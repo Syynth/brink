@@ -415,6 +415,35 @@ You have {gold} gold.
 -> END
 ";
 
+/// The `compile_walks_up_from_entry_to_find_brink_toml` companion for
+/// `brink ide` (issue #1403): `resolve_analysis_options` now discovers over
+/// the `SourceTree` seam (`brink_project_config::discover_from_entry_in_tree`)
+/// rather than the path-based `load_from_entry` — this proves the walk-up
+/// behavior survived the swap end-to-end, not just in the unit-level
+/// `resolve_analysis_options_source_tree_seam_tests`.
+#[test]
+fn ide_check_walks_up_from_entry_to_find_brink_toml() {
+    let dir = project_dir("ide-config-nested");
+    let nested = dir.join("chapters");
+    fs::create_dir_all(&nested).unwrap();
+    let story = write_story(&nested, EXTENSION_FIXTURE);
+    write_config(&dir, "[project]\ndialect = \"brink\"\n");
+
+    let out = brink()
+        .args(["ide", "check", "-e"])
+        .arg(&story)
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "brink.toml one directory above the entry file should still be found by brink ide: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
 /// Regression for the review finding on `introduced_diagnostics`'s
 /// re-analysis `Driver`: it used to be built with
 /// `AnalysisOptions::default()` (always `strict-ink`) regardless of the

@@ -34,25 +34,37 @@ use super::handlers::{Mutation, emit_mutation};
 /// driver in `load_git_baseline` — so none of them can silently disagree
 /// about which dialect/type-policy governs the same project. Unknown keys in
 /// the file are reported as warnings on stderr, never treated as errors.
-fn resolve_analysis_options(entry: &Path) -> Result<brink_analyzer::AnalysisOptions, String> {
+///
+/// Issue #1403: discovers over `tree` (a [`SourceTree`]) via
+/// [`brink_project_config::discover_from_entry_in_tree`] — the identical
+/// probe [`brink_environment::Project::load`]'s producer uses to resolve a
+/// mount's `brink.toml` (#1312/#1370) — instead of the path-based
+/// `brink_project_config::load_from_entry`. Previously `brink ide` was the
+/// one caller left resolving config straight off `std::fs`, so it could
+/// silently disagree with `brink compile`/brink-web/bevy-brink (all of which
+/// go through the `SourceTree` seam) and could never honor a non-`RealFs`
+/// mount. `entry_key` is `tree`-relative (as returned by
+/// [`brink_driver::relative_key`]), matching every other `SourceTree`
+/// caller's convention.
+fn resolve_analysis_options(
+    tree: &dyn SourceTree,
+    entry_key: &str,
+) -> Result<brink_analyzer::AnalysisOptions, String> {
     let mut options = brink_analyzer::AnalysisOptions::default();
-    if let Some(loaded) =
-        brink_project_config::load_from_entry(entry).map_err(|e| format!("{e}"))?
+    if let Some(config_key) = brink_project_config::discover_from_entry_in_tree(tree, entry_key)
+        .map_err(|e| format!("{e}"))?
     {
-        for warning in &loaded.warnings {
-            let _ = writeln!(
-                io::stderr(),
-                "warning: [{}] {warning}",
-                loaded.path.display()
-            );
+        let text = tree
+            .read(&config_key)
+            .map_err(|e| format!("failed to read project config {config_key}: {e}"))?;
+        let (config, warnings) = brink_project_config::parse_str(&text)
+            .map_err(|e| format!("project config error in {config_key}: {e}"))?;
+        for warning in &warnings {
+            let _ = writeln!(io::stderr(), "warning: [{config_key}] {warning}");
         }
-        let lint_warnings = options.apply_project_config(&loaded.config, false, false);
+        let lint_warnings = options.apply_project_config(&config, false, false);
         for warning in &lint_warnings {
-            let _ = writeln!(
-                io::stderr(),
-                "warning: [{}] {warning}",
-                loaded.path.display()
-            );
+            let _ = writeln!(io::stderr(), "warning: [{config_key}] {warning}");
         }
     }
     Ok(options)
@@ -134,14 +146,18 @@ impl Project {
     /// pre-#1005 behavior) is the only source. Unknown keys in the file are
     /// reported as warnings on stderr, never treated as errors.
     pub(super) fn load(entry: &Path) -> Result<Self, String> {
+        let root = brink_driver::native_source_root(entry);
+        let tree = RealFs::new(&root);
+        let config_key = brink_driver::relative_key(&root, entry);
+
         let mut driver = Driver::new();
-        driver.set_analysis_options(resolve_analysis_options(entry)?);
+        driver.set_analysis_options(resolve_analysis_options(&tree, &config_key)?);
 
         let entry_key = if brink_driver::is_native(entry) {
-            let root = brink_driver::native_source_root(entry);
-            let tree = RealFs::new(&root);
+            // Reuse the same `SourceTree` config resolution just probed —
+            // the "tree it already builds" issue #1403 asks for.
             driver.discover_native(&tree).map_err(|e| format!("{e}"))?;
-            brink_driver::relative_key(&root, entry)
+            config_key
         } else {
             let entry_s = entry.to_string_lossy().into_owned();
             driver
@@ -310,18 +326,20 @@ impl Project {
         edited: &BTreeMap<String, String>,
         removed: Option<&str>,
     ) -> Result<Vec<DiagEntry>, String> {
+        let root = brink_driver::native_source_root(entry);
+        let config_key = brink_driver::relative_key(&root, entry);
+
         let mut driver = Driver::new();
-        driver.set_analysis_options(resolve_analysis_options(entry)?);
+        driver.set_analysis_options(resolve_analysis_options(&RealFs::new(&root), &config_key)?);
 
         let entry_key = if brink_driver::is_native(entry) {
-            let root = brink_driver::native_source_root(entry);
             let tree = EditOverlay {
                 inner: RealFs::new(&root),
                 edited,
                 removed,
             };
             driver.discover_native(&tree).map_err(|e| format!("{e}"))?;
-            brink_driver::relative_key(&root, entry)
+            config_key
         } else {
             let entry_s = entry.to_string_lossy().into_owned();
             driver
@@ -613,18 +631,24 @@ impl Project {
 /// entry is unchanged: `git_show`-driven `INCLUDE` BFS.
 pub(super) fn load_git_baseline(entry: &Path, rev: &str) -> Result<Project, String> {
     let entry_s = entry.to_string_lossy().into_owned();
+    let root = brink_driver::native_source_root(entry);
+    let config_key = brink_driver::relative_key(&root, entry);
+
     let mut driver = Driver::new();
-    driver.set_analysis_options(resolve_analysis_options(entry)?);
+    // Config resolution still reads `brink.toml` off the working tree, not
+    // `rev` — the baseline and head sides must agree on the *same* resolved
+    // policy (see `load_git_baseline_matches_project_load_analysis_options`
+    // below); only the source content itself is read from `rev`.
+    driver.set_analysis_options(resolve_analysis_options(&RealFs::new(&root), &config_key)?);
 
     let entry_key = if brink_driver::is_native(entry) {
-        let root = brink_driver::native_source_root(entry);
         let repo_dir = Path::new(".");
         ensure_repo_dir_is_toplevel(repo_dir)?;
         let tree = GitRev::new(repo_dir, rev, &root);
         driver
             .discover_native(&tree)
             .map_err(|e| format!("baseline {rev}: {e}"))?;
-        brink_driver::relative_key(&root, entry)
+        config_key
     } else {
         driver
             .discover(&entry_s, |p| git_show(rev, p))
@@ -1137,5 +1161,80 @@ mod ide_session_project_config_tests {
         );
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+/// Regression for issue #1403: `resolve_analysis_options` used to call the
+/// path-based `brink_project_config::load_from_entry`, which reads straight
+/// off `std::fs` and can only ever see the real filesystem — the same
+/// hardcoding `brink_environment::Project::load` (the `brink
+/// compile`/brink-web/bevy-brink producer) had already moved off of via the
+/// `SourceTree` seam (#1312/#1370). These tests resolve config from a
+/// `brink_db::InMemory` tree — a `brink.toml` that is never written to disk
+/// at all — so they only pass if `resolve_analysis_options` is generic over
+/// `&dyn SourceTree` rather than secretly still bound to `RealFs`/`std::fs`.
+#[cfg(test)]
+mod resolve_analysis_options_source_tree_seam_tests {
+    use super::*;
+
+    #[test]
+    fn resolves_brink_toml_from_a_non_filesystem_source_tree() {
+        let tree = brink_db::InMemory::new(BTreeMap::from([
+            (
+                "brink.toml".to_string(),
+                "[project]\ndialect = \"brink\"\n".to_string(),
+            ),
+            (
+                "chapters/main.ink".to_string(),
+                "Hello.\n-> END\n".to_string(),
+            ),
+        ]));
+
+        let options = resolve_analysis_options(&tree, "chapters/main.ink")
+            .expect("resolves options over an in-memory tree");
+
+        assert_eq!(
+            options.dialect,
+            brink_analyzer::Dialect::Brink,
+            "must discover + apply a brink.toml that exists only in the SourceTree, never on disk"
+        );
+    }
+
+    /// The "missing file changes nothing" guarantee, proven against the
+    /// tree-based probe: no `brink.toml` anywhere in the tree resolves to
+    /// byte-identical defaults.
+    #[test]
+    fn no_brink_toml_in_tree_yields_default_options() {
+        let tree = brink_db::InMemory::new(BTreeMap::from([(
+            "main.ink".to_string(),
+            "Hello.\n-> END\n".to_string(),
+        )]));
+
+        let options =
+            resolve_analysis_options(&tree, "main.ink").expect("resolves options with no config");
+
+        assert_eq!(options, brink_analyzer::AnalysisOptions::default());
+    }
+
+    /// The tree-based probe walks up from a nested entry key exactly like
+    /// the filesystem-based one did — a `brink.toml` two levels above the
+    /// entry is still discovered.
+    #[test]
+    fn walks_up_from_a_nested_entry_key_in_the_tree() {
+        let tree = brink_db::InMemory::new(BTreeMap::from([
+            (
+                "brink.toml".to_string(),
+                "[project]\ndialect = \"brink\"\n".to_string(),
+            ),
+            (
+                "book/chapters/main.ink".to_string(),
+                "Hello.\n-> END\n".to_string(),
+            ),
+        ]));
+
+        let options = resolve_analysis_options(&tree, "book/chapters/main.ink")
+            .expect("resolves options by walking up the tree");
+
+        assert_eq!(options.dialect, brink_analyzer::Dialect::Brink);
     }
 }
