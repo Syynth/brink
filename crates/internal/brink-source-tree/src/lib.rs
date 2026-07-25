@@ -107,25 +107,38 @@ pub const IGNORED_DIR_NAMES: &[&str] = &["target", ".git", "node_modules"];
 ///
 /// # Admission policy
 ///
-/// This guard governs **directory walks** — code that discovers files by
-/// recursively enumerating a tree it wasn't already told the shape of
-/// (`brink-driver`'s `RealFs` walk; `brink-lsp`'s workspace-load walk; the
-/// *admission* half of `brink-lsp`'s file-watcher handler, which is handed
+/// This section is scoped to **`.ink` source admission**. This guard governs
+/// **directory walks** — code that discovers files by recursively
+/// enumerating a tree it wasn't already told the shape of (`brink-driver`'s
+/// `RealFs` walk; `brink-lsp`'s workspace-load walk; the *admission* half of
+/// `brink-lsp`'s file-watcher handler for `.ink` paths, which is handed
 /// individual paths but still decides whether each is new territory). It
 /// does **not** govern **explicit path admission** — code that is handed one
 /// specific path by something outside the walk, with no discretion to skip
 /// it: a user opening a file directly in their editor
 /// (`textDocument/didOpen`), or an `INCLUDE` directive naming a path from
 /// within source that is itself already admitted (`brink-lsp`'s
-/// `chase_includes` / `load_file_from_disk`). Those call sites intentionally
-/// never call this guard — the user (via the editor) or the source author
-/// (via `INCLUDE`) has already made the decision to reference that exact
-/// file, and second-guessing it here would make e.g. `INCLUDE
+/// `chase_includes` / `load_file_from_disk`). `brink-lsp`'s
+/// `textDocument/didChange` and `textDocument/didSave` handlers are explicit
+/// path admission too — both insert via `ProjectDb::update_file`, a literal
+/// alias for `set_file`, so either can admit a path the db has never seen —
+/// though in practice they're always preceded by a `didOpen` for the same
+/// path first. Those call sites intentionally never call this guard — the
+/// user (via the editor) or the source author (via `INCLUDE`) has already
+/// made the decision to reference that exact file, and second-guessing it
+/// here would make e.g. `INCLUDE
 /// node_modules/shared/lib.ink` — a legitimate way to pull in vendored ink
 /// content — silently fail to load. Once such a file is admitted, it is
 /// tracked like any other: later watched-file CHANGED/DELETED events for it
 /// keep syncing, even though a *fresh* CREATED admission of the same
 /// still-untracked path would be pruned.
+///
+/// `brink-lsp`'s file-watcher handler also routes `brink.toml` changes
+/// separately from `.ink` admission, and applies this guard there under a
+/// stricter rule of its own: an ignored-dir `brink.toml` is never
+/// authoritative config, so that route skips unconditionally, with no
+/// already-tracked exemption. That rule is config-file routing, not `.ink`
+/// source admission, so it isn't part of the policy documented above.
 ///
 /// Decided and written down once here (issue #1424) after #1415 found the
 /// split already held in practice — every admission path's behavior already

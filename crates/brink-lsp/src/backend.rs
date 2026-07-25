@@ -565,11 +565,16 @@ impl Backend {
     /// Load a file from disk into the database if not already present.
     /// Recursively chases INCLUDE directives.
     ///
-    /// `path` is always an explicit `INCLUDE` target resolved by
-    /// [`Self::chase_includes`] (its only caller), never a path discovered
-    /// by walking a directory — so, per `brink_source_tree::is_ignored_dir`'s
-    /// "Admission policy" doc, it is admitted unconditionally, even under
-    /// `target/`, `.git/`, or `node_modules/` (issue #1424).
+    /// This is the shared admission sink for every explicit-path load —
+    /// [`Self::chase_includes`] (an `INCLUDE` target) and [`Self::walk_and_load`]
+    /// (a path `collect_ink_files` produced while walking the workspace
+    /// root) both call it, and it recurses into itself while chasing
+    /// further includes. It never applies `brink_source_tree::is_ignored_dir`
+    /// itself, because each caller has already decided: `collect_ink_files`
+    /// prunes ignored directories upstream during the walk, while
+    /// `chase_includes` and `did_open` deliberately admit unconditionally,
+    /// per `brink_source_tree::is_ignored_dir`'s "Admission policy" doc
+    /// (issue #1424).
     fn load_file_from_disk(&self, path: &str) {
         // Check if already loaded
         {
@@ -993,10 +998,13 @@ fn is_brink_toml_path(path: &str) -> bool {
 /// True if any component of `path`, *below whichever `roots` entry contains
 /// it*, is a [`brink_source_tree::is_ignored_dir`] name (`target/`, `.git/`,
 /// `node_modules/`) — i.e. `path` lives inside a directory a recursive walk
-/// would never descend into. Only ever consulted at the *admission* call
-/// site in `did_change_watched_files` (see `is_ignored_dir`'s "Admission
-/// policy" doc) — a path already tracked in `ProjectDb` keeps syncing
-/// regardless of what this returns.
+/// would never descend into. Consulted at two sites in
+/// `did_change_watched_files` (see `is_ignored_dir`'s "Admission policy"
+/// doc): the `brink.toml` route, which skips unconditionally with no
+/// already-tracked exemption (an ignored-dir config is never authoritative,
+/// per that branch's own inline comment); and the `.ink` admission gate,
+/// where a path already tracked in `ProjectDb` keeps syncing regardless of
+/// what this returns.
 ///
 /// `did_change_watched_files` receives whole file paths from the client's
 /// file-watcher subscription rather than walking a directory tree itself, so
