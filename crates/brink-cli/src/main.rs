@@ -320,8 +320,9 @@ fn run_command(command: Commands) -> ExitCode {
 ///
 /// The CLI mounts a [`RealFs::project`](brink_driver::RealFs::project) tree
 /// rooted at [`native_source_root`] — a lazy real-filesystem `SourceTree`, not
-/// a whole-tree eager drain (issue #1357): `list` enumerates `.brink`/`.ink`/
-/// `brink.toml` keys by stat alone, and `read` serves any one of them off
+/// a whole-tree eager drain (issue #1357): `list` enumerates `.brink`/`.ink`
+/// keys by stat alone (never descending into `target/`/`.git/`
+/// `node_modules/` — issue #1381), and `read` serves any one of them off
 /// disk only when `Project::load` actually needs it (an ink entry's
 /// `INCLUDE`-reachable set, a native entry's whole `.brink` universe, and
 /// whichever single `brink.toml` config discovery resolves). An unrelated
