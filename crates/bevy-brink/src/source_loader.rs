@@ -387,6 +387,10 @@ impl AssetLoader for InkLoader {
         let overrides = OptionOverrides {
             dialect: self.override_config.as_ref().and_then(|c| c.dialect),
             types: self.override_config.as_ref().and_then(|c| c.types),
+            // bevy-brink's editor/host lint-override API is a follow-up
+            // (issue #1373 scoped its CLI/API tier to `brink-cli`); no
+            // `BrinkPlugin::with_config` field feeds these yet.
+            ..OptionOverrides::default()
         };
 
         // Land the drained map in a `SourceTree` and go through the
