@@ -501,6 +501,11 @@ impl IdeSession {
     /// `brink-lsp`. #1385 is the owner issue for resolving that fence, and the
     /// deliberate decision is: **do not migrate.** `IdeSession::compile` keeps
     /// pushing salsa inputs directly onto its own long-lived [`ProjectDb`].
+    ///
+    /// This ruling is scoped to **today's `compile(&Environment)` free
+    /// function** (`crates/internal/brink-environment/src/lib.rs`), not to
+    /// `Environment` as a value type in the abstract — see the last bullet
+    /// below for the alternative that scoping deliberately excludes.
     /// Reasoning:
     ///
     /// - **`compile(&Environment)` is intentionally non-incremental.** Per its
@@ -513,29 +518,37 @@ impl IdeSession {
     ///   hold **one** persistent `ProjectDb` across many edits and queries so
     ///   an unrelated file's parse/HIR/analysis memos survive a single-file
     ///   keystroke edit. Routing every `compile_project` call through
-    ///   `Project::load`/`compile(&env)` would re-walk the tree, re-hash every
-    ///   source, and reseed a brand-new db on each call — discarding the
-    ///   incremental state this session exists to keep warm, with no
-    ///   compensating benefit.
-    /// - **It would resurrect the #1004 divergence class.** #1032 made
-    ///   compile and analysis share this one db specifically so they can never
-    ///   diverge on manifest/dialect/policy/file-state (see this method's
-    ///   opening paragraph). `Project::load` + `compile(&env)` builds an
-    ///   `Environment` from a fresh `SourceTree` walk and compiles it on an
-    ///   entirely separate, throwaway `ProjectDb`. Wiring `compile_project`
-    ///   through that producer would put a *second* db back in the picture
-    ///   alongside `IdeSession`'s own — precisely the two-driver split #1032
-    ///   closed as "structurally unrepresentable."
-    /// - **`Environment` is a value; `IdeSession` is not.** `Environment` is
-    ///   documented as "the whole compilation universe as a single hashable
-    ///   \[point-in-time\] artifact" — content-addressed, immutable, built
-    ///   fresh per compile. `IdeSession` is long-lived mutable state whose one
-    ///   db is edited incrementally, input by input (`set_file`, `set_entry`,
-    ///   `set_analysis_options`), over a session that can span a whole editing
-    ///   run. Forcing a whole-snapshot value producer onto a mutable
-    ///   incremental session inverts the abstraction the #1306 split
-    ///   (value-producer vs. effectful mount vs. pure compile) was designed
-    ///   around.
+    ///   *today's* `Project::load`/`compile(&env)` would re-walk the tree,
+    ///   re-hash every source, and reseed a brand-new `Driver::new()` db on
+    ///   each call (that function's own body does exactly that:
+    ///   `set_analysis_options` + `set_file` per key + `set_entry` onto a
+    ///   fresh driver) — discarding the incremental state this session exists
+    ///   to keep warm, with no compensating benefit.
+    /// - **As it stands, it would resurrect the #1004 divergence class.**
+    ///   #1032 made compile and analysis share this one db specifically so
+    ///   they can never diverge on manifest/dialect/policy/file-state (see
+    ///   this method's opening paragraph). *Today's* `Project::load` +
+    ///   `compile(&env)` builds an `Environment` from a fresh `SourceTree`
+    ///   walk and compiles it on its own freshly-minted `ProjectDb` (via
+    ///   `Driver::new()`). Wiring `compile_project` through that entry point
+    ///   unmodified would put a *second* db back in the picture alongside
+    ///   `IdeSession`'s own. This is a property of `compile`'s current body
+    ///   (it always mints a throwaway driver), not an inherent property of
+    ///   the `Environment` value type — see below.
+    /// - **The live alternative, named and deferred, not dismissed.** A
+    ///   `compile_into(&mut Driver, &Environment)` variant — same
+    ///   `set_analysis_options`/`set_file`/`set_entry` push, applied to the
+    ///   *session's own* `ProjectDb` instead of a fresh one — would preserve
+    ///   incrementality outright (salsa's `set_file` is a no-op for unchanged
+    ///   content, so unrelated files' memos survive) while keeping exactly
+    ///   one db, sidestepping the #1004 divergence concern above by
+    ///   construction. That is a real, live alternative, not a hypothetical
+    ///   future-salsa escape hatch — it is deliberately **out of scope for
+    ///   this ruling** because it requires designing and landing a new
+    ///   `brink-environment` entry point, which #1385 did not ask this PR to
+    ///   do. It is the natural next step if/when `IdeSession` is revisited to
+    ///   compile against `Environment`-shaped input; bring it back as its own
+    ///   proposal rather than treating this doc comment as having settled it.
     /// - **The adjacent design question is still genuinely open.** #1347
     ///   (`needs-design`, unresolved) asks whether `IdeSession`'s live-typing
     ///   diagnostics should route through `ProjectDb`'s own salsa-level
@@ -543,11 +556,18 @@ impl IdeSession {
     ///   `compile_project` onto a *different* producer now would prejudge that
     ///   still-open call rather than wait for it.
     ///
-    /// If `IdeSession` is ever restructured to compile against a
-    /// content-addressed `Environment` per keystroke — e.g. because a future
-    /// salsa version makes `Environment`-keyed incremental reuse cheap — that
-    /// would be a new design proposal to bring back for discussion, not an
-    /// extension of this ruling.
+    /// **Relationship to the #1306 decision-log entry**
+    /// (`docs/decision-log.md`, "Compilation environment as a deterministic,
+    /// serializable input" — "producer vs. pure input"): that entry names
+    /// `set_file`/`set_entry`/`set_analysis_options` as exactly the imperative
+    /// push `Environment`/`compile(&env)` exists to reify, and folds "the LSP
+    /// mount (#1131)" into the producer's scope — i.e. it anticipated
+    /// `IdeSession`-shaped mounts eventually feeding `Environment` too. This
+    /// ruling is a **narrower, present-tense carve-out**: it does not
+    /// contradict #1306's long-run direction, it says today's
+    /// `compile(&Environment)` shape (one throwaway db per call) is not yet
+    /// the right fit for `IdeSession`'s incremental db, pending the
+    /// `compile_into`-style seam above.
     ///
     /// # Errors
     /// Returns [`CompileEntryError::EntryNotFound`] if `entry` is not a file
