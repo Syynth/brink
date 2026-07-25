@@ -252,12 +252,17 @@ fn ancestor_dirs(entry_path: &str) -> Vec<String> {
 /// Returns only the candidate's key + text — **not** parsed, and no
 /// precedence applied. This loader's job stops at supplying bytes; the
 /// caller lands the pair at its own key in the drained source map, and
-/// [`Project::load`] (over the resulting `SourceTree`) does the actual
-/// discovery walk, parsing, and `CLI/API > file > default` precedence
-/// itself (#1360) — so the walk-up rule lives in exactly one place, not
-/// duplicated between this probe and the producer. A miss at every
-/// ancestor returns `Ok(None)` — not an error, matching
-/// `brink-project-config`'s "missing config changes nothing" contract.
+/// [`Project::load`] (over the resulting `SourceTree`) then runs its own
+/// discovery walk (`brink_project_config::discover_from_entry_in_tree`) to
+/// decide which candidate governs, parses it, and applies the
+/// `CLI/API > file > default` precedence (#1360). The bounded ancestor
+/// walk-up itself is still performed twice — once here (to fetch candidate
+/// bytes through the async `AssetReader`), once inside `Project::load`
+/// (over the resulting in-memory tree) — only the parsing, precedence, and
+/// "which candidate governs" decision are deduplicated; this probe does not
+/// re-implement that resolution policy. A miss at every ancestor returns
+/// `Ok(None)` — not an error, matching `brink-project-config`'s "missing
+/// config changes nothing" contract.
 async fn probe_brink_toml(
     load_context: &mut LoadContext<'_>,
     entry_path: &str,
@@ -670,5 +675,35 @@ mod config_discovery_tests {
         app.world().resource::<AssetServer>().reload("intro.ink");
 
         wait_for_failed(&mut app, &handle);
+    }
+
+    /// #1360 regression: the migrated loader still walks a multi-file
+    /// `INCLUDE` graph correctly through the real `AssetServer` /
+    /// `MemoryAssetReader`, including a parent-traversing (`../`) include
+    /// that exercises [`super::resolve_include_path`]'s `..`-segment
+    /// normalization, alongside a same-directory include. Before #1360 this
+    /// path went through `brink_compiler::compile_with_options`'s read
+    /// closure; it now goes through `brink_source_tree::InMemory` ->
+    /// `brink_environment::Driver::discover`, so a producer-side change to
+    /// include-graph keying could silently break multi-file loads without
+    /// this test catching it.
+    #[test]
+    fn multi_file_include_graph_loads_through_asset_server() {
+        let (mut app, dir) = make_memory_asset_app();
+        dir.insert_asset_text(
+            Path::new("stories/ch1/intro.ink"),
+            "INCLUDE ../shared/util.ink\nINCLUDE local.ink\n-> END\n",
+        );
+        // Parent traversal: "../shared/util.ink" from "stories/ch1/" must
+        // resolve to "stories/shared/util.ink", not "stories/ch1/../shared/util.ink".
+        dir.insert_asset_text(Path::new("stories/shared/util.ink"), "VAR shared_var = 1\n");
+        // Same-directory include, resolved relative to the entry's own dir.
+        dir.insert_asset_text(Path::new("stories/ch1/local.ink"), "VAR local_var = 2\n");
+
+        let handle = app
+            .world()
+            .resource::<AssetServer>()
+            .load::<BrinkStoryAsset>("stories/ch1/intro.ink");
+        wait_for_loaded(&mut app, &handle);
     }
 }
