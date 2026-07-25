@@ -360,8 +360,16 @@ fn resolve_options(
     let mut options = AnalysisOptions::default();
 
     if let Some(config_key) = discover_from_entry_in_tree(tree, Path::new("."), entry)? {
-        let text = tree.read(&config_key)?;
-        let (config, warnings) = parse_str(&text)?;
+        let text = tree
+            .read(&config_key)
+            .map_err(|source| LoadError::ConfigRead {
+                path: config_key.clone(),
+                source,
+            })?;
+        let (config, warnings) = parse_str(&text).map_err(|source| LoadError::Config {
+            path: config_key.clone(),
+            source,
+        })?;
         for warning in &warnings {
             // The producer is the effectful side; surfacing unknown-key
             // warnings here (rather than dropping them) preserves the CLI's
@@ -467,9 +475,30 @@ pub enum LoadError {
     Discover(#[from] brink_driver::DiscoverError),
     /// A discovered `brink.toml` could not be parsed (malformed TOML, or a
     /// recognized key with an out-of-range value). Unknown keys are warnings,
-    /// never this error.
-    #[error("project config error: {0}")]
-    Config(#[from] ConfigError),
+    /// never this error. Carries the discovered `path` so the message names
+    /// which file failed — lost when this variant went through a bare
+    /// `#[from] ConfigError` in #1306 (#1369 restores it).
+    #[error("project config error in {path}: {source}")]
+    Config {
+        /// The root-relative key of the `brink.toml` that failed to parse.
+        path: String,
+        #[source]
+        source: ConfigError,
+    },
+    /// A discovered `brink.toml` could not be *read* (permission error,
+    /// non-UTF-8 bytes, or any other I/O failure) — the other half of
+    /// #1369's regression: `tree.read(&config_key)?` used to fall through
+    /// the bare `#[from] io::Error` on [`LoadError::Io`], which carries no
+    /// path (`RealFs::read` is `fs::read_to_string`, and std I/O errors
+    /// don't carry the path that failed). Carries the discovered `path` so
+    /// this half names the file too.
+    #[error("failed to read project config {path}: {source}")]
+    ConfigRead {
+        /// The root-relative key of the `brink.toml` that failed to read.
+        path: String,
+        #[source]
+        source: io::Error,
+    },
     /// A native source key is not root-relative (contains a `..` segment) — a
     /// save-key-identity guardrail against a `SourceTree` that violates the
     /// contract.
@@ -638,7 +667,87 @@ mod tests {
         ]);
         let err = Project::load(&t, "main.brink", &OptionOverrides::default())
             .expect_err("invalid dialect value must fail load");
-        assert!(matches!(err, LoadError::Config(_)));
+        assert!(matches!(err, LoadError::Config { .. }));
+    }
+
+    /// #1369: the `Config` error must name the discovered `brink.toml`'s
+    /// path — lost since #1306 when the variant became a bare
+    /// `#[from] ConfigError` with no path carried alongside it.
+    #[test]
+    fn malformed_brink_toml_error_names_its_path() {
+        let t = tree(&[
+            ("brink.toml", "[project]\ndialect = \"sideways\"\n"),
+            ("main.brink", "flow main() {}"),
+        ]);
+        let err = Project::load(&t, "main.brink", &OptionOverrides::default())
+            .expect_err("invalid dialect value must fail load");
+        let LoadError::Config { path, .. } = &err else {
+            unreachable!("expected LoadError::Config, got {err:?}");
+        };
+        assert_eq!(path, "brink.toml");
+        assert!(
+            err.to_string().contains("brink.toml"),
+            "error message must name the malformed file, got: {err}"
+        );
+    }
+
+    /// Nested discovery (walking up from a subdirectory) must report the
+    /// `brink.toml`'s actual discovered *key* — a multi-segment root-relative
+    /// path — not just a bare filename. A `brink.toml` at the tree root
+    /// (the previous fixture) discovers as the bare `"brink.toml"` key
+    /// itself, which the preceding test already proves; this fixture nests
+    /// the `brink.toml` too, so `path` only passes if the discovered key is
+    /// actually threaded through rather than, say, a hardcoded filename.
+    #[test]
+    fn malformed_brink_toml_error_names_its_nested_path() {
+        let t = tree(&[
+            ("chapters/brink.toml", "[project]\ndialect = \"sideways\"\n"),
+            ("chapters/deep/main.brink", "flow main() {}"),
+        ]);
+        let err = Project::load(&t, "chapters/deep/main.brink", &OptionOverrides::default())
+            .expect_err("invalid dialect value must fail load");
+        let LoadError::Config { path, .. } = &err else {
+            unreachable!("expected LoadError::Config, got {err:?}");
+        };
+        assert_eq!(path, "chapters/brink.toml");
+        assert!(
+            err.to_string().contains("chapters/brink.toml"),
+            "error message must name the nested malformed file, got: {err}"
+        );
+    }
+
+    /// #1369's other half: a `brink.toml` that is *discovered* but fails to
+    /// *read* (non-UTF-8 bytes) must also name its path — the failure mode
+    /// that fell through the bare `#[from] io::Error` on `LoadError::Io`
+    /// pre-fix, since `RealFs::read` (`fs::read_to_string`) returns a std
+    /// I/O error with no path attached. `InMemory` can't represent invalid
+    /// UTF-8 (its map is `String`-keyed and -valued), so this exercises the
+    /// real filesystem via `RealFs` instead.
+    #[test]
+    fn unreadable_brink_toml_error_names_its_path() {
+        let dir = std::env::temp_dir().join(format!(
+            "brink-environment-unreadable-config-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Invalid UTF-8: a lone continuation byte can never start a valid
+        // UTF-8 sequence, so `fs::read_to_string` fails with `InvalidData`.
+        std::fs::write(dir.join("brink.toml"), [0x80_u8, 0x81, 0x82]).unwrap();
+        std::fs::write(dir.join("main.brink"), "flow main() {}").unwrap();
+
+        let t = brink_driver::RealFs::project(&dir);
+        let err = Project::load(&t, "main.brink", &OptionOverrides::default())
+            .expect_err("non-UTF-8 brink.toml must fail load");
+        let LoadError::ConfigRead { path, .. } = &err else {
+            unreachable!("expected LoadError::ConfigRead, got {err:?}");
+        };
+        assert_eq!(path, "brink.toml");
+        assert!(
+            err.to_string().contains("brink.toml"),
+            "error message must name the unreadable file, got: {err}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     // ── [lints] resolution (issue #1160) ──────────────────────────────
