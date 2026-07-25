@@ -495,7 +495,8 @@ mod tests {
     };
 
     use super::{
-        Dialect, ExternalCheckSeverity, IdeSession, SemanticTypeDiagnosticSeverity, TypePolicy,
+        AnalysisOptions, Dialect, ExternalCheckSeverity, IdeSession,
+        SemanticTypeDiagnosticSeverity, TypePolicy,
     };
 
     fn color_manifest() -> HostManifest {
@@ -764,6 +765,71 @@ EXTERNAL add_state(who)
             "types=strict + dialect=brink: expected E065 on unused param `x`: {:?}",
             analysis.diagnostics
         );
+    }
+
+    /// B0.9 native strict-only enforcement (issue #1342): the IDE/editor
+    /// surface (`brink-web`'s `EditorSession::compile_project`, which calls
+    /// `IdeSession::compile` exactly as here — see that method's doc)
+    /// reaches `E137` the same way `brink_compiler::compile_path_with_options`
+    /// does — proving the salsa `story_data()` compile path (not just the
+    /// pure `analyze_with_options` diagnostics path `set_type_policy`'s
+    /// sibling tests above exercise) also hits the gate.
+    #[test]
+    fn compile_native_file_with_explicit_gradual_types_reports_e137() {
+        let mut session = IdeSession::new();
+        session.update_and_analyze(
+            "main.brink",
+            "flow main() {\n  Hello. -> END\n}\n".to_string(),
+        );
+        let options = AnalysisOptions {
+            types: Some(TypePolicy::Gradual),
+            ..Default::default()
+        };
+        let product = session
+            .compile("main.brink", &options)
+            .expect("entry file is loaded");
+
+        assert!(
+            product
+                .errors
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E137),
+            "types=gradual native compile: expected E137: {:?}",
+            product.errors
+        );
+        assert!(
+            product.story.is_none(),
+            "a hard error must not emit a story"
+        );
+    }
+
+    /// The paired positive case: `types = strict` on the same native entry
+    /// compiles cleanly (no `E137`).
+    #[test]
+    fn compile_native_file_with_explicit_strict_types_has_no_e137() {
+        let mut session = IdeSession::new();
+        session.update_and_analyze(
+            "main.brink",
+            "flow main() {\n  Hello. -> END\n}\n".to_string(),
+        );
+        let options = AnalysisOptions {
+            dialect: Dialect::Brink,
+            types: Some(TypePolicy::Strict),
+            ..Default::default()
+        };
+        let product = session
+            .compile("main.brink", &options)
+            .expect("entry file is loaded");
+
+        assert!(
+            !product
+                .errors
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E137),
+            "types=strict native compile: expected no E137: {:?}",
+            product.errors
+        );
+        assert!(product.story.is_some(), "expected a compiled story");
     }
 
     /// #1127 (default flip): under `dialect = brink` with NO explicit

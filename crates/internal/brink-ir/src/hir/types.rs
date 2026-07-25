@@ -2183,6 +2183,14 @@ pub enum DiagnosticCode {
     /// from, so any other value means a weave-fold concept leaked in from
     /// somewhere it shouldn't have.
     E136,
+    /// The B0.9 native strict-only enforcement point (docs/b0-sequencing.md
+    /// §B0.9, decision-log 2026-07-19 "Typing posture ruled"): a native
+    /// `.brink` file was compiled with an explicit `types = gradual` knob.
+    /// Gradual typing does not exist on the native surface — `types` is not
+    /// a project knob there the way it is for the transitional brink
+    /// dialect, so an explicit `gradual` setting reaching a `.brink` compile
+    /// is refused, loudly, rather than silently accepted.
+    E137,
 }
 
 impl DiagnosticCode {
@@ -2330,6 +2338,7 @@ impl DiagnosticCode {
             Self::E134 => "E134",
             Self::E135 => "E135",
             Self::E136 => "E136",
+            Self::E137 => "E137",
         }
     }
 
@@ -2528,6 +2537,7 @@ impl DiagnosticCode {
             }
             Self::E135 => "native accept-list: thread-start outside choice-point splice position",
             Self::E136 => "native accept-list: choice set carries a non-neutral weave-fold value",
+            Self::E137 => "native .brink compile requires types = strict",
         }
     }
 
@@ -2702,6 +2712,7 @@ impl DiagnosticCode {
             "E134" => Some(Self::E134),
             "E135" => Some(Self::E135),
             "E136" => Some(Self::E136),
+            "E137" => Some(Self::E137),
             _ => None,
         }
     }

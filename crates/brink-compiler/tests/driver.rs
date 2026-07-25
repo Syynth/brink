@@ -262,6 +262,84 @@ fn compile_path_native_walks_up_to_brink_toml() {
     );
 }
 
+// ── B0.9 native strict-only enforcement (issue #1342) ────────────────
+//
+// Native is strict-only by design (decision-log 2026-07-19 "Typing posture
+// ruled"): a `.brink` compile with an explicit `types = gradual` knob is a
+// hard error (`E137`), never silently accepted. A bare `.brink` compile
+// with no explicit `types` (the two tests above, `AnalysisOptions::default()`)
+// is unaffected — the gate only fires on an explicit `gradual` choice, see
+// `brink_analyzer::native_strict_only_error`'s doc.
+
+/// `types = gradual` explicitly requested for a native entry is refused
+/// with `E137`, not silently compiled.
+#[test]
+fn compile_path_native_with_explicit_gradual_types_is_e137() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-native-gradual-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("main.brink"),
+        "flow main() {\n  Hello. -> END\n}\n",
+    )
+    .unwrap();
+
+    let options = brink_compiler::AnalysisOptions {
+        types: Some(brink_compiler::TypePolicy::Gradual),
+        ..Default::default()
+    };
+    let result = brink_compiler::compile_path_with_options(&dir.join("main.brink"), options);
+    std::fs::remove_dir_all(&dir).ok();
+
+    let err = result.expect_err("a gradual-knob .brink compile must be a hard error");
+    assert!(
+        matches!(err, brink_compiler::CompileError::Diagnostics(_)),
+        "expected a Diagnostics(E137) compile error, got: {err}"
+    );
+    let codes = diagnostic_codes(&err);
+    assert!(
+        codes.contains(&"E137"),
+        "expected E137 (native strict-only) among diagnostics, got: {codes:?}"
+    );
+}
+
+/// `types = strict` explicitly requested for a native entry compiles
+/// cleanly — the paired positive case for the gate above.
+#[test]
+fn compile_path_native_with_explicit_strict_types_compiles() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-native-strict-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("main.brink"),
+        "flow main() {\n  Hello. -> END\n}\n",
+    )
+    .unwrap();
+
+    let options = brink_compiler::AnalysisOptions {
+        // `types = strict` requires `dialect = brink` (E064) — the ink-only
+        // dialect gate is orthogonal to native strict-only but still checked,
+        // since native has no dialect concept of its own to exempt it.
+        dialect: brink_compiler::Dialect::Brink,
+        types: Some(brink_compiler::TypePolicy::Strict),
+        ..Default::default()
+    };
+    let result = brink_compiler::compile_path_with_options(&dir.join("main.brink"), options);
+    std::fs::remove_dir_all(&dir).ok();
+
+    let output = result.expect("types = strict native compile should succeed");
+    assert!(
+        !output.data.containers.is_empty(),
+        "expected non-empty containers"
+    );
+}
+
 // ── compile_path (disk-based) ───────────────────────────────────────
 
 #[test]

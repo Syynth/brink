@@ -71,7 +71,7 @@ pub use protocols::{
 };
 pub use resolve::ImportScope;
 pub use signature::{Sig, signature};
-pub use strict::{TypePolicy, effective_severity, resolve_type_policy};
+pub use strict::{TypePolicy, effective_severity, native_strict_only_error, resolve_type_policy};
 pub use structs::{ShapeInfo, declared_shapes};
 
 use brink_format::DefinitionId;
