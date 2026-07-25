@@ -302,7 +302,15 @@ impl EditorSession {
             ..brink_analyzer::AnalysisOptions::default()
         };
         let lint_warnings = lint_options.apply_project_config(&config, true, true);
-        self.session.set_lint_policy(lint_options.lints);
+        // `set_lint_policy` always re-analyzes, unlike `dialect`/`types`
+        // above (which only re-analyze when the file actually sets that
+        // field) — so only push when the merge actually changed anything.
+        // `LintPolicy` is `Eq`; a `brink.toml` with no `[lints]` table (or
+        // one that resolves to the same policy already in effect) must not
+        // trigger a redundant full re-analysis.
+        if lint_options.lints != *self.session.lint_policy() {
+            self.session.set_lint_policy(lint_options.lints);
+        }
 
         let mut all_warnings: Vec<String> = warnings.into_iter().map(|w| w.0).collect();
         all_warnings.extend(lint_warnings.into_iter().map(|w| w.0));
@@ -2944,7 +2952,27 @@ mod tests {
         assert_eq!(warnings, "[]", "a valid overridable code earns no warning");
         s.update_file("main.ink", source);
         let result = s.compile_project("main.ink");
-        let severity = json(&result)["warnings"]
+        let parsed = json(&result);
+        // Promoting E014 to `Error` doesn't just re-render its `severity`
+        // string — it makes the diagnostic count as an error for
+        // `has_errors_in_closure_query`'s partitioning, so `compile_project`
+        // fails to produce a story at all: `ok: false`, `story_bytes: null`.
+        // `warnings` is `errors ⧺ warnings` on the failure branch, so
+        // checking only that field can't distinguish "still compiled, just
+        // re-leveled" from "compile now fails" — assert on `ok`/`story_bytes`
+        // directly.
+        assert_eq!(
+            parsed["ok"],
+            serde_json::json!(false),
+            "brink.toml's [lints] E014 = \"deny\" promotes E014 to Error, so \
+             compilation must now fail: {result}"
+        );
+        assert_eq!(
+            parsed["story_bytes"],
+            serde_json::json!(null),
+            "a failed compile must not carry story bytes: {result}"
+        );
+        let severity = parsed["warnings"]
             .as_array()
             .and_then(|w| w.iter().find(|d| d["code"] == "E014"))
             .map(|d| d["severity"].clone());
@@ -2966,7 +2994,23 @@ mod tests {
             .expect("valid brink.toml");
         s.update_file("main.ink", "~\nHello.\n-> DONE\n");
         let result = s.compile_project("main.ink");
-        let severity = json(&result)["warnings"]
+        let parsed = json(&result);
+        // Same consequence as the per-code override above: `deny-warnings`
+        // makes every `Warning`-severity diagnostic count as an error for
+        // partitioning, so this now fails to compile — `ok: false`,
+        // `story_bytes: null` — not merely a re-rendered `severity` string.
+        assert_eq!(
+            parsed["ok"],
+            serde_json::json!(false),
+            "brink.toml's [lints] deny-warnings = true promotes E014 to \
+             Error, so compilation must now fail: {result}"
+        );
+        assert_eq!(
+            parsed["story_bytes"],
+            serde_json::json!(null),
+            "a failed compile must not carry story bytes: {result}"
+        );
+        let severity = parsed["warnings"]
             .as_array()
             .and_then(|w| w.iter().find(|d| d["code"] == "E014"))
             .map(|d| d["severity"].clone());

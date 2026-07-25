@@ -247,9 +247,15 @@ impl IdeSession {
     /// re-analyze. Callers resolve the policy themselves — typically by
     /// merging a parsed `brink.toml`'s `[lints]` table onto the current
     /// policy via `AnalysisOptions::apply_project_config` and passing the
-    /// result's `.lints` back here (see `brink-web`'s `EditorSession::
-    /// apply_project_config` and the CLI's `Project::load`) — this session
-    /// only stores and forwards the resolved value.
+    /// result's `.lints` back here. As of #1366, `brink-web`'s
+    /// `EditorSession::apply_project_config` is the only caller — this
+    /// session only stores and forwards the resolved value. The CLI's
+    /// `Project::load`/`Project::ide_session` do **not** call this yet:
+    /// `resolve_analysis_options` (`brink-cli/src/ide/project.rs`) merges
+    /// `[lints]` into the `Driver`'s `AnalysisOptions` for compile/analysis,
+    /// but `Project::ide_session()` builds a bare `IdeSession::new()` and
+    /// never forwards that policy here — a `brink ide` structural-op safety
+    /// gate (`structural_result::gate`) still sees `LintPolicy::default()`.
     pub fn set_lint_policy(&mut self, lints: LintPolicy) {
         self.lints = lints;
         self.reanalyze();

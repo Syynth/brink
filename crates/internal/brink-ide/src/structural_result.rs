@@ -183,11 +183,14 @@ pub fn gate_with_source(
 /// `IdeSession::analysis_options().lints`, which since #1366 reflects
 /// whatever `IdeSession::set_lint_policy` last resolved (a served
 /// `brink.toml`'s `[lints]` table, merged in by `brink-web`'s
-/// `EditorSession::apply_project_config` or the CLI's `Project::load`) —
-/// `LintPolicy::default()` only when nothing has ever set it. Taking `lints`
-/// as a parameter (rather than manufacturing a fresh `LintPolicy::default()`
-/// in here) is what let that wiring land as a two-line change at the
-/// `IdeSession` seam instead of a change to every call site here.
+/// `EditorSession::apply_project_config` — as of #1366 the only caller;
+/// the CLI's `Project::load`/`Project::ide_session` do not forward a
+/// resolved policy here yet, see `IdeSession::set_lint_policy`'s doc
+/// comment) — `LintPolicy::default()` only when nothing has ever set it.
+/// Taking `lints` as a parameter (rather than manufacturing a fresh
+/// `LintPolicy::default()` in here) is what let that wiring land as a
+/// two-line change at the `IdeSession` seam instead of a change to every
+/// call site here.
 pub(crate) fn introduced_diagnostics(
     analysis: &AnalysisResult,
     new_analysis: &AnalysisResult,
