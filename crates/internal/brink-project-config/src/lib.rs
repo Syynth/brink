@@ -441,25 +441,19 @@ pub fn discover_from_entry(entry_file: &Path) -> Option<PathBuf> {
 /// against whatever root the tree was constructed with, so this function
 /// needs no enumeration to know where to look.
 ///
-/// `root` is accepted (and unused) for source compatibility with existing
-/// callers only. It used to be kept for shape-symmetry with
-/// [`SourceTree::list`]'s signature, but issue #1371 dropped `list`'s
-/// equivalent `root` parameter entirely (every implementation's root is now
-/// exclusively constructor-held, per the #1323 layering ruling) — this
-/// function's own `root` predates that and was left in place rather than
-/// rippling a signature change through every caller for a parameter that
-/// was already inert. Every current [`SourceTree`] implementation resolves
-/// `read` keys against its own stored root, not against a `root` supplied
-/// per call.
+/// Takes no `root` parameter: every current [`SourceTree`] implementation
+/// resolves `read` keys against its own constructor-held root (issue #1371),
+/// so there is nothing for a caller to supply here. An earlier version of
+/// this function accepted (and ignored) a `root: &Path` for shape-symmetry
+/// with [`SourceTree::list`]'s old signature; issue #1395 dropped it once
+/// #1371 made the equivalent parameter dead on `list` too, closing the gap
+/// left when this function's own dead parameter wasn't swept up at the same
+/// time.
 ///
 /// Returns the matching key, not file content — callers read it via
 /// [`SourceTree::read`] (mirroring how [`find_config`] returns a path the
 /// caller reads via `std::fs`, not file content).
-pub fn find_config_in_tree(
-    tree: &dyn SourceTree,
-    _root: &Path,
-    start_key: &str,
-) -> io::Result<Option<String>> {
+pub fn find_config_in_tree(tree: &dyn SourceTree, start_key: &str) -> io::Result<Option<String>> {
     let mut dir = start_key.trim_matches('/');
     loop {
         let candidate = if dir.is_empty() {
@@ -493,14 +487,13 @@ pub fn find_config_in_tree(
 /// [`SourceTree`] analog of [`discover_from_entry`].
 pub fn discover_from_entry_in_tree(
     tree: &dyn SourceTree,
-    root: &Path,
     entry_key: &str,
 ) -> io::Result<Option<String>> {
     let start = match entry_key.trim_matches('/').rsplit_once('/') {
         Some((parent, _)) => parent,
         None => "",
     };
-    find_config_in_tree(tree, root, start)
+    find_config_in_tree(tree, start)
 }
 
 /// Discover (via [`discover_from_entry`]) and parse (via [`parse_str`]) the
@@ -779,7 +772,7 @@ mod tests {
         files.insert("a/b/story.ink".to_owned(), "content".to_owned());
         let tree = InMemory::new(files);
 
-        let found = find_config_in_tree(&tree, Path::new("."), "a/b")
+        let found = find_config_in_tree(&tree, "a/b")
             .expect("list succeeds")
             .expect("should find brink.toml in an ancestor key");
         assert_eq!(found, CONFIG_FILE_NAME);
@@ -794,7 +787,7 @@ mod tests {
         files.insert("a/b/story.ink".to_owned(), "content".to_owned());
         let tree = InMemory::new(files);
 
-        let found = find_config_in_tree(&tree, Path::new("."), "a/b").expect("list succeeds");
+        let found = find_config_in_tree(&tree, "a/b").expect("list succeeds");
         assert_eq!(found, None);
     }
 
@@ -838,7 +831,7 @@ mod tests {
         }
         let tree = ErrorsOnList { files };
 
-        let found = find_config_in_tree(&tree, Path::new("."), "a/b/c/d")
+        let found = find_config_in_tree(&tree, "a/b/c/d")
             .expect("direct probing succeeds without ever calling list")
             .expect("should find brink.toml at the tree root");
         assert_eq!(found, CONFIG_FILE_NAME);
@@ -852,7 +845,7 @@ mod tests {
         }
         let tree = ErrorsOnList { files };
 
-        let found = find_config_in_tree(&tree, Path::new("."), "a/b/c/d")
+        let found = find_config_in_tree(&tree, "a/b/c/d")
             .expect("direct probing succeeds without ever calling list");
         assert_eq!(found, None);
     }
@@ -890,7 +883,7 @@ mod tests {
 
     #[test]
     fn find_config_in_tree_reports_found_when_the_candidate_read_errors_non_not_found() {
-        let found = find_config_in_tree(&ErrorsOnRead, Path::new("."), "a/b")
+        let found = find_config_in_tree(&ErrorsOnRead, "a/b")
             .expect("a non-NotFound read error is not propagated")
             .expect("the unreadable brink.toml is still reported as found");
         assert_eq!(found, CONFIG_FILE_NAME);
@@ -909,7 +902,7 @@ mod tests {
         files.insert("story.ink".to_owned(), "content".to_owned());
         let tree = InMemory::new(files);
 
-        let found = discover_from_entry_in_tree(&tree, Path::new("."), "story.ink")
+        let found = discover_from_entry_in_tree(&tree, "story.ink")
             .expect("list succeeds")
             .expect("should find brink.toml beside entry key");
         assert_eq!(found, CONFIG_FILE_NAME);

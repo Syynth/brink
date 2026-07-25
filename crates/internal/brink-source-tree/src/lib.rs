@@ -31,6 +31,34 @@
 //! probe speculatively treat `NotFound` as "no candidate here, keep going"
 //! and treat every other error kind as fatal.
 //!
+//! ## Policy asymmetry: `list` may be key-kind-scoped, `read` never is
+//!
+//! `list`'s enumeration scope is entirely implementation-defined — nothing
+//! in this trait requires it to return only native `.brink` keys.
+//! `brink-driver`'s `RealFs`, for instance, has two constructors backed by
+//! the same type: `RealFs::new` scopes `list` to `.brink` only (the native
+//! discovery / `brink ide` shape), while `RealFs::project` widens it to
+//! `.brink` + `.ink` + `brink.toml` (the CLI's producer mount). `read`,
+//! however, has **no equivalent scoping on any implementation** — it will
+//! serve the text of any key that exists in the underlying store, native or
+//! not, regardless of what that same implementation's `list` would ever
+//! enumerate. A `RealFs::new`-scoped tree's `read("brink.toml")` still
+//! succeeds if that file is on disk, even though its `list()` would never
+//! return that key.
+//!
+//! This is intentional, not an oversight: it is exactly what lets
+//! `find_config_in_tree` probe for a manifestly non-native `brink.toml` key
+//! against *any* `SourceTree` — including one scoped to `.brink` alone —
+//! without needing a widened `list` or a second seam. The seam itself does
+//! not police "nativeness" on `read`; a consumer that needs that guarantee
+//! enforces it itself. `brink-driver`'s `discover_native` is the sharp edge
+//! of this: it inspects every key `list` returns and rejects the whole
+//! discovery (`DiscoverError::NonNativeKey`) if any of them is not `.brink`
+//! — but that check runs against `list`'s output only, is specific to that
+//! one consumer, and says nothing about what `read` will or won't serve.
+//! Do not assume a `SourceTree` implementation refuses to read non-native
+//! keys just because its `list` is native-scoped.
+//!
 //! The root itself is never discovered inside the seam (no implementation
 //! walks upward looking for a project marker) — it is always supplied by the
 //! caller, which resolves it however is appropriate for that host (a
@@ -70,6 +98,10 @@ pub trait SourceTree {
     /// [`io::ErrorKind::NotFound`], and no other error kind, when `key` does
     /// not exist — speculative callers rely on that kind to distinguish "not
     /// here, keep probing" from a real I/O failure.
+    ///
+    /// `read` carries no key-kind scoping even when `list` does (see the
+    /// [module docs](self) "policy asymmetry" section) — it serves any
+    /// existing key, native source or not.
     fn read(&self, key: &str) -> io::Result<String>;
 }
 
