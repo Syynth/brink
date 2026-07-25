@@ -1084,6 +1084,32 @@ fn file_level_was_lowers_to_module_rename_record() {
 }
 
 #[test]
+fn file_level_was_unquoted_path_lowers_to_module_rename_record() {
+    // Issue #1355: the unquoted `::`-path arg shape (issue #1349's grammar)
+    // must reach `hir.module.was` exactly like the quoted string form does —
+    // no E132, same rename record.
+    let (hir, _m, diags) = lower_src("@[was(story::old::barter)]\nflow hero() {\n  hi\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let module = hir
+        .module
+        .as_ref()
+        .expect("an unquoted `@[was]` file must carry a ModuleDecl");
+    assert_eq!(
+        module.was.as_ref().map(|(old, _)| old.as_str()),
+        Some("story::old::barter"),
+        "the unquoted old module path must reach `module.was`"
+    );
+    assert!(
+        diags.iter().all(|d| d.code != DiagnosticCode::E129),
+        "a recognized unquoted `@[was]` must not raise E129: {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code != DiagnosticCode::E132),
+        "the unquoted path form must not diagnose E132: {diags:?}"
+    );
+}
+
+#[test]
 fn no_was_annotation_leaves_module_none() {
     let (hir, _m, diags) = lower_src("flow hero() {\n  hi\n}\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
