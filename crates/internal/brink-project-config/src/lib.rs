@@ -13,7 +13,9 @@
 //! This crate is the one place that:
 //!
 //! - **discovers** the config file — walking up from the entry `.ink` file's
-//!   directory to the nearest ancestor containing [`CONFIG_FILE_NAME`]
+//!   directory to the nearest ancestor containing [`CONFIG_FILE_NAME`],
+//!   bounded at a workspace/git boundary (#1425) so the walk can never
+//!   escape the project and pick up an unrelated `brink.toml` far above it
 //!   ([`discover_from_entry`], [`find_config`]);
 //! - **parses** it, tolerating unknown keys as warnings rather than errors
 //!   (forward compat — an older `brink` binary shouldn't choke on a
@@ -386,6 +388,24 @@ fn value_type_name(value: &Value) -> &'static str {
 /// "walk up from the entry file to the nearest `brink.toml`" discovery rule
 /// (#1005) — a project's entry `.ink` file doesn't have to sit directly
 /// beside the config for every mount to find the same one.
+///
+/// **Bounded at a workspace/git boundary (#1425).** Before checking a
+/// directory's parent, this stops if the directory itself contains a `.git`
+/// entry — the marker of a repository root, whether it's an ordinary
+/// repository (`.git/` is a directory) or a linked worktree (`.git` is a
+/// *file* holding a `gitdir:` pointer, e.g. `.claude/worktrees/*` in this
+/// very repo — checked with [`Path::exists`], not `is_dir`, so both shapes
+/// count). `start_dir` and every ancestor up to and including the boundary
+/// directory are still probed for `brink.toml` — only climbing *past* the
+/// boundary is refused. Without this bound the walk is `Path::parent`-only,
+/// which has no concept of "outside the project": run from deep enough
+/// inside a repo with no `brink.toml` of its own, it keeps climbing past the
+/// repository root and can silently pick up an unrelated `brink.toml` far
+/// above it (in `$HOME`, or another project entirely) — surprising, and a
+/// violation of this codebase's guard-against-unbounded-growth rule. A tree
+/// with no `.git` anywhere above `start_dir` (a bare, VCS-less project) is
+/// unaffected: the walk still runs all the way to the filesystem root,
+/// exactly as before.
 #[must_use]
 pub fn find_config(start_dir: &Path) -> Option<PathBuf> {
     let mut dir = Some(start_dir);
@@ -393,6 +413,12 @@ pub fn find_config(start_dir: &Path) -> Option<PathBuf> {
         let candidate = d.join(CONFIG_FILE_NAME);
         if candidate.is_file() {
             return Some(candidate);
+        }
+        if d.join(".git").exists() {
+            // Workspace/git boundary: this directory is the repository
+            // root (or a linked worktree's root) and had no `brink.toml`
+            // of its own — do not climb past it.
+            return None;
         }
         dir = d.parent();
     }
@@ -453,6 +479,14 @@ pub fn discover_from_entry(entry_file: &Path) -> Option<PathBuf> {
 /// Returns the matching key, not file content — callers read it via
 /// [`SourceTree::read`] (mirroring how [`find_config`] returns a path the
 /// caller reads via `std::fs`, not file content).
+///
+/// Already bounded at the tree's own root, so it needed no change for
+/// #1425 (unlike [`find_config`]'s `.git`-directory bound): a key's
+/// ancestors are string-derived (`rsplit_once('/')`), bottoming out at the
+/// empty root key with nothing further to strip — there is no lexical
+/// equivalent of `find_config`'s unbounded `Path::parent` climb here. It can
+/// only ever "escape" the project if the `tree` itself is rooted somewhere
+/// too wide (a caller concern, not this function's).
 pub fn find_config_in_tree(tree: &dyn SourceTree, start_key: &str) -> io::Result<Option<String>> {
     let mut dir = start_key.trim_matches('/');
     loop {
@@ -726,6 +760,103 @@ mod tests {
         let root = unique_tmp_dir("absent");
         std::fs::create_dir_all(&root).unwrap();
         assert_eq!(find_config(&root), None);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    // ── workspace/git boundary (#1425) ──────────────────────────────────
+
+    /// The walk must not climb past a directory containing a `.git`
+    /// subdirectory — an unrelated `brink.toml` sitting further up (outside
+    /// the repository) must never be picked up.
+    #[test]
+    fn find_config_stops_at_git_dir_boundary() {
+        let root = unique_tmp_dir("git-boundary-dir");
+        let repo = root.join("repo");
+        let nested = repo.join("a").join("b");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        // Stray config *above* the repository root — must never be found.
+        std::fs::write(
+            root.join(CONFIG_FILE_NAME),
+            "[project]\ndialect = \"brink\"\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            find_config(&nested),
+            None,
+            "must not climb past the .git-marked repository root to a stray ancestor config"
+        );
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The boundary check also fires when `.git` is a *file* rather than a
+    /// directory — the shape a linked git worktree uses (a `gitdir:` pointer
+    /// file, exactly how this repository's own `.claude/worktrees/*` are
+    /// laid out), not just an ordinary clone's `.git/` directory.
+    #[test]
+    fn find_config_stops_at_git_file_boundary_worktree_shape() {
+        let root = unique_tmp_dir("git-boundary-file");
+        let repo = root.join("repo");
+        let nested = repo.join("a").join("b");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(repo.join(".git"), "gitdir: /elsewhere/.git/worktrees/x\n").unwrap();
+        std::fs::write(
+            root.join(CONFIG_FILE_NAME),
+            "[project]\ndialect = \"brink\"\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            find_config(&nested),
+            None,
+            "a `.git` worktree-pointer *file* must bound the walk exactly like a `.git` dir"
+        );
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The boundary directory itself (the one holding `.git`) is still
+    /// checked for `brink.toml` before the walk refuses to climb further —
+    /// bounding the walk must not also blind it to a config at the boundary.
+    #[test]
+    fn find_config_still_finds_config_at_the_git_boundary_dir_itself() {
+        let root = unique_tmp_dir("git-boundary-config-at-root");
+        let repo = root.join("repo");
+        let nested = repo.join("a").join("b");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::write(
+            repo.join(CONFIG_FILE_NAME),
+            "[project]\ndialect = \"brink\"\n",
+        )
+        .unwrap();
+
+        let found = find_config(&nested).expect("brink.toml at the repo root must still be found");
+        assert_eq!(found, repo.join(CONFIG_FILE_NAME));
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A project with no `.git` anywhere above it (no VCS at all) is
+    /// unaffected by the bound — the walk still runs all the way to the
+    /// filesystem root, exactly as before #1425.
+    #[test]
+    fn find_config_without_any_git_boundary_still_walks_to_filesystem_root() {
+        let root = unique_tmp_dir("no-git-anywhere");
+        let nested = root.join("a").join("b").join("c");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(
+            root.join(CONFIG_FILE_NAME),
+            "[project]\ndialect = \"brink\"\n",
+        )
+        .unwrap();
+
+        let found =
+            find_config(&nested).expect("should still find brink.toml with no .git anywhere");
+        assert_eq!(found, root.join(CONFIG_FILE_NAME));
+
         std::fs::remove_dir_all(&root).unwrap();
     }
 

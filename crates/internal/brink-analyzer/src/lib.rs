@@ -149,20 +149,39 @@ impl AnalysisOptions {
     /// field is left untouched regardless of what the file says. The file only
     /// ever supplies a *default*.
     ///
-    /// Fields the file doesn't set are also left untouched, so `self` should
-    /// already carry whatever it would have without a config file (typically
-    /// [`AnalysisOptions::default()`]).
+    /// For `dialect`/`types`, fields the file doesn't set are also left
+    /// untouched, so `self` should already carry whatever it would have
+    /// without a config file (typically [`AnalysisOptions::default()`]).
+    /// `lints` does not follow this rule — see below.
     ///
     /// `lints`/`deny-warnings` (issue #1160) have no override mechanism yet
     /// (no CLI flag or editor API sets an individual code's severity or
     /// `deny-warnings` today), so unlike `dialect`/`types` there is no
-    /// `lints_overridden` parameter — the file's `[lints]` table always
-    /// applies, merged key-by-key into [`AnalysisOptions::lints`]
-    /// (`config.deny_warnings`, if set, replaces
-    /// [`LintPolicy::deny_warnings`] wholesale). Adding an explicit
-    /// override source is a natural follow-up that would slot into the
-    /// same `CLI/API > file > default` precedence this function already
-    /// establishes for `dialect`/`types`.
+    /// `lints_overridden` parameter — the file's `[lints]` table is instead
+    /// the sole source of truth for [`AnalysisOptions::lints`]: this call
+    /// **replaces** `self.lints` wholesale with the policy resolved from
+    /// `config` (a code missing from `config.lints`, or an absent `[lints]`
+    /// table entirely, resolves to no override for that code; a missing
+    /// `deny-warnings` resolves to `false`) rather than merging `config`'s
+    /// entries key-by-key into whatever `self.lints` already held.
+    ///
+    /// This differs from `dialect`/`types`' "unset means untouched" rule
+    /// above deliberately (issue #1397): those fields are one-shot,
+    /// CLI-flag-style choices where "unset" genuinely means "the file
+    /// doesn't have an opinion, leave whatever's already resolved alone".
+    /// `[lints]`, in contrast, is a *table* a long-lived caller (the editor
+    /// session re-applies `brink.toml` on every change; see
+    /// `brink-web`'s `EditorSession::apply_parsed_config`) re-resolves from
+    /// scratch each time it calls this — merge semantics meant a code
+    /// deleted from `brink.toml` (or an editor-supplied config) left its
+    /// previously-applied override permanently stuck, since nothing ever
+    /// removed it from [`AnalysisOptions::lints`]. Replacing wholesale is
+    /// safe for every caller: `apply_lint_overrides` (the CLI/API tier) is
+    /// always documented to run *after* this, on top of whatever it just
+    /// resolved, and no caller relies on this call preserving lint state
+    /// this one didn't itself just set — `self.lints` at call time is
+    /// either a fresh [`AnalysisOptions::default()`] (CLI, LSP, `brink ide`,
+    /// `bevy-brink`) or the previous call's own output (the editor session).
     ///
     /// `brink-project-config` doesn't know the real `DiagnosticCode` set
     /// (kept dependency-free, #1234), so it accepts any string key under
@@ -171,8 +190,8 @@ impl AnalysisOptions {
     /// and decides which codes are actually overridable: a key that isn't a
     /// real code, or names a code whose default severity isn't `Warning`
     /// (never reachable through [`effective_severity`]'s hard-error
-    /// exemption anyway — see its doc comment), is *not* merged into
-    /// [`AnalysisOptions::lints`] and instead earns a returned
+    /// exemption anyway — see its doc comment), is *not* included in the
+    /// replaced [`AnalysisOptions::lints`] and instead earns a returned
     /// [`ConfigWarning`], the same "warn, never silently drop" channel
     /// unknown top-level/`[project]` keys already use. Every call site that
     /// already loops over `brink_project_config::parse_str`'s own warnings
@@ -194,17 +213,21 @@ impl AnalysisOptions {
             self.types = Some(types);
         }
         let mut warnings = Vec::new();
+        let mut overrides = BTreeMap::new();
         for (code, level) in &config.lints {
             match validate_lint_code(code) {
                 Ok(()) => {
-                    self.lints.overrides.insert(code.clone(), *level);
+                    overrides.insert(code.clone(), *level);
                 }
                 Err(warning) => warnings.push(warning),
             }
         }
-        if let Some(deny_warnings) = config.deny_warnings {
-            self.lints.deny_warnings = deny_warnings;
-        }
+        // Replace, not merge (issue #1397) — see the doc comment above for
+        // why: a code (or `deny-warnings`) omitted from `config` must
+        // resolve to its base severity, not whatever a prior call left in
+        // place.
+        self.lints.overrides = overrides;
+        self.lints.deny_warnings = config.deny_warnings.unwrap_or(false);
         warnings
     }
 
@@ -1389,7 +1412,7 @@ EXTERNAL add_state(who)
     // ── AnalysisOptions::apply_project_config: [lints] (issue #1160) ──
 
     #[test]
-    fn apply_project_config_merges_lint_overrides() {
+    fn apply_project_config_applies_lint_overrides() {
         let mut options = AnalysisOptions::default();
         let mut config = ProjectConfig::default();
         config.lints.insert("E014".to_owned(), LintLevel::Deny);
@@ -1415,7 +1438,7 @@ EXTERNAL add_state(who)
     }
 
     #[test]
-    fn apply_project_config_absent_lints_leaves_lint_policy_untouched() {
+    fn apply_project_config_absent_lints_clears_lint_policy() {
         let mut options = AnalysisOptions {
             lints: LintPolicy {
                 overrides: BTreeMap::from([("E014".to_owned(), LintLevel::Deny)]),
@@ -1426,11 +1449,55 @@ EXTERNAL add_state(who)
 
         options.apply_project_config(&ProjectConfig::default(), false, false);
 
-        // An empty `[lints]` table (or none at all) must not clear an
-        // already-resolved lint policy — same "unset means untouched" rule
-        // `dialect`/`types` already follow.
-        assert_eq!(options.lints.overrides.get("E014"), Some(&LintLevel::Deny));
-        assert!(options.lints.deny_warnings);
+        // Issue #1397: unlike `dialect`/`types`, `[lints]` REPLACES the
+        // resolved policy rather than merging into it — an empty (or
+        // absent) `[lints]` table resolves to no overrides and
+        // `deny-warnings = false`, so a long-lived caller (the editor
+        // session) that re-applies `brink.toml` after the table was deleted
+        // actually reverts, instead of leaving the previous override stuck.
+        assert!(
+            options.lints.overrides.is_empty(),
+            "an absent [lints] table must clear previously-resolved overrides"
+        );
+        assert!(!options.lints.deny_warnings);
+    }
+
+    #[test]
+    fn apply_project_config_omitted_code_reverts_to_base_severity() {
+        // Simulates the editor session's live-reapply scenario (#1397): a
+        // prior call already resolved E014 and E022 overrides plus
+        // deny-warnings; the re-applied config only re-asserts E014 —
+        // E022 and deny-warnings were deleted from `brink.toml` in between.
+        let mut options = AnalysisOptions {
+            lints: LintPolicy {
+                overrides: BTreeMap::from([
+                    ("E014".to_owned(), LintLevel::Deny),
+                    ("E022".to_owned(), LintLevel::Allow),
+                ]),
+                deny_warnings: true,
+            },
+            ..AnalysisOptions::default()
+        };
+        let mut config = ProjectConfig::default();
+        config.lints.insert("E014".to_owned(), LintLevel::Deny);
+
+        options.apply_project_config(&config, false, false);
+
+        assert_eq!(
+            options.lints.overrides.get("E014"),
+            Some(&LintLevel::Deny),
+            "a code still present in the re-applied config keeps its override"
+        );
+        assert!(
+            !options.lints.overrides.contains_key("E022"),
+            "a code omitted from the re-applied config must revert to its \
+             base severity, not stick"
+        );
+        assert!(
+            !options.lints.deny_warnings,
+            "deny-warnings omitted from the re-applied config must revert \
+             to false, not stick"
+        );
     }
 
     #[test]

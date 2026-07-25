@@ -29,8 +29,13 @@ E014 = "deny"          # per-code severity override: "allow" | "warn" | "deny"
 ```
 
 All keys are optional. An empty or absent `[project]`/`[lints]` table — or
-no `brink.toml` at all — changes nothing: **a missing file is exactly
-today's behavior**, no regression.
+no `brink.toml` at all — changes nothing on a *first* apply: **a missing
+file is exactly today's behavior**, no regression. For a long-lived caller
+that re-applies `brink.toml` on every change (the wasm editor session, see
+below), `[lints]` is the one exception: each apply **replaces** the
+resolved lint policy wholesale from whatever the file currently says
+(issue #1397), so an empty or absent `[lints]` table on a *later* apply
+reverts any codes a previous, non-empty `[lints]` table had set.
 
 Unknown keys — a stray top-level table, a key inside `[project]`, or a
 `[lints]` entry naming a code this version of `brink` doesn't recognize (or
@@ -88,6 +93,21 @@ it finds. The file doesn't have to sit directly beside the entry point — a
 multi-file project with `story.ink` in `src/chapters/` and `brink.toml` at
 the repo root still finds it.
 
+For the real-filesystem mounts — `brink compile`, `brink ide`, and
+`brink-lsp` — the walk is bounded at a workspace/git boundary: it never
+climbs past a directory containing a `.git` entry (an ordinary repository's
+`.git/` directory, or a linked worktree's `.git` pointer file). Inside a
+non-repository tree (no VCS at all), the walk still runs all the way to the
+filesystem root. Either way, a `brink.toml` that lives outside the
+project's own repository is never picked up by these mounts, even by
+accident — the file is treated exactly as if it didn't exist.
+
+The virtual mounts have no filesystem or `.git` to bound against, so each is
+bounded at its own tree instead: the wasm editor session's
+`discoverProjectConfig` never looks past the document tree's own root (see
+below), and `bevy-brink`'s dev-mode `InkLoader` never climbs past the asset
+source root it was loaded from.
+
 ```text
 my-project/
 ├── brink.toml          ← found even though the entry is nested
@@ -144,7 +164,12 @@ one-off choice that the file must not silently overrule.
   **It applies `[project] dialect`/`types` *and* `[lints]`/`deny-warnings`**
   (issue #1366) — diagnostic severity rendered through this surface now
   reflects the file the same way `brink compile`, `brink ide`, and
-  `brink-lsp` already did:
+  `brink-lsp` already did. Because this session is long-lived, a repeated
+  `applyProjectConfig`/`discoverProjectConfig` call fully **re-resolves**
+  `[lints]` from the file each time rather than merging onto the previous
+  result (issue #1397) — a code or `deny-warnings` present in an earlier
+  `brink.toml` but absent from the current one reverts to its default
+  severity:
 
   ```ts
   import { EditorSessionHandle } from "@brink-lang/web";

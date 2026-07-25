@@ -590,7 +590,7 @@ mod config_discovery_tests {
     use bevy_asset::io::memory::{Dir, MemoryAssetReader};
     use bevy_asset::io::{AssetSourceBuilder, AssetSourceId};
     use bevy_asset::{AssetApp, AssetPlugin, AssetServer, LoadState};
-    use brink_project_config::Dialect;
+    use brink_project_config::{Dialect, TypePolicy};
 
     use super::{InkLoader, ProjectConfig};
     use crate::asset::{BrinkStoryAsset, LineTablesAsset, ProgramAsset};
@@ -610,6 +610,22 @@ mod config_discovery_tests {
     /// (and so a `Failed` load) once `[lints]` denies it or sets
     /// `deny-warnings` (issue #1394).
     const E014_SOURCE: &str = "Hello.\n~\n-> END\n";
+
+    /// An untyped function parameter (`f(x)`, no `: type` annotation) called
+    /// with an argument: `dialect = Brink`'s own resolved-policy default is
+    /// `Strict` (`AnalysisOptions::type_policy`), which rejects an untyped
+    /// param with 2 diagnostics — only an explicit `types = gradual`
+    /// override compiles it. Verified against this crate's own `brink`
+    /// CLI: `brink compile fnreturn.ink --dialect brink` exits 1 with 2
+    /// diagnostics; `--dialect brink --types gradual` exits 0.
+    ///
+    /// Replaces a prior `STRUCT NPC = ...; VAR npc = NPC#{...}` fixture that
+    /// was meant to hit `E075` (struct literals as declaration defaults) but
+    /// didn't — it compiled cleanly under `types = strict` too (verified the
+    /// same way), so the `types` override test built on it was vacuous
+    /// (house rule 19q; #1426 w52 review).
+    const UNTYPED_PARAM_SOURCE: &str =
+        "=== function f(x) ===\n~ return x\n\n=== start ===\n{f(1)}\n-> END\n";
 
     /// Build an `App` with an in-memory `AssetSource` and just enough
     /// registered (asset types + the dev-mode `InkLoader`) to drive a real
@@ -673,6 +689,39 @@ mod config_discovery_tests {
                 ..Default::default()
             },
             crate::plugin::BrinkAssetsPlugin::default().with_config(config),
+        ));
+        (app, dir)
+    }
+
+    /// Same as [`make_memory_asset_app_with_config`], but wired through
+    /// [`crate::BrinkPlugin::with_config`] instead of
+    /// [`crate::plugin::BrinkAssetsPlugin::with_config`] directly — proves
+    /// the two-hop delegation (`BrinkPlugin::build` ->
+    /// `BrinkAssetsPlugin::with_config_option` -> `InkLoader {
+    /// override_config }`) a host adding the marker-parameterized plugin
+    /// actually goes through, not just `BrinkAssetsPlugin` in isolation.
+    fn make_memory_asset_app_via_brink_plugin_with_config(
+        config: ProjectConfig,
+    ) -> (bevy_app::App, Dir) {
+        let mut app = bevy_app::App::new();
+        let dir = Dir::default();
+        let dir_clone = dir.clone();
+        app.register_asset_source(
+            AssetSourceId::Default,
+            AssetSourceBuilder::new(move || {
+                Box::new(MemoryAssetReader {
+                    root: dir_clone.clone(),
+                })
+            }),
+        )
+        .add_plugins((
+            TaskPoolPlugin::default(),
+            AssetPlugin {
+                watch_for_changes_override: Some(false),
+                use_asset_processor_override: Some(false),
+                ..Default::default()
+            },
+            crate::BrinkPlugin::<()>::default().with_config(config),
         ));
         (app, dir)
     }
@@ -1060,6 +1109,147 @@ mod config_discovery_tests {
             joined.contains("[lints] `E001` is not overridable"),
             "a non-overridable lint code must warn with the 'not overridable' message \
              (not silently drop); captured: {joined}"
+        );
+    }
+
+    // ── plugin-level `with_config` coverage across all four knobs (#1426) ──
+    //
+    // The tests above prove `[lints]` reaches through `with_config` at the
+    // plugin level. `dialect`/`types`/`deny_warnings` previously only had
+    // *loader*-level coverage (`InkLoader { override_config }` constructed
+    // by hand, e.g. `plugin_override_wins_over_conflicting_asset` above) —
+    // never proven to actually reach `InkLoader` through
+    // `BrinkAssetsPlugin::with_config` / `BrinkPlugin::with_config`
+    // themselves (`with_config` -> `with_config_option` ->
+    // `BrinkAssetsPlugin::build` -> `InkLoader { override_config }`). Each
+    // test below picks a fixture whose default-policy outcome the override
+    // must actually flip (house rule: a value the default would already
+    // produce proves nothing).
+
+    #[test]
+    fn plugin_with_config_dialect_reaches_ink_loader() {
+        // Default dialect (StrictInk) rejects `#@private`
+        // (`missing_brink_toml_leaves_default_dialect_unchanged` above) --
+        // only an explicit `dialect = Brink` override flips that.
+        let (mut app, dir) = make_memory_asset_app_with_config(ProjectConfig {
+            dialect: Some(Dialect::Brink),
+            ..ProjectConfig::default()
+        });
+        dir.insert_asset_text(Path::new("intro.ink"), BRINK_ONLY_SOURCE);
+
+        let handle = app
+            .world()
+            .resource::<AssetServer>()
+            .load::<BrinkStoryAsset>("intro.ink");
+        wait_for_loaded(&mut app, &handle);
+    }
+
+    #[test]
+    fn plugin_with_config_types_reaches_ink_loader() {
+        // `dialect = Brink` alone resolves `types` to its dialect-keyed
+        // default, `Strict` (`AnalysisOptions::type_policy`), which rejects
+        // `UNTYPED_PARAM_SOURCE`'s untyped function parameter -- only an
+        // explicit `types = Gradual` override (on top of the same
+        // `dialect = Brink`) makes it compile. See
+        // `plugin_with_config_types_absent_leaves_strict_default_rejecting`
+        // for the negative control proving the default (no `types`
+        // override) still fails the same source.
+        let (mut app, dir) = make_memory_asset_app_with_config(ProjectConfig {
+            dialect: Some(Dialect::Brink),
+            types: Some(TypePolicy::Gradual),
+            ..ProjectConfig::default()
+        });
+        dir.insert_asset_text(Path::new("intro.ink"), UNTYPED_PARAM_SOURCE);
+
+        let handle = app
+            .world()
+            .resource::<AssetServer>()
+            .load::<BrinkStoryAsset>("intro.ink");
+        wait_for_loaded(&mut app, &handle);
+    }
+
+    #[test]
+    fn plugin_with_config_types_absent_leaves_strict_default_rejecting() {
+        // Negative control for `plugin_with_config_types_reaches_ink_loader`
+        // (house rule 19q): same `UNTYPED_PARAM_SOURCE`, same `dialect =
+        // Brink`, but no `types` override -- the dialect-keyed default
+        // (`Strict`) still rejects it, so the override in the sibling test
+        // is what actually flips the outcome, not something else about the
+        // fixture or the dialect setting.
+        let (mut app, dir) = make_memory_asset_app_with_config(ProjectConfig {
+            dialect: Some(Dialect::Brink),
+            types: None,
+            ..ProjectConfig::default()
+        });
+        dir.insert_asset_text(Path::new("intro.ink"), UNTYPED_PARAM_SOURCE);
+
+        let handle = app
+            .world()
+            .resource::<AssetServer>()
+            .load::<BrinkStoryAsset>("intro.ink");
+        wait_for_failed(&mut app, &handle);
+    }
+
+    #[test]
+    fn plugin_with_config_deny_warnings_reaches_ink_loader() {
+        // `E014_SOURCE` loads cleanly under the default policy
+        // (`e014_source_loads_by_default_with_no_lints_table` above) --
+        // only an explicit `deny_warnings = true` override relevels its
+        // Warning to a blocking Error.
+        let (mut app, dir) = make_memory_asset_app_with_config(ProjectConfig {
+            deny_warnings: Some(true),
+            ..ProjectConfig::default()
+        });
+        dir.insert_asset_text(Path::new("intro.ink"), E014_SOURCE);
+
+        let handle = app
+            .world()
+            .resource::<AssetServer>()
+            .load::<BrinkStoryAsset>("intro.ink");
+        wait_for_failed(&mut app, &handle);
+    }
+
+    #[test]
+    fn brink_plugin_with_config_delegates_to_ink_loader() {
+        // The two-hop path a real app actually uses (`BrinkPlugin<M>`, not
+        // `BrinkAssetsPlugin` standalone) -- proves `BrinkPlugin::build`'s
+        // `with_config_option` delegation actually carries the override
+        // through, using the same dialect fixture as
+        // `plugin_with_config_dialect_reaches_ink_loader`.
+        let (mut app, dir) = make_memory_asset_app_via_brink_plugin_with_config(ProjectConfig {
+            dialect: Some(Dialect::Brink),
+            ..ProjectConfig::default()
+        });
+        dir.insert_asset_text(Path::new("intro.ink"), BRINK_ONLY_SOURCE);
+
+        let handle = app
+            .world()
+            .resource::<AssetServer>()
+            .load::<BrinkStoryAsset>("intro.ink");
+        wait_for_loaded(&mut app, &handle);
+    }
+
+    /// [`BrinkConfigWarnings`](crate::BrinkConfigWarnings)'s plugin-level
+    /// wiring (#1426): `BrinkAssetsPlugin::build` inserts it eagerly, so a
+    /// host never needs a real story load (or a `tracing` subscriber) to
+    /// read a rejected `with_config` lint code.
+    #[test]
+    fn plugin_with_config_invalid_lint_code_reaches_brink_config_warnings_resource() {
+        let mut lints = std::collections::BTreeMap::new();
+        lints.insert(
+            "E9999_TYPO".to_owned(),
+            brink_project_config::LintLevel::Deny,
+        );
+        let (app, _dir) = make_memory_asset_app_with_config(ProjectConfig {
+            lints,
+            ..ProjectConfig::default()
+        });
+
+        let warnings = app.world().resource::<crate::BrinkConfigWarnings>();
+        assert_eq!(warnings.0.len(), 1);
+        assert!(
+            warnings.0[0].contains("E9999_TYPO") && warnings.0[0].contains("not a recognized"),
+            "unexpected resource contents: {warnings:?}"
         );
     }
 
