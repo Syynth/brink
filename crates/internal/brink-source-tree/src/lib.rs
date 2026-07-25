@@ -23,7 +23,13 @@
 //! iteration order, which is unspecified and can vary between runs. Keys are
 //! root-relative (forward-slash-joined, matching how `.brink` module paths
 //! are derived downstream). [`SourceTree::read`] reads the source text for a
-//! key previously returned by `list`.
+//! key previously returned by `list` — **but callers may also probe
+//! candidate keys `list` never returned** (e.g. `find_config_in_tree`'s
+//! #1370 ancestor-probing walk, which never calls `list` at all). A
+//! [`SourceTree::read`] implementation MUST surface a nonexistent key as
+//! [`io::ErrorKind::NotFound`], not some other error kind — callers that
+//! probe speculatively treat `NotFound` as "no candidate here, keep going"
+//! and treat every other error kind as fatal.
 //!
 //! The root itself is never discovered inside the seam (no implementation
 //! walks upward looking for a project marker) — it is always supplied by the
@@ -46,8 +52,15 @@ pub trait SourceTree {
     /// key.
     fn list(&self, root: &Path) -> io::Result<Vec<String>>;
 
-    /// Read the source text for `key` (a key previously returned by
-    /// [`list`](Self::list)).
+    /// Read the source text for `key`.
+    ///
+    /// `key` is usually one [`list`](Self::list) previously returned, but
+    /// callers may also probe speculative candidate keys `list` never
+    /// returned (see the [module docs](self) — e.g. an ancestor-directory
+    /// walk-up probing for a config file). Implementations MUST return
+    /// [`io::ErrorKind::NotFound`], and no other error kind, when `key` does
+    /// not exist — speculative callers rely on that kind to distinguish "not
+    /// here, keep probing" from a real I/O failure.
     fn read(&self, key: &str) -> io::Result<String>;
 }
 
