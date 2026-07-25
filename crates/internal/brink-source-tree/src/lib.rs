@@ -18,14 +18,14 @@
 //!
 //! # The contract
 //!
-//! [`SourceTree::list`] enumerates every source key under a caller-supplied
-//! `root`, **sorted deterministically by key** — never in filesystem/OS
-//! iteration order, which is unspecified and can vary between runs. Keys are
-//! root-relative (forward-slash-joined, matching how `.brink` module paths
-//! are derived downstream). [`SourceTree::read`] reads the source text for a
-//! key previously returned by `list` — **but callers may also probe
-//! candidate keys `list` never returned** (e.g. `find_config_in_tree`'s
-//! #1370 ancestor-probing walk, which never calls `list` at all). A
+//! [`SourceTree::list`] enumerates every source key, **sorted
+//! deterministically by key** — never in filesystem/OS iteration order,
+//! which is unspecified and can vary between runs. Keys are root-relative
+//! (forward-slash-joined, matching how `.brink` module paths are derived
+//! downstream). [`SourceTree::read`] reads the source text for a key
+//! previously returned by `list` — **but callers may also probe candidate
+//! keys `list` never returned** (e.g. `find_config_in_tree`'s #1370
+//! ancestor-probing walk, which never calls `list` at all). A
 //! [`SourceTree::read`] implementation MUST surface a nonexistent key as
 //! [`io::ErrorKind::NotFound`], not some other error kind — callers that
 //! probe speculatively treat `NotFound` as "no candidate here, keep going"
@@ -34,23 +34,32 @@
 //! The root itself is never discovered inside the seam (no implementation
 //! walks upward looking for a project marker) — it is always supplied by the
 //! caller, which resolves it however is appropriate for that host (a
-//! `brink.toml` walk-up for the CLI, a pushed project root for web/LSP).
+//! `brink.toml` walk-up for the CLI, a pushed project root for web/LSP). It
+//! is held by the implementation **at construction** (the #1323 layering
+//! ruling), not passed per call: `list` takes no `root` parameter, matching
+//! `read`, which never had one. Issue #1371 removed `list`'s `root`
+//! parameter for exactly this reason — before the fix, `RealFs` silently
+//! ignored a `root` argument to `list` while `GitRev` silently used it
+//! *instead of* its own constructor-held root, so the same call could
+//! resolve two different trees' worth of keys depending on which impl
+//! happened to be behind the `dyn SourceTree`. Dropping the parameter makes
+//! "root is constructor-held" the only contract there is to honor.
 
 use std::collections::BTreeMap;
 use std::io;
-use std::path::Path;
 
-/// A source of `.brink` files: enumerate what exists under a root, and read
-/// any key that enumeration returned.
+/// A source of `.brink` files: enumerate what exists under a root (held by
+/// the implementation since construction — see the [module docs](self)),
+/// and read any key that enumeration returned.
 ///
 /// See the [module docs](self) for the full contract. Implementations must
 /// return `list()` results sorted by key, regardless of what order the
 /// underlying storage (filesystem, git tree, in-memory map) happens to
 /// iterate in.
 pub trait SourceTree {
-    /// Enumerate every source key under `root`, sorted deterministically by
-    /// key.
-    fn list(&self, root: &Path) -> io::Result<Vec<String>>;
+    /// Enumerate every source key under the implementation's own root,
+    /// sorted deterministically by key.
+    fn list(&self) -> io::Result<Vec<String>>;
 
     /// Read the source text for `key`.
     ///
@@ -84,9 +93,7 @@ impl InMemory {
 }
 
 impl SourceTree for InMemory {
-    /// `root` is unused: an `InMemory` tree's keys are already root-relative
-    /// by construction, so there is nothing further to scope by directory.
-    fn list(&self, _root: &Path) -> io::Result<Vec<String>> {
+    fn list(&self) -> io::Result<Vec<String>> {
         Ok(self.files.keys().cloned().collect())
     }
 
@@ -113,7 +120,7 @@ mod tests {
         }
         let tree = InMemory::new(files);
 
-        let keys = tree.list(Path::new(".")).expect("list succeeds");
+        let keys = tree.list().expect("list succeeds");
 
         assert_eq!(keys, vec!["a/a.brink", "b/m.brink", "c/z.brink"]);
     }
@@ -128,7 +135,7 @@ mod tests {
         }
         let tree = InMemory::new(files);
 
-        let keys = tree.list(Path::new(".")).expect("list succeeds");
+        let keys = tree.list().expect("list succeeds");
 
         assert_eq!(
             keys,
@@ -174,9 +181,6 @@ mod tests {
     fn in_memory_list_empty_is_ok_empty() {
         let tree = InMemory::new(BTreeMap::new());
 
-        assert_eq!(
-            tree.list(Path::new(".")).expect("list succeeds"),
-            Vec::<String>::new()
-        );
+        assert_eq!(tree.list().expect("list succeeds"), Vec::<String>::new());
     }
 }

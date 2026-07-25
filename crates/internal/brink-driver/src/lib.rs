@@ -12,7 +12,6 @@ mod source_tree;
 
 use std::collections::HashMap;
 use std::io;
-use std::path::Path;
 
 pub use brink_analyzer::{
     AnalysisOptions, AnalysisResult, Dialect, LintLevel, LintPolicy, TypePolicy,
@@ -76,17 +75,14 @@ impl Driver {
         discover::discover(&mut self.db, entry, &mut { read_file })
     }
 
-    /// Discover a native `.brink` project: enumerate `tree` under `root`
-    /// (sorted, root-relative keys) and load every file — no `INCLUDE` BFS,
-    /// since native has no `INCLUDE`s. `root` must be the same root passed
-    /// to construct `tree` (`RealFs::new`/`GitRev::new`) — see
-    /// [`native_source_root`] to derive it from an entry path.
-    pub fn discover_native(
-        &mut self,
-        tree: &dyn SourceTree,
-        root: &Path,
-    ) -> Result<(), DiscoverError> {
-        discover_native::discover_native(&mut self.db, tree, root)
+    /// Discover a native `.brink` project: enumerate `tree` (sorted,
+    /// root-relative keys, scoped to `tree`'s own constructor-held root —
+    /// issue #1371) and load every file — no `INCLUDE` BFS, since native has
+    /// no `INCLUDE`s. `tree` must be constructed with the project's source
+    /// root (`RealFs::new`/`GitRev::new`) — see [`native_source_root`] to
+    /// derive it from an entry path.
+    pub fn discover_native(&mut self, tree: &dyn SourceTree) -> Result<(), DiscoverError> {
+        discover_native::discover_native(&mut self.db, tree)
     }
 
     // ── Analysis ─────────────────────────────────────────────────────

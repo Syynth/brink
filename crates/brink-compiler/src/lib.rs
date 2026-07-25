@@ -125,6 +125,13 @@ pub enum CompileError {
     /// uphold the contract.
     #[error("invalid source key `{0}` (must be root-relative, no `..`)")]
     InvalidSourceKey(String),
+    /// Native (`.brink`) discovery was handed a `SourceTree` that listed a
+    /// non-`.brink` key — see `brink_driver::DiscoverError::NonNativeKey`
+    /// (issue #1371). Not reachable through `prepare_driver`'s `RealFs::new`
+    /// today (native-scoped, `.brink`-only); a guardrail against a future
+    /// caller mistakenly widening the tree it hands to native discovery.
+    #[error("source key `{0}` is not a native `.brink` file")]
+    NonNativeSourceKey(String),
 }
 
 impl From<brink_driver::DiscoverError> for CompileError {
@@ -133,6 +140,7 @@ impl From<brink_driver::DiscoverError> for CompileError {
             brink_driver::DiscoverError::Io(e) => Self::Io(e),
             brink_driver::DiscoverError::CircularInclude(msg) => Self::CircularInclude(msg),
             brink_driver::DiscoverError::InvalidKey(key) => Self::InvalidSourceKey(key),
+            brink_driver::DiscoverError::NonNativeKey(key) => Self::NonNativeSourceKey(key),
         }
     }
 }

@@ -58,7 +58,7 @@ where
     let entry_key = if brink_driver::is_native(Path::new(entry)) {
         let root = brink_driver::native_source_root(Path::new(entry));
         let tree = RealFs::new(&root);
-        driver.discover_native(&tree, &root)?;
+        driver.discover_native(&tree)?;
         brink_driver::relative_key(&root, Path::new(entry))
     } else {
         driver.discover(entry, read_file)?;

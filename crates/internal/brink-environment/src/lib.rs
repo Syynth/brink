@@ -321,7 +321,7 @@ fn collect_sources(
 ) -> Result<BTreeMap<String, String>, LoadError> {
     if brink_driver::is_native(Path::new(entry)) {
         let mut map = BTreeMap::new();
-        for key in tree.list(Path::new("."))? {
+        for key in tree.list()? {
             if Path::new(&key)
                 .extension()
                 .is_none_or(|ext| ext != NATIVE_EXTENSION)
@@ -865,7 +865,7 @@ mod tests {
     fn dotdot_native_key_is_rejected() {
         struct Hostile;
         impl SourceTree for Hostile {
-            fn list(&self, _root: &Path) -> io::Result<Vec<String>> {
+            fn list(&self) -> io::Result<Vec<String>> {
                 Ok(vec!["a.brink".to_string(), "../escape.brink".to_string()])
             }
             fn read(&self, key: &str) -> io::Result<String> {
