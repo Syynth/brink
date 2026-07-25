@@ -48,6 +48,17 @@ const INK_EXTENSION: &str = "ink";
 ///   load-bearing for discovery; both it and `.ink` stay listed so the scope
 ///   name is honest about "the producer's whole key surface," not just the
 ///   slice one caller currently reads.
+///
+/// No type distinguishes a `ListScope::Native`-scoped `RealFs` from a
+/// `ListScope::Project`-scoped one — both are the same `RealFs` type, so
+/// nothing here stops a caller from constructing one with [`RealFs::project`]
+/// and mistakenly handing it to
+/// [`discover_native`](crate::discover_native::discover_native) instead of
+/// `brink-environment`'s `Project::load` (its intended `.brink` + `.ink` +
+/// `brink.toml` consumer). The guard against that (issue #1371) lives on the
+/// *consumer* side instead: `discover_native` itself rejects any listed key
+/// that is not a `.brink` file, before loading anything — see its doc
+/// comment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ListScope {
     Native,
@@ -79,13 +90,13 @@ impl ListScope {
 /// a `read` of an unrelated key (issue #1357).
 ///
 /// Both `list` and `read` resolve against the root this instance was
-/// constructed with — `list`'s `root` parameter (required by the
-/// [`SourceTree`] trait, and meaningful for `InMemory`/`GitRev`) is ignored,
-/// matching how `read` has no `root` parameter at all. Every current caller
-/// already passes the same root to both, and the CLI's producer mount
-/// (`brink_environment::Project::load`, #1312's "tree is rooted at `.`"
-/// convention) needs `list` to work when called with a bare `.` — it has no
-/// other root to give.
+/// constructed with — neither takes a `root` parameter (issue #1371:
+/// `SourceTree::list` used to take one, but `RealFs` always ignored it in
+/// favor of its own constructor-held root, while [`GitRev`]'s pre-#1371
+/// `list` used the passed-in `root` *instead of* its own constructor-held
+/// one — two impls silently disagreeing on which root governed the same
+/// call. Dropping the parameter everywhere makes "root is constructor-held"
+/// the only contract left to honor).
 #[derive(Debug, Clone)]
 pub struct RealFs {
     root: PathBuf,
@@ -119,9 +130,7 @@ impl RealFs {
 }
 
 impl SourceTree for RealFs {
-    /// `root` (the trait parameter) is ignored in favor of the root this
-    /// `RealFs` was constructed with — see the type docs.
-    fn list(&self, _root: &Path) -> io::Result<Vec<String>> {
+    fn list(&self) -> io::Result<Vec<String>> {
         let mut keys = Vec::new();
         walk(&self.root, &self.root, self.scope, &mut keys)?;
         keys.sort();
@@ -220,9 +229,10 @@ pub fn relative_key(root: &Path, path: &Path) -> String {
 ///
 /// `git` runs with `repo_dir` as its working directory. `root` (a path
 /// relative to `repo_dir`, `.` for the whole repo) is stored at
-/// construction for the same reason `RealFs` stores its root: `read` has no
-/// `root` parameter, so it must already know how to turn a root-relative
-/// key back into a repo-relative git pathspec.
+/// construction for the same reason `RealFs` stores its root: neither `list`
+/// nor `read` takes a `root` parameter (issue #1371), so both must already
+/// know how to turn a root-relative key back into a repo-relative git
+/// pathspec from `self.root` alone.
 #[derive(Debug, Clone)]
 pub struct GitRev {
     repo_dir: PathBuf,
@@ -258,8 +268,8 @@ impl GitRev {
 }
 
 impl SourceTree for GitRev {
-    fn list(&self, root: &Path) -> io::Result<Vec<String>> {
-        let pathspec = to_key(root);
+    fn list(&self) -> io::Result<Vec<String>> {
+        let pathspec = to_key(&self.root);
         let output = Command::new("git")
             .current_dir(&self.repo_dir)
             .args([
@@ -357,7 +367,7 @@ mod tests {
         fs::write(root.join("a.brink"), "-- a --").expect("write a.brink");
 
         let tree = RealFs::new(&root);
-        let keys = tree.list(&root).expect("list succeeds");
+        let keys = tree.list().expect("list succeeds");
 
         assert_eq!(keys, vec!["a.brink", "nested/a.brink", "z.brink"]);
 
@@ -372,7 +382,7 @@ mod tests {
         fs::write(root.join("main.brink"), "flow main() {}").expect("write main.brink");
 
         let tree = RealFs::new(&root);
-        let keys = tree.list(&root).expect("list succeeds");
+        let keys = tree.list().expect("list succeeds");
         assert_eq!(keys, vec!["main.brink"]);
 
         let source = tree.read(&keys[0]).expect("read succeeds");
@@ -387,7 +397,7 @@ mod tests {
         let root = temp_dir("realfs-empty");
 
         let tree = RealFs::new(&root);
-        let keys = tree.list(&root).expect("list succeeds");
+        let keys = tree.list().expect("list succeeds");
 
         assert_eq!(keys, Vec::<String>::new());
 
@@ -412,7 +422,7 @@ mod tests {
         fs::write(root.join("nested/a.brink"), "-- nested/a --").expect("write nested/a.brink");
 
         let tree = RealFs::project(&root);
-        let keys = tree.list(&root).expect("list succeeds");
+        let keys = tree.list().expect("list succeeds");
 
         assert_eq!(
             keys,
@@ -434,27 +444,26 @@ mod tests {
         fs::write(root.join("brink.toml"), "[project]\n").expect("write brink.toml");
 
         let tree = RealFs::new(&root);
-        let keys = tree.list(&root).expect("list succeeds");
+        let keys = tree.list().expect("list succeeds");
 
         assert_eq!(keys, vec!["a.brink"]);
 
         fs::remove_dir_all(&root).expect("cleanup temp dir");
     }
 
-    /// `RealFs::list` ignores the `root` parameter the `SourceTree` trait
-    /// requires and always walks the root it was constructed with — the CLI
-    /// producer mount (`brink_environment::Project::load`) calls `list` with
-    /// a bare `.`, the #1312 "tree is rooted at `.`" convention, and must
-    /// still see the real keys.
+    /// `RealFs::list` takes no `root` parameter at all (issue #1371) and
+    /// always walks the root it was constructed with — the CLI producer
+    /// mount (`brink_environment::Project::load`) calls `list` with no
+    /// arguments at all now, the #1312 "tree is rooted at `.`" convention
+    /// realized as "there is nothing else to pass," and must still see the
+    /// real keys.
     #[test]
-    fn real_fs_list_ignores_trait_root_parameter() {
-        let root = temp_dir("realfs-list-ignores-root-param");
+    fn real_fs_list_uses_only_its_constructor_root() {
+        let root = temp_dir("realfs-list-constructor-root");
         fs::write(root.join("main.brink"), "flow main() {}").expect("write main.brink");
 
         let tree = RealFs::new(&root);
-        let keys = tree
-            .list(Path::new("."))
-            .expect("list succeeds even with an unrelated root argument");
+        let keys = tree.list().expect("list succeeds");
 
         assert_eq!(keys, vec!["main.brink"]);
 
@@ -475,9 +484,7 @@ mod tests {
         fs::write(root.join("bad.brink"), [0xFF, 0xFE, 0xFD]).expect("write bad.brink");
 
         let tree = RealFs::project(&root);
-        let keys = tree
-            .list(&root)
-            .expect("list succeeds without reading contents");
+        let keys = tree.list().expect("list succeeds without reading contents");
         assert_eq!(keys, vec!["bad.brink", "good.brink"]);
 
         let source = tree
@@ -569,7 +576,7 @@ mod tests {
         );
 
         let tree = GitRev::new(&repo_dir, sha.clone(), ".");
-        let keys = tree.list(Path::new(".")).expect("list succeeds");
+        let keys = tree.list().expect("list succeeds");
 
         assert_eq!(keys, vec!["a.brink", "nested/b.brink", "z.brink"]);
         assert_eq!(tree.read("a.brink").expect("read succeeds"), "-- a --");
@@ -591,6 +598,33 @@ mod tests {
         let err = tree.read("missing.brink").expect_err("key absent at rev");
 
         assert_eq!(err.kind(), io::ErrorKind::NotFound);
+
+        fs::remove_dir_all(&repo_dir).expect("cleanup temp dir");
+    }
+
+    /// Regression for #1371: `GitRev::list` used to take a `root: &Path`
+    /// trait parameter and scope its `git ls-tree` pathspec off *that*
+    /// argument, ignoring its own constructor-held `root` entirely — the
+    /// opposite bug from `RealFs` (which ignored the argument and always
+    /// used its constructor root). A tree constructed with a subdirectory
+    /// root must list only that subdirectory's `.brink` files, with no
+    /// `root` argument available to override it.
+    #[test]
+    fn git_rev_list_uses_only_its_constructor_root_not_a_call_site_argument() {
+        let (repo_dir, sha) = git_repo_with_commit(
+            "gitrev-constructor-root",
+            &[("sub/a.brink", "-- sub/a --"), ("top.brink", "-- top --")],
+        );
+
+        let tree = GitRev::new(&repo_dir, sha, "sub");
+        let keys = tree.list().expect("list succeeds");
+
+        assert_eq!(
+            keys,
+            vec!["a.brink"],
+            "must scope to the constructor-held root (sub/), never see top.brink"
+        );
+        assert_eq!(tree.read("a.brink").expect("read succeeds"), "-- sub/a --");
 
         fs::remove_dir_all(&repo_dir).expect("cleanup temp dir");
     }

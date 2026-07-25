@@ -91,8 +91,8 @@ struct EditOverlay<'a> {
 }
 
 impl SourceTree for EditOverlay<'_> {
-    fn list(&self, root: &Path) -> io::Result<Vec<String>> {
-        let mut keys: BTreeSet<String> = self.inner.list(root)?.into_iter().collect();
+    fn list(&self) -> io::Result<Vec<String>> {
+        let mut keys: BTreeSet<String> = self.inner.list()?.into_iter().collect();
         if let Some(r) = self.removed {
             keys.remove(r);
         }
@@ -140,9 +140,7 @@ impl Project {
         let entry_key = if brink_driver::is_native(entry) {
             let root = brink_driver::native_source_root(entry);
             let tree = RealFs::new(&root);
-            driver
-                .discover_native(&tree, &root)
-                .map_err(|e| format!("{e}"))?;
+            driver.discover_native(&tree).map_err(|e| format!("{e}"))?;
             brink_driver::relative_key(&root, entry)
         } else {
             let entry_s = entry.to_string_lossy().into_owned();
@@ -322,9 +320,7 @@ impl Project {
                 edited,
                 removed,
             };
-            driver
-                .discover_native(&tree, &root)
-                .map_err(|e| format!("{e}"))?;
+            driver.discover_native(&tree).map_err(|e| format!("{e}"))?;
             brink_driver::relative_key(&root, entry)
         } else {
             let entry_s = entry.to_string_lossy().into_owned();
@@ -594,7 +590,7 @@ pub(super) fn load_git_baseline(entry: &Path, rev: &str) -> Result<Project, Stri
         ensure_repo_dir_is_toplevel(repo_dir)?;
         let tree = GitRev::new(repo_dir, rev, &root);
         driver
-            .discover_native(&tree, &root)
+            .discover_native(&tree)
             .map_err(|e| format!("baseline {rev}: {e}"))?;
         brink_driver::relative_key(&root, entry)
     } else {
