@@ -1,4 +1,9 @@
-mod cst;
+mod conditional;
+mod inner_expr;
+mod multiline;
+mod nested_branch;
+mod sequence;
+mod uniformity;
 
 use super::{check, check_lossless};
 use crate::parse;
