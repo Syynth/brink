@@ -1882,3 +1882,98 @@ fn did_change_watched_files_syncs_already_tracked_file_under_node_modules() {
         "a DELETED event on an already-tracked node_modules/ file must remove it from ProjectDb, but workspace/symbol found: {after_results:?}"
     );
 }
+
+/// Issue #1424: `did_open` is explicit path admission (the client is
+/// telling us the user opened this exact file), not a directory walk, so it
+/// must admit a file whose *own* path lives under `node_modules/` even when
+/// no `INCLUDE` is involved — unlike the #1415 regression test above, which
+/// only proves this for a file reached indirectly via `chase_includes`.
+/// Pins the `is_ignored_dir` "Admission policy" doc's claim for the
+/// `did_open` call site specifically.
+#[test]
+fn did_open_admits_file_directly_under_ignored_dir() {
+    let root = unique_tmp_dir("did-open-node-modules");
+    let vendor_dir = root.join("node_modules/vendor-pkg");
+    std::fs::create_dir_all(&vendor_dir).unwrap();
+    let vendor_path = vendor_dir.join("index.ink");
+    std::fs::write(
+        &vendor_path,
+        "== vendored_knot_opened_directly ==\nVendored.\n-> DONE\n",
+    )
+    .unwrap();
+
+    let bin = env!("CARGO_BIN_EXE_brink-lsp");
+    let mut child = Command::new(bin)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to start brink-lsp");
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    let vendor_uri = format!("file://{}", vendor_path.display());
+
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "capabilities": {},
+                "rootUri": format!("file://{}", root.display()),
+            },
+        }),
+    );
+    let (_init_resp, _) = recv_response(&mut stdout, 1);
+
+    send(
+        &mut stdin,
+        &json!({"jsonrpc": "2.0", "method": "initialized", "params": {}}),
+    );
+
+    // No workspace files exist outside node_modules/, so `initialized`'s
+    // workspace scan admits nothing — the only way this file can reach
+    // `ProjectDb` in this test is `did_open` admitting it directly.
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": vendor_uri,
+                    "languageId": "ink",
+                    "version": 1,
+                    "text": "== vendored_knot_opened_directly ==\nVendored.\n-> DONE\n",
+                }
+            }
+        }),
+    );
+
+    wait_for_analysis_pass_where(&mut stdout, &vendor_uri, 2000, |file_count| file_count >= 1);
+
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "workspace/symbol",
+            "params": {"query": "vendored_knot_opened_directly"}
+        }),
+    );
+    let (resp, _) = recv_response(&mut stdout, 2);
+
+    drop(stdin);
+    drop(stdout);
+    let _ = child.wait();
+    std::fs::remove_dir_all(&root).unwrap();
+
+    let results = resp["result"].as_array().cloned().unwrap_or_default();
+    assert!(
+        !results.is_empty(),
+        "did_open must admit a file directly under node_modules/ (explicit path admission, \
+         not a directory walk), got: {resp:?}"
+    );
+}
