@@ -13,33 +13,51 @@
 # excluded crate's *external* deps (bevy, rand, ...) are left exactly as
 # committed.
 #
-# Usage: refresh-excluded-lockfiles.sh [--dry-run]
+# Usage: refresh-excluded-lockfiles.sh [--dry-run|--print-lockfiles]
 #
-#   --dry-run   Uses `cargo update --dry-run`, which resolves and reports
-#               what would change but never writes a Cargo.lock. Lets this
-#               logic — the part release-plz.yml can't safely exercise
-#               outside a real release, since the real step pushes with a
-#               PAT — be run from a plain PR checkout with no release
-#               branch, no git identity, and no push. It still genuinely
-#               fails if a package can't be resolved (a bad path dep, a
-#               version constraint that no longer matches, a missing
-#               crate), which is the same failure mode the real refresh
-#               would hit (#1427).
+#   --dry-run          Uses `cargo update --dry-run`, which resolves and
+#               reports what would change but never writes a Cargo.lock.
+#               Lets this logic — the part release-plz.yml can't safely
+#               exercise outside a real release, since the real step
+#               pushes with a PAT — be run from a plain PR checkout with
+#               no release branch, no git identity, and no push. It still
+#               genuinely fails if a package can't be resolved (a bad path
+#               dep, a version constraint that no longer matches, a
+#               missing crate), which is the same failure mode the real
+#               refresh would hit (#1427).
 #
-# Callers: release-plz.yml (real refresh, then commits + pushes the diff)
-# and the `verify-lockfile-refresh` job in the same workflow (dry run only).
+#   --print-lockfiles  Prints the Cargo.lock path for every excluded_dirs
+#               entry below, one per line, and exits — no cargo invoked.
+#               This is the single source of truth for *which* lockfiles
+#               the refresh touches: release-plz.yml's `git diff`/`git add`
+#               step reads this list instead of hardcoding the same three
+#               paths a second time, so adding a fourth excluded_dirs entry
+#               here can't silently go unreflected there (#1427 review).
+#
+# Callers: release-plz.yml (real refresh, then commits + pushes the diff —
+# driving its `git diff`/`git add` off `--print-lockfiles`) and the
+# `verify-lockfile-refresh` job in the same workflow (dry run only).
 
 set -euo pipefail
 
-dry_run=false
+excluded_dirs=(demos/compound benchmarks/tools/gen-input benchmarks/drivers/brink-loop)
+
+mode=refresh
 if [[ "${1:-}" == "--dry-run" ]]; then
-  dry_run=true
+  mode=dry-run
+elif [[ "${1:-}" == "--print-lockfiles" ]]; then
+  mode=print-lockfiles
 elif [[ $# -gt 0 ]]; then
-  echo "usage: $0 [--dry-run]" >&2
+  echo "usage: $0 [--dry-run|--print-lockfiles]" >&2
   exit 2
 fi
 
-excluded_dirs=(demos/compound benchmarks/tools/gen-input benchmarks/drivers/brink-loop)
+if [[ "$mode" == print-lockfiles ]]; then
+  for dir in "${excluded_dirs[@]}"; do
+    echo "$dir/Cargo.lock"
+  done
+  exit 0
+fi
 
 for dir in "${excluded_dirs[@]}"; do
   pkgs=$(grep -E '^name = "(brink|bevy-brink)' "$dir/Cargo.lock" | sed -E 's/^name = "(.*)"$/\1/' | sort -u)
@@ -48,7 +66,7 @@ for dir in "${excluded_dirs[@]}"; do
     args+=(-p "$pkg")
   done
 
-  if $dry_run; then
+  if [[ "$mode" == dry-run ]]; then
     echo "==> cargo update --dry-run ${args[*]} (in $dir)"
     (cd "$dir" && cargo update --dry-run "${args[@]}")
   else

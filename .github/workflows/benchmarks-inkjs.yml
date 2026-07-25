@@ -8,9 +8,11 @@ on:
     # `npm ci` below is the node analogue of the other gates' `--locked`: a
     # dependency release cannot silently affect this build, only an
     # explicit change to package-lock.json can. The cron instead exists to
-    # catch drift the path filter below can't see: a new Node LTS turning
-    # previously-clean driver code red (#1427, splitting this out of
-    # benchmarks.yml so it keeps that gate's cadence).
+    # catch drift the path filter below can't see: `setup-node`'s
+    # `node-version: 22` pin only floats within the 22.x line, so a new
+    # Node 22.x point release or a runner-image change could still turn
+    # previously-clean driver code red between PRs (#1427, splitting this
+    # out of benchmarks.yml so it keeps that gate's cadence).
     - cron: '0 18 * * 1'
   workflow_dispatch:
   # benchmarks/drivers/inkjs (the inkjs cross-implementation benchmark
@@ -21,6 +23,9 @@ on:
   # this job's own paths triggered the Rust jobs for no reason. Split into
   # its own workflow with its own filter (#1427, following up on #1405's
   # original inkjs-gate addition).
+  #
+  # Not in branch protection's required-checks list, so it's advisory: it
+  # goes red on a relevant PR but does not block the merge by itself.
   #
   # `benchmarks/lib/**` and `benchmarks/stories/**` are included because
   # the smoke-test step below reads convert-input.sh and the crucible-8

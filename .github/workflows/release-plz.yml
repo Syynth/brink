@@ -135,14 +135,25 @@ jobs:
 
           ./scripts/refresh-excluded-lockfiles.sh
 
-          if git diff --quiet -- demos/compound/Cargo.lock benchmarks/tools/gen-input/Cargo.lock benchmarks/drivers/brink-loop/Cargo.lock; then
+          # Read the affected lockfile paths from the script itself
+          # (`--print-lockfiles`) instead of hardcoding them a second time
+          # here: the script's `excluded_dirs` array is the one source of
+          # truth for which lockfiles the refresh touches, so a new excluded
+          # crate added there is picked up here automatically (#1427 review
+          # — previously this list and the refresh loop lived in the same
+          # step; now that they're in different files, drifting them apart
+          # would silently drop a lockfile from the diff/add and never push
+          # its refresh).
+          mapfile -t lockfiles < <(./scripts/refresh-excluded-lockfiles.sh --print-lockfiles)
+
+          if git diff --quiet -- "${lockfiles[@]}"; then
             echo "Excluded-crate lockfiles already current; nothing to push."
             exit 0
           fi
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add demos/compound/Cargo.lock benchmarks/tools/gen-input/Cargo.lock benchmarks/drivers/brink-loop/Cargo.lock
+          git add "${lockfiles[@]}"
           git commit -m "chore: refresh workspace-excluded lockfiles for this release"
           # RELEASE_PLZ_TOKEN (a PAT), not the default GITHUB_TOKEN: pushes made
           # with GITHUB_TOKEN don't trigger other workflow runs, so
