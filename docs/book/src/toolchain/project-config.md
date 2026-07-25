@@ -72,10 +72,13 @@ channel unknown top-level/`[project]` keys use), never silently dropped.
 as `dialect`/`types` below: repeatable `--deny`/`--warn`/`--allow <CODE>`
 flags, plus `-D warnings` (mirroring `rustc`'s own flag) for `deny-warnings`.
 See [`brink compile`](./cli/compile.md#options) and
-[Precedence](#precedence-the-file-is-the-default-code-wins) below. No other
-mount has an override source for `[lints]`/`deny-warnings` yet — `brink ide`,
-`brink-lsp`, and the wasm editor session all still resolve it from
-`brink.toml` (or the plain default) alone.
+[Precedence](#precedence-the-file-is-the-default-code-wins) below.
+`bevy-brink`'s dev-mode `InkLoader` has one too, via
+`BrinkPlugin::with_config(ProjectConfig { lints, deny_warnings, .. })`
+(issue #1394; see the Precedence table below). `brink ide`, `brink-lsp`, and
+the wasm editor session still resolve `[lints]`/`deny-warnings` from
+`brink.toml` (or the plain default) alone, with no override source of their
+own.
 
 ## Discovery
 
@@ -106,6 +109,7 @@ one-off choice that the file must not silently overrule.
 | `--dialect brink` / `--types strict` (CLI flag actually passed) | `brink.toml`, defaults |
 | `--deny`/`--warn`/`--allow <CODE>` / `-D warnings` (`brink compile` only, CLI flag actually passed) | `brink.toml`, defaults |
 | `setLanguageDialect(...)` / `setTypePolicy(...)` (explicit call) | `brink.toml`, defaults |
+| `BrinkPlugin::with_config(...)` / `BrinkAssetsPlugin::with_config(...)` (`bevy-brink`, field actually set) | `brink.toml`, defaults |
 | `brink.toml`'s `[project] dialect`/`types` | defaults only |
 | `brink.toml`'s `[lints]`/`deny-warnings` (for a code without a `brink compile` CLI override) | defaults only |
 | Dialect-keyed default (`brink` → `strict`, `strict-ink` → `gradual`) | — |
