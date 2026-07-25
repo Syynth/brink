@@ -39,14 +39,23 @@
 //! the same type: `RealFs::new` scopes `list` to `.brink` only (the native
 //! discovery / `brink ide` shape), while `RealFs::project` widens it to
 //! `.brink` + `.ink` + `brink.toml` (the CLI's producer mount). `read`,
-//! however, has **no equivalent scoping on any implementation** — it will
-//! serve the text of any key that exists in the underlying store, native or
-//! not, regardless of what that same implementation's `list` would ever
-//! enumerate. A `RealFs::new`-scoped tree's `read("brink.toml")` still
+//! however, has **no equivalent key-kind scoping on any implementation** —
+//! whether a key is native (`.brink`) or not plays no role in whether `read`
+//! will serve it, regardless of what that same implementation's `list` would
+//! ever enumerate. A `RealFs::new`-scoped tree's `read("brink.toml")` still
 //! succeeds if that file is on disk, even though its `list()` would never
 //! return that key.
 //!
-//! This is intentional, not an oversight: it is exactly what lets
+//! This is a claim about key-*kind* scoping specifically, not a claim that
+//! every implementation serves every key that physically exists: a
+//! `SourceTree` may still layer a *per-key* overlay unrelated to nativeness.
+//! `brink-cli`'s `EditOverlay`, for instance, reports `NotFound` for a key
+//! it has marked `removed` even though that file is still on disk — a
+//! moved/deleted-key overlay, not list-parity scoping keyed on whether the
+//! file is native. That axis is orthogonal to this section and remains
+//! legal.
+//!
+//! This asymmetry is intentional, not an oversight: it is exactly what lets
 //! `find_config_in_tree` probe for a manifestly non-native `brink.toml` key
 //! against *any* `SourceTree` — including one scoped to `.brink` alone —
 //! without needing a widened `list` or a second seam. The seam itself does
@@ -78,7 +87,7 @@ use std::io;
 
 /// A source of `.brink` files: enumerate what exists under a root (held by
 /// the implementation since construction — see the [module docs](self)),
-/// and read any key that enumeration returned.
+/// and read any key, whether or not enumeration returned it.
 ///
 /// See the [module docs](self) for the full contract. Implementations must
 /// return `list()` results sorted by key, regardless of what order the
@@ -100,8 +109,10 @@ pub trait SourceTree {
     /// here, keep probing" from a real I/O failure.
     ///
     /// `read` carries no key-kind scoping even when `list` does (see the
-    /// [module docs](self) "policy asymmetry" section) — it serves any
-    /// existing key, native source or not.
+    /// [module docs](self) "policy asymmetry" section) — whether a key is
+    /// native source or not plays no role in whether `read` serves it. A
+    /// per-key overlay unrelated to nativeness (e.g. a moved/deleted-key
+    /// guard) may still legally refuse a specific existing key.
     fn read(&self, key: &str) -> io::Result<String>;
 }
 

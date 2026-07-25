@@ -525,6 +525,20 @@ mod tests {
 
         assert_eq!(keys, vec!["a.brink"]);
 
+        // `read` carries no equivalent scoping (brink-source-tree's "policy
+        // asymmetry" doc section): a `.brink`-scoped `list()` still leaves
+        // `read` willing to serve the non-native keys sitting right next to
+        // it, because `find_config_in_tree`'s ancestor probe depends on
+        // exactly that.
+        assert_eq!(
+            tree.read("brink.toml").expect("read is not list-scoped"),
+            "[project]\n"
+        );
+        assert_eq!(
+            tree.read("main.ink").expect("read is not list-scoped"),
+            "-> END\n"
+        );
+
         fs::remove_dir_all(&root).expect("cleanup temp dir");
     }
 
