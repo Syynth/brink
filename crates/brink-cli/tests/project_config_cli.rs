@@ -510,6 +510,40 @@ fn ide_check_walks_up_from_entry_to_find_brink_toml() {
     fs::remove_dir_all(&dir).ok();
 }
 
+/// Companion for `compile_finds_brink_toml_above_a_bare_relative_entrys_cwd`,
+/// covering `brink ide check` instead of `brink compile` (issue #1425 named
+/// this specific gap: every existing `ide_check_*` test above either has no
+/// config at all or one sitting beside/at cwd — none with `brink.toml`
+/// *above* cwd and a bare relative entry). `brink ide check` discovers its
+/// config over `resolve_analysis_options`'s `SourceTree` seam
+/// (`brink_project_config::discover_from_entry_in_tree`,
+/// `find_config_in_tree`), a different discovery path than `brink compile`'s
+/// path-based `native_source_root`/`find_config` — so this is not redundant
+/// with the `compile` case even though the fixture shape matches it exactly.
+#[test]
+fn ide_check_finds_brink_toml_above_a_bare_relative_entrys_cwd() {
+    let dir = project_dir("ide-config-above-cwd");
+    let sub = dir.join("sub");
+    fs::create_dir_all(&sub).unwrap();
+    write_story(&sub, EXTENSION_FIXTURE);
+    write_config(&dir, "[project]\ndialect = \"brink\"\n");
+
+    let out = brink()
+        .current_dir(&sub)
+        .args(["ide", "check", "-e", "story.ink"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a bare relative entry must let brink ide discover a brink.toml above the process's \
+         cwd, exactly like brink compile does: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
 /// Regression for a review finding on #1403/PR #1412:
 /// `ide_check_walks_up_from_entry_to_find_brink_toml` above always passes an
 /// *absolute* entry path, which sidesteps `native_source_root`'s walk-up

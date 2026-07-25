@@ -700,14 +700,29 @@ pub(super) fn load_git_baseline(entry: &Path, rev: &str) -> Result<Project, Stri
 /// - `root` (as resolved by [`brink_driver::native_source_root`]) is not
 ///   inside the repo at all. Since issue #1413's absolutized retry,
 ///   `native_source_root` can return an absolute path when it walks up past
-///   cwd to find a `brink.toml` — and if that config lives in an *ancestor of
-///   the repo root* (with none found inside the repo first), the returned
-///   `root` is outside the repository entirely. `GitRev`'s pathspec would
-///   then be an out-of-repo absolute path, and `git ls-tree`/`git show` would
-///   fail with an opaque `fatal: ... is outside repository` instead of this
-///   guard's fail-fast message. (Note this check is independent of the cwd
-///   check above: passing it does not by itself guarantee `root` stays
-///   inside the repo, which is why both are verified.)
+///   cwd to find a `brink.toml`. Before #1425 that walk was unbounded, so a
+///   config living in an *ancestor of the repo root* (with none found inside
+///   the repo first) could actually be discovered, and `GitRev`'s pathspec
+///   would then be an out-of-repo absolute path, causing `git ls-tree`/`git
+///   show` to fail with an opaque `fatal: ... is outside repository` instead
+///   of this guard's fail-fast message. (Note this check is independent of
+///   the cwd check above: passing it does not by itself guarantee `root`
+///   stays inside the repo, which is why both are verified.)
+///
+///   **Since #1425**, `brink_project_config::find_config`'s walk itself stops
+///   at a workspace/git boundary (a directory containing `.git`), so an
+///   *ancestor* `brink.toml` (one that would have been discovered by
+///   climbing past the repo root) is now invisible to the walk rather than
+///   discovered-then-rejected here. But `native_source_root` falls back to
+///   `entry_dir` whenever no config is found at all, and `entry_dir` itself
+///   can still be outside the repo the cwd belongs to — e.g. `effects-diff
+///   --rev` invoked with an entry in a sibling tree
+///   (`-e ../sibling/story.brink` from inside this repo). That still reaches
+///   this branch end-to-end, which is why it stays covered both directly
+///   (`ensure_repo_dir_is_toplevel_rejects_a_root_outside_the_repo`, in
+///   isolation) and via `load_git_baseline`
+///   (`git_baseline_for_an_out_of_repo_entry_errors_via_this_guard`) in the
+///   tests below.
 fn ensure_repo_dir_is_toplevel(repo_dir: &Path, root: &Path) -> Result<(), String> {
     let output = Command::new("git")
         .current_dir(repo_dir)
@@ -1113,17 +1128,29 @@ mod git_baseline_config_tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// Regression for the review finding on PR #1420: since issue #1413's
-    /// absolutized retry, `native_source_root` can resolve to an absolute
-    /// path outside the git repository entirely — a `brink.toml` in an
-    /// *ancestor of the repo root*, with none inside the repo. Run from the
-    /// repo's own toplevel (so the cwd-equals-toplevel half of
-    /// `ensure_repo_dir_is_toplevel` alone would pass), `load_git_baseline`
-    /// must still fail fast naming the out-of-repo root, rather than handing
-    /// `GitRev` an absolute pathspec that fails `git ls-tree`/`git show` with
-    /// an opaque "outside repository" error.
+    /// Regression for #1425 (superseding the PR #1420 review-finding
+    /// regression this test used to pin): before the walk was bounded at a
+    /// workspace/git boundary, a `brink.toml` living in an *ancestor of the
+    /// repo root* (with none found inside the repo) could be discovered by
+    /// #1413's absolutized retry, and `load_git_baseline` would fail fast
+    /// via `ensure_repo_dir_is_toplevel`'s "outside the git repository"
+    /// branch (what this test used to assert). Now that
+    /// `brink_project_config::find_config` itself stops climbing the moment
+    /// it passes the `.git`-marked repository root, that ancestor
+    /// `brink.toml` is never discovered in the first place —
+    /// `native_source_root` falls back to `entry_dir` exactly as if no
+    /// config existed at all, and the baseline loads successfully with
+    /// default `AnalysisOptions`, never reaching
+    /// `ensure_repo_dir_is_toplevel`'s outside-repo branch *for this
+    /// specific trigger* (an ancestor `brink.toml`). That guard branch is
+    /// not dead overall, though — see
+    /// `git_baseline_for_an_out_of_repo_entry_errors_via_this_guard` below
+    /// for a different trigger (an out-of-repo *entry*) that still reaches
+    /// it end-to-end, and
+    /// `ensure_repo_dir_is_toplevel_rejects_a_root_outside_the_repo` for
+    /// direct, isolated coverage of the guard function itself.
     #[test]
-    fn git_baseline_for_brink_entry_with_config_outside_the_repo_errors_instead_of_misaligning() {
+    fn git_baseline_ignores_a_brink_toml_outside_the_repo_instead_of_erroring() {
         let _lock = CWD_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1137,8 +1164,13 @@ mod git_baseline_config_tests {
         let repo = ancestor.join("repo");
         std::fs::create_dir_all(&repo).unwrap();
         // `brink.toml` lives one directory *above* the repo root — never
-        // inside the repo itself.
-        std::fs::write(ancestor.join("brink.toml"), "[project]\n").unwrap();
+        // inside the repo itself, and (post-#1425) outside the walk's
+        // workspace/git boundary too.
+        std::fs::write(
+            ancestor.join("brink.toml"),
+            "[project]\ndialect = \"brink\"\n",
+        )
+        .unwrap();
         std::fs::write(repo.join("story.brink"), "flow main() {\n  Hi. -> END\n}\n").unwrap();
         git(&repo, &["init", "-q"]);
         git(&repo, &["config", "user.email", "test@example.com"]);
@@ -1152,10 +1184,59 @@ mod git_baseline_config_tests {
         let cwd_guard = CwdGuard(original_cwd);
 
         let entry = Path::new("story.brink");
-        let err = load_git_baseline(entry, "HEAD").err().expect(
-            "baseline load with brink.toml outside the repo must fail fast, not hand GitRev \
-             an out-of-repo pathspec",
+        let baseline = load_git_baseline(entry, "HEAD").expect(
+            "an out-of-repo brink.toml must be invisible to the bounded walk, not surfaced as \
+             an error",
         );
+        assert_eq!(
+            baseline.driver.db().analysis_options().dialect,
+            brink_analyzer::Dialect::StrictInk,
+            "the out-of-repo brink.toml (dialect = \"brink\") must never be discovered, so \
+             default AnalysisOptions apply"
+        );
+
+        drop(cwd_guard);
+        std::fs::remove_dir_all(&ancestor).ok();
+    }
+
+    /// Direct, isolated coverage for `ensure_repo_dir_is_toplevel`'s
+    /// outside-repo branch: exercises the guard function directly with a
+    /// fabricated out-of-repo `root`, independent of how a caller might
+    /// arrive at one. The branch is *not* unreachable via
+    /// `load_git_baseline`'s real call path — #1425 only closed the
+    /// ancestor-`brink.toml` trigger (see
+    /// `git_baseline_ignores_a_brink_toml_outside_the_repo_instead_of_erroring`
+    /// above); an out-of-repo *entry* still reaches this branch end-to-end
+    /// (`native_source_root` falls back to `entry_dir` when no config is
+    /// found at all, and `entry_dir` can itself be outside the repo), which
+    /// `git_baseline_for_an_out_of_repo_entry_errors_via_this_guard` below
+    /// proves directly through `load_git_baseline`.
+    #[test]
+    fn ensure_repo_dir_is_toplevel_rejects_a_root_outside_the_repo() {
+        let _lock = CWD_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let original_cwd = std::env::current_dir().unwrap();
+
+        let ancestor = std::env::temp_dir().join(format!(
+            "brink-ide-unit-ensure-toplevel-outside-repo-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&ancestor);
+        let repo = ancestor.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::write(repo.join(".keep"), "").unwrap();
+        git(&repo, &["init", "-q"]);
+        git(&repo, &["config", "user.email", "test@example.com"]);
+        git(&repo, &["config", "user.name", "test"]);
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-q", "-m", "initial"]);
+
+        std::env::set_current_dir(&repo).unwrap();
+        let cwd_guard = CwdGuard(original_cwd);
+
+        let err = ensure_repo_dir_is_toplevel(Path::new("."), &ancestor)
+            .expect_err("a root outside the repository must be rejected");
         assert!(
             err.contains("outside the git repository"),
             "error must name the actual problem, got: {err}"
@@ -1163,6 +1244,138 @@ mod git_baseline_config_tests {
 
         drop(cwd_guard);
         std::fs::remove_dir_all(&ancestor).ok();
+    }
+
+    /// End-to-end regression (w52 review of #1432): `ensure_repo_dir_is_toplevel`'s
+    /// outside-repo branch is *not* dead via `load_git_baseline`'s real call
+    /// path, despite #1425 bounding `find_config`'s walk. `native_source_root`
+    /// falls back to `entry_dir` whenever no `brink.toml` is found at all — and
+    /// `entry_dir` can itself sit outside the repo the cwd belongs to, e.g. an
+    /// entry in a sibling tree passed to `effects-diff --rev` from inside this
+    /// repo. cwd is the repo's own toplevel (satisfying the first guard check
+    /// on its own), so this drives the *second* check — `root` resolving
+    /// outside the repo — through `load_git_baseline` itself, not by calling
+    /// `ensure_repo_dir_is_toplevel` directly.
+    #[test]
+    fn git_baseline_for_an_out_of_repo_entry_errors_via_this_guard() {
+        let _lock = CWD_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let original_cwd = std::env::current_dir().unwrap();
+
+        let ancestor = std::env::temp_dir().join(format!(
+            "brink-ide-unit-git-baseline-out-of-repo-entry-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&ancestor);
+        let repo = ancestor.join("repo");
+        let sibling = ancestor.join("sibling");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
+        // The entry lives entirely outside `repo`, in a sibling tree with no
+        // `brink.toml` anywhere above it either — so `native_source_root`
+        // finds no config and falls back to `entry_dir` (the sibling dir
+        // itself), which is outside the repo.
+        std::fs::write(
+            sibling.join("story.brink"),
+            "flow main() {\n  Hi. -> END\n}\n",
+        )
+        .unwrap();
+        std::fs::write(repo.join(".keep"), "").unwrap();
+        git(&repo, &["init", "-q"]);
+        git(&repo, &["config", "user.email", "test@example.com"]);
+        git(&repo, &["config", "user.name", "test"]);
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-q", "-m", "initial"]);
+
+        // cwd is the repo's own toplevel, exactly like `effects-diff --rev`
+        // requires — the entry, not cwd, is what puts `root` outside the repo.
+        std::env::set_current_dir(&repo).unwrap();
+        let cwd_guard = CwdGuard(original_cwd);
+
+        // An absolute entry path, not a `../`-relative one: `root` ends up
+        // exactly `sibling` (an unresolved-`.."` relative root would
+        // lexically "start with" `repo` — a separate, narrower quirk of
+        // this guard's `Path::starts_with`, not what this test is proving).
+        let entry = sibling.join("story.brink");
+        let err = load_git_baseline(&entry, "HEAD")
+            .err()
+            .expect("an out-of-repo entry must fail fast via ensure_repo_dir_is_toplevel");
+        assert!(
+            err.contains("outside the git repository"),
+            "error must name the actual problem, got: {err}"
+        );
+
+        drop(cwd_guard);
+        std::fs::remove_dir_all(&ancestor).ok();
+    }
+
+    /// Coverage for the review-named gap (issue #1425): `GitRev` with `root
+    /// != cwd` — a native project rooted in a *subdirectory* of the git
+    /// repository, not at its top level. Every prior `load_git_baseline`
+    /// test either resolved `root == "."` (`GitRev::repo_relative`'s
+    /// dot-shortcut, the #1403/PR #1412 trap this issue explicitly flags) or
+    /// hit an error path before `GitRev` was ever constructed. This drives
+    /// the *non*-dot `repo_relative` branch
+    /// (`format!("{}/{key}", to_key(&self.root))`) for both `GitRev::list`
+    /// and `GitRev::read`, end to end.
+    #[test]
+    fn git_baseline_discovers_a_native_project_rooted_in_a_repo_subdirectory() {
+        let _lock = CWD_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let original_cwd = std::env::current_dir().unwrap();
+
+        let dir = std::env::temp_dir().join(format!(
+            "brink-ide-unit-git-baseline-root-ne-cwd-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(
+            dir.join("sub").join("brink.toml"),
+            "[project]\ndialect = \"brink\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("sub").join("main.brink"),
+            "flow main() {\n  Hi. -> END\n}\n",
+        )
+        .unwrap();
+        git(&dir, &["init", "-q"]);
+        git(&dir, &["config", "user.email", "test@example.com"]);
+        git(&dir, &["config", "user.name", "test"]);
+        git(&dir, &["add", "-A"]);
+        git(&dir, &["commit", "-q", "-m", "initial"]);
+
+        // cwd is the repo's own toplevel (satisfies `ensure_repo_dir_is_toplevel`'s
+        // cwd check), but the native project root — discovered via
+        // `sub/brink.toml` — is `sub`, not `.`: `root != cwd` (and `root != "."`).
+        std::env::set_current_dir(&dir).unwrap();
+        let cwd_guard = CwdGuard(original_cwd);
+
+        let entry = Path::new("sub/main.brink");
+        let baseline = load_git_baseline(entry, "HEAD")
+            .expect("git baseline must succeed for a project rooted in a repo subdirectory");
+
+        assert_eq!(
+            baseline.driver.db().analysis_options().dialect,
+            brink_analyzer::Dialect::Brink,
+            "sub/brink.toml's dialect must be discovered and applied"
+        );
+        let db = baseline.driver.db();
+        let entry_id = db
+            .file_id("main.brink")
+            .expect("main.brink discovered, keyed root-relative to sub/");
+        let source = db.source(entry_id).unwrap_or_default();
+        assert!(
+            source.contains("Hi."),
+            "must read main.brink's committed content via GitRev's non-dot repo_relative \
+             branch, got: {source:?}"
+        );
+
+        drop(cwd_guard);
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
 
