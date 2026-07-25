@@ -11,11 +11,17 @@ on:
   # critical path for every other PR (#1077, decision 2026-07-22 / #1237).
   # Not in branch protection's required-checks list, so it's advisory: it
   # goes red on a relevant PR but does not block the merge by itself.
+  # `crates/internal/**` is included alongside `crates/brink-*/**`: the demo's
+  # Cargo.lock pins several crates/internal/* packages transitively (e.g.
+  # brink-analyzer, brink-ir, brink-syntax), so a change there can stale the
+  # lockfile exactly like a change to a front-door crate (#1402 — DEMO_GATE
+  # went red only after merge because this filter missed that).
   pull_request:
     paths:
       - 'demos/**'
       - 'crates/bevy-brink/**'
       - 'crates/brink-*/**'
+      - 'crates/internal/**'
       - '.github/workflows/demo.yml'
   push:
     branches: [main]
@@ -23,6 +29,7 @@ on:
       - 'demos/**'
       - 'crates/bevy-brink/**'
       - 'crates/brink-*/**'
+      - 'crates/internal/**'
       - '.github/workflows/demo.yml'
 
 # Least privilege: jobs only read the repo. Grant more per-job if ever needed.
