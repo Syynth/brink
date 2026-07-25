@@ -63,7 +63,13 @@ jobs:
       - name: Test (zed-brink)
         working-directory: crates/zed-brink
         run: cargo test --locked
-      # Verify the extension stays excluded from the workspace: root cargo
-      # check must not build it.
-      - name: Check (root workspace)
-        run: cargo check --workspace
+      # Verify the extension stays excluded from the workspace. NOT
+      # `cargo check --workspace` (house rule 19p): that command exits 0
+      # identically whether zed-brink is excluded or a member, so it asserts
+      # nothing here — and ci.yml's required `Check` job already runs the
+      # exact same command on every PR regardless of this workflow. Assert
+      # the actual package list instead.
+      - name: Verify workspace exclusion (zed-brink)
+        run: |
+          cargo metadata --format-version 1 --no-deps |
+            jq -e '[.packages[].name] | index("zed-brink") | not'
