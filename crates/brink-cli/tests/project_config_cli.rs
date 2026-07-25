@@ -137,6 +137,35 @@ fn compile_unknown_config_key_is_a_warning_not_a_compile_failure() {
     fs::remove_dir_all(&dir).ok();
 }
 
+/// #1369 (house rule 11): a malformed `brink.toml` must fail `brink compile`
+/// and the error must name `brink.toml`, not just report a bare parse
+/// error — the CLI-visible, black-box proof of `LoadError::Config`'s
+/// `path` field actually reaching the user, not just the in-crate unit
+/// tests around `brink_environment::Project::load` directly.
+#[test]
+fn compile_malformed_brink_toml_names_the_file_in_the_error() {
+    let dir = project_dir("compile-config-malformed");
+    let story = write_story(&dir, "Hello.\n-> END\n");
+    write_config(&dir, "[project]\ndialect = \"sideways\"\n");
+
+    let out = brink().arg("compile").arg(&story).output().unwrap();
+    assert!(
+        !out.status.success(),
+        "a malformed brink.toml must fail brink compile"
+    );
+    // `main.rs` reports the error via `tracing::error!`, and
+    // `tracing_subscriber::fmt()`'s default writer is stdout (not stderr) —
+    // confirmed by direct invocation, not assumed.
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("brink.toml"),
+        "compile error must name brink.toml, got stdout: {stdout}, stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
 // ── brink convert ────────────────────────────────────────────────────
 
 /// Regression for the review finding on `load_story_data` (the shared loader
