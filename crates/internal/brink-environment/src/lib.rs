@@ -257,10 +257,12 @@ impl Project {
     ///
     /// The tree is treated as rooted at `.` with root-relative keys (the
     /// #1312 `SourceTree` config-discovery convention): `entry` is a
-    /// root-relative key, and the tree's `list("." )` enumerates root-relative
-    /// keys including any `brink.toml`. The mount is responsible for rooting
-    /// its tree (the CLI drains its project root into an in-memory tree; web /
-    /// LSP push their own root-relative store).
+    /// root-relative key, and any `brink.toml` is looked up by a direct
+    /// `{ancestor}/brink.toml` probe walking up from `entry` (#1370 —
+    /// discovery no longer calls `list` at all, so a mount's `list` is not
+    /// required to surface `brink.toml`). The mount is responsible for
+    /// rooting its tree (the CLI drains its project root into an in-memory
+    /// tree; web / LSP push their own root-relative store).
     ///
     /// **Sync** — the only asynchrony a mount has (e.g. a bevy `AssetReader`)
     /// is quarantined in *building the tree*, before this runs, matching the
