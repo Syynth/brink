@@ -12,8 +12,15 @@
 //!
 //! Both types are host-only (they touch the real filesystem and spawn a
 //! `git` subprocess), which is why they live here rather than in
-//! `brink-db`: `brink-web` links `brink-db` for its (portable)
-//! `InMemory` seam but never links `brink-driver`.
+//! `brink-db`: `RealFs`/`GitRev` are never constructed on any
+//! wasm-reachable path — `brink-web`'s `compile`/`compile_fragment` build
+//! `brink_source_tree::InMemory` directly and feed it to
+//! `brink_environment::Project::load`, which never touches a
+//! `SourceTree` at all when driven from `Environment`'s inline content;
+//! `brink-compiler`'s `RealFs` branch is CLI-only. (`brink-driver` itself
+//! *is* linked into the wasm build transitively, via `brink-compiler` and
+//! `brink-environment` — it is `RealFs`/`GitRev` construction, not the
+//! crate link, that stays host-only.)
 
 use std::fs;
 use std::io;
@@ -21,85 +28,31 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use brink_db::SourceTree;
+use brink_source_tree::is_ignored_dir;
 
 /// `.brink` is the native surface's source extension (as opposed to ink's
 /// `.ink`) — see `crates/internal/brink-ir/src/hir/lower_native/mod.rs`.
 const NATIVE_EXTENSION: &str = "brink";
 
-/// ink's source extension.
-const INK_EXTENSION: &str = "ink";
-
-/// Which keys [`RealFs::list`] enumerates. Two consumer shapes exist for the
-/// same real-filesystem walk, and they must not see each other's keys:
-///
-/// - [`ListScope::Native`] (the default, via [`RealFs::new`]): `.brink`
-///   only. `discover_native` and `brink ide`'s `EditOverlay` load *every*
-///   listed key as brink source via `ProjectDb::set_file` — widening this
-///   to include `.ink` would feed non-brink text into the native parser.
-/// - [`ListScope::Project`] (via [`RealFs::project`], issue #1357): `.brink`
-///   and `.ink`, the CLI producer mount's key set —
-///   `brink_environment::Project::load` filters `.brink` keys itself for a
-///   native entry and never lists at all for an ink entry (it follows
-///   `INCLUDE`s by `read`ing through the tree instead). `brink.toml` used to
-///   be listed here too, but nothing ever read it off `list()`'s output:
-///   config discovery (`brink_project_config::find_config_in_tree`) never
-///   enumerates — it probes O(depth) ancestor candidates directly via `read`
-///   (issue #1370) — so the entry was dead surface, removed by issue #1381.
-///
-/// No type distinguishes a `ListScope::Native`-scoped `RealFs` from a
-/// `ListScope::Project`-scoped one — both are the same `RealFs` type, so
-/// nothing here stops a caller from constructing one with [`RealFs::project`]
-/// and mistakenly handing it to
-/// [`discover_native`](crate::discover_native::discover_native) instead of
-/// `brink-environment`'s `Project::load` (its intended `.brink` + `.ink`
-/// consumer). The guard against that (issue #1371) lives on the
-/// *consumer* side instead: `discover_native` itself rejects any listed key
-/// that is not a `.brink` file, before loading anything — see its doc
-/// comment.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ListScope {
-    Native,
-    Project,
-}
-
-impl ListScope {
-    /// Whether `path` belongs in `list()`'s output under this scope.
-    fn matches(self, path: &Path) -> bool {
-        let is_brink = path.extension().is_some_and(|ext| ext == NATIVE_EXTENSION);
-        match self {
-            ListScope::Native => is_brink,
-            ListScope::Project => {
-                is_brink || path.extension().is_some_and(|ext| ext == INK_EXTENSION)
-            }
-        }
-    }
-}
-
-/// Directory names the walk never descends into, regardless of [`ListScope`]
-/// — build output and VCS/dependency metadata that is never a valid source
-/// location and can be enormous (issue #1381: #1370 fixed *config
-/// discovery* to probe ancestors directly instead of enumerating, but this
-/// walk — the other call path that used to pay the same cost — still
-/// descended into `target/`, `.git/`, and `node_modules/` on every native
-/// compile). Matched by exact directory-entry name, not path suffix, so a
-/// source file legitimately named e.g. `target.brink` is unaffected.
-const IGNORED_DIR_NAMES: &[&str] = &["target", ".git", "node_modules"];
-
-/// Whether `name` (a single directory-entry file name, not a path) is a
-/// conventionally-ignored directory the walk must not descend into.
-fn is_ignored_dir(name: &std::ffi::OsStr) -> bool {
-    IGNORED_DIR_NAMES.iter().any(|ignored| name == *ignored)
-}
-
 /// Real-filesystem [`SourceTree`]: walks a root directory and enumerates
-/// the keys its [`ListScope`] selects (`.brink` only by default; `.brink` +
-/// `.ink` for [`RealFs::project`]), keyed by root-relative path. The walk
-/// never descends into [`IGNORED_DIR_NAMES`] (`target/`, `.git/`,
+/// `.brink` keys, keyed by root-relative path. The walk never descends into
+/// [`brink_source_tree::IGNORED_DIR_NAMES`] (`target/`, `.git/`,
 /// `node_modules/` — issue #1381), so a stray build-output or dependency
 /// tree under `root` is never enumerated. `read` serves any key lazily off
 /// disk — it never eagerly reads the tree, so one malformed/unreadable file
 /// elsewhere under `root` cannot fail a `read` of an unrelated key (issue
 /// #1357).
+///
+/// `list`'s `.brink`-only scope is fixed — there used to be a second,
+/// `.brink` + `.ink` scope reachable via a `RealFs::project` constructor
+/// (issue #1357's CLI producer mount), but every caller of that wider scope
+/// either filtered `list()`'s output back down to `.brink` itself
+/// (`brink-environment`'s `collect_sources`, for a native entry) or never
+/// called `list()` at all (the same function's ink-entry branch, which reads
+/// through the tree via `INCLUDE` BFS instead). The extra `.ink` keys were
+/// therefore never observable through any real call path, so issue #1404
+/// deleted the second scope and collapsed `RealFs::project`'s callers onto
+/// this single `.brink`-only constructor.
 ///
 /// Both `list` and `read` resolve against the root this instance was
 /// constructed with — neither takes a `root` parameter (issue #1371:
@@ -112,39 +65,22 @@ fn is_ignored_dir(name: &std::ffi::OsStr) -> bool {
 #[derive(Debug, Clone)]
 pub struct RealFs {
     root: PathBuf,
-    scope: ListScope,
 }
 
 impl RealFs {
     /// Construct a `RealFs` seam rooted at `root`, listing `.brink` keys
-    /// only — the native-discovery / `brink ide` shape. `read` resolves keys
-    /// (as returned by `list`) relative to this root.
+    /// only. `read` resolves keys (as returned by `list`) relative to this
+    /// root.
     #[must_use]
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self {
-            root: root.into(),
-            scope: ListScope::Native,
-        }
-    }
-
-    /// Construct a `RealFs` seam rooted at `root`, listing `.brink` and
-    /// `.ink` keys — the CLI's #1306 producer mount (issue #1357). Replaces
-    /// draining the whole tree eagerly into an `InMemory` copy: the same
-    /// lazy, `.brink`-scoped `read` this type already had, widened only at
-    /// `list` time to the producer's key surface.
-    #[must_use]
-    pub fn project(root: impl Into<PathBuf>) -> Self {
-        Self {
-            root: root.into(),
-            scope: ListScope::Project,
-        }
+        Self { root: root.into() }
     }
 }
 
 impl SourceTree for RealFs {
     fn list(&self) -> io::Result<Vec<String>> {
         let mut keys = Vec::new();
-        walk(&self.root, &self.root, self.scope, &mut keys)?;
+        walk(&self.root, &self.root, &mut keys)?;
         keys.sort();
         Ok(keys)
     }
@@ -154,12 +90,13 @@ impl SourceTree for RealFs {
     }
 }
 
-/// Recursively collect root-relative keys matching `scope` under `dir` into
-/// `keys`. Directory-entry iteration order is filesystem/OS-dependent —
-/// callers (`RealFs::list`) sort the accumulated result, so this helper does
-/// not need to sort as it goes. Directories named in [`IGNORED_DIR_NAMES`]
-/// are pruned — never descended into — regardless of `scope`.
-fn walk(root: &Path, dir: &Path, scope: ListScope, keys: &mut Vec<String>) -> io::Result<()> {
+/// Recursively collect root-relative `.brink` keys under `dir` into `keys`.
+/// Directory-entry iteration order is filesystem/OS-dependent — callers
+/// (`RealFs::list`) sort the accumulated result, so this helper does not
+/// need to sort as it goes. Directories named in
+/// [`brink_source_tree::IGNORED_DIR_NAMES`] are pruned — never descended
+/// into.
+fn walk(root: &Path, dir: &Path, keys: &mut Vec<String>) -> io::Result<()> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
@@ -168,8 +105,8 @@ fn walk(root: &Path, dir: &Path, scope: ListScope, keys: &mut Vec<String>) -> io
             if is_ignored_dir(&entry.file_name()) {
                 continue;
             }
-            walk(root, &path, scope, keys)?;
-        } else if file_type.is_file() && scope.matches(&path) {
+            walk(root, &path, keys)?;
+        } else if file_type.is_file() && is_native(&path) {
             let rel = path
                 .strip_prefix(root)
                 .map_err(|e| io::Error::other(e.to_string()))?;
@@ -458,60 +395,9 @@ mod tests {
         fs::remove_dir_all(&root).expect("cleanup temp dir");
     }
 
-    /// The same pruning applies under [`ListScope::Project`]
-    /// ([`RealFs::project`]) — the scope only widens *which extensions*
-    /// match, not which directories are walked.
-    #[test]
-    fn real_fs_project_list_skips_ignored_dirs() {
-        let root = temp_dir("realfs-project-ignored-dirs");
-
-        fs::write(root.join("main.brink"), "flow main() {}").expect("write main.brink");
-        fs::create_dir_all(root.join("target")).expect("mkdir target");
-        fs::write(root.join("target/stray.ink"), "-> END\n").expect("write target/stray.ink");
-
-        let tree = RealFs::project(&root);
-        let keys = tree.list().expect("list succeeds");
-
-        assert_eq!(keys, vec!["main.brink"]);
-
-        fs::remove_dir_all(&root).expect("cleanup temp dir");
-    }
-
-    // ── `RealFs::project` (issue #1357) ─────────────────────────────
-
-    /// `RealFs::project`'s `list` enumerates `.brink` and `.ink` keys —
-    /// everything the CLI producer mount actually reads off `list()` —
-    /// while still excluding unrelated files, sorted regardless of on-disk
-    /// creation order. A `brink.toml` sitting alongside the sources is
-    /// *not* listed (issue #1381): config discovery probes ancestor
-    /// candidates directly via `read` and never consults `list()`'s output,
-    /// so a listed `brink.toml` entry was dead surface.
-    #[test]
-    fn real_fs_project_list_enumerates_ink_and_brink_but_excludes_config() {
-        let root = temp_dir("realfs-project-list");
-
-        fs::write(root.join("z.brink"), "-- z --").expect("write z.brink");
-        fs::write(root.join("main.ink"), "-> END\n").expect("write main.ink");
-        fs::write(root.join("brink.toml"), "[project]\n").expect("write brink.toml");
-        fs::write(root.join("README.md"), "not a source file").expect("write README.md");
-        fs::create_dir_all(root.join("nested")).expect("mkdir nested");
-        fs::write(root.join("nested/a.brink"), "-- nested/a --").expect("write nested/a.brink");
-
-        let tree = RealFs::project(&root);
-        let keys = tree.list().expect("list succeeds");
-
-        assert_eq!(
-            keys,
-            vec!["main.ink", "nested/a.brink", "z.brink"],
-            "brink.toml must not appear in list() output"
-        );
-
-        fs::remove_dir_all(&root).expect("cleanup temp dir");
-    }
-
-    /// A plain `RealFs::new` (native-only) tree still excludes `.ink` and
-    /// `brink.toml` keys even when they sit alongside `.brink` files —
-    /// `discover_native`/`EditOverlay` must never see them widen.
+    /// `RealFs::list` excludes `.ink` and `brink.toml` keys even when they
+    /// sit alongside `.brink` files — `discover_native`/`EditOverlay` must
+    /// never see them, and `read` still serves them (see below).
     #[test]
     fn real_fs_native_list_still_excludes_ink_and_config() {
         let root = temp_dir("realfs-native-scope");
@@ -574,7 +460,7 @@ mod tests {
         // `fs::read_to_string` if ever read.
         fs::write(root.join("bad.brink"), [0xFF, 0xFE, 0xFD]).expect("write bad.brink");
 
-        let tree = RealFs::project(&root);
+        let tree = RealFs::new(&root);
         let keys = tree.list().expect("list succeeds without reading contents");
         assert_eq!(keys, vec!["bad.brink", "good.brink"]);
 
@@ -598,7 +484,7 @@ mod tests {
         fs::create_dir_all(&root).expect("mkdir proj");
         fs::write(wrapper.join("shared.ink"), "Shared content.\n").expect("write shared.ink");
 
-        let tree = RealFs::project(&root);
+        let tree = RealFs::new(&root);
         let source = tree
             .read("../shared.ink")
             .expect("read resolves an above-root key relative to the constructed root");

@@ -17,6 +17,7 @@ brink-fmt = { workspace = true }
 brink-ide = { workspace = true }
 brink-ir = { workspace = true }
 brink-project-config = { workspace = true }
+brink-source-tree = { workspace = true }
 brink-syntax = { workspace = true }
 rowan.workspace = true
 serde.workspace = true
