@@ -136,10 +136,12 @@ one-off choice that the file must not silently overrule.
   so published diagnostic severity picks up a `[lints]` change without a
   client restart.
 - **The wasm editor session** (`@brink-lang/web`'s `EditorSessionHandle`) has
-  no filesystem of its own. Read `brink.toml`'s text with your host's own
-  file APIs (Node `fs`, the browser File System Access API, a bundler
-  import, …) and hand it to `applyProjectConfig`. **`applyProjectConfig`
-  applies `[project] dialect`/`types` *and* `[lints]`/`deny-warnings`**
+  no filesystem of its own — but it is inherently virtual, so it discovers
+  `brink.toml` the same way `brink compile`/`brink ide` do: by walking its
+  own document tree, not a real filesystem (issue #1414). Serve `brink.toml`
+  as an ordinary document — `updateFile("brink.toml", text)`, at the entry's
+  directory or any ancestor of it — and call `discoverProjectConfig(entry)`.
+  **It applies `[project] dialect`/`types` *and* `[lints]`/`deny-warnings`**
   (issue #1366) — diagnostic severity rendered through this surface now
   reflects the file the same way `brink compile`, `brink ide`, and
   `brink-lsp` already did:
@@ -150,16 +152,26 @@ one-off choice that the file must not silently overrule.
   const handle = new EditorSessionHandle();
   const toml = await readProjectFile("brink.toml"); // your own host API
   if (toml !== null) {
-    const warnings = handle.applyProjectConfig(toml);
-    for (const w of warnings) console.warn(w);
+    handle.updateFile("brink.toml", toml);
   }
+  handle.updateFile("story.ink", await readProjectFile("story.ink"));
+  const warnings = handle.discoverProjectConfig("story.ink");
+  for (const w of warnings) console.warn(w);
   ```
 
-  Call `applyProjectConfig` once, right after construction, before any
-  explicit `setLanguageDialect`/`setTypePolicy` call — a field the session
-  already has an explicit value for is left untouched, so a later explicit
-  call always wins over an earlier `applyProjectConfig`, matching the CLI's
-  flag precedence.
+  Call `discoverProjectConfig` once, after the project's files are loaded
+  and before any explicit `setLanguageDialect`/`setTypePolicy` call — a
+  field the session already has an explicit value for is left untouched, so
+  a later explicit call always wins over an earlier `discoverProjectConfig`,
+  matching the CLI's flag precedence. Returns `[]` (never throws) when no
+  `brink.toml` is found anywhere from the entry's directory up to the tree
+  root.
+
+  If your embedder reads `brink.toml`'s text with its own host file API
+  (Node `fs`, the browser File System Access API, a bundler import, …) and
+  would rather hand that text in directly than load it as a document, use
+  `applyProjectConfig(toml)` instead — the same application/precedence
+  rules apply, just without the discovery step.
 
 ## Driving the compiler as a library
 

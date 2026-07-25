@@ -312,12 +312,15 @@ export class EditorSessionHandle {
    * Parse a `brink.toml` project settings file (#1005 — dialect + type
    * policy, one config every compiler mount reads) and apply its
    * `[project] dialect`/`types` *and* `[lints]`/`deny-warnings` (#1366) to
-   * this session. The wasm sandbox has no filesystem of its own: read
-   * `brink.toml`'s text with whatever host API your embedder has (Node
-   * `fs`, the File System Access API, a bundler import, …) and pass it
-   * here — this method does the discovery-free parsing + application,
-   * mirroring what `brink compile`/`brink ide` do with real filesystem
-   * discovery.
+   * this session. Prefer {@link discoverProjectConfig} (#1414) when
+   * `brink.toml` is (or can be) loaded into this session as an ordinary
+   * document via {@link updateFile} — it resolves the file automatically
+   * through the same discovery mechanism `brink compile`/`brink ide`/
+   * `bevy-brink` use, so your embedder needs no host-specific directory-walk
+   * code of its own. This method stays for embedders that read
+   * `brink.toml`'s text with their own host API (Node `fs`, the File System
+   * Access API, a bundler import, …) without ever loading it into the
+   * session, and just want that text applied.
    *
    * Call this once, right after construction, before any explicit
    * {@link setLanguageDialect}/{@link setTypePolicy} call — an explicit
@@ -339,6 +342,36 @@ export class EditorSessionHandle {
   applyProjectConfig(toml: string): string[] {
     this.bump();
     const json = this.session.apply_project_config(toml);
+    return JSON.parse(json) as string[];
+  }
+
+  /**
+   * Discover and apply this session's `brink.toml`, if one exists among the
+   * currently loaded documents (#1414) — the web-mount counterpart of
+   * `brink compile`/`brink ide`'s filesystem-walk discovery, resolved
+   * instead by walking this session's own in-memory document tree (the
+   * `SourceTree`/producer seam every other mount already uses). Serve
+   * `brink.toml` as an ordinary document — `updateFile("brink.toml", text)`,
+   * at `entry`'s directory or any ancestor of it — and call this once (e.g.
+   * right after loading the project's files) in place of
+   * {@link applyProjectConfig}: no host-specific directory-walk code (Node
+   * `fs`, the File System Access API, …) required.
+   *
+   * `entry` is a session document path (whatever was passed to
+   * {@link updateFile}), not a filesystem path.
+   *
+   * Returns `[]` when no `brink.toml` is found anywhere from `entry`'s
+   * directory up to the tree root — missing config is unchanged behavior,
+   * never a thrown error. Otherwise applies and re-analyzes exactly like
+   * {@link applyProjectConfig}: an explicit {@link setLanguageDialect}/
+   * {@link setTypePolicy} call still wins over the file, `[lints]` still
+   * always merges, and the returned array carries the same
+   * unrecognized-key/lint-code warning strings. Throws only on malformed
+   * TOML or a recognized key with an invalid value.
+   */
+  discoverProjectConfig(entry: string): string[] {
+    this.bump();
+    const json = this.session.discover_project_config(entry);
     return JSON.parse(json) as string[];
   }
 

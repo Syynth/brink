@@ -245,12 +245,16 @@ impl EditorSession {
 
     /// Parse a `brink.toml` project-settings file (#1005) and apply its
     /// `[project] dialect`/`types` to this session — the wasm/editor-mount
-    /// wiring for the config file every compiler mount reads. The CLI
-    /// discovers + reads `brink.toml` straight off disk
-    /// (`brink_project_config::load_from_entry`); the wasm sandbox has no
-    /// filesystem of its own, so the embedder reads the file with its own
-    /// host APIs (Node `fs`, the File System Access API, …) and hands the
-    /// text here.
+    /// wiring for the config file every compiler mount reads. Prefer
+    /// [`Self::discover_project_config`] (#1414) when `brink.toml` is (or
+    /// can be) loaded into this session as an ordinary document — it
+    /// resolves the file automatically through the same `SourceTree` seam
+    /// `brink compile`/`brink ide`/`bevy-brink` use, instead of requiring
+    /// the embedder to locate and read it with host-specific filesystem
+    /// code. This method stays for embedders that read `brink.toml`
+    /// straight from a host API (Node `fs`, the File System Access API, …)
+    /// without ever loading it into the session, or that want the file text
+    /// applied without it being a queryable document.
     ///
     /// Call this once, at session construction, before any explicit
     /// `set_language_dialect`/`set_type_policy` call — a field already set
@@ -265,55 +269,76 @@ impl EditorSession {
     /// malformed TOML or a recognized key with an invalid value.
     ///
     /// Also merges the file's `[lints]` table / `deny-warnings` flag (issue
-    /// #1160) onto the session's resolved lint policy, via the one merge
-    /// point `AnalysisOptions::apply_project_config` owns (#1366 — this
-    /// method used to hand-apply `dialect`/`types` directly onto
-    /// `self.session`'s own fields while never even reading `config.lints`,
-    /// so a project's `[lints]` never reached this session at all). Unlike
-    /// `dialect`/`types` there is no explicit-API-call precedence to honor
-    /// for lints yet (see that function's doc comment on why `dialect_overridden`/
-    /// `types_overridden` don't gate the lint merge), so the file's table
-    /// always applies. Unknown/non-overridable lint codes are reported
-    /// through the same warnings channel as unrecognized top-level keys.
+    /// #1160) onto the session's resolved lint policy — see
+    /// [`Self::apply_parsed_config`], the merge point this and
+    /// [`Self::discover_project_config`] both funnel through.
     pub fn apply_project_config(&mut self, toml: &str) -> Result<String, JsError> {
         let (config, warnings) = brink_project_config::parse_str(toml)
             .map_err(|e| JsError::new(&format!("invalid brink.toml: {e}")))?;
-        if !self.dialect_explicit
-            && let Some(dialect) = config.dialect
-        {
-            self.dialect = dialect;
-            self.session.set_language_dialect(dialect);
-        }
-        if !self.types_explicit
-            && let Some(types) = config.types
-        {
-            self.session.set_type_policy(types);
-        }
-        // Merge `[lints]`/`deny-warnings` onto the session's current
-        // resolved policy. `IdeSession` has no lint-specific fields of its
-        // own to hand `apply_project_config`, so build a throwaway
-        // `AnalysisOptions` carrying just the current `lints`, merge into
-        // it, and push the merged result back. `dialect_overridden`/
-        // `types_overridden` are passed `true` — irrelevant to lint merging,
-        // and `dialect`/`types` are already applied above — so this call
-        // touches nothing but `.lints`.
-        let mut lint_options = brink_analyzer::AnalysisOptions {
-            lints: self.session.lint_policy().clone(),
-            ..brink_analyzer::AnalysisOptions::default()
+        let mut all_warnings: Vec<String> = warnings.into_iter().map(|w| w.0).collect();
+        all_warnings.extend(self.apply_parsed_config(&config));
+        Ok(serde_json::to_string(&all_warnings).unwrap_or_default())
+    }
+
+    /// Discover and apply this session's `brink.toml`, if one exists among
+    /// the currently loaded documents (issue #1414) — the web-mount
+    /// counterpart of `brink compile`/`brink_environment::Project::load`'s
+    /// producer discovery and `brink ide`'s #1403 fix: both resolve
+    /// `brink.toml` by walking a [`brink_source_tree::SourceTree`] via
+    /// [`brink_project_config::discover_from_entry_in_tree`], never a
+    /// path-based filesystem walk. `EditorSession` previously had no
+    /// equivalent — `apply_project_config` only *applies* text the embedder
+    /// already found and read through its own host APIs, so brink-web
+    /// (which is inherently virtual: documents live only in this session's
+    /// memory, there is no real filesystem to walk) was the one mount left
+    /// unable to discover `brink.toml` itself.
+    ///
+    /// Builds a [`brink_source_tree::InMemory`] view of every file currently
+    /// held by this session (whatever `update_file`/`update_source` have
+    /// loaded, keyed exactly as those calls were made) and walks up from
+    /// `entry`'s directory for a `brink.toml`, exactly like every other
+    /// mount. An embedder that serves `brink.toml` as an ordinary document
+    /// — `update_file("brink.toml", text)`, or nested at any ancestor of
+    /// `entry` — needs no host-specific directory-walk code of its own;
+    /// call this once (e.g. right after loading the project's files) in
+    /// place of `apply_project_config`.
+    ///
+    /// `entry` is a session document path (this session's own path
+    /// convention — whatever was passed to `update_file`), not a
+    /// filesystem path.
+    ///
+    /// Returns `"[]"` when no `brink.toml` is found anywhere from `entry`'s
+    /// directory up to the tree root — missing config is unchanged
+    /// behavior, never an error. Otherwise applies and re-analyzes exactly
+    /// like `apply_project_config`: explicit `set_language_dialect`/
+    /// `set_type_policy` calls still win over the file, `[lints]` still
+    /// always merges (see [`Self::apply_parsed_config`]), and the returned
+    /// JSON carries the same unrecognized-key/lint-code warnings.
+    pub fn discover_project_config(&mut self, entry: &str) -> Result<String, JsError> {
+        let db = self.session.db();
+        let files: BTreeMap<String, String> = db
+            .file_ids()
+            .filter_map(|id| {
+                let path = db.file_path(id)?;
+                let source = db.source(id)?;
+                Some((path.to_owned(), source.to_owned()))
+            })
+            .collect();
+        let tree = brink_source_tree::InMemory::new(files);
+
+        let Some(config_key) = brink_project_config::discover_from_entry_in_tree(&tree, entry)
+            .map_err(|e| JsError::new(&format!("failed to discover brink.toml: {e}")))?
+        else {
+            return Ok("[]".to_owned());
         };
-        let lint_warnings = lint_options.apply_project_config(&config, true, true);
-        // `set_lint_policy` always re-analyzes, unlike `dialect`/`types`
-        // above (which only re-analyze when the file actually sets that
-        // field) — so only push when the merge actually changed anything.
-        // `LintPolicy` is `Eq`; a `brink.toml` with no `[lints]` table (or
-        // one that resolves to the same policy already in effect) must not
-        // trigger a redundant full re-analysis.
-        if lint_options.lints != *self.session.lint_policy() {
-            self.session.set_lint_policy(lint_options.lints);
-        }
+        let text = brink_source_tree::SourceTree::read(&tree, &config_key).map_err(|e| {
+            JsError::new(&format!("failed to read project config {config_key}: {e}"))
+        })?;
+        let (config, warnings) = brink_project_config::parse_str(&text)
+            .map_err(|e| JsError::new(&format!("invalid brink.toml at {config_key}: {e}")))?;
 
         let mut all_warnings: Vec<String> = warnings.into_iter().map(|w| w.0).collect();
-        all_warnings.extend(lint_warnings.into_iter().map(|w| w.0));
+        all_warnings.extend(self.apply_parsed_config(&config));
         Ok(serde_json::to_string(&all_warnings).unwrap_or_default())
     }
 
@@ -500,6 +525,55 @@ impl EditorSession {
 }
 
 impl EditorSession {
+    /// Apply an already-parsed `[project]`/`[lints]` table to this session —
+    /// the one merge point [`Self::apply_project_config`] (caller-supplied
+    /// text) and [`Self::discover_project_config`] (#1414 — text located by
+    /// walking this session's own in-memory document tree) both funnel
+    /// through, so the two entry points can never disagree on how a parsed
+    /// config is applied.
+    ///
+    /// `dialect`/`types` are skipped when the corresponding
+    /// `set_language_dialect`/`set_type_policy` API was already called
+    /// explicitly on this session (explicit calls always win over the
+    /// file). `[lints]`/`deny-warnings` (issue #1160) has no explicit-call
+    /// precedence to honor yet, so the file's table always merges onto the
+    /// session's current resolved lint policy — via a throwaway
+    /// `AnalysisOptions` carrying just `lints` (`IdeSession` has no
+    /// lint-specific fields of its own to hand `apply_project_config`),
+    /// merged and pushed back only when it actually changed (`LintPolicy`
+    /// is `Eq`; `set_lint_policy` always re-analyzes, so a `brink.toml` with
+    /// no `[lints]` table — or one resolving to the policy already in
+    /// effect — must not trigger a redundant full re-analysis).
+    ///
+    /// Returns the `[lints]`/non-overridable-code warning strings (unknown
+    /// top-level/`[project]` key warnings are the caller's own — parsed
+    /// alongside `config`, not part of it).
+    fn apply_parsed_config(&mut self, config: &brink_project_config::ProjectConfig) -> Vec<String> {
+        if !self.dialect_explicit
+            && let Some(dialect) = config.dialect
+        {
+            self.dialect = dialect;
+            self.session.set_language_dialect(dialect);
+        }
+        if !self.types_explicit
+            && let Some(types) = config.types
+        {
+            self.session.set_type_policy(types);
+        }
+        let mut lint_options = brink_analyzer::AnalysisOptions {
+            lints: self.session.lint_policy().clone(),
+            ..brink_analyzer::AnalysisOptions::default()
+        };
+        // `dialect_overridden`/`types_overridden` are passed `true` —
+        // irrelevant to lint merging, and `dialect`/`types` are already
+        // applied above — so this call touches nothing but `.lints`.
+        let lint_warnings = lint_options.apply_project_config(config, true, true);
+        if lint_options.lints != *self.session.lint_policy() {
+            self.session.set_lint_policy(lint_options.lints);
+        }
+        lint_warnings.into_iter().map(|w| w.0).collect()
+    }
+
     /// Allocate the next handle id and insert `state`. Ids are monotonically
     /// increasing and never reused within a session.
     fn insert_doc(&mut self, state: DocState) -> u32 {
@@ -2919,6 +2993,136 @@ mod tests {
         assert!(parsed[0].contains("project.future_key"));
     }
 
+    // ── Issue #1414: `discover_project_config` (SourceTree seam, no ────────
+    // external host filesystem read) ────────────────────────────────────
+
+    #[test]
+    fn discover_project_config_finds_and_applies_a_brink_toml_loaded_as_a_document() {
+        // `brink.toml` is served exactly like any other file — via
+        // `update_file` — never read off a real filesystem. Proves
+        // `discover_project_config` resolves it purely from the session's
+        // own in-memory document tree.
+        let mut s = EditorSession::new();
+        s.update_file("brink.toml", "[project]\ndialect = \"brink\"\n");
+        s.update_file("main.ink", BRINK_EXT_SRC);
+        let warnings = s
+            .discover_project_config("main.ink")
+            .expect("discovers and applies the in-memory brink.toml");
+        assert_eq!(warnings, "[]");
+        let analysis = s.session.analysis().expect("analysis");
+        assert!(
+            !analysis
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E051),
+            "discovered brink.toml's dialect = brink: no E051 on valid extension syntax: {:?}",
+            analysis.diagnostics
+        );
+    }
+
+    #[test]
+    fn discover_project_config_walks_up_from_a_nested_entry_document() {
+        // A `brink.toml` at the tree root governs an entry document nested
+        // several directories below it — the same ancestor walk-up
+        // `brink_project_config::discover_from_entry_in_tree` gives every
+        // other mount.
+        let mut s = EditorSession::new();
+        s.update_file("brink.toml", "[project]\ndialect = \"brink\"\n");
+        s.update_file("book/chapters/main.ink", BRINK_EXT_SRC);
+        let warnings = s
+            .discover_project_config("book/chapters/main.ink")
+            .expect("walks up from the nested entry to find brink.toml");
+        assert_eq!(warnings, "[]");
+        assert_eq!(s.dialect, brink_analyzer::Dialect::Brink);
+    }
+
+    #[test]
+    fn discover_project_config_no_config_in_the_document_set_yields_no_warnings_and_default_dialect()
+     {
+        // No `brink.toml` loaded anywhere in the session: `Ok("[]")`, never
+        // an error, and the `StrictInk` default stands — mirrors
+        // `Project::load`/`resolve_options`'s "missing config = unchanged
+        // defaults" contract.
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", BRINK_EXT_SRC);
+        let warnings = s
+            .discover_project_config("main.ink")
+            .expect("no brink.toml anywhere is not an error");
+        assert_eq!(warnings, "[]");
+        let analysis = s.session.analysis().expect("analysis");
+        assert!(
+            analysis
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E051),
+            "no brink.toml in the tree: StrictInk default stands: {:?}",
+            analysis.diagnostics
+        );
+    }
+
+    #[test]
+    fn discover_project_config_after_explicit_set_language_dialect_is_a_no_op_for_dialect() {
+        // #1005 precedence, proven against the discovery path too: an
+        // explicit `set_language_dialect` call always wins over a later
+        // `discover_project_config`.
+        let mut s = EditorSession::new();
+        s.update_file("brink.toml", "[project]\ndialect = \"brink\"\n");
+        s.update_file("main.ink", BRINK_EXT_SRC);
+        s.set_language_dialect("strict-ink");
+        s.discover_project_config("main.ink")
+            .expect("discovers and applies the in-memory brink.toml");
+        let analysis = s.session.analysis().expect("analysis");
+        assert!(
+            analysis
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E051),
+            "explicit set_language_dialect(\"strict-ink\") must survive a later \
+             discover_project_config finding dialect = brink: {:?}",
+            analysis.diagnostics
+        );
+    }
+
+    #[test]
+    fn discover_project_config_reports_unknown_keys_as_warnings() {
+        let mut s = EditorSession::new();
+        s.update_file(
+            "brink.toml",
+            "[project]\ndialect = \"brink\"\nfuture_key = \"x\"\n",
+        );
+        s.update_file("main.ink", BRINK_EXT_SRC);
+        let warnings = s
+            .discover_project_config("main.ink")
+            .expect("unknown keys are warnings, not errors");
+        let parsed: Vec<String> = serde_json::from_str(&warnings).expect("valid json");
+        assert_eq!(parsed.len(), 1);
+        assert!(parsed[0].contains("project.future_key"));
+    }
+
+    /// The `apply_project_config_applies_lints_from_file` companion for the
+    /// discovery path: `[lints]` reaches the editor session — and
+    /// `compile_project`'s rendered severity — when `brink.toml` is
+    /// discovered from the document tree, not just when its text is handed
+    /// in directly.
+    #[test]
+    fn discover_project_config_applies_lints_from_a_discovered_file() {
+        let mut s = EditorSession::new();
+        s.update_file("brink.toml", "[lints]\nE014 = \"deny\"\n");
+        s.update_file("main.ink", "~\nHello.\n-> DONE\n");
+        let warnings = s
+            .discover_project_config("main.ink")
+            .expect("valid brink.toml");
+        assert_eq!(warnings, "[]", "a valid overridable code earns no warning");
+        let result = s.compile_project("main.ink");
+        let parsed = json(&result);
+        assert_eq!(
+            parsed["ok"],
+            serde_json::json!(false),
+            "discovered brink.toml's [lints] E014 = \"deny\" promotes E014 to \
+             Error, so compilation must now fail: {result}"
+        );
+    }
+
     // ── Issue #1160/#1366: `[lints]` reaches the editor session ────────────
 
     /// A `[lints]` re-leveled code shows its overridden severity through the
@@ -3540,5 +3744,17 @@ mod dialect_wasm_tests {
             s.apply_project_config("[project]\ndialect = \"sideways\"\n")
                 .is_err()
         );
+    }
+
+    /// The discovery-path (#1414) companion to
+    /// `apply_project_config_rejects_invalid_dialect_value`: a `brink.toml`
+    /// with an invalid `dialect` value, discovered from the session's own
+    /// in-memory document tree, is still a rejected `Result`, never a panic.
+    #[wasm_bindgen_test]
+    fn discover_project_config_rejects_invalid_dialect_value() {
+        let mut s = EditorSession::new();
+        s.update_file("brink.toml", "[project]\ndialect = \"sideways\"\n");
+        s.update_file("main.ink", "-> END\n");
+        assert!(s.discover_project_config("main.ink").is_err());
     }
 }
