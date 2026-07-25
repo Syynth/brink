@@ -149,9 +149,10 @@ impl AnalysisOptions {
     /// field is left untouched regardless of what the file says. The file only
     /// ever supplies a *default*.
     ///
-    /// Fields the file doesn't set are also left untouched, so `self` should
-    /// already carry whatever it would have without a config file (typically
-    /// [`AnalysisOptions::default()`]).
+    /// For `dialect`/`types`, fields the file doesn't set are also left
+    /// untouched, so `self` should already carry whatever it would have
+    /// without a config file (typically [`AnalysisOptions::default()`]).
+    /// `lints` does not follow this rule — see below.
     ///
     /// `lints`/`deny-warnings` (issue #1160) have no override mechanism yet
     /// (no CLI flag or editor API sets an individual code's severity or

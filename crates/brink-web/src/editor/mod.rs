@@ -268,10 +268,11 @@ impl EditorSession {
     /// (a `string[]`) — never an error (forward compat). Errors only on
     /// malformed TOML or a recognized key with an invalid value.
     ///
-    /// Also merges the file's `[lints]` table / `deny-warnings` flag (issue
-    /// #1160) onto the session's resolved lint policy — see
-    /// [`Self::apply_parsed_config`], the merge point this and
-    /// [`Self::discover_project_config`] both funnel through.
+    /// Also **replaces** the session's resolved lint policy from the file's
+    /// `[lints]` table / `deny-warnings` flag (issue #1160; fixed to
+    /// replace rather than merge in #1397) — see [`Self::apply_parsed_config`],
+    /// the merge point this and [`Self::discover_project_config`] both
+    /// funnel through.
     pub fn apply_project_config(&mut self, toml: &str) -> Result<String, JsError> {
         let (config, warnings) = brink_project_config::parse_str(toml)
             .map_err(|e| JsError::new(&format!("invalid brink.toml: {e}")))?;
@@ -319,9 +320,10 @@ impl EditorSession {
     /// directory up to the tree root — missing config is unchanged
     /// behavior, never an error. Otherwise applies and re-analyzes exactly
     /// like `apply_project_config`: explicit `set_language_dialect`/
-    /// `set_type_policy` calls still win over the file, `[lints]` still
-    /// always merges (see [`Self::apply_parsed_config`]), and the returned
-    /// JSON carries the same unrecognized-key/lint-code warnings.
+    /// `set_type_policy` calls still win over the file, `[lints]` is still
+    /// fully replaced from the file on every call (see
+    /// [`Self::apply_parsed_config`]; #1397), and the returned JSON carries
+    /// the same unrecognized-key/lint-code warnings.
     pub fn discover_project_config(&mut self, entry: &str) -> Result<String, JsError> {
         let db = self.session.db();
         let files: BTreeMap<String, String> = db
@@ -3284,27 +3286,35 @@ mod tests {
     /// `[lints]` entry is deleted from the file must actually un-set that
     /// override, not leave it stuck — the exact scenario this issue names
     /// (`apply_project_config` previously only ever merged into the
-    /// session's resolved policy, so a removed entry never went away).
+    /// session's resolved policy, so a removed entry never went away). The
+    /// first apply sets both `deny-warnings` and a per-code override —
+    /// mirroring `apply_project_config_applies_lints_from_file` and
+    /// `apply_project_config_applies_deny_warnings_from_file` above — so the
+    /// empty re-apply proves *both* revert end-to-end; `deny_warnings`
+    /// reverts through a different line
+    /// (`config.deny_warnings.unwrap_or(false)`) than per-code overrides, so
+    /// exercising only one would leave the other unproven.
     #[test]
     fn apply_project_config_reapply_without_a_previously_set_code_restores_base_severity() {
         let source = "~\nHello.\n-> DONE\n";
         let mut s = EditorSession::new();
         s.update_file("main.ink", source);
 
-        // First apply: E014 is promoted to `deny`, so compilation fails.
-        s.apply_project_config("[lints]\nE014 = \"deny\"\n")
+        // First apply: deny-warnings is set AND E014 is promoted to `deny`,
+        // so compilation fails.
+        s.apply_project_config("[lints]\ndeny-warnings = true\nE014 = \"deny\"\n")
             .expect("valid brink.toml");
         let promoted = json(&s.compile_project("main.ink"));
         assert_eq!(
             promoted["ok"],
             serde_json::json!(false),
-            "precondition: E014 = deny must fail compilation: {promoted}"
+            "precondition: deny-warnings = true / E014 = deny must fail compilation: {promoted}"
         );
 
         // Second apply: the user deleted the `[lints]` table from
         // brink.toml (an editor session re-applies on every config
-        // change) — E014 must revert to its base `Warning` severity, so
-        // compilation now succeeds again.
+        // change) — both deny-warnings and E014 must revert to their base
+        // state, so compilation now succeeds again.
         s.apply_project_config("").expect("empty document is valid");
         let reverted = json(&s.compile_project("main.ink"));
         assert_eq!(

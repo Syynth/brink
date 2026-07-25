@@ -119,7 +119,9 @@ pub struct IdeSession {
     /// there is no explicit-vs-file precedence to track here — `[lints]` has
     /// no CLI-flag/editor-API override source of its own yet (see
     /// `AnalysisOptions::apply_project_config`'s doc comment), so the file is
-    /// always the source of truth for whichever codes it mentions. Feeds
+    /// always the source of truth for the *whole table* (issue #1397: a
+    /// fresh `apply_project_config` call replaces the resolved policy
+    /// wholesale, not just the codes it mentions). Feeds
     /// `analyze`/`reanalyze`/`analyze_overlay`/`analyze_projection` exactly
     /// like `language_dialect`/`type_policy` (#1366: previously hardcoded to
     /// `LintPolicy::default()` in both `snapshot` and `analysis_options`, so
@@ -245,9 +247,11 @@ impl IdeSession {
 
     /// Set the resolved `[lints]` policy (issue #1160/#1366), then
     /// re-analyze. Callers resolve the policy themselves — typically by
-    /// merging a parsed `brink.toml`'s `[lints]` table onto the current
-    /// policy via `AnalysisOptions::apply_project_config` and passing the
-    /// result's `.lints` back here. `brink-web`'s
+    /// running a parsed `brink.toml`'s `[lints]` table through
+    /// `AnalysisOptions::apply_project_config`, which **replaces** the
+    /// policy wholesale from the file rather than merging onto whatever was
+    /// resolved before (issue #1397), and passing the result's `.lints`
+    /// back here. `brink-web`'s
     /// `EditorSession::apply_project_config` and the CLI's
     /// `Project::ide_session()` (`brink-cli/src/ide/project.rs`, issue
     /// #1393) both call this — the CLI resolves `[lints]` once, via
