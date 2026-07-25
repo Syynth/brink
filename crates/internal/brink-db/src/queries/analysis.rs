@@ -113,6 +113,13 @@ pub(crate) fn resolutions_index_query(
 /// query's dependency edge: `opts` (the whole `AnalysisOptions`) is already
 /// read for `dialect`/`host_manifest` above.
 ///
+/// Same seam decouples the T1b dialect gate from native files (issue #1348):
+/// `dialect` is an ink-only axis (docs/t1b-surface-spec.md §1), orthogonal to
+/// this file's [`super::Language`] classification, so
+/// `brink_analyzer::per_file_diagnostics`'s `is_native` flag — computed here,
+/// once, and reused for both calls below — skips the gate for a native file
+/// exactly the way `native_strict_only_error` above is native-conditional.
+///
 /// `lru = 4096`: per-file runaway-guard ceiling (issue #647).
 #[salsa::tracked(lru = 4096)]
 pub(crate) fn per_file_diagnostics_query(
@@ -125,15 +132,17 @@ pub(crate) fn per_file_diagnostics_query(
     let (file_resolutions, _diags) = resolve_query(db, project, file);
     let index = resolution_index_query(db, project);
     let opts = project.analysis_options(db);
+    let is_native = super::file_language(file.path(db)) == super::Language::Native;
     let mut diagnostics = brink_analyzer::per_file_diagnostics(
         file_id,
         hir,
         file_resolutions,
         index,
         opts.dialect,
+        is_native,
         opts.host_manifest.as_ref(),
     );
-    if super::file_language(file.path(db)) == super::Language::Native {
+    if is_native {
         diagnostics.extend(brink_analyzer::native_strict_only_error(
             file_id, opts.types,
         ));
@@ -485,11 +494,17 @@ pub(crate) fn whole_project_diagnostics_query(
         // `type_inference_query` -> `solve_scc_query` already reads the
         // same memo for the actual `EXTERNAL`-signature seeding.
         let inline_docs = inline_docs_query(db, project);
+        // `is_native` (issue #1348): `dialect` is an ink-only axis — a
+        // native project has no dialect to be wrong about, so the ink-only
+        // `E064` config error must never fire for one. Same
+        // `super::project_is_native` seam `compilation_closure_files` itself
+        // uses to decide the frontend for the whole compilation unit.
         diagnostics.extend(brink_analyzer::strict_diagnostics(
             &hir_refs,
             &resolved.index,
             &resolved.resolutions,
             opts,
+            super::project_is_native(db, project),
             strict_inference,
             inline_docs,
         ));

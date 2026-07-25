@@ -1276,6 +1276,84 @@ mod tests {
         assert!(config_error(crate::Dialect::StrictInk, None).is_none());
     }
 
+    // ── strict_diagnostics: is_native decouples E064 (issue #1348) ────
+    //
+    // `dialect` is an ink-only axis (docs/t1b-surface-spec.md §1) — a native
+    // `.brink` project has no dialect to be wrong about, so `config_error`
+    // must never fire for one, regardless of `opts.dialect`'s value (a
+    // native compile never sets it, and the default `StrictInk` is what used
+    // to trip `E064` the instant `types = strict` was requested).
+
+    #[test]
+    fn strict_diagnostics_is_native_true_never_fires_config_error() {
+        // `dialect` left at its `StrictInk` default — the exact combination
+        // that fires `E064` for an ink project — plus `types = strict`, the
+        // B0.9 native strict-only posture (issue #1342).
+        let (hir, index, res) = build("=== main ===\nHello.\n-> DONE\n");
+        let opts = crate::AnalysisOptions {
+            types: Some(TypePolicy::Strict),
+            ..Default::default()
+        };
+        let diags = crate::strict_diagnostics(
+            &[(FileId(0), &hir)],
+            &index,
+            &res,
+            &opts,
+            true,
+            None,
+            &BTreeMap::new(),
+        );
+        assert!(
+            !diags.iter().any(|d| d.code == DiagnosticCode::E064),
+            "native must never see the ink-only dialect config error: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn strict_diagnostics_is_native_true_still_runs_inference_checks() {
+        // Skipping `config_error` must not skip the rest of strict mode —
+        // an otherwise-escaping param must still `E065` for a native project.
+        let (hir, index, res) = build("=== noop(x) ===\nHello.\n-> DONE\n");
+        let opts = crate::AnalysisOptions {
+            types: Some(TypePolicy::Strict),
+            ..Default::default()
+        };
+        let diags = crate::strict_diagnostics(
+            &[(FileId(0), &hir)],
+            &index,
+            &res,
+            &opts,
+            true,
+            None,
+            &BTreeMap::new(),
+        );
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E065);
+    }
+
+    #[test]
+    fn strict_diagnostics_is_native_false_unaffected_still_fires_config_error() {
+        // The `is_native = false` (ink) path is byte-identical to before
+        // this parameter existed — same `StrictInk` + `types = strict`
+        // combination as the test above, still an `E064` config error.
+        let (hir, index, res) = build("=== main ===\nHello.\n-> DONE\n");
+        let opts = crate::AnalysisOptions {
+            types: Some(TypePolicy::Strict),
+            ..Default::default()
+        };
+        let diags = crate::strict_diagnostics(
+            &[(FileId(0), &hir)],
+            &index,
+            &res,
+            &opts,
+            false,
+            None,
+            &BTreeMap::new(),
+        );
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E064);
+    }
+
     // ── native_strict_only_error (B0.9, issue #1342) ────────────────
 
     #[test]
@@ -1722,6 +1800,7 @@ mod tests {
             &index,
             &res,
             &opts,
+            false,
             None,
             &BTreeMap::new(),
         );
@@ -1815,6 +1894,7 @@ mod tests {
             &index,
             &res,
             &strict_opts(Some(get_thing_manifest("thing_id"))),
+            false,
             None,
             &BTreeMap::new(),
         );
@@ -1832,6 +1912,7 @@ mod tests {
             &index,
             &res,
             &strict_opts(Some(get_thing_manifest(""))),
+            false,
             None,
             &BTreeMap::new(),
         );
@@ -1862,6 +1943,7 @@ mod tests {
             &index,
             &res,
             &strict_opts(None),
+            false,
             None,
             &BTreeMap::new(),
         );
@@ -1881,6 +1963,7 @@ mod tests {
             &index,
             &res,
             &opts,
+            false,
             None,
             &BTreeMap::new(),
         );
@@ -1996,6 +2079,7 @@ mod tests {
             &index,
             &res,
             &strict_opts(Some(notify_manifest())),
+            false,
             None,
             &BTreeMap::new(),
         );
@@ -2036,6 +2120,7 @@ mod tests {
             &index,
             &res,
             &strict_opts(Some(notify_manifest())),
+            false,
             None,
             &BTreeMap::new(),
         );
