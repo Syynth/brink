@@ -544,14 +544,19 @@ impl EditorSession {
     /// `set_language_dialect`/`set_type_policy` API was already called
     /// explicitly on this session (explicit calls always win over the
     /// file). `[lints]`/`deny-warnings` (issue #1160) has no explicit-call
-    /// precedence to honor yet, so the file's table always merges onto the
-    /// session's current resolved lint policy — via a throwaway
-    /// `AnalysisOptions` carrying just `lints` (`IdeSession` has no
-    /// lint-specific fields of its own to hand `apply_project_config`),
-    /// merged and pushed back only when it actually changed (`LintPolicy`
-    /// is `Eq`; `set_lint_policy` always re-analyzes, so a `brink.toml` with
-    /// no `[lints]` table — or one resolving to the policy already in
-    /// effect — must not trigger a redundant full re-analysis).
+    /// precedence to honor yet, so the file's table always **replaces**
+    /// (not merges onto, issue #1397) the session's resolved lint policy —
+    /// via a throwaway `AnalysisOptions` (`IdeSession` has no lint-specific
+    /// fields of its own to hand `apply_project_config`), pushed back only
+    /// when it actually changed (`LintPolicy` is `Eq`; `set_lint_policy`
+    /// always re-analyzes, so a `brink.toml` with no `[lints]` table — or
+    /// one resolving to the policy already in effect — must not trigger a
+    /// redundant full re-analysis). Replace semantics matter specifically
+    /// here: this is the one call site among `apply_project_config`'s
+    /// callers that's a long-lived, repeatedly-re-applied session rather
+    /// than a fresh one-shot compile, so a code (or `deny-warnings`)
+    /// deleted from `brink.toml` between two calls must actually revert
+    /// instead of staying stuck at whatever an earlier call resolved.
     ///
     /// Returns the `[lints]`/non-overridable-code warning strings (unknown
     /// top-level/`[project]` key warnings are the caller's own — parsed
@@ -568,13 +573,13 @@ impl EditorSession {
         {
             self.session.set_type_policy(types);
         }
-        let mut lint_options = brink_analyzer::AnalysisOptions {
-            lints: self.session.lint_policy().clone(),
-            ..brink_analyzer::AnalysisOptions::default()
-        };
-        // `dialect_overridden`/`types_overridden` are passed `true` —
-        // irrelevant to lint merging, and `dialect`/`types` are already
-        // applied above — so this call touches nothing but `.lints`.
+        // No need to seed `lints` from the session's current policy:
+        // `apply_project_config` replaces `.lints` wholesale from `config`
+        // (issue #1397), so a throwaway `AnalysisOptions::default()` is
+        // enough — `dialect_overridden`/`types_overridden` are passed
+        // `true` (irrelevant to lint resolution; `dialect`/`types` are
+        // already applied above), so this call touches nothing but `.lints`.
+        let mut lint_options = brink_analyzer::AnalysisOptions::default();
         let lint_warnings = lint_options.apply_project_config(config, true, true);
         if lint_options.lints != *self.session.lint_policy() {
             self.session.set_lint_policy(lint_options.lints);
@@ -3273,6 +3278,52 @@ mod tests {
         let parsed: Vec<String> = serde_json::from_str(&warnings).expect("valid json");
         assert_eq!(parsed.len(), 1);
         assert!(parsed[0].contains("E9999"));
+    }
+
+    /// Issue #1397: a live editor session re-applying `brink.toml` after a
+    /// `[lints]` entry is deleted from the file must actually un-set that
+    /// override, not leave it stuck — the exact scenario this issue names
+    /// (`apply_project_config` previously only ever merged into the
+    /// session's resolved policy, so a removed entry never went away).
+    #[test]
+    fn apply_project_config_reapply_without_a_previously_set_code_restores_base_severity() {
+        let source = "~\nHello.\n-> DONE\n";
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", source);
+
+        // First apply: E014 is promoted to `deny`, so compilation fails.
+        s.apply_project_config("[lints]\nE014 = \"deny\"\n")
+            .expect("valid brink.toml");
+        let promoted = json(&s.compile_project("main.ink"));
+        assert_eq!(
+            promoted["ok"],
+            serde_json::json!(false),
+            "precondition: E014 = deny must fail compilation: {promoted}"
+        );
+
+        // Second apply: the user deleted the `[lints]` table from
+        // brink.toml (an editor session re-applies on every config
+        // change) — E014 must revert to its base `Warning` severity, so
+        // compilation now succeeds again.
+        s.apply_project_config("").expect("empty document is valid");
+        let reverted = json(&s.compile_project("main.ink"));
+        assert_eq!(
+            reverted["ok"],
+            serde_json::json!(true),
+            "removing [lints] E014 = \"deny\" from brink.toml must restore \
+             E014's base Warning severity, letting compilation succeed \
+             again: {reverted}"
+        );
+        let severity = reverted["warnings"]
+            .as_array()
+            .and_then(|w| w.iter().find(|d| d["code"] == "E014"))
+            .map(|d| d["severity"].clone());
+        assert_eq!(
+            severity,
+            Some(serde_json::json!("Warning")),
+            "E014 must show its base Warning severity once the override is \
+             gone, not the stale Error from the first apply: {reverted}"
+        );
     }
 
     // ── Issue #1004: manifest-typed external params under strict ──────────
