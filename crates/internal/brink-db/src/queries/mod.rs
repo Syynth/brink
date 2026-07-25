@@ -487,6 +487,27 @@ pub(crate) fn compilation_closure_files(
     }
 }
 
+/// Whether `project` is a native compilation unit — its entry file is a
+/// `.brink` module (the same "entry file decides the frontend" rule
+/// [`compilation_closure_files`] documents). `false` when there is no entry
+/// file at all.
+///
+/// The T1b dialect-gate decoupling (issue #1348) reads this to skip the
+/// ink-only `E064` config error (`strict::config_error`, via
+/// [`brink_analyzer::strict_diagnostics`]'s `is_native` flag) for a native
+/// project — the whole-project sibling of [`per_file_diagnostics_query`]'s
+/// own per-file `file_language(file.path(db)) == Language::Native` check.
+pub(crate) fn project_is_native(db: &dyn salsa::Database, project: ProjectInput) -> bool {
+    let Some(entry) = project.entry(db) else {
+        return false;
+    };
+    project
+        .files(db)
+        .iter()
+        .find(|f| f.file_id(db) == entry)
+        .is_some_and(|f| file_language(f.path(db)) == Language::Native)
+}
+
 // ─── Layer 2: project-wide names ─────────────────────────────────────
 
 /// Every file's resolved module (M-1, docs/modules-spec.md §1/§5) plus the
