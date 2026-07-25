@@ -82,7 +82,12 @@ use brink_ir::{
 
 /// Tooling options for analysis: the registered host manifest and the
 /// severity policy for its external checks. Defaults to no manifest.
-#[derive(Debug, Clone, Default)]
+///
+/// `PartialEq`/`Eq` + serde are the #1306 requirement: `AnalysisOptions` is
+/// the resolved-policy slot of the serializable, content-addressed
+/// [`Environment`](../brink_environment/struct.Environment.html) input value,
+/// so the whole `Environment` can be hashed, cached on, and diffed.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AnalysisOptions {
     /// The registered host-capability manifest, if any.
     pub host_manifest: Option<HostManifest>,

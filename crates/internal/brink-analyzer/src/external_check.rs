@@ -32,7 +32,7 @@ use brink_ir::{
 
 /// Severity policy for manifest-driven external checks. Configurable as a
 /// compiler/IDE flag; defaults to `Error` (a registered manifest is binding).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ExternalCheckSeverity {
     /// Emit manifest-driven diagnostics (default).
     #[default]
@@ -49,7 +49,7 @@ pub enum ExternalCheckSeverity {
 /// fires for any unresolved type even with no manifest registered) — e.g. so a
 /// host can catch typo'd semantic-type tags before wiring up a full manifest
 /// (#532).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SemanticTypeDiagnosticSeverity {
     /// Tolerate unknown semantic types when no manifest is registered —
     /// opaque, no `E040` (default).
