@@ -177,8 +177,10 @@ pub fn is_native(path: &Path) -> bool {
 /// relative walk comes up empty, retry once from an absolutized
 /// `entry_dir` so a `brink.toml` above cwd is still found, exactly as it
 /// would be for an absolute-path entry. The retry is skipped whenever
-/// `entry_dir` was already absolute (the first pass already walked to the
-/// filesystem root) and never runs when the relative walk already found an
+/// absolutizing `entry_dir` changes nothing (i.e. `entry_dir` was already
+/// absolute *and* already normalized — the first pass already walked to the
+/// filesystem root, so a byte-identical second walk would be wasted work)
+/// and never runs when the relative walk already found an
 /// answer — so the fast, already-correct relative result (including the
 /// `"."`-for-cwd spelling [`GitRev::repo_relative`](GitRev)'s shortcut
 /// depends on, per the #1403/PR #1412 trap) is untouched in the common
