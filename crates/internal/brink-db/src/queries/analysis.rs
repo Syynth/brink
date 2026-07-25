@@ -104,6 +104,15 @@ pub(crate) fn resolutions_index_query(
 /// X's memo fully validated (same `Arc`/pointer), not re-executed.
 /// `Arc`-wrapped for the same pointer-identity reason as [`ResolvedProject`].
 ///
+/// Also the B0.9 native strict-only enforcement point
+/// ([`brink_analyzer::native_strict_only_error`], issue #1342): this is the
+/// narrowest seam that has both a file's own [`super::Language`]
+/// classification (`super::file_language`) and `AnalysisOptions` access —
+/// `super::lower_native_file` has neither (issue #1179's finding), so the
+/// check cannot live there. Reading `opts.types` here doesn't widen this
+/// query's dependency edge: `opts` (the whole `AnalysisOptions`) is already
+/// read for `dialect`/`host_manifest` above.
+///
 /// `lru = 4096`: per-file runaway-guard ceiling (issue #647).
 #[salsa::tracked(lru = 4096)]
 pub(crate) fn per_file_diagnostics_query(
@@ -116,14 +125,20 @@ pub(crate) fn per_file_diagnostics_query(
     let (file_resolutions, _diags) = resolve_query(db, project, file);
     let index = resolution_index_query(db, project);
     let opts = project.analysis_options(db);
-    Arc::new(brink_analyzer::per_file_diagnostics(
+    let mut diagnostics = brink_analyzer::per_file_diagnostics(
         file_id,
         hir,
         file_resolutions,
         index,
         opts.dialect,
         opts.host_manifest.as_ref(),
-    ))
+    );
+    if super::file_language(file.path(db)) == super::Language::Native {
+        diagnostics.extend(brink_analyzer::native_strict_only_error(
+            file_id, opts.types,
+        ));
+    }
+    Arc::new(diagnostics)
 }
 
 /// Aggregated per-file diagnostic contributors across the whole project

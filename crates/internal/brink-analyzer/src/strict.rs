@@ -156,6 +156,50 @@ pub fn config_error(
     })
 }
 
+/// The B0.9 native strict-only enforcement point (`docs/b0-sequencing.md`
+/// §B0.9's "the strict-only ruling's enforcement point", issue #1342;
+/// decision-log 2026-07-19 "Typing posture ruled": "the native surface is
+/// strict-only — `types = strict` is a property of the dialect, not a
+/// project knob; gradual typing does not exist on the native surface").
+///
+/// The inverse of [`config_error`] above in spirit — both are project-level
+/// `types` config errors with no single offending span — but a different
+/// axis: [`config_error`] rejects `types = strict` under the wrong
+/// **dialect** (an ink-only concept); this rejects an explicit `types =
+/// gradual` **knob** reaching a native (`.brink`) file, which has no
+/// dialect at all (`Language::Native` is a separate, path-derived
+/// classification — see `brink-db`'s `file_language` doc). Deliberately
+/// keyed on the *explicit* `AnalysisOptions::types` field, never the
+/// dialect-defaulted [`AnalysisOptions::type_policy`] result: a native
+/// project that never touches the `types` knob resolves through the
+/// ink-shaped `resolve_type_policy` default (which native's B0.10 dialect
+/// wiring has not yet overridden) and must not be penalized for a default
+/// it never chose — only a caller (CLI flag, `brink.toml`, editor/API call)
+/// that explicitly dials `types = gradual` for a native file hits this.
+///
+/// `None` when `explicit_types` isn't `Some(TypePolicy::Gradual)` (unset, or
+/// explicitly `Strict`) — the only two cases a native compile passes this
+/// gate.
+#[must_use]
+pub fn native_strict_only_error(
+    file: FileId,
+    explicit_types: Option<TypePolicy>,
+) -> Option<brink_ir::Diagnostic> {
+    if explicit_types != Some(TypePolicy::Gradual) {
+        return None;
+    }
+    Some(brink_ir::Diagnostic {
+        file,
+        range: TextRange::new(0.into(), 0.into()),
+        message: "native `.brink` compiles are strict-only — `types = gradual` is not a valid \
+                   policy for native source (docs/decision-log.md \"Typing posture ruled\", \
+                   2026-07-19); drop the `types` setting (native strict is the only policy) or \
+                   set `types = strict` explicitly"
+            .to_owned(),
+        code: brink_ir::DiagnosticCode::E137,
+    })
+}
+
 /// The strict-mode diagnostics that need a full `InferenceResult`:
 /// Unknown-escape (`E065`), Conflicted-escape (`E066`), void-assignment
 /// (`E067`), and — the inherited #640-round ruling — auto-wiring
@@ -1230,6 +1274,27 @@ mod tests {
     #[test]
     fn config_error_is_none_with_no_files() {
         assert!(config_error(crate::Dialect::StrictInk, None).is_none());
+    }
+
+    // ── native_strict_only_error (B0.9, issue #1342) ────────────────
+
+    #[test]
+    fn native_strict_only_fires_for_explicit_gradual() {
+        let diag = native_strict_only_error(FileId(0), Some(TypePolicy::Gradual));
+        assert!(diag.is_some());
+        assert_eq!(diag.expect("checked above").code, DiagnosticCode::E137);
+    }
+
+    #[test]
+    fn native_strict_only_is_none_for_explicit_strict() {
+        assert!(native_strict_only_error(FileId(0), Some(TypePolicy::Strict)).is_none());
+    }
+
+    #[test]
+    fn native_strict_only_is_none_for_unset_types() {
+        // No explicit knob turned — the dialect-defaulted resolution (not
+        // this gate's concern, see the function doc) governs instead.
+        assert!(native_strict_only_error(FileId(0), None).is_none());
     }
 
     // ── check(): Unknown-escape ────────────────────────────────────
