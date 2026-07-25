@@ -29,8 +29,13 @@ E014 = "deny"          # per-code severity override: "allow" | "warn" | "deny"
 ```
 
 All keys are optional. An empty or absent `[project]`/`[lints]` table — or
-no `brink.toml` at all — changes nothing: **a missing file is exactly
-today's behavior**, no regression.
+no `brink.toml` at all — changes nothing on a *first* apply: **a missing
+file is exactly today's behavior**, no regression. For a long-lived caller
+that re-applies `brink.toml` on every change (the wasm editor session, see
+below), `[lints]` is the one exception: each apply **replaces** the
+resolved lint policy wholesale from whatever the file currently says
+(issue #1397), so an empty or absent `[lints]` table on a *later* apply
+reverts any codes a previous, non-empty `[lints]` table had set.
 
 Unknown keys — a stray top-level table, a key inside `[project]`, or a
 `[lints]` entry naming a code this version of `brink` doesn't recognize (or
@@ -152,7 +157,12 @@ one-off choice that the file must not silently overrule.
   **It applies `[project] dialect`/`types` *and* `[lints]`/`deny-warnings`**
   (issue #1366) — diagnostic severity rendered through this surface now
   reflects the file the same way `brink compile`, `brink ide`, and
-  `brink-lsp` already did:
+  `brink-lsp` already did. Because this session is long-lived, a repeated
+  `applyProjectConfig`/`discoverProjectConfig` call fully **re-resolves**
+  `[lints]` from the file each time rather than merging onto the previous
+  result (issue #1397) — a code or `deny-warnings` present in an earlier
+  `brink.toml` but absent from the current one reverts to its default
+  severity:
 
   ```ts
   import { EditorSessionHandle } from "@brink-lang/web";

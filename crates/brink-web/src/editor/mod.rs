@@ -268,10 +268,11 @@ impl EditorSession {
     /// (a `string[]`) — never an error (forward compat). Errors only on
     /// malformed TOML or a recognized key with an invalid value.
     ///
-    /// Also merges the file's `[lints]` table / `deny-warnings` flag (issue
-    /// #1160) onto the session's resolved lint policy — see
-    /// [`Self::apply_parsed_config`], the merge point this and
-    /// [`Self::discover_project_config`] both funnel through.
+    /// Also **replaces** the session's resolved lint policy from the file's
+    /// `[lints]` table / `deny-warnings` flag (issue #1160; fixed to
+    /// replace rather than merge in #1397) — see [`Self::apply_parsed_config`],
+    /// the merge point this and [`Self::discover_project_config`] both
+    /// funnel through.
     pub fn apply_project_config(&mut self, toml: &str) -> Result<String, JsError> {
         let (config, warnings) = brink_project_config::parse_str(toml)
             .map_err(|e| JsError::new(&format!("invalid brink.toml: {e}")))?;
@@ -319,9 +320,10 @@ impl EditorSession {
     /// directory up to the tree root — missing config is unchanged
     /// behavior, never an error. Otherwise applies and re-analyzes exactly
     /// like `apply_project_config`: explicit `set_language_dialect`/
-    /// `set_type_policy` calls still win over the file, `[lints]` still
-    /// always merges (see [`Self::apply_parsed_config`]), and the returned
-    /// JSON carries the same unrecognized-key/lint-code warnings.
+    /// `set_type_policy` calls still win over the file, `[lints]` is still
+    /// fully replaced from the file on every call (see
+    /// [`Self::apply_parsed_config`]; #1397), and the returned JSON carries
+    /// the same unrecognized-key/lint-code warnings.
     pub fn discover_project_config(&mut self, entry: &str) -> Result<String, JsError> {
         let db = self.session.db();
         let files: BTreeMap<String, String> = db
@@ -544,14 +546,19 @@ impl EditorSession {
     /// `set_language_dialect`/`set_type_policy` API was already called
     /// explicitly on this session (explicit calls always win over the
     /// file). `[lints]`/`deny-warnings` (issue #1160) has no explicit-call
-    /// precedence to honor yet, so the file's table always merges onto the
-    /// session's current resolved lint policy — via a throwaway
-    /// `AnalysisOptions` carrying just `lints` (`IdeSession` has no
-    /// lint-specific fields of its own to hand `apply_project_config`),
-    /// merged and pushed back only when it actually changed (`LintPolicy`
-    /// is `Eq`; `set_lint_policy` always re-analyzes, so a `brink.toml` with
-    /// no `[lints]` table — or one resolving to the policy already in
-    /// effect — must not trigger a redundant full re-analysis).
+    /// precedence to honor yet, so the file's table always **replaces**
+    /// (not merges onto, issue #1397) the session's resolved lint policy —
+    /// via a throwaway `AnalysisOptions` (`IdeSession` has no lint-specific
+    /// fields of its own to hand `apply_project_config`), pushed back only
+    /// when it actually changed (`LintPolicy` is `Eq`; `set_lint_policy`
+    /// always re-analyzes, so a `brink.toml` with no `[lints]` table — or
+    /// one resolving to the policy already in effect — must not trigger a
+    /// redundant full re-analysis). Replace semantics matter specifically
+    /// here: this is the one call site among `apply_project_config`'s
+    /// callers that's a long-lived, repeatedly-re-applied session rather
+    /// than a fresh one-shot compile, so a code (or `deny-warnings`)
+    /// deleted from `brink.toml` between two calls must actually revert
+    /// instead of staying stuck at whatever an earlier call resolved.
     ///
     /// Returns the `[lints]`/non-overridable-code warning strings (unknown
     /// top-level/`[project]` key warnings are the caller's own — parsed
@@ -568,13 +575,13 @@ impl EditorSession {
         {
             self.session.set_type_policy(types);
         }
-        let mut lint_options = brink_analyzer::AnalysisOptions {
-            lints: self.session.lint_policy().clone(),
-            ..brink_analyzer::AnalysisOptions::default()
-        };
-        // `dialect_overridden`/`types_overridden` are passed `true` —
-        // irrelevant to lint merging, and `dialect`/`types` are already
-        // applied above — so this call touches nothing but `.lints`.
+        // No need to seed `lints` from the session's current policy:
+        // `apply_project_config` replaces `.lints` wholesale from `config`
+        // (issue #1397), so a throwaway `AnalysisOptions::default()` is
+        // enough — `dialect_overridden`/`types_overridden` are passed
+        // `true` (irrelevant to lint resolution; `dialect`/`types` are
+        // already applied above), so this call touches nothing but `.lints`.
+        let mut lint_options = brink_analyzer::AnalysisOptions::default();
         let lint_warnings = lint_options.apply_project_config(config, true, true);
         if lint_options.lints != *self.session.lint_policy() {
             self.session.set_lint_policy(lint_options.lints);
@@ -3273,6 +3280,60 @@ mod tests {
         let parsed: Vec<String> = serde_json::from_str(&warnings).expect("valid json");
         assert_eq!(parsed.len(), 1);
         assert!(parsed[0].contains("E9999"));
+    }
+
+    /// Issue #1397: a live editor session re-applying `brink.toml` after a
+    /// `[lints]` entry is deleted from the file must actually un-set that
+    /// override, not leave it stuck — the exact scenario this issue names
+    /// (`apply_project_config` previously only ever merged into the
+    /// session's resolved policy, so a removed entry never went away). The
+    /// first apply sets both `deny-warnings` and a per-code override —
+    /// mirroring `apply_project_config_applies_lints_from_file` and
+    /// `apply_project_config_applies_deny_warnings_from_file` above — so the
+    /// empty re-apply proves *both* revert end-to-end; `deny_warnings`
+    /// reverts through a different line
+    /// (`config.deny_warnings.unwrap_or(false)`) than per-code overrides, so
+    /// exercising only one would leave the other unproven.
+    #[test]
+    fn apply_project_config_reapply_without_a_previously_set_code_restores_base_severity() {
+        let source = "~\nHello.\n-> DONE\n";
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", source);
+
+        // First apply: deny-warnings is set AND E014 is promoted to `deny`,
+        // so compilation fails.
+        s.apply_project_config("[lints]\ndeny-warnings = true\nE014 = \"deny\"\n")
+            .expect("valid brink.toml");
+        let promoted = json(&s.compile_project("main.ink"));
+        assert_eq!(
+            promoted["ok"],
+            serde_json::json!(false),
+            "precondition: deny-warnings = true / E014 = deny must fail compilation: {promoted}"
+        );
+
+        // Second apply: the user deleted the `[lints]` table from
+        // brink.toml (an editor session re-applies on every config
+        // change) — both deny-warnings and E014 must revert to their base
+        // state, so compilation now succeeds again.
+        s.apply_project_config("").expect("empty document is valid");
+        let reverted = json(&s.compile_project("main.ink"));
+        assert_eq!(
+            reverted["ok"],
+            serde_json::json!(true),
+            "removing [lints] E014 = \"deny\" from brink.toml must restore \
+             E014's base Warning severity, letting compilation succeed \
+             again: {reverted}"
+        );
+        let severity = reverted["warnings"]
+            .as_array()
+            .and_then(|w| w.iter().find(|d| d["code"] == "E014"))
+            .map(|d| d["severity"].clone());
+        assert_eq!(
+            severity,
+            Some(serde_json::json!("Warning")),
+            "E014 must show its base Warning severity once the override is \
+             gone, not the stale Error from the first apply: {reverted}"
+        );
     }
 
     // ── Issue #1004: manifest-typed external params under strict ──────────

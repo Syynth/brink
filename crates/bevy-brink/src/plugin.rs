@@ -145,7 +145,10 @@ impl<M: Send + Sync + 'static> BrinkPlugin<M> {
     /// bevy author's console the same way it would from the CLI or a served
     /// `brink.toml` — no extra wiring needed, but see
     /// `plugin_override_unknown_and_non_overridable_lint_codes_warn_but_valid_entry_still_applies`
-    /// (`source_loader.rs`) for the regression proof.
+    /// (`source_loader.rs`) for the regression proof. **Also** readable
+    /// without a logger, as [`BrinkConfigWarnings`](crate::BrinkConfigWarnings)
+    /// — a headless/embedding host that never installs `bevy_log` still gets
+    /// the rejection (issue #1426).
     #[cfg(feature = "dev")]
     #[must_use]
     pub fn with_config(mut self, config: brink_project_config::ProjectConfig) -> Self {
@@ -326,6 +329,13 @@ impl BrinkAssetsPlugin {
     /// standalone-plugin equivalent of [`BrinkPlugin::with_config`], for
     /// hosts that add `BrinkAssetsPlugin` directly (e.g. a headless
     /// asset-processing binary) without going through `BrinkPlugin<M>`.
+    ///
+    /// An unknown or non-overridable code in `config.lints` is never
+    /// silently applied — [`build`](Plugin::build) inserts
+    /// [`BrinkConfigWarnings`](crate::BrinkConfigWarnings) with the
+    /// rejection eagerly, at plugin-build time, so a headless host that
+    /// never installs `bevy_log`/a `tracing` subscriber still gets it
+    /// (issue #1426).
     #[cfg(feature = "dev")]
     #[must_use]
     pub fn with_config(mut self, config: brink_project_config::ProjectConfig) -> Self {
@@ -358,5 +368,14 @@ impl Plugin for BrinkAssetsPlugin {
         app.register_asset_loader(crate::source_loader::InkLoader {
             override_config: self.config.clone(),
         });
+        // #1426: the non-log surface for `config.lints`'s rejected codes —
+        // see `crate::config_warnings`'s module docs. Inserted eagerly, once,
+        // regardless of whether `self.config` is set or has any lint
+        // overrides at all (an empty `Vec` is the well-defined "nothing
+        // rejected" case, not "the check never ran").
+        #[cfg(feature = "dev")]
+        app.insert_resource(crate::config_warnings::BrinkConfigWarnings::from_config(
+            self.config.as_ref(),
+        ));
     }
 }
