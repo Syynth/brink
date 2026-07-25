@@ -880,6 +880,136 @@ mod config_discovery_tests {
         wait_for_failed(&mut app, &handle);
     }
 
+    // ── unknown/non-overridable `[lints]` codes warn, not drop (#1416) ──
+    //
+    // `AnalysisOptions::apply_lint_overrides` (`brink-analyzer`) already
+    // rejects a code that isn't a real `DiagnosticCode`, or names one whose
+    // *base* severity isn't `Warning`, returning a `ConfigWarning` instead of
+    // silently merging it — `resolve_options` (`brink-environment`) loops
+    // those through `tracing::warn!` unconditionally, regardless of whether
+    // a `brink.toml` was even discovered (see its own doc comment). Since
+    // `bevy_log`'s macros are `tracing`'s own, re-exported verbatim, and
+    // `LogPlugin` installs a process-wide `tracing` subscriber, that
+    // `tracing::warn!` call already reaches a bevy author's console in any
+    // real app -- the CLI/`brink.toml` mounts rely on the exact same
+    // ambient-dispatch mechanism, just with `tracing_subscriber::fmt`
+    // instead of `LogPlugin` as the installed subscriber. What was actually
+    // untested (house rule 9) is that `BrinkPlugin::with_config`'s
+    // `override_config.lints` -- forwarded into `OptionOverrides` by #1394 --
+    // reaches that channel too, and that an invalid entry doesn't take a
+    // valid sibling entry down with it. `CapturingSubscriber` below installs
+    // itself as the *global* `tracing` default (not a thread-local one,
+    // which `InkLoader::load` -- driven off the asset IO task pool thread --
+    // would never see) so the warnings loop above is observed no matter
+    // which pool thread runs the compile.
+    struct CapturingSubscriber {
+        messages: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl tracing::field::Visit for CapturedMessage {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.0 = format!("{value:?}");
+            }
+        }
+    }
+
+    struct CapturedMessage(String);
+
+    impl tracing::Subscriber for CapturingSubscriber {
+        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+
+        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+
+        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+
+        fn event(&self, event: &tracing::Event<'_>) {
+            let mut captured = CapturedMessage(String::new());
+            event.record(&mut captured);
+            self.messages.lock().unwrap().push(captured.0);
+        }
+
+        fn enter(&self, _span: &tracing::span::Id) {}
+
+        fn exit(&self, _span: &tracing::span::Id) {}
+    }
+
+    /// Install (once per test binary) a process-wide capturing subscriber
+    /// and return the shared buffer every event's formatted message lands
+    /// in. A single global install is required -- `tracing` only allows
+    /// setting the global default once -- so every test that calls this
+    /// shares one growing buffer; that's fine here because each test only
+    /// asserts its own uniquely-spelled codes appear somewhere in it, never
+    /// that the buffer is otherwise empty.
+    fn captured_warnings() -> std::sync::Arc<std::sync::Mutex<Vec<String>>> {
+        static MESSAGES: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<Vec<String>>>> =
+            std::sync::OnceLock::new();
+        let messages = MESSAGES.get_or_init(|| {
+            let messages = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let subscriber = CapturingSubscriber {
+                messages: std::sync::Arc::clone(&messages),
+            };
+            // Ignore a "someone already set it" error: nothing else in this
+            // crate's test binary installs a global subscriber, so in
+            // practice this always wins on first call.
+            let _ = tracing::subscriber::set_global_default(subscriber);
+            messages
+        });
+        std::sync::Arc::clone(messages)
+    }
+
+    #[test]
+    fn plugin_override_unknown_and_non_overridable_lint_codes_warn_but_valid_entry_still_applies() {
+        let warnings = captured_warnings();
+
+        let (mut app, dir) = make_memory_asset_app();
+        dir.insert_asset_text(Path::new("intro.ink"), E014_SOURCE);
+
+        let mut lints = std::collections::BTreeMap::new();
+        // Not a real `DiagnosticCode` -- never parses.
+        lints.insert(
+            "E9999_TYPO".to_owned(),
+            brink_project_config::LintLevel::Deny,
+        );
+        // A real code, but its base severity is `Error`, not `Warning` --
+        // never overridable (mirrors `brink-analyzer`'s own
+        // `apply_lint_overrides_rejects_non_overridable_code` unit test).
+        lints.insert("E001".to_owned(), brink_project_config::LintLevel::Deny);
+        // The valid entry: must still apply and relevel E014 to a blocking
+        // Error, proving the two invalid siblings above don't take it down
+        // with them.
+        lints.insert("E014".to_owned(), brink_project_config::LintLevel::Deny);
+
+        app.register_asset_loader(InkLoader {
+            override_config: Some(ProjectConfig {
+                lints,
+                ..ProjectConfig::default()
+            }),
+        });
+
+        let handle = app
+            .world()
+            .resource::<AssetServer>()
+            .load::<BrinkStoryAsset>("intro.ink");
+        wait_for_failed(&mut app, &handle);
+
+        let joined = warnings.lock().unwrap().join("\n");
+        assert!(
+            joined.contains("E9999_TYPO"),
+            "an unknown lint code must warn (not silently drop); captured: {joined}"
+        );
+        assert!(
+            joined.contains("E001"),
+            "a non-overridable lint code must warn (not silently drop); captured: {joined}"
+        );
+    }
+
     #[test]
     fn hot_reload_picks_up_edited_brink_toml() {
         let (mut app, dir) = make_memory_asset_app();

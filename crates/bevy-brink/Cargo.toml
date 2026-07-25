@@ -98,6 +98,14 @@ brink-intl = { path = "../internal/brink-intl" }
 # file) — already a transitive dependency via the `brink-compiler` dev-dep
 # above, so this adds no new build work, just a direct path to it.
 brink-ir = { path = "../internal/brink-ir" }
+# #1416: `config_discovery_tests` (source_loader.rs) installs a capturing
+# `tracing::Subscriber` to prove an unknown/non-overridable `[lints]` code
+# passed through `InkLoader::override_config` actually reaches the ambient
+# tracing dispatcher — the same channel `bevy_log::LogPlugin` subscribes to
+# in a real app (`bevy_log` re-exports `tracing`'s macros verbatim). Plain
+# `tracing`, not `bevy_log`, because the subscriber has to see events
+# emitted on the asset IO task-pool thread, not just the test thread.
+tracing.workspace = true
 # serde_json is a regular dependency now (handle.rs's SaveKey erasure); the
 # `book_saves` example also round-trips a composed save map through it to
 # prove `SaveState` really is Serialize/Deserialize end to end.

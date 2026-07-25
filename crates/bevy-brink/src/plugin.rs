@@ -133,6 +133,19 @@ impl<M: Send + Sync + 'static> BrinkPlugin<M> {
     /// resolution point (`AnalysisOptions::apply_lint_overrides`).
     /// (Previously scoped to `dialect`/`types` only per the issue #1382
     /// audit — that gap is what #1394 closed.)
+    ///
+    /// An unknown code (not a real `DiagnosticCode`) or a non-overridable
+    /// one (a code whose *base* severity isn't `Warning`) in `config.lints`
+    /// is never silently applied — `apply_lint_overrides` rejects it and
+    /// `Project::load` surfaces the rejection via `tracing::warn!` (issue
+    /// #1416), the same "warn, never drop" channel every other mount's
+    /// `[lints]` handling uses. Since `bevy_log`'s logging macros are
+    /// `tracing`'s own, re-exported verbatim, and `LogPlugin` installs a
+    /// process-wide `tracing` subscriber, a typo'd code here surfaces on a
+    /// bevy author's console the same way it would from the CLI or a served
+    /// `brink.toml` — no extra wiring needed, but see
+    /// `plugin_override_unknown_and_non_overridable_lint_codes_warn_but_valid_entry_still_applies`
+    /// (`source_loader.rs`) for the regression proof.
     #[cfg(feature = "dev")]
     #[must_use]
     pub fn with_config(mut self, config: brink_project_config::ProjectConfig) -> Self {
