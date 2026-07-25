@@ -2,8 +2,16 @@
 
 use std::path::{Path, PathBuf};
 
+use brink_source_tree::Walk;
+
 use crate::episode::Episode;
 use crate::explorer::ExploreConfig;
+
+/// Case-data directories [`collect_recursive`] never descends into: they
+/// hold a case's fixtures, never nested cases, so walking them is pure
+/// waste. Pruned *on top of* the standing `target/`/`.git/`/`node_modules/`
+/// policy [`Walk`] applies by construction (issue #1433).
+const CASE_DATA_DIRS: [&str; 2] = ["episodes", "oracle"];
 
 /// Recursively find directories containing `story.ink`.
 pub fn collect_test_cases(root: &Path) -> Vec<PathBuf> {
@@ -29,28 +37,20 @@ pub fn collect_oracle_cases(root: &Path) -> Vec<PathBuf> {
     result
 }
 
+/// Push every directory at or below `dir` that satisfies `predicate` onto
+/// `out`. The descent is the shared [`Walk`], so it prunes the standing
+/// ignored-directory policy as well as [`CASE_DATA_DIRS`]; `dir` itself is
+/// never pruned (a [`Walk`] contract), so a corpus root that happens to be
+/// named like one of them is still enumerated. Callers sort `out`.
 fn collect_recursive(dir: &Path, out: &mut Vec<PathBuf>, predicate: impl Fn(&Path) -> bool + Copy) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-
     if predicate(dir) {
         out.push(dir.to_path_buf());
     }
 
-    let mut subdirs: Vec<PathBuf> = entries
-        .flatten()
-        .filter(|e| e.file_type().is_ok_and(|ft| ft.is_dir()))
-        .filter(|e| {
-            let name = e.file_name();
-            name != "episodes" && name != "oracle"
-        })
-        .map(|e| e.path())
-        .collect();
-    subdirs.sort();
-
-    for sub in subdirs {
-        collect_recursive(&sub, out, predicate);
+    for entry in Walk::new(dir).prune_also(CASE_DATA_DIRS).flatten() {
+        if entry.is_dir() && predicate(entry.path()) {
+            out.push(entry.into_path());
+        }
     }
 }
 

@@ -274,22 +274,18 @@ fn bench_corpus_cold(root: &Path, runs: usize) -> Result<(), String> {
     Ok(())
 }
 
-/// Recursively find directories containing `story.ink`, sorted for determinism.
+/// Recursively find directories containing `story.ink`, via the shared
+/// [`brink_source_tree::Walk`] (issue #1433) — deterministic order, and the
+/// ignored-directory policy applied by construction rather than by a
+/// hand-written recursion that has to remember it. The caller sorts.
 fn collect_story_ink(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
     if dir.join("story.ink").is_file() {
         out.push(dir.to_path_buf());
     }
-    let mut subdirs: Vec<PathBuf> = entries
-        .flatten()
-        .filter(|e| e.file_type().is_ok_and(|ft| ft.is_dir()))
-        .map(|e| e.path())
-        .collect();
-    subdirs.sort();
-    for sub in subdirs {
-        collect_story_ink(&sub, out);
+    for entry in brink_source_tree::Walk::new(dir).flatten() {
+        if entry.is_dir() && entry.path().join("story.ink").is_file() {
+            out.push(entry.into_path());
+        }
     }
 }
 
