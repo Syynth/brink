@@ -1072,7 +1072,7 @@ mod ide_session_project_config_tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("brink.toml"),
-            "[project]\ndialect = \"brink\"\ntypes = \"strict\"\n\n[lints]\nE014 = \"deny\"\n",
+            "[project]\ndialect = \"brink\"\ntypes = \"gradual\"\n\n[lints]\nE014 = \"deny\"\n",
         )
         .unwrap();
         std::fs::write(dir.join("story.ink"), "Hello.\n-> END\n").unwrap();
@@ -1086,9 +1086,14 @@ mod ide_session_project_config_tests {
             brink_analyzer::Dialect::Brink,
             "ide_session() must forward the resolved [project] dialect"
         );
+        // `types = "gradual"` is the non-default posture for the `Brink`
+        // dialect (which otherwise resolves `None` to `Strict` — see
+        // `resolve_type_policy`), so this only stays green if `ide_session()`
+        // actually forwards the explicit `types` value instead of falling
+        // through to the dialect-keyed default.
         assert_eq!(
             session.type_policy(),
-            brink_analyzer::TypePolicy::Strict,
+            brink_analyzer::TypePolicy::Gradual,
             "ide_session() must forward the resolved [project] types"
         );
         assert_eq!(
@@ -1120,6 +1125,11 @@ mod ide_session_project_config_tests {
         assert_eq!(
             session.language_dialect(),
             brink_analyzer::Dialect::default()
+        );
+        assert_eq!(
+            session.type_policy(),
+            brink_analyzer::TypePolicy::Gradual,
+            "no brink.toml must resolve through the StrictInk-keyed default, not invent a policy"
         );
         assert_eq!(
             *session.lint_policy(),
