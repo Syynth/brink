@@ -99,6 +99,72 @@ fn compile_walks_up_from_entry_to_find_brink_toml() {
     fs::remove_dir_all(&dir).ok();
 }
 
+/// Regression for issue #1413: `native_source_root`'s walk-up is purely
+/// *lexical* (`Path::parent`) — for a relative `entry_dir` that bottoms out
+/// at the process's cwd (`""`), with no way to synthesize a `".."` to keep
+/// climbing, unlike an absolute `entry_dir`, whose `Path::parent` chain
+/// walks all the way to the filesystem root for free. So `brink compile
+/// story.ink`, run from a cwd one directory *below* the true project root
+/// (`brink.toml` lives in cwd's *parent*, not in cwd itself), used to miss
+/// the config and mis-root at cwd — the entry failed to compile (two bogus
+/// E051 dialect errors) even though the identical absolute-path entry (or a
+/// bare entry with an extra path component reaching the same directory)
+/// resolved correctly. `.current_dir(&sub)` + a bare relative entry
+/// reproduces that exact scenario end-to-end, mirroring the `brink ide`
+/// regression test #1403/PR #1412 added for the sibling bug.
+#[test]
+fn compile_finds_brink_toml_above_a_bare_relative_entrys_cwd() {
+    let dir = project_dir("compile-config-above-cwd");
+    let sub = dir.join("sub");
+    fs::create_dir_all(&sub).unwrap();
+    write_story(&sub, EXTENSION_FIXTURE);
+    write_config(&dir, "[project]\ndialect = \"brink\"\n");
+
+    let out = brink()
+        .current_dir(&sub)
+        .args(["compile", "story.ink"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a bare relative entry must still discover a brink.toml above the \
+         process's cwd, exactly like the absolute-path form: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// Companion for the case issue #1413 names literally: `brink.toml` sitting
+/// *beside* a bare, single-component relative entry, directly in the
+/// process's cwd (not above it). This shape already resolved correctly
+/// before the #1413 fix (the fast relative-walk path finds it on its first
+/// probe), but had no CLI-level `.current_dir()` coverage — every existing
+/// `compile_*` test above passes an absolute entry path, which sidesteps
+/// `native_source_root`'s cwd-relative walk entirely. Pins it explicitly so
+/// a future regression here is caught the same way #1413 itself was.
+#[test]
+fn compile_finds_brink_toml_beside_a_bare_relative_entry_in_cwd() {
+    let dir = project_dir("compile-config-beside-bare-entry");
+    write_story(&dir, EXTENSION_FIXTURE);
+    write_config(&dir, "[project]\ndialect = \"brink\"\n");
+
+    let out = brink()
+        .current_dir(&dir)
+        .args(["compile", "story.ink"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a bare relative entry must discover a brink.toml beside it in cwd: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn compile_explicit_flag_overrides_brink_toml() {
     let dir = project_dir("compile-config-override");

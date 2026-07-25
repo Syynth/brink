@@ -39,6 +39,10 @@ const hoisted = vi.hoisted(() => {
       calls.push({ method: "apply_project_config", args: [toml] });
       return "[\"unknown key `project.future_key` in brink.toml (ignored)\"]";
     }
+    discover_project_config(entry: unknown): string {
+      calls.push({ method: "discover_project_config", args: [entry] });
+      return "[]";
+    }
   }
   return { calls, EditorSessionStub };
 });
@@ -146,6 +150,25 @@ describe("EditorSessionHandle wasm-lever passthroughs", () => {
     expect(warnings).toEqual([
       "unknown key `project.future_key` in brink.toml (ignored)",
     ]);
+    expect(handle.generation).toBe(before + 1);
+  });
+
+  it("exposes discoverProjectConfig (#1414: SourceTree-seam brink.toml discovery for the virtual web mount)", () => {
+    const handle = new EditorSessionHandle();
+    expect(typeof handle.discoverProjectConfig).toBe("function");
+  });
+
+  it("forwards discoverProjectConfig to discover_project_config, parses the warning JSON, and bumps generation", () => {
+    hoisted.calls.length = 0;
+    const handle = new EditorSessionHandle();
+    const before = handle.generation;
+
+    const warnings = handle.discoverProjectConfig("main.ink");
+
+    expect(hoisted.calls).toEqual([
+      { method: "discover_project_config", args: ["main.ink"] },
+    ]);
+    expect(warnings).toEqual([]);
     expect(handle.generation).toBe(before + 1);
   });
 });
