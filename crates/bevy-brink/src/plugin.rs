@@ -102,8 +102,8 @@ impl<M: Send + Sync + 'static> BrinkPlugin<M> {
     }
 
     /// Override the [`ProjectConfig`](brink_project_config::ProjectConfig)
-    /// (`dialect`/`types`) the dev-mode [`InkLoader`](crate::InkLoader) uses
-    /// for stories compiled under this marker (#1029).
+    /// the dev-mode [`InkLoader`](crate::InkLoader) uses for stories
+    /// compiled under this marker (#1029).
     ///
     /// The **programmatic escape hatch**: it wins over whatever `brink.toml`
     /// the loader's bounded asset walk-up discovers beside the entry story —
