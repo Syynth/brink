@@ -2262,6 +2262,7 @@ dependencies = [
 name = "brink-project-config"
 version = "0.0.11"
 dependencies = [
+ "brink-source-tree",
  "thiserror 2.0.18",
  "toml",
 ]

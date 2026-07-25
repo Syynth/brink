@@ -8,8 +8,10 @@ repository.workspace = true
 readme.workspace = true
 # Unpublished until a maintainer does the one-time manual `cargo publish`
 # (Trusted Publishing cannot create a crate — docs/releasing.md). As of the
-# #1234 inversion this crate has NO workspace dependencies and packages
-# standalone, so that publish is now unblocked; flip this off once done.
+# #1234 inversion (and, since #1312, the `brink-source-tree` L0-leaf
+# dependency it gained for SourceTree-based config discovery) this crate's
+# only workspace dependency is itself a dependency-free L0 leaf, so it still
+# packages standalone; flip this off once a maintainer does the publish.
 keywords.workspace = true
 categories.workspace = true
 
@@ -23,6 +25,7 @@ categories.workspace = true
 # consumes it. Publishing it again requires fixing the standalone build first.
 
 [dependencies]
+brink-source-tree.workspace = true
 thiserror.workspace = true
 toml.workspace = true
 
