@@ -15,13 +15,18 @@ on:
   # Cargo.lock pins several crates/internal/* packages transitively (e.g.
   # brink-analyzer, brink-ir, brink-syntax), so a change there can stale the
   # lockfile exactly like a change to a front-door crate (#1402 — DEMO_GATE
-  # went red only after merge because this filter missed that).
+  # went red only after merge because this filter missed that). Root
+  # `Cargo.toml` is included too: it holds `[workspace.package] version` and
+  # `[workspace.dependencies]`, which every brink package version and
+  # transitive dep in demos/compound/Cargo.lock resolves from, so a bump
+  # there is the same staling vector one directory up.
   pull_request:
     paths:
       - 'demos/**'
       - 'crates/bevy-brink/**'
       - 'crates/brink-*/**'
       - 'crates/internal/**'
+      - 'Cargo.toml'
       - '.github/workflows/demo.yml'
   push:
     branches: [main]
@@ -30,6 +35,7 @@ on:
       - 'crates/bevy-brink/**'
       - 'crates/brink-*/**'
       - 'crates/internal/**'
+      - 'Cargo.toml'
       - '.github/workflows/demo.yml'
 
 # Least privilege: jobs only read the repo. Grant more per-job if ever needed.
