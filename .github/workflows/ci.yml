@@ -294,6 +294,35 @@ jobs:
         run: |
           rustup toolchain install nightly --profile minimal
           cargo install cargo-fuzz --locked
+      # Lockfile-drift gate (#1396 gap 2, house rule 19o): `cargo +nightly
+      # fuzz run` below has no `--locked` of its own — cargo-fuzz doesn't
+      # expose one — so a stale fuzz-crate Cargo.lock (e.g. after a parent
+      # crate's deps change) would otherwise be silently refreshed and the
+      # job would exit 0, same drift shape #1386 fixed for demos/compound.
+      # `cargo metadata --locked` fails loudly instead of refreshing when a
+      # committed lockfile no longer matches its manifest. All four
+      # workspace-excluded fuzz crates now carry a committed Cargo.lock.
+      - name: Verify fuzz crate lockfiles are not stale
+        run: |
+          set -uo pipefail
+          dirs="
+          crates/internal/brink-syntax/fuzz
+          crates/internal/brink-syntax-native/fuzz
+          crates/internal/brink-format/fuzz
+          crates/brink-runtime/fuzz
+          "
+          failed=""
+          for dir in $dirs; do
+            if ! cargo metadata --locked --no-deps --format-version 1 \
+                 --manifest-path "${dir}/Cargo.toml" >/dev/null; then
+              echo "::error::stale or missing Cargo.lock in ${dir}"
+              failed="${failed} ${dir}"
+            fi
+          done
+          if [ -n "${failed}" ]; then
+            echo "::error::stale fuzz lockfiles:${failed}"
+            exit 1
+          fi
       - name: Fuzz all targets
         run: |
           set -uo pipefail
