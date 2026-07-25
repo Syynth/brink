@@ -211,6 +211,85 @@ first_light_fixture_test!(simple_glue, "simple-glue");
 first_light_fixture_test!(sticky_choice, "sticky-choice");
 first_light_fixture_test!(weave_options, "weave-options");
 
+/// #1336 regression: `content_items_until`'s shared prose-scanning loop
+/// (`crates/internal/brink-syntax-native/src/parser/content.rs`) used to
+/// call `p.skip_ws()` unconditionally at the top of every loop iteration,
+/// discarding significant inter-token whitespace — the space after a
+/// choice's `]` bracket close, or after a `<>` glue marker. That was fixed
+/// by #1264/PR #1268 (the conditional `starts_text_run` policy this
+/// module's own doc comment describes), which added CST-level unit tests
+/// in `brink-syntax-native`'s `content.rs`/`choice.rs` test modules. This
+/// test locks the SAME whitespace at the far end of the pipeline instead:
+/// the actual runtime line text produced by compiling and exploring each
+/// of the four fixtures #1336 named as affected
+/// (basic-tunnel/complex-flow-v1/exhibit-fogg-passage/gather-basic),
+/// asserting the exact space-preserving substrings the first-light
+/// divergence report called out. `first_light_fixture_test!` above already
+/// gates full episode-identity for these fixtures; this test exists so a
+/// future regression that clips one of these specific spaces prints a
+/// targeted, human-readable diff instead of only a generic oracle mismatch.
+#[test]
+fn whitespace_after_bracket_close_and_glue_marker_survives_to_runtime_text() {
+    let config = ExploreConfig {
+        max_depth: 20,
+        max_episodes: 1000,
+    };
+    let compile = |case: &str| {
+        let src = std::fs::read_to_string(respell_fixture_dir(case).join("story.brink"))
+            .unwrap_or_else(|e| panic!("read {case}/story.brink: {e}"));
+        compile_and_explore_from_brink_native(&src, &config)
+            .unwrap_or_else(|e| panic!("{case}: pipeline error: {e}"))
+            .1
+    };
+    let joined_text = |episodes: &[Episode], choice_path: &[usize]| -> String {
+        episodes
+            .iter()
+            .find(|ep| ep.choice_path == choice_path)
+            .unwrap_or_else(|| panic!("no episode with choice_path={choice_path:?}"))
+            .steps
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect()
+    };
+
+    // basic-tunnel: `-> f -> \n<> world` — the leading `<>` glues the
+    // tunnel's "Hello" onto "world", and the space after `<>` is the
+    // separating space between the two words. A dropped space would
+    // collapse this to "Helloworld".
+    let basic_tunnel = compile("basic-tunnel");
+    assert!(
+        joined_text(&basic_tunnel, &[]).contains("Hello world"),
+        "basic-tunnel: space after `<>` glue must survive between tunnel return and continuation"
+    );
+
+    // complex-flow-v1: `* 'A wager!'[] I returned.` — the charter wager
+    // shape (PR #1268's own regression name). A dropped space would
+    // collapse this to "'A wager!'I returned.".
+    let complex_flow = compile("complex-flow-v1");
+    assert!(
+        joined_text(&complex_flow, &[0, 0, 0, 0]).contains("'A wager!' I returned."),
+        "complex-flow-v1: space after choice `]` bracket close must survive into runtime text"
+    );
+
+    // exhibit-fogg-passage: `<> "But surely you are not serious?" I
+    // demanded.` following "I stared at Monsieur Fogg." on the prior
+    // content line — the exact glue-space divergence #1336 quotes.
+    let exhibit_fogg = compile("exhibit-fogg-passage");
+    assert!(
+        joined_text(&exhibit_fogg, &[0])
+            .contains("I stared at Monsieur Fogg. \"But surely you are not serious?\""),
+        "exhibit-fogg-passage: space after `<>` glue must survive into runtime text"
+    );
+
+    // gather-basic: `* "Nothing, Monsieur!"[] I replied.` — another
+    // bracket-close-space choice shape.
+    let gather_basic = compile("gather-basic");
+    assert!(
+        joined_text(&gather_basic, &[1]).contains("\"Nothing, Monsieur!\" I replied."),
+        "gather-basic: space after choice `]` bracket close must survive into runtime text"
+    );
+}
+
 /// A non-failing summary across all 9 fixtures — always green, prints a
 /// one-line-per-fixture status table with `--nocapture`. Exists so a CI run
 /// (or a human) can see the aggregate first-light picture in one place
