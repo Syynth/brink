@@ -312,7 +312,7 @@ fn gate_dir_move(
     }
 
     let (new_analysis, new_db) = session.analyze_projection(&projection);
-    introduced_diagnostics(baseline, &new_analysis, &new_db)
+    introduced_diagnostics(baseline, &new_analysis, &new_db, session.type_policy())
 }
 
 /// The exact byte range of an `INCLUDE`'s file-path token, resolved against the
@@ -506,8 +506,12 @@ mod tests {
         );
         let baseline = s.analysis().unwrap();
         let (new_analysis, new_db) = s.analyze_projection(&projection);
-        let introduced =
-            crate::structural_result::introduced_diagnostics(baseline, &new_analysis, &new_db);
+        let introduced = crate::structural_result::introduced_diagnostics(
+            baseline,
+            &new_analysis,
+            &new_db,
+            s.type_policy(),
+        );
         assert!(
             introduced.iter().any(|d| d.code.as_str() == "E024"),
             "gate should report the introduced dangling divert: {:?}",

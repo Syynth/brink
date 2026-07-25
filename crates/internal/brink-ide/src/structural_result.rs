@@ -104,7 +104,7 @@ pub fn gate(session: &IdeSession, edits: &[FileEdit]) -> Vec<IntroducedDiagnosti
     }
 
     let (new_analysis, new_db) = session.analyze_overlay(&overlay);
-    introduced_diagnostics(analysis, &new_analysis, &new_db)
+    introduced_diagnostics(analysis, &new_analysis, &new_db, session.type_policy())
 }
 
 /// The overlay-based gate for ops whose primary edit is a whole-file source
@@ -154,18 +154,28 @@ pub fn gate_with_source(
     }
 
     let (new_analysis, new_db) = session.analyze_overlay(&overlay);
-    introduced_diagnostics(analysis, &new_analysis, &new_db)
+    introduced_diagnostics(analysis, &new_analysis, &new_db, session.type_policy())
 }
 
 /// Diff `new_analysis` against the baseline `analysis`, returning the
 /// diagnostics that the edit introduced — present now but not before, matched
 /// as a multiset keyed by `(code, message)` so duplicate messages are counted.
 /// Locations resolve through `new_db` (the overlay db owns the new `FileId`s).
+///
+/// `types` is the session's resolved TM-3 policy — `severity` renders the
+/// [`brink_analyzer::effective_severity`] (issue #1367), not the raw
+/// [`DiagnosticCode::severity`] default. `lints` is always
+/// `LintPolicy::default()`: `IdeSession` has no `[lints]`-resolution input
+/// wired yet (same #1160 scope note as [`IdeSession::analysis_options`]), so
+/// this is a no-op today but keeps the breakage report on the one seam
+/// every diagnostic-severity display site must call.
 pub(crate) fn introduced_diagnostics(
     analysis: &AnalysisResult,
     new_analysis: &AnalysisResult,
     new_db: &brink_db::ProjectDb,
+    types: brink_analyzer::TypePolicy,
 ) -> Vec<IntroducedDiagnostic> {
+    let lints = brink_analyzer::LintPolicy::default();
     let mut baseline: BTreeMap<(&str, &str), i32> = BTreeMap::new();
     for d in &analysis.diagnostics {
         *baseline
@@ -186,7 +196,7 @@ pub(crate) fn introduced_diagnostics(
         let src = new_db.source(d.file).unwrap_or_default();
         let (line, col) = LineIndex::new(src).line_col(d.range.start());
         introduced.push(IntroducedDiagnostic {
-            severity: d.code.severity(),
+            severity: brink_analyzer::effective_severity(d.code, types, &lints),
             code: d.code,
             message: d.message.clone(),
             path,
@@ -195,4 +205,70 @@ pub(crate) fn introduced_diagnostics(
         });
     }
     introduced
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use brink_analyzer::TypePolicy;
+    use brink_ir::{Diagnostic, SymbolIndex};
+    use rowan::{TextRange, TextSize};
+    use std::sync::Arc;
+
+    fn empty_analysis() -> AnalysisResult {
+        AnalysisResult {
+            index: Arc::new(SymbolIndex::default()),
+            resolutions: Vec::new(),
+            diagnostics: Vec::new(),
+            symbol_meta: BTreeMap::new(),
+        }
+    }
+
+    fn analysis_with(diagnostics: Vec<Diagnostic>) -> AnalysisResult {
+        AnalysisResult {
+            diagnostics,
+            ..empty_analysis()
+        }
+    }
+
+    /// #1367: `introduced_diagnostics` must render the *effective* severity,
+    /// not the raw `DiagnosticCode::severity()` default. `E063` (annotation-
+    /// vs-inference mismatch) is `Warning` by default but `Error` under
+    /// `types = strict` (`brink-analyzer::strict`'s #640-round ruling) — the
+    /// one TM-3 carve-out `effective_severity` applies regardless of
+    /// `[lints]`, so it's reachable even though `IdeSession` has no
+    /// `[lints]`-resolution input wired yet (see this function's doc
+    /// comment).
+    #[test]
+    fn reports_effective_severity_not_raw_default() {
+        assert_eq!(
+            DiagnosticCode::E063.severity(),
+            Severity::Warning,
+            "precondition: E063's raw default is Warning"
+        );
+
+        let baseline = empty_analysis();
+        let new_analysis = analysis_with(vec![Diagnostic {
+            file: FileId(0),
+            range: TextRange::new(TextSize::from(0), TextSize::from(1)),
+            message: "type annotation disagrees with inferred type".to_owned(),
+            code: DiagnosticCode::E063,
+        }]);
+        let db = brink_db::ProjectDb::new();
+
+        let gradual = introduced_diagnostics(&baseline, &new_analysis, &db, TypePolicy::Gradual);
+        assert_eq!(
+            gradual.first().map(|d| d.severity),
+            Some(Severity::Warning),
+            "types = gradual: E063 stays at its raw Warning default"
+        );
+
+        let strict = introduced_diagnostics(&baseline, &new_analysis, &db, TypePolicy::Strict);
+        assert_eq!(
+            strict.first().map(|d| d.severity),
+            Some(Severity::Error),
+            "types = strict: E063 must promote to Error via effective_severity, \
+             not stay at the raw Warning default"
+        );
+    }
 }

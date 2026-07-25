@@ -10,6 +10,11 @@ use crate::editor_dto::diagnostic_to_js;
 /// Compile ink source and return JSON with diagnostics or story data.
 #[wasm_bindgen]
 pub fn compile(source: &str) -> String {
+    // `brink_compiler::compile` hardcodes `AnalysisOptions::default()` (no
+    // `brink.toml`/`[lints]` input at this entry point) — mirrored here so
+    // `diagnostic_to_js` renders the same effective severity the compile
+    // actually ran under (issue #1367).
+    let options = brink_compiler::AnalysisOptions::default();
     let result = brink_compiler::compile("main.ink", |_path| Ok(source.to_owned()));
 
     match result {
@@ -17,7 +22,7 @@ pub fn compile(source: &str) -> String {
             let warnings: Vec<DiagnosticJs> = output
                 .warnings
                 .iter()
-                .map(|d| diagnostic_to_js(d, source))
+                .map(|d| diagnostic_to_js(d, source, options.type_policy(), &options.lints))
                 .collect();
 
             let data = output.data;
@@ -38,7 +43,10 @@ pub fn compile(source: &str) -> String {
 
             match e {
                 brink_compiler::CompileError::Diagnostics(diags) => {
-                    diagnostics = diags.iter().map(|d| diagnostic_to_js(d, source)).collect();
+                    diagnostics = diags
+                        .iter()
+                        .map(|d| diagnostic_to_js(d, source, options.type_policy(), &options.lints))
+                        .collect();
                 }
                 other => {
                     error_msg = Some(format!("{other}"));
@@ -141,9 +149,12 @@ pub fn compile_fragment(entry: &str, sources_json: &str, synthetic_source: &str)
         })
     });
 
+    // Fragment compiles also run under `AnalysisOptions::default()` (see the
+    // doc comment above) — same rationale as `compile`'s `options` binding.
+    let options = brink_compiler::AnalysisOptions::default();
     let to_js = |d: &brink_compiler::ResolvedDiagnostic| {
         let src = served(&d.path).unwrap_or_default();
-        diagnostic_to_js(d, &src)
+        diagnostic_to_js(d, &src, options.type_policy(), &options.lints)
     };
 
     match result {

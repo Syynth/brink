@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use brink_analyzer::{AnalysisOptions, AnalysisResult, Dialect, TypePolicy};
+use brink_analyzer::{AnalysisOptions, AnalysisResult, Dialect, LintPolicy, TypePolicy};
 use brink_syntax::ast::AstNode;
 use tokio::sync::{Notify, watch};
 use tower_lsp::jsonrpc::Result;
@@ -107,6 +107,17 @@ pub struct LanguageOptions {
     /// feeds `analysis_loop` so its diagnostics analyze under the
     /// client-declared types policy too.
     types: Arc<Mutex<Option<TypePolicy>>>,
+    /// Resolved `[lints]` policy (issue #1160/#1367): a discovered
+    /// `brink.toml`'s `[lints]` table, applied via
+    /// `AnalysisOptions::apply_project_config` in
+    /// `resolve_language_options`. Mirrors `dialect`/`types` — no
+    /// `initializationOptions` equivalent exists for `[lints]` (it is
+    /// file-only), so this is written only from `resolve_language_options`'s
+    /// output, never from `ConfigOverrides`. Feeds both `analysis_loop`'s
+    /// `AnalysisOptions` and every diagnostic-publish site's
+    /// `effective_severity` call, so a re-leveled code's LSP-published
+    /// severity matches its build-gating severity.
+    lints: Arc<Mutex<LintPolicy>>,
 }
 
 impl LanguageOptions {
@@ -114,6 +125,25 @@ impl LanguageOptions {
         Self {
             dialect: Arc::new(Mutex::new(Dialect::default())),
             types: Arc::new(Mutex::new(None)),
+            lints: Arc::new(Mutex::new(LintPolicy::default())),
+        }
+    }
+
+    /// Write a freshly `resolve_language_options`-resolved dialect/types/
+    /// lints into the shared session state (poisoned-lock-safe, mirrors
+    /// [`Backend::dialect`]) — the common tail of `initialize` and
+    /// [`Backend::reload_brink_toml`], both of which compute a fresh
+    /// resolution and must publish it identically. Takes `resolved` by value
+    /// since neither caller reads it again afterward.
+    fn store(&self, resolved: AnalysisOptions) {
+        if let Ok(mut guard) = self.dialect.lock() {
+            *guard = resolved.dialect;
+        }
+        if let Ok(mut guard) = self.types.lock() {
+            *guard = resolved.types;
+        }
+        if let Ok(mut guard) = self.lints.lock() {
+            *guard = resolved.lints;
         }
     }
 }
@@ -335,6 +365,24 @@ impl Backend {
             .map_or_else(|_| Dialect::default(), |g| *g)
     }
 
+    /// The effective TM-3 `types` policy: an explicit client/file value if
+    /// one was ever registered, else the dialect-keyed default (mirrors
+    /// `IdeSession::type_policy`, poisoned-lock-safe like [`Self::dialect`]).
+    fn type_policy(&self) -> TypePolicy {
+        let explicit = self.language.types.lock().map_or_else(|_| None, |g| *g);
+        brink_analyzer::resolve_type_policy(self.dialect(), explicit)
+    }
+
+    /// The resolved `[lints]` policy from the last-loaded `brink.toml`
+    /// (poisoned-lock-safe like [`Self::dialect`]; `LintPolicy::default()` —
+    /// a no-op — until a project file with a `[lints]` table is discovered).
+    fn lints(&self) -> LintPolicy {
+        self.language
+            .lints
+            .lock()
+            .map_or_else(|_| LintPolicy::default(), |g| g.clone())
+    }
+
     fn uri_to_path(uri: &Url) -> Option<String> {
         uri.to_file_path()
             .ok()
@@ -379,12 +427,7 @@ impl Backend {
 
         let (resolved, outcome) = resolve_language_options(overrides, &roots);
 
-        if let Ok(mut guard) = self.language.dialect.lock() {
-            *guard = resolved.dialect;
-        }
-        if let Ok(mut guard) = self.language.types.lock() {
-            *guard = resolved.types;
-        }
+        self.language.store(resolved);
 
         self.publish_config_outcome(&outcome).await;
     }
@@ -408,6 +451,8 @@ impl Backend {
     /// sent directly, so the anti-downgrade rule prevents a delayed per-file
     /// send from clobbering a fuller analysis set already on screen.
     async fn publish_perfile_diagnostics(&self, path: &str, version: Option<i32>) {
+        let types = self.type_policy();
+        let lints = self.lints();
         let (file_id, generation, lsp_diags) = {
             let db = lock_db(&self.db);
             let Some(file_id) = db.file_id(path) else {
@@ -431,7 +476,7 @@ impl Backend {
 
             let lsp_diags: Vec<_> = filtered
                 .iter()
-                .map(|d| convert::diagnostic_to_lsp(d, &idx))
+                .map(|d| convert::diagnostic_to_lsp(d, &idx, types, &lints))
                 .collect();
 
             // Generation this set reflects: read under the same db lock as the
@@ -929,12 +974,7 @@ impl LanguageServer for Backend {
         // `InitializeResult`, so `initialized()` publishes it instead.
         let overrides = ConfigOverrides::from_initialize_params(&params);
         let (resolved, outcome) = resolve_language_options(overrides, &roots);
-        if let Ok(mut guard) = self.language.dialect.lock() {
-            *guard = resolved.dialect;
-        }
-        if let Ok(mut guard) = self.language.types.lock() {
-            *guard = resolved.types;
-        }
+        self.language.store(resolved);
         if let Ok(mut guard) = self.config_overrides.lock() {
             *guard = overrides;
         }
@@ -2203,15 +2243,19 @@ pub async fn analysis_loop(
         // Coalesce rapid edits — yield so any queued notifications collapse
         tokio::task::yield_now().await;
 
-        // Re-read the declared dialect + types policy each iteration
+        // Re-read the declared dialect + types + lints policy each iteration
         // (poisoned-lock-safe, mirrors `Backend::dialect()`) so a client that
-        // changes either mid-session is picked up on the next pass.
+        // changes any of them mid-session is picked up on the next pass.
         let opts = AnalysisOptions {
             dialect: language
                 .dialect
                 .lock()
                 .map_or_else(|_| Dialect::default(), |g| *g),
             types: language.types.lock().map_or_else(|_| None, |g| *g),
+            lints: language
+                .lints
+                .lock()
+                .map_or_else(|_| LintPolicy::default(), |g| g.clone()),
             ..AnalysisOptions::default()
         };
 
@@ -2285,6 +2329,7 @@ pub async fn analysis_loop(
             &per_file_diags,
             &file_suppressions,
             generation,
+            &opts,
         )
         .await;
 
@@ -2320,6 +2365,7 @@ fn collect_multiproject_diags(
     file_path_map: &HashMap<brink_ir::FileId, &str>,
     idx: &LineIndex,
     lsp_diags: &mut Vec<tower_lsp::lsp_types::Diagnostic>,
+    opts: &AnalysisOptions,
 ) {
     let mut seen: HashMap<(u32, u32, String, String), usize> = HashMap::new();
 
@@ -2342,7 +2388,8 @@ fn collect_multiproject_diags(
                     related.push(annotation);
                 }
             } else {
-                let mut lsp_diag = convert::diagnostic_to_lsp(d, idx);
+                let mut lsp_diag =
+                    convert::diagnostic_to_lsp(d, idx, opts.type_policy(), &opts.lints);
                 if let Some(root_path) = file_path_map.get(root)
                     && let Some(annotation) = make_project_annotation(root_path)
                 {
@@ -2378,6 +2425,7 @@ async fn publish_all_diagnostics(
     per_file_diags: &[(brink_ir::FileId, Vec<brink_ir::Diagnostic>)],
     file_suppressions: &HashMap<brink_ir::FileId, brink_ir::suppressions::Suppressions>,
     generation: u64,
+    opts: &AnalysisOptions,
 ) {
     let lowering_diags: HashMap<brink_ir::FileId, &[brink_ir::Diagnostic]> = per_file_diags
         .iter()
@@ -2429,7 +2477,7 @@ async fn publish_all_diagnostics(
 
                 let mut lsp_diags: Vec<tower_lsp::lsp_types::Diagnostic> = filtered_lowering
                     .iter()
-                    .map(|d| convert::diagnostic_to_lsp(d, &idx))
+                    .map(|d| convert::diagnostic_to_lsp(d, &idx, opts.type_policy(), &opts.lints))
                     .collect();
 
                 let roots = projects
@@ -2443,6 +2491,7 @@ async fn publish_all_diagnostics(
                     &file_path_map,
                     &idx,
                     &mut lsp_diags,
+                    opts,
                 );
 
                 publisher
@@ -2469,7 +2518,7 @@ async fn publish_all_diagnostics(
 
         let lsp_diags: Vec<tower_lsp::lsp_types::Diagnostic> = filtered
             .iter()
-            .map(|d| convert::diagnostic_to_lsp(d, &idx))
+            .map(|d| convert::diagnostic_to_lsp(d, &idx, opts.type_policy(), &opts.lints))
             .collect();
 
         publisher
