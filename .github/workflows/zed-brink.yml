@@ -4,7 +4,14 @@ on:
   schedule:
     # Weekly schedule: Monday at 06:00 UTC (offset from demo.yml's 00:00 run
     # so the two workspace-excluded gates don't contend for the same runner
-    # window).
+    # window). Every step below passes `--locked`, so the committed
+    # crates/zed-brink/Cargo.lock pins the resolved dependency set — a new
+    # `zed_extension_api` (or any other dependency) release cannot silently
+    # affect this build, only an explicit `cargo update` committed to the
+    # crate can. The cron instead exists to catch *toolchain* drift: a new
+    # stable Rust or clippy release turning previously-clean code red,
+    # which nothing else in this repo would otherwise surface until the
+    # next PR touching crates/zed-brink.
     - cron: '0 6 * * 1'
   workflow_dispatch:
   # crates/zed-brink is workspace-excluded (see its Cargo.toml) and gets zero
@@ -12,8 +19,9 @@ on:
   # from #1386). Path-filtered so it only fires on pushes/PRs that could
   # actually affect it. Unlike demos/compound, zed-brink has no path
   # dependency on any brink-* crate — its only dependency is the external
-  # `zed_extension_api` crate — so it can only ever break from edits inside
-  # this workflow or the crate itself.
+  # `zed_extension_api` crate — so (toolchain drift aside, see the cron
+  # comment above) it can only ever break from edits inside this workflow
+  # or the crate itself.
   # Not in branch protection's required-checks list, so it's advisory: it
   # goes red on a relevant PR but does not block the merge by itself.
   pull_request:
