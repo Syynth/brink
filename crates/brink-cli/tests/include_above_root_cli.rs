@@ -32,7 +32,6 @@ fn wrapper_dir(tag: &str) -> PathBuf {
 /// `wrap/shared.ink` sits ABOVE `wrap/proj/` — the resolved root, pinned
 /// there by its `brink.toml`. `proj/main.ink` reaches up to include it.
 #[test]
-#[expect(clippy::unwrap_used, reason = "test fixture setup")]
 fn compile_resolves_an_include_above_the_project_root() {
     let wrap = wrapper_dir("compile");
     let proj = wrap.join("proj");
