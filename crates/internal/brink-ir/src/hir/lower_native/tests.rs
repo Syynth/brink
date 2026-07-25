@@ -1,7 +1,7 @@
 #![allow(clippy::panic)]
 
 use super::*;
-use crate::{DiagnosticCode, Tail, Terminator};
+use crate::{BlockStmt, DiagnosticCode, ElseBranch, Tail, Terminator};
 
 fn lower_src(src: &str) -> (HirFile, SymbolManifest, Vec<Diagnostic>) {
     let parse = brink_syntax_native::parse(src);
@@ -825,6 +825,122 @@ fn bare_return_inside_a_choice_body_of_a_non_function_flow_is_a_tunnel_redirect(
         );
     };
     assert_eq!(r.kind, ReturnKind::TunnelRedirect);
+}
+
+// ─── `fixup_return_kind` recursion into `Stmt::LogicBlock` (#1334) ──
+//
+// `~{ }` code-ground bodies wrap their statements in a single
+// `Stmt::LogicBlock(LogicBlock { stmts: Vec<BlockStmt>, .. })` — a
+// structurally different shape from the weave-level `Stmt` variants
+// `fixup_return_kind` already walked (`ChoiceSet`/`Conditional`/
+// `Sequence`/`LabeledBlock`). Before this fix the `LogicBlock` arm was a
+// no-op, so a bare `return;` anywhere inside a `~{ }` body — even directly,
+// not just nested inside `if`/`while` — kept `lower_return_stmt`'s
+// unconditional `ReturnKind::Explicit` stamp in a non-function flow, which
+// is the same E032 false-positive `bare_return_inside_a_non_function_flow_
+// is_a_tunnel_redirect` (content-ground/weave level) already guards
+// against — just unreached on the code-ground side.
+//
+// Each test below pins its code-ground result against the equivalent
+// content-ground (brink-dialect prose `>{ }`) shape one of the existing
+// weave-level fixup tests already established, so "correct ReturnKind"
+// means "agrees with the sibling dialect that was already covered", not a
+// freshly invented expectation.
+
+#[test]
+fn logic_block_bare_return_in_non_function_flow_is_a_tunnel_redirect() {
+    // The direct case: `return;` as an immediate `BlockStmt` of the
+    // `LogicBlock` itself (no `if`/`while` nesting) — this alone was
+    // mis-stamped before the fix, since the old `LogicBlock(_) => {}` arm
+    // skipped the block's contents entirely.
+    let (hir, _m, diags) = lower_src("flow f() ~{\n  return;\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let Stmt::LogicBlock(lb) = &hir.knots[0].body.stmts[0] else {
+        panic!("expected LogicBlock, got {:?}", hir.knots[0].body.stmts[0]);
+    };
+    let BlockStmt::Return(r) = &lb.stmts[0] else {
+        panic!("expected Return, got {:?}", lb.stmts[0]);
+    };
+    assert_eq!(
+        r.kind,
+        ReturnKind::TunnelRedirect,
+        "must agree with the content-ground equivalent \
+         (bare_return_inside_a_non_function_flow_is_a_tunnel_redirect)"
+    );
+}
+
+#[test]
+fn logic_block_bare_return_inside_if_body_is_a_tunnel_redirect() {
+    let (hir, _m, diags) = lower_src("flow f() ~{\n  if true {\n    return;\n  }\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let Stmt::LogicBlock(lb) = &hir.knots[0].body.stmts[0] else {
+        panic!("expected LogicBlock, got {:?}", hir.knots[0].body.stmts[0]);
+    };
+    let BlockStmt::If(if_stmt) = &lb.stmts[0] else {
+        panic!("expected If, got {:?}", lb.stmts[0]);
+    };
+    let BlockStmt::Return(r) = &if_stmt.body[0] else {
+        panic!("expected Return in if body, got {:?}", if_stmt.body[0]);
+    };
+    assert_eq!(r.kind, ReturnKind::TunnelRedirect);
+}
+
+#[test]
+fn logic_block_bare_return_inside_else_body_is_a_tunnel_redirect() {
+    let (hir, _m, diags) =
+        lower_src("flow f() ~{\n  if false {\n    return;\n  } else {\n    return;\n  }\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let Stmt::LogicBlock(lb) = &hir.knots[0].body.stmts[0] else {
+        panic!("expected LogicBlock, got {:?}", hir.knots[0].body.stmts[0]);
+    };
+    let BlockStmt::If(if_stmt) = &lb.stmts[0] else {
+        panic!("expected If, got {:?}", lb.stmts[0]);
+    };
+    let Some(ElseBranch::Else(else_stmts)) = &if_stmt.else_branch else {
+        panic!("expected an else branch, got {:?}", if_stmt.else_branch);
+    };
+    let BlockStmt::Return(r) = &else_stmts[0] else {
+        panic!("expected Return in else body, got {:?}", else_stmts[0]);
+    };
+    assert_eq!(r.kind, ReturnKind::TunnelRedirect);
+}
+
+#[test]
+fn logic_block_bare_return_inside_while_body_is_a_tunnel_redirect() {
+    let (hir, _m, diags) = lower_src("flow f() ~{\n  while true {\n    return;\n  }\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let Stmt::LogicBlock(lb) = &hir.knots[0].body.stmts[0] else {
+        panic!("expected LogicBlock, got {:?}", hir.knots[0].body.stmts[0]);
+    };
+    let BlockStmt::While(while_stmt) = &lb.stmts[0] else {
+        panic!("expected While, got {:?}", lb.stmts[0]);
+    };
+    let BlockStmt::Return(r) = &while_stmt.body[0] else {
+        panic!(
+            "expected Return in while body, got {:?}",
+            while_stmt.body[0]
+        );
+    };
+    assert_eq!(r.kind, ReturnKind::TunnelRedirect);
+}
+
+#[test]
+fn logic_block_bare_return_nested_in_if_stays_explicit_inside_a_function() {
+    // Mirrors `bare_return_inside_a_function_stays_explicit` (content-ground
+    // `>{ }`): the `is_function` guard must still hold at this nesting
+    // depth, not just at the `LogicBlock`'s own top level.
+    let (hir, _m, diags) = lower_src("fn f() {\n  if true {\n    return;\n  }\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let Stmt::LogicBlock(lb) = &hir.knots[0].body.stmts[0] else {
+        panic!("expected LogicBlock, got {:?}", hir.knots[0].body.stmts[0]);
+    };
+    let BlockStmt::If(if_stmt) = &lb.stmts[0] else {
+        panic!("expected If, got {:?}", lb.stmts[0]);
+    };
+    let BlockStmt::Return(r) = &if_stmt.body[0] else {
+        panic!("expected Return in if body, got {:?}", if_stmt.body[0]);
+    };
+    assert_eq!(r.kind, ReturnKind::Explicit);
 }
 
 #[test]
