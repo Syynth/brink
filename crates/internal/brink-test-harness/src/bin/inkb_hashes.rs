@@ -25,21 +25,17 @@ fn hash_bytes(bytes: &[u8]) -> u64 {
     h
 }
 
+/// Recursively find directories containing `story.ink`, via the shared
+/// [`brink_source_tree::Walk`] (issue #1433) — deterministic order, and the
+/// ignored-directory policy applied by construction. The caller sorts.
 fn collect_cases(root: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return;
-    };
     if root.join("story.ink").exists() {
         out.push(root.to_path_buf());
     }
-    let mut subdirs: Vec<PathBuf> = entries
-        .flatten()
-        .filter(|e| e.file_type().is_ok_and(|ft| ft.is_dir()))
-        .map(|e| e.path())
-        .collect();
-    subdirs.sort();
-    for sub in subdirs {
-        collect_cases(&sub, out);
+    for entry in brink_source_tree::Walk::new(root).flatten() {
+        if entry.is_dir() && entry.path().join("story.ink").exists() {
+            out.push(entry.into_path());
+        }
     }
 }
 

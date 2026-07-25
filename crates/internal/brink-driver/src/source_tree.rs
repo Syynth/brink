@@ -28,17 +28,20 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use brink_db::SourceTree;
-use brink_source_tree::is_ignored_dir;
+use brink_source_tree::Walk;
 
 /// `.brink` is the native surface's source extension (as opposed to ink's
 /// `.ink`) — see `crates/internal/brink-ir/src/hir/lower_native/mod.rs`.
 const NATIVE_EXTENSION: &str = "brink";
 
 /// Real-filesystem [`SourceTree`]: walks a root directory and enumerates
-/// `.brink` keys, keyed by root-relative path. The walk never descends into
+/// `.brink` keys, keyed by root-relative path. Enumeration goes through the
+/// shared [`brink_source_tree::Walk`], so it never descends into
 /// [`brink_source_tree::IGNORED_DIR_NAMES`] (`target/`, `.git/`,
-/// `node_modules/` — issue #1381), so a stray build-output or dependency
-/// tree under `root` is never enumerated. `read` serves any key lazily off
+/// `node_modules/` — issue #1381 hand-rolled that prune here; issue #1433
+/// moved the enforcement into the walk itself, where it can't be forgotten),
+/// so a stray build-output or dependency tree under `root` is never
+/// enumerated. `read` serves any key lazily off
 /// disk — it never eagerly reads the tree, so one malformed/unreadable file
 /// elsewhere under `root` cannot fail a `read` of an unrelated key (issue
 /// #1357).
@@ -80,7 +83,21 @@ impl RealFs {
 impl SourceTree for RealFs {
     fn list(&self) -> io::Result<Vec<String>> {
         let mut keys = Vec::new();
-        walk(&self.root, &self.root, &mut keys)?;
+        for entry in Walk::new(&self.root) {
+            let entry = entry?;
+            if !entry.is_file() || !is_native(entry.path()) {
+                continue;
+            }
+            let rel = entry
+                .path()
+                .strip_prefix(&self.root)
+                .map_err(|e| io::Error::other(e.to_string()))?;
+            keys.push(to_key(rel));
+        }
+        // `Walk` is pre-order and per-directory sorted, which is not the
+        // same as globally key-sorted (`a.brink` < `a/z.brink`, but the walk
+        // yields `a/`'s contents first) — and `list`'s contract is the
+        // latter, so sort the collected keys.
         keys.sort();
         Ok(keys)
     }
@@ -88,32 +105,6 @@ impl SourceTree for RealFs {
     fn read(&self, key: &str) -> io::Result<String> {
         fs::read_to_string(self.root.join(key))
     }
-}
-
-/// Recursively collect root-relative `.brink` keys under `dir` into `keys`.
-/// Directory-entry iteration order is filesystem/OS-dependent — callers
-/// (`RealFs::list`) sort the accumulated result, so this helper does not
-/// need to sort as it goes. Directories named in
-/// [`brink_source_tree::IGNORED_DIR_NAMES`] are pruned — never descended
-/// into.
-fn walk(root: &Path, dir: &Path, keys: &mut Vec<String>) -> io::Result<()> {
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        let file_type = entry.file_type()?;
-        if file_type.is_dir() {
-            if is_ignored_dir(&entry.file_name()) {
-                continue;
-            }
-            walk(root, &path, keys)?;
-        } else if file_type.is_file() && is_native(&path) {
-            let rel = path
-                .strip_prefix(root)
-                .map_err(|e| io::Error::other(e.to_string()))?;
-            keys.push(to_key(rel));
-        }
-    }
-    Ok(())
 }
 
 /// Join a relative path's components with `/`, so keys are stable across

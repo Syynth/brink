@@ -84,6 +84,10 @@
 //! happened to be behind the `dyn SourceTree`. Dropping the parameter makes
 //! "root is constructor-held" the only contract there is to honor.
 
+pub mod walk;
+
+pub use walk::{Walk, WalkEntry};
+
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::io;
@@ -99,11 +103,25 @@ use std::io;
 /// the same directories instead of each re-deriving its own list. Matched
 /// by exact directory-entry name, not path suffix, so a source file
 /// legitimately named e.g. `target.brink` is unaffected.
+///
+/// Sharing the *list* was only half the problem: each walk still had to
+/// remember to consult it. [`Walk`] (issue #1433) applies this list by
+/// construction, and is where every recursive traversal enforces it now.
 pub const IGNORED_DIR_NAMES: &[&str] = &["target", ".git", "node_modules"];
 
 /// Whether `name` (a single directory-entry file name, not a path) is a
 /// conventionally-ignored directory a recursive walk must not descend into.
 /// See [`IGNORED_DIR_NAMES`].
+///
+/// # Call it directly only when there is no walk to hang it off
+///
+/// A recursive traversal must **not** call this itself — it uses [`Walk`],
+/// which applies the policy by construction, precisely because five separate
+/// issues fixed five hand-written walks that each forgot to (issue #1433).
+/// This predicate stays public for the cases that aren't walks at all and so
+/// have no descent to prune: `brink-lsp`'s `path_under_ignored_dir` tests
+/// every component of an already-complete path handed to it by the client's
+/// file watcher (#1415).
 ///
 /// # Admission policy
 ///

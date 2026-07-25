@@ -2350,6 +2350,7 @@ dependencies = [
  "brink-format",
  "brink-ir",
  "brink-runtime",
+ "brink-source-tree",
  "brink-syntax",
  "brink-syntax-native",
  "insta",

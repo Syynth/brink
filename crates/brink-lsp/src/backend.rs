@@ -657,45 +657,35 @@ impl Backend {
     }
 }
 
-/// Recursively collect every `.ink` file path under `dir`. Never descends
-/// into a directory [`brink_source_tree::is_ignored_dir`] flags (`target/`,
-/// `.git/`, `node_modules/`) — before issue #1402, this was the third
-/// unpruned recursive walk in the codebase (after #1370's config discovery
-/// and #1381's native compile walk), so opening a workspace with a large
+/// Recursively collect every `.ink` file path under `dir`, via the shared
+/// [`brink_source_tree::Walk`] — so it never descends into a directory
+/// [`brink_source_tree::IGNORED_DIR_NAMES`] names (`target/`, `.git/`,
+/// `node_modules/`). Before issue #1402, this was the third unpruned
+/// recursive walk in the codebase (after #1370's config discovery and
+/// #1381's native compile walk), so opening a workspace with a large
 /// `target/` or `node_modules/` tree made the LSP enumerate all of it on
-/// load.
+/// load; issue #1433 replaced the hand-written recursion #1402 added — and
+/// its hand-placed `is_ignored_dir` call — with the shared walk, which
+/// applies the same policy by construction.
 ///
 /// `dir` itself — the workspace root a caller starts the walk from — is
-/// never checked against `is_ignored_dir`, only the entries found *while
-/// descending* from it (see [`collect_ink_files_into`]): a workspace
-/// legitimately rooted inside e.g. `node_modules/` (vendored ink content
-/// opened directly as a folder) still has its own files admitted; only a
-/// genuinely nested ignored directory further below the root is pruned
-/// (issue #1424, verifying the root-relative scoping #1415 gave
-/// [`path_under_ignored_dir`] holds here too).
+/// never checked against the policy, only the entries found *while
+/// descending* from it (a [`brink_source_tree::Walk`] contract, not a local
+/// convention): a workspace legitimately rooted inside e.g. `node_modules/`
+/// (vendored ink content opened directly as a folder) still has its own
+/// files admitted; only a genuinely nested ignored directory further below
+/// the root is pruned (issue #1424, verifying the root-relative scoping
+/// #1415 gave [`path_under_ignored_dir`] holds here too).
+///
+/// Unreadable directories are skipped rather than reported — a workspace
+/// scan is best-effort, exactly as it was when this function swallowed its
+/// own `read_dir` errors.
 fn collect_ink_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
-    let mut files = Vec::new();
-    collect_ink_files_into(dir, &mut files);
-    files
-}
-
-/// Accumulator half of [`collect_ink_files`], recursing into `dir` and
-/// pushing every matching path onto `files`.
-fn collect_ink_files_into(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            if brink_source_tree::is_ignored_dir(&entry.file_name()) {
-                continue;
-            }
-            collect_ink_files_into(&path, files);
-        } else if path.extension().is_some_and(|ext| ext == "ink") {
-            files.push(path);
-        }
-    }
+    brink_source_tree::Walk::new(dir)
+        .flatten()
+        .filter(|entry| !entry.is_dir() && entry.path().extension().is_some_and(|ext| ext == "ink"))
+        .map(brink_source_tree::WalkEntry::into_path)
+        .collect()
 }
 
 fn lock_db(db: &Arc<Mutex<brink_db::ProjectDb>>) -> std::sync::MutexGuard<'_, brink_db::ProjectDb> {
@@ -1008,17 +998,16 @@ fn is_brink_toml_path(path: &str) -> bool {
 ///
 /// `did_change_watched_files` receives whole file paths from the client's
 /// file-watcher subscription rather than walking a directory tree itself, so
-/// [`collect_ink_files_into`]'s per-entry `is_ignored_dir` check (which only
-/// ever sees one path component at a time while descending, and so never
-/// tests the workspace root's own name or its ancestors) doesn't apply
-/// directly here — this walks every component of the already-complete path
+/// [`collect_ink_files`]'s per-entry prune (which only ever sees one path
+/// component at a time while descending, and so never tests the workspace
+/// root's own name or its ancestors) doesn't apply directly here — this walks every component of the already-complete path
 /// instead, using the same shared predicate (issue #1415: `did_change_watched_files`
 /// was a fourth unpruned path admitting `target/`/`.git/`/`node_modules/`
 /// files into `ProjectDb`, after #1370's config discovery, #1381's native
 /// compile walk, and #1402's LSP workspace-load walk).
 ///
-/// `roots` scopes the check to mirror `collect_ink_files_into` exactly: the
-/// longest matching entry of `roots` is stripped from `path` before
+/// `roots` scopes the check to mirror `collect_ink_files`'s walk exactly:
+/// the longest matching entry of `roots` is stripped from `path` before
 /// checking components, so a workspace root that itself lives under e.g.
 /// `node_modules/` (vendored ink content opened directly as a folder) still
 /// has its own files admitted — only descendants' ignored-dir components
@@ -2809,8 +2798,8 @@ mod tests {
     /// opened directly as its own workspace folder) must still have its own
     /// `.ink` files admitted — `is_ignored_dir` is only ever checked against
     /// entries found *while descending from* the walk's starting `dir`
-    /// (`collect_ink_files_into`), never against `dir` itself, so the root's
-    /// own name never disqualifies it. A genuinely nested ignored directory
+    /// (`collect_ink_files`'s `Walk`), never against `dir` itself, so the
+    /// root's own name never disqualifies it. A genuinely nested ignored directory
     /// further below that same root must still be pruned, exactly as if the
     /// root weren't ignored-named at all.
     #[test]
@@ -2840,7 +2829,7 @@ mod tests {
     /// #1415 regression: `path_under_ignored_dir` — the guard
     /// `did_change_watched_files` applies to whole file-watcher paths,
     /// since it never walks a directory tree entry-by-entry the way
-    /// `collect_ink_files_into` does — must flag a path whose *any*
+    /// `collect_ink_files` does — must flag a path whose *any*
     /// component is `target/`, `.git/`, or `node_modules/`, not just a leaf
     /// directory name, and must leave ordinary paths alone.
     #[test]
@@ -2855,7 +2844,7 @@ mod tests {
         assert!(!path_under_ignored_dir("/repo/targets/main.ink", &[]));
     }
 
-    /// #1415 review finding: path-scope divergence. `collect_ink_files_into`
+    /// #1415 review finding: path-scope divergence. `collect_ink_files`
     /// only ever tests components *below* whichever workspace root it
     /// started walking from, so a workspace root that itself lives inside
     /// `node_modules/` (vendored ink content opened directly as a folder)

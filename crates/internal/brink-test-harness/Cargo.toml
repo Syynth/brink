@@ -29,6 +29,10 @@ brink-db = { workspace = true, features = ["memory-introspection"] }
 # FG-3): `AnalysisOptions`/`Dialect`/`TypePolicy` to configure `types =
 # strict` on the persistent db before the edit loop.
 brink-analyzer = { workspace = true }
+# For corpus/bench case discovery: the shared pruned directory walk (issue
+# #1433) every recursive traversal in the workspace routes through, instead
+# of each one hand-rolling a `read_dir` recursion.
+brink-source-tree = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
