@@ -532,6 +532,13 @@ impl Backend {
     }
 
     /// Chase INCLUDE directives from a file that's already in the db.
+    ///
+    /// Deliberately never checks `brink_source_tree::is_ignored_dir` (see
+    /// that function's "Admission policy" doc): an `INCLUDE` target is an
+    /// explicit reference from source the workspace walk already admitted,
+    /// not something this code discovered by scanning a directory, so an
+    /// `INCLUDE node_modules/shared/lib.ink` is loaded like any other
+    /// include (issue #1424).
     fn chase_includes(&self, path: &str) {
         let includes = {
             let db = lock_db(&self.db);
@@ -557,6 +564,17 @@ impl Backend {
 
     /// Load a file from disk into the database if not already present.
     /// Recursively chases INCLUDE directives.
+    ///
+    /// This is the shared admission sink for every explicit-path load —
+    /// [`Self::chase_includes`] (an `INCLUDE` target) and [`Self::walk_and_load`]
+    /// (a path `collect_ink_files` produced while walking the workspace
+    /// root) both call it, and it recurses into itself while chasing
+    /// further includes. It never applies `brink_source_tree::is_ignored_dir`
+    /// itself, because each caller has already decided: `collect_ink_files`
+    /// prunes ignored directories upstream during the walk, while
+    /// `chase_includes` and `did_open` deliberately admit unconditionally,
+    /// per `brink_source_tree::is_ignored_dir`'s "Admission policy" doc
+    /// (issue #1424).
     fn load_file_from_disk(&self, path: &str) {
         // Check if already loaded
         {
@@ -646,6 +664,15 @@ impl Backend {
 /// and #1381's native compile walk), so opening a workspace with a large
 /// `target/` or `node_modules/` tree made the LSP enumerate all of it on
 /// load.
+///
+/// `dir` itself — the workspace root a caller starts the walk from — is
+/// never checked against `is_ignored_dir`, only the entries found *while
+/// descending* from it (see [`collect_ink_files_into`]): a workspace
+/// legitimately rooted inside e.g. `node_modules/` (vendored ink content
+/// opened directly as a folder) still has its own files admitted; only a
+/// genuinely nested ignored directory further below the root is pruned
+/// (issue #1424, verifying the root-relative scoping #1415 gave
+/// [`path_under_ignored_dir`] holds here too).
 fn collect_ink_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     let mut files = Vec::new();
     collect_ink_files_into(dir, &mut files);
@@ -971,7 +998,13 @@ fn is_brink_toml_path(path: &str) -> bool {
 /// True if any component of `path`, *below whichever `roots` entry contains
 /// it*, is a [`brink_source_tree::is_ignored_dir`] name (`target/`, `.git/`,
 /// `node_modules/`) — i.e. `path` lives inside a directory a recursive walk
-/// would never descend into.
+/// would never descend into. Consulted at two sites in
+/// `did_change_watched_files` (see `is_ignored_dir`'s "Admission policy"
+/// doc): the `brink.toml` route, which skips unconditionally with no
+/// already-tracked exemption (an ignored-dir config is never authoritative,
+/// per that branch's own inline comment); and the `.ink` admission gate,
+/// where a path already tracked in `ProjectDb` keeps syncing regardless of
+/// what this returns.
 ///
 /// `did_change_watched_files` receives whole file paths from the client's
 /// file-watcher subscription rather than walking a directory tree itself, so
@@ -1318,6 +1351,12 @@ impl LanguageServer for Backend {
             return;
         };
 
+        // Admitted unconditionally, even if `path` lives under `target/`,
+        // `.git/`, or `node_modules/` — the client is telling us the user
+        // explicitly opened this exact file, which is explicit path
+        // admission, not a directory walk, so
+        // `brink_source_tree::is_ignored_dir`'s "Admission policy" doc says
+        // this never applies here (issue #1424).
         self.mutate_db(|db| db.set_file(&path, params.text_document.text));
 
         // Chase INCLUDE directives — load referenced files from disk
@@ -2763,6 +2802,39 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&root).expect("cleanup temp dir");
+    }
+
+    /// Issue #1424: a workspace legitimately *rooted* inside an
+    /// ignored-dir-named directory (e.g. a `node_modules/vendor-ink` package
+    /// opened directly as its own workspace folder) must still have its own
+    /// `.ink` files admitted — `is_ignored_dir` is only ever checked against
+    /// entries found *while descending from* the walk's starting `dir`
+    /// (`collect_ink_files_into`), never against `dir` itself, so the root's
+    /// own name never disqualifies it. A genuinely nested ignored directory
+    /// further below that same root must still be pruned, exactly as if the
+    /// root weren't ignored-named at all.
+    #[test]
+    fn collect_ink_files_admits_workspace_root_itself_under_ignored_dir() {
+        let root = temp_dir("root-under-node-modules").join("node_modules/vendor-ink");
+        std::fs::create_dir_all(&root).expect("create root under node_modules");
+
+        std::fs::write(root.join("main.ink"), "Hello.\n-> DONE\n").expect("write main.ink");
+        std::fs::create_dir_all(root.join("target/debug")).expect("mkdir target/debug");
+        std::fs::write(root.join("target/debug/build.ink"), "-- build --")
+            .expect("write target/debug/build.ink");
+
+        let mut files = collect_ink_files(&root);
+        files.sort();
+
+        assert_eq!(
+            files,
+            vec![root.join("main.ink")],
+            "the root's own node_modules/ ancestry must not block admission of its own \
+             files, but a genuinely nested target/ below it must still be pruned"
+        );
+
+        std::fs::remove_dir_all(root.ancestors().nth(2).expect("has grandparent"))
+            .expect("cleanup temp dir");
     }
 
     /// #1415 regression: `path_under_ignored_dir` — the guard
