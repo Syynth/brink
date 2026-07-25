@@ -134,7 +134,8 @@ impl<M: Send + Sync + 'static> Plugin for BrinkPlugin<M> {
     fn build(&self, app: &mut App) {
         if !app.is_plugin_added::<BrinkAssetsPlugin>() {
             #[cfg(feature = "dev")]
-            let assets_plugin = BrinkAssetsPlugin::default().with_config_option(self.config);
+            let assets_plugin =
+                BrinkAssetsPlugin::default().with_config_option(self.config.clone());
             #[cfg(not(feature = "dev"))]
             let assets_plugin = BrinkAssetsPlugin::default();
             app.add_plugins(assets_plugin);
@@ -331,7 +332,7 @@ impl Plugin for BrinkAssetsPlugin {
         app.init_asset_loader::<crate::brkt::BrktLoader>();
         #[cfg(feature = "dev")]
         app.register_asset_loader(crate::source_loader::InkLoader {
-            override_config: self.config,
+            override_config: self.config.clone(),
         });
     }
 }

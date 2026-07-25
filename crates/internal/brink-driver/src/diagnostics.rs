@@ -41,9 +41,15 @@ pub fn collect_diagnostics(
         })
         .collect();
 
-    let types = db.analysis_options().type_policy();
-    let (errors, warnings) =
-        partition_diagnostics(&inputs, &analysis.diagnostics, disable_all, types);
+    let opts = db.analysis_options();
+    let types = opts.type_policy();
+    let (errors, warnings) = partition_diagnostics(
+        &inputs,
+        &analysis.diagnostics,
+        disable_all,
+        types,
+        &opts.lints,
+    );
     DiagnosticReport { errors, warnings }
 }
 
