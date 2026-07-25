@@ -318,9 +318,16 @@ fn run_command(command: Commands) -> ExitCode {
 /// one path every `brink compile`/`convert`/`play`/`replay`/`export-xliff`
 /// invocation flows through now.
 ///
-/// The CLI mount drains the project root — [`native_source_root`], the
-/// `brink.toml` walk-up — into an in-memory `SourceTree`, so config discovery
-/// and source enumeration both run over the one seam inside the producer
+/// The CLI mounts a [`RealFs::project`](brink_driver::RealFs::project) tree
+/// rooted at [`native_source_root`] — a lazy real-filesystem `SourceTree`, not
+/// a whole-tree eager drain (issue #1357): `list` enumerates `.brink`/`.ink`/
+/// `brink.toml` keys by stat alone, and `read` serves any one of them off
+/// disk only when `Project::load` actually needs it (an ink entry's
+/// `INCLUDE`-reachable set, a native entry's whole `.brink` universe, and
+/// whichever single `brink.toml` config discovery resolves). An unrelated
+/// malformed/non-UTF8 file elsewhere under the root is therefore never read
+/// and can no longer fail an otherwise-valid compile — config discovery and
+/// source enumeration both still run over the one seam inside the producer
 /// (rather than the CLI resolving `AnalysisOptions` itself). Policy layers, in
 /// increasing priority:
 /// 1. `AnalysisOptions::default()` (`strict-ink`; `types` dialect-keyed per
@@ -340,92 +347,11 @@ fn compile_entry(
     types: Option<brink_compiler::TypePolicy>,
 ) -> Result<brink_compiler::CompileOutput, Box<dyn std::error::Error>> {
     let root = brink_driver::native_source_root(entry);
-    let tree = drain_project_tree(&root)?;
+    let tree = brink_driver::RealFs::project(&root);
     let entry_key = brink_driver::relative_key(&root, entry);
     let overrides = brink_environment::OptionOverrides { dialect, types };
     let env = brink_environment::Project::load(&tree, &entry_key, &overrides)?;
     Ok(brink_environment::compile(&env)?)
-}
-
-/// Drain a native project root into a `SourceTree` — the CLI's #1306 producer
-/// mount. Collects every `.ink`/`.brink` source plus any `brink.toml`, keyed
-/// root-relative with `/` separators (the seam's key contract), so
-/// [`brink_environment::Project::load`] can enumerate the native universe /
-/// follow the ink `INCLUDE` graph *and* discover config over the same tree.
-/// Reifying the root up front is the point of an `Environment` — the input
-/// value bundles every source it depends on.
-fn drain_project_tree(root: &std::path::Path) -> std::io::Result<DrainedRoot> {
-    let mut files = std::collections::BTreeMap::new();
-    drain_walk(root, root, &mut files)?;
-    Ok(DrainedRoot {
-        files,
-        root: root.to_path_buf(),
-    })
-}
-
-/// The drained root, with a read-through to disk for keys *outside* it.
-///
-/// [`list`](brink_db::SourceTree::list) is root-scoped (the drained keys), so
-/// the native universe is exactly the tree under the root — unchanged, and
-/// `..` keys stay rejected there by `Project::load`'s own guard.
-///
-/// [`read`](brink_db::SourceTree::read) falls back to reading `root/key` off
-/// disk on a miss. That restores ink's pre-#1306 behavior for an `INCLUDE`
-/// that escapes the resolved root (`INCLUDE ../shared.ink`), which the drain
-/// alone cannot collect and which regressed to a compile failure (issue
-/// #1356). Determinism is preserved: `Project::load` records every source it
-/// actually reads into the `Environment`'s manifest, so a fallback read is
-/// bundled into the reified input exactly like a drained one.
-struct DrainedRoot {
-    files: std::collections::BTreeMap<String, String>,
-    root: std::path::PathBuf,
-}
-
-impl brink_db::SourceTree for DrainedRoot {
-    fn list(&self, _root: &std::path::Path) -> std::io::Result<Vec<String>> {
-        Ok(self.files.keys().cloned().collect())
-    }
-
-    fn read(&self, key: &str) -> std::io::Result<String> {
-        if let Some(text) = self.files.get(key) {
-            return Ok(text.clone());
-        }
-        std::fs::read_to_string(self.root.join(key))
-    }
-}
-
-/// Recursively collect root-relative source/config keys under `dir`.
-fn drain_walk(
-    root: &std::path::Path,
-    dir: &std::path::Path,
-    files: &mut std::collections::BTreeMap<String, String>,
-) -> std::io::Result<()> {
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        let file_type = entry.file_type()?;
-        if file_type.is_dir() {
-            drain_walk(root, &path, files)?;
-        } else if file_type.is_file() {
-            let is_source = path
-                .extension()
-                .is_some_and(|ext| ext == "ink" || ext == "brink");
-            let is_config = path
-                .file_name()
-                .is_some_and(|name| name == brink_project_config::CONFIG_FILE_NAME);
-            if (is_source || is_config)
-                && let Ok(rel) = path.strip_prefix(root)
-            {
-                let key = rel
-                    .components()
-                    .map(|c| c.as_os_str().to_string_lossy())
-                    .collect::<Vec<_>>()
-                    .join("/");
-                files.insert(key, std::fs::read_to_string(&path)?);
-            }
-        }
-    }
-    Ok(())
 }
 
 fn run_compile(
