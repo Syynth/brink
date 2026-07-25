@@ -428,10 +428,18 @@ pub fn discover_from_entry(entry_file: &Path) -> Option<PathBuf> {
 /// `node_modules`, just to test a handful of ancestor candidates was the
 /// same waste #1357 removed from the CLI drain, relocated here). A `read`
 /// that fails with [`io::ErrorKind::NotFound`] means "no `brink.toml` at
-/// this candidate, keep walking up"; any other read error propagates —
-/// `tree`'s own [`SourceTree::read`] already resolves keys against
-/// whatever root the tree was constructed with, so this function needs no
-/// enumeration to know where to look.
+/// this candidate, keep walking up"; any other error kind (permission
+/// denied, invalid encoding, ...) means a `brink.toml` *exists* at this
+/// candidate but this probe couldn't read it — treated as "found" (returns
+/// `Some(candidate)`) rather than propagated, so the caller's own
+/// [`SourceTree::read`] of the returned key is what actually surfaces the
+/// failure, with the path correctly attributed (see `brink-environment`'s
+/// `LoadError::ConfigRead`, #1369). Propagating this probe's own read error
+/// instead would report the same failure without a path — issue #1370's
+/// fix regressed exactly that for a moment before this doc/behavior was
+/// tightened; `tree`'s own [`SourceTree::read`] already resolves keys
+/// against whatever root the tree was constructed with, so this function
+/// needs no enumeration to know where to look.
 ///
 /// `root` is accepted (and unused) only to keep this function's shape
 /// symmetric with [`SourceTree::list`]'s signature and preserve source
@@ -455,9 +463,15 @@ pub fn find_config_in_tree(
             format!("{dir}/{CONFIG_FILE_NAME}")
         };
         match tree.read(&candidate) {
-            Ok(_) => return Ok(Some(candidate)),
             Err(err) if err.kind() == io::ErrorKind::NotFound => {}
-            Err(err) => return Err(err),
+            // Found: either the read actually succeeded, or it failed with
+            // some other error kind — which, under the `SourceTree::read`
+            // contract, implies the candidate exists but this probe read
+            // just couldn't consume it. Report it as found either way; the
+            // caller's own read of the same key is what turns a probe-read
+            // failure into a path-attributed error (`LoadError::ConfigRead`)
+            // instead of a bare, pathless one.
+            Ok(_) | Err(_) => return Ok(Some(candidate)),
         }
         if dir.is_empty() {
             return Ok(None);
@@ -836,6 +850,45 @@ mod tests {
         let found = find_config_in_tree(&tree, Path::new("."), "a/b/c/d")
             .expect("direct probing succeeds without ever calling list");
         assert_eq!(found, None);
+    }
+
+    /// A `SourceTree` whose `brink.toml` candidate exists but errors on
+    /// `read` with a non-`NotFound` kind (e.g. invalid encoding, permission
+    /// denied) — must be reported as *found* (`Some(candidate)`), not
+    /// propagated as an `Err` from `find_config_in_tree` itself. Regression
+    /// guard for the #1370/#1369 interaction: `find_config_in_tree`'s probe
+    /// read used to propagate this error directly, which — since it carries
+    /// no path — surfaced to callers as a bare `LoadError::Io` instead of
+    /// the path-attributed `LoadError::ConfigRead` the caller's own `read`
+    /// of the returned key is meant to produce.
+    struct ErrorsOnRead;
+
+    impl SourceTree for ErrorsOnRead {
+        fn list(&self, _root: &Path) -> io::Result<Vec<String>> {
+            Ok(vec![CONFIG_FILE_NAME.to_owned()])
+        }
+
+        fn read(&self, key: &str) -> io::Result<String> {
+            if key == CONFIG_FILE_NAME {
+                Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "not valid utf-8",
+                ))
+            } else {
+                Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("{key}: not found"),
+                ))
+            }
+        }
+    }
+
+    #[test]
+    fn find_config_in_tree_reports_found_when_the_candidate_read_errors_non_not_found() {
+        let found = find_config_in_tree(&ErrorsOnRead, Path::new("."), "a/b")
+            .expect("a non-NotFound read error is not propagated")
+            .expect("the unreadable brink.toml is still reported as found");
+        assert_eq!(found, CONFIG_FILE_NAME);
     }
 
     #[test]
