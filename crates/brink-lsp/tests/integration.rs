@@ -1052,6 +1052,168 @@ fn brink_toml_dialect_neither_file_nor_option_defaults() {
     );
 }
 
+// ── #1367: `[lints]` re-leveling reaches the published diagnostic severity ──
+//
+// `resolve_language_options` already resolves a discovered `brink.toml`'s
+// `[lints]` table via `AnalysisOptions::apply_project_config` (#1160); this
+// proves that resolved policy actually reaches `LanguageOptions` and every
+// diagnostic-publish site's `effective_severity` call, end to end through
+// the real LSP process — not just the unit-level `convert::diagnostic_to_lsp`
+// coverage in `src/convert.rs`.
+
+/// A bare `~` logic line — no expression, no statement — lowers to `E014`
+/// ("logic line has no effect"), `Warning` by default
+/// (`brink-ir/src/hir/lower/tests.rs`'s `logic_line_emits_diagnostic_on_malformed`
+/// exercises the same construct at the lowering-unit level).
+const E014_PROBE_SOURCE: &str = "\
+== start ==
+~
+Hello.
+-> DONE
+";
+
+fn e014_severity(diags: &[Value]) -> Option<u64> {
+    diags
+        .iter()
+        .find(|d| d["code"].as_str() == Some("E014"))
+        .and_then(|d| d["severity"].as_u64())
+}
+
+/// Like [`diagnostics_after_background_analysis_full`], but `E014` is a pure
+/// **lowering** diagnostic (`brink.toml`'s `[lints]` policy is already loaded
+/// before `initialize()` returns, so `publish_perfile_diagnostics`'s very
+/// first, *versioned* publish already carries the effective severity — the
+/// background pass then computes an identical set and the anti-downgrade
+/// rule correctly never re-sends it). Filtering to version-less publishes
+/// (as the dialect/types helpers do, where the analysis-only signal they
+/// probe genuinely only ever appears on the `Analysis`-tier publish) would
+/// see nothing here. This captures the last publish for the file's URI
+/// regardless of version — the client-visible end state — up to the same
+/// settling signal.
+fn diagnostics_for_uri_settled(root: &std::path::Path, source: &str) -> Vec<Value> {
+    const MAX_MESSAGES: u64 = 2000;
+
+    let bin = env!("CARGO_BIN_EXE_brink-lsp");
+    let mut child = Command::new(bin)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to start brink-lsp");
+
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "capabilities": {},
+                "rootUri": format!("file://{}", root.display()),
+            }
+        }),
+    );
+    let (_init_resp, _) = recv_response(&mut stdout, 1);
+
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "initialized",
+            "params": {}
+        }),
+    );
+
+    let file_uri = "file:///tmp/lints_test_story.ink";
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": file_uri,
+                    "languageId": "ink",
+                    "version": 1,
+                    "text": source,
+                }
+            }
+        }),
+    );
+
+    let mut last_diags_for_uri: Vec<Value> = Vec::new();
+    let mut settled = false;
+    for _ in 0..MAX_MESSAGES {
+        let msg = recv(&mut stdout);
+        if msg["method"] == "textDocument/publishDiagnostics" && msg["params"]["uri"] == file_uri {
+            last_diags_for_uri = msg["params"]["diagnostics"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+        } else if msg["method"] == "$/brink/backgroundAnalysisComplete" {
+            let file_count = msg["params"]["file_count"].as_u64().unwrap_or(0);
+            if file_count >= 1 {
+                settled = true;
+                break;
+            }
+        }
+    }
+
+    assert!(
+        settled,
+        "background analysis never signaled completion for {file_uri} \
+         within {MAX_MESSAGES} messages"
+    );
+
+    drop(stdin);
+    drop(stdout);
+    let _ = child.wait();
+
+    last_diags_for_uri
+}
+
+/// No `[lints]` table at all: `E014` publishes at its raw `Warning` default
+/// (LSP severity `2`).
+#[test]
+fn brink_toml_lints_no_override_keeps_warning_default() {
+    let root = unique_tmp_dir("lints-no-override");
+    std::fs::create_dir_all(&root).unwrap();
+
+    let diags = diagnostics_for_uri_settled(&root, E014_PROBE_SOURCE);
+
+    std::fs::remove_dir_all(&root).unwrap();
+
+    assert_eq!(
+        e014_severity(&diags),
+        Some(2),
+        "no [lints] override: E014 should publish at its Warning default, got: {diags:?}"
+    );
+}
+
+/// `[lints] E014 = "deny"` in `brink.toml`: the published diagnostic must be
+/// `Error` (LSP severity `1`), not the raw `Warning` default — the exact
+/// regression #1367 fixes (`diagnostic_to_lsp` previously called the raw
+/// `diag.code.severity()`, never consulting `[lints]` at all).
+#[test]
+fn brink_toml_lints_override_promotes_published_severity_to_error() {
+    let root = unique_tmp_dir("lints-deny-override");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("brink.toml"), "[lints]\nE014 = \"deny\"\n").unwrap();
+
+    let diags = diagnostics_for_uri_settled(&root, E014_PROBE_SOURCE);
+
+    std::fs::remove_dir_all(&root).unwrap();
+
+    assert_eq!(
+        e014_severity(&diags),
+        Some(1),
+        "[lints] E014 = deny should promote the published severity to Error, got: {diags:?}"
+    );
+}
+
 // ── #1055: malformed brink.toml diagnostic + live reload ───────────────
 //
 // Two related gaps closed together (see `backend.rs`): (1) a malformed

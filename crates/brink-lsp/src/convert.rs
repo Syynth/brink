@@ -40,10 +40,22 @@ pub fn severity_to_lsp(sev: brink_ir::Severity) -> lsp_types::DiagnosticSeverity
     }
 }
 
-pub fn diagnostic_to_lsp(diag: &brink_ir::Diagnostic, idx: &LineIndex) -> lsp_types::Diagnostic {
+/// `types`/`lints` are the resolved [`brink_analyzer::TypePolicy`]/
+/// [`brink_analyzer::LintPolicy`] the diagnostic was produced under —
+/// `severity` publishes [`brink_analyzer::effective_severity`], not the raw
+/// [`brink_ir::DiagnosticCode::severity`] default, so a `[lints]` re-leveled
+/// code shows at its overridden severity in the client (issue #1367).
+pub fn diagnostic_to_lsp(
+    diag: &brink_ir::Diagnostic,
+    idx: &LineIndex,
+    types: brink_analyzer::TypePolicy,
+    lints: &brink_analyzer::LintPolicy,
+) -> lsp_types::Diagnostic {
     lsp_types::Diagnostic {
         range: to_lsp_range(diag.range, idx),
-        severity: Some(severity_to_lsp(diag.code.severity())),
+        severity: Some(severity_to_lsp(brink_analyzer::effective_severity(
+            diag.code, types, lints,
+        ))),
         code: Some(lsp_types::NumberOrString::String(
             diag.code.as_str().to_owned(),
         )),
@@ -103,8 +115,7 @@ mod tests {
     /// #1163 regression: a `DiagnosticCode` whose default severity is
     /// `Warning` (E014 is one of the 17 warning-default codes) must surface
     /// as `DiagnosticSeverity::WARNING`, not `ERROR`, once routed through
-    /// `diagnostic_to_lsp` — the real `diag.code.severity()` path, exercised
-    /// end-to-end with an actual code rather than a bare `Severity` value.
+    /// `diagnostic_to_lsp` with no `[lints]` override in play.
     #[test]
     fn diagnostic_to_lsp_respects_warning_default_code() {
         assert_eq!(
@@ -119,7 +130,33 @@ mod tests {
             code: brink_ir::DiagnosticCode::E014,
         };
         let idx = LineIndex::new("x");
-        let lsp = diagnostic_to_lsp(&diag, &idx);
+        let lsp = diagnostic_to_lsp(
+            &diag,
+            &idx,
+            brink_analyzer::TypePolicy::Gradual,
+            &brink_analyzer::LintPolicy::default(),
+        );
         assert_eq!(lsp.severity, Some(lsp_types::DiagnosticSeverity::WARNING));
+    }
+
+    /// #1367: a `[lints] E014 = "deny"` override must publish as
+    /// `ERROR`, not the code's raw `Warning` default — `diagnostic_to_lsp`
+    /// must route severity through `effective_severity`, not
+    /// `diag.code.severity()`.
+    #[test]
+    fn diagnostic_to_lsp_respects_lints_override() {
+        let diag = brink_ir::Diagnostic {
+            file: brink_ir::FileId(0),
+            range: TextRange::new(TextSize::from(0), TextSize::from(1)),
+            message: "test".to_owned(),
+            code: brink_ir::DiagnosticCode::E014,
+        };
+        let idx = LineIndex::new("x");
+        let mut lints = brink_analyzer::LintPolicy::default();
+        lints
+            .overrides
+            .insert("E014".to_owned(), brink_analyzer::LintLevel::Deny);
+        let lsp = diagnostic_to_lsp(&diag, &idx, brink_analyzer::TypePolicy::Gradual, &lints);
+        assert_eq!(lsp.severity, Some(lsp_types::DiagnosticSeverity::ERROR));
     }
 }

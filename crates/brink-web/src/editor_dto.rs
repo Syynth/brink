@@ -555,17 +555,65 @@ pub(crate) fn inlay_hint_kind_str(kind: &brink_ide::inlay_hints::InlayHintKind) 
 /// OWN file source (offsets are file-relative), used only to translate byte
 /// offsets into UTF-16 for the editor. The file path comes from the resolved
 /// diagnostic itself, so an included file's error lands on the right tab.
+///
+/// `types`/`lints` are the [`brink_analyzer::TypePolicy`]/[`brink_analyzer::LintPolicy`]
+/// the diagnostics were actually produced under — `severity` renders the
+/// [`brink_analyzer::effective_severity`] (issue #1367: a `[lints]`
+/// re-leveled code must display at its overridden severity, not the raw
+/// [`brink_ir::DiagnosticCode::severity`] default).
 pub(crate) fn diagnostic_to_js(
     d: &brink_compiler::ResolvedDiagnostic,
     source: &str,
+    types: brink_analyzer::TypePolicy,
+    lints: &brink_analyzer::LintPolicy,
 ) -> DiagnosticJs {
     DiagnosticJs {
         message: d.message.clone(),
         start: byte_to_utf16(source, d.range.start().into()),
         end: byte_to_utf16(source, d.range.end().into()),
-        severity: format!("{:?}", d.code.severity()),
+        severity: format!(
+            "{:?}",
+            brink_analyzer::effective_severity(d.code, types, lints)
+        ),
         code: d.code.as_str().to_owned(),
         file: d.path.clone(),
+    }
+}
+
+#[cfg(test)]
+mod diagnostic_to_js_tests {
+    use super::diagnostic_to_js;
+
+    fn diag(code: brink_ir::DiagnosticCode) -> brink_compiler::ResolvedDiagnostic {
+        brink_compiler::ResolvedDiagnostic {
+            path: "main.ink".to_owned(),
+            file: brink_ir::FileId(0),
+            range: rowan::TextRange::new(rowan::TextSize::from(0), rowan::TextSize::from(1)),
+            message: "test".to_owned(),
+            code,
+        }
+    }
+
+    /// #1367: the wasm editor's diagnostic list must render the *effective*
+    /// severity, not `d.code.severity()` — a `[lints]` re-leveled code
+    /// (`E014` is one of the `Warning`-default codes) must show `"Error"`.
+    #[test]
+    fn diagnostic_to_js_respects_lints_override() {
+        let d = diag(brink_ir::DiagnosticCode::E014);
+        let no_override = diagnostic_to_js(
+            &d,
+            "x",
+            brink_analyzer::TypePolicy::Gradual,
+            &brink_analyzer::LintPolicy::default(),
+        );
+        assert_eq!(no_override.severity, "Warning");
+
+        let mut lints = brink_analyzer::LintPolicy::default();
+        lints
+            .overrides
+            .insert("E014".to_owned(), brink_analyzer::LintLevel::Deny);
+        let overridden = diagnostic_to_js(&d, "x", brink_analyzer::TypePolicy::Gradual, &lints);
+        assert_eq!(overridden.severity, "Error");
     }
 }
 

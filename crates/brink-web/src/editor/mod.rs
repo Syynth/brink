@@ -414,7 +414,17 @@ impl EditorSession {
                 message: d.message.clone(),
                 start: byte_to_utf16(src, d.range.start().into()),
                 end: byte_to_utf16(src, d.range.end().into()),
-                severity: format!("{:?}", d.code.severity()),
+                // Effective severity (issue #1367), not the raw
+                // `DiagnosticCode::severity()` default — `options` is the
+                // same `AnalysisOptions` `compile` above ran under.
+                severity: format!(
+                    "{:?}",
+                    brink_analyzer::effective_severity(
+                        d.code,
+                        options.type_policy(),
+                        &options.lints
+                    )
+                ),
                 code: d.code.as_str().to_owned(),
                 file: self.session.file_path(d.file).unwrap_or("").to_owned(),
             }
@@ -3090,6 +3100,35 @@ mod tests {
         assert!(
             compile_has(&result, "E065"),
             "strict policy: compile flags E065 too: {result}"
+        );
+    }
+
+    /// #1367: `compile_project`'s diagnostic JSON must render the *effective*
+    /// severity, not the raw `DiagnosticCode::severity()` default. `E063`
+    /// (annotation-vs-inference mismatch, `Warning` by default per
+    /// `DiagnosticCode::severity()`) is only ever wired into production
+    /// under `types = strict` (`annotations::mismatches` is called solely
+    /// from `strict::check`), where the #640-round ruling promotes it to
+    /// `Error`. Before this fix, the `to_js` closure called the raw default
+    /// and would have shown `"Warning"` even here.
+    #[test]
+    fn compile_project_severity_reflects_strict_types_e063_promotion() {
+        let source = "=== heal(hp: string) ===\n{hp > 1:\n  ok\n}\n-> DONE\n";
+
+        let mut strict = EditorSession::new();
+        strict.set_language_dialect("brink");
+        strict.set_type_policy("strict");
+        strict.update_file("main.ink", source);
+        let strict_result = strict.compile_project("main.ink");
+        let strict_severity = json(&strict_result)["warnings"]
+            .as_array()
+            .and_then(|w| w.iter().find(|d| d["code"] == "E063"))
+            .map(|d| d["severity"].clone());
+        assert_eq!(
+            strict_severity,
+            Some(serde_json::json!("Error")),
+            "types = strict: E063 must promote to Error, not stay at the raw \
+             Warning default: {strict_result}"
         );
     }
 

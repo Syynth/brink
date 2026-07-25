@@ -32,8 +32,14 @@ enum LoadOrCompileError {
 /// result, resolving each diagnostic's byte offsets against `source_of` (the
 /// text the diagnostic's `path` was actually parsed from — a single-file
 /// compile always resolves the same source; a multi-file one, e.g.
-/// [`compile_fragment`], looks the path up per diagnostic).
+/// [`compile_fragment`], looks the path up per diagnostic) and its rendered
+/// severity against `options` — the [`brink_analyzer::AnalysisOptions`]
+/// [`compile_over_tree`] actually resolved the compile under, so a
+/// `[lints]`-re-leveled or `types = strict`-promoted code renders at the same
+/// effective severity it was gated on, not the code's raw default (issue
+/// #1367).
 fn compile_result_json(
+    options: &brink_analyzer::AnalysisOptions,
     result: Result<brink_compiler::CompileOutput, LoadOrCompileError>,
     source_of: impl Fn(&str) -> String,
 ) -> String {
@@ -42,7 +48,14 @@ fn compile_result_json(
             let warnings: Vec<DiagnosticJs> = output
                 .warnings
                 .iter()
-                .map(|d| diagnostic_to_js(d, &source_of(&d.path)))
+                .map(|d| {
+                    diagnostic_to_js(
+                        d,
+                        &source_of(&d.path),
+                        options.type_policy(),
+                        &options.lints,
+                    )
+                })
                 .collect();
 
             let mut bytes = Vec::new();
@@ -64,7 +77,14 @@ fn compile_result_json(
                 LoadOrCompileError::Compile(brink_compiler::CompileError::Diagnostics(diags)) => {
                     diagnostics = diags
                         .iter()
-                        .map(|d| diagnostic_to_js(d, &source_of(&d.path)))
+                        .map(|d| {
+                            diagnostic_to_js(
+                                d,
+                                &source_of(&d.path),
+                                options.type_policy(),
+                                &options.lints,
+                            )
+                        })
                         .collect();
                 }
                 other => {
@@ -97,13 +117,33 @@ fn compile_result_json(
 /// non-diagnostics [`brink_compiler::CompileError`] uses — the caller only
 /// ever sees the one `CompileResult` JSON shape — but as its own `Display`
 /// message, not laundered through `CompileError::Io`.
+///
+/// Also returns the resolved [`brink_analyzer::AnalysisOptions`] alongside
+/// the compile result, so the caller can render diagnostics at the effective
+/// severity the compile actually ran under (issue #1367) even on the
+/// `CompileError::Diagnostics` failure path. Falls back to
+/// `AnalysisOptions::default()` when `Project::load` itself fails, before any
+/// options are resolved — that `Load` error variant never carries
+/// diagnostics, so the fallback is never actually rendered through.
 fn compile_over_tree(
     tree: &InMemory,
     entry: &str,
-) -> Result<brink_compiler::CompileOutput, LoadOrCompileError> {
+) -> (
+    brink_analyzer::AnalysisOptions,
+    Result<brink_compiler::CompileOutput, LoadOrCompileError>,
+) {
     let overrides = OptionOverrides::default();
-    let env = Project::load(tree, entry, &overrides)?;
-    Ok(brink_environment::compile(&env)?)
+    match Project::load(tree, entry, &overrides) {
+        Ok(env) => {
+            let options = env.options.clone();
+            let result = brink_environment::compile(&env).map_err(LoadOrCompileError::from);
+            (options, result)
+        }
+        Err(e) => (
+            brink_analyzer::AnalysisOptions::default(),
+            Err(LoadOrCompileError::from(e)),
+        ),
+    }
 }
 
 /// Compile ink source and return JSON with diagnostics or story data.
@@ -113,8 +153,8 @@ pub fn compile(source: &str) -> String {
         "main.ink".to_string(),
         source.to_owned(),
     )]));
-    let result = compile_over_tree(&tree, "main.ink");
-    compile_result_json(result, |_path| source.to_owned())
+    let (options, result) = compile_over_tree(&tree, "main.ink");
+    compile_result_json(&options, result, |_path| source.to_owned())
 }
 
 /// The source-identity checksum of compiled `.inkb` bytes, formatted as
@@ -202,8 +242,10 @@ pub fn compile_fragment(entry: &str, sources_json: &str, synthetic_source: &str)
         .collect();
 
     let tree = InMemory::new(served.clone());
-    let result = compile_over_tree(&tree, entry);
-    compile_result_json(result, |path| served.get(path).cloned().unwrap_or_default())
+    let (options, result) = compile_over_tree(&tree, entry);
+    compile_result_json(&options, result, |path| {
+        served.get(path).cloned().unwrap_or_default()
+    })
 }
 
 #[derive(Serialize)]
