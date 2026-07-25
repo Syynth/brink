@@ -155,6 +155,42 @@ jobs:
         with:
           shared-key: all-features
       - run: cargo test --workspace --all-features --exclude bevy-brink --exclude bevy-brink-derive
+
+  # demos/compound declares its own `[workspace]` table (see its Cargo.toml)
+  # specifically so the repo-root workspace's exclude list keeps it out of
+  # `cargo check/test/clippy --workspace` — it takes a path dep INWARD on
+  # bevy-brink but is otherwise fully standalone. That isolation means it can
+  # rot silently with zero CI signal (#1386). This job builds and clippies it
+  # directly, cd'd into its own workspace root, so it stays honest without
+  # perturbing the main gate's cache or run time.
+  demos:
+    name: Demos (compound)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      # Same bevy Linux system libs as the `test` job above — the demo takes
+      # bevy-brink as a path dependency, which pulls in bevy itself.
+      - name: Install Linux dependencies (bevy)
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: demos/compound
+      - name: Format
+        working-directory: demos/compound
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        id: clippy
+        if: '!cancelled()'
+        working-directory: demos/compound
+        run: cargo clippy --all-targets -- -D warnings
+
   # Consolidated static checks (decision 2026-07-22, #1237). Previously six
   # separate jobs — Format, Clippy, Clippy (all features), no_std ×2, and the
   # publishable pre-flight — each under a minute of real work but each paying
