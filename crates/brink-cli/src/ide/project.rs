@@ -91,8 +91,8 @@ struct EditOverlay<'a> {
 }
 
 impl SourceTree for EditOverlay<'_> {
-    fn list(&self, root: &Path) -> io::Result<Vec<String>> {
-        let mut keys: BTreeSet<String> = self.inner.list(root)?.into_iter().collect();
+    fn list(&self) -> io::Result<Vec<String>> {
+        let mut keys: BTreeSet<String> = self.inner.list()?.into_iter().collect();
         if let Some(r) = self.removed {
             keys.remove(r);
         }
@@ -140,9 +140,7 @@ impl Project {
         let entry_key = if brink_driver::is_native(entry) {
             let root = brink_driver::native_source_root(entry);
             let tree = RealFs::new(&root);
-            driver
-                .discover_native(&tree, &root)
-                .map_err(|e| format!("{e}"))?;
+            driver.discover_native(&tree).map_err(|e| format!("{e}"))?;
             brink_driver::relative_key(&root, entry)
         } else {
             let entry_s = entry.to_string_lossy().into_owned();
@@ -322,9 +320,7 @@ impl Project {
                 edited,
                 removed,
             };
-            driver
-                .discover_native(&tree, &root)
-                .map_err(|e| format!("{e}"))?;
+            driver.discover_native(&tree).map_err(|e| format!("{e}"))?;
             brink_driver::relative_key(&root, entry)
         } else {
             let entry_s = entry.to_string_lossy().into_owned();
@@ -444,6 +440,21 @@ impl Project {
 
     /// Build an `IdeSession` seeded with every project file (db-level only — no
     /// analysis), for the `brink-ide` ops (`file_rename`) that take a session.
+    ///
+    /// Deliberately never calls `IdeSession::set_lint_policy` (issue #1382
+    /// audit; see that method's own doc for the `IdeSession` side of this
+    /// note): with no `update_and_analyze`/`reanalyze` call here either,
+    /// `session.analysis()` stays `None` for the session's whole lifetime, so
+    /// `structural_result::gate`/`gate_with_source` (which `rename_file`
+    /// calls internally) short-circuit to an empty breakage report before
+    /// ever reading `analysis_options().lints` — today's one caller
+    /// (`run_move_file`) also discards that `StructuralResult`'s
+    /// `safe`/`introduced` fields entirely, re-deriving the real safety-gate
+    /// diagnostics through `introduced_diagnostics` (this struct's own
+    /// method, which *does* resolve `[lints]` via `resolve_analysis_options`)
+    /// instead. So there is no live drop today — but a future caller that
+    /// starts reading `rename_file`'s own `.safe`/`.introduced` would need
+    /// `set_lint_policy` wired here first.
     pub(super) fn ide_session(&self) -> IdeSession {
         let db = self.driver.db();
         let mut session = IdeSession::new();
@@ -594,7 +605,7 @@ pub(super) fn load_git_baseline(entry: &Path, rev: &str) -> Result<Project, Stri
         ensure_repo_dir_is_toplevel(repo_dir)?;
         let tree = GitRev::new(repo_dir, rev, &root);
         driver
-            .discover_native(&tree, &root)
+            .discover_native(&tree)
             .map_err(|e| format!("baseline {rev}: {e}"))?;
         brink_driver::relative_key(&root, entry)
     } else {

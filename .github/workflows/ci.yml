@@ -155,6 +155,7 @@ jobs:
         with:
           shared-key: all-features
       - run: cargo test --workspace --all-features --exclude bevy-brink --exclude bevy-brink-derive
+
   # Consolidated static checks (decision 2026-07-22, #1237). Previously six
   # separate jobs — Format, Clippy, Clippy (all features), no_std ×2, and the
   # publishable pre-flight — each under a minute of real work but each paying

@@ -441,11 +441,16 @@ pub fn discover_from_entry(entry_file: &Path) -> Option<PathBuf> {
 /// against whatever root the tree was constructed with, so this function
 /// needs no enumeration to know where to look.
 ///
-/// `root` is accepted (and unused) only to keep this function's shape
-/// symmetric with [`SourceTree::list`]'s signature and preserve source
-/// compatibility for existing callers; every current [`SourceTree`]
-/// implementation resolves `read` keys against its own stored root, not
-/// against a `root` supplied per call.
+/// `root` is accepted (and unused) for source compatibility with existing
+/// callers only. It used to be kept for shape-symmetry with
+/// [`SourceTree::list`]'s signature, but issue #1371 dropped `list`'s
+/// equivalent `root` parameter entirely (every implementation's root is now
+/// exclusively constructor-held, per the #1323 layering ruling) — this
+/// function's own `root` predates that and was left in place rather than
+/// rippling a signature change through every caller for a parameter that
+/// was already inert. Every current [`SourceTree`] implementation resolves
+/// `read` keys against its own stored root, not against a `root` supplied
+/// per call.
 ///
 /// Returns the matching key, not file content — callers read it via
 /// [`SourceTree::read`] (mirroring how [`find_config`] returns a path the
@@ -807,7 +812,7 @@ mod tests {
     }
 
     impl SourceTree for ErrorsOnList {
-        fn list(&self, _root: &Path) -> io::Result<Vec<String>> {
+        fn list(&self) -> io::Result<Vec<String>> {
             Err(io::Error::other(
                 "find_config_in_tree must not enumerate the tree via SourceTree::list (issue #1370)",
             ))
@@ -864,7 +869,7 @@ mod tests {
     struct ErrorsOnRead;
 
     impl SourceTree for ErrorsOnRead {
-        fn list(&self, _root: &Path) -> io::Result<Vec<String>> {
+        fn list(&self) -> io::Result<Vec<String>> {
             Ok(vec![CONFIG_FILE_NAME.to_owned()])
         }
 

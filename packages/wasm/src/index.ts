@@ -311,22 +311,30 @@ export class EditorSessionHandle {
   /**
    * Parse a `brink.toml` project settings file (#1005 — dialect + type
    * policy, one config every compiler mount reads) and apply its
-   * `[project] dialect`/`types` to this session. The wasm sandbox has no
-   * filesystem of its own: read `brink.toml`'s text with whatever host API
-   * your embedder has (Node `fs`, the File System Access API, a bundler
-   * import, …) and pass it here — this method does the discovery-free
-   * parsing + application, mirroring what `brink compile`/`brink ide` do
-   * with real filesystem discovery.
+   * `[project] dialect`/`types` *and* `[lints]`/`deny-warnings` (#1366) to
+   * this session. The wasm sandbox has no filesystem of its own: read
+   * `brink.toml`'s text with whatever host API your embedder has (Node
+   * `fs`, the File System Access API, a bundler import, …) and pass it
+   * here — this method does the discovery-free parsing + application,
+   * mirroring what `brink compile`/`brink ide` do with real filesystem
+   * discovery.
    *
    * Call this once, right after construction, before any explicit
    * {@link setLanguageDialect}/{@link setTypePolicy} call — an explicit
-   * call always overrides the file for that field (matches the CLI's
-   * `--dialect`/`--types` flag precedence: the file is the default, code
-   * wins). Re-analyzes immediately for whichever field the file sets.
+   * call always overrides the file for `dialect`/`types` (matches the
+   * CLI's `--dialect`/`--types` flag precedence: the file is the default,
+   * code wins). `[lints]`/`deny-warnings` has no explicit-API override
+   * source yet, so the file's table always applies. Re-analyzes
+   * immediately for whichever field the file sets — including `[lints]`,
+   * which can change diagnostic severity: a `[lints] E014 = "deny"` or
+   * `deny-warnings = true` entry can promote a diagnostic that previously
+   * rendered as `"Warning"` to `"Error"` in subsequent `compileProject`
+   * results.
    *
-   * Returns the list of warning strings for unrecognized keys — never an
-   * error (forward compat). Throws only on malformed TOML or a recognized
-   * key with an invalid value.
+   * Returns the list of warning strings for unrecognized `[project]` keys
+   * *and* unrecognized/non-overridable `[lints]` codes — never an error
+   * (forward compat). Throws only on malformed TOML or a recognized key
+   * with an invalid value.
    */
   applyProjectConfig(toml: string): string[] {
     this.bump();

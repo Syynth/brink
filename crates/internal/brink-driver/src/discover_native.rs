@@ -12,27 +12,36 @@ use brink_db::{ProjectDb, SourceTree};
 use tracing::info;
 
 use crate::discover::DiscoverError;
+use crate::source_tree::is_native;
 
-/// Discover a native project via `tree`: [`SourceTree::list`] under `root`
-/// (sorted, root-relative keys — the seam's own determinism contract), then
-/// [`SourceTree::read`] + [`ProjectDb::set_file`] for each key **in that
-/// order** — `FileId`s mint in sorted-key order, which is the whole point:
-/// the same tree contents, discovered through any [`SourceTree`] impl in any
-/// insertion order, always mint the same `FileId`s (and, since
-/// `native_module_path` is a pure function of the path, the same module
-/// identity).
+/// Discover a native project via `tree`: [`SourceTree::list`] (sorted,
+/// root-relative keys, scoped to `tree`'s own constructor-held root — the
+/// seam's own determinism contract), then [`SourceTree::read`] +
+/// [`ProjectDb::set_file`] for each key **in that order** — `FileId`s mint
+/// in sorted-key order, which is the whole point: the same tree contents,
+/// discovered through any [`SourceTree`] impl in any insertion order,
+/// always mint the same `FileId`s (and, since `native_module_path` is a
+/// pure function of the path, the same module identity).
 ///
-/// Every key is checked for a `..` segment before any file is loaded, and
-/// discovery is rejected wholesale (no partial load) if one is found — see
-/// [`DiscoverError::InvalidKey`].
-pub fn discover_native(
-    db: &mut ProjectDb,
-    tree: &dyn SourceTree,
-    root: &Path,
-) -> Result<(), DiscoverError> {
-    let keys = tree.list(root)?;
+/// Every key is checked for a `..` segment and for a `.brink` extension
+/// before any file is loaded, and discovery is rejected wholesale (no
+/// partial load) if either check fails — see [`DiscoverError::InvalidKey`]
+/// and [`DiscoverError::NonNativeKey`]. The extension guard exists because
+/// `tree` is a `&dyn SourceTree`, not necessarily one scoped to `.brink`
+/// alone — `brink-driver`'s own `RealFs::project` widens `list` to
+/// `.brink` + `.ink` + `brink.toml` for `brink-environment`'s
+/// `Project::load` (issue #1357), and nothing at the type level stops that
+/// wider tree from being passed here by mistake (issue #1371). Rejecting a
+/// non-native key here, rather than silently parsing `.ink`/config text as
+/// brink source, is the guard that keeps the two discovery paths from
+/// crossing.
+pub fn discover_native(db: &mut ProjectDb, tree: &dyn SourceTree) -> Result<(), DiscoverError> {
+    let keys = tree.list()?;
     if let Some(bad) = keys.iter().find(|key| is_dotdot_polluted(key)) {
         return Err(DiscoverError::InvalidKey(bad.clone()));
+    }
+    if let Some(bad) = keys.iter().find(|key| !is_native(Path::new(key.as_str()))) {
+        return Err(DiscoverError::NonNativeKey(bad.clone()));
     }
 
     let count = keys.len();
@@ -79,7 +88,7 @@ mod tests {
             ("nested/b.brink", "flow b() {}"),
         ]);
 
-        discover_native(&mut db, &t, Path::new(".")).expect("discovery succeeds");
+        discover_native(&mut db, &t).expect("discovery succeeds");
 
         let mut paths: Vec<_> = db.file_ids().filter_map(|id| db.file_path(id)).collect();
         paths.sort_unstable();
@@ -102,7 +111,7 @@ mod tests {
             ("m.brink", "flow m() {}"),
         ]);
 
-        discover_native(&mut db, &t, Path::new(".")).expect("discovery succeeds");
+        discover_native(&mut db, &t).expect("discovery succeeds");
 
         let a = db.file_id("a.brink").expect("a.brink discovered");
         let m = db.file_id("m.brink").expect("m.brink discovered");
@@ -129,7 +138,7 @@ mod tests {
             ("a.brink", "flow a() {}"),
             ("nested/m.brink", "flow m() {}"),
         ]);
-        discover_native(&mut db_a, &t_a, Path::new(".")).expect("discovery succeeds");
+        discover_native(&mut db_a, &t_a).expect("discovery succeeds");
 
         let mut db_b = ProjectDb::new();
         // Same files, built via a map that (were it not for `BTreeMap`'s own
@@ -139,7 +148,7 @@ mod tests {
             ("z.brink", "flow z() {}"),
             ("a.brink", "flow a() {}"),
         ]);
-        discover_native(&mut db_b, &t_b, Path::new(".")).expect("discovery succeeds");
+        discover_native(&mut db_b, &t_b).expect("discovery succeeds");
 
         for key in ["a.brink", "nested/m.brink", "z.brink"] {
             let id_a = db_a.file_id(key).expect("{key} in db_a");
@@ -181,7 +190,7 @@ mod tests {
         let mut db = ProjectDb::new();
         let t = tree(&[("main.brink", "flow main() {}")]);
 
-        discover_native(&mut db, &t, Path::new(".")).expect("discovery succeeds");
+        discover_native(&mut db, &t).expect("discovery succeeds");
 
         assert_eq!(db.file_ids().count(), 1);
         assert!(db.file_id("main.brink").is_some());
@@ -193,7 +202,7 @@ mod tests {
         let mut db = ProjectDb::new();
         let t = tree(&[]);
 
-        discover_native(&mut db, &t, Path::new(".")).expect("discovery succeeds");
+        discover_native(&mut db, &t).expect("discovery succeeds");
 
         assert_eq!(db.file_ids().count(), 0);
     }
@@ -206,7 +215,7 @@ mod tests {
     fn dotdot_key_is_rejected_before_any_load() {
         struct Hostile;
         impl SourceTree for Hostile {
-            fn list(&self, _root: &Path) -> std::io::Result<Vec<String>> {
+            fn list(&self) -> std::io::Result<Vec<String>> {
                 Ok(vec!["a.brink".to_string(), "../escape.brink".to_string()])
             }
             fn read(&self, key: &str) -> std::io::Result<String> {
@@ -215,8 +224,42 @@ mod tests {
         }
 
         let mut db = ProjectDb::new();
-        let err = discover_native(&mut db, &Hostile, Path::new(".")).expect_err("must be rejected");
+        let err = discover_native(&mut db, &Hostile).expect_err("must be rejected");
         assert!(matches!(err, DiscoverError::InvalidKey(k) if k == "../escape.brink"));
+        assert_eq!(
+            db.file_ids().count(),
+            0,
+            "no partial load: a.brink must not have been set either"
+        );
+    }
+
+    /// A `SourceTree` scoped wider than `.brink` alone — the exact shape of
+    /// `RealFs::project` (issue #1357), which lists `.brink` + `.ink` +
+    /// `brink.toml` for `brink-environment`'s `Project::load` — must be
+    /// rejected wholesale, before any file is loaded, if it is ever handed
+    /// to `discover_native` instead. This is the #1371 guard: nothing at the
+    /// type level stops a `ListScope::Project`-scoped tree from reaching
+    /// here, so `discover_native` itself must refuse any non-`.brink` key
+    /// rather than silently parsing `.ink`/config text as brink source.
+    #[test]
+    fn non_native_key_is_rejected_before_any_load() {
+        struct WiderThanNative;
+        impl SourceTree for WiderThanNative {
+            fn list(&self) -> std::io::Result<Vec<String>> {
+                Ok(vec![
+                    "a.brink".to_string(),
+                    "brink.toml".to_string(),
+                    "main.ink".to_string(),
+                ])
+            }
+            fn read(&self, key: &str) -> std::io::Result<String> {
+                Ok(format!("-- {key} --"))
+            }
+        }
+
+        let mut db = ProjectDb::new();
+        let err = discover_native(&mut db, &WiderThanNative).expect_err("must be rejected");
+        assert!(matches!(err, DiscoverError::NonNativeKey(k) if k == "brink.toml"));
         assert_eq!(
             db.file_ids().count(),
             0,

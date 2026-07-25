@@ -122,6 +122,16 @@ impl<M: Send + Sync + 'static> BrinkPlugin<M> {
     /// `BrinkAssetsPlugin`-owned setting. Call
     /// [`BrinkAssetsPlugin::with_config`] directly instead if you're adding
     /// it standalone.
+    ///
+    /// Deliberately scoped to `dialect`/`types` only (issue #1382 audit): a
+    /// `[lints]` table or `deny-warnings` value set on the passed
+    /// `ProjectConfig` is silently ignored here — `InkLoader` still resolves
+    /// `[lints]` from a discovered `brink.toml` (via `Project::load` /
+    /// `resolve_options`, which owns the whole precedence rule), just not
+    /// from this override. There's no `--lints` CLI-flag equivalent to
+    /// mirror either (see `AnalysisOptions::apply_project_config`'s doc): an
+    /// explicit-override mechanism for `[lints]` is a natural follow-up, not
+    /// yet built.
     #[cfg(feature = "dev")]
     #[must_use]
     pub fn with_config(mut self, config: brink_project_config::ProjectConfig) -> Self {

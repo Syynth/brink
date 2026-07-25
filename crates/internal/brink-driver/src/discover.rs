@@ -24,6 +24,18 @@ pub enum DiscoverError {
     /// implementation that doesn't.
     #[error("source key `{0}` is not root-relative (contains `..`)")]
     InvalidKey(String),
+    /// A key `discover_native` was handed does not have the `.brink`
+    /// extension. `discover_native` must only ever see native source (issue
+    /// #1371): a [`SourceTree`](brink_db::SourceTree) scoped wider than
+    /// `.brink` alone — e.g. `brink-driver`'s `RealFs::project`, whose
+    /// `.brink` + `.ink` + `brink.toml` surface exists for
+    /// `brink-environment`'s `Project::load`, not for native discovery —
+    /// must never be fed here, or `.ink`/config text would be parsed as
+    /// brink source. Checked (like [`InvalidKey`](Self::InvalidKey)) before
+    /// any file is loaded, so a violation rejects the whole discovery, not
+    /// just the offending key.
+    #[error("source key `{0}` is not a native `.brink` file")]
+    NonNativeKey(String),
 }
 
 /// Discover all files reachable via INCLUDEs from the entry point.

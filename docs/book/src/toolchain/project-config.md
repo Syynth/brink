@@ -135,10 +135,10 @@ one-off choice that the file must not silently overrule.
   no filesystem of its own. Read `brink.toml`'s text with your host's own
   file APIs (Node `fs`, the browser File System Access API, a bundler
   import, …) and hand it to `applyProjectConfig`. **`applyProjectConfig`
-  applies only `[project] dialect`/`types`; `[lints]`/`deny-warnings` are not
-  wired to the wasm editor session yet.** It is the only surface whose
-  diagnostic output does not change severity based on `[lints]` today —
-  `brink compile`, `brink ide`, and `brink-lsp` all do:
+  applies `[project] dialect`/`types` *and* `[lints]`/`deny-warnings`**
+  (issue #1366) — diagnostic severity rendered through this surface now
+  reflects the file the same way `brink compile`, `brink ide`, and
+  `brink-lsp` already did:
 
   ```ts
   import { EditorSessionHandle } from "@brink-lang/web";
