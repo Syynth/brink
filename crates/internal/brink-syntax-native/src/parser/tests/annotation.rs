@@ -209,6 +209,76 @@ fn annotation_arg_string_literal() {
     assert!(lit.syntax().text().to_string().contains("hi there"));
 }
 
+/// Issue #1349: the arg to `@[was(...)]` (native rename migration, the
+/// closed #1286) must accept an *unquoted* `::`-separated module path, not
+/// only the quoted-string form `lower_native`'s `module.rs` already
+/// lowers. `story::old::path` must parse to a `PATH` (via
+/// `AnnotationArg::path`), not an error.
+#[test]
+fn annotation_arg_unquoted_module_path() {
+    let src = "@[was(story::old::path)]\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let line = annotation_line_node(&p);
+    assert_eq!(line.name_token().unwrap().text(), "was");
+    let args = line.args().expect("ANNOTATION_ARGS");
+    let arg = args.args().next().expect("ANNOTATION_ARG");
+
+    // The path shape, not the bare-ident shape: no `name_token`, a `path`.
+    assert!(arg.name_token().is_none(), "path arg has no bare IDENT");
+    let path = arg.path().expect("ANNOTATION_ARG carries a PATH");
+    let segments: Vec<_> = path.segments().map(|t| t.text().to_string()).collect();
+    assert_eq!(segments, vec!["story", "old", "path"]);
+    assert!(
+        path.crosses_module_wall(),
+        "`::`-separated, not `.`-separated"
+    );
+}
+
+/// A single-segment path (no `::` at all) is indistinguishable from a bare
+/// ident at the grammar level and must keep parsing as the existing
+/// bare-ident arg shape — the new `nth(1) == COLON_COLON` lookahead must
+/// not misfire on it.
+#[test]
+fn annotation_arg_single_segment_stays_bare_ident() {
+    let src = "@[was(story)]\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let line = annotation_line_node(&p);
+    let args = line.args().expect("ANNOTATION_ARGS");
+    let arg = args.args().next().expect("ANNOTATION_ARG");
+    assert_eq!(arg.name_token().unwrap().text(), "story");
+    assert!(arg.path().is_none());
+}
+
+/// Two path-shaped args in the same annotation, exercising the arg-list
+/// comma loop with the new production (not just a single-arg fixture).
+#[test]
+fn annotation_args_multiple_unquoted_paths() {
+    let src = "@[rename(story::old::a, story::old::b)]\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let line = annotation_line_node(&p);
+    let args = line.args().expect("ANNOTATION_ARGS");
+    let paths: Vec<Vec<String>> = args
+        .args()
+        .map(|a| {
+            a.path()
+                .expect("ANNOTATION_ARG carries a PATH")
+                .segments()
+                .map(|t| t.text().to_string())
+                .collect()
+        })
+        .collect();
+    assert_eq!(
+        paths,
+        vec![
+            vec!["story".to_string(), "old".to_string(), "a".to_string()],
+            vec!["story".to_string(), "old".to_string(), "b".to_string()],
+        ]
+    );
+}
+
 #[test]
 fn annotation_args_trailing_comma_allowed() {
     let src = "@[name(a, b,)]\n";

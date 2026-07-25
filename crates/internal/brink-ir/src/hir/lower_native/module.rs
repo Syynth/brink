@@ -12,13 +12,20 @@
 //! `DefinitionId` to its current one.
 //!
 //! This is the **same** module-rename feature ink already has (`#@was`,
-//! `docs/modules-spec.md` §5); only the spelling differs — native names a full
-//! `::`-separated module path (a string literal, since `::` is not annotation
-//! grammar), where ink names a bare module name. The read path
-//! (`brink-db::queries::module_map_query`) and the alias-table codegen
-//! (`brink-analyzer::manifest::insert_symbol`) are already wired for both; the
-//! only piece this slice adds is parsing the authored record into
-//! `HirFile.module.was` so it stops being silently dropped.
+//! `docs/modules-spec.md` §5); only the spelling differs — native names a
+//! full `::`-separated module path, where ink names a bare module name.
+//! The read path (`brink-db::queries::module_map_query`) and the
+//! alias-table codegen (`brink-analyzer::manifest::insert_symbol`) are
+//! already wired for both; the only piece this slice adds is parsing the
+//! authored record into `HirFile.module.was` so it stops being silently
+//! dropped.
+//!
+//! The path currently travels as a quoted string
+//! (`@[was("old::path")]`) — [`was_old_path`] below only reads a
+//! `STRING_LIT` arg. `brink-syntax-native`'s annotation-arg grammar
+//! separately gained an *unquoted* `::`-path arg production (issue #1349,
+//! `@[was(story::old::path)]`, `AnnotationArg::path`); wiring that shape
+//! into this lowering pass is a follow-up, not done in this slice.
 //!
 //! The produced [`ModuleDecl`] carries an **empty `name`** deliberately: a
 //! native file's current module identity is a project-layer, path-derived fact
@@ -96,9 +103,10 @@ pub(super) fn lower_file_module(
 }
 
 /// Extract the old module path from a `@[was("…")]` line: its first argument
-/// must be a string literal (`::` path spellings are not annotation-argument
-/// grammar, so the path travels as a quoted string). Returns `None` for a
-/// missing or non-string argument, which the caller diagnoses `E132`.
+/// must be a string literal. Returns `None` for a missing or non-string
+/// argument (including the newer unquoted-`::`-path arg shape, issue
+/// #1349 — not yet consumed here, see this module's doc comment), which
+/// the caller diagnoses `E132`.
 fn was_old_path(line: &ast::AnnotationLine) -> Option<String> {
     let arg = line.args()?.args().next()?;
     let string_lit = arg

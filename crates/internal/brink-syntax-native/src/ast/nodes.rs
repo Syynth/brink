@@ -614,6 +614,14 @@ impl AnnotationArg {
     pub fn nested_args(&self) -> Option<AnnotationArgs> {
         support::child(&self.syntax)
     }
+
+    /// The unquoted `::`-separated module `PATH` (`story::old::path`), if
+    /// this argument is one (issue #1349, `@[was(story::old::path)]`'s
+    /// arg form). `name_token` is `None` for this shape — the arg's direct
+    /// child is a `PATH` node, not a bare `IDENT` token.
+    pub fn path(&self) -> Option<Path> {
+        support::child(&self.syntax)
+    }
 }
 
 impl CallExpr {
