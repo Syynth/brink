@@ -438,23 +438,34 @@ impl Project {
         Ok(out)
     }
 
-    /// Build an `IdeSession` seeded with every project file (db-level only — no
-    /// analysis), for the `brink-ide` ops (`file_rename`) that take a session.
+    /// Build an `IdeSession` seeded with every project file, for the
+    /// `brink-ide` ops (`file_rename`) that take a session.
     ///
-    /// Deliberately never calls `IdeSession::set_lint_policy` (issue #1382
-    /// audit; see that method's own doc for the `IdeSession` side of this
-    /// note): with no `update_and_analyze`/`reanalyze` call here either,
-    /// `session.analysis()` stays `None` for the session's whole lifetime, so
-    /// `structural_result::gate`/`gate_with_source` (which `rename_file`
-    /// calls internally) short-circuit to an empty breakage report before
-    /// ever reading `analysis_options().lints` — today's one caller
-    /// (`run_move_file`) also discards that `StructuralResult`'s
-    /// `safe`/`introduced` fields entirely, re-deriving the real safety-gate
-    /// diagnostics through `introduced_diagnostics` (this struct's own
-    /// method, which *does* resolve `[lints]` via `resolve_analysis_options`)
-    /// instead. So there is no live drop today — but a future caller that
-    /// starts reading `rename_file`'s own `.safe`/`.introduced` would need
-    /// `set_lint_policy` wired here first.
+    /// Issue #1393: forwards the already-resolved project policy —
+    /// `Project::load` has already merged `brink.toml`'s `[project]
+    /// dialect`/`types` and `[lints]` into `driver`'s `AnalysisOptions` via
+    /// `resolve_analysis_options` — onto the session via
+    /// `set_language_dialect`/`set_type_policy`/`set_lint_policy`. Previously
+    /// this built a bare `IdeSession::new()` and never called any of those
+    /// setters (issue #1382 audit), so `structural_result::gate`/
+    /// `gate_with_source` (which `rename_file` calls internally) always saw
+    /// `LintPolicy::default()`/`Dialect::default()` and — because
+    /// `session.analysis()` also stayed `None` with no setter ever
+    /// triggering a `reanalyze()` — short-circuited to an empty breakage
+    /// report regardless. Today's one caller (`run_move_file`) discards that
+    /// `StructuralResult`'s `safe`/`introduced` fields entirely, re-deriving
+    /// the real safety-gate diagnostics through `introduced_diagnostics`
+    /// (this struct's own method, which *does* resolve `[lints]`), so this
+    /// was not a live behavioral drop for `move-file` specifically — but the
+    /// CLI IDE surface was still silently ignoring project config that
+    /// `brink compile` (and `brink ide check`, which reads `project.driver`
+    /// directly rather than going through this session) already honored, and
+    /// any future caller reading `rename_file`'s own gate output, or a new
+    /// `ide_session()` consumer, would have inherited the drop. Each setter
+    /// re-analyzes, so they're called after every source is loaded — calling
+    /// them first would reanalyze against an empty file set, then leave that
+    /// stale (empty) result in place once sources are added via
+    /// `update_source` (which does not itself trigger re-analysis).
     pub(super) fn ide_session(&self) -> IdeSession {
         let db = self.driver.db();
         let mut session = IdeSession::new();
@@ -464,6 +475,12 @@ impl Project {
                 session.update_source(path, src.to_string());
             }
         }
+        let options = db.analysis_options();
+        session.set_language_dialect(options.dialect);
+        if let Some(types) = options.types {
+            session.set_type_policy(types);
+        }
+        session.set_lint_policy(options.lints.clone());
         session
     }
 
@@ -1030,6 +1047,95 @@ mod git_baseline_config_tests {
         );
 
         drop(cwd_guard);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+/// Regression for issue #1393: `Project::ide_session()` used to build a bare
+/// `IdeSession::new()` with no `set_lint_policy`/`set_language_dialect`/
+/// `set_type_policy` call, so a project's `brink.toml` never reached any
+/// `brink ide` subcommand that goes through a session — the CLI IDE surface
+/// silently ignored config that `brink compile` (and `brink ide check`,
+/// which reads `Project::driver`'s own resolved `AnalysisOptions` directly)
+/// already honored.
+#[cfg(test)]
+mod ide_session_project_config_tests {
+    use super::*;
+
+    #[test]
+    fn ide_session_applies_the_resolved_lints_dialect_and_types() {
+        let dir = std::env::temp_dir().join(format!(
+            "brink-ide-unit-ide-session-config-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("brink.toml"),
+            "[project]\ndialect = \"brink\"\ntypes = \"gradual\"\n\n[lints]\nE014 = \"deny\"\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("story.ink"), "Hello.\n-> END\n").unwrap();
+
+        let entry = dir.join("story.ink");
+        let project = Project::load(&entry).expect("project loads");
+        let session = project.ide_session();
+
+        assert_eq!(
+            session.language_dialect(),
+            brink_analyzer::Dialect::Brink,
+            "ide_session() must forward the resolved [project] dialect"
+        );
+        // `types = "gradual"` is the non-default posture for the `Brink`
+        // dialect (which otherwise resolves `None` to `Strict` — see
+        // `resolve_type_policy`), so this only stays green if `ide_session()`
+        // actually forwards the explicit `types` value instead of falling
+        // through to the dialect-keyed default.
+        assert_eq!(
+            session.type_policy(),
+            brink_analyzer::TypePolicy::Gradual,
+            "ide_session() must forward the resolved [project] types"
+        );
+        assert_eq!(
+            session.lint_policy().overrides.get("E014"),
+            Some(&brink_analyzer::LintLevel::Deny),
+            "ide_session() must forward the resolved [lints] re-level"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Sanity companion: with no `brink.toml` at all, `ide_session()` must
+    /// still resolve to the same byte-identical defaults `IdeSession::new()`
+    /// starts with — the fix must not invent policy out of nothing.
+    #[test]
+    fn ide_session_matches_session_defaults_when_no_brink_toml_is_present() {
+        let dir = std::env::temp_dir().join(format!(
+            "brink-ide-unit-ide-session-no-config-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("story.ink"), "Hello.\n-> END\n").unwrap();
+
+        let entry = dir.join("story.ink");
+        let project = Project::load(&entry).expect("project loads");
+        let session = project.ide_session();
+
+        assert_eq!(
+            session.language_dialect(),
+            brink_analyzer::Dialect::default()
+        );
+        assert_eq!(
+            session.type_policy(),
+            brink_analyzer::TypePolicy::Gradual,
+            "no brink.toml must resolve through the StrictInk-keyed default, not invent a policy"
+        );
+        assert_eq!(
+            *session.lint_policy(),
+            brink_analyzer::LintPolicy::default()
+        );
+
         std::fs::remove_dir_all(&dir).ok();
     }
 }
