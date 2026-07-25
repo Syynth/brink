@@ -88,6 +88,14 @@ it finds. The file doesn't have to sit directly beside the entry point — a
 multi-file project with `story.ink` in `src/chapters/` and `brink.toml` at
 the repo root still finds it.
 
+The walk is bounded at a workspace/git boundary: it never climbs past a
+directory containing a `.git` entry (an ordinary repository's `.git/`
+directory, or a linked worktree's `.git` pointer file). Inside a
+non-repository tree (no VCS at all), the walk still runs all the way to the
+filesystem root. Either way, a `brink.toml` that lives outside the project's
+own repository is never picked up, even by accident — the file is treated
+exactly as if it didn't exist.
+
 ```text
 my-project/
 ├── brink.toml          ← found even though the entry is nested
