@@ -361,12 +361,13 @@ CUT TO:                             ← transition (dresses the divert)
 
 ## 9. Open threads ⏳ (the resumption points)
 
-1. **The syntax round** — the concrete element inventory for the
-   screenplay preset + spellings, the choice-point aesthetic pass
-   (§2b's "naturally complement" check), explicit-slug spelling,
-   escape-set finalization, conventions-file format, and the
+1. **The syntax round** — *the next major sitting.* Prepared straw:
+   **docs/prose-element-inventory.md** (candidate element inventory,
+   glyph-conflict ledger, and the sitting's agenda). Covers: the
+   screenplay preset's element set + spellings, the choice-point
+   aesthetic pass (§2b's "naturally complement" check), explicit-slug
+   spelling, escape-set finalization, conventions-file format, and the
    attachment-mechanism final call (compile-baked is the lean, §3.6).
-   *The next major sitting.*
 2. **Translation, round 2** — element data in XLIFF (is a speaker name
    translatable?), per-locale budgets, the bump batching.
 3. **Per-path export design** (§2b.4) — Fountain/FDX/VO-sheet
