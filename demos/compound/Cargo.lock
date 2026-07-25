@@ -1991,6 +1991,7 @@ dependencies = [
  "brink-db",
  "brink-ir",
  "brink-project-config",
+ "brink-source-tree",
  "thiserror 2.0.18",
  "tracing",
 ]
