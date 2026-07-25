@@ -706,7 +706,7 @@ mod tests {
         let env = Project::load(&t, "main.ink", &OptionOverrides::default()).expect("loads");
         let err = compile(&env).expect_err("a denied E014 must block compilation");
         let CompileError::Diagnostics(diags) = err else {
-            panic!("expected CompileError::Diagnostics, got {err:?}");
+            unreachable!("expected CompileError::Diagnostics, got {err:?}");
         };
         assert!(
             diags
