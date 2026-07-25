@@ -48,7 +48,7 @@ use crate::asset::{
 /// [`brink_runtime::link`] and emits labeled subassets (`#program`,
 /// `#line_tables`) just like [`InkbLoader`](crate::InkbLoader).
 ///
-/// ## `brink.toml` discovery (#1029, #1360)
+/// ## `brink.toml` discovery (#1029, #1360, #1406)
 ///
 /// A `brink.toml` beside (or above) the entry asset supplies the
 /// [`ProjectConfig`] (`dialect`/`types`) that gates T1b brink-extension
@@ -59,15 +59,19 @@ use crate::asset::{
 /// entry, then each ancestor directory in turn, via
 /// [`LoadContext::read_asset_bytes`] — bounded at the asset source root
 /// (never above it) and naturally finite (the entry path has finitely many
-/// `/`-separated ancestors). A hit is registered as a load dependency
-/// exactly like an `INCLUDE`, so editing `brink.toml` in dev mode
-/// hot-reloads the story, and its text is landed at its own key in the
-/// drained source map. Discovering *that* key, parsing it, and applying
-/// `CLI/API > file > default` precedence is then entirely
-/// [`Project::load`]'s job (`brink_project_config::discover_from_entry_in_tree`
-/// over the same map) — this loader only supplies candidate bytes, it does
-/// not re-implement the resolution policy. A miss at every level leaves
-/// `AnalysisOptions` at its default — byte-identical to pre-#1029 behavior.
+/// `/`-separated ancestors). Every candidate found (not just the nearest)
+/// is registered as a load dependency exactly like an `INCLUDE`, so editing
+/// any of them in dev mode hot-reloads the story, and its text is landed at
+/// its own key in the drained source map. Discovering *which* key governs,
+/// parsing it, and applying `CLI/API > file > default` precedence is then
+/// entirely [`Project::load`]'s job
+/// (`brink_project_config::discover_from_entry_in_tree` over the same map,
+/// walking the same bounded ancestor chain once more — but now as the
+/// *only* place that walk makes a governing-candidate decision, see
+/// [`probe_brink_toml`]'s doc) — this loader only supplies candidate bytes,
+/// it does not re-implement the resolution policy. A miss at every level
+/// leaves `AnalysisOptions` at its default — byte-identical to pre-#1029
+/// behavior.
 ///
 /// [`override_config`](Self::override_config), set via
 /// [`BrinkPlugin::with_config`](crate::BrinkPlugin::with_config) /
@@ -281,28 +285,42 @@ fn ancestor_dirs(entry_path: &str) -> Vec<String> {
 /// to the asset source root — mirroring the CLI's `brink.toml` walk-up
 /// (`brink_project_config::find_config`), but over the async `AssetReader`
 /// since a bevy source tree may be virtual or packed rather than a real
-/// filesystem. A hit is read via [`LoadContext::read_asset_bytes`], which
-/// registers it as a load dependency, so hot-reload "just works" exactly
-/// like an `INCLUDE`.
+/// filesystem. Every candidate found is read via
+/// [`LoadContext::read_asset_bytes`], which registers it as a load
+/// dependency, so hot-reload "just works" exactly like an `INCLUDE`.
 ///
-/// Returns only the candidate's key + text — **not** parsed, and no
-/// precedence applied. This loader's job stops at supplying bytes; the
-/// caller lands the pair at its own key in the drained source map, and
-/// [`Project::load`] (over the resulting `SourceTree`) then runs its own
-/// discovery walk (`brink_project_config::discover_from_entry_in_tree`) to
-/// decide which candidate governs, parses it, and applies the
-/// `CLI/API > file > default` precedence (#1360). The bounded ancestor
-/// walk-up itself is still performed twice — once here (to fetch candidate
-/// bytes through the async `AssetReader`), once inside `Project::load`
-/// (over the resulting in-memory tree) — only the parsing, precedence, and
-/// "which candidate governs" decision are deduplicated; this probe does not
-/// re-implement that resolution policy. A miss at every ancestor returns
-/// `Ok(None)` — not an error, matching `brink-project-config`'s "missing
-/// config changes nothing" contract.
+/// Returns every candidate this probe found along the way — key + raw
+/// text, **not** parsed, and no precedence applied. This loader's job
+/// stops at supplying bytes; the caller lands every pair at its own key in
+/// the drained source map, and [`Project::load`] (over the resulting
+/// `SourceTree`) then runs its own discovery walk
+/// (`brink_project_config::discover_from_entry_in_tree`) to decide which
+/// candidate governs, parses it, and applies the `CLI/API > file >
+/// default` precedence (#1360).
+///
+/// ## One walk, not two (#1406)
+///
+/// This probe deliberately does **not** stop at the first hit. #1360 left
+/// the bounded ancestor walk-up performed twice — once here (fetching
+/// bytes through the async `AssetReader`, stopping as soon as a candidate
+/// was found) and again inside `Project::load` (`discover_from_entry_in_tree`,
+/// walking the same ancestor chain over the resulting tree to decide which
+/// candidate governs) — so this loader was quietly re-implementing the
+/// same nearest-wins decision `discover_from_entry_in_tree` already makes,
+/// with the two walks only ever agreeing because at most one candidate was
+/// ever landed in the tree to find. Walking every ancestor to the asset
+/// source root instead — landing every candidate that exists, not just
+/// the nearest — means `Project::load`'s own walk is the **only** place
+/// that decision is made; this probe just gathers raw bytes. Only the
+/// nearest candidate is ever actually read as config (farther ones are
+/// shadowed exactly as before — [`Project::load`]'s walk still stops at
+/// the first hit it finds), so the extra reads never change which
+/// candidate governs, just who decides.
 async fn probe_brink_toml(
     load_context: &mut LoadContext<'_>,
     entry_path: &str,
-) -> Result<Option<(String, String)>, InkLoaderError> {
+) -> Result<Vec<(String, String)>, InkLoaderError> {
+    let mut found = Vec::new();
     for dir in ancestor_dirs(entry_path) {
         let candidate = if dir.is_empty() {
             brink_project_config::CONFIG_FILE_NAME.to_string()
@@ -311,10 +329,10 @@ async fn probe_brink_toml(
         };
         if let Ok(bytes) = load_context.read_asset_bytes(candidate.clone()).await {
             let text = String::from_utf8(bytes)?;
-            return Ok(Some((candidate, text)));
+            found.push((candidate, text));
         }
     }
-    Ok(None)
+    Ok(found)
 }
 
 impl AssetLoader for InkLoader {
@@ -369,13 +387,15 @@ impl AssetLoader for InkLoader {
             sources.insert(path, source);
         }
 
-        // #1029/#1360: bounded ancestor walk-up for `brink.toml` through the
-        // async AssetReader (see the module/struct docs). Only the bytes are
-        // fetched here; landing the pair at its own key in `sources` lets
-        // `Project::load` below do its own discovery, parsing, and
-        // precedence resolution over the resulting tree — this loader no
-        // longer duplicates that policy.
-        if let Some((config_path, text)) = probe_brink_toml(load_context, &entry_path).await? {
+        // #1029/#1360/#1406: bounded ancestor walk-up for `brink.toml`
+        // through the async AssetReader (see the module/struct docs). Only
+        // the bytes are fetched here — every candidate found along the way,
+        // not just the nearest — landing each pair at its own key in
+        // `sources` lets `Project::load` below run the *sole* discovery
+        // walk (over the resulting tree) that decides which candidate
+        // governs, parses it, and applies precedence; this loader no longer
+        // duplicates that decision.
+        for (config_path, text) in probe_brink_toml(load_context, &entry_path).await? {
             sources.insert(config_path, text);
         }
 
@@ -812,6 +832,36 @@ mod config_discovery_tests {
         // brink.toml sits two levels above the entry -- proves the walk-up
         // doesn't stop at the immediate sibling directory.
         dir.insert_asset_text(Path::new("brink.toml"), "[project]\ndialect = \"brink\"\n");
+
+        let handle = app
+            .world()
+            .resource::<AssetServer>()
+            .load::<BrinkStoryAsset>("stories/ch1/intro.ink");
+        wait_for_loaded(&mut app, &handle);
+    }
+
+    /// #1406 regression: with a `brink.toml` at *two* ancestor levels
+    /// (conflicting settings), the nearest one must still govern even
+    /// though [`super::probe_brink_toml`] now lands **both** candidates in
+    /// the drained tree (it no longer stops at the first hit — see its doc
+    /// comment). The farther, root-level `brink.toml` sets
+    /// `dialect = "strict-ink"`, which alone would reject `BRINK_ONLY_SOURCE`
+    /// (`#@private`) — only the nearer `stories/ch1/brink.toml`'s
+    /// `dialect = "brink"` makes it compile, so a `Loaded` outcome here
+    /// proves `Project::load`'s own walk (`discover_from_entry_in_tree`),
+    /// not this probe, is still the sole "which candidate governs" decider.
+    #[test]
+    fn nearest_ancestor_brink_toml_shadows_a_farther_conflicting_one() {
+        let (mut app, dir) = make_memory_asset_app();
+        dir.insert_asset_text(Path::new("stories/ch1/intro.ink"), BRINK_ONLY_SOURCE);
+        dir.insert_asset_text(
+            Path::new("stories/ch1/brink.toml"),
+            "[project]\ndialect = \"brink\"\n",
+        );
+        dir.insert_asset_text(
+            Path::new("brink.toml"),
+            "[project]\ndialect = \"strict-ink\"\n",
+        );
 
         let handle = app
             .world()
