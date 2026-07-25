@@ -36,6 +36,8 @@ mod bindings;
 mod brkt;
 mod call;
 mod capability;
+#[cfg(feature = "dev")]
+mod config_warnings;
 mod event;
 mod flow;
 mod globals;
@@ -129,6 +131,8 @@ pub use capability::{
     ContainerAccess, ContainerAccessTable, compute_container_access, detect_capability_changes,
     dump_container_access, rebuild_capability_table,
 };
+#[cfg(feature = "dev")]
+pub use config_warnings::BrinkConfigWarnings;
 #[cfg(feature = "dev")]
 pub use event::BrinkFlowReset;
 pub use event::{BrinkChoicesPresented, BrinkLineDelivered, BrinkStoryEnded, BrinkTurnDone};
