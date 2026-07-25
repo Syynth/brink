@@ -200,6 +200,7 @@ fn has_errors_matches_manual_partition_diagnostics() {
             &db.analysis().diagnostics,
             disable_all,
             db.analysis_options().type_policy(),
+            &db.analysis_options().lints,
         );
         assert_eq!(
             db.has_errors(),

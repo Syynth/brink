@@ -202,6 +202,9 @@ impl Default for BrinkDatabase {
                 // above — see `has_errors_in_closure_query`'s doc comment.
                 .ingredient::<has_errors_in_closure_query>()
                 .ingredient::<type_policy_query>()
+                // The `.lints` sibling projection (issue #1160) — see
+                // `lint_policy_query`'s doc comment.
+                .ingredient::<lint_policy_query>()
                 // FG-4d (issue #830): per-knot LIR chunk memos + the
                 // cutoff-friendly struct-shape projection they read;
                 // `lir_lowering_query` is now the link phase assembling them.
@@ -1748,6 +1751,22 @@ pub(crate) fn type_policy_query(db: &dyn salsa::Database, project: ProjectInput)
     project.analysis_options(db).type_policy()
 }
 
+/// The project's resolved `[lints]` policy (issue #1160) as its own narrow
+/// projection query — [`type_policy_query`]'s sibling, same cutoff argument:
+/// [`lir_lowering_query`]'s severity partition needs `AnalysisOptions.lints`,
+/// but reading it through `project.analysis_options(db)` directly would
+/// register a dependency on the *whole* input field, so an unrelated options
+/// edit (registering a host manifest, say) would force the `no_eq` lowering
+/// memo to fully re-execute. `LintPolicy`'s derived `Eq` gives the same
+/// cheap-cutoff property `TypePolicy` already has here.
+#[salsa::tracked]
+pub(crate) fn lint_policy_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+) -> brink_analyzer::LintPolicy {
+    project.analysis_options(db).lints.clone()
+}
+
 /// FG-4d **link phase**: assemble the per-knot chunk memos and the whole-root
 /// chunk into a `Program`. See the section comment above for the
 /// byte-identity and non-re-execution arguments.
@@ -1803,6 +1822,9 @@ pub(crate) fn lir_lowering_query(db: &dyn salsa::Database, project: ProjectInput
     // (issue #839 / FG-4e removed the direct `build_prelude` call that used
     // to consume it here).
     let types = type_policy_query(db, project);
+    // [`lint_policy_query`]'s sibling narrow projection (issue #1160) —
+    // same cutoff rationale as `type_policy_query` above.
+    let lints = lint_policy_query(db, project);
 
     // Whole-project prelude (issue #839 / FG-4e): declarations + struct
     // shapes + the seeded name table come from [`lir_prelude_decls_query`]
@@ -1861,9 +1883,10 @@ pub(crate) fn lir_lowering_query(db: &dyn salsa::Database, project: ProjectInput
     // program regardless of dialect). Error-severity lowering diagnostics
     // (T1b-3's E055/E056) still gate `program: None` exactly like an
     // analysis-phase error would.
-    let (lir_errors, lir_warnings): (Vec<Diagnostic>, Vec<Diagnostic>) = lir_diagnostics
-        .into_iter()
-        .partition(|d| brink_analyzer::effective_severity(d.code, types) == Severity::Error);
+    let (lir_errors, lir_warnings): (Vec<Diagnostic>, Vec<Diagnostic>) =
+        lir_diagnostics.into_iter().partition(|d| {
+            brink_analyzer::effective_severity(d.code, types, &lints) == Severity::Error
+        });
 
     if lir_errors.is_empty() {
         LirLowering {
@@ -1913,9 +1936,10 @@ pub(crate) fn lir_query(db: &dyn salsa::Database, project: ProjectInput) -> LirP
             lowering: &lowered_query(db, *f).diagnostics,
         })
         .collect();
-    let types = project.analysis_options(db).type_policy();
+    let opts = project.analysis_options(db);
+    let types = opts.type_policy();
     let (mut errors, mut warnings) =
-        partition_diagnostics(&inputs, diagnostics, disable_all, types);
+        partition_diagnostics(&inputs, diagnostics, disable_all, types, &opts.lints);
 
     // FG-4a (issue #791, PR #753 seam finding #3): the gate deciding
     // whether to attempt (potentially expensive) LIR lowering reads the
@@ -1998,9 +2022,10 @@ pub(crate) fn lir_in_closure_query(db: &dyn salsa::Database, project: ProjectInp
             lowering: &lowered_query(db, *f).diagnostics,
         })
         .collect();
-    let types = project.analysis_options(db).type_policy();
+    let opts = project.analysis_options(db);
+    let types = opts.type_policy();
     let (mut errors, mut warnings) =
-        partition_diagnostics(&inputs, &diagnostics, disable_all, types);
+        partition_diagnostics(&inputs, &diagnostics, disable_all, types, &opts.lints);
 
     if has_errors_in_closure_query(db, project) {
         return LirProduct {
@@ -2238,18 +2263,23 @@ static NO_SUPPRESSIONS: Suppressions = Suppressions {
 /// under `types = gradual` (the #640-round ruling) no matter which of this
 /// function's two callers ([`lir_query`] or `brink-driver`'s
 /// `collect_diagnostics`) is asking.
+///
+/// `lints`: the project's resolved `[lints]` policy (issue #1160), the other
+/// input [`brink_analyzer::effective_severity`] partitions by — per-code
+/// `deny`/`warn`/`allow` overrides plus `deny-warnings`.
 #[must_use]
 pub fn partition_diagnostics(
     files: &[FileDiagnostics<'_>],
     analysis_diagnostics: &[Diagnostic],
     disable_all: bool,
     types: brink_analyzer::TypePolicy,
+    lints: &brink_analyzer::LintPolicy,
 ) -> (Vec<Diagnostic>, Vec<Diagnostic>) {
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
 
     let mut partition = |d: Diagnostic| {
-        if brink_analyzer::effective_severity(d.code, types) == Severity::Error {
+        if brink_analyzer::effective_severity(d.code, types, lints) == Severity::Error {
             errors.push(d);
         } else {
             warnings.push(d);

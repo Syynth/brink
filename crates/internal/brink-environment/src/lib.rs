@@ -474,6 +474,7 @@ pub enum LoadError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use brink_driver::LintLevel;
     use brink_source_tree::InMemory;
 
     fn tree(files: &[(&str, &str)]) -> InMemory {
@@ -632,6 +633,100 @@ mod tests {
         let err = Project::load(&t, "main.brink", &OptionOverrides::default())
             .expect_err("invalid dialect value must fail load");
         assert!(matches!(err, LoadError::Config(_)));
+    }
+
+    // ── [lints] resolution (issue #1160) ──────────────────────────────
+    //
+    // `Project::load` is the ONE point that folds a discovered `brink.toml`
+    // into the resolved `AnalysisOptions` (via
+    // `AnalysisOptions::apply_project_config`) — these tests exercise that
+    // exact seam, then prove the resolved policy is actually consulted by
+    // `compile`'s error gate (not just stored inertly on `Environment`).
+
+    /// A logic line with no effect (`~` alone) — `DiagnosticCode::E014`,
+    /// `Warning` by default (`brink_ir::hir::lower::tests::
+    /// logic_line_emits_diagnostic_on_malformed`).
+    const E014_SOURCE: &str = "Hello.\n~\n-> END\n";
+
+    #[test]
+    fn brink_toml_lints_table_resolves_into_options() {
+        let t = tree(&[
+            ("brink.toml", "[lints]\nE014 = \"deny\"\n"),
+            ("main.ink", E014_SOURCE),
+        ]);
+        let env = Project::load(&t, "main.ink", &OptionOverrides::default()).expect("loads");
+        assert_eq!(
+            env.options.lints.overrides.get("E014"),
+            Some(&LintLevel::Deny)
+        );
+    }
+
+    #[test]
+    fn brink_toml_deny_warnings_resolves_into_options() {
+        let t = tree(&[
+            ("brink.toml", "[lints]\ndeny-warnings = true\n"),
+            ("main.ink", E014_SOURCE),
+        ]);
+        let env = Project::load(&t, "main.ink", &OptionOverrides::default()).expect("loads");
+        assert!(env.options.lints.deny_warnings);
+    }
+
+    #[test]
+    fn absent_lints_table_leaves_options_lints_at_default() {
+        let t = tree(&[("main.ink", E014_SOURCE)]);
+        let env = Project::load(&t, "main.ink", &OptionOverrides::default()).expect("loads");
+        assert_eq!(env.options.lints, brink_driver::LintPolicy::default());
+    }
+
+    #[test]
+    fn e014_warning_compiles_cleanly_by_default() {
+        // No `[lints]` table: E014 stays a Warning, never blocks compile —
+        // "absent table = today's behavior" acceptance criterion.
+        let t = tree(&[("main.ink", E014_SOURCE)]);
+        let env = Project::load(&t, "main.ink", &OptionOverrides::default()).expect("loads");
+        let out = compile(&env).expect("a Warning-only diagnostic must not block compilation");
+        assert!(
+            out.warnings
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E014),
+            "expected E014 among the warnings: {:?}",
+            out.warnings
+        );
+    }
+
+    #[test]
+    fn brink_toml_lints_deny_relevels_e014_and_blocks_compile() {
+        // The same source as above, but `[lints] E014 = "deny"` re-levels
+        // it to Error — this must now fail the same `has_errors`-style
+        // gate `compile` reads through `Environment.options`.
+        let t = tree(&[
+            ("brink.toml", "[lints]\nE014 = \"deny\"\n"),
+            ("main.ink", E014_SOURCE),
+        ]);
+        let env = Project::load(&t, "main.ink", &OptionOverrides::default()).expect("loads");
+        let err = compile(&env).expect_err("a denied E014 must block compilation");
+        let CompileError::Diagnostics(diags) = err else {
+            panic!("expected CompileError::Diagnostics, got {err:?}");
+        };
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E014),
+            "expected E014 among the surfaced diagnostics: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn brink_toml_deny_warnings_blocks_compile_on_an_unconfigured_warning() {
+        // `deny-warnings = true` with no per-code override: E014 (an
+        // ordinary, unconfigured Warning) is still promoted to Error.
+        let t = tree(&[
+            ("brink.toml", "[lints]\ndeny-warnings = true\n"),
+            ("main.ink", E014_SOURCE),
+        ]);
+        let env = Project::load(&t, "main.ink", &OptionOverrides::default()).expect("loads");
+        let err = compile(&env).expect_err("deny-warnings must promote E014 to a compile error");
+        assert!(matches!(err, CompileError::Diagnostics(_)));
     }
 
     // ── native universe = whole tree; brink.toml never a source ──────

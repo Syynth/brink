@@ -71,7 +71,10 @@ pub use protocols::{
 };
 pub use resolve::ImportScope;
 pub use signature::{Sig, signature};
-pub use strict::{TypePolicy, effective_severity, native_strict_only_error, resolve_type_policy};
+pub use strict::{
+    LintLevel, LintPolicy, TypePolicy, effective_severity, native_strict_only_error,
+    resolve_type_policy,
+};
 pub use structs::{ShapeInfo, declared_shapes};
 
 use brink_format::DefinitionId;
@@ -117,6 +120,14 @@ pub struct AnalysisOptions {
     /// (annotation-vs-inference mismatch) into production. Authoring-time/
     /// tooling input only — never embedded in `.inkb`, mirroring `dialect`.
     pub types: Option<TypePolicy>,
+    /// Resolved `[lints]` policy (issue #1160): per-code severity overrides
+    /// plus `deny-warnings`. `LintPolicy::default()` (empty overrides,
+    /// `deny_warnings: false`) is a no-op — every diagnostic keeps its
+    /// [`brink_ir::DiagnosticCode::severity`] default, byte-identical to
+    /// pre-#1160 behavior. Resolved once, here, via
+    /// [`AnalysisOptions::apply_project_config`] — read through
+    /// [`effective_severity`], never this field directly.
+    pub lints: LintPolicy,
 }
 
 impl AnalysisOptions {
@@ -141,6 +152,17 @@ impl AnalysisOptions {
     /// already carry whatever it would have without a config file (typically
     /// [`AnalysisOptions::default()`]).
     ///
+    /// `lints`/`deny-warnings` (issue #1160) have no override mechanism yet
+    /// (no CLI flag or editor API sets an individual code's severity or
+    /// `deny-warnings` today), so unlike `dialect`/`types` there is no
+    /// `lints_overridden` parameter — the file's `[lints]` table always
+    /// applies, merged key-by-key into [`AnalysisOptions::lints`]
+    /// (`config.deny_warnings`, if set, replaces
+    /// [`LintPolicy::deny_warnings`] wholesale). Adding an explicit
+    /// override source is a natural follow-up that would slot into the
+    /// same `CLI/API > file > default` precedence this function already
+    /// establishes for `dialect`/`types`.
+    ///
     /// Lives here rather than in `brink-project-config` so that crate needs no
     /// workspace dependencies and can publish standalone (#1234) — it owns the
     /// policy *types*, this crate owns applying them to its own options.
@@ -155,6 +177,12 @@ impl AnalysisOptions {
         }
         if !types_overridden && let Some(types) = config.types {
             self.types = Some(types);
+        }
+        for (code, level) in &config.lints {
+            self.lints.overrides.insert(code.clone(), *level);
+        }
+        if let Some(deny_warnings) = config.deny_warnings {
+            self.lints.deny_warnings = deny_warnings;
         }
     }
 }
@@ -864,10 +892,12 @@ mod tests {
     //! compilation when no `HostManifest` is registered, while a registered
     //! manifest keeps full checking (a genuinely unknown type still errors).
 
+    use std::collections::BTreeMap;
+
     use brink_ir::{BaseType, HostManifest, SemanticTypeDef};
 
     use super::{
-        AnalysisOptions, Dialect, FileId, ImportScope, ProjectConfig,
+        AnalysisOptions, Dialect, FileId, ImportScope, LintLevel, LintPolicy, ProjectConfig,
         SemanticTypeDiagnosticSeverity, TypePolicy, analyze, analyze_with_options,
         per_file_diagnostics, resolve, symbol_index,
     };
@@ -1219,6 +1249,7 @@ EXTERNAL add_state(who)
         let config = ProjectConfig {
             dialect: Some(Dialect::Brink),
             types: Some(TypePolicy::Strict),
+            ..ProjectConfig::default()
         };
         options.apply_project_config(&config, false, false);
         assert_eq!(options.dialect, Dialect::Brink);
@@ -1235,6 +1266,7 @@ EXTERNAL add_state(who)
         let config = ProjectConfig {
             dialect: Some(Dialect::Brink),
             types: Some(TypePolicy::Strict),
+            ..ProjectConfig::default()
         };
         // Both overridden: explicit calls win, file is ignored entirely.
         options.apply_project_config(&config, true, true);
@@ -1252,6 +1284,7 @@ EXTERNAL add_state(who)
         let config = ProjectConfig {
             dialect: Some(Dialect::Brink),
             types: Some(TypePolicy::Strict),
+            ..ProjectConfig::default()
         };
         // dialect explicitly overridden (stays StrictInk); types is not
         // (file wins, becomes Strict).
@@ -1270,5 +1303,52 @@ EXTERNAL add_state(who)
         options.apply_project_config(&ProjectConfig::default(), false, false);
         assert_eq!(options.dialect, Dialect::Brink);
         assert_eq!(options.types, Some(TypePolicy::Strict));
+    }
+
+    // ── AnalysisOptions::apply_project_config: [lints] (issue #1160) ──
+
+    #[test]
+    fn apply_project_config_merges_lint_overrides() {
+        let mut options = AnalysisOptions::default();
+        let mut config = ProjectConfig::default();
+        config.lints.insert("E014".to_owned(), LintLevel::Deny);
+        config.lints.insert("E022".to_owned(), LintLevel::Allow);
+
+        options.apply_project_config(&config, false, false);
+
+        assert_eq!(options.lints.overrides.get("E014"), Some(&LintLevel::Deny));
+        assert_eq!(options.lints.overrides.get("E022"), Some(&LintLevel::Allow));
+    }
+
+    #[test]
+    fn apply_project_config_sets_deny_warnings() {
+        let mut options = AnalysisOptions::default();
+        let config = ProjectConfig {
+            deny_warnings: Some(true),
+            ..ProjectConfig::default()
+        };
+
+        options.apply_project_config(&config, false, false);
+
+        assert!(options.lints.deny_warnings);
+    }
+
+    #[test]
+    fn apply_project_config_absent_lints_leaves_lint_policy_untouched() {
+        let mut options = AnalysisOptions {
+            lints: LintPolicy {
+                overrides: BTreeMap::from([("E014".to_owned(), LintLevel::Deny)]),
+                deny_warnings: true,
+            },
+            ..AnalysisOptions::default()
+        };
+
+        options.apply_project_config(&ProjectConfig::default(), false, false);
+
+        // An empty `[lints]` table (or none at all) must not clear an
+        // already-resolved lint policy — same "unset means untouched" rule
+        // `dialect`/`types` already follow.
+        assert_eq!(options.lints.overrides.get("E014"), Some(&LintLevel::Deny));
+        assert!(options.lints.deny_warnings);
     }
 }

@@ -14,7 +14,9 @@ use std::collections::HashMap;
 use std::io;
 use std::path::Path;
 
-pub use brink_analyzer::{AnalysisOptions, AnalysisResult, Dialect, TypePolicy};
+pub use brink_analyzer::{
+    AnalysisOptions, AnalysisResult, Dialect, LintLevel, LintPolicy, TypePolicy,
+};
 pub use brink_db::{CompileProduct, LirProduct, ProjectDb, SourceTree};
 pub use brink_ir::FileId;
 pub use diagnostics::DiagnosticReport;

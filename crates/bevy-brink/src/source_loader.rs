@@ -642,6 +642,7 @@ mod config_discovery_tests {
             override_config: Some(ProjectConfig {
                 dialect: Some(Dialect::Brink),
                 types: None,
+                ..ProjectConfig::default()
             }),
         });
 
