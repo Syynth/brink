@@ -195,23 +195,76 @@ impl AnalysisOptions {
         }
         let mut warnings = Vec::new();
         for (code, level) in &config.lints {
-            match DiagnosticCode::from_str_code(code) {
-                Some(parsed) if parsed.severity() == Severity::Warning => {
+            match validate_lint_code(code) {
+                Ok(()) => {
                     self.lints.overrides.insert(code.clone(), *level);
                 }
-                Some(_) => warnings.push(ConfigWarning(format!(
-                    "[lints] `{code}` is not overridable (its default severity is not \
-                     `Warning`); ignored"
-                ))),
-                None => warnings.push(ConfigWarning(format!(
-                    "[lints] `{code}` is not a recognized diagnostic code; ignored"
-                ))),
+                Err(warning) => warnings.push(warning),
             }
         }
         if let Some(deny_warnings) = config.deny_warnings {
             self.lints.deny_warnings = deny_warnings;
         }
         warnings
+    }
+
+    /// Apply explicit CLI/API per-code lint-level overrides on top of
+    /// whatever [`Self::apply_project_config`] already resolved (the
+    /// default, then a discovered `brink.toml`) — the top of the `CLI/API >
+    /// file > default` precedence stack (#1005), completing the "natural
+    /// follow-up" [`Self::apply_project_config`]'s own doc comment flags:
+    /// `[lints]`/`deny-warnings` previously had no override source at all
+    /// (issue #1373). Call this *after* `apply_project_config`, if the
+    /// caller applies both — an entry here replaces whatever the file set
+    /// for the same code, and `deny_warnings: Some(_)` replaces the file's
+    /// `deny-warnings` wholesale, mirroring `dialect`/`types`' own
+    /// `*_overridden` handling above.
+    ///
+    /// Runs every code through the exact same [`validate_lint_code`] gate
+    /// `apply_project_config`'s `[lints]` handling uses — a key that isn't a
+    /// real [`DiagnosticCode`], or names a code whose *default* severity
+    /// isn't `Warning`, is never merged into [`Self::lints`] and instead
+    /// earns a returned [`ConfigWarning`] on the same "warn, never silently
+    /// drop" channel (#1160's overridability constraint applies identically
+    /// to a CLI/API-set code as to a `brink.toml`-set one).
+    pub fn apply_lint_overrides(
+        &mut self,
+        overrides: &BTreeMap<String, LintLevel>,
+        deny_warnings: Option<bool>,
+    ) -> Vec<ConfigWarning> {
+        let mut warnings = Vec::new();
+        for (code, level) in overrides {
+            match validate_lint_code(code) {
+                Ok(()) => {
+                    self.lints.overrides.insert(code.clone(), *level);
+                }
+                Err(warning) => warnings.push(warning),
+            }
+        }
+        if let Some(deny_warnings) = deny_warnings {
+            self.lints.deny_warnings = deny_warnings;
+        }
+        warnings
+    }
+}
+
+/// Validate `code` against the real [`DiagnosticCode`] set (#1160's "resolve
+/// a key against the real code set" channel, shared by
+/// [`AnalysisOptions::apply_project_config`]'s `[lints]` handling and
+/// [`AnalysisOptions::apply_lint_overrides`] — #1373): `Ok(())` if `code` is
+/// overridable (a recognized code whose *default* severity is `Warning`),
+/// otherwise the same-shaped [`ConfigWarning`] both call sites surface,
+/// keeping the wording byte-identical regardless of which tier the code came
+/// from.
+fn validate_lint_code(code: &str) -> Result<(), ConfigWarning> {
+    match DiagnosticCode::from_str_code(code) {
+        Some(parsed) if parsed.severity() == Severity::Warning => Ok(()),
+        Some(_) => Err(ConfigWarning(format!(
+            "[lints] `{code}` is not overridable (its default severity is not `Warning`); ignored"
+        ))),
+        None => Err(ConfigWarning(format!(
+            "[lints] `{code}` is not a recognized diagnostic code; ignored"
+        ))),
     }
 }
 
@@ -1441,5 +1494,85 @@ EXTERNAL add_state(who)
         let warnings = options.apply_project_config(&config, false, false);
 
         assert!(warnings.is_empty());
+    }
+
+    // ── AnalysisOptions::apply_lint_overrides: CLI/API tier (issue #1373) ──
+
+    #[test]
+    fn apply_lint_overrides_merges_per_code_overrides() {
+        let mut options = AnalysisOptions::default();
+        let mut overrides = BTreeMap::new();
+        overrides.insert("E014".to_owned(), LintLevel::Deny);
+
+        let warnings = options.apply_lint_overrides(&overrides, None);
+
+        assert!(warnings.is_empty());
+        assert_eq!(options.lints.overrides.get("E014"), Some(&LintLevel::Deny));
+    }
+
+    #[test]
+    fn apply_lint_overrides_sets_deny_warnings() {
+        let mut options = AnalysisOptions::default();
+
+        let warnings = options.apply_lint_overrides(&BTreeMap::new(), Some(true));
+
+        assert!(warnings.is_empty());
+        assert!(options.lints.deny_warnings);
+    }
+
+    #[test]
+    fn apply_lint_overrides_none_deny_warnings_leaves_it_untouched() {
+        let mut options = AnalysisOptions::default();
+        options.lints.deny_warnings = true;
+
+        options.apply_lint_overrides(&BTreeMap::new(), None);
+
+        assert!(options.lints.deny_warnings);
+    }
+
+    #[test]
+    fn apply_lint_overrides_rejects_unknown_code() {
+        let mut options = AnalysisOptions::default();
+        let mut overrides = BTreeMap::new();
+        overrides.insert("E9999".to_owned(), LintLevel::Deny);
+
+        let warnings = options.apply_lint_overrides(&overrides, None);
+
+        assert!(options.lints.overrides.is_empty());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].0.contains("E9999"));
+    }
+
+    #[test]
+    fn apply_lint_overrides_rejects_non_overridable_code() {
+        let mut options = AnalysisOptions::default();
+        let mut overrides = BTreeMap::new();
+        // E001 is a real code, but its default severity is `Error`, not
+        // `Warning` — same non-overridability rule as the file's `[lints]`
+        // table (#1160).
+        overrides.insert("E001".to_owned(), LintLevel::Deny);
+
+        let warnings = options.apply_lint_overrides(&overrides, None);
+
+        assert!(options.lints.overrides.is_empty());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].0.contains("E001"));
+    }
+
+    #[test]
+    fn apply_lint_overrides_wins_over_a_prior_apply_project_config_for_the_same_code() {
+        let mut options = AnalysisOptions::default();
+        let mut config = ProjectConfig::default();
+        config.lints.insert("E014".to_owned(), LintLevel::Deny);
+        options.apply_project_config(&config, false, false);
+        assert_eq!(options.lints.overrides.get("E014"), Some(&LintLevel::Deny));
+
+        let mut overrides = BTreeMap::new();
+        overrides.insert("E014".to_owned(), LintLevel::Allow);
+        options.apply_lint_overrides(&overrides, None);
+
+        // The explicit override replaces the file's value for the same
+        // code — #1005/#1373's `CLI/API > file` precedence.
+        assert_eq!(options.lints.overrides.get("E014"), Some(&LintLevel::Allow));
     }
 }
