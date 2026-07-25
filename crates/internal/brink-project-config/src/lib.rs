@@ -37,12 +37,46 @@
 //! types   = "strict"     # "gradual" | "strict"   (default: dialect-keyed —
 //!                        # brink → strict, strict-ink → gradual; issue
 //!                        # #1127, ruled 2026-07-19)
+//!
+//! [lints]
+//! deny-warnings = true   # promote every Warning-severity diagnostic to
+//!                        # Error (the `-D warnings` equivalent; issue #1160)
+//! E014 = "deny"          # per-code severity override: "allow" | "warn" | "deny"
 //! ```
 //!
-//! Both keys are optional; an empty or absent `[project]` table is valid and
-//! contributes nothing (`ProjectConfig::default()`).
+//! (`E014` — a plainly `Warning`-by-default code — is used here rather than
+//! `E063`: `E063`'s own *base* severity is `types`-policy-dependent (`Error`
+//! under `types = strict`, see `brink_analyzer::effective_severity`'s doc
+//! comment), so it makes a confusing flagship example — under `types =
+//! strict` a `[lints]` entry for it is never even consulted.)
+//!
+//! Every key is optional; an empty or absent `[project]`/`[lints]` table is
+//! valid and contributes nothing (`ProjectConfig::default()`).
+//!
+//! `[lints]` is shaped like Rust's own `[lints]` table (issue #1160) but is
+//! **not** a drop-in semantic match: each key other than the reserved
+//! `deny-warnings` is taken as a diagnostic code (`"E014"`) mapped to a
+//! [`LintLevel`], and `Deny`/`Warn` behave as their Rust namesakes suggest —
+//! but `Allow` does not *remove* the diagnostic the way Rust's `allow`
+//! does. `LintLevel::Allow` only buys immunity from `deny-warnings`; the
+//! diagnostic still resolves to `Severity::Warning` and is still reported
+//! (`brink_analyzer::effective_severity`'s doc comment, step 3). An author
+//! who wants a code gone entirely wants `brink_ir::suppressions`
+//! (`//brink-disable`), a different, per-site mechanism — not `[lints]`.
+//!
+//! This crate does not know the closed set of real `DiagnosticCode`s
+//! (keeping it dependency-free, #1234), so it accepts any key here without
+//! validation — resolving a key against the real code set, and deciding
+//! which codes are actually overridable (a `Warning`-base-severity code
+//! only — see `effective_severity`'s hard-error exemption), is
+//! `AnalysisOptions::apply_project_config`'s job in `brink-analyzer` (which
+//! owns `DiagnosticCode`): an unknown or non-overridable key is never
+//! merged into the resolved policy, and is surfaced back to the caller as a
+//! [`ConfigWarning`]-shaped string through that function's return value —
+//! the same "warn, never silently drop" channel this crate's own unknown-key
+//! warnings use.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -83,6 +117,26 @@ pub enum TypePolicy {
     Gradual,
     Strict,
 }
+
+/// A `[lints]` table entry's severity (issue #1160) — mirrors Rust's own
+/// `[lints]` levels. `Warn` is every diagnostic code's implicit level when
+/// `[lints]` doesn't mention it, so it doubles as this type's `Default`.
+///
+/// Defined here for the same reason as [`Dialect`]/[`TypePolicy`]: a
+/// project-policy type this crate parses but doesn't interpret, kept
+/// dependency-free (#1234) and re-exported by `brink-analyzer`, which owns
+/// applying it against the real `DiagnosticCode` set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum LintLevel {
+    /// Never escalate this code past `Warning`, even under `deny-warnings`.
+    Allow,
+    /// The code's ordinary behavior: `Warning`, promoted to `Error` by
+    /// `deny-warnings` like any other unconfigured warning.
+    #[default]
+    Warn,
+    /// Always `Error`, regardless of `deny-warnings`.
+    Deny,
+}
 use thiserror::Error;
 use toml::Value;
 
@@ -90,24 +144,43 @@ use toml::Value;
 /// file (or in an ancestor directory — see [`find_config`]).
 pub const CONFIG_FILE_NAME: &str = "brink.toml";
 
-/// The `[project]` table's recognized keys, parsed out of `brink.toml`.
-/// Each field is `None` when the file doesn't set it — callers fall back to
-/// `AnalysisOptions::default()` (or an explicit override), never to a
-/// default invented by this crate.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// The `[project]`/`[lints]` tables' recognized keys, parsed out of
+/// `brink.toml`. `dialect`/`types` are `None` when the file doesn't set
+/// them — callers fall back to `AnalysisOptions::default()` (or an explicit
+/// override), never to a default invented by this crate. `lints`/
+/// `deny_warnings` follow the same "unset means untouched" rule: an empty
+/// `lints` map and a `None` `deny_warnings` both mean "`[lints]` didn't say,
+/// leave whatever the caller already had."
+///
+/// No longer `Copy` (issue #1160): `lints` is a `BTreeMap`, which isn't
+/// `Copy`. Every construction site now needs `.clone()` where it used to
+/// rely on an implicit copy.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProjectConfig {
     /// `[project] dialect`, if set.
     pub dialect: Option<Dialect>,
     /// `[project] types`, if set.
     pub types: Option<TypePolicy>,
+    /// `[lints]` per-code severity overrides, keyed by the raw code string
+    /// as written in the file (e.g. `"E063"`) — this crate doesn't validate
+    /// codes against the real `DiagnosticCode` set (#1234 dependency-free
+    /// constraint); resolving unknown/non-overridable codes is
+    /// `brink-analyzer`'s job. Sorted (`BTreeMap`) for deterministic
+    /// iteration.
+    pub lints: BTreeMap<String, LintLevel>,
+    /// `[lints] deny-warnings`, if set.
+    pub deny_warnings: Option<bool>,
 }
 
 impl ProjectConfig {
-    /// True if the file set neither key (an all-default/empty `[project]`
-    /// table, or no `[project]` table at all).
+    /// True if the file set nothing at all (an all-default/empty
+    /// `[project]`/`[lints]` table, or neither table present).
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.dialect.is_none() && self.types.is_none()
+        self.dialect.is_none()
+            && self.types.is_none()
+            && self.lints.is_empty()
+            && self.deny_warnings.is_none()
     }
 }
 
@@ -211,6 +284,25 @@ pub fn parse_str(text: &str) -> Result<(ProjectConfig, Vec<ConfigWarning>), Conf
                     ))),
                 }
             }
+        } else if key == "lints" {
+            let lints = match value {
+                Value::Table(t) => t,
+                other => {
+                    return Err(ConfigError::NotATable {
+                        key: "lints".to_owned(),
+                        found: value_type_name(other),
+                    });
+                }
+            };
+            for (lkey, lvalue) in lints {
+                if lkey == "deny-warnings" {
+                    config.deny_warnings = Some(parse_deny_warnings(lkey, lvalue)?);
+                } else {
+                    config
+                        .lints
+                        .insert(lkey.clone(), parse_lint_level(lkey, lvalue)?);
+                }
+            }
         } else {
             warnings.push(ConfigWarning(format!(
                 "unknown top-level key `{key}` in {CONFIG_FILE_NAME} (ignored)"
@@ -248,6 +340,30 @@ fn parse_types(key: &str, value: &Value) -> Result<TypePolicy, ConfigError> {
         other => Err(ConfigError::InvalidValue {
             key: format!("project.{key}"),
             expected: &["gradual", "strict"],
+            found: other.to_owned(),
+        }),
+    }
+}
+
+fn parse_deny_warnings(key: &str, value: &Value) -> Result<bool, ConfigError> {
+    value.as_bool().ok_or_else(|| ConfigError::WrongType {
+        key: format!("lints.{key}"),
+        found: value_type_name(value),
+    })
+}
+
+fn parse_lint_level(key: &str, value: &Value) -> Result<LintLevel, ConfigError> {
+    let s = value.as_str().ok_or_else(|| ConfigError::WrongType {
+        key: format!("lints.{key}"),
+        found: value_type_name(value),
+    })?;
+    match s {
+        "allow" => Ok(LintLevel::Allow),
+        "warn" => Ok(LintLevel::Warn),
+        "deny" => Ok(LintLevel::Deny),
+        other => Err(ConfigError::InvalidValue {
+            key: format!("lints.{key}"),
+            expected: &["allow", "warn", "deny"],
             found: other.to_owned(),
         }),
     }
@@ -471,6 +587,76 @@ mod tests {
             err,
             ConfigError::NotATable { .. } | ConfigError::Toml(_)
         ));
+    }
+
+    // ── [lints] ──────────────────────────────────────────────────────
+
+    #[test]
+    fn parses_per_code_lint_levels() {
+        let (config, warnings) = parse_str(
+            r#"
+            [lints]
+            E063 = "deny"
+            E014 = "allow"
+            E022 = "warn"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.lints.get("E063"), Some(&LintLevel::Deny));
+        assert_eq!(config.lints.get("E014"), Some(&LintLevel::Allow));
+        assert_eq!(config.lints.get("E022"), Some(&LintLevel::Warn));
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn parses_deny_warnings_flag() {
+        let (config, _) = parse_str("[lints]\ndeny-warnings = true\n").unwrap();
+        assert_eq!(config.deny_warnings, Some(true));
+    }
+
+    #[test]
+    fn deny_warnings_and_codes_coexist() {
+        let (config, _) = parse_str(
+            r#"
+            [lints]
+            deny-warnings = true
+            E063 = "allow"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.deny_warnings, Some(true));
+        assert_eq!(config.lints.get("E063"), Some(&LintLevel::Allow));
+    }
+
+    #[test]
+    fn absent_lints_table_is_empty_config() {
+        let (config, _) = parse_str("[project]\ndialect = \"brink\"\n").unwrap();
+        assert!(config.lints.is_empty());
+        assert_eq!(config.deny_warnings, None);
+    }
+
+    #[test]
+    fn invalid_lint_level_value_is_an_error() {
+        let err = parse_str("[lints]\nE063 = \"sideways\"\n").unwrap_err();
+        assert!(matches!(err, ConfigError::InvalidValue { .. }));
+    }
+
+    #[test]
+    fn wrong_type_deny_warnings_is_an_error() {
+        let err = parse_str("[lints]\ndeny-warnings = \"yes\"\n").unwrap_err();
+        assert!(matches!(err, ConfigError::WrongType { .. }));
+    }
+
+    #[test]
+    fn wrong_type_lint_level_is_an_error() {
+        let err = parse_str("[lints]\nE063 = 1\n").unwrap_err();
+        assert!(matches!(err, ConfigError::WrongType { .. }));
+    }
+
+    #[test]
+    fn non_table_lints_is_an_error() {
+        let err = parse_str("lints = 1\n").unwrap_err();
+        assert!(matches!(err, ConfigError::NotATable { .. }));
     }
 
     // ── discovery ─────────────────────────────────────────────────────

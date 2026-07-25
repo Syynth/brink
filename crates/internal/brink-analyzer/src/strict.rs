@@ -90,6 +90,38 @@ use crate::infer::{InferenceResult, InferredSig, Ty};
 // policy default.
 pub use brink_project_config::TypePolicy;
 
+// `LintLevel` is defined in `brink-project-config` for the same reason as
+// `TypePolicy` above (#1234). Re-exported so `brink_analyzer::LintLevel` is
+// the canonical path every consumer of [`LintPolicy::overrides`] uses.
+pub use brink_project_config::LintLevel;
+
+/// The resolved `[lints]` policy (issue #1160): per-code severity overrides
+/// plus the blanket `deny-warnings` flag. Bundled as its own small,
+/// cheaply-`PartialEq`-comparable value — rather than as two loose scalars —
+/// so `brink-db`'s severity-partitioning call sites can share one narrow
+/// salsa projection the same way [`TypePolicy`] already does (see
+/// `brink-db`'s `type_policy_query`/`lint_policy_query` doc comments for the
+/// cutoff argument).
+///
+/// This is the `AnalysisOptions::lints` field's type — resolved once, at
+/// `Project::load` (via `AnalysisOptions::apply_project_config`), never
+/// re-derived at a call site (#1160's "apply it at the ONE point" mandate).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LintPolicy {
+    /// Per-code overrides, keyed by the diagnostic code's string form
+    /// (`DiagnosticCode::as_str`, e.g. `"E063"`). Only ever consulted for
+    /// codes whose *default* severity ([`brink_ir::DiagnosticCode::severity`])
+    /// is `Warning` — see [`effective_severity`]'s doc comment for why a
+    /// hard-error-by-default code is never even looked up here.
+    pub overrides: BTreeMap<String, LintLevel>,
+    /// `[lints] deny-warnings = true`: promote every diagnostic that would
+    /// otherwise resolve to `Warning` up to `Error` (the `-D warnings`
+    /// equivalent). A code with an explicit [`Self::overrides`] entry is
+    /// unaffected by this flag — `Deny` is `Error` either way, and `Allow`
+    /// is specifically the "stay `Warning` even under `deny-warnings`" knob.
+    pub deny_warnings: bool,
+}
+
 /// THE `types`-default resolution function (issue #1127, decision-log
 /// 2026-07-19 "Typing posture ruled"). An explicit `types = …` — a CLI
 /// `--types` flag, a `brink.toml` `[project] types` key, an editor/LSP API
@@ -113,20 +145,58 @@ pub fn resolve_type_policy(dialect: crate::Dialect, explicit: Option<TypePolicy>
 }
 
 /// The severity a diagnostic code should actually be reported at, given the
-/// project's `types` policy — the single seam every diagnostic-partitioning
-/// site must call instead of the raw [`brink_ir::DiagnosticCode::severity`]
-/// default (the #640-round ruling: "TM-3's strict-policy wiring, which must
-/// run inference anyway, is where E063 starts firing in production", i.e.
-/// `E063` — annotation-vs-inference mismatch — is advisory (`Warning`) under
-/// `types = gradual` but error-eligible under `types = strict`). Every other
-/// code's severity is policy-independent and this simply defers to
-/// [`brink_ir::DiagnosticCode::severity`].
+/// project's `types` policy and resolved `[lints]` policy — the single seam
+/// every diagnostic-partitioning site must call instead of the raw
+/// [`brink_ir::DiagnosticCode::severity`] default.
+///
+/// Resolution order:
+///
+/// 1. **Type-policy carve-out** (the #640-round ruling: "TM-3's
+///    strict-policy wiring, which must run inference anyway, is where E063
+///    starts firing in production") — `E063` (annotation-vs-inference
+///    mismatch) is `Warning` under `types = gradual` but `Error` under
+///    `types = strict`. Every other code's *base* severity is
+///    policy-independent and comes straight from
+///    [`brink_ir::DiagnosticCode::severity`].
+/// 2. **Hard-error exemption** (issue #1160): if the base severity is
+///    already `Error`, `lints` is never consulted — a code that is a hard
+///    error by default can never be downgraded by `[lints]`. This is the
+///    "conservative overridable set" #1160 asks for: rather than inventing
+///    a policy for which `Error`-default codes are "safe" to relax, none of
+///    them are reachable through this table at all.
+/// 3. **`[lints]` per-code override**, for a `Warning`-base code only:
+///    `Deny` → `Error`; `Allow` → `Warning`, immune to step 4;
+///    `Warn`/unset → falls through to step 4 exactly like an unconfigured
+///    code.
+/// 4. **`deny-warnings`**: a `Warning`-base code with no override (or an
+///    explicit `Warn`) becomes `Error` if `lints.deny_warnings` is set —
+///    the `-D warnings` equivalent.
 #[must_use]
-pub fn effective_severity(code: brink_ir::DiagnosticCode, types: TypePolicy) -> brink_ir::Severity {
-    if code == brink_ir::DiagnosticCode::E063 && types == TypePolicy::Strict {
+pub fn effective_severity(
+    code: brink_ir::DiagnosticCode,
+    types: TypePolicy,
+    lints: &LintPolicy,
+) -> brink_ir::Severity {
+    let base = if code == brink_ir::DiagnosticCode::E063 && types == TypePolicy::Strict {
         brink_ir::Severity::Error
     } else {
         code.severity()
+    };
+
+    if base != brink_ir::Severity::Warning {
+        return base;
+    }
+
+    match lints.overrides.get(code.as_str()) {
+        Some(LintLevel::Deny) => brink_ir::Severity::Error,
+        Some(LintLevel::Allow) => brink_ir::Severity::Warning,
+        Some(LintLevel::Warn) | None => {
+            if lints.deny_warnings {
+                brink_ir::Severity::Error
+            } else {
+                brink_ir::Severity::Warning
+            }
+        }
     }
 }
 
@@ -2257,7 +2327,11 @@ mod tests {
     #[test]
     fn effective_severity_e063_is_warning_under_gradual() {
         assert_eq!(
-            effective_severity(DiagnosticCode::E063, TypePolicy::Gradual),
+            effective_severity(
+                DiagnosticCode::E063,
+                TypePolicy::Gradual,
+                &LintPolicy::default()
+            ),
             brink_ir::Severity::Warning
         );
     }
@@ -2265,7 +2339,11 @@ mod tests {
     #[test]
     fn effective_severity_e063_is_error_under_strict() {
         assert_eq!(
-            effective_severity(DiagnosticCode::E063, TypePolicy::Strict),
+            effective_severity(
+                DiagnosticCode::E063,
+                TypePolicy::Strict,
+                &LintPolicy::default()
+            ),
             brink_ir::Severity::Error
         );
     }
@@ -2276,14 +2354,120 @@ mod tests {
         // severity regardless of policy — only E063 is ever conditioned.
         for policy in [TypePolicy::Gradual, TypePolicy::Strict] {
             assert_eq!(
-                effective_severity(DiagnosticCode::E065, policy),
+                effective_severity(DiagnosticCode::E065, policy, &LintPolicy::default()),
                 DiagnosticCode::E065.severity()
             );
             assert_eq!(
-                effective_severity(DiagnosticCode::E022, policy),
+                effective_severity(DiagnosticCode::E022, policy, &LintPolicy::default()),
                 DiagnosticCode::E022.severity()
             );
         }
+    }
+
+    // ── effective_severity: [lints] (issue #1160) ───────────────────
+
+    #[test]
+    fn absent_lints_table_is_byte_identical_to_default_severity() {
+        // Every non-E063 code, under both policies, with an empty
+        // `LintPolicy`: must match `DiagnosticCode::severity()` exactly —
+        // the "absent table = today's behavior" acceptance criterion.
+        for policy in [TypePolicy::Gradual, TypePolicy::Strict] {
+            for code in [
+                DiagnosticCode::E014,
+                DiagnosticCode::E022,
+                DiagnosticCode::E025,
+                DiagnosticCode::E037,
+            ] {
+                assert_eq!(
+                    effective_severity(code, policy, &LintPolicy::default()),
+                    code.severity(),
+                    "code {code:?} under {policy:?} must be unaffected by an empty LintPolicy"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn lint_override_deny_relevels_a_warning_code_to_error() {
+        // E014 defaults to Warning.
+        assert_eq!(DiagnosticCode::E014.severity(), brink_ir::Severity::Warning);
+        let lints = LintPolicy {
+            overrides: BTreeMap::from([("E014".to_owned(), LintLevel::Deny)]),
+            deny_warnings: false,
+        };
+        assert_eq!(
+            effective_severity(DiagnosticCode::E014, TypePolicy::Gradual, &lints),
+            brink_ir::Severity::Error
+        );
+    }
+
+    #[test]
+    fn lint_override_allow_keeps_a_warning_code_at_warning() {
+        let lints = LintPolicy {
+            overrides: BTreeMap::from([("E014".to_owned(), LintLevel::Allow)]),
+            deny_warnings: false,
+        };
+        assert_eq!(
+            effective_severity(DiagnosticCode::E014, TypePolicy::Gradual, &lints),
+            brink_ir::Severity::Warning
+        );
+    }
+
+    #[test]
+    fn deny_warnings_promotes_unconfigured_warning_codes_to_error() {
+        let lints = LintPolicy {
+            overrides: BTreeMap::new(),
+            deny_warnings: true,
+        };
+        assert_eq!(
+            effective_severity(DiagnosticCode::E014, TypePolicy::Gradual, &lints),
+            brink_ir::Severity::Error
+        );
+        assert_eq!(
+            effective_severity(DiagnosticCode::E022, TypePolicy::Gradual, &lints),
+            brink_ir::Severity::Error
+        );
+    }
+
+    #[test]
+    fn deny_warnings_does_not_touch_an_allow_override() {
+        // `allow` is specifically the "immune to deny-warnings" knob.
+        let lints = LintPolicy {
+            overrides: BTreeMap::from([("E014".to_owned(), LintLevel::Allow)]),
+            deny_warnings: true,
+        };
+        assert_eq!(
+            effective_severity(DiagnosticCode::E014, TypePolicy::Gradual, &lints),
+            brink_ir::Severity::Warning
+        );
+    }
+
+    #[test]
+    fn hard_error_code_is_never_downgraded_by_lints_or_deny_warnings() {
+        // E025 (unresolved reference) defaults to Error and is not in the
+        // Warning set — [lints] must never be consulted for it at all,
+        // regardless of what a (nonsensical) override or deny-warnings say.
+        assert_eq!(DiagnosticCode::E025.severity(), brink_ir::Severity::Error);
+        let lints = LintPolicy {
+            overrides: BTreeMap::from([("E025".to_owned(), LintLevel::Allow)]),
+            deny_warnings: false,
+        };
+        assert_eq!(
+            effective_severity(DiagnosticCode::E025, TypePolicy::Gradual, &lints),
+            brink_ir::Severity::Error
+        );
+    }
+
+    #[test]
+    fn deny_override_wins_even_without_deny_warnings() {
+        let lints = LintPolicy {
+            overrides: BTreeMap::from([("E014".to_owned(), LintLevel::Deny)]),
+            deny_warnings: false,
+        };
+        assert_eq!(
+            effective_severity(DiagnosticCode::E014, TypePolicy::Gradual, &lints),
+            brink_ir::Severity::Error
+        );
     }
 
     // ── check(): void-assignment (E067) ────────────────────────────

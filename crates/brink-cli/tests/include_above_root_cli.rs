@@ -3,10 +3,12 @@
 //!
 //! Before the #1306 `Environment` producer, the CLI read includes through a
 //! direct-filesystem closure, so `INCLUDE ../shared.ink` resolved fine. The
-//! producer mount drains the project root into an in-memory tree, which by
-//! construction cannot contain a file *above* that root — so the same story
-//! regressed to a compile failure. `DrainedRoot` restores the old behavior by
-//! reading through to disk on a key miss (see `drain_project_tree`).
+//! producer mount originally drained the project root into an in-memory
+//! tree, which by construction cannot contain a file *above* that root — so
+//! the same story regressed to a compile failure. As of #1357,
+//! `brink_driver::RealFs::read` resolves every key as `self.root.join(key)`,
+//! so a `../shared.ink`-shaped key reads through to disk on its normal
+//! path — no drain, no key-miss fallback.
 
 use std::fs;
 use std::path::PathBuf;

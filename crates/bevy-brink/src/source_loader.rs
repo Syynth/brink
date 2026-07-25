@@ -10,23 +10,28 @@
 //! Available only when the `dev` feature is enabled. Release builds
 //! should pre-compile to `.inkb` and avoid carrying the compiler.
 //!
-//! ## Async/sync seam
+//! ## Async/sync seam (#1360, the `brink-environment` producer consumer)
 //!
-//! [`brink_compiler::compile`] is synchronous (it calls a `read_file`
-//! closure for each file it discovers). Bevy's `AssetReader` is async,
-//! and on web targets it has to be — there's no blocking filesystem.
-//! We bridge the two by walking the INCLUDE graph ourselves first
-//! (using [`brink_syntax::extract_includes`] to discover INCLUDEs from
-//! cached source), pre-fetching every file via Bevy's async reader, and
-//! then handing the compiler a closure that simply reads from the
-//! in-memory cache.
+//! [`brink_environment::Project::load`] (and the `compile` it feeds) is
+//! synchronous — it reads through a [`brink_source_tree::SourceTree`], which
+//! has no `async fn`. Bevy's `AssetReader` is async, and on web targets it
+//! has to be — there's no blocking filesystem. We bridge the two by walking
+//! the INCLUDE graph ourselves first (using [`brink_syntax::extract_includes`]
+//! to discover INCLUDEs from cached source), pre-fetching every reachable
+//! file via Bevy's async reader into an in-memory map, then handing that map
+//! to the sync producer as a [`brink_source_tree::InMemory`] tree. The BFS
+//! itself stays here (the mount's async reality); `brink.toml` discovery,
+//! parsing, and override precedence (#1005/#1320) now live entirely in
+//! [`brink_environment::Project::load`] — not re-implemented in this loader.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use bevy_app::App;
 use bevy_asset::{AssetLoader, Assets, Handle, LoadContext, io::Reader};
 use bevy_reflect::TypePath;
+use brink_environment::{OptionOverrides, Project};
 use brink_project_config::ProjectConfig;
+use brink_source_tree::InMemory;
 
 use crate::asset::{
     BrinkStoryAsset, LineTablesAsset, ProgramAsset, emit_story_assets, fresh_context,
@@ -35,34 +40,42 @@ use crate::asset::{
 /// Asset loader for `.ink` (source) files.
 ///
 /// Reads the entry source, walks the `INCLUDE` graph asynchronously
-/// through Bevy's `AssetReader`, compiles via [`brink_compiler::compile`],
-/// links via [`brink_runtime::link`], and emits labeled subassets
-/// (`#program`, `#line_tables`) just like [`InkbLoader`](crate::InkbLoader).
+/// through Bevy's `AssetReader`, lands the drained sources in a
+/// [`brink_source_tree::InMemory`] tree, then goes through the
+/// [`brink_environment`] producer: [`Project::load`] resolves `brink.toml`
+/// and override precedence and freezes an `Environment`, and
+/// [`brink_environment::compile`] compiles it. Links the result via
+/// [`brink_runtime::link`] and emits labeled subassets (`#program`,
+/// `#line_tables`) just like [`InkbLoader`](crate::InkbLoader).
 ///
-/// ## `brink.toml` discovery (#1029)
+/// ## `brink.toml` discovery (#1029, #1360)
 ///
 /// A `brink.toml` beside (or above) the entry asset supplies the
 /// [`ProjectConfig`] (`dialect`/`types`) that gates T1b brink-extension
 /// syntax — the same file the CLI discovers by walking the real
 /// filesystem (`brink-project-config::load_from_entry`). Bevy's
-/// `AssetReader` may be virtual or packed, so this loader re-implements
-/// the walk-up over the async reader instead: [`load`](AssetLoader::load)
-/// probes `brink.toml` beside the entry, then each ancestor directory in
-/// turn, via [`LoadContext::read_asset_bytes`] — bounded at the asset
-/// source root (never above it) and naturally finite (the entry path has
-/// finitely many `/`-separated ancestors). A hit is registered as a load
-/// dependency exactly like an `INCLUDE`, so editing `brink.toml` in dev
-/// mode hot-reloads the story. A miss at every level leaves
-/// `AnalysisOptions` at its default — byte-identical to pre-#1029
-/// behavior.
+/// `AssetReader` may be virtual or packed, so [`load`](AssetLoader::load)
+/// probes for it over the async reader itself: `brink.toml` beside the
+/// entry, then each ancestor directory in turn, via
+/// [`LoadContext::read_asset_bytes`] — bounded at the asset source root
+/// (never above it) and naturally finite (the entry path has finitely many
+/// `/`-separated ancestors). A hit is registered as a load dependency
+/// exactly like an `INCLUDE`, so editing `brink.toml` in dev mode
+/// hot-reloads the story, and its text is landed at its own key in the
+/// drained source map. Discovering *that* key, parsing it, and applying
+/// `CLI/API > file > default` precedence is then entirely
+/// [`Project::load`]'s job (`brink_project_config::discover_from_entry_in_tree`
+/// over the same map) — this loader only supplies candidate bytes, it does
+/// not re-implement the resolution policy. A miss at every level leaves
+/// `AnalysisOptions` at its default — byte-identical to pre-#1029 behavior.
 ///
 /// [`override_config`](Self::override_config), set via
 /// [`BrinkPlugin::with_config`](crate::BrinkPlugin::with_config) /
 /// [`BrinkAssetsPlugin::with_config`](crate::BrinkAssetsPlugin::with_config),
 /// is the programmatic escape hatch: when set, its fields win over
-/// whatever the asset walk-up discovers (applied last via
-/// `AnalysisOptions::apply_project_config`, mirroring the CLI's
-/// "explicit call always wins over the file" precedence).
+/// whatever `brink.toml` supplies — passed through as
+/// [`OptionOverrides`], the same `explicit call always wins over the file`
+/// precedence [`Project::load`] applies for every mount (CLI included).
 #[derive(Default, TypePath)]
 pub struct InkLoader {
     /// Out-of-band [`ProjectConfig`] override (#1029). `None` (the
@@ -83,20 +96,17 @@ pub enum InkLoaderError {
     InvalidUtf8(#[from] std::string::FromUtf8Error),
     #[error("entry path missing or non-UTF-8")]
     BadEntryPath,
+    /// The `brink-environment` producer failed to resolve the drained
+    /// sources into an `Environment` — `INCLUDE` discovery (missing/circular
+    /// include) or a malformed discovered `brink.toml` (bad TOML syntax, or
+    /// a recognized key with a value outside its enum; unknown keys are
+    /// warnings, never this). See `brink_environment::LoadError`.
+    #[error("load environment: {0}")]
+    Load(#[from] brink_environment::LoadError),
     #[error("compile: {0}")]
     Compile(#[from] brink_compiler::CompileError),
     #[error("link error: {0}")]
     Link(#[from] brink_runtime::RuntimeError),
-    /// A discovered `brink.toml` asset exists but is malformed: bad TOML
-    /// syntax, or a recognized key (`dialect`/`types`) with a value
-    /// outside its enum. Unknown keys are warnings (logged), never this —
-    /// see `brink_project_config::ConfigError` (#1029).
-    #[error("invalid {path}: {source}")]
-    InvalidProjectConfig {
-        path: String,
-        #[source]
-        source: brink_project_config::ConfigError,
-    },
 }
 
 /// Errors from [`compile_story_inline`].
@@ -237,13 +247,26 @@ fn ancestor_dirs(entry_path: &str) -> Vec<String> {
 /// since a bevy source tree may be virtual or packed rather than a real
 /// filesystem. A hit is read via [`LoadContext::read_asset_bytes`], which
 /// registers it as a load dependency, so hot-reload "just works" exactly
-/// like an `INCLUDE`. A miss at every ancestor returns `None` — not an
-/// error, matching `brink-project-config`'s "missing config changes
-/// nothing" contract.
+/// like an `INCLUDE`.
+///
+/// Returns only the candidate's key + text — **not** parsed, and no
+/// precedence applied. This loader's job stops at supplying bytes; the
+/// caller lands the pair at its own key in the drained source map, and
+/// [`Project::load`] (over the resulting `SourceTree`) then runs its own
+/// discovery walk (`brink_project_config::discover_from_entry_in_tree`) to
+/// decide which candidate governs, parses it, and applies the
+/// `CLI/API > file > default` precedence (#1360). The bounded ancestor
+/// walk-up itself is still performed twice — once here (to fetch candidate
+/// bytes through the async `AssetReader`), once inside `Project::load`
+/// (over the resulting in-memory tree) — only the parsing, precedence, and
+/// "which candidate governs" decision are deduplicated; this probe does not
+/// re-implement that resolution policy. A miss at every ancestor returns
+/// `Ok(None)` — not an error, matching `brink-project-config`'s "missing
+/// config changes nothing" contract.
 async fn probe_brink_toml(
     load_context: &mut LoadContext<'_>,
     entry_path: &str,
-) -> Option<(String, Vec<u8>)> {
+) -> Result<Option<(String, String)>, InkLoaderError> {
     for dir in ancestor_dirs(entry_path) {
         let candidate = if dir.is_empty() {
             brink_project_config::CONFIG_FILE_NAME.to_string()
@@ -251,10 +274,11 @@ async fn probe_brink_toml(
             format!("{dir}/{}", brink_project_config::CONFIG_FILE_NAME)
         };
         if let Ok(bytes) = load_context.read_asset_bytes(candidate.clone()).await {
-            return Some((candidate, bytes));
+            let text = String::from_utf8(bytes)?;
+            return Ok(Some((candidate, text)));
         }
     }
-    None
+    Ok(None)
 }
 
 impl AssetLoader for InkLoader {
@@ -284,8 +308,10 @@ impl AssetLoader for InkLoader {
 
         // BFS the INCLUDE graph, fetching every transitive dep through
         // Bevy's async reader (which registers each as a dependency for
-        // automatic hot-reload).
-        let mut sources: HashMap<String, String> = HashMap::new();
+        // automatic hot-reload). `BTreeMap` (not `HashMap`): it lands
+        // directly in an `InMemory` `SourceTree` below, whose contract is a
+        // deterministic key order.
+        let mut sources: BTreeMap<String, String> = BTreeMap::new();
         let mut queue: Vec<String> = brink_syntax::extract_includes(&entry_source)
             .into_iter()
             .map(|inc| resolve_include_path(&entry_path, &inc))
@@ -307,42 +333,34 @@ impl AssetLoader for InkLoader {
             sources.insert(path, source);
         }
 
-        // #1029: brink.toml discovery — bounded ancestor walk-up through
-        // the async AssetReader (see the module/struct docs). A hit
-        // supplies the *default* ProjectConfig; `override_config` (set via
-        // `BrinkPlugin::with_config`) is applied afterward and wins.
-        let mut options = brink_compiler::AnalysisOptions::default();
-        if let Some((config_path, bytes)) = probe_brink_toml(load_context, &entry_path).await {
-            let text = String::from_utf8(bytes)?;
-            let (config, warnings) = brink_project_config::parse_str(&text).map_err(|source| {
-                InkLoaderError::InvalidProjectConfig {
-                    path: config_path.clone(),
-                    source,
-                }
-            })?;
-            for warning in &warnings {
-                bevy_log::warn!("[{config_path}] {warning}");
-            }
-            options.apply_project_config(&config, false, false);
-        }
-        if let Some(override_config) = &self.override_config {
-            options.apply_project_config(override_config, false, false);
+        // #1029/#1360: bounded ancestor walk-up for `brink.toml` through the
+        // async AssetReader (see the module/struct docs). Only the bytes are
+        // fetched here; landing the pair at its own key in `sources` lets
+        // `Project::load` below do its own discovery, parsing, and
+        // precedence resolution over the resulting tree — this loader no
+        // longer duplicates that policy.
+        if let Some((config_path, text)) = probe_brink_toml(load_context, &entry_path).await? {
+            sources.insert(config_path, text);
         }
 
-        // Compile from the cached sources (synchronous; closure reads
-        // from the HashMap).
-        let output = brink_compiler::compile_with_options(
-            &entry_path,
-            |p| {
-                sources.get(p).cloned().ok_or_else(|| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::NotFound,
-                        format!("{p}: not in pre-fetched source cache"),
-                    )
-                })
-            },
-            options,
-        )?;
+        // The `CLI/API > file > default` precedence's explicit-override
+        // side (#1005): `override_config` — set via
+        // `BrinkPlugin::with_config` — wins over whatever `brink.toml` (just
+        // landed above) supplies. `brink.toml` itself, and applying that
+        // precedence, is entirely `Project::load`'s job.
+        let overrides = OptionOverrides {
+            dialect: self.override_config.as_ref().and_then(|c| c.dialect),
+            types: self.override_config.as_ref().and_then(|c| c.types),
+        };
+
+        // Land the drained map in a `SourceTree` and go through the
+        // producer: `Project::load` resolves `brink.toml` + precedence and
+        // freezes an `Environment`; `compile` is the pure function over it.
+        // Both are synchronous — the only asynchrony (the BFS above) is
+        // already behind us.
+        let tree = InMemory::new(sources);
+        let env = Project::load(&tree, &entry_path, &overrides)?;
+        let output = brink_environment::compile(&env)?;
         let (program, tables) = brink_runtime::link(&output.data)?;
         Ok(emit_story_assets(
             load_context,
@@ -624,6 +642,7 @@ mod config_discovery_tests {
             override_config: Some(ProjectConfig {
                 dialect: Some(Dialect::Brink),
                 types: None,
+                ..ProjectConfig::default()
             }),
         });
 
@@ -657,5 +676,35 @@ mod config_discovery_tests {
         app.world().resource::<AssetServer>().reload("intro.ink");
 
         wait_for_failed(&mut app, &handle);
+    }
+
+    /// #1360 regression: the migrated loader still walks a multi-file
+    /// `INCLUDE` graph correctly through the real `AssetServer` /
+    /// `MemoryAssetReader`, including a parent-traversing (`../`) include
+    /// that exercises [`super::resolve_include_path`]'s `..`-segment
+    /// normalization, alongside a same-directory include. Before #1360 this
+    /// path went through `brink_compiler::compile_with_options`'s read
+    /// closure; it now goes through `brink_source_tree::InMemory` ->
+    /// `brink_environment::Driver::discover`, so a producer-side change to
+    /// include-graph keying could silently break multi-file loads without
+    /// this test catching it.
+    #[test]
+    fn multi_file_include_graph_loads_through_asset_server() {
+        let (mut app, dir) = make_memory_asset_app();
+        dir.insert_asset_text(
+            Path::new("stories/ch1/intro.ink"),
+            "INCLUDE ../shared/util.ink\nINCLUDE local.ink\n-> END\n",
+        );
+        // Parent traversal: "../shared/util.ink" from "stories/ch1/" must
+        // resolve to "stories/shared/util.ink", not "stories/ch1/../shared/util.ink".
+        dir.insert_asset_text(Path::new("stories/shared/util.ink"), "VAR shared_var = 1\n");
+        // Same-directory include, resolved relative to the entry's own dir.
+        dir.insert_asset_text(Path::new("stories/ch1/local.ink"), "VAR local_var = 2\n");
+
+        let handle = app
+            .world()
+            .resource::<AssetServer>()
+            .load::<BrinkStoryAsset>("stories/ch1/intro.ink");
+        wait_for_loaded(&mut app, &handle);
     }
 }

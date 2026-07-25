@@ -42,6 +42,16 @@ impl IdeSnapshot {
             semantic_type_check: self.semantic_type_check,
             dialect: self.dialect,
             types: self.types,
+            // `IdeSnapshot` has no `[lints]`-resolution input yet (issue
+            // #1160 scope note: `IdeSession`/`IdeSnapshot` don't wire
+            // `brink.toml` at all today, unlike `Driver`/`Project::load`)
+            // — a no-op default that keeps every diagnostic at its ordinary
+            // severity. Spelled out explicitly (not `..Default::default()`)
+            // so the next `AnalysisOptions` field added has to be considered
+            // here rather than silently defaulting — exactly the "a mount
+            // silently doesn't resolve this policy" failure mode this scope
+            // note documents.
+            lints: brink_analyzer::LintPolicy::default(),
         };
         brink_analyzer::analyze_with_options(&refs, &opts)
     }
@@ -401,6 +411,11 @@ impl IdeSession {
             semantic_type_check: self.semantic_type_check,
             dialect: self.language_dialect,
             types: self.type_policy,
+            // See the matching note on `IdeSnapshot::analyze` — no
+            // `[lints]`-resolution input wired to `IdeSession` yet (#1160
+            // scope note). Spelled out explicitly, not `..Default::default()`
+            // — see that note for why.
+            lints: brink_analyzer::LintPolicy::default(),
         }
     }
 

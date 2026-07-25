@@ -688,10 +688,11 @@ pub(crate) fn has_errors_query(db: &dyn salsa::Database, project: ProjectInput) 
             lowering: &lowered_query(db, *f).diagnostics,
         })
         .collect();
-    let types = project.analysis_options(db).type_policy();
+    let opts = project.analysis_options(db);
+    let types = opts.type_policy();
     let diagnostics = analysis_diagnostics_query(db, project);
     let (errors, _warnings) =
-        super::partition_diagnostics(&inputs, diagnostics, disable_all, types);
+        super::partition_diagnostics(&inputs, diagnostics, disable_all, types, &opts.lints);
     !errors.is_empty()
 }
 
@@ -745,13 +746,14 @@ pub(crate) fn has_errors_in_closure_query(db: &dyn salsa::Database, project: Pro
             lowering: &lowered_query(db, *f).diagnostics,
         })
         .collect();
-    let types = project.analysis_options(db).type_policy();
+    let opts = project.analysis_options(db);
+    let types = opts.type_policy();
     let diagnostics: Vec<Diagnostic> = analysis_diagnostics_query(db, project)
         .iter()
         .filter(|d| closure.contains(&d.file))
         .cloned()
         .collect();
     let (errors, _warnings) =
-        super::partition_diagnostics(&inputs, &diagnostics, disable_all, types);
+        super::partition_diagnostics(&inputs, &diagnostics, disable_all, types, &opts.lints);
     !errors.is_empty()
 }
