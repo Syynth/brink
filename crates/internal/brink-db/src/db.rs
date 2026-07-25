@@ -876,6 +876,63 @@ mod native_seam_tests {
         );
     }
 
+    /// The end-to-end proof #1286 claimed but issue #1355 found not actually
+    /// reachable: the unquoted `::`-path spelling of `@[was(…)]` (issue
+    /// #1349's grammar) must migrate a pre-rename `DefinitionId` exactly like
+    /// the quoted-string spelling in
+    /// [`native_was_annotation_produces_pre_rename_alias`] — same alias, not
+    /// just a clean parse.
+    #[test]
+    fn native_was_annotation_unquoted_path_produces_pre_rename_alias() {
+        use brink_format::DefinitionId;
+
+        fn hero_id(path: &str, src: &str) -> DefinitionId {
+            let mut db = ProjectDb::new();
+            db.set_analysis_options(AnalysisOptions {
+                dialect: Dialect::Brink,
+                ..AnalysisOptions::default()
+            });
+            db.set_file(path, src.to_owned());
+            db.set_entry(path);
+            let index = db.symbol_index();
+            index.by_name.get("hero").expect("`hero` is defined")[0]
+        }
+
+        let plain = "flow hero() {\n  hi\n}\n";
+        // The OLD identity: `hero` when the module lived at `old/barter.brink`
+        // (module `story::old::barter`), before any rename.
+        let old_id = hero_id("old/barter.brink", plain);
+
+        // The renamed module: same `hero`, now at `market/barter.brink`
+        // (module `story::market::barter`), declaring where it came from
+        // using the **unquoted** `::`-path spelling.
+        let renamed_src = "@[was(story::old::barter)]\nflow hero() {\n  hi\n}\n";
+        let mut db = ProjectDb::new();
+        db.set_analysis_options(AnalysisOptions {
+            dialect: Dialect::Brink,
+            ..AnalysisOptions::default()
+        });
+        db.set_file("market/barter.brink", renamed_src.to_owned());
+        db.set_entry("market/barter.brink");
+
+        let index = db.symbol_index();
+        let new_id = index.by_name.get("hero").expect("`hero` is defined")[0];
+        assert_ne!(
+            old_id, new_id,
+            "moving the module changes `hero`'s identity — that is the problem \
+             `@[was]` migrates"
+        );
+        assert!(
+            index
+                .aliases
+                .iter()
+                .any(|a| a.old == old_id && a.new == new_id),
+            "`@[was(story::old::barter)]` (unquoted) must alias the pre-rename \
+             id to the current one; aliases: {:?}",
+            index.aliases
+        );
+    }
+
     /// The negative control for [`native_was_annotation_produces_pre_rename_alias`]:
     /// WITHOUT `@[was]`, the same physical move changes `hero`'s `DefinitionId`
     /// and produces **no** alias — an old save silently fails to resolve. This
