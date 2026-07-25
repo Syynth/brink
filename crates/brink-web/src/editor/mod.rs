@@ -305,7 +305,15 @@ impl EditorSession {
     ///
     /// `entry` is a session document path (this session's own path
     /// convention — whatever was passed to `update_file`), not a
-    /// filesystem path.
+    /// filesystem path. The document tree built here is keyed by exactly
+    /// the strings passed to `update_file`/`update_source`, and the
+    /// ancestor walk-up matches candidate keys by exact string equality —
+    /// so `entry` and every `brink.toml`/document path in this session must
+    /// share the same root-relative spelling (no leading `/`). Mixing a
+    /// `/`-prefixed `entry` (or `/`-prefixed document paths) with
+    /// unprefixed ones is a silent no-op: the walk-up finds nothing and
+    /// this returns `Ok("[]")` exactly as if no `brink.toml` existed, with
+    /// no warning.
     ///
     /// Returns `"[]"` when no `brink.toml` is found anywhere from `entry`'s
     /// directory up to the tree root — missing config is unchanged
@@ -3123,6 +3131,33 @@ mod tests {
         );
     }
 
+    /// Regression pin for the root-relative-key constraint documented on
+    /// `discover_project_config`: a session keyed with a leading `/` on
+    /// every document path (a spelling `update_file`/`update_source` never
+    /// reject) walks up from a `/`-prefixed `entry`, trims the leading `/`
+    /// down to an unprefixed candidate key (`"brink.toml"`), and misses the
+    /// `/`-prefixed document the session actually holds (`"/brink.toml"`).
+    /// The result is a silent no-op — `Ok("[]")`, indistinguishable from
+    /// "no `brink.toml` anywhere" — not an error and not a warning.
+    #[test]
+    fn discover_project_config_with_leading_slash_document_keys_silently_finds_nothing() {
+        let mut s = EditorSession::new();
+        s.update_file("/brink.toml", "[project]\ndialect = \"brink\"\n");
+        s.update_file("/main.ink", BRINK_EXT_SRC);
+        let warnings = s
+            .discover_project_config("/main.ink")
+            .expect("a key-spelling mismatch is a silent miss, never an error");
+        assert_eq!(
+            warnings, "[]",
+            "leading-slash document keys must not be discoverable by this walk-up"
+        );
+        assert_eq!(
+            s.dialect,
+            brink_analyzer::Dialect::StrictInk,
+            "the discovered-but-missed brink.toml's dialect = brink must NOT apply"
+        );
+    }
+
     // ── Issue #1160/#1366: `[lints]` reaches the editor session ────────────
 
     /// A `[lints]` re-leveled code shows its overridden severity through the
@@ -3754,6 +3789,20 @@ mod dialect_wasm_tests {
     fn discover_project_config_rejects_invalid_dialect_value() {
         let mut s = EditorSession::new();
         s.update_file("brink.toml", "[project]\ndialect = \"sideways\"\n");
+        s.update_file("main.ink", "-> END\n");
+        assert!(s.discover_project_config("main.ink").is_err());
+    }
+
+    /// The discovery-path (#1414) companion to
+    /// `apply_project_config_rejects_malformed_toml`: malformed TOML
+    /// discovered from the session's own in-memory document tree hits
+    /// `discover_project_config`'s own `parse_str` arm (the distinct
+    /// "invalid brink.toml at {config_key}" message) — still a rejected
+    /// `Result`, never a panic.
+    #[wasm_bindgen_test]
+    fn discover_project_config_rejects_malformed_toml() {
+        let mut s = EditorSession::new();
+        s.update_file("brink.toml", "this is not [ valid toml");
         s.update_file("main.ink", "-> END\n");
         assert!(s.discover_project_config("main.ink").is_err());
     }

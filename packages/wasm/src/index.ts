@@ -358,7 +358,12 @@ export class EditorSessionHandle {
    * `fs`, the File System Access API, …) required.
    *
    * `entry` is a session document path (whatever was passed to
-   * {@link updateFile}), not a filesystem path.
+   * {@link updateFile}), not a filesystem path — and it must share the same
+   * root-relative spelling (no leading `/`) as every document path in this
+   * session, since the ancestor walk-up matches keys by exact string
+   * equality. Mixing a `/`-prefixed `entry` or document path with
+   * unprefixed ones is a silent no-op: discovery finds nothing and this
+   * returns `[]` exactly as if no `brink.toml` existed, with no warning.
    *
    * Returns `[]` when no `brink.toml` is found anywhere from `entry`'s
    * directory up to the tree root — missing config is unchanged behavior,

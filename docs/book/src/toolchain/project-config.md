@@ -167,6 +167,12 @@ one-off choice that the file must not silently overrule.
   `brink.toml` is found anywhere from the entry's directory up to the tree
   root.
 
+  `entry` must use the same root-relative spelling (no leading `/`) as every
+  document path given to `updateFile`/`updateSource` — the walk-up matches
+  keys by exact string equality. Mixing a `/`-prefixed path with unprefixed
+  ones is a silent no-op: discovery finds nothing and `discoverProjectConfig`
+  returns `[]` exactly as if no `brink.toml` existed, with no warning.
+
   If your embedder reads `brink.toml`'s text with its own host file API
   (Node `fs`, the browser File System Access API, a bundler import, …) and
   would rather hand that text in directly than load it as a document, use
