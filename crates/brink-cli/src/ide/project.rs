@@ -46,8 +46,16 @@ use super::handlers::{Mutation, emit_mutation};
 /// mount. `entry_key` is `tree`-relative (as returned by
 /// [`brink_driver::relative_key`]), matching every other `SourceTree`
 /// caller's convention.
+///
+/// `root` is only used to render the discovered config's path in the
+/// stderr warnings below — `discover_from_entry_in_tree` returns a
+/// `tree`-relative key, so without `root` a warning could only ever print
+/// the bare `brink.toml`, leaving the user unable to tell *which*
+/// `brink.toml` (of possibly several on disk across invocations) warned
+/// (review finding on #1403/PR #1412).
 fn resolve_analysis_options(
     tree: &dyn SourceTree,
+    root: &Path,
     entry_key: &str,
 ) -> Result<brink_analyzer::AnalysisOptions, String> {
     let mut options = brink_analyzer::AnalysisOptions::default();
@@ -59,12 +67,13 @@ fn resolve_analysis_options(
             .map_err(|e| format!("failed to read project config {config_key}: {e}"))?;
         let (config, warnings) = brink_project_config::parse_str(&text)
             .map_err(|e| format!("project config error in {config_key}: {e}"))?;
+        let config_path = root.join(&config_key).display().to_string();
         for warning in &warnings {
-            let _ = writeln!(io::stderr(), "warning: [{config_key}] {warning}");
+            let _ = writeln!(io::stderr(), "warning: [{config_path}] {warning}");
         }
         let lint_warnings = options.apply_project_config(&config, false, false);
         for warning in &lint_warnings {
-            let _ = writeln!(io::stderr(), "warning: [{config_key}] {warning}");
+            let _ = writeln!(io::stderr(), "warning: [{config_path}] {warning}");
         }
     }
     Ok(options)
@@ -148,16 +157,16 @@ impl Project {
     pub(super) fn load(entry: &Path) -> Result<Self, String> {
         let root = brink_driver::native_source_root(entry);
         let tree = RealFs::new(&root);
-        let config_key = brink_driver::relative_key(&root, entry);
+        let entry_key = brink_driver::relative_key(&root, entry);
 
         let mut driver = Driver::new();
-        driver.set_analysis_options(resolve_analysis_options(&tree, &config_key)?);
+        driver.set_analysis_options(resolve_analysis_options(&tree, &root, &entry_key)?);
 
         let entry_key = if brink_driver::is_native(entry) {
             // Reuse the same `SourceTree` config resolution just probed —
             // the "tree it already builds" issue #1403 asks for.
             driver.discover_native(&tree).map_err(|e| format!("{e}"))?;
-            config_key
+            entry_key
         } else {
             let entry_s = entry.to_string_lossy().into_owned();
             driver
@@ -327,10 +336,14 @@ impl Project {
         removed: Option<&str>,
     ) -> Result<Vec<DiagEntry>, String> {
         let root = brink_driver::native_source_root(entry);
-        let config_key = brink_driver::relative_key(&root, entry);
+        let entry_key = brink_driver::relative_key(&root, entry);
 
         let mut driver = Driver::new();
-        driver.set_analysis_options(resolve_analysis_options(&RealFs::new(&root), &config_key)?);
+        driver.set_analysis_options(resolve_analysis_options(
+            &RealFs::new(&root),
+            &root,
+            &entry_key,
+        )?);
 
         let entry_key = if brink_driver::is_native(entry) {
             let tree = EditOverlay {
@@ -339,7 +352,7 @@ impl Project {
                 removed,
             };
             driver.discover_native(&tree).map_err(|e| format!("{e}"))?;
-            config_key
+            entry_key
         } else {
             let entry_s = entry.to_string_lossy().into_owned();
             driver
@@ -632,14 +645,18 @@ impl Project {
 pub(super) fn load_git_baseline(entry: &Path, rev: &str) -> Result<Project, String> {
     let entry_s = entry.to_string_lossy().into_owned();
     let root = brink_driver::native_source_root(entry);
-    let config_key = brink_driver::relative_key(&root, entry);
+    let entry_key = brink_driver::relative_key(&root, entry);
 
     let mut driver = Driver::new();
     // Config resolution still reads `brink.toml` off the working tree, not
     // `rev` — the baseline and head sides must agree on the *same* resolved
     // policy (see `load_git_baseline_matches_project_load_analysis_options`
     // below); only the source content itself is read from `rev`.
-    driver.set_analysis_options(resolve_analysis_options(&RealFs::new(&root), &config_key)?);
+    driver.set_analysis_options(resolve_analysis_options(
+        &RealFs::new(&root),
+        &root,
+        &entry_key,
+    )?);
 
     let entry_key = if brink_driver::is_native(entry) {
         let repo_dir = Path::new(".");
@@ -648,7 +665,7 @@ pub(super) fn load_git_baseline(entry: &Path, rev: &str) -> Result<Project, Stri
         driver
             .discover_native(&tree)
             .map_err(|e| format!("baseline {rev}: {e}"))?;
-        config_key
+        entry_key
     } else {
         driver
             .discover(&entry_s, |p| git_show(rev, p))
@@ -1190,7 +1207,7 @@ mod resolve_analysis_options_source_tree_seam_tests {
             ),
         ]));
 
-        let options = resolve_analysis_options(&tree, "chapters/main.ink")
+        let options = resolve_analysis_options(&tree, Path::new("."), "chapters/main.ink")
             .expect("resolves options over an in-memory tree");
 
         assert_eq!(
@@ -1210,8 +1227,8 @@ mod resolve_analysis_options_source_tree_seam_tests {
             "Hello.\n-> END\n".to_string(),
         )]));
 
-        let options =
-            resolve_analysis_options(&tree, "main.ink").expect("resolves options with no config");
+        let options = resolve_analysis_options(&tree, Path::new("."), "main.ink")
+            .expect("resolves options with no config");
 
         assert_eq!(options, brink_analyzer::AnalysisOptions::default());
     }
@@ -1232,7 +1249,7 @@ mod resolve_analysis_options_source_tree_seam_tests {
             ),
         ]));
 
-        let options = resolve_analysis_options(&tree, "book/chapters/main.ink")
+        let options = resolve_analysis_options(&tree, Path::new("."), "book/chapters/main.ink")
             .expect("resolves options by walking up the tree");
 
         assert_eq!(options.dialect, brink_analyzer::Dialect::Brink);

@@ -444,6 +444,41 @@ fn ide_check_walks_up_from_entry_to_find_brink_toml() {
     fs::remove_dir_all(&dir).ok();
 }
 
+/// Regression for a review finding on #1403/PR #1412:
+/// `ide_check_walks_up_from_entry_to_find_brink_toml` above always passes an
+/// *absolute* entry path, which sidesteps `native_source_root`'s walk-up
+/// entirely and left it structurally blind to a real regression — with
+/// `brink.toml` sitting in the process's cwd and a bare cwd-relative
+/// multi-component entry (`chapters/story.ink`, no `./` prefix), discovery
+/// silently missed the config and mis-rooted at `chapters` instead of `dir`,
+/// so the entry failed to compile at all (two bogus E051 dialect errors)
+/// even though the identical absolute-path and `./`-prefixed forms worked.
+/// `.current_dir(&dir)` + a bare relative entry argument reproduces that
+/// exact scenario end-to-end.
+#[test]
+fn ide_check_finds_brink_toml_with_a_bare_relative_multi_component_entry() {
+    let dir = project_dir("ide-config-relative-entry");
+    let nested = dir.join("chapters");
+    fs::create_dir_all(&nested).unwrap();
+    write_story(&nested, EXTENSION_FIXTURE);
+    write_config(&dir, "[project]\ndialect = \"brink\"\n");
+
+    let out = brink()
+        .current_dir(&dir)
+        .args(["ide", "check", "-e", "chapters/story.ink"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "a bare cwd-relative multi-component entry must still discover brink.toml \
+         above it, exactly like the absolute-path form: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
 /// Regression for the review finding on `introduced_diagnostics`'s
 /// re-analysis `Driver`: it used to be built with
 /// `AnalysisOptions::default()` (always `strict-ink`) regardless of the

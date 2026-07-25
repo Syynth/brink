@@ -145,17 +145,32 @@ pub fn is_native(path: &Path) -> bool {
 /// the entry's own directory (decision-log 2026-07-22 "native module
 /// identity ... source root": the explicit, documented single-file-project
 /// mode, not a silent fallback).
+///
+/// `entry_dir` is absolutized (via [`std::path::absolute`], which resolves
+/// `.`/`..` without touching the filesystem) before the walk-up: a
+/// *relative* multi-component `entry_dir` like `chapters` has `Path::parent`
+/// return `Some("")` — not `None` — once the walk reaches it, so
+/// [`brink_project_config::find_config`] can return a bare `brink.toml`
+/// (found relative to the process cwd) whose own `.parent()` is that same
+/// empty path. The `!p.as_os_str().is_empty()` filter below then rejects it
+/// and silently falls back to `entry_dir` itself — so `brink ide check -e
+/// chapters/story.ink`, run from a cwd containing `brink.toml`, missed the
+/// config and mis-rooted at `chapters` instead of the true root. An
+/// absolute `entry_dir` never produces an empty-string parent (its walk
+/// bottoms out at `None`), so this can't happen once absolutized (review
+/// finding on #1403/PR #1412).
 #[must_use]
 pub fn native_source_root(entry: &Path) -> PathBuf {
     let entry_dir = entry
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
+    let entry_dir = std::path::absolute(entry_dir).unwrap_or_else(|_| entry_dir.to_path_buf());
 
-    brink_project_config::find_config(entry_dir)
+    brink_project_config::find_config(&entry_dir)
         .and_then(|config_path| config_path.parent().map(Path::to_path_buf))
         .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| entry_dir.to_path_buf())
+        .unwrap_or(entry_dir)
 }
 
 /// Convert `path` to the root-relative key [`RealFs`]/[`GitRev`] would key it
