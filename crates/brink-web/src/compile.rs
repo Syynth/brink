@@ -1,28 +1,34 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
+
+use brink_environment::{OptionOverrides, Project};
+use brink_source_tree::InMemory;
 
 use crate::editor_dto::diagnostic_to_js;
 
 // ── Compilation ─────────────────────────────────────────────────────
 
-/// Compile ink source and return JSON with diagnostics or story data.
-#[wasm_bindgen]
-pub fn compile(source: &str) -> String {
-    let result = brink_compiler::compile("main.ink", |_path| Ok(source.to_owned()));
-
+/// Build a [`CompileResult`] JSON string from an already-produced compile
+/// result, resolving each diagnostic's byte offsets against `source_of` (the
+/// text the diagnostic's `path` was actually parsed from — a single-file
+/// compile always resolves the same source; a multi-file one, e.g.
+/// [`compile_fragment`], looks the path up per diagnostic).
+fn compile_result_json(
+    result: Result<brink_compiler::CompileOutput, brink_compiler::CompileError>,
+    source_of: impl Fn(&str) -> String,
+) -> String {
     match result {
         Ok(output) => {
             let warnings: Vec<DiagnosticJs> = output
                 .warnings
                 .iter()
-                .map(|d| diagnostic_to_js(d, source))
+                .map(|d| diagnostic_to_js(d, &source_of(&d.path)))
                 .collect();
 
-            let data = output.data;
             let mut bytes = Vec::new();
-            brink_format::write_inkb(&data, &mut bytes);
+            brink_format::write_inkb(&output.data, &mut bytes);
 
             let resp = CompileResult {
                 ok: true,
@@ -38,7 +44,10 @@ pub fn compile(source: &str) -> String {
 
             match e {
                 brink_compiler::CompileError::Diagnostics(diags) => {
-                    diagnostics = diags.iter().map(|d| diagnostic_to_js(d, source)).collect();
+                    diagnostics = diags
+                        .iter()
+                        .map(|d| diagnostic_to_js(d, &source_of(&d.path)))
+                        .collect();
                 }
                 other => {
                     error_msg = Some(format!("{other}"));
@@ -54,6 +63,39 @@ pub fn compile(source: &str) -> String {
             serde_json::to_string(&resp).unwrap_or_default()
         }
     }
+}
+
+/// Compile `entry` over `tree` through the #1306 producer:
+/// `Project::load(&tree, entry, &overrides)` -> `compile(&env)`. Replaces the
+/// throwaway `Driver` + `set_file`/`set_entry`/`set_analysis_options`
+/// imperative path — `Project::load`'s own `brink.toml` discovery + override
+/// precedence resolves the effective `AnalysisOptions` (default
+/// `OptionOverrides`, matching the pre-migration behavior of an unset
+/// `host_manifest`/dialect/types).
+///
+/// A [`brink_environment::LoadError`] (a bad `SourceTree` read, a malformed
+/// `brink.toml`) is reported through the same `error` string field a
+/// non-diagnostics [`brink_compiler::CompileError`] uses — the caller only
+/// ever sees the one `CompileResult` JSON shape.
+fn compile_over_tree(
+    tree: &InMemory,
+    entry: &str,
+) -> Result<brink_compiler::CompileOutput, brink_compiler::CompileError> {
+    let overrides = OptionOverrides::default();
+    let env = Project::load(tree, entry, &overrides)
+        .map_err(|e| brink_compiler::CompileError::Io(std::io::Error::other(e.to_string())))?;
+    brink_environment::compile(&env)
+}
+
+/// Compile ink source and return JSON with diagnostics or story data.
+#[wasm_bindgen]
+pub fn compile(source: &str) -> String {
+    let tree = InMemory::new(BTreeMap::from([(
+        "main.ink".to_string(),
+        source.to_owned(),
+    )]));
+    let result = compile_over_tree(&tree, "main.ink");
+    compile_result_json(result, |_path| source.to_owned())
 }
 
 /// The source-identity checksum of compiled `.inkb` bytes, formatted as
@@ -118,71 +160,26 @@ pub fn compile_fragment(entry: &str, sources_json: &str, synthetic_source: &str)
     };
 
     // The text actually served for `path`: the entry file gets the synthetic
-    // symbol appended, every other (`INCLUDE`d) file is served verbatim.
-    // Shared between the read closure and diagnostic-offset resolution below,
-    // so a diagnostic inside the appended fragment resolves against the exact
-    // text it was parsed from.
-    let served = |path: &str| -> Option<String> {
-        sources.get(path).map(|src| {
-            if path == entry {
+    // symbol appended, every other (`INCLUDE`d) file is served verbatim. A
+    // `BTreeMap` (not the deserialized `HashMap`) both backs the `InMemory`
+    // tree `Project::load` walks and resolves each diagnostic's byte offsets
+    // below, so a diagnostic inside the appended fragment resolves against
+    // the exact text it was parsed from.
+    let served: BTreeMap<String, String> = sources
+        .iter()
+        .map(|(path, src)| {
+            let content = if path == entry {
                 format!("{src}\n\n{synthetic_source}\n")
             } else {
                 src.clone()
-            }
-        })
-    };
-
-    let result = brink_compiler::compile(entry, |path| {
-        served(path).ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("file not found: {path}"),
-            )
-        })
-    });
-
-    let to_js = |d: &brink_compiler::ResolvedDiagnostic| {
-        let src = served(&d.path).unwrap_or_default();
-        diagnostic_to_js(d, &src)
-    };
-
-    match result {
-        Ok(output) => {
-            let warnings: Vec<DiagnosticJs> = output.warnings.iter().map(to_js).collect();
-
-            let mut bytes = Vec::new();
-            brink_format::write_inkb(&output.data, &mut bytes);
-
-            let resp = CompileResult {
-                ok: true,
-                story_bytes: Some(bytes),
-                warnings,
-                error: None,
             };
-            serde_json::to_string(&resp).unwrap_or_default()
-        }
-        Err(e) => {
-            let mut diagnostics = Vec::new();
-            let mut error_msg = None;
+            (path.clone(), content)
+        })
+        .collect();
 
-            match e {
-                brink_compiler::CompileError::Diagnostics(diags) => {
-                    diagnostics = diags.iter().map(to_js).collect();
-                }
-                other => {
-                    error_msg = Some(format!("{other}"));
-                }
-            }
-
-            let resp = CompileResult {
-                ok: false,
-                story_bytes: None,
-                warnings: diagnostics,
-                error: error_msg,
-            };
-            serde_json::to_string(&resp).unwrap_or_default()
-        }
-    }
+    let tree = InMemory::new(served.clone());
+    let result = compile_over_tree(&tree, entry);
+    compile_result_json(result, |path| served.get(path).cloned().unwrap_or_default())
 }
 
 #[derive(Serialize)]
