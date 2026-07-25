@@ -12,9 +12,10 @@ impl zed::Extension for InkExtension {
         _language_server_id: &zed::LanguageServerId,
         worktree: &zed::Worktree,
     ) -> zed::Result<zed::Command> {
-        let path = worktree
-            .which("brink-lsp")
-            .ok_or_else(|| "brink-lsp not found on PATH. Install with: cargo install --path crates/brink-lsp".to_string())?;
+        let path = worktree.which("brink-lsp").ok_or_else(|| {
+            "brink-lsp not found on PATH. Install with: cargo install --path crates/brink-lsp"
+                .to_string()
+        })?;
 
         Ok(zed::Command {
             command: path,

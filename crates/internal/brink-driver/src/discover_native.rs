@@ -29,12 +29,11 @@ use crate::source_tree::is_native;
 /// and [`DiscoverError::NonNativeKey`]. The extension guard exists because
 /// `tree` is a `&dyn SourceTree`, not necessarily one scoped to `.brink`
 /// alone — `brink-driver`'s own `RealFs::project` widens `list` to
-/// `.brink` + `.ink` + `brink.toml` for `brink-environment`'s
-/// `Project::load` (issue #1357), and nothing at the type level stops that
-/// wider tree from being passed here by mistake (issue #1371). Rejecting a
-/// non-native key here, rather than silently parsing `.ink`/config text as
-/// brink source, is the guard that keeps the two discovery paths from
-/// crossing.
+/// `.brink` + `.ink` for `brink-environment`'s `Project::load` (issue
+/// #1357), and nothing at the type level stops that wider tree from being
+/// passed here by mistake (issue #1371). Rejecting a non-native key here,
+/// rather than silently parsing `.ink` text as brink source, is the guard
+/// that keeps the two discovery paths from crossing.
 pub fn discover_native(db: &mut ProjectDb, tree: &dyn SourceTree) -> Result<(), DiscoverError> {
     let keys = tree.list()?;
     if let Some(bad) = keys.iter().find(|key| is_dotdot_polluted(key)) {
@@ -233,14 +232,16 @@ mod tests {
         );
     }
 
-    /// A `SourceTree` scoped wider than `.brink` alone — the exact shape of
-    /// `RealFs::project` (issue #1357), which lists `.brink` + `.ink` +
-    /// `brink.toml` for `brink-environment`'s `Project::load` — must be
-    /// rejected wholesale, before any file is loaded, if it is ever handed
-    /// to `discover_native` instead. This is the #1371 guard: nothing at the
-    /// type level stops a `ListScope::Project`-scoped tree from reaching
-    /// here, so `discover_native` itself must refuse any non-`.brink` key
-    /// rather than silently parsing `.ink`/config text as brink source.
+    /// A `SourceTree` scoped wider than `.brink` alone — the shape of
+    /// `RealFs::project` (issue #1357), which lists `.brink` + `.ink` for
+    /// `brink-environment`'s `Project::load` — must be rejected wholesale,
+    /// before any file is loaded, if it is ever handed to `discover_native`
+    /// instead. This is the #1371 guard: nothing at the type level stops a
+    /// `ListScope::Project`-scoped tree from reaching here, so
+    /// `discover_native` itself must refuse any non-`.brink` key rather than
+    /// silently parsing `.ink`/other text as brink source. The fixture below
+    /// also throws in a `brink.toml`-named key to prove the guard rejects
+    /// *any* non-`.brink` key generically, not just `.ink`.
     #[test]
     fn non_native_key_is_rejected_before_any_load() {
         struct WiderThanNative;
