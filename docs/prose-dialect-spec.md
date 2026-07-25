@@ -50,6 +50,53 @@ issue #1351.
 This is Scrivener's paragraph-style/inline-formatting split expressed as
 plain text.
 
+## 2b. Product vision — the interactive screenplay (RULED, sitting 3)
+
+A screenplay is a record of one performance; the weave is a machine for
+many. The screenplay tradition has no vocabulary for "the reader
+decides" — so the product is neither "screenplay with choices bolted
+on" nor "ink with prettier prose":
+
+**The document is linear dramatic prose on an interactive skeleton —
+and the two never wear each other's clothes.**
+
+1. **Branches read as screenplay; structure reads as structure.**
+   Within any linear run, the text is screenplay — full conventions, no
+   compromise. The interactive skeleton (choice points, transitions-as-
+   diverts, scene boundaries) is its own visual register, made
+   beautiful by the editor, never disguised as pseudo-screenplay
+   elements. (**No-costume ruled in principle**; one deliberate
+   aesthetic pass over choice-point syntax against the conventions is
+   reserved for the syntax round — they must *naturally complement*.)
+2. **Choices are typed prose.** An option's text is element-typed by
+   the same conventions as any line: a dialogue-choice carries
+   `speaker: <PC>`; an action-choice is imperative narrative; a cue
+   above a choice block types the options as that speaker's dialogue
+   options (the Telltale pattern, via chain rules). `Choice.element`
+   is the same machinery, not a special case. **The ink `[]` choice
+   anatomy is re-ratified unchanged** — it already answers
+   spoken-vs-summary (option text vs delivered text) per choice.
+3. **Scene-grained is the golden path; the editor dissolves the
+   granularity tension.** Linear leaves on a graph spine (the
+   industry's own interactive-screenplay answer) is what the
+   conventions serve best — headings-as-stitches, transitions-dressing-
+   diverts. Conversation-grained weaves stay fully powered. The
+   bridge is editorial (NS-T scope, gated on this round):
+   **scrivenings-style inline-destination view** (select a choice, see
+   its target rendered in place), **extract-to-stitch refactoring**
+   (inline body → knot/stitch + auto-divert), **story-graph
+   visualization**. Composition is the editor's job; the format stays
+   honestly graph-shaped.
+4. **Per-path export is in the vision.** Element-typed lines make any
+   single playthrough renderable as a genuine linear screenplay —
+   Fountain/FDX for table reads, per-character VO recording sheets —
+   and the machinery is *adjacent to the intl pipeline* (the xliff
+   exporter already walks scopes and renders line tables; a path
+   exporter walks a path and renders to industry formats — the same
+   extractor family, inheriting line-identity work for free).
+   Consequence: the element set must map cleanly onto what
+   Fountain/FDX can express.
+
 ## 3. The element layer
 
 ### 3.1 Classification (RULED)
@@ -255,7 +302,7 @@ Consequences (RULED):
 - Enumerable variants are measurement-critical: recognizer growth
   (#1446) is promoted from intl-nicety to measurement prerequisite.
 
-## 7. Runtime output (🔶 proposed, sitting 2)
+## 7. Runtime output (RULED in substance, sitting 3 — naming ⏳)
 
 **Break-compat is RULED**: no external consumers exist; in-repo
 consumers (bevy, web, TUI) migrate in-PR; `@brink-lang/web` takes a
@@ -314,26 +361,29 @@ CUT TO:                             ← transition (dresses the divert)
 
 ## 9. Open threads ⏳ (the resumption points)
 
-1. **Run-through of §7's proposed output shape** — remaining scrutiny
-   points: text-derived-not-stored, the Choice element slot, naming.
-   The terminal half is worked: see the **parked terminal cluster** —
-   #1448 (weave-terminator compiler fix, DIAGNOSED + deferred), #1449
-   (harness terminal-step fold, the redesign's mandatory prerequisite),
-   #1450 (the Done/End distinction dig — oracle-invisible axis; decide
-   from host need, never conformance). Deferred by maintainer ruling
-   until the runtime/compiler window opens.
-2. **Consecutive lines / blocks (§3.7 — largely settled):** per-line
-   emission + baked block id RULED; blank-line delimiter RULED;
-   `continue_block` dropped (host helper at most). Remaining: which
-   element kinds form blocks (lean: id is universal and cheap).
-3. **Choices × elements** — chain rules meeting the weave; what element
-   a choice line carries; markup in choice text (Choice.parts admits it).
-4. **Translation, round 2** — element data in XLIFF (is a speaker name
+1. **The syntax round** — the concrete element inventory for the
+   screenplay preset + spellings, the choice-point aesthetic pass
+   (§2b's "naturally complement" check), explicit-slug spelling,
+   escape-set finalization, conventions-file format, and the
+   attachment-mechanism final call (compile-baked is the lean, §3.6).
+   *The next major sitting.*
+2. **Translation, round 2** — element data in XLIFF (is a speaker name
    translatable?), per-locale budgets, the bump batching.
-5. **Dynamic element payloads** — is `@{challenger}` (interpolated cue)
-   legal? Classification stays static; is the *payload* a fragment?
-6. **Editor implications (NS-T)** — line-local classification vs the
-   nesting-property dialect; #1350/#1131 stay held on this round.
-7. Element-conventions file format details; explicit-slug spelling;
-   escape-set finalization; attachment-mechanism final call
-   (compile-baked is the lean, §3.6).
+3. **Per-path export design** (§2b.4) — Fountain/FDX/VO-sheet
+   renderers as intl-exporter siblings; the element↔Fountain mapping
+   constraint.
+4. **Dynamic element payloads** — RULED necessary as a capability
+   (sitting 3); the remaining question is mechanics only (payload as
+   fragment/slot on the wire).
+5. **Terminal cluster — parked**: #1448 (weave-terminator compiler
+   fix, diagnosed + deferred), #1449 (harness terminal-step fold, the
+   Step redesign's prerequisite), #1450 (Done/End dig). Deferred until
+   the runtime/compiler window opens.
+6. **§7 output naming** (`Line`/`Step`/`StoryEvent`) — the shape is
+   ruled in substance; blocks settled (per-line + block id, blank-line
+   delimiter, no continue_block); which element kinds form blocks
+   (lean: id universal).
+7. **Editor implications (NS-T)** — line-local classification vs the
+   nesting-property dialect; plus the §2b.3 bridge features
+   (scrivenings inline-destination, extract-to-stitch, story graph).
+   #1350/#1131 stay held on this round.
