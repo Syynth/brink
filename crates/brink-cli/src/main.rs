@@ -347,17 +347,51 @@ fn compile_entry(
     Ok(brink_environment::compile(&env)?)
 }
 
-/// Drain a native project root into an in-memory `SourceTree` — the CLI's
-/// #1306 producer mount. Collects every `.ink`/`.brink` source plus any
-/// `brink.toml`, keyed root-relative with `/` separators (the seam's key
-/// contract), so [`brink_environment::Project::load`] can enumerate the native
-/// universe / follow the ink `INCLUDE` graph *and* discover config over the
-/// same tree. Reifying the whole root up front is the point of an
-/// `Environment` — the input value bundles every source it depends on.
-fn drain_project_tree(root: &std::path::Path) -> std::io::Result<brink_db::InMemory> {
+/// Drain a native project root into a `SourceTree` — the CLI's #1306 producer
+/// mount. Collects every `.ink`/`.brink` source plus any `brink.toml`, keyed
+/// root-relative with `/` separators (the seam's key contract), so
+/// [`brink_environment::Project::load`] can enumerate the native universe /
+/// follow the ink `INCLUDE` graph *and* discover config over the same tree.
+/// Reifying the root up front is the point of an `Environment` — the input
+/// value bundles every source it depends on.
+fn drain_project_tree(root: &std::path::Path) -> std::io::Result<DrainedRoot> {
     let mut files = std::collections::BTreeMap::new();
     drain_walk(root, root, &mut files)?;
-    Ok(brink_db::InMemory::new(files))
+    Ok(DrainedRoot {
+        files,
+        root: root.to_path_buf(),
+    })
+}
+
+/// The drained root, with a read-through to disk for keys *outside* it.
+///
+/// [`list`](brink_db::SourceTree::list) is root-scoped (the drained keys), so
+/// the native universe is exactly the tree under the root — unchanged, and
+/// `..` keys stay rejected there by `Project::load`'s own guard.
+///
+/// [`read`](brink_db::SourceTree::read) falls back to reading `root/key` off
+/// disk on a miss. That restores ink's pre-#1306 behavior for an `INCLUDE`
+/// that escapes the resolved root (`INCLUDE ../shared.ink`), which the drain
+/// alone cannot collect and which regressed to a compile failure (issue
+/// #1356). Determinism is preserved: `Project::load` records every source it
+/// actually reads into the `Environment`'s manifest, so a fallback read is
+/// bundled into the reified input exactly like a drained one.
+struct DrainedRoot {
+    files: std::collections::BTreeMap<String, String>,
+    root: std::path::PathBuf,
+}
+
+impl brink_db::SourceTree for DrainedRoot {
+    fn list(&self, _root: &std::path::Path) -> std::io::Result<Vec<String>> {
+        Ok(self.files.keys().cloned().collect())
+    }
+
+    fn read(&self, key: &str) -> std::io::Result<String> {
+        if let Some(text) = self.files.get(key) {
+            return Ok(text.clone());
+        }
+        std::fs::read_to_string(self.root.join(key))
+    }
 }
 
 /// Recursively collect root-relative source/config keys under `dir`.
