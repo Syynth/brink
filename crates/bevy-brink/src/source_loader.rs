@@ -316,6 +316,9 @@ fn ancestor_dirs(entry_path: &str) -> Vec<String> {
 /// shadowed exactly as before — [`Project::load`]'s walk still stops at
 /// the first hit it finds), so the extra reads never change which
 /// candidate governs, just who decides.
+///
+/// A miss at every ancestor returns `Ok(vec![])` — not an error, matching
+/// `brink-project-config`'s "missing config changes nothing" contract.
 async fn probe_brink_toml(
     load_context: &mut LoadContext<'_>,
     entry_path: &str,
@@ -328,8 +331,15 @@ async fn probe_brink_toml(
             format!("{dir}/{}", brink_project_config::CONFIG_FILE_NAME)
         };
         if let Ok(bytes) = load_context.read_asset_bytes(candidate.clone()).await {
-            let text = String::from_utf8(bytes)?;
-            found.push((candidate, text));
+            match String::from_utf8(bytes) {
+                Ok(text) => found.push((candidate, text)),
+                // Only the nearest candidate is load-relevant (it's the only
+                // one `discover_from_entry_in_tree` can ever pick); an
+                // undecodable *farther* ancestor is shadowed and must not
+                // fail a load that would otherwise succeed.
+                Err(err) if found.is_empty() => return Err(err.into()),
+                Err(_) => {}
+            }
         }
     }
     Ok(found)
@@ -862,6 +872,35 @@ mod config_discovery_tests {
             Path::new("brink.toml"),
             "[project]\ndialect = \"strict-ink\"\n",
         );
+
+        let handle = app
+            .world()
+            .resource::<AssetServer>()
+            .load::<BrinkStoryAsset>("stories/ch1/intro.ink");
+        wait_for_loaded(&mut app, &handle);
+    }
+
+    /// w-review regression: an *undecodable* farther ancestor `brink.toml`
+    /// must not fail a load whose nearest, decodable candidate is the one
+    /// that actually governs. On `main` (pre-guard), `probe_brink_toml`
+    /// propagates `String::from_utf8`'s error for *every* candidate it
+    /// reads, including shadowed ones — a non-UTF-8 root-level
+    /// `brink.toml` that `discover_from_entry_in_tree` would never even
+    /// look at (the nearer `stories/ch1/brink.toml` shadows it) turns a
+    /// load that used to succeed into a `Failed` one. This fails on that
+    /// code path and only passes once the probe skips a decode error on a
+    /// candidate found *after* a decodable one already landed.
+    #[test]
+    fn undecodable_farther_ancestor_brink_toml_does_not_fail_the_load() {
+        let (mut app, dir) = make_memory_asset_app();
+        dir.insert_asset_text(Path::new("stories/ch1/intro.ink"), BRINK_ONLY_SOURCE);
+        dir.insert_asset_text(
+            Path::new("stories/ch1/brink.toml"),
+            "[project]\ndialect = \"brink\"\n",
+        );
+        // Invalid UTF-8 (a lone continuation byte) -- must never be decoded
+        // as config text, since the nearer candidate above already governs.
+        dir.insert_asset(Path::new("brink.toml"), vec![0x80_u8]);
 
         let handle = app
             .world()
