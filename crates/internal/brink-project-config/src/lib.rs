@@ -42,8 +42,12 @@
 //! Both keys are optional; an empty or absent `[project]` table is valid and
 //! contributes nothing (`ProjectConfig::default()`).
 
+use std::collections::HashSet;
 use std::fmt;
+use std::io;
 use std::path::{Path, PathBuf};
+
+use brink_source_tree::SourceTree;
 
 /// Compiler dialect: gates T1b brink-extension syntax. Default `StrictInk` —
 /// divergence from the oracle-anchored ink subset is a visible, one-time,
@@ -288,6 +292,64 @@ pub fn discover_from_entry(entry_file: &Path) -> Option<PathBuf> {
     find_config(start)
 }
 
+/// [`find_config`], but discovering over a [`SourceTree`] rather than the
+/// real filesystem (#1312) — mount-agnostic: the same walk-up rule serves
+/// the CLI's `RealFs` mount, a wasm sandbox's `InMemory` mount, a git
+/// baseline's `GitRev` mount, or any future host, with no per-mount
+/// discovery code duplicated outside the seam.
+///
+/// `start_key` is a root-relative directory key (`""` for the tree root
+/// itself), in the same forward-slash-joined form [`SourceTree::list`]
+/// returns. Walks `start_key` and every ancestor, closest first, checking
+/// whether `{ancestor}/brink.toml` (bare `brink.toml` at the tree root) is
+/// among the keys `tree.list(root)` enumerates — the tree-relative analog of
+/// [`find_config`]'s `Path::is_file` check at each `Path::parent`.
+///
+/// Returns the matching key, not file content — callers read it via
+/// [`SourceTree::read`] (mirroring how [`find_config`] returns a path the
+/// caller reads via `std::fs`, not file content).
+pub fn find_config_in_tree(
+    tree: &dyn SourceTree,
+    root: &Path,
+    start_key: &str,
+) -> io::Result<Option<String>> {
+    let keys: HashSet<String> = tree.list(root)?.into_iter().collect();
+
+    let mut dir = start_key.trim_matches('/');
+    loop {
+        let candidate = if dir.is_empty() {
+            CONFIG_FILE_NAME.to_owned()
+        } else {
+            format!("{dir}/{CONFIG_FILE_NAME}")
+        };
+        if keys.contains(&candidate) {
+            return Ok(Some(candidate));
+        }
+        if dir.is_empty() {
+            return Ok(None);
+        }
+        dir = match dir.rsplit_once('/') {
+            Some((parent, _)) => parent,
+            None => "",
+        };
+    }
+}
+
+/// [`find_config_in_tree`], starting from an entry `.brink`/`.ink` file's
+/// root-relative key rather than a directory key directly — the
+/// [`SourceTree`] analog of [`discover_from_entry`].
+pub fn discover_from_entry_in_tree(
+    tree: &dyn SourceTree,
+    root: &Path,
+    entry_key: &str,
+) -> io::Result<Option<String>> {
+    let start = match entry_key.trim_matches('/').rsplit_once('/') {
+        Some((parent, _)) => parent,
+        None => "",
+    };
+    find_config_in_tree(tree, root, start)
+}
+
 /// Discover (via [`discover_from_entry`]) and parse (via [`parse_str`]) the
 /// `brink.toml` governing `entry_file`'s project, if one exists.
 ///
@@ -479,6 +541,57 @@ mod tests {
         assert!(load_from_entry(&entry).unwrap().is_none());
 
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn find_config_in_tree_walks_up_from_start_key() {
+        use brink_source_tree::InMemory;
+        use std::collections::BTreeMap;
+
+        let mut files = BTreeMap::new();
+        files.insert(
+            CONFIG_FILE_NAME.to_owned(),
+            "[project]\ndialect = \"brink\"\n".to_owned(),
+        );
+        files.insert("a/b/story.ink".to_owned(), "content".to_owned());
+        let tree = InMemory::new(files);
+
+        let found = find_config_in_tree(&tree, Path::new("."), "a/b")
+            .expect("list succeeds")
+            .expect("should find brink.toml in an ancestor key");
+        assert_eq!(found, CONFIG_FILE_NAME);
+    }
+
+    #[test]
+    fn find_config_in_tree_returns_none_when_absent() {
+        use brink_source_tree::InMemory;
+        use std::collections::BTreeMap;
+
+        let mut files = BTreeMap::new();
+        files.insert("a/b/story.ink".to_owned(), "content".to_owned());
+        let tree = InMemory::new(files);
+
+        let found = find_config_in_tree(&tree, Path::new("."), "a/b").expect("list succeeds");
+        assert_eq!(found, None);
+    }
+
+    #[test]
+    fn discover_from_entry_in_tree_starts_at_entry_parent_key() {
+        use brink_source_tree::InMemory;
+        use std::collections::BTreeMap;
+
+        let mut files = BTreeMap::new();
+        files.insert(
+            CONFIG_FILE_NAME.to_owned(),
+            "[project]\ntypes = \"strict\"\n".to_owned(),
+        );
+        files.insert("story.ink".to_owned(), "content".to_owned());
+        let tree = InMemory::new(files);
+
+        let found = discover_from_entry_in_tree(&tree, Path::new("."), "story.ink")
+            .expect("list succeeds")
+            .expect("should find brink.toml beside entry key");
+        assert_eq!(found, CONFIG_FILE_NAME);
     }
 
     #[test]
