@@ -627,19 +627,46 @@ impl Backend {
         db.rebuild_include_graph();
     }
 
-    /// Recursively walk a directory, loading all .ink files.
+    /// Recursively walk a directory, loading all .ink files. The walk
+    /// itself is delegated to [`collect_ink_files`] — a free function with
+    /// no `Client` dependency — so pruning can be unit-tested directly
+    /// without standing up a full `Backend` (issue #1402).
     fn walk_and_load(&self, dir: &std::path::Path) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                self.walk_and_load(&path);
-            } else if path.extension().is_some_and(|ext| ext == "ink") {
-                let path_str = path.to_string_lossy().into_owned();
-                self.load_file_from_disk(&path_str);
+        for path in collect_ink_files(dir) {
+            let path_str = path.to_string_lossy().into_owned();
+            self.load_file_from_disk(&path_str);
+        }
+    }
+}
+
+/// Recursively collect every `.ink` file path under `dir`. Never descends
+/// into a directory [`brink_source_tree::is_ignored_dir`] flags (`target/`,
+/// `.git/`, `node_modules/`) — before issue #1402, this was the third
+/// unpruned recursive walk in the codebase (after #1370's config discovery
+/// and #1381's native compile walk), so opening a workspace with a large
+/// `target/` or `node_modules/` tree made the LSP enumerate all of it on
+/// load.
+fn collect_ink_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    collect_ink_files_into(dir, &mut files);
+    files
+}
+
+/// Accumulator half of [`collect_ink_files`], recursing into `dir` and
+/// pushing every matching path onto `files`.
+fn collect_ink_files_into(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if brink_source_tree::is_ignored_dir(&entry.file_name()) {
+                continue;
             }
+            collect_ink_files_into(&path, files);
+        } else if path.extension().is_some_and(|ext| ext == "ink") {
+            files.push(path);
         }
     }
 }
@@ -2601,8 +2628,70 @@ mod tests {
     use tower_lsp::lsp_types::Diagnostic;
 
     use super::{
-        PublishDecision, PublishRecord, PublishTier, config_error_diagnostic, publish_decision,
+        PublishDecision, PublishRecord, PublishTier, collect_ink_files, config_error_diagnostic,
+        publish_decision,
     };
+
+    /// A unique per-test scratch directory under the OS temp dir, mirroring
+    /// `brink-driver`'s own `temp_dir` test helper
+    /// (`crates/internal/brink-driver/src/source_tree.rs`) — each test gets
+    /// an isolated directory so parallel test runs never collide.
+    fn temp_dir(label: &str) -> std::path::PathBuf {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default();
+        let dir = std::env::temp_dir().join(format!(
+            "brink-lsp-walk-test-{label}-{}-{n}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    /// #1402 regression, mirroring #1381's `real_fs_list_skips_ignored_dirs`
+    /// shape (`crates/internal/brink-driver/src/source_tree.rs`):
+    /// `collect_ink_files` — the walk `Backend::walk_and_load` delegates to
+    /// — must never descend into `target/`, `.git/`, or `node_modules/`.
+    /// The fixture plants an unparseable file directly under `target/`
+    /// (garbage ink syntax, not merely a stray file) to prove the walk is
+    /// *pruned*, not just filtered after the fact: before this fix, that
+    /// file would have been enumerated and handed to `load_file_from_disk`,
+    /// which parses it — an unparseable file under an ignored directory
+    /// must not break the load.
+    #[test]
+    fn collect_ink_files_skips_ignored_dirs() {
+        let root = temp_dir("ignored-dirs");
+
+        std::fs::write(root.join("main.ink"), "Hello.\n-> DONE\n").expect("write main.ink");
+        std::fs::create_dir_all(root.join("target/debug")).expect("mkdir target/debug");
+        std::fs::write(root.join("target/stray.ink"), "-- stray --").expect("write target/stray");
+        std::fs::write(
+            root.join("target/debug/build.ink"),
+            "this is not valid ink syntax {{{ ???",
+        )
+        .expect("write target/debug/build.ink");
+        std::fs::create_dir_all(root.join(".git/objects")).expect("mkdir .git/objects");
+        std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/main\n").expect("write .git/HEAD");
+        std::fs::write(root.join(".git/objects/pack.ink"), "-- pack --")
+            .expect("write .git/objects/pack.ink");
+        std::fs::create_dir_all(root.join("node_modules/some-pkg")).expect("mkdir node_modules");
+        std::fs::write(root.join("node_modules/some-pkg/index.ink"), "-- pkg --")
+            .expect("write node_modules/some-pkg/index.ink");
+
+        let mut files = collect_ink_files(&root);
+        files.sort();
+
+        assert_eq!(
+            files,
+            vec![root.join("main.ink")],
+            "target/, .git/, and node_modules/ must be pruned entirely"
+        );
+
+        std::fs::remove_dir_all(&root).expect("cleanup temp dir");
+    }
 
     /// #1163 regression: `config_error_diagnostic` must always report
     /// `ERROR` — every `ConfigError` variant (malformed TOML, unreadable

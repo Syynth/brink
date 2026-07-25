@@ -14,6 +14,7 @@ brink-db = { workspace = true }
 brink-analyzer = { workspace = true }
 brink-ir = { workspace = true }
 brink-project-config = { workspace = true }
+brink-source-tree = { workspace = true }
 tracing.workspace = true
 thiserror.workspace = true
 
