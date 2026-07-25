@@ -45,9 +45,13 @@ impl IdeSnapshot {
             // `IdeSnapshot` has no `[lints]`-resolution input yet (issue
             // #1160 scope note: `IdeSession`/`IdeSnapshot` don't wire
             // `brink.toml` at all today, unlike `Driver`/`Project::load`)
-            // — defaulted, a no-op that keeps every diagnostic at its
-            // ordinary severity.
-            ..AnalysisOptions::default()
+            // — a no-op default that keeps every diagnostic at its ordinary
+            // severity. Spelled out explicitly (not `..Default::default()`)
+            // so the next `AnalysisOptions` field added has to be considered
+            // here rather than silently defaulting — exactly the "a mount
+            // silently doesn't resolve this policy" failure mode this scope
+            // note documents.
+            lints: brink_analyzer::LintPolicy::default(),
         };
         brink_analyzer::analyze_with_options(&refs, &opts)
     }
@@ -409,8 +413,9 @@ impl IdeSession {
             types: self.type_policy,
             // See the matching note on `IdeSnapshot::analyze` — no
             // `[lints]`-resolution input wired to `IdeSession` yet (#1160
-            // scope note).
-            ..AnalysisOptions::default()
+            // scope note). Spelled out explicitly, not `..Default::default()`
+            // — see that note for why.
+            lints: brink_analyzer::LintPolicy::default(),
         }
     }
 

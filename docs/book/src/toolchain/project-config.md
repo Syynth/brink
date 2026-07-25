@@ -21,17 +21,56 @@ config every mount reads.
 dialect = "brink"      # "brink" | "strict-ink" (default: "strict-ink")
 types   = "gradual"    # "gradual" | "strict"   (default: dialect-keyed —
                        # strict for "brink", gradual for "strict-ink")
+
+[lints]
+deny-warnings = true   # promote every Warning-severity diagnostic to
+                       # Error (the `-D warnings` equivalent; issue #1160)
+E014 = "deny"          # per-code severity override: "allow" | "warn" | "deny"
 ```
 
-Both keys are optional. An empty or absent `[project]` table — or no
-`brink.toml` at all — changes nothing: **a missing file is exactly today's
-behavior**, no regression.
+All keys are optional. An empty or absent `[project]`/`[lints]` table — or
+no `brink.toml` at all — changes nothing: **a missing file is exactly
+today's behavior**, no regression.
 
-Unknown keys — a stray top-level table, or a key inside `[project]` this
-version of `brink` doesn't recognize — are reported as **warnings**, never
-compile failures. This is a forward-compatibility guarantee: a `brink.toml`
-written against a newer schema still compiles with an older `brink` binary,
-just with a warning about the keys it didn't understand.
+Unknown keys — a stray top-level table, a key inside `[project]`, or a
+`[lints]` entry naming a code this version of `brink` doesn't recognize (or
+one whose default severity isn't `Warning`, so it isn't overridable at all —
+see [Lint severity](#lint-severity) below) — are reported as
+**warnings**, never compile failures. This is a forward-compatibility
+guarantee: a `brink.toml` written against a newer schema still compiles with
+an older `brink` binary, just with a warning about the keys it didn't
+understand.
+
+## Lint severity
+
+`[lints]` (issue #1160) is shaped like Rust's own `[lints]` table, but is
+**not** a semantic drop-in for it. Each key other than the reserved
+`deny-warnings` names a diagnostic code (`"E014"`) mapped to a severity:
+
+- `deny` — always `Error`, regardless of `deny-warnings`.
+- `warn` — the code's ordinary behavior: `Warning`, promoted to `Error` by
+  `deny-warnings` like any other unconfigured warning.
+- `allow` — **unlike Rust's `allow`, this does not remove the diagnostic.**
+  It only buys immunity from `deny-warnings`; the diagnostic still resolves
+  to `Warning` and is still reported. To actually suppress a diagnostic at a
+  specific site, use a `//brink-disable` comment instead — a different,
+  per-site mechanism, not a project-wide policy knob.
+
+Only codes whose *default* severity is `Warning` are overridable at all — a
+diagnostic that is a hard error by default (e.g. a parse error) can never be
+downgraded through `[lints]`; the table is never even consulted for it.
+`E063` (annotation-vs-inference mismatch) is a special case worth knowing:
+its own *base* severity is `types`-policy-dependent (`Error` under `types =
+strict`), so a `[lints]` entry for it is only ever consulted under `types =
+gradual`.
+
+A key that isn't a real diagnostic code, or names a non-overridable one, is
+never merged into the resolved policy — it's reported as a warning (the same
+channel unknown top-level/`[project]` keys use), never silently dropped.
+
+Today, `[lints]` and `deny-warnings` are file-only: there is no
+`--deny`/`-D` CLI flag or editor-API call that sets an individual code's
+severity, unlike `dialect`/`types` below.
 
 ## Discovery
 
@@ -63,20 +102,28 @@ one-off choice that the file must not silently overrule.
 | `setLanguageDialect(...)` / `setTypePolicy(...)` (explicit call) | `brink.toml`, defaults |
 | `brink.toml`'s `[project] dialect`/`types` | defaults only |
 | Dialect-keyed default (`brink` → `strict`, `strict-ink` → `gradual`) | — |
+| `brink.toml`'s `[lints]`/`deny-warnings` | defaults only — no CLI/API override source yet (file-only, see [Lint severity](#lint-severity)) |
 
 ## Per mount
 
 - **`brink compile`** discovers `brink.toml` from the entry file you pass it.
   `--dialect`/`--types`, when actually given, override the file field-by-field
   (setting only `--dialect` leaves the file's `types`, if any, in effect).
-  See [`brink compile`](./cli/compile.md).
+  `[lints]`/`deny-warnings` apply too — a build that previously succeeded
+  with a warning can now fail. See [`brink compile`](./cli/compile.md).
 - **`brink ide`** has no `--dialect`/`--types` flags of its own — the file
-  (or the plain defaults, absent one) is the only source. See
-  [`brink ide`](./cli/ide.md).
+  (or the plain defaults, absent one) is the only source, and this includes
+  `[lints]`/`deny-warnings`. See [`brink ide`](./cli/ide.md).
 - **The wasm editor session** (`@brink-lang/web`'s `EditorSessionHandle`) has
   no filesystem of its own. Read `brink.toml`'s text with your host's own
   file APIs (Node `fs`, the browser File System Access API, a bundler
-  import, …) and hand it to `applyProjectConfig`:
+  import, …) and hand it to `applyProjectConfig`. **`applyProjectConfig`
+  applies only `[project] dialect`/`types`; `[lints]`/`deny-warnings` are not
+  wired to the wasm editor session yet** — the same is true of the language
+  server (`brink-lsp`), which also only resolves `dialect`/`types` from a
+  discovered `brink.toml`. Neither surface's diagnostic output changes
+  severity based on `[lints]` today; only `brink compile` and `brink ide`
+  do:
 
   ```ts
   import { EditorSessionHandle } from "@brink-lang/web";
