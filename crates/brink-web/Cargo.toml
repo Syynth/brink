@@ -42,6 +42,7 @@ brink-intl = { workspace = true }
 rowan.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 wasm-bindgen = "0.2"
 # `js-sys` provides `Function`/`Array` for the synchronous external-function
 # binding boundary (ink EXTERNAL → JS callback). Values are hand-mapped to
