@@ -1,4 +1,4 @@
-name: Benchmarks (gen-input, brink-loop)
+name: Benchmarks (gen-input, brink-loop, inkjs)
 
 on:
   schedule:
@@ -23,22 +23,43 @@ on:
   # every other PR. Not in branch protection's required-checks list, so
   # it's advisory: it goes red on a relevant PR but does not block the
   # merge by itself.
+  #
+  # `crates/internal/**` (not just `crates/internal/brink-format/**`) is
+  # required: both crates' Cargo.lock pins the full transitive closure
+  # (brink-analyzer, brink-db, brink-driver, brink-ir, brink-syntax, ... —
+  # not only brink-format), so any of those going stale is the same
+  # #1402-shaped gap gen-input/brink-loop were already exposed to via
+  # brink-runtime/brink-compiler. Root `Cargo.toml` is included for the same
+  # reason as demo.yml: it holds `[workspace.package] version` and
+  # `[workspace.dependencies]`, which every excluded lockfile resolves from.
+  # `benchmarks/lib/**` and `benchmarks/stories/**` are included because
+  # BENCHMARKS_INKJS_GATE's smoke step reads convert-input.sh and the
+  # crucible-8 story fixture directly — a PR editing either can break that
+  # gate without touching any of the paths above.
   pull_request:
     paths:
       - 'benchmarks/tools/gen-input/**'
       - 'benchmarks/drivers/brink-loop/**'
+      - 'benchmarks/drivers/inkjs/**'
+      - 'benchmarks/lib/**'
+      - 'benchmarks/stories/**'
       - 'crates/brink-runtime/**'
       - 'crates/brink-compiler/**'
-      - 'crates/internal/brink-format/**'
+      - 'crates/internal/**'
+      - 'Cargo.toml'
       - '.github/workflows/benchmarks.yml'
   push:
     branches: [main]
     paths:
       - 'benchmarks/tools/gen-input/**'
       - 'benchmarks/drivers/brink-loop/**'
+      - 'benchmarks/drivers/inkjs/**'
+      - 'benchmarks/lib/**'
+      - 'benchmarks/stories/**'
       - 'crates/brink-runtime/**'
       - 'crates/brink-compiler/**'
-      - 'crates/internal/brink-format/**'
+      - 'crates/internal/**'
+      - 'Cargo.toml'
       - '.github/workflows/benchmarks.yml'
 
 # Least privilege: jobs only read the repo. Grant more per-job if ever needed.
@@ -124,3 +145,42 @@ jobs:
         run: |
           cargo metadata --format-version 1 --no-deps |
             jq -e '[.packages[].name] | index("brink-loop") | not'
+
+  # benchmarks/drivers/inkjs (the inkjs cross-implementation benchmark
+  # driver, run.sh) had zero CI signal until now — it isn't a cargo crate so
+  # neither `ci.yml` nor the two Rust gates above ever touch it.
+  inkjs-gate:
+    name: BENCHMARKS_INKJS_GATE
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+      # `npm ci` is the node analogue of `--locked` above: it fails outright
+      # if package-lock.json doesn't exactly satisfy package.json instead of
+      # silently re-resolving a drifted lockfile.
+      - name: Install dependencies (inkjs driver)
+        working-directory: benchmarks/drivers/inkjs
+        run: npm ci
+      - name: Syntax check (inkjs driver)
+        working-directory: benchmarks/drivers/inkjs
+        run: node --check driver.mjs
+      # Smoke-run the driver end-to-end (not just a syntax check — house
+      # rule 19r: a check step must be able to fail for what it claims to
+      # verify) against a small existing benchmark story. driver.mjs expects
+      # 1-indexed choice input; benchmarks/stories/*/input.txt is 0-indexed
+      # (see scenario.toml `input_indexing`), so convert it the same way
+      # run.sh does.
+      - name: Smoke test (inkjs driver)
+        working-directory: benchmarks/drivers/inkjs
+        run: |
+          set -euo pipefail
+          input_1based=$(mktemp)
+          trap 'rm -f "$input_1based"' EXIT
+          bash ../../lib/convert-input.sh < ../../stories/crucible-8/input.txt > "$input_1based"
+          node driver.mjs ../../stories/crucible-8/story.ink.json "$input_1based"

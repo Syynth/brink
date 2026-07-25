@@ -61,8 +61,74 @@ jobs:
           fetch-depth: 0
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: release-plz release-pr
+        id: release-pr
         uses: release-plz/action@e8792575c7f2366cf6ff3ccc33ead9ace5b691c7 # v0.5
         with:
           command: release-pr
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+      # A version bump changes every crates/*/Cargo.toml `version`, which
+      # stales the Cargo.lock of any workspace-excluded crate that takes a
+      # `path` dependency on a bumped crate (Cargo.lock still lists the old
+      # version even though it's a path dep, and `--locked` in
+      # demo.yml/benchmarks.yml fails on the mismatch). Without this step the
+      # NEXT release would leave demos/compound and benchmarks/{gen-input,
+      # brink-loop} lockfiles stale, re-reddening those gates the moment
+      # #1418's path-filter fix lets them see the release PR (#1418, priority
+      # item 3 — release.yml is cargo-dist-generated, house rule 5, so this
+      # lives here instead).
+      #
+      # `cargo update -p <name>` (not a blanket `cargo update`) so only the
+      # brink/bevy-brink path-dependency entries actually re-resolve; each
+      # excluded crate's *external* deps (bevy, rand, ...) are left exactly
+      # as committed.
+      - name: Refresh workspace-excluded lockfiles for the release PR
+        if: steps.release-pr.outputs.prs_created == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
+          # Passed via env (not inlined as `${{ ... }}` in the script body) so
+          # the JSON can't be interpreted as shell syntax.
+          RELEASE_PR_JSON: ${{ steps.release-pr.outputs.pr }}
+        run: |
+          set -euo pipefail
+          branch="$(jq -r '.head_branch' <<< "$RELEASE_PR_JSON")"
+          if [[ -z "$branch" || "$branch" == "null" ]]; then
+            echo "No head_branch in the release-pr 'pr' output; skipping lockfile refresh." >&2
+            exit 1
+          fi
+          git fetch origin "$branch"
+          git checkout -B "$branch" FETCH_HEAD
+
+          for dir in demos/compound benchmarks/tools/gen-input benchmarks/drivers/brink-loop; do
+            pkgs=$(grep -E '^name = "(brink|bevy-brink)' "$dir/Cargo.lock" | sed -E 's/^name = "(.*)"$/\1/' | sort -u)
+            args=()
+            for pkg in $pkgs; do
+              args+=(-p "$pkg")
+            done
+            echo "==> cargo update ${args[*]} (in $dir)"
+            (cd "$dir" && cargo update "${args[@]}")
+          done
+
+          if git diff --quiet -- demos/compound/Cargo.lock benchmarks/tools/gen-input/Cargo.lock benchmarks/drivers/brink-loop/Cargo.lock; then
+            echo "Excluded-crate lockfiles already current; nothing to push."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add demos/compound/Cargo.lock benchmarks/tools/gen-input/Cargo.lock benchmarks/drivers/brink-loop/Cargo.lock
+          git commit -m "chore: refresh workspace-excluded lockfiles for this release"
+          # RELEASE_PLZ_TOKEN (a PAT), not the default GITHUB_TOKEN: pushes made
+          # with GITHUB_TOKEN don't trigger other workflow runs, so
+          # demo.yml/benchmarks.yml would never re-check this branch (same
+          # reasoning as the release job's GITHUB_TOKEN override, see
+          # docs/releasing.md).
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+          # actions/checkout on this job does NOT set persist-credentials:
+          # false, so git's local http.extraheader carries an
+          # `Authorization: basic <GITHUB_TOKEN>` for github.com that takes
+          # precedence over the x-access-token userinfo above — the push
+          # would silently authenticate as GITHUB_TOKEN and defeat the whole
+          # point of using RELEASE_PLZ_TOKEN. Clear it before pushing.
+          git config --local --unset-all http.https://github.com/.extraheader || true
+          git push origin "HEAD:$branch"
