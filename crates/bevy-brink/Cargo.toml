@@ -102,9 +102,13 @@ brink-ir = { path = "../internal/brink-ir" }
 # `tracing::Subscriber` to prove an unknown/non-overridable `[lints]` code
 # passed through `InkLoader::override_config` actually reaches the ambient
 # tracing dispatcher — the same channel `bevy_log::LogPlugin` subscribes to
-# in a real app (`bevy_log` re-exports `tracing`'s macros verbatim). Plain
-# `tracing`, not `bevy_log`, because the subscriber has to see events
-# emitted on the asset IO task-pool thread, not just the test thread.
+# in a real app (`bevy_log` re-exports `tracing`'s macros verbatim, and is
+# already a non-optional dependency of this crate, so this isn't needed for
+# thread visibility — a `tracing::Subscriber` installed via
+# `set_global_default` sees every thread regardless of which crate path
+# emitted the `warn!`). This is a direct dependency on the `Subscriber`
+# trait / `subscriber` module the test implements against, rather than
+# reaching for those through `bevy_log`'s re-export.
 tracing.workspace = true
 # serde_json is a regular dependency now (handle.rs's SaveKey erasure); the
 # `book_saves` example also round-trips a composed save map through it to

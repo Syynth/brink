@@ -642,6 +642,41 @@ mod config_discovery_tests {
         (app, dir)
     }
 
+    /// Same as [`make_memory_asset_app`], except the `.ink` loader is wired
+    /// through the *real* [`crate::plugin::BrinkAssetsPlugin::with_config`]
+    /// plugin-build path instead of a hand-constructed `InkLoader {
+    /// override_config }`. Every other case in `config_discovery_tests`
+    /// constructs `InkLoader` directly, which only proves
+    /// `InkLoader::override_config`'s own behavior — not that
+    /// `BrinkPlugin::with_config` / `BrinkAssetsPlugin::with_config`
+    /// actually thread an override into it (`with_config` ->
+    /// `with_config_option` -> `BrinkAssetsPlugin::build` ->
+    /// `InkLoader { override_config }`). Use this builder for any test
+    /// whose claim is specifically about `with_config`'s reachability.
+    fn make_memory_asset_app_with_config(config: ProjectConfig) -> (bevy_app::App, Dir) {
+        let mut app = bevy_app::App::new();
+        let dir = Dir::default();
+        let dir_clone = dir.clone();
+        app.register_asset_source(
+            AssetSourceId::Default,
+            AssetSourceBuilder::new(move || {
+                Box::new(MemoryAssetReader {
+                    root: dir_clone.clone(),
+                })
+            }),
+        )
+        .add_plugins((
+            TaskPoolPlugin::default(),
+            AssetPlugin {
+                watch_for_changes_override: Some(false),
+                use_asset_processor_override: Some(false),
+                ..Default::default()
+            },
+            crate::plugin::BrinkAssetsPlugin::default().with_config(config),
+        ));
+        (app, dir)
+    }
+
     /// Poll `app.update()` until `predicate` returns `Some`, bounded so a
     /// stuck load fails the test instead of hanging the suite (guard
     /// against unbounded growth).
@@ -917,8 +952,18 @@ mod config_discovery_tests {
     struct CapturedMessage(String);
 
     impl tracing::Subscriber for CapturingSubscriber {
-        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
-            true
+        // Global (process-wide, whole-test-binary-lifetime) subscriber, so
+        // this must not accept every `trace!`/`debug!`/`info!` from every
+        // crate (bevy_asset, bevy_ecs, brink-*) in every other test running
+        // concurrently -- that would tax unrelated tests and let their
+        // events contaminate this test's substring assertions. Only the
+        // warnings this test actually cares about need capturing.
+        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+            *metadata.level() <= tracing::Level::WARN
+        }
+
+        fn max_level_hint(&self) -> Option<tracing::level_filters::LevelFilter> {
+            Some(tracing::level_filters::LevelFilter::WARN)
         }
 
         fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
@@ -968,9 +1013,6 @@ mod config_discovery_tests {
     fn plugin_override_unknown_and_non_overridable_lint_codes_warn_but_valid_entry_still_applies() {
         let warnings = captured_warnings();
 
-        let (mut app, dir) = make_memory_asset_app();
-        dir.insert_asset_text(Path::new("intro.ink"), E014_SOURCE);
-
         let mut lints = std::collections::BTreeMap::new();
         // Not a real `DiagnosticCode` -- never parses.
         lints.insert(
@@ -986,12 +1028,15 @@ mod config_discovery_tests {
         // with them.
         lints.insert("E014".to_owned(), brink_project_config::LintLevel::Deny);
 
-        app.register_asset_loader(InkLoader {
-            override_config: Some(ProjectConfig {
-                lints,
-                ..ProjectConfig::default()
-            }),
+        // Routed through `BrinkAssetsPlugin::with_config` (not a
+        // hand-registered `InkLoader`) so this test actually proves the
+        // `BrinkPlugin::with_config` wiring path, not just
+        // `InkLoader::override_config` in isolation.
+        let (mut app, dir) = make_memory_asset_app_with_config(ProjectConfig {
+            lints,
+            ..ProjectConfig::default()
         });
+        dir.insert_asset_text(Path::new("intro.ink"), E014_SOURCE);
 
         let handle = app
             .world()
@@ -1000,13 +1045,21 @@ mod config_discovery_tests {
         wait_for_failed(&mut app, &handle);
 
         let joined = warnings.lock().unwrap().join("\n");
+        // Assert the exact message text `validate_lint_code`
+        // (`brink-analyzer/src/lib.rs`) emits for each rejection class, not
+        // just the code substring -- a plain `contains("E001")` can't tell
+        // "not a recognized diagnostic code" apart from "not overridable",
+        // so it would pass identically even if the two rejection paths were
+        // swapped.
         assert!(
-            joined.contains("E9999_TYPO"),
-            "an unknown lint code must warn (not silently drop); captured: {joined}"
+            joined.contains("[lints] `E9999_TYPO` is not a recognized diagnostic code"),
+            "an unknown lint code must warn with the 'not a recognized diagnostic code' \
+             message (not silently drop); captured: {joined}"
         );
         assert!(
-            joined.contains("E001"),
-            "a non-overridable lint code must warn (not silently drop); captured: {joined}"
+            joined.contains("[lints] `E001` is not overridable"),
+            "a non-overridable lint code must warn with the 'not overridable' message \
+             (not silently drop); captured: {joined}"
         );
     }
 
