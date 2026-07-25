@@ -710,15 +710,18 @@ pub(super) fn load_git_baseline(entry: &Path, rev: &str) -> Result<Project, Stri
 ///   stays inside the repo, which is why both are verified.)
 ///
 ///   **Since #1425**, `brink_project_config::find_config`'s walk itself stops
-///   at a workspace/git boundary (a directory containing `.git`), so
-///   `native_source_root` can no longer resolve `root` to somewhere outside
-///   the repository the entry lives in — an ancestor `brink.toml` is now
-///   invisible to the walk rather than discovered-then-rejected here. This
-///   branch is believed unreachable via `load_git_baseline`'s real call path
-///   as a result; it stays as defense-in-depth (a clear error beats a
-///   garbled `git` one if some future change reopens the gap) and is
-///   exercised directly, in isolation, by
-///   `ensure_repo_dir_is_toplevel_rejects_a_root_outside_the_repo` in the
+///   at a workspace/git boundary (a directory containing `.git`), so an
+///   *ancestor* `brink.toml` (one that would have been discovered by
+///   climbing past the repo root) is now invisible to the walk rather than
+///   discovered-then-rejected here. But `native_source_root` falls back to
+///   `entry_dir` whenever no config is found at all, and `entry_dir` itself
+///   can still be outside the repo the cwd belongs to — e.g. `effects-diff
+///   --rev` invoked with an entry in a sibling tree
+///   (`-e ../sibling/story.brink` from inside this repo). That still reaches
+///   this branch end-to-end, which is why it stays covered both directly
+///   (`ensure_repo_dir_is_toplevel_rejects_a_root_outside_the_repo`, in
+///   isolation) and via `load_git_baseline`
+///   (`git_baseline_for_an_out_of_repo_entry_errors_via_this_guard`) in the
 ///   tests below.
 fn ensure_repo_dir_is_toplevel(repo_dir: &Path, root: &Path) -> Result<(), String> {
     let output = Command::new("git")
@@ -1138,9 +1141,14 @@ mod git_baseline_config_tests {
     /// `native_source_root` falls back to `entry_dir` exactly as if no
     /// config existed at all, and the baseline loads successfully with
     /// default `AnalysisOptions`, never reaching
-    /// `ensure_repo_dir_is_toplevel`'s outside-repo branch. That branch is
-    /// still covered directly, in isolation, by
-    /// `ensure_repo_dir_is_toplevel_rejects_a_root_outside_the_repo` below.
+    /// `ensure_repo_dir_is_toplevel`'s outside-repo branch *for this
+    /// specific trigger* (an ancestor `brink.toml`). That guard branch is
+    /// not dead overall, though — see
+    /// `git_baseline_for_an_out_of_repo_entry_errors_via_this_guard` below
+    /// for a different trigger (an out-of-repo *entry*) that still reaches
+    /// it end-to-end, and
+    /// `ensure_repo_dir_is_toplevel_rejects_a_root_outside_the_repo` for
+    /// direct, isolated coverage of the guard function itself.
     #[test]
     fn git_baseline_ignores_a_brink_toml_outside_the_repo_instead_of_erroring() {
         let _lock = CWD_LOCK
@@ -1191,16 +1199,18 @@ mod git_baseline_config_tests {
         std::fs::remove_dir_all(&ancestor).ok();
     }
 
-    /// Direct coverage for `ensure_repo_dir_is_toplevel`'s outside-repo
-    /// branch, now unreachable via `load_git_baseline`'s natural call path
-    /// since #1425 bounded `native_source_root`'s walk at the repository's
-    /// own `.git` boundary (see the doc comment on
-    /// `ensure_repo_dir_is_toplevel` and
+    /// Direct, isolated coverage for `ensure_repo_dir_is_toplevel`'s
+    /// outside-repo branch: exercises the guard function directly with a
+    /// fabricated out-of-repo `root`, independent of how a caller might
+    /// arrive at one. The branch is *not* unreachable via
+    /// `load_git_baseline`'s real call path — #1425 only closed the
+    /// ancestor-`brink.toml` trigger (see
     /// `git_baseline_ignores_a_brink_toml_outside_the_repo_instead_of_erroring`
-    /// above). Retained as defense-in-depth: exercises the guard function
-    /// directly with a fabricated out-of-repo `root`, so the check itself
-    /// stays covered even though nothing in this codebase can currently
-    /// construct that input for it end-to-end.
+    /// above); an out-of-repo *entry* still reaches this branch end-to-end
+    /// (`native_source_root` falls back to `entry_dir` when no config is
+    /// found at all, and `entry_dir` can itself be outside the repo), which
+    /// `git_baseline_for_an_out_of_repo_entry_errors_via_this_guard` below
+    /// proves directly through `load_git_baseline`.
     #[test]
     fn ensure_repo_dir_is_toplevel_rejects_a_root_outside_the_repo() {
         let _lock = CWD_LOCK
@@ -1227,6 +1237,70 @@ mod git_baseline_config_tests {
 
         let err = ensure_repo_dir_is_toplevel(Path::new("."), &ancestor)
             .expect_err("a root outside the repository must be rejected");
+        assert!(
+            err.contains("outside the git repository"),
+            "error must name the actual problem, got: {err}"
+        );
+
+        drop(cwd_guard);
+        std::fs::remove_dir_all(&ancestor).ok();
+    }
+
+    /// End-to-end regression (w52 review of #1432): `ensure_repo_dir_is_toplevel`'s
+    /// outside-repo branch is *not* dead via `load_git_baseline`'s real call
+    /// path, despite #1425 bounding `find_config`'s walk. `native_source_root`
+    /// falls back to `entry_dir` whenever no `brink.toml` is found at all — and
+    /// `entry_dir` can itself sit outside the repo the cwd belongs to, e.g. an
+    /// entry in a sibling tree passed to `effects-diff --rev` from inside this
+    /// repo. cwd is the repo's own toplevel (satisfying the first guard check
+    /// on its own), so this drives the *second* check — `root` resolving
+    /// outside the repo — through `load_git_baseline` itself, not by calling
+    /// `ensure_repo_dir_is_toplevel` directly.
+    #[test]
+    fn git_baseline_for_an_out_of_repo_entry_errors_via_this_guard() {
+        let _lock = CWD_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let original_cwd = std::env::current_dir().unwrap();
+
+        let ancestor = std::env::temp_dir().join(format!(
+            "brink-ide-unit-git-baseline-out-of-repo-entry-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&ancestor);
+        let repo = ancestor.join("repo");
+        let sibling = ancestor.join("sibling");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
+        // The entry lives entirely outside `repo`, in a sibling tree with no
+        // `brink.toml` anywhere above it either — so `native_source_root`
+        // finds no config and falls back to `entry_dir` (the sibling dir
+        // itself), which is outside the repo.
+        std::fs::write(
+            sibling.join("story.brink"),
+            "flow main() {\n  Hi. -> END\n}\n",
+        )
+        .unwrap();
+        std::fs::write(repo.join(".keep"), "").unwrap();
+        git(&repo, &["init", "-q"]);
+        git(&repo, &["config", "user.email", "test@example.com"]);
+        git(&repo, &["config", "user.name", "test"]);
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-q", "-m", "initial"]);
+
+        // cwd is the repo's own toplevel, exactly like `effects-diff --rev`
+        // requires — the entry, not cwd, is what puts `root` outside the repo.
+        std::env::set_current_dir(&repo).unwrap();
+        let cwd_guard = CwdGuard(original_cwd);
+
+        // An absolute entry path, not a `../`-relative one: `root` ends up
+        // exactly `sibling` (an unresolved-`.."` relative root would
+        // lexically "start with" `repo` — a separate, narrower quirk of
+        // this guard's `Path::starts_with`, not what this test is proving).
+        let entry = sibling.join("story.brink");
+        let err = load_git_baseline(&entry, "HEAD")
+            .err()
+            .expect("an out-of-repo entry must fail fast via ensure_repo_dir_is_toplevel");
         assert!(
             err.contains("outside the git repository"),
             "error must name the actual problem, got: {err}"

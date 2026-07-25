@@ -480,14 +480,13 @@ pub fn discover_from_entry(entry_file: &Path) -> Option<PathBuf> {
 /// [`SourceTree::read`] (mirroring how [`find_config`] returns a path the
 /// caller reads via `std::fs`, not file content).
 ///
-/// Already bounded at the `SourceTree`'s own root (#1425's second named
-/// boundary, alongside [`find_config`]'s `.git`-directory bound): a key's
+/// Already bounded at the tree's own root, so it needed no change for
+/// #1425 (unlike [`find_config`]'s `.git`-directory bound): a key's
 /// ancestors are string-derived (`rsplit_once('/')`), bottoming out at the
 /// empty root key with nothing further to strip — there is no lexical
-/// equivalent of `find_config`'s unbounded `Path::parent` climb here, so this
-/// function never needed a fix for that issue. It can only ever "escape" the
-/// project if the `tree` itself is rooted somewhere too wide (a caller
-/// concern, not this function's).
+/// equivalent of `find_config`'s unbounded `Path::parent` climb here. It can
+/// only ever "escape" the project if the `tree` itself is rooted somewhere
+/// too wide (a caller concern, not this function's).
 pub fn find_config_in_tree(tree: &dyn SourceTree, start_key: &str) -> io::Result<Option<String>> {
     let mut dir = start_key.trim_matches('/');
     loop {
