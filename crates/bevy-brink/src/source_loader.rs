@@ -611,14 +611,21 @@ mod config_discovery_tests {
     /// `deny-warnings` (issue #1394).
     const E014_SOURCE: &str = "Hello.\n~\n-> END\n";
 
-    /// A `VAR x = 0` -> struct-reassign idiom: `E075` (struct literals are
-    /// not legal declaration defaults) is gradual-locked, so this compiles
-    /// under `dialect = Brink` only with an explicit `types = gradual`
-    /// override (`dialect = Brink`'s own resolved-policy default is
-    /// `Strict`, per `AnalysisOptions::type_policy`) — mirrors the same
-    /// placeholder idiom `crate::test_support::compile_test_story_brink_gradual`
-    /// documents. Needs `STRUCT`, so it also requires `dialect = Brink`.
-    const STRUCT_REASSIGN_SOURCE: &str = "STRUCT NPC = #{hp: int, name: string}\nVAR npc = 0\n~ npc = NPC#{hp: 7, name: \"x\"}\n-> END\n";
+    /// An untyped function parameter (`f(x)`, no `: type` annotation) called
+    /// with an argument: `dialect = Brink`'s own resolved-policy default is
+    /// `Strict` (`AnalysisOptions::type_policy`), which rejects an untyped
+    /// param with 2 diagnostics — only an explicit `types = gradual`
+    /// override compiles it. Verified against this crate's own `brink`
+    /// CLI: `brink compile fnreturn.ink --dialect brink` exits 1 with 2
+    /// diagnostics; `--dialect brink --types gradual` exits 0.
+    ///
+    /// Replaces a prior `STRUCT NPC = ...; VAR npc = NPC#{...}` fixture that
+    /// was meant to hit `E075` (struct literals as declaration defaults) but
+    /// didn't — it compiled cleanly under `types = strict` too (verified the
+    /// same way), so the `types` override test built on it was vacuous
+    /// (house rule 19q; #1426 w52 review).
+    const UNTYPED_PARAM_SOURCE: &str =
+        "=== function f(x) ===\n~ return x\n\n=== start ===\n{f(1)}\n-> END\n";
 
     /// Build an `App` with an in-memory `AssetSource` and just enough
     /// registered (asset types + the dev-mode `InkLoader`) to drive a real
@@ -1141,21 +1148,46 @@ mod config_discovery_tests {
     fn plugin_with_config_types_reaches_ink_loader() {
         // `dialect = Brink` alone resolves `types` to its dialect-keyed
         // default, `Strict` (`AnalysisOptions::type_policy`), which rejects
-        // `STRUCT_REASSIGN_SOURCE`'s placeholder idiom (E075) -- only an
+        // `UNTYPED_PARAM_SOURCE`'s untyped function parameter -- only an
         // explicit `types = Gradual` override (on top of the same
-        // `dialect = Brink`, needed for `STRUCT`) makes it compile.
+        // `dialect = Brink`) makes it compile. See
+        // `plugin_with_config_types_absent_leaves_strict_default_rejecting`
+        // for the negative control proving the default (no `types`
+        // override) still fails the same source.
         let (mut app, dir) = make_memory_asset_app_with_config(ProjectConfig {
             dialect: Some(Dialect::Brink),
             types: Some(TypePolicy::Gradual),
             ..ProjectConfig::default()
         });
-        dir.insert_asset_text(Path::new("intro.ink"), STRUCT_REASSIGN_SOURCE);
+        dir.insert_asset_text(Path::new("intro.ink"), UNTYPED_PARAM_SOURCE);
 
         let handle = app
             .world()
             .resource::<AssetServer>()
             .load::<BrinkStoryAsset>("intro.ink");
         wait_for_loaded(&mut app, &handle);
+    }
+
+    #[test]
+    fn plugin_with_config_types_absent_leaves_strict_default_rejecting() {
+        // Negative control for `plugin_with_config_types_reaches_ink_loader`
+        // (house rule 19q): same `UNTYPED_PARAM_SOURCE`, same `dialect =
+        // Brink`, but no `types` override -- the dialect-keyed default
+        // (`Strict`) still rejects it, so the override in the sibling test
+        // is what actually flips the outcome, not something else about the
+        // fixture or the dialect setting.
+        let (mut app, dir) = make_memory_asset_app_with_config(ProjectConfig {
+            dialect: Some(Dialect::Brink),
+            types: None,
+            ..ProjectConfig::default()
+        });
+        dir.insert_asset_text(Path::new("intro.ink"), UNTYPED_PARAM_SOURCE);
+
+        let handle = app
+            .world()
+            .resource::<AssetServer>()
+            .load::<BrinkStoryAsset>("intro.ink");
+        wait_for_failed(&mut app, &handle);
     }
 
     #[test]

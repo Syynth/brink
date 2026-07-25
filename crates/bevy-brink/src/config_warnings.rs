@@ -38,10 +38,16 @@ use brink_project_config::ProjectConfig;
 ///
 /// Always present once [`BrinkAssetsPlugin`](crate::BrinkAssetsPlugin) is
 /// added (even with no `with_config` override, or one with no rejected
-/// codes) — an empty `Vec` means "nothing was rejected," never "the check
-/// didn't run." Message text is byte-identical to what
-/// `AnalysisOptions::apply_lint_overrides` (`brink-analyzer`) produces, the
-/// same wording the `tracing::warn!` channel logs.
+/// codes) — an empty `Vec` means "nothing was rejected by this plugin
+/// instance's own `with_config`," not necessarily "no `[lints]` override was
+/// ever rejected." In particular, a later `BrinkPlugin<M>::with_config`
+/// whose config is ignored because `BrinkAssetsPlugin` was already added
+/// (see [`BrinkPlugin::with_config`](crate::BrinkPlugin::with_config)) never
+/// reaches this resource at all — its whole `ProjectConfig`, rejected codes
+/// included, is silently dropped, with no `tracing::warn!` either. Message
+/// text is byte-identical to what `AnalysisOptions::apply_lint_overrides`
+/// (`brink-analyzer`) produces, the same wording the `tracing::warn!`
+/// channel logs.
 #[derive(Resource, Debug, Clone, Default, PartialEq, Eq)]
 pub struct BrinkConfigWarnings(pub Vec<String>);
 

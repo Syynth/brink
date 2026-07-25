@@ -329,6 +329,13 @@ impl BrinkAssetsPlugin {
     /// standalone-plugin equivalent of [`BrinkPlugin::with_config`], for
     /// hosts that add `BrinkAssetsPlugin` directly (e.g. a headless
     /// asset-processing binary) without going through `BrinkPlugin<M>`.
+    ///
+    /// An unknown or non-overridable code in `config.lints` is never
+    /// silently applied — [`build`](Plugin::build) inserts
+    /// [`BrinkConfigWarnings`](crate::BrinkConfigWarnings) with the
+    /// rejection eagerly, at plugin-build time, so a headless host that
+    /// never installs `bevy_log`/a `tracing` subscriber still gets it
+    /// (issue #1426).
     #[cfg(feature = "dev")]
     #[must_use]
     pub fn with_config(mut self, config: brink_project_config::ProjectConfig) -> Self {
