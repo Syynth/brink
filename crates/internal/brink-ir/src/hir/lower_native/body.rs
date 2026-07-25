@@ -38,8 +38,9 @@ use crate::Provenance;
 use crate::hir::FileId;
 use crate::provenance::NodeClass;
 use crate::{
-    Block, Content, ContentPart, Diagnostic, DiagnosticCode, Divert, DivertPath, DivertTarget,
-    Expr, LogicBlock, Name, Return, ReturnKind, Stmt, Tag, TunnelCall,
+    Block, BlockStmt, Content, ContentPart, Diagnostic, DiagnosticCode, Divert, DivertPath,
+    DivertTarget, ElseBranch, Expr, IfStmt, LogicBlock, Name, Return, ReturnKind, Stmt, Tag,
+    TunnelCall,
 };
 
 use super::choice::lower_choice_point;
@@ -314,9 +315,13 @@ fn lower_one_item(file_id: FileId, node: &SyntaxNode, diags: &mut Vec<Diagnostic
 /// its body is built (`is_function` is known there, not down in the
 /// per-item dispatch), walking every reachable structural nesting point —
 /// choice bodies/continuations, conditional branches, sequence branches,
-/// labeled blocks — and recomputing each touched block's `tail` (S1,
-/// docs/block-effect-model.md §10 row j), since mutating a tail-position
-/// `Return` in place leaves a stale `tail` otherwise.
+/// labeled blocks, and code-ground `Stmt::LogicBlock` (`~{ }` bodies, plus
+/// nested `if`/`while`/`for` bodies within one, via
+/// [`fixup_return_kind_in_block_stmts`]) — and recomputing each touched
+/// `Block`'s `tail` (S1, docs/block-effect-model.md §10 row j), since
+/// mutating a tail-position `Return` in place leaves a stale `tail`
+/// otherwise. `LogicBlock`/`BlockStmt` carry no `tail` field of their own
+/// (S1 only populates `Block`), so no recompute is needed on that side.
 ///
 /// **Known scope gap, flagged rather than silently mishandled**: a
 /// `return` reached only through a content-embedded inline conditional/
@@ -350,6 +355,7 @@ pub(super) fn fixup_return_kind(is_function: bool, block: &mut Block) {
                     fixup_return_kind(is_function, branch);
                 }
             }
+            Stmt::LogicBlock(lb) => fixup_return_kind_in_block_stmts(is_function, &mut lb.stmts),
             Stmt::Content(_)
             | Stmt::Divert(_)
             | Stmt::TunnelCall(_)
@@ -358,11 +364,51 @@ pub(super) fn fixup_return_kind(is_function: bool, block: &mut Block) {
             | Stmt::Assignment(_)
             | Stmt::ExprStmt(_)
             | Stmt::EndOfLine
-            | Stmt::LogicBlock(_)
             | Stmt::Await(_) => {}
         }
     }
     block.recompute_tail();
+}
+
+/// [`fixup_return_kind`]'s recursion into a code-ground `~{ }` body
+/// (`LogicBlock::stmts`/`BlockStmt`, B0.8's closed statement set — see that
+/// enum's doc: no weave concept reaches this side, so there is no
+/// `ChoiceSet`/`Conditional`/`Sequence`/`LabeledBlock` arm to mirror here).
+/// Walks `if`/`while`/`for` bodies (and `else`/`else if` chains) to reach
+/// every `BlockStmt::Return` a logic block can nest, applying the same
+/// non-function-bare-return → `TunnelRedirect` correction
+/// [`fixup_return_kind`] applies at weave level.
+fn fixup_return_kind_in_block_stmts(is_function: bool, stmts: &mut [BlockStmt]) {
+    for stmt in stmts {
+        match stmt {
+            BlockStmt::Return(r) => {
+                if !is_function && r.kind == ReturnKind::Explicit && r.value.is_none() {
+                    r.kind = ReturnKind::TunnelRedirect;
+                }
+            }
+            BlockStmt::If(i) => fixup_return_kind_in_if_stmt(is_function, i),
+            BlockStmt::While(w) => fixup_return_kind_in_block_stmts(is_function, &mut w.body),
+            BlockStmt::For(f) => fixup_return_kind_in_block_stmts(is_function, &mut f.body),
+            BlockStmt::TempDecl(_)
+            | BlockStmt::Assignment(_)
+            | BlockStmt::Break(_)
+            | BlockStmt::Continue(_)
+            | BlockStmt::ExprStmt(_)
+            | BlockStmt::Await(_) => {}
+        }
+    }
+}
+
+/// [`fixup_return_kind_in_block_stmts`]'s `if`/`else if`/`else` walk —
+/// split out since `ElseBranch::ElseIf` recurses on `IfStmt` itself, not on
+/// a `[BlockStmt]` slice.
+fn fixup_return_kind_in_if_stmt(is_function: bool, i: &mut IfStmt) {
+    fixup_return_kind_in_block_stmts(is_function, &mut i.body);
+    match &mut i.else_branch {
+        Some(ElseBranch::ElseIf(inner)) => fixup_return_kind_in_if_stmt(is_function, inner),
+        Some(ElseBranch::Else(stmts)) => fixup_return_kind_in_block_stmts(is_function, stmts),
+        None => {}
+    }
 }
 
 /// Grant a native `flow`/`stitch` body ink's ROOT-content implicit-end
