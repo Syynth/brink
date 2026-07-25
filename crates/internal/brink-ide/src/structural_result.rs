@@ -179,15 +179,18 @@ pub fn gate_with_source(
 /// `types` is the session's resolved TM-3 policy and `lints` its resolved
 /// `[lints]` policy (both from [`IdeSession::analysis_options`]) — `severity`
 /// renders the [`brink_analyzer::effective_severity`] (issue #1367), not the
-/// raw [`DiagnosticCode::severity`] default. Every caller currently passes
-/// `IdeSession::analysis_options().lints`, which is always
-/// `LintPolicy::default()`: `IdeSession` has no `[lints]`-resolution input
-/// wired yet (same #1160 scope note as [`IdeSession::analysis_options`]), so
-/// this is a no-op today — but taking `lints` as a parameter (rather than
-/// manufacturing a fresh `LintPolicy::default()` in here) means a future
-/// `[lints]` source wired into `IdeSession` (#1366) flows through
-/// automatically instead of silently going stale one layer down from the
-/// seam this function exists to keep live.
+/// raw [`DiagnosticCode::severity`] default. Every caller passes
+/// `IdeSession::analysis_options().lints`, which since #1366 reflects
+/// whatever `IdeSession::set_lint_policy` last resolved (a served
+/// `brink.toml`'s `[lints]` table, merged in by `brink-web`'s
+/// `EditorSession::apply_project_config` — as of #1366 the only caller;
+/// the CLI's `Project::load`/`Project::ide_session` do not forward a
+/// resolved policy here yet, see `IdeSession::set_lint_policy`'s doc
+/// comment) — `LintPolicy::default()` only when nothing has ever set it.
+/// Taking `lints` as a parameter (rather than manufacturing a fresh
+/// `LintPolicy::default()` in here) is what let that wiring land as a
+/// two-line change at the `IdeSession` seam instead of a change to every
+/// call site here.
 pub(crate) fn introduced_diagnostics(
     analysis: &AnalysisResult,
     new_analysis: &AnalysisResult,
@@ -255,9 +258,9 @@ mod tests {
     /// vs-inference mismatch) is `Warning` by default but `Error` under
     /// `types = strict` (`brink-analyzer::strict`'s #640-round ruling) — the
     /// one TM-3 carve-out `effective_severity` applies regardless of
-    /// `[lints]`, so it's reachable even though `IdeSession` has no
-    /// `[lints]`-resolution input wired yet (see this function's doc
-    /// comment).
+    /// `[lints]`, exercised directly here (calling the function under test
+    /// with an explicit `LintPolicy::default()`) rather than through a full
+    /// `IdeSession`.
     #[test]
     fn reports_effective_severity_not_raw_default() {
         assert_eq!(
