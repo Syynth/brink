@@ -166,6 +166,158 @@ fn compile_malformed_brink_toml_names_the_file_in_the_error() {
     fs::remove_dir_all(&dir).ok();
 }
 
+// ── brink compile: --deny/--warn/--allow / -D warnings (#1373) ────────
+
+/// A logic line with no effect (`~` alone) — `DiagnosticCode::E014`,
+/// `Warning` by default. Plain `strict-ink` source, no extension syntax, so
+/// only the lint-override tier can make this fail.
+const E014_FIXTURE: &str = "Hello.\n~\n-> END\n";
+
+#[test]
+fn compile_deny_e014_flag_fails_an_otherwise_clean_compile() {
+    let dir = project_dir("compile-deny-e014");
+    let story = write_story(&dir, E014_FIXTURE);
+
+    let out = brink()
+        .arg("compile")
+        .arg(&story)
+        .args(["--deny", "E014"])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "--deny E014 must make an ordinarily-Warning diagnostic fail the compile"
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn compile_short_deny_flag_fails_an_otherwise_clean_compile() {
+    let dir = project_dir("compile-deny-e014-short");
+    let story = write_story(&dir, E014_FIXTURE);
+
+    let out = brink()
+        .arg("compile")
+        .arg(&story)
+        .args(["-D", "E014"])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "-D E014 must make an ordinarily-Warning diagnostic fail the compile"
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn compile_no_lint_flags_e014_stays_a_warning() {
+    let dir = project_dir("compile-no-lint-flags");
+    let story = write_story(&dir, E014_FIXTURE);
+
+    let out = brink().arg("compile").arg(&story).output().unwrap();
+    assert!(
+        out.status.success(),
+        "with no --deny/-D warnings flag, E014 must stay a Warning: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn compile_deny_warnings_short_flag_fails_an_unconfigured_warning() {
+    let dir = project_dir("compile-deny-warnings-short");
+    let story = write_story(&dir, E014_FIXTURE);
+
+    let out = brink()
+        .arg("compile")
+        .arg(&story)
+        .args(["-D", "warnings"])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "-D warnings must promote an unconfigured E014 warning to a compile error"
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// A CLI `--allow` must beat a conflicting `brink.toml` `[lints] E014 =
+/// "deny"` entry — #1005/#1373's `CLI/API > file > default` precedence.
+#[test]
+fn compile_allow_flag_overrides_a_conflicting_brink_toml_deny() {
+    let dir = project_dir("compile-allow-overrides-toml-deny");
+    let story = write_story(&dir, E014_FIXTURE);
+    write_config(&dir, "[lints]\nE014 = \"deny\"\n");
+
+    // Sanity check: the file alone denies E014 and fails the compile.
+    let baseline = brink().arg("compile").arg(&story).output().unwrap();
+    assert!(
+        !baseline.status.success(),
+        "sanity check: brink.toml's E014 = \"deny\" alone must fail the compile"
+    );
+
+    let out = brink()
+        .arg("compile")
+        .arg(&story)
+        .args(["--allow", "E014"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "--allow E014 must override brink.toml's conflicting E014 = \"deny\": {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// A CLI `--deny` must beat a conflicting `brink.toml` `[lints] E014 =
+/// "allow"` entry, the reverse direction of the above.
+#[test]
+fn compile_deny_flag_overrides_a_conflicting_brink_toml_allow() {
+    let dir = project_dir("compile-deny-overrides-toml-allow");
+    let story = write_story(&dir, E014_FIXTURE);
+    write_config(&dir, "[lints]\nE014 = \"allow\"\n");
+
+    let out = brink()
+        .arg("compile")
+        .arg(&story)
+        .args(["--deny", "E014"])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "--deny E014 must override brink.toml's conflicting E014 = \"allow\": {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn compile_unrecognized_deny_code_is_a_warning_not_a_compile_failure() {
+    let dir = project_dir("compile-deny-unknown-code");
+    let story = write_story(&dir, "Hello.\n-> END\n");
+
+    let out = brink()
+        .arg("compile")
+        .arg(&story)
+        .args(["--deny", "E9999"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "an unrecognized --deny code must warn, not fail compilation: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
 // ── brink convert ────────────────────────────────────────────────────
 
 /// Regression for the review finding on `load_story_data` (the shared loader
