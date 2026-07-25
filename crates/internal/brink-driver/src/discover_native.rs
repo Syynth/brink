@@ -232,9 +232,13 @@ mod tests {
 
     /// A `SourceTree` scoped wider than `.brink` alone — e.g. one that lists
     /// `.brink` + `.ink` for `brink-environment`'s `Project::load` (no
-    /// production implementation does this any more, since issue #1404
-    /// deleted `RealFs`'s second, wider list scope, but nothing at the type
-    /// level stops a future or test-only `&dyn SourceTree` from doing so) —
+    /// implementation ever HANDED TO `discover_native` — `RealFs`, `GitRev`
+    /// — lists wider than `.brink` since issue #1404 deleted `RealFs`'s
+    /// second, wider list scope; but `brink_source_tree::InMemory`, the tree
+    /// `brink-web`'s `compile()` builds and hands to
+    /// `brink_environment::Project::load`, still lists arbitrary `.ink`
+    /// keys today, and nothing at the type level stops it — or a future
+    /// `discover_native` caller — from handing such a tree here instead) —
     /// must be rejected wholesale, before any file is loaded, if it is ever
     /// handed to `discover_native` instead. This is the #1371 guard:
     /// `discover_native` itself must refuse any non-`.brink` key rather than

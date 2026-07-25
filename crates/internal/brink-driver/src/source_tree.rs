@@ -12,8 +12,15 @@
 //!
 //! Both types are host-only (they touch the real filesystem and spawn a
 //! `git` subprocess), which is why they live here rather than in
-//! `brink-db`: `brink-web` links `brink-db` for its (portable)
-//! `InMemory` seam but never links `brink-driver`.
+//! `brink-db`: `RealFs`/`GitRev` are never constructed on any
+//! wasm-reachable path — `brink-web`'s `compile`/`compile_fragment` build
+//! `brink_source_tree::InMemory` directly and feed it to
+//! `brink_environment::Project::load`, which never touches a
+//! `SourceTree` at all when driven from `Environment`'s inline content;
+//! `brink-compiler`'s `RealFs` branch is CLI-only. (`brink-driver` itself
+//! *is* linked into the wasm build transitively, via `brink-compiler` and
+//! `brink-environment` — it is `RealFs`/`GitRev` construction, not the
+//! crate link, that stays host-only.)
 
 use std::fs;
 use std::io;
