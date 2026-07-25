@@ -28,9 +28,7 @@ use crate::source_tree::is_native;
 /// partial load) if either check fails — see [`DiscoverError::InvalidKey`]
 /// and [`DiscoverError::NonNativeKey`]. The extension guard exists because
 /// `tree` is a `&dyn SourceTree`, not necessarily one scoped to `.brink`
-/// alone — `brink-driver`'s own `RealFs::project` widens `list` to
-/// `.brink` + `.ink` for `brink-environment`'s `Project::load` (issue
-/// #1357), and nothing at the type level stops that wider tree from being
+/// alone, and nothing at the type level stops a wider-scoped tree from being
 /// passed here by mistake (issue #1371). Rejecting a non-native key here,
 /// rather than silently parsing `.ink` text as brink source, is the guard
 /// that keeps the two discovery paths from crossing.
@@ -232,12 +230,13 @@ mod tests {
         );
     }
 
-    /// A `SourceTree` scoped wider than `.brink` alone — the shape of
-    /// `RealFs::project` (issue #1357), which lists `.brink` + `.ink` for
-    /// `brink-environment`'s `Project::load` — must be rejected wholesale,
-    /// before any file is loaded, if it is ever handed to `discover_native`
-    /// instead. This is the #1371 guard: nothing at the type level stops a
-    /// `ListScope::Project`-scoped tree from reaching here, so
+    /// A `SourceTree` scoped wider than `.brink` alone — e.g. one that lists
+    /// `.brink` + `.ink` for `brink-environment`'s `Project::load` (no
+    /// production implementation does this any more, since issue #1404
+    /// deleted `RealFs`'s second, wider list scope, but nothing at the type
+    /// level stops a future or test-only `&dyn SourceTree` from doing so) —
+    /// must be rejected wholesale, before any file is loaded, if it is ever
+    /// handed to `discover_native` instead. This is the #1371 guard:
     /// `discover_native` itself must refuse any non-`.brink` key rather than
     /// silently parsing `.ink`/other text as brink source. The fixture below
     /// also throws in a `brink.toml`-named key to prove the guard rejects

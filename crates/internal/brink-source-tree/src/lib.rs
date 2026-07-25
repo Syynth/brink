@@ -35,16 +35,18 @@
 //!
 //! `list`'s enumeration scope is entirely implementation-defined — nothing
 //! in this trait requires it to return only native `.brink` keys.
-//! `brink-driver`'s `RealFs`, for instance, has two constructors backed by
-//! the same type: `RealFs::new` scopes `list` to `.brink` only (the native
-//! discovery / `brink ide` shape), while `RealFs::project` widens it to
-//! `.brink` + `.ink` + `brink.toml` (the CLI's producer mount). `read`,
-//! however, has **no equivalent key-kind scoping on any implementation** —
-//! whether a key is native (`.brink`) or not plays no role in whether `read`
-//! will serve it, regardless of what that same implementation's `list` would
-//! ever enumerate. A `RealFs::new`-scoped tree's `read("brink.toml")` still
-//! succeeds if that file is on disk, even though its `list()` would never
-//! return that key.
+//! `brink-driver`'s `RealFs`, for instance, scopes `list` to `.brink` only
+//! (the native discovery / `brink ide` shape; issue #1404 deleted a second,
+//! wider `.brink` + `.ink` scope once tracing showed every caller of that
+//! wider scope either filtered `list()`'s output back down to `.brink`
+//! itself or never called `list()` at all, so the extra `.ink` keys were
+//! never actually observable). `read`, however, has **no equivalent
+//! key-kind scoping on any implementation** — whether a key is native
+//! (`.brink`) or not plays no role in whether `read` will serve it,
+//! regardless of what that same implementation's `list` would ever
+//! enumerate. A `RealFs`-scoped tree's `read("brink.toml")` still succeeds
+//! if that file is on disk, even though its `list()` would never return
+//! that key.
 //!
 //! This is a claim about key-*kind* scoping specifically, not a claim that
 //! every implementation serves every key that physically exists: a

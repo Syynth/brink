@@ -341,9 +341,9 @@ fn run_command(command: Commands) -> ExitCode {
 /// one path every `brink compile`/`convert`/`play`/`replay`/`export-xliff`
 /// invocation flows through now.
 ///
-/// The CLI mounts a [`RealFs::project`](brink_driver::RealFs::project) tree
+/// The CLI mounts a [`RealFs::new`](brink_driver::RealFs::new) tree
 /// rooted at [`native_source_root`] — a lazy real-filesystem `SourceTree`, not
-/// a whole-tree eager drain (issue #1357): `list` enumerates `.brink`/`.ink`
+/// a whole-tree eager drain (issue #1357): `list` enumerates `.brink`
 /// keys by stat alone (never descending into `target/`, `.git/`, or
 /// `node_modules/` — issue #1381), and `read` serves any one of them off
 /// disk only when `Project::load` actually needs it (an ink entry's
@@ -375,7 +375,7 @@ fn compile_entry(
     deny_warnings: Option<bool>,
 ) -> Result<brink_compiler::CompileOutput, Box<dyn std::error::Error>> {
     let root = brink_driver::native_source_root(entry);
-    let tree = brink_driver::RealFs::project(&root);
+    let tree = brink_driver::RealFs::new(&root);
     let entry_key = brink_driver::relative_key(&root, entry);
     let overrides = brink_environment::OptionOverrides {
         dialect,
