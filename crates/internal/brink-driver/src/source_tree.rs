@@ -159,6 +159,32 @@ pub fn is_native(path: &Path) -> bool {
 /// parent always means "found in the directory the walk started from" —
 /// i.e. the current directory — so it maps to `Path::new(".")` instead of
 /// being discarded.
+///
+/// A *relative* `entry_dir` still can't see past the process's cwd, though,
+/// even after that fix: `find_config`'s walk-up is `Path::parent`, which is
+/// purely lexical — for a relative path it bottoms out at `""` (cwd itself)
+/// and has no way to synthesize a `".."` to keep climbing, unlike an
+/// *absolute* `entry_dir`, whose `Path::parent` chain walks all the way to
+/// the filesystem root for free. So `brink compile story.ink`, run from a
+/// cwd whose `brink.toml` lives one directory *above* cwd (not in cwd
+/// itself), never even attempts that ancestor — `entry_dir` is `"."`,
+/// `find_config` checks `"./brink.toml"` and the bare `"brink.toml"` (both
+/// resolve to the same cwd-relative candidate) and then has nowhere lexical
+/// left to go, so it returns `None` and this function falls back to
+/// `entry_dir` itself, mis-rooting at cwd instead of the true project root
+/// (issue #1413) — even though the identical project laid out with an
+/// absolute or `chapters/`-nested entry resolves correctly. When the
+/// relative walk comes up empty, retry once from an absolutized
+/// `entry_dir` so a `brink.toml` above cwd is still found, exactly as it
+/// would be for an absolute-path entry. The retry is skipped whenever
+/// absolutizing `entry_dir` changes nothing (i.e. `entry_dir` was already
+/// absolute *and* already normalized — the first pass already walked to the
+/// filesystem root, so a byte-identical second walk would be wasted work)
+/// and never runs when the relative walk already found an
+/// answer — so the fast, already-correct relative result (including the
+/// `"."`-for-cwd spelling [`GitRev::repo_relative`](GitRev)'s shortcut
+/// depends on, per the #1403/PR #1412 trap) is untouched in the common
+/// case.
 #[must_use]
 pub fn native_source_root(entry: &Path) -> PathBuf {
     let entry_dir = entry
@@ -166,17 +192,34 @@ pub fn native_source_root(entry: &Path) -> PathBuf {
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
 
-    brink_project_config::find_config(entry_dir).map_or_else(
-        || entry_dir.to_path_buf(),
-        |config_path| {
-            let parent = config_path.parent().unwrap_or_else(|| Path::new(""));
-            if parent.as_os_str().is_empty() {
-                PathBuf::from(".")
-            } else {
-                parent.to_path_buf()
-            }
-        },
-    )
+    if let Some(root) = source_root_from_config(entry_dir) {
+        return root;
+    }
+
+    let entry_dir_abs = std::path::absolute(entry_dir).unwrap_or_else(|_| entry_dir.to_path_buf());
+    if entry_dir_abs != entry_dir
+        && let Some(root) = source_root_from_config(&entry_dir_abs)
+    {
+        return root;
+    }
+
+    entry_dir.to_path_buf()
+}
+
+/// Walk up from `entry_dir` for a `brink.toml` via
+/// [`brink_project_config::find_config`], returning the directory that
+/// governs it — `None` when no config is found anywhere above `entry_dir`.
+/// An empty parent (a bare `brink.toml` found exactly at `entry_dir`, e.g.
+/// the process cwd for a relative walk) maps to `Path::new(".")` rather
+/// than being discarded — see [`native_source_root`]'s doc for why.
+fn source_root_from_config(entry_dir: &Path) -> Option<PathBuf> {
+    let config_path = brink_project_config::find_config(entry_dir)?;
+    let parent = config_path.parent().unwrap_or_else(|| Path::new(""));
+    Some(if parent.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        parent.to_path_buf()
+    })
 }
 
 /// Convert `path` to the root-relative key [`RealFs`]/[`GitRev`] would key it
