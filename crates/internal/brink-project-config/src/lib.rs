@@ -76,7 +76,7 @@
 //! the same "warn, never silently drop" channel this crate's own unknown-key
 //! warnings use.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -416,21 +416,37 @@ pub fn discover_from_entry(entry_file: &Path) -> Option<PathBuf> {
 ///
 /// `start_key` is a root-relative directory key (`""` for the tree root
 /// itself), in the same forward-slash-joined form [`SourceTree::list`]
-/// returns. Walks `start_key` and every ancestor, closest first, checking
-/// whether `{ancestor}/brink.toml` (bare `brink.toml` at the tree root) is
-/// among the keys `tree.list(root)` enumerates — the tree-relative analog of
-/// [`find_config`]'s `Path::is_file` check at each `Path::parent`.
+/// returns. Walks `start_key` and every ancestor, closest first, probing
+/// whether `{ancestor}/brink.toml` (bare `brink.toml` at the tree root)
+/// exists via a direct [`SourceTree::read`] of each candidate key — the
+/// tree-relative analog of [`find_config`]'s `Path::is_file` check at each
+/// `Path::parent`.
+///
+/// This is an O(depth) probe, **not** a tree enumeration: unlike an earlier
+/// version of this function, it never calls [`SourceTree::list`] (issue
+/// #1370 — a full recursive tree walk, including `target/`/`.git`/
+/// `node_modules`, just to test a handful of ancestor candidates was the
+/// same waste #1357 removed from the CLI drain, relocated here). A `read`
+/// that fails with [`io::ErrorKind::NotFound`] means "no `brink.toml` at
+/// this candidate, keep walking up"; any other read error propagates —
+/// `root`'s own [`SourceTree::read`] already resolves keys against
+/// whatever root the tree was constructed with, so this function needs no
+/// enumeration to know where to look.
+///
+/// `root` is accepted (and unused) only to keep this function's shape
+/// symmetric with [`SourceTree::list`]'s signature and preserve source
+/// compatibility for existing callers; every current [`SourceTree`]
+/// implementation resolves `read` keys against its own stored root, not
+/// against a `root` supplied per call.
 ///
 /// Returns the matching key, not file content — callers read it via
 /// [`SourceTree::read`] (mirroring how [`find_config`] returns a path the
 /// caller reads via `std::fs`, not file content).
 pub fn find_config_in_tree(
     tree: &dyn SourceTree,
-    root: &Path,
+    _root: &Path,
     start_key: &str,
 ) -> io::Result<Option<String>> {
-    let keys: HashSet<String> = tree.list(root)?.into_iter().collect();
-
     let mut dir = start_key.trim_matches('/');
     loop {
         let candidate = if dir.is_empty() {
@@ -438,8 +454,10 @@ pub fn find_config_in_tree(
         } else {
             format!("{dir}/{CONFIG_FILE_NAME}")
         };
-        if keys.contains(&candidate) {
-            return Ok(Some(candidate));
+        match tree.read(&candidate) {
+            Ok(_) => return Ok(Some(candidate)),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err),
         }
         if dir.is_empty() {
             return Ok(None);
@@ -758,6 +776,65 @@ mod tests {
         let tree = InMemory::new(files);
 
         let found = find_config_in_tree(&tree, Path::new("."), "a/b").expect("list succeeds");
+        assert_eq!(found, None);
+    }
+
+    /// A `SourceTree` whose `list` errors out — proves `find_config_in_tree`
+    /// resolves purely via direct `read` probes of the O(depth) ancestor
+    /// candidates and never falls back to enumerating the tree (issue
+    /// #1370): if it ever called `list`, that error would propagate and the
+    /// test's `.expect(..)` calls below would fail. Seeded with a huge,
+    /// irrelevant key set (standing in for `target/`/`.git`/`node_modules`
+    /// clutter a real tree walk would have to traverse) that a `list`-based
+    /// implementation would have to comb through but a `read`-probing one
+    /// never touches.
+    struct ErrorsOnList {
+        files: BTreeMap<String, String>,
+    }
+
+    impl SourceTree for ErrorsOnList {
+        fn list(&self, _root: &Path) -> io::Result<Vec<String>> {
+            Err(io::Error::other(
+                "find_config_in_tree must not enumerate the tree via SourceTree::list (issue #1370)",
+            ))
+        }
+
+        fn read(&self, key: &str) -> io::Result<String> {
+            self.files
+                .get(key)
+                .cloned()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("{key}: not found")))
+        }
+    }
+
+    #[test]
+    fn find_config_in_tree_probes_directly_without_enumerating_the_tree() {
+        let mut files = BTreeMap::new();
+        files.insert(
+            CONFIG_FILE_NAME.to_owned(),
+            "[project]\ndialect = \"brink\"\n".to_owned(),
+        );
+        for i in 0..10_000 {
+            files.insert(format!("target/build-artifact-{i}.o"), "ignored".to_owned());
+        }
+        let tree = ErrorsOnList { files };
+
+        let found = find_config_in_tree(&tree, Path::new("."), "a/b/c/d")
+            .expect("direct probing succeeds without ever calling list")
+            .expect("should find brink.toml at the tree root");
+        assert_eq!(found, CONFIG_FILE_NAME);
+    }
+
+    #[test]
+    fn find_config_in_tree_probes_directly_returns_none_without_enumerating_the_tree() {
+        let mut files = BTreeMap::new();
+        for i in 0..10_000 {
+            files.insert(format!(".git/objects/{i}"), "ignored".to_owned());
+        }
+        let tree = ErrorsOnList { files };
+
+        let found = find_config_in_tree(&tree, Path::new("."), "a/b/c/d")
+            .expect("direct probing succeeds without ever calling list");
         assert_eq!(found, None);
     }
 

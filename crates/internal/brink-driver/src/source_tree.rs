@@ -41,12 +41,13 @@ const INK_EXTENSION: &str = "ink";
 ///   `.ink`, and `brink.toml`, the CLI producer mount's full key set —
 ///   `brink_environment::Project::load` filters `.brink` keys itself for a
 ///   native entry and never lists at all for an ink entry (it follows
-///   `INCLUDE`s by `read`ing through the tree instead), so the only reason
-///   `.ink`/`brink.toml` need to be enumerable here is `brink.toml`
-///   discovery (`brink_project_config::find_config_in_tree`), which checks
-///   candidate keys against the full `list()` output. `.ink` is included
-///   too so the scope name is honest about "the producer's whole key
-///   surface," not just the slice one caller currently reads.
+///   `INCLUDE`s by `read`ing through the tree instead). `brink.toml`
+///   discovery (`brink_project_config::find_config_in_tree`) no longer
+///   enumerates at all — it probes O(depth) ancestor candidates directly via
+///   `read` (issue #1370) — so `brink.toml`'s presence here is no longer
+///   load-bearing for discovery; both it and `.ink` stay listed so the scope
+///   name is honest about "the producer's whole key surface," not just the
+///   slice one caller currently reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ListScope {
     Native,
