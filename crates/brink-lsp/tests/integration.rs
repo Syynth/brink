@@ -1511,3 +1511,119 @@ fn brink_toml_did_change_configuration_reload_applies_without_restart() {
         "brink dialect after a didChangeConfiguration reload should not flag E051, got: {diags_after:?}"
     );
 }
+
+/// #1415 regression: `did_change_watched_files` must prune ignored
+/// directories the same way every other recursive walk in the codebase
+/// does (#1370's config discovery, #1381's native compile walk, #1402's LSP
+/// workspace-load walk) — a change event for a file under `target/` must
+/// never be admitted into `ProjectDb`.
+///
+/// The fixture pairs the ignored-dir event with a legitimate change to
+/// `main.ink` in the *same* notification batch, so the batch is guaranteed
+/// to trigger a background-analysis pass this test can synchronize on — a
+/// target/-only batch triggering *no* analysis at all is exactly the
+/// behavior under test, so alone it would give the test nothing to wait
+/// for. If the smuggled file were ever admitted, its uniquely-named knot
+/// would show up in a `workspace/symbol` search after the pass settles.
+#[test]
+fn did_change_watched_files_skips_ignored_dirs() {
+    let root = unique_tmp_dir("watched-files-ignored-dir");
+    std::fs::create_dir_all(&root).unwrap();
+    let main_path = root.join("main.ink");
+    std::fs::write(&main_path, "== start ==\nHello.\n-> DONE\n").unwrap();
+
+    let bin = env!("CARGO_BIN_EXE_brink-lsp");
+    let mut child = Command::new(bin)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to start brink-lsp");
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    let main_uri = format!("file://{}", main_path.display());
+
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "capabilities": {},
+                "rootUri": format!("file://{}", root.display()),
+            },
+        }),
+    );
+    let (_init_resp, _) = recv_response(&mut stdout, 1);
+
+    send(
+        &mut stdin,
+        &json!({"jsonrpc": "2.0", "method": "initialized", "params": {}}),
+    );
+
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": main_uri,
+                    "languageId": "ink",
+                    "version": 1,
+                    "text": "== start ==\nHello.\n-> DONE\n",
+                }
+            }
+        }),
+    );
+
+    wait_for_next_analysis_pass(&mut stdout, &main_uri, 2000);
+
+    // Plant a uniquely-named knot under target/, and touch main.ink at the
+    // same time so this batch is guaranteed to trigger re-analysis.
+    let target_dir = root.join("target/debug");
+    std::fs::create_dir_all(&target_dir).unwrap();
+    let hidden_path = target_dir.join("hidden.ink");
+    std::fs::write(&hidden_path, "== smuggled_only_here ==\nSecret.\n-> DONE\n").unwrap();
+    std::fs::write(&main_path, "== start ==\nHello again.\n-> DONE\n").unwrap();
+
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "workspace/didChangeWatchedFiles",
+            "params": {
+                "changes": [
+                    {"uri": main_uri, "type": 2},
+                    {"uri": format!("file://{}", hidden_path.display()), "type": 1},
+                ]
+            }
+        }),
+    );
+
+    wait_for_next_analysis_pass(&mut stdout, &main_uri, 2000);
+
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "workspace/symbol",
+            "params": {"query": "smuggled_only_here"}
+        }),
+    );
+    let (resp, _) = recv_response(&mut stdout, 2);
+
+    drop(stdin);
+    drop(stdout);
+    let _ = child.wait();
+    std::fs::remove_dir_all(&root).unwrap();
+
+    let results = resp["result"].as_array().cloned().unwrap_or_default();
+    assert!(
+        results.is_empty(),
+        "a change event under target/ must never enter ProjectDb, but workspace/symbol found: {results:?}"
+    );
+}

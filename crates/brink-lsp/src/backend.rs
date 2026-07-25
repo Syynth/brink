@@ -968,6 +968,26 @@ fn is_brink_toml_path(path: &str) -> bool {
         == Some(brink_project_config::CONFIG_FILE_NAME)
 }
 
+/// True if any component of `path` is a
+/// [`brink_source_tree::is_ignored_dir`] name (`target/`, `.git/`,
+/// `node_modules/`) — i.e. `path` lives inside a directory a recursive walk
+/// would never descend into.
+///
+/// `did_change_watched_files` receives whole file paths from the client's
+/// file-watcher subscription rather than walking a directory tree itself, so
+/// [`collect_ink_files_into`]'s per-entry `is_ignored_dir` check (which only
+/// ever sees one path component at a time while descending) doesn't apply
+/// directly here — this walks every component of the already-complete path
+/// instead, using the same shared predicate (issue #1415: `did_change_watched_files`
+/// was a fourth unpruned path admitting `target/`/`.git/`/`node_modules/`
+/// files into `ProjectDb`, after #1370's config discovery, #1381's native
+/// compile walk, and #1402's LSP workspace-load walk).
+fn path_under_ignored_dir(path: &str) -> bool {
+    std::path::Path::new(path)
+        .components()
+        .any(|c| brink_source_tree::is_ignored_dir(c.as_os_str()))
+}
+
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
@@ -1176,6 +1196,14 @@ impl LanguageServer for Backend {
             let Some(path) = Self::uri_to_path(&change.uri) else {
                 continue;
             };
+
+            if path_under_ignored_dir(&path) {
+                // #1415: the client's file-watcher subscription can still
+                // report changes under target/.git/node_modules (e.g. a
+                // broad `**/*.ink` glob) — never admit those into
+                // `ProjectDb`, matching every other recursive walk's prune.
+                continue;
+            }
 
             if is_brink_toml_path(&path) {
                 // brink.toml isn't tracked in `ProjectDb` (it's not `.ink`
@@ -2629,7 +2657,7 @@ mod tests {
 
     use super::{
         PublishDecision, PublishRecord, PublishTier, collect_ink_files, config_error_diagnostic,
-        publish_decision,
+        path_under_ignored_dir, publish_decision,
     };
 
     /// A unique per-test scratch directory under the OS temp dir, mirroring
@@ -2691,6 +2719,23 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&root).expect("cleanup temp dir");
+    }
+
+    /// #1415 regression: `path_under_ignored_dir` — the guard
+    /// `did_change_watched_files` applies to whole file-watcher paths,
+    /// since it never walks a directory tree entry-by-entry the way
+    /// `collect_ink_files_into` does — must flag a path whose *any*
+    /// component is `target/`, `.git/`, or `node_modules/`, not just a leaf
+    /// directory name, and must leave ordinary paths alone.
+    #[test]
+    fn path_under_ignored_dir_matches_any_component() {
+        assert!(path_under_ignored_dir("/repo/target/debug/build.ink"));
+        assert!(path_under_ignored_dir("/repo/.git/objects/pack.ink"));
+        assert!(path_under_ignored_dir(
+            "/repo/node_modules/some-pkg/index.ink"
+        ));
+        assert!(!path_under_ignored_dir("/repo/src/main.ink"));
+        assert!(!path_under_ignored_dir("/repo/targets/main.ink"));
     }
 
     /// #1163 regression: `config_error_diagnostic` must always report
