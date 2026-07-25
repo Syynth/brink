@@ -112,6 +112,13 @@ pub enum InkLoaderError {
 /// Errors from [`compile_story_inline`].
 #[derive(Debug, thiserror::Error)]
 pub enum CompileStoryInlineError {
+    /// The `brink-environment` producer failed to resolve the single-file
+    /// tree into an `Environment` — most commonly an unresolvable `INCLUDE`
+    /// (the tree has only `name`, so any `INCLUDE`'d path always misses),
+    /// but also reachable via a malformed discovered `brink.toml` or a
+    /// circular `INCLUDE`. See `brink_environment::LoadError`.
+    #[error("load environment: {0}")]
+    Load(#[from] brink_environment::LoadError),
     #[error("compile: {0}")]
     Compile(#[from] brink_compiler::CompileError),
     #[error("link error: {0}")]
@@ -130,12 +137,32 @@ pub enum CompileStoryInlineError {
 /// [`emit_story_assets`]-adjacent logic [`InkLoader`] uses at asset-load
 /// time, but synchronously and without the async `AssetServer`.
 ///
+/// ## Goes through the same producer as [`InkLoader`] (#1372)
+///
+/// `name`/`source` are landed as the sole entry in a
+/// [`brink_source_tree::InMemory`] tree, then handed to
+/// [`brink_environment::Project::load`] → [`brink_environment::compile`] —
+/// the exact same two-call seam [`InkLoader::load`] uses, with no
+/// `OptionOverrides` (this entry point has no `brink.toml`-bearing mount to
+/// override). This closes the divergence #1360 left open: before, this
+/// function called `brink_compiler::compile` directly, a second compile path
+/// with its own (in this case: no) `brink.toml`/precedence resolution,
+/// separate from `InkLoader`'s. Routing both through `Project::load` means a
+/// future change to precedence resolution can't silently diverge between the
+/// two entry points again.
+///
 /// `name` is the compiler's synthetic entry file name (also its `INCLUDE`
-/// resolution root). Since `source` is a single in-memory string, `INCLUDE`
-/// is not supported here — any `INCLUDE` directive fails to resolve and
-/// surfaces as a [`CompileStoryInlineError::Compile`]; a story spanning
-/// multiple files needs [`InkLoader`]/`AssetServer::load` instead, which
-/// walks the graph asynchronously.
+/// resolution root). Since `source` is a single in-memory string — the tree
+/// has exactly one key — `INCLUDE` is not supported here — any `INCLUDE`
+/// directive is followed (same BFS `InkLoader` uses), but always misses
+/// (the tree has nothing but `name`) and surfaces as a
+/// [`CompileStoryInlineError::Load`]; a story spanning multiple files needs
+/// [`InkLoader`]/`AssetServer::load` instead, which walks the graph
+/// asynchronously. For the same reason, a `brink.toml` is never discovered
+/// (the tree has nothing but `name`) — `AnalysisOptions` always resolves to
+/// its default, matching `InkLoader`'s "no `brink.toml` found" case
+/// byte-for-byte, since both run the identical `resolve_options` codepath
+/// over an equivalent (single/no-config) tree.
 ///
 /// `app` must already have `AssetPlugin` (or equivalent) installed, so
 /// `Assets<ProgramAsset>`, `Assets<LineTablesAsset>`, and
@@ -146,19 +173,11 @@ pub fn compile_story_inline(
     name: &str,
     source: &str,
 ) -> Result<Handle<BrinkStoryAsset>, CompileStoryInlineError> {
-    let output = brink_compiler::compile(name, |path| {
-        if path == name {
-            Ok(source.to_string())
-        } else {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!(
-                    "{path}: compile_story_inline compiles a single in-memory source with no \
-                     INCLUDE support; use InkLoader/AssetServer for multi-file stories"
-                ),
-            ))
-        }
-    })?;
+    let mut sources = BTreeMap::new();
+    sources.insert(name.to_string(), source.to_string());
+    let tree = InMemory::new(sources);
+    let env = Project::load(&tree, name, &OptionOverrides::default())?;
+    let output = brink_environment::compile(&env)?;
     let (program, tables) = brink_runtime::link(&output.data)?;
     let initial_context = fresh_context(&program);
 
@@ -437,6 +456,49 @@ mod tests {
             .expect_err("a divert to an undeclared knot should not compile");
         assert!(
             matches!(err, CompileStoryInlineError::Compile(_)),
+            "got {err:?}"
+        );
+    }
+
+    /// #1372: `compile_story_inline` now goes through the same
+    /// `Project::load` → `compile` producer seam as [`InkLoader`], instead of
+    /// calling `brink_compiler::compile` directly. Pin the precedence
+    /// consequence both entry points now share: with no `brink.toml`
+    /// reachable (here, structurally — the tree has only the single inline
+    /// source), `AnalysisOptions` resolves to its default (`StrictInk`),
+    /// which rejects the brink-extension `#@private` form — the exact same
+    /// fixture and expectation as
+    /// `config_discovery_tests::missing_brink_toml_leaves_default_dialect_unchanged`
+    /// for `InkLoader`.
+    #[test]
+    fn compile_story_inline_has_no_brink_toml_and_uses_default_dialect() {
+        let mut app = crate::test_support::make_test_app();
+
+        let err = compile_story_inline(
+            &mut app,
+            "inline.ink",
+            "#@private\nVAR secret = 0\n-> END\n",
+        )
+        .expect_err("brink-extension syntax should be rejected under the default dialect");
+        assert!(
+            matches!(err, CompileStoryInlineError::Compile(_)),
+            "got {err:?}"
+        );
+    }
+
+    /// #1372: an `INCLUDE` in the inline source is followed through the same
+    /// `Project::load` discovery BFS `InkLoader` uses, but the single-key
+    /// tree can never satisfy it — surfaces as `CompileStoryInlineError::Load`
+    /// (a `brink_environment::LoadError`, not `brink_compiler::CompileError`
+    /// as it did before this function was rerouted through the producer).
+    #[test]
+    fn compile_story_inline_surfaces_load_error_for_unresolvable_include() {
+        let mut app = crate::test_support::make_test_app();
+
+        let err = compile_story_inline(&mut app, "inline.ink", "INCLUDE missing.ink\n-> END\n")
+            .expect_err("an INCLUDE can never resolve in a single-key inline tree");
+        assert!(
+            matches!(err, CompileStoryInlineError::Load(_)),
             "got {err:?}"
         );
     }
