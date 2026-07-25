@@ -233,6 +233,39 @@ fn compile_path_native_multi_file_no_brink_toml() {
     );
 }
 
+/// A `target/` subdirectory sitting next to a valid `.brink` entry, holding
+/// a file that is not valid brink source at all: native discovery must
+/// never walk into `target/` in the first place (issue #1381), so the
+/// unparseable file is never enumerated and never kills an otherwise-valid
+/// compile. Fails on `main` (before the `target/`/`.git/`/`node_modules/`
+/// pruning landed) and passes on this branch.
+#[test]
+fn compile_path_native_ignores_unparseable_file_under_target() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-native-target-junk-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("target")).unwrap();
+    std::fs::write(
+        dir.join("main.brink"),
+        "flow main() {\n  Hello. -> END\n}\n",
+    )
+    .unwrap();
+    std::fs::write(dir.join("target/junk.brink"), "{{{ not brink source at all").unwrap();
+
+    let result = brink_compiler::compile_path(&dir.join("main.brink"));
+    std::fs::remove_dir_all(&dir).ok();
+
+    let output = result.expect(
+        "an unparseable .brink file under target/ must not be discovered, so the entry still compiles",
+    );
+    assert!(
+        !output.data.containers.is_empty(),
+        "expected non-empty containers"
+    );
+}
+
 /// A `.brink` entry under a directory whose ancestor has a `brink.toml`:
 /// the source root walks up to it (not the entry's own directory), and
 /// discovery must still find + read the entry correctly through that root.
