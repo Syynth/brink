@@ -642,6 +642,41 @@ mod config_discovery_tests {
         (app, dir)
     }
 
+    /// Same as [`make_memory_asset_app`], except the `.ink` loader is wired
+    /// through the *real* [`crate::plugin::BrinkAssetsPlugin::with_config`]
+    /// plugin-build path instead of a hand-constructed `InkLoader {
+    /// override_config }`. Every other case in `config_discovery_tests`
+    /// constructs `InkLoader` directly, which only proves
+    /// `InkLoader::override_config`'s own behavior — not that
+    /// `BrinkPlugin::with_config` / `BrinkAssetsPlugin::with_config`
+    /// actually thread an override into it (`with_config` ->
+    /// `with_config_option` -> `BrinkAssetsPlugin::build` ->
+    /// `InkLoader { override_config }`). Use this builder for any test
+    /// whose claim is specifically about `with_config`'s reachability.
+    fn make_memory_asset_app_with_config(config: ProjectConfig) -> (bevy_app::App, Dir) {
+        let mut app = bevy_app::App::new();
+        let dir = Dir::default();
+        let dir_clone = dir.clone();
+        app.register_asset_source(
+            AssetSourceId::Default,
+            AssetSourceBuilder::new(move || {
+                Box::new(MemoryAssetReader {
+                    root: dir_clone.clone(),
+                })
+            }),
+        )
+        .add_plugins((
+            TaskPoolPlugin::default(),
+            AssetPlugin {
+                watch_for_changes_override: Some(false),
+                use_asset_processor_override: Some(false),
+                ..Default::default()
+            },
+            crate::plugin::BrinkAssetsPlugin::default().with_config(config),
+        ));
+        (app, dir)
+    }
+
     /// Poll `app.update()` until `predicate` returns `Some`, bounded so a
     /// stuck load fails the test instead of hanging the suite (guard
     /// against unbounded growth).
@@ -878,6 +913,154 @@ mod config_discovery_tests {
             .resource::<AssetServer>()
             .load::<BrinkStoryAsset>("intro.ink");
         wait_for_failed(&mut app, &handle);
+    }
+
+    // ── unknown/non-overridable `[lints]` codes warn, not drop (#1416) ──
+    //
+    // `AnalysisOptions::apply_lint_overrides` (`brink-analyzer`) already
+    // rejects a code that isn't a real `DiagnosticCode`, or names one whose
+    // *base* severity isn't `Warning`, returning a `ConfigWarning` instead of
+    // silently merging it — `resolve_options` (`brink-environment`) loops
+    // those through `tracing::warn!` unconditionally, regardless of whether
+    // a `brink.toml` was even discovered (see its own doc comment). Since
+    // `bevy_log`'s macros are `tracing`'s own, re-exported verbatim, and
+    // `LogPlugin` installs a process-wide `tracing` subscriber, that
+    // `tracing::warn!` call already reaches a bevy author's console in any
+    // real app -- the CLI/`brink.toml` mounts rely on the exact same
+    // ambient-dispatch mechanism, just with `tracing_subscriber::fmt`
+    // instead of `LogPlugin` as the installed subscriber. What was actually
+    // untested (house rule 9) is that `BrinkPlugin::with_config`'s
+    // `override_config.lints` -- forwarded into `OptionOverrides` by #1394 --
+    // reaches that channel too, and that an invalid entry doesn't take a
+    // valid sibling entry down with it. `CapturingSubscriber` below installs
+    // itself as the *global* `tracing` default (not a thread-local one,
+    // which `InkLoader::load` -- driven off the asset IO task pool thread --
+    // would never see) so the warnings loop above is observed no matter
+    // which pool thread runs the compile.
+    struct CapturingSubscriber {
+        messages: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl tracing::field::Visit for CapturedMessage {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.0 = format!("{value:?}");
+            }
+        }
+    }
+
+    struct CapturedMessage(String);
+
+    impl tracing::Subscriber for CapturingSubscriber {
+        // Global (process-wide, whole-test-binary-lifetime) subscriber, so
+        // this must not accept every `trace!`/`debug!`/`info!` from every
+        // crate (bevy_asset, bevy_ecs, brink-*) in every other test running
+        // concurrently -- that would tax unrelated tests and let their
+        // events contaminate this test's substring assertions. Only the
+        // warnings this test actually cares about need capturing.
+        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
+            *metadata.level() <= tracing::Level::WARN
+        }
+
+        fn max_level_hint(&self) -> Option<tracing::level_filters::LevelFilter> {
+            Some(tracing::level_filters::LevelFilter::WARN)
+        }
+
+        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+
+        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+
+        fn event(&self, event: &tracing::Event<'_>) {
+            let mut captured = CapturedMessage(String::new());
+            event.record(&mut captured);
+            self.messages.lock().unwrap().push(captured.0);
+        }
+
+        fn enter(&self, _span: &tracing::span::Id) {}
+
+        fn exit(&self, _span: &tracing::span::Id) {}
+    }
+
+    /// Install (once per test binary) a process-wide capturing subscriber
+    /// and return the shared buffer every event's formatted message lands
+    /// in. A single global install is required -- `tracing` only allows
+    /// setting the global default once -- so every test that calls this
+    /// shares one growing buffer; that's fine here because each test only
+    /// asserts its own uniquely-spelled codes appear somewhere in it, never
+    /// that the buffer is otherwise empty.
+    fn captured_warnings() -> std::sync::Arc<std::sync::Mutex<Vec<String>>> {
+        static MESSAGES: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<Vec<String>>>> =
+            std::sync::OnceLock::new();
+        let messages = MESSAGES.get_or_init(|| {
+            let messages = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let subscriber = CapturingSubscriber {
+                messages: std::sync::Arc::clone(&messages),
+            };
+            // Ignore a "someone already set it" error: nothing else in this
+            // crate's test binary installs a global subscriber, so in
+            // practice this always wins on first call.
+            let _ = tracing::subscriber::set_global_default(subscriber);
+            messages
+        });
+        std::sync::Arc::clone(messages)
+    }
+
+    #[test]
+    fn plugin_override_unknown_and_non_overridable_lint_codes_warn_but_valid_entry_still_applies() {
+        let warnings = captured_warnings();
+
+        let mut lints = std::collections::BTreeMap::new();
+        // Not a real `DiagnosticCode` -- never parses.
+        lints.insert(
+            "E9999_TYPO".to_owned(),
+            brink_project_config::LintLevel::Deny,
+        );
+        // A real code, but its base severity is `Error`, not `Warning` --
+        // never overridable (mirrors `brink-analyzer`'s own
+        // `apply_lint_overrides_rejects_non_overridable_code` unit test).
+        lints.insert("E001".to_owned(), brink_project_config::LintLevel::Deny);
+        // The valid entry: must still apply and relevel E014 to a blocking
+        // Error, proving the two invalid siblings above don't take it down
+        // with them.
+        lints.insert("E014".to_owned(), brink_project_config::LintLevel::Deny);
+
+        // Routed through `BrinkAssetsPlugin::with_config` (not a
+        // hand-registered `InkLoader`) so this test actually proves the
+        // `BrinkPlugin::with_config` wiring path, not just
+        // `InkLoader::override_config` in isolation.
+        let (mut app, dir) = make_memory_asset_app_with_config(ProjectConfig {
+            lints,
+            ..ProjectConfig::default()
+        });
+        dir.insert_asset_text(Path::new("intro.ink"), E014_SOURCE);
+
+        let handle = app
+            .world()
+            .resource::<AssetServer>()
+            .load::<BrinkStoryAsset>("intro.ink");
+        wait_for_failed(&mut app, &handle);
+
+        let joined = warnings.lock().unwrap().join("\n");
+        // Assert the exact message text `validate_lint_code`
+        // (`brink-analyzer/src/lib.rs`) emits for each rejection class, not
+        // just the code substring -- a plain `contains("E001")` can't tell
+        // "not a recognized diagnostic code" apart from "not overridable",
+        // so it would pass identically even if the two rejection paths were
+        // swapped.
+        assert!(
+            joined.contains("[lints] `E9999_TYPO` is not a recognized diagnostic code"),
+            "an unknown lint code must warn with the 'not a recognized diagnostic code' \
+             message (not silently drop); captured: {joined}"
+        );
+        assert!(
+            joined.contains("[lints] `E001` is not overridable"),
+            "a non-overridable lint code must warn with the 'not overridable' message \
+             (not silently drop); captured: {joined}"
+        );
     }
 
     #[test]
