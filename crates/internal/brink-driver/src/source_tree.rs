@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use brink_db::SourceTree;
+use brink_source_tree::is_ignored_dir;
 
 /// `.brink` is the native surface's source extension (as opposed to ink's
 /// `.ink`) — see `crates/internal/brink-ir/src/hir/lower_native/mod.rs`.
@@ -75,28 +76,13 @@ impl ListScope {
     }
 }
 
-/// Directory names the walk never descends into, regardless of [`ListScope`]
-/// — build output and VCS/dependency metadata that is never a valid source
-/// location and can be enormous (issue #1381: #1370 fixed *config
-/// discovery* to probe ancestors directly instead of enumerating, but this
-/// walk — the other call path that used to pay the same cost — still
-/// descended into `target/`, `.git/`, and `node_modules/` on every native
-/// compile). Matched by exact directory-entry name, not path suffix, so a
-/// source file legitimately named e.g. `target.brink` is unaffected.
-const IGNORED_DIR_NAMES: &[&str] = &["target", ".git", "node_modules"];
-
-/// Whether `name` (a single directory-entry file name, not a path) is a
-/// conventionally-ignored directory the walk must not descend into.
-fn is_ignored_dir(name: &std::ffi::OsStr) -> bool {
-    IGNORED_DIR_NAMES.iter().any(|ignored| name == *ignored)
-}
-
 /// Real-filesystem [`SourceTree`]: walks a root directory and enumerates
 /// the keys its [`ListScope`] selects (`.brink` only by default; `.brink` +
 /// `.ink` for [`RealFs::project`]), keyed by root-relative path. The walk
-/// never descends into [`IGNORED_DIR_NAMES`] (`target/`, `.git/`,
-/// `node_modules/` — issue #1381), so a stray build-output or dependency
-/// tree under `root` is never enumerated. `read` serves any key lazily off
+/// never descends into [`brink_source_tree::IGNORED_DIR_NAMES`] (`target/`,
+/// `.git/`, `node_modules/` — issue #1381), so a stray build-output or
+/// dependency tree under `root` is never enumerated. `read` serves any key
+/// lazily off
 /// disk — it never eagerly reads the tree, so one malformed/unreadable file
 /// elsewhere under `root` cannot fail a `read` of an unrelated key (issue
 /// #1357).
@@ -157,8 +143,9 @@ impl SourceTree for RealFs {
 /// Recursively collect root-relative keys matching `scope` under `dir` into
 /// `keys`. Directory-entry iteration order is filesystem/OS-dependent —
 /// callers (`RealFs::list`) sort the accumulated result, so this helper does
-/// not need to sort as it goes. Directories named in [`IGNORED_DIR_NAMES`]
-/// are pruned — never descended into — regardless of `scope`.
+/// not need to sort as it goes. Directories named in
+/// [`brink_source_tree::IGNORED_DIR_NAMES`] are pruned — never descended
+/// into — regardless of `scope`.
 fn walk(root: &Path, dir: &Path, scope: ListScope, keys: &mut Vec<String>) -> io::Result<()> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
