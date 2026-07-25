@@ -437,6 +437,58 @@ mod tests {
         fs::remove_dir_all(&root).expect("cleanup temp dir");
     }
 
+    /// Documents the disclosed behavior delta from `Path::is_dir()`-based
+    /// hand-rolled walks (the LSP's pre-#1433 `collect_ink_files`): a
+    /// [`WalkEntry`]'s kind comes from `DirEntry::file_type`, which does not
+    /// follow symlinks, so a symlinked directory is yielded once as a plain
+    /// (non-dir) entry and never descended into — bounding the walk against
+    /// symlink cycles — while a symlinked `.ink` file is still yielded (with
+    /// `is_dir() == false`, `is_file() == false`), which is exactly what
+    /// lets a caller filtering on `!entry.is_dir()` (as `collect_ink_files`
+    /// does) still admit it.
+    #[cfg(unix)]
+    #[test]
+    fn walk_does_not_descend_into_a_symlinked_directory_but_admits_a_symlinked_file() {
+        use std::os::unix::fs::symlink;
+
+        let root = temp_dir("symlink");
+        write(root.join("real/nested.ink"), "nested");
+        write(root.join("real-file.ink"), "real");
+        symlink(root.join("real"), root.join("link-dir")).expect("symlink dir");
+        symlink(root.join("real-file.ink"), root.join("link-file.ink")).expect("symlink file");
+
+        let entries: Vec<(String, bool, bool)> = Walk::new(&root)
+            .map(|entry| {
+                let entry = entry.expect("entry reads");
+                (
+                    entry
+                        .path()
+                        .strip_prefix(&root)
+                        .expect("entry is under root")
+                        .to_string_lossy()
+                        .into_owned(),
+                    entry.is_dir(),
+                    entry.is_file(),
+                )
+            })
+            .collect();
+
+        assert_eq!(
+            entries,
+            vec![
+                ("link-dir".to_string(), false, false),
+                ("link-file.ink".to_string(), false, false),
+                ("real".to_string(), true, false),
+                ("real/nested.ink".to_string(), false, true),
+                ("real-file.ink".to_string(), false, true),
+            ],
+            "the symlinked directory is yielded once and never descended into; \
+             the symlinked file is still yielded, with is_dir()==false"
+        );
+
+        fs::remove_dir_all(&root).expect("cleanup temp dir");
+    }
+
     /// [`relative`] but dropping errored entries — for fixtures that
     /// deliberately contain an unreadable branch.
     #[cfg(unix)]
