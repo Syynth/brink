@@ -10,13 +10,31 @@ use crate::editor_dto::diagnostic_to_js;
 
 // ── Compilation ─────────────────────────────────────────────────────
 
+/// Failure from [`compile_over_tree`]: either loading the [`Project`] (a bad
+/// `SourceTree` read, a malformed `brink.toml`) or the compile itself. Kept
+/// distinct from `brink_compiler::CompileError` — rather than laundering a
+/// [`brink_environment::LoadError`] through `CompileError::Io`'s `"I/O
+/// error: "` prefix (which doubled up on `LoadError::Discover`'s own
+/// `"discovery error: "` / `"I/O error: "` prefixes and mislabelled a
+/// `LoadError::Config`/`ConfigRead` as I/O) — so [`compile_result_json`] can
+/// surface each variant's own `Display` message verbatim.
+#[derive(Debug, thiserror::Error)]
+enum LoadOrCompileError {
+    /// [`Project::load`] failed before compilation ever started.
+    #[error(transparent)]
+    Load(#[from] brink_environment::LoadError),
+    /// [`Project::load`] succeeded but [`brink_environment::compile`] failed.
+    #[error(transparent)]
+    Compile(#[from] brink_compiler::CompileError),
+}
+
 /// Build a [`CompileResult`] JSON string from an already-produced compile
 /// result, resolving each diagnostic's byte offsets against `source_of` (the
 /// text the diagnostic's `path` was actually parsed from — a single-file
 /// compile always resolves the same source; a multi-file one, e.g.
 /// [`compile_fragment`], looks the path up per diagnostic).
 fn compile_result_json(
-    result: Result<brink_compiler::CompileOutput, brink_compiler::CompileError>,
+    result: Result<brink_compiler::CompileOutput, LoadOrCompileError>,
     source_of: impl Fn(&str) -> String,
 ) -> String {
     match result {
@@ -43,7 +61,7 @@ fn compile_result_json(
             let mut error_msg = None;
 
             match e {
-                brink_compiler::CompileError::Diagnostics(diags) => {
+                LoadOrCompileError::Compile(brink_compiler::CompileError::Diagnostics(diags)) => {
                     diagnostics = diags
                         .iter()
                         .map(|d| diagnostic_to_js(d, &source_of(&d.path)))
@@ -69,22 +87,23 @@ fn compile_result_json(
 /// `Project::load(&tree, entry, &overrides)` -> `compile(&env)`. Replaces the
 /// throwaway `Driver` + `set_file`/`set_entry`/`set_analysis_options`
 /// imperative path — `Project::load`'s own `brink.toml` discovery + override
-/// precedence resolves the effective `AnalysisOptions` (default
-/// `OptionOverrides`, matching the pre-migration behavior of an unset
-/// `host_manifest`/dialect/types).
+/// precedence resolves the effective `AnalysisOptions`: the `overrides` here
+/// are always the default (never a registered host manifest), but the
+/// dialect/types/`[lints]` values themselves come from a `brink.toml`
+/// discovered on `tree`, if one is served.
 ///
 /// A [`brink_environment::LoadError`] (a bad `SourceTree` read, a malformed
 /// `brink.toml`) is reported through the same `error` string field a
 /// non-diagnostics [`brink_compiler::CompileError`] uses — the caller only
-/// ever sees the one `CompileResult` JSON shape.
+/// ever sees the one `CompileResult` JSON shape — but as its own `Display`
+/// message, not laundered through `CompileError::Io`.
 fn compile_over_tree(
     tree: &InMemory,
     entry: &str,
-) -> Result<brink_compiler::CompileOutput, brink_compiler::CompileError> {
+) -> Result<brink_compiler::CompileOutput, LoadOrCompileError> {
     let overrides = OptionOverrides::default();
-    let env = Project::load(tree, entry, &overrides)
-        .map_err(|e| brink_compiler::CompileError::Io(std::io::Error::other(e.to_string())))?;
-    brink_environment::compile(&env)
+    let env = Project::load(tree, entry, &overrides)?;
+    Ok(brink_environment::compile(&env)?)
 }
 
 /// Compile ink source and return JSON with diagnostics or story data.
@@ -137,13 +156,18 @@ pub fn program_checksum(story_bytes: &[u8]) -> Result<String, JsError> {
 /// tries the expression wrap first and falls back to the content wrap (or
 /// vice versa) by calling this twice with different `synthetic_source`s.
 ///
-/// Unlike `compile_project`, this uses default `AnalysisOptions` — no
-/// registered host manifest — so a fragment compile is strictly *more*
-/// lenient than the editor's project compile (a manifest-driven external
-/// type/arity/domain diagnostic won't fire). This is benign: the manifest is
-/// tooling/author-time-only and never affects codegen or binding liveness, so
-/// the recompiled program runs identically; the fragment simply skips an
-/// author-time check that has no bearing on a side-effect-proof speculative run.
+/// Unlike `compile_project`, this always passes default `OptionOverrides` —
+/// no registered host manifest — so a fragment compile never gets a
+/// manifest-driven external type/arity/domain diagnostic. The dialect/types/
+/// `[lints]` values themselves are still resolved from a `brink.toml`
+/// discovered on `sources_json`, exactly as `compile_project` would resolve
+/// them, so a served `[lints] deny-warnings = true` (or a deny-leveled code)
+/// makes a fragment compile *stricter*, not more lenient — the only
+/// leniency guarantee is the absent host manifest. This is benign: the
+/// manifest is tooling/author-time-only and never affects codegen or binding
+/// liveness, so the recompiled program runs identically; the fragment simply
+/// skips an author-time check that has no bearing on a side-effect-proof
+/// speculative run.
 #[wasm_bindgen]
 pub fn compile_fragment(entry: &str, sources_json: &str, synthetic_source: &str) -> String {
     let sources: HashMap<String, String> = match serde_json::from_str(sources_json) {
@@ -292,6 +316,56 @@ mod compile_fragment_tests {
         let json = compile_fragment("main.ink", "not json", "=== __eval_test ===\nHi.\n");
         let v: serde_json::Value = serde_json::from_str(&json).expect("valid json");
         assert_eq!(v["ok"], false, "{json}");
+    }
+
+    #[test]
+    fn served_brink_toml_lints_deny_relevels_e014_and_blocks_fragment_compile() {
+        // Precedent: brink-environment's
+        // `brink_toml_lints_deny_relevels_e014_and_blocks_compile`. A
+        // `brink.toml` served alongside the project's sources is discovered
+        // by `compile_over_tree`'s `Project::load` exactly as
+        // `compile_project` would discover it — `[lints] E014 = "deny"`
+        // must re-level a bare `~` line's E014 to Error and block the
+        // fragment compile, not just the editor's project compile.
+        let src = sources_json(&[
+            ("brink.toml", "[lints]\nE014 = \"deny\"\n"),
+            (
+                "main.ink",
+                "Hello.\n~\n-> start\n\n=== start ===\nHi.\n-> END\n",
+            ),
+        ]);
+        let synthetic = "=== function __eval_test() ===\n~ return 1\n";
+        let json = compile_fragment("main.ink", &src, synthetic);
+        let v: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        assert_eq!(v["ok"], false, "{json}");
+        assert!(
+            v["warnings"]
+                .as_array()
+                .is_some_and(|w| w.iter().any(|d| d["code"] == "E014")),
+            "expected E014 among the surfaced diagnostics: {json}"
+        );
+    }
+
+    #[test]
+    fn malformed_served_brink_toml_reports_an_error_not_a_panic() {
+        // A discovered-but-unparsable `brink.toml` (bad `dialect` value) is
+        // a `brink_environment::LoadError::Config`, surfaced through
+        // `compile_over_tree`'s `LoadOrCompileError::Load` — must be a
+        // populated `error` string, never a panic, and never a
+        // `story_bytes`/diagnostics result.
+        let src = sources_json(&[
+            ("brink.toml", "[project]\ndialect = \"sideways\"\n"),
+            ("main.ink", "-> start\n\n=== start ===\nHi.\n-> END\n"),
+        ]);
+        let synthetic = "=== __eval_test ===\nHi.\n";
+        let json = compile_fragment("main.ink", &src, synthetic);
+        let v: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        assert_eq!(v["ok"], false, "{json}");
+        assert!(v["story_bytes"].is_null(), "{json}");
+        assert!(
+            v["error"].as_str().is_some_and(|e| !e.is_empty()),
+            "expected a populated error string: {json}"
+        );
     }
 }
 
