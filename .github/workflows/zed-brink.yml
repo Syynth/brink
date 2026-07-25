@@ -1,0 +1,69 @@
+name: Zed Extension (zed-brink)
+
+on:
+  schedule:
+    # Weekly schedule: Monday at 06:00 UTC (offset from demo.yml's 00:00 run
+    # so the two workspace-excluded gates don't contend for the same runner
+    # window).
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+  # crates/zed-brink is workspace-excluded (see its Cargo.toml) and gets zero
+  # signal from the main `ci.yml` gate (#1396, following the demos precedent
+  # from #1386). Path-filtered so it only fires on pushes/PRs that could
+  # actually affect it. Unlike demos/compound, zed-brink has no path
+  # dependency on any brink-* crate — its only dependency is the external
+  # `zed_extension_api` crate — so it can only ever break from edits inside
+  # this workflow or the crate itself.
+  # Not in branch protection's required-checks list, so it's advisory: it
+  # goes red on a relevant PR but does not block the merge by itself.
+  pull_request:
+    paths:
+      - 'crates/zed-brink/**'
+      - '.github/workflows/zed-brink.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'crates/zed-brink/**'
+      - '.github/workflows/zed-brink.yml'
+
+# Least privilege: jobs only read the repo. Grant more per-job if ever needed.
+permissions: {}
+
+env:
+  CARGO_TERM_COLOR: always
+
+# Third-party actions are pinned to full commit SHAs (mutable tags can be
+# repointed at malicious code). The trailing comment tracks the version;
+# Dependabot bumps both together.
+jobs:
+  zed-brink-gate:
+    name: ZED_BRINK_GATE
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      # Format check inside crates/zed-brink
+      - name: Format check (zed-brink)
+        working-directory: crates/zed-brink
+        run: cargo fmt --all -- --check
+      # Clippy inside crates/zed-brink. `--locked` is load-bearing: without
+      # it a stale crates/zed-brink/Cargo.lock (e.g. after a `zed_extension_api`
+      # bump) is silently refreshed by cargo and the job exits 0, which is
+      # exactly the kind of drift this gate exists to catch (#1396).
+      - name: Clippy (zed-brink)
+        working-directory: crates/zed-brink
+        run: cargo clippy --locked --all-targets -- -D warnings
+      # Test inside crates/zed-brink (no tests exist today; kept for parity
+      # with the demo.yml pattern and to catch a stale lockfile the same way
+      # if one is ever added).
+      - name: Test (zed-brink)
+        working-directory: crates/zed-brink
+        run: cargo test --locked
+      # Verify the extension stays excluded from the workspace: root cargo
+      # check must not build it.
+      - name: Check (root workspace)
+        run: cargo check --workspace
