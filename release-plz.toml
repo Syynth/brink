@@ -21,15 +21,3 @@ dependencies_update = false
 # Unpublished crates (brink, brink-web, zed-brink, brink-test-harness) are
 # skipped automatically via their `publish = false` — no per-package overrides
 # needed (and zed-brink isn't a workspace member, so an override would error).
-
-# Pinned explicitly (matches the release-plz default) so the release-pr job in
-# .github/workflows/release-plz.yml can find the release branch deterministically
-# by this exact prefix, rather than depending on a default that could change out
-# from under it in a future release-plz upgrade. See the "Refresh
-# workspace-excluded lockfiles" step there for why: a workspace version bump
-# changes every crates/*/Cargo.toml version, which stales the Cargo.lock of any
-# workspace-excluded crate (demos/compound, benchmarks/tools/gen-input,
-# benchmarks/drivers/brink-loop) that takes a path dependency on a bumped crate
-# — re-reddening demo.yml/benchmarks.yml on the very next PR after a release
-# (#1418).
-pr_branch_prefix = "release-plz-"
