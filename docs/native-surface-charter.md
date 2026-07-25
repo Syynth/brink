@@ -80,6 +80,9 @@ combination is honestly spellable.
   is nesting. (Depth >2 = watch list.)
 - Braces are the universal body delimiter — "solid" — for
   containers, fn bodies, choice bodies, annotated blocks alike.
+  **(Amended 2026-07-25, prose sitting 4: preset heading-elements
+  in prose-ground declare header-scoped bodies — a scene runs to the
+  next heading or enclosing close; docs/prose-dialect-spec.md §8b.2.)**
 - **Body-dialect selector (RULED 2026-07-23 — see decision-log):**
   the brace prefix selects the body's dialect. Plain `{ … }` = the
   per-keyword **default** (`fn` → code, `flow` → prose); **`~{ … }`**

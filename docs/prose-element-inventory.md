@@ -1,5 +1,13 @@
 # Candidate element inventory — STRAW for the syntax round (#1351)
 
+> **Sitting-4 outcome (2026-07-25):** the round was held against this
+> doc — rulings live in docs/prose-dialect-spec.md **§8b**. Headlines:
+> lyrics **dropped**; slug = trailing **`[slug]`**; heading stitches
+> **header-scoped**; trailing tags → per-flow tags (#474); diverts
+> **line-neutral**; transitions/scene entry **lowered to host calls**
+> via the new conventions `lower` column; compact cue `@NAME: text`
+> accepted; choice typing 🔶 lean (c). Remaining items: spec §9.1.
+
 Status: **prepared material, not rulings.** Everything here is 🔶 straw
 unless marked RULED (carried from sittings 1–3, docs/prose-dialect-spec.md).
 Purpose: walk into the syntax round reacting to a concrete list instead of

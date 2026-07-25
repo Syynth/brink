@@ -359,32 +359,111 @@ CUT TO:                             ← transition (dresses the divert)
 -> market_square                    ← editor renders the display name
 ```
 
+## 8b. Sitting 4 — concrete syntax rulings (2026-07-25)
+
+The syntax round, held against docs/prose-element-inventory.md. RULED
+unless marked:
+
+1. **Lyrics element: dropped** (the `~` conflict dies with it).
+2. **Header-scoped stitch bodies.** A scene-heading stitch is
+   delimited by the next heading or the enclosing close — **amending
+   charter §4's "braces are the universal body delimiter"** for preset
+   heading-elements in prose-ground only. Consequences embraced:
+   heading-stitches are **flat siblings** (scenes don't nest — as on a
+   real page); deeper nesting uses the general `flow x { }` spelling,
+   which remains first-class in prose-ground; this is a restoration of
+   ink's own header-scoped stitch, not an invention.
+3. **Slug spelling: trailing `[slug]` on the heading.**
+   `INT. MARKET SQUARE - NIGHT [market] #tense #act1`. Rejected:
+   `#x#` (tag-lexer clash), `{x}` (lexes as interpolation — headings
+   get no carve-out). Line order: pattern, `[slug]`, tags.
+4. **Tags on declarations**: trailing `#tag`s on header lines — both
+   the heading spelling and `flow x #tag { }` — captured as
+   **container-level per-flow tags**. This is the authoring surface
+   #474 (per-flow tag APIs) was iceboxed waiting for.
+5. **The conventions schema gains an *address capture* role** — the
+   slug capture feeds structure/`DefinitionId`, unlike ordinary
+   payload captures.
+6. **Divert line-neutrality (native dialect).** Diverts are invisible
+   to line assembly — they never end, join, or contribute to an output
+   line; **glue is the only joiner**. Divert placement is therefore
+   pure formatting: fmt normalizes to own-line (choice-line trailing
+   diverts exempt — anatomy, not formatting). Ink dialect keeps its
+   oracle-bound inline-divert joining untouched (superset doctrine).
+7. **Transitions and scene entry are lowered host calls, not content
+   lines.** Their runtime consumer is the *engine*, not the reader —
+   so they ride the existing non-blocking command/extern machinery
+   (journaled, effect-checked via the manifest). **Scene entry** = the
+   scene-heading element's default lowering (`scene_entered(title,
+   slug)` fires on entering the stitch — pure codegen, a call planted
+   at the top of the body). **Written transitions** (`SMASH CUT TO:`)
+   = a departure-site style call; the bare-scene-divert default cut
+   needs no authored transition (the slugline implies the cut, as in
+   real screenwriting). **Diverts remain absolutely invisible** — no
+   annotations, no target-inference, no exceptions.
+8. **The lowering column.** The conventions schema gains per-element
+   `lower: content | call(name, args ← payload) | nothing`. v1 is
+   declarative; the §3.5 comptime conventions-module later *computes*
+   the same value through the already-open door. **Power boundary
+   (RULED):** per-element, call/content/nothing only — arbitrary
+   rewriting is a macro system and a separate future round.
+9. **Compact cue `@NAME: text`** (the Yarn cross): cue + single
+   dialogue line fused, as a second declared pattern beside the block
+   cue. Accepted on the sample page.
+10. **Choice typing: 🔶 lean (c)** — the cue above a choice block
+    supplies the speaker; **quoted** option text marks a spoken
+    (dialogue-)choice, unquoted/bracketed options are action-choices;
+    mixed blocks legal; with no cue, quoted options attribute to the
+    roster's PC. Recorded as lean, cheap to flip.
+11. **Point markers** (`<pause/>`, `<sfx name="bell"/>`) named as an
+    explicit span use case — in-text events, mapping to XLIFF `<x/>`.
+12. **Parking is not a Step** (the questline case, §8c): `until`
+    parks surface at the `FlowInstance::advance` layer
+    (`AwaitingExternal`-family), never as a `Step` variant.
+13. Yarn's persisted-line-ID localization model added to the
+    translation-round-2 agenda as a genuine fork vs `source_hash`
+    (hybrid opt-in is the candidate).
+
+## 8c. Worked case: the gated questline (validation)
+
+```
+EXT. RUINED CHAPEL - DUSK [chapel_found]
+
+You mark the chapel on your map. Somewhere below, something waits.
+
+~ until quest.chapel_key_found
+-> chapel_interior
+```
+
+Zero new machinery: `until` parks the flow (FlowSleep reactive wake,
+built); the invisible divert fires on wake — possibly much later —
+and arrival triggers the next scene's `scene_entered` lowering; the
+parked flow is save-persistent (serializable coroutine); the suspend
+dimension infers into the flow's effect row. The fused
+`~ until cond -> target` spelling is optional sugar ⏳. Editor
+decoration: the parked line renders as an *awaits: criteria → SCENE
+TITLE* annotation via the display-name machinery.
+
 ## 9. Open threads ⏳ (the resumption points)
 
-1. **The syntax round** — *the next major sitting.* Prepared straw:
-   **docs/prose-element-inventory.md** (candidate element inventory,
-   glyph-conflict ledger, and the sitting's agenda). Covers: the
-   screenplay preset's element set + spellings, the choice-point
-   aesthetic pass (§2b's "naturally complement" check), explicit-slug
-   spelling, escape-set finalization, conventions-file format, and the
-   attachment-mechanism final call (compile-baked is the lean, §3.6).
-2. **Translation, round 2** — element data in XLIFF (is a speaker name
-   translatable?), per-locale budgets, the bump batching.
-3. **Per-path export design** (§2b.4) — Fountain/FDX/VO-sheet
-   renderers as intl-exporter siblings; the element↔Fountain mapping
-   constraint.
-4. **Dynamic element payloads** — RULED necessary as a capability
-   (sitting 3); the remaining question is mechanics only (payload as
-   fragment/slot on the wire).
-5. **Terminal cluster — parked**: #1448 (weave-terminator compiler
-   fix, diagnosed + deferred), #1449 (harness terminal-step fold, the
-   Step redesign's prerequisite), #1450 (Done/End dig). Deferred until
-   the runtime/compiler window opens.
-6. **§7 output naming** (`Line`/`Step`/`StoryEvent`) — the shape is
-   ruled in substance; blocks settled (per-line + block id, blank-line
-   delimiter, no continue_block); which element kinds form blocks
-   (lean: id universal).
+1. **Syntax round remainder** — cue extensions (`(V.O.)`/`(O.S.)` as
+   parsed payload vs opaque), centered's fate (lean: span), the fused
+   `until cond -> target` sugar call, escape-set finalization, the
+   conventions-file *concrete* format (it must now express: patterns,
+   roles, chains, payload + address captures, succession, export
+   mapping, and the §8b.8 lowering column), and the final
+   complement-pass read over a full page.
+2. **Choice typing** — flip-or-ratify the 🔶 lean (c) (§8b.10).
+3. **Translation, round 2** — element data in XLIFF (speaker names
+   translatable?), per-locale budgets, the bump batching, scene-title
+   localization under call-lowering (§8b.7 rider), and the Yarn
+   persisted-line-ID fork (§8b.13).
+4. **Per-path export design** (§2b.4) — Fountain/FDX/VO-sheet
+   renderers as intl-exporter siblings; the element↔Fountain mapping.
+5. **Terminal cluster — parked**: #1448 / #1449 / #1450, deferred
+   until the runtime/compiler window.
+6. **§7 output naming** (`Line`/`Step`/`StoryEvent`) — shape ruled in
+   substance; which element kinds form blocks (lean: id universal).
 7. **Editor implications (NS-T)** — line-local classification vs the
-   nesting-property dialect; plus the §2b.3 bridge features
-   (scrivenings inline-destination, extract-to-stitch, story graph).
-   #1350/#1131 stay held on this round.
+   nesting-property dialect; the §2b.3 bridge features; the §8c park
+   decoration. #1350/#1131 stay held on this round.
