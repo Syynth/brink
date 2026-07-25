@@ -3,6 +3,29 @@ name: release-plz
 on:
   push:
     branches: [main]
+  # `verify-lockfile-refresh` (below) dry-runs the excluded-lockfile-refresh
+  # logic on PRs that could affect it, so that step — which for real only
+  # runs rarely (on the run where release-pr opens a brand-new release PR)
+  # and pushes with a PAT — gets exercised continuously instead of its
+  # first live run being its first run ever (#1427). `release` and
+  # `release-pr` stay gated to the `push` event via their own `if:` below,
+  # so this trigger can never fire a real release or open a release PR from
+  # a plain PR.
+  pull_request:
+    paths:
+      - 'demos/compound/**'
+      - 'benchmarks/tools/gen-input/**'
+      - 'benchmarks/drivers/brink-loop/**'
+      - 'crates/brink-runtime/**'
+      - 'crates/brink-compiler/**'
+      - 'crates/bevy-brink/**'
+      - 'crates/internal/**'
+      - 'Cargo.toml'
+      - 'scripts/refresh-excluded-lockfiles.sh'
+      - '.github/workflows/release-plz.yml'
+  # Lets a maintainer exercise the dry run ad hoc, independent of a PR
+  # touching the paths above.
+  workflow_dispatch:
 
 permissions: {}
 
@@ -12,6 +35,9 @@ jobs:
   release:
     name: release
     runs-on: ubuntu-latest
+    # Only the `push` trigger above should ever run a real release — never
+    # `pull_request` or `workflow_dispatch` (added for verify-lockfile-refresh).
+    if: github.event_name == 'push'
     # Gate the publish behind the `crates-io` environment (optional required
     # reviewers; also scopes the OIDC trust). Configure it under
     # Settings > Environments > crates-io.
@@ -49,6 +75,10 @@ jobs:
   release-pr:
     name: release-pr
     runs-on: ubuntu-latest
+    # Only the `push` trigger above should ever open/update the real release
+    # PR — never `pull_request` or `workflow_dispatch` (added for
+    # verify-lockfile-refresh).
+    if: github.event_name == 'push'
     permissions:
       contents: write        # push the release branch
       pull-requests: write   # open/update the release PR
@@ -78,10 +108,14 @@ jobs:
       # item 3 — release.yml is cargo-dist-generated, house rule 5, so this
       # lives here instead).
       #
-      # `cargo update -p <name>` (not a blanket `cargo update`) so only the
-      # brink/bevy-brink path-dependency entries actually re-resolve; each
-      # excluded crate's *external* deps (bevy, rand, ...) are left exactly
-      # as committed.
+      # The actual per-directory `cargo update -p <name>` loop lives in
+      # scripts/refresh-excluded-lockfiles.sh (not a blanket `cargo update`,
+      # so only the brink/bevy-brink path-dependency entries actually
+      # re-resolve; each excluded crate's *external* deps (bevy, rand, ...)
+      # are left exactly as committed) — shared with the
+      # `verify-lockfile-refresh` job below, which runs the same script
+      # with `--dry-run` on PRs so this logic doesn't go completely
+      # unexercised between releases (#1427).
       - name: Refresh workspace-excluded lockfiles for the release PR
         if: steps.release-pr.outputs.prs_created == 'true'
         env:
@@ -99,15 +133,7 @@ jobs:
           git fetch origin "$branch"
           git checkout -B "$branch" FETCH_HEAD
 
-          for dir in demos/compound benchmarks/tools/gen-input benchmarks/drivers/brink-loop; do
-            pkgs=$(grep -E '^name = "(brink|bevy-brink)' "$dir/Cargo.lock" | sed -E 's/^name = "(.*)"$/\1/' | sort -u)
-            args=()
-            for pkg in $pkgs; do
-              args+=(-p "$pkg")
-            done
-            echo "==> cargo update ${args[*]} (in $dir)"
-            (cd "$dir" && cargo update "${args[@]}")
-          done
+          ./scripts/refresh-excluded-lockfiles.sh
 
           if git diff --quiet -- demos/compound/Cargo.lock benchmarks/tools/gen-input/Cargo.lock benchmarks/drivers/brink-loop/Cargo.lock; then
             echo "Excluded-crate lockfiles already current; nothing to push."
@@ -132,3 +158,31 @@ jobs:
           # point of using RELEASE_PLZ_TOKEN. Clear it before pushing.
           git config --local --unset-all http.https://github.com/.extraheader || true
           git push origin "HEAD:$branch"
+
+  # Dry-runs scripts/refresh-excluded-lockfiles.sh (the same script the real
+  # refresh step above calls) so the mechanism gets exercised on ordinary
+  # PRs instead of only on the rare push where release-pr opens a brand-new
+  # release PR. `--dry-run` resolves each excluded crate's brink/bevy-brink
+  # path deps via `cargo update --dry-run` — real dependency resolution,
+  # capable of failing exactly like the live step would (a broken path dep,
+  # a version constraint that no longer matches) — but never writes a
+  # Cargo.lock, needs no release branch, no git identity, and no push, so
+  # it's safe to run from a plain PR checkout (#1427).
+  verify-lockfile-refresh:
+    name: verify-lockfile-refresh (dry-run)
+    runs-on: ubuntu-latest
+    # Runs for the `pull_request` and `workflow_dispatch` triggers above,
+    # never for `push` (that's the real release-pr/release path).
+    if: github.event_name != 'push'
+    concurrency:
+      group: release-plz-verify-lockfile-refresh-${{ github.ref }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Dry-run excluded-lockfile refresh
+        run: ./scripts/refresh-excluded-lockfiles.sh --dry-run
