@@ -308,6 +308,12 @@ fn compile_path_native_with_explicit_gradual_types_is_e137() {
 
 /// `types = strict` explicitly requested for a native entry compiles
 /// cleanly — the paired positive case for the gate above.
+///
+/// No `dialect` setting at all (issue #1348): `dialect` is an ink-only axis
+/// (docs/t1b-surface-spec.md §1), orthogonal to native's `Language`
+/// classification, so a native compile must never need one — the ink-only
+/// `E064` config error (`types = strict` + `dialect != brink`) must not fire
+/// against a `.brink` entry even at `dialect`'s `StrictInk` default.
 #[test]
 fn compile_path_native_with_explicit_strict_types_compiles() {
     let dir = std::env::temp_dir().join(format!(
@@ -323,17 +329,54 @@ fn compile_path_native_with_explicit_strict_types_compiles() {
     .unwrap();
 
     let options = brink_compiler::AnalysisOptions {
-        // `types = strict` requires `dialect = brink` (E064) — the ink-only
-        // dialect gate is orthogonal to native strict-only but still checked,
-        // since native has no dialect concept of its own to exempt it.
-        dialect: brink_compiler::Dialect::Brink,
         types: Some(brink_compiler::TypePolicy::Strict),
         ..Default::default()
     };
     let result = brink_compiler::compile_path_with_options(&dir.join("main.brink"), options);
     std::fs::remove_dir_all(&dir).ok();
 
-    let output = result.expect("types = strict native compile should succeed");
+    // `E064` is a hard error (`DiagnosticCode::severity`) — if the ink-only
+    // dialect gate had fired, this `expect` would panic showing it, exactly
+    // the regression `compile_path_native_with_explicit_gradual_types_is_e137`
+    // above proves the *sibling* `E137` gate the same way.
+    let output = result.expect("types = strict native compile should succeed with no dialect set");
+    assert!(
+        !output.data.containers.is_empty(),
+        "expected non-empty containers"
+    );
+}
+
+/// The T1b dialect gate itself (`dialect_gate::check`, `E051`) must not fire
+/// against native source either (issue #1348) — not just its `E064` config
+/// error. `STRUCT` declarations are ordinary native syntax (native's own
+/// `struct` keyword lowers to the same `HirFile::structs` the gate walks —
+/// `docs/t1b-surface-spec.md` §1 flags a `STRUCT` decl as brink-extension
+/// syntax under ink's `StrictInk` default), so a native file declaring one
+/// must compile cleanly under fully-default `AnalysisOptions` — no `dialect`,
+/// no `types` — exactly the posture a bare `.brink` compile with no
+/// `brink.toml` has today.
+#[test]
+fn compile_path_native_struct_decl_under_default_options_has_no_dialect_gate_e051() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-native-struct-dialect-gate-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("main.brink"),
+        "struct Item {\n  name: string,\n  weight: int\n}\n\nflow main() {\n  Hello. -> END\n}\n",
+    )
+    .unwrap();
+
+    let result = brink_compiler::compile_path_with_options(
+        &dir.join("main.brink"),
+        brink_compiler::AnalysisOptions::default(),
+    );
+    std::fs::remove_dir_all(&dir).ok();
+
+    let output = result
+        .expect("a native STRUCT declaration must never trip the ink-only dialect gate (E051)");
     assert!(
         !output.data.containers.is_empty(),
         "expected non-empty containers"

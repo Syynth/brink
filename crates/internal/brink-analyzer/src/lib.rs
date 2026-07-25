@@ -291,6 +291,19 @@ pub fn analyze_with_options(
 /// This is the query-shaped seam `brink-db`'s `per_file_diagnostics_query`
 /// wraps: a body edit in file Y leaves file X's per-file contributor memo
 /// untouched (pinned by `fg3_dependency_edges.rs`).
+///
+/// `is_native`: the T1b dialect gate (`dialect_gate::check`, issue #1348) is
+/// an ink-only axis — a native `.brink` file has no "dialect" concept at all
+/// (its own grammar *is* the superset grammar the gate exists to police, so
+/// every construct it recognizes is ordinary native syntax, never "brink
+/// extension" syntax to reject). `true` skips the gate entirely, regardless
+/// of `dialect`'s value; every other per-file contributor is unaffected —
+/// this caller-supplied flag never widens what `per_file_diagnostics` itself
+/// needs to know (it stays as agnostic to `Language` as `dialect` already
+/// was), it only tells this one contributor whether it applies. Callers with
+/// no `Language` classification of their own (the pure `analyze_with_options`
+/// path, via [`finish_analysis`]) always pass `false`, unchanged from before
+/// this parameter existed.
 #[must_use]
 pub fn per_file_diagnostics(
     file: FileId,
@@ -298,11 +311,14 @@ pub fn per_file_diagnostics(
     file_resolutions: &ResolutionMap,
     index: &SymbolIndex,
     dialect: Dialect,
+    is_native: bool,
     host_manifest: Option<&HostManifest>,
 ) -> Vec<Diagnostic> {
     let files = [(file, hir)];
     let mut out = validate::validate(&files);
-    out.extend(dialect_gate::check(&files, file_resolutions, dialect));
+    if !is_native {
+        out.extend(dialect_gate::check(&files, file_resolutions, dialect));
+    }
     // NS-A1 E107 (bare-`none`-needs-context, docs/stdlib-spec.md §1.4) —
     // dialect-INDEPENDENT, unlike the brink-only block below: the rule is
     // part of the Option package itself, and under `strict-ink` (where
@@ -521,6 +537,15 @@ pub fn module_diagnostics(
 /// [`whole_project_diagnostics`]'s doc) and wires in Unknown/Conflicted-
 /// escape (`E065`/`E066`) plus `E063` mismatches.
 ///
+/// `is_native` (issue #1348): `E064` is [`strict::config_error`]'s dialect
+/// check, and `dialect` is an ink-only axis — a native `.brink` project has
+/// no dialect to be wrong about, so `true` skips the `config_error` call
+/// entirely and always proceeds straight to the inference-driven checks
+/// below (never a config error for native, regardless of `opts.dialect`).
+/// Same "caller-supplied, never widens this function's own knowledge" shape
+/// as [`per_file_diagnostics`]'s own `is_native` — the pure path (via
+/// [`whole_project_diagnostics`]) always passes `false`.
+///
 /// `inline_docs` (issue #805): forwarded to [`infer::infer_project`]'s own
 /// `EXTERNAL`-signature seeding when `strict_inference` isn't already
 /// supplied — the pure/self-contained fallback path only; `brink-db`'s
@@ -536,12 +561,18 @@ pub fn strict_diagnostics(
     index: &SymbolIndex,
     resolutions: &ResolutionMap,
     opts: &AnalysisOptions,
+    is_native: bool,
     strict_inference: Option<&InferenceResult>,
     inline_docs: &BTreeMap<(SymbolKind, String), DocBlock>,
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     if opts.type_policy() == TypePolicy::Strict {
-        if let Some(diag) = strict::config_error(opts.dialect, files.first().map(|&(f, _)| f)) {
+        let config_err = if is_native {
+            None
+        } else {
+            strict::config_error(opts.dialect, files.first().map(|&(f, _)| f))
+        };
+        if let Some(diag) = config_err {
             diagnostics.push(diag);
         } else {
             let owned_inference;
@@ -635,6 +666,9 @@ pub fn whole_project_diagnostics(
         index,
         resolutions,
         opts,
+        // No `Language` classification exists at this layer (issue #1348) —
+        // same reasoning as `finish_analysis`'s `per_file_diagnostics` call.
+        false,
         strict_inference,
         &inline_docs,
     ));
@@ -769,6 +803,10 @@ pub fn finish_analysis(
             &file_resolutions,
             &index,
             opts.dialect,
+            // The pure path has no `Language` classification of its own
+            // (issue #1348) — only `brink-db`'s salsa query path, which
+            // knows a file's path, can tell native from ink.
+            false,
             opts.host_manifest.as_ref(),
         ));
     }
@@ -829,8 +867,9 @@ mod tests {
     use brink_ir::{BaseType, HostManifest, SemanticTypeDef};
 
     use super::{
-        AnalysisOptions, Dialect, FileId, ProjectConfig, SemanticTypeDiagnosticSeverity,
-        TypePolicy, analyze, analyze_with_options,
+        AnalysisOptions, Dialect, FileId, ImportScope, ProjectConfig,
+        SemanticTypeDiagnosticSeverity, TypePolicy, analyze, analyze_with_options,
+        per_file_diagnostics, resolve, symbol_index,
     };
 
     /// ink with an `EXTERNAL` whose param is typed with a host semantic type
@@ -1115,6 +1154,60 @@ EXTERNAL add_state(who)
         };
         let result = analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
         assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    }
+
+    // ── per_file_diagnostics: is_native decouples the T1b dialect gate
+    //    (issue #1348) ────────────────────────────────────────────────
+
+    #[test]
+    fn per_file_diagnostics_is_native_true_skips_the_dialect_gate() {
+        // Postfix indexing is ordinary syntax in the native grammar, but a
+        // brink-extension construct the T1b gate flags (`E051`) under ink's
+        // default `StrictInk` dialect. Under `is_native = true` the gate must
+        // never run, regardless of `dialect`.
+        let (hir, manifest) = lower_one("~ x = a[0]\n");
+        let (index, _diags) = symbol_index(&[(FileId(0), &manifest)]);
+        let (resolutions, _diags) = resolve(FileId(0), &manifest, &index, &ImportScope::default());
+        let diags = per_file_diagnostics(
+            FileId(0),
+            &hir,
+            &resolutions,
+            &index,
+            Dialect::StrictInk,
+            true,
+            None,
+        );
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E051),
+            "native must never see the ink-only dialect gate: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn per_file_diagnostics_is_native_false_unaffected_still_flags_extension_syntax() {
+        // The `is_native = false` (ink) path is byte-identical to before
+        // this parameter existed — same source, same `StrictInk` default,
+        // still an `E051` extension-syntax diagnostic.
+        let (hir, manifest) = lower_one("~ x = a[0]\n");
+        let (index, _diags) = symbol_index(&[(FileId(0), &manifest)]);
+        let (resolutions, _diags) = resolve(FileId(0), &manifest, &index, &ImportScope::default());
+        let diags = per_file_diagnostics(
+            FileId(0),
+            &hir,
+            &resolutions,
+            &index,
+            Dialect::StrictInk,
+            false,
+            None,
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E051),
+            "ink must still see the dialect gate: {diags:?}"
+        );
     }
 
     // ── AnalysisOptions::apply_project_config (moved from
