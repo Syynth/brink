@@ -457,6 +457,16 @@ impl EditorSession {
     /// Takes `&mut self` because pointing the shared db at this entry and
     /// syncing its options input are salsa input writes; they do not touch the
     /// editor's cached diagnostic state (see `IdeSession::compile`).
+    ///
+    /// Unlike [`crate::compile::compile`]/[`crate::compile::compile_fragment`]
+    /// (migrated onto the #1306 `Project::load` → `compile(&env)` producer by
+    /// #1361), this method is **deliberately not migrated** — see the ruling
+    /// and its reasoning on `IdeSession::compile`'s doc comment (issue #1385).
+    /// In short: `compile(&Environment)` reseeds a fresh, throwaway `ProjectDb`
+    /// on every call, which is correct for a stateless one-shot compile but
+    /// would defeat the incremental, live-editing `ProjectDb` this session
+    /// exists to keep warm, and would reopen the #1004 two-driver divergence
+    /// #1032 closed by unifying compile and analysis onto one db.
     pub fn compile_project(&mut self, entry: &str) -> String {
         let options = self.session.analysis_options();
         let product = match self.session.compile(entry, &options) {
