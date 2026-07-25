@@ -491,6 +491,64 @@ impl IdeSession {
     /// into **this** db, so a caller resolves each to a path/source through the
     /// same session (`file_path`/`source`) — no throwaway-driver id remapping.
     ///
+    /// ## Ruling: this stays on the imperative `set_file`/`set_entry` path (#1385)
+    ///
+    /// #1361 migrated `brink-web`'s one-shot `compile()`/`compile_fragment()`
+    /// onto the #1306 producer (`brink_environment::Project::load` →
+    /// `brink_environment::compile(&env)`), but deliberately scope-fenced
+    /// `EditorSession::compile_project` — which delegates to this method —
+    /// because it drives a different, incremental, live-editing db shared with
+    /// `brink-lsp`. #1385 is the owner issue for resolving that fence, and the
+    /// deliberate decision is: **do not migrate.** `IdeSession::compile` keeps
+    /// pushing salsa inputs directly onto its own long-lived [`ProjectDb`].
+    /// Reasoning:
+    ///
+    /// - **`compile(&Environment)` is intentionally non-incremental.** Per its
+    ///   own doc, it "seeds a **fresh** salsa `ProjectDb`" from a frozen,
+    ///   point-in-time value on every call — "no ambient reads, no walk-up, no
+    ///   I/O." That is exactly right for a one-shot mount handed a full
+    ///   document snapshot per call (the CLI, `brink-web`'s stateless
+    ///   `compile()`/`compile_fragment()`). It is exactly wrong for
+    ///   `IdeSession`, whose entire reason to exist (see the module doc) is to
+    ///   hold **one** persistent `ProjectDb` across many edits and queries so
+    ///   an unrelated file's parse/HIR/analysis memos survive a single-file
+    ///   keystroke edit. Routing every `compile_project` call through
+    ///   `Project::load`/`compile(&env)` would re-walk the tree, re-hash every
+    ///   source, and reseed a brand-new db on each call — discarding the
+    ///   incremental state this session exists to keep warm, with no
+    ///   compensating benefit.
+    /// - **It would resurrect the #1004 divergence class.** #1032 made
+    ///   compile and analysis share this one db specifically so they can never
+    ///   diverge on manifest/dialect/policy/file-state (see this method's
+    ///   opening paragraph). `Project::load` + `compile(&env)` builds an
+    ///   `Environment` from a fresh `SourceTree` walk and compiles it on an
+    ///   entirely separate, throwaway `ProjectDb`. Wiring `compile_project`
+    ///   through that producer would put a *second* db back in the picture
+    ///   alongside `IdeSession`'s own — precisely the two-driver split #1032
+    ///   closed as "structurally unrepresentable."
+    /// - **`Environment` is a value; `IdeSession` is not.** `Environment` is
+    ///   documented as "the whole compilation universe as a single hashable
+    ///   \[point-in-time\] artifact" — content-addressed, immutable, built
+    ///   fresh per compile. `IdeSession` is long-lived mutable state whose one
+    ///   db is edited incrementally, input by input (`set_file`, `set_entry`,
+    ///   `set_analysis_options`), over a session that can span a whole editing
+    ///   run. Forcing a whole-snapshot value producer onto a mutable
+    ///   incremental session inverts the abstraction the #1306 split
+    ///   (value-producer vs. effectful mount vs. pure compile) was designed
+    ///   around.
+    /// - **The adjacent design question is still genuinely open.** #1347
+    ///   (`needs-design`, unresolved) asks whether `IdeSession`'s live-typing
+    ///   diagnostics should route through `ProjectDb`'s own salsa-level
+    ///   `analysis_query`/`per_file_diagnostics_query` surface at all. Forcing
+    ///   `compile_project` onto a *different* producer now would prejudge that
+    ///   still-open call rather than wait for it.
+    ///
+    /// If `IdeSession` is ever restructured to compile against a
+    /// content-addressed `Environment` per keystroke — e.g. because a future
+    /// salsa version makes `Environment`-keyed incremental reuse cheap — that
+    /// would be a new design proposal to bring back for discussion, not an
+    /// extension of this ruling.
+    ///
     /// # Errors
     /// Returns [`CompileEntryError::EntryNotFound`] if `entry` is not a file
     /// loaded in this session.
