@@ -13,11 +13,19 @@ crate-type = ["cdylib"]
 [dependencies]
 brink-compiler = { workspace = true }
 brink-db = { workspace = true }
+# The #1306 producer: `Project::load(&tree, entry, &overrides)` ->
+# `compile(&env)` — the pure/effectful split `compile()`/`compile_fragment()`
+# (crates/brink-web/src/compile.rs) migrate onto, replacing the throwaway
+# `Driver` + `set_file`/`set_entry`/`set_analysis_options` imperative path.
+brink-environment = { workspace = true }
 brink-ide = { workspace = true }
 brink-runtime = { workspace = true }
 brink-syntax = { workspace = true }
 brink-analyzer = { workspace = true }
 brink-ir = { workspace = true }
+# `InMemory`: the map-backed `SourceTree` — the web mount's natural home,
+# since compile.rs's documents already live in memory.
+brink-source-tree = { workspace = true }
 # `brink.toml` project settings file (#1005): `parse_str` only (no fs use —
 # the wasm sandbox has none of its own; the embedder reads the file with its
 # own host APIs and hands the text to `EditorSession::apply_project_config`).
@@ -34,6 +42,7 @@ brink-intl = { workspace = true }
 rowan.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
 wasm-bindgen = "0.2"
 # `js-sys` provides `Function`/`Array` for the synchronous external-function
 # binding boundary (ink EXTERNAL → JS callback). Values are hand-mapped to
