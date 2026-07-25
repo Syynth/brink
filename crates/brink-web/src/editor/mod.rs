@@ -263,6 +263,18 @@ impl EditorSession {
     /// Returns the list of warning strings for unrecognized keys — as JSON
     /// (a `string[]`) — never an error (forward compat). Errors only on
     /// malformed TOML or a recognized key with an invalid value.
+    ///
+    /// Also merges the file's `[lints]` table / `deny-warnings` flag (issue
+    /// #1160) onto the session's resolved lint policy, via the one merge
+    /// point `AnalysisOptions::apply_project_config` owns (#1366 — this
+    /// method used to hand-apply `dialect`/`types` directly onto
+    /// `self.session`'s own fields while never even reading `config.lints`,
+    /// so a project's `[lints]` never reached this session at all). Unlike
+    /// `dialect`/`types` there is no explicit-API-call precedence to honor
+    /// for lints yet (see that function's doc comment on why `dialect_overridden`/
+    /// `types_overridden` don't gate the lint merge), so the file's table
+    /// always applies. Unknown/non-overridable lint codes are reported
+    /// through the same warnings channel as unrecognized top-level keys.
     pub fn apply_project_config(&mut self, toml: &str) -> Result<String, JsError> {
         let (config, warnings) = brink_project_config::parse_str(toml)
             .map_err(|e| JsError::new(&format!("invalid brink.toml: {e}")))?;
@@ -277,10 +289,24 @@ impl EditorSession {
         {
             self.session.set_type_policy(types);
         }
-        Ok(
-            serde_json::to_string(&warnings.into_iter().map(|w| w.0).collect::<Vec<_>>())
-                .unwrap_or_default(),
-        )
+        // Merge `[lints]`/`deny-warnings` onto the session's current
+        // resolved policy. `IdeSession` has no lint-specific fields of its
+        // own to hand `apply_project_config`, so build a throwaway
+        // `AnalysisOptions` carrying just the current `lints`, merge into
+        // it, and push the merged result back. `dialect_overridden`/
+        // `types_overridden` are passed `true` — irrelevant to lint merging,
+        // and `dialect`/`types` are already applied above — so this call
+        // touches nothing but `.lints`.
+        let mut lint_options = brink_analyzer::AnalysisOptions {
+            lints: self.session.lint_policy().clone(),
+            ..brink_analyzer::AnalysisOptions::default()
+        };
+        let lint_warnings = lint_options.apply_project_config(&config, true, true);
+        self.session.set_lint_policy(lint_options.lints);
+
+        let mut all_warnings: Vec<String> = warnings.into_iter().map(|w| w.0).collect();
+        all_warnings.extend(lint_warnings.into_iter().map(|w| w.0));
+        Ok(serde_json::to_string(&all_warnings).unwrap_or_default())
     }
 
     /// Push the host's current values for `host`-source semantic types (Tier 3,
@@ -2883,6 +2909,87 @@ mod tests {
         let parsed: Vec<String> = serde_json::from_str(&warnings).expect("valid json");
         assert_eq!(parsed.len(), 1);
         assert!(parsed[0].contains("project.future_key"));
+    }
+
+    // ── Issue #1160/#1366: `[lints]` reaches the editor session ────────────
+
+    /// A `[lints]` re-leveled code shows its overridden severity through the
+    /// *editor session* path (`apply_project_config` → `compile_project`),
+    /// not just through `AnalysisOptions::apply_project_config` in isolation
+    /// (which #1160 already covered) or `Driver`/CLI compile (#1160/#1367).
+    /// `E014` ("logic line has no effect", a bare `~` with nothing after it)
+    /// is `Warning` by default; `[lints] E014 = "deny"` must promote it to
+    /// `Error` on the diagnostic `compile_project` actually returns.
+    #[test]
+    fn apply_project_config_applies_lints_from_file() {
+        let source = "~\nHello.\n-> DONE\n";
+
+        let mut default_severity = EditorSession::new();
+        default_severity.update_file("main.ink", source);
+        let before = default_severity.compile_project("main.ink");
+        let before_severity = json(&before)["warnings"]
+            .as_array()
+            .and_then(|w| w.iter().find(|d| d["code"] == "E014"))
+            .map(|d| d["severity"].clone());
+        assert_eq!(
+            before_severity,
+            Some(serde_json::json!("Warning")),
+            "precondition: E014's raw default is Warning: {before}"
+        );
+
+        let mut s = EditorSession::new();
+        let warnings = s
+            .apply_project_config("[lints]\nE014 = \"deny\"\n")
+            .expect("valid brink.toml");
+        assert_eq!(warnings, "[]", "a valid overridable code earns no warning");
+        s.update_file("main.ink", source);
+        let result = s.compile_project("main.ink");
+        let severity = json(&result)["warnings"]
+            .as_array()
+            .and_then(|w| w.iter().find(|d| d["code"] == "E014"))
+            .map(|d| d["severity"].clone());
+        assert_eq!(
+            severity,
+            Some(serde_json::json!("Error")),
+            "brink.toml's [lints] E014 = \"deny\": expected Error, not the raw \
+             Warning default: {result}"
+        );
+    }
+
+    /// `deny-warnings = true` promotes every `Warning`-severity diagnostic to
+    /// `Error`, reachable the same way — through the editor session's
+    /// `compile_project`, not just `AnalysisOptions` in isolation.
+    #[test]
+    fn apply_project_config_applies_deny_warnings_from_file() {
+        let mut s = EditorSession::new();
+        s.apply_project_config("[lints]\ndeny-warnings = true\n")
+            .expect("valid brink.toml");
+        s.update_file("main.ink", "~\nHello.\n-> DONE\n");
+        let result = s.compile_project("main.ink");
+        let severity = json(&result)["warnings"]
+            .as_array()
+            .and_then(|w| w.iter().find(|d| d["code"] == "E014"))
+            .map(|d| d["severity"].clone());
+        assert_eq!(
+            severity,
+            Some(serde_json::json!("Error")),
+            "brink.toml's [lints] deny-warnings = true: expected Error: {result}"
+        );
+    }
+
+    /// An unrecognized `[lints]` code is reported through the same
+    /// unknown-key warnings channel as `[project]`'s unrecognized keys
+    /// (`AnalysisOptions::apply_project_config`'s `ConfigWarning`s), not
+    /// silently dropped.
+    #[test]
+    fn apply_project_config_reports_unknown_lint_code_as_warning() {
+        let mut s = EditorSession::new();
+        let warnings = s
+            .apply_project_config("[lints]\nE9999 = \"deny\"\n")
+            .expect("unrecognized lint codes are warnings, not errors");
+        let parsed: Vec<String> = serde_json::from_str(&warnings).expect("valid json");
+        assert_eq!(parsed.len(), 1);
+        assert!(parsed[0].contains("E9999"));
     }
 
     // ── Issue #1004: manifest-typed external params under strict ──────────

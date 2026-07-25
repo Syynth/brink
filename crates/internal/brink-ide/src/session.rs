@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use brink_analyzer::{
-    AnalysisOptions, AnalysisResult, Dialect, ExternalCheckSeverity,
+    AnalysisOptions, AnalysisResult, Dialect, ExternalCheckSeverity, LintPolicy,
     SemanticTypeDiagnosticSeverity, TypePolicy,
 };
 use brink_db::{CompileProduct, ProjectDb};
@@ -25,6 +25,7 @@ pub struct IdeSnapshot {
     semantic_type_check: SemanticTypeDiagnosticSeverity,
     dialect: Dialect,
     types: Option<TypePolicy>,
+    lints: LintPolicy,
 }
 
 impl IdeSnapshot {
@@ -42,16 +43,16 @@ impl IdeSnapshot {
             semantic_type_check: self.semantic_type_check,
             dialect: self.dialect,
             types: self.types,
-            // `IdeSnapshot` has no `[lints]`-resolution input yet (issue
-            // #1160 scope note: `IdeSession`/`IdeSnapshot` don't wire
-            // `brink.toml` at all today, unlike `Driver`/`Project::load`)
-            // — a no-op default that keeps every diagnostic at its ordinary
-            // severity. Spelled out explicitly (not `..Default::default()`)
-            // so the next `AnalysisOptions` field added has to be considered
-            // here rather than silently defaulting — exactly the "a mount
-            // silently doesn't resolve this policy" failure mode this scope
-            // note documents.
-            lints: brink_analyzer::LintPolicy::default(),
+            // `[lints]`-resolution input (issue #1160/#1366): the policy
+            // `IdeSession::set_lint_policy` resolved (via
+            // `AnalysisOptions::apply_project_config`, from the served
+            // `brink.toml`) and carried into this snapshot by
+            // `IdeSession::snapshot`. Spelled out explicitly (not
+            // `..Default::default()`) so the next `AnalysisOptions` field
+            // added has to be considered here rather than silently
+            // defaulting — exactly the "a mount silently doesn't resolve
+            // this policy" failure mode #1160's scope note flagged.
+            lints: self.lints.clone(),
         };
         brink_analyzer::analyze_with_options(&refs, &opts)
     }
@@ -111,6 +112,19 @@ pub struct IdeSession {
     /// `analyze`/`reanalyze`/`analyze_overlay`/`analyze_projection`, same as
     /// `language_dialect`.
     type_policy: Option<TypePolicy>,
+    /// Resolved `[lints]` policy (issue #1160), set via `set_lint_policy`.
+    /// Defaults to `LintPolicy::default()` (a no-op: every diagnostic keeps
+    /// its `DiagnosticCode::severity()` default), matching
+    /// `AnalysisOptions::default()`. Unlike `language_dialect`/`type_policy`
+    /// there is no explicit-vs-file precedence to track here — `[lints]` has
+    /// no CLI-flag/editor-API override source of its own yet (see
+    /// `AnalysisOptions::apply_project_config`'s doc comment), so the file is
+    /// always the source of truth for whichever codes it mentions. Feeds
+    /// `analyze`/`reanalyze`/`analyze_overlay`/`analyze_projection` exactly
+    /// like `language_dialect`/`type_policy` (#1366: previously hardcoded to
+    /// `LintPolicy::default()` in both `snapshot` and `analysis_options`, so
+    /// a project's `[lints]` never reached the IDE/LSP/web surface).
+    lints: LintPolicy,
     /// Per-file HIR projection cache (#480): the canonical structural model
     /// is computed once per edit and shared by every per-line/per-span view
     /// (`line_contexts`, folding, `hir_spans`). The flag records whether the
@@ -135,6 +149,7 @@ impl IdeSession {
             dialect: None,
             language_dialect: Dialect::default(),
             type_policy: None,
+            lints: LintPolicy::default(),
             projection_cache: RefCell::new(HashMap::new()),
         }
     }
@@ -228,6 +243,25 @@ impl IdeSession {
         brink_analyzer::resolve_type_policy(self.language_dialect, self.type_policy)
     }
 
+    /// Set the resolved `[lints]` policy (issue #1160/#1366), then
+    /// re-analyze. Callers resolve the policy themselves — typically by
+    /// merging a parsed `brink.toml`'s `[lints]` table onto the current
+    /// policy via `AnalysisOptions::apply_project_config` and passing the
+    /// result's `.lints` back here (see `brink-web`'s `EditorSession::
+    /// apply_project_config` and the CLI's `Project::load`) — this session
+    /// only stores and forwards the resolved value.
+    pub fn set_lint_policy(&mut self, lints: LintPolicy) {
+        self.lints = lints;
+        self.reanalyze();
+    }
+
+    /// The current resolved `[lints]` policy (defaults to
+    /// `LintPolicy::default()`, a no-op).
+    #[must_use]
+    pub fn lint_policy(&self) -> &LintPolicy {
+        &self.lints
+    }
+
     /// Set the severity policy for manifest-driven external checks, then
     /// re-analyze.
     pub fn set_external_check(&mut self, severity: ExternalCheckSeverity) {
@@ -273,6 +307,7 @@ impl IdeSession {
             semantic_type_check: self.semantic_type_check,
             dialect: self.language_dialect,
             types: self.type_policy,
+            lints: self.lints.clone(),
         }
     }
 
@@ -400,9 +435,10 @@ impl IdeSession {
 
     /// The current analysis options (registered host manifest +
     /// external-check / semantic-type-check severities + T1b compiler
-    /// dialect + TM-3 typed-mode policy), for callers that run their own
-    /// analysis/compile pass. `analyze_overlay`/`analyze_projection` use
-    /// this, so the declared dialect and types policy carry through to their
+    /// dialect + TM-3 typed-mode policy + resolved `[lints]` policy), for
+    /// callers that run their own analysis/compile pass.
+    /// `analyze_overlay`/`analyze_projection` use this, so the declared
+    /// dialect and types policy carry through to their
     /// gate-check passes too (#611, #660).
     pub fn analysis_options(&self) -> AnalysisOptions {
         AnalysisOptions {
@@ -411,11 +447,10 @@ impl IdeSession {
             semantic_type_check: self.semantic_type_check,
             dialect: self.language_dialect,
             types: self.type_policy,
-            // See the matching note on `IdeSnapshot::analyze` — no
-            // `[lints]`-resolution input wired to `IdeSession` yet (#1160
-            // scope note). Spelled out explicitly, not `..Default::default()`
-            // — see that note for why.
-            lints: brink_analyzer::LintPolicy::default(),
+            // See the matching note on `IdeSnapshot::analyze` (#1160/#1366):
+            // the policy `set_lint_policy` resolved. Spelled out explicitly,
+            // not `..Default::default()` — see that note for why.
+            lints: self.lints.clone(),
         }
     }
 
