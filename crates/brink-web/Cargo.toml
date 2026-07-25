@@ -26,9 +26,12 @@ brink-ir = { workspace = true }
 # `InMemory`: the map-backed `SourceTree` — the web mount's natural home,
 # since compile.rs's documents already live in memory.
 brink-source-tree = { workspace = true }
-# `brink.toml` project settings file (#1005): `parse_str` only (no fs use —
-# the wasm sandbox has none of its own; the embedder reads the file with its
-# own host APIs and hands the text to `EditorSession::apply_project_config`).
+# `brink.toml` project settings file (#1005): `parse_str` for
+# `EditorSession::apply_project_config` (text handed in by an embedder that
+# reads the file with its own host APIs) and, since #1414,
+# `discover_from_entry_in_tree` for `EditorSession::discover_project_config`
+# (walks the session's in-memory `SourceTree` — still no real fs use, since
+# the wasm sandbox has none of its own).
 brink-project-config = { workspace = true }
 # `inkt-write` exposes the dependency-free `.inkt` writer for the Program
 # Explorer (`StoryRunner::program_inkt`) — no `pest` reader pulled into the wasm.
