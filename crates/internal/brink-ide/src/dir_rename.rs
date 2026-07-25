@@ -312,7 +312,14 @@ fn gate_dir_move(
     }
 
     let (new_analysis, new_db) = session.analyze_projection(&projection);
-    introduced_diagnostics(baseline, &new_analysis, &new_db, session.type_policy())
+    let options = session.analysis_options();
+    introduced_diagnostics(
+        baseline,
+        &new_analysis,
+        &new_db,
+        options.type_policy(),
+        &options.lints,
+    )
 }
 
 /// The exact byte range of an `INCLUDE`'s file-path token, resolved against the
@@ -506,11 +513,13 @@ mod tests {
         );
         let baseline = s.analysis().unwrap();
         let (new_analysis, new_db) = s.analyze_projection(&projection);
+        let options = s.analysis_options();
         let introduced = crate::structural_result::introduced_diagnostics(
             baseline,
             &new_analysis,
             &new_db,
-            s.type_policy(),
+            options.type_policy(),
+            &options.lints,
         );
         assert!(
             introduced.iter().any(|d| d.code.as_str() == "E024"),

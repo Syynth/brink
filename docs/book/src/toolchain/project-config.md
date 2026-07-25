@@ -114,16 +114,21 @@ one-off choice that the file must not silently overrule.
 - **`brink ide`** has no `--dialect`/`--types` flags of its own — the file
   (or the plain defaults, absent one) is the only source, and this includes
   `[lints]`/`deny-warnings`. See [`brink ide`](./cli/ide.md).
+- **`brink-lsp`** discovers `brink.toml` from the workspace roots the client
+  declares at `initialize`, resolving `[project] dialect`/`types` *and*
+  `[lints]`/`deny-warnings` into its shared `LanguageOptions`. A later
+  `workspace/didChangeConfiguration` notification or a watched edit to
+  `brink.toml` re-resolves and re-stores the policy (`reload_brink_toml`),
+  so published diagnostic severity picks up a `[lints]` change without a
+  client restart.
 - **The wasm editor session** (`@brink-lang/web`'s `EditorSessionHandle`) has
   no filesystem of its own. Read `brink.toml`'s text with your host's own
   file APIs (Node `fs`, the browser File System Access API, a bundler
   import, …) and hand it to `applyProjectConfig`. **`applyProjectConfig`
   applies only `[project] dialect`/`types`; `[lints]`/`deny-warnings` are not
-  wired to the wasm editor session yet** — the same is true of the language
-  server (`brink-lsp`), which also only resolves `dialect`/`types` from a
-  discovered `brink.toml`. Neither surface's diagnostic output changes
-  severity based on `[lints]` today; only `brink compile` and `brink ide`
-  do:
+  wired to the wasm editor session yet.** It is the only surface whose
+  diagnostic output does not change severity based on `[lints]` today —
+  `brink compile`, `brink ide`, and `brink-lsp` all do:
 
   ```ts
   import { EditorSessionHandle } from "@brink-lang/web";

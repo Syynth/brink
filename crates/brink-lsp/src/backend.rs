@@ -812,7 +812,8 @@ fn toml_span_to_lsp_range(
 /// a genuine config-load failure — `ConfigError` carries no `DiagnosticCode`
 /// and has no warning-level variant, unlike `brink_ir::Diagnostic` (whose
 /// severity is code-dependent and must go through
-/// [`convert::severity_to_lsp`] with `diag.code.severity()`, see
+/// [`convert::severity_to_lsp`] with
+/// [`brink_analyzer::effective_severity`], see
 /// [`convert::diagnostic_to_lsp`]). This still routes through
 /// `convert::severity_to_lsp` rather than naming the `tower_lsp` variant
 /// directly, so the mapping stays centralized in one place (#1163).

@@ -104,7 +104,14 @@ pub fn gate(session: &IdeSession, edits: &[FileEdit]) -> Vec<IntroducedDiagnosti
     }
 
     let (new_analysis, new_db) = session.analyze_overlay(&overlay);
-    introduced_diagnostics(analysis, &new_analysis, &new_db, session.type_policy())
+    let options = session.analysis_options();
+    introduced_diagnostics(
+        analysis,
+        &new_analysis,
+        &new_db,
+        options.type_policy(),
+        &options.lints,
+    )
 }
 
 /// The overlay-based gate for ops whose primary edit is a whole-file source
@@ -154,7 +161,14 @@ pub fn gate_with_source(
     }
 
     let (new_analysis, new_db) = session.analyze_overlay(&overlay);
-    introduced_diagnostics(analysis, &new_analysis, &new_db, session.type_policy())
+    let options = session.analysis_options();
+    introduced_diagnostics(
+        analysis,
+        &new_analysis,
+        &new_db,
+        options.type_policy(),
+        &options.lints,
+    )
 }
 
 /// Diff `new_analysis` against the baseline `analysis`, returning the
@@ -162,20 +176,25 @@ pub fn gate_with_source(
 /// as a multiset keyed by `(code, message)` so duplicate messages are counted.
 /// Locations resolve through `new_db` (the overlay db owns the new `FileId`s).
 ///
-/// `types` is the session's resolved TM-3 policy — `severity` renders the
-/// [`brink_analyzer::effective_severity`] (issue #1367), not the raw
-/// [`DiagnosticCode::severity`] default. `lints` is always
+/// `types` is the session's resolved TM-3 policy and `lints` its resolved
+/// `[lints]` policy (both from [`IdeSession::analysis_options`]) — `severity`
+/// renders the [`brink_analyzer::effective_severity`] (issue #1367), not the
+/// raw [`DiagnosticCode::severity`] default. Every caller currently passes
+/// `IdeSession::analysis_options().lints`, which is always
 /// `LintPolicy::default()`: `IdeSession` has no `[lints]`-resolution input
 /// wired yet (same #1160 scope note as [`IdeSession::analysis_options`]), so
-/// this is a no-op today but keeps the breakage report on the one seam
-/// every diagnostic-severity display site must call.
+/// this is a no-op today — but taking `lints` as a parameter (rather than
+/// manufacturing a fresh `LintPolicy::default()` in here) means a future
+/// `[lints]` source wired into `IdeSession` (#1366) flows through
+/// automatically instead of silently going stale one layer down from the
+/// seam this function exists to keep live.
 pub(crate) fn introduced_diagnostics(
     analysis: &AnalysisResult,
     new_analysis: &AnalysisResult,
     new_db: &brink_db::ProjectDb,
     types: brink_analyzer::TypePolicy,
+    lints: &brink_analyzer::LintPolicy,
 ) -> Vec<IntroducedDiagnostic> {
-    let lints = brink_analyzer::LintPolicy::default();
     let mut baseline: BTreeMap<(&str, &str), i32> = BTreeMap::new();
     for d in &analysis.diagnostics {
         *baseline
@@ -196,7 +215,7 @@ pub(crate) fn introduced_diagnostics(
         let src = new_db.source(d.file).unwrap_or_default();
         let (line, col) = LineIndex::new(src).line_col(d.range.start());
         introduced.push(IntroducedDiagnostic {
-            severity: brink_analyzer::effective_severity(d.code, types, &lints),
+            severity: brink_analyzer::effective_severity(d.code, types, lints),
             code: d.code,
             message: d.message.clone(),
             path,
@@ -255,15 +274,18 @@ mod tests {
             code: DiagnosticCode::E063,
         }]);
         let db = brink_db::ProjectDb::new();
+        let lints = brink_analyzer::LintPolicy::default();
 
-        let gradual = introduced_diagnostics(&baseline, &new_analysis, &db, TypePolicy::Gradual);
+        let gradual =
+            introduced_diagnostics(&baseline, &new_analysis, &db, TypePolicy::Gradual, &lints);
         assert_eq!(
             gradual.first().map(|d| d.severity),
             Some(Severity::Warning),
             "types = gradual: E063 stays at its raw Warning default"
         );
 
-        let strict = introduced_diagnostics(&baseline, &new_analysis, &db, TypePolicy::Strict);
+        let strict =
+            introduced_diagnostics(&baseline, &new_analysis, &db, TypePolicy::Strict, &lints);
         assert_eq!(
             strict.first().map(|d| d.severity),
             Some(Severity::Error),
