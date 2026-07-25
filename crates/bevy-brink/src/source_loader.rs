@@ -387,10 +387,20 @@ impl AssetLoader for InkLoader {
         let overrides = OptionOverrides {
             dialect: self.override_config.as_ref().and_then(|c| c.dialect),
             types: self.override_config.as_ref().and_then(|c| c.types),
-            // bevy-brink's editor/host lint-override API is a follow-up
-            // (issue #1373 scoped its CLI/API tier to `brink-cli`); no
-            // `BrinkPlugin::with_config` field feeds these yet.
-            ..OptionOverrides::default()
+            // #1394: forward the plugin override's lint tier the same way
+            // as dialect/types — `BrinkPlugin::with_config`'s
+            // `ProjectConfig.lints`/`.deny_warnings` (landed with #1160)
+            // always win over a served `brink.toml`'s `[lints]` table, via
+            // the same `OptionOverrides` seam #1373 gave the CLI. No new
+            // resolution path: `Project::load` below folds these in at the
+            // one point (`AnalysisOptions::apply_lint_overrides`) that
+            // already validates codes for the CLI.
+            lints: self
+                .override_config
+                .as_ref()
+                .map(|c| c.lints.clone())
+                .unwrap_or_default(),
+            deny_warnings: self.override_config.as_ref().and_then(|c| c.deny_warnings),
         };
 
         // Land the drained map in a `SourceTree` and go through the
@@ -593,6 +603,14 @@ mod config_discovery_tests {
     /// brink-extension form that fails under the default.
     const BRINK_ONLY_SOURCE: &str = "#@private\nVAR secret = 0\n-> END\n";
 
+    /// A logic line with no effect (`~` alone) — `DiagnosticCode::E014`,
+    /// `Warning` by default (mirrors `brink_environment`'s own `E014_SOURCE`
+    /// fixture, `crates/internal/brink-environment/src/lib.rs`). Compiles
+    /// cleanly under the default policy; only relevels to a blocking `Error`
+    /// (and so a `Failed` load) once `[lints]` denies it or sets
+    /// `deny-warnings` (issue #1394).
+    const E014_SOURCE: &str = "Hello.\n~\n-> END\n";
+
     /// Build an `App` with an in-memory `AssetSource` and just enough
     /// registered (asset types + the dev-mode `InkLoader`) to drive a real
     /// `AssetServer::load` through [`InkLoader::load`] end to end, without
@@ -745,6 +763,121 @@ mod config_discovery_tests {
             .resource::<AssetServer>()
             .load::<BrinkStoryAsset>("intro.ink");
         wait_for_loaded(&mut app, &handle);
+    }
+
+    // ── `[lints]` re-level, observable through the bevy load path (#1394) ──
+    //
+    // A served `brink.toml`'s `[lints]`/`deny-warnings` table was already
+    // reaching `Project::load` before this issue — `resolve_options` there
+    // applies the discovered file's config unconditionally, regardless of
+    // `OptionOverrides` (see `sibling_brink_toml_lints_deny_relevels_...`
+    // below, both regression guards for that pre-existing file tier, not
+    // new coverage). What `InkLoader` actually dropped was narrower: a
+    // `BrinkPlugin::with_config` override's `lints`/`deny_warnings` never
+    // reached `OptionOverrides`, so it could never win over (or supply, with
+    // no `brink.toml` present) the file. `plugin_override_lints_wins_over_conflicting_asset`
+    // and `plugin_override_deny_warnings_relevels_warning_to_failed_load`
+    // below are the tests that actually exercise the fixed seam. These
+    // mirror `brink_environment`'s own `[lints]` tests (`E014_SOURCE`, a
+    // Warning by default that only blocks compilation once denied), but
+    // drive them through the real `AssetServer`/`InkLoader` seam this crate
+    // owns.
+
+    #[test]
+    fn e014_source_loads_by_default_with_no_lints_table() {
+        // Baseline: E014 is a Warning, never blocking, with no `[lints]`
+        // anywhere -- the contrast case for the two `Failed` tests below.
+        let (mut app, dir) = make_memory_asset_app();
+        dir.insert_asset_text(Path::new("intro.ink"), E014_SOURCE);
+
+        let handle = app
+            .world()
+            .resource::<AssetServer>()
+            .load::<BrinkStoryAsset>("intro.ink");
+        wait_for_loaded(&mut app, &handle);
+    }
+
+    #[test]
+    fn sibling_brink_toml_lints_deny_relevels_warning_to_failed_load() {
+        // A served brink.toml's `[lints] E014 = "deny"` re-levels the
+        // Warning to a blocking Error -- observable as a `Failed` load
+        // through the bevy path, exactly as it already blocks the CLI.
+        let (mut app, dir) = make_memory_asset_app();
+        dir.insert_asset_text(Path::new("intro.ink"), E014_SOURCE);
+        dir.insert_asset_text(Path::new("brink.toml"), "[lints]\nE014 = \"deny\"\n");
+
+        let handle = app
+            .world()
+            .resource::<AssetServer>()
+            .load::<BrinkStoryAsset>("intro.ink");
+        wait_for_failed(&mut app, &handle);
+    }
+
+    #[test]
+    fn sibling_brink_toml_deny_warnings_relevels_warning_to_failed_load() {
+        // Same re-level, via the `deny-warnings = true` blanket knob rather
+        // than a per-code entry.
+        let (mut app, dir) = make_memory_asset_app();
+        dir.insert_asset_text(Path::new("intro.ink"), E014_SOURCE);
+        dir.insert_asset_text(Path::new("brink.toml"), "[lints]\ndeny-warnings = true\n");
+
+        let handle = app
+            .world()
+            .resource::<AssetServer>()
+            .load::<BrinkStoryAsset>("intro.ink");
+        wait_for_failed(&mut app, &handle);
+    }
+
+    #[test]
+    fn plugin_override_lints_wins_over_conflicting_asset() {
+        // The asset explicitly allows E014 (so, alone, the load would
+        // succeed); the plugin override denies it -- override must win,
+        // same `override > file > default` precedence as dialect/types.
+        let (mut app, dir) = make_memory_asset_app();
+        dir.insert_asset_text(Path::new("intro.ink"), E014_SOURCE);
+        dir.insert_asset_text(Path::new("brink.toml"), "[lints]\nE014 = \"allow\"\n");
+
+        let mut lints = std::collections::BTreeMap::new();
+        lints.insert("E014".to_owned(), brink_project_config::LintLevel::Deny);
+        app.register_asset_loader(InkLoader {
+            override_config: Some(ProjectConfig {
+                lints,
+                ..ProjectConfig::default()
+            }),
+        });
+
+        let handle = app
+            .world()
+            .resource::<AssetServer>()
+            .load::<BrinkStoryAsset>("intro.ink");
+        wait_for_failed(&mut app, &handle);
+    }
+
+    #[test]
+    fn plugin_override_deny_warnings_relevels_warning_to_failed_load() {
+        // No `brink.toml` at all -- alone, E014 stays a non-blocking
+        // Warning (see `e014_source_loads_by_default_with_no_lints_table`).
+        // The plugin override's blanket `deny_warnings` knob must still
+        // relevel it to a blocking Error on its own, the same way a served
+        // `brink.toml`'s `deny-warnings = true` does
+        // (`sibling_brink_toml_deny_warnings_relevels_warning_to_failed_load`),
+        // proving the `.deny_warnings` field (not just `.lints`) actually
+        // reaches `OptionOverrides` through `InkLoader::load`.
+        let (mut app, dir) = make_memory_asset_app();
+        dir.insert_asset_text(Path::new("intro.ink"), E014_SOURCE);
+
+        app.register_asset_loader(InkLoader {
+            override_config: Some(ProjectConfig {
+                deny_warnings: Some(true),
+                ..ProjectConfig::default()
+            }),
+        });
+
+        let handle = app
+            .world()
+            .resource::<AssetServer>()
+            .load::<BrinkStoryAsset>("intro.ink");
+        wait_for_failed(&mut app, &handle);
     }
 
     #[test]

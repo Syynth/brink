@@ -26,11 +26,12 @@ pub enum DiscoverError {
     InvalidKey(String),
     /// A key `discover_native` was handed does not have the `.brink`
     /// extension. `discover_native` must only ever see native source (issue
-    /// #1371): a [`SourceTree`](brink_db::SourceTree) scoped wider than
-    /// `.brink` alone — e.g. `brink-driver`'s `RealFs::project`, whose
-    /// `.brink` + `.ink` surface exists for `brink-environment`'s
-    /// `Project::load`, not for native discovery — must never be fed here,
-    /// or `.ink` text would be parsed as brink source. Checked (like
+    /// #1371): `tree` is a `&dyn SourceTree`, and nothing at the type level
+    /// stops a caller from handing it an implementation scoped wider than
+    /// `.brink` alone — e.g. `brink_source_tree::InMemory`, the tree
+    /// `brink-web`'s `compile()` builds (`.ink`-keyed) and hands to
+    /// `brink_environment::Project::load`, not to native discovery — which
+    /// would let `.ink` text be parsed as brink source. Checked (like
     /// [`InvalidKey`](Self::InvalidKey)) before
     /// any file is loaded, so a violation rejects the whole discovery, not
     /// just the offending key.

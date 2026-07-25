@@ -766,7 +766,7 @@ mod tests {
         std::fs::write(dir.join("brink.toml"), [0x80_u8, 0x81, 0x82]).unwrap();
         std::fs::write(dir.join("main.brink"), "flow main() {}").unwrap();
 
-        let t = brink_driver::RealFs::project(&dir);
+        let t = brink_driver::RealFs::new(&dir);
         let err = Project::load(&t, "main.brink", &OptionOverrides::default())
             .expect_err("non-UTF-8 brink.toml must fail load");
         let LoadError::ConfigRead { path, .. } = &err else {

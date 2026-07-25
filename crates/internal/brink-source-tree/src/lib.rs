@@ -35,16 +35,18 @@
 //!
 //! `list`'s enumeration scope is entirely implementation-defined — nothing
 //! in this trait requires it to return only native `.brink` keys.
-//! `brink-driver`'s `RealFs`, for instance, has two constructors backed by
-//! the same type: `RealFs::new` scopes `list` to `.brink` only (the native
-//! discovery / `brink ide` shape), while `RealFs::project` widens it to
-//! `.brink` + `.ink` + `brink.toml` (the CLI's producer mount). `read`,
-//! however, has **no equivalent key-kind scoping on any implementation** —
-//! whether a key is native (`.brink`) or not plays no role in whether `read`
-//! will serve it, regardless of what that same implementation's `list` would
-//! ever enumerate. A `RealFs::new`-scoped tree's `read("brink.toml")` still
-//! succeeds if that file is on disk, even though its `list()` would never
-//! return that key.
+//! `brink-driver`'s `RealFs`, for instance, scopes `list` to `.brink` only
+//! (the native discovery / `brink ide` shape; issue #1404 deleted a second,
+//! wider `.brink` + `.ink` scope once tracing showed every caller of that
+//! wider scope either filtered `list()`'s output back down to `.brink`
+//! itself or never called `list()` at all, so the extra `.ink` keys were
+//! never actually observable). `read`, however, has **no equivalent
+//! key-kind scoping on any implementation** — whether a key is native
+//! (`.brink`) or not plays no role in whether `read` will serve it,
+//! regardless of what that same implementation's `list` would ever
+//! enumerate. A `RealFs`-scoped tree's `read("brink.toml")` still succeeds
+//! if that file is on disk, even though its `list()` would never return
+//! that key.
 //!
 //! This is a claim about key-*kind* scoping specifically, not a claim that
 //! every implementation serves every key that physically exists: a
@@ -83,7 +85,29 @@
 //! "root is constructor-held" the only contract there is to honor.
 
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::io;
+
+/// Directory names a recursive filesystem walk should never descend into —
+/// build output and VCS/dependency metadata that is never a valid source
+/// location and can be enormous. Originally added to `brink-driver`'s
+/// `RealFs` walk alone (issue #1381: #1370 fixed *config discovery* to
+/// probe ancestors directly instead of enumerating, but the native compile
+/// walk — the other call path paying the same cost — still descended into
+/// these). Promoted here (issue #1402) so every host-side recursive walk —
+/// `brink-driver`'s `RealFs` and `brink-lsp`'s workspace scan alike — prunes
+/// the same directories instead of each re-deriving its own list. Matched
+/// by exact directory-entry name, not path suffix, so a source file
+/// legitimately named e.g. `target.brink` is unaffected.
+pub const IGNORED_DIR_NAMES: &[&str] = &["target", ".git", "node_modules"];
+
+/// Whether `name` (a single directory-entry file name, not a path) is a
+/// conventionally-ignored directory a recursive walk must not descend into.
+/// See [`IGNORED_DIR_NAMES`].
+#[must_use]
+pub fn is_ignored_dir(name: &OsStr) -> bool {
+    IGNORED_DIR_NAMES.iter().any(|ignored| name == *ignored)
+}
 
 /// A source of `.brink` files: enumerate what exists under a root (held by
 /// the implementation since construction — see the [module docs](self)),
@@ -225,5 +249,26 @@ mod tests {
         let tree = InMemory::new(BTreeMap::new());
 
         assert_eq!(tree.list().expect("list succeeds"), Vec::<String>::new());
+    }
+
+    /// `is_ignored_dir` matches every name in [`IGNORED_DIR_NAMES`] exactly
+    /// (issue #1402: this is the shared helper both `brink-driver`'s
+    /// `RealFs` walk and `brink-lsp`'s workspace scan now call).
+    #[test]
+    fn is_ignored_dir_matches_every_listed_name() {
+        for name in IGNORED_DIR_NAMES {
+            assert!(is_ignored_dir(OsStr::new(name)), "{name} should be ignored");
+        }
+    }
+
+    /// A directory whose name merely starts with an ignored name (not an
+    /// exact match) is not pruned — this is a name-equality check, not a
+    /// prefix/suffix test, so e.g. `target.brink` (a legitimately named
+    /// source file) or `targets/` are unaffected.
+    #[test]
+    fn is_ignored_dir_does_not_match_by_prefix() {
+        assert!(!is_ignored_dir(OsStr::new("targets")));
+        assert!(!is_ignored_dir(OsStr::new("target.brink")));
+        assert!(!is_ignored_dir(OsStr::new("my-node_modules")));
     }
 }

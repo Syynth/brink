@@ -102,8 +102,8 @@ impl<M: Send + Sync + 'static> BrinkPlugin<M> {
     }
 
     /// Override the [`ProjectConfig`](brink_project_config::ProjectConfig)
-    /// (`dialect`/`types`) the dev-mode [`InkLoader`](crate::InkLoader) uses
-    /// for stories compiled under this marker (#1029).
+    /// the dev-mode [`InkLoader`](crate::InkLoader) uses for stories
+    /// compiled under this marker (#1029).
     ///
     /// The **programmatic escape hatch**: it wins over whatever `brink.toml`
     /// the loader's bounded asset walk-up discovers beside the entry story —
@@ -123,15 +123,16 @@ impl<M: Send + Sync + 'static> BrinkPlugin<M> {
     /// [`BrinkAssetsPlugin::with_config`] directly instead if you're adding
     /// it standalone.
     ///
-    /// Deliberately scoped to `dialect`/`types` only (issue #1382 audit): a
-    /// `[lints]` table or `deny-warnings` value set on the passed
-    /// `ProjectConfig` is silently ignored here — `InkLoader` still resolves
-    /// `[lints]` from a discovered `brink.toml` (via `Project::load` /
-    /// `resolve_options`, which owns the whole precedence rule), just not
-    /// from this override. There's no `--lints` CLI-flag equivalent to
-    /// mirror either (see `AnalysisOptions::apply_project_config`'s doc): an
-    /// explicit-override mechanism for `[lints]` is a natural follow-up, not
-    /// yet built.
+    /// Also covers the `[lints]` tier (issue #1394): a `[lints]` table or
+    /// `deny-warnings` value set on the passed `ProjectConfig` wins over the
+    /// same table in a discovered `brink.toml`, mirroring the CLI's
+    /// `--deny`/`--warn`/`--allow`/`-D warnings` flags (issue #1373) —
+    /// `InkLoader` forwards `config.lints`/`.deny_warnings` into the same
+    /// [`OptionOverrides`](brink_environment::OptionOverrides) seam used for
+    /// `dialect`/`types`, so `Project::load` folds everything in at one
+    /// resolution point (`AnalysisOptions::apply_lint_overrides`).
+    /// (Previously scoped to `dialect`/`types` only per the issue #1382
+    /// audit — that gap is what #1394 closed.)
     #[cfg(feature = "dev")]
     #[must_use]
     pub fn with_config(mut self, config: brink_project_config::ProjectConfig) -> Self {
