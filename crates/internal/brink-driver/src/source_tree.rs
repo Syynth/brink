@@ -185,6 +185,17 @@ pub fn is_native(path: &Path) -> bool {
 /// `"."`-for-cwd spelling [`GitRev::repo_relative`](GitRev)'s shortcut
 /// depends on, per the #1403/PR #1412 trap) is untouched in the common
 /// case.
+///
+/// Neither pass climbs past a workspace/git boundary (#1425):
+/// [`brink_project_config::find_config`] itself now stops ascending once it
+/// passes a directory containing a `.git` entry, so this function can never
+/// resolve `root` to somewhere outside the repository the entry lives in —
+/// closing the gap the absolutized retry above opened (an absolute walk used
+/// to reach the filesystem root "for free," which meant a stray `brink.toml`
+/// anywhere above the repo — even in `$HOME` — could get picked up). A
+/// `brink.toml` sitting outside a repository entirely (as opposed to merely
+/// above `entry_dir` but still inside it) is now treated exactly like no
+/// `brink.toml` at all: this function falls back to `entry_dir`.
 #[must_use]
 pub fn native_source_root(entry: &Path) -> PathBuf {
     let entry_dir = entry
