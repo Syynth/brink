@@ -57,6 +57,7 @@ use std::path::{Path, PathBuf};
 
 use brink_compiler::{AnalysisOptions, Dialect};
 use brink_runtime::{DotNetRng, Line, Story};
+use brink_source_tree::Walk;
 
 fn book_src_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -70,20 +71,17 @@ fn book_src_dir() -> PathBuf {
 
 /// Recursively collect every `.md` file under `dir`, sorted by path for
 /// deterministic report order.
-fn collect_markdown(dir: &Path, out: &mut Vec<PathBuf>) {
-    let mut entries: Vec<_> = std::fs::read_dir(dir)
-        .unwrap_or_else(|e| panic!("read_dir {}: {e}", dir.display()))
-        .filter_map(Result::ok)
-        .map(|e| e.path())
-        .collect();
-    entries.sort();
-    for path in entries {
-        if path.is_dir() {
-            collect_markdown(&path, out);
-        } else if path.extension().is_some_and(|ext| ext == "md") {
-            out.push(path);
-        }
-    }
+///
+/// Routed through the shared [`Walk`] (issue #1433) — `brink-test-harness`
+/// already depends on `brink-source-tree` for corpus/bench case discovery,
+/// so there is no new dependency to justify here, unlike the crate-local
+/// parser-corpus walkers this issue left unconverted.
+fn collect_markdown(dir: &Path) -> Vec<PathBuf> {
+    Walk::new(dir)
+        .map(|entry| entry.unwrap_or_else(|e| panic!("walk {}: {e}", dir.display())))
+        .filter(|entry| entry.is_file() && entry.path().extension().is_some_and(|ext| ext == "md"))
+        .map(brink_source_tree::WalkEntry::into_path)
+        .collect()
 }
 
 /// Execution markers parsed from a `<!-- fence: … -->` comment.
@@ -320,8 +318,7 @@ fn classify(info: &str) -> Kind {
 
 #[test]
 fn every_ink_fence_in_the_book_checks_out() {
-    let mut files = Vec::new();
-    collect_markdown(&book_src_dir(), &mut files);
+    let files = collect_markdown(&book_src_dir());
     assert!(!files.is_empty(), "no markdown files under docs/book/src");
 
     let mut errors: Vec<String> = Vec::new();
