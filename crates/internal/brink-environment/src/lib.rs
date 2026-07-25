@@ -378,7 +378,7 @@ fn resolve_options(
 ) -> Result<AnalysisOptions, LoadError> {
     let mut options = AnalysisOptions::default();
 
-    if let Some(config_key) = discover_from_entry_in_tree(tree, Path::new("."), entry)? {
+    if let Some(config_key) = discover_from_entry_in_tree(tree, entry)? {
         let text = tree
             .read(&config_key)
             .map_err(|source| LoadError::ConfigRead {

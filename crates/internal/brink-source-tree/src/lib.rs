@@ -31,6 +31,43 @@
 //! probe speculatively treat `NotFound` as "no candidate here, keep going"
 //! and treat every other error kind as fatal.
 //!
+//! ## Policy asymmetry: `list` may be key-kind-scoped, `read` never is
+//!
+//! `list`'s enumeration scope is entirely implementation-defined — nothing
+//! in this trait requires it to return only native `.brink` keys.
+//! `brink-driver`'s `RealFs`, for instance, has two constructors backed by
+//! the same type: `RealFs::new` scopes `list` to `.brink` only (the native
+//! discovery / `brink ide` shape), while `RealFs::project` widens it to
+//! `.brink` + `.ink` + `brink.toml` (the CLI's producer mount). `read`,
+//! however, has **no equivalent key-kind scoping on any implementation** —
+//! whether a key is native (`.brink`) or not plays no role in whether `read`
+//! will serve it, regardless of what that same implementation's `list` would
+//! ever enumerate. A `RealFs::new`-scoped tree's `read("brink.toml")` still
+//! succeeds if that file is on disk, even though its `list()` would never
+//! return that key.
+//!
+//! This is a claim about key-*kind* scoping specifically, not a claim that
+//! every implementation serves every key that physically exists: a
+//! `SourceTree` may still layer a *per-key* overlay unrelated to nativeness.
+//! `brink-cli`'s `EditOverlay`, for instance, reports `NotFound` for a key
+//! it has marked `removed` even though that file is still on disk — a
+//! moved/deleted-key overlay, not list-parity scoping keyed on whether the
+//! file is native. That axis is orthogonal to this section and remains
+//! legal.
+//!
+//! This asymmetry is intentional, not an oversight: it is exactly what lets
+//! `find_config_in_tree` probe for a manifestly non-native `brink.toml` key
+//! against *any* `SourceTree` — including one scoped to `.brink` alone —
+//! without needing a widened `list` or a second seam. The seam itself does
+//! not police "nativeness" on `read`; a consumer that needs that guarantee
+//! enforces it itself. `brink-driver`'s `discover_native` is the sharp edge
+//! of this: it inspects every key `list` returns and rejects the whole
+//! discovery (`DiscoverError::NonNativeKey`) if any of them is not `.brink`
+//! — but that check runs against `list`'s output only, is specific to that
+//! one consumer, and says nothing about what `read` will or won't serve.
+//! Do not assume a `SourceTree` implementation refuses to read non-native
+//! keys just because its `list` is native-scoped.
+//!
 //! The root itself is never discovered inside the seam (no implementation
 //! walks upward looking for a project marker) — it is always supplied by the
 //! caller, which resolves it however is appropriate for that host (a
@@ -50,7 +87,7 @@ use std::io;
 
 /// A source of `.brink` files: enumerate what exists under a root (held by
 /// the implementation since construction — see the [module docs](self)),
-/// and read any key that enumeration returned.
+/// and read any key, whether or not enumeration returned it.
 ///
 /// See the [module docs](self) for the full contract. Implementations must
 /// return `list()` results sorted by key, regardless of what order the
@@ -70,6 +107,12 @@ pub trait SourceTree {
     /// [`io::ErrorKind::NotFound`], and no other error kind, when `key` does
     /// not exist — speculative callers rely on that kind to distinguish "not
     /// here, keep probing" from a real I/O failure.
+    ///
+    /// `read` carries no key-kind scoping even when `list` does (see the
+    /// [module docs](self) "policy asymmetry" section) — whether a key is
+    /// native source or not plays no role in whether `read` serves it. A
+    /// per-key overlay unrelated to nativeness (e.g. a moved/deleted-key
+    /// guard) may still legally refuse a specific existing key.
     fn read(&self, key: &str) -> io::Result<String>;
 }
 
