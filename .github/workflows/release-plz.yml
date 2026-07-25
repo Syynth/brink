@@ -124,4 +124,11 @@ jobs:
           # reasoning as the release job's GITHUB_TOKEN override, see
           # docs/releasing.md).
           git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+          # actions/checkout on this job does NOT set persist-credentials:
+          # false, so git's local http.extraheader carries an
+          # `Authorization: basic <GITHUB_TOKEN>` for github.com that takes
+          # precedence over the x-access-token userinfo above — the push
+          # would silently authenticate as GITHUB_TOKEN and defeat the whole
+          # point of using RELEASE_PLZ_TOKEN. Clear it before pushing.
+          git config --local --unset-all http.https://github.com/.extraheader || true
           git push origin "HEAD:$branch"
