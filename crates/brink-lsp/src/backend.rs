@@ -428,8 +428,35 @@ impl Backend {
         let (resolved, outcome) = resolve_language_options(overrides, &roots);
 
         self.language.store(resolved);
+        // A `brink.toml` appearing, moving, or disappearing moves the native
+        // source root with it (#1572), so re-register it here too — otherwise
+        // every native module name would stay pinned to whatever root the
+        // session started with.
+        self.register_native_root(&roots, &outcome);
 
         self.publish_config_outcome(&outcome).await;
+    }
+
+    /// Register this session's native source root with `ProjectDb` (#1572),
+    /// so the module identity the editor mints for a `.brink` file equals the
+    /// identity a real compile of the same tree mints.
+    ///
+    /// The LSP keys `ProjectDb` by absolute OS path — it must, since every
+    /// path it holds round-trips through a `file://` URI — but a native
+    /// file's module is contractually a function of its *root-relative* key.
+    /// Declaring the root closes that gap at the one place the identity
+    /// function is fed (see [`brink_db::ProjectDb::set_native_root`]).
+    ///
+    /// Called from `initialize` and from every later
+    /// [`reload_brink_toml`](Self::reload_brink_toml). Goes through
+    /// [`mutate_db`](Self::mutate_db) so the content generation advances:
+    /// changing the root changes every native module name, which is a real
+    /// input change the background pass must re-analyze against.
+    fn register_native_root(&self, roots: &[PathBuf], outcome: &ConfigLoadOutcome) {
+        let root = native_source_root(roots, outcome)
+            .map(|p| p.to_string_lossy().into_owned())
+            .filter(|p| !p.is_empty());
+        self.mutate_db(|db| db.set_native_root(root));
     }
 
     /// Publish per-file diagnostics (parse + lowering only, no analysis).
@@ -989,6 +1016,34 @@ fn resolve_language_options(
     (options, outcome)
 }
 
+/// The directory this session's native `.brink` keys are root-relative to
+/// (issue #1572), or `None` when there is nothing to anchor to (no workspace
+/// folder and no `brink.toml` — a bare `stdin`-only session).
+///
+/// Mirrors the compiler's own [`brink_driver::native_source_root`] rule at
+/// the one input the LSP actually has: the compiler resolves the root from
+/// the *entry file* (the governing `brink.toml`'s directory, else the entry's
+/// own directory), while a language server has no entry file at all, only
+/// workspace folders. So the same two-step applies with the workspace root
+/// standing in for the entry directory — the discovered `brink.toml`'s
+/// directory wins (`outcome.path` is the very file
+/// [`resolve_language_options`] found by walking up from the first workspace
+/// root), else the first workspace root itself.
+///
+/// Consulting only the *first* root matches every other project-scoped
+/// decision this server makes (`resolve_language_options`, `Backend::dialect`);
+/// a genuinely multi-root native workspace is issue #1572's separate
+/// project-extent finding, not this one.
+fn native_source_root(roots: &[PathBuf], outcome: &ConfigLoadOutcome) -> Option<PathBuf> {
+    outcome
+        .path
+        .as_ref()
+        .and_then(|config| config.parent())
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .map(std::path::Path::to_path_buf)
+        .or_else(|| roots.first().cloned())
+}
+
 /// True if `path`'s file name is exactly
 /// `brink_project_config::CONFIG_FILE_NAME` ("brink.toml") — used to route
 /// `did_change_watched_files` events for the project config file to
@@ -1079,6 +1134,10 @@ impl LanguageServer for Backend {
         let overrides = ConfigOverrides::from_initialize_params(&params);
         let (resolved, outcome) = resolve_language_options(overrides, &roots);
         self.language.store(resolved);
+        // #1572: declare the native source root before any file is loaded, so
+        // the very first analysis pass already mints compile-identical native
+        // module identity (`initialized()` runs the workspace scan).
+        self.register_native_root(&roots, &outcome);
         if let Ok(mut guard) = self.config_overrides.lock() {
             *guard = overrides;
         }
@@ -2851,9 +2910,9 @@ mod tests {
     use tower_lsp::lsp_types::Diagnostic;
 
     use super::{
-        ConfigOverrides, PublishDecision, PublishRecord, PublishTier, collect_source_files,
-        config_error_diagnostic, path_under_ignored_dir, publish_decision,
-        resolve_language_options,
+        ConfigLoadOutcome, ConfigOverrides, PublishDecision, PublishRecord, PublishTier,
+        collect_source_files, config_error_diagnostic, native_source_root, path_under_ignored_dir,
+        publish_decision, resolve_language_options,
     };
 
     /// A unique per-test scratch directory under the OS temp dir, mirroring
@@ -3093,6 +3152,62 @@ mod tests {
             "diagnostic message must name the file, got: {}",
             diag.message
         );
+    }
+
+    /// #1572: with a `brink.toml` in a *sub*directory of the workspace root,
+    /// the native source root is the config's directory — the same rule the
+    /// compiler's own `brink_driver::native_source_root` applies, so the
+    /// module names the editor mints match a real compile's. The fixture
+    /// deliberately puts the config somewhere the workspace-root fallback
+    /// would NOT produce, so the test would fail if the config branch were
+    /// dropped.
+    #[test]
+    fn native_source_root_prefers_the_discovered_config_directory() {
+        let workspace = temp_dir("native-root-config");
+        let game = workspace.join("game");
+        std::fs::create_dir_all(&game).expect("create game dir");
+        std::fs::write(game.join("brink.toml"), "[project]\ndialect = \"brink\"\n")
+            .expect("write brink.toml");
+
+        let outcome = ConfigLoadOutcome {
+            path: Some(game.join(brink_project_config::CONFIG_FILE_NAME)),
+            diagnostic: None,
+        };
+
+        assert_eq!(
+            native_source_root(std::slice::from_ref(&workspace), &outcome),
+            Some(game),
+            "the governing brink.toml's directory is the native source root"
+        );
+
+        std::fs::remove_dir_all(&workspace).expect("clean up");
+    }
+
+    /// #1572: with no `brink.toml` anywhere, the first workspace folder is the
+    /// native source root — and with neither (a client that opened no folder
+    /// at all), there is nothing to anchor to, so identity is left exactly as
+    /// registered.
+    #[test]
+    fn native_source_root_falls_back_to_the_first_workspace_root_then_nothing() {
+        let workspace = temp_dir("native-root-fallback");
+        let other = temp_dir("native-root-fallback-second");
+
+        assert_eq!(
+            native_source_root(
+                &[workspace.clone(), other.clone()],
+                &ConfigLoadOutcome::default()
+            ),
+            Some(workspace.clone()),
+            "no config: the FIRST workspace folder anchors identity"
+        );
+        assert_eq!(
+            native_source_root(&[], &ConfigLoadOutcome::default()),
+            None,
+            "no config and no workspace folder: nothing to anchor to"
+        );
+
+        std::fs::remove_dir_all(&workspace).expect("clean up");
+        std::fs::remove_dir_all(&other).expect("clean up");
     }
 
     /// A distinct diagnostic set identified by its message (content equality is

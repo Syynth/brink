@@ -56,7 +56,7 @@ impl ProjectDb {
     /// Create an empty project database.
     pub fn new() -> Self {
         let salsa = BrinkDatabase::default();
-        let project = ProjectInput::new(&salsa, Vec::new(), None, AnalysisOptions::default());
+        let project = ProjectInput::new(&salsa, Vec::new(), None, AnalysisOptions::default(), None);
         Self {
             salsa,
             project,
@@ -174,6 +174,34 @@ impl ProjectDb {
     /// The analysis options currently registered with the database.
     pub fn analysis_options(&self) -> &AnalysisOptions {
         self.project.analysis_options(&self.salsa)
+    }
+
+    /// Register the directory native `.brink` file keys are root-relative
+    /// *to* (issue #1572).
+    ///
+    /// A native file's module — and therefore every `DefinitionId` it
+    /// qualifies — is a pure function of its **root-relative** key
+    /// (decision-log 2026-07-22 "Native module identity"). `brink-driver`'s
+    /// `discover_native` already registers such keys, so a compile leaves
+    /// this `None` and nothing changes. A consumer that must key by some
+    /// other prefix — the LSP keys by absolute OS path, because every path it
+    /// holds round-trips through a `file://` URI — declares that prefix here,
+    /// and the identity it mints then matches a real compile of the same
+    /// tree byte for byte instead of embedding the machine's directory
+    /// layout. Paths not under `root` are unaffected.
+    ///
+    /// Ink (`.ink`) files never consult this: their module is their file
+    /// *stem*, which no path prefix can change.
+    pub fn set_native_root(&mut self, root: Option<String>) {
+        if self.project.native_root(&self.salsa) != &root {
+            self.project.set_native_root(&mut self.salsa).to(root);
+        }
+    }
+
+    /// The registered native source root, if any — see
+    /// [`set_native_root`](Self::set_native_root).
+    pub fn native_root(&self) -> Option<&str> {
+        self.project.native_root(&self.salsa).as_deref()
     }
 
     /// Look up a file's ID by path.
@@ -865,6 +893,7 @@ mod path_tests {
 #[cfg(test)]
 mod native_seam_tests {
     use super::ProjectDb;
+
     use brink_analyzer::{AnalysisOptions, Dialect};
 
     /// B0.10a gate (issue #1106): a native `.brink` file, registered by the

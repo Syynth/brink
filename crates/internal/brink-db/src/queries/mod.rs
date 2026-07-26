@@ -292,8 +292,8 @@ pub(crate) struct SourceFile {
 }
 
 /// The project-level input: the file set (sorted by [`FileId`]), the compile
-/// entry point, and the analysis options (host manifest + external-check
-/// severity).
+/// entry point, the analysis options (host manifest + external-check
+/// severity), and the native source root.
 #[salsa::input]
 pub(crate) struct ProjectInput {
     #[returns(ref)]
@@ -301,6 +301,14 @@ pub(crate) struct ProjectInput {
     pub entry: Option<FileId>,
     #[returns(ref)]
     pub analysis_options: AnalysisOptions,
+    /// The directory native `.brink` keys are root-relative *to*, for a
+    /// consumer that registers files under some other prefix (issue #1572:
+    /// the LSP keys by absolute OS path). `None` — every compile path, where
+    /// `discover_native` already keys root-relative — means "the keys are
+    /// already root-relative", and is byte-identical to the pre-#1572 world.
+    /// Only [`crate::modules::native_root_relative_key`] reads it.
+    #[returns(ref)]
+    pub native_root: Option<String>,
 }
 
 // ─── Layer 1: per-file queries ───────────────────────────────────────
@@ -593,6 +601,13 @@ pub(crate) fn module_map_query(
     // exactly as the ink path reads `#@was` — never hard-dropped (issue #1286
     // wired the native parse/lower; `lower_native::module`). `None` when the
     // file authored no `@[was]`.
+    // The key handed to `native_module_path` is the file's path made
+    // root-relative to the project's registered `native_root` (issue #1572) —
+    // a no-op for every compile path (`discover_native` already keys
+    // root-relative, so `native_root` is `None`), and the normalization that
+    // makes a long-lived editor session's absolute-path keys mint the *same*
+    // module identity a real compile of the same tree does.
+    let native_root = project.native_root(db).as_deref();
     for f in files {
         if file_language(f.path(db)) == Language::Native {
             let was = lowered_query(db, *f)
@@ -600,10 +615,11 @@ pub(crate) fn module_map_query(
                 .module
                 .as_ref()
                 .and_then(|m| m.was.as_ref().map(|(old, _)| old.clone()));
+            let key = crate::modules::native_root_relative_key(native_root, f.path(db));
             map.insert(
                 f.file_id(db),
                 brink_analyzer::ResolvedModule {
-                    name: crate::modules::native_module_path(f.path(db)),
+                    name: crate::modules::native_module_path(&key),
                     declared: true,
                     was,
                 },
