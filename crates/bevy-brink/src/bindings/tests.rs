@@ -259,9 +259,12 @@ fn value_read_through_a_ref_projection_reaches_a_binding_as_a_plain_snapshot() {
                     ~ hp = hp + amount\n\
                     ~ return hp\n";
     // NS-A9 (strict brink default): the `VAR npc = 0` → struct-reassign
-    // placeholder idiom is gradual-locked (E075 — struct literals are not
-    // legal declaration defaults), and the subject here (projection
-    // resolution at the binding seam) is regime-independent.
+    // placeholder idiom predates #1530, which made a well-formed
+    // construction literal a legal declaration default; the idiom is still
+    // gradual-locked (strict types `npc` as the scalar and rejects at the
+    // reassignment), and the subject here (projection resolution at the
+    // binding seam) is regime-independent. Migrating this fixture onto the
+    // direct spelling is a separate pass.
     let (program, tables, _ctx) = compile_test_story_brink_gradual(src);
 
     let seen: std::sync::Arc<std::sync::Mutex<Vec<Value>>> = std::sync::Arc::default();

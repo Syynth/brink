@@ -110,8 +110,8 @@ fn construction_read_and_write_run_end_to_end() {
 
 #[test]
 fn struct_shapes_table_is_populated_and_ordered_by_declaration() {
-    // #673: a struct construction literal is no longer legal as a `VAR`
-    // declaration default (a real E075 now, not a silent `Value::Null`) —
+    // Since #1530, a well-formed construction literal IS a legal `VAR`
+    // declaration default (it folds into `lir::ConstValue::Record`) —
     // `build_shape_table` populates every declared `STRUCT` unconditionally
     // from the declarations themselves (`hir_file.structs`), independent of
     // any construction site, so this test never needed one; `A` is
