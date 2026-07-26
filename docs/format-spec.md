@@ -85,7 +85,7 @@ Root container
 
 - The first stitch in a knot is auto-entered via an implicit divert. Other stitches require explicit `-> stitch_name`.
 - Stitches do NOT fall through to each other.
-- The root story container gets an implicit final gather + `-> DONE` appended by the compiler.
+- The root story container gets an implicit final gather + `-> DONE` appended by the compiler — once, for the entry file's root weave only. An `INCLUDE`d file's own trailing weave gets none, matching C# ink's `isRootStory` guard, so running off the end of one is still a `RanOutOfContent` fault (issues #1448, #1502).
 
 ## Global variables (tag `0x02`)
 

@@ -432,6 +432,10 @@ pub fn build_prelude(
 /// call frame — `LowerCtx::next_block_slot`). Returns each `(chunk,
 /// lowering-diagnostics)` pair in `files` order plus the total root temp-slot
 /// count. This is the root-content half of the old `lower_root`, unchanged.
+///
+/// The synthesized root terminus ([`attach_root_final_gather`]) is attached to
+/// the **last** chunk only — see that function's doc for why that is the one
+/// place C# puts it.
 #[must_use]
 fn lower_root_content_chunks(
     files: &[(FileId, &hir::HirFile)],
@@ -453,7 +457,12 @@ fn lower_root_content_chunks(
     let temp_map = temps::alloc_temps(&[], &[], &root_blocks);
     let mut block_slot = temp_map.total_slots();
 
-    for &(file_id, hir_file) in files {
+    // Only the last root-content chunk — the tail of the assembled root body —
+    // may carry the synthesized terminus (issue #1502). See
+    // `attach_root_final_gather`.
+    let last_chunk = files.len().saturating_sub(1);
+
+    for (chunk_index, &(file_id, hir_file)) in files.iter().enumerate() {
         let mut local_names = NameTable::new();
         let mut diagnostics = Vec::new();
         let (stmts, mut block_children) = {
@@ -479,7 +488,9 @@ fn lower_root_content_chunks(
             ctx.ids.reset_seq_counter();
             lower_block_with_children(&hir_file.root_content, &mut ctx, &mut cc, &mut gc)
         };
-        attach_root_final_gather(file_id, &mut block_children, &mut ids);
+        if chunk_index == last_chunk {
+            attach_root_final_gather(file_id, &mut block_children, &mut ids);
+        }
         chunks.push((
             chunk::ScopeChunk::root_content(stmts, block_children, local_names.into_entries()),
             diagnostics,
@@ -1869,14 +1880,37 @@ const ROOT_TERMINUS_NAME: &str = "g-final";
 /// content runs out is a genuine authoring error that C# ink reports and
 /// brink must keep reporting — extending a terminus to every weave terminus
 /// regresses those cases.
+///
+/// **Entry file only** (#1502). C# appends the implicit gather exactly once,
+/// to the *root story's* weave — `SplitWeaveAndSubFlowContent`'s
+/// `if (isRootStory)` guard. An `INCLUDE`d file is parsed as
+/// `Story(isInclude: true)` and gets none: `Story.PreProcessTopLevelObjects`
+/// splices its non-flow content in as the included story's own already-built
+/// `Weave`, which becomes a nested weave *container* in the root — so a
+/// trailing gather there is entered by divert (clearing the container stack)
+/// and running out of it faults with `RanOutOfContent`, exactly as it does in
+/// brink. Terminating included files individually would silently end the flow
+/// mid-story instead, which is strictly worse than the loud fault it replaces.
+///
+/// Callers therefore apply this to the **last** root-content chunk only. For
+/// an ink project that is the entry file by construction:
+/// `compilation_closure_files` orders the closure with
+/// `IncludeGraph::topological_order(entry)`, a post-order DFS from `entry`
+/// that pushes `entry` after everything it includes, so `entry` is always the
+/// final element. (A native project's closure is `FileId`-ordered instead,
+/// but `.brink` modules have no root weave to terminate.) Positionally this
+/// is also the only correct spot: the chunks concatenate into one root body,
+/// and C#'s implicit gather sits at the very end of it.
 fn attach_root_final_gather(
     file_id: FileId,
     children: &mut Vec<lir::Container>,
     ids: &mut context::IdAllocator,
 ) {
     // `#` never appears in a lowering scope path, so this key cannot collide
-    // with a real container address. Keyed per file because each file's
-    // root-level content is lowered as its own chunk (and its own weave).
+    // with a real container address. Still keyed by the file whose chunk owns
+    // it — at most one terminus exists per program, but keeping the file in
+    // the key leaves single-file programs' addresses byte-identical to what
+    // #1448 shipped.
     let terminus_id = ids.alloc_address(&format!("#root-terminus.{}", file_id.0));
 
     if !patch_root_loose_end(children, terminus_id) {

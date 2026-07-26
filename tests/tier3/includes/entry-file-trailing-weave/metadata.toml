@@ -1,0 +1,11 @@
+description = "A trailing weave in the entry file still gets the implicit final gather when the project has INCLUDEs (issue #1502)"
+mode = "runtime"
+
+[source]
+origin = "brink"
+original_id = "entry-file-trailing-weave"
+
+[classification]
+tier = 3
+feature = "includes"
+tags = ["includes", "weave", "gather"]
