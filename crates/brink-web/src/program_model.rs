@@ -637,8 +637,8 @@ fn format_opcode(op: &Opcode, r: &Resolver) -> String {
         Opcode::MapGetOpt => "map_get_opt".to_owned(),
         Opcode::MapContainsValue => "map_contains_value".to_owned(),
         Opcode::MapClear => "map_clear".to_owned(),
-        // B1 `or`-coalescing (issue #1460).
-        Opcode::Coalesce => "coalesce".to_owned(),
+        // B1 `or`-coalescing, short-circuited (issue #1471).
+        Opcode::CoalesceSome(off) => format!("coalesce_some {off}"),
         Opcode::OptionBind(slot) => format!("option_bind {slot}"),
         // NS-A6 rand verbs (#1112).
         Opcode::RandFloat => "rand_float".to_owned(),

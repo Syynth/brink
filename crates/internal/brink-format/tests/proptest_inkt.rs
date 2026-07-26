@@ -397,8 +397,8 @@ fn arb_opcode() -> impl Strategy<Value = Opcode> {
         Just(Opcode::MapGetOpt),
         Just(Opcode::MapContainsValue),
         Just(Opcode::MapClear),
-        // B1 `or`-coalescing (issue #1460).
-        Just(Opcode::Coalesce),
+        // B1 `or`-coalescing, short-circuited (issue #1471).
+        any::<i32>().prop_map(Opcode::CoalesceSome),
         // B1b the `as` binding (issue #1475).
         any::<u16>().prop_map(Opcode::OptionBind),
         // NS-A6 rand verbs (#1112).
@@ -566,7 +566,7 @@ fn assert_opcode_variants_exhaustive(op: &Opcode) {
         | Opcode::MapGetOpt
         | Opcode::MapContainsValue
         | Opcode::MapClear
-        | Opcode::Coalesce
+        | Opcode::CoalesceSome(_)
         | Opcode::OptionBind(_)
         | Opcode::RandFloat
         | Opcode::RandChance

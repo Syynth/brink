@@ -653,6 +653,65 @@ pub(crate) fn ufcs_resolution_query(
     }
 }
 
+/// B1 `or`-coalescing typing (issue #1492/#1471): the project's recorded
+/// per-step chain shapes, translated to `brink-ir`'s own lowering-facing
+/// mirror type (`brink_ir::lir::CoalesceLookup`).
+///
+/// Only the **table** half of `brink_analyzer::coalesce_types` is kept: its
+/// `E066` diagnostics are strict-mode-only and already reach
+/// [`whole_project_diagnostics_query`] through `strict::check`'s own wiring
+/// (see `brink_analyzer::coalesce_types`' doc — surfacing them from here
+/// too would emit strict-only diagnostics under `types = gradual`, and
+/// duplicate them under strict).
+///
+/// Deliberately **not** gated on the `types` policy: the recorded shapes are
+/// a typing *record*, not a strict-mode check. Native's un-overridden
+/// default is gradual (`brink-analyzer::strict::native_strict_only_error`'s
+/// own doc), and a gradual chain whose operands *are* statically pinned
+/// still deserves the right code shape; only genuinely unpinned steps come
+/// back as `CoalesceShape::RuntimeCheck`.
+///
+/// Memoized once per project and read by the two LIR-lowering call sites
+/// (`lir_knot_chunk_query`, `lir_lowering_query`'s root-content step), so
+/// both see the same table. Lazy the same way [`ufcs_resolution_query`] is:
+/// a project with no `or`-coalescing anywhere (every ink-dialect project,
+/// by construction — `InfixOp::Coalesce` is native-lowering-only) never
+/// triggers whole-project inference here and stays pointer-stable at the
+/// empty table.
+#[salsa::tracked(returns(ref))]
+pub(crate) fn coalesce_types_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+) -> brink_ir::lir::CoalesceLookup {
+    let resolved = resolutions_index_query(db, project);
+    let hir_refs: Vec<(FileId, &HirFile)> = project
+        .files(db)
+        .iter()
+        .map(|f| (f.file_id(db), &lowered_query(db, *f).hir))
+        .collect();
+
+    if !hir_refs
+        .iter()
+        .any(|&(_, hir)| brink_analyzer::project_has_coalesce(hir))
+    {
+        return brink_ir::lir::CoalesceLookup::new();
+    }
+
+    // Reuses the FG-narrowed, per-SCC-memoized `type_inference_query`
+    // rather than letting the analyzer recompute inference from scratch —
+    // the same seam `ufcs_resolution_query` above reuses.
+    let inference = type_inference_query(db, project);
+    let (table, _strict_only_diagnostics) = brink_analyzer::coalesce_types(
+        &hir_refs,
+        &resolved.index,
+        inference.as_ref(),
+        &resolved.resolutions,
+    );
+    // The one shared translation point (issue #1471) — see
+    // `brink_analyzer::coalesce_lir_lookup`'s own doc.
+    brink_analyzer::coalesce_lir_lookup(&table)
+}
+
 /// All analysis diagnostics, assembled in the exact order
 /// [`brink_analyzer::finish_analysis`] would produce them (issue #632 /
 /// FG-3): symbol-index diagnostics, every file's own `resolve_query`

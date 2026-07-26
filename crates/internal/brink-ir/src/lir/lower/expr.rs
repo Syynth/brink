@@ -79,6 +79,11 @@ pub fn lower_expr(expr: &hir::Expr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
         // PrefixOp, InfixOp, PostfixOp are shared types — pass through directly
         hir::Expr::Prefix(op, inner) => lir::Expr::Prefix(*op, Box::new(lower_expr(inner, ctx))),
 
+        // B1 `or`-coalescing, short-circuited (issue #1471) — the one
+        // `InfixOp` that does not fall through to the generic form below.
+        // Handled a whole chain at a time; see `lower_coalesce_chain`.
+        hir::Expr::Infix(_, crate::InfixOp::Coalesce, _) => lower_coalesce_chain(expr, ctx),
+
         hir::Expr::Infix(lhs, op, rhs) => lir::Expr::Infix(
             Box::new(lower_expr(lhs, ctx)),
             *op,
@@ -136,6 +141,79 @@ pub fn lower_expr(expr: &hir::Expr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
         // then this is a clean, targeted stop, not a silent drop.
         hir::Expr::RefArg(ra) => lower_ref_arg_fence(ra, ctx),
     }
+}
+
+/// Lower a whole `or`-coalescing chain (B1, issue #1460; short-circuited
+/// per issue #1471's ruling) from its **root**, consuming the analyzer's
+/// recorded per-step shapes (issue #1492).
+///
+/// `a or b or c` parses left-associatively as `Infix(Infix(a, or, b), or,
+/// c)`. The chain is lowered here in one pass rather than by recursing into
+/// the left spine, because the verdict side table is keyed at the chain root
+/// only: `hir::expr_span` of a chain and of its own left spine are
+/// frequently *identical* (`brink_analyzer::coalesce`'s module doc spells
+/// this out), so looking a spine node up would hand it another node's
+/// verdict — a miscompile. Operand subtrees are lowered through the ordinary
+/// [`lower_expr`], so a chain nested inside an operand (`a or (b or c)`) is
+/// reached as its own root, exactly as the analyzer records it.
+///
+/// Operands are lowered in source order (innermost `lhs`, then each `rhs`
+/// outward), byte-identical to what the old recursive `Infix` lowering
+/// produced, so nothing that depends on lowering order (name interning,
+/// sequence-id allocation) shifts.
+///
+/// A chain with no recorded verdict — an unkeyable root, a poisoned key, an
+/// analysis that never ran, or a length disagreement between the recorded
+/// steps and the spine — falls back to [`context::CoalesceShape::RuntimeCheck`]
+/// for every step. Absence is always safe: that verdict is exactly the
+/// gradual-mode posture, where the runtime check *is* the semantics.
+fn lower_coalesce_chain(root: &hir::Expr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
+    let spine = coalesce_chain_spine(root);
+    let shapes = crate::hir::expr_span(root)
+        .and_then(|range| ctx.coalesce.get(ctx.file, range))
+        .filter(|shapes| shapes.len() == spine.len());
+
+    // `spine` is outermost-first; walk it in reverse so the fold runs
+    // innermost-first, the order `CoalesceChain::steps` is recorded in.
+    let mut steps = spine.iter().rev();
+    let Some((innermost_lhs, innermost_rhs)) = steps.next().copied() else {
+        // Unreachable in practice: the caller only dispatches here for an
+        // `InfixOp::Coalesce` node, which always yields at least one spine
+        // entry. Lowering the node as itself keeps this total rather than
+        // panicking on a shape that cannot occur.
+        return lower_expr(root, ctx);
+    };
+    let mut fallbacks = vec![innermost_rhs];
+    fallbacks.extend(steps.map(|&(_, rhs)| rhs));
+
+    let mut acc = lower_expr(innermost_lhs, ctx);
+    for (index, fallback) in fallbacks.into_iter().enumerate() {
+        let rhs = lower_expr(fallback, ctx);
+        acc = lir::Expr::Coalesce {
+            lhs: Box::new(acc),
+            rhs: Box::new(rhs),
+            shape: shapes
+                .and_then(|shapes| shapes.get(index))
+                .copied()
+                .unwrap_or_default(),
+        };
+    }
+    acc
+}
+
+/// The `(lhs, rhs)` operand pair of each step in the coalescing chain rooted
+/// at `root`, **outermost first** — `root` itself, then its left-hand
+/// operand for as long as that is a coalescing node too. Mirrors
+/// `brink_analyzer::coalesce::chain_spine` exactly, so producer and consumer
+/// agree on what one chain is.
+fn coalesce_chain_spine(root: &hir::Expr) -> Vec<(&hir::Expr, &hir::Expr)> {
+    let mut spine = Vec::new();
+    let mut cursor = root;
+    while let hir::Expr::Infix(lhs, crate::InfixOp::Coalesce, rhs) = cursor {
+        spine.push((lhs.as_ref(), rhs.as_ref()));
+        cursor = lhs;
+    }
+    spine
 }
 
 /// The T1e-1 E052-fence backstop for a `ref lvalue-path` that reached
@@ -1937,6 +2015,56 @@ mod tests {
         assert!(
             recognize_builtin("TURNS").is_some(),
             "TURNS() should be recognized as a built-in function"
+        );
+    }
+
+    /// The consumer half of the `or`-coalescing side-channel contract
+    /// (issue #1471/#1492): a chain's spine must be enumerated exactly the
+    /// way `brink_analyzer::coalesce::chain_spine` enumerates it —
+    /// outermost first, descending the *left* operand only — or the
+    /// recorded (innermost-first) per-step shapes would be applied to the
+    /// wrong steps. `a or b or c` is one chain of two steps; a coalescing
+    /// node hanging off a `rhs` is a separate chain, not part of this one.
+    #[test]
+    fn coalesce_chain_spine_walks_the_left_spine_outermost_first() {
+        fn coalesce(lhs: hir::Expr, rhs: hir::Expr) -> hir::Expr {
+            hir::Expr::Infix(Box::new(lhs), crate::InfixOp::Coalesce, Box::new(rhs))
+        }
+
+        // `a or b or c` → Infix(Infix(a, or, b), or, c).
+        let chain = coalesce(
+            coalesce(hir::Expr::Int(1), hir::Expr::Int(2)),
+            hir::Expr::Int(3),
+        );
+        let spine = coalesce_chain_spine(&chain);
+        assert_eq!(spine.len(), 2, "two steps: `1 or 2`, then `… or 3`");
+        // Outermost first: its fallback is the trailing `3`.
+        assert!(matches!(spine[0].1, hir::Expr::Int(3)));
+        // Then the innermost step: `1 or 2`.
+        assert!(matches!(spine[1].0, hir::Expr::Int(1)));
+        assert!(matches!(spine[1].1, hir::Expr::Int(2)));
+
+        // A coalescing node in `rhs` position is *not* part of this spine
+        // — it is its own chain root, keyed and recorded separately.
+        let nested = coalesce(
+            hir::Expr::Int(1),
+            coalesce(hir::Expr::Int(2), hir::Expr::Int(3)),
+        );
+        assert_eq!(coalesce_chain_spine(&nested).len(), 1);
+    }
+
+    /// A non-coalescing expression has no spine at all — the guard that
+    /// keeps `lower_coalesce_chain` from being entered for anything else.
+    #[test]
+    fn coalesce_chain_spine_is_empty_for_a_non_coalescing_expr() {
+        assert!(coalesce_chain_spine(&hir::Expr::Int(1)).is_empty());
+        assert!(
+            coalesce_chain_spine(&hir::Expr::Infix(
+                Box::new(hir::Expr::Int(1)),
+                crate::InfixOp::Or,
+                Box::new(hir::Expr::Int(2)),
+            ))
+            .is_empty()
         );
     }
 }

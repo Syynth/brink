@@ -20,7 +20,7 @@ use super::types as lir;
 use context::{LowerCtx, NameTable, ResolutionLookup, TempMap};
 
 pub use chunk::ScopeChunk;
-pub use context::{TypeMode, UfcsLookup, UfcsVerdict};
+pub use context::{CoalesceLookup, CoalesceShape, TypeMode, UfcsLookup, UfcsVerdict};
 pub use structs::{StructFieldEntry, StructShapeData, StructShapeEntry, build_struct_shape_data};
 
 /// Defensive backstop for `brink-analyzer`'s dialect gate (E051/E052).
@@ -85,6 +85,7 @@ pub fn lower_to_program(
         file_paths,
         context::TypeMode::Gradual,
         &context::UfcsLookup::new(),
+        &context::CoalesceLookup::new(),
     )
 }
 
@@ -131,6 +132,7 @@ pub fn lower_to_program_with_type_mode(
     file_paths: &LookupMap<FileId, String>,
     type_mode: context::TypeMode,
     ufcs: &context::UfcsLookup,
+    coalesce: &context::CoalesceLookup,
 ) -> (Option<lir::Program>, Vec<crate::Diagnostic>) {
     // FG-4d/e: this whole-project entry runs the same three pure phases
     // `brink-db`'s production link phase (`lir_lowering_query`) composes
@@ -156,6 +158,7 @@ pub fn lower_to_program_with_type_mode(
         file_paths,
         &struct_ctx,
         ufcs,
+        coalesce,
     );
 
     // Diagnostic order mirrors the old monolithic path exactly: declaration
@@ -179,6 +182,7 @@ pub fn lower_to_program_with_type_mode(
                 prelude.root_id,
                 file_id,
                 ufcs,
+                coalesce,
             );
             ordered_chunks.push(chunk);
             lir_diagnostics.extend(diags);
@@ -436,6 +440,7 @@ fn lower_root_content_chunks(
     file_paths: &LookupMap<FileId, String>,
     struct_ctx: &context::StructCtx<'_>,
     ufcs: &context::UfcsLookup,
+    coalesce: &context::CoalesceLookup,
 ) -> (Vec<(chunk::ScopeChunk, Vec<crate::Diagnostic>)>, u16) {
     let mut chunks = Vec::new();
 
@@ -468,6 +473,7 @@ fn lower_root_content_chunks(
                 &mut diagnostics,
                 struct_ctx,
                 ufcs,
+                coalesce,
             );
             let mut cc = 0;
             let mut gc = 0;
@@ -500,6 +506,7 @@ fn lower_knot_chunk(
     root_id: brink_format::DefinitionId,
     file_id: FileId,
     ufcs: &context::UfcsLookup,
+    coalesce: &context::CoalesceLookup,
 ) -> (chunk::ScopeChunk, Vec<crate::Diagnostic>) {
     let mut local_names = NameTable::new();
     let mut ids = context::IdAllocator::new();
@@ -518,6 +525,7 @@ fn lower_knot_chunk(
         &mut diagnostics,
         struct_ctx,
         ufcs,
+        coalesce,
     );
     (
         chunk::ScopeChunk::knot(knot_container, local_names.into_entries()),
@@ -550,6 +558,7 @@ pub fn lower_knot_chunk_incremental(
     type_mode: context::TypeMode,
     file_id: FileId,
     ufcs: &context::UfcsLookup,
+    coalesce: &context::CoalesceLookup,
 ) -> (chunk::ScopeChunk, Vec<crate::Diagnostic>) {
     let resolutions = ResolutionLookup::build(resolutions);
     let mut throwaway = NameTable::new();
@@ -570,6 +579,7 @@ pub fn lower_knot_chunk_incremental(
         context::root_definition_id(),
         file_id,
         ufcs,
+        coalesce,
     )
 }
 
@@ -590,6 +600,7 @@ pub fn lower_root_content_for_prelude(
     resolutions: &ResolutionMap,
     file_paths: &LookupMap<FileId, String>,
     ufcs: &context::UfcsLookup,
+    coalesce: &context::CoalesceLookup,
 ) -> (Vec<(chunk::ScopeChunk, Vec<crate::Diagnostic>)>, u16) {
     let resolutions = ResolutionLookup::build(resolutions);
     let struct_ctx = prelude.struct_ctx();
@@ -601,6 +612,7 @@ pub fn lower_root_content_for_prelude(
         file_paths,
         &struct_ctx,
         ufcs,
+        coalesce,
     )
 }
 
@@ -680,6 +692,7 @@ fn lower_knot(
     diagnostics: &mut Vec<crate::Diagnostic>,
     structs: &context::StructCtx<'_>,
     ufcs: &context::UfcsLookup,
+    coalesce: &context::CoalesceLookup,
 ) -> lir::Container {
     let knot_name = &knot.name.text;
     let knot_id = lookup_container_id(index, knot_name).unwrap_or(root_id);
@@ -713,6 +726,7 @@ fn lower_knot(
         diagnostics,
         structs,
         ufcs,
+        coalesce,
     );
     let mut cc = 0;
     let mut gc = 0;
@@ -736,6 +750,7 @@ fn lower_knot(
             diagnostics,
             structs,
             ufcs,
+            coalesce,
         ));
     }
 
@@ -785,6 +800,7 @@ fn lower_stitch(
     diagnostics: &mut Vec<crate::Diagnostic>,
     structs: &context::StructCtx<'_>,
     ufcs: &context::UfcsLookup,
+    coalesce: &context::CoalesceLookup,
 ) -> lir::Container {
     let stitch_name = &stitch.name.text;
     let stitch_path = format!("{}.{stitch_name}", knot.name.text);
@@ -809,6 +825,7 @@ fn lower_stitch(
         diagnostics,
         structs,
         ufcs,
+        coalesce,
     );
     let mut cc = 0;
     let mut gc = 0;
@@ -1500,6 +1517,7 @@ fn make_ctx<'a>(
     diagnostics: &'a mut Vec<crate::Diagnostic>,
     structs: &'a context::StructCtx<'a>,
     ufcs: &'a context::UfcsLookup,
+    coalesce: &'a context::CoalesceLookup,
 ) -> LowerCtx<'a> {
     LowerCtx {
         file,
@@ -1524,6 +1542,7 @@ fn make_ctx<'a>(
         structs,
         temp_shapes: LookupMap::new(),
         ufcs,
+        coalesce,
     }
 }
 

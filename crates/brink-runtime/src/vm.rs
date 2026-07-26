@@ -1290,11 +1290,18 @@ fn step_impl<R: crate::rng::StoryRng>(
         Opcode::MapContainsValue => collection_ops::map_contains_value(flow)?,
         Opcode::MapClear => collection_ops::map_clear(flow)?,
 
-        // ── B1: `or`-coalescing (issue #1460) ──────────────────────────
-        Opcode::Coalesce => {
-            let rhs = flow.pop_value()?;
-            let lhs = flow.pop_value()?;
-            flow.value_stack.push(value_ops::coalesce(lhs, rhs)?);
+        // ── B1: `or`-coalescing, short-circuited (issue #1471) ─────────
+        // Pops `lhs`. `some(v)` pushes the unwrapped `v` and jumps `rel`
+        // bytes forward, landing past the `rhs` bytecode codegen emitted
+        // right after this instruction — the short-circuit itself, `rhs`
+        // is simply never reached. `none` pushes nothing and falls
+        // straight through into that `rhs` bytecode.
+        Opcode::CoalesceSome(rel) => {
+            let val = flow.pop_value()?;
+            if let Some(inner) = value_ops::coalesce_unwrap_some(val)? {
+                flow.value_stack.push(inner);
+                apply_jump(flow, rel)?;
+            }
         }
 
         // ── B1b: the `as` binding (issue #1475) ──────────────────────

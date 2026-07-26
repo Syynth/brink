@@ -223,7 +223,13 @@ verb, `while heap_pop(ref h) as node`, `if m.get(k) as v`). **Depends:**
 B0, A1.
 
 **Landed in two slices.** B1 (#1460) shipped `x or default` as
-`InfixOp::Coalesce` + `Opcode::Coalesce`, and honestly *declined* the
+`InfixOp::Coalesce` + a binary `Opcode::Coalesce` that evaluated both
+operands eagerly, honestly flagging that as an unruled decision; the
+maintainer then ruled **short-circuit** (issue #1471), so the binary opcode
+was retired for the branching `Opcode::CoalesceSome(rel)` (`rhs` runs only
+on `none`) and the collapse-vs-preserve typing decision moved to lowering,
+which consumes the analyzer's recorded per-step types (issue #1492) instead
+of re-deriving them from syntax. B1 also honestly *declined* the
 `as`-binding: its grammar existed only as illustrative sketches, in two
 mutually inconsistent shapes. The reconciliation was ruled 2026-07-26
 ("The `as` binding: one construct, both condition positions, `{if}`

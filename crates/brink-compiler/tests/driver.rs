@@ -416,14 +416,18 @@ fn compile_path_native_struct_decl_under_default_options_has_no_dialect_gate_e05
     );
 }
 
-// ── B1 `or`-coalescing (`docs/stdlib-spec.md` §1.6a, issue #1460) ────
+// ── B1 `or`-coalescing (`docs/stdlib-spec.md` §1.6a, issue #1460),
+// short-circuited per issue #1471's ruling ───────────────────────────
 //
 // Full pipeline: native lexer (`KW_OR`) → native parser (`Prec::Coalesce`)
 // → native HIR lowering (`InfixOp::Coalesce`) → analyzer typing
-// (`infer::ty::coalesce`) → LIR → codegen (`Opcode::Coalesce`) → runtime VM
-// (`value_ops::coalesce`) → `Story` output. Compiles and *runs* the
-// program (not just a diagnostics-clean compile) so the opcode is proven
-// reachable end to end, not merely wired at the type level.
+// (`infer::ty::coalesce`, recorded per step by `brink_analyzer::
+// coalesce_types` and threaded to lowering by `brink-db`'s
+// `coalesce_types_query`) → LIR (`lir::Expr::Coalesce`, a real branch) →
+// codegen (`Opcode::CoalesceSome`) → runtime VM
+// (`value_ops::coalesce_unwrap_some`) → `Story` output. Compiles and *runs*
+// the program (not just a diagnostics-clean compile) so the opcode is
+// proven reachable end to end, not merely wired at the type level.
 
 /// Compile a native `.brink` entry from disk and run it to completion,
 /// returning the concatenated output text. Mirrors `compile_and_run`
@@ -431,6 +435,19 @@ fn compile_path_native_struct_decl_under_default_options_has_no_dialect_gate_e05
 /// `.ink`-only (`compile_mem` hardcodes the `.ink` extension), so this is
 /// its own small helper rather than a parameterization of that one.
 fn compile_and_run_native(dir_suffix: &str, source: &str) -> String {
+    let lines = try_compile_and_run_native(dir_suffix, source)
+        .unwrap_or_else(|err| panic!("fixture must run cleanly, got a runtime fault: {err:?}"));
+    lines
+}
+
+/// [`compile_and_run_native`] without the "must run cleanly" assumption —
+/// the fixture still has to *compile* cleanly, but a turn-terminating
+/// runtime fault is handed back instead of panicking, so a test can assert
+/// on one (the `CoalesceShape::RuntimeCheck` posture).
+fn try_compile_and_run_native(
+    dir_suffix: &str,
+    source: &str,
+) -> Result<String, brink_runtime::RuntimeError> {
     let dir = std::env::temp_dir().join(format!(
         "brink-compiler-native-b1-{dir_suffix}-{}",
         std::process::id()
@@ -446,12 +463,12 @@ fn compile_and_run_native(dir_suffix: &str, source: &str) -> String {
 
     let (program, line_tables) = brink_runtime::link(&data).unwrap();
     let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
-    let lines = story.continue_maximally().unwrap();
+    let lines = story.continue_maximally()?;
     let mut output = String::new();
     for line in &lines {
         output.push_str(line.text());
     }
-    output
+    Ok(output)
 }
 
 /// The collapse form (`Option[T] or T -> T`): `some(v)` unwraps to `v`,
@@ -495,18 +512,20 @@ fn native_or_coalescing_chain_falls_through_to_final_fallback() {
     );
 }
 
-/// Coalescing evaluates **both** operands, unconditionally — review finding
-/// on PR #1469/#1460: an unruled implementation decision (see
-/// `brink_ir::InfixOp::Coalesce`/`brink_format::Opcode::Coalesce`'s own
-/// docs), unlike the short-circuiting `??`/`?:` conventions this operator's
-/// precedence placement was modeled on. `bump()` mutates the global
-/// `counter` and is only ever reached through the coalescing `rhs` — if
-/// evaluation were lazy/short-circuiting, a `some(_)` `lhs` would mean
-/// `bump()` never runs and `counter` would stay `0`; it does not.
+/// Coalescing **short-circuits**: `rhs` is never evaluated when `lhs` is
+/// `some` — RULED, issue #1471, flipping the eager pin PR #1469/#1460
+/// landed and flagged as unruled (see `brink_ir::InfixOp::Coalesce`/
+/// `brink_format::Opcode::CoalesceSome`'s own docs), matching the
+/// short-circuiting `??`/`?:` conventions this operator's precedence
+/// placement was modeled on. `bump()` mutates the global `counter` and is
+/// only ever reached through the coalescing `rhs` — if evaluation were
+/// still eager, `bump()` would run regardless of `lhs` and `counter` would
+/// end up `1`; short-circuiting means a `some(_)` `lhs` skips `bump()`
+/// entirely, so `counter` stays `0`.
 #[test]
-fn native_or_coalescing_evaluates_both_operands_eagerly() {
+fn native_or_coalescing_short_circuits_rhs_on_some_lhs() {
     let output = compile_and_run_native(
-        "eager",
+        "shortcircuit",
         "var counter = 0\n\
          fn bump() {\n  counter = counter + 1;\n  return 99;\n}\n\
          flow main() {\n  Value: {some(5) or bump()}\n  Counter: {counter} -> END\n}\n",
@@ -516,9 +535,139 @@ fn native_or_coalescing_evaluates_both_operands_eagerly() {
         "the collapse form must still unwrap `some(5)`, got: {output:?}"
     );
     assert!(
+        output.contains("Counter: 0"),
+        "expected `bump()` to never run since `lhs` is `some(_)` \
+         (short-circuit), got: {output:?}"
+    );
+}
+
+/// The other half of the short-circuit proof: `rhs` must still run —
+/// exactly once — when `lhs` actually is `none`. Short-circuiting only
+/// means the evaluation is *conditional*, not that `rhs` is permanently
+/// dead code.
+#[test]
+fn native_or_coalescing_still_evaluates_rhs_when_lhs_is_none() {
+    let output = compile_and_run_native(
+        "shortcircuit-none",
+        "var counter = 0\n\
+         fn bump() {\n  counter = counter + 1;\n  return 99;\n}\n\
+         flow main() {\n  Value: {none or bump()}\n  Counter: {counter} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Value: 99"),
+        "the `none` lhs must fall through to `bump()`'s return value, got: {output:?}"
+    );
+    assert!(
         output.contains("Counter: 1"),
-        "expected `bump()` to have run exactly once despite the `some(_)` \
-         lhs (eager evaluation, not short-circuiting), got: {output:?}"
+        "expected `bump()` to have run exactly once for a `none` lhs, got: {output:?}"
+    );
+}
+
+/// A leading `some(_)` in a coalesce **chain** must still preserve
+/// optionality through the intermediate step so the chain can continue —
+/// short-circuiting changes *when* `rhs` runs, not the collapse-vs-preserve
+/// typing rule (`(Option[T],T)->T` vs `(Option[T],Option[T])->Option[U]`).
+/// `some(5) or none` is the inner step (parses left-associatively): a wrong
+/// collapse decision there would hand the outer step a plain `Int` where it
+/// requires an `Option`, faulting instead of printing `5`.
+#[test]
+fn native_or_coalescing_chain_preserves_optionality_through_intermediate_some() {
+    let output = compile_and_run_native(
+        "chain-preserve",
+        "flow main() {\n  Chained: {some(5) or none or 99} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Chained: 5"),
+        "expected the leading `some(5)` to win, unwrapped only at the final \
+         non-Option fallback, got: {output:?}"
+    );
+}
+
+/// The BLOCKING review finding on PR #1479, now a passing test (issue
+/// #1492's ruling, re-driven here): an `Option`-returning **call** as the
+/// intermediate fallback. `maybe()` lowers to `lir::Expr::Call`, whose
+/// `Option`-ness lives in the callee's inferred return type — invisible to
+/// any syntactic shape-sniff at lowering time, which is exactly why the
+/// deleted `rhs_is_option_shaped` heuristic collapsed the inner step and
+/// made the outer `CoalesceSome` fault on a plain `Int`. Lowering now reads
+/// the analyzer's recorded `CoalesceShape::PreserveOption` for that step
+/// instead, so the leading `some(5)` survives to the end.
+///
+/// (`brink-analyzer`'s `coalesce_types.rs` pins the *verdict* for this exact
+/// chain; this pins the program it actually produces.)
+#[test]
+fn native_or_coalescing_chain_with_intermediate_call_yields_the_leading_some() {
+    let output = compile_and_run_native(
+        "chain-call",
+        "fn maybe() {\n  return none;\n}\n\
+         flow main() {\n  Chained: {some(5) or maybe() or 99} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Chained: 5"),
+        "expected the leading `some(5)` to win through an Option-returning \
+         call fallback, got: {output:?}"
+    );
+}
+
+/// The `CoalesceShape::RuntimeCheck` posture, still intact (RULED, issue
+/// #1492, documented on `brink_format::Opcode::CoalesceSome`): with an
+/// unpinned left-hand type — an untyped parameter under the native default
+/// `types = gradual` — the analyzer commits to no shape, and **the runtime
+/// check is the operator's semantics**. A plain (non-`Option`) value
+/// reaching the step is a turn-terminating `TypeError`, not a silent
+/// coalesce and not a compile error.
+#[test]
+fn native_or_coalescing_unpinned_lhs_faults_on_a_plain_value() {
+    let err = try_compile_and_run_native(
+        "runtime-check-fault",
+        "fn pick(x) {\n  return x or 99;\n}\n\
+         flow main() {\n  Value: {pick(1)} -> END\n}\n",
+    )
+    .expect_err("a plain `Int` left-hand side must fault at runtime");
+    assert!(
+        matches!(&err, brink_runtime::RuntimeError::TypeError(msg)
+            if msg.contains("or-coalescing requires an Option left-hand side")),
+        "expected the or-coalescing TypeError, got: {err:?}"
+    );
+}
+
+/// The other arm of the same unpinned step, so the test above cannot pass
+/// by the operator being broken outright: an actual `Option` flowing into
+/// an unpinned `lhs` coalesces normally (and still short-circuits — the
+/// runtime check gates the *value*, not the branch).
+#[test]
+fn native_or_coalescing_unpinned_lhs_coalesces_an_option() {
+    let output = compile_and_run_native(
+        "runtime-check-ok",
+        "fn pick(x) {\n  return x or 99;\n}\n\
+         flow main() {\n  Some: {pick(some(5))}\n  None: {pick(none)} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Some: 5"),
+        "an unpinned `lhs` holding `some(5)` must unwrap, got: {output:?}"
+    );
+    assert!(
+        output.contains("None: 99"),
+        "an unpinned `lhs` holding `none` must fall through, got: {output:?}"
+    );
+}
+
+/// The same call-shaped fallback un-chained, and falling through: a `none`
+/// `lhs` hands the whole step over to `maybe()`'s own `Option`, which the
+/// trailing plain fallback then collapses. Together with the test above
+/// this covers both operand orders of the two-Option form the recorded
+/// verdict drives.
+#[test]
+fn native_or_coalescing_falls_through_to_an_option_returning_call() {
+    let output = compile_and_run_native(
+        "call-fallthrough",
+        "fn maybe() {\n  return some(7);\n}\n\
+         flow main() {\n  Chained: {none or maybe() or 99} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Chained: 7"),
+        "expected `maybe()`'s `some(7)` to win, unwrapped at the final \
+         non-Option fallback, got: {output:?}"
     );
 }
 
