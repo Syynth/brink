@@ -2406,6 +2406,24 @@ pub enum DiagnosticCode {
     /// for the common case; under `types = gradual` the `MapRemove`
     /// runtime fault stays the backstop, same posture as the rest of TM-3.
     E149,
+    /// A def (function or value-returning flow/stitch) declares a non-`void`
+    /// return type but its body may fall through without ever executing a
+    /// value-carrying `return <expr>` (issue #1551, `docs/decision-log.md`
+    /// 2026-07-22 implicit-end ruling item 3: "a flow that declares a
+    /// return type must produce a value... falling through without a value
+    /// is a checker error", ratified for a return-typed flow/stitch and now
+    /// extended to the identical `fn` shape). Strict-mode-only
+    /// (`strict::check_def`'s escape check, extended by #1551 to run for
+    /// any def carrying a declared return type, not just `is_function`);
+    /// deliberately distinct from [`Self::E065`] Unknown-escape — the
+    /// annotation-fallback in `infer::body::infer_def_body` backfills a
+    /// no-return body's inferred return type from the annotation itself,
+    /// so the type comes out concrete (`Clean`, not `Unknown`) and E065's
+    /// classification can never see this mistake; only a direct
+    /// `has_value_return` check catches it. An implicit `-> DONE` is never
+    /// treated as satisfying this — DONE ends the *turn*, not the value
+    /// contract.
+    E150,
 }
 
 impl DiagnosticCode {
@@ -2566,6 +2584,7 @@ impl DiagnosticCode {
             Self::E147 => "E147",
             Self::E148 => "E148",
             Self::E149 => "E149",
+            Self::E150 => "E150",
         }
     }
 
@@ -2779,6 +2798,9 @@ impl DiagnosticCode {
             Self::E147 => "the `as` binding requires an `Option[T]` condition",
             Self::E148 => "an `as` binding is immutable and cannot be assigned to",
             Self::E149 => "`remove` is map-only — did you mean `remove_at`?",
+            Self::E150 => {
+                "declares a return type but the body may fall through without returning a value"
+            }
         }
     }
 
@@ -2966,6 +2988,7 @@ impl DiagnosticCode {
             "E147" => Some(Self::E147),
             "E148" => Some(Self::E148),
             "E149" => Some(Self::E149),
+            "E150" => Some(Self::E150),
             _ => None,
         }
     }
