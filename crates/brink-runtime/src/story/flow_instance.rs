@@ -725,6 +725,27 @@ impl FlowInstance {
         self.status
     }
 
+    /// Whether the most recent execution cycle ended with a *safe exit* —
+    /// an explicit `-> DONE` opcode — as opposed to falling off the end of
+    /// its content with nothing left to run.
+    ///
+    /// Both cases deliver a terminal [`Line::Done`]; this is the only way
+    /// to tell them apart without issuing an extra `advance`/
+    /// `step_single_line` call and observing whether it returns
+    /// [`RuntimeError::RanOutOfContent`](crate::RuntimeError::RanOutOfContent).
+    /// Read it right after receiving a `Line::Done` — it is cleared at the
+    /// start of the *next* execution cycle, so a value read before a
+    /// terminal line is not meaningful.
+    ///
+    /// `true`: the story chose to stop (a knot/stitch reached `-> DONE`);
+    /// resuming later is well-formed. `false`: the flow ran out of
+    /// content; the trailing text was still delivered, but resuming will
+    /// fault.
+    #[must_use]
+    pub fn did_safe_exit(&self) -> bool {
+        self.flow.did_safe_exit
+    }
+
     /// Runtime statistics (instructions, materialization counts, etc.)
     /// accumulated over this flow's execution.
     #[must_use]
