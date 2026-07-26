@@ -385,20 +385,28 @@ fn native_module_aware_analysis_matches_db_identity() {
         .map(|(id, hir, manifest)| (*id, hir, manifest))
         .collect();
 
-    let db_ids: Vec<_> = db.symbol_index().symbols.keys().copied().collect();
+    // `SymbolIndex::symbols` is a `HashMap`, so compare id *sets*, never
+    // iteration order (determinism rule).
+    fn ids(
+        index: &brink_ir::SymbolIndex,
+    ) -> std::collections::BTreeSet<brink_format::DefinitionId> {
+        index.symbols.keys().copied().collect()
+    }
+
+    let db_ids = ids(&db.symbol_index());
     assert_eq!(db_ids.len(), 2, "two flows, two ids: {db_ids:?}");
 
     let module_aware = brink_analyzer::analyze_with_modules(&refs, db.module_map(), &opts);
-    let aware_ids: Vec<_> = module_aware.index.symbols.keys().copied().collect();
     assert_eq!(
-        aware_ids, db_ids,
+        ids(&module_aware.index),
+        db_ids,
         "module-aware analysis must mint the db's `DefinitionId`s for native files"
     );
 
     let module_blind = brink_analyzer::analyze_with_options(&refs, &opts);
-    let blind_ids: Vec<_> = module_blind.index.symbols.keys().copied().collect();
     assert_ne!(
-        blind_ids, db_ids,
+        ids(&module_blind.index),
+        db_ids,
         "non-vacuity: the module-blind path must NOT match — if it does, \
          native identity stopped being path-qualified"
     );
