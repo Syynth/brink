@@ -516,6 +516,29 @@ stalls
     }
 
     #[test]
+    fn hover_annotation_wins_over_inference_for_a_temp() {
+        // Before #530 a `~ temp x: type` ascription was skipped straight to
+        // inferred-body display; the declared annotation (`step: float`)
+        // must be what hover shows for the *declaration itself*, not the
+        // inferred int type of the literal `1`.
+        let src = "=== quest ===\n~ temp step: float = 1\nOnward.\n-> END\n";
+        let content = hover_at(src, "step: float");
+        assert!(content.contains("step: float"), "{content}");
+        assert!(!content.contains("step: int"), "{content}");
+    }
+
+    #[test]
+    fn hover_shows_an_annotated_params_declared_type_at_a_use_site() {
+        // Hovering `hp` *inside the body* (not the declaration) must still
+        // resolve to the param's own declared annotation via
+        // `db.local_signature`, not the enclosing knot header's
+        // `signature_strs` path.
+        let src = "=== function heal(hp: string) ===\n~ temp bonus = hp + 1\n~ return bonus\n";
+        let content = hover_at(src, "hp + 1");
+        assert!(content.contains("hp: string"), "{content}");
+    }
+
+    #[test]
     fn hover_falls_back_to_inferred_signature_for_an_unannotated_knot_header() {
         // No TM-2 annotations anywhere — `symbol_meta` has no param/return
         // type for `heal` at all, so hover must fall back to

@@ -38,10 +38,21 @@ pub struct Sig {
     /// firewall rule) — so every existing consumer of `value_type`
     /// (notably `infer::collect_globals`) picks up the annotated type
     /// automatically, with no seam change.
+    ///
+    /// [`local_signature`]'s `Param`/`Temp` locals populate this field too
+    /// (issue #530) — there it is never initializer-inferred (a local has
+    /// no initializer-literal path here), only the downcast of the local's
+    /// own TM-2 `: type` annotation, `None` when unannotated or unresolved.
     pub value_type: Option<InferredType>,
     /// A VAR/CONST's declaration-derived type at **full [`Ty`] fidelity**
-    /// (issue #1540) — `None` for every other symbol kind, and for a
-    /// VAR/CONST whose declaration determines no type at all.
+    /// (issue #1540) — `None` for every other `signature`-produced symbol
+    /// kind, and for a VAR/CONST whose declaration determines no type at
+    /// all. [`local_signature`] (issue #530) is the one other producer that
+    /// populates this field: for a `Param`/`Temp`, it is the local's own
+    /// TM-2 `: type` annotation resolved the same way, `None` when the
+    /// local is unannotated — this is precisely the field
+    /// `brink-ide::hover::inferred_local_type_str` reads via
+    /// `db.local_signature`.
     ///
     /// This is the field every *typed* consumer reads (`collect_globals` in
     /// both this crate and `brink-db`'s narrowed mirror); `value_type` above
