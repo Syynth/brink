@@ -2415,7 +2415,15 @@ pub async fn analysis_loop(
         // carried (both read the revision under the db lock; the analysis reads
         // at-or-after the write). Tagged `Analysis`, this therefore wins the
         // `DiagnosticsPublisher` anti-downgrade rule against that per-file set.
-        let (generation, projects, modules, file_meta, per_file_diags, file_suppressions) = {
+        let (
+            generation,
+            projects,
+            modules,
+            module_diags,
+            file_meta,
+            per_file_diags,
+            file_suppressions,
+        ) = {
             let db = lock_db(&db);
             let generation = generation.load(Ordering::Relaxed);
             let project_defs = db.compute_projects();
@@ -2431,6 +2439,11 @@ pub async fn analysis_loop(
             // `db.signature`/`db.infer_body`. Keyed by `FileId`, so the
             // whole-workspace map is a harmless superset for each project.
             let modules = db.module_map().clone();
+            // The map's diagnostics half (`E085` stem collisions, #1553).
+            // `analyze_with_modules` below is handed the finished map, so it
+            // cannot re-derive them; without folding them back in per project
+            // a collision a db-driven compile catches never reaches the editor.
+            let module_diags = db.module_map_diagnostics().to_vec();
             let meta = db.file_metadata();
             let diags: Vec<_> = meta
                 .iter()
@@ -2444,6 +2457,7 @@ pub async fn analysis_loop(
                 generation,
                 project_inputs,
                 modules,
+                module_diags,
                 meta,
                 diags,
                 suppressions,
@@ -2460,10 +2474,20 @@ pub async fn analysis_loop(
                 .iter()
                 .map(|(id, hir, manifest)| (*id, hir, manifest))
                 .collect();
-            let result = brink_analyzer::analyze_with_modules(&file_refs, &modules, &opts);
-            by_root.insert(*root, Arc::new(result));
+            let mut result = brink_analyzer::analyze_with_modules(&file_refs, &modules, &opts);
 
             let members: Vec<_> = inputs.iter().map(|(id, _, _)| *id).collect();
+            // Scoped to this project's own members — `module_diags` is
+            // whole-workspace, and a collision in an unrelated project must
+            // not be attributed to this one (#1553).
+            result.diagnostics.extend(
+                module_diags
+                    .iter()
+                    .filter(|d| members.contains(&d.file))
+                    .cloned(),
+            );
+            by_root.insert(*root, Arc::new(result));
+
             for &member in &members {
                 file_to_roots.entry(member).or_default().push(*root);
             }

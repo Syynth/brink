@@ -94,13 +94,41 @@ impl Driver {
     }
 
     /// Run analysis on a specific subset of files (one project). Not cached.
+    ///
+    /// Module-aware and options-honoring (issue #1553): the pass runs with
+    /// the db's own [`ProjectDb::module_map`] and registered
+    /// [`AnalysisOptions`], so the `DefinitionId`s it mints key this db's
+    /// per-def queries and the declared dialect/types/lints reach it — the
+    /// same contract [`analyze`](Self::analyze) has. A bare
+    /// `brink_analyzer::analyze`/`analyze_with_options` here was
+    /// module-*blind* and dropped the options entirely, which for a native
+    /// `.brink` project (whose module is its path, always declared) mints a
+    /// different identity space than the db's — see
+    /// [`ProjectDb::module_map`]'s doc.
+    ///
+    /// Stem-collision diagnostics (`E085`) are folded in from
+    /// [`ProjectDb::module_map_diagnostics`], scoped to `file_ids`, for the
+    /// same reason: the analyzer is handed the finished map and cannot
+    /// re-derive them.
     pub fn analyze_project(&self, file_ids: &[FileId]) -> AnalysisResult {
         let inputs = self.db.analysis_inputs_for(file_ids);
         let file_refs: Vec<_> = inputs
             .iter()
             .map(|(id, hir, manifest)| (*id, hir, manifest))
             .collect();
-        brink_analyzer::analyze(&file_refs)
+        let mut result = brink_analyzer::analyze_with_modules(
+            &file_refs,
+            self.db.module_map(),
+            self.db.analysis_options(),
+        );
+        result.diagnostics.extend(
+            self.db
+                .module_map_diagnostics()
+                .iter()
+                .filter(|d| file_ids.contains(&d.file))
+                .cloned(),
+        );
+        result
     }
 
     /// Snapshot analysis inputs for a subset of files.

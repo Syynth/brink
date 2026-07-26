@@ -364,8 +364,30 @@ impl ProjectDb {
     /// db's per-def queries ([`effects`](Self::effects),
     /// [`signature`](Self::signature), [`infer_body`](Self::infer_body)) are
     /// keyed by. Identity is minted here and nowhere else.
+    ///
+    /// The map's *diagnostics* half is
+    /// [`module_map_diagnostics`](Self::module_map_diagnostics) — an
+    /// off-db `analyze_with_modules` pass has to fold it back in itself
+    /// (issue #1553).
     pub fn module_map(&self) -> &brink_analyzer::ModuleMap {
         &module_map_query(&self.salsa, self.project).0
+    }
+
+    /// Stem-collision diagnostics (`E085`) produced alongside
+    /// [`module_map`](Self::module_map): a file with no `#@module` whose
+    /// stem is some *other* file's declared module name.
+    ///
+    /// A db-driven compile picks these up through
+    /// [`symbol_index_diagnostics`](Self::symbol_index_diagnostics), which
+    /// folds them in. A caller that instead runs
+    /// [`brink_analyzer::analyze_with_modules`] outside the db (the LSP's
+    /// background pass, `IdeSession`'s editor analysis) gets only the
+    /// analyzer's own diagnostics, so before issue #1553 the collision was
+    /// silently dropped on every editor surface. Such callers must snapshot
+    /// this alongside [`module_map`](Self::module_map) and extend their
+    /// result with the entries belonging to their file set.
+    pub fn module_map_diagnostics(&self) -> &[Diagnostic] {
+        &module_map_query(&self.salsa, self.project).1
     }
 
     /// One file's resolved references + resolution diagnostics (layer 2,

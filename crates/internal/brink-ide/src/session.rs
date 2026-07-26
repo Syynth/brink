@@ -27,6 +27,12 @@ pub struct IdeSnapshot {
     /// the ones the db's per-def queries are keyed by, and every native
     /// `.brink` symbol would miss.
     modules: ModuleMap,
+    /// The stem-collision diagnostics (`E085`) the db computed alongside
+    /// `modules` (issue #1553). `analyze_with_modules` is handed the
+    /// finished map, so it cannot re-derive them; without folding them back
+    /// in here a collision a db-driven compile catches never reaches the
+    /// editor.
+    module_diagnostics: Vec<brink_ir::Diagnostic>,
     host_manifest: Option<HostManifest>,
     external_check: ExternalCheckSeverity,
     semantic_type_check: SemanticTypeDiagnosticSeverity,
@@ -61,7 +67,17 @@ impl IdeSnapshot {
             // this policy" failure mode #1160's scope note flagged.
             lints: self.lints.clone(),
         };
-        brink_analyzer::analyze_with_modules(&refs, &self.modules, &opts)
+        let mut result = brink_analyzer::analyze_with_modules(&refs, &self.modules, &opts);
+        // The db-only half of the module map (issue #1553) — see
+        // `module_diagnostics`. Scoped to this snapshot's own files so a
+        // partial snapshot never reports a collision it doesn't contain.
+        result.diagnostics.extend(
+            self.module_diagnostics
+                .iter()
+                .filter(|d| self.inputs.iter().any(|(id, _, _)| *id == d.file))
+                .cloned(),
+        );
+        result
     }
 }
 
@@ -296,9 +312,38 @@ impl IdeSession {
     }
 
     /// Re-run analysis on the current inputs (e.g. after a manifest change).
+    ///
+    /// Pushes the session's options into the db first (see
+    /// [`sync_db_options`](Self::sync_db_options)) — every option setter
+    /// funnels through here, so that one call keeps the db's
+    /// `AnalysisOptions` input in step with the session's own state.
     fn reanalyze(&mut self) {
+        self.sync_db_options();
         let result = self.snapshot().analyze();
         self.apply_analysis(result);
+    }
+
+    /// Write the session's current [`analysis_options`](Self::analysis_options)
+    /// into its own [`ProjectDb`] as a salsa input (issue #1553).
+    ///
+    /// The editor-facing analysis runs *off* the db
+    /// ([`snapshot`](Self::snapshot) → [`IdeSnapshot::analyze`]), but many IDE
+    /// features read db queries directly — `per_file_diagnostics`,
+    /// `symbol_index`, `diagnostics`, `effects`, `infer_body` — and those are
+    /// gated on this input. Before #1553 only [`compile`](Self::compile) ever
+    /// wrote it, so a session that never compiled read every one of those
+    /// queries under `AnalysisOptions::default()`: M-2d cross-module
+    /// duplicate coexistence (`brink`-only in `symbol_index_query`) and the
+    /// B0.9 native strict-only check (`E137`, which needs an explicit
+    /// `types = gradual`) were silently gated off, among others.
+    ///
+    /// An unchanged value is a salsa no-op, so this never invalidates memos
+    /// on its own. [`compile`](Self::compile) still writes its own (possibly
+    /// overriding) options — the next option change re-establishes the
+    /// session's.
+    fn sync_db_options(&mut self) {
+        let options = self.analysis_options();
+        self.db.set_analysis_options(options);
     }
 
     /// Add or update a source file in the database.
@@ -320,6 +365,7 @@ impl IdeSession {
         IdeSnapshot {
             inputs: self.db.analysis_inputs(),
             modules: self.db.module_map().clone(),
+            module_diagnostics: self.db.module_map_diagnostics().to_vec(),
             host_manifest: self.host_manifest.clone(),
             external_check: self.external_check,
             semantic_type_check: self.semantic_type_check,
@@ -409,6 +455,10 @@ impl IdeSession {
                 .unwrap_or_default();
             db.update_file(path, source);
         }
+        // The gate db's own options input (#1553), so any query a caller
+        // reads back off the returned db is judged under the same policy as
+        // the session's — not `AnalysisOptions::default()`.
+        db.set_analysis_options(self.analysis_options());
         let result = {
             let inputs = db.analysis_inputs();
             let refs: Vec<(FileId, &HirFile, &SymbolManifest)> = inputs
@@ -420,7 +470,15 @@ impl IdeSession {
             // is path-derived, so analyzing module-blind here would make the
             // gate's ids disagree with the returned db's.
             let modules = db.module_map().clone();
-            brink_analyzer::analyze_with_modules(&refs, &modules, &self.analysis_options())
+            let mut result =
+                brink_analyzer::analyze_with_modules(&refs, &modules, &self.analysis_options());
+            // The map's db-only diagnostics half (#1553) — the whole point of
+            // the gate is to report the diagnostics an edit *would* introduce,
+            // and a stem collision is one of them.
+            result
+                .diagnostics
+                .extend(db.module_map_diagnostics().iter().cloned());
+            result
         };
         (result, db)
     }
@@ -445,6 +503,9 @@ impl IdeSession {
         for (path, source) in projection {
             db.update_file(path, source.clone());
         }
+        // Same as `analyze_overlay` (#1553): the gate db is judged under the
+        // session's options, not the defaults.
+        db.set_analysis_options(self.analysis_options());
         let result = {
             let inputs = db.analysis_inputs();
             let refs: Vec<(FileId, &HirFile, &SymbolManifest)> = inputs
@@ -456,7 +517,15 @@ impl IdeSession {
             // the map has to come from the projected db — the whole point of
             // the gate is to model identity after the move.
             let modules = db.module_map().clone();
-            brink_analyzer::analyze_with_modules(&refs, &modules, &self.analysis_options())
+            let mut result =
+                brink_analyzer::analyze_with_modules(&refs, &modules, &self.analysis_options());
+            // A move is exactly the edit that can *introduce* a stem
+            // collision, so the gate has to see the map's diagnostics half
+            // (#1553).
+            result
+                .diagnostics
+                .extend(db.module_map_diagnostics().iter().cloned());
+            result
         };
         (result, db)
     }
