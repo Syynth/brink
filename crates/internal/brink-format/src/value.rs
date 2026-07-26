@@ -1637,6 +1637,88 @@ mod tests {
         assert!(Value::Int(1).map_make_mut().is_none());
     }
 
+    /// `record_make_mut` gets the same COW proof as `array_make_mut`/
+    /// `map_make_mut` above — issue #1476's audit found this variant was the
+    /// one collection `make_mut` without a dedicated "copies when shared"
+    /// regression, despite sharing the exact take → `make_mut` → write-back
+    /// discipline (§96 doc comment on [`Value`]).
+    #[test]
+    fn record_make_mut_copies_when_shared() {
+        let shape = ShapeId(0);
+        let original = Value::record(shape, vec![Value::Int(1), Value::Int(2)]);
+        let mut copy = original.clone(); // shares the Arc
+        copy.record_make_mut().expect("record")[0] = Value::Int(99);
+        assert_eq!(
+            original.as_record().expect("record").1.as_slice(),
+            &[Value::Int(1), Value::Int(2)],
+            "mutating the copy must never be observable through the original"
+        );
+        assert_eq!(
+            copy.as_record().expect("record").1.as_slice(),
+            &[Value::Int(99), Value::Int(2)]
+        );
+        // After the fork both are unique again.
+        assert_eq!(
+            Arc::strong_count(original.as_record().expect("record").1),
+            1
+        );
+    }
+
+    /// The classic nested-collection leak site (issue #1476), one layer
+    /// deeper: a `Record` field itself holds an `Array` (two independent
+    /// `Arc`s stacked — the record's field vec, and the array's backing
+    /// vec). `let y = x` then mutating `x`'s field-array in place must never
+    /// surface through `y`, exactly like a bare `Array`-of-`Array`
+    /// (`rmw-mutator-shared-nested-lvalue`, `tests/tier1-brink/`) but for
+    /// the `Record` wrapper the compiler doesn't yet expose a way to nest
+    /// this way through source syntax — direct `Value` construction proves
+    /// the runtime layer holds regardless of what the compiler currently
+    /// emits.
+    #[test]
+    fn nested_array_inside_record_field_is_isolated_after_copy() {
+        let shape = ShapeId(0);
+        let inner = Value::array(vec![Value::Int(1), Value::Int(2)]);
+        let original = Value::record(shape, vec![Value::String("bag".into()), inner]);
+        let mut copy = original.clone(); // shares both Arcs (record + inner array)
+
+        // Take → make_mut → write-back on the copy's inner array field,
+        // mirroring `collection_ops`'s RMW discipline: pull the field out,
+        // COW-mutate it, write it back into the (already-uniqued) record.
+        let fields = copy.record_make_mut().expect("record");
+        let mut inner_copy = fields[1].clone();
+        inner_copy
+            .array_make_mut()
+            .expect("array")
+            .push(Value::Int(3));
+        fields[1] = inner_copy;
+
+        let original_inner = original
+            .as_record()
+            .expect("record")
+            .1
+            .get(1)
+            .expect("field 1")
+            .as_array()
+            .expect("array");
+        assert_eq!(
+            original_inner.as_slice(),
+            &[Value::Int(1), Value::Int(2)],
+            "mutating the copy's nested array must never be observable through the original record"
+        );
+        let copy_inner = copy
+            .as_record()
+            .expect("record")
+            .1
+            .get(1)
+            .expect("field 1")
+            .as_array()
+            .expect("array");
+        assert_eq!(
+            copy_inner.as_slice(),
+            &[Value::Int(1), Value::Int(2), Value::Int(3)]
+        );
+    }
+
     // ── Structural equality with the ptr_eq fast path ──────────────────────
 
     #[test]
