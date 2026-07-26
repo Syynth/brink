@@ -130,15 +130,14 @@ fn record_divert_choice_flags_missing_terminal_as_error() {
         "../../../tests/tier1/choices/divert-choice/story.ink",
         &[0, 0],
     );
-    match &ep.outcome {
-        brink_test_harness::Outcome::Error(msg) => {
-            assert!(
-                msg.contains("ran out of content"),
-                "expected a 'ran out of content' error, got: {msg}"
-            );
-        }
-        other => panic!("expected Outcome::Error, got {other:?}"),
-    }
+    assert!(
+        matches!(
+            &ep.outcome,
+            brink_test_harness::Outcome::Error(msg) if msg.contains("ran out of content")
+        ),
+        "expected Outcome::Error containing 'ran out of content', got {:?}",
+        ep.outcome
+    );
 }
 
 /// Counterpart to the above: a fixture that reaches an explicit `-> END`
