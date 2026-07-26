@@ -435,9 +435,8 @@ fn compile_path_native_struct_decl_under_default_options_has_no_dialect_gate_e05
 /// `.ink`-only (`compile_mem` hardcodes the `.ink` extension), so this is
 /// its own small helper rather than a parameterization of that one.
 fn compile_and_run_native(dir_suffix: &str, source: &str) -> String {
-    let lines = try_compile_and_run_native(dir_suffix, source)
-        .unwrap_or_else(|err| panic!("fixture must run cleanly, got a runtime fault: {err:?}"));
-    lines
+    try_compile_and_run_native(dir_suffix, source)
+        .unwrap_or_else(|err| panic!("fixture must run cleanly, got a runtime fault: {err:?}"))
 }
 
 /// [`compile_and_run_native`] without the "must run cleanly" assumption —

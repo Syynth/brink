@@ -431,6 +431,7 @@ pub fn build_prelude(
 /// call frame — `LowerCtx::next_block_slot`). Returns each `(chunk,
 /// lowering-diagnostics)` pair in `files` order plus the total root temp-slot
 /// count. This is the root-content half of the old `lower_root`, unchanged.
+#[expect(clippy::too_many_arguments)]
 #[must_use]
 fn lower_root_content_chunks(
     files: &[(FileId, &hir::HirFile)],
