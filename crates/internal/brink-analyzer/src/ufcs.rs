@@ -25,8 +25,11 @@
 //!    so a call's meaning never hinges on a field's type.
 //! 3. Else resolve `name` as a free function in **ordinary lexical scope
 //!    only** (D4 — no method sets, no inherent impls: any in-scope free
-//!    function is method-callable) and record the desugar to
-//!    `name(recv, args)` ([`UfcsVerdict::FreeFnDesugar`]).
+//!    function is method-callable) — file `use` + the T1b/NS stdlib
+//!    prelude (`len`, `push`, `sort_by`, …) — and record the desugar to
+//!    `name(recv, args)` ([`UfcsVerdict::FreeFnDesugar`] for an index
+//!    symbol, [`UfcsVerdict::PreludeDesugar`] for a prelude verb, which has
+//!    no index symbol to point at).
 //! 4. Neither → one diagnostic naming **both** attempts
 //!    ([`DiagnosticCode::E141`]).
 //!
@@ -216,6 +219,18 @@ pub enum UfcsVerdict {
         /// The definition the desugared call targets.
         target: DefinitionId,
     },
+    /// A T1b/NS stdlib prelude name won (step 3, D4's "file `use` + prelude"
+    /// candidate set): the call desugars to `name(recv, args)` exactly like
+    /// [`Self::FreeFnDesugar`], but the target is a VM-native intrinsic
+    /// (`resolve::is_t1b_stdlib_name`/`resolve::is_builtin_function`), not an
+    /// index symbol — there is no [`DefinitionId`] to record. `xs.len()`,
+    /// `inventory.push(sword)`, `a.sort_by(c)` all land here.
+    PreludeDesugar {
+        /// The receiver's inferred type.
+        receiver: Ty,
+        /// The prelude function's name, as written.
+        name: String,
+    },
 }
 
 /// Every UFCS call site's verdict for one project.
@@ -384,12 +399,12 @@ impl UfcsVisitor<'_> {
             // A bare `name(args)` — ordinary direct call, never UFCS.
             return;
         }
-        if !self.is_value_receiver(path) {
+        let Some(head_def) = self.value_receiver_def(path) else {
             // The callee path resolves to a real callable (a
             // module-qualified free call, an ink `knot.stitch()` visit) —
             // an ordinary qualified call, not method-call syntax.
             return;
-        }
+        };
 
         let receiver_text = receiver_segs
             .iter()
@@ -397,7 +412,7 @@ impl UfcsVisitor<'_> {
             .collect::<Vec<_>>()
             .join(".");
 
-        let Some(receiver_ty) = self.receiver_ty(receiver_segs) else {
+        let Some(receiver_ty) = self.receiver_ty(head_def, receiver_segs) else {
             // D3: no deferral machinery — demand an annotation.
             self.push(
                 path.range,
@@ -430,7 +445,7 @@ impl UfcsVisitor<'_> {
                 "cannot resolve `{receiver_text}.{method}(…)`: `{recv_ty}` declares no field \
                  `{method}`, and no function `{method}` is in scope here",
                 method = method.text,
-                recv_ty = display_ty(&receiver_ty),
+                recv_ty = receiver_ty.display(),
             ),
         );
     }
@@ -470,7 +485,7 @@ impl UfcsVisitor<'_> {
                  field access wins over a free function of the same name, so this is never \
                  re-read as `{field}({receiver_text}, …)`",
                 field = method.text,
-                found = display_ty(field_ty),
+                found = field_ty.display(),
             );
             self.push(path.range, DiagnosticCode::E140, &message);
         }
@@ -478,9 +493,16 @@ impl UfcsVisitor<'_> {
     }
 
     /// Step 3 (D4/D5). Returns `true` when a free function of the called
-    /// name is in ordinary lexical scope — recorded as the by-value desugar,
-    /// or refused with `E143` when its first parameter is `ref` (auto-ref is
-    /// issue #1462, built on top of this pass).
+    /// name is in ordinary lexical scope, or the name is a T1b/NS stdlib
+    /// prelude verb (D4's candidate set is "ordinary lexical scope only
+    /// (file `use` + prelude)" — `resolve::is_t1b_stdlib_name`/
+    /// `resolve::is_builtin_function`, e.g. `len`/`push`/`sort_by`, are not
+    /// index symbols and would otherwise fall through to the `E141` "no
+    /// function in scope" diagnostic, which is false: `push(xs, v)` compiles
+    /// today). Recorded as the by-value desugar, or refused with `E143` when
+    /// an index-symbol target's first parameter is `ref` (auto-ref is issue
+    /// #1462, built on top of this pass) — the prelude verbs have no
+    /// user-declared `ref` params to refuse.
     fn try_free_fn_desugar(
         &mut self,
         path: &HirPath,
@@ -495,6 +517,21 @@ impl UfcsVisitor<'_> {
             &method.text,
             &[SymbolKind::Knot, SymbolKind::External],
         ) else {
+            // No index symbol of this name — the T1b/NS stdlib prelude is
+            // the other half of D4's candidate set. It has no `DefinitionId`
+            // (VM-native, resolved at LIR lowering) and so no arity to check
+            // here.
+            if crate::resolve::is_t1b_stdlib_name(&method.text)
+                || crate::resolve::is_builtin_function(&method.text)
+            {
+                let verdict = UfcsVerdict::PreludeDesugar {
+                    receiver: receiver_ty,
+                    name: method.text.clone(),
+                };
+                self.table
+                    .insert(NodeKey::new(self.file, path.range), verdict);
+                return true;
+            }
             return false;
         };
         let first_param_is_ref = self
@@ -514,6 +551,26 @@ impl UfcsVisitor<'_> {
             self.push(path.range, DiagnosticCode::E143, &message);
             return true;
         }
+        // Every other resolved call gets an arity check (`resolve::
+        // check_arity`) before it is declared resolved; this desugar owes
+        // the same — the receiver counts as the first argument.
+        let expected = self
+            .index
+            .symbols
+            .get(&target)
+            .map(|info| info.params.len());
+        let actual = arg_count + 1;
+        if let Some(expected) = expected
+            && expected != actual
+        {
+            let message = format!(
+                "`{name}` expects {expected} argument(s), got {actual} \
+                 (`{receiver_text}.{name}(…)` desugars to `{name}({receiver_text}, …)`, counting \
+                 the receiver as the first argument)",
+                name = method.text,
+            );
+            self.push(path.range, DiagnosticCode::E031, &message);
+        }
         let verdict = UfcsVerdict::FreeFnDesugar {
             receiver: receiver_ty,
             name: method.text.clone(),
@@ -524,36 +581,51 @@ impl UfcsVisitor<'_> {
         true
     }
 
-    /// Whether `path` is a *method-call-shaped* callee: the resolver
-    /// recorded the head value (a param/temp/VAR/CONST) as the callee's
-    /// target rather than a callable definition.
+    /// The resolved definition of `path`'s head when `path` is a
+    /// *method-call-shaped* callee: the resolver recorded the head value (a
+    /// param/temp/VAR/CONST) as the callee's target rather than a callable
+    /// definition. `None` for an ordinary qualified call (a module-qualified
+    /// free call, an ink `knot.stitch()` visit).
     ///
     /// This is the mirror of `resolve::resolve_function`'s own UFCS-shaped
     /// fallback — the two must agree, or a call would either be diagnosed
-    /// twice or not at all.
-    fn is_value_receiver(&self, path: &HirPath) -> bool {
+    /// twice or not at all. `resolve_function`'s lookup is project-wide
+    /// (`resolve::lookup_by_name`), not file-scoped, so this returns the
+    /// same project-wide [`DefinitionId`] rather than re-deriving one from
+    /// the head's name alone — [`Self::head_ty`] types it from exactly that
+    /// id, the same way `structs::resolved_symbol_ty` types any other
+    /// resolved reference.
+    fn value_receiver_def(&self, path: &HirPath) -> Option<DefinitionId> {
         let key = (path.range.start().into(), path.range.end().into());
-        let Some(&target) = self.resolution_by_range.get(&key) else {
-            return false;
-        };
+        let &target = self.resolution_by_range.get(&key)?;
         match self.index.symbols.get(&target) {
-            Some(info) => matches!(
-                info.kind,
-                SymbolKind::Param | SymbolKind::Temp | SymbolKind::Variable | SymbolKind::Constant
-            ),
+            Some(info)
+                if matches!(
+                    info.kind,
+                    SymbolKind::Param
+                        | SymbolKind::Temp
+                        | SymbolKind::Variable
+                        | SymbolKind::Constant
+                ) =>
+            {
+                Some(target)
+            }
             // brink-db's narrowed index projection can strip locals; the
             // definition tag still identifies them (mirrors
             // `infer::body::infer_call`'s own `is_value_callee`).
-            None => target.tag() == brink_format::DefinitionTag::LocalVar,
+            None if target.tag() == brink_format::DefinitionTag::LocalVar => Some(target),
+            Some(_) | None => None,
         }
     }
 
-    /// The receiver's type: the head segment's own type, then each further
-    /// segment walked through the declared shape table. `None` whenever any
-    /// step lands on an unknown or conflicted type — the D3 case.
-    fn receiver_ty(&self, segments: &[brink_ir::Name]) -> Option<Ty> {
+    /// The receiver's type: the head segment's own type (typed from
+    /// `head_def`, the definition `resolve::resolve_function` actually
+    /// bound the head to), then each further segment walked through the
+    /// declared shape table. `None` whenever any step lands on an unknown or
+    /// conflicted type — the D3 case.
+    fn receiver_ty(&self, head_def: DefinitionId, segments: &[brink_ir::Name]) -> Option<Ty> {
         let (head, rest) = segments.split_first()?;
-        let mut ty = self.head_ty(head)?;
+        let mut ty = self.head_ty(head_def, head)?;
         for seg in rest {
             let Ty::Struct(shape_name) = &ty else {
                 return None;
@@ -564,21 +636,31 @@ impl UfcsVisitor<'_> {
         (!ty.is_unknown() && ty != Ty::Conflicted).then_some(ty)
     }
 
-    /// The head segment's type: an enclosing def's finalized local
-    /// (param/temp) by name, else a declaration-derived global — the same
-    /// two sources `structs::classify_expr_ty` reads, and the same firewall
-    /// (`infer::body` never sees another def's locals either).
-    fn head_ty(&self, head: &brink_ir::Name) -> Option<Ty> {
-        if let Some(locals) = self.current_locals()
-            && let Some(ty) = locals.get(&head.text)
-        {
-            return Some(ty.clone());
+    /// The head segment's type, read from `def` — the *resolved* definition,
+    /// exactly as `structs::resolved_symbol_ty` reads any other resolved
+    /// reference: a param/temp reads the enclosing def's finalized local *by
+    /// name* (`def`'s own name — locals are keyed by name, not id); a global
+    /// `VAR`/`CONST` reads `infer::collect_globals`'s declaration-derived
+    /// type *by id*, project-wide, never file-scoped. Dispatching on `def`'s
+    /// own kind (rather than trying `current_locals()` by `head.text` first,
+    /// unconditionally) also means a body-local shadowing a same-named
+    /// global after the call site can never be mistaken for the global the
+    /// resolver actually bound.
+    fn head_ty(&self, def: DefinitionId, head: &brink_ir::Name) -> Option<Ty> {
+        match self.index.symbols.get(&def) {
+            Some(info) => match info.kind {
+                SymbolKind::Param | SymbolKind::Temp => {
+                    self.current_locals()?.get(&info.name).cloned()
+                }
+                SymbolKind::Variable | SymbolKind::Constant => self.globals.get(&def).cloned(),
+                _ => None,
+            },
+            // brink-db's narrowed index projection can strip locals (see
+            // `value_receiver_def`'s own fallback); the enclosing body's
+            // finalized locals are keyed by name and unaffected by that
+            // projection, so fall back to `head.text`.
+            None => self.current_locals()?.get(&head.text).cloned(),
         }
-        let id = annotations::def_id_for(self.index, self.file, SymbolKind::Variable, &head.text)
-            .or_else(|| {
-            annotations::def_id_for(self.index, self.file, SymbolKind::Constant, &head.text)
-        })?;
-        self.globals.get(&id).cloned()
     }
 
     fn push(&mut self, range: TextRange, code: DiagnosticCode, detail: &str) {
@@ -588,18 +670,5 @@ impl UfcsVisitor<'_> {
             message: format!("{}: {detail}", code.title()),
             code,
         });
-    }
-}
-
-/// A receiver/field type as it reads in a diagnostic. Nominal types show
-/// their declared name; everything else shows the checker's own spelling.
-fn display_ty(ty: &Ty) -> String {
-    match ty {
-        Ty::Int => "int".into(),
-        Ty::Float => "float".into(),
-        Ty::Bool => "bool".into(),
-        Ty::String => "string".into(),
-        Ty::Struct(name) | Ty::List(name) | Ty::Handle(name) => name.clone(),
-        other => format!("{other:?}"),
     }
 }

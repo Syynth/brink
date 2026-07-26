@@ -142,6 +142,193 @@ fn a_resolved_method_call_raises_no_diagnostic_at_all() {
     assert!(relevant.is_empty(), "expected none, got {relevant:?}");
 }
 
+/// A resolved free-fn desugar owes the same arity check every other
+/// resolved call gets (`resolve::check_arity`) — the receiver counts as the
+/// first argument, so `g.greet(1, 2, 3)` against `fn greet(g, loudness)`
+/// (two params) is a 4-vs-2 mismatch, not a clean resolution.
+#[test]
+fn a_free_fn_desugar_with_the_wrong_arity_is_still_reported() {
+    let (hir, manifest) = lower(
+        "\
+struct Guest {
+  name: string
+}
+
+fn greet(g, loudness) {
+  return loudness;
+}
+
+fn main() {
+  let g = Guest { name: \"ada\" };
+  let n = g.greet(1, 2, 3);
+}
+",
+    );
+    // The site still resolves — an arity mismatch is a diagnostic
+    // alongside the verdict, not a refusal to record one (mirrors
+    // `resolve::check_arity`'s own behavior for every other call).
+    let verdicts = verdicts(&hir, &manifest);
+    assert_eq!(verdicts.len(), 1, "one UFCS site: {verdicts:?}");
+    assert!(matches!(verdicts[0], UfcsVerdict::FreeFnDesugar { .. }));
+
+    let diags = diagnostics(&hir, &manifest);
+    let e031 = only(&diags, DiagnosticCode::E031);
+    assert!(
+        e031.message.contains("greet"),
+        "E031 must name the function: {}",
+        e031.message
+    );
+}
+
+// ─── Step 3: the T1b/NS stdlib prelude fallback (D4) ──────────────────
+
+/// A receiver typed `array<int>` — same "patch the field's `TypeExpr` after
+/// lowering" device [`a_function_typed_field_wins_and_is_recorded_as_a_field_call`]
+/// uses, since the native surface has no array-literal grammar yet to
+/// construct a real `array<int>` *value* with. The field's declared type
+/// (read straight from `structs::declared_shapes`, not from inference) is
+/// all a receiver's type needs — the shape backing it is otherwise inert.
+fn array_receiver_fixture(call_expr: &str) -> (HirFile, SymbolManifest) {
+    let (mut hir, manifest) = lower(&format!(
+        "\
+struct Bag {{
+  items: int
+}}
+
+fn main() {{
+  let b = Bag {{ items: 0 }};
+  let n = {call_expr};
+}}
+"
+    ));
+    let zero = TextRange::new(TextSize::from(0), TextSize::from(0));
+    hir.structs[0].fields[0].ty = TypeExpr::Generic {
+        name: "array".into(),
+        args: vec![TypeExpr::Named {
+            name: "int".into(),
+            range: zero,
+        }],
+        range: zero,
+    };
+    (hir, manifest)
+}
+
+/// D4's candidate set for step 3 is "ordinary lexical scope only (file
+/// `use` + prelude)": the T1b/NS stdlib prelude (`len`, `push`, `sort_by`,
+/// …) is not an index symbol, so `resolve::lookup_by_name`'s `Knot`/
+/// `External` sweep alone would miss it and a legal `b.items.len()` would
+/// read as "no function `len` is in scope here" (`E141`) — which is false,
+/// `len(xs)` compiles today.
+#[test]
+fn a_prelude_verb_resolves_and_is_recorded_as_a_prelude_desugar() {
+    let (hir, manifest) = array_receiver_fixture("b.items.len()");
+    let diags = diagnostics(&hir, &manifest);
+    assert!(
+        !codes(&diags).contains(&DiagnosticCode::E141),
+        "a prelude verb must not read as \"no function in scope\": {diags:?}"
+    );
+
+    let verdicts = verdicts(&hir, &manifest);
+    assert_eq!(verdicts.len(), 1, "one UFCS site: {verdicts:?}");
+    let UfcsVerdict::PreludeDesugar { receiver, name } = &verdicts[0] else {
+        panic!("expected a prelude-desugar verdict, got {:?}", verdicts[0]);
+    };
+    assert_eq!(name, "len");
+    assert_eq!(
+        *receiver,
+        brink_analyzer::Ty::Array(Box::new(brink_analyzer::Ty::Int))
+    );
+}
+
+/// A mutating prelude verb (`push`) resolves the same way — arrays have no
+/// declared shape, so the field-wins step (2) never intercepts it.
+#[test]
+fn a_mutating_prelude_verb_also_resolves_as_a_prelude_desugar() {
+    let (hir, manifest) = array_receiver_fixture("b.items.push(3)");
+    let diags = diagnostics(&hir, &manifest);
+    assert!(
+        !codes(&diags).contains(&DiagnosticCode::E141),
+        "a prelude verb must not read as \"no function in scope\": {diags:?}"
+    );
+
+    let verdicts = verdicts(&hir, &manifest);
+    assert_eq!(verdicts.len(), 1, "one UFCS site: {verdicts:?}");
+    let UfcsVerdict::PreludeDesugar { name, .. } = &verdicts[0] else {
+        panic!("expected a prelude-desugar verdict, got {:?}", verdicts[0]);
+    };
+    assert_eq!(name, "push");
+}
+
+// ─── Receiver typed from the resolved definition, not file-locally ────
+
+/// The resolver (`resolve::resolve_function`'s UFCS-shaped fallback) binds
+/// a call's head to a value *project-wide* (`resolve::lookup_by_name`), not
+/// file-scoped. The receiver must be typed from that same resolved
+/// definition — a global `VAR` declared in another file must type
+/// correctly here, not read as an unknown receiver demanding an annotation
+/// (`E142`) just because the naive "look it up by name in this file" path
+/// can't see it. (`int`, not a struct: `signature()`'s `value_type` has no
+/// `InferredType` representation for `Ty::Struct` — a separate, documented
+/// gap — so a struct-typed global can never reach `infer::collect_globals`'s
+/// map regardless of this pass; `int` isolates the file-scoping bug this
+/// test pins.)
+#[test]
+fn a_multi_file_global_receiver_is_typed_from_the_resolved_definition() {
+    let (hir_a, manifest_a) = lower("var g: int = 10\n");
+    let (hir_b, manifest_b) = lower(
+        "\
+fn greet(g, loudness) {
+  return loudness;
+}
+
+fn main() {
+  let n = g.greet(3);
+}
+",
+    );
+
+    let files = vec![
+        (FileId(0), &hir_a, &manifest_a),
+        (FileId(1), &hir_b, &manifest_b),
+    ];
+    let analysis = brink_analyzer::analyze(&files);
+    let (diags, _meta) = brink_analyzer::whole_project_diagnostics(
+        &files,
+        &analysis.index,
+        &analysis.resolutions,
+        &AnalysisOptions::default(),
+        None,
+    );
+    assert!(
+        !diags.iter().any(|d| d.code == DiagnosticCode::E142),
+        "a global receiver declared in another file must not read as unknown: {diags:?}"
+    );
+
+    let hir_inputs = vec![(FileId(0), &hir_a), (FileId(1), &hir_b)];
+    let manifest_inputs = vec![(FileId(0), &manifest_a), (FileId(1), &manifest_b)];
+    let inline_docs = brink_analyzer::project_inline_docs(&manifest_inputs);
+    let inference = brink_analyzer::infer_project(
+        &hir_inputs,
+        &analysis.index,
+        &analysis.resolutions,
+        None,
+        &inline_docs,
+    );
+    let (table, _diags) = brink_analyzer::ufcs_resolution(
+        &hir_inputs,
+        &analysis.index,
+        &analysis.resolutions,
+        &inference,
+    );
+    let verdicts: Vec<_> = table.iter().map(|(_key, v)| v.clone()).collect();
+    assert_eq!(verdicts.len(), 1, "one UFCS site: {verdicts:?}");
+    let UfcsVerdict::FreeFnDesugar { receiver, name, .. } = &verdicts[0] else {
+        panic!("expected a free-fn desugar verdict, got {:?}", verdicts[0]);
+    };
+    assert_eq!(name, "greet");
+    assert_eq!(*receiver, brink_analyzer::Ty::Int);
+}
+
 // ─── Step 2 / D1: field access wins outright ─────────────────────────
 
 /// D1: the receiver's type declares the called name as a field, but the
