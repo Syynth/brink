@@ -452,20 +452,20 @@ fn main() {
 
         let call_pos =
             u32::try_from(UFCS_FREE_FN_SRC.find("g.greet(3)").expect("call")).expect("offset");
-        let edit = result
+        let found = result
             .edits
             .iter()
-            .find(|e| e.file == id && e.range.start() == TextSize::from(call_pos))
-            .unwrap_or_else(|| {
-                panic!(
-                    "expected an edit at the UFCS call site's receiver segment, got {:?}",
-                    result
-                        .edits
-                        .iter()
-                        .map(|e| (e.range, e.new_text.as_str()))
-                        .collect::<Vec<_>>()
-                )
-            });
+            .find(|e| e.file == id && e.range.start() == TextSize::from(call_pos));
+        assert!(
+            found.is_some(),
+            "expected an edit at the UFCS call site's receiver segment, got {:?}",
+            result
+                .edits
+                .iter()
+                .map(|e| (e.range, e.new_text.as_str()))
+                .collect::<Vec<_>>()
+        );
+        let edit = found.expect("checked above");
         assert_eq!(edit.new_text, "newname");
         assert_eq!(
             usize::from(edit.range.end()) - usize::from(edit.range.start()),
