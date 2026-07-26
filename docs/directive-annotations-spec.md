@@ -178,8 +178,8 @@ change.
 ## 5. Conformance and testing
 
 - Plain ink (no directives) must compile bit-identically (modulo the
-  format version byte) — the oracle ratchet (5,577) and corpus report are
-  the gate, unchanged.
+  format version byte) — the oracle ratchet (`RATCHET_EPISODE_COUNT`) and
+  corpus report are the gate, unchanged.
 - New-syntax stories cannot have `.ink.json`/oracle files (inklecate treats
   directives as inert tags); coverage is brink-native:
   - parser/HIR tests: recognition, consumption (no tag leaks into content),

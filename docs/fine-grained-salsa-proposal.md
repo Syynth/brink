@@ -335,7 +335,7 @@ Facts from the current code:
 
 ## 7. Test / verification plan
 
-- **Oracle gate on every slice.** Ratchet `RATCHET_EPISODE_COUNT` (5,577) must
+- **Oracle gate on every slice.** Ratchet `RATCHET_EPISODE_COUNT` must
   not move; corpus report identical. The inference family is advisory-only
   under gradual policy — `type_inference_query` is not read by `lir_query` or
   `story_data_query` — so this holds by construction until TM-3.
