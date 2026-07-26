@@ -1030,12 +1030,18 @@ mod tests {
         let end = usize::try_from(key.range.1).unwrap();
         assert_eq!(&src[start..end], "some(1) or maybe() or 99");
 
-        let spine = "some(1) or maybe()";
-        let at = src.find(spine).expect("the left spine's own text");
-        let spine_range = TextRange::new(
-            u32::try_from(at).unwrap().into(),
-            u32::try_from(at + spine.len()).unwrap().into(),
-        );
+        // Derive the spine's key from the HIR itself, not from a fabricated
+        // `src.find(...)` range: the stamped range includes trailing
+        // whitespace trivia before the next operator (see the #1517 comment
+        // in `hir::spans`), so a hand-picked substring range would not be
+        // the spine's *real* key and would trivially miss the table for the
+        // wrong reason.
+        let (hir, ..) = build_native(src);
+        let root_expr = first_coalesce_root(&hir).expect("one chain");
+        let Expr::Infix(root) = root_expr else {
+            panic!("expected a left-associative chain, got {root_expr:?}");
+        };
+        let spine_range = expr_span(&root.lhs).expect("the left spine is an infix too");
         assert_ne!(
             spine_range,
             TextRange::new(key.range.0.into(), key.range.1.into())

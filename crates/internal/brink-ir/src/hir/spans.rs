@@ -219,7 +219,14 @@ mod tests {
             panic!("expected a left-associative chain, got {e:?}");
         };
         let inner = expr_span(&root.lhs).expect("the left spine is an infix too");
-        assert_eq!(text(src, inner), "a or b");
+        // The stamped range is the CST node's real `text_range()`, which for a
+        // non-terminal chain node includes the trailing whitespace trivia before
+        // the next operator (brink-syntax-native's `expression_bp` runs
+        // `skip_ws()` while the checkpoint-wrapped node is still open). That
+        // trivia is part of the provenance on purpose — it must stay exact for
+        // resolver round-trip and LIR/analyzer key agreement — so trim only in
+        // the assertion, not the stamped range itself.
+        assert_eq!(text(src, inner).trim_end(), "a or b");
         assert_ne!(inner, whole, "root and spine must be separately keyable");
     }
 
