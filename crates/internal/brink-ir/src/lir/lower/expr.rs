@@ -841,9 +841,13 @@ fn lower_ufcs_call(
             }
         }
         // A free function in ordinary lexical scope (D4) — `target(recv,
-        // args…)`, by value only (D5; a `ref`-first-param target is
-        // refused earlier, at analysis, with `E143`).
-        context::UfcsVerdict::FreeFnDesugar { target } => {
+        // args…)`. By value, or (D5 auto-ref, issue #1462) with the receiver
+        // passed by `ref` when the target's first parameter is declared
+        // `ref`; the two share one lowering, since which shape the receiver
+        // argument takes is exactly what `lower_call_args` already decides
+        // from the target's own param row.
+        context::UfcsVerdict::FreeFnDesugar { target }
+        | context::UfcsVerdict::FreeFnAutoRef { target } => {
             lower_ufcs_desugared_call(path, args, target, ctx)
         }
         // A T1b/NS stdlib prelude verb, or a classic ink builtin, with no
@@ -871,27 +875,62 @@ pub(super) fn ufcs_receiver_path(path: &hir::Path) -> hir::Path {
     }
 }
 
-/// `target(receiver, args…)` — the `UfcsVerdict::FreeFnDesugar` shape.
-/// `target` is always a `Knot` or `External` symbol (`brink-analyzer::
-/// ufcs::try_free_fn_desugar` only looks those two kinds up); the receiver
-/// occupies `target`'s first declared parameter, so the arity/`ref` check
-/// for the *rest* of `args` runs against `target`'s params shifted by one.
+/// The receiver as a desugared *argument* expression: the plain path when
+/// the target takes it by value, or (**D5 auto-ref**, issue #1462) the same
+/// path wrapped in an explicit `ref` — the projection spelled out, exactly
+/// as an author would write it in the free-call form.
+///
+/// The synthesized [`hir::Expr::RefArg`] is what routes the receiver into
+/// [`lower_call_args`]'s existing T1e arm; its provenance is
+/// [`Provenance::synthetic`] over the call path's own range (the node has no
+/// syntax of its own — `ref` is never written at a UFCS call site — but a
+/// real range keeps the defensive `E099` fence's diagnostic anchored at the
+/// call).
+fn ufcs_receiver_arg(path: &hir::Path, auto_ref: bool) -> hir::Expr {
+    let receiver = hir::Expr::Path(ufcs_receiver_path(path));
+    if auto_ref {
+        hir::Expr::RefArg(hir::RefArgExpr {
+            ptr: crate::Provenance::synthetic(crate::NodeClass::RefArg, path.range),
+            operand: Box::new(receiver),
+        })
+    } else {
+        receiver
+    }
+}
+
+/// `target(receiver, args…)` — the `UfcsVerdict::FreeFnDesugar` and
+/// `UfcsVerdict::FreeFnAutoRef` shapes. `target` is always a `Knot` or
+/// `External` symbol (`brink-analyzer::ufcs::try_free_fn_desugar` only looks
+/// those two kinds up).
+///
+/// The receiver occupies `target`'s **first declared parameter**, so the
+/// whole desugared argument row — receiver included — goes through
+/// [`lower_call_args`] against `target`'s unshifted params. That is what
+/// makes **D5 auto-ref** (issue #1462) fall out of the existing machinery
+/// rather than a parallel path: when that first parameter is `ref`, the
+/// receiver is spelled as an explicit `hir::Expr::RefArg`, which
+/// `lower_call_args` binds exactly as an explicitly written `ref` argument —
+/// `RefTemp`/`RefGlobal` for a bare receiver, a real T1e
+/// [`lir::CallArg::RefProjection`] for a dotted one
+/// (`party.leader.heal(5)` → `heal(ref party.leader, 5)`). When it is not
+/// `ref`, the receiver lowers by value, exactly as before.
 fn lower_ufcs_desugared_call(
     path: &hir::Path,
     args: &[hir::Expr],
     target: brink_format::DefinitionId,
     ctx: &mut LowerCtx<'_>,
 ) -> lir::Expr {
-    let receiver_expr = lower_expr(&hir::Expr::Path(ufcs_receiver_path(path)), ctx);
     let Some(target_info) = ctx.index.symbols.get(&target) else {
         // Structurally unreachable — `target` came from the analyzer's own
         // `resolve::lookup_by_name` against this same project index. Guard
         // rather than panic, per the E053-backstop lesson.
         return lir::Expr::Null;
     };
-    let rest_params = target_info.params.get(1..).unwrap_or(&[]);
-    let mut call_args = vec![lir::CallArg::Value(receiver_expr)];
-    call_args.extend(lower_call_args(args, rest_params, ctx));
+    let auto_ref = target_info.params.first().is_some_and(|p| p.is_ref);
+    let mut desugared_args = Vec::with_capacity(args.len() + 1);
+    desugared_args.push(ufcs_receiver_arg(path, auto_ref));
+    desugared_args.extend(args.iter().cloned());
+    let call_args = lower_call_args(&desugared_args, &target_info.params, ctx);
 
     if target_info.kind == SymbolKind::External {
         lir::Expr::CallExternal {

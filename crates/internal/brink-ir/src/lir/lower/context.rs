@@ -57,6 +57,15 @@ pub enum UfcsVerdict {
     /// The call's final path segment names a free function in ordinary
     /// lexical scope — lower as `target(receiver, args…)`.
     FreeFnDesugar { target: DefinitionId },
+    /// **D5 auto-ref** (issue #1462): as [`Self::FreeFnDesugar`], but
+    /// `target`'s first declared parameter is `ref`, so the receiver is
+    /// passed *by reference* — lower as `target(ref receiver, args…)`, the
+    /// projection spelled explicitly through the same T1e ref-argument
+    /// machinery an explicitly written `ref` argument reaches
+    /// (`lir::lower::expr::lower_call_args`). The analyzer has already
+    /// checked that the receiver can be written through (`E143` otherwise),
+    /// so lowering never re-derives that rule.
+    FreeFnAutoRef { target: DefinitionId },
     /// The call's final path segment names a T1b/NS stdlib prelude verb (or
     /// a classic ink builtin) with no index symbol of its own — lower as
     /// `name(receiver, args…)` through the same builtin/stdlib dispatch an

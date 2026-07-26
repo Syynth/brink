@@ -264,10 +264,24 @@ outright (`E140` when the matching field is not callable), else a free
 function in ordinary lexical scope is desugared to `name(recv, args)`
 (`E141` when neither, `E142` when the receiver's type is unknown), with the
 verdict recorded in a `node → verdict` side table for LIR lowering and IDE
-hover. **Auto-ref is explicitly not in it**: a free function with a `ref`
-first parameter reached through method syntax is refused with `E143` rather
-than desugared by value, and lifting that fence is the remaining B3 work
-(issue #1462), built on top of the pass.
+hover. Auto-ref was explicitly not in it: a free function with a `ref` first
+parameter reached through method syntax was refused rather than desugared by
+value, and lifting that fence was the remaining B3 work.
+
+**B3b — auto-ref (SHIPPED, issue #1462).** D5 landed on top of the pass: a
+`ref` first parameter now makes the receiver an explicit ref-argument
+(`gold.bump(1)` → `bump(ref gold, 1)`, `party.leader.heal(5)` →
+`heal(ref party.leader, 5)`), riding the T1e ref-argument/projection
+machinery rather than a parallel path — so it inherits T1e's durable-root
+rule. `E143` is repurposed as the ruled refusal for a receiver that cannot
+be written through (a `CONST`; a projection rooted in a frame-local; and the
+ruled rvalue receivers `[1,2].push(3)`/`a.sorted().push(x)` once the grammar
+can spell them at all). A non-`ref` first parameter is untouched — plain
+by-value desugar, no lvalue requirement. **Not yet reachable end to end:**
+the *projection* receiver, because the native surface cannot spell a
+struct-typed durable global today (a construction literal is refused as a
+`VAR` default, `E075`) — covered at the LIR-lowering level instead
+(`brink-ir/tests/ufcs_auto_ref.rs`).
 
 ### Wave B4 — display-boundary None-render in interpolation (SHIPPED, issue #1463)
 The §1.6b forgiveness: a final-None interpolation renders as nothing;

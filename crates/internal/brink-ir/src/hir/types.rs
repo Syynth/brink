@@ -2283,11 +2283,16 @@ pub enum DiagnosticCode {
     /// posture). Explicitly a *for now* trade — smarter inference ordering
     /// is planned and additive when it lands.
     E142,
-    /// **D5 fence**: `recv.name(args)` resolved to a free function whose
-    /// first parameter is declared `ref`. The auto-ref desugar
-    /// (`heal(ref party.members[0], 5)`) is issue #1462, built on top of
-    /// this pass — until it lands the call is refused rather than desugared
-    /// by value, which would silently drop the mutation.
+    /// **D5**: `recv.name(args)` resolved to a free function whose first
+    /// parameter is declared `ref`, so the receiver is auto-ref'd
+    /// (`party.leader.heal(5)` → `heal(ref party.leader, 5)`, issue
+    /// #1462) — but *this* receiver cannot be written through: a `CONST`, or
+    /// a projection whose root is a frame-local (T1e's durable-root rule,
+    /// `docs/t1e-spec.md` §2), or — once the grammar can spell them — an
+    /// rvalue such as `[1,2].push(3)`. Refused rather than silently
+    /// desugared by value, which would drop the mutation. A non-`ref` first
+    /// parameter never reaches this code: the by-value desugar puts no
+    /// lvalue requirement on its receiver.
     E143,
     /// A UFCS call site that `brink-analyzer::ufcs` **resolved** cleanly has
     /// reached LIR lowering, which does not consume the verdict side table
@@ -2702,7 +2707,7 @@ impl DiagnosticCode {
             Self::E140 => "method-call syntax matched a field that is not callable",
             Self::E141 => "method-call syntax matched neither a field nor a free function",
             Self::E142 => "method-call receiver type is unknown — annotate it",
-            Self::E143 => "method-call syntax onto a `ref` first parameter is not supported yet",
+            Self::E143 => "method-call auto-ref needs a receiver that can be written through",
             Self::E144 => "native: method call resolves but has no LIR lowering yet",
             Self::E145 => {
                 "the `as` binding must be the entire condition (no `&&`/`||` composition)"
