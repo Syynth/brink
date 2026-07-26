@@ -5,6 +5,8 @@ f1 is {f1}.
 f2 is {f2}.
 {f1 == some(6): f1 matched at six.}
 {f2 == none: f2 is absent.}
+{f2}
+after bare f2 interpolation.
 ~ temp a = #[3, 1, 2]
 index of 1 is {index_of(a, 1)}, of 9 is {index_of(a, 9)}.
 min {min(a)}, max {max(a)}.

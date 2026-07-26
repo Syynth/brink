@@ -11,7 +11,10 @@
 // The humble heap: min-heap verbs over an ordinary [T] by the §4b
 // doctrine order — heap_push (statement-only, RMW write-back),
 // heap_pop (mutator + Option expression), heap_peek (pure Option read);
-// empty pops are absence (none), never faults.
+// empty pops are absence (none), never faults. The drain line's final
+// `heap_pop` runs the heap dry — its `none` is the display-boundary
+// forgiveness (§1.6b, Track B4): it renders as nothing, not the word
+// `none`.
 //
 // TYPES POLICY: strict (the brink-dialect default) — the whole surface
 // types cleanly: roll(Weighted[string]) is a string, heap_pop([int]) is

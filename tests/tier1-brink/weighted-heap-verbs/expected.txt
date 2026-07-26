@@ -4,4 +4,4 @@ rolls: potion, shield, potion, potion, sword
 replay: potion, shield, potion, potion, sword
 peek: some(3)
 popped: some(3) then some(5)
-drain: some(7) some(8) some(9) none
+drain: some(7) some(8) some(9)

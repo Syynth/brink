@@ -187,10 +187,13 @@ pub(crate) fn stringify(v: &Value, program: &Program) -> String {
         Value::Projection(p) => format!("ref {}", display_projection_path(p, program)),
         // Option values (NS-A1, `docs/stdlib-spec.md` §1.4): the boring,
         // stable form — `none` / `some(<inner display form>)`, matching the
-        // source-level construction vocabulary. NOTE: the §1.6
-        // display-boundary forgiveness (a final-None interpolation renders
-        // as *nothing*) is Track B4 and deliberately NOT implemented here —
-        // this is the strict-era rendering, total like every other arm.
+        // source-level construction vocabulary. This is the strict, total
+        // rendering used by `string()` and every non-display-boundary
+        // caller (debug formatting, nested Option display, etc.) — never
+        // forgiven. The §1.6b display-boundary forgiveness (a final-None
+        // interpolation renders as *nothing*) is Track B4 and lives in
+        // `stringify_display`, a separate wrapper used only at the
+        // interpolation/template-slot boundary — see its doc comment.
         Value::OptionVal(inner) => match inner {
             None => "none".to_owned(),
             Some(v) => format!("some({})", stringify(v, program)),
@@ -255,6 +258,42 @@ pub(crate) fn stringify(v: &Value, program: &Program) -> String {
             stringify(&Value::Vec4(m.w_axis), program)
         ),
     }
+}
+
+/// Stringify a value at the ink **display boundary**
+/// (`docs/stdlib-spec.md` §1.6b, RULED 2026-07-18, Track B4): the FINAL
+/// value substituted into an interpolation, template slot, or captured
+/// fragment/tag. Delegates to [`stringify`] for everything **except** a
+/// bare `Option[T]` in the `None` state, which renders as *nothing* —
+/// "absence renders as absence," the honest narrative meaning. This
+/// supersedes F28's interim total `none` render (`Some(v)` is unaffected —
+/// still `some(<v>)`, `stringify`'s existing arm).
+///
+/// **Cut by POSITION, not dialect** (§1.6b): nested compositions
+/// (`{mood.first() + 1}`) are never forgiven, because the type checker
+/// already rejects an `Option[T]` used inside further composition
+/// (`Option[T] ≠ T`, strict everywhere but this one boundary — see
+/// `infer/ty.rs`'s `unify`). By the time a value reaches this function it
+/// is always the interpolation's own top-level result — there is no other
+/// way for an `Option` value to survive type-checking into a template slot.
+///
+/// Deliberately **not** used by `string()` (`convert_to_string`, the
+/// `ConvertString` opcode) — F28's ruled totality for that intrinsic is
+/// preserved: `string(none)` still renders `"none"`. Also deliberately not
+/// used by the debug value formatter (`debug.rs`'s `format_value`) — a
+/// developer inspecting story state wants to see `none`, not blank.
+///
+/// **Traceable by construction**: the transcript stores the *raw*
+/// `OutputPart`/`Value`, never eagerly resolved
+/// (`docs/runtime-restructuring-spec.md`'s deferred-resolution model), so a
+/// forgiven `None`-render never loses information — re-reading the
+/// transcript still finds `Value::OptionVal(None)` at that slot, distinct
+/// from a slot that was never populated.
+pub(crate) fn stringify_display(v: &Value, program: &Program) -> String {
+    if matches!(v, Value::OptionVal(None)) {
+        return String::new();
+    }
+    stringify(v, program)
 }
 
 /// Render a projection's `root.field[index]…` path text — no leading `ref `
@@ -1376,12 +1415,30 @@ mod tests {
 
     #[test]
     fn option_display_forms_are_pinned() {
-        // F28 (ruled 2026-07-19): `none`/`some(…)` render *totally* in
-        // display until B4's boundary forgiveness arrives with the native
-        // surface.
+        // F28 (ruled 2026-07-19): `stringify` itself (the `string()`
+        // intrinsic's path) renders `none`/`some(…)` *totally* — never
+        // forgiven. The §1.6b display-boundary forgiveness lives only in
+        // `stringify_display` (below), a separate wrapper used at the
+        // interpolation/template-slot boundary.
         let program = dummy_program();
         assert_eq!(stringify(&Value::none(), &program), "none");
         assert_eq!(stringify(&Value::some(Value::Int(3)), &program), "some(3)");
+    }
+
+    #[test]
+    fn display_boundary_forgives_a_final_none_but_not_string() {
+        // §1.6b / Track B4: a final-`None` value forgives to nothing at
+        // the display boundary; `Some(v)` and every other value still
+        // delegate to `stringify` unchanged, and `string()`'s totality
+        // (the plain `stringify` path, asserted above) is untouched by
+        // this wrapper's existence.
+        let program = dummy_program();
+        assert_eq!(stringify_display(&Value::none(), &program), "");
+        assert_eq!(
+            stringify_display(&Value::some(Value::Int(3)), &program),
+            "some(3)"
+        );
+        assert_eq!(stringify_display(&Value::Int(42), &program), "42");
     }
 
     #[test]

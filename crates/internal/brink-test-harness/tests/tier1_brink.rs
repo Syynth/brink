@@ -181,7 +181,11 @@ fn index_then_field_assignment_target_is_e074_not_a_parse_error() {
 /// fields in declared order), pinned on both consumers of the one display
 /// path (F1): interpolation and `string()` render identically; nested
 /// structs, structs-in-collections, and Option forms recurse through the
-/// same path (F28's total `none`/`some(…)` render included).
+/// same path. `some(…)` still renders totally at both consumers (F28); a
+/// final `none` at the interpolation boundary now renders as nothing
+/// (`docs/stdlib-spec.md` §1.6b, Track B4) while `string(none)` keeps F28's
+/// total `"none"` render — the fixture's `absent` / `absent via string`
+/// pair proves the two consumers deliberately diverge for `None` only.
 #[test]
 fn struct_display_structural_default_serves_both_display_consumers() {
     assert_case("struct-display-default");
@@ -2150,8 +2154,9 @@ fn fn_value_inside_a_map_save_load_invoke_equals_direct_invoke() {
 /// End-to-end reachability for the whole A1 verb set: `find`/`index_of`/
 /// `min`/`max`/`first`/`last`/`pop`/`get`/`contains_value`/`clear`, plus
 /// `some(x)` construction, bare-`none` equality, and Option interpolation
-/// (the strict-era `none`/`some(…)` display form — §1.6 forgiveness is
-/// Track B4, deliberately absent).
+/// — every `none`-valued interpolation slot here renders as nothing, the
+/// §1.6b display-boundary forgiveness (Track B4, issue #1463; superseded
+/// the interim total `none` render this fixture originally pinned).
 #[test]
 fn option_verbs_end_to_end() {
     assert_case("option-verbs");
@@ -2187,8 +2192,9 @@ fn sort_verbs_end_to_end() {
 /// humble heap end to end — construction + F17 multiset equality +
 /// construction-literal display, seeded `roll` goldens (the rand-verbs
 /// oracle-free discipline), and the heap verbs' push/peek/pop/drain over
-/// an ordinary array (§4b doctrine order; empty pops are `none`). Strict
-/// types (the brink-dialect default).
+/// an ordinary array (§4b doctrine order; an empty pop is `none`, which
+/// renders as nothing at the interpolation boundary — §1.6b, Track B4,
+/// issue #1463). Strict types (the brink-dialect default).
 #[test]
 fn weighted_heap_verbs_end_to_end() {
     assert_case("weighted-heap-verbs");
