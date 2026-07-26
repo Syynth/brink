@@ -213,8 +213,9 @@ impl CoalesceLookup {
 ///
 /// Before this bundle, each new side-table ([`UfcsLookup`] for B3a UFCS,
 /// then [`CoalesceLookup`] for B1 `or`-coalescing) added its own parameter
-/// to every lowering signature between [`lower_to_program_with_type_mode`]
-/// (super) and [`LowerCtx`] itself — eight signatures deep, forcing
+/// to every lowering signature between
+/// [`super::lower_to_program_with_type_mode`] and [`LowerCtx`] itself —
+/// eight signatures deep, forcing
 /// `lower_root_content_chunks` to carry
 /// `#[expect(clippy::too_many_arguments)]`. Two independent reviewers
 /// (#1471, #1479) hit the same pain point and deliberately deferred the fix
