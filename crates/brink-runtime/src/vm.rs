@@ -2026,7 +2026,17 @@ fn resolve_line(
                     LinePart::Literal(s) => result.push_str(s),
                     LinePart::Slot(n) => {
                         if let Some(val) = slots.get(*n as usize) {
-                            result.push_str(&value_ops::stringify(val, program));
+                            // B4 (`docs/stdlib-spec.md` §1.6b): this is a
+                            // template-slot display boundary — same
+                            // forgiveness as `output/mod.rs`'s
+                            // `resolve_line_ref`. Currently unreachable in
+                            // production (`lir::Stmt::EvalLine`, this
+                            // function's only caller, is never constructed
+                            // by any lowering path — choice display goes
+                            // through `EmitLine` + `Fragment` instead), but
+                            // routed through the same seam so it can't
+                            // silently diverge if that ever changes.
+                            result.push_str(&value_ops::stringify_display(val, program));
                         }
                     }
                     LinePart::Select {
@@ -2401,7 +2411,16 @@ fn handle_begin_choice(
                 crate::story::ChoiceDisplay::Fragment(idx)
             }
             Some(Value::String(s)) => crate::story::ChoiceDisplay::Text((*s).to_owned()),
-            Some(other) => crate::story::ChoiceDisplay::Text(value_ops::stringify(&other, program)),
+            // B4 (`docs/stdlib-spec.md` §1.6b): a choice's display value is
+            // itself a display boundary. Currently unreachable for an
+            // `Option` in practice — current codegen always produces a
+            // `Value::FragmentRef` or `Value::String` here, never a bare
+            // `Option` — but routed through `stringify_display` so this
+            // fallback can't silently diverge from the interpolation
+            // boundary if that ever changes.
+            Some(other) => {
+                crate::story::ChoiceDisplay::Text(value_ops::stringify_display(&other, program))
+            }
             None => crate::story::ChoiceDisplay::Text(String::new()),
         }
     } else {

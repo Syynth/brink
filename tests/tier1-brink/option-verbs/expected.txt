@@ -1,12 +1,13 @@
 f1 is some(6).
-f2 is none.
+f2 is .
 f1 matched at six.
 f2 is absent.
-index of 1 is some(1), of 9 is none.
+after bare f2 interpolation.
+index of 1 is some(1), of 9 is .
 min some(1), max some(3).
 first some(3), last some(2).
 popped some(2), leaving 2.
-hp some(10), armor none.
+hp some(10), armor .
 has ten: true, has seven: false.
 cleared to 0 entries.
 f2 holds zero now.
