@@ -30,7 +30,7 @@
 //
 // PRIORITY QUEUE — NO NATIVE HEAP: identical situation and identical
 // `pq_insert` shape to dijkstra-grid/story.ink; see that file's header
-// for the full finding (the O(n) insertion scan, the O(n) `remove(pq,
+// for the full finding (the O(n) insertion scan, the O(n) `remove_at(pq,
 // 0)` pop, the non-short-circuit `and`/`or` trap in the scan guard, and
 // why icebox #829's slice/range sketch would help the copy cost but not
 // the search cost). Not re-derived here to avoid duplicating the same
@@ -85,7 +85,7 @@ VAR found = false
 
     while len(pq) > 0 {
         temp top = pq[0]
-        remove(pq, 0)
+        remove_at(pq, 0)
 
         if visited[top.r][top.c] == false {
             visited[top.r][top.c] = true

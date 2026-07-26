@@ -283,6 +283,26 @@ fn fault_during_remove_at_leaves_root_null() {
     assert_eq!(arr, &brink_format::Value::Null);
 }
 
+/// `remove(a, k)` on an *array* — the whole point of issue #1484's split:
+/// `remove` is map-only now, so a container-kind mismatch (not an
+/// out-of-bounds index) is the fault, `NotIndexable("array")` rather than
+/// `IndexOutOfBounds`. Same documented `Value::Null` root-after-fault
+/// outcome as `insert`/`remove_at` above — the container is taken before
+/// the kind check runs.
+#[test]
+fn fault_during_remove_on_an_array_leaves_root_null() {
+    let source =
+        "VAR arr = 0\n~ {\n    arr = #[1, 2, 3]\n    remove(arr, 0)\n}\n{arr[0]}\n-> END\n";
+    let mut story = compile(source);
+    let err = run_to_completion_or_fault(&mut story).expect_err("remove on an array faults");
+    assert!(
+        matches!(err, RuntimeError::NotIndexable("array")),
+        "unexpected error: {err:?}"
+    );
+    let arr = story.variable("arr").expect("arr is declared");
+    assert_eq!(arr, &brink_format::Value::Null);
+}
+
 /// A fault during one variable's RMW must not corrupt an *unrelated*
 /// global — `TakeGlobal`/`TakeTemp` only ever touch the one slot they're
 /// given.

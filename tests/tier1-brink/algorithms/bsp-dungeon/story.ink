@@ -37,9 +37,9 @@
 //   array concat primitive — same gap quicksort and mergesort both flag),
 //   so a tree with more leaves pays one extra full copy per internal node
 //   on the way back up. For this corpus's depth-3 tree that's invisible;
-//   noted because it's the same shape of cost bfs-grid-path's `remove(arr,
-//   0)` finding describes, just for `push`-heavy concatenation instead of
-//   `remove`-heavy dequeuing.
+//   noted because it's the same shape of cost bfs-grid-path's
+//   `remove_at(arr, 0)` finding describes, just for `push`-heavy
+//   concatenation instead of `remove_at`-heavy dequeuing.
 // - Recursion base case needed THREE independent conditions
 //   (`depth <= 0 or rect.w < min_size * 2 or rect.h < min_size * 2`) —
 //   all cheap int comparisons on the same struct's fields, so (unlike the
