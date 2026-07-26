@@ -22,9 +22,10 @@
 //! the override to exactly the method segment's own range, so hovering
 //! `recv` is untouched and still shows the receiver.
 //!
-//! ## Why a `FreeFnDesugar` target resolves through `db`, not `analysis`
+//! ## Why a `FreeFnDesugar`/`FreeFnAutoRef` target resolves through `db`, not `analysis`
 //!
-//! A [`brink_ir::lir::UfcsVerdict::FreeFnDesugar`]'s `DefinitionId` is
+//! A [`brink_ir::lir::UfcsVerdict::FreeFnDesugar`] or
+//! [`brink_ir::lir::UfcsVerdict::FreeFnAutoRef`]'s `DefinitionId` is
 //! produced by `brink-analyzer`'s `ufcs` pass running over `brink-db`'s own
 //! module-qualified project index (`resolutions_index_query`, which
 //! `ProjectDb::ufcs_verdict` reads through). Every caller-supplied
@@ -51,6 +52,11 @@
 //! - [`brink_ir::lir::UfcsVerdict::FreeFnDesugar`] carries the resolved free
 //!   function's `DefinitionId` directly — go-to-def jumps there like any
 //!   other resolved reference.
+//! - [`brink_ir::lir::UfcsVerdict::FreeFnAutoRef`] (D5 auto-ref, issue
+//!   #1462) is the same free-function-target case as `FreeFnDesugar` for
+//!   hover/go-to-def purposes — the only difference is the callee's first
+//!   parameter is declared `ref`, so hover notes the by-reference dispatch
+//!   and go-to-def jumps to the same `target` the same way.
 //! - [`brink_ir::lir::UfcsVerdict::PreludeDesugar`] names a VM-native T1b
 //!   stdlib/builtin verb with **no** `DefinitionId` at all (the analyzer's
 //!   own doc: "there is no index symbol to point at") — go-to-def handles
@@ -170,10 +176,10 @@ pub fn ufcs_hover(
             field = call.method.text,
         ),
         UfcsVerdict::FreeFnDesugar { target } => {
-            // See the module doc's "Why a `FreeFnDesugar` target resolves
-            // through `db`, not `analysis`" section: `target` lives in
-            // `db.resolutions_index()`'s identity space, not a caller's
-            // separately-computed `AnalysisResult`.
+            // See the module doc's "Why a `FreeFnDesugar`/`FreeFnAutoRef`
+            // target resolves through `db`, not `analysis`" section:
+            // `target` lives in `db.resolutions_index()`'s identity space,
+            // not a caller's separately-computed `AnalysisResult`.
             let info = db.resolutions_index().index.symbols.get(&target).cloned();
             let name = info
                 .as_ref()
@@ -185,6 +191,26 @@ pub fn ufcs_hover(
             format!(
                 "**free function** `{name}({recv}, …)`\n\nDesugared from `{recv}.{name}(…)` — \
                  resolves to the free function `{name}` in ordinary lexical scope (D4).{file_note}",
+                recv = call.receiver_text,
+            )
+        }
+        UfcsVerdict::FreeFnAutoRef { target } => {
+            // Same target identity space as `FreeFnDesugar` above (see the
+            // module doc) — only the description differs, to surface the D5
+            // by-reference dispatch.
+            let info = db.resolutions_index().index.symbols.get(&target).cloned();
+            let name = info
+                .as_ref()
+                .map_or(call.method.text.as_str(), |i| i.name.as_str());
+            let file_note = info
+                .as_ref()
+                .and_then(|i| project_files.iter().find(|(fid, _, _)| *fid == i.file))
+                .map_or(String::new(), |(_, p, _)| format!("\n\n*Defined in `{p}`*"));
+            format!(
+                "**free function (by ref)** `{name}(ref {recv}, …)`\n\nDesugared from \
+                 `{recv}.{name}(…)` — resolves to the free function `{name}` in ordinary lexical \
+                 scope (D4), whose first parameter is declared `ref`, so `{recv}` is passed by \
+                 reference (D5 auto-ref).{file_note}",
                 recv = call.receiver_text,
             )
         }
@@ -226,9 +252,9 @@ pub fn ufcs_goto_definition(
 ) -> Option<Option<LocationResult>> {
     let (_call, verdict) = ufcs_call_and_verdict(db, hir, file_id, offset)?;
     let loc = match verdict {
-        // See the module doc's "Why a `FreeFnDesugar` target resolves
-        // through `db`, not `analysis`" section.
-        UfcsVerdict::FreeFnDesugar { target } => db
+        // See the module doc's "Why a `FreeFnDesugar`/`FreeFnAutoRef` target
+        // resolves through `db`, not `analysis`" section.
+        UfcsVerdict::FreeFnDesugar { target } | UfcsVerdict::FreeFnAutoRef { target } => db
             .resolutions_index()
             .index
             .symbols
