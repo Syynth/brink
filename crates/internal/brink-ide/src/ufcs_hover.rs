@@ -40,14 +40,14 @@
 //! [`brink_ir::lir::UfcsVerdict::FreeFnAutoRef`]'s `DefinitionId` is
 //! produced by `brink-analyzer`'s `ufcs` pass running over `brink-db`'s own
 //! module-qualified project index (`resolutions_index_query`, which
-//! `ProjectDb::ufcs_verdict` reads through). Every caller-supplied
-//! `brink_analyzer::AnalysisResult` (e.g. `IdeSession`'s own cached
-//! analysis, or the LSP's `analysis_loop`) is instead built by
-//! `brink_analyzer::analyze_with_options` — an intentionally
-//! module-*blind* "whole-project convenience path" (see that function's own
-//! doc). For a native `.brink` file, which always carries a real
-//! `story::<stem>` module identity (`brink-db`'s `modules.rs`, "path on
-//! disk = path in language"), those two computations mint *different*
+//! `ProjectDb::ufcs_verdict` reads through). [`crate::hover::hover`] accepts
+//! an arbitrary caller-supplied `brink_analyzer::AnalysisResult`, which may
+//! still be module-*blind* if the caller built it via
+//! `brink_analyzer::analyze_with_options` — an intentionally module-blind
+//! "whole-project convenience path" (see that function's own doc). For a
+//! native `.brink` file, which always carries a real `story::<stem>` module
+//! identity (`brink-db`'s `modules.rs`, "path on disk = path in language"),
+//! a module-blind `AnalysisResult` and the db's own index mint *different*
 //! `DefinitionId`s for the same declaration. So the target is looked up in
 //! [`ProjectDb::resolutions_index`] here — the same identity space
 //! `ufcs_verdict`'s own `target` came from — never in a caller's

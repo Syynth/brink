@@ -312,7 +312,12 @@ impl ProjectDb {
     /// Snapshot all analysis inputs for background analysis.
     ///
     /// Returns `(FileId, HirFile, SymbolManifest)` tuples cloned out of the db,
-    /// so the caller can run `brink_analyzer::analyze()` without holding the lock.
+    /// so the caller can run `brink_analyzer::analyze_with_modules` (with
+    /// [`module_map`](Self::module_map), also snapshotted) without holding
+    /// the lock. Issue #1526: a bare `brink_analyzer::analyze()` /
+    /// `analyze_with_options` over these inputs is module-*blind* and mints
+    /// different `DefinitionId`s than this db's own queries for native
+    /// `.brink` files — see [`module_map`](Self::module_map)'s doc.
     pub fn analysis_inputs(&self) -> Vec<(FileId, HirFile, SymbolManifest)> {
         let ids: Vec<_> = self.file_ids().collect();
         self.analysis_inputs_for(&ids)
@@ -378,9 +383,13 @@ impl ProjectDb {
     }
 
     /// Full cross-file analysis over all files, honoring the registered
-    /// [`AnalysisOptions`]. Memoized; identical to
-    /// `brink_analyzer::analyze_with_options` over
-    /// [`analysis_inputs`](Self::analysis_inputs) by construction.
+    /// [`AnalysisOptions`]. Memoized; module-aware — identical to
+    /// `brink_analyzer::analyze_with_modules` over
+    /// [`analysis_inputs`](Self::analysis_inputs) and
+    /// [`module_map`](Self::module_map) by construction. For native
+    /// `.brink` files this is *not* identical to `analyze_with_options`
+    /// (module-blind), which mints different `DefinitionId`s — see
+    /// [`module_map`](Self::module_map)'s doc (issue #1526).
     pub fn analysis(&self) -> &AnalysisResult {
         analysis_query(&self.salsa, self.project)
     }
