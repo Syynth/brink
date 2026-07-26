@@ -1461,6 +1461,47 @@ mod tests {
         assert!(data.fragments[0].tags.is_empty());
     }
 
+    // The *other* backward-compat boundary this module's doc claims but only
+    // `legacy_transcript_without_tag_section_reads_as_empty_tags` above pins:
+    // a `.brkt` written before the fragment section existed at all (pre-
+    // fragments feature), where the body ends right after the top-level part
+    // list — no `fragment_count` `u32`, not even a zero one. `write_transcript`
+    // has *always* written `fragments.len()` unconditionally (even `0` for an
+    // empty slice — see the call site right after the part loop), so no call
+    // through the real writer can ever produce this exact shape; it has to be
+    // hand-built, same rationale as the tag-section test above. The read-side
+    // `if off < bytes.len()` probe at the fragment-count read (this module's
+    // `read_transcript`) is what is actually under test here: with zero bytes
+    // left after the parts, it must fall back to "no fragments" rather than
+    // erroring as truncated input.
+    #[test]
+    fn legacy_transcript_without_fragment_section_reads_as_no_fragments() {
+        let mut body = Vec::new();
+        write_u32(&mut body, 1); // part count
+        write_u8(&mut body, TAG_TEXT);
+        write_str(&mut body, "legacy");
+        // (body ends here — no fragment section, no tag section, matches a
+        // `.brkt` written before fragments existed at all)
+
+        let content_crc = crc32(&body);
+        let mut bytes = Vec::with_capacity(HEADER_SIZE + body.len());
+        bytes.extend_from_slice(MAGIC);
+        write_u16(&mut bytes, VERSION);
+        write_u16(&mut bytes, 0);
+        write_u32(&mut bytes, 0xCAFE_BABE);
+        write_u32(&mut bytes, content_crc);
+        bytes.extend(body);
+
+        let data = read_transcript(&bytes).expect("legacy transcript must still decode");
+        assert_eq!(data.parts.len(), 1);
+        assert!(matches!(&data.parts[0], OutputPart::Text(s) if s == "legacy"));
+        assert!(
+            data.fragments.is_empty(),
+            "a pre-fragments `.brkt` must decode with zero fragments, not error: {:?}",
+            data.fragments
+        );
+    }
+
     #[test]
     fn invalid_magic_errors() {
         let mut bytes = write_transcript(&[], 0, &[]);
