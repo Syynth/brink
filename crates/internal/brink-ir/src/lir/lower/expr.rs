@@ -785,6 +785,36 @@ fn lower_call(path: &hir::Path, args: &[hir::Expr], ctx: &mut LowerCtx<'_>) -> l
 /// a silent `Null`, for the callers that lower HIR directly without running
 /// analysis first (this crate's own tests/benches, `golden_i078.rs`) — see
 /// #1482's PR description for the miscompile this guards against.
+/// The shared E144 refusal: `name` resolves as method-call syntax that this
+/// UFCS lowering cannot turn into a real call, so refuse loudly rather than
+/// silently folding to `Null`. Two call sites reach this — [`lower_ufcs_call`]
+/// itself, when no verdict was recorded at all (only possible for a caller
+/// that lowers HIR directly without running analysis first, e.g. this
+/// crate's own tests/benches), and [`lower_ufcs_prelude_desugar`], when a
+/// verdict *was* recorded as `PreludeDesugar` but neither this crate's
+/// `recognize_builtin` nor its `is_t1b_stdlib_name`/`lower_t1b_stdlib_call`
+/// copy recognizes the name — meaning it drifted out of sync with
+/// `brink-analyzer`'s own `is_t1b_stdlib_name`/`is_builtin_function` copies
+/// (both pairs' own docs say they're hand-synced across the crate boundary
+/// with no shared source of truth).
+fn push_ufcs_lowering_refusal(
+    name: &str,
+    range: rowan::TextRange,
+    ctx: &mut LowerCtx<'_>,
+) -> lir::Expr {
+    ctx.diagnostics.push(crate::Diagnostic {
+        file: ctx.file,
+        range,
+        message: format!(
+            "{}: `{name}` resolves as method-call syntax, but the compiler cannot \
+             lower it yet — spell the call explicitly as a free call for now",
+            crate::DiagnosticCode::E144.title(),
+        ),
+        code: crate::DiagnosticCode::E144,
+    });
+    lir::Expr::Null
+}
+
 fn lower_ufcs_call(
     name: &str,
     path: &hir::Path,
@@ -792,17 +822,7 @@ fn lower_ufcs_call(
     ctx: &mut LowerCtx<'_>,
 ) -> lir::Expr {
     let Some(verdict) = ctx.ufcs.get(ctx.file, path.range).cloned() else {
-        ctx.diagnostics.push(crate::Diagnostic {
-            file: ctx.file,
-            range: path.range,
-            message: format!(
-                "{}: `{name}` resolves as method-call syntax, but the compiler cannot \
-                 lower it yet — spell the call explicitly as a free call for now",
-                crate::DiagnosticCode::E144.title(),
-            ),
-            code: crate::DiagnosticCode::E144,
-        });
-        return lir::Expr::Null;
+        return push_ufcs_lowering_refusal(name, path.range, ctx);
     };
     match verdict {
         // Field access wins (`brink-analyzer::ufcs` D1): the whole path,
@@ -917,7 +937,14 @@ fn lower_ufcs_prelude_desugar(
     let mut desugared_args = Vec::with_capacity(args.len() + 1);
     desugared_args.push(hir::Expr::Path(receiver_path));
     desugared_args.extend(args.iter().cloned());
-    lower_t1b_stdlib_call(name, &desugared_args, path.range, ctx).unwrap_or(lir::Expr::Null)
+    // `lower_t1b_stdlib_call` returning `None` here means `name` passed the
+    // analyzer's `is_t1b_stdlib_name`/`is_builtin_function` check (that's
+    // the only way a `PreludeDesugar` verdict is recorded) but missed both
+    // of this crate's own hand-synced copies — a drift bug, not a normal
+    // compile outcome. Refuse loudly (E144) instead of silently dropping
+    // the call to `Null`.
+    lower_t1b_stdlib_call(name, &desugared_args, path.range, ctx)
+        .unwrap_or_else(|| push_ufcs_lowering_refusal(name, path.range, ctx))
 }
 
 /// Recognize a T1b stdlib call (`docs/t1b-surface-spec.md` §5) reached with
