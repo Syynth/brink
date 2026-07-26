@@ -986,6 +986,55 @@ fn main() {
         }
     }
 
+    #[test]
+    fn renaming_a_knot_level_label_rewrites_only_the_tail_segment_of_a_qualified_reference() {
+        // Review finding on this PR: `qualified_tail_range_at_path` gates on
+        // `Stitch | ListItem | Label`, but only the Stitch and ListItem
+        // variants had a regression test. `Label` is a live corruption path
+        // of its own: `resolve::lookup_divert`'s dotted branch looks up
+        // `&[SymbolKind::Stitch, SymbolKind::Label]`, and
+        // `Projector::qualify_label` stores a knot-level label as
+        // `hub.mylabel` — so `-> hub.mylabel` records the same whole-path
+        // `ResolvedRef` shape a stitch reference does, and collapsed to
+        // `-> newname` before this PR.
+        let src = "=== hub ===\n- (mylabel) Hi.\n-> DONE\n=== main ===\n-> hub.mylabel\n";
+        let (s, id) = session(src);
+        let analysis = s.analysis().expect("analysis");
+        let decl_pos = analysis
+            .index
+            .symbols
+            .values()
+            .find(|i| i.kind == brink_ir::SymbolKind::Label && i.name == "hub.mylabel")
+            .map(|i| i.range.start())
+            .expect("the `mylabel` label declaration");
+
+        let result = rename(s.db(), analysis, id, decl_pos, "newname").expect("rename");
+
+        let tail_pos =
+            u32::try_from(src.find("hub.mylabel").expect("ref") + "hub.".len()).expect("offset");
+        let found = result
+            .edits
+            .iter()
+            .find(|e| e.file == id && e.range.start() == TextSize::from(tail_pos));
+        assert!(
+            found.is_some(),
+            "expected an edit at the qualified reference's tail segment, got {:?}",
+            result
+                .edits
+                .iter()
+                .map(|e| (e.range, e.new_text.as_str()))
+                .collect::<Vec<_>>()
+        );
+        let edit = found.expect("checked above");
+        assert_eq!(
+            usize::from(edit.range.end()) - usize::from(edit.range.start()),
+            "mylabel".len(),
+            "the edit must span only the `mylabel` segment, not the whole `hub.mylabel` path — \
+             got {:?}",
+            edit.range
+        );
+    }
+
     // ── Issue #1571 variant 2: `VAR`/`CONST` initializer expressions
     // bypassed the narrowing walker entirely. `symbols::project_manifest`
     // walks them and records whole-path `UnresolvedRef`s, but

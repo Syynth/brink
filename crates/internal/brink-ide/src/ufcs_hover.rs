@@ -369,10 +369,13 @@ pub fn field_access_head_range_at_path(
 /// - `Expr::Path` — a plain value-position reference (`~ y = hub.market`,
 ///   `{Colors.Red}`).
 ///
-/// A call's callee path (`Expr::Call`) is deliberately absent: `resolve`'s
-/// `resolve_function` has no stitch / list-item / label lookup at all, so no
-/// `Expr::Call` reference can ever target one of the kinds
-/// [`qualified_tail_range_at_path`] gates on.
+/// A call's callee path (`Expr::Call`), a function literal's target
+/// (`Expr::FnLiteral`, both `RefKind::Function`) and a struct literal's
+/// shape (`Expr::StructLiteral`, `RefKind::Struct`) are deliberately
+/// absent: `resolve`'s `resolve_function` has no stitch / list-item /
+/// label lookup at all, and `resolve_struct_ref` resolves only against
+/// `SymbolKind::Struct`, so neither reference position can ever target one
+/// of the kinds [`qualified_tail_range_at_path`] gates on.
 fn find_qualified_tail(hir: &HirFile, path_range: TextRange) -> Option<TextRange> {
     struct Finder {
         path_range: TextRange,
