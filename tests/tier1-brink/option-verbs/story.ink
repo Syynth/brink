@@ -20,4 +20,26 @@ has ten: {contains_value(m, 10)}, has seven: {contains_value(m, 7)}.
 cleared to {len(m)} entries.
 ~ f2 = some(0)
 {f2 == some(0): f2 holds zero now.}
+~ temp rooms = #{"Mira": 3, "Old Tom": 1}
+~ temp room = room_of(rooms, "Mira")
+room Mira is {room}.
+~ temp room2 = room_of(rooms, "Edda")
+room Edda is {string(room2)}.
+~ temp hit = first_over(#[4, 7, 2, 9], 5)
+first over 5 is {hit}.
+~ temp miss = first_over(#[4, 7, 2, 9], 10)
+first over 10 is {string(miss)}.
 -> END
+
+=== function room_of(rooms: map<string, int>, name: string) ===
+~ return get(rooms, name)
+
+=== function first_over(tab: array<int>, floor: int) ===
+~ {
+    for coins in tab {
+        if coins > floor {
+            return some(coins)
+        }
+    }
+}
+~ return none

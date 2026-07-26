@@ -153,6 +153,9 @@ impl Default for BrinkDatabase {
                 .ingredient::<resolution_index_query>()
                 .ingredient::<resolve_query>()
                 .ingredient::<signature_query>()
+                // Issue #530: the per-file locals path signature_query
+                // itself can't take — see local_signature_query's doc.
+                .ingredient::<local_signature_query>()
                 // FG-3 (issue #632): analysis_query decomposed into narrow
                 // cutoff-friendly projections. resolutions_index_query
                 // (index+resolutions, no diagnostics) and
@@ -744,13 +747,18 @@ pub(crate) fn resolve_query(
     brink_analyzer::resolve(file.file_id(db), &lowered.manifest, index, &scope)
 }
 
-/// Interned key for [`signature_query`]. Keyed on the content-addressed
-/// [`DefinitionId`] alone: colliding ids among non-local declarations
-/// (duplicate names across files) map to a *single* index entry chosen
-/// deterministically by the merge, so the memo cannot diverge from what a
-/// non-memoized `signature(def)` call would return for the same id. Local
-/// (`Param`/`Temp`) ids no longer collide across files in a way that matters
-/// here — [`resolution_index_query`] drops locals entirely (issue #517).
+/// Interned key for [`signature_query`] and [`local_signature_query`].
+/// Keyed on the content-addressed [`DefinitionId`] alone: colliding ids
+/// among non-local declarations (duplicate names across files) map to a
+/// *single* index entry chosen deterministically by the merge, so the memo
+/// cannot diverge from what a non-memoized `signature(def)` call would
+/// return for the same id. For `signature_query`, local (`Param`/`Temp`)
+/// ids no longer collide across files in a way that matters here —
+/// [`resolution_index_query`] drops locals entirely (issue #517). A local's
+/// `DefinitionId` itself carries no file component, so a colliding id
+/// *would* matter for [`local_signature_query`] — that query disambiguates
+/// by taking its own explicit `file` parameter alongside this same `DefKey`
+/// (issue #530), rather than relying on uniqueness of the id alone.
 #[salsa::interned]
 pub(crate) struct DefKey<'db> {
     pub def: DefinitionId,
@@ -763,8 +771,9 @@ pub(crate) struct DefKey<'db> {
 /// (returns `None` for a `Param`/`Temp` [`DefinitionId`], issue #517):
 /// resolving one would require scanning every file's `manifest.locals` to
 /// find the declaring file, reintroducing the project-wide invalidation this
-/// projection exists to avoid. No consumer calls `signature` with a local id
-/// today (phase-0 stub, not yet wired to hover).
+/// projection exists to avoid. Locals stay permanently non-addressable via
+/// this query — see [`local_signature_query`] for the per-file path hover
+/// now uses instead (issue #530).
 ///
 /// **Declaring-file dependency only (issue #630 / FG-1 §2.1).**
 /// `brink_analyzer::signature` reads only the declaring file's HIR (looked
@@ -807,6 +816,47 @@ pub(crate) fn signature_query<'db>(
         .collect();
     let opts = project.analysis_options(db);
     brink_analyzer::signature(def_id, index, &hir_refs, opts.host_manifest.as_ref())
+}
+
+/// The per-file locals path [`signature_query`] itself cannot take (issue
+/// #530): [`resolution_index_query`] drops `Param`/`Temp` locals entirely
+/// (issue #517), so `signature_query(def)` short-circuits to `None` for
+/// any local `DefinitionId` — a silent "hover shows nothing" trap for
+/// whoever wires hover/signature to a local next. A local's `DefinitionId`
+/// carries no file component (content hash of `(scope, name, kind)` alone —
+/// `brink_analyzer::local_signature`'s doc), so unlike [`signature_query`]
+/// it cannot recover its declaring file from the project-wide index without
+/// either a whole-project scan (reintroducing exactly the invalidation
+/// #517's cutoff exists to kill) or a caller-supplied file. This query
+/// takes `file` explicitly instead — the same per-file-only shape
+/// [`resolve_query`] already uses for local lookups (a local's body lives
+/// in exactly one file, issue #517) — so a body edit in a *different* file
+/// leaves this memo untouched.
+///
+/// Per #531 (converge `symbol_index_query` to decls-only): this is
+/// deliberately a *separate* query, not a widening of `signature_query`'s
+/// own index read — it serves locals without merging the decls-only and
+/// full indexes back together.
+///
+/// `lru = 4096`: per-(file, def) runaway-guard ceiling (issue #647,
+/// decision log "FG-5 memory bounding"), matching the other per-file
+/// families' ceiling — a `Sig` is small and this query reads only its own
+/// file's `manifest.locals`, so it carries none of `signature_query`'s
+/// wider per-def fanout. `heap_size = heap_size::signature_heap_size`
+/// (issue #538/#530): the output is the identical `Option<Arc<Sig>>` shape
+/// `signature_query` already estimates, so the same walk is reused rather
+/// than duplicated — see `heap_size.rs`'s module doc.
+#[salsa::tracked(lru = 4096, heap_size = heap_size::signature_heap_size)]
+pub(crate) fn local_signature_query<'db>(
+    db: &'db dyn salsa::Database,
+    project: ProjectInput,
+    file: SourceFile,
+    def: DefKey<'db>,
+) -> Option<Arc<Sig>> {
+    let index = resolution_index_query(db, project);
+    let manifest = &lowered_query(db, file).manifest;
+    let opts = project.analysis_options(db);
+    brink_analyzer::local_signature(def.def(db), manifest, index, opts.host_manifest.as_ref())
 }
 
 // ─── Layer 2/3: type inference (TM-1, advisory-only) ──────────────────

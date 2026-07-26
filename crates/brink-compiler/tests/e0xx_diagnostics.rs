@@ -1610,3 +1610,121 @@ fn e151_denied_through_the_lints_control_plane_becomes_an_error() {
         "expected E151 among errors, got: {diags:?}"
     );
 }
+
+// ─── E152 (issue #582, companion to #580): `contains(m, needle)` static
+// key-domain warning ──────────────────────────────────────────────────────
+//
+// Strict-mode-only (`brink_analyzer::contains_domain`'s own module doc) —
+// every fixture here uses `strict_options()` explicitly. Warning-severity,
+// so the compile still succeeds; `E152` shows up in `out.warnings`, never
+// `out` (errors), unless promoted through `[lints]`.
+
+/// The issue's own worked shape: a float needle against a statically
+/// map-typed receiver can never match — always `false` at runtime.
+#[test]
+fn e152_float_needle_against_a_map_literal_is_flagged() {
+    let source = "=== main ===\n~ temp x = contains(#{1: \"a\"}, 3.5)\n-> DONE\n";
+    let out = compile(source, strict_options())
+        .unwrap_or_else(|e| panic!("a Warning-severity lint must not fail the compile: {e:?}"));
+    assert!(
+        out.warnings.iter().any(|d| d.code == DiagnosticCode::E152),
+        "expected E152, got: {:?}",
+        out.warnings
+    );
+}
+
+/// A global `VAR`'s declaration-derived static type (issue #1540's
+/// full-fidelity `Sig::value_ty`) makes the receiver provably a map and the
+/// needle provably out of domain — the exact "far more cases" reach this
+/// issue's re-scoping note called out.
+#[test]
+fn e152_global_map_var_with_out_of_domain_needle_is_flagged() {
+    let source =
+        "VAR scores = #{1: \"a\"}\n=== main ===\n~ temp x = contains(scores, #[1, 2])\n-> DONE\n";
+    let out = compile(source, strict_options())
+        .unwrap_or_else(|e| panic!("a Warning-severity lint must not fail the compile: {e:?}"));
+    assert!(
+        out.warnings.iter().any(|d| d.code == DiagnosticCode::E152),
+        "expected E152, got: {:?}",
+        out.warnings
+    );
+}
+
+/// An in-domain needle (`int`) is never flagged.
+#[test]
+fn e152_in_domain_needle_is_not_flagged() {
+    let source = "=== main ===\n~ temp x = contains(#{1: \"a\"}, 2)\n-> DONE\n";
+    let out = compile(source, strict_options()).unwrap_or_else(|e| panic!("must compile: {e:?}"));
+    assert!(
+        out.warnings.iter().all(|d| d.code != DiagnosticCode::E152),
+        "an in-domain needle must never fire E152, got: {:?}",
+        out.warnings
+    );
+}
+
+/// The precision-critical exclusion this pass' own module doc leads with:
+/// an `Array` receiver has no key-domain restriction at all (structural
+/// element containment against any type), so a float needle against one
+/// must never be flagged.
+#[test]
+fn e152_array_receiver_is_never_flagged() {
+    let source = "=== main ===\n~ temp x = contains(#[1, 2], 3.5)\n-> DONE\n";
+    let out = compile(source, strict_options()).unwrap_or_else(|e| panic!("must compile: {e:?}"));
+    assert!(
+        out.warnings.iter().all(|d| d.code != DiagnosticCode::E152),
+        "an array receiver must never fire E152, got: {:?}",
+        out.warnings
+    );
+}
+
+/// An author-defined `contains` knot shadows the builtin (T1b-surface-spec
+/// §5's shadowing ruling) — a resolved call is ordinary and never checked.
+#[test]
+fn e152_author_defined_contains_shadowing_the_builtin_is_not_flagged() {
+    let source = "=== function contains(a: int, b: int) ===\n~ return true\n\
+                  === main ===\n~ temp x = contains(#{1: \"a\"}, 3.5)\n-> DONE\n";
+    let out = compile(source, strict_options()).unwrap_or_else(|e| panic!("must compile: {e:?}"));
+    assert!(
+        out.warnings.iter().all(|d| d.code != DiagnosticCode::E152),
+        "a shadowed `contains` must never fire E152, got: {:?}",
+        out.warnings
+    );
+}
+
+/// Gradual mode gets no static signal at all (the module doc's
+/// inference-substrate note): the whole-project `InferenceResult` this pass
+/// needs is only ever computed under `types = strict`. The runtime's own
+/// total `false` return (#580) is the sole, correct residual.
+#[test]
+fn e152_gradual_mode_never_fires_the_static_warning() {
+    let source = "=== main ===\n~ temp x = contains(#{1: \"a\"}, 3.5)\n-> DONE\n";
+    let out = compile(source, gradual_options()).unwrap_or_else(|e| panic!("must compile: {e:?}"));
+    assert!(
+        out.warnings.iter().all(|d| d.code != DiagnosticCode::E152),
+        "gradual mode must never fire E152, got: {:?}",
+        out.warnings
+    );
+}
+
+/// The `[lints]` control plane, end to end: `E152 = "deny"` must promote
+/// this specific warning from `Warning` to a real compile `Error` through
+/// the actual pipeline — mirrors `e151_denied_through_the_lints_control_plane_becomes_an_error`.
+#[test]
+fn e152_denied_through_the_lints_control_plane_becomes_an_error() {
+    let source = "=== main ===\n~ temp x = contains(#{1: \"a\"}, 3.5)\n-> DONE\n";
+    let options = AnalysisOptions {
+        lints: LintPolicy {
+            overrides: BTreeMap::from([("E152".to_owned(), LintLevel::Deny)]),
+            deny_warnings: false,
+        },
+        ..strict_options()
+    };
+    let err = compile(source, options)
+        .map(|_| ())
+        .expect_err("`[lints] E152 = deny` must promote the warning to a compile error");
+    let diags = errors_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E152),
+        "expected E152 among errors, got: {diags:?}"
+    );
+}

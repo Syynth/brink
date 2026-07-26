@@ -296,6 +296,27 @@ fn strict_void_assignment_blocks_compilation_with_e067() {
 }
 
 #[test]
+fn strict_inferred_void_assignment_blocks_compilation_with_e067() {
+    // Issue #1054: `noop` here carries no `): void ===` annotation at all —
+    // it's void purely by inference (#1046: no value-returning `return`
+    // anywhere in its body). Must fail strict compilation with the same
+    // `E067` the explicitly-annotated case above gets, through the same
+    // real `compile_with_options` entry point.
+    let err = compile_mem(
+        "=== function noop() ===\nHello.\n\
+         === main ===\n~ temp x = noop()\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    )
+    .expect_err("assigning an inferred-void call's result must fail strict compilation");
+    let diags = diagnostics_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E067),
+        "{diags:?}"
+    );
+}
+
+#[test]
 fn strict_void_statement_position_call_compiles_clean() {
     // `~ f()` (no assignment) is never flagged — only the assignment/temp-
     // decl RHS-root shape is.

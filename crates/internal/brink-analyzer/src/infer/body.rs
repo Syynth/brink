@@ -1086,9 +1086,83 @@ impl InferPass<'_, '_> {
         // (shadow-fallback, matching `brink_analyzer::resolve::
         // is_t1b_stdlib_name` — a real def always wins the resolve() above).
         if let [seg] = path.segments.as_slice() {
-            return self.infer_intrinsic(&seg.text, path.range, args, &arg_tys);
+            // Issue #1168 (review correction, w65): NOT every intrinsic arm
+            // only inspects `arg_tys` to shape its own result — `contains`,
+            // `push`/`heap_push`, `insert`, `remove`, `index_of`, `get`, and
+            // `contains_value` all call `self.observe(<sibling arg>, <type
+            // derived from arg_tys[0]>)`, writing evidence into
+            // `self.locals` for a *second* argument. Passing an
+            // annotation-shadowed `arg_tys` into `infer_intrinsic`
+            // uniformly would make one param's annotation become body
+            // *evidence* for a sibling param — exactly the seeding
+            // `infer_def_body`'s "overlay, never replace" design exists to
+            // avoid, and would silently discard the sibling's own
+            // annotation or manufacture a spurious `E066` if the sibling is
+            // later compared against something else.
+            //
+            // So `arg_tys` (below) stays the original, evidence-only
+            // vector — every observe-bearing arm keeps matching on it
+            // unchanged. `read_tys` is a *separate* fallback-shadowed copy,
+            // threaded through only for arms that shape their own return
+            // type from a value that is purely read, never joined against a
+            // second operand (`some(x)` → `Option[typeof x]`; `get(m, k)`'s
+            // *return type* — its `observe(key_arg, k)` call still matches
+            // on the unshadowed `arg_tys`, so `m`'s annotation alone can
+            // never seed `k`'s inference). See `own_annotation`'s doc for
+            // why `infer_infix` deliberately gets neither slice.
+            let read_tys: Vec<Ty> = args
+                .iter()
+                .zip(arg_tys.iter())
+                .map(|(a, ty)| self.or_own_annotation(a, ty.clone()))
+                .collect();
+            return self.infer_intrinsic(&seg.text, path.range, args, &arg_tys, &read_tys);
         }
         Ty::Unknown
+    }
+
+    /// Annotation fallback for a *value-position* read whose observed type
+    /// came back `Unknown` purely because nothing in the body compared or
+    /// combined it with anything else yet — the "pass a param straight
+    /// through" case (issue #1168: `some(x)`, `get(m, k)`, a `for` loop's
+    /// iterable). Mirrors [`Self::annotated_callee_ty`]'s exact resolution
+    /// shape (a real def's name, or the bare single-segment fallback for a
+    /// locals-stripped index) but for the *value*, not the *callee*.
+    ///
+    /// `infer_infix`'s comparison/arithmetic arms deliberately never call
+    /// this: TM-2's "a body use that disagrees with the annotation still
+    /// infers its own concrete type" guarantee (`E063` needs two
+    /// independent derivations, `overlay_never_replaces_a_concrete_
+    /// body_derivation`) depends on those operands seeing `Unknown`, not
+    /// the annotation, on their very first read — this fallback is only
+    /// safe at read sites that don't themselves produce counter-evidence.
+    fn own_annotation(&self, expr: &Expr) -> Option<Ty> {
+        let Expr::Path(p) = expr else {
+            return None;
+        };
+        if let Some(def) = self.resolve(p.range)
+            && let Some(name) = self.ctx.index.symbols.get(&def).map(|i| i.name.clone())
+            && let Some(ann) = self.annotated.get(&name)
+        {
+            return Some(ann.clone());
+        }
+        if let [seg] = p.segments.as_slice()
+            && let Some(ann) = self.annotated.get(&seg.text)
+        {
+            return Some(ann.clone());
+        }
+        None
+    }
+
+    /// Apply [`Self::own_annotation`]'s fallback to an already-computed
+    /// `ty` only when it's `Unknown` — a concrete or `Conflicted` body
+    /// derivation always wins outright (same "overlay, never replace"
+    /// posture as every other annotation fallback in this module).
+    fn or_own_annotation(&self, expr: &Expr, ty: Ty) -> Ty {
+        if ty.is_unknown() {
+            self.own_annotation(expr).unwrap_or(ty)
+        } else {
+            ty
+        }
     }
 
     /// `#fn(target, args…)` — docs/t1c-spec.md §4: consume the bound prefix
@@ -1392,6 +1466,7 @@ impl InferPass<'_, '_> {
         range: TextRange,
         args: &[Expr],
         arg_tys: &[Ty],
+        read_tys: &[Ty],
     ) -> Ty {
         // NS-A2 fault dimension (issue #1108, from #1097) + NS-A6 RNG-cell
         // writes (issue #1112, "every draw is an ordinary write"): both
@@ -1621,16 +1696,21 @@ impl InferPass<'_, '_> {
                 ret
             }
             // `get(m, k)` → `Option[V]` (§5, martyr #3); the key narrows
-            // against the map's key type.
-            "get" => match arg_tys.first() {
-                Some(Ty::Map(k, v)) => {
-                    if let Some(key_arg) = args.get(1) {
-                        self.observe(key_arg, k);
-                    }
-                    Ty::Option(v.clone())
+            // against the map's key type — from `arg_tys` (evidence-only:
+            // issue #1168's review correction, see `infer_call`'s comment
+            // — `m`'s annotation must never become `k`'s evidence). The
+            // return type's own map shape comes from `read_tys`, so `m`'s
+            // own annotation still resolves `get(m, k)`'s result when `m`
+            // is otherwise unevidenced (the confirmed #1168 repro).
+            "get" => {
+                if let (Some(Ty::Map(k, _)), Some(key_arg)) = (arg_tys.first(), args.get(1)) {
+                    self.observe(key_arg, k);
                 }
-                _ => Ty::Option(Box::new(Ty::Unknown)),
-            },
+                match read_tys.first() {
+                    Some(Ty::Map(_, v)) => Ty::Option(v.clone()),
+                    _ => Ty::Option(Box::new(Ty::Unknown)),
+                }
+            }
             // `contains_value(m, v)` → bool (§5); the needle narrows
             // against the map's value type.
             "contains_value" => {
@@ -1661,8 +1741,11 @@ impl InferPass<'_, '_> {
                 Ty::Unknown
             }
             // `some(x)` → `Option[typeof x]` (§1.4) — the constructor is
-            // where a bare element type becomes optional.
-            "some" => Ty::Option(Box::new(arg_tys.first().cloned().unwrap_or(Ty::Unknown))),
+            // where a bare element type becomes optional. `x` is read here,
+            // never joined against a second operand, so this is the one
+            // arm where `read_tys` (issue #1168's annotation fallback) is
+            // safe unconditionally: there is no sibling to seed.
+            "some" => Ty::Option(Box::new(read_tys.first().cloned().unwrap_or(Ty::Unknown))),
             // ── NS-A8 numeric tower (issue #1114,
             // `docs/tower-mini-spec.md`). Constructors return their kind;
             // numeric lanes observe `float` (int lanes coerce through the
@@ -2117,6 +2200,15 @@ impl InferPass<'_, '_> {
                 // faults (bool v1).
                 self.effect_faults = true;
                 let iter_ty = self.infer_expr(&f.iterable);
+                // Issue #1168: same "pass a param straight through" read as
+                // a stdlib verb's arg (`infer_call`'s intrinsic dispatch) —
+                // the iterable is only ever inspected, never joined against
+                // a second operand, so an annotated-but-otherwise-
+                // unevidenced param/temp iterable should still carry its
+                // own declared type here (`iteration.md`'s `first_over`
+                // fence: `for coins in tab` where `tab: array<int>` is
+                // never touched anywhere else in the body).
+                let iter_ty = self.or_own_annotation(&f.iterable, iter_ty);
                 // F29 discharge: a provably-iterable type (the closed
                 // builtin roster) makes the loop's own iteration total.
                 if crate::protocols::iterate_element_ty(&iter_ty).is_none() {

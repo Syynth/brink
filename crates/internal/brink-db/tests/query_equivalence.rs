@@ -279,9 +279,12 @@ fn signature_matches_direct_analyzer_call() {
 #[test]
 fn signature_is_none_for_locals() {
     // #517: `resolution_index` (which `signature_query` reads) drops locals
-    // entirely, so `signature(def)` for a `Param`/`Temp` id is always `None`
-    // — not yet a regression, since no consumer calls `signature` with a
-    // local id today (see `resolve_query`'s own per-file locals lookup).
+    // entirely, so `signature(def)` for a `Param`/`Temp` id is always
+    // `None` — by design, not a regression: `signature`/`db.signature`
+    // stays the decls-only query (per #531, deliberately not merged with
+    // the full index), and a caller that already knows the local's own
+    // declaring file gets it instead through `db.local_signature` (issue
+    // #530's per-file locals path — see `local_signature.rs`'s tests).
     let db = db_with(&[(
         "main.ink",
         "=== quest(hero) ===\n~ temp step = 1\nOnward.\n-> END\n",
