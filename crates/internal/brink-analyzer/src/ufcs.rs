@@ -81,9 +81,11 @@
 //! (a caller that never ran this pass) still refuses with
 //! [`DiagnosticCode::E144`] rather than lowering against the receiver's own
 //! id, which would be a silently wrong program — but that is a defensive
-//! fallback now, not the unconditional behavior. IDE hover/go-to-def, to
-//! name the real target rather than the receiver the [`ResolutionMap`]
-//! records for the callee path, is still unwired.
+//! fallback now, not the unconditional behavior. IDE hover/go-to-def
+//! (issue #1507, `brink-ide`'s `ufcs_hover` module) is wired too — it reads
+//! the same memoized table (`brink_db::ProjectDb::ufcs_verdict`) to name the
+//! real target rather than the receiver the [`ResolutionMap`] records for
+//! the callee path.
 //!
 //! [`SideTable`] is deliberately generic over its payload: it is
 //! `(node → verdict)` plumbing, so a second payload kind can ride the same

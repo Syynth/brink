@@ -21,7 +21,8 @@ use crate::queries::{
     inferred_signature_query, lir_knot_chunk_query, lir_prelude_decls_query, lir_query,
     lowered_query, parse_native_query, parse_query, per_file_diagnostics_query,
     resolutions_index_query, resolve_query, signature_query, story_data_query, suppressions_query,
-    symbol_index_query, type_diagnostics_query, type_inference_query, value_meta_query,
+    symbol_index_query, type_diagnostics_query, type_inference_query, ufcs_resolution_query,
+    value_meta_query,
 };
 
 /// Stateful incremental project database.
@@ -463,6 +464,24 @@ impl ProjectDb {
     /// underlying atom harvest + per-SCC fixpoint.
     pub fn effects(&self, def: DefinitionId) -> Option<Arc<EffectRow>> {
         effects_query(&self.salsa, self.project, DefKey::new(&self.salsa, def))
+    }
+
+    /// The B3a UFCS resolution verdict for the call site at `range` in
+    /// `file` (issue #1507) — reads the same memoized `ufcs_resolution_query`
+    /// (#1506) LIR lowering already shares, rather than re-running the
+    /// analyzer's `ufcs` pass a second time for IDE hover/go-to-def. `None`
+    /// when the pass recorded no verdict at this exact range: not a
+    /// UFCS-shaped call site, an unresolved one (already diagnosed
+    /// E140–E143 elsewhere), or the project has no dotted-callee call
+    /// anywhere (`ufcs_resolution_query`'s own laziness gate).
+    pub fn ufcs_verdict(
+        &self,
+        file: FileId,
+        range: rowan::TextRange,
+    ) -> Option<&brink_ir::lir::UfcsVerdict> {
+        ufcs_resolution_query(&self.salsa, self.project)
+            .table
+            .get(file, range)
     }
 
     /// Per-file type diagnostics (`type_diagnostics(FileId)`). Advisory-only
