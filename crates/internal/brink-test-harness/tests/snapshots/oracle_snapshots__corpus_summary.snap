@@ -304,10 +304,12 @@ tier3/bools/I135-bools-can-be-coerced: PASS (1/1 episodes)
 tier3/callstack/I075-clean-callstack-reset-on-path-choice: PASS (1/1 episodes)
 tier3/callstack/I076-call-stack-evaluation: PASS (1/1 episodes)
 tier3/floats/I133-float-printing-precision: PASS (1/1 episodes)
+tier3/includes/choice-accumulation-across-include: FAIL (0/2 episodes, 2 mismatch)
 tier3/includes/entry-file-trailing-weave: PASS (2/2 episodes)
-tier3/includes/include: SKIP
+tier3/includes/include: PASS (1/1 episodes)
 tier3/includes/included-file-trailing-weave: PASS (2/2 episodes)
-tier3/includes/nested-include: SKIP
+tier3/includes/nested-include: PASS (1/1 episodes)
+tier3/includes/root-content-splice-site: FAIL (0/1 episodes, 1 mismatch)
 tier3/lists/tower-of-hanoi: PASS (1000/1000 episodes)
 tier3/misc/I016-empty: SKIP
 tier3/misc/I017-end: PASS (1/1 episodes)
