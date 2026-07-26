@@ -38,10 +38,21 @@ pub struct Sig {
     /// firewall rule) — so every existing consumer of `value_type`
     /// (notably `infer::collect_globals`) picks up the annotated type
     /// automatically, with no seam change.
+    ///
+    /// [`local_signature`]'s `Param`/`Temp` locals populate this field too
+    /// (issue #530) — there it is never initializer-inferred (a local has
+    /// no initializer-literal path here), only the downcast of the local's
+    /// own TM-2 `: type` annotation, `None` when unannotated or unresolved.
     pub value_type: Option<InferredType>,
     /// A VAR/CONST's declaration-derived type at **full [`Ty`] fidelity**
-    /// (issue #1540) — `None` for every other symbol kind, and for a
-    /// VAR/CONST whose declaration determines no type at all.
+    /// (issue #1540) — `None` for every other `signature`-produced symbol
+    /// kind, and for a VAR/CONST whose declaration determines no type at
+    /// all. [`local_signature`] (issue #530) is the one other producer that
+    /// populates this field: for a `Param`/`Temp`, it is the local's own
+    /// TM-2 `: type` annotation resolved the same way, `None` when the
+    /// local is unannotated — this is precisely the field
+    /// `brink-ide::hover::inferred_local_type_str` reads via
+    /// `db.local_signature`.
     ///
     /// This is the field every *typed* consumer reads (`collect_globals` in
     /// both this crate and `brink-db`'s narrowed mirror); `value_type` above
@@ -466,5 +477,64 @@ pub fn signature(
         is_local,
         param_annotations,
         return_annotation,
+    }))
+}
+
+/// The per-file locals path [`signature`] itself cannot take (issue #530).
+///
+/// A local (`Param`/`Temp`) `DefinitionId` is a content hash of
+/// `(scope, name, kind)` alone (`manifest::local_definition_id`) — it has
+/// no file component, unlike a declaration's id (recoverable from the
+/// project-wide index's `SymbolInfo.file`). So `signature`'s own
+/// `index.symbols.get(&def)` lookup can never find one once the caller
+/// passes the decls-only [`resolution_index_query`](../../brink_db)
+/// projection ([`resolution_index_query`]'s own doc: locals are dropped
+/// entirely, issue #517) — and widening that lookup to the full,
+/// range-carrying index would reintroduce exactly the whole-project
+/// invalidation #517's cutoff exists to kill. A local's body lives in
+/// exactly one file (the same fact [`crate::resolve::lookup_local_in_scope`]
+/// already leans on), so a caller that already knows which file declares
+/// the local — hover, go-to-def, resolved from a reference inside that
+/// same file — can hand this function that file's own `manifest` directly,
+/// keeping the lookup a narrow per-file scan instead of a project-wide one.
+///
+/// Declaration-derived only, matching [`signature`]'s own contract: a
+/// `Param`'s or `~ temp`'s TM-2 (docs/typed-mode-spec.md §3) `: type`
+/// annotation, if any — no body inference (that's `infer_body`'s job, read
+/// separately by a caller that wants an inferred fallback). `is_local` is
+/// always `false` — the `#@local` flow-private directive only exists on
+/// knot/stitch/VAR declarations, never on a param or temp. `params` and
+/// `param_annotations` stay empty and `return_annotation` stays `None` —
+/// a local isn't callable, so those `Sig` fields (knot/stitch-only) don't
+/// apply. Returns `None` when `def` doesn't match any local declared in
+/// `manifest`.
+#[must_use]
+pub fn local_signature(
+    def: DefinitionId,
+    manifest: &brink_ir::SymbolManifest,
+    index: &SymbolIndex,
+    host: Option<&HostManifest>,
+) -> Option<Arc<Sig>> {
+    let local = manifest
+        .locals
+        .iter()
+        .find(|l| crate::manifest::local_definition_id(&l.scope, &l.name, l.kind) == def)?;
+
+    let names = crate::annotations::TypeNames::new(index, host);
+    let value_ty = local
+        .annotation
+        .as_ref()
+        .and_then(|a| resolve_annotation(a, &names));
+    let value_type = value_ty.as_ref().and_then(ty_to_inferred_type);
+
+    Some(Arc::new(Sig {
+        name: local.name.clone(),
+        kind: local.kind,
+        params: Vec::new(),
+        value_type,
+        value_ty,
+        is_local: false,
+        param_annotations: Vec::new(),
+        return_annotation: None,
     }))
 }

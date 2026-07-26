@@ -1219,6 +1219,114 @@ fn roundtrip_line_entry_with_audio_ref() {
     );
 }
 
+// Regression for #1444: `LineFlags` is derived, not stored — `.inkb`
+// decoding recomputes it from the decoded `LineContent` via
+// `LineFlags::from_content` (see `decode_line_entry`). Round-trip templates
+// whose first/last part is an interpolation slot (or an empty leading
+// literal, which used to defeat the STARTS_WITH_WS check the same way a
+// future zero-width part kind would) through encode+decode and confirm the
+// recomputed flags match what a fresh `LineFlags::from_content` call gives —
+// i.e. the fix holds after going through the wire format, not just in
+// isolation.
+#[test]
+fn roundtrip_line_flags_for_template_with_edge_slot_and_empty_literal() {
+    use brink_format::{
+        ContainerDef, CountingFlags, DefinitionId, DefinitionTag, LineContent, LineEntry,
+        LineFlags, LinePart, NameId, ScopeLineTable, StoryData,
+    };
+
+    let scope_id = DefinitionId::new(DefinitionTag::Address, 1);
+
+    // Leading Slot, trailing whitespace literal — conservative on the slot
+    // side, exact on the literal side.
+    let leading_slot = LineContent::Template(vec![
+        LinePart::Slot(0),
+        LinePart::Literal("trailing ".to_string()),
+    ]);
+    // Empty leading literal ahead of a whitespace-leading literal — must not
+    // defeat STARTS_WITH_WS (the bug this issue fixes).
+    let empty_leading_literal = LineContent::Template(vec![
+        LinePart::Literal(String::new()),
+        LinePart::Literal(" indented".to_string()),
+    ]);
+
+    let data = StoryData {
+        containers: vec![ContainerDef {
+            id: scope_id,
+            scope_id,
+            name: Some(NameId(0)),
+            bytecode: vec![],
+            counting_flags: CountingFlags::empty(),
+            path_hash: 0,
+            param_count: 0,
+            params: vec![],
+            local: false,
+        }],
+        line_tables: vec![ScopeLineTable {
+            scope_id,
+            lines: vec![
+                LineEntry {
+                    content: leading_slot.clone(),
+                    flags: LineFlags::from_content(&leading_slot),
+                    source_hash: 1,
+                    audio_ref: None,
+                    slot_info: Vec::new(),
+                    source_location: None,
+                },
+                LineEntry {
+                    content: empty_leading_literal.clone(),
+                    flags: LineFlags::from_content(&empty_leading_literal),
+                    source_hash: 2,
+                    audio_ref: None,
+                    slot_info: Vec::new(),
+                    source_location: None,
+                },
+            ],
+        }],
+        variables: vec![],
+        list_defs: vec![],
+        list_items: vec![],
+        externals: vec![],
+        addresses: vec![],
+        address_paths: vec![],
+        name_table: vec!["root".to_string()],
+        list_literals: vec![],
+        literal_pool: vec![],
+        struct_shapes: vec![],
+        private_defs: vec![],
+        alias_table: vec![],
+        effect_rows: vec![],
+        frame_shapes: Vec::new(),
+        source_checksum: 0,
+    };
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+    let mut recovered = read_inkb(&buf).unwrap();
+    recovered.source_checksum = data.source_checksum;
+
+    assert_eq!(data, recovered);
+
+    let recovered_leading_slot = &recovered.line_tables[0].lines[0];
+    assert!(
+        !recovered_leading_slot
+            .flags
+            .contains(LineFlags::STARTS_WITH_WS)
+    );
+    assert!(
+        recovered_leading_slot
+            .flags
+            .contains(LineFlags::ENDS_WITH_WS)
+    );
+
+    let recovered_empty_leading_literal = &recovered.line_tables[0].lines[1];
+    assert!(
+        recovered_empty_leading_literal
+            .flags
+            .contains(LineFlags::STARTS_WITH_WS)
+    );
+}
+
 // Regression for #954, sibling of the `.inkt` reader's guard (#745): a
 // mutated `.inkb` can declare a `param_count` that disagrees with the number
 // of per-param name/mode metadata entries that actually follow it. Before
