@@ -1372,10 +1372,7 @@ fn e149_ufcs_remove_on_a_statically_known_array() {
         .map(|_| ())
         .unwrap_err();
     let diags = errors_of(err);
-    assert!(
-        diags.iter().any(|d| d.code == DiagnosticCode::E149),
-        "expected E149 for `ks.remove(0)`, got: {diags:?}"
-    );
+    assert_code_at_nth(&diags, DiagnosticCode::E149, source, "ks.remove(0)", 0);
 }
 
 /// The verb's legal receiver is untouched by the UFCS leg: a *map* receiver

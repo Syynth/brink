@@ -54,8 +54,12 @@ pub struct Sig {
     /// - an explicit `: type` annotation on the VAR/CONST, resolved by
     ///   [`crate::annotations::resolve`] with **no downcast** (so
     ///   `array<int>`, `map<string, int>`, a declared `STRUCT` name,
-    ///   `fn(T…): R`, `option<T>`, `range` and `handle<K>` all survive —
-    ///   this is the `ty_to_inferred_type` gap issue #1540 closes);
+    ///   `fn(T…): R` and `handle<K>` all survive — this is the
+    ///   `ty_to_inferred_type` gap issue #1540 closes). `option<T>` and
+    ///   `range` have **no annotation grammar at all**
+    ///   ([`crate::annotations::resolve`] has no arm for either), so a
+    ///   `Ty::Option`/`Ty::Range` value can never actually reach this
+    ///   field yet;
     /// - else the initializer literal, at the same fidelity
     ///   ([`literal_ty`]): `#[…]` → `Ty::Array`, `#{…}` → `Ty::Map`,
     ///   `Name#{…}` → `Ty::Struct`, plus every scalar/`list<L>` form
@@ -169,8 +173,11 @@ fn value_type_with_annotation_override(
 /// constant-folds into a declaration default at all (`brink-ir`'s
 /// `lir::lower::decls::is_const_foldable_decl_default` returns `false` for
 /// it), so typing one here would mint `NonEmptyRange` evidence — or its
-/// absence — for a declaration that cannot compile. A `range` *annotation*
-/// still resolves normally through `declared_value_ty`'s first branch.
+/// absence — for a declaration that cannot compile. Moot in practice: a
+/// `range` *annotation* has no grammar either
+/// ([`crate::annotations::resolve`] has no `"range"` arm), so
+/// `declared_value_ty`'s annotation branch can't produce `Ty::Range` any
+/// more than this literal branch can.
 fn literal_ty(expr: &Expr, index: &SymbolIndex) -> Option<Ty> {
     match expr {
         Expr::ArrayLiteral(a) => Some(Ty::Array(Box::new(crate::infer::unify_all(
@@ -213,31 +220,24 @@ fn declared_value_ty(
     if let Some(ty) = annotation.and_then(|ann| resolve_annotation(ann, names)) {
         return Some(ty);
     }
-    literal_ty(value, index)
-        .or_else(|| declared_fn_type(value, annotation, index, files, names, manifest))
+    literal_ty(value, index).or_else(|| declared_fn_type(value, index, files, manifest))
 }
 
-/// A VAR/CONST's declaration-derived `fn(T…): R` type (T1c follow-up, issue
-/// #712) — `None` when neither an `fn(...)` annotation nor a `#fn(...)`
-/// initializer applies. Feeds [`Sig::value_ty`]'s last fallback.
+/// A VAR/CONST's declaration-derived `#fn(target, args…)` initializer type
+/// (T1c follow-up, issue #712) — `None` when the initializer isn't a
+/// `#fn(...)` literal. Feeds [`Sig::value_ty`]'s last fallback, after the
+/// annotation and the initializer-literal branches in
+/// [`declared_value_ty`] have both already come up empty — an `fn(...)`
+/// *annotation* is resolved and returned there directly (that call site's
+/// own `if let Some(ty) = annotation.and_then(...)` is strictly earlier in
+/// the firewall order and already covers it), so this function only ever
+/// needs to look at the initializer.
 fn declared_fn_type(
     value: &Expr,
-    annotation: Option<&brink_ir::TypeExpr>,
     index: &SymbolIndex,
     files: &[(FileId, &HirFile)],
-    names: &crate::annotations::TypeNames,
     manifest: Option<&HostManifest>,
 ) -> Option<Ty> {
-    // Annotation wins over inference (TM-2 firewall) — same rule as
-    // `value_type_with_annotation_override`, but reading the full `Ty`
-    // straight from `resolve_annotation` instead of downcasting through
-    // `InferredType` (which has no `Fn` form — see `Sig::fn_type`'s doc).
-    if let Some(ann) = annotation
-        && let Some(ty @ Ty::Fn(..)) = resolve_annotation(ann, names)
-    {
-        return Some(ty);
-    }
-
     let Expr::FnLiteral(fl) = value else {
         return None;
     };

@@ -250,10 +250,14 @@ fn index_resolutions_by_file(
 /// Reads [`Sig::value_ty`](crate::Sig::value_ty) — the declaration's type at
 /// full [`Ty`] fidelity. Before issue #1540 this read the narrow
 /// `Sig::value_type` (with a `Sig::fn_type` fallback), which had no
-/// representation for `Array`/`Map`/`Struct`/`Fn`/`Option`/`Range`, so a
+/// representation for `Array`/`Map`/`Struct`/`Fn`/`Handle`, so a
 /// collection-typed global was invisible to every typed check keyed on this
 /// map — E149 and the TM-3/T1e family all missed `VAR arr = #[…]` entirely.
-/// One field now carries the whole domain, so nothing can fall out again.
+/// One field now carries that whole domain, so nothing in it can fall out
+/// again. `option<T>`/`range` are not part of that domain yet: neither has
+/// annotation grammar at all (`crate::annotations::resolve` has no arm for
+/// either), so a `VAR`/`CONST` can't be declared with one in the first
+/// place.
 ///
 /// `pub(crate)` (issue #670) so `structs::check`'s non-literal struct-field
 /// classification can resolve a variable-valued initializer that names a
