@@ -21,6 +21,7 @@ mod manifest;
 mod map_keys;
 mod modules;
 mod native_admission;
+mod native_choice_dead_end;
 mod option_conditions;
 mod option_rules;
 mod protocols;
@@ -71,6 +72,7 @@ pub use infer::{
 };
 pub use manifest::{ModuleMap, ResolvedModule};
 pub use native_admission::validate_native_accept_list;
+pub use native_choice_dead_end::check as check_native_choice_dead_end;
 pub use protocols::{
     Protocol, ProtocolImplDecl, check_protocol_impls, check_reserved_names,
     is_reserved_protocol_name, iterate_element_ty, iterate_val_ty,
