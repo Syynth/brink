@@ -46,7 +46,7 @@ use std::sync::Arc;
 use brink_compiler::{CompileError, CompileOutput, ResolvedDiagnostic};
 use brink_driver::{AnalysisOptions, Dialect, Driver, LintLevel, TypePolicy};
 use brink_ir::Diagnostic;
-use brink_project_config::{ConfigError, discover_from_entry_in_tree, parse_str};
+use brink_project_config::{ConfigError, discover_from_entry_in_tree, parse_str_at};
 use brink_source_tree::SourceTree;
 
 // ── Content addressing ───────────────────────────────────────────────
@@ -385,10 +385,11 @@ fn resolve_options(
                 path: config_key.clone(),
                 source,
             })?;
-        let (config, warnings) = parse_str(&text).map_err(|source| LoadError::Config {
-            path: config_key.clone(),
-            source,
-        })?;
+        let (config, warnings) =
+            parse_str_at(config_key.clone(), &text).map_err(|source| LoadError::Config {
+                path: config_key.clone(),
+                source: Box::new(source),
+            })?;
         for warning in &warnings {
             // The producer is the effectful side; surfacing unknown-key
             // warnings here (rather than dropping them) preserves the CLI's
@@ -508,13 +509,22 @@ pub enum LoadError {
     /// recognized key with an out-of-range value). Unknown keys are warnings,
     /// never this error. Carries the discovered `path` so the message names
     /// which file failed — lost when this variant went through a bare
-    /// `#[from] ConfigError` in #1306 (#1369 restores it).
-    #[error("project config error in {path}: {source}")]
+    /// `#[from] ConfigError` in #1306 (#1369 restores it). `source` is
+    /// itself now path-carrying too (#1384: `parse_str_at` threads `path`
+    /// into every `ConfigError` it raises), so this field is kept for
+    /// structural/pattern-matching access (existing callers destructure
+    /// `LoadError::Config { path, .. }`) rather than duplicated into the
+    /// rendered message — `source`'s own `Display` already names the file.
+    /// `source` is boxed: `ConfigError` grew past `clippy::result_large_err`'s
+    /// threshold once #1384 threaded `path` into its own variants, and this
+    /// is the one `LoadError` variant that stacks a second `path` field on
+    /// top of it.
+    #[error("{source}")]
     Config {
         /// The root-relative key of the `brink.toml` that failed to parse.
         path: String,
         #[source]
-        source: ConfigError,
+        source: Box<ConfigError>,
     },
     /// A discovered `brink.toml` could not be *read* (permission error,
     /// non-UTF-8 bytes, or any other I/O failure) — the other half of

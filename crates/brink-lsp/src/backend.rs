@@ -818,8 +818,8 @@ struct ConfigLoadOutcome {
     diagnostic: Option<tower_lsp::lsp_types::Diagnostic>,
 }
 
-/// Best-effort byte-span → LSP range for a `ConfigError::Toml` (malformed
-/// TOML syntax carries a span via `toml::de::Error::span`). Every other
+/// Best-effort byte-span → LSP range for a `ConfigError` (malformed TOML
+/// syntax carries a span — see `ConfigError::span`, #1384). Every other
 /// `ConfigError` variant (unreadable file, a recognized key holding the
 /// wrong shape/value) has no location narrower than "the whole file", and a
 /// span this project's `u32`-based `TextSize` can't represent falls back the
@@ -829,10 +829,7 @@ fn toml_span_to_lsp_range(
     error: &brink_project_config::ConfigError,
     source: Option<&str>,
 ) -> Option<Range> {
-    let brink_project_config::ConfigError::Toml(toml_error) = error else {
-        return None;
-    };
-    let span = toml_error.span()?;
+    let span = error.span()?;
     let source = source?;
     let start = u32::try_from(span.start).ok()?;
     let end = u32::try_from(span.end).ok()?;
@@ -924,7 +921,8 @@ fn resolve_language_options(
     {
         outcome.path = Some(path.clone());
         match std::fs::read_to_string(&path) {
-            Ok(text) => match brink_project_config::parse_str(&text) {
+            Ok(text) => match brink_project_config::parse_str_at(path.display().to_string(), &text)
+            {
                 Ok((config, warnings)) => {
                     for warning in &warnings {
                         tracing::warn!("[{}] {warning}", path.display());
@@ -939,7 +937,11 @@ fn resolve_language_options(
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("failed to parse {}: {e}", path.display());
+                    // `e`'s own `Display` already names `path` (#1384:
+                    // `parse_str_at` threads it into every `ConfigError`),
+                    // so this no longer needs its own `path.display()`
+                    // prefix the way the pre-#1384 bare `parse_str` did.
+                    tracing::warn!("failed to parse: {e}");
                     outcome.diagnostic = Some(config_error_diagnostic(&e, Some(&text)));
                 }
             },
@@ -2728,8 +2730,9 @@ mod tests {
     use tower_lsp::lsp_types::Diagnostic;
 
     use super::{
-        PublishDecision, PublishRecord, PublishTier, collect_ink_files, config_error_diagnostic,
-        path_under_ignored_dir, publish_decision,
+        ConfigOverrides, PublishDecision, PublishRecord, PublishTier, collect_ink_files,
+        config_error_diagnostic, path_under_ignored_dir, publish_decision,
+        resolve_language_options,
     };
 
     /// A unique per-test scratch directory under the OS temp dir, mirroring
@@ -2889,6 +2892,7 @@ mod tests {
     #[test]
     fn config_error_diagnostic_is_always_error() {
         let err = brink_project_config::ConfigError::NotATable {
+            path: "brink.toml".to_owned(),
             key: "types".to_owned(),
             found: "string",
         };
@@ -2896,6 +2900,36 @@ mod tests {
         assert_eq!(
             diag.severity,
             Some(tower_lsp::lsp_types::DiagnosticSeverity::ERROR)
+        );
+    }
+
+    /// #1384: `resolve_language_options`'s published diagnostic for a
+    /// malformed `brink.toml` must name the file in its message text, not
+    /// just via the diagnostic's implicit file association — a bare
+    /// `ConfigError::Display` pre-#1384 (`error.to_string()` with no path
+    /// prefix) had nothing identifying which file failed once the message
+    /// left the editor's per-file diagnostic list (e.g. in a client's
+    /// aggregated "Problems" pane).
+    #[test]
+    fn resolve_language_options_diagnostic_names_its_path_on_malformed_toml() {
+        let root = temp_dir("config-diagnostic-path");
+        std::fs::write(
+            root.join("brink.toml"),
+            "[project]\ndialect = \"sideways\"\n",
+        )
+        .expect("write brink.toml");
+
+        let (_, outcome) =
+            resolve_language_options(ConfigOverrides::default(), std::slice::from_ref(&root));
+
+        let diag = outcome
+            .diagnostic
+            .expect("malformed brink.toml must publish a diagnostic");
+        let expected_path = root.join("brink.toml").display().to_string();
+        assert!(
+            diag.message.contains(&expected_path),
+            "diagnostic message must name the file, got: {}",
+            diag.message
         );
     }
 
