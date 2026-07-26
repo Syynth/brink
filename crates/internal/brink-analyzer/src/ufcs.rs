@@ -38,11 +38,18 @@
 //! there is deliberately no deferral machinery here. The improvement
 //! (smarter inference ordering) is tracked separately and is additive.
 //!
-//! **D5 is out of scope** (issue #1462 builds on top of this pass): the
-//! desugar recorded here is **by value only**. A free function whose first
-//! parameter is declared `ref` is refused with
-//! [`DiagnosticCode::E143`] — pointing at #1462 — rather than desugared by
-//! value, which would silently drop the mutation.
+//! **D5 — auto-ref** (issue #1462, landed on top of this pass): the desugar
+//! is by value *unless* the resolved free function's first parameter is
+//! declared `ref`. Then the receiver is passed by reference
+//! ([`UfcsVerdict::FreeFnAutoRef`]) and the desugar spells the projection
+//! explicitly — `party.members.heal(5)` → `heal(ref party.members, 5)` —
+//! riding the T1e ref-argument/projection machinery
+//! (`brink_ir::lir::lower::expr::lower_call_args`), never a parallel path.
+//! A receiver that cannot be written through is refused with
+//! [`DiagnosticCode::E143`] rather than silently desugared by value, which
+//! would drop the mutation: see [`UfcsVisitor::auto_ref_fault`] for exactly
+//! which receivers those are. A non-`ref` first parameter is unaffected —
+//! plain by-value desugar, with no lvalue requirement on the receiver.
 //!
 //! ## Scope fences
 //!
@@ -218,6 +225,22 @@ pub enum UfcsVerdict {
         /// non-callable match is `E140`, never a verdict.
         field_ty: Ty,
     },
+    /// **D5 auto-ref** (issue #1462): a free function won (step 3) *and* its
+    /// first parameter is declared `ref`, so the call desugars to
+    /// `name(ref recv, args)` — the receiver spelled as an explicit T1e
+    /// ref-argument/projection, so the callee's writes land in the
+    /// receiver's own cell instead of in a copy.
+    ///
+    /// Only ever recorded for a receiver that can actually be written
+    /// through ([`UfcsVisitor::auto_ref_fault`]); anything else is `E143`.
+    FreeFnAutoRef {
+        /// The receiver's inferred type.
+        receiver: Ty,
+        /// The free function's name, as written.
+        name: String,
+        /// The definition the desugared call targets.
+        target: DefinitionId,
+    },
     /// A free function won (step 3): the call desugars to
     /// `name(recv, args)`, by value.
     FreeFnDesugar {
@@ -264,6 +287,9 @@ pub fn to_lir_lookup(table: &UfcsTable) -> brink_ir::lir::UfcsLookup {
             let range = TextRange::new(key.range.0.into(), key.range.1.into());
             let mirrored = match verdict {
                 UfcsVerdict::FieldCall { .. } => brink_ir::lir::UfcsVerdict::FieldCall,
+                UfcsVerdict::FreeFnAutoRef { target, .. } => {
+                    brink_ir::lir::UfcsVerdict::FreeFnAutoRef { target: *target }
+                }
                 UfcsVerdict::FreeFnDesugar { target, .. } => {
                     brink_ir::lir::UfcsVerdict::FreeFnDesugar { target: *target }
                 }
@@ -425,6 +451,22 @@ impl HirVisitor for UfcsVisitor<'_> {
     }
 }
 
+/// The receiver half of one UFCS call site, resolved: everything the two
+/// resolution steps and D5's auto-ref gate need to know about `recv` in
+/// `recv.name(args)`.
+struct Receiver<'a> {
+    /// The definition the head segment resolved to (a param/temp/`VAR`/
+    /// `CONST` — [`UfcsVisitor::value_receiver_def`]).
+    def: DefinitionId,
+    /// Every segment before the final pre-`(` one, head first.
+    segments: &'a [brink_ir::Name],
+    /// The receiver as written (`party.members`), for diagnostics.
+    text: String,
+    /// The receiver's inferred type ([`UfcsVisitor::receiver_ty`]) — never
+    /// `Unknown`/`Conflicted`, which is `E142` one step earlier.
+    ty: Ty,
+}
+
 impl UfcsVisitor<'_> {
     fn current_locals(&self) -> Option<&BTreeMap<String, Ty>> {
         self.stitch_locals.or(self.knot_locals)
@@ -468,13 +510,21 @@ impl UfcsVisitor<'_> {
             return;
         };
 
+        let receiver = Receiver {
+            def: head_def,
+            segments: receiver_segs,
+            text: receiver_text,
+            ty: receiver_ty,
+        };
+
         // Step 2 — field access wins outright (D1).
-        if self.try_field_call(path, method, &receiver_ty, &receiver_text) {
+        if self.try_field_call(path, method, &receiver) {
             return;
         }
 
-        // Step 3 — a free function in ordinary lexical scope (D4).
-        if self.try_free_fn_desugar(path, method, receiver_ty.clone(), &receiver_text, arg_count) {
+        // Step 3 — a free function in ordinary lexical scope (D4), by value
+        // or auto-ref'd (D5).
+        if self.try_free_fn_desugar(path, method, &receiver, arg_count) {
             return;
         }
 
@@ -486,7 +536,8 @@ impl UfcsVisitor<'_> {
                 "cannot resolve `{receiver_text}.{method}(…)`: `{recv_ty}` declares no field \
                  `{method}`, and no function `{method}` is in scope here",
                 method = method.text,
-                recv_ty = receiver_ty.display(),
+                receiver_text = receiver.text,
+                recv_ty = receiver.ty.display(),
             ),
         );
     }
@@ -499,9 +550,10 @@ impl UfcsVisitor<'_> {
         &mut self,
         path: &HirPath,
         method: &brink_ir::Name,
-        receiver_ty: &Ty,
-        receiver_text: &str,
+        receiver: &Receiver<'_>,
     ) -> bool {
+        let receiver_ty = &receiver.ty;
+        let receiver_text = &receiver.text;
         let Ty::Struct(shape_name) = receiver_ty else {
             return false;
         };
@@ -540,16 +592,22 @@ impl UfcsVisitor<'_> {
     /// `resolve::is_builtin_function`, e.g. `len`/`push`/`sort_by`, are not
     /// index symbols and would otherwise fall through to the `E141` "no
     /// function in scope" diagnostic, which is false: `push(xs, v)` compiles
-    /// today). Recorded as the by-value desugar, or refused with `E143` when
-    /// an index-symbol target's first parameter is `ref` (auto-ref is issue
-    /// #1462, built on top of this pass) — the prelude verbs have no
-    /// user-declared `ref` params to refuse.
+    /// today).
+    ///
+    /// **D5** picks the desugar's shape from the target's *first declared
+    /// parameter*: `ref` → [`UfcsVerdict::FreeFnAutoRef`] (the receiver is
+    /// passed by reference, provided it can be written through — otherwise
+    /// `E143`, see [`Self::auto_ref_fault`]); anything else → the plain
+    /// by-value [`UfcsVerdict::FreeFnDesugar`], with no lvalue requirement on
+    /// the receiver at all. The prelude verbs have no user-declared params to
+    /// read, so they are always the by-value shape here — the collection
+    /// mutators' own lvalue discipline is LIR lowering's ruled RMW expansion
+    /// (`brink_ir::lir::lower::blocks::try_lower_mutator_stmt`), unchanged.
     fn try_free_fn_desugar(
         &mut self,
         path: &HirPath,
         method: &brink_ir::Name,
-        receiver_ty: Ty,
-        receiver_text: &str,
+        receiver: &Receiver<'_>,
         arg_count: usize,
     ) -> bool {
         let Some(target) = crate::resolve::lookup_by_name(
@@ -566,7 +624,7 @@ impl UfcsVisitor<'_> {
                 || crate::resolve::is_builtin_function(&method.text)
             {
                 let verdict = UfcsVerdict::PreludeDesugar {
-                    receiver: receiver_ty,
+                    receiver: receiver.ty.clone(),
                     name: method.text.clone(),
                 };
                 self.table
@@ -581,13 +639,13 @@ impl UfcsVisitor<'_> {
             .get(&target)
             .and_then(|info| info.params.first())
             .is_some_and(|p| p.is_ref);
-        if first_param_is_ref {
+        if first_param_is_ref && let Some(cause) = self.auto_ref_fault(receiver) {
             let message = format!(
-                "`{name}`'s first parameter is `ref`, and method-call syntax onto a `ref` \
-                 parameter (auto-ref) is not supported yet — see issue #1462. Spell the call \
-                 explicitly as `{name}(ref {receiver_text}{comma})` for now",
+                "cannot mutate `{receiver_text}` through `{name}`: `{name}`'s first parameter is \
+                 `ref`, so `{receiver_text}.{name}(…)` auto-refs its receiver (D5) — but {cause}. \
+                 Bind the receiver to a durable cell, or call a by-value function on it",
                 name = method.text,
-                comma = if arg_count == 0 { "" } else { ", …" },
+                receiver_text = receiver.text,
             );
             self.push(path.range, DiagnosticCode::E143, &message);
             return true;
@@ -609,17 +667,80 @@ impl UfcsVisitor<'_> {
                  (`{receiver_text}.{name}(…)` desugars to `{name}({receiver_text}, …)`, counting \
                  the receiver as the first argument)",
                 name = method.text,
+                receiver_text = receiver.text,
             );
             self.push(path.range, DiagnosticCode::E031, &message);
         }
-        let verdict = UfcsVerdict::FreeFnDesugar {
-            receiver: receiver_ty,
-            name: method.text.clone(),
-            target,
+        let verdict = if first_param_is_ref {
+            UfcsVerdict::FreeFnAutoRef {
+                receiver: receiver.ty.clone(),
+                name: method.text.clone(),
+                target,
+            }
+        } else {
+            UfcsVerdict::FreeFnDesugar {
+                receiver: receiver.ty.clone(),
+                name: method.text.clone(),
+                target,
+            }
         };
         self.table
             .insert(NodeKey::new(self.file, path.range), verdict);
         true
+    }
+
+    /// **D5's receiver gate.** `Some(cause)` when auto-ref cannot write
+    /// through this receiver, phrased as the tail of the `E143` message;
+    /// `None` when it can.
+    ///
+    /// The desugar rides the T1e ref-argument machinery verbatim
+    /// (`brink_ir::lir::lower::expr::lower_call_args`), so it inherits that
+    /// machinery's own rules rather than inventing a second set:
+    ///
+    /// - A **bare** receiver (`gold.bump(1)`) binds like any unmarked
+    ///   ref-argument: a frame slot (param/temp) or a global `VAR` both work
+    ///   — `lower_ref_path_call_arg`'s `RefTemp`/`RefGlobal` pair.
+    /// - A **projection** receiver (`party.leader.heal(5)`) becomes a real
+    ///   `lir::CallArg::RefProjection`, whose root must be a **durable cell**
+    ///   (`docs/t1e-spec.md` §2, the `E080` rule `ref_projection::
+    ///   check_durable_root` enforces for the explicitly spelled form): a
+    ///   frame-local root dies with its frame and has no projection
+    ///   representation at all.
+    /// - A `CONST` is never writable at any depth.
+    ///
+    /// The ruled rvalue receivers (`[1,2].push(3)`, `a.sorted().push(x)` —
+    /// "mutating a temporary loses the mutation") reach this gate as soon as
+    /// they are spellable: today's native grammar admits only a dotted path
+    /// as a call's callee (`brink-syntax-native`'s `parser::expr::
+    /// path_or_call`), so a literal or a call cannot yet sit in receiver
+    /// position at all.
+    fn auto_ref_fault(&self, receiver: &Receiver<'_>) -> Option<String> {
+        let head = receiver.segments.first().map_or("", |s| s.text.as_str());
+        let is_projection = receiver.segments.len() > 1;
+        let frame_local = || {
+            is_projection.then(|| {
+                format!(
+                    "`{head}` is a temp/param that dies with its frame, and a `ref` projection's \
+                     root must be a durable cell (a VAR — `docs/t1e-spec.md` §2)"
+                )
+            })
+        };
+        match self.index.symbols.get(&receiver.def) {
+            Some(info) => match info.kind {
+                SymbolKind::Variable => None,
+                SymbolKind::Constant => Some(format!("`{head}` is a CONST, not a mutable cell")),
+                SymbolKind::Param | SymbolKind::Temp => frame_local(),
+                // `value_receiver_def` admits no other kind as a receiver.
+                _ => Some(format!(
+                    "`{head}` is not a value that can be written through"
+                )),
+            },
+            // Absent from `brink-db`'s narrowed index projection: a local
+            // temp/param, exactly as `value_receiver_def`/`head_ty` already
+            // treat it (and `ref_projection::check_durable_root`'s own
+            // `LocalVar` fallback).
+            None => frame_local(),
+        }
     }
 
     /// The resolved definition of `path`'s head when `path` is a

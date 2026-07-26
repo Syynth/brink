@@ -499,36 +499,169 @@ fn main(guest) {
     );
 }
 
-// ─── D5 fence: auto-ref is #1462, not this pass ──────────────────────
+// ─── D5: auto-ref (issue #1462) ──────────────────────────────────────
 
+/// A `ref` first parameter turns the desugar into the auto-ref shape — never
+/// the by-value one, which would silently drop the mutation — and the site is
+/// otherwise a clean resolution.
 #[test]
-fn a_ref_first_param_free_fn_is_refused_with_a_pointer_to_1462() {
+fn a_ref_first_param_auto_refs_a_frame_local_receiver() {
     let (hir, manifest) = lower(
         "\
-struct Guest {
-  name: string
-}
-
-fn heal(ref g, amount) {
-  return amount;
+fn bump(ref n, amount) {
+  n = n + amount;
 }
 
 fn main() {
-  let g = Guest { name: \"ada\" };
-  let n = g.heal(5);
+  let g = 1;
+  g.bump(5);
+}
+",
+    );
+    let verdicts = verdicts(&hir, &manifest);
+    assert_eq!(verdicts.len(), 1, "one UFCS site: {verdicts:?}");
+    let UfcsVerdict::FreeFnAutoRef { receiver, name, .. } = &verdicts[0] else {
+        panic!("expected an auto-ref verdict, got {:?}", verdicts[0]);
+    };
+    assert_eq!(name, "bump");
+    assert_eq!(*receiver, brink_analyzer::Ty::Int);
+    assert!(
+        !codes(&diagnostics(&hir, &manifest)).contains(&DiagnosticCode::E143),
+        "a writable receiver is not refused"
+    );
+}
+
+/// The durable half of the same rule: a global `VAR` receiver auto-refs too.
+#[test]
+fn a_ref_first_param_auto_refs_a_global_var_receiver() {
+    let (hir, manifest) = lower(
+        "\
+var hp: int = 1
+
+fn bump(ref n, amount) {
+  n = n + amount;
+}
+
+fn main() {
+  hp.bump(5);
+}
+",
+    );
+    let verdicts = verdicts(&hir, &manifest);
+    assert_eq!(verdicts.len(), 1, "one UFCS site: {verdicts:?}");
+    assert!(matches!(verdicts[0], UfcsVerdict::FreeFnAutoRef { .. }));
+}
+
+/// The auto-ref desugar owes the same arity check the by-value one does —
+/// the receiver still counts as the first argument.
+#[test]
+fn an_auto_ref_desugar_with_the_wrong_arity_is_still_reported() {
+    let (hir, manifest) = lower(
+        "\
+fn bump(ref n, amount) {
+  n = n + amount;
+}
+
+fn main() {
+  let g = 1;
+  g.bump(1, 2, 3);
+}
+",
+    );
+    let diags = diagnostics(&hir, &manifest);
+    let e031 = only(&diags, DiagnosticCode::E031);
+    assert!(
+        e031.message.contains("bump"),
+        "E031 must name the function: {}",
+        e031.message
+    );
+}
+
+/// D5's refusal: an immutable receiver under a `ref` first parameter is a
+/// compile error, never a by-value desugar that drops the mutation.
+#[test]
+fn a_const_receiver_under_a_ref_first_param_is_refused() {
+    let (hir, manifest) = lower(
+        "\
+const START: int = 1
+
+fn bump(ref n, amount) {
+  n = n + amount;
+}
+
+fn main() {
+  START.bump(5);
 }
 ",
     );
     assert!(
         verdicts(&hir, &manifest).is_empty(),
-        "a `ref` first param must never be desugared by value"
+        "an unwritable receiver must never be desugared"
     );
     let diags = diagnostics(&hir, &manifest);
     let e143 = only(&diags, DiagnosticCode::E143);
     assert!(
-        e143.message.contains("#1462"),
-        "E143 must point at the follow-up: {}",
+        e143.message.contains("cannot mutate") && e143.message.contains("CONST"),
+        "E143 must name the cause: {}",
         e143.message
+    );
+}
+
+/// The projection desugar inherits T1e's durable-root rule (`docs/
+/// t1e-spec.md` §2, the `E080` rule the explicitly spelled form obeys): a
+/// projection whose root is a frame-local has no representation at all.
+#[test]
+fn a_projection_off_a_frame_local_under_a_ref_first_param_is_refused() {
+    let (hir, manifest) = lower(
+        "\
+struct Guest {
+  hp: int
+}
+
+fn heal(ref h, amount) {
+  h = h + amount;
+}
+
+fn main() {
+  let g = Guest { hp: 1 };
+  g.hp.heal(5);
+}
+",
+    );
+    assert!(verdicts(&hir, &manifest).is_empty());
+    let diags = diagnostics(&hir, &manifest);
+    let e143 = only(&diags, DiagnosticCode::E143);
+    assert!(
+        e143.message.contains("cannot mutate") && e143.message.contains("durable"),
+        "E143 must name the durable-root rule: {}",
+        e143.message
+    );
+}
+
+/// The mirror of the rule: a **non-`ref`** first parameter puts no lvalue
+/// requirement on the receiver at all — the very `const` receiver refused
+/// above resolves cleanly as the ordinary by-value desugar.
+#[test]
+fn a_non_ref_first_param_accepts_an_immutable_receiver() {
+    let (hir, manifest) = lower(
+        "\
+const START: int = 1
+
+fn plus(n, amount) {
+  return n + amount;
+}
+
+fn main() {
+  let n = START.plus(5);
+}
+",
+    );
+    let verdicts = verdicts(&hir, &manifest);
+    assert_eq!(verdicts.len(), 1, "one UFCS site: {verdicts:?}");
+    assert!(matches!(verdicts[0], UfcsVerdict::FreeFnDesugar { .. }));
+    assert!(
+        !codes(&diagnostics(&hir, &manifest)).contains(&DiagnosticCode::E143),
+        "the by-value desugar has no lvalue requirement"
     );
 }
 

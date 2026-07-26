@@ -27,5 +27,5 @@ so this half is exercised by a hand-rewritten HIR fixture
 (`brink-ir/tests/ufcs_field_call.rs`), not an end-to-end `.brink` case.
 `.ink` compiles are unaffected (ink's own lowering cannot produce the
 multi-segment callee path this pass keys on). Auto-ref (a free function
-reached through method syntax whose first parameter is `ref`) stays out of
-scope — refused with `E143`, pointing at #1462.
+reached through method syntax whose first parameter is `ref`) was out of
+scope here; it lands separately in #1462, in this same release.
