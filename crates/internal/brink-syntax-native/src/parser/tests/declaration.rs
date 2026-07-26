@@ -611,6 +611,37 @@ fn flags_without_eq_shape_is_prose_not_a_decl() {
 
 // ── struct: field shapes, generic-type gap, malformed bodies ──────────
 
+/// Narrow a [`ast::TypeExpr`] to its `Name` variant, or fail — `panic!` is
+/// denied in this crate's production-lint set (`clippy.toml` exempts
+/// `unwrap`/`expect` in tests, not `panic!` itself), so this reaches the
+/// same "fail with a message" outcome through `Option::expect` on a
+/// deliberately-`None` fallback instead.
+fn expect_type_name(te: &ast::TypeExpr) -> String {
+    match te.kind() {
+        Some(ast::TypeExprKind::Name(n)) => n.name(),
+        _ => None,
+    }
+    .expect("expected a bare type name")
+}
+
+/// See [`expect_type_name`] — the `Generic` variant.
+fn expect_type_generic(te: &ast::TypeExpr) -> ast::TypeGeneric {
+    match te.kind() {
+        Some(ast::TypeExprKind::Generic(g)) => Some(g),
+        _ => None,
+    }
+    .expect("expected a generic type")
+}
+
+/// See [`expect_type_name`] — the `Fn` variant.
+fn expect_type_fn(te: &ast::TypeExpr) -> ast::TypeFn {
+    match te.kind() {
+        Some(ast::TypeExprKind::Fn(f)) => Some(f),
+        _ => None,
+    }
+    .expect("expected a fn type")
+}
+
 #[test]
 fn struct_decl_single_field() {
     let p = assert_lossless("struct Wrapper {\n  value: int\n}\n");
@@ -619,13 +650,12 @@ fn struct_decl_single_field() {
     let fields: Vec<_> = decl.fields().collect();
     assert_eq!(fields.len(), 1);
     assert_eq!(fields[0].name_token().expect("name").text(), "value");
-    let ty = fields[0].type_path().expect("type path");
-    assert_eq!(
-        ty.segments()
-            .map(|t| t.text().to_string())
-            .collect::<Vec<_>>(),
-        vec!["int"]
-    );
+    let ty = fields[0]
+        .type_annotation()
+        .expect("type annotation")
+        .type_expr()
+        .expect("type expr");
+    assert_eq!(expect_type_name(&ty), "int");
 }
 
 #[test]
@@ -649,20 +679,37 @@ fn struct_decl_empty_body() {
 }
 
 #[test]
-fn struct_field_dotted_type_path() {
-    // `path()` accepts `.`/`::`-joined segments — a struct field's type may
-    // be a module-qualified path, not just a bare `IDENT`.
+fn struct_field_dotted_type_path_is_a_documented_gap_not_a_panic() {
+    // Before NG-E (#1505), a struct field's type was a bare `path()`
+    // (`.`/`::`-joined segments), so a module-qualified type name like
+    // `geo::Point` parsed cleanly. Widening the field type to `type_expr`
+    // (#1487) trades that away: `type_name_or_generic` accepts a single
+    // `IDENT` only, the same restriction the brink dialect's own TM-2
+    // `type_expr` already has (`brink-syntax/src/parser/types.rs`) — so
+    // every `: type` position in this grammar, not just struct fields,
+    // shares this gap. Only asserting resilience here, same contract as
+    // every other documented gap in this file: no panic, and at least one
+    // recorded error surfacing the unsupported `::` continuation.
     let p = assert_lossless("struct Wrapper {\n  loc: geo::Point\n}\n");
-    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
-    let decl: ast::StructDecl = find_child(&p.syntax()).expect("struct decl");
-    let field = decl.fields().next().expect("field");
-    let segs: Vec<_> = field
-        .type_path()
-        .expect("type path")
-        .segments()
-        .map(|t| t.text().to_string())
-        .collect();
-    assert_eq!(segs, vec!["geo", "Point"]);
+    assert!(
+        !p.errors().is_empty(),
+        "expected the unsupported `::`-qualified type name to surface at least one error"
+    );
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::STRUCT_DECL));
+
+    // `a.b` is the module-qualified spelling `docs/modules-spec.md`
+    // documents, so it's the more likely real-source form of the two — and
+    // the same `type_name_or_generic`-only-accepts-a-single-`IDENT` gap
+    // swallows it too: `struct_field` reports "unexpected token in struct
+    // body" for the dangling `.Point` continuation, and a spurious
+    // `STRUCT_FIELD` named `loc` with `Point` orphaned outside it is what
+    // HIR lowering silently drops. Same contract, same assertions.
+    let p = assert_lossless("struct W {\n  loc: geo.Point\n}\n");
+    assert!(
+        !p.errors().is_empty(),
+        "expected the unsupported `.`-qualified type name to surface at least one error"
+    );
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::STRUCT_DECL));
 }
 
 #[test]
@@ -701,22 +748,68 @@ fn struct_decl_unexpected_token_in_body_recovers() {
 }
 
 #[test]
-fn struct_decl_generic_field_type_is_a_documented_gap_not_a_panic() {
-    // `struct_field`'s own doc comment already scopes this out: "a bare
-    // dotted path in this skeleton grammar (no generics/fn-types)". A
-    // generic field type (`array<int>`, the brink-syntax parity target's
-    // `struct_decl_generic_field_type` shape) is therefore NOT a supported
-    // shape here — this is a documented scope gap, not a bug this
-    // TEST-ONLY issue should paper over. Only asserting the resilience
-    // property: no panic, lossless round-trip, and at least one recorded
-    // error surfacing the gap.
-    let src = "struct Bag {\n  items: array<int>\n}\n";
+fn struct_decl_generic_field_type() {
+    // NG-E (issue #1505): `struct_field` now parses a full `type_expr`,
+    // so a container-typed field (`list<int>`) is a first-class shape —
+    // no longer the documented gap the pre-#1505 test of this name
+    // asserted. `map<K, V>` (multiple type arguments) is covered by
+    // `struct_decl_map_field_type` below.
+    let src = "struct Bag {\n  items: list<int>\n}\n";
     let p = assert_lossless(src);
-    assert!(
-        !p.errors().is_empty(),
-        "expected the unsupported `<...>` shape to surface at least one error"
-    );
-    assert!(has_node_kind(&p.syntax(), SyntaxKind::STRUCT_DECL));
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::StructDecl = find_child(&p.syntax()).expect("struct decl");
+    let field = decl.fields().next().expect("field");
+    let ty = field
+        .type_annotation()
+        .expect("type annotation")
+        .type_expr()
+        .expect("type expr");
+    let g = expect_type_generic(&ty);
+    assert_eq!(g.name().as_deref(), Some("list"));
+    let arg_names: Vec<_> = g.args().map(|a| expect_type_name(&a)).collect();
+    assert_eq!(arg_names, vec!["int".to_string()]);
+}
+
+#[test]
+fn struct_decl_map_field_type() {
+    // `map<K, V>` — a generic field type with more than one type argument
+    // (NG-E, issue #1505).
+    let src = "struct Registry {\n  items: map<string, int>\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::StructDecl = find_child(&p.syntax()).expect("struct decl");
+    let field = decl.fields().next().expect("field");
+    let ty = field
+        .type_annotation()
+        .expect("type annotation")
+        .type_expr()
+        .expect("type expr");
+    let g = expect_type_generic(&ty);
+    assert_eq!(g.name().as_deref(), Some("map"));
+    let arg_names: Vec<_> = g.args().map(|a| expect_type_name(&a)).collect();
+    assert_eq!(arg_names, vec!["string".to_string(), "int".to_string()]);
+}
+
+#[test]
+fn struct_decl_fn_typed_field() {
+    // Function-typed struct field (NG-E, issue #1505) — the only reachable
+    // positive case of #1482's ruled `UfcsVerdict::FieldCall` (D1
+    // field-access-wins needs an fn-typed field to exist at all).
+    let src = "struct Guest {\n  greet: fn(string): string\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::StructDecl = find_child(&p.syntax()).expect("struct decl");
+    let field = decl.fields().next().expect("field");
+    let ty = field
+        .type_annotation()
+        .expect("type annotation")
+        .type_expr()
+        .expect("type expr");
+    let f = expect_type_fn(&ty);
+    let param_names: Vec<_> = f.params().iter().map(expect_type_name).collect();
+    assert_eq!(param_names, vec!["string".to_string()]);
+    let ret = f.return_type().expect("return type");
+    assert_eq!(expect_type_name(&ret), "string");
 }
 
 #[test]
