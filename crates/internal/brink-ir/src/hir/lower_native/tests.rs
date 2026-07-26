@@ -984,7 +984,8 @@ fn effects_annotation_on_a_nested_fn_is_diagnosed_not_silently_dropped() {
     // `@[effects(…)]` must not be waved through as "consumed" only to be
     // read by nothing. `attached_declaration` sees an `FN_DECL` immediately
     // after, so this pins the depth check, not just the declaration kind.
-    let (_hir, _m, diags) = lower_src("flow a() {\n  @[effects(pure)]\n  fn b() {\n    x\n  }\n}\n");
+    let (_hir, _m, diags) =
+        lower_src("flow a() {\n  @[effects(pure)]\n  fn b() {\n    x\n  }\n}\n");
     assert!(
         diags.iter().any(|d| d.code == DiagnosticCode::E129),
         "the nested fn itself is still the E129 fence: {diags:?}"
