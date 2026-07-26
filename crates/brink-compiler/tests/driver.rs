@@ -416,6 +416,77 @@ fn compile_path_native_struct_decl_under_default_options_has_no_dialect_gate_e05
     );
 }
 
+// ── B1 `or`-coalescing (`docs/stdlib-spec.md` §1.6a, issue #1460) ────
+//
+// Full pipeline: native lexer (`KW_OR`) → native parser (`Prec::Coalesce`)
+// → native HIR lowering (`InfixOp::Coalesce`) → analyzer typing
+// (`infer::ty::coalesce`) → LIR → codegen (`Opcode::Coalesce`) → runtime VM
+// (`value_ops::coalesce`) → `Story` output. Compiles and *runs* the
+// program (not just a diagnostics-clean compile) so the opcode is proven
+// reachable end to end, not merely wired at the type level.
+
+/// Compile a native `.brink` entry from disk and run it to completion,
+/// returning the concatenated output text. Mirrors `compile_and_run`
+/// above, but for a native (not `.ink`) entry — `compile_and_run` is
+/// `.ink`-only (`compile_mem` hardcodes the `.ink` extension), so this is
+/// its own small helper rather than a parameterization of that one.
+fn compile_and_run_native(dir_suffix: &str, source: &str) -> String {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-native-b1-{dir_suffix}-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("main.brink"), source).unwrap();
+
+    let result = brink_compiler::compile_path(&dir.join("main.brink"));
+    std::fs::remove_dir_all(&dir).ok();
+    // B1 coalescing fixture must compile cleanly.
+    let data = result.unwrap().data;
+
+    let (program, line_tables) = brink_runtime::link(&data).unwrap();
+    let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
+    let lines = story.continue_maximally().unwrap();
+    let mut output = String::new();
+    for line in &lines {
+        output.push_str(line.text());
+    }
+    output
+}
+
+/// The collapse form (`Option[T] or T -> T`): `some(v)` unwraps to `v`,
+/// `none` falls through to the (already-`T`-typed) fallback unchanged.
+#[test]
+fn native_or_coalescing_collapse_form_unwraps_some_and_falls_back_on_none() {
+    let output = compile_and_run_native(
+        "collapse",
+        "flow main() {\n  Some case: {some(5) or 99}\n  None case: {none or 99} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Some case: 5"),
+        "expected the unwrapped `some(5)`, got: {output:?}"
+    );
+    assert!(
+        output.contains("None case: 99"),
+        "expected the `none` fallback, got: {output:?}"
+    );
+}
+
+/// The two-Option form and left-associative chaining (`a or b or default`):
+/// `none or none` keeps optionality (stays `none`), so the chain falls all
+/// the way through to the final non-Option fallback.
+#[test]
+fn native_or_coalescing_chains_left_associatively() {
+    let output = compile_and_run_native(
+        "chain",
+        "flow main() {\n  Chained: {none or none or 7} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Chained: 7"),
+        "expected the chain to fall through both `none`s to the final fallback, got: {output:?}"
+    );
+}
+
 // ── compile_path (disk-based) ───────────────────────────────────────
 
 #[test]

@@ -399,6 +399,27 @@ const SEQ_SORTED_BY: u8 = 0xF9;
 // discipline.
 const COLLECT: u8 = 0xFA;
 
+// B1 `or`-coalescing (`docs/stdlib-spec.md` §1.6a, `docs/decision-log.md`
+// "Option[T] ruled" 2026-07-18; issue #1460 — this PR's own reservation,
+// same "assigned here" precedent as the blocks above). One free byte
+// remained after NS-A7 (`0xFB`-`0xFD` + `0xFF`); this claims the first.
+// Native-surface-only: the surface spelling reuses the literal `or`
+// keyword, but `InfixOp::Or` (ink's boolean `||`, oracle-frozen) is left
+// untouched — `InfixOp::Coalesce` is a distinct HIR op that native
+// lowering alone produces, so this opcode is unreachable from the
+// oracle-covered brink/ink dialects.
+//
+//   0xFB Coalesce  `[lhs, rhs]` → per the ruled typing
+//                  (`(Option[T],T)->T`, `(Option[T],Option[T])->Option[T]`):
+//                  `lhs` must be `OptionVal`; `none` yields `rhs` unchanged,
+//                  `some(v)` yields `v` unwrapped if `rhs` is not itself an
+//                  `OptionVal` (the collapse form), else the original
+//                  `some(v)` unchanged (the two-Option form, keeping
+//                  optionality for chaining) — decided dynamically from
+//                  `rhs`'s runtime shape, matching the statically-checked
+//                  typing rule with no codegen branching required.
+const COALESCE: u8 = 0xFB;
+
 // List ops
 const LIST_CONTAINS: u8 = 0xB0;
 const LIST_NOT_CONTAINS: u8 = 0xB1;
@@ -1230,6 +1251,21 @@ pub enum Opcode {
     /// Fault on a non-map.
     MapClear,
 
+    // ── B1: `or`-coalescing (`docs/stdlib-spec.md` §1.6a, issue #1460) ────
+    /// `[lhs, rhs]` → per the ruled coalescing typing
+    /// (`(Option[T],T)->T`, `(Option[T],Option[T])->Option[T]`): `lhs`
+    /// must be an `OptionVal`. `none` yields `rhs` unchanged; `some(v)`
+    /// yields the unwrapped `v` when `rhs` is not itself an `OptionVal`
+    /// (the collapse form), or the original `some(v)` unchanged when
+    /// `rhs` is an `OptionVal` (the two-Option form, preserving
+    /// optionality for chaining) — decided from `rhs`'s runtime shape, the
+    /// same information the static typing rule already used to pick this
+    /// branch, so no separate codegen variant is needed. Native-surface
+    /// only: reachable exclusively through `InfixOp::Coalesce`, which the
+    /// native lowering path alone produces (`InfixOp::Or`, ink's boolean
+    /// `||`, is untouched and oracle-frozen).
+    Coalesce,
+
     // ── NS-A6: the `std::rand` draw verbs (`docs/stdlib-spec.md` §7,
     // ruled 2026-07-18; `docs/stdlib-sequencing.md` §2 Wave A6). Every op
     // below draws through the ONE RNG state cell (`rng_seed` +
@@ -1677,6 +1713,9 @@ impl Opcode {
             Self::MapGetOpt => write_u8(buf, MAP_GET_OPT),
             Self::MapContainsValue => write_u8(buf, MAP_CONTAINS_VALUE),
             Self::MapClear => write_u8(buf, MAP_CLEAR),
+
+            // B1 `or`-coalescing
+            Self::Coalesce => write_u8(buf, COALESCE),
             Self::RandFloat => write_u8(buf, RAND_FLOAT),
             Self::RandChance => write_u8(buf, RAND_CHANCE),
             Self::RandPick => write_u8(buf, RAND_PICK),
@@ -1936,6 +1975,9 @@ impl Opcode {
             MAP_GET_OPT => Self::MapGetOpt,
             MAP_CONTAINS_VALUE => Self::MapContainsValue,
             MAP_CLEAR => Self::MapClear,
+
+            // B1 `or`-coalescing
+            COALESCE => Self::Coalesce,
             RAND_FLOAT => Self::RandFloat,
             RAND_CHANCE => Self::RandChance,
             RAND_PICK => Self::RandPick,
@@ -2319,6 +2361,22 @@ mod tests {
             op.encode(&mut buf);
             assert_eq!(buf[0], byte, "{op:?} encoded to unexpected discriminant");
         }
+    }
+
+    /// B1 `or`-coalescing (issue #1460): one opcode, one byte, no operand.
+    #[test]
+    fn roundtrip_b1_coalesce() {
+        roundtrip(&Opcode::Coalesce);
+    }
+
+    /// `Coalesce` claims the first byte free after NS-A7's `Collect`
+    /// (`0xFA`) — `docs/format-v4-rfc.md`'s free-space note, updated by
+    /// this PR's own reservation comment above `COALESCE`.
+    #[test]
+    fn coalesce_opcode_byte_is_0xfb() {
+        let mut buf = Vec::new();
+        Opcode::Coalesce.encode(&mut buf);
+        assert_eq!(buf[0], 0xFB, "Coalesce encoded to unexpected discriminant");
     }
 
     #[test]

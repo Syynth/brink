@@ -32,11 +32,14 @@ have one."**
 > **Current spelling** — examples in this chapter compile in today's brink
 > dialect: collection literals carry the `#[…]`/`#{…}` sigils and the Option
 > verbs are free calls (`get(rooms, "Edda")`, `find(s, sub)`). The ruled
-> native `.brink` spellings — method-position calls (`rooms.get("Edda")`),
-> the `x or default` coalescing form, and the `as`-binding — arrive with the
-> native frontend, and this chapter's examples will be respelled then. Until
-> that lands, `or` in source is ink's boolean or (an alias for `||`),
-> nothing more.
+> native `.brink` spellings — method-position calls (`rooms.get("Edda")`)
+> and the `as`-binding — still arrive with further native-frontend work, and
+> this chapter's examples will be respelled then. The `x or default`
+> coalescing form has landed (B1, issue #1460) — but **only on the native
+> `.brink` surface**: `or` in the *brink dialect* this chapter's examples
+> use (the `~`-prefixed, `#[…]`-sigil syntax above) is still ink's boolean
+> or (an alias for `||`), unchanged and oracle-frozen; a native-surface
+> `.brink` file can already write `get(rooms, "Edda") or "no one"`.
 
 ## Absence is a value, not a fault
 
@@ -352,18 +355,20 @@ The heaviest night on the tab: {heaviest} coins — the ledger says {max(tab)}.
 The heaviest night on the tab: 7 coins — the ledger says some(7).
 ```
 
-> **Planned — the ergonomic completion (B1).** The ruled Option package
-> includes its ergonomics; they arrive with the native frontend. The
-> coalescing form `x or default` collapses an Option into a value
-> (`get(rooms, "Edda") or 0`), chains left-to-right staying optional until
-> the final non-Option fallback (`get(m, k) or get(m, k2) or 0`), and the
-> `as`-binding tests and unwraps in one move
-> (`{get(rooms, "Edda") as r: room {r} it is}`). The compiler's typing
-> machinery for coalescing already exists in-tree (chaining semantics per
-> finding F19 — substrate, implemented ahead of any surface); no spelling
-> reaches source until B1 lands, and today's `or` keyword remains ink's
-> boolean or. Nothing in this chapter changes then except how short it
-> gets.
+> **Landed on the native surface, still planned for this (brink-dialect)
+> chapter (B1, issue #1460).** The ruled Option package includes its
+> ergonomics. The coalescing form `x or default` collapses an Option into a
+> value (`get(rooms, "Edda") or 0`), chaining left-to-right and staying
+> optional until the final non-Option fallback
+> (`get(m, k) or get(m, k2) or 0`) — this now compiles on the native
+> `.brink` surface. The `as`-binding that tests and unwraps in one move
+> (sketched here as `{get(rooms, "Edda") as r: room {r} it is}`) does
+> **not**: its precise grammar was never ruled beyond illustrative
+> sketches like this one, so it remains undelivered pending a design round
+> (house rule 7 — declining to invent syntax). Nothing in *this* chapter
+> changes yet either way — these examples are brink-dialect, where `or`
+> stays ink's boolean or; the chapter's own respell to the native surface
+> is separate, later work.
 
 ## How Option prints
 
@@ -450,11 +455,15 @@ value in `==`/arithmetic is a type fault; and the malformed-question faults
 - **F28: total display until B4** — same 2026-07-19 ruling; the
   display-boundary forgiveness (position-cut, nested never forgiven,
   traceable) ships with the native surface.
-- **`x or default` and the `as`-binding** — part of the 2026-07-18 package
-  ruling; surface arrives with Track B1 (`docs/stdlib-sequencing.md` §3).
-  The coalescing *typing* substrate follows finding F19
-  (`docs/stdlib-phase-c-findings.md`) — implemented in-tree, no ruled
-  surface yet.
+- **`x or default`** — part of the 2026-07-18 package ruling; the typing
+  substrate follows finding F19 (`docs/stdlib-phase-c-findings.md`). Surface
+  spelling landed on the native `.brink` frontend in B1 (issue #1460):
+  `InfixOp::Coalesce`, distinct from the brink dialect's oracle-frozen
+  `InfixOp::Or` (ink's boolean `||`).
+- **The `as`-binding** — named as the post-B1 condition-position spelling
+  by F27 (below), but its precise grammar was never promoted from
+  illustrative sketch to a decision-log ruling — still undelivered,
+  Track B1 (`docs/stdlib-sequencing.md` §3) remains its home once ruled.
 - **Bare `none` needs a type from context** — `docs/stdlib-spec.md` §1.4;
   E107's declaration rule (#1107).
 - **`Option[T]` in the static type language (inferable today, annotatable

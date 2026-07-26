@@ -1290,6 +1290,13 @@ fn step_impl<R: crate::rng::StoryRng>(
         Opcode::MapContainsValue => collection_ops::map_contains_value(flow)?,
         Opcode::MapClear => collection_ops::map_clear(flow)?,
 
+        // ── B1: `or`-coalescing (issue #1460) ──────────────────────────
+        Opcode::Coalesce => {
+            let rhs = flow.pop_value()?;
+            let lhs = flow.pop_value()?;
+            flow.value_stack.push(value_ops::coalesce(lhs, rhs)?);
+        }
+
         // ── NS-A6: the `std::rand` draw verbs (#1112,
         // `docs/stdlib-spec.md` §7). Every draw is an ordinary write to
         // the one RNG cell (`DefinitionId::RNG_CELL`) — recorded for the

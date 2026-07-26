@@ -1252,6 +1252,7 @@ mod proptest_roundtrip {
             Just("!="),
             Just("&&"),
             Just("||"),
+            Just("or"),
         ]
     }
 

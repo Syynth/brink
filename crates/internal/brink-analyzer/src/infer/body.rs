@@ -30,7 +30,7 @@ use brink_ir::{
 };
 use rowan::TextRange;
 
-use super::ty::{TowerTy, Ty, unify, unify_all};
+use super::ty::{TowerTy, Ty, coalesce, unify, unify_all};
 use super::{InferredSig, ValueCallFact, ValueCallKind, range_key};
 
 /// Read-only context shared by every body inferred in the same SCC round.
@@ -971,6 +971,39 @@ impl InferPass<'_, '_> {
             // Both operands are condition position — visited above for
             // their side effects, never forced to bool (spec §4 truthiness).
             InfixOp::And | InfixOp::Or | InfixOp::Has | InfixOp::HasNot => Ty::Bool,
+            // B1 `or`-coalescing (`docs/stdlib-spec.md` §1.6a, issue
+            // #1460): asymmetric by design (`lhs`: `Option[T]`, `rhs`: `T`
+            // or `Option[U]`), so unlike the arithmetic/comparison arms
+            // above there is no single shared "joined" type for both
+            // operands. There IS a one-directional signal worth feeding
+            // back, though: unlike And/Or/Has/HasNot's condition operands
+            // (genuinely no useful bool/int constraint to add — spec §4
+            // truthiness), a coalescing `lhs` is never optional-vs-leniency,
+            // it is *required* to be `Option[T]` — so if `lhs` is a bare
+            // param/temp path, `rhs`'s already-inferred type tells us the
+            // shape to expect: `rhs`'s own type when `rhs` is itself
+            // `Option[U]` (the two-Option form), else `Option[rhs's type]`
+            // (the collapse form). `observe` is a no-op for every other
+            // expression shape (only bare single-segment param/temp paths
+            // feed back), so this is safe to call unconditionally. A
+            // mismatch collapses to `Ty::Conflicted` (the same
+            // infallible-absorption idiom `unify` uses elsewhere) rather
+            // than a bespoke diagnostic — TM-3's existing Conflicted-escape
+            // check (`strict::check`, `E066`) already catches it generically
+            // the moment the result reaches a signature or body-local slot;
+            // unrouted results keep the runtime `TypeError` fault as the
+            // backstop, the same "Unknown/Conflicted never disagrees, the
+            // runtime catches the rest" doctrine `option_conditions`'s F27
+            // check documents.
+            InfixOp::Coalesce => {
+                let expected_lhs = if matches!(r, Ty::Option(_)) {
+                    r.clone()
+                } else {
+                    Ty::Option(Box::new(r.clone()))
+                };
+                self.observe(lhs, &expected_lhs);
+                coalesce(&l, &r).unwrap_or(Ty::Conflicted)
+            }
         }
     }
 

@@ -752,7 +752,7 @@ mod choice_proptests {
     const KEYWORDS: &[&str] = &[
         "flow", "fn", "var", "const", "let", "flags", "struct", "extern", "import", "use",
         "module", "return", "ref", "if", "match", "else", "while", "for", "in", "until", "break",
-        "continue", "as", "true", "false", "END", "DONE",
+        "continue", "as", "or", "true", "false", "END", "DONE",
     ];
 
     fn arb_ident() -> impl Strategy<Value = String> {

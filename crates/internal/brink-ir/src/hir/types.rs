@@ -1019,6 +1019,17 @@ pub enum InfixOp {
     Or,
     Has,
     HasNot,
+    /// `or`-coalescing (B1, `docs/stdlib-spec.md` §1.6a, issue #1460):
+    /// `x or default`. Distinct from [`Or`](Self::Or) — ink's boolean
+    /// `||`, oracle-frozen — because the two mean different things on the
+    /// same textual keyword: `Or` is condition-position boolean
+    /// disjunction, `Coalesce` is value-position Option unwrapping
+    /// (`(Option[T],T)->T`, `(Option[T],Option[T])->Option[T]`, ruled
+    /// `docs/decision-log.md` 2026-07-18). Only native lowering produces
+    /// this variant (`hir::lower_native::expr::infix_op`); the legacy
+    /// ink/brink lowering path never does, so it is unreachable from the
+    /// oracle-covered dialects.
+    Coalesce,
 }
 
 // ─── Expression display ─────────────────────────────────────────────
@@ -1150,6 +1161,7 @@ impl InfixOp {
             Self::Or => "||",
             Self::Has => "?",
             Self::HasNot => "!?",
+            Self::Coalesce => "or",
         }
     }
 }
