@@ -773,7 +773,12 @@ fn lower_call(path: &hir::Path, args: &[hir::Expr], ctx: &mut LowerCtx<'_>) -> l
         };
     }
 
-    // Resolve via resolution map
+    // Resolve via resolution map. `path.range` here is a load-bearing key —
+    // it must be the callee `Path`'s own whole span, exactly what the
+    // analyzer's `ResolvedRef::range` produced (issue #1561; see that
+    // field's doc for the other three consumers keying on the same range,
+    // including `ufcs_receiver_path` just below, which deliberately
+    // preserves this same range on the receiver sub-path it builds).
     if let Some(info) = ctx.resolve_path(path.range) {
         // B3a UFCS (issue #1482/#1506): a *multi-segment* callee path
         // resolving to a value is method-call syntax — the resolution
@@ -956,6 +961,13 @@ fn lower_ufcs_call(
 /// path`'s existing `ctx.resolve_path`/`ctx.temp_slot` lookups resolve it
 /// correctly whether the receiver is one segment (`x`) or a dotted chain
 /// (`a.b`).
+///
+/// This is deliberate reuse of the call-path `ResolvedRef::range` contract
+/// (issue #1561, see that field's doc): `range: path.range` here — never a
+/// receiver-only sub-range — is *why* `resolve_path(path.range)` still hits
+/// the entry `brink-analyzer` recorded for the whole call. Narrowing this
+/// to, say, `TextRange::new(path.range.start(), head_end)` would silently
+/// miss that lookup for every UFCS call site.
 pub(super) fn ufcs_receiver_path(path: &hir::Path) -> hir::Path {
     let receiver_segs = path.segments.split_last().map_or(&[][..], |(_, rest)| rest);
     hir::Path {

@@ -1031,6 +1031,11 @@ impl InferPass<'_, '_> {
 
     fn infer_call(&mut self, path: &HirPath, args: &[Expr]) -> Ty {
         let arg_tys: Vec<Ty> = args.iter().map(|a| self.infer_expr(a)).collect();
+        // `path.range` here is the callee `Path`'s whole span — this
+        // `resolve` lookup is one of the four consumers keyed on the
+        // call-path `ResolvedRef::range` contract (issue #1561); see that
+        // field's doc. Below, the B3a branch handles a multi-segment
+        // (dotted UFCS) path explicitly.
         if let Some(def) = self.resolve(path.range) {
             // T1c: a callee resolving to a *value* (param/temp/VAR/CONST)
             // is a call through a function value, not a direct call — its

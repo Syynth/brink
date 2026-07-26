@@ -125,6 +125,11 @@ line at the top of a knot or stitch body.
 > it still compiles but warns (`E110`). New code writes the annotation form
 > below; clauses are parenthesized (`reads(gold)`, never `reads: gold`).
 
+> On the native `.brink` surface the same annotation attaches Rust-style — on
+> the line directly *above* the `flow`/`fn` head rather than inside its body.
+> The arguments, the `pure` sugar, and the exceedance-only checking below are
+> identical.
+
 ```ink
 VAR gold = 10
 -> shop

@@ -196,11 +196,13 @@ change.
 NS-A2 (#1108; stdlib-spec §9.2, ruled 2026-07-18) added a **second,
 line-level spelling** for compiler annotations: the annotation line
 `@[name(args)]` on a line of its own. It is the assertion final form's
-carrier — v1 recognizes exactly one name, `effects`
-(`@[effects(pure, silent, total, reads(gold), …)]` — paren clause
-grammar since the 2026-07-19 amendment, issue #1120), in exactly one
-placement (the leading run at the top of a knot/stitch body, shared
-with directive tag lines in either order). Rules mirror the tag
+carrier — on the **ink surface**, v1 recognizes exactly one name,
+`effects` (`@[effects(pure, silent, total, reads(gold), …)]` — paren
+clause grammar since the 2026-07-19 amendment, issue #1120), in exactly
+one placement (the leading run at the top of a knot/stitch body, shared
+with directive tag lines in either order). (§5c below extends both the
+name set and the placement rule for the native `.brink` surface, which
+has no tag-line spelling to share a run with.) Rules mirror the tag
 channel's:
 
 - superset-parsed under every dialect (`AT_L_BRACKET` token +
@@ -213,6 +215,36 @@ channel's:
   names do **not** alias into this channel);
 - the old `#@effects(…)` tag-directive spelling remains a deprecation
   alias (shipped surface) and warns `E110`.
+
+### 5c. The channel on the native `.brink` surface (issue #1563)
+
+The `@[…]` line is the native surface's *only* annotation channel (there
+is no tag-directive spelling to alias — `#` is the tag sigil there too,
+but `#@name` has no native recognizer). Two differences from §5b, both
+following from native having real declaration nodes:
+
+- **Placement is Rust's**, not ink's: an annotation attaches to the
+  declaration it immediately precedes (`@[effects(pure)]` on the line
+  above `fn heal(…)`), with only trivia, doc comments, and further
+  annotation lines allowed to intervene. Ink's top-of-body placement
+  exists because a tag line above a knot header structurally belongs to
+  the previous scope; native has no such problem.
+- **The recognized name set is `effects` plus `was`.** `@[effects(…)]`
+  attaches to a `flow`/`fn` head at either container level (top-level →
+  `Knot.effects_assertion`, nested → `Stitch.effects_assertion`) and is
+  checked by the same frontend-agnostic exceedance pass (`E103`/`E108`/
+  `E109`) that judges ink assertions. `@[was("old::module::path")]` is
+  the **file-level** module-rename record (§5 of `modules-spec`, issues
+  #1286/#1355) and is recognized only as a direct child of the file.
+
+Everything else is the reserved-namespace rule (§1.1) doing its job: an
+unknown name is `E111`, a recognized name out of placement is `E112`, and
+the grammar codes are shared with the ink recognizer (`E100` empty
+assertion, `E101` malformed argument, `E048` duplicate). In particular
+`@[element(…)]`/`@[style(…)]` (the prose sitting-4 addenda) and a
+per-*declaration* `@[was(old_name)]` rename are **not** wired: they are
+ruled features awaiting their own slices, not annotation names this
+channel may guess at.
 
 ## 6. Future tenants (non-normative)
 
