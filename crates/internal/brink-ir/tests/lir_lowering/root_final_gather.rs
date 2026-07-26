@@ -84,6 +84,20 @@ fn root_weave_already_terminated_gets_no_final_gather() {
 }
 
 #[test]
+fn root_weave_diverting_elsewhere_gets_no_final_gather() {
+    // An authored divert to another knot is not a loose end either — the
+    // author took control elsewhere, so synthesizing a terminus here would
+    // emit an unreachable container. This exercises the `DivertTarget::
+    // Address(_)` arm of `ends_terminal`, distinct from the `Done`/`End`
+    // arms covered above.
+    let p = lower_ink("* one\n* two\n- gathered\n-> k\n\n=== k ===\nX\n-> DONE\n");
+    assert!(
+        final_gathers(root(&p)).is_empty(),
+        "no terminus when the root weave's loose end already diverts elsewhere"
+    );
+}
+
+#[test]
 fn standalone_gather_wrapper_descends_to_inner_loose_end() {
     // `- (gather) …` lowers to an *inline* wrapper container, entered with
     // `EnterContainer` and therefore not itself a loose end — but the choice
