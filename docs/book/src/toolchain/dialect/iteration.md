@@ -399,18 +399,9 @@ qualifies, and answer like the stdlib verbs do: `some(hit)` or `none`,
 never a sentinel. Wrap it in a function and let `return` be the early
 exit:
 
-<!-- The fence below is marked `ink,proposed` because it does not compile
-     today: issue #1168. A user function whose body returns `some(<a
-     variable>)` on one path and `none` on another has its return type
-     inferred as `Option[Unknown]` and trips E065 under strict types — and
-     there is no annotation escape hatch (`Option[int]` is rejected by E061,
-     "not a recognized type"). The example is the intended, ruled shape; the
-     compiler is what's behind. Do not "fix" this fence by restructuring —
-     unmark it to plain `ink` once #1168 lands. Minimal repro:
-       === function f(x: int) === / ~ return some(x)   ->  E065 -->
-```ink,proposed
+```ink
 First night over 5 coins: {first_over(#[4, 7, 2, 9], 5)}.
-First night over 10: {first_over(#[4, 7, 2, 9], 10)}.
+First night over 10: {string(first_over(#[4, 7, 2, 9], 10))}.
 -> END
 
 === function first_over(tab: array<int>, floor: int) ===
