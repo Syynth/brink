@@ -199,12 +199,17 @@ impl Driver {
     pub fn analyze(&mut self) -> &AnalysisResult;
 
     /// Run cross-file analysis on a specific subset of files (one project).
-    /// Does not cache the result (the caller owns it).
+    /// Does not cache the result (the caller owns it). Module-aware and
+    /// options-honoring (#1553): runs with the db's own `module_map()` and
+    /// registered `AnalysisOptions`, and folds in the map's stem-collision
+    /// diagnostics for the given files.
     pub fn analyze_project(&self, file_ids: &[FileId]) -> AnalysisResult;
 
     /// Snapshot analysis inputs for a subset of files.
     /// Returns owned (FileId, HirFile, SymbolManifest) tuples suitable for
-    /// passing to brink_analyzer::analyze() outside a lock.
+    /// passing to brink_analyzer::analyze_with_modules() outside a lock —
+    /// paired with ProjectDb::module_map(), or the ids minted for native
+    /// `.brink` files won't match the db's (#1526).
     pub fn analysis_inputs_for(
         &self,
         file_ids: &[FileId],

@@ -43,13 +43,25 @@ flow start() {
 }
 ";
 
-/// A two-file native project, analyzed.
-fn native_session() -> (IdeSession, brink_ir::FileId) {
+/// A two-file native project, analyzed. `dialect` is `None` for a session
+/// that never calls `set_language_dialect` — the **default** a native mount
+/// actually runs under (`Dialect::StrictInk`, matching
+/// `AnalysisOptions::default()`), which is not the same code path as the
+/// explicit `Dialect::Brink` one: the dialect gates M-2d coexistence in the
+/// db's `symbol_index_query` and several per-file diagnostic queries.
+fn native_session_with(dialect: Option<Dialect>) -> (IdeSession, brink_ir::FileId) {
     let mut session = IdeSession::new();
-    session.set_language_dialect(Dialect::Brink);
+    if let Some(dialect) = dialect {
+        session.set_language_dialect(dialect);
+    }
     session.update_source("market/barter.brink", BARTER.to_owned());
     let main = session.update_and_analyze("main.brink", MAIN.to_owned());
     (session, main)
+}
+
+/// A two-file native project under an explicit `Dialect::Brink`.
+fn native_session() -> (IdeSession, brink_ir::FileId) {
+    native_session_with(Some(Dialect::Brink))
 }
 
 /// The root cause (#1526): the ids in the session's `AnalysisResult` must be
@@ -106,21 +118,42 @@ fn native_analysis_ids_key_the_db_per_def_queries() {
 #[test]
 fn native_cross_file_hover_shows_the_db_backed_effect_row() {
     let (session, main_id) = native_session();
-    let analysis = session.analysis().expect("analysis");
-    let offset = u32::try_from(MAIN.find("haggle\n}").expect("divert target")).expect("offset");
-    let files = session.db().file_metadata();
+    let content =
+        cross_file_hover_content(&session, main_id).expect("hover over the divert target");
+    assert_native_cross_file_hover(&content);
+}
 
-    let content = hover(
+/// The same user-visible path under the **default** dialect — no
+/// `set_language_dialect` call at all (issue #1553). Native projects mount
+/// with `Dialect::StrictInk` (`AnalysisOptions::default()`), and the dialect
+/// is an input to the db queries hover reads back through, so the
+/// `Dialect::Brink`-only test above left the default path uncovered.
+#[test]
+fn native_cross_file_hover_under_default_dialect() {
+    let (session, main_id) = native_session_with(None);
+    let content =
+        cross_file_hover_content(&session, main_id).expect("hover over the divert target");
+    assert_native_cross_file_hover(&content);
+}
+
+/// Hover markdown for the `-> haggle` divert target in `main.brink`, or
+/// `None` if the session has no analysis / the offset yields no hover.
+fn cross_file_hover_content(session: &IdeSession, main_id: brink_ir::FileId) -> Option<String> {
+    let analysis = session.analysis()?;
+    let offset = u32::try_from(MAIN.find("haggle\n}")?).ok()?;
+    let files = session.db().file_metadata();
+    let info = hover(
         analysis,
         session.db(),
         main_id,
         MAIN,
         TextSize::from(offset),
         &files,
-    )
-    .expect("hover over the divert target")
-    .content;
+    )?;
+    Some(info.content)
+}
 
+fn assert_native_cross_file_hover(content: &str) {
     assert!(content.contains("**knot** `haggle`"), "{content}");
     assert!(
         content.contains("*Defined in `market/barter.brink`*"),

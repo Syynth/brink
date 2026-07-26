@@ -1977,3 +1977,166 @@ fn did_open_admits_file_directly_under_ignored_dir() {
          not a directory walk), got: {resp:?}"
     );
 }
+
+// ── Native `.brink` workspaces (#1526 / #1553) ──────────────────────
+
+/// `market/barter.brink` — the definition side of a two-file native project.
+const NATIVE_BARTER: &str = "\
+var gold = 10
+
+/// Trade at the market stall.
+flow haggle() {
+  You haggle over the price.
+}
+";
+
+/// `main.brink` — the reference side.
+const NATIVE_MAIN: &str = "\
+use story::market::barter::haggle;
+
+flow start() {
+  The market is busy.
+  -> haggle
+}
+";
+
+/// LSP-level regression test for #1526 (issue #1553): the background
+/// analysis pass must qualify `DefinitionId`s with the db's `ModuleMap`.
+///
+/// A native file's module is its path (`market/barter.brink` →
+/// `story::market::barter`) and is always *declared*, so it qualifies
+/// identity — unlike the undeclared stem-modules the ink corpus uses, where
+/// module-blind and module-aware hashing agree by construction. The visible
+/// tell is the hover **effects** row: `brink_ide::hover` renders it from
+/// `db.effects(info.id)`, so it appears only when the id the background pass
+/// minted is the id the db's per-def queries are keyed by. Before #1526 the
+/// pass ran module-blind and every native symbol's row silently vanished.
+///
+/// Two files, in different directories, precisely because that is where the
+/// two identity schemes diverge most visibly: the qualifying module differs
+/// per file, so one shared bare-name index cannot stand in for it.
+#[test]
+fn native_two_file_workspace_hover_keeps_the_db_backed_effect_row() {
+    const MAX_MESSAGES: u64 = 2000;
+
+    let root = unique_tmp_dir("native-two-file");
+    std::fs::create_dir_all(root.join("market")).unwrap();
+    std::fs::write(root.join("market/barter.brink"), NATIVE_BARTER).unwrap();
+    std::fs::write(root.join("main.brink"), NATIVE_MAIN).unwrap();
+
+    let bin = env!("CARGO_BIN_EXE_brink-lsp");
+    let mut child = Command::new(bin)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to start brink-lsp");
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "capabilities": {},
+                "rootUri": format!("file://{}", root.display()),
+            },
+        }),
+    );
+    let (_init_resp, _) = recv_response(&mut stdout, 1);
+    send(
+        &mut stdin,
+        &json!({"jsonrpc": "2.0", "method": "initialized", "params": {}}),
+    );
+
+    // The workspace scan only enumerates `.ink`; native files reach the db
+    // through explicit `didOpen`, which admits any path.
+    let barter_uri = format!("file://{}", root.join("market/barter.brink").display());
+    let main_uri = format!("file://{}", root.join("main.brink").display());
+    for (uri, text) in [(&barter_uri, NATIVE_BARTER), (&main_uri, NATIVE_MAIN)] {
+        send(
+            &mut stdin,
+            &json!({
+                "jsonrpc": "2.0",
+                "method": "textDocument/didOpen",
+                "params": {"textDocument": {
+                    "uri": uri, "languageId": "brink", "version": 1, "text": text,
+                }},
+            }),
+        );
+    }
+    // `file_count >= 2` pins the pass that has *both* files — an earlier
+    // single-file pass cannot satisfy it (see `wait_for_analysis_pass_where`).
+    let _ = wait_for_analysis_pass_where(&mut stdout, &main_uri, MAX_MESSAGES, |c| c >= 2);
+
+    let hover = |stdin: &mut ChildStdin,
+                 stdout: &mut BufReader<ChildStdout>,
+                 id: u64,
+                 uri: &str,
+                 line: u32,
+                 character: u32| {
+        send(
+            stdin,
+            &json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "textDocument/hover",
+                "params": {
+                    "textDocument": {"uri": uri},
+                    "position": {"line": line, "character": character},
+                },
+            }),
+        );
+        recv_response(stdout, id).0
+    };
+
+    // `flow start()` in `main.brink` (module `story::main`) …
+    let start = hover(&mut stdin, &mut stdout, 2, &main_uri, 2, 7);
+    // … and `flow haggle()` in `market/barter.brink` (module
+    // `story::market::barter`) — a per-file divergence would show on one and
+    // not the other.
+    let haggle = hover(&mut stdin, &mut stdout, 3, &barter_uri, 3, 7);
+
+    // The cross-file divert target `-> haggle` in `main.brink`. It resolves
+    // to nothing today because the LSP partitions projects by the INCLUDE
+    // graph and native `.brink` has no INCLUDEs, so each native file is its
+    // own single-file project — a separate gap from the identity one under
+    // test here. Asserted so that whoever teaches the LSP the native
+    // compilation closure sees this test and replaces it with the
+    // "Defined in `market/barter.brink`" assertion it should then make.
+    let cross_file = hover(&mut stdin, &mut stdout, 4, &main_uri, 4, 6);
+
+    drop(stdin);
+    drop(stdout);
+    let _ = child.wait();
+    std::fs::remove_dir_all(&root).unwrap();
+
+    let start_md = start["result"]["contents"]["value"].as_str().unwrap_or("");
+    assert!(
+        start_md.contains("**knot** `start`") && start_md.contains("**effects**"),
+        "native hover lost the db-backed effect row for `start`: {start}"
+    );
+    assert!(
+        start_md.contains("main.brink"),
+        "hover must name the defining file: {start}"
+    );
+
+    let haggle_md = haggle["result"]["contents"]["value"].as_str().unwrap_or("");
+    assert!(
+        haggle_md.contains("**knot** `haggle`") && haggle_md.contains("**effects**"),
+        "native hover lost the db-backed effect row for `haggle`: {haggle}"
+    );
+    assert!(
+        haggle_md.contains("Trade at the market stall."),
+        "hover must carry the doc comment: {haggle}"
+    );
+
+    assert!(
+        cross_file["result"].is_null(),
+        "known gap (INCLUDE-graph project partitioning, see this test's comment): \
+         a cross-file native divert now hovers — update this assertion: {cross_file}"
+    );
+}

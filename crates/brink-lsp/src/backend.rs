@@ -2415,7 +2415,15 @@ pub async fn analysis_loop(
         // carried (both read the revision under the db lock; the analysis reads
         // at-or-after the write). Tagged `Analysis`, this therefore wins the
         // `DiagnosticsPublisher` anti-downgrade rule against that per-file set.
-        let (generation, projects, modules, file_meta, per_file_diags, file_suppressions) = {
+        let (
+            generation,
+            projects,
+            modules,
+            module_diags,
+            file_meta,
+            per_file_diags,
+            file_suppressions,
+        ) = {
             let db = lock_db(&db);
             let generation = generation.load(Ordering::Relaxed);
             let project_defs = db.compute_projects();
@@ -2431,6 +2439,11 @@ pub async fn analysis_loop(
             // `db.signature`/`db.infer_body`. Keyed by `FileId`, so the
             // whole-workspace map is a harmless superset for each project.
             let modules = db.module_map().clone();
+            // The map's diagnostics half (`E085` stem collisions, #1553).
+            // `analyze_with_modules` below is handed the finished map, so it
+            // cannot re-derive them; without folding them back in per project
+            // a collision a db-driven compile catches never reaches the editor.
+            let module_diags = db.module_map_diagnostics().to_vec();
             let meta = db.file_metadata();
             let diags: Vec<_> = meta
                 .iter()
@@ -2444,6 +2457,7 @@ pub async fn analysis_loop(
                 generation,
                 project_inputs,
                 modules,
+                module_diags,
                 meta,
                 diags,
                 suppressions,
@@ -2460,10 +2474,11 @@ pub async fn analysis_loop(
                 .iter()
                 .map(|(id, hir, manifest)| (*id, hir, manifest))
                 .collect();
-            let result = brink_analyzer::analyze_with_modules(&file_refs, &modules, &opts);
+            let mut result = brink_analyzer::analyze_with_modules(&file_refs, &modules, &opts);
+            let members: Vec<_> = inputs.iter().map(|(id, _, _)| *id).collect();
+            fold_module_diagnostics(&mut result, &module_diags, &members);
             by_root.insert(*root, Arc::new(result));
 
-            let members: Vec<_> = inputs.iter().map(|(id, _, _)| *id).collect();
             for &member in &members {
                 file_to_roots.entry(member).or_default().push(*root);
             }
@@ -2504,6 +2519,27 @@ pub async fn analysis_loop(
             })
             .await;
     }
+}
+
+/// Fold the module map's own diagnostics (`E085` stem collisions) into one
+/// project's analysis result (issue #1553).
+///
+/// `brink_analyzer::analyze_with_modules` is handed the *finished* map, so it
+/// cannot re-derive them; without this a collision a db-driven compile catches
+/// never reaches the editor. `module_diags` is whole-workspace, so it is
+/// filtered to `members` — a collision in an unrelated project must not be
+/// attributed to this one.
+fn fold_module_diagnostics(
+    result: &mut AnalysisResult,
+    module_diags: &[brink_ir::Diagnostic],
+    members: &[brink_ir::FileId],
+) {
+    result.diagnostics.extend(
+        module_diags
+            .iter()
+            .filter(|d| members.contains(&d.file))
+            .cloned(),
+    );
 }
 
 /// Build a `DiagnosticRelatedInformation` pointing to a project root file.

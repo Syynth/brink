@@ -31,7 +31,16 @@ impl EditorSession {
             return "null".to_owned();
         };
 
-        let project_files = [(file_id, path.to_owned(), source.to_owned())];
+        // Every file in the session, not just the hovered one (#1553):
+        // `brink_ide::hover` looks the *definition's* file up in here to
+        // render "Defined in `path`", and `ufcs_hover` does the same for a
+        // method's declaring file. A single-entry set can only ever match a
+        // same-file definition, so cross-file hover text could never render
+        // in the web editor. `file_metadata` is the same `(FileId, path,
+        // source)` shape the LSP's `NavigationSnapshot` builds, sorted by
+        // `FileId`; the wasm session holds one project, so no per-project
+        // scoping applies here.
+        let project_files = self.session.db().file_metadata();
 
         let abs_offset = self.to_absolute(path, view, offset);
         match brink_ide::hover::hover(
@@ -56,5 +65,52 @@ impl EditorSession {
             }
             None => "null".to_owned(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EditorSession;
+
+    /// `market/barter.brink` — the definition side of the file boundary.
+    const BARTER: &str = "\
+var gold = 10
+
+/// Trade at the market stall.
+flow haggle() {
+  You haggle over the price.
+}
+";
+
+    /// `main.brink` — the reference side: a divert into the other file.
+    const MAIN: &str = "\
+use story::market::barter::haggle;
+
+flow start() {
+  The market is busy.
+  -> haggle
+}
+";
+
+    /// Cross-file "Defined in `path`" hover in the web editor (#1553).
+    /// `hover_impl` used to hand `brink_ide::hover` only the hovered file, so
+    /// the definition's file was never in the lookup set and the note could
+    /// not render — a defect invisible to any same-file hover test.
+    #[test]
+    fn hover_names_the_defining_file_across_the_project() {
+        let mut session = EditorSession::new();
+        session.update_file("market/barter.brink", BARTER);
+        session.update_file("main.brink", MAIN);
+        assert!(session.set_active_file("main.brink"));
+
+        let offset = u32::try_from(MAIN.find("haggle\n}").expect("divert target")).expect("offset");
+        let json = session.hover(offset);
+        let v: serde_json::Value = serde_json::from_str(&json).expect("hover JSON");
+        let content = v["content"].as_str().unwrap_or_default();
+
+        assert!(
+            content.contains("*Defined in `market/barter.brink`*"),
+            "hover must name the defining file: {json}"
+        );
     }
 }
