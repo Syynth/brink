@@ -266,10 +266,9 @@ mod tests {
         let mut driver = Driver::new();
         // `head.ink` declares module `alpha`; `alpha.ink` is a separate,
         // undeclared file whose *stem* is also `alpha` — the collision.
-        let head = driver.db_mut().update_file(
-            "head.ink",
-            "#@module(alpha)\n== a_knot ==\nHi\n".to_owned(),
-        );
+        let head = driver
+            .db_mut()
+            .update_file("head.ink", "#@module(alpha)\n== a_knot ==\nHi\n".to_owned());
         let collider = driver
             .db_mut()
             .update_file("alpha.ink", "== other ==\nHi\n".to_owned());
