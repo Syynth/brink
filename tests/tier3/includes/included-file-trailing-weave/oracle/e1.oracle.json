@@ -1,0 +1,46 @@
+{
+  "steps": [
+    {
+      "text": "The included file opens a weave.\n",
+      "tags": [],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "first branch",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "second branch",
+              "index": 1,
+              "tags": []
+            }
+          ],
+          "selected": 1
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "second branch\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    }
+  ],
+  "outcome": {
+    "Error": "Ink had 1 error. It is strongly suggested that you assign an error handler to story.onError. The first issue was: RUNTIME ERROR: 'trailing_weave.ink' line 4: ran out of content. Do you need a '-> DONE' or '-> END'?"
+  },
+  "choice_path": [
+    1
+  ],
+  "initial_state": {
+    "variables": {},
+    "turn_index": 0
+  }
+}

@@ -127,6 +127,93 @@ fn standalone_gather_wrapper_descends_to_inner_loose_end() {
     );
 }
 
+// ─── Multi-file root content: the terminus is the entry file's (#1502) ───
+//
+// C# guards the implicit gather with `if (isRootStory)`: an INCLUDEd file is
+// parsed as `Story(isInclude: true)` and its root content becomes a nested
+// weave *container* in the root, whose trailing gather is entered by divert
+// and therefore genuinely runs out of content. Brink lowers root content one
+// chunk per file, so the terminus must be attached to the last chunk — the
+// entry file's — and to no other, or an included file's trailing weave ends
+// the story silently in the wrong place.
+
+/// The root-level gather container whose body emits `text`.
+fn root_gather_emitting<'a>(r: &'a lir::Container, text: &str) -> &'a lir::Container {
+    r.children
+        .iter()
+        .find(|c| {
+            c.kind == lir::ContainerKind::Gather
+                && collect_text(&c.body).iter().any(|t| t.contains(text))
+        })
+        .unwrap_or_else(|| panic!("no root-level gather emitting {text:?}"))
+}
+
+#[test]
+fn included_file_trailing_weave_keeps_running_out_of_content() {
+    // Included file first, entry file last — `topological_order`'s order.
+    let p = lower_ink_files(&[
+        "* one\n* two\n- gathered in the included file\n",
+        "INCLUDE included.ink\nBack in the entry file.\n",
+    ]);
+    let r = root(&p);
+
+    assert!(
+        final_gathers(r).is_empty(),
+        "an INCLUDEd file's trailing weave gets no terminus — C# reports it as \
+         `ran out of content`, and silently ending the flow there is worse"
+    );
+    let gather = root_gather_emitting(r, "gathered in the included file");
+    assert!(
+        !ends_with_divert(&gather.body),
+        "the included file's loose end stays loose"
+    );
+}
+
+#[test]
+fn entry_file_trailing_weave_still_gets_the_terminus() {
+    // The #1448 fix must keep working once the project has INCLUDEs: the
+    // entry file is the root story, so its own loose end is terminated.
+    let p = lower_ink_files(&[
+        "A line from the included file.\n",
+        "INCLUDE prelude.ink\n* one\n* two\n- gathered in the entry file\n",
+    ]);
+    let r = root(&p);
+
+    let terminus = find_child(r, "g-final");
+    assert!(ends_with_done(terminus));
+    let gather = root_gather_emitting(r, "gathered in the entry file");
+    assert!(
+        ends_with_divert_to(gather, terminus.id),
+        "the entry file's loose end diverts to the terminus"
+    );
+}
+
+#[test]
+fn only_the_entry_files_trailing_weave_is_terminated() {
+    // Both files end in a loose weave: exactly one terminus, and it belongs
+    // to the entry file's weave.
+    let p = lower_ink_files(&[
+        "* one\n* two\n- gathered in the included file\n",
+        "INCLUDE included.ink\n* three\n* four\n- gathered in the entry file\n",
+    ]);
+    let r = root(&p);
+
+    let all = final_gathers(r);
+    assert_eq!(all.len(), 1, "exactly one terminus for the whole program");
+
+    let terminus = find_child(r, "g-final");
+    assert!(ends_with_divert_to(
+        root_gather_emitting(r, "gathered in the entry file"),
+        terminus.id
+    ));
+    assert!(
+        !ends_with_divert(&root_gather_emitting(r, "gathered in the included file").body),
+        "the included file's loose end must not be diverted to the entry \
+         file's terminus either — that would splice one file's weave onto \
+         another's tail"
+    );
+}
+
 #[test]
 fn knot_weave_loose_end_is_left_erroring() {
     // Root scope ONLY. A knot that runs out of content is a genuine error in
