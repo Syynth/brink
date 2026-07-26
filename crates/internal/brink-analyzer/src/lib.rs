@@ -344,13 +344,22 @@ pub fn symbol_index(files: &[(FileId, &SymbolManifest)]) -> (Arc<SymbolIndex>, V
 ///
 /// `dialect` gates the M-2c cross-declared-module duplicate escalation
 /// (issue #784): see [`manifest::merge_manifests_with_modules`].
+///
+/// `is_native` (issue #1562 review finding) widens that same gate past the
+/// ink-only `dialect` axis for a native `.brink` project, exactly as
+/// [`strict_diagnostics`]'s own `is_native` widens `E064`'s dialect check —
+/// see [`manifest::merge_manifests_with_modules`]'s doc. Callers with no
+/// `Language` classification of their own pass `false`, unchanged from
+/// before this parameter existed.
 #[must_use]
 pub fn symbol_index_with_modules(
     files: &[(FileId, &SymbolManifest)],
     modules: &ModuleMap,
     dialect: Dialect,
+    is_native: bool,
 ) -> (Arc<SymbolIndex>, Vec<Diagnostic>) {
-    let (index, diagnostics) = manifest::merge_manifests_with_modules(files, modules, dialect);
+    let (index, diagnostics) =
+        manifest::merge_manifests_with_modules(files, modules, dialect, is_native);
     (Arc::new(index), diagnostics)
 }
 
@@ -400,7 +409,9 @@ pub fn analyze_with_options(
     files: &[(FileId, &HirFile, &SymbolManifest)],
     opts: &AnalysisOptions,
 ) -> AnalysisResult {
-    analyze_with_modules(files, &ModuleMap::new(), opts)
+    // No `Language` classification exists at this layer (issue #1348 /
+    // #1562) — see `analyze_with_modules`'s own `is_native` doc.
+    analyze_with_modules(files, &ModuleMap::new(), opts, false)
 }
 
 /// Run cross-file semantic analysis against the project's resolved
@@ -421,10 +432,23 @@ pub fn analyze_with_options(
 /// two paths.
 ///
 /// An empty map reproduces [`analyze_with_options`] exactly.
+///
+/// `is_native` (issue #1562 review finding) is the same widening
+/// [`symbol_index_with_modules`]'s own `is_native` describes: M-2d
+/// cross-declared-module coexistence must not depend on `opts.dialect`
+/// being `Dialect::Brink` for a project with no ink dialect to be wrong
+/// about. Callers that know the project's `Language` from a `ProjectDb`
+/// (`brink-lsp`'s `analysis_loop`, via `ProjectDb::is_native`) pass the real
+/// value; every other caller passes `false`, unchanged from before this
+/// parameter existed — [`analyze_with_options`] always does, and so does
+/// this crate's own `finish_analysis`/`per_file_diagnostics`/
+/// `strict_diagnostics` machinery below, which stays scoped to the narrower
+/// ink-only `E064` gate it already had (issue #1348).
 pub fn analyze_with_modules(
     files: &[(FileId, &HirFile, &SymbolManifest)],
     modules: &ModuleMap,
     opts: &AnalysisOptions,
+    is_native: bool,
 ) -> AnalysisResult {
     let manifest_inputs: Vec<(FileId, &SymbolManifest)> = files
         .iter()
@@ -432,7 +456,7 @@ pub fn analyze_with_modules(
         .collect();
 
     let (index, mut diagnostics) =
-        symbol_index_with_modules(&manifest_inputs, modules, opts.dialect);
+        symbol_index_with_modules(&manifest_inputs, modules, opts.dialect, is_native);
     let mut resolutions = ResolutionMap::new();
     for &(file_id, hir, manifest) in files {
         // Import-scoped resolution (M-2d, issue #790), matching

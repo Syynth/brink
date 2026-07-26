@@ -20,7 +20,7 @@ Three responsibilities are currently scattered across `brink-db`, `brink-compile
 
    This is ~50 lines in the compiler, ~90 lines in the LSP, doing the same core work. The LSP adds multi-project annotation on top, but the gather-suppress-partition logic is identical.
 
-4. **Project computation** — `ProjectDb::compute_projects()` discovers independent project groups from include relationships. This is a query over the include graph, not a storage operation.
+4. **Project computation** — `ProjectDb::compute_projects()` discovers independent project groups: ink files by include reachability (a query over the include graph), native `.brink` files as a single project (the discovered module set is the compilation unit — issue #1562). Either way this is a query over what the db already holds, not a storage operation.
 
 5. **Include path resolution** — `resolve_include_path()` in `brink-db` uses `std::path::Path` for relative path resolution. Ink uses `/` as path separator universally (even on Windows, inklecate normalizes), so this should be string-based.
 
@@ -77,7 +77,7 @@ TIER 5: brink-compiler → brink-driver, brink-codegen-inkb
 |------------------|------|-------------------------------------|
 | `ProjectDb::discover()` | BFS file discovery via `read_file` callback | I/O + pipeline orchestration, not storage |
 | `ProjectDb::analyze()` | Calls `brink_analyzer::analyze()`, caches result | Analysis orchestration, not storage |
-| `ProjectDb::compute_projects()` | Groups files into independent projects by include relationships | Query over graph structure, not per-file caching |
+| `ProjectDb::compute_projects()` | Groups files into independent projects (ink: include relationships; native: one project per module tree) | Query over graph/file-set structure, not per-file caching |
 | `ProjectDb::analysis_inputs()` | Snapshots `(FileId, HirFile, SymbolManifest)` tuples | Convenience for analysis callers, not storage |
 | `ProjectDb::analysis_inputs_for()` | Same, filtered to a subset | Same |
 | `ProjectDb::file_ids_topo()` | Topological sort of files by include order | Graph query, not storage |
@@ -258,10 +258,14 @@ The implementation:
 
 ```rust
 impl Driver {
-    /// Discover independent projects from include relationships.
+    /// Compute independent projects: ink files by `INCLUDE` reachability,
+    /// native `.brink` files as one project (issue #1562).
     ///
-    /// A "project" is a root .ink file plus everything it transitively INCLUDEs.
-    /// Roots are files not included by any other file.
+    /// For ink, a "project" is a root .ink file plus everything it
+    /// transitively INCLUDEs; roots are files not included by any other
+    /// file. Every native `.brink` file in the db belongs to the single
+    /// native project instead — native has no `INCLUDE`, so the discovered
+    /// module set is the compilation unit.
     /// Returns (root, members) pairs sorted by root FileId.
     pub fn compute_projects(&self) -> Vec<(FileId, Vec<FileId>)>;
 }
@@ -345,7 +349,8 @@ impl ProjectDb {
     /// File IDs in topological include order from entry.
     pub fn file_ids_topo(&self, entry: FileId) -> Vec<FileId>;
 
-    /// Compute independent projects from include relationships.
+    /// Compute independent projects: ink files by `INCLUDE` reachability,
+    /// native `.brink` files as one project (issue #1562).
     pub fn compute_projects(&self) -> Vec<(FileId, Vec<FileId>)>;
 
     /// Detect circular includes. Returns the cycle path if found.

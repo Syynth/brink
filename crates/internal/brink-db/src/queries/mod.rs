@@ -379,7 +379,7 @@ pub(crate) fn lowered_query(db: &dyn salsa::Database, file: SourceFile) -> Lower
 /// It is a different axis from `brink_analyzer::Dialect` (an ink-extension
 /// gate) — do not conflate the two.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Language {
+pub(crate) enum Language {
     Ink,
     Native,
 }
@@ -389,7 +389,7 @@ enum Language {
 /// change, no `HashMap` iteration. Uses `Path::extension` to match the
 /// codebase's existing extension convention (e.g. `brink-lsp`'s `ext ==
 /// "ink"`).
-fn file_language(path: &str) -> Language {
+pub(crate) fn file_language(path: &str) -> Language {
     if std::path::Path::new(path)
         .extension()
         .is_some_and(|ext| ext == "brink")
@@ -519,6 +519,29 @@ pub(crate) fn project_is_native(db: &dyn salsa::Database, project: ProjectInput)
         .is_some_and(|f| file_language(f.path(db)) == Language::Native)
 }
 
+/// Whether every file currently tracked in `project` is a native `.brink`
+/// module — `false` for an empty project or one holding even a single ink
+/// file.
+///
+/// [`project_is_native`]'s "entry file decides the frontend" rule is right
+/// for a codegen-shaped question ("which frontend am I compiling"), which
+/// always has an explicit entry (the CLI's compile target). `symbol_index_query`
+/// asks a different question — "does this project have any ink file whose
+/// `dialect` could actually be wrong" — for `ProjectDb`'s single
+/// whole-workspace `ProjectInput`, which a long-lived LSP session never
+/// anchors to an entry at all (`Backend` never calls `ProjectDb::set_entry`;
+/// issue #1562 review finding). A project every one of whose files is native
+/// has no such file, by the same "native has no dialect to be wrong about"
+/// reasoning [`project_is_native`]'s own doc gives — regardless of whether
+/// anything ever called `set_entry`.
+pub(crate) fn project_is_all_native(db: &dyn salsa::Database, project: ProjectInput) -> bool {
+    let files = project.files(db);
+    !files.is_empty()
+        && files
+            .iter()
+            .all(|f| file_language(f.path(db)) == Language::Native)
+}
+
 // ─── Layer 2: project-wide names ─────────────────────────────────────
 
 /// Every file's resolved module (M-1, docs/modules-spec.md §1/§5) plus the
@@ -612,8 +635,24 @@ pub(crate) fn symbol_index_query(
     // inside `symbol_index_with_modules` itself, so the project's configured
     // dialect must reach it here.
     let dialect = project.analysis_options(db).dialect;
+    // `is_native` (issue #1562 review finding): a native project has no
+    // dialect to be wrong about — the same reasoning `project_is_native`
+    // gives `whole_project_diagnostics_query` for skipping the ink-only
+    // `E064` config error — so M-2d cross-declared-module coexistence must
+    // not depend on a client having declared `dialect: "brink"`. Every
+    // `.brink` file's module is its path and always *declared*, so without
+    // this a native workspace under the (default) `StrictInk` dialect would
+    // drop one of two same-name definitions from the index instead of
+    // letting them coexist.
+    //
+    // `project_is_all_native`, not `project_is_native`: this `project` is
+    // `ProjectDb`'s single whole-workspace `ProjectInput`, which a
+    // long-lived LSP session never anchors to a compile `entry`
+    // (`project_is_native` always answers `false` without one) — see
+    // `project_is_all_native`'s own doc.
+    let is_native = project_is_all_native(db, project);
     let (index, mut diagnostics) =
-        brink_analyzer::symbol_index_with_modules(&manifest_refs, module_map, dialect);
+        brink_analyzer::symbol_index_with_modules(&manifest_refs, module_map, dialect, is_native);
     diagnostics.extend(module_diags.clone());
     (index, diagnostics)
 }

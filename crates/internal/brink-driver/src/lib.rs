@@ -120,6 +120,13 @@ impl Driver {
             &file_refs,
             self.db.module_map(),
             self.db.analysis_options(),
+            // Unchanged from before `analyze_with_modules` gained this
+            // parameter (issue #1562): `file_ids` is an arbitrary caller-
+            // chosen subset, not necessarily anchored at a project root, so
+            // there is no single file to ask `ProjectDb::is_native` about
+            // here the way `brink-lsp`'s `analysis_loop` can for its own
+            // per-project-root call.
+            false,
         );
         result.diagnostics.extend(
             self.db
@@ -146,7 +153,9 @@ impl Driver {
 
     // ── Project graph ────────────────────────────────────────────────
 
-    /// Compute independent projects from include relationships.
+    /// Compute independent projects: ink files by `INCLUDE` reachability,
+    /// native `.brink` files as one project (issue #1562). See
+    /// [`brink_db::ProjectDb::compute_projects`].
     pub fn compute_projects(&self) -> Vec<(FileId, Vec<FileId>)> {
         self.db.compute_projects()
     }

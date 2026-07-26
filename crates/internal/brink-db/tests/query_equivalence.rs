@@ -394,7 +394,7 @@ fn native_module_aware_analysis_matches_db_identity() {
     let db_ids = ids(&db.symbol_index());
     assert_eq!(db_ids.len(), 2, "two flows, two ids: {db_ids:?}");
 
-    let module_aware = brink_analyzer::analyze_with_modules(&refs, db.module_map(), &opts);
+    let module_aware = brink_analyzer::analyze_with_modules(&refs, db.module_map(), &opts, false);
     assert_eq!(
         ids(&module_aware.index),
         db_ids,
@@ -440,7 +440,7 @@ fn ink_declared_module_aware_analysis_matches_db_identity() {
     let db_ids = ids(&db.symbol_index());
     assert_eq!(db_ids.len(), 2, "two knots, two ids: {db_ids:?}");
 
-    let module_aware = brink_analyzer::analyze_with_modules(&refs, db.module_map(), &opts);
+    let module_aware = brink_analyzer::analyze_with_modules(&refs, db.module_map(), &opts, false);
     assert_eq!(
         ids(&module_aware.index),
         db_ids,
