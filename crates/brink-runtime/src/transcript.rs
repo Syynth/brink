@@ -168,10 +168,7 @@ pub fn write_transcript(
     let mut body = Vec::new();
 
     // Count non-Checkpoint parts
-    let count = parts
-        .iter()
-        .filter(|p| !matches!(p, OutputPart::Checkpoint))
-        .count() as u32;
+    let count = parts.iter().filter(|p| is_persisted(p)).count() as u32;
     write_u32(&mut body, count);
 
     for part in parts {
@@ -181,11 +178,7 @@ pub fn write_transcript(
     // Serialize fragments
     write_u32(&mut body, fragments.len() as u32);
     for fragment in fragments {
-        let filtered_count = fragment
-            .parts
-            .iter()
-            .filter(|p| !matches!(p, OutputPart::Checkpoint))
-            .count() as u32;
+        let filtered_count = fragment.parts.iter().filter(|p| is_persisted(p)).count() as u32;
         write_u32(&mut body, filtered_count);
         for part in &fragment.parts {
             encode_part(part, &mut body);
@@ -337,12 +330,30 @@ pub fn render_transcript(
 // `read_transcript`. Before this, the two call sites hand-duplicated the
 // same match arms; #953 was exactly that duplication silently dropping
 // `Fragment::tags` because the two loops drifted. Any new `OutputPart`
-// variant now needs exactly one new arm here, reached from both loops.
+// variant that always writes bytes needs exactly one new arm here, reached
+// from both loops. A new *transient* (zero-byte) variant — like
+// `OutputPart::Checkpoint` — additionally needs its own arm added to
+// `is_persisted` below, which both part-count filters share; see that
+// function's doc comment.
+
+/// Returns whether `part` is written to the persisted `.brkt` format.
+///
+/// `OutputPart::Checkpoint` is the one transient capture marker that is
+/// filtered out (it writes zero bytes in [`encode_part`]). This predicate is
+/// shared by both of `write_transcript`'s part-count computations (the
+/// top-level count and each fragment's `filtered_count`) so they cannot
+/// drift from each other or from `encode_part`'s zero-byte arm. Any future
+/// transient variant must be added here *and* to `encode_part`'s zero-byte
+/// arm in lockstep — otherwise the written count disagrees with the emitted
+/// bytes and `read_transcript` misreads the part list.
+fn is_persisted(part: &OutputPart) -> bool {
+    !matches!(part, OutputPart::Checkpoint)
+}
 
 /// Encode a single [`OutputPart`] (its tag byte plus payload) onto `buf`.
 /// `OutputPart::Checkpoint` writes nothing — it is a transient capture
 /// marker filtered out of the persisted `.brkt` format by the caller's part
-/// count (see `write_transcript`).
+/// count (see `write_transcript` and [`is_persisted`]).
 #[expect(clippy::cast_possible_truncation)]
 fn encode_part(part: &OutputPart, buf: &mut Vec<u8>) {
     match part {
@@ -1018,6 +1029,29 @@ mod tests {
         assert!(matches!(&data.parts[2], OutputPart::Newline));
         assert!(matches!(&data.parts[3], OutputPart::Tag(s) if s == "tag1"));
         assert!(matches!(&data.parts[4], OutputPart::Glue));
+    }
+
+    // #1443 review finding: `write_transcript`'s top-level `count` and each
+    // fragment's `filtered_count` used to hand-duplicate the same
+    // `!matches!(p, OutputPart::Checkpoint)` predicate. They now both call
+    // the single shared `is_persisted` helper, which must stay in lockstep
+    // with `encode_part`'s zero-byte `OutputPart::Checkpoint` arm: only
+    // `Checkpoint` is transient (zero bytes), every other variant persists.
+    #[test]
+    fn is_persisted_filters_only_checkpoint() {
+        assert!(!is_persisted(&OutputPart::Checkpoint));
+        assert!(is_persisted(&OutputPart::Text("hi".to_string())));
+        assert!(is_persisted(&OutputPart::LineRef {
+            container_idx: 0,
+            line_idx: 0,
+            slots: Vec::new(),
+            flags: LineFlags::empty(),
+        }));
+        assert!(is_persisted(&OutputPart::ValueRef(Value::Bool(true))));
+        assert!(is_persisted(&OutputPart::Newline));
+        assert!(is_persisted(&OutputPart::Spring));
+        assert!(is_persisted(&OutputPart::Glue));
+        assert!(is_persisted(&OutputPart::Tag("t".to_string())));
     }
 
     // #1443: `write_transcript`/`read_transcript` used to hand-duplicate one
