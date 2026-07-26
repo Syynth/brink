@@ -401,7 +401,7 @@ const COLLECT: u8 = 0xFA;
 
 // B1 `or`-coalescing (`docs/stdlib-spec.md` §1.6a, `docs/decision-log.md`
 // "Option[T] ruled" 2026-07-18; issue #1460 — this PR's own reservation,
-// same "assigned here" precedent as the blocks above). One free byte
+// same "assigned here" precedent as the blocks above). Four free bytes
 // remained after NS-A7 (`0xFB`-`0xFD` + `0xFF`); this claims the first.
 // Native-surface-only: the surface spelling reuses the literal `or`
 // keyword, but `InfixOp::Or` (ink's boolean `||`, oracle-frozen) is left
@@ -1264,6 +1264,16 @@ pub enum Opcode {
     /// only: reachable exclusively through `InfixOp::Coalesce`, which the
     /// native lowering path alone produces (`InfixOp::Or`, ink's boolean
     /// `||`, is untouched and oracle-frozen).
+    ///
+    /// **Both operands are always evaluated before this op runs — an
+    /// unruled implementation decision** (review finding on PR
+    /// #1469/#1460, raised on #1460 for a ruling; see
+    /// `brink_ir::InfixOp::Coalesce`'s own doc). Unlike C#'s `??`/Kotlin's
+    /// `?:` — the conventions this operator's precedence placement was
+    /// modeled on — this codegen path has no short-circuit: `lhs` and
+    /// `rhs` are both pushed before `Coalesce` ever inspects either, so an
+    /// effectful `rhs` (an RNG draw, a mutation) always runs, even when
+    /// `lhs` turns out to be `some(_)` and `rhs`'s value is discarded.
     Coalesce,
 
     // ── NS-A6: the `std::rand` draw verbs (`docs/stdlib-spec.md` §7,
@@ -2369,9 +2379,11 @@ mod tests {
         roundtrip(&Opcode::Coalesce);
     }
 
-    /// `Coalesce` claims the first byte free after NS-A7's `Collect`
-    /// (`0xFA`) — `docs/format-v4-rfc.md`'s free-space note, updated by
-    /// this PR's own reservation comment above `COALESCE`.
+    /// `Coalesce` claims the first of the four bytes free after NS-A7's
+    /// `Collect` (`0xFA`) — `docs/format-v4-rfc.md` §5 explicitly does NOT
+    /// freeze numeric opcode assignments (only the name/encoding
+    /// *inventory*); the reservation comment above `COALESCE` is the actual
+    /// (implementation-level) source of truth this test pins.
     #[test]
     fn coalesce_opcode_byte_is_0xfb() {
         let mut buf = Vec::new();

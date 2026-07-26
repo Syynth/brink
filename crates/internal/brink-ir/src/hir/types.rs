@@ -1037,6 +1037,17 @@ pub enum InfixOp {
     /// this variant (`hir::lower_native::expr::infix_op`); the legacy
     /// ink/brink lowering path never does, so it is unreachable from the
     /// oracle-covered dialects.
+    ///
+    /// **Evaluation strictness: eager, both operands always evaluated —
+    /// an unruled implementation decision** (review finding on PR
+    /// #1469/#1460, raised on #1460 for a ruling). This lowers through the
+    /// same `infix_op_to_opcode` path every other `InfixOp` does, so
+    /// there is no codegen-level short-circuit the way condition-position
+    /// `And`/`Or` get: `x or rand::int(1, 10)` always draws (advancing RNG
+    /// state) and `x or pop(ref s)` always mutates `s`, even when `x` is
+    /// `some(_)` and the fallback's value is discarded. Every convention
+    /// this operator's precedence placement cites (C# `??`, Kotlin `?:`)
+    /// short-circuits the fallback; this implementation does not.
     Coalesce,
 }
 

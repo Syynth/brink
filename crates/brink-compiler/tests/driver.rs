@@ -472,11 +472,19 @@ fn native_or_coalescing_collapse_form_unwraps_some_and_falls_back_on_none() {
     );
 }
 
-/// The two-Option form and left-associative chaining (`a or b or default`):
-/// `none or none` keeps optionality (stays `none`), so the chain falls all
-/// the way through to the final non-Option fallback.
+/// The two-Option form chained (`a or b or default`): `none or none` keeps
+/// optionality (stays `none`), so the chain falls all the way through to
+/// the final non-Option fallback. A **smoke test only** — review finding on
+/// PR #1469/#1460: coalescing is semantically associative (`unify` is
+/// commutative/associative on agreeing types), so `{none or none or 7}`
+/// prints `7` under *either* grouping — this test cannot detect an
+/// associativity regression (e.g. right-associative parsing) on its own.
+/// `brink-syntax-native`'s own
+/// `parser::tests::expression::prec_coalesce_chain_is_left_associative`
+/// proves left-associativity at the parse-tree level, where a wrong
+/// grouping is actually observable.
 #[test]
-fn native_or_coalescing_chains_left_associatively() {
+fn native_or_coalescing_chain_falls_through_to_final_fallback() {
     let output = compile_and_run_native(
         "chain",
         "flow main() {\n  Chained: {none or none or 7} -> END\n}\n",
@@ -484,6 +492,33 @@ fn native_or_coalescing_chains_left_associatively() {
     assert!(
         output.contains("Chained: 7"),
         "expected the chain to fall through both `none`s to the final fallback, got: {output:?}"
+    );
+}
+
+/// Coalescing evaluates **both** operands, unconditionally — review finding
+/// on PR #1469/#1460: an unruled implementation decision (see
+/// `brink_ir::InfixOp::Coalesce`/`brink_format::Opcode::Coalesce`'s own
+/// docs), unlike the short-circuiting `??`/`?:` conventions this operator's
+/// precedence placement was modeled on. `bump()` mutates the global
+/// `counter` and is only ever reached through the coalescing `rhs` — if
+/// evaluation were lazy/short-circuiting, a `some(_)` `lhs` would mean
+/// `bump()` never runs and `counter` would stay `0`; it does not.
+#[test]
+fn native_or_coalescing_evaluates_both_operands_eagerly() {
+    let output = compile_and_run_native(
+        "eager",
+        "var counter = 0\n\
+         fn bump() {\n  counter = counter + 1;\n  return 99;\n}\n\
+         flow main() {\n  Value: {some(5) or bump()}\n  Counter: {counter} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Value: 5"),
+        "the collapse form must still unwrap `some(5)`, got: {output:?}"
+    );
+    assert!(
+        output.contains("Counter: 1"),
+        "expected `bump()` to have run exactly once despite the `some(_)` \
+         lhs (eager evaluation, not short-circuiting), got: {output:?}"
     );
 }
 

@@ -8,6 +8,7 @@
 mod admission;
 mod annotations;
 mod await_purity;
+mod coalesce_mismatch;
 mod comparator_contract;
 mod conversions;
 mod determinism;

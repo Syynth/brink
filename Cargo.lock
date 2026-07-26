@@ -2077,6 +2077,7 @@ dependencies = [
  "brink-ir",
  "brink-project-config",
  "brink-syntax",
+ "brink-syntax-native",
  "proptest",
  "rowan",
  "serde",

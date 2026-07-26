@@ -987,14 +987,21 @@ impl InferPass<'_, '_> {
             // expression shape (only bare single-segment param/temp paths
             // feed back), so this is safe to call unconditionally. A
             // mismatch collapses to `Ty::Conflicted` (the same
-            // infallible-absorption idiom `unify` uses elsewhere) rather
-            // than a bespoke diagnostic — TM-3's existing Conflicted-escape
-            // check (`strict::check`, `E066`) already catches it generically
-            // the moment the result reaches a signature or body-local slot;
-            // unrouted results keep the runtime `TypeError` fault as the
-            // backstop, the same "Unknown/Conflicted never disagrees, the
-            // runtime catches the rest" doctrine `option_conditions`'s F27
-            // check documents.
+            // infallible-absorption idiom `unify` uses elsewhere) — this
+            // pass only ever *computes* the type, it never diagnoses.
+            // `coalesce_mismatch::check` is the strict-mode-only pass that
+            // re-runs `coalesce` at this same expression's own site and
+            // pushes `E066` directly when it disagrees (review finding on
+            // PR #1469/#1460): the generic Conflicted-escape check
+            // (`strict::check`'s own `E066`) is *not* a sufficient backstop
+            // on its own, since it only fires once a `Conflicted` value
+            // reaches a signature or body-local slot boundary — a
+            // coalescing expression used directly in content/argument
+            // position never does. Under `types = gradual` neither compile-
+            // time check runs; the runtime `TypeError` fault
+            // (`value_ops::coalesce`) is the sole backstop there, and only
+            // for a non-Option `lhs` (see that function's own doc for the
+            // `Mismatch` case's narrower coverage).
             InfixOp::Coalesce => {
                 let expected_lhs = if matches!(r, Ty::Option(_)) {
                     r.clone()

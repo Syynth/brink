@@ -1030,17 +1030,29 @@ fn list_ordinal_shift(lv: &ListValue, shift: i32, program: &Program) -> ListValu
 /// → per the ruled typing (`(Option[T],T)->T`,
 /// `(Option[T],Option[T])->Option[T]`).
 ///
-/// `lhs` must be `Value::OptionVal` — strict-mode typing (native surface is
-/// strict-only) guarantees this statically, so a non-Option `lhs` here means
-/// malformed bytecode, not an author mistake; it faults rather than
-/// guessing. `none` yields `rhs` unchanged (already the right shape by
-/// construction, whichever typing branch produced it). `some(v)` yields the
-/// unwrapped `v` when `rhs` is not itself an `OptionVal` (the collapse
-/// form), or the original `some(v)` unchanged when `rhs` *is* an
-/// `OptionVal` (the two-Option form, preserving optionality for chaining) —
-/// decided from `rhs`'s runtime shape, the same information the static
-/// typing rule used to pick the branch, so no separate opcode or codegen
-/// variant is needed for the two forms.
+/// `lhs` must be `Value::OptionVal`. Note this is a *runtime* check, not a
+/// statically-guaranteed invariant: native's strict-only wiring (B0.10)
+/// has not landed (`brink-analyzer::strict::native_strict_only_error`'s own
+/// doc), so a native compile with an un-overridden default `types` policy
+/// runs zero strict-mode checks — `coalesce_mismatch::check`'s `E066`
+/// (review finding on PR #1469/#1460) only fires when a caller has
+/// explicitly set `types = strict`. A non-Option `lhs` reaching here can
+/// therefore be an un-caught author mistake, not only malformed bytecode;
+/// it faults rather than guessing either way. `none` yields `rhs` unchanged
+/// (already the right shape by construction, whichever typing branch
+/// produced it). `some(v)` yields the unwrapped `v` when `rhs` is not
+/// itself an `OptionVal` (the collapse form), or the original `some(v)`
+/// unchanged when `rhs` *is* an `OptionVal` (the two-Option form,
+/// preserving optionality for chaining) — decided from `rhs`'s runtime
+/// shape, the same information the static typing rule used to pick the
+/// branch, so no separate opcode or codegen variant is needed for the two
+/// forms. This runtime shape-dispatch is also why a *mismatched* fallback
+/// type (`some(1) or "text"`) is never caught here: both operands are
+/// concrete values by the time this runs, and `some(1)`'s `rhs` not being
+/// an `OptionVal` is indistinguishable from the intended collapse form — it
+/// silently unwraps to `1`. That case has no runtime backstop at all;
+/// `coalesce_mismatch::check`'s compile-time `E066` is the only place it is
+/// ever caught.
 pub(crate) fn coalesce(lhs: Value, rhs: Value) -> Result<Value, RuntimeError> {
     match lhs {
         Value::OptionVal(Some(inner)) => {

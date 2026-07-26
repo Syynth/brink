@@ -345,6 +345,17 @@ pub fn check(
         inference,
         resolutions,
     ));
+    // B1 `or`-coalescing (docs/stdlib-spec.md §1.6a, issue #1460; review
+    // finding on PR #1469): `infer::ty::coalesce`'s `LeftNotOption`/
+    // `Mismatch` failures, surfaced at the coalescing expression's own site
+    // — strict-mode-only, the compile-time half; gradual is inert with the
+    // runtime `TypeError` fault as the (narrower) residual backstop.
+    out.extend(crate::coalesce_mismatch::check(
+        files,
+        index,
+        inference,
+        resolutions,
+    ));
     out
 }
 

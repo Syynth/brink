@@ -22,3 +22,12 @@ precise grammar is unruled beyond a usage sketch in a DRAFT sequencing
 document (`docs/stdlib-sequencing.md`, Finding F16, never promoted to a
 decision-log ruling), so it is deferred per house rule 7 pending a design
 round.
+
+Review follow-up: a statically-detectable coalescing mismatch (a
+non-Option left-hand side, or a fallback type that disagrees with the
+Option's element type — `{5 or 9}`, `{some(1) or "text"}`) now raises
+`E066` at the coalescing expression's own site under `types = strict`,
+instead of silently collapsing to an unreported `Conflicted` type. The
+mnemonic/opcode assignment and the typing/runtime semantics (including
+eager evaluation of both operands — no short-circuiting) are unchanged
+from the original patch; only diagnostic coverage improved.
