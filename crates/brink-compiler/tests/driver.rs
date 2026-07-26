@@ -522,6 +522,113 @@ fn native_or_coalescing_evaluates_both_operands_eagerly() {
     );
 }
 
+// ── B1b the `as` binding (`docs/decision-log.md` 2026-07-26, issue
+//    #1475) ────────────────────────────────────────────────────────────
+//
+// Full pipeline, in both ruled condition positions: native parser
+// (`AS_BINDING`) → native HIR lowering (`IfStmt`/`WhileStmt`/
+// `CondBranch::binding`) → analyzer typing (`Option[T]` → `T`) → LIR
+// (`lir::Expr::OptionBind`) → codegen (`Opcode::OptionBind`) → runtime VM
+// → `Story` output. Each fixture *runs*, so the opcode is proven reachable
+// end to end rather than merely wired at the type level.
+
+/// The statement form: `if EXPR as NAME { … }` binds the unwrapped payload
+/// (not the `Option`) inside the success arm, and the `else` arm is
+/// reached when the condition is `none`.
+#[test]
+fn native_as_binding_statement_form_binds_payload_and_falls_to_else() {
+    let output = compile_and_run_native(
+        "as-if",
+        "fn present() {\n  if some(41) as n {\n    return n + 1;\n  }\n  return 0;\n}\n\
+         fn absent() {\n  if none as n {\n    return n;\n  }\n  return -7;\n}\n\
+         flow main() {\n  Present: {present()}\n  Absent: {absent()} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Present: 42"),
+        "expected `n` to be the UNWRAPPED 41 (42 after +1), got: {output:?}"
+    );
+    assert!(
+        output.contains("Absent: -7"),
+        "expected the `none` condition to skip the arm entirely, got: {output:?}"
+    );
+}
+
+/// The `while` form rebinds each iteration (the ruling's explicit rider):
+/// `next_ticket()` yields `some(2)`, `some(1)`, `some(0)`, then `none`, so
+/// a per-iteration rebinding sums to 3 — a first-iteration snapshot would
+/// sum to 6 (2+2+2) and a non-terminating binding would never stop.
+#[test]
+fn native_as_binding_while_form_rebinds_each_iteration() {
+    let output = compile_and_run_native(
+        "as-while",
+        "var counter = 3\n\
+         fn next_ticket() {\n\
+         \x20 if counter > 0 {\n\
+         \x20   counter = counter - 1;\n\
+         \x20   return some(counter);\n\
+         \x20 }\n\
+         \x20 return none;\n}\n\
+         fn drain() {\n\
+         \x20 let sum = 0;\n\
+         \x20 while next_ticket() as t {\n\
+         \x20   sum = sum + t;\n\
+         \x20 }\n\
+         \x20 return sum;\n}\n\
+         flow main() {\n  Sum: {drain()} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Sum: 3"),
+        "expected 2+1+0 = 3 from per-iteration rebinding, got: {output:?}"
+    );
+}
+
+/// The template form `{if EXPR as NAME: … else: …}` — the same construct in
+/// brink's other condition position, riding the already-ruled `{if}`
+/// spelling. The bound name is readable from an interpolation inside the
+/// success arm; the `else` arm runs on `none`.
+#[test]
+fn native_as_binding_template_form_binds_inside_the_success_arm() {
+    let output = compile_and_run_native(
+        "as-template",
+        "flow main() {\n\
+         \x20 Leader: {if some(9) as l: number {l} else: nobody}\n\
+         \x20 Empty: {if none as l: number {l} else: nobody} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Leader: number 9"),
+        "expected the template arm to see the unwrapped 9, got: {output:?}"
+    );
+    assert!(
+        output.contains("Empty: nobody"),
+        "expected the `else` arm on `none`, got: {output:?}"
+    );
+}
+
+/// The binding is scoped **strictly to the success arm** — observable by
+/// shadowing: an outer `n` is invisible inside the arm (the binding wins)
+/// and intact after it (the binding is gone). A leaked binding would make
+/// the function return `1`; a binding that never took effect would print
+/// `100` from inside the arm.
+#[test]
+fn native_as_binding_scope_ends_at_the_arm() {
+    let output = compile_and_run_native(
+        "as-scope",
+        "fn probe() {\n\
+         \x20 let n = 100;\n\
+         \x20 let inner = 0;\n\
+         \x20 if some(1) as n {\n\
+         \x20   inner = n;\n\
+         \x20 }\n\
+         \x20 return inner * 1000 + n;\n}\n\
+         flow main() {\n  Probe: {probe()} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Probe: 1100"),
+        "expected inner = 1 (the binding) and n = 100 (the outer local, \
+         restored after the arm), got: {output:?}"
+    );
+}
+
 // ── compile_path (disk-based) ───────────────────────────────────────
 
 #[test]

@@ -91,11 +91,18 @@ fn lower_params(param_list: Option<ast::ParamList>) -> Vec<Param> {
             name_from(p.name_token()).map(|name| Param {
                 name,
                 is_ref: p.is_ref(),
-                // Neither a `->`-typed divert param nor a `: type`
-                // annotation exists in this grammar skeleton
-                // (`parser/decl.rs::param`) — always false/`None`.
+                // No `->`-typed divert param exists in this grammar
+                // (`parser/decl.rs::param`) — always false.
                 is_divert: false,
-                annotation: None,
+                // `name: type` (NG-A, issue #1487) — the same
+                // `hir::TypeExpr` the ink dialect's TM-2 annotations lower
+                // to, so `brink-analyzer::strict`'s annotation firewall
+                // (its `E065` Unknown-escape exemption) reads a native
+                // parameter exactly as it reads an ink one.
+                annotation: p
+                    .type_annotation()
+                    .as_ref()
+                    .and_then(super::types::lower_type_annotation),
             })
         })
         .collect()
@@ -120,6 +127,14 @@ pub(super) fn lower_top_level_container(
         return None;
     };
     let params = lower_params(node.param_list());
+    // `fn probability(g: Guest): float { … }` (NG-C, issue #1489, RULED
+    // 2026-07-26). Declaring a return type is also the ruled
+    // **coroutine-vs-state toggle** — see the implicit-`-> DONE` guard
+    // below.
+    let return_type = node
+        .return_type()
+        .as_ref()
+        .and_then(super::types::lower_type_annotation);
 
     // A nested `flow`/`fn` declaration can only appear inside a
     // *prose*-ground body — `parser/stmt.rs`'s code-ground statement
@@ -168,7 +183,17 @@ pub(super) fn lower_top_level_container(
     // (RULED 2026-07-22; charter §15): a body falling off the end gets a
     // synthesized `-> DONE`. Functions are excluded — they implicitly
     // *return* on exhaustion, not DONE.
-    if !node.is_function() {
+    //
+    // So is a **value-returning flow**: the return-type declaration is the
+    // ruled coroutine-vs-state toggle (`docs/decision-log.md` 2026-07-22
+    // implicit-end ruling, item 3 — "no return type ⇒ ends implicitly as
+    // DONE; has one ⇒ must return"). A coroutine that falls through
+    // without a value is a *checker* error, and synthesizing `-> DONE`
+    // here would silently turn that authoring mistake into a story that
+    // quietly ends. The checker diagnostic itself is not built by this
+    // slice (no new toggle machinery — see the issue #1489 fence); this is
+    // the toggle wired into the one mechanism that already exists.
+    if !node.is_function() && return_type.is_none() {
         super::body::apply_implicit_done(&mut body_block);
     }
 
@@ -181,7 +206,7 @@ pub(super) fn lower_top_level_container(
         stitches,
         is_local: false,
         effects_assertion: None,
-        return_type: None,
+        return_type,
         doc,
         visibility: None,
         was: None,
@@ -206,6 +231,22 @@ fn lower_stitch(
         return None;
     };
     let params = lower_params(node.param_list());
+
+    // A return type on a *stitch* has nowhere to go: `hir::Stitch` has no
+    // `return_type` field (only `Knot` does — the ink dialect's own
+    // `= stitch` grammar never had a return clause either), so the ruled
+    // coroutine toggle can't be honored one level down. Flag it with the
+    // native "parses but has no HIR lowering yet" fence rather than
+    // dropping it silently (CLAUDE.md: silent drops are bugs) — NG-C's
+    // scope is `Knot.return_type`; widening `Stitch` is a shared-HIR change
+    // for a follow-up.
+    if let Some(rt) = node.return_type() {
+        diags.push(diag(
+            file_id,
+            rt.syntax().text_range(),
+            DiagnosticCode::E129,
+        ));
+    }
 
     // Depth-3 fence (Q4(b)): a `flow` nested inside *this* stitch's body is
     // one level too deep. Reject each occurrence loudly; do not lower it,

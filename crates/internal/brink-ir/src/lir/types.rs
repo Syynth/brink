@@ -777,6 +777,25 @@ pub enum Expr {
     OptionNone,
     /// `some(x)` — `Opcode::MakeSome`, total over every value.
     OptionSome(Box<Expr>),
+    /// The `as` binding's condition (B1b, issue #1475) —
+    /// `Opcode::OptionBind(slot)`. Evaluates `value` (an `Option[T]`) and
+    /// yields the **bool** the enclosing `if`/`while`/`{if}` branches on,
+    /// writing the unwrapped payload into temp `slot` on the `some` path
+    /// and leaving the slot untouched on `none`.
+    ///
+    /// The test and the bind are one opcode on purpose: it keeps the
+    /// binding entirely inside condition evaluation, so `while EXPR as n`
+    /// rebinds per iteration for free (the condition is re-evaluated), an
+    /// inline `{if EXPR as n: …}` needs no statement hoisted out of its
+    /// content line, and `value` is evaluated exactly once in every form.
+    /// The only producer is `as`-binding lowering (`lir::lower::blocks`,
+    /// `lir::lower::content`); nothing in the ink/brink dialects can reach
+    /// it.
+    OptionBind {
+        value: Box<Expr>,
+        slot: u16,
+        name: NameId,
+    },
     /// `[s, sub]` → `Option[int]`. The `find(s, sub)` stdlib pure function
     /// (§3, martyr #1 redeemed): USV index of the first occurrence, `none`
     /// when absent.

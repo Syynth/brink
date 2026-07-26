@@ -188,7 +188,12 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
                 }
                 body.recompute_tail();
                 branches.push(CondBranch {
+                    // B1b (issue #1475): a lifted inline `{if EXPR as n: …}`
+                    // keeps its binding — this rebuild is a body rewrite
+                    // (prefix/suffix splice), not a re-lowering, so dropping
+                    // it here would silently unbind the arm.
                     condition: branch.condition.clone(),
+                    binding: branch.binding.clone(),
                     body,
                     container_id: None,
                 });
@@ -208,6 +213,7 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
                 else_body.recompute_tail();
                 branches.push(CondBranch {
                     condition: None,
+                    binding: None,
                     body: else_body,
                     container_id: None,
                 });
@@ -421,6 +427,7 @@ mod tests {
                     let tail = crate::tail_from_stmts(&stmts);
                     CondBranch {
                         condition,
+                        binding: None,
                         body: Block {
                             label: None,
                             stmts,
@@ -509,6 +516,7 @@ mod tests {
             kind: CondKind::InitialCondition,
             branches: vec![CondBranch {
                 condition: Some(Expr::Bool(true)),
+                binding: None,
                 body: divert_body,
                 container_id: None,
             }],
@@ -753,6 +761,7 @@ mod tests {
             kind: CondKind::IfElse,
             branches: vec![CondBranch {
                 condition: Some(Expr::Bool(true)),
+                binding: None,
                 body: mk_block(vec![Stmt::Content(body_content), Stmt::EndOfLine]),
                 container_id: None,
             }],

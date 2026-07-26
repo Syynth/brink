@@ -1118,3 +1118,107 @@ fn e066_coalesce_mismatched_fallback_type() {
         "expected E066, got: {diags:?}"
     );
 }
+
+// ─── B1b the `as` binding (issue #1475): E145/E146/E147 ────────────────
+//
+// Native-only, same reasoning as the E066 block above — an `AS_BINDING`
+// node exists only in the native grammar, so these reuse `compile_native`.
+
+/// E145 — the v1 whole-condition restriction, caught at HIR lowering when
+/// the binding sits on top of a `&&` composition. (The mirror spelling, an
+/// operator *after* the binding, is a parse error instead; see
+/// `brink-syntax-native`'s `parser::tests::statement`.)
+#[test]
+fn e140_as_binding_over_a_boolean_composition() {
+    // Both boolean operators, not just `&&`: the native lowering maps `&&`
+    // to `InfixOp::And` and `||` to `InfixOp::Or`, and the whole-condition
+    // rule refuses either as the bound expression.
+    for (suffix, op) in [("as-composed-and", "&&"), ("as-composed-or", "||")] {
+        let source =
+            format!("flow main() ~{{\n  if true {op} some(1) as n {{\n    return n;\n  }}\n}}\n");
+        let Err(err) = compile_native(suffix, &source, native_strict_options()).map(|_| ()) else {
+            panic!("`as` over a `{op}` composition must fail");
+        };
+        let diags = errors_of(err);
+        assert!(
+            diags.iter().any(|d| d.code == DiagnosticCode::E145),
+            "expected E145 for `{op}`, got: {diags:?}"
+        );
+    }
+}
+
+/// E146 — guard-`as` is ruled but rides the `.inkb` v6 Choice record, so it
+/// is diagnosed as *not yet supported* rather than half-lowered.
+#[test]
+fn e141_as_binding_in_a_choice_guard_is_not_yet_supported() {
+    let source = "flow main() {
+  {?
+    * {if some(1) as n} take it
+  }
+  -> END
+}
+";
+    let err = compile_native("as-guard", source, native_strict_options())
+        .map(|_| ())
+        .expect_err("guard-`as` must be refused until the v6 Choice record lands");
+    let diags = errors_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E146),
+        "expected E146, got: {diags:?}"
+    );
+}
+
+/// E147 — the binding unwraps `Option[T]`; a statically classifiable
+/// non-Option condition has nothing to unwrap. The strict-mode twin of the
+/// runtime's `AsBindingNotOption` fault.
+#[test]
+fn e142_as_binding_on_a_non_option_condition() {
+    let source = "flow main() {
+  {if 5 as n: got {n} else: nope}
+  -> END
+}
+";
+    let err = compile_native("as-not-option", source, native_strict_options())
+        .map(|_| ())
+        .expect_err("`as` over an int condition must fail under types = strict");
+    let diags = errors_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E147),
+        "expected E147, got: {diags:?}"
+    );
+}
+
+/// E148 — the binding is immutable by ruling. Every write shape resolves
+/// its target through the same LIR choke point, so all four are refused:
+/// plain assignment, compound assignment, an in-place mutator, and passing
+/// the binding by `ref` to a function that writes through it (the review
+/// finding this last case guards: `ref` bypasses `lower_assign_target`
+/// entirely — it hands the callee a raw pointer to the slot — so it needs
+/// its own refusal at `lower_ref_path_call_arg`/`lower_ref_projection_arg`).
+#[test]
+fn e143_as_binding_is_immutable() {
+    for (suffix, write) in [
+        ("as-imm-assign", "n = 1;"),
+        ("as-imm-compound", "n += 1;"),
+        ("as-imm-mutator", "pop(n);"),
+        // Native `ref` is a parameter-position marker (`fn bump(ref x)`),
+        // not a call-site keyword: an argument at a `ref` parameter's
+        // position is auto-ref'd from its bare path, so this reaches the
+        // same `lower_ref_path_call_arg` choke point as the ink-dialect's
+        // explicit `heal(ref t, 5)` spelling would.
+        ("as-imm-ref", "bump(n);"),
+    ] {
+        let source = format!(
+            "fn bump(ref x) {{\n  x = x + 1;\n}}\n\nflow main() ~{{\n  if some(1) as n {{\n    \
+             {write}\n  }}\n}}\n"
+        );
+        let err = compile_native(suffix, &source, native_strict_options())
+            .map(|_| ())
+            .unwrap_err();
+        let diags = errors_of(err);
+        assert!(
+            diags.iter().any(|d| d.code == DiagnosticCode::E148),
+            "expected E148 for `{write}`, got: {diags:?}"
+        );
+    }
+}

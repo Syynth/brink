@@ -963,7 +963,21 @@ fn lower_block_with_children(
                     .iter()
                     .enumerate()
                     .map(|(branch_idx, b)| {
-                        let condition = b.condition.as_ref().map(|e| expr::lower_expr(e, ctx));
+                        // B1b (issue #1475): the block-level `{if EXPR as
+                        // n: … else: …}` template form. The branch body
+                        // becomes its own container, but containers share
+                        // the enclosing call frame's temp slots, so the
+                        // binding's slot is visible inside it — the scope
+                        // bracket below is the lowering-time name scope,
+                        // and it closes before the next branch is walked.
+                        ctx.push_block_scope();
+                        let condition = match (b.condition.as_ref(), b.binding.as_ref()) {
+                            (Some(e), Some(binding)) => {
+                                Some(blocks::lower_bound_condition(e, binding, ctx))
+                            }
+                            (Some(e), None) => Some(expr::lower_expr(e, ctx)),
+                            (None, _) => None,
+                        };
 
                         // Set scope_path for this branch so nested containers
                         // (choices, gathers, nested conditionals) get unique IDs.
@@ -998,6 +1012,9 @@ fn lower_block_with_children(
                             local: false,
                         };
                         children.push(branch_container);
+                        // Closes the `as`-binding scope opened above — the
+                        // next branch (an `else`) must not see the name.
+                        ctx.pop_block_scope();
 
                         // The branch body in the Conditional struct is just EnterContainer
                         lir::CondBranch {
@@ -1464,6 +1481,7 @@ fn make_ctx<'a>(
         choice_gather_target: None,
         next_block_slot,
         block_scopes: Vec::new(),
+        as_binding_slots: LookupSet::new(),
         block_scoped_temp_names: LookupSet::new(),
         diagnostics,
         loop_depth: 0,

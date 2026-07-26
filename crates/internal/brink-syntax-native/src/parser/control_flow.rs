@@ -34,13 +34,19 @@ fn head_expression(p: &mut Parser<'_, '_>) {
     p.set_no_construct_literal(saved);
 }
 
-/// `if cond { … } (else if cond { … } | else { … })?`.
+/// `if cond (as name)? { … } (else if cond { … } | else { … })?` — the
+/// optional `as` binding is B1b (issue #1475, `parser/binding.rs`), scoped
+/// strictly to the success arm, so an `else`/`else if` arm never sees it.
 pub(crate) fn if_stmt(p: &mut Parser<'_, '_>) {
     p.start_node(IF_STMT);
     p.bump(); // KW_IF
     p.skip_ws();
     head_expression(p);
     p.skip_ws();
+    if super::binding::at_as_binding(p) {
+        super::binding::as_binding(p);
+        p.skip_ws();
+    }
     super::stmt::stmt_block(p);
     p.skip_ws();
     if p.at(KW_ELSE) {
@@ -64,14 +70,23 @@ fn else_clause(p: &mut Parser<'_, '_>) {
     p.finish_node();
 }
 
-/// `while cond { … }`. Always a plain loop — native has no `await` keyword
-/// to spell a persistent-await variant with (see module doc).
+/// `while cond (as name)? { … }`. Always a plain loop — native has no
+/// `await` keyword to spell a persistent-await variant with (see module
+/// doc).
 pub(crate) fn while_stmt(p: &mut Parser<'_, '_>) {
     p.start_node(WHILE_STMT);
     p.bump(); // KW_WHILE
     p.skip_ws();
     head_expression(p);
     p.skip_ws();
+    // `while EXPR as NAME { … }` rebinds each iteration (B1b, issue
+    // #1475) — the grammar is identical to `if`'s; the per-iteration
+    // rebinding falls out of the condition being re-evaluated, so nothing
+    // distinguishes the two forms here.
+    if super::binding::at_as_binding(p) {
+        super::binding::as_binding(p);
+        p.skip_ws();
+    }
     super::stmt::stmt_block(p);
     p.finish_node();
 }

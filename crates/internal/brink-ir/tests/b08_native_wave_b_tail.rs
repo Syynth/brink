@@ -24,31 +24,29 @@
 //! entry point `b08_native_control_flow.rs` uses) to inspect the resulting
 //! `Vec<BlockStmt>` tree.
 //!
-//! # UFCS: an honest, explicit gap, not silently skipped
+//! # UFCS: the gap this file pinned, and where it was closed
 //!
-//! Issue #1322 also lists UFCS resolution (`x.foo(y)` → field-access-wins,
-//! else free-fn `foo(x, y)`) as ruled surface. Investigation for this PR
-//! found that **ink's own grammar structurally rejects the exact shape
-//! this ruling describes**: `~ temp x = obj.field()` lowers to `E104`
-//! ("Direct-call syntax is RULED to a bare variable/temp/param callee
-//! only" — `brink-ir/src/hir/lower/expr/references.rs`'s
-//! `ast::CallExpr::lower_expr` doc, t1c-spec §3/§10) — there is no working
-//! ink construct to differentially compare against, and no existing
-//! `brink-analyzer` pass resolves a multi-segment `Expr::Call` path today
-//! (the "FieldAccess/Call ambiguity ownership" the decision log points to
-//! is `brink-analyzer::resolve`'s TM-4b fallback, which disambiguates a
-//! bare `Expr::Path` used as a *value*, never a `Call` callee — see
-//! `resolve.rs`'s `resolution_fallback_static_dotted_path_wins_over_a_colliding_variable_name`
-//! test). Building the real field-access-wins/free-fn disambiguation is
-//! `brink-analyzer` design work with no precedent to reuse, not a lean
-//! frontend-lowering addition — so it's deferred, honestly, rather than
-//! guessed at. `ufcs_call_shape_parses_and_lowers_but_ink_has_no_equivalent`
-//! below pins the current (pre-existing, unchanged by this PR) native
-//! behavior as a documented cross-frontend asymmetry, mirroring
-//! `b08_native_control_flow.rs`'s own
-//! `bare_trailing_tail_is_dropped_on_native_but_kept_as_exprstmt_on_ink`
-//! precedent for pinning a known, intentional gap rather than leaving it
-//! undocumented.
+//! Issue #1322 also listed UFCS resolution (`x.foo(y)` → field-access-wins,
+//! else free-fn `foo(x, y)`) as ruled surface, and this file originally
+//! pinned it as an honest, unimplemented gap: ink's own grammar
+//! structurally rejects the shape (`~ temp x = obj.field()` is `E104` —
+//! "Direct-call syntax is RULED to a bare variable/temp/param callee only",
+//! `brink-ir/src/hir/lower/expr/references.rs`'s `ast::CallExpr::lower_expr`
+//! doc, t1c-spec §3/§10), so there was no differential partner to build
+//! against, and no `brink-analyzer` pass resolved a multi-segment
+//! `Expr::Call` path.
+//!
+//! **That gap is closed** (issue #1482, B3a; D1–D5 RULED 2026-07-26). The
+//! resolution is type-directed and therefore lives in the analyzer, not in
+//! this lowering: `brink-analyzer::ufcs` infers the receiver's type, lets a
+//! matching field win outright (`E140` if it isn't callable), else desugars
+//! onto a free function in ordinary lexical scope, and records the verdict
+//! in a `node → verdict` side table. The *lowering* below is unchanged and
+//! still produces the full dotted callee path — which is exactly what that
+//! pass keys on, so `ufcs_call_shape_lowers_the_full_dotted_callee_path`
+//! stays as the pin for the shape contract the two layers share. The
+//! cross-frontend asymmetry it also records (ink cannot express this at
+//! all) is what keeps the ink corpus out of the new pass by construction.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -395,21 +393,25 @@ var x = {
     assert_eq!(native_assign.op, AssignOp::Set);
 }
 
-// ─── UFCS: honest gap, pinned not guessed at (see module doc) ──────────
+// ─── UFCS: the shape contract the analyzer's pass keys on (module doc) ──
 
-/// Native's pre-existing `CALL_EXPR` lowering (`lower_native::expr::
-/// lower_call`, unchanged by this PR) already produces `Expr::Call` for a
-/// multi-segment dotted callee path — `x.foo(y)` lowers cleanly, with no
-/// rejection. This is the "the call shape already parses" state the
-/// grammar's own module doc has flagged since B0.6. What this PR does
-/// **not** add is the field-access-wins/free-fn resolution semantics the
-/// decision log rules — see this file's module doc for why that's
-/// deferred. Pinned here (mirroring `bare_trailing_tail_is_dropped_on_native_
-/// but_kept_as_exprstmt_on_ink`'s precedent) so the gap is a visible,
-/// intentional signpost, not silent drift — and so a future PR that adds
-/// real resolution has a failing test to flip.
+/// Native's `CALL_EXPR` lowering (`lower_native::expr::lower_call`) produces
+/// `Expr::Call` for a multi-segment dotted callee path — `x.foo(y)` lowers
+/// cleanly, keeping every segment, with no rejection.
+///
+/// That full dotted path is the **input contract** of the UFCS resolution
+/// pass (`brink-analyzer::ufcs`, issue #1482): the pass splits it into a
+/// receiver (every segment but the last) and a method name, so collapsing
+/// or rewriting it here would silently break resolution. Pinned for that
+/// reason — it was originally pinned as a gap signpost (see the module
+/// doc's UFCS section) and is now the shared-shape guard between the two
+/// layers.
+///
+/// The second half of the test keeps the cross-frontend asymmetry on the
+/// record: ink cannot express this shape at all, which is what keeps the
+/// ink corpus out of the type-directed pass by construction.
 #[test]
-fn ufcs_call_shape_parses_and_lowers_but_ink_has_no_equivalent() {
+fn ufcs_call_shape_lowers_the_full_dotted_callee_path() {
     let (native_stmts, diags) = native_block_stmts(
         "\
 var x = {
@@ -427,8 +429,8 @@ var x = {
             .map(|s| s.text.as_str())
             .collect::<Vec<_>>(),
         vec!["x", "foo"],
-        "UFCS-shaped call keeps the full dotted callee path — resolution \
-         (field-access-wins vs. free-fn desugar) is not yet implemented"
+        "UFCS-shaped call must keep the full dotted callee path — \
+         `brink-analyzer::ufcs` splits it into receiver + method name"
     );
     assert_eq!(args.len(), 1);
 

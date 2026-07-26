@@ -131,3 +131,13 @@ fn sticky_choice() {
 fn weave_options() {
     round_trip_case("weave-options");
 }
+
+/// NG-A/NG-B (issues #1487/#1488): the `: type` annotation grammar,
+/// end-to-end. This is the case that proves `emit_native`'s annotation
+/// spelling and the native parser agree — before the annotation grammar
+/// landed, `emit_param` could already write `name: type` into a `.brink`
+/// file the parser had no rule for.
+#[test]
+fn typed_annotations() {
+    round_trip_case("typed-annotations");
+}

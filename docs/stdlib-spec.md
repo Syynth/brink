@@ -80,7 +80,8 @@ dangles; charter fix owed.)
    (2026-07-19): Option has NO truthiness** — a condition-position
    `Option[T]` is a compile error under strict and a runtime fault
    under gradual; the author writes `== none`, `== some(x)`, or
-   (post-B1) the `as`-binding. Truthiness is a quiet coercion of
+   the `as`-binding (RULED 2026-07-26, SHIPPED on the native
+   surface in B1b, issue #1475). Truthiness is a quiet coercion of
    exactly the kind `Option[T] ≠ T` exists to ban. (Supersedes
    A1's shipped falsy-none — implementation fix owed.) **F28 RULED
    (2026-07-19)**: `none`/`some(…)` render totally via `string()`
@@ -195,7 +196,9 @@ cross-referenced so views ≠ projections.
   (`push(ref inventory, sword)`) — the sugar is earned in method
   position, the spelled form teaches what it means. Safe
   sigil-free because values are COW (no aliasing/escape to warn
-  about) and the mutation lives in the effect row regardless.
+  about — the value-model statement in `docs/runtime-spec.md` §"Value
+  model", detailed in `docs/value-model-spec.md` §3) and the
+  mutation lives in the effect row regardless.
   **Naming (RULED with it)**: imperative = in-place (`sort push
   insert remove reverse`), past-participle = functional (`sorted
   reversed`) — the verb carries the mutation signal; the
@@ -713,7 +716,9 @@ precedent, oracle byte-identical):
   as an implementation prerequisite. Pre-registered bet the
   verbs leaned on: **capture is by-value** (COW makes it cheap;
   no ref captures v1, so closures can't smuggle mutable aliases
-  past the auto-ref rules); rows compose through captures per
+  past the auto-ref rules — see the closure-capture bullet of the
+  value-model statement in `docs/runtime-spec.md` §"Value model");
+  rows compose through captures per
   #872. Reopening capture reopens knowingly. (2)
   **Syntax-in-value-position** — one coherent mechanism (operator
   sections vs `(+)`-style operator-values vs named verb twins vs

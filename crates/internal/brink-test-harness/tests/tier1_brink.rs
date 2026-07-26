@@ -196,6 +196,20 @@ fn struct_through_function_call_marshals_and_stays_a_value_copy() {
     assert_case("struct-through-function-call");
 }
 
+// ── #1476: COW no-aliasing invariant sweep ────────────────────────────────
+//
+// `struct-through-function-call` proves value semantics across a call
+// boundary; this proves it for the plain assignment case (`let y = x`,
+// docs/value-model-spec.md §2/§3) on a `Value::Record` — mutating a field
+// through `a` after `b = a` must never be observable through `b`. Arrays
+// already have this exact shape of regression (`rmw-mutator-shared-nested-
+// lvalue`); structs didn't until this sweep.
+
+#[test]
+fn struct_copy_is_isolated_from_later_field_mutation() {
+    assert_case("struct-copy-isolation");
+}
+
 // ── TM-5 (#621) corpus wing growth: TM-2 inline annotations end-to-end ────
 //
 // TM-2 landed annotation grammar/HIR/fmt/IDE feeding `signature()`; this
@@ -419,6 +433,7 @@ fn every_case_directory_has_a_test() {
         "struct-construct-read-write",
         "struct-display-default",
         "struct-through-function-call",
+        "struct-copy-isolation",
         "annotations-mixed",
         "fn-value-call-forms",
         "fn-value-ref-mutation",

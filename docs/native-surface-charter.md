@@ -123,7 +123,12 @@ One brace grammar; the annotation position declares the kind:
 - **Bare `{expr}` = interpolation** — and nothing else, ever.
 - **Words where logic branches**: `{if cond: … else: …}` (inline or
   multiline), `{match x: …}` for switch forms. Conditional choice
-  guards reuse it: `* {if cond} [text]`.
+  guards reuse it: `* {if cond} [text]`. The `as` binding
+  (`{if cond as name: … else: …}`, ruled 2026-07-26, B1b #1475) is a
+  suffix of the `if` head in this position, and the identical suffix on
+  the code-ground `if`/`while` — one construct, both condition
+  positions, no new syntax family. (In a choice guard it parses but is
+  not yet implemented — it rides the `.inkb` v6 Choice record.)
 - **Characters where content alternates**: `{~ }` shuffle, `{& }`
   cycle, `{! }` once, `{| }` stopping-sequence (chars tentative).
 - **`{?` choice point** (§5) — one member of the family.

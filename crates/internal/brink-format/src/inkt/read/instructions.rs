@@ -364,6 +364,9 @@ fn parse_instruction(pair: P<'_>) -> Result<Opcode, InktParseError> {
 
         // B1 `or`-coalescing (issue #1460)
         "coalesce" => Ok(Opcode::Coalesce),
+        "option_bind" => Ok(Opcode::OptionBind(parse_operand_u16(
+            &operands, 0, mnemonic,
+        )?)),
 
         // NS-A6 rand verbs
         "rand_float" => Ok(Opcode::RandFloat),
