@@ -3,7 +3,7 @@ use brink_db::ProjectDb;
 use brink_ir::{FileId, HirFile};
 use rowan::{TextRange, TextSize};
 
-use crate::navigation::find_def_at_offset;
+use crate::navigation::{analysis_identity_of, db_identity_of, find_def_at_offset};
 use crate::session::IdeSession;
 use crate::structural_result::{StructuralResult, gate};
 
@@ -28,6 +28,13 @@ pub struct RenameResult {
 /// renameable range is the method segment's own span (mirroring how a plain
 /// reference's own range, not its target's declaration range, is returned
 /// below).
+///
+/// Review finding on #1539/PR #1543: a UFCS target must clear the same
+/// `SymbolKind::External` guard `rename` itself applies once it resolves the
+/// same target (below) — without this, `prepare_rename` reported an
+/// `external fn`'s UFCS call site as renameable, and the subsequent `rename`
+/// call then returned `None`, i.e. a silent no-op from the caller's (LSP's)
+/// point of view.
 pub fn prepare_rename(
     db: &ProjectDb,
     analysis: &AnalysisResult,
@@ -35,13 +42,19 @@ pub fn prepare_rename(
     offset: rowan::TextSize,
 ) -> Option<TextRange> {
     if let Some(hir) = db.hir(file_id)
-        && let Some(target) =
+        && let Some(verdict_target) =
             crate::ufcs_hover::ufcs_goto_definition_target(db, hir, file_id, offset)
     {
-        // `target.is_none()` (field call / prelude intrinsic): not
+        // `verdict_target.is_none()` (field call / prelude intrinsic): not
         // renameable — return `None` rather than falling through to the
         // generic lookup below, which would offer the receiver's range.
-        return target.and(crate::ufcs_hover::ufcs_method_range_at_offset(hir, offset));
+        let target = verdict_target?;
+        let resolved = db.resolutions_index();
+        let info = resolved.index.symbols.get(&target)?;
+        if matches!(info.kind, brink_ir::SymbolKind::External) {
+            return None;
+        }
+        return crate::ufcs_hover::ufcs_method_range_at_offset(hir, offset);
     }
 
     let info = find_def_at_offset(analysis, file_id, offset)?;
@@ -72,6 +85,20 @@ pub fn prepare_rename(
 /// misses every UFCS call site" bug: without it, `analysis.resolutions`
 /// alone never carries a UFCS call site's true target (see `ufcs_hover`'s
 /// module doc), so those call sites were never in the edit set at all.
+///
+/// Review finding on #1539/PR #1543: the two identity-space correlations
+/// (`analysis` ⇄ `db`, via [`analysis_identity_of`]/[`db_identity_of`],
+/// shared with `crate::navigation::find_references`) must not fail *open*.
+/// The two are not revision-locked for every caller (e.g. the LSP's cached
+/// `snap.analysis` vs. a freshly re-locked `self.db`), so a stale snapshot
+/// can shift a declaration's range and miss the correlation. Previously,
+/// a missed correlation silently dropped an entire category of edits
+/// (either the plain `ResolutionMap` references, or the UFCS call sites)
+/// while still returning `Some(RenameResult)` — exactly the "rename
+/// silently produces a broken program" failure mode #1539 exists to kill,
+/// just relocated to a different trigger. Both branches below now return
+/// `None` — refuse the whole rename — the moment a needed correlation step
+/// misses, rather than ever emitting a silently incomplete edit set.
 pub fn rename(
     db: &ProjectDb,
     analysis: &AnalysisResult,
@@ -92,27 +119,16 @@ pub fn rename(
             if matches!(info.kind, brink_ir::SymbolKind::External) {
                 return None;
             }
-            let analysis_id = analysis
-                .index
-                .symbols
-                .values()
-                .find(|i| i.file == info.file && i.range == info.range)
-                .map(|i| i.id);
-            (info.file, info.range, analysis_id, Some(target))
+            let analysis_id = analysis_identity_of(analysis, info.file, info.range)?;
+            (info.file, info.range, analysis_id, target)
         }
         None => {
             let info = find_def_at_offset(analysis, file_id, offset)?;
             if matches!(info.kind, brink_ir::SymbolKind::External) {
                 return None;
             }
-            let db_id = db
-                .resolutions_index()
-                .index
-                .symbols
-                .values()
-                .find(|i| i.file == info.file && i.range == info.range)
-                .map(|i| i.id);
-            (info.file, info.range, Some(info.id), db_id)
+            let db_id = db_identity_of(db, info.file, info.range)?;
+            (info.file, info.range, info.id, db_id)
         }
     };
 
@@ -126,35 +142,31 @@ pub fn rename(
     });
 
     // 2. Rename all plain reference sites (analysis's own identity space)
-    if let Some(def_id) = analysis_def_id {
-        for resolved in &analysis.resolutions {
-            if resolved.target == def_id {
-                edits.push(FileEdit {
-                    file: resolved.file,
-                    range: resolved.range,
-                    new_text: new_name.to_owned(),
-                });
-            }
+    for resolved in &analysis.resolutions {
+        if resolved.target == analysis_def_id {
+            edits.push(FileEdit {
+                file: resolved.file,
+                range: resolved.range,
+                new_text: new_name.to_owned(),
+            });
         }
     }
 
     // 3. Rename every UFCS-desugared call site targeting the same free
     // function (issue #1539, `db`'s own identity space).
-    if let Some(def_id) = db_def_id {
-        for (file, path_range) in db.ufcs_call_sites_for_target(def_id) {
-            let Some(hir) = db.hir(file) else {
-                continue;
-            };
-            let Some(method_range) = crate::ufcs_hover::ufcs_method_range_at_path(hir, path_range)
-            else {
-                continue;
-            };
-            edits.push(FileEdit {
-                file,
-                range: method_range,
-                new_text: new_name.to_owned(),
-            });
-        }
+    for (file, path_range) in db.ufcs_call_sites_for_target(db_def_id) {
+        let Some(hir) = db.hir(file) else {
+            continue;
+        };
+        let Some(method_range) = crate::ufcs_hover::ufcs_method_range_at_path(hir, path_range)
+        else {
+            continue;
+        };
+        edits.push(FileEdit {
+            file,
+            range: method_range,
+            new_text: new_name.to_owned(),
+        });
     }
 
     Some(RenameResult { edits })
@@ -457,6 +469,80 @@ fn main() {
         assert!(
             prepare_rename(s.db(), analysis, id, TextSize::from(call_pos)).is_none(),
             "a field call has no DefinitionId to rename"
+        );
+    }
+
+    #[test]
+    fn prepare_rename_on_a_ufcs_call_to_an_external_free_fn_is_not_renameable() {
+        // Review finding on #1539/PR #1543: `prepare_rename`'s UFCS branch
+        // skipped the `SymbolKind::External` guard `rename` itself applies
+        // once it resolves the same target (below) — an LSP `prepareRename`
+        // reported the call site renameable, then the follow-up `rename`
+        // call returned `None` (an external target has no analysis-space
+        // correlate to rename through), i.e. a silent no-op.
+        let src = "\
+struct Guest {
+  name: string
+}
+
+extern greet(g, n)
+
+fn main() {
+  let g = Guest { name: \"ada\" };
+  let n = g.greet(3);
+}
+";
+        let (s, id) = native_session(src);
+        let call_pos = u32::try_from(src.find("greet(3)").expect("call")).expect("offset");
+        let analysis = s.analysis().expect("analysis");
+
+        assert!(
+            prepare_rename(s.db(), analysis, id, TextSize::from(call_pos)).is_none(),
+            "an external free function cannot be renamed through this path"
+        );
+        assert!(
+            rename(s.db(), analysis, id, TextSize::from(call_pos), "salute").is_none(),
+            "rename must agree with prepare_rename: both refuse an external target"
+        );
+    }
+
+    #[test]
+    fn rename_refuses_rather_than_silently_dropping_edits_when_identity_spaces_disagree() {
+        // Review finding on #1539/PR #1543: `analysis`/`db` are not
+        // revision-locked for every caller (e.g. the LSP's cached
+        // `snap.analysis` vs. a freshly re-locked `self.db`) — a stale
+        // `analysis` snapshot can carry a declaration range that no longer
+        // matches `db`'s current one. Before this fix, `rename` silently
+        // returned `Some(RenameResult)` containing only the edits reachable
+        // from whichever identity space *did* correlate, omitting the rest
+        // with no signal — precisely the "rename silently produces a
+        // broken program" failure mode #1539 exists to kill, just
+        // relocated to a different trigger. It must now refuse instead.
+        let (mut s, id) = native_session(UFCS_FREE_FN_SRC);
+        // Captured *before* the edit below: self-consistent with the
+        // original source's ranges, but about to go stale relative to the
+        // session's `db` (and its own `hir`) once the source shifts.
+        let stale_analysis = s.analysis().expect("analysis").clone();
+        let decl_pos =
+            u32::try_from(UFCS_FREE_FN_SRC.find("greet(g").expect("decl")).expect("offset");
+
+        // Shift every declaration's range forward by re-analyzing a source
+        // with an extra leading line — `db`/the fresh analysis now disagree
+        // with `stale_analysis` about where `fn greet` lives.
+        let shifted_src = format!("// shifted\n{UFCS_FREE_FN_SRC}");
+        s.update_and_analyze("test.brink", shifted_src);
+
+        assert!(
+            rename(
+                s.db(),
+                &stale_analysis,
+                id,
+                TextSize::from(decl_pos),
+                "salute"
+            )
+            .is_none(),
+            "a stale analysis/db identity-space mismatch must refuse the rename, not emit a \
+             partial edit set"
         );
     }
 }

@@ -84,7 +84,23 @@ pub fn goto_definition(
 /// target resolves through `db`, not `analysis`" section. A declaration's
 /// own source range is stable across both computations, so this correlates
 /// by that instead of trusting a caller-supplied id directly.
-fn db_identity_of(db: &ProjectDb, file: FileId, range: TextRange) -> Option<DefinitionId> {
+///
+/// `pub(crate)` (review finding on #1539/PR #1543): `crate::rename` used to
+/// re-implement this exact `HashMap::values().find(...)` scan inline in two
+/// places — reused here instead, so the correlation rule (and its
+/// determinism caveat below) lives in one place.
+///
+/// Both this and [`analysis_identity_of`] scan `HashMap::values()` for a
+/// `(file, range)` match, so they are order-dependent if two symbols ever
+/// share a declaration span — that can't happen for well-formed source
+/// today, but is worth flagging given `UfcsLookup::call_sites_for_target`
+/// (immediately relevant to these two functions' callers) is carefully
+/// sorted for determinism.
+pub(crate) fn db_identity_of(
+    db: &ProjectDb,
+    file: FileId,
+    range: TextRange,
+) -> Option<DefinitionId> {
     db.resolutions_index()
         .index
         .symbols
@@ -99,7 +115,10 @@ fn db_identity_of(db: &ProjectDb, file: FileId, range: TextRange) -> Option<Defi
 /// a UFCS-originated lookup can still find the declaration/plain-reference
 /// entries that live in `analysis.index`/`analysis.resolutions`, which are
 /// keyed by `analysis`'s own (possibly different) ids.
-fn analysis_identity_of(
+///
+/// `pub(crate)` — see [`db_identity_of`]'s doc; `crate::rename` reuses this
+/// too.
+pub(crate) fn analysis_identity_of(
     analysis: &AnalysisResult,
     file: FileId,
     range: TextRange,
@@ -148,6 +167,17 @@ fn ufcs_reference_locations(db: &ProjectDb, target: DefinitionId) -> Vec<Locatio
 /// ([`db_identity_of`]/[`analysis_identity_of`]) are correlated by
 /// declaration range rather than assumed equal, since `analysis` may be a
 /// caller-supplied, module-blind snapshot.
+///
+/// Review finding on #1539/PR #1543: correlation between the two identity
+/// spaces must not fail *open*. If `analysis`/`db` disagree on where a
+/// declaration lives (e.g. an LSP caller's `snap.analysis` isn't
+/// revision-locked with the freshly re-locked `db`, so a stale snapshot
+/// shifts ranges), the old code silently returned only the *reachable*
+/// half of the reference set — UFCS call sites but no plain references, or
+/// vice versa — with no signal that the result was incomplete. Both
+/// branches below now fail closed (empty result) the moment a needed
+/// correlation step misses, rather than ever returning a silently partial
+/// reference list.
 pub fn find_references(
     db: &ProjectDb,
     analysis: &AnalysisResult,
@@ -165,13 +195,17 @@ pub fn find_references(
         // below, which would resolve to the receiver instead.
         Some(None) => return Vec::new(),
         Some(Some(target)) => {
-            let analysis_id = db
-                .resolutions_index()
-                .index
-                .symbols
-                .get(&target)
-                .and_then(|info| analysis_identity_of(analysis, info.file, info.range));
-            (analysis_id, Some(target))
+            let resolved = db.resolutions_index();
+            let Some(info) = resolved.index.symbols.get(&target) else {
+                return Vec::new();
+            };
+            let Some(analysis_id) = analysis_identity_of(analysis, info.file, info.range) else {
+                // Correlation failed: returning only the UFCS call sites
+                // below (via `db_def_id`) would silently omit any plain
+                // reference/declaration this same symbol also has.
+                return Vec::new();
+            };
+            (analysis_id, target)
         }
         None => {
             let def_id = analysis
@@ -192,48 +226,45 @@ pub fn find_references(
                         })
                         .map(|info| info.id)
                 });
-            let db_def_id = def_id.and_then(|id| {
-                analysis
-                    .index
-                    .symbols
-                    .get(&id)
-                    .and_then(|info| db_identity_of(db, info.file, info.range))
-            });
+            let Some(def_id) = def_id else {
+                return Vec::new();
+            };
+            let Some(info) = analysis.index.symbols.get(&def_id) else {
+                return Vec::new();
+            };
+            let Some(db_def_id) = db_identity_of(db, info.file, info.range) else {
+                // Correlation failed: returning only the plain references
+                // below (via `analysis_def_id`) would silently omit any
+                // UFCS call site desugaring to this same free function.
+                return Vec::new();
+            };
             (def_id, db_def_id)
         }
     };
 
-    if analysis_def_id.is_none() && db_def_id.is_none() {
-        return Vec::new();
-    }
-
     let mut locations = Vec::new();
 
-    if let Some(def_id) = analysis_def_id {
-        // Include the definition itself if requested
-        if include_declaration && let Some(info) = analysis.index.symbols.get(&def_id) {
-            locations.push(LocationResult {
-                file: info.file,
-                range: info.range,
-            });
-        }
+    // Include the definition itself if requested
+    if include_declaration && let Some(info) = analysis.index.symbols.get(&analysis_def_id) {
+        locations.push(LocationResult {
+            file: info.file,
+            range: info.range,
+        });
+    }
 
-        // Collect all reference sites that resolve to this definition
-        for resolved in &analysis.resolutions {
-            if resolved.target == def_id {
-                locations.push(LocationResult {
-                    file: resolved.file,
-                    range: resolved.range,
-                });
-            }
+    // Collect all reference sites that resolve to this definition
+    for resolved in &analysis.resolutions {
+        if resolved.target == analysis_def_id {
+            locations.push(LocationResult {
+                file: resolved.file,
+                range: resolved.range,
+            });
         }
     }
 
     // UFCS-desugared call sites targeting the same free function (issue
     // #1539).
-    if let Some(db_def_id) = db_def_id {
-        locations.extend(ufcs_reference_locations(db, db_def_id));
-    }
+    locations.extend(ufcs_reference_locations(db, db_def_id));
 
     locations
 }
@@ -418,6 +449,85 @@ fn main() {
             refs.iter()
                 .any(|loc| loc.file == file_id && loc.range.start() == TextSize::from(decl_pos)),
             "expected the `fn greet` declaration among references, got {:?}",
+            refs.iter().map(|l| l.range).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn find_references_from_a_free_fn_auto_ref_declaration_includes_its_ufcs_call_site() {
+        // Review finding on #1539/PR #1543: `UfcsLookup::call_sites_for_target`
+        // matches `FreeFnDesugar { target } | FreeFnAutoRef { target }` in one
+        // or-pattern arm, but every other test exercising the reverse
+        // (target → call sites) direction used only a `FreeFnDesugar`
+        // fixture — so the `FreeFnAutoRef` half of that arm was never
+        // independently proven live for `find_references`/`rename`. Fixture
+        // mirrors `goto_definition_on_a_ufcs_free_fn_auto_ref_jumps_to_the_free_function`
+        // above.
+        let src = "\
+fn bump(ref n, amount) {
+  n = n + amount;
+}
+
+fn main() {
+  let g = 1;
+  g.bump(5);
+}
+";
+        let mut session = IdeSession::new();
+        let file_id = session.update_and_analyze("test.brink", src.to_string());
+        let analysis = session.analysis().expect("analysis");
+        let decl_pos = u32::try_from(src.find("bump(ref n").expect("decl")).expect("offset");
+
+        let refs = find_references(
+            session.db(),
+            analysis,
+            file_id,
+            TextSize::from(decl_pos),
+            false,
+        );
+
+        let call_pos = u32::try_from(src.find("bump(5)").expect("call")).expect("offset");
+        assert!(
+            refs.iter()
+                .any(|loc| loc.file == file_id && loc.range.start() == TextSize::from(call_pos)),
+            "expected the FreeFnAutoRef UFCS call site among references, got {:?}",
+            refs.iter().map(|l| l.range).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn find_references_refuses_rather_than_silently_dropping_ufcs_sites_when_identity_spaces_disagree()
+     {
+        // Review finding on #1539/PR #1543: `analysis`/`db` are not
+        // revision-locked for every caller (e.g. the LSP's cached
+        // `snap.analysis` vs. a freshly re-locked `self.db`). Before this
+        // fix, a correlation miss between the two identity spaces silently
+        // returned only the *reachable* half of the reference set (plain
+        // references without the UFCS call sites, or vice versa) — this
+        // must now return nothing rather than a silently incomplete list.
+        let mut session = IdeSession::new();
+        let file_id = session.update_and_analyze("test.brink", UFCS_FREE_FN_SRC.to_string());
+        // Captured before the edit below: self-consistent with the
+        // original source's ranges, but about to go stale relative to the
+        // session's `db` once the source shifts.
+        let stale_analysis = session.analysis().expect("analysis").clone();
+        let decl_pos =
+            u32::try_from(UFCS_FREE_FN_SRC.find("greet(g").expect("decl")).expect("offset");
+
+        let shifted_src = format!("// shifted\n{UFCS_FREE_FN_SRC}");
+        session.update_and_analyze("test.brink", shifted_src);
+
+        let refs = find_references(
+            session.db(),
+            &stale_analysis,
+            file_id,
+            TextSize::from(decl_pos),
+            true,
+        );
+        assert!(
+            refs.is_empty(),
+            "a stale analysis/db identity-space mismatch must return no references, not a \
+             partial list, got {:?}",
             refs.iter().map(|l| l.range).collect::<Vec<_>>()
         );
     }

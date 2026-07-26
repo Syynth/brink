@@ -205,6 +205,22 @@ impl Project {
     /// bug #1534 already fixed for hover/go-to-def. Owned, not borrowed: the
     /// UFCS path's symbol comes from `db.resolutions_index()`, a freshly
     /// computed `Arc` local to this call, not `self.analysis`.
+    ///
+    /// Review finding on #1539/PR #1543: this resolver is shared by `def`,
+    /// `hover`, `references`, and `rename --at` (all four route through
+    /// `Project::resolve`), so the UFCS override only short-circuits on a
+    /// verdict that actually names a `DefinitionId`
+    /// (`FreeFnDesugar`/`FreeFnAutoRef` — the case this fix targets). A
+    /// field-call/prelude-intrinsic verdict (resolved, but with no
+    /// `DefinitionId` to report) falls through to the generic
+    /// `find_def_at_offset` lookup below exactly as if `offset` weren't on a
+    /// UFCS call at all — its pre-#1539 behavior (reporting the *receiver*'s
+    /// own declaration) — rather than hard-failing with `"no symbol at
+    /// {at}"` for all four commands. Turning that case into a hard error
+    /// would have been a new, undocumented behavior change to
+    /// `hover`/`references`/`rename --at` that issue #1539 never asked for
+    /// (it named only `def --at`, `find_references`, and `rename` as the
+    /// three UFCS-*receiver*-target bugs to fix).
     pub(super) fn resolve(
         &self,
         addr: &Address,
@@ -221,14 +237,15 @@ impl Project {
             let offset = LineIndex::new(src).offset(line.saturating_sub(1), col.saturating_sub(1));
 
             if let Some(hir) = db.hir(file_id)
-                && let Some(target) =
+                && let Some(Some(target)) =
                     brink_ide::ufcs_hover::ufcs_goto_definition_target(db, hir, file_id, offset)
             {
-                // `target.is_none()` (field call / prelude intrinsic): resolved,
-                // but nowhere to jump — stop here rather than falling through to
-                // the receiver's own declaration.
-                return target
-                    .and_then(|id| db.resolutions_index().index.symbols.get(&id).cloned())
+                return db
+                    .resolutions_index()
+                    .index
+                    .symbols
+                    .get(&target)
+                    .cloned()
                     .ok_or_else(|| format!("no symbol at {at}"));
             }
 
