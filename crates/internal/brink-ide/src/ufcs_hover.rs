@@ -19,6 +19,19 @@
 //! call site that resolves to it — via `ProjectDb::ufcs_call_sites_for_target`
 //! and [`ufcs_method_range_at_path`].
 //!
+//! Issue #1560 pushed this module's reach past UFCS entirely: the plain
+//! (non-call) dotted-field-access fallback (`resolve::lookup_variable` step
+//! 11, `resolve.rs:474-503`) records the SAME whole-path `ResolvedRef` range
+//! the UFCS-receiver fallback (#1550, above) does, for an ordinary `p.x.y`
+//! reference with no call involved at all. [`find_field_access_ref`] /
+//! [`field_access_head_range_at_path`] are the non-UFCS counterpart to
+//! [`find_ufcs_call`] / [`ufcs_receiver_head_range_at_path`] — same
+//! narrowing idea, applied to an `Expr::Path` that is never a UFCS call
+//! site's callee. As of #1560 this module's name undersells its scope: it
+//! now hosts every "a `ResolvedRef` covers more than its target's own
+//! declaration" narrowing `rename`/`find_references` need, UFCS-shaped or
+//! not.
+//!
 //! ## Why this is a narrow, method-segment-only override
 //!
 //! For a UFCS-shaped call, `brink-analyzer`'s `resolve::resolve_function`

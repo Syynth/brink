@@ -750,4 +750,91 @@ fn main() {
                 .collect::<Vec<_>>()
         );
     }
+
+    #[test]
+    fn renaming_the_head_of_a_plain_field_access_in_ink_dialect_edits_only_the_head_segment() {
+        // Review finding on #1560: the two tests above only exercise the
+        // native `.brink` struct/`fn`/`let` surface (`native_session`), but
+        // `brink-analyzer`'s own dotted-field-access-fallback tests
+        // (`resolution_fallback_resolves_to_head_variable_when_no_static_path_matches`,
+        // `resolution_fallback_resolves_to_head_param` in
+        // `brink-analyzer/src/resolve.rs`) prove step 11 fires for plain
+        // `.ink` source too (`VAR p = 0` / `~ y = p.x`) — the dialect where
+        // the fallback (and thus the corrupting fixture) is already known
+        // to occur. Same assertion as the native test above, on the `.ink`
+        // dialect via the `session()` helper.
+        let src = "VAR p = 0\n=== main ===\n~ y = p.x\n-> DONE\n";
+        let (s, id) = session(src);
+        let decl_pos = u32::try_from(src.find("p = 0").expect("decl")).expect("offset");
+        let analysis = s.analysis().expect("analysis");
+
+        let result =
+            rename(s.db(), analysis, id, TextSize::from(decl_pos), "newname").expect("rename");
+
+        let ref_pos = u32::try_from(src.find("p.x").expect("ref")).expect("offset");
+        let found = result
+            .edits
+            .iter()
+            .find(|e| e.file == id && e.range.start() == TextSize::from(ref_pos));
+        assert!(
+            found.is_some(),
+            "expected an edit at the field-access reference's head segment, got {:?}",
+            result
+                .edits
+                .iter()
+                .map(|e| (e.range, e.new_text.as_str()))
+                .collect::<Vec<_>>()
+        );
+        let edit = found.expect("checked above");
+        assert_eq!(edit.new_text, "newname");
+        assert_eq!(
+            usize::from(edit.range.end()) - usize::from(edit.range.start()),
+            1,
+            "the edit must span only the head's own `p` segment (1 byte), not the whole `p.x` \
+             path — got {:?}",
+            edit.range
+        );
+    }
+
+    #[test]
+    fn renaming_a_stitch_through_its_qualified_reference_is_not_narrowed_to_the_head() {
+        // Review finding on #1560 (blocking): `field_access_head_range_at_path`'s
+        // `matches!(target_kind, Variable | Constant | Param | Temp)` guard
+        // is the only thing preventing this change from corrupting stitch
+        // renames — nothing else exercised it. `~ y = hub.market` lowers to
+        // a 2-segment `Expr::Path` with the whole-path range and resolves
+        // (via `lookup_variable` step 8) to the stitch `market`, at the
+        // SAME whole-path `ResolvedRef` shape the dotted-field-access
+        // fallback (step 11) produces — an ungated narrowing would rewrite
+        // `hub.market` down to just `hub`, corrupting the qualified
+        // reference. Fixture mirrors
+        // `resolve::resolution_fallback_static_dotted_path_wins_over_a_colliding_variable_name`.
+        //
+        // This asserts only that the reference is *not narrowed to the
+        // head* — the semantically correct rewrite of the reference itself
+        // (`hub.newname`, not `newname.market`) is a separate, pre-existing
+        // bug, out of scope here.
+        let src = "=== hub ===\n= market\nHi.\n-> DONE\n=== main ===\n~ y = hub.market\n-> DONE\n";
+        let (s, id) = session(src);
+        let hir = s.hir(id).expect("hir");
+        let decl_pos = declaration_offset(hir, "hub", Some("market")).expect("stitch decl");
+        let analysis = s.analysis().expect("analysis");
+
+        let result = rename(s.db(), analysis, id, decl_pos, "newname").expect("rename");
+
+        let ref_pos = u32::try_from(src.find("hub.market").expect("ref")).expect("offset");
+        if let Some(edit) = result
+            .edits
+            .iter()
+            .find(|e| e.file == id && e.range.start() == TextSize::from(ref_pos))
+        {
+            assert_ne!(
+                usize::from(edit.range.end()) - usize::from(edit.range.start()),
+                3,
+                "the qualified `hub.market` reference must not be narrowed to the 3-byte `hub` \
+                 head segment — got {:?}",
+                edit.range
+            );
+        }
+    }
 }
