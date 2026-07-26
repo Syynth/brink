@@ -2,11 +2,16 @@
 //! seam — the behavior a future yield-time classifier (issue #1520,
 //! `docs/design/yield-time-terminal-classifier.md`) is proposed to move.
 //!
-//! Nothing in the runtime pinned this contract before: the deferred
+//! No *runtime* test pinned this contract before: the deferred
 //! `RanOutOfContent` fault (`story/flow_instance.rs`, the `StoryStatus::Done`
-//! reset arm) had no test at all, so a refactor could have silently changed
+//! reset arm) had no direct test, so a refactor could have silently changed
 //! *which* `continue_single` call faults — the exact axis the design turns
-//! on — without a single runtime test going red.
+//! on — without a single runtime test going red. The oracle corpus does
+//! pin this end-to-end (`tests/tier1/choices/knot-body-choice-with-stitches-following`
+//! and `.../nested-choice-loose-end-in-knot`, authored for #1522 around this
+//! exact fault and its trailing extra step) via insta snapshots, so the
+//! workspace gate as a whole was not blind to it — only the runtime crate's
+//! own test suite was.
 //!
 //! These tests assert **today's** behavior, not a desired one. If the
 //! classifier lands and moves the fault to the yield, these tests must be
@@ -85,9 +90,22 @@ fn explicit_done_is_a_safe_exit_and_does_not_fault() {
     let (terminal, _) = drive_to_terminal(&mut story);
     assert!(matches!(terminal, Line::Done { .. }));
 
+    // A safe exit resets `Active` and steps the VM again rather than
+    // faulting; with no content left, that yields an empty `Line::Done`,
+    // not `RanOutOfContent`. Pin the concrete value today's runtime
+    // returns, not just the negative "it isn't the fault" — a refactor
+    // that changed this to some other non-fault outcome (e.g. a step
+    // limit or a different line shape) must still turn this test red.
+    let result = story.continue_single();
     assert!(
-        !matches!(story.continue_single(), Err(RuntimeError::RanOutOfContent)),
-        "a safe exit must not raise the deferred fault"
+        matches!(
+            result,
+            Ok(Line::Done {
+                ref text,
+                ref tags
+            }) if text.is_empty() && tags.is_empty()
+        ),
+        "a safe exit must not raise the deferred fault, got {result:?}"
     );
 }
 

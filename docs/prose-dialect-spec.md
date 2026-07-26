@@ -632,7 +632,7 @@ grace.
    The runtime half is #1520, written up in
    `docs/design/yield-time-terminal-classifier.md` — it needs two
    rulings before code moves: **where the classification surfaces**
-   (a `Line`-shaped change now vs. folding into `Step`, per §7/§8b.7)
+   (a `Line`-shaped change now vs. folding into `Step`, per §7/§8d.7)
    and **whether the `RanOutOfContent` fault moves to the same
    `continue`** (a ratchet-moving change that would retire #1522's
    extra-step allowance).

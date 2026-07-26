@@ -26,12 +26,15 @@ At the end of a turn the runtime must answer two independent questions:
 - **Why did we stop?** (choices pending / `-> DONE` / `-> END` /
   *fell off the end of content*)
 
-Today the second answer is produced in **four** places, in three
-different shapes, and the fourth of those places is not in the runtime at
-all — it is a consumer re-deriving it by making an extra call.
+Today the second answer is produced in **six** places, in three
+different shapes: five of those places are in the runtime (the table
+below), and the sixth is not in the runtime at all — it is a consumer
+re-deriving it by making an extra call.
 
-## 2. Inventory (as of `origin/main`, all line numbers
-`crates/brink-runtime/src/story/flow_instance.rs` unless noted)
+## 2. Inventory
+
+As of `origin/main`, all line numbers are in
+`crates/brink-runtime/src/story/flow_instance.rs` unless noted.
 
 | # | Site | What it decides | Shape |
 |---|------|-----------------|-------|
@@ -99,7 +102,7 @@ answer:
 
 - **(a) On the output type.** e.g. `Line::Done { text, tags, safe_exit }`,
   or a new `Line::OutOfContent`. Directly addresses the payoff. But
-  `docs/prose-dialect-spec.md` §8b.7 **RULED** that the output enum
+  `docs/prose-dialect-spec.md` §8d.7 **RULED** that the output enum
   becomes `Step`, and §7 rules that its terminals carry **no text**. Any
   `Line`-shaped change made now is churn the ruled migration then
   rewrites, and it forces every marshal leg (`brink-web`'s
