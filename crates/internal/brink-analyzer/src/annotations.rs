@@ -382,7 +382,15 @@ pub fn mismatches(
         for knot in &hir.knots {
             check_def_mismatch(knot, file, index, &names, inference, &mut out);
             for stitch in &knot.stitches {
-                check_stitch_mismatch(stitch, file, index, &names, inference, &mut out);
+                check_stitch_mismatch(
+                    stitch,
+                    &knot.name.text,
+                    file,
+                    index,
+                    &names,
+                    inference,
+                    &mut out,
+                );
             }
         }
     }
@@ -416,7 +424,7 @@ fn check_def_mismatch(
     inference: &InferenceResult,
     out: &mut Vec<Diagnostic>,
 ) {
-    let Some(id) = def_id_for(index, file, SymbolKind::Knot, &knot.name.text) else {
+    let Some(id) = def_id_for(index, file, knot.symbol_kind(), &knot.name.text) else {
         return;
     };
     let Some(inferred) = inference.signatures.get(&id) else {
@@ -441,13 +449,15 @@ fn check_def_mismatch(
 
 fn check_stitch_mismatch(
     stitch: &Stitch,
+    knot_name: &str,
     file: FileId,
     index: &SymbolIndex,
     names: &TypeNames,
     inference: &InferenceResult,
     out: &mut Vec<Diagnostic>,
 ) {
-    let Some(id) = def_id_for(index, file, SymbolKind::Stitch, &stitch.name.text) else {
+    let qualified = format!("{knot_name}.{}", stitch.name.text);
+    let Some(id) = def_id_for(index, file, SymbolKind::Stitch, &qualified) else {
         return;
     };
     let Some(inferred) = inference.signatures.get(&id) else {
@@ -927,5 +937,22 @@ mod tests {
 
         let diags = mismatches(&[(FileId(0), &hir)], &index, &inference, None);
         assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn mismatches_flags_nested_stitch_return_type_disagreeing_with_body_inference() {
+        // Regression for the #1509 review finding: `check_stitch_mismatch`
+        // looked the stitch up under its bare name, but a nested stitch is
+        // indexed under `"{knot}.{stitch}"` (brink-ir/src/symbols/project.rs)
+        // — so `def_id_for` always missed and this check was dead code.
+        // `fire` is annotated `: string` but its body only ever returns an
+        // int literal.
+        let (hir, index, res) =
+            build_with_resolutions("=== camp ===\n= fire(): string\n~ return 1\n-> DONE\n");
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let diags = mismatches(&[(FileId(0), &hir)], &index, &inference, None);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E063);
     }
 }

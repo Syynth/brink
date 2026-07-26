@@ -236,6 +236,35 @@ mod tests {
         assert!(out.contains("TYPE_NAME"), "{out}");
     }
 
+    /// #1509 review finding: no test in that PR proved the new
+    /// `stitch_header` grammar position (`= name(params)?: type`, mirroring
+    /// `knot_header`'s) actually parses — every lowering test went through
+    /// `lower_hir`, which discards `parsed.errors()`. Covers both shapes
+    /// `stitch_header`'s `if p.current() == L_PAREN` / `at_type_annotation`
+    /// split allows: with params and the paramless form, neither of which
+    /// had a test anywhere in the PR.
+    #[test]
+    fn stitch_header_return_type_annotation_parses() {
+        for src in [
+            "=== camp ===\n= fire(logs): int\n~ return logs\n",
+            "=== camp ===\n= fire: int\n~ return 1\n",
+        ] {
+            let parsed = parse(src);
+            assert_eq!(parsed.errors().len(), 0, "{src:?}: {:?}", parsed.errors());
+            let stitch_header = parsed
+                .syntax()
+                .descendants()
+                .find(|n| n.kind() == SyntaxKind::STITCH_HEADER)
+                .unwrap_or_else(|| panic!("no STITCH_HEADER for {src:?}"));
+            assert!(
+                stitch_header
+                    .descendants()
+                    .any(|n| n.kind() == SyntaxKind::TYPE_ANNOTATION),
+                "{src:?}: {stitch_header:#?}"
+            );
+        }
+    }
+
     #[test]
     fn unknown_type_name_still_parses_no_error() {
         // Grammar accepts any identifier; the "unknown type name" check is a
