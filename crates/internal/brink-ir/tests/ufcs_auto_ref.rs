@@ -114,8 +114,10 @@ fn lower_call_args(src: &str) -> Vec<lir::CallArg> {
         &resolutions,
         &std::collections::HashMap::new(),
         lir::TypeMode::Gradual,
-        &ufcs,
-        &lir::CoalesceLookup::new(),
+        lir::AnalyzerTables {
+            ufcs: &ufcs,
+            coalesce: &lir::CoalesceLookup::new(),
+        },
     );
     assert!(
         lir_diags.is_empty(),

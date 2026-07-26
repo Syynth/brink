@@ -20,7 +20,9 @@ use super::types as lir;
 use context::{LowerCtx, NameTable, ResolutionLookup, TempMap};
 
 pub use chunk::ScopeChunk;
-pub use context::{CoalesceLookup, CoalesceShape, TypeMode, UfcsLookup, UfcsVerdict};
+pub use context::{
+    AnalyzerTables, CoalesceLookup, CoalesceShape, TypeMode, UfcsLookup, UfcsVerdict,
+};
 pub use structs::{StructFieldEntry, StructShapeData, StructShapeEntry, build_struct_shape_data};
 
 /// Defensive backstop for `brink-analyzer`'s dialect gate (E051/E052).
@@ -84,8 +86,10 @@ pub fn lower_to_program(
         resolutions,
         file_paths,
         context::TypeMode::Gradual,
-        &context::UfcsLookup::new(),
-        &context::CoalesceLookup::new(),
+        context::AnalyzerTables {
+            ufcs: &context::UfcsLookup::new(),
+            coalesce: &context::CoalesceLookup::new(),
+        },
     )
 }
 
@@ -131,8 +135,7 @@ pub fn lower_to_program_with_type_mode(
     resolutions: &ResolutionMap,
     file_paths: &LookupMap<FileId, String>,
     type_mode: context::TypeMode,
-    ufcs: &context::UfcsLookup,
-    coalesce: &context::CoalesceLookup,
+    tables: context::AnalyzerTables<'_>,
 ) -> (Option<lir::Program>, Vec<crate::Diagnostic>) {
     // FG-4d/e: this whole-project entry runs the same three pure phases
     // `brink-db`'s production link phase (`lir_lowering_query`) composes
@@ -157,8 +160,7 @@ pub fn lower_to_program_with_type_mode(
         prelude.root_id,
         file_paths,
         &struct_ctx,
-        ufcs,
-        coalesce,
+        tables,
     );
 
     // Diagnostic order mirrors the old monolithic path exactly: declaration
@@ -181,8 +183,7 @@ pub fn lower_to_program_with_type_mode(
                 &struct_ctx,
                 prelude.root_id,
                 file_id,
-                ufcs,
-                coalesce,
+                tables,
             );
             ordered_chunks.push(chunk);
             lir_diagnostics.extend(diags);
@@ -431,7 +432,6 @@ pub fn build_prelude(
 /// call frame — `LowerCtx::next_block_slot`). Returns each `(chunk,
 /// lowering-diagnostics)` pair in `files` order plus the total root temp-slot
 /// count. This is the root-content half of the old `lower_root`, unchanged.
-#[expect(clippy::too_many_arguments)]
 #[must_use]
 fn lower_root_content_chunks(
     files: &[(FileId, &hir::HirFile)],
@@ -440,8 +440,7 @@ fn lower_root_content_chunks(
     root_id: brink_format::DefinitionId,
     file_paths: &LookupMap<FileId, String>,
     struct_ctx: &context::StructCtx<'_>,
-    ufcs: &context::UfcsLookup,
-    coalesce: &context::CoalesceLookup,
+    tables: context::AnalyzerTables<'_>,
 ) -> (Vec<(chunk::ScopeChunk, Vec<crate::Diagnostic>)>, u16) {
     let mut chunks = Vec::new();
 
@@ -473,8 +472,7 @@ fn lower_root_content_chunks(
                 &mut block_slot,
                 &mut diagnostics,
                 struct_ctx,
-                ufcs,
-                coalesce,
+                tables,
             );
             let mut cc = 0;
             let mut gc = 0;
@@ -506,8 +504,7 @@ fn lower_knot_chunk(
     struct_ctx: &context::StructCtx<'_>,
     root_id: brink_format::DefinitionId,
     file_id: FileId,
-    ufcs: &context::UfcsLookup,
-    coalesce: &context::CoalesceLookup,
+    tables: context::AnalyzerTables<'_>,
 ) -> (chunk::ScopeChunk, Vec<crate::Diagnostic>) {
     let mut local_names = NameTable::new();
     let mut ids = context::IdAllocator::new();
@@ -525,8 +522,7 @@ fn lower_knot_chunk(
         file_paths,
         &mut diagnostics,
         struct_ctx,
-        ufcs,
-        coalesce,
+        tables,
     );
     (
         chunk::ScopeChunk::knot(knot_container, local_names.into_entries()),
@@ -558,8 +554,7 @@ pub fn lower_knot_chunk_incremental(
     shape_data: &StructShapeData,
     type_mode: context::TypeMode,
     file_id: FileId,
-    ufcs: &context::UfcsLookup,
-    coalesce: &context::CoalesceLookup,
+    tables: context::AnalyzerTables<'_>,
 ) -> (chunk::ScopeChunk, Vec<crate::Diagnostic>) {
     let resolutions = ResolutionLookup::build(resolutions);
     let mut throwaway = NameTable::new();
@@ -579,8 +574,7 @@ pub fn lower_knot_chunk_incremental(
         &struct_ctx,
         context::root_definition_id(),
         file_id,
-        ufcs,
-        coalesce,
+        tables,
     )
 }
 
@@ -600,8 +594,7 @@ pub fn lower_root_content_for_prelude(
     index: &SymbolIndex,
     resolutions: &ResolutionMap,
     file_paths: &LookupMap<FileId, String>,
-    ufcs: &context::UfcsLookup,
-    coalesce: &context::CoalesceLookup,
+    tables: context::AnalyzerTables<'_>,
 ) -> (Vec<(chunk::ScopeChunk, Vec<crate::Diagnostic>)>, u16) {
     let resolutions = ResolutionLookup::build(resolutions);
     let struct_ctx = prelude.struct_ctx();
@@ -612,8 +605,7 @@ pub fn lower_root_content_for_prelude(
         prelude.root_id,
         file_paths,
         &struct_ctx,
-        ufcs,
-        coalesce,
+        tables,
     )
 }
 
@@ -692,8 +684,7 @@ fn lower_knot(
     file_paths: &LookupMap<FileId, String>,
     diagnostics: &mut Vec<crate::Diagnostic>,
     structs: &context::StructCtx<'_>,
-    ufcs: &context::UfcsLookup,
-    coalesce: &context::CoalesceLookup,
+    tables: context::AnalyzerTables<'_>,
 ) -> lir::Container {
     let knot_name = &knot.name.text;
     let knot_id = lookup_container_id(index, knot_name).unwrap_or(root_id);
@@ -726,8 +717,7 @@ fn lower_knot(
         &mut block_slot,
         diagnostics,
         structs,
-        ufcs,
-        coalesce,
+        tables,
     );
     let mut cc = 0;
     let mut gc = 0;
@@ -750,8 +740,7 @@ fn lower_knot(
             &mut block_slot,
             diagnostics,
             structs,
-            ufcs,
-            coalesce,
+            tables,
         ));
     }
 
@@ -800,8 +789,7 @@ fn lower_stitch(
     block_slot: &mut u16,
     diagnostics: &mut Vec<crate::Diagnostic>,
     structs: &context::StructCtx<'_>,
-    ufcs: &context::UfcsLookup,
-    coalesce: &context::CoalesceLookup,
+    tables: context::AnalyzerTables<'_>,
 ) -> lir::Container {
     let stitch_name = &stitch.name.text;
     let stitch_path = format!("{}.{stitch_name}", knot.name.text);
@@ -825,8 +813,7 @@ fn lower_stitch(
         block_slot,
         diagnostics,
         structs,
-        ufcs,
-        coalesce,
+        tables,
     );
     let mut cc = 0;
     let mut gc = 0;
@@ -1517,8 +1504,7 @@ fn make_ctx<'a>(
     next_block_slot: &'a mut u16,
     diagnostics: &'a mut Vec<crate::Diagnostic>,
     structs: &'a context::StructCtx<'a>,
-    ufcs: &'a context::UfcsLookup,
-    coalesce: &'a context::CoalesceLookup,
+    tables: context::AnalyzerTables<'a>,
 ) -> LowerCtx<'a> {
     LowerCtx {
         file,
@@ -1542,8 +1528,7 @@ fn make_ctx<'a>(
         loop_depth: 0,
         structs,
         temp_shapes: LookupMap::new(),
-        ufcs,
-        coalesce,
+        tables,
     }
 }
 
