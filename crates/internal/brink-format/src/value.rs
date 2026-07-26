@@ -83,11 +83,20 @@ pub enum ValueType {
 
 /// A runtime value in the ink VM.
 ///
-/// Heap-allocating variants (`String`, `List`, `Array`, `Map`) are wrapped in
-/// `Arc` so that cloning a `Value` is always O(1) — a refcount bump, not a
-/// deep copy. This matches C#'s reference-type semantics and makes call-frame
-/// cloning (during `fork_thread`) essentially free. Atomic refcounts are used
-/// so `Value` can flow through Bevy's parallel scheduler.
+/// Heap-allocating variants (`String`, `List`, `Array`, `Map`, `Record`,
+/// `Closure`, `Projection`, `OptionVal`, `Weighted`) are wrapped in `Arc` so
+/// that cloning a `Value` is always O(1) — a refcount bump, not a deep copy —
+/// which makes call-frame cloning (during `fork_thread`) essentially free.
+/// Atomic refcounts are used so `Value` can flow through Bevy's parallel
+/// scheduler.
+///
+/// This `Arc` wrapping is a *performance* mechanism under **value
+/// semantics**, not reference semantics: sharing the underlying allocation
+/// is unobservable (`docs/value-model-spec.md` §3), because every mutating
+/// entry point forks the shared allocation on write (take → `make_mut` →
+/// write-back — see `docs/runtime-spec.md`'s "Value model" section). A
+/// binding that never observed a mutation never sees it, regardless of
+/// whether it shares the `Arc` underneath.
 ///
 /// The `Array`/`Map` collections follow the ratified value model
 /// (`docs/value-model-spec.md` §4/§5): value semantics with copy-on-write
@@ -1641,7 +1650,8 @@ mod tests {
     /// `map_make_mut` above — issue #1476's audit found this variant was the
     /// one collection `make_mut` without a dedicated "copies when shared"
     /// regression, despite sharing the exact take → `make_mut` → write-back
-    /// discipline (§96 doc comment on [`Value`]).
+    /// discipline (the COW discipline documented on [`Value`] —
+    /// `docs/value-model-spec.md` §4/§5).
     #[test]
     fn record_make_mut_copies_when_shared() {
         let shape = ShapeId(0);
@@ -1669,11 +1679,27 @@ mod tests {
     /// `Arc`s stacked — the record's field vec, and the array's backing
     /// vec). `let y = x` then mutating `x`'s field-array in place must never
     /// surface through `y`, exactly like a bare `Array`-of-`Array`
-    /// (`rmw-mutator-shared-nested-lvalue`, `tests/tier1-brink/`) but for
-    /// the `Record` wrapper the compiler doesn't yet expose a way to nest
-    /// this way through source syntax — direct `Value` construction proves
-    /// the runtime layer holds regardless of what the compiler currently
-    /// emits.
+    /// (`rmw-mutator-shared-nested-lvalue`, `tests/tier1-brink/`).
+    ///
+    /// This is pinned only at the `Value` layer, not as an end-to-end
+    /// `tests/tier1-brink/` fixture, because the obvious source form —
+    /// `STRUCT Bag = #{ items: array<int> }`, `push(a.items, 3)` — does not
+    /// currently reach this code path: `push`/`insert`/`remove`'s
+    /// bare-lvalue fast path (`try_lower_mutator_stmt` in
+    /// `brink-ir::lir::lower::blocks`) treats *any* `hir::Expr::Path`
+    /// lvalue, including a multi-segment TM-4b dotted field-access path
+    /// like `a.items`, as a single bare-variable target and resolves the
+    /// whole path's range to its root symbol — unlike plain field
+    /// assignment's `try_lower_field_assignment`, which explicitly special-
+    /// cases `path.segments.len() > 1`. The mutator ends up applied to `a`
+    /// itself (a `Record`) instead of `a`'s `items` field, so `push(a.items,
+    /// 3)` compiles clean but faults at runtime with
+    /// `RuntimeError::NotIndexable("record")` rather than mutating the
+    /// nested array. That is a real compiler bug, not a deliberate
+    /// limitation — tracked separately; this `Value`-layer test is what
+    /// proves the runtime's own COW discipline is already correct once a
+    /// future fix routes this lvalue shape through the field-projection
+    /// path instead.
     #[test]
     fn nested_array_inside_record_field_is_isolated_after_copy() {
         let shape = ShapeId(0);
