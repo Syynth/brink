@@ -93,11 +93,13 @@
 //!    too (issue #1286, [`module`]) — see judgment call #7.
 //! 6. **`import name;`'s semantics** (B0.5's own Finding #3 explicitly left
 //!    this to B0.6): lowered as the *qualified* form of ink's `Import`
-//!    (`module` = the joined path, `items` empty, `bare: false` — "brings
-//!    only the module name into scope"), matching `use path;` with no
-//!    `{ … }` list. `use`'s two shapes with no `Import` equivalent
-//!    (module-level `as` aliasing; recursive nested groups) get E129
-//!    rather than a lossy guess — see [`import`]'s module doc.
+//!    (`module` = the whole `::`-joined path, `items` empty, `bare: false`
+//!    — "brings only the module name into scope"), matching a
+//!    single-segment `use module;`. A multi-segment `use path::item;`
+//!    instead names an *item* of `path` (issue #1581), so its leaf lands in
+//!    `items`. `use`'s one shape with no `Import` equivalent (recursive
+//!    nested groups — plus aliasing a single-segment *module* name) gets
+//!    E129 rather than a lossy guess — see [`import`]'s module doc.
 //! 7. **Native module *identity* is filesystem-derived, not stamped here.**
 //!    `HirFile.module.name` stays empty for every native file: unlike ink's
 //!    `#@module(name)` tag (a per-file directive), native module identity is

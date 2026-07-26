@@ -235,13 +235,16 @@ fn struct_nested_in_a_flow_body_is_not_silently_dropped() {
     );
 }
 
+// ─── `use` / `import` → `Import` (issue #1581: `Import.module` must be a
+// real, `::`-joined module name, with the leaf item kept out of it) ─────────
+
 #[test]
 fn use_decl_lowers_to_import() {
     let (hir, _manifest, diags) = lower_src("use story::market::{barter, haggle as h};\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     assert_eq!(hir.imports.len(), 1);
     let imp = &hir.imports[0];
-    assert_eq!(imp.module, "story.market");
+    assert_eq!(imp.module, "story::market");
     assert!(imp.bare);
     assert_eq!(imp.items.len(), 2);
     assert_eq!(imp.items[0].name, "barter");
@@ -250,13 +253,68 @@ fn use_decl_lowers_to_import() {
     assert_eq!(imp.items[1].alias.as_deref(), Some("h"));
 }
 
+/// The plain `use path::item;` shape: the leaf is the imported *item*, and
+/// the module is the `::`-joined prefix — exactly the module name
+/// `brink_db::modules::native_module_path` mints for `market/barter.brink`.
+/// Before #1581 this produced `module: "story.market.barter.haggle"`, which
+/// no module could ever equal.
 #[test]
-fn qualified_use_decl_lowers_to_bare_false_import() {
-    let (hir, _manifest, diags) = lower_src("use story::market;\n");
+fn use_decl_leaf_is_the_item_not_part_of_the_module() {
+    let src = "use story::market::barter::haggle;\n";
+    let (hir, _manifest, diags) = lower_src(src);
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     assert_eq!(hir.imports.len(), 1);
+    let imp = &hir.imports[0];
+    assert_eq!(imp.module, "story::market::barter");
+    assert!(imp.bare, "a named item is a name-precise (bare) import");
+    assert_eq!(imp.items.len(), 1);
+    assert_eq!(imp.items[0].name, "haggle");
+    assert_eq!(imp.items[0].alias, None);
+    assert_eq!(&src[imp.items[0].range], "haggle");
+    assert_eq!(&src[imp.module_range], "story::market::barter");
+}
+
+/// `use path::item as alias;` — previously rejected outright as an
+/// unrepresentable "module-level alias" (E129). With the leaf read as an
+/// item it is ink's `IMPORT { item AS alias } FROM path`, which `Import`
+/// represents exactly.
+#[test]
+fn aliased_use_decl_lowers_to_an_aliased_item() {
+    let src = "use story::market::barter as b;\n";
+    let (hir, _manifest, diags) = lower_src(src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(hir.imports.len(), 1);
+    let imp = &hir.imports[0];
+    assert_eq!(imp.module, "story::market");
+    assert!(imp.bare);
+    assert_eq!(imp.items.len(), 1);
+    assert_eq!(imp.items[0].name, "barter");
+    assert_eq!(imp.items[0].alias.as_deref(), Some("b"));
+    assert_eq!(&src[imp.items[0].range], "barter as b");
+}
+
+/// A single segment has no prefix to be the module, so it can only name the
+/// module itself — the qualified form, same as `import story;`.
+#[test]
+fn single_segment_use_decl_lowers_to_bare_false_import() {
+    let (hir, _manifest, diags) = lower_src("use story;\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(hir.imports.len(), 1);
+    assert_eq!(hir.imports[0].module, "story");
     assert!(!hir.imports[0].bare);
     assert!(hir.imports[0].items.is_empty());
+}
+
+/// …and aliasing *that* is a module-level alias, which ink's `Import` has no
+/// field for — still loud, never silently dropped.
+#[test]
+fn single_segment_aliased_use_decl_is_flagged() {
+    let (hir, _manifest, diags) = lower_src("use story as s;\n");
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E129),
+        "a module-level alias must be flagged: {diags:?}"
+    );
+    assert!(hir.imports.is_empty());
 }
 
 #[test]
@@ -264,7 +322,7 @@ fn import_decl_lowers_to_qualified_import() {
     let (hir, _manifest, diags) = lower_src("import story::market\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     assert_eq!(hir.imports.len(), 1);
-    assert_eq!(hir.imports[0].module, "story.market");
+    assert_eq!(hir.imports[0].module, "story::market");
     assert!(!hir.imports[0].bare);
 }
 
