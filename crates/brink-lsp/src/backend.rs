@@ -3154,33 +3154,39 @@ mod tests {
         );
     }
 
-    /// #1572: with a `brink.toml` in a *sub*directory of the workspace root,
-    /// the native source root is the config's directory — the same rule the
-    /// compiler's own `brink_driver::native_source_root` applies, so the
-    /// module names the editor mints match a real compile's. The fixture
-    /// deliberately puts the config somewhere the workspace-root fallback
-    /// would NOT produce, so the test would fail if the config branch were
-    /// dropped.
+    /// #1572: `brink_project_config::find_config` only ever walks *up* from
+    /// the workspace root (stopping at a `.git` boundary), so the discovered
+    /// config's directory can never be a subdirectory of the workspace
+    /// folder — the only real shape where the config directory differs from
+    /// the workspace-root fallback is the reverse: opening a *subfolder* of
+    /// a project whose `brink.toml` lives at an ancestor. The fixture puts
+    /// `brink.toml` at `root/` with the workspace folder at `root/game`, and
+    /// obtains the outcome via a real `resolve_language_options` call (the
+    /// only real producer of a `ConfigLoadOutcome`) rather than
+    /// hand-constructing one, so the test proves both the wired path and the
+    /// branch — it would fail if either the config discovery or the
+    /// config-directory branch were dropped.
     #[test]
     fn native_source_root_prefers_the_discovered_config_directory() {
-        let workspace = temp_dir("native-root-config");
-        let game = workspace.join("game");
+        let root = temp_dir("native-root-config");
+        let game = root.join("game");
         std::fs::create_dir_all(&game).expect("create game dir");
-        std::fs::write(game.join("brink.toml"), "[project]\ndialect = \"brink\"\n")
-            .expect("write brink.toml");
+        std::fs::write(
+            root.join(brink_project_config::CONFIG_FILE_NAME),
+            "[project]\ndialect = \"brink\"\n",
+        )
+        .expect("write brink.toml");
 
-        let outcome = ConfigLoadOutcome {
-            path: Some(game.join(brink_project_config::CONFIG_FILE_NAME)),
-            diagnostic: None,
-        };
+        let (_, outcome) =
+            resolve_language_options(ConfigOverrides::default(), std::slice::from_ref(&game));
 
         assert_eq!(
-            native_source_root(std::slice::from_ref(&workspace), &outcome),
-            Some(game),
+            native_source_root(std::slice::from_ref(&game), &outcome),
+            Some(root.clone()),
             "the governing brink.toml's directory is the native source root"
         );
 
-        std::fs::remove_dir_all(&workspace).expect("clean up");
+        std::fs::remove_dir_all(&root).expect("clean up");
     }
 
     /// #1572: with no `brink.toml` anywhere, the first workspace folder is the
