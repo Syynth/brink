@@ -254,6 +254,11 @@ impl Projector {
         });
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "mirrors declare's shape (issue #530: annotation is a plain \
+                  positional passthrough, not a new structural concern)"
+    )]
     fn push_local(
         &mut self,
         name: String,
@@ -262,6 +267,7 @@ impl Projector {
         knot: Option<&str>,
         stitch: Option<&str>,
         param_detail: Option<ParamInfo>,
+        annotation: Option<crate::TypeExpr>,
     ) {
         self.manifest.locals.push(LocalSymbol {
             name,
@@ -269,6 +275,7 @@ impl Projector {
             scope: Self::scope_of(knot, stitch),
             kind,
             param_detail,
+            annotation,
         });
     }
 
@@ -316,6 +323,7 @@ impl Projector {
                 Some(knot.name.text.as_str()),
                 None,
                 Some(param_info(param)),
+                param.annotation.clone(),
             );
         }
 
@@ -341,6 +349,7 @@ impl Projector {
                     Some(knot.name.text.as_str()),
                     Some(st.name.text.as_str()),
                     Some(param_info(param)),
+                    param.annotation.clone(),
                 );
             }
             self.walk_block(&st.body, Some(&knot.name.text), Some(&st.name.text));
@@ -381,6 +390,7 @@ impl Projector {
                     knot,
                     stitch,
                     None,
+                    t.annotation.clone(),
                 );
             }
             Stmt::Assignment(a) => {
@@ -512,6 +522,7 @@ impl Projector {
                 knot,
                 stitch,
                 None,
+                None,
             );
         }
     }
@@ -541,6 +552,7 @@ impl Projector {
                     knot,
                     stitch,
                     None,
+                    t.annotation.clone(),
                 );
             }
             BlockStmt::Assignment(a) => {
@@ -602,6 +614,7 @@ impl Projector {
             knot,
             stitch,
             None,
+            None,
         );
         // Two-binding map iteration (`for k, v in m`, B2 issue #1461): the
         // second binding is a local too, for hover/goto-def/rename parity
@@ -613,6 +626,7 @@ impl Projector {
                 SymbolKind::Temp,
                 knot,
                 stitch,
+                None,
                 None,
             );
         }

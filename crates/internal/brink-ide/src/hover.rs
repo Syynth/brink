@@ -270,14 +270,18 @@ fn signature_strs(
 
 /// TM-5 (#621): the inferred (or declared-but-not-`symbol_meta`-tracked)
 /// type suffix for a `Param`/`Temp` symbol — `symbol_meta` never carries
-/// these (it only covers knots/stitches/externals/VAR/CONST/List). For a
-/// `Param`, the enclosing knot/stitch's declared annotation (matched by
-/// position, same source `signature_strs` reads) still wins over
-/// inference. Either way, falls back to the enclosing callable's inferred
-/// body locals (`params ∪ temps`, keyed by name) so hovering an
-/// unannotated parameter or `temp` still shows a type instead of nothing.
-/// Empty string when nothing resolves (including `Unknown` — showing that
-/// would be noise, not information) or `info` isn't a `Param`/`Temp`.
+/// these (it only covers knots/stitches/externals/VAR/CONST/List). The
+/// local's own TM-2 `: type` annotation (`db.local_signature`, issue #530
+/// — the per-file locals path `signature`/`db.signature` itself can't
+/// take) still wins over inference for *both* a `Param` and a `Temp`
+/// (before #530 only a `Param`'s annotation reached hover, read positionally
+/// off the *enclosing* knot/stitch's own `signature`; a `~ temp x: type`
+/// ascription was silently skipped straight to inference). Either way,
+/// falls back to the enclosing callable's inferred body locals (`params ∪
+/// temps`, keyed by name) so hovering an unannotated parameter or `temp`
+/// still shows a type instead of nothing. Empty string when nothing
+/// resolves (including `Unknown` — showing that would be noise, not
+/// information) or `info` isn't a `Param`/`Temp`.
 fn inferred_local_type_str(
     analysis: &AnalysisResult,
     db: &ProjectDb,
@@ -289,17 +293,12 @@ fn inferred_local_type_str(
     ) {
         return String::new();
     }
-    let enclosing = enclosing_callable(analysis, info);
-    let declared = (info.kind == brink_ir::SymbolKind::Param)
-        .then(|| enclosing.and_then(|def| db.signature(def)))
-        .flatten()
-        .and_then(|sig| {
-            let idx = sig.params.iter().position(|p| p.name == info.name)?;
-            sig.param_annotations.get(idx)?.clone()
-        });
+    let declared = db
+        .local_signature(info.file, info.id)
+        .and_then(|sig| sig.value_ty.clone());
     declared
         .or_else(|| {
-            enclosing
+            enclosing_callable(analysis, info)
                 .and_then(|def| db.infer_body(def))
                 .and_then(|body| body.locals.get(&info.name).cloned())
                 .filter(|ty| !ty.is_unknown())
@@ -514,6 +513,29 @@ stalls
         let content = hover_at(src, "heal(hp: string)");
         assert!(content.contains("hp: string"), "{content}");
         assert!(!content.contains("hp: int"), "{content}");
+    }
+
+    #[test]
+    fn hover_annotation_wins_over_inference_for_a_temp() {
+        // Before #530 a `~ temp x: type` ascription was skipped straight to
+        // inferred-body display; the declared annotation (`step: float`)
+        // must be what hover shows for the *declaration itself*, not the
+        // inferred int type of the literal `1`.
+        let src = "=== quest ===\n~ temp step: float = 1\nOnward.\n-> END\n";
+        let content = hover_at(src, "step: float");
+        assert!(content.contains("step: float"), "{content}");
+        assert!(!content.contains("step: int"), "{content}");
+    }
+
+    #[test]
+    fn hover_shows_an_annotated_params_declared_type_at_a_use_site() {
+        // Hovering `hp` *inside the body* (not the declaration) must still
+        // resolve to the param's own declared annotation via
+        // `db.local_signature`, not the enclosing knot header's
+        // `signature_strs` path.
+        let src = "=== function heal(hp: string) ===\n~ temp bonus = hp + 1\n~ return bonus\n";
+        let content = hover_at(src, "hp + 1");
+        assert!(content.contains("hp: string"), "{content}");
     }
 
     #[test]

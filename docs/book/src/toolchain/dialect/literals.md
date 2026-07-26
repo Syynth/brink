@@ -301,7 +301,13 @@ that is statically outside the domain (a float, an array, a map) gets a
 compile-time **warning**, `E106` ("map-literal key is outside the
 int/string/bool key domain"); a dynamic key expression that turns out bad
 at runtime is the corresponding turn-terminating construction fault. One
-domain, checked early where visible, enforced at runtime always.
+domain, checked early where visible, enforced at runtime always. The same
+key domain governs `contains(m, needle)`: under `types = strict`, when the
+map and the needle's out-of-domain type are both statically visible,
+`E152` flags the call at compile time — `contains` itself stays total and
+never faults (see [`contains` is total](./stdlib.md#contains-is-total)),
+so `E152` is a warning about a call that's always `false`, not a fault
+report.
 
 Order is worth trusting, because it's guaranteed:
 
@@ -704,6 +710,7 @@ draw being an effect — is the Randomness chapter's; iteration in full
 | `E117` | `int(r)` over a range not proven inhabited | strict (runtime fault under gradual) |
 | `E119` | a `sort_by`/`sorted_by` comparator provably exceeds pure·silent | both |
 | `E149` | `remove` on a statically-known array — use `remove_at` | strict (runtime fault under gradual) |
+| `E152` | a statically non-key-domain needle in `contains(m, …)` on a statically-known map | strict (warning; runtime returns `false` under gradual) |
 
 ## Where this is ruled
 
