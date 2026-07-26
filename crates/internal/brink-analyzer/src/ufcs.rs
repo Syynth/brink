@@ -65,15 +65,18 @@
 //! matching the analyzer's existing "inference results travel beside the
 //! tree" posture (`infer::InferenceResult`).
 //!
-//! **Neither consumer is wired yet**, and that is deliberate: the table is
-//! published as the seam (`brink_analyzer::ufcs_resolution`) the two ruled
-//! consumers will read — LIR lowering, to emit either a call through the
-//! field's value or the desugared free call, and IDE hover/go-to-def, to
-//! name the real target rather than the receiver the
-//! [`ResolutionMap`] records for the callee path. Until LIR lowering does
-//! read it, a *resolved* site is refused there with
-//! [`DiagnosticCode::E144`] rather than lowered against the receiver's own
-//! id, which would be a silently wrong program.
+//! The table is published as the seam (`brink_analyzer::ufcs_resolution`)
+//! the two ruled consumers read. **LIR lowering is wired** (issue #1506,
+//! `brink-db`'s `ufcs_resolution_query` translates this table into
+//! `brink-ir`'s own lowering-facing mirror at the query boundary) — it now
+//! emits either a call through the field's value or the desugared free
+//! call for real. A resolved site LIR lowering cannot find a verdict for
+//! (a caller that never ran this pass) still refuses with
+//! [`DiagnosticCode::E144`] rather than lowering against the receiver's own
+//! id, which would be a silently wrong program — but that is a defensive
+//! fallback now, not the unconditional behavior. IDE hover/go-to-def, to
+//! name the real target rather than the receiver the [`ResolutionMap`]
+//! records for the callee path, is still unwired.
 //!
 //! [`SideTable`] is deliberately generic over its payload: it is
 //! `(node → verdict)` plumbing, so a second payload kind can ride the same
@@ -241,6 +244,38 @@ pub enum UfcsVerdict {
 
 /// Every UFCS call site's verdict for one project.
 pub type UfcsTable = SideTable<UfcsVerdict>;
+
+/// Translate a [`UfcsTable`] into `brink-ir`'s own lowering-facing mirror
+/// (`brink_ir::lir::UfcsLookup`/`UfcsVerdict`) — issue #1506's one
+/// conversion point, so the `UfcsVerdict` → `brink_ir::lir::UfcsVerdict`
+/// mapping lives in exactly one place rather than once per caller.
+/// `brink-ir` sits below this crate in the crate graph (this crate depends
+/// on `brink-ir`, never the reverse), so it cannot provide this itself —
+/// see `brink_ir::lir::UfcsVerdict`'s own doc. Every LIR-lowering caller
+/// shares this: `brink-db`'s `ufcs_resolution_query` (the production path)
+/// and `brink-test-harness`'s hand-assembled native pipeline
+/// (`corpus::compile_and_explore_from_brink_native`, which has no salsa
+/// layer to memoize the table in).
+#[must_use]
+pub fn to_lir_lookup(table: &UfcsTable) -> brink_ir::lir::UfcsLookup {
+    let entries = table
+        .iter()
+        .map(|(key, verdict)| {
+            let range = TextRange::new(key.range.0.into(), key.range.1.into());
+            let mirrored = match verdict {
+                UfcsVerdict::FieldCall { .. } => brink_ir::lir::UfcsVerdict::FieldCall,
+                UfcsVerdict::FreeFnDesugar { target, .. } => {
+                    brink_ir::lir::UfcsVerdict::FreeFnDesugar { target: *target }
+                }
+                UfcsVerdict::PreludeDesugar { name, .. } => {
+                    brink_ir::lir::UfcsVerdict::PreludeDesugar { name: name.clone() }
+                }
+            };
+            (key.file, range, mirrored)
+        })
+        .collect();
+    brink_ir::lir::UfcsLookup::from_entries(entries)
+}
 
 // ─── The pass ────────────────────────────────────────────────────────
 

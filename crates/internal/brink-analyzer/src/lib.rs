@@ -81,7 +81,7 @@ pub use strict::{
 pub use structs::{ShapeInfo, declared_shapes};
 pub use ufcs::{
     NodeKey, SideTable, UfcsTable, UfcsVerdict, project_has_ufcs_call,
-    resolve as resolve_ufcs_calls,
+    resolve as resolve_ufcs_calls, to_lir_lookup as ufcs_lir_lookup,
 };
 
 use brink_format::DefinitionId;

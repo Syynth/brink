@@ -155,8 +155,9 @@ explicit" completion, `docs/typed-mode-spec.md` §4).
 Per the roadmap's divergence discipline:
 
 - **Strict-mode gate**: the entire oracle corpus compiles under
-  `strict-ink` in CI; ratchet unchanged at 5,577 byte-identical.
-  Extension syntax appearing anywhere in the corpus is a hard failure.
+  `strict-ink` in CI; ratchet unchanged at `RATCHET_EPISODE_COUNT`
+  byte-identical. Extension syntax appearing anywhere in the corpus is
+  a hard failure.
 - **Tier-1 corpus wing**: `tests/tier1-brink/` — brink-dialect cases
   with hand-written expected transcripts (spec-derived, not
   oracle-derived), exercised by the existing episode harness.
