@@ -877,8 +877,9 @@ pub(super) fn ufcs_receiver_path(path: &hir::Path) -> hir::Path {
 
 /// The receiver as a desugared *argument* expression: the plain path when
 /// the target takes it by value, or (**D5 auto-ref**, issue #1462) the same
-/// path wrapped in an explicit `ref` — the projection spelled out, exactly
-/// as an author would write it in the free-call form.
+/// path wrapped in an explicit `ref` — the HIR-level desugar spelling
+/// (`ref` is never written at a UFCS call site; the native surface has no
+/// call-site `ref` keyword at all).
 ///
 /// The synthesized [`hir::Expr::RefArg`] is what routes the receiver into
 /// [`lower_call_args`]'s existing T1e arm; its provenance is

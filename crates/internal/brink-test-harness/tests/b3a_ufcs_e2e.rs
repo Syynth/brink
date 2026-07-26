@@ -252,6 +252,59 @@ flow main() {
     assert_eq!(out, "HP is 6.\n");
 }
 
+/// Review finding on issue #1462: the auto-ref desugar's central claim is
+/// that the receiver "binds exactly as an author-written `ref` argument" —
+/// this mirrors `auto_ref_mutates_a_local_receiver_end_to_end` with the
+/// explicit free-call spelling (`bump(g, 5)`, no call-site `ref` keyword —
+/// the native surface doesn't have one) and asserts byte-identical output,
+/// pinning the equivalence at the user surface instead of only asserting it
+/// in prose.
+#[test]
+fn the_explicit_free_call_spelling_matches_auto_ref_for_a_local_receiver() {
+    let out = play(
+        "\
+fn bump(ref n, amount) {
+  n = n + amount;
+}
+
+fn total() {
+  let g = 1;
+  bump(g, 5);
+  return g;
+}
+
+flow main() {
+  Total is {total()}.
+}
+",
+    );
+    assert_eq!(out, "Total is 6.\n");
+}
+
+/// The global-`VAR`-receiver mirror of the test above.
+#[test]
+fn the_explicit_free_call_spelling_matches_auto_ref_for_a_global_var_receiver() {
+    let out = play(
+        "\
+var hp: int = 1
+
+fn bump(ref n, amount) {
+  n = n + amount;
+}
+
+fn total() {
+  bump(hp, 5);
+  return hp;
+}
+
+flow main() {
+  HP is {total()}.
+}
+",
+    );
+    assert_eq!(out, "HP is 6.\n");
+}
+
 /// D5's other half, stated as its own test: a **non-`ref`** first parameter
 /// is untouched by auto-ref — plain by-value desugar, and *no* lvalue
 /// requirement on the receiver, so the very `const` receiver the auto-ref

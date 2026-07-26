@@ -5,8 +5,10 @@
 Issue #1462 (D5): UFCS method-call syntax now **auto-refs** its receiver when
 the resolved free function's first parameter is declared `ref`. A `.brink`
 source that writes `gold.bump(1)` against `fn bump(ref n, amount)` compiles
-and runs the mutation for real — the desugar spells the reference explicitly
-(`bump(ref gold, 1)`; a dotted receiver becomes an explicit T1e projection,
+and runs the mutation for real — internally the desugar spells the reference
+as `bump(ref gold, 1)` (desugar notation; the native surface has no
+call-site `ref` keyword, so the spellable equivalent is the unmarked
+`bump(gold, 1)`, and a dotted receiver becomes an explicit T1e projection,
 `party.leader.heal(5)` → `heal(ref party.leader, 5)`) and rides the existing
 ref-argument/projection lowering, so a `ref` parameter's write lands in the
 receiver's own cell instead of a copy.

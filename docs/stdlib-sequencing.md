@@ -270,8 +270,10 @@ value, and lifting that fence was the remaining B3 work.
 
 **B3b — auto-ref (SHIPPED, issue #1462).** D5 landed on top of the pass: a
 `ref` first parameter now makes the receiver an explicit ref-argument
-(`gold.bump(1)` → `bump(ref gold, 1)`, `party.leader.heal(5)` →
-`heal(ref party.leader, 5)`), riding the T1e ref-argument/projection
+internally — `gold.bump(1)` → `bump(ref gold, 1)` in desugar notation (the
+native surface has no call-site `ref` keyword; the spellable equivalent is
+the unmarked `bump(gold, 1)`), `party.leader.heal(5)` →
+`heal(ref party.leader, 5)` — riding the T1e ref-argument/projection
 machinery rather than a parallel path — so it inherits T1e's durable-root
 rule. `E143` is repurposed as the ruled refusal for a receiver that cannot
 be written through (a `CONST`; a projection rooted in a frame-local; and the
