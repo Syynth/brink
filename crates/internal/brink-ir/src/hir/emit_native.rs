@@ -891,7 +891,24 @@ fn emit_conditional(
                     context,
                 ));
             };
-            let _ = writeln!(out, "{indent}{{if {} {{", emit_expr(if_cond, context)?);
+            // B1b (issue #1475): a template `{if}` can carry an `as`
+            // binding — `{if EXPR as n: … else: …}` — and `AS_BINDING` is
+            // proven valid *inside* the braced `{if EXPR as n { … }}` form
+            // too (`brink-syntax-native::parser::tests::brace_family::
+            // conditional_block_carries_an_as_binding_on_the_braced_form`),
+            // so respelling it as a suffix on the condition head is a
+            // faithful round-trip, not a guess at new grammar. Omitting it
+            // would silently change what the respelled source means: the
+            // arm's body could reference a binding that no longer exists.
+            let binding_suffix = match &first.binding {
+                Some(name) => format!(" as {}", name.text),
+                None => String::new(),
+            };
+            let _ = writeln!(
+                out,
+                "{indent}{{if {}{binding_suffix} {{",
+                emit_expr(if_cond, context)?
+            );
             emit_block_stmts(out, &first.body, depth + 1, context)?;
             if let Some(second) = cond.branches.get(1) {
                 if second.condition.is_some() {
@@ -1173,6 +1190,33 @@ mod tests {
         assert!(
             matches!(annotation, TypeExpr::Fn { .. }),
             "expected a re-lowered TypeExpr::Fn, got {annotation:?}"
+        );
+    }
+
+    /// B1b (issue #1475): a template `{if}` conditional's `as` binding must
+    /// round-trip, not silently disappear. Before this fix
+    /// `CondKind::InitialCondition`'s emission never read
+    /// `CondBranch::binding`, so the respelled source dropped the `as l`
+    /// suffix — a different-behavior HIR behind a green round-trip check,
+    /// since the success arm's body still referenced `l`.
+    #[test]
+    fn conditional_as_binding_round_trips() {
+        let src = "flow a() {\n  {if some(9) as l: number {l} else: nobody}\n}\n";
+        let emitted = lower_and_emit(src).expect("`as` binding conditional must now emit");
+        assert!(
+            emitted.contains("as l"),
+            "emitted source dropped the `as` binding:\n{emitted}"
+        );
+
+        let hir = reparse_and_lower(&emitted);
+        let body = &hir.knots[0].body;
+        let Stmt::Conditional(cond) = &body.stmts[0] else {
+            panic!("expected Conditional as the re-lowered body's first statement: {body:?}");
+        };
+        assert_eq!(
+            cond.branches[0].binding.as_ref().map(|n| n.text.as_str()),
+            Some("l"),
+            "re-lowered conditional lost its `as` binding"
         );
     }
 }

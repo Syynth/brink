@@ -489,7 +489,30 @@ impl Projector {
             if let Some(e) = &branch.condition {
                 self.walk_expr(e, knot, stitch);
             }
+            self.push_as_binding(branch.binding.as_ref(), knot, stitch);
             self.walk_block(&branch.body, knot, stitch);
+        }
+    }
+
+    /// Index an `as` binding (B1b, issue #1475) as an ordinary local, so
+    /// reads of the bound name inside the success arm resolve — and so
+    /// hover/go-to-def/rename see it exactly as they see a `for`-loop
+    /// variable or a block `let` (`walk_for_stmt`'s precedent).
+    fn push_as_binding(
+        &mut self,
+        binding: Option<&crate::Name>,
+        knot: Option<&str>,
+        stitch: Option<&str>,
+    ) {
+        if let Some(name) = binding {
+            self.push_local(
+                name.text.clone(),
+                name.range,
+                SymbolKind::Temp,
+                knot,
+                stitch,
+                None,
+            );
         }
     }
 
@@ -547,6 +570,7 @@ impl Projector {
 
     fn walk_if_stmt(&mut self, i: &IfStmt, knot: Option<&str>, stitch: Option<&str>) {
         self.walk_expr(&i.condition, knot, stitch);
+        self.push_as_binding(i.binding.as_ref(), knot, stitch);
         for s in &i.body {
             self.walk_block_stmt(s, knot, stitch);
         }
@@ -563,6 +587,7 @@ impl Projector {
 
     fn walk_while_stmt(&mut self, w: &WhileStmt, knot: Option<&str>, stitch: Option<&str>) {
         self.walk_expr(&w.condition, knot, stitch);
+        self.push_as_binding(w.binding.as_ref(), knot, stitch);
         for s in &w.body {
             self.walk_block_stmt(s, knot, stitch);
         }

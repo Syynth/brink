@@ -1,4 +1,5 @@
 mod annotation;
+mod binding;
 mod block;
 mod choice;
 mod content;

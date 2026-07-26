@@ -984,6 +984,76 @@ fn garbage_tokens_inside_conditional_body_never_panic() {
 // wave) — a small generator covering the shapes this family adds:
 // `{if}`/`{match}` (both body forms) and multiline alternation.
 
+// ── The `as` binding in the template condition position (B1b, issue
+//    #1475) ──────────────────────────────────────────────────────────
+
+#[test]
+fn conditional_block_carries_an_as_binding_on_the_colon_form() {
+    let p = assert_lossless("{if party.leader as l: {l} leads. else: Nobody leads.}\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let cb: ast::ConditionalBlock = find_child(&p.syntax()).expect("CONDITIONAL_BLOCK");
+    assert!(cb.is_if());
+    // The head expression accessor must still find the condition, not the
+    // trailing `AS_BINDING` sibling.
+    assert_eq!(
+        cb.condition().map(|n| n.kind()),
+        Some(SyntaxKind::PATH_EXPR)
+    );
+    assert_eq!(
+        cb.as_binding()
+            .and_then(|b| b.name_token())
+            .map(|t| t.text().to_string()),
+        Some("l".to_string())
+    );
+    assert!(cb.if_arm().is_some());
+    assert!(cb.else_arm().is_some());
+}
+
+#[test]
+fn conditional_block_carries_an_as_binding_on_the_braced_form() {
+    let p = assert_lossless("{if find(s, \"x\") as i { Found {i}. }}\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let cb: ast::ConditionalBlock = find_child(&p.syntax()).expect("CONDITIONAL_BLOCK");
+    assert_eq!(
+        cb.as_binding()
+            .and_then(|b| b.name_token())
+            .map(|t| t.text().to_string()),
+        Some("i".to_string())
+    );
+}
+
+#[test]
+fn conditional_block_without_as_has_no_binding() {
+    let p = assert_lossless("{if ready: go else: wait}\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let cb: ast::ConditionalBlock = find_child(&p.syntax()).expect("CONDITIONAL_BLOCK");
+    assert!(cb.as_binding().is_none());
+}
+
+#[test]
+fn choice_guard_accepts_an_as_binding_for_brink_ir_to_diagnose() {
+    // Guard-`as` is ruled but unimplemented (it rides the `.inkb` v6 Choice
+    // record) — the grammar accepts it so `brink-ir` can say "not yet
+    // supported" (E146) instead of the parser saying "unexpected token".
+    let src = "flow f() {\n  {?\n    * {if find(s, \"x\") as i} take it\n  }\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let guard = p
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::CHOICE_GUARD)
+        .and_then(ast::ChoiceGuard::cast)
+        .expect("CHOICE_GUARD");
+    assert_eq!(guard.expr().map(|n| n.kind()), Some(SyntaxKind::CALL_EXPR));
+    assert_eq!(
+        guard
+            .as_binding()
+            .and_then(|b| b.name_token())
+            .map(|t| t.text().to_string()),
+        Some("i".to_string())
+    );
+}
+
 mod proptests {
     use super::*;
     use proptest::prelude::*;

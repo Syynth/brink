@@ -420,6 +420,32 @@ const COLLECT: u8 = 0xFA;
 //                  typing rule with no codegen branching required.
 const COALESCE: u8 = 0xFB;
 
+// B1b the `as` binding (`docs/decision-log.md` 2026-07-26 "The `as`
+// binding: one construct, both condition positions, `{if}` spelling";
+// issue #1475 — this PR's own reservation, same "assigned here" precedent
+// as the blocks above). Three free bytes remained after B1's `COALESCE`
+// (`0xFC`-`0xFD` + `0xFF`); this claims the first. Native-surface-only:
+// nothing in the ink/brink dialects has an `as` binding to lower.
+//
+//   0xFC OptionBind(slot)  `[opt]` → `[bool]`: `opt` must be an
+//                          `OptionVal`. `some(v)` writes `v` — the
+//                          UNWRAPPED payload, typed `T` — into temp
+//                          `slot` and pushes `true`; `none` leaves the
+//                          slot untouched and pushes `false`. A
+//                          non-`OptionVal` operand is a runtime fault
+//                          (`RuntimeError::AsBindingNotOption`), the
+//                          gradual-mode residual of the strict-mode `E147`
+//                          the checker raises for the same shape.
+//
+// Test-and-bind is deliberately ONE op rather than a dup/compare/unwrap
+// sequence: it keeps the whole binding inside condition evaluation, which
+// is what makes `while EXPR as n { … }` rebind per iteration for free and
+// lets an inline `{if EXPR as n: …}` bind without hoisting a statement out
+// of its content line. The write is a plain frame-local store with no
+// `ref`/pointer write-through (unlike `SetTemp`): an `as` binding always
+// declares a FRESH slot, so it can never alias a `ref` parameter's cell.
+const OPTION_BIND: u8 = 0xFC;
+
 // List ops
 const LIST_CONTAINS: u8 = 0xB0;
 const LIST_NOT_CONTAINS: u8 = 0xB1;
@@ -1276,6 +1302,23 @@ pub enum Opcode {
     /// `lhs` turns out to be `some(_)` and `rhs`'s value is discarded.
     Coalesce,
 
+    // ── B1b: the `as` binding (`docs/decision-log.md` 2026-07-26; issue
+    //    #1475) ──────────────────────────────────────────────────────────
+    /// `[opt]` → `[bool]` — the `as` binding's fused test-and-bind
+    /// (`if EXPR as name { … }`, `while EXPR as name { … }`,
+    /// `{if EXPR as name: … else: …}`). `opt` must be an `OptionVal`:
+    /// `some(v)` stores the **unwrapped** `v` in temp `slot` and pushes
+    /// `true`; `none` leaves `slot` untouched and pushes `false`. A
+    /// non-`OptionVal` operand faults
+    /// ([`RuntimeError::AsBindingNotOption`](crate::opcode) — the
+    /// gradual-mode residual of the checker's `E147`).
+    ///
+    /// The slot is always freshly allocated by the binding itself, so —
+    /// unlike [`SetTemp`](Self::SetTemp) — the write needs no
+    /// pointer/projection write-through: an `as` binding can never land on
+    /// a `ref` parameter's cell. Native-surface only.
+    OptionBind(u16),
+
     // ── NS-A6: the `std::rand` draw verbs (`docs/stdlib-spec.md` §7,
     // ruled 2026-07-18; `docs/stdlib-sequencing.md` §2 Wave A6). Every op
     // below draws through the ONE RNG state cell (`rng_seed` +
@@ -1726,6 +1769,10 @@ impl Opcode {
 
             // B1 `or`-coalescing
             Self::Coalesce => write_u8(buf, COALESCE),
+            Self::OptionBind(slot) => {
+                write_u8(buf, OPTION_BIND);
+                write_u16(buf, slot);
+            }
             Self::RandFloat => write_u8(buf, RAND_FLOAT),
             Self::RandChance => write_u8(buf, RAND_CHANCE),
             Self::RandPick => write_u8(buf, RAND_PICK),
@@ -1988,6 +2035,7 @@ impl Opcode {
 
             // B1 `or`-coalescing
             COALESCE => Self::Coalesce,
+            OPTION_BIND => Self::OptionBind(read_u16(buf, offset)?),
             RAND_FLOAT => Self::RandFloat,
             RAND_CHANCE => Self::RandChance,
             RAND_PICK => Self::RandPick,
@@ -2389,6 +2437,28 @@ mod tests {
         let mut buf = Vec::new();
         Opcode::Coalesce.encode(&mut buf);
         assert_eq!(buf[0], 0xFB, "Coalesce encoded to unexpected discriminant");
+    }
+
+    /// B1b the `as` binding (issue #1475): one opcode with a `u16` slot
+    /// immediate, encoded like `SetTemp`/`GetTemp`.
+    #[test]
+    fn roundtrip_b1b_option_bind() {
+        roundtrip(&Opcode::OptionBind(0));
+        roundtrip(&Opcode::OptionBind(7));
+        roundtrip(&Opcode::OptionBind(u16::MAX));
+    }
+
+    /// `OptionBind` claims the first byte free after B1's `Coalesce`
+    /// (`0xFB`) — same "the reservation comment is the source of truth"
+    /// posture as `coalesce_opcode_byte_is_0xfb` above.
+    #[test]
+    fn option_bind_opcode_byte_is_0xfc() {
+        let mut buf = Vec::new();
+        Opcode::OptionBind(1).encode(&mut buf);
+        assert_eq!(
+            buf[0], 0xFC,
+            "OptionBind encoded to unexpected discriminant"
+        );
     }
 
     #[test]

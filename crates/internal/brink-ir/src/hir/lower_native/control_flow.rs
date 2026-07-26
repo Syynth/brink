@@ -61,6 +61,41 @@ fn name_from(tok: Option<brink_syntax_native::SyntaxToken>) -> Option<Name> {
     })
 }
 
+/// Lower an `as NAME` binding (B1b, issue #1475) and enforce the v1
+/// whole-condition restriction on the expression it binds.
+///
+/// The parser already refuses an operator *after* the binding
+/// (`brink-syntax-native::parser::binding::reject_composition`); what only
+/// this layer can see is a binding sitting on top of a `&&`/`||`
+/// composition (`if a && find(x) as s { … }`), because the head expression
+/// parses fine and only its lowered *shape* gives the intent away. Both
+/// halves of the ruling's "composition with `&&`/`||` is a parse/analysis
+/// error" are therefore covered, each where it is detectable.
+///
+/// A rejected composition yields `None` — the construct lowers as an
+/// ordinary unbound `if`/`while`, which the F27 condition check then judges
+/// on its own terms. `E145` is Error-severity, so nothing reaches codegen
+/// either way.
+pub(super) fn lower_as_binding(
+    file_id: FileId,
+    binding: Option<&ast::AsBinding>,
+    condition: &crate::Expr,
+    diags: &mut Vec<Diagnostic>,
+) -> Option<Name> {
+    let binding = binding?;
+    if let crate::Expr::Infix(_, op, _) = condition
+        && matches!(op, crate::InfixOp::And | crate::InfixOp::Or)
+    {
+        diags.push(diag(
+            file_id,
+            binding.syntax().text_range(),
+            DiagnosticCode::E145,
+        ));
+        return None;
+    }
+    name_from(binding.name_token())
+}
+
 /// Lower a `STMT_BLOCK`'s statements to the T1b closed set. Any child that
 /// isn't one of the seven recognized statement kinds — the block's own
 /// blocks-as-values tail, or a malformed item the parser already
@@ -224,6 +259,7 @@ fn lower_if_stmt(
         return None;
     };
     let condition = lower_expr(file_id, &cond_node, diags);
+    let binding = lower_as_binding(file_id, if_stmt.as_binding().as_ref(), &condition, diags);
     let body = if_stmt
         .body()
         .map(|b| lower_stmt_block(file_id, &b, diags))
@@ -235,6 +271,7 @@ fn lower_if_stmt(
     Some(IfStmt {
         ptr: native_provenance(file_id, NodeClass::If, if_stmt.syntax()),
         condition,
+        binding,
         body,
         else_branch,
     })
@@ -269,6 +306,7 @@ fn lower_while_stmt(
         return None;
     };
     let condition = lower_expr(file_id, &cond_node, diags);
+    let binding = lower_as_binding(file_id, w.as_binding().as_ref(), &condition, diags);
     let body = w
         .body()
         .map(|b| lower_stmt_block(file_id, &b, diags))
@@ -276,6 +314,7 @@ fn lower_while_stmt(
     Some(WhileStmt {
         ptr: native_provenance(file_id, NodeClass::While, w.syntax()),
         condition,
+        binding,
         body,
         // Native has no `await` keyword to spell a persistent-await
         // variant with (retired, decision-log item 4) — always a plain

@@ -89,8 +89,16 @@ fn lower_block_stmt(stmt: &hir::BlockStmt, ctx: &mut LowerCtx<'_>, out: &mut Vec
                 super::stmts::emit_await_lowering_fence(ctx, w.ptr.text_range());
                 return;
             }
-            let condition = lower_expr(&w.condition, ctx);
+            // Same bracket shape as `lower_if_branch`: the scope opens
+            // before the condition so an `as` binding declares into it.
+            // `LogicWhile` re-evaluates `condition` each pass, so the
+            // binding rebinds per iteration with no extra machinery (B1b,
+            // issue #1475).
             ctx.push_block_scope();
+            let condition = match &w.binding {
+                Some(binding) => lower_bound_condition(&w.condition, binding, ctx),
+                None => lower_expr(&w.condition, ctx),
+            };
             ctx.loop_depth += 1;
             let body = lower_block_stmt_list(&w.body, ctx);
             ctx.loop_depth -= 1;
@@ -160,8 +168,15 @@ fn lower_if_branch(
     ctx: &mut LowerCtx<'_>,
     branches: &mut Vec<lir::CondBranch>,
 ) {
-    let condition = Some(lower_expr(&if_stmt.condition, ctx));
+    // The scope opens BEFORE the condition so an `as` binding (B1b, issue
+    // #1475) can declare into it; it closes after the success arm, which is
+    // exactly the binding's ruled scope — the `else`/`else if` arms below
+    // are lowered outside the bracket and never see the name.
     ctx.push_block_scope();
+    let condition = Some(match &if_stmt.binding {
+        Some(binding) => lower_bound_condition(&if_stmt.condition, binding, ctx),
+        None => lower_expr(&if_stmt.condition, ctx),
+    });
     let body = lower_block_stmt_list(&if_stmt.body, ctx);
     ctx.pop_block_scope();
     branches.push(lir::CondBranch { condition, body });
@@ -178,6 +193,39 @@ fn lower_if_branch(
             });
         }
         None => {}
+    }
+}
+
+/// Lower a condition that carries an `as` binding (B1b, issue #1475) into
+/// the `OptionBind` condition expression, with the binding's scope already
+/// open.
+///
+/// The caller **must** be inside its own `push_block_scope` bracket when it
+/// calls this and must pop it after lowering the success arm — that bracket
+/// IS the "scoped strictly to the success arm" rule (an `else`/`else if`
+/// arm is lowered outside it, so the name is invisible there).
+///
+/// The binding shares `declare_shadow_checked`'s slot allocation and E054
+/// shadow warning with an ordinary block `let`: an `as` binding is a
+/// block-scoped immutable local, so shadowing an outer temp is legal and
+/// warned about in exactly the same way.
+pub(super) fn lower_bound_condition(
+    condition: &hir::Expr,
+    binding: &crate::Name,
+    ctx: &mut LowerCtx<'_>,
+) -> lir::Expr {
+    // The condition is evaluated before the name becomes visible, so
+    // `if find(s) as s { … }` reads the OUTER `s` in its own condition —
+    // the same rule `lower_block_temp_decl` applies to `let x = x`.
+    let value = lower_expr(condition, ctx);
+    let (slot, name) = declare_shadow_checked(&binding.text, binding.range, ctx);
+    // The binding is immutable by ruling — record the slot so every write
+    // path refuses it (`stmts::lower_assign_target`, E148).
+    ctx.as_binding_slots.insert(slot);
+    lir::Expr::OptionBind {
+        value: Box::new(value),
+        slot,
+        name,
     }
 }
 

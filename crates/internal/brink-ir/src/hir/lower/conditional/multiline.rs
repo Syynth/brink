@@ -63,6 +63,7 @@ fn lower_if_else_branches(
             });
             CondBranch {
                 condition,
+                binding: None,
                 body,
                 container_id: None,
             }

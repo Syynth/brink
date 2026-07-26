@@ -521,3 +521,88 @@ fn error_until_missing_semicolon_does_not_panic() {
     assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
     assert!(!p.errors().is_empty());
 }
+
+// ── I. The `as` binding (B1b, issue #1475) ──────────────────────────
+//
+// One construct, both condition positions — the template half lives in
+// `brace_family.rs` (`{if EXPR as NAME: … else: …}`), the statement half
+// here. `parser/binding.rs` is the shared rule.
+
+#[test]
+fn if_stmt_as_binding_is_a_sibling_of_the_condition() {
+    let p = assert_lossless("var x = { if find(s, \"a\") as i { i; } 0 }\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let block = stmt_block_of(&p);
+    let if_stmt: ast::IfStmt = find_child(block.syntax()).expect("IF_STMT");
+    // The binding must NOT displace the condition accessor — it is a
+    // trailing sibling node, and `condition()` skips it by kind.
+    assert_eq!(
+        if_stmt.condition().map(|n| n.kind()),
+        Some(SyntaxKind::CALL_EXPR)
+    );
+    let binding = if_stmt.as_binding().expect("AS_BINDING");
+    assert_eq!(
+        binding.name_token().map(|t| t.text().to_string()),
+        Some("i".to_string())
+    );
+    assert!(if_stmt.body().is_some());
+}
+
+#[test]
+fn if_stmt_without_as_has_no_binding() {
+    let p = assert_lossless("var x = { if a { 1; } 0 }\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let block = stmt_block_of(&p);
+    let if_stmt: ast::IfStmt = find_child(block.syntax()).expect("IF_STMT");
+    assert!(if_stmt.as_binding().is_none());
+}
+
+#[test]
+fn while_stmt_as_binding_parses() {
+    let p = assert_lossless("var x = { while pop(q) as item { consume(item); } 0 }\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let block = stmt_block_of(&p);
+    let while_stmt: ast::WhileStmt = find_child(block.syntax()).expect("WHILE_STMT");
+    assert_eq!(
+        while_stmt.condition().map(|n| n.kind()),
+        Some(SyntaxKind::CALL_EXPR)
+    );
+    assert_eq!(
+        while_stmt
+            .as_binding()
+            .and_then(|b| b.name_token())
+            .map(|t| t.text().to_string()),
+        Some("item".to_string())
+    );
+}
+
+/// The v1 whole-condition restriction, parser half: an operator directly
+/// after the binding is refused by name, not with a generic
+/// `expected L_BRACE`. (The mirror spelling — a binding over a `&&`
+/// composition — parses fine here and is `brink-ir`'s `E145`.)
+#[test]
+fn as_binding_followed_by_an_operator_is_a_named_parse_error() {
+    for src in [
+        "var x = { if find(s, \"a\") as i && i > 0 { 1; } 0 }\n",
+        "var x = { if find(s, \"a\") as i || true { 1; } 0 }\n",
+        "var x = { if find(s, \"a\") as i or 3 { 1; } 0 }\n",
+    ] {
+        let p = parse(src);
+        assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
+        assert!(
+            p.errors()
+                .iter()
+                .any(|e| e.message.contains("must be the entire condition")),
+            "expected the whole-condition error for {src:?}, got: {:?}",
+            p.errors()
+        );
+    }
+}
+
+#[test]
+fn error_as_with_no_name_does_not_panic() {
+    let src = "var x = { if a as { 1; } 0 }\n";
+    let p = parse(src);
+    assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
+    assert!(!p.errors().is_empty());
+}

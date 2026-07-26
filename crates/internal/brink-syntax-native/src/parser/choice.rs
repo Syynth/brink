@@ -92,11 +92,25 @@ fn choice(p: &mut Parser<'_, '_>) {
     p.finish_node();
 }
 
+/// `{if cond}` — and, grammatically, `{if cond as name}`.
+///
+/// Guard-`as` is a ruled part of the language (`docs/decision-log.md`
+/// 2026-07-26, "Choice-guard `as` un-deferred: capture-at-presentation,
+/// by-value (COW), rides v6"), but its implementation waits on the `.inkb`
+/// v6 Choice record growing a captured environment. Accepting it here and
+/// diagnosing it in `brink-ir` (`E146`) is deliberate: a parse-level
+/// refusal would say "unexpected token `as`", which reads as "this is not
+/// a language feature" rather than the truth — it is, and it is not
+/// implemented yet.
 fn choice_guard(p: &mut Parser<'_, '_>) {
     p.start_node(CHOICE_GUARD);
     p.expect(L_BRACE);
     p.expect(KW_IF);
     super::expr::expression(p);
+    p.skip_ws();
+    if super::binding::at_as_binding(p) {
+        super::binding::as_binding(p);
+    }
     p.expect(R_BRACE);
     p.finish_node();
 }
