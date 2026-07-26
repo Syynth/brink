@@ -625,9 +625,25 @@ fn resolve_function(
             )
         })
     {
+        // Issue #1550 (mirror of #1539): record the RECEIVER SEGMENT's own
+        // range here, not the whole `recv.verb` path (`uref.range`). This
+        // `ResolvedRef` is what `find_references`/rename key off of for the
+        // receiver's own identity — recording the whole-path range meant a
+        // "safe" rename of just the receiver (e.g. `g` in `g.greet(3)`)
+        // rewrote the entire path, silently dropping the method segment
+        // (`newname(3)` instead of `newname.greet(3)`). `head` is a
+        // verbatim prefix of `path`, which in turn spans `uref.range`
+        // exactly (no whitespace inside a dotted path), so the receiver's
+        // range is just `uref.range`'s first `head.len()` bytes — the same
+        // "narrow to one segment" move `brink-ide`'s `ufcs_hover` already
+        // does for the *method* segment (issue #1539).
+        let receiver_range = rowan::TextRange::new(
+            uref.range.start(),
+            uref.range.start() + rowan::TextSize::of(head),
+        );
         map.push(ResolvedRef {
             file: file_id,
-            range: uref.range,
+            range: receiver_range,
             target: id,
         });
         return;

@@ -429,6 +429,85 @@ fn main() {
         );
     }
 
+    // ── Issue #1550: renaming the RECEIVER of a UFCS call leaves the
+    // method segment intact (the mirror of #1539, which fixed renaming the
+    // *method*) ────────────────────────────────────────────────────────
+
+    #[test]
+    fn renaming_the_receiver_of_a_ufcs_call_site_edits_only_the_receiver_segment() {
+        // The core #1550 bug: `brink-analyzer::resolve`'s UFCS-shaped-callee
+        // fallback recorded the receiver's resolved reference range as the
+        // *whole* `recv.verb` path. Renaming the receiver `g` (declared by
+        // `let g = Guest { .. }`) then produced an edit spanning all of
+        // `g.greet`, so applying it collapsed `g.greet(3)` down to
+        // `newname(3)` — silently dropping the method segment and
+        // corrupting the program from a "safe" rename.
+        let (s, id) = native_session(UFCS_FREE_FN_SRC);
+        let decl_pos =
+            u32::try_from(UFCS_FREE_FN_SRC.find("g = Guest").expect("decl")).expect("offset");
+        let analysis = s.analysis().expect("analysis");
+
+        let result =
+            rename(s.db(), analysis, id, TextSize::from(decl_pos), "newname").expect("rename");
+
+        let call_pos =
+            u32::try_from(UFCS_FREE_FN_SRC.find("g.greet(3)").expect("call")).expect("offset");
+        let edit = result
+            .edits
+            .iter()
+            .find(|e| e.file == id && e.range.start() == TextSize::from(call_pos))
+            .unwrap_or_else(|| {
+                panic!(
+                    "expected an edit at the UFCS call site's receiver segment, got {:?}",
+                    result
+                        .edits
+                        .iter()
+                        .map(|e| (e.range, e.new_text.as_str()))
+                        .collect::<Vec<_>>()
+                )
+            });
+        assert_eq!(edit.new_text, "newname");
+        assert_eq!(
+            usize::from(edit.range.end()) - usize::from(edit.range.start()),
+            1,
+            "the edit must span only the receiver's own `g` segment (1 byte), not the whole \
+             `g.greet` path — got {:?}",
+            edit.range
+        );
+    }
+
+    #[test]
+    fn rename_safe_on_the_receiver_of_a_ufcs_call_site_produces_a_valid_program() {
+        // End-to-end counterpart of the test above, via the studio-facing
+        // `rename_safe` path: the folded `new_source` must keep the method
+        // segment (`newname.greet(3)`), never collapse to a bare call
+        // (`newname(3)`), and the rename must introduce no new diagnostics.
+        let (s, id) = native_session(UFCS_FREE_FN_SRC);
+        let decl_pos =
+            u32::try_from(UFCS_FREE_FN_SRC.find("g = Guest").expect("decl")).expect("offset");
+
+        let res = rename_safe(&s, id, TextSize::from(decl_pos), "newname").expect("rename");
+
+        let new_source = res.new_source.as_deref().expect("new_source");
+        assert!(
+            new_source.contains("newname.greet(3)"),
+            "the method segment must survive the receiver rename: {new_source}"
+        );
+        assert!(
+            !new_source.contains("newname(3)"),
+            "the receiver rename must not collapse into a bare call, dropping the method \
+             segment: {new_source}"
+        );
+        assert!(
+            res.introduced.is_empty(),
+            "a correct receiver rename introduces no new diagnostics, got {:?}",
+            res.introduced
+                .iter()
+                .map(|d| (d.code.as_str(), d.message.as_str()))
+                .collect::<Vec<_>>()
+        );
+    }
+
     #[test]
     fn prepare_rename_on_a_ufcs_call_site_returns_the_method_segment_span() {
         let (s, id) = native_session(UFCS_FREE_FN_SRC);

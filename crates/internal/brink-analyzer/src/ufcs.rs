@@ -835,7 +835,15 @@ impl UfcsVisitor<'_> {
     /// id, the same way `structs::resolved_symbol_ty` types any other
     /// resolved reference.
     fn value_receiver_def(&self, path: &HirPath) -> Option<DefinitionId> {
-        let key = (path.range.start().into(), path.range.end().into());
+        // Issue #1550: `resolve::resolve_function`'s UFCS-shaped fallback
+        // now records the RECEIVER SEGMENT's own range (`path.segments`'
+        // first entry), not the whole `recv.verb` path's range — narrowing
+        // to the receiver's own span is what keeps a rename of the
+        // receiver from corrupting the trailing method segment. This
+        // lookup must key on the exact same range or it silently never
+        // finds the resolution, so it has to agree.
+        let head = path.segments.first()?;
+        let key = (head.range.start().into(), head.range.end().into());
         let &target = self.resolution_by_range.get(&key)?;
         match self.index.symbols.get(&target) {
             Some(info)
