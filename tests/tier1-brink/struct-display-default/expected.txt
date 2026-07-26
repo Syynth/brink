@@ -5,3 +5,4 @@ in array: [Point { x: 1, y: 1 }, Point { x: 2, y: 2 }]
 option: some(Point { x: 1, y: 2 })
 absent:
 absent via string: none
+pair: [some(Point { x: 1, y: 2 }), none]

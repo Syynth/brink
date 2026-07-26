@@ -24,12 +24,14 @@ VAR p = 0
 VAR seg = 0
 VAR pts = 0
 VAR o = 0
+VAR opts = 0
 
 ~ {
     p = Point#{x: 1.0, y: 2.0}
     seg = Line#{start: Point#{x: 0.0, y: 0.0}, end: Point#{x: 5.0, y: 5.5}}
     pts = #[Point#{x: 1.0, y: 1.0}, Point#{x: 2.0, y: 2.0}]
     o = some(p)
+    opts = #[o, none]
 }
 
 whole: {p}
@@ -39,4 +41,10 @@ in array: {pts}
 option: {o}
 absent: {find("abc", "z")}
 absent via string: {string(find("abc", "z"))}
+// The display-boundary None-forgiveness (B4, §1.6b) is cut by POSITION:
+// it only ever fires when an Option is the interpolation's own top-level
+// result. An Option nested inside a further composition (here, an array
+// element) is never forgiven — it always renders through the ordinary
+// total `stringify`, same as `option:`/`absent:` did before B4.
+pair: {opts}
 -> DONE

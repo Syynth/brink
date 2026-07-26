@@ -70,7 +70,7 @@ dangles; charter fix owed.)
    stringify_display` is the boundary — a final `Value::OptionVal(None)`
    at an interpolation/template-slot position renders `""`; every other
    value (including `Some(v)`) still delegates to the ordinary
-   `stringify`. The transcript riders is satisfied by construction — the
+   `stringify`. The transcript rider is satisfied by construction — the
    append-only transcript/`Fragment` model never eagerly resolves output
    parts, so a forgiven `None`-render still shows up as
    `Value::OptionVal(None)` in `OutputBuffer::transcript()`. The

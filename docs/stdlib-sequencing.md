@@ -75,7 +75,6 @@ graph TD
   B0 --> B1
   B0 --> B2
   B0 --> B3
-  B0 --> B4
   B0 --> B5
 
   classDef block fill:#fdd,stroke:#c00;
@@ -248,9 +247,8 @@ already exist on the current brink dialect (the same "early host" pattern
 §0's opening note argues for), so the boundary shipped as a
 `brink-runtime` value-display change (`value_ops::stringify_display`),
 oracle- and brink-corpus-covered immediately, with no native-parser
-surface involved at all; the `B0 --> B4` edge above is stale for this
-reason (not re-drawn here — flagged, not fixed, to keep this diff
-narrow). **Findings:** F1 — RESOLVED, the boundary does **not** govern
+surface involved at all; the graph above no longer draws a `B0 --> B4`
+edge, reflecting that. **Findings:** F1 — RESOLVED, the boundary does **not** govern
 `string()` (§1.6's own text: "`string()`'s ruled totality is preserved");
 F12 — RESOLVED by inspection, `note_effect_emit` fires unconditionally in
 `vm.rs` before the output push, independent of whether the pushed value
