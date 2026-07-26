@@ -625,8 +625,10 @@ grace.
    call-lowering, the Yarn persisted-line-ID fork.
 3. **Per-path export design** (§2b.4) — Fountain/FDX/VO-sheet
    renderers; export mapping incl. tag→extension translation (§8d.4).
-4. **Terminal cluster — parked**: #1448 / #1449 / #1450, deferred
-   until the runtime/compiler window.
+4. **Terminal cluster**: #1450 closed (PR #1468); #1448 landed
+   (PR #1500); #1449 is un-deferred and partly delivered (PR #1513
+   folds the episode-builder terminal handling into a single
+   classifier; the Step/OutputLine runtime redesign itself remains).
 5. **Deferred details**: context injection; numeric capture coercion;
    fused-`until` sugar; indent-level style tokens; which-blocks
    question closed by §8d.2.
