@@ -59,6 +59,16 @@ Unlike indexed reads, `contains` never faults — it always answers `true` or
   across both container kinds — you don't need to already know a map's key
   domain just to test membership without risking a crash.
 
+  Under `types = strict`, though, when both the map and the needle's
+  out-of-domain type are already statically visible, `contains(m, v)` is
+  flagged at compile time by `E152` (`Warning` severity) — the call is
+  always `false`, and the diagnostic exists to catch what's usually a typo
+  or a stale key type rather than intentional code. `E152` is strict-mode
+  only (it stays silent under `types = gradual`, where the runtime's total
+  `false` above remains the only behavior), and like other warnings it can
+  be re-leveled or suppressed via `[lints]` (e.g. `E152 = "deny"` or
+  `E152 = "allow"`) or a `//brink-disable` comment.
+
 ## Mutators require an lvalue
 
 `push`/`insert`/`remove`/`remove_at` mutate their first argument, so that argument has
