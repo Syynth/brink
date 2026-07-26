@@ -71,7 +71,12 @@ analyzer-arm bug · #1384 config path/span threading.
 - #1484 `remove_at` rename
 - #1476 COW no-aliasing invariant sweep (+ first-class value-model
   statement in runtime-spec)
-- Native grammar gaps — scoping pass running; issues to follow from it.
+- Native grammar gaps (scoped 2026-07-26 — native is strict-only with NO
+  annotation syntax; every binding structurally hits E065/E066):
+  #1487 NG-A param annotations (+ the shared `type_expr` production;
+  lambda annotations grammar-only) → #1488 NG-B let/var/const annotations.
+  Ruling-gated: #1489 NG-C return types (lean `: type`, the lambda
+  convention) · #1490 NG-D array literals (lean `[1, 2, 3]`).
 
 **Design-gated (needs a sitting before build):**
 - Protocol implementation spelling + compare/equality coherence (§9.6) —
