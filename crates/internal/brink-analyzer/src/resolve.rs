@@ -1417,6 +1417,7 @@ mod tests {
             },
             kind: SymbolKind::Temp,
             param_detail: None,
+            annotation: None,
         });
 
         let mut b = SymbolManifest::default();
