@@ -991,8 +991,7 @@ fn unannotated_stitch_header_has_no_return_type() {
 fn return_type_annotation_lowers_onto_nested_stitch() {
     // #1509: `= name(params): type` on a *nested* stitch header (widening
     // NG-C's `Knot.return_type` grammar to `Stitch`).
-    let (hir, diags) =
-        lower_hir("=== camp ===\nText.\n= fire(logs): int\n~ return logs\n");
+    let (hir, diags) = lower_hir("=== camp ===\nText.\n= fire(logs): int\n~ return logs\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     let camp = hir.knots.iter().find(|k| k.name.text == "camp").unwrap();
     match &camp.stitches[0].return_type {

@@ -1275,8 +1275,7 @@ fn a_return_typed_stitch_does_not_get_the_implicit_done() {
     // Same coroutine-vs-state toggle as a top-level flow/fn (see
     // `a_return_typed_flow_does_not_get_the_implicit_done`), now honored
     // one level down (#1509).
-    let (plain, _m, diags) =
-        lower_src("flow garden() {\n  flow gate() {\n    Creak.\n  }\n}\n");
+    let (plain, _m, diags) = lower_src("flow garden() {\n  flow gate() {\n    Creak.\n  }\n}\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     assert!(
         matches!(plain.knots[0].stitches[0].body.stmts.last(), Some(Stmt::Divert(d))
