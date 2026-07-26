@@ -151,6 +151,22 @@ pub fn iterate_element_ty(iterable: &Ty) -> Option<Ty> {
     }
 }
 
+/// The value type bound by `for k, v in m`'s second binding (B2, issue
+/// #1461, docs/stdlib-spec.md §5/§9's F10 ruling — two-binding map
+/// iteration is the pair story `entries()` never got). Only maps have a
+/// "value at key"; arrays and ranges iterate a single element with no
+/// paired value, so they're not represented here at all — a caller
+/// (`infer::body`'s `BlockStmt::For` arm) falls back to `Ty::Unknown` for
+/// anything this returns `None` for, the same permissive-at-compile
+/// posture [`iterate_element_ty`]'s own callers already rely on.
+#[must_use]
+pub fn iterate_val_ty(iterable: &Ty) -> Option<Ty> {
+    match iterable {
+        Ty::Map(_, val) => Some((**val).clone()),
+        _ => None,
+    }
+}
+
 // ─── F6: reserved-name declarations (E113) ──────────────────────────────
 
 /// Check one file for author declarations of the reserved protocol method
@@ -283,6 +299,9 @@ fn walk_block_stmts(stmts: &[BlockStmt], push: &mut impl FnMut(&Name, &str)) {
             BlockStmt::While(w) => walk_block_stmts(&w.body, push),
             BlockStmt::For(f) => {
                 push(&f.var_name, "for-loop variable");
+                if let Some(val_name) = &f.val_name {
+                    push(val_name, "for-loop variable");
+                }
                 walk_block_stmts(&f.body, push);
             }
             BlockStmt::Assignment(_)

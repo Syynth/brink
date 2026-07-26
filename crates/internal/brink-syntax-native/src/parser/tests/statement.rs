@@ -379,6 +379,42 @@ fn for_stmt_shape() {
     assert!(has_node_kind(body.syntax(), SyntaxKind::EXPR_STMT));
 }
 
+/// `for k, v in m` — two-binding map iteration (B2, issue #1461,
+/// docs/stdlib-spec.md §5/§9's F10 ruling). `val_name_token` is the second
+/// direct `IDENT`; `name_token` (the key binding) is unaffected.
+#[test]
+fn for_stmt_two_binding_shape() {
+    let p = assert_lossless("var x = { for k, v in m { foo(k, v); } 0 }\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let block = stmt_block_of(&p);
+    let for_stmt: ast::ForStmt = find_child(block.syntax()).expect("FOR_STMT");
+    assert_eq!(
+        for_stmt.name_token().map(|t| t.text().to_string()),
+        Some("k".to_string())
+    );
+    assert_eq!(
+        for_stmt.val_name_token().map(|t| t.text().to_string()),
+        Some("v".to_string())
+    );
+    assert_eq!(
+        for_stmt.iterable().map(|n| n.kind()),
+        Some(SyntaxKind::PATH_EXPR)
+    );
+}
+
+/// The single-binding form still has no second binding — `val_name_token`
+/// stays `None`, not accidentally picking up an `IDENT` from inside the
+/// iterable expression (which is a nested node, not a direct `FOR_STMT`
+/// token).
+#[test]
+fn for_stmt_single_binding_has_no_val_name() {
+    let p = assert_lossless("var x = { for item in items { foo(item); } 0 }\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let block = stmt_block_of(&p);
+    let for_stmt: ast::ForStmt = find_child(block.syntax()).expect("FOR_STMT");
+    assert!(for_stmt.val_name_token().is_none());
+}
+
 #[test]
 fn until_stmt_shape() {
     let p = assert_lossless("var x = { until door_open; 0 }\n");

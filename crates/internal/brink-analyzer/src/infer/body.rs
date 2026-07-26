@@ -2014,6 +2014,19 @@ impl InferPass<'_, '_> {
                 // keys; anything else is not iterable and stays `Unknown`).
                 let elem_ty = crate::protocols::iterate_element_ty(&iter_ty).unwrap_or(Ty::Unknown);
                 self.bind_local(&f.var_name.text, &elem_ty);
+                // Two-binding map iteration (`for k, v in m`, B2 issue
+                // #1461): the second binding's type is the map's value
+                // type. Only maps have a "value at key" — an iterable
+                // outside the closed set (or an array/range, which iterate
+                // a single element with no paired value) escapes as
+                // `Unknown` rather than refusing to compile, matching
+                // `elem_ty`'s own fallback just above (NS-A2: `for`
+                // compiles unconditionally; the runtime `Index`/
+                // `NotIndexable` fault is the actual gate).
+                if let Some(val_name) = &f.val_name {
+                    let val_ty = crate::protocols::iterate_val_ty(&iter_ty).unwrap_or(Ty::Unknown);
+                    self.bind_local(&val_name.text, &val_ty);
+                }
                 for s in &f.body {
                     self.infer_block_stmt(s);
                 }
