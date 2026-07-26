@@ -141,12 +141,28 @@ pub fn rename(
         new_text: new_name.to_owned(),
     });
 
-    // 2. Rename all plain reference sites (analysis's own identity space)
+    // 2. Rename all plain reference sites (analysis's own identity space).
+    //
+    // Issue #1550: a `ResolvedRef` here may be a UFCS call site's
+    // *receiver* — `resolve::resolve_function`'s UFCS-shaped fallback
+    // records the receiver's resolution against the *whole* `recv.verb`
+    // path, not just the receiver's own segment (mirroring the D2 side
+    // table's own key). Renaming the receiver must therefore narrow that
+    // whole-path range down to the receiver's own first segment via
+    // `ufcs_hover::ufcs_receiver_head_range_at_path`, or the edit collapses
+    // `g.greet(3)` into `newname(3)`, silently dropping the method
+    // segment.
     for resolved in &analysis.resolutions {
         if resolved.target == analysis_def_id {
+            let range = db
+                .hir(resolved.file)
+                .and_then(|hir| {
+                    crate::ufcs_hover::ufcs_receiver_head_range_at_path(hir, resolved.range)
+                })
+                .unwrap_or(resolved.range);
             edits.push(FileEdit {
                 file: resolved.file,
-                range: resolved.range,
+                range,
                 new_text: new_name.to_owned(),
             });
         }
