@@ -170,8 +170,9 @@ pub fn ufcs_hover(
     let (call, verdict) = ufcs_call_and_verdict(db, hir, file_id, offset)?;
     let content = match verdict {
         UfcsVerdict::FieldCall => format!(
-            "**field call** `{recv}.{field}(…)`\n\nField access wins over a free function of the \
-             same name (D1): dispatches through the receiver's `{field}` field value.",
+            "**field call** `{recv}.{field}(…)`\n\nDispatches through the receiver's `{field}` \
+             field value (a function-typed field wins over a free function of the same name, \
+             per D1).",
             recv = call.receiver_text,
             field = call.method.text,
         ),
