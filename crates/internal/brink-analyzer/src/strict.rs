@@ -984,6 +984,15 @@ fn check_void_assignments(
 /// under `SymbolKind::Stitch`, #626). A *nested* `Stitch` never carries
 /// `is_function` (no HIR container below `Knot` does), so it is never a
 /// candidate here regardless of its own `return_type` (#1509).
+///
+/// The inferred branch's "never carries a value-returning `return`" check
+/// must also account for the function's own stitches: a fall-through
+/// `-> f.sub` (or a conditional divert into one) reaches a stitch's body,
+/// which is a *separate* `Def` (`infer::collect_defs`, qualified name
+/// `f.sub`, `SymbolKind::Stitch`) with its own `BodyTypes` in
+/// `inference.bodies` — the knot's own `BodyTypes` only covers content
+/// before the first stitch. A knot is only inferred-void when neither its
+/// own body nor any of its stitches carries a value-returning `return`.
 fn collect_void_defs(
     files: &[(FileId, &HirFile)],
     index: &SymbolIndex,
@@ -1003,7 +1012,18 @@ fn collect_void_defs(
                 .return_type
                 .as_ref()
                 .is_some_and(|rt| matches!(rt, TypeExpr::Named { name, .. } if name == "void"));
+            let stitch_returns_value = knot.stitches.iter().any(|st| {
+                annotations::def_id_for(
+                    index,
+                    file,
+                    SymbolKind::Stitch,
+                    &format!("{}.{}", knot.name.text, st.name.text),
+                )
+                .and_then(|sid| inference.bodies.get(&sid))
+                .is_some_and(|b| b.has_value_return)
+            });
             let inferred_void = knot.return_type.is_none()
+                && !stitch_returns_value
                 && inference
                     .bodies
                     .get(&id)
@@ -2991,6 +3011,30 @@ mod tests {
         let (hir, index, res) = build(
             "=== function give() ===\n~ return 5\n\
              === main ===\n~ temp x = give()\n-> DONE\n",
+        );
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
+        assert!(
+            !diags.iter().any(|d| d.code == DiagnosticCode::E067),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn stitch_return_value_reached_by_fallthrough_is_not_inferred_void_and_stays_clean_of_e067() {
+        // Regression for the reviewer-caught gap in `collect_void_defs`: the
+        // value-returning `return` lives in a *stitch* (`compute`), reached
+        // by falling straight through the knot's own (empty) body — not by
+        // an explicit divert. A stitch under a function knot is a separate
+        // `Def` (`infer::collect_defs`, qualified name `f.compute`,
+        // `SymbolKind::Stitch`) with its own `BodyTypes`, so the knot's own
+        // `BodyTypes.has_value_return` is `false` even though the function
+        // as a whole always returns a value. Before the fix this silently
+        // inferred `f` as void and flagged `E067` on the assignment below.
+        let (hir, index, res) = build(
+            "=== function f() ===\n= compute\n~ return 5\n\
+             === main ===\n~ temp x: int = f()\nx={x}\n-> DONE\n",
         );
         let inference =
             crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
