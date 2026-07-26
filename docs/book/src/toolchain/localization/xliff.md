@@ -2,7 +2,9 @@
 
 Localization source files use **XLIFF 2.0** — one file per locale. Lexical scopes (knots/stitches/root) map to `<file>` elements within the XLIFF document. brink-specific metadata (content hashes for change tracking) uses XLIFF's custom namespace extension (`brink:`, see `BRINK_NS` in `brink-intl`), which conforming tools preserve across round-trips.
 
-The workflow is shipped end-to-end: the `brink` CLI exposes `export-xliff`, `compile-locale`, and `regenerate-xliff`, and `brink-intl` exposes the same operations as a library (`generate_locale`, `compile_locale_xliff`, `regenerate_locale`).
+The workflow is shipped end-to-end: the `brink` CLI exposes `export-xliff`, `compile-locale`, `regenerate-xliff`, and `migrate-xliff`, and `brink-intl` exposes the same operations as a library (`generate_locale`, `compile_locale_xliff`, `regenerate_locale`, `migrate_unit_ids`).
+
+`<unit id>` is keyed on the scope's `DefinitionId` (e.g. `0x0100000000000001:0`), not its display name — DefinitionIds are stable across knot/stitch renames, so a TMS that keys translation memory on unit id survives a pure rename. The human-readable scope name still rides along as the `name` attribute on `<unit>` and as the `id` attribute on the containing `<file>`, for translator context.
 
 ## Why XLIFF
 
@@ -42,3 +44,23 @@ the intl tooling.)
 
 Load the resulting `.inkl` at runtime with `brink_runtime::apply_locale`, or in
 Bevy via the locale-switching API (see the Bevy Integration section).
+
+## Migrating archived `.xlf` files
+
+`.xlf` files exported before the scope-id-based unit id scheme landed carry
+display-name-based unit ids (e.g. `intro:0` instead of
+`0x0100000000000001:0`). `brink regenerate-xliff` already re-keys them for
+free the next time you recompile (it rebuilds the document from the fresh
+export and overlays translations by content hash, never by unit id). If you
+need to re-key an archived `.xlf` without recompiling — for example to push
+it back through a TMS that indexes on unit id before your next source
+change — use `migrate-xliff`:
+
+```sh
+brink migrate-xliff story.es.xlf -o story.es.xlf
+```
+
+This only rewrites the `id` attribute on each `<unit>`; `<source>`,
+`<target>`, `state`, and every `brink:*` extension attribute are left
+untouched, so no translation is lost. It's idempotent — running it on a file
+that's already on the new scheme is a no-op.
