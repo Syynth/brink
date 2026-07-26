@@ -320,6 +320,16 @@ operator forms `?`/`^`/`+=`/`-=` are code-dialect ⏳). The frozen ink
 LIST ops (right column) remain the only shipped surface — plus
 `rand::pick` over a flags subset, which A6 did ship (§7).
 
+**`remove`'s flags-subtract row above stays unshipped as of issue
+#1532** (the #1501 review's "one name, one posture" follow-up): this
+whole domain — the *first* native flags verb dispatch, `Ty::List`
+narrowing at the call site, an idempotent LIST-subtract op reachable
+from a `remove(ref s: Mood, m: Mood)` mutator call, plus every sibling
+verb in this table — is unsequenced work, not a small addition
+alongside a targeted diagnostic fix. Shipping it needs its own design
+pass (docs/decision-log.md-style ruling on dispatch shape, at minimum),
+not a unilateral call inside an unrelated issue.
+
 | Verb | Signature | NS | Pre | Recv | Row | Option/refine | ink frozen sibling |
 |---|---|---|---|---|---|---|---|
 | `count` | `fn count(s: Mood): int` | flags | ✓ | val | P | — | `LIST_COUNT` |

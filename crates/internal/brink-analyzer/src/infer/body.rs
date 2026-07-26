@@ -165,6 +165,15 @@ pub(super) struct BodyResult {
     /// only place argument expressions have types; reported by strict mode
     /// only.
     pub value_calls: Vec<ValueCallFact>,
+    /// Issue #1532 (the #1501 review's `remove`/`remove_at` migration-tail
+    /// finding): every `remove(a, i)` call site in this body whose first
+    /// argument is statically known to be `Ty::Array` — the pre-#1484 array
+    /// leg `remove` no longer serves (`remove_at` does). Each entry is the
+    /// call's own `remove` token range (matching `ValueCallFact::range`'s
+    /// convention). Recorded unconditionally, like `value_calls`; reported
+    /// only by strict mode (`strict::check_array_remove_calls`, `E149`) —
+    /// gradual mode keeps the `MapRemove` runtime fault as its backstop.
+    pub array_remove_calls: Vec<TextRange>,
 }
 
 /// Infer one definition's body against `ctx`. `def.params` are the declared
@@ -211,6 +220,7 @@ pub(super) fn infer_def_body(def: &super::Def<'_>, ctx: &BodyCtx<'_>) -> BodyRes
         effect_faults_refined: false,
         annotated,
         value_calls: Vec::new(),
+        array_remove_calls: Vec::new(),
         local_write_counts: BTreeMap::new(),
         local_fn_origin: BTreeMap::new(),
         pending_value_calls: Vec::new(),
@@ -275,6 +285,7 @@ pub(super) fn infer_def_body(def: &super::Def<'_>, ctx: &BodyCtx<'_>) -> BodyRes
         effect_faults: pass.effect_faults,
         effect_faults_refined: pass.effect_faults_refined,
         value_calls: pass.value_calls,
+        array_remove_calls: pass.array_remove_calls,
     }
 }
 
@@ -350,6 +361,9 @@ struct InferPass<'a, 'b> {
     /// two-independent-derivations comparison stays intact.
     annotated: BTreeMap<String, Ty>,
     value_calls: Vec<ValueCallFact>,
+    /// See [`BodyResult::array_remove_calls`] — accumulated the same way
+    /// `value_calls` is, during the one body walk.
+    array_remove_calls: Vec<TextRange>,
     /// T2 §8 precision rung (docs/effects-spec.md §6 item 3/§8, issue #872): every
     /// write (`TempDecl` initializer or bare-`Path` `Assignment`) to a
     /// Temp local, by name, counted regardless of whether the write's
@@ -1492,6 +1506,16 @@ impl InferPass<'_, '_> {
             "remove" => {
                 if let (Some(Ty::Map(k, _)), Some(item)) = (arg_tys.first(), args.get(1)) {
                     self.observe(item, k);
+                }
+                // Issue #1532: the pre-#1484 array-index leg has no
+                // compatibility shim — a statically-known `Ty::Array`
+                // receiver here is an un-migrated `remove(a, i)` call site
+                // that means `remove_at(a, i)`. Recorded as a fact (see
+                // `BodyResult::array_remove_calls`'s doc), not raised
+                // directly: this pass is advisory-only, reported by strict
+                // mode (`strict::check_array_remove_calls`, `E149`).
+                if matches!(arg_tys.first(), Some(Ty::Array(_))) {
+                    self.array_remove_calls.push(range);
                 }
                 if let Some(container) = args.first() {
                     self.record_write(container);

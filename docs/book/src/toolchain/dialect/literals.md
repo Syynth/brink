@@ -404,7 +404,14 @@ nothing about a map-key removal implies an array-index removal, or vice
 versa). The fix is naming, not flattening: `remove_at` joins the `_at`
 faulting-index family with `char_at`, leaving `remove` to mean exactly
 one thing — identity-based, idempotent-total removal (map keys today;
-flags values once flags land).
+flags values once flags land). There is no compatibility shim: a
+pre-#1484 `remove(array, i)` call site is `E149` (issue #1532) under
+`types = strict`, the brink dialect's own implicit default, *when the
+receiver's array type is statically known* — provable from its own
+body-local uses (a `temp`/param). A `VAR`-held array has no
+`Array`/`Map` representation in the checker's static typing today, so
+that idiom still faults only at runtime, as `NotIndexable`; under
+`types = gradual`, every case stays a runtime `NotIndexable` fault.
 
 **One spelling per concept, eventually.** Today's dialect ships
 `insert(m, k, v)` as a slice-1 free function, but the ruled native
@@ -696,6 +703,7 @@ draw being an effect — is the Randomness chapter's; iteration in full
 | `E116` | an `Option[T]` used as a condition — no truthiness | strict (runtime fault under gradual) |
 | `E117` | `int(r)` over a range not proven inhabited | strict (runtime fault under gradual) |
 | `E119` | a `sort_by`/`sorted_by` comparator provably exceeds pure·silent | both |
+| `E149` | `remove` on a statically-known array — use `remove_at` | strict (runtime fault under gradual) |
 
 ## Where this is ruled
 

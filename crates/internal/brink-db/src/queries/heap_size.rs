@@ -340,6 +340,10 @@ fn body_types_heap(b: &BodyTypes) -> usize {
             .iter()
             .map(value_call_fact_heap)
             .sum::<usize>()
+        // Issue #1532: `TextRange` owns no heap data of its own (two `u32`s
+        // inline), so the `Vec`'s own buffer is the whole contribution —
+        // same posture as `divert_target_heap`'s `vec_heap(&dt.args)`.
+        + vec_heap(&b.array_remove_calls)
 }
 
 pub(crate) fn solve_scc_heap_size(value: &Arc<SolvedScc>) -> usize {
@@ -557,6 +561,7 @@ mod tests {
                 return_ty: Ty::Bool,
                 has_value_return: true,
                 value_calls: Vec::new(),
+                array_remove_calls: Vec::new(),
             },
         );
 

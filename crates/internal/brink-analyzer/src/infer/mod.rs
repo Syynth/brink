@@ -122,6 +122,13 @@ pub struct BodyTypes {
     /// strict mode** (`strict::check` — gradual stays advisory, the runtime
     /// fault is its backstop, spec §3/§4).
     pub value_calls: Vec<ValueCallFact>,
+    /// Issue #1532: every `remove(a, i)` call site in this body whose first
+    /// argument is statically known to be `Ty::Array` — see
+    /// `body::BodyResult::array_remove_calls`'s doc for why this is
+    /// captured (the pre-#1484 array leg `remove` no longer serves).
+    /// Reported only by strict mode (`strict::check_array_remove_calls`,
+    /// `E149`), the same split as `value_calls`.
+    pub array_remove_calls: Vec<TextRange>,
 }
 
 /// One statically-checkable fact about a call through a function value
@@ -612,6 +619,7 @@ fn solve_one_batch(
                     return_ty: result.return_ty,
                     has_value_return: result.has_value_return,
                     value_calls: result.value_calls,
+                    array_remove_calls: result.array_remove_calls,
                 },
             )
         })
@@ -1150,6 +1158,50 @@ mod tests {
         let result = infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
         let sig = sig_of(&result, &index, "noop");
         assert_eq!(sig.params, vec![Ty::Unknown]);
+    }
+
+    /// Issue #1532 (#1501 review finding 3): the #1484 `remove`/`remove_at`
+    /// split's advertised latent fix — the array leg no longer narrows its
+    /// *index* argument against the array's *element* type (wrong for an
+    /// index; the pre-split shared `remove` code did this) — shipped with
+    /// no regression test. `arr` is a `temp` (not a `VAR`: a global's
+    /// static type is purely declaration-derived — `Sig::value_type` has no
+    /// `Array`/`Map` representation at all, `signature.rs`'s
+    /// `ty_to_inferred_type` — so a `VAR` fixture here would leave
+    /// `arg_tys.first()` at `Ty::Unknown` and never even reach the
+    /// `Ty::Array` arm this test exists to guard), so its `Ty::Array(String)`
+    /// element type is genuinely in hand at the call site. If `remove_at`'s
+    /// index arm regressed to narrowing against it, `i` would come out
+    /// `Ty::String` here instead of staying `Unknown` (`i` is otherwise
+    /// unused — `unused_param_is_unknown_and_legal`'s baseline). Mirrors
+    /// `insert`'s array leg, which is also index-typed and was never
+    /// narrowed (`infer::body`'s `"insert"` arm only narrows the map k/v
+    /// pair).
+    #[test]
+    fn remove_at_index_arg_does_not_narrow_against_the_array_element_type() {
+        let (hir, index, res) = build(
+            "=== function drop_at(i) ===\n~ {\n    temp arr = #[\"a\", \"b\", \"c\"]\n    remove_at(arr, i)\n}\n~ return 0\n",
+        );
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let drop_at_id = index
+            .by_name
+            .get("drop_at")
+            .and_then(|ids| ids.first())
+            .copied()
+            .expect("drop_at");
+        let body = result.bodies.get(&drop_at_id).expect("drop_at body");
+        assert_eq!(
+            body.locals.get("arr"),
+            Some(&Ty::Array(Box::new(Ty::String))),
+            "fixture sanity: arr must actually be known as an array of strings, or this test \
+             can't distinguish the fix from the bug it guards"
+        );
+        let sig = sig_of(&result, &index, "drop_at");
+        assert_eq!(
+            sig.params,
+            vec![Ty::Unknown],
+            "remove_at's index argument must not narrow against the array's element type"
+        );
     }
 
     #[test]
