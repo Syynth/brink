@@ -740,6 +740,7 @@ impl InfixExpr {
                         | SyntaxKind::SLASH
                         | SyntaxKind::PERCENT
                         | SyntaxKind::PIPE
+                        | SyntaxKind::KW_OR
                 )
             })
     }

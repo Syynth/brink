@@ -117,6 +117,11 @@ pub enum SyntaxKind {
     KW_CONTINUE,
     /// `as` — import/use aliasing (`use a::b as c`).
     KW_AS,
+    /// `or` — B1 `or`-coalescing (`docs/stdlib-spec.md` §1.6a, issue
+    /// #1460): `x or default`. A distinct keyword from `||` (boolean
+    /// disjunction, still two adjacent `PIPE` tokens — see
+    /// `ast::InfixExpr::is_double_pipe`).
+    KW_OR,
     KW_TRUE,
     KW_FALSE,
     /// `END` — divert target sentinel (kept verbatim, charter §11).
@@ -606,6 +611,7 @@ impl SyntaxKind {
                 | Self::KW_BREAK
                 | Self::KW_CONTINUE
                 | Self::KW_AS
+                | Self::KW_OR
                 | Self::KW_TRUE
                 | Self::KW_FALSE
                 | Self::KW_END
@@ -707,6 +713,7 @@ impl SyntaxKind {
                 | Self::KW_BREAK
                 | Self::KW_CONTINUE
                 | Self::KW_AS
+                | Self::KW_OR
                 | Self::KW_TRUE
                 | Self::KW_FALSE
                 | Self::KW_END
@@ -827,6 +834,7 @@ mod tests {
             SyntaxKind::KW_BREAK,
             SyntaxKind::KW_CONTINUE,
             SyntaxKind::KW_AS,
+            SyntaxKind::KW_OR,
             SyntaxKind::KW_TRUE,
             SyntaxKind::KW_FALSE,
             SyntaxKind::KW_END,

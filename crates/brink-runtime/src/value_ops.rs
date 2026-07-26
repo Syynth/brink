@@ -1026,6 +1026,50 @@ fn list_ordinal_shift(lv: &ListValue, shift: i32, program: &Program) -> ListValu
     }
 }
 
+/// `or`-coalescing (`docs/stdlib-spec.md` §1.6a, issue #1460): `[lhs, rhs]`
+/// → per the ruled typing (`(Option[T],T)->T`,
+/// `(Option[T],Option[T])->Option[T]`).
+///
+/// `lhs` must be `Value::OptionVal`. Note this is a *runtime* check, not a
+/// statically-guaranteed invariant: native's strict-only wiring (B0.10)
+/// has not landed (`brink-analyzer::strict::native_strict_only_error`'s own
+/// doc), so a native compile with an un-overridden default `types` policy
+/// runs zero strict-mode checks — `coalesce_mismatch::check`'s `E066`
+/// (review finding on PR #1469/#1460) only fires when a caller has
+/// explicitly set `types = strict`. A non-Option `lhs` reaching here can
+/// therefore be an un-caught author mistake, not only malformed bytecode;
+/// it faults rather than guessing either way. `none` yields `rhs` unchanged
+/// (already the right shape by construction, whichever typing branch
+/// produced it). `some(v)` yields the unwrapped `v` when `rhs` is not
+/// itself an `OptionVal` (the collapse form), or the original `some(v)`
+/// unchanged when `rhs` *is* an `OptionVal` (the two-Option form,
+/// preserving optionality for chaining) — decided from `rhs`'s runtime
+/// shape, the same information the static typing rule used to pick the
+/// branch, so no separate opcode or codegen variant is needed for the two
+/// forms. This runtime shape-dispatch is also why a *mismatched* fallback
+/// type (`some(1) or "text"`) is never caught here: both operands are
+/// concrete values by the time this runs, and `some(1)`'s `rhs` not being
+/// an `OptionVal` is indistinguishable from the intended collapse form — it
+/// silently unwraps to `1`. That case has no runtime backstop at all;
+/// `coalesce_mismatch::check`'s compile-time `E066` is the only place it is
+/// ever caught.
+pub(crate) fn coalesce(lhs: Value, rhs: Value) -> Result<Value, RuntimeError> {
+    match lhs {
+        Value::OptionVal(Some(inner)) => {
+            if matches!(rhs, Value::OptionVal(_)) {
+                Ok(Value::OptionVal(Some(inner)))
+            } else {
+                Ok(Arc::try_unwrap(inner).unwrap_or_else(|shared| (*shared).clone()))
+            }
+        }
+        Value::OptionVal(None) => Ok(rhs),
+        other => Err(RuntimeError::TypeError(format!(
+            "or-coalescing requires an Option left-hand side, got {:?}",
+            other.value_type()
+        ))),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BinaryOp {
     Add,
@@ -1472,6 +1516,56 @@ mod tests {
             is_truthy(&Value::some(Value::Bool(true))),
             Err(RuntimeError::OptionTruthiness)
         );
+    }
+
+    /// B1 `or`-coalescing (`docs/stdlib-spec.md` §1.6a, issue #1460): the
+    /// collapse form — `Option[T] or T` — unwraps `some(v)` and passes
+    /// `none` through to the (already-`T`-typed) fallback unchanged.
+    #[test]
+    fn coalesce_collapse_form() {
+        assert_eq!(
+            coalesce(Value::some(Value::Int(1)), Value::Int(2)),
+            Ok(Value::Int(1))
+        );
+        assert_eq!(coalesce(Value::none(), Value::Int(2)), Ok(Value::Int(2)));
+    }
+
+    /// The two-Option form — `Option[T] or Option[T]` — keeps optionality:
+    /// `some(v)` stays wrapped (chaining relies on this), `none` passes the
+    /// right-hand `Option` through unchanged, `some` or `none` alike.
+    #[test]
+    fn coalesce_two_option_form_preserves_optionality() {
+        assert_eq!(
+            coalesce(Value::some(Value::Int(1)), Value::some(Value::Int(2))),
+            Ok(Value::some(Value::Int(1)))
+        );
+        assert_eq!(
+            coalesce(Value::none(), Value::some(Value::Int(2))),
+            Ok(Value::some(Value::Int(2)))
+        );
+        assert_eq!(coalesce(Value::none(), Value::none()), Ok(Value::none()));
+    }
+
+    /// Left-associative chaining (`a or b or default`) falls naturally out
+    /// of repeated application — no bespoke associativity machinery, same
+    /// as the typing rule (`infer::ty::coalesce`'s doc in brink-analyzer).
+    #[test]
+    fn coalesce_chains_left_associatively() {
+        let step1 = coalesce(Value::none(), Value::some(Value::Int(2))).unwrap();
+        assert_eq!(coalesce(step1, Value::Int(9)), Ok(Value::Int(2)));
+
+        let step1 = coalesce(Value::none(), Value::none()).unwrap();
+        assert_eq!(coalesce(step1, Value::Int(9)), Ok(Value::Int(9)));
+    }
+
+    /// A non-Option left-hand side is malformed bytecode (strict-mode
+    /// typing on the native surface should never emit this) — faults
+    /// rather than guessing, the same "your program is wrong" doctrine as
+    /// every other malformed-question fault in this module.
+    #[test]
+    fn coalesce_non_option_lhs_faults() {
+        let err = coalesce(Value::Int(1), Value::Int(2)).unwrap_err();
+        assert!(matches!(err, RuntimeError::TypeError(_)), "{err:?}");
     }
 
     #[test]

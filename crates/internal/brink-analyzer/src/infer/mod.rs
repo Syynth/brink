@@ -1163,6 +1163,42 @@ mod tests {
         assert_eq!(sig.return_ty, Ty::Unknown);
     }
 
+    /// [`build`]'s native-frontend twin — `InfixOp::Coalesce` (B1, issue
+    /// #1460) is produced only by `hir::lower_native`, so the coalescing
+    /// feedback test below (unlike every other test in this module) must
+    /// parse through the native frontend rather than `brink_syntax`.
+    fn build_native(src: &str) -> (HirFile, SymbolIndex, ResolutionMap) {
+        let parse = brink_syntax_native::parse(src);
+        assert!(
+            parse.errors().is_empty(),
+            "fixture must parse cleanly: {:?}",
+            parse.errors()
+        );
+        let tree = parse.tree();
+        let (hir, manifest, _diag) = brink_ir::hir::lower_native::lower(FileId(0), &tree);
+        let (index, _diag) = crate::symbol_index(&[(FileId(0), &manifest)]);
+        let (resolutions, _diag) =
+            crate::resolve(FileId(0), &manifest, &index, &crate::ImportScope::default());
+        (hir, (*index).clone(), (*resolutions).clone())
+    }
+
+    /// Review finding on PR #1469/#1460: the `InfixOp::Coalesce` arm's
+    /// one-directional `observe()` feedback (`infer::body::InferPass::
+    /// infer_infix`'s doc: "so if `lhs` is a bare param/temp path, `rhs`'s
+    /// already-inferred type tells us the shape to expect") was asserted in
+    /// the PR body but never pinned by a test. `x` is only ever used as
+    /// `x or 0` — `rhs` is `int`, not itself `Option`, so the collapse-form
+    /// branch feeds `Option[int]` back onto `x`, rather than `x` leaking
+    /// `Unknown` (T1c's un-narrowed-Unknown posture every other bare-unused
+    /// param hits — see `unused_param_is_unknown_and_legal` above).
+    #[test]
+    fn coalesce_lhs_param_narrows_to_option_of_the_rhs_type() {
+        let (hir, index, res) = build_native("fn f(x) {\n  return x or 0;\n}\n");
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let sig = sig_of(&result, &index, "f");
+        assert_eq!(sig.params, vec![Ty::Option(Box::new(Ty::Int))]);
+    }
+
     #[test]
     fn call_site_propagates_callee_param_type_to_caller_local() {
         let (hir, index, res) = build(

@@ -324,7 +324,89 @@ fn infix_pipe_pipe_paren_rhs_does_not_double_wrap() {
     assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::PAREN_EXPR), 1);
 }
 
-// ── E. Precedence and associativity (Or < And < Eq < Cmp < Add < Mul) ──
+// ── E. Precedence and associativity (Coalesce < Or < And < Eq < Cmp < Add < Mul) ──
+
+/// `a or b == c` → `or` outer, `==` inner RHS (B1, `docs/stdlib-spec.md`
+/// §1.6a, issue #1460: `Prec::Coalesce` sits looser than every other
+/// operator, so an equality comparison on the fallback side stays nested
+/// under `or`, never the other way around — `a or (b == c)`).
+#[test]
+fn prec_coalesce_over_eq() {
+    let p = assert_lossless("var x = a or b == c\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let outer: ast::InfixExpr = find_child(&p.syntax())
+        .and_then(|vd: ast::VarDecl| vd.value())
+        .and_then(ast::InfixExpr::cast)
+        .expect("outer INFIX_EXPR");
+    assert_eq!(outer.op_token().map(|t| t.kind()), Some(SyntaxKind::KW_OR));
+    assert_eq!(
+        outer.lhs().map(|n| n.kind()),
+        Some(SyntaxKind::PATH_EXPR),
+        "lhs should be the bare `a`"
+    );
+    let rhs = outer.rhs().expect("rhs");
+    assert_eq!(
+        rhs.kind(),
+        SyntaxKind::INFIX_EXPR,
+        "`b == c` should nest under `or` as its RHS — see the section doc above"
+    );
+    let inner = ast::InfixExpr::cast(rhs).expect("inner INFIX_EXPR");
+    assert_eq!(inner.op_token().map(|t| t.kind()), Some(SyntaxKind::EQ_EQ));
+}
+
+/// `a || b or c` → `or` outer, `||` inner LHS (`or` is looser than `||`
+/// too, not just the operators between them — the whole `a || b` disjunction
+/// becomes the coalescing left-hand side).
+#[test]
+fn prec_coalesce_over_double_pipe() {
+    let p = assert_lossless("var x = a || b or c\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let outer: ast::InfixExpr = find_child(&p.syntax())
+        .and_then(|vd: ast::VarDecl| vd.value())
+        .and_then(ast::InfixExpr::cast)
+        .expect("outer INFIX_EXPR");
+    assert_eq!(outer.op_token().map(|t| t.kind()), Some(SyntaxKind::KW_OR));
+    let lhs = outer.lhs().expect("lhs");
+    assert_eq!(
+        lhs.kind(),
+        SyntaxKind::INFIX_EXPR,
+        "`a || b` should nest under `or` as its LHS — see the section doc above"
+    );
+    let inner = ast::InfixExpr::cast(lhs).expect("inner INFIX_EXPR");
+    assert!(inner.is_double_pipe());
+    assert_eq!(
+        outer.rhs().map(|n| n.kind()),
+        Some(SyntaxKind::PATH_EXPR),
+        "rhs should be the bare `c`"
+    );
+}
+
+/// `a or b or c` → left-nested (`(a or b) or c`), same left-associativity
+/// fix section F documents for every other symmetric-precedence operator —
+/// `or` shares it, and it is also the ruled coalescing associativity
+/// (`infer::ty::coalesce`'s doc: left-associative chaining).
+#[test]
+fn prec_coalesce_chain_is_left_associative() {
+    let p = assert_lossless("var x = a or b or c\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let outer: ast::InfixExpr = find_child(&p.syntax())
+        .and_then(|vd: ast::VarDecl| vd.value())
+        .and_then(ast::InfixExpr::cast)
+        .expect("outer INFIX_EXPR");
+    assert_eq!(outer.op_token().map(|t| t.kind()), Some(SyntaxKind::KW_OR));
+    let lhs = outer.lhs().expect("lhs");
+    assert_eq!(
+        lhs.kind(),
+        SyntaxKind::INFIX_EXPR,
+        "`a or b or c` should parse left-associative as `(a or b) or c` \
+         (INFIX_EXPR on the LHS)"
+    );
+    assert_eq!(
+        outer.rhs().map(|n| n.kind()),
+        Some(SyntaxKind::PATH_EXPR),
+        "rhs should be the bare `c` under left-associative parsing"
+    );
+}
 
 /// `1 + 2 * 3` → `+` outer, `*` inner right (mul binds tighter than add).
 #[test]
@@ -463,7 +545,7 @@ fn prefix_binds_tighter_than_infix() {
 // that recursive call — it got pulled into the child instead of being
 // left for the parent's own loop. Net effect: every symmetric-precedence
 // operator chain in this grammar (`-`, `/`, `%`, `<`, `>`, `<=`, `>=`,
-// `==`, `!=`, `&&`, `||`) parsed RIGHT-associative, not left-associative.
+// `==`, `!=`, `&&`, `||`, `or`) parsed RIGHT-associative, not left-associative.
 // For `+`/`*` this was unobservable (they're mathematically associative),
 // but for `-` and `/` it silently changed the computed VALUE: `10 - 3 - 2`
 // grouped as `10 - (3 - 2)` (= 9 if evaluated naively), not
@@ -1252,6 +1334,7 @@ mod proptest_roundtrip {
             Just("!="),
             Just("&&"),
             Just("||"),
+            Just("or"),
         ]
     }
 
