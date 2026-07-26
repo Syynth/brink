@@ -232,6 +232,37 @@ fn compile_malformed_brink_toml_names_the_file_in_the_error() {
     fs::remove_dir_all(&dir).ok();
 }
 
+/// #1384: malformed TOML *syntax* (as opposed to a recognized key holding an
+/// out-of-range value, the case above) carries a byte span from the `toml`
+/// crate — its `Display` renders it as "line X, column Y" plus a
+/// caret-annotated snippet once `ConfigError::Toml` threads `path` through
+/// (`parse_str_at`). Black-box proof this reaches the CLI end to end, not
+/// just `brink-project-config`'s own unit tests around `ConfigError::span`.
+#[test]
+fn compile_malformed_toml_syntax_names_its_line_in_the_error() {
+    let dir = project_dir("compile-config-malformed-syntax");
+    let story = write_story(&dir, "Hello.\n-> END\n");
+    // Line 2 is the malformed one — line 1 is well-formed.
+    write_config(&dir, "[project]\ndialect = \"brink\" oops\n");
+
+    let out = brink().arg("compile").arg(&story).output().unwrap();
+    assert!(
+        !out.status.success(),
+        "malformed TOML syntax must fail brink compile"
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("brink.toml"),
+        "compile error must name brink.toml, got stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("line 2"),
+        "compile error must name the malformed line, got stdout: {stdout}"
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
 // ── brink compile: --deny/--warn/--allow / -D warnings (#1373) ────────
 
 /// A logic line with no effect (`~` alone) — `DiagnosticCode::E014`,
