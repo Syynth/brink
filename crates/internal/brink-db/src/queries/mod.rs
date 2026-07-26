@@ -379,7 +379,7 @@ pub(crate) fn lowered_query(db: &dyn salsa::Database, file: SourceFile) -> Lower
 /// It is a different axis from `brink_analyzer::Dialect` (an ink-extension
 /// gate) — do not conflate the two.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Language {
+pub(crate) enum Language {
     Ink,
     Native,
 }
@@ -389,7 +389,7 @@ enum Language {
 /// change, no `HashMap` iteration. Uses `Path::extension` to match the
 /// codebase's existing extension convention (e.g. `brink-lsp`'s `ext ==
 /// "ink"`).
-fn file_language(path: &str) -> Language {
+pub(crate) fn file_language(path: &str) -> Language {
     if std::path::Path::new(path)
         .extension()
         .is_some_and(|ext| ext == "brink")

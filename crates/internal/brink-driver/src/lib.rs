@@ -146,7 +146,9 @@ impl Driver {
 
     // ── Project graph ────────────────────────────────────────────────
 
-    /// Compute independent projects from include relationships.
+    /// Compute independent projects: ink files by `INCLUDE` reachability,
+    /// native `.brink` files as one project (issue #1562). See
+    /// [`brink_db::ProjectDb::compute_projects`].
     pub fn compute_projects(&self) -> Vec<(FileId, Vec<FileId>)> {
         self.db.compute_projects()
     }

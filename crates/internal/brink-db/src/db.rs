@@ -272,12 +272,72 @@ impl ProjectDb {
         self.include_graph().find_cycle()
     }
 
-    /// Compute independent projects from include relationships.
+    /// Compute independent projects — the unit every editor surface scopes
+    /// itself to (the LSP analyzes one project at a time, and navigation only
+    /// ever sees the files of the project the cursor's file belongs to).
     ///
-    /// Returns `(root, members)` pairs sorted by root `FileId`.
+    /// Returns `(root, members)` pairs sorted by root `FileId`; each
+    /// project's members are sorted by `FileId`.
+    ///
+    /// One rule per frontend:
+    ///
+    /// - **Ink** groups by `INCLUDE` reachability — a root file plus its
+    ///   transitive `INCLUDE` closure (see
+    ///   [`IncludeGraph::compute_projects`](crate::include_graph::IncludeGraph::compute_projects)).
+    ///   Unchanged.
+    /// - **Native `.brink`** files are *one* project, all of them. Issue
+    ///   #1562: `.brink` has no `INCLUDE` (the module system replaced it), so
+    ///   running them through the ink rule made every native file its own
+    ///   single-file project and broke go-to-definition, find-references,
+    ///   completion, and diagnostics across every real native workspace. The
+    ///   rule here is the one
+    ///   [`compilation_closure_files`](crate::queries::compilation_closure_files)
+    ///   already applies to codegen (decision-log *"Native multi-file
+    ///   linking"*, 2026-07-23): the discovered module set **is** the
+    ///   compilation unit, so it is also the editor's scope. No second
+    ///   discovery mechanism is involved — this partitions the files the db
+    ///   already holds.
+    ///
+    /// The two sets are disjoint, so an `INCLUDE` in an ink file that names a
+    /// `.brink` target (not expressible in native, and meaningless as ink)
+    /// contributes no edge: the native file is in the native project only.
     pub fn compute_projects(&self) -> Vec<(FileId, Vec<FileId>)> {
-        let all: Vec<_> = self.file_ids().collect();
-        self.include_graph().compute_projects(&all)
+        let (native, ink): (Vec<FileId>, Vec<FileId>) =
+            self.file_ids().partition(|&id| self.is_native(id));
+
+        let mut projects = self.include_graph().compute_projects(&ink);
+        if let Some(root) = self.native_project_root(&native) {
+            projects.push((root, native));
+        }
+        projects.sort_by_key(|(root, _)| root.0);
+        projects
+    }
+
+    /// Whether `id` is a native (`.brink`) module rather than an ink file.
+    fn is_native(&self, id: FileId) -> bool {
+        self.file_path(id).is_some_and(|path| {
+            crate::queries::file_language(path) == crate::queries::Language::Native
+        })
+    }
+
+    /// The root of the single native project: the file whose **path** sorts
+    /// first (`FileId` breaking a tie that paths cannot actually produce).
+    /// `None` when the db holds no native file.
+    ///
+    /// Keyed on the path rather than on the `FileId` — which is how
+    /// [`compilation_closure_files`](crate::queries::compilation_closure_files)
+    /// orders the same file set — because a project root is *identity*, not
+    /// just order: it keys the published per-project analysis and names the
+    /// project in multi-project diagnostics. `FileId`s are minted in
+    /// registration order, which for a long-lived LSP session is `didOpen`
+    /// order and varies run to run; the path does not.
+    fn native_project_root(&self, native: &[FileId]) -> Option<FileId> {
+        native.iter().copied().min_by(|&a, &b| {
+            self.file_path(a)
+                .unwrap_or_default()
+                .cmp(self.file_path(b).unwrap_or_default())
+                .then(a.0.cmp(&b.0))
+        })
     }
 
     /// All files reachable from `entry` via the forward `INCLUDE` graph,
