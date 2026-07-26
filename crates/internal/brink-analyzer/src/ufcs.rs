@@ -278,9 +278,10 @@ pub type UfcsTable = SideTable<UfcsVerdict>;
 /// on `brink-ir`, never the reverse), so it cannot provide this itself —
 /// see `brink_ir::lir::UfcsVerdict`'s own doc. Every LIR-lowering caller
 /// shares this: `brink-db`'s `ufcs_resolution_query` (the production path)
-/// and `brink-test-harness`'s hand-assembled native pipeline
-/// (`corpus::compile_and_explore_from_brink_native`, which has no salsa
-/// layer to memoize the table in).
+/// and [`assemble_analyzer_tables`](crate::assemble_analyzer_tables) — the
+/// salsa-free path used by `brink-test-harness`
+/// (`corpus::compile_and_explore_from_brink_native`) and any other caller
+/// with no salsa layer of its own to memoize the table in.
 #[must_use]
 pub fn to_lir_lookup(table: &UfcsTable) -> brink_ir::lir::UfcsLookup {
     let entries = table

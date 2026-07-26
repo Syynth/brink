@@ -48,8 +48,9 @@ impl ResolutionLookup {
 /// `brink_analyzer::ufcs_lir_lookup` is the one translation point (it can
 /// see both crates, since `brink-analyzer` already depends on `brink-ir`):
 /// `brink-db`'s `ufcs_resolution_query` (the production path) and
-/// `brink-test-harness`'s hand-assembled native pipeline both call it to
-/// build a [`UfcsLookup`] from `brink_analyzer::UfcsTable`.
+/// `brink_analyzer::assemble_analyzer_tables` (the salsa-free path used by
+/// `brink-test-harness` and any other caller with no salsa layer of its own)
+/// both call it to build a [`UfcsLookup`] from `brink_analyzer::UfcsTable`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UfcsVerdict {
     /// The call's final path segment names a function-typed field on the
@@ -118,6 +119,17 @@ impl UfcsLookup {
         self.map.get(&(file, range))
     }
 
+    /// Whether this table carries any recorded verdict at all — a project
+    /// with no UFCS-shaped call anywhere stays at the empty table
+    /// ([`Self::new`]'s doc). Exists so a caller assembling this table can
+    /// assert it actually got populated instead of silently staying empty
+    /// (issue #1528's coverage test) without needing a specific `(file,
+    /// range)` key to probe with.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
     /// Every call site whose verdict is a [`UfcsVerdict::FreeFnDesugar`] or
     /// [`UfcsVerdict::FreeFnAutoRef`] targeting `target` — issue #1539: the
     /// project-wide enumeration `find_references`/`rename` need to also
@@ -168,8 +180,10 @@ impl UfcsLookup {
 /// the analyzer's own `CoalesceShape` directly.
 /// `brink_analyzer::coalesce_lir_lookup` is the one translation point:
 /// `brink-db`'s `coalesce_types_query` (the production path) and
-/// `brink-test-harness`'s hand-assembled native pipeline both call it to
-/// build a [`CoalesceLookup`] from `brink_analyzer::CoalesceTable`.
+/// `brink_analyzer::assemble_analyzer_tables` (the salsa-free path used by
+/// `brink-test-harness` and any other caller with no salsa layer of its own)
+/// both call it to build a [`CoalesceLookup`] from
+/// `brink_analyzer::CoalesceTable`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CoalesceShape {
     /// `Option[T] or Option[U]` — optionality survives the step, so codegen
@@ -240,6 +254,14 @@ impl CoalesceLookup {
     pub fn get(&self, file: FileId, range: TextRange) -> Option<&[CoalesceShape]> {
         self.map.get(&(file, range)).map(Vec::as_slice)
     }
+
+    /// Whether this table carries any recorded chain at all —
+    /// [`UfcsLookup::is_empty`]'s sibling, same rationale (issue #1528's
+    /// coverage test).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
 }
 
 // ─── Analyzer side-table bundle (issue #1527) ──────────────────────
@@ -259,6 +281,14 @@ impl CoalesceLookup {
 /// to avoid mid-PR churn — this bundle is that fix. A future table (the
 /// v6/Step work) now means adding one field here, not touching every
 /// signature between the entry points and `LowerCtx` again.
+///
+/// A future table also means adding one field to
+/// `brink_analyzer::AnalyzerTablesOwned` and wiring it into
+/// `brink_analyzer::assemble_analyzer_tables` (issue #1528) — the one place
+/// a caller with no salsa layer of its own (`brink-test-harness`'s
+/// `corpus.rs`) assembles the owned tables this struct then borrows from;
+/// forgetting that step is what let the harness silently lower with an
+/// empty table for a table the production `brink-db` path already had.
 ///
 /// `Copy` — it's two references, cheap to pass by value everywhere instead
 /// of threading yet another `&`.

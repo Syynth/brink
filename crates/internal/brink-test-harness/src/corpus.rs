@@ -280,51 +280,25 @@ pub fn compile_and_explore_from_brink_native(
 
     let files_for_lir: Vec<(brink_ir::FileId, &brink_ir::HirFile)> = vec![(file_id, &hir)];
 
-    // B3a UFCS (issue #1506): this hand-assembled pipeline has no salsa
-    // layer to memoize `brink-db`'s `ufcs_resolution_query` in, so it runs
-    // the same pass by hand — lazy on the same `project_has_ufcs_call` gate
-    // — and shares the one translation point
-    // (`brink_analyzer::ufcs_lir_lookup`) with the production path. Without
-    // this, every UFCS call site here would fall back to LIR lowering's
-    // defensive `E144` refusal (no verdict recorded), even though analysis
-    // above already proved the site resolves cleanly.
-    let ufcs_table = if brink_analyzer::project_has_ufcs_call(&hir) {
-        let inline_docs = brink_analyzer::project_inline_docs(&[(file_id, &manifest)]);
-        let inference = brink_analyzer::infer_project(
-            &files_for_lir,
-            &index,
-            &resolutions,
-            analysis_opts.host_manifest.as_ref(),
-            &inline_docs,
-        );
-        let (table, _ufcs_diags) =
-            brink_analyzer::ufcs_resolution(&files_for_lir, &index, &resolutions, &inference);
-        brink_analyzer::ufcs_lir_lookup(&table)
-    } else {
-        brink_ir::lir::UfcsLookup::new()
-    };
-
-    // B1 `or`-coalescing (issue #1471/#1492): same story as the UFCS table
-    // above — no salsa layer here, so `brink-db`'s `coalesce_types_query`
-    // runs by hand, lazy on the same `project_has_coalesce` gate, through
-    // the one shared translation point. Without it every `or` step would
-    // fall back to `CoalesceShape::RuntimeCheck` and a two-Option chain
-    // would lose its optionality mid-chain.
-    let coalesce_table = if brink_analyzer::project_has_coalesce(&hir) {
-        let inline_docs = brink_analyzer::project_inline_docs(&[(file_id, &manifest)]);
-        let inference = brink_analyzer::infer_project(
-            &files_for_lir,
-            &index,
-            &resolutions,
-            analysis_opts.host_manifest.as_ref(),
-            &inline_docs,
-        );
-        let (table, _e066_diags) =
-            brink_analyzer::coalesce_types(&files_for_lir, &index, &inference, &resolutions);
-        brink_analyzer::coalesce_lir_lookup(&table)
-    } else {
-        brink_ir::lir::CoalesceLookup::new()
-    };
+    // Every analyzer side-table LIR lowering needs (B3a UFCS, issue #1506;
+    // B1 `or`-coalescing, issue #1471/#1492; and whatever future table
+    // joins them), assembled through the one path a caller with no salsa
+    // layer of its own must use — `brink_analyzer::assemble_analyzer_tables`
+    // (issue #1528). Before this call, this pipeline hand-rolled the same
+    // gate-then-translate pattern per table, independently re-running
+    // `infer_project` for each one; a future table added to the analyzer
+    // side but not remembered here would have silently lowered with an
+    // empty table, passing tests with the wrong coverage. See that
+    // function's own doc for the full rationale — extending it, not this
+    // call site, is where a future table belongs.
+    let inline_docs = brink_analyzer::project_inline_docs(&[(file_id, &manifest)]);
+    let analyzer_tables = brink_analyzer::assemble_analyzer_tables(
+        &files_for_lir,
+        &index,
+        &resolutions,
+        analysis_opts.host_manifest.as_ref(),
+        &inline_docs,
+    );
 
     let (program, lir_diags) = brink_ir::lir::lower_to_program_with_type_mode(
         &files_for_lir,
@@ -332,10 +306,7 @@ pub fn compile_and_explore_from_brink_native(
         &resolutions,
         &std::collections::HashMap::new(),
         brink_ir::lir::TypeMode::Gradual,
-        brink_ir::lir::AnalyzerTables {
-            ufcs: &ufcs_table,
-            coalesce: &coalesce_table,
-        },
+        analyzer_tables.as_tables(),
     );
     if !lir_diags.is_empty() {
         return Err(format!("LIR lowering diagnostics: {lir_diags:?}"));

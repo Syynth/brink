@@ -1002,6 +1002,120 @@ pub fn coalesce_types(
     coalesce::resolve(files, index, inference, resolutions)
 }
 
+/// Owned form of [`brink_ir::lir::AnalyzerTables`] (issue #1527) — every
+/// analyzer side-table LIR lowering reads, held by value instead of by the
+/// borrowed references `AnalyzerTables` itself carries. A caller builds one
+/// of these (via [`assemble_analyzer_tables`]) and then borrows its fields
+/// into an `AnalyzerTables` at the lowering call site, exactly as
+/// `brink-db`'s two salsa queries already borrow their own owned
+/// `UfcsLookup`/`CoalesceLookup` locals.
+#[derive(Debug, Clone, Default)]
+pub struct AnalyzerTablesOwned {
+    /// B3a UFCS (issue #1506) — see [`brink_ir::lir::UfcsLookup`]'s own doc.
+    pub ufcs: brink_ir::lir::UfcsLookup,
+    /// B1 `or`-coalescing (issue #1492) — see [`brink_ir::lir::CoalesceLookup`]'s own doc.
+    pub coalesce: brink_ir::lir::CoalesceLookup,
+}
+
+impl AnalyzerTablesOwned {
+    /// Borrow this owned bundle into the [`brink_ir::lir::AnalyzerTables`]
+    /// lowering actually takes — the one place that borrow is assembled
+    /// (issue #1528's review finding). Field-by-field construction at each
+    /// call site meant a third `AnalyzerTables` field would compile-error at
+    /// the call site instead of here, and the cheapest silencer there is a
+    /// throwaway default value rather than actually wiring the new table —
+    /// exactly the silent-empty-table failure this whole function exists to
+    /// prevent. Keeping the borrow here means a new field's compile error
+    /// lands next to this assembly instead.
+    #[must_use]
+    pub fn as_tables(&self) -> brink_ir::lir::AnalyzerTables<'_> {
+        brink_ir::lir::AnalyzerTables {
+            ufcs: &self.ufcs,
+            coalesce: &self.coalesce,
+        }
+    }
+}
+
+/// Assemble every analyzer side-table LIR lowering needs, from scratch, in
+/// one whole-project pass — **the one path a caller with no salsa layer of
+/// its own must use** (issue #1528).
+///
+/// Before this function existed, `brink-test-harness`'s `corpus.rs` hand-
+/// rolled this assembly itself: one `if project_has_*` block per table,
+/// each independently re-running [`infer_project`] — a *third* parallel
+/// implementation of the same gate-then-translate pattern `brink-db`'s two
+/// salsa queries (`ufcs_resolution_query`, `coalesce_types_query`) already
+/// each implement for their own table. That meant a future side-table (the
+/// v6/Step work) had to be *remembered* in three places at once — miss the
+/// harness's copy and lowering there silently got an empty table for it: a
+/// compiling, green-tested, wrong-coverage bug, the same silent-drop class
+/// this repo always treats as a bug. Extending *this* function is the fix
+/// for every salsa-free caller: it is the one place such a caller's
+/// gate+translate needs adding, mirroring how
+/// [`brink_ir::lir::AnalyzerTables`] (issue #1527) is the one place a
+/// future table needs adding to lowering's own signature. `brink-db`'s two
+/// queries stay separate `#[salsa::tracked]` functions on purpose — each
+/// needs its own independent memoization/backdating cutoff, which a single
+/// bundled query would collapse — but both continue to call the exact same
+/// translation primitives this function composes
+/// ([`ufcs_resolution`]/[`coalesce_types`]/[`ufcs_lir_lookup`]/
+/// [`coalesce_lir_lookup`]), so the two paths can't drift on *how* a table
+/// is computed, only on *when* (memoized vs. every call).
+///
+/// Lazy exactly like each table already was individually: [`infer_project`]
+/// runs at most once — shared across every table that needs it, unlike the
+/// old per-table harness blocks which each ran their own copy — and only if
+/// some table's structural gate ([`project_has_ufcs_call`] or
+/// [`project_has_coalesce`]) found something to resolve. A project using
+/// neither feature (every ink-dialect project, by construction — both
+/// features are native-frontend-only) pays nothing and returns the
+/// all-empty default.
+#[must_use]
+pub fn assemble_analyzer_tables(
+    files: &[(FileId, &HirFile)],
+    index: &SymbolIndex,
+    resolutions: &ResolutionMap,
+    host_manifest: Option<&HostManifest>,
+    inline_docs: &BTreeMap<(SymbolKind, String), DocBlock>,
+) -> AnalyzerTablesOwned {
+    let needs_ufcs = files
+        .iter()
+        .any(|&(_, hir)| ufcs::project_has_ufcs_call(hir));
+    let needs_coalesce = files
+        .iter()
+        .any(|&(_, hir)| coalesce::project_has_coalesce(hir));
+
+    let inference = if needs_ufcs || needs_coalesce {
+        Some(infer::infer_project(
+            files,
+            index,
+            resolutions,
+            host_manifest,
+            inline_docs,
+        ))
+    } else {
+        None
+    };
+
+    let ufcs = match (&inference, needs_ufcs) {
+        (Some(inference), true) => {
+            let (table, _ufcs_diagnostics) = ufcs_resolution(files, index, resolutions, inference);
+            ufcs_lir_lookup(&table)
+        }
+        _ => brink_ir::lir::UfcsLookup::new(),
+    };
+
+    let coalesce = match (&inference, needs_coalesce) {
+        (Some(inference), true) => {
+            let (table, _e066_diagnostics) = coalesce_types(files, index, inference, resolutions);
+            coalesce_lir_lookup(&table)
+        }
+        _ => brink_ir::lir::CoalesceLookup::new(),
+    };
+
+    AnalyzerTablesOwned { ufcs, coalesce }
+}
+
 /// Cheap structural scan: does any knot/stitch in `hir` carry a
 /// `#@effects(…)` assertion? The laziness gate for
 /// [`whole_project_diagnostics`]'s exceedance pass — avoids running
