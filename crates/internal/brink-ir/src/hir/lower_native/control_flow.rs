@@ -83,8 +83,8 @@ pub(super) fn lower_as_binding(
     diags: &mut Vec<Diagnostic>,
 ) -> Option<Name> {
     let binding = binding?;
-    if let crate::Expr::Infix(_, op, _) = condition
-        && matches!(op, crate::InfixOp::And | crate::InfixOp::Or)
+    if let crate::Expr::Infix(ie) = condition
+        && matches!(ie.op, crate::InfixOp::And | crate::InfixOp::Or)
     {
         diags.push(diag(
             file_id,

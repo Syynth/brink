@@ -367,9 +367,9 @@ fn collect_expr(expr: &Expr, out: &mut Vec<ComparatorSite>) {
             }
         }
         Expr::Prefix(_, inner) | Expr::Postfix(inner, _) => collect_expr(inner, out),
-        Expr::Infix(l, _, r) => {
-            collect_expr(l, out);
-            collect_expr(r, out);
+        Expr::Infix(ie) => {
+            collect_expr(&ie.lhs, out);
+            collect_expr(&ie.rhs, out);
         }
         Expr::Index(idx) => {
             collect_expr(&idx.base, out);

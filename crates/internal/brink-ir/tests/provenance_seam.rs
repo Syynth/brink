@@ -562,9 +562,10 @@ fn garble_expr(e: &mut hir::Expr) {
             }
         }
         hir::Expr::Prefix(_, inner) => garble_expr(inner),
-        hir::Expr::Infix(lhs, _, rhs) => {
-            garble_expr(lhs);
-            garble_expr(rhs);
+        hir::Expr::Infix(ie) => {
+            garble(&mut ie.ptr);
+            garble_expr(&mut ie.lhs);
+            garble_expr(&mut ie.rhs);
         }
         hir::Expr::Postfix(inner, _) => garble_expr(inner),
         hir::Expr::Call(_, args) => {

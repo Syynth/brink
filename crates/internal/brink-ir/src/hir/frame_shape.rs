@@ -459,9 +459,9 @@ fn collect_reads(expr: &Expr, sink: &mut impl FnMut(&String)) {
             }
         }
         Expr::Prefix(_, inner) | Expr::Postfix(inner, _) => collect_reads(inner, sink),
-        Expr::Infix(lhs, _, rhs) => {
-            collect_reads(lhs, sink);
-            collect_reads(rhs, sink);
+        Expr::Infix(ie) => {
+            collect_reads(&ie.lhs, sink);
+            collect_reads(&ie.rhs, sink);
         }
         Expr::Call(_path, args) => {
             for arg in args {

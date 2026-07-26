@@ -84,7 +84,7 @@ pub fn expr_contains_call(expr: &Expr) -> bool {
     match expr {
         Expr::Call(..) => true,
         Expr::Prefix(_, inner) | Expr::Postfix(inner, _) => expr_contains_call(inner),
-        Expr::Infix(lhs, _, rhs) => expr_contains_call(lhs) || expr_contains_call(rhs),
+        Expr::Infix(ie) => expr_contains_call(&ie.lhs) || expr_contains_call(&ie.rhs),
         Expr::String(s) => s
             .parts
             .iter()

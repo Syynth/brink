@@ -1445,11 +1445,16 @@ impl LanguageServer for Backend {
         let idx = LineIndex::new(&snap.source);
         let offset = convert::to_text_size(params.text_document_position_params.position, &idx);
 
+        // B3a UFCS resolution (issue #1507): a brief, transient lock —
+        // `goto_definition` reads the memoized `db.ufcs_verdict` to jump to
+        // a UFCS-desugared free function instead of the receiver.
+        let db = lock_db(&self.db);
         let Some(loc) =
-            brink_ide::navigation::goto_definition(&snap.analysis, snap.file_id, offset)
+            brink_ide::navigation::goto_definition(&db, &snap.analysis, snap.file_id, offset)
         else {
             return Ok(None);
         };
+        drop(db);
 
         // Find the target file in our snapshot
         let Some((_, target_path, target_source)) = snap

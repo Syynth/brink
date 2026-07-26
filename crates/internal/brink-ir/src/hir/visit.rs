@@ -338,9 +338,9 @@ fn walk_expr(expr: &Expr, v: &mut impl HirVisitor) {
             }
         }
         Expr::Prefix(_, inner) | Expr::Postfix(inner, _) => walk_expr(inner, v),
-        Expr::Infix(lhs, _, rhs) => {
-            walk_expr(lhs, v);
-            walk_expr(rhs, v);
+        Expr::Infix(ie) => {
+            walk_expr(&ie.lhs, v);
+            walk_expr(&ie.rhs, v);
         }
         Expr::String(s) => {
             for part in &s.parts {

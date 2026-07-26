@@ -256,10 +256,10 @@ pub fn eval_const_expr(
                 _ => lir::ConstValue::Null,
             }
         }
-        hir::Expr::Infix(lhs, op, rhs) => {
-            let l = eval_const_expr(lhs, index, resolutions, file, const_values, diagnostics);
-            let r = eval_const_expr(rhs, index, resolutions, file, const_values, diagnostics);
-            eval_const_infix(&l, *op, &r)
+        hir::Expr::Infix(ie) => {
+            let l = eval_const_expr(&ie.lhs, index, resolutions, file, const_values, diagnostics);
+            let r = eval_const_expr(&ie.rhs, index, resolutions, file, const_values, diagnostics);
+            eval_const_infix(&l, ie.op, &r)
         }
         hir::Expr::Path(path) => {
             if let Some(id) = resolutions.resolve(file, path.range) {
@@ -574,9 +574,9 @@ fn is_const_foldable_kind(
             Some(info) if info.kind == SymbolKind::Variable
         ),
         hir::Expr::Prefix(_, inner) => is_const_foldable_kind(inner, index, resolutions, file),
-        hir::Expr::Infix(lhs, _, rhs) => {
-            is_const_foldable_kind(lhs, index, resolutions, file)
-                && is_const_foldable_kind(rhs, index, resolutions, file)
+        hir::Expr::Infix(ie) => {
+            is_const_foldable_kind(&ie.lhs, index, resolutions, file)
+                && is_const_foldable_kind(&ie.rhs, index, resolutions, file)
         }
         hir::Expr::Postfix(..)
         | hir::Expr::Call(..)
@@ -657,9 +657,9 @@ fn is_const_foldable_decl_default(
         hir::Expr::Prefix(_, inner) => {
             is_const_foldable_decl_default(inner, index, resolutions, file)
         }
-        hir::Expr::Infix(lhs, _, rhs) => {
-            is_const_foldable_decl_default(lhs, index, resolutions, file)
-                && is_const_foldable_decl_default(rhs, index, resolutions, file)
+        hir::Expr::Infix(ie) => {
+            is_const_foldable_decl_default(&ie.lhs, index, resolutions, file)
+                && is_const_foldable_decl_default(&ie.rhs, index, resolutions, file)
         }
         hir::Expr::Postfix(..)
         | hir::Expr::Call(..)

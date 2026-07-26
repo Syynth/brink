@@ -510,9 +510,10 @@ impl Collector {
                 }
             }
             Expr::Prefix(_, inner) | Expr::Postfix(inner, _) => self.walk_expr(inner),
-            Expr::Infix(l, _, r) => {
-                self.walk_expr(l);
-                self.walk_expr(r);
+            Expr::Infix(ie) => {
+                self.check_range(ie.ptr.text_range());
+                self.walk_expr(&ie.lhs);
+                self.walk_expr(&ie.rhs);
             }
             Expr::Call(path, args) => {
                 self.push_ref(path.range);

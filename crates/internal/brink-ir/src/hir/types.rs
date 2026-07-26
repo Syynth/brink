@@ -855,8 +855,9 @@ pub enum Expr {
 
     /// Prefix operation (`-x`, `not x`).
     Prefix(PrefixOp, Box<Expr>),
-    /// Infix operation (`x + y`, `x == y`, etc.).
-    Infix(Box<Expr>, InfixOp, Box<Expr>),
+    /// Infix operation (`x + y`, `x == y`, etc.). Carries its own
+    /// [`Provenance`] (issue #1517) — see [`InfixExpr`].
+    Infix(InfixExpr),
     /// Postfix operation (`x++`, `x--`).
     Postfix(Box<Expr>, PostfixOp),
 
@@ -963,6 +964,42 @@ pub struct ArrayLiteral {
 pub struct MapLiteral {
     pub ptr: Provenance,
     pub entries: Vec<(Expr, Expr)>,
+}
+
+/// `lhs op rhs` — one infix (binary) operation.
+///
+/// `ptr` is the whole operation's own source range, and it is what makes an
+/// infix node **separately addressable** (issue #1517): before it existed,
+/// a side table could only identify an infix node by the union of the
+/// ranges reachable in its subtree, so a left-associative chain and its own
+/// left spine collided whenever the trailing operand carried no range of
+/// its own (`a or b or 99`). Consumers that record a per-node verdict
+/// (`brink_analyzer::coalesce`, `lir::lower::expr::lower_coalesce_chain`)
+/// key on this range, and a chain root's range strictly contains its left
+/// spine's, so the two can never be confused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InfixExpr {
+    /// The whole `lhs op rhs` operation's provenance.
+    pub ptr: Provenance,
+    /// The left-hand operand.
+    pub lhs: Box<Expr>,
+    /// The operator.
+    pub op: InfixOp,
+    /// The right-hand operand.
+    pub rhs: Box<Expr>,
+}
+
+impl InfixExpr {
+    /// Build an infix node from its parts, boxing the operands.
+    #[must_use]
+    pub fn new(ptr: Provenance, lhs: Expr, op: InfixOp, rhs: Expr) -> Self {
+        Self {
+            ptr,
+            lhs: Box::new(lhs),
+            op,
+            rhs: Box::new(rhs),
+        }
+    }
 }
 
 /// `base[index]`, chainable (`grid[y][x]` lowers as nested `IndexExpr`).
@@ -1108,12 +1145,12 @@ pub fn display_expr(expr: &Expr) -> String {
         Expr::Prefix(op, inner) => {
             format!("{}{}", op.as_str(), display_expr(inner))
         }
-        Expr::Infix(lhs, op, rhs) => {
+        Expr::Infix(ie) => {
             format!(
                 "{} {} {}",
-                display_expr(lhs),
-                op.as_str(),
-                display_expr(rhs)
+                display_expr(&ie.lhs),
+                ie.op.as_str(),
+                display_expr(&ie.rhs)
             )
         }
         Expr::Postfix(inner, op) => {

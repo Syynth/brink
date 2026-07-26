@@ -796,7 +796,7 @@ impl InferPass<'_, '_> {
                 self.infer_expr(inner); // condition position — no forcing.
                 Ty::Bool
             }
-            Expr::Infix(lhs, op, rhs) => self.infer_infix(lhs, *op, rhs),
+            Expr::Infix(ie) => self.infer_infix(&ie.lhs, ie.op, &ie.rhs),
             Expr::Call(path, args) => self.infer_call(path, args),
             Expr::ArrayLiteral(a) => {
                 let elems: Vec<Ty> = a.elements.iter().map(|e| self.infer_expr(e)).collect();

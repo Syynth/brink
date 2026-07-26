@@ -971,10 +971,12 @@ pub fn ufcs_resolution(
 /// cannot see through (a call's return type, a `VAR`'s declared type).
 ///
 /// Keyed by [`brink_ir::hir::expr_span`] of the chain root, the derivation
-/// both sides share; see [`CoalesceChain`] for the step order and
-/// `coalesce`'s module doc for why absence (an unkeyable or ambiguously
-/// keyed chain) is always safe — the consumer falls back to the runtime
-/// check, which is what gradual mode does regardless.
+/// both sides share — since issue #1517, the root `Expr::Infix`'s own
+/// `Provenance` range, so every chain root in a file is separately
+/// addressable. See [`CoalesceChain`] for the step order and `coalesce`'s
+/// module doc for why absence (an ill-typed chain the pass abandoned) is
+/// always safe — the consumer falls back to the runtime check, which is
+/// what gradual mode does regardless.
 ///
 /// Split out from [`whole_project_diagnostics`] — which keeps the same
 /// pass's `E066` *diagnostics* — exactly as [`ufcs_resolution`] is, and for
