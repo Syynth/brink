@@ -43,8 +43,15 @@
 //! independent* check: a construction literal supplying the same field
 //! name more than once is flagged under both `types = gradual` and
 //! `types = strict` — it doesn't need the shape to resolve, so it's wired
-//! into `per_file_diagnostics` unconditionally (dialect = brink only)
-//! rather than behind `strict::config_error` the way [`check`] is.
+//! into `per_file_diagnostics` unconditionally within a file (no
+//! `TypePolicy` gate) rather than behind `strict::config_error` the way
+//! [`check`] is. Its `dialect`/`is_native` gating is wider than `check`'s
+//! own brink-only block, though: B5 (issue #1464, #1103 cascade ruling
+//! (A)) made `TypeName { … }` construction reach `StructLiteral` from the
+//! native surface (`Point { x: 1 }`) as well as the brink dialect's own
+//! `#{…}` spelling, so the caller runs this under `dialect = Brink ||
+//! is_native` — same reasoning `map_keys::check_duplicate_keys`'s own doc
+//! gives for `E138`.
 
 use std::collections::BTreeMap;
 
@@ -330,9 +337,10 @@ impl HirVisitor for ConstructionVisitor<'_> {
 /// resolve (a repeated field name is detectable from the literal's own
 /// field list alone) and runs under *both* `types` policies: a duplicate
 /// field is a structural authoring mistake, not a type-checking concern.
-/// Callers wire this in unconditionally (dialect = brink only, matching
-/// every other TM-4c construction-literal check) rather than gating it
-/// behind `strict::config_error` the way [`check`] is.
+/// Callers wire this in under `dialect = Brink || is_native` (wider than
+/// every other TM-4c construction-literal check, matching `E138`'s own
+/// wiring — see the module doc) rather than gating it behind
+/// `strict::config_error` the way [`check`] is.
 #[must_use]
 pub fn check_duplicates(files: &[(FileId, &HirFile)]) -> Vec<Diagnostic> {
     let mut out = Vec::new();

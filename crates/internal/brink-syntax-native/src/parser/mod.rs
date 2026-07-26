@@ -123,6 +123,19 @@ pub(crate) struct Parser<'t, 'c> {
     non_trivia: Vec<usize>,
     builder: rowan::GreenNodeBuilder<'c>,
     errors: Vec<ParseError>,
+    /// When `true`, a `PATH` followed by `{` is **not** read as a
+    /// `TypeName { … }` construction literal (B5, issue #1464) — the brace
+    /// belongs to the enclosing construct's body instead.
+    ///
+    /// Set only in the four head positions where an expression is directly
+    /// followed by a block opener and the two readings are genuinely
+    /// ambiguous: `if`/`while`/`for … in` heads (`parser::control_flow`)
+    /// and the content-ground `{if …}`/`{match …}` heads
+    /// (`parser::family::conditional_body`). Rust's own
+    /// `no-struct-literal` restriction is the precedent; `(…)`, an
+    /// argument list and a construction literal's own entry list all clear
+    /// it again, so `if (Point { x: 1 }) == p { … }` still parses.
+    no_construct_literal: bool,
 }
 
 impl<'t> Parser<'t, 'static> {
@@ -135,6 +148,7 @@ impl<'t> Parser<'t, 'static> {
             non_trivia,
             builder: rowan::GreenNodeBuilder::new(),
             errors: Vec::new(),
+            no_construct_literal: false,
         }
     }
 }
@@ -149,6 +163,7 @@ impl<'t, 'c> Parser<'t, 'c> {
             non_trivia,
             builder: rowan::GreenNodeBuilder::with_cache(cache),
             errors: Vec::new(),
+            no_construct_literal: false,
         }
     }
 
@@ -182,6 +197,22 @@ impl<'t, 'c> Parser<'t, 'c> {
     /// Leave one level entered by `enter_depth`.
     fn exit_depth(&mut self) {
         self.depth -= 1;
+    }
+
+    /// Set the [`Self::no_construct_literal`] restriction, returning the
+    /// previous value so the caller can restore it — a save/restore pair
+    /// rather than a plain `= false` reset, so nested heads (`if a { if b
+    /// { … } }`, `{if x: {match y { … }}}`) each unwind to whatever their
+    /// own enclosing context was.
+    fn set_no_construct_literal(&mut self, value: bool) -> bool {
+        std::mem::replace(&mut self.no_construct_literal, value)
+    }
+
+    /// Whether a `PATH` at the current position may be followed by a
+    /// `TypeName { … }` construction literal (see
+    /// [`Self::no_construct_literal`]).
+    fn construct_literals_allowed(&self) -> bool {
+        !self.no_construct_literal
     }
 
     // ── Lookahead ───────────────────────────────────────────────

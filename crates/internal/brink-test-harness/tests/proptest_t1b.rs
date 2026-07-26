@@ -157,13 +157,28 @@ proptest! {
             }
         }
 
+        // A repeated key can no longer be *spelled in a literal* — that is
+        // `E138` since #1103's cascade ruling (A) — so the generated
+        // program puts each key's first occurrence in the literal and
+        // re-inserts every repeat through an indexed write. Same
+        // `OrderedMap::insert` path, same property under test (a repeated
+        // key keeps its original slot), spelled the way the ruling leaves
+        // available.
         let entries: Vec<String> = keys
             .iter()
             .enumerate()
+            .filter(|(i, k)| keys.iter().position(|other| other == *k) == Some(*i))
             .map(|(i, k)| format!("\"{k}\": {i}"))
             .collect();
+        let mut repeats = String::new();
+        for (i, k) in keys.iter().enumerate() {
+            if keys.iter().position(|other| other == k) != Some(i) {
+                use std::fmt::Write as _;
+                let _ = writeln!(repeats, "    m[\"{k}\"] = {i}");
+            }
+        }
         let source = format!(
-            "VAR out = \"\"\n~ {{\n    temp m = #{{{}}}\n    for k in m {{\n        out = out + k\n    }}\n}}\n{{out}}\n-> END\n",
+            "VAR out = \"\"\n~ {{\n    temp m = #{{{}}}\n{repeats}    for k in m {{\n        out = out + k\n    }}\n}}\n{{out}}\n-> END\n",
             entries.join(", "),
         );
         let out = run_brink(&source);

@@ -607,6 +607,19 @@ precedent, oracle byte-identical):
      E076-lineage code), consistent with struct dup-field. A spread
      / from-existing form (`Map { ..other, k:v }`) is **deferred** —
      no demonstrated demand, extensible later at zero grammar cost.
+     **BUILT (B5, issue #1464)** on the native surface:
+     `brink-syntax-native` produces one node shape
+     (`CONSTRUCT_LITERAL`/`CONSTRUCT_ENTRY` — the element and pair/field
+     forms, with a Rust-style no-construct-literal restriction in
+     `if`/`while`/`for` and `{if …}`/`{match …}` heads, so a head's brace
+     still opens its body); `brink_ir::hir::construct::ConstructTarget`
+     is the registry — a closed enum, the same protocol-fence shape
+     NS-A8 uses — with `Map`/`Flags`/`Weighted` registered and an
+     unregistered name falling through to the declared-struct reading.
+     Duplicate map keys are **E138**; entries in the wrong form for
+     their target are **E139**. The deferred items above (the impl
+     spelling, the validating member's spelling, spread) are
+     deliberately absent, not stubbed.
    Implementation spelling (attribute vs impl-block) ⏳ —
    code-dialect sitting.
 
@@ -661,8 +674,9 @@ precedent, oracle byte-identical):
   implementation spelling + compare/equality coherence line
   (§9.6) ·
   inhabited-range type/validator spelling (§7, code-dialect
-  sitting) · initializer protocol-vs-grammar (#1103,
-  code-dialect sitting).
+  sitting). **Closed since**: initializer protocol-vs-grammar —
+  #1103 RULED 2026-07-23 (it is protocol dispatch; see §9.6's
+  `construct` entry) and BUILT by #1464.
 - Maintainer-attention note: `remove` now names three verbs with
   divergent postures — seq remove-by-index (OOB ⇒ fault, the
   indexing contract), map remove-by-key (idempotent-total), flags

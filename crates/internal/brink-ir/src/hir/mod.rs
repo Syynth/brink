@@ -5,6 +5,7 @@
 //! stay as trees, choices and conditionals keep their branch structure, diverts
 //! are semantic nodes — with weave nesting resolved and syntactic sugar stripped.
 
+pub mod construct;
 pub(crate) mod doc_block;
 pub mod emit_native;
 pub mod frame_shape;
@@ -16,6 +17,7 @@ mod stamp;
 mod types;
 pub mod visit;
 
+pub use construct::{ConstructForm, ConstructTarget};
 pub use frame_shape::{AwaitFrameShape, ContinuationSite, compute_frame_shapes};
 pub use ink_provenance::{InkProvenanceResolver, ink_provenance};
 pub use lower::{WeaveItem, fold_weave, lower, lower_single_knot, lower_top_level};

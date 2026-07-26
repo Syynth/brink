@@ -459,18 +459,27 @@ semantics untouched; the native surface carries the ruled postures.
 
 ## 11. Construction forms — `TypeName { … }` grammar (§9.1, #1103)
 
-One initializer grammar, **per-type meaning** (protocol-vs-grammar is
-#1103, code-dialect sitting; this sitting commits only to the shape).
+One initializer grammar, **per-type meaning** — RULED 2026-07-23 (#1103):
+the meaning is **protocol dispatch**, the registry's 4th entry
+(`construct`), not grammar dispatch over a closed set. Built by #1464 for
+the native surface: `brink_ir::hir::construct::ConstructTarget` is the
+registry (std-only this round — `Map`/`Flags`/`Weighted`; an unregistered
+name falls through to the declared-struct reading).
 
 | Type | Form | Inside the braces | Duplicate policy |
 |---|---|---|---|
 | struct | `Point { x: 1.0, y: 2.0 }` | fields (+defaults); source-order eval | duplicate field = compile error E084 |
-| map | `Map { k: v }` | key: value pairs | duplicate key = E076/E084 lineage (error) |
+| map | `Map { k: v }` | key: value pairs | duplicate key = compile error **E138** (the E076-lineage code, ruled in #1103's cascade (A)) |
 | flags | `Flags { calm, wary }` / `none(Mood)` / `all(Mood)` | bare members (a subset) | dup member = ⚠(idempotent? or error) |
 | array | `[a, b, c]` | elements | n/a |
 | `Weighted[T]` | `Weighted { 3: sword, 1: shield }` | weight: value pairs, positive-int weights | **duplicate weight LEGAL (multiset)** ⚠F17 — diverges from map! |
 | enum variant | `Phase.Suspicious { level: 0.5 }` | named-field payload | duplicate field = E084 |
 | tower | `vec3 { x:, y:, z: }` | components per `docs/tower-mini-spec.md` (F24 ruled) | — |
+
+The last two rows are **not registered** by #1464: enums have no HIR node
+yet, and the tower ships its own NS-A8 call grammar — both join the
+literal grammar later at no grammar cost, which is the point of making
+construction a protocol.
 
 Struct pattern in `let` reuses match's grammar (§1.3).
 

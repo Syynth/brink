@@ -105,6 +105,11 @@ ast_node!(ArgList, ARG_LIST);
 ast_node!(LambdaExpr, LAMBDA_EXPR);
 ast_node!(LambdaParams, LAMBDA_PARAMS);
 
+// ── The construction initializer (B5, issue #1464) ───────────────────
+
+ast_node!(ConstructLiteral, CONSTRUCT_LITERAL);
+ast_node!(ConstructEntry, CONSTRUCT_ENTRY);
+
 // ── The code-ground statement layer (B0.8 Wave A) ────────────────────
 
 ast_node!(StmtBlock, STMT_BLOCK);
@@ -643,6 +648,52 @@ impl CallExpr {
 impl PathExpr {
     pub fn path(&self) -> Option<Path> {
         support::child(&self.syntax)
+    }
+}
+
+impl ConstructLiteral {
+    /// The constructed type's name path — `Map`, `Flags`, `Weighted`, a
+    /// declared struct's name, or a `::`-qualified spelling of any of them.
+    /// Which of those it *is* is dispatch, not grammar: `brink-ir`'s
+    /// `construct` registry resolves it (`docs/stdlib-spec.md` §9.6).
+    pub fn type_path(&self) -> Option<Path> {
+        support::child(&self.syntax)
+    }
+
+    /// The literal's entries, in source order. Empty for `TypeName { }`.
+    pub fn entries(&self) -> impl Iterator<Item = ConstructEntry> {
+        support::children(&self.syntax)
+    }
+}
+
+impl ConstructEntry {
+    /// `true` for the pair/field form (`k: v`), `false` for the element
+    /// form (`v`) — read off the `COLON` token the parser emits between the
+    /// two expressions, so it never depends on child-count guessing.
+    pub fn is_pair(&self) -> bool {
+        support::token(&self.syntax, crate::SyntaxKind::COLON).is_some()
+    }
+
+    /// The left-hand expression of a pair/field entry (`k` in `k: v`), or
+    /// `None` for the element form.
+    pub fn key(&self) -> Option<SyntaxNode> {
+        if self.is_pair() {
+            self.syntax.children().next()
+        } else {
+            None
+        }
+    }
+
+    /// The entry's value expression: the right-hand side of a pair/field
+    /// entry, or the single expression of an element entry.
+    pub fn value(&self) -> Option<SyntaxNode> {
+        let mut children = self.syntax.children();
+        let first = children.next();
+        if self.is_pair() {
+            children.next()
+        } else {
+            first
+        }
     }
 }
 

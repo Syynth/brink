@@ -355,7 +355,10 @@ path.
   reshape them (#1106): `or`/`as` (B1), **`for k, v`** (B2 — the one
   additive HIR field `val_name` lands with B2, not B0), UFCS **auto-ref
   resolution** (B3 — B0.8 parses the call shape only), display-boundary
-  None-render (B4), `TypeName { … }` construction grammar (B5, #1103).
+  None-render (B4). **B5 is no longer unfiled**: `TypeName { … }`
+  construction was ruled by #1103 (2026-07-23) and built by #1464 — the
+  native grammar (`CONSTRUCT_LITERAL`/`CONSTRUCT_ENTRY`) plus the
+  `construct` protocol registry (`brink_ir::hir::construct`), std-only.
 - **Lambdas** — ruled (Rust pipes) but `FnLiteral` is partial application,
   not an anonymous body; a new HIR node is semantics-adjacent work owed to
   the code-dialect sitting's implementation round. B0.5 tokenizes pipes;

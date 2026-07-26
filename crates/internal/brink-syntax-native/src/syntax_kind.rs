@@ -492,6 +492,27 @@ pub enum SyntaxKind {
     LAMBDA_EXPR,
     LAMBDA_PARAMS,
 
+    // ── Node kinds — the construction initializer (B5, issue #1464, ─────
+    // ── #1103 RULED 2026-07-23, `docs/stdlib-spec.md` §9.6) ─────────────
+    /// `TypeName { … }` — the one construction-initializer grammar
+    /// (`docs/decision-log.md` 2026-07-23 "Collection/construction
+    /// initializer"). The brace *tokens* are fixed surface grammar this
+    /// parser produces; **meaning is protocol dispatch**, resolved one
+    /// layer up by the `construct` registry
+    /// (`brink_ir::hir::construct::ConstructTarget`) against the leading
+    /// [`Self::PATH`], never by this grammar. So `Map { "a": 1 }`,
+    /// `Flags { Red, Blue }`, `Weighted { 3: "gold" }` and a struct's
+    /// `Point { x: 1, y: 2 }` are all one node shape here.
+    CONSTRUCT_LITERAL,
+    /// One entry of a [`Self::CONSTRUCT_LITERAL`], in whichever of the
+    /// three ruled forms the source used: the **element** form (a single
+    /// child expression — `Flags { Red }`), or the **pair**/**field** form
+    /// (two child expressions around a `COLON` — `Map { k: v }`,
+    /// `Point { x: 1 }`). Pair and field are one shape by construction:
+    /// they differ only in what the target type makes of the left-hand
+    /// expression, which is dispatch, not grammar.
+    CONSTRUCT_ENTRY,
+
     // ── Node kinds — the code-ground statement layer (B0.8 Wave A, ──────
     // ── `docs/decision-log.md` 2026-07-23 "Code-ground sitting") ────────
     // RustScript-shaped statements over the expression skeleton above.

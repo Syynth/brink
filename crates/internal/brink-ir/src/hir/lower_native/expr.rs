@@ -28,6 +28,13 @@
 //! guessed at; see `crates/internal/brink-ir/tests/b08_native_wave_b_tail.rs`'s
 //! module doc for the full investigation and its pinned gap test.
 //!
+//! **Construction (B5, issue #1464)**: `CONSTRUCT_LITERAL` — the
+//! `TypeName { … }` initializer — lowers through [`lower_construct`] below,
+//! which dispatches on the `construct` protocol registry
+//! (`crate::hir::construct`) rather than on a closed set of names baked
+//! into this match, per the #1103 ruling. Every registered target desugars
+//! to an HIR shape that already existed.
+//!
 //! `LAMBDA_EXPR` is tokenized/parsed (B0.5) but explicitly unlowered until
 //! the code sitting rules a real anonymous-body node (`docs/b0-sequencing.md`
 //! §3: "B0.5 tokenizes pipes; B0.8 does not lower them") — encountering one
@@ -37,7 +44,10 @@ use brink_syntax_native::SyntaxKind as N;
 use brink_syntax_native::ast::{self, AstNode as _};
 use brink_syntax_native::{SyntaxNode, SyntaxToken};
 
+use super::provenance::native_provenance;
 use crate::hir::FileId;
+use crate::hir::construct::{ConstructForm, ConstructTarget};
+use crate::provenance::NodeClass;
 use crate::{Diagnostic, DiagnosticCode, Expr, FloatBits, InfixOp, Name, Path, PrefixOp};
 use crate::{StringExpr, StringPart};
 
@@ -101,6 +111,7 @@ pub(super) fn lower_expr(file_id: FileId, node: &SyntaxNode, diags: &mut Vec<Dia
         N::PREFIX_EXPR => lower_prefix(file_id, node, diags),
         N::INFIX_EXPR => lower_infix(file_id, node, diags),
         N::CALL_EXPR => lower_call(file_id, node, diags),
+        N::CONSTRUCT_LITERAL => lower_construct(file_id, node, diags),
         N::STMT_BLOCK => {
             // Blocks-as-values (decision-log 2026-07-23 item 2) has no HIR
             // representation yet — no `Expr::Block` variant exists, and
@@ -227,6 +238,193 @@ fn infix_op(tok: &SyntaxToken) -> Option<InfixOp> {
         // boolean disjunction, oracle-frozen and unreachable from this
         // lowering path).
         N::KW_OR => Some(InfixOp::Coalesce),
+        _ => None,
+    }
+}
+
+/// Lower a `TypeName { … }` construction literal (B5, issue #1464; #1103
+/// RULED 2026-07-23, `docs/stdlib-spec.md` §9.6).
+///
+/// This is the **dispatch** half of the ruling: the parser gave us one
+/// grammar (a type path plus element / pair entries), and the `construct`
+/// registry ([`crate::hir::construct::ConstructTarget`]) decides what it
+/// means. Every registered std target desugars into an HIR shape that
+/// already exists — the ruling's whole point is that construction is a
+/// protocol over the existing value model, not a new node kind:
+///
+/// | written | registry entry | HIR |
+/// |---|---|---|
+/// | `Map { "a": 1 }` | [`ConstructTarget::Map`] | [`Expr::MapLiteral`] |
+/// | `Flags { Red, Blue }` | [`ConstructTarget::Flags`] | [`Expr::ListLiteral`] |
+/// | `Weighted { 3: "gold" }` | [`ConstructTarget::Weighted`] | `weighted(3, "gold")` ([`Expr::Call`]) |
+/// | `Point { x: 1, y: 2 }` | *(unregistered)* | [`Expr::StructLiteral`] |
+///
+/// The unregistered fall-through is deliberate and is what keeps the
+/// std-only fence honest: user types do not *register* anything this round
+/// (the `impl` spelling is still deferred), they simply keep the declared-
+/// struct reading the compiler already had.
+fn lower_construct(file_id: FileId, node: &SyntaxNode, diags: &mut Vec<Diagnostic>) -> Expr {
+    let Some(lit) = ast::ConstructLiteral::cast(node.clone()) else {
+        diags.push(diag(file_id, node.text_range(), DiagnosticCode::E015));
+        return Expr::Null;
+    };
+    let Some(type_path) = lit.type_path() else {
+        diags.push(diag(file_id, node.text_range(), DiagnosticCode::E015));
+        return Expr::Null;
+    };
+    let path = lower_path(&type_path);
+    let segments: Vec<String> = path.segments.iter().map(|s| s.text.clone()).collect();
+    let entries: Vec<ast::ConstructEntry> = lit.entries().collect();
+
+    let target = ConstructTarget::lookup(&segments);
+    let expected = target.map_or(ConstructForm::Pair, ConstructTarget::form);
+    if !entries_match_form(&entries, expected) {
+        diags.push(form_mismatch(file_id, node, &segments, expected));
+        return Expr::Null;
+    }
+
+    match target {
+        Some(ConstructTarget::Map) => Expr::MapLiteral(crate::MapLiteral {
+            ptr: native_provenance(file_id, NodeClass::MapLiteral, node),
+            entries: entries
+                .iter()
+                .map(|e| {
+                    let at = e.syntax().text_range();
+                    (
+                        lower_entry_part(file_id, e.key().as_ref(), at, diags),
+                        lower_entry_part(file_id, e.value().as_ref(), at, diags),
+                    )
+                })
+                .collect(),
+        }),
+        Some(ConstructTarget::Flags) => {
+            // A flags value names declared members, so each element must be
+            // a bare name — the same shape ink's `(A, B)` list literal has.
+            let mut items = Vec::with_capacity(entries.len());
+            for entry in &entries {
+                let member = entry
+                    .value()
+                    .and_then(ast::PathExpr::cast)
+                    .and_then(|p| p.path());
+                let Some(p) = member else {
+                    diags.push(diag(
+                        file_id,
+                        entry.syntax().text_range(),
+                        DiagnosticCode::E139,
+                    ));
+                    return Expr::Null;
+                };
+                items.push(lower_path(&p));
+            }
+            Expr::ListLiteral(items)
+        }
+        Some(ConstructTarget::Weighted) => {
+            // The **total** literal (#1103 cascade ruling B): desugars to
+            // the existing `weighted(w, v, …)` flattened-pair intrinsic,
+            // which already faults on an invalid table (`E120` statically,
+            // `WeightedBadWeight` at runtime). The validating
+            // `construct → Option` member is ratified but unspelled, so
+            // there is deliberately no second form here.
+            let mut args = Vec::with_capacity(entries.len() * 2);
+            for entry in &entries {
+                let at = entry.syntax().text_range();
+                args.push(lower_entry_part(file_id, entry.key().as_ref(), at, diags));
+                args.push(lower_entry_part(file_id, entry.value().as_ref(), at, diags));
+            }
+            Expr::Call(
+                Path {
+                    segments: vec![Name {
+                        text: "weighted".to_string(),
+                        range: type_path.syntax().text_range(),
+                    }],
+                    range: type_path.syntax().text_range(),
+                },
+                args,
+            )
+        }
+        None => {
+            let mut fields = Vec::with_capacity(entries.len());
+            for entry in &entries {
+                let Some(name) = entry.key().and_then(|k| bare_field_name(&k)) else {
+                    diags.push(diag(
+                        file_id,
+                        entry.syntax().text_range(),
+                        DiagnosticCode::E139,
+                    ));
+                    return Expr::Null;
+                };
+                let at = entry.syntax().text_range();
+                fields.push((
+                    name,
+                    lower_entry_part(file_id, entry.value().as_ref(), at, diags),
+                ));
+            }
+            Expr::StructLiteral(crate::StructLiteral {
+                ptr: native_provenance(file_id, NodeClass::StructLiteral, node),
+                shape: Name {
+                    text: segments.last().cloned().unwrap_or_default(),
+                    range: type_path.syntax().text_range(),
+                },
+                fields,
+            })
+        }
+    }
+}
+
+/// Whether every entry is in `expected`'s form. An empty literal
+/// (`Map { }`, `Flags { }`) vacuously matches either form — the ruled
+/// grammar accepts it and it constructs the empty value.
+fn entries_match_form(entries: &[ast::ConstructEntry], expected: ConstructForm) -> bool {
+    entries
+        .iter()
+        .all(|e| e.is_pair() == (expected == ConstructForm::Pair))
+}
+
+/// The `E139` diagnostic for a form mismatch, naming both the target and
+/// the form it does construct from.
+fn form_mismatch(
+    file: FileId,
+    node: &SyntaxNode,
+    segments: &[String],
+    expected: ConstructForm,
+) -> Diagnostic {
+    let name = segments.last().map_or("<unnamed>", String::as_str);
+    Diagnostic {
+        file,
+        range: node.text_range(),
+        message: format!(
+            "`{name} {{ … }}` constructs from {} entries",
+            expected.label()
+        ),
+        code: DiagnosticCode::E139,
+    }
+}
+
+/// Lower one side of a construction entry, pushing `E015` at `fallback`
+/// (and returning `Null`) if the parser left the slot empty — never a
+/// silent drop.
+fn lower_entry_part(
+    file_id: FileId,
+    part: Option<&SyntaxNode>,
+    fallback: rowan::TextRange,
+    diags: &mut Vec<Diagnostic>,
+) -> Expr {
+    let Some(n) = part else {
+        // Only reachable from a malformed parse (`Map { : 1 }`); the caller
+        // has already checked the entry's *form*.
+        diags.push(diag(file_id, fallback, DiagnosticCode::E015));
+        return Expr::Null;
+    };
+    lower_expr(file_id, n, diags)
+}
+
+/// A struct-literal field key must be a bare, single-segment name — the
+/// field form. `Point { 1: 2 }` or `Point { a.b: 2 }` is `E139`.
+fn bare_field_name(key: &SyntaxNode) -> Option<Name> {
+    let path = ast::PathExpr::cast(key.clone())?.path()?;
+    let lowered = lower_path(&path);
+    match lowered.segments.as_slice() {
+        [only] => Some(only.clone()),
         _ => None,
     }
 }

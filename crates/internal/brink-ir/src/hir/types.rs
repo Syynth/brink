@@ -2222,6 +2222,25 @@ pub enum DiagnosticCode {
     /// dialect, so an explicit `gradual` setting reaching a `.brink` compile
     /// is refused, loudly, rather than silently accepted.
     E137,
+
+    // ── B5: the construction initializer (issue #1464, #1103 RULED
+    //    2026-07-23, `docs/stdlib-spec.md` §9.6) ────────────────────────
+    /// A map literal supplies the same key twice (`Map { k: 1, k: 2 }`).
+    /// The E076-lineage cascade ruling (A) of #1103: a duplicate key is a
+    /// **compile error**, consistent with a struct literal's duplicate
+    /// field ([`Self::E084`]) — last-wins would silently swallow the typo.
+    /// Only *statically comparable* literal keys can collide here
+    /// (int/string/bool, the `E106` key domain); a dynamic key is left to
+    /// the runtime, exactly as the key-domain check leaves it.
+    E138,
+    /// A construction literal's entries are not in the form its target type
+    /// constructs from — `Map { a }` (element form for a key/value target)
+    /// or `Flags { A: 1 }` (key/value form for an element target). The
+    /// brace *tokens* are one fixed grammar; the entry form each type
+    /// consumes is the `construct` protocol's business
+    /// ([`crate::hir::construct::ConstructTarget::form`]), so a mismatch is
+    /// caught at dispatch rather than by the parser.
+    E139,
 }
 
 impl DiagnosticCode {
@@ -2370,6 +2389,8 @@ impl DiagnosticCode {
             Self::E135 => "E135",
             Self::E136 => "E136",
             Self::E137 => "E137",
+            Self::E138 => "E138",
+            Self::E139 => "E139",
         }
     }
 
@@ -2569,6 +2590,8 @@ impl DiagnosticCode {
             Self::E135 => "native accept-list: thread-start outside choice-point splice position",
             Self::E136 => "native accept-list: choice set carries a non-neutral weave-fold value",
             Self::E137 => "native .brink compile requires types = strict",
+            Self::E138 => "map construction literal supplies a duplicate key",
+            Self::E139 => "construction literal entries do not match the target type's form",
         }
     }
 
@@ -2744,6 +2767,8 @@ impl DiagnosticCode {
             "E135" => Some(Self::E135),
             "E136" => Some(Self::E136),
             "E137" => Some(Self::E137),
+            "E138" => Some(Self::E138),
+            "E139" => Some(Self::E139),
             _ => None,
         }
     }

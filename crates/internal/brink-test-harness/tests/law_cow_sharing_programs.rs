@@ -34,10 +34,20 @@ proptest! {
     /// `a` — the sharing-unobservable law (§3) applied to `Value::Map`.
     #[test]
     fn map_copy_then_index_write_never_observes_through_original(
-        keys in prop::collection::vec("[a-e]", 1..6),
+        raw_keys in prop::collection::vec("[a-e]", 1..6),
         write_key_idx in 0usize..6,
         new_val in -1000i32..1000,
     ) {
+        // Distinct keys, first-occurrence order. `[a-e]` repeats, and a
+        // repeated key in a map literal is a compile error since #1103's
+        // cascade ruling (A) (`E138`) — this generator is about the
+        // sharing law, not duplicate-key policy, so it must not emit one.
+        let mut keys: Vec<String> = Vec::with_capacity(raw_keys.len());
+        for k in raw_keys {
+            if !keys.contains(&k) {
+                keys.push(k);
+            }
+        }
         let write_key = keys[write_key_idx % keys.len()].clone();
 
         let mut original: Vec<(String, i32)> = Vec::new();
