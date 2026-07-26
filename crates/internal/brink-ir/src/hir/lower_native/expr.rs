@@ -296,13 +296,19 @@ fn lower_construct(file_id: FileId, node: &SyntaxNode, diags: &mut Vec<Diagnosti
             // a bare name — the same shape ink's `(A, B)` list literal has.
             let mut items = Vec::with_capacity(entries.len());
             for entry in &entries {
-                match entry.value().and_then(ast::PathExpr::cast).and_then(|p| p.path()) {
-                    Some(p) => items.push(lower_path(&p)),
-                    None => {
-                        diags.push(diag(file_id, entry.syntax().text_range(), DiagnosticCode::E139));
-                        return Expr::Null;
-                    }
-                }
+                let member = entry
+                    .value()
+                    .and_then(ast::PathExpr::cast)
+                    .and_then(|p| p.path());
+                let Some(p) = member else {
+                    diags.push(diag(
+                        file_id,
+                        entry.syntax().text_range(),
+                        DiagnosticCode::E139,
+                    ));
+                    return Expr::Null;
+                };
+                items.push(lower_path(&p));
             }
             Expr::ListLiteral(items)
         }
@@ -334,11 +340,18 @@ fn lower_construct(file_id: FileId, node: &SyntaxNode, diags: &mut Vec<Diagnosti
             let mut fields = Vec::with_capacity(entries.len());
             for entry in &entries {
                 let Some(name) = entry.key().and_then(|k| bare_field_name(&k)) else {
-                    diags.push(diag(file_id, entry.syntax().text_range(), DiagnosticCode::E139));
+                    diags.push(diag(
+                        file_id,
+                        entry.syntax().text_range(),
+                        DiagnosticCode::E139,
+                    ));
                     return Expr::Null;
                 };
                 let at = entry.syntax().text_range();
-                fields.push((name, lower_entry_part(file_id, entry.value().as_ref(), at, diags)));
+                fields.push((
+                    name,
+                    lower_entry_part(file_id, entry.value().as_ref(), at, diags),
+                ));
             }
             Expr::StructLiteral(crate::StructLiteral {
                 ptr: native_provenance(file_id, NodeClass::StructLiteral, node),
@@ -390,15 +403,13 @@ fn lower_entry_part(
     fallback: rowan::TextRange,
     diags: &mut Vec<Diagnostic>,
 ) -> Expr {
-    match part {
-        Some(n) => lower_expr(file_id, n, diags),
-        None => {
-            // Only reachable from a malformed parse (`Map { : 1 }`); the
-            // caller has already checked the entry's *form*.
-            diags.push(diag(file_id, fallback, DiagnosticCode::E015));
-            Expr::Null
-        }
-    }
+    let Some(n) = part else {
+        // Only reachable from a malformed parse (`Map { : 1 }`); the caller
+        // has already checked the entry's *form*.
+        diags.push(diag(file_id, fallback, DiagnosticCode::E015));
+        return Expr::Null;
+    };
+    lower_expr(file_id, n, diags)
 }
 
 /// A struct-literal field key must be a bare, single-segment name — the

@@ -190,7 +190,11 @@ fn a_flags_element_that_is_not_a_name_is_e139() {
 fn a_struct_field_key_that_is_not_a_bare_name_is_e139() {
     for src in ["var p = Point { 1: 2 }\n", "var p = Point { a.b: 2 }\n"] {
         let (_expr, diags) = var_initializer(src);
-        assert_eq!(codes(&diags), vec![DiagnosticCode::E139], "{src}: {diags:?}");
+        assert_eq!(
+            codes(&diags),
+            vec![DiagnosticCode::E139],
+            "{src}: {diags:?}"
+        );
     }
 }
 

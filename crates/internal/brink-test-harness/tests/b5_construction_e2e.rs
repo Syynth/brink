@@ -25,12 +25,7 @@ fn play(src: &str) -> String {
     let episodes = explore_from_brink_native(src, &ExploreConfig::default())
         .unwrap_or_else(|e| panic!("native fixture must compile and play: {e}"));
     let episode = episodes.first().expect("one episode");
-    episode
-        .steps
-        .iter()
-        .map(|s| s.text.clone())
-        .collect::<Vec<_>>()
-        .join("")
+    episode.steps.iter().map(|s| s.text.clone()).collect()
 }
 
 fn refuse(src: &str) -> String {

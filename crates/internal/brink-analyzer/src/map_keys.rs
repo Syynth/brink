@@ -16,11 +16,14 @@
 //! non-key-domain literal key is a structural authoring mistake detectable
 //! from the literal alone, so this runs under *both* `types` policies
 //! (unlike `structs::check`'s missing/extra/mistyped trio, which is
-//! strict-only because it needs a resolved shape). Wired in unconditionally
-//! under `dialect = brink` — map literals don't exist at all under
-//! `strict-ink` (already rejected whole by `dialect_gate`'s E051), so
-//! critiquing the inside of rejected syntax would be noise (same rule
-//! `per_file_diagnostics`'s brink-only block already documents).
+//! strict-only because it needs a resolved shape). [`check`] is wired in
+//! unconditionally under `dialect = brink` — map literals don't exist at
+//! all under `strict-ink` *ink*, being already rejected whole by
+//! `dialect_gate`'s E051, so critiquing the inside of rejected syntax would
+//! be noise (same rule `per_file_diagnostics`'s brink-only block already
+//! documents). [`check_duplicate_keys`] is wired one step wider — it also
+//! runs for a native file, which reaches map literals through
+//! `Map { k: v }` whatever the (ink-only) `dialect` axis says.
 //!
 //! Scoped to **statically classifiable** key expressions — a literal kind
 //! is either obviously in the domain (`Expr::Int`/`Expr::Bool`/`Expr::String`)
@@ -478,9 +481,8 @@ mod tests {
 
     #[test]
     fn distinct_keys_do_not_fire() {
-        let diags = dup_src(
-            "=== main ===\n~ temp m = #{1: \"a\", 2: \"b\", true: 3, \"1\": 4}\n-> DONE\n",
-        );
+        let diags =
+            dup_src("=== main ===\n~ temp m = #{1: \"a\", 2: \"b\", true: 3, \"1\": 4}\n-> DONE\n");
         assert!(diags.is_empty(), "{diags:?}");
     }
 

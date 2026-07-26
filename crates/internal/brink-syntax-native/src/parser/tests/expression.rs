@@ -1408,7 +1408,10 @@ fn construct_entry_accessors_distinguish_the_two_forms() {
     let entry = lit.entries().next().expect("one entry");
     assert!(entry.is_pair());
     assert_eq!(entry.key().expect("key").kind(), SyntaxKind::STRING_LIT);
-    assert_eq!(entry.value().expect("value").kind(), SyntaxKind::INTEGER_LIT);
+    assert_eq!(
+        entry.value().expect("value").kind(),
+        SyntaxKind::INTEGER_LIT
+    );
 
     let p = assert_lossless("var f = Flags { Red }\n");
     let lit = p
