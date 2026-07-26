@@ -140,20 +140,57 @@ fn attached_declaration(line: &SyntaxNode) -> Option<SyntaxNode> {
     None
 }
 
+/// The number of enclosing `flow`/`fn` containers between `decl` and the
+/// file root. Native has no HIR "module" container node (judgment call #4)
+/// — a `MODULE_DECL`'s body is walked flat by `walk_top_level`, so a
+/// `MODULE_DECL` ancestor does not count as a nesting level here, only
+/// `FLOW_DECL`/`FN_DECL` ones do.
+///
+/// `0` is top-level (lowers to a `Knot` via
+/// `container::lower_top_level_container`); `1` is a `flow` nested exactly
+/// one level inside another's body (lowers to a `Stitch` via
+/// `container::lower_stitch`); `2` or deeper is the depth-3 fence
+/// (`DiagnosticCode::E130`) — no container lowers it.
+fn container_nesting_depth(decl: &SyntaxNode) -> usize {
+    let mut depth = 0;
+    let mut cursor = decl.parent();
+    while let Some(node) = cursor {
+        if matches!(node.kind(), N::FLOW_DECL | N::FN_DECL) {
+            depth += 1;
+        }
+        cursor = node.parent();
+    }
+    depth
+}
+
 /// `true` when `line` sits in a placement some lowering pass consumes, so
 /// [`handle_line`] must not report it misplaced.
+///
+/// This must track exactly what `container.rs` actually lowers, not merely
+/// "attached to a `flow`/`fn` head" — a nested `fn` (no HIR container below
+/// `Knot` carries `is_function`, `container.rs`'s E129 fence) and a `flow`
+/// nested three levels deep (the E130 depth fence) are never lowered, so an
+/// `@[effects(…)]` attached to either of them must be diagnosed here too,
+/// not waved through as "consumed" only to be read by nothing.
 fn is_consumed_position(name: &str, line: &SyntaxNode) -> bool {
     match name {
         // The module-rename record is a *file-level* fact — `module::
         // lower_file_module` scans `SOURCE_FILE`'s own children for it.
         WAS => line.parent().is_some_and(|p| p.kind() == N::SOURCE_FILE),
-        // The effects assertion attaches to a callable container; both
-        // `container::lower_top_level_container` (→ `Knot`) and
-        // `container::lower_stitch` (→ `Stitch`) read their own run.
-        EFFECTS => matches!(
-            attached_declaration(line).map(|d| d.kind()),
-            Some(N::FLOW_DECL | N::FN_DECL)
-        ),
+        // The effects assertion attaches to a callable container that
+        // `container.rs` actually lowers.
+        EFFECTS => attached_declaration(line).is_some_and(|d| {
+            let depth = container_nesting_depth(&d);
+            match d.kind() {
+                // A `flow` lowers at top level (→ `Knot`) and nested exactly
+                // one level (→ `Stitch`); depth-3+ is the E130 fence.
+                N::FLOW_DECL => depth <= 1,
+                // A `fn` only ever lowers at top level; any nested `fn` is
+                // the E129 fence — there is nowhere for it to go.
+                N::FN_DECL => depth == 0,
+                _ => false,
+            }
+        }),
         _ => false,
     }
 }

@@ -977,6 +977,42 @@ fn misplaced_body_annotation_is_diagnosed_not_dropped() {
     );
 }
 
+#[test]
+fn effects_annotation_on_a_nested_fn_is_diagnosed_not_silently_dropped() {
+    // A nested `fn` never lowers to anything (no HIR container below `Knot`
+    // carries `is_function`, `container.rs`'s E129 fence) — its attached
+    // `@[effects(…)]` must not be waved through as "consumed" only to be
+    // read by nothing. `attached_declaration` sees an `FN_DECL` immediately
+    // after, so this pins the depth check, not just the declaration kind.
+    let (_hir, _m, diags) = lower_src("flow a() {\n  @[effects(pure)]\n  fn b() {\n    x\n  }\n}\n");
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E129),
+        "the nested fn itself is still the E129 fence: {diags:?}"
+    );
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E112),
+        "the annotation attached to it must be separately diagnosed, not silently dropped: {diags:?}"
+    );
+}
+
+#[test]
+fn effects_annotation_on_a_depth_three_flow_is_diagnosed_not_silently_dropped() {
+    // A `flow` nested three levels deep never lowers (the E130 depth fence)
+    // — its attached `@[effects(…)]` must not be waved through as
+    // "consumed" only to be read by nothing.
+    let (_hir, _m, diags) = lower_src(
+        "flow a() {\n  flow b() {\n    @[effects(pure)]\n    flow c() {\n      Too deep.\n    }\n  }\n}\n",
+    );
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E130),
+        "the depth-3 flow itself is still the E130 fence: {diags:?}"
+    );
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E112),
+        "the annotation attached to it must be separately diagnosed, not silently dropped: {diags:?}"
+    );
+}
+
 // ─── Block::tail (S1, docs/block-effect-model.md §10 row j) ────────
 //
 // Expand-phase groundwork only: `tail` is populated from `stmts`' final
