@@ -177,11 +177,17 @@ fn lower_coalesce_chain(root: &hir::Expr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
     // innermost-first, the order `CoalesceChain::steps` is recorded in.
     let mut steps = spine.iter().rev();
     let Some((innermost_lhs, innermost_rhs)) = steps.next().copied() else {
-        // Unreachable in practice: the caller only dispatches here for an
-        // `InfixOp::Coalesce` node, which always yields at least one spine
-        // entry. Lowering the node as itself keeps this total rather than
-        // panicking on a shape that cannot occur.
-        return lower_expr(root, ctx);
+        // Structurally unreachable: the caller only dispatches here for an
+        // `InfixOp::Coalesce` node, and `coalesce_chain_spine` always yields
+        // at least one entry for such a node (its `while` loop matches the
+        // root itself before ever advancing). Falling back to
+        // `lower_expr(root, ctx)` here would NOT be total — `lower_expr`'s
+        // `InfixOp::Coalesce` arm dispatches straight back into this
+        // function, so an empty spine would recurse unboundedly (stack
+        // overflow) rather than terminate. `unreachable!` matches the
+        // precedent this same change sets in
+        // `brink_codegen_inkb::expr::infix_op_to_opcode`.
+        unreachable!("InfixOp::Coalesce always has a non-empty chain spine")
     };
     let mut fallbacks = vec![innermost_rhs];
     fallbacks.extend(steps.map(|&(_, rhs)| rhs));
