@@ -50,7 +50,9 @@ use super::provenance::native_provenance;
 use crate::hir::FileId;
 use crate::hir::construct::{ConstructForm, ConstructTarget};
 use crate::provenance::NodeClass;
-use crate::{Diagnostic, DiagnosticCode, Expr, FloatBits, InfixOp, Name, Path, PrefixOp};
+use crate::{
+    Diagnostic, DiagnosticCode, Expr, FloatBits, InfixExpr, InfixOp, Name, Path, PrefixOp,
+};
 use crate::{StringExpr, StringPart};
 
 /// Lower one expression-grammar node to an [`Expr`]. Never fails outright —
@@ -213,7 +215,10 @@ fn lower_infix(file_id: FileId, node: &SyntaxNode, diags: &mut Vec<Diagnostic>) 
     };
 
     if let Some(op) = op {
-        Expr::Infix(Box::new(lhs), op, Box::new(rhs))
+        // The whole `lhs op rhs` node's own range — the identity key a side
+        // table addresses this node by (issue #1517).
+        let ptr = native_provenance(file_id, NodeClass::Infix, node);
+        Expr::Infix(InfixExpr::new(ptr, lhs, op, rhs))
     } else {
         diags.push(diag(file_id, node.text_range(), DiagnosticCode::E016));
         lhs

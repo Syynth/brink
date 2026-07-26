@@ -173,10 +173,10 @@ pub enum CoalesceShape {
 /// above.
 ///
 /// Keyed at the **chain root** by [`crate::hir::expr_span`] — the derivation
-/// both sides share — carrying every step's shape innermost-first, because
-/// a chain and its own left spine frequently have identical spans (see
-/// `brink_analyzer::coalesce`'s module doc). Lowering therefore looks a
-/// chain up exactly once, at its root, and never at a spine node.
+/// both sides share, which since issue #1517 is the root infix node's own
+/// [`crate::Provenance`] range — carrying every step's shape innermost-first.
+/// One chain is one recorded fold, so lowering looks it up exactly once, at
+/// its root; a spine node's key is a *different* key and simply misses.
 ///
 /// Empty by construction for every caller that never ran the analyzer's
 /// `coalesce` pass (this crate's own tests, `compile_bench`,

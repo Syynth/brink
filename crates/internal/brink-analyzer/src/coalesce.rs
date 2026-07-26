@@ -25,18 +25,23 @@
 //! ## Chains, and why the table is keyed at the chain root
 //!
 //! `a or b or c` is a left-associative `Expr::Infix(Infix(a, or, b), or,
-//! c)`. `Expr::Infix` carries **no `Provenance` of its own**, and neither
-//! do the scalar literals that so often terminate a chain, so the
-//! `(FileId, TextRange)` [`NodeKey`] of a chain and of its own left spine
-//! are frequently *identical* (`brink_ir::hir::expr_span`'s own doc spells
-//! this out). Keying every step separately would therefore hand a consumer
-//! one node's verdict under another node's key — a miscompile.
+//! c)`. One entry is recorded per **chain root**, carrying every step's
+//! verdict in innermost-first order ([`CoalesceChain::steps`]), because the
+//! fold is what produces the verdicts: a step's left-hand type is the
+//! previous step's *result*, not anything re-derivable from the spine node
+//! in isolation.
 //!
-//! Instead one entry is recorded per **chain root**, carrying every step's
-//! verdict in innermost-first order ([`CoalesceChain::steps`]), and any key
-//! that two distinct roots would share is **poisoned** (dropped entirely).
-//! Absence is always safe: a consumer with no verdict falls back to the
-//! runtime check, which is what gradual mode does anyway.
+//! The root's [`NodeKey`] is `brink_ir::hir::expr_span` of the root — since
+//! issue #1517 the root `Expr::Infix`'s **own `Provenance` range**, which
+//! strictly contains its left operand's, so a chain and its own left spine
+//! are always distinct keys. Before #1517 they were not (an infix node had
+//! no provenance and a trailing scalar literal contributed no range, so
+//! `some(a) or f() or 99` keyed identically to `some(a) or f()`), and this
+//! pass had to poison any key two roots would share. That workaround is
+//! gone; nothing here drops an entry to avoid an ambiguous key.
+//!
+//! Absence is still always safe: a consumer with no verdict falls back to
+//! the runtime check, which is what gradual mode does anyway.
 //!
 //! ## The old shape, retained
 //!
@@ -246,10 +251,7 @@ pub fn resolve(
 ) -> (CoalesceTable, Vec<Diagnostic>) {
     let globals = crate::infer::collect_globals(files, index, None);
     let mut out = Vec::new();
-    // `None` marks a poisoned key: two distinct chain roots derived the same
-    // `(file, range)` identity, so neither verdict may be served (module
-    // doc). Collected first, filtered into the table at the end.
-    let mut recorded: BTreeMap<NodeKey, Option<CoalesceChain>> = BTreeMap::new();
+    let mut table = CoalesceTable::new();
     for &(file, hir) in files {
         let resolution_by_range = resolution_index(resolutions, file);
         let mut v = CoalesceVisitor {
@@ -264,7 +266,7 @@ pub fn resolve(
             stitch_locals: None,
             fallback: TextRange::new(0.into(), 0.into()),
             spine: BTreeSet::new(),
-            recorded: &mut recorded,
+            table: &mut table,
             diagnostics: &mut out,
         };
         visit::visit(hir, &mut v);
@@ -284,7 +286,7 @@ pub fn resolve(
                 var.ptr.text_range(),
                 file,
                 &ctx,
-                &mut recorded,
+                &mut table,
                 &mut out,
             );
         }
@@ -294,15 +296,9 @@ pub fn resolve(
                 c.ptr.text_range(),
                 file,
                 &ctx,
-                &mut recorded,
+                &mut table,
                 &mut out,
             );
-        }
-    }
-    let mut table = CoalesceTable::new();
-    for (key, chain) in recorded {
-        if let Some(chain) = chain {
-            table.insert(key, chain);
         }
     }
     (table, out)
@@ -356,8 +352,8 @@ struct CoalesceVisitor<'a> {
     /// walk. Membership only — never iterated — but a `BTreeSet` anyway,
     /// per the crate's determinism lint.
     spine: BTreeSet<usize>,
-    /// Chain-root verdicts, `None` for a poisoned (ambiguously keyed) one.
-    recorded: &'a mut BTreeMap<NodeKey, Option<CoalesceChain>>,
+    /// The chain-root verdicts recorded so far.
+    table: &'a mut CoalesceTable,
     diagnostics: &'a mut Vec<Diagnostic>,
 }
 
@@ -452,7 +448,7 @@ impl HirVisitor for CoalesceVisitor<'_> {
             self.fallback,
             self.file,
             &ctx,
-            self.recorded,
+            self.table,
             self.diagnostics,
         );
     }
@@ -469,18 +465,18 @@ fn check_expr(
     fallback: TextRange,
     file: FileId,
     ctx: &MistypeCtx<'_>,
-    recorded: &mut BTreeMap<NodeKey, Option<CoalesceChain>>,
+    table: &mut CoalesceTable,
     out: &mut Vec<Diagnostic>,
 ) {
     if coalesce_operands(expr).is_some() {
-        analyze_chain(expr, fallback, file, ctx, recorded, out);
+        analyze_chain(expr, fallback, file, ctx, table, out);
         for operand in chain_operands(expr) {
-            check_expr(operand, fallback, file, ctx, recorded, out);
+            check_expr(operand, fallback, file, ctx, table, out);
         }
         return;
     }
     for child in expr_children(expr) {
-        check_expr(child, fallback, file, ctx, recorded, out);
+        check_expr(child, fallback, file, ctx, table, out);
     }
 }
 
@@ -491,7 +487,7 @@ fn expr_children(expr: &Expr) -> Vec<&Expr> {
     match expr {
         Expr::Prefix(_, inner) | Expr::Postfix(inner, _) => vec![inner],
         Expr::FieldAccess(fa) => vec![&fa.base],
-        Expr::Infix(lhs, _, rhs) => vec![lhs, rhs],
+        Expr::Infix(ie) => vec![&ie.lhs, &ie.rhs],
         Expr::Call(_, args) => args.iter().collect(),
         Expr::ArrayLiteral(a) => a.elements.iter().collect(),
         Expr::MapLiteral(m) => m.entries.iter().flat_map(|(k, v)| [k, v]).collect(),
@@ -521,7 +517,7 @@ fn expr_children(expr: &Expr) -> Vec<&Expr> {
 /// The two operands of a coalescing node, or `None` for anything else.
 fn coalesce_operands(expr: &Expr) -> Option<(&Expr, &Expr)> {
     match expr {
-        Expr::Infix(lhs, InfixOp::Coalesce, rhs) => Some((lhs, rhs)),
+        Expr::Infix(ie) if ie.op == InfixOp::Coalesce => Some((&ie.lhs, &ie.rhs)),
         _ => None,
     }
 }
@@ -581,14 +577,15 @@ fn chain_operands(root: &Expr) -> Vec<&Expr> {
 ///
 /// The verdict is keyed by [`expr_span`] of the root — the derivation LIR
 /// lowering shares, in `brink-ir`, so producer and consumer cannot drift.
-/// A root whose subtree carries no source range at all cannot be keyed, and
-/// a key two distinct roots would share is poisoned rather than served.
+/// Since issue #1517 that is the root `Expr::Infix`'s own `Provenance`
+/// range, so every chain root in a file has its own key and there is no
+/// ambiguity to guard against.
 fn analyze_chain(
     root: &Expr,
     fallback: TextRange,
     file: FileId,
     ctx: &MistypeCtx<'_>,
-    recorded: &mut BTreeMap<NodeKey, Option<CoalesceChain>>,
+    table: &mut CoalesceTable,
     out: &mut Vec<Diagnostic>,
 ) {
     let spine = chain_spine(root);
@@ -641,11 +638,7 @@ fn analyze_chain(
     let Some(range) = expr_span(root) else {
         return;
     };
-    let key = NodeKey::new(file, range);
-    recorded
-        .entry(key)
-        .and_modify(|slot| *slot = None)
-        .or_insert(Some(CoalesceChain { steps }));
+    table.insert(NodeKey::new(file, range), CoalesceChain { steps });
 }
 
 /// Which shape one step's operand types imply, per the `docs/stdlib-spec.md`
@@ -735,7 +728,7 @@ fn expr_anchor(expr: &Expr) -> Option<TextRange> {
         Expr::Prefix(_, inner) | Expr::Postfix(inner, _) => expr_anchor(inner),
         Expr::Index(idx) => expr_anchor(&idx.base),
         Expr::FieldAccess(fa) => expr_anchor(&fa.base),
-        Expr::Infix(lhs, _, rhs) => expr_anchor(lhs).or_else(|| expr_anchor(rhs)),
+        Expr::Infix(ie) => expr_anchor(&ie.lhs).or_else(|| expr_anchor(&ie.rhs)),
         _ => None,
     }
 }
@@ -780,6 +773,10 @@ fn resolution_index(
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::panic,
+    reason = "test-only assertions; see sibling test modules"
+)]
 mod tests {
     use super::*;
     use brink_ir::{FileId as HirFileId, SymbolIndex};
@@ -870,9 +867,8 @@ mod tests {
     /// always classifies. `Expr::Prefix` is neither a shape `observe`
     /// narrows (only a bare `Path`) nor one `classify_expr_ty` handles at
     /// all (only Path/Call/Index beyond literals) — genuinely
-    /// unclassifiable, and still keyable (`expr_span` recurses through
-    /// `Prefix` into `x`'s own span, unlike the bare-literal
-    /// `an_unkeyable_chain_records_no_verdict` fixture).
+    /// unclassifiable, and (like every infix node since #1517) keyable
+    /// from the operation's own provenance.
     #[test]
     fn unpinned_left_hand_side_records_a_runtime_check_step() {
         // `fn`'s plain `{ }` routes through the code-ground `stmt_block`
@@ -1007,12 +1003,75 @@ mod tests {
     }
 
     #[test]
-    fn an_unkeyable_chain_records_no_verdict() {
-        // No operand carries a source range, so `expr_span` yields `None`
-        // and there is no identity to serve the verdict under. (It is also
-        // `E066`, but the point here is the key, not the diagnostic.)
-        let table = table_of("flow main() {\n  {5 or 9}\n  -> END\n}\n");
-        assert!(table.is_empty(), "{table:?}");
+    fn an_all_literal_chain_is_keyable_but_still_ill_typed() {
+        // Before #1517 this chain could not be keyed at all — neither
+        // operand carried a range and the infix node had none of its own,
+        // so `expr_span` yielded `None`. It is keyable now (the operation's
+        // own provenance), and records nothing purely because it is `E066`.
+        let src = "flow main() {\n  {5 or 9}\n  -> END\n}\n";
+        let (hir, ..) = build_native(src);
+        let root = first_coalesce_root(&hir).expect("one chain");
+        assert!(expr_span(root).is_some(), "the operation is keyable now");
+        assert!(table_of(src).is_empty(), "but it is ill-typed");
+    }
+
+    /// The #1517 refactor's payoff, at the producer: a chain root's key is
+    /// its **own** provenance range, so it covers the trailing literal that
+    /// used to contribute nothing, and the chain's own left spine derives a
+    /// *different* key that the table simply misses. Before #1517 the two
+    /// were the same key, which is why this pass had to poison any key two
+    /// roots could share.
+    #[test]
+    fn a_chain_root_and_its_left_spine_derive_different_keys() {
+        let src = concat!(
+            "fn maybe() {\n  return some(7);\n}\n",
+            "flow main() {\n  {some(1) or maybe() or 99}\n  -> END\n}\n",
+        );
+        let table = table_of(src);
+        assert_eq!(table.len(), 1, "{table:?}");
+        let (key, _) = table.iter().next().expect("one entry");
+        let start = usize::try_from(key.range.0).unwrap();
+        let end = usize::try_from(key.range.1).unwrap();
+        assert_eq!(&src[start..end], "some(1) or maybe() or 99");
+
+        // Derive the spine's key from the HIR itself, not from a fabricated
+        // `src.find(...)` range: the stamped range includes trailing
+        // whitespace trivia before the next operator (see the #1517 comment
+        // in `hir::spans`), so a hand-picked substring range would not be
+        // the spine's *real* key and would trivially miss the table for the
+        // wrong reason.
+        let (hir, ..) = build_native(src);
+        let root_expr = first_coalesce_root(&hir).expect("one chain");
+        let Expr::Infix(root) = root_expr else {
+            panic!("expected a left-associative chain, got {root_expr:?}");
+        };
+        let spine_range = expr_span(&root.lhs).expect("the left spine is an infix too");
+        assert_ne!(
+            spine_range,
+            TextRange::new(key.range.0.into(), key.range.1.into())
+        );
+        assert!(
+            table.at(HirFileId(0), spine_range).is_none(),
+            "a spine node must miss, never inherit the root's verdict: {table:?}"
+        );
+    }
+
+    /// The first coalescing chain root in a file's knot bodies.
+    fn first_coalesce_root(hir: &HirFile) -> Option<&Expr> {
+        for knot in &hir.knots {
+            for stmt in &knot.body.stmts {
+                if let Stmt::Content(c) = stmt {
+                    for part in &c.parts {
+                        if let brink_ir::ContentPart::Interpolation(e) = part
+                            && coalesce_operands(e).is_some()
+                        {
+                            return Some(e);
+                        }
+                    }
+                }
+            }
+        }
+        None
     }
 
     #[test]
@@ -1025,9 +1084,8 @@ mod tests {
         assert_eq!(table.len(), 2, "one entry per chain root: {table:?}");
     }
 
-    /// Two chains in the same file whose spans genuinely differ stay
-    /// separately addressable — the poisoning rule must not be a blanket
-    /// "any second chain wins/loses".
+    /// Two textually identical chains in the same file stay separately
+    /// addressable: the key is each root's own source range, not its text.
     #[test]
     fn sibling_chains_keep_distinct_keys() {
         let src = "flow main() {\n  {some(1) or 2}\n  {some(1) or 2}\n  -> END\n}\n";

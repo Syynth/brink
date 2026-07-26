@@ -136,7 +136,7 @@ fn expr_children(expr: &Expr) -> Vec<&Expr> {
     match expr {
         Expr::Prefix(_, inner) | Expr::Postfix(inner, _) => vec![inner],
         Expr::FieldAccess(fa) => vec![&fa.base],
-        Expr::Infix(lhs, _, rhs) => vec![lhs, rhs],
+        Expr::Infix(ie) => vec![&ie.lhs, &ie.rhs],
         Expr::Call(_, args) => args.iter().collect(),
         Expr::ArrayLiteral(a) => a.elements.iter().collect(),
         Expr::MapLiteral(m) => m.entries.iter().flat_map(|(k, v)| [k, v]).collect(),

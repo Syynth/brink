@@ -2,7 +2,8 @@
 
 use brink_syntax::ast::{self, AstNode};
 
-use crate::{DiagnosticCode, Expr};
+use crate::provenance::NodeClass;
+use crate::{DiagnosticCode, Expr, InfixExpr};
 
 use super::super::context::{LowerScope, LowerSink, Lowered};
 use super::super::helpers::{lower_infix_op, lower_postfix_op, lower_prefix_op};
@@ -34,7 +35,10 @@ impl LowerExpr for ast::InfixExpr {
             .rhs()
             .ok_or_else(|| sink.diagnose(range, DiagnosticCode::E015))
             .and_then(|e| e.lower_expr(scope, sink))?;
-        Ok(Expr::Infix(Box::new(lhs), op, Box::new(rhs)))
+        // The whole `lhs op rhs` node's own range — the identity key a
+        // side table addresses this node by (issue #1517).
+        let ptr = scope.prov(NodeClass::Infix, self.syntax());
+        Ok(Expr::Infix(InfixExpr::new(ptr, lhs, op, rhs)))
     }
 }
 
