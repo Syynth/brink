@@ -1451,8 +1451,9 @@ fn wait_for_next_analysis_pass(
 /// #1055 gap 2 (file-watch path): editing `brink.toml` on disk and sending
 /// the `workspace/didChangeWatchedFiles` notification the server's own
 /// `initialized()`-time watcher registration asks for (`**/brink.toml`, in
-/// addition to `**/*.ink`) re-resolves the dialect and re-analyzes on the
-/// very next pass — no client restart, no re-`initialize`.
+/// addition to `**/*.ink` and `**/*.brink`) re-resolves the dialect and
+/// re-analyzes on the very next pass — no client restart, no
+/// re-`initialize`.
 #[test]
 fn brink_toml_file_watch_reload_applies_without_restart() {
     let root = unique_tmp_dir("file-watch-reload");
@@ -2024,90 +2025,38 @@ fn native_two_file_workspace_hover_keeps_the_db_backed_effect_row() {
     std::fs::write(root.join("market/barter.brink"), NATIVE_BARTER).unwrap();
     std::fs::write(root.join("main.brink"), NATIVE_MAIN).unwrap();
 
-    let bin = env!("CARGO_BIN_EXE_brink-lsp");
-    let mut child = Command::new(bin)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("failed to start brink-lsp");
-    let mut stdin = child.stdin.take().unwrap();
-    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    // No declared dialect: a native mount's *default*
+    // (`AnalysisOptions::default()`), matching `brink-ide`'s own
+    // `native_cross_file_hover_under_default_dialect`.
+    let (mut child, mut stdin, mut stdout) = start_server_at(&root, None);
 
-    send(
-        &mut stdin,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "capabilities": {},
-                "rootUri": format!("file://{}", root.display()),
-            },
-        }),
-    );
-    let (_init_resp, _) = recv_response(&mut stdout, 1);
-    send(
-        &mut stdin,
-        &json!({"jsonrpc": "2.0", "method": "initialized", "params": {}}),
-    );
-
-    // The workspace scan only enumerates `.ink`; native files reach the db
-    // through explicit `didOpen`, which admits any path.
+    // Both files are opened explicitly here — this test is about identity,
+    // not admission. (Since #1562 the workspace scan enumerates `.brink`
+    // too, so a native sibling reaches the db either way; the
+    // `native_two_file_workspace_*_without_opening_the_sibling` test below
+    // covers the scan path on its own.)
     let barter_uri = format!("file://{}", root.join("market/barter.brink").display());
     let main_uri = format!("file://{}", root.join("main.brink").display());
-    for (uri, text) in [(&barter_uri, NATIVE_BARTER), (&main_uri, NATIVE_MAIN)] {
-        send(
-            &mut stdin,
-            &json!({
-                "jsonrpc": "2.0",
-                "method": "textDocument/didOpen",
-                "params": {"textDocument": {
-                    "uri": uri, "languageId": "brink", "version": 1, "text": text,
-                }},
-            }),
-        );
-    }
+    did_open_native(&mut stdin, &barter_uri, NATIVE_BARTER);
+    did_open_native(&mut stdin, &main_uri, NATIVE_MAIN);
     // `file_count >= 2` pins the pass that has *both* files — an earlier
     // single-file pass cannot satisfy it (see `wait_for_analysis_pass_where`).
     let _ = wait_for_analysis_pass_where(&mut stdout, &main_uri, MAX_MESSAGES, |c| c >= 2);
 
-    let hover = |stdin: &mut ChildStdin,
-                 stdout: &mut BufReader<ChildStdout>,
-                 id: u64,
-                 uri: &str,
-                 line: u32,
-                 character: u32| {
-        send(
-            stdin,
-            &json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "method": "textDocument/hover",
-                "params": {
-                    "textDocument": {"uri": uri},
-                    "position": {"line": line, "character": character},
-                },
-            }),
-        );
-        recv_response(stdout, id).0
-    };
-
     // `flow start()` in `main.brink` (module `story::main`) …
-    let start = hover(&mut stdin, &mut stdout, 2, &main_uri, 2, 7);
+    let start = hover_at(&mut stdin, &mut stdout, 2, &main_uri, 2, 7);
     // … and `flow haggle()` in `market/barter.brink` (module
     // `story::market::barter`) — a per-file divergence would show on one and
     // not the other.
-    let haggle = hover(&mut stdin, &mut stdout, 3, &barter_uri, 3, 7);
+    let haggle = hover_at(&mut stdin, &mut stdout, 3, &barter_uri, 3, 7);
 
-    // The cross-file divert target `-> haggle` in `main.brink`. It resolves
-    // to nothing today because the LSP partitions projects by the INCLUDE
-    // graph and native `.brink` has no INCLUDEs, so each native file is its
-    // own single-file project — a separate gap from the identity one under
-    // test here. Asserted so that whoever teaches the LSP the native
-    // compilation closure sees this test and replaces it with the
-    // "Defined in `market/barter.brink`" assertion it should then make.
-    let cross_file = hover(&mut stdin, &mut stdout, 4, &main_uri, 4, 6);
+    // The cross-file divert target `-> haggle` in `main.brink`. Until issue
+    // #1562 this resolved to nothing — the LSP partitioned projects by the
+    // INCLUDE graph and native `.brink` has no INCLUDEs, so each native file
+    // was its own single-file project and the divert target was simply not
+    // in scope. It now crosses the file boundary (the native module tree is
+    // one project), so the hover names the *defining* file.
+    let cross_file = hover_at(&mut stdin, &mut stdout, 4, &main_uri, 4, 6);
 
     drop(stdin);
     drop(stdout);
@@ -2134,9 +2083,306 @@ fn native_two_file_workspace_hover_keeps_the_db_backed_effect_row() {
         "hover must carry the doc comment: {haggle}"
     );
 
+    let cross_file_md = cross_file["result"]["contents"]["value"]
+        .as_str()
+        .unwrap_or("");
     assert!(
-        cross_file["result"].is_null(),
-        "known gap (INCLUDE-graph project partitioning, see this test's comment): \
-         a cross-file native divert now hovers — update this assertion: {cross_file}"
+        cross_file_md.contains("**knot** `haggle`"),
+        "a cross-file native divert must hover its target (#1562): {cross_file}"
     );
+    assert!(
+        cross_file_md.contains("barter.brink"),
+        "the cross-file hover must name the defining file: {cross_file}"
+    );
+    assert!(
+        cross_file_md.contains("**effects**"),
+        "the db-backed effect row must survive the identity join across the \
+         file boundary: {cross_file}"
+    );
+}
+
+/// Start a server rooted at `root`, `initialize` + `initialized` it, and
+/// return its pipes. `dialect` is written verbatim into
+/// `initializationOptions.dialect` when given.
+fn start_server_at(
+    root: &std::path::Path,
+    dialect: Option<&str>,
+) -> (Child, ChildStdin, BufReader<ChildStdout>) {
+    let bin = env!("CARGO_BIN_EXE_brink-lsp");
+    let mut child = Command::new(bin)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to start brink-lsp");
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    let mut params = json!({
+        "capabilities": {},
+        "rootUri": format!("file://{}", root.display()),
+    });
+    if let Some(dialect) = dialect {
+        params["initializationOptions"] = json!({ "dialect": dialect });
+    }
+    send(
+        &mut stdin,
+        &json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": params}),
+    );
+    let (_init_resp, _) = recv_response(&mut stdout, 1);
+    send(
+        &mut stdin,
+        &json!({"jsonrpc": "2.0", "method": "initialized", "params": {}}),
+    );
+
+    (child, stdin, stdout)
+}
+
+/// Send a `textDocument/didOpen` for a native document.
+fn did_open_native(stdin: &mut ChildStdin, uri: &str, text: &str) {
+    send(
+        stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {"textDocument": {
+                "uri": uri, "languageId": "brink", "version": 1, "text": text,
+            }},
+        }),
+    );
+}
+
+/// Send the request `build(id)` produces, and keep re-sending it (with a
+/// fresh id, briefly backing off) until `ready` accepts the response or the
+/// attempts run out. Returns the last response either way.
+///
+/// The point is the *failure* mode: a request is always answered, so a
+/// regression surfaces as a response the caller can assert on, whereas
+/// pinning the same expectation to a `$/brink/backgroundAnalysisComplete`
+/// predicate the regression makes unsatisfiable would block the reader
+/// forever. Requests only need retrying at all because a server-side race
+/// (the workspace scan versus the client's own `didOpen`) decides which
+/// analysis pass lands first.
+fn retry_request(
+    stdin: &mut ChildStdin,
+    stdout: &mut BufReader<ChildStdout>,
+    first_id: u64,
+    build: impl Fn(u64) -> Value,
+    ready: impl Fn(&Value) -> bool,
+) -> Value {
+    const ATTEMPTS: u64 = 10;
+
+    let mut last = Value::Null;
+    for attempt in 0..ATTEMPTS {
+        let id = first_id + attempt;
+        send(stdin, &build(id));
+        last = recv_response(stdout, id).0;
+        if ready(&last) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    last
+}
+
+/// Request `textDocument/hover` at a position and return the raw response.
+fn hover_at(
+    stdin: &mut ChildStdin,
+    stdout: &mut BufReader<ChildStdout>,
+    id: u64,
+    uri: &str,
+    line: u32,
+    character: u32,
+) -> Value {
+    send(
+        stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "textDocument/hover",
+            "params": {
+                "textDocument": {"uri": uri},
+                "position": {"line": line, "character": character},
+            },
+        }),
+    );
+    recv_response(stdout, id).0
+}
+
+/// Issue #1562, the headline gap: **cross-file navigation in a native
+/// workspace**, exercised the way a user actually meets it — one file open,
+/// the sibling module merely present on disk.
+///
+/// Two things had to be wrong for this to fail, and both are fixed here:
+/// the workspace scan enumerated `.ink` only, so `market/barter.brink` never
+/// entered the db at all; and `compute_projects` grouped by INCLUDE
+/// reachability, which native has none of, so even once both files *were* in
+/// the db they were two disjoint single-file projects and `haggle` was not
+/// in `main.brink`'s navigation scope.
+#[test]
+fn native_two_file_workspace_goes_to_definition_without_opening_the_sibling() {
+    const MAX_MESSAGES: u64 = 2000;
+
+    let root = unique_tmp_dir("native-cross-file-def");
+    std::fs::create_dir_all(root.join("market")).unwrap();
+    std::fs::write(root.join("market/barter.brink"), NATIVE_BARTER).unwrap();
+    std::fs::write(root.join("main.brink"), NATIVE_MAIN).unwrap();
+
+    let (mut child, mut stdin, mut stdout) = start_server_at(&root, Some("brink"));
+
+    // Only `main.brink` is opened. `market/barter.brink` is on disk and must
+    // reach the db through the `initialized` workspace scan.
+    let main_uri = format!("file://{}", root.join("main.brink").display());
+    let barter_uri = format!("file://{}", root.join("market/barter.brink").display());
+    did_open_native(&mut stdin, &main_uri, NATIVE_MAIN);
+    let _ = wait_for_next_analysis_pass(&mut stdout, &main_uri, MAX_MESSAGES);
+
+    // Both requests are *retried* rather than pinned to a `file_count >= 2`
+    // analysis pass: the scan and the `didOpen` race, so the first pass to
+    // complete may be either one's. A request always gets a response, so a
+    // regression fails these assertions instead of blocking on a completion
+    // notification that will never arrive.
+    let definition = retry_request(
+        &mut stdin,
+        &mut stdout,
+        2,
+        |id| {
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "textDocument/definition",
+                "params": {
+                    // The cross-file divert target `-> haggle` in `main.brink`.
+                    "textDocument": {"uri": &main_uri},
+                    "position": {"line": 4, "character": 6},
+                },
+            })
+        },
+        |resp| resp["result"]["uri"].is_string(),
+    );
+
+    // Find-references from the definition side is the same scope read the
+    // other way: the reference lives in a file the defining module never
+    // mentions.
+    let references = retry_request(
+        &mut stdin,
+        &mut stdout,
+        20,
+        |id| {
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "textDocument/references",
+                "params": {
+                    "textDocument": {"uri": &barter_uri},
+                    "position": {"line": 3, "character": 7},
+                    "context": {"includeDeclaration": false},
+                },
+            })
+        },
+        |resp| {
+            resp["result"]
+                .as_array()
+                .is_some_and(|locs| !locs.is_empty())
+        },
+    );
+
+    drop(stdin);
+    drop(stdout);
+    let _ = child.wait();
+    std::fs::remove_dir_all(&root).unwrap();
+
+    let target = definition["result"]["uri"].as_str().unwrap_or("");
+    assert!(
+        target.ends_with("market/barter.brink"),
+        "go-to-definition must cross into the sibling native module (#1562), \
+         got: {definition}"
+    );
+
+    let ref_uris: Vec<&str> = references["result"]
+        .as_array()
+        .map(|locs| {
+            locs.iter()
+                .filter_map(|loc| loc["uri"].as_str())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    assert!(
+        ref_uris.iter().any(|uri| uri.ends_with("main.brink")),
+        "find-references must see the referring native module (#1562), \
+         got: {references}"
+    );
+}
+
+/// `alpha.brink` and `beta.brink` — two native modules that each declare a
+/// flow named `greet`. Legal: a native file's module is its path and is
+/// always *declared*, so the two are `story::alpha::greet` and
+/// `story::beta::greet` and they coexist (M-2d, issue #790) — but only under
+/// `Dialect::Brink`, which is exactly the input the LSP's own `ProjectDb`
+/// never received.
+const NATIVE_ALPHA: &str = "\
+/// Greeting from alpha.
+flow greet() {
+  Alpha says hello.
+}
+";
+
+const NATIVE_BETA: &str = "\
+/// Greeting from beta.
+flow greet() {
+  Beta says hello.
+}
+";
+
+/// The sibling bug folded into #1562: `Backend`'s `ProjectDb` never received
+/// `set_analysis_options`, so every db-backed request handler — hover's
+/// `db.effects`/`db.signature`/`db.infer_body`, inlay hints, code actions,
+/// rename's UFCS resolution — ran under `AnalysisOptions::default()` while
+/// the published diagnostics used the client's declared options. The #1553
+/// bug class in a second db holder.
+///
+/// `Dialect::StrictInk` (the default) gates off M-2d cross-declared-module
+/// coexistence in `symbol_index_query`, so under the stale default the db's
+/// index kept only *one* of the two `greet`s. The visible tell is hover's
+/// effects row, which `brink_ide::hover` renders from `db.effects(info.id)`:
+/// the analysis (running under the declared `brink` dialect) minted an id
+/// for both, but only one of them keyed anything in the db.
+#[test]
+fn native_homonym_flows_keep_the_db_backed_hover_under_the_declared_dialect() {
+    const MAX_MESSAGES: u64 = 2000;
+
+    let root = unique_tmp_dir("native-homonym-dialect");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("alpha.brink"), NATIVE_ALPHA).unwrap();
+    std::fs::write(root.join("beta.brink"), NATIVE_BETA).unwrap();
+
+    let (mut child, mut stdin, mut stdout) = start_server_at(&root, Some("brink"));
+
+    let alpha_uri = format!("file://{}", root.join("alpha.brink").display());
+    let beta_uri = format!("file://{}", root.join("beta.brink").display());
+    did_open_native(&mut stdin, &alpha_uri, NATIVE_ALPHA);
+    did_open_native(&mut stdin, &beta_uri, NATIVE_BETA);
+    let _ = wait_for_analysis_pass_where(&mut stdout, &alpha_uri, MAX_MESSAGES, |c| c >= 2);
+
+    // `flow greet()` is line 1 in both files (line 0 is the doc comment).
+    let alpha = hover_at(&mut stdin, &mut stdout, 2, &alpha_uri, 1, 7);
+    let beta = hover_at(&mut stdin, &mut stdout, 3, &beta_uri, 1, 7);
+
+    drop(stdin);
+    drop(stdout);
+    let _ = child.wait();
+    std::fs::remove_dir_all(&root).unwrap();
+
+    for (label, resp) in [("alpha", &alpha), ("beta", &beta)] {
+        let md = resp["result"]["contents"]["value"].as_str().unwrap_or("");
+        assert!(
+            md.contains("**knot** `greet`"),
+            "hover over `{label}`'s own `greet` must resolve: {resp}"
+        );
+        assert!(
+            md.contains("**effects**"),
+            "`{label}`'s db-backed effect row is missing — the server's own \
+             ProjectDb is analyzing under stale default options: {resp}"
+        );
+    }
 }

@@ -567,10 +567,10 @@ impl Backend {
     ///
     /// This is the shared admission sink for every explicit-path load —
     /// [`Self::chase_includes`] (an `INCLUDE` target) and [`Self::walk_and_load`]
-    /// (a path `collect_ink_files` produced while walking the workspace
+    /// (a path `collect_source_files` produced while walking the workspace
     /// root) both call it, and it recurses into itself while chasing
     /// further includes. It never applies `brink_source_tree::is_ignored_dir`
-    /// itself, because each caller has already decided: `collect_ink_files`
+    /// itself, because each caller has already decided: `collect_source_files`
     /// prunes ignored directories upstream during the walk, while
     /// `chase_includes` and `did_open` deliberately admit unconditionally,
     /// per `brink_source_tree::is_ignored_dir`'s "Admission policy" doc
@@ -627,7 +627,8 @@ impl Backend {
         }
     }
 
-    /// Scan workspace directories for .ink files and load them all.
+    /// Scan workspace directories for source files (`.ink` and `.brink`) and
+    /// load them all.
     fn load_workspace_files(&self) {
         let roots = match self.workspace_roots.lock() {
             Ok(guard) => guard.clone(),
@@ -645,19 +646,23 @@ impl Backend {
         db.rebuild_include_graph();
     }
 
-    /// Recursively walk a directory, loading all .ink files. The walk
-    /// itself is delegated to [`collect_ink_files`] — a free function with
-    /// no `Client` dependency — so pruning can be unit-tested directly
+    /// Recursively walk a directory, loading every source file it holds. The
+    /// walk itself is delegated to [`collect_source_files`] — a free function
+    /// with no `Client` dependency — so pruning can be unit-tested directly
     /// without standing up a full `Backend` (issue #1402).
     fn walk_and_load(&self, dir: &std::path::Path) {
-        for path in collect_ink_files(dir) {
+        for path in collect_source_files(dir) {
             let path_str = path.to_string_lossy().into_owned();
             self.load_file_from_disk(&path_str);
         }
     }
 }
 
-/// Recursively collect every `.ink` file path under `dir`, via the shared
+/// Recursively collect every source file path under `dir` — `.ink` **and**
+/// native `.brink` (issue #1562: the scan enumerated `.ink` alone, so in a
+/// native workspace only the files the user happened to `didOpen` ever
+/// reached the db and every cross-file feature was blind to the rest) — via
+/// the shared
 /// [`brink_source_tree::Walk`] — so it never descends into a directory
 /// [`brink_source_tree::IGNORED_DIR_NAMES`] names (`target/`, `.git/`,
 /// `node_modules/`). Before issue #1402, this was the third unpruned
@@ -680,12 +685,21 @@ impl Backend {
 /// Unreadable directories are skipped rather than reported — a workspace
 /// scan is best-effort, exactly as it was when this function swallowed its
 /// own `read_dir` errors.
-fn collect_ink_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+fn collect_source_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     brink_source_tree::Walk::new(dir)
         .flatten()
-        .filter(|entry| !entry.is_dir() && entry.path().extension().is_some_and(|ext| ext == "ink"))
+        .filter(|entry| !entry.is_dir() && is_source_path(entry.path()))
         .map(brink_source_tree::WalkEntry::into_path)
         .collect()
+}
+
+/// Whether `path` names a source file this server tracks: ink (`.ink`) or
+/// native (`.brink`). The same two extensions the `initialized` handler's
+/// file watchers register, and the same axis `brink-db`'s own frontend
+/// dispatch splits on (`.brink` → native parser, everything else → ink).
+fn is_source_path(path: &std::path::Path) -> bool {
+    path.extension()
+        .is_some_and(|ext| ext == "ink" || ext == "brink")
 }
 
 fn lock_db(db: &Arc<Mutex<brink_db::ProjectDb>>) -> std::sync::MutexGuard<'_, brink_db::ProjectDb> {
@@ -1000,7 +1014,7 @@ fn is_brink_toml_path(path: &str) -> bool {
 ///
 /// `did_change_watched_files` receives whole file paths from the client's
 /// file-watcher subscription rather than walking a directory tree itself, so
-/// [`collect_ink_files`]'s per-entry prune (which only ever sees one path
+/// [`collect_source_files`]'s per-entry prune (which only ever sees one path
 /// component at a time while descending, and so never tests the workspace
 /// root's own name or its ancestors) doesn't apply directly here — this walks every component of the already-complete path
 /// instead, using the same shared predicate (issue #1415: `did_change_watched_files`
@@ -1008,7 +1022,7 @@ fn is_brink_toml_path(path: &str) -> bool {
 /// files into `ProjectDb`, after #1370's config discovery, #1381's native
 /// compile walk, and #1402's LSP workspace-load walk).
 ///
-/// `roots` scopes the check to mirror `collect_ink_files`'s walk exactly:
+/// `roots` scopes the check to mirror `collect_source_files`'s walk exactly:
 /// the longest matching entry of `roots` is stripped from `path` before
 /// checking components, so a workspace root that itself lives under e.g.
 /// `node_modules/` (vendored ink content opened directly as a folder) still
@@ -1183,14 +1197,20 @@ impl LanguageServer for Backend {
             self.publish_config_outcome(&outcome).await;
         }
 
-        // Register file watchers for **/*.ink and brink.toml (#1055 gap 2:
-        // previously only .ink files were watched, so an on-disk edit to
-        // brink.toml never reached the server) — fire-and-forget, some test
+        // Register file watchers for **/*.ink, **/*.brink and brink.toml
+        // (#1055 gap 2: previously only .ink files were watched, so an
+        // on-disk edit to brink.toml never reached the server; #1562: native
+        // `.brink` modules were unwatched too, so an on-disk edit to one
+        // never reached the server either) — fire-and-forget, some test
         // clients don't respond to server-initiated requests.
         let client = self.client.clone();
         tokio::spawn(async move {
             let ink_watcher = FileSystemWatcher {
                 glob_pattern: GlobPattern::String("**/*.ink".to_owned()),
+                kind: None,
+            };
+            let native_watcher = FileSystemWatcher {
+                glob_pattern: GlobPattern::String("**/*.brink".to_owned()),
                 kind: None,
             };
             let toml_watcher = FileSystemWatcher {
@@ -1205,7 +1225,7 @@ impl LanguageServer for Backend {
                 method: "workspace/didChangeWatchedFiles".to_owned(),
                 register_options: serde_json::to_value(
                     tower_lsp::lsp_types::DidChangeWatchedFilesRegistrationOptions {
-                        watchers: vec![ink_watcher, toml_watcher],
+                        watchers: vec![ink_watcher, native_watcher, toml_watcher],
                     },
                 )
                 .ok(),
@@ -1215,7 +1235,7 @@ impl LanguageServer for Backend {
             }
         });
 
-        // Scan workspace directories for .ink files
+        // Scan workspace directories for source files
         self.load_workspace_files();
         self.trigger_analysis();
     }
@@ -2424,7 +2444,33 @@ pub async fn analysis_loop(
             per_file_diags,
             file_suppressions,
         ) = {
-            let db = lock_db(&db);
+            let mut db = lock_db(&db);
+            // Push the same options this pass analyzes under into the db as a
+            // salsa input, *before* reading anything derived from it (issue
+            // #1562, folding in the #1553 bug class in its second db holder).
+            //
+            // The published diagnostics come from the off-db
+            // `analyze_with_modules` pass below, which honors `opts` — but
+            // several request handlers read the db's own queries directly:
+            // hover (`db.effects`/`db.signature`/`db.inferred_signature`/
+            // `db.infer_body`), inlay hints, code actions, and rename's UFCS
+            // resolution. `Backend` never wrote this input, so every one of
+            // them ran under `AnalysisOptions::default()` — `Dialect::StrictInk`
+            // no matter what the client declared, which (among other things)
+            // gates off M-2d cross-declared-module coexistence in
+            // `symbol_index_query`. Every native `.brink` file has a declared
+            // module, so two native modules with a same-named flow lost one of
+            // them from the db's index, and every db-backed hover row for it
+            // silently vanished.
+            //
+            // Guarded against unchanged values exactly as `IdeSession::
+            // sync_db_options` is: salsa stamps the current revision on every
+            // write, so an unguarded call here — once per analysis pass, i.e.
+            // once per keystroke — would invalidate every direct reader on
+            // every edit.
+            if db.analysis_options() != &opts {
+                db.set_analysis_options(opts.clone());
+            }
             let generation = generation.load(Ordering::Relaxed);
             let project_defs = db.compute_projects();
             let project_inputs: Vec<_> = project_defs
@@ -2800,7 +2846,7 @@ mod tests {
     use tower_lsp::lsp_types::Diagnostic;
 
     use super::{
-        ConfigOverrides, PublishDecision, PublishRecord, PublishTier, collect_ink_files,
+        ConfigOverrides, PublishDecision, PublishRecord, PublishTier, collect_source_files,
         config_error_diagnostic, path_under_ignored_dir, publish_decision,
         resolve_language_options,
     };
@@ -2826,7 +2872,7 @@ mod tests {
 
     /// #1402 regression, mirroring #1381's `real_fs_list_skips_ignored_dirs`
     /// shape (`crates/internal/brink-driver/src/source_tree.rs`):
-    /// `collect_ink_files` — the walk `Backend::walk_and_load` delegates to
+    /// `collect_source_files` — the walk `Backend::walk_and_load` delegates to
     /// — must never descend into `target/`, `.git/`, or `node_modules/`.
     /// The fixture plants an unparseable file directly under `target/`
     /// (garbage ink syntax, not merely a stray file) to prove the walk is
@@ -2835,7 +2881,7 @@ mod tests {
     /// which parses it — an unparseable file under an ignored directory
     /// must not break the load.
     #[test]
-    fn collect_ink_files_skips_ignored_dirs() {
+    fn collect_source_files_skips_ignored_dirs() {
         let root = temp_dir("ignored-dirs");
 
         std::fs::write(root.join("main.ink"), "Hello.\n-> DONE\n").expect("write main.ink");
@@ -2854,7 +2900,7 @@ mod tests {
         std::fs::write(root.join("node_modules/some-pkg/index.ink"), "-- pkg --")
             .expect("write node_modules/some-pkg/index.ink");
 
-        let mut files = collect_ink_files(&root);
+        let mut files = collect_source_files(&root);
         files.sort();
 
         assert_eq!(
@@ -2866,17 +2912,58 @@ mod tests {
         std::fs::remove_dir_all(&root).expect("cleanup temp dir");
     }
 
+    /// Issue #1562: the workspace scan must enumerate native `.brink`
+    /// modules as well as `.ink`. Before this, only a `didOpen` ever put a
+    /// `.brink` file in the db, so a native workspace's sibling modules were
+    /// invisible to go-to-definition, find-references, and completion until
+    /// the user opened each one by hand. Non-source files stay out, and the
+    /// ignored-dir prune applies to `.brink` exactly as it does to `.ink`.
+    #[test]
+    fn collect_source_files_admits_native_brink_modules() {
+        let root = temp_dir("native-modules");
+
+        std::fs::write(root.join("main.brink"), "flow start() {\n  Hi.\n}\n")
+            .expect("write main.brink");
+        std::fs::create_dir_all(root.join("market")).expect("mkdir market");
+        std::fs::write(
+            root.join("market/barter.brink"),
+            "flow haggle() {\n  Trade.\n}\n",
+        )
+        .expect("write market/barter.brink");
+        std::fs::write(root.join("legacy.ink"), "Hello.\n-> DONE\n").expect("write legacy.ink");
+        std::fs::write(root.join("README.md"), "# not source\n").expect("write README.md");
+        std::fs::create_dir_all(root.join("target")).expect("mkdir target");
+        std::fs::write(root.join("target/stray.brink"), "flow stray() {\n}\n")
+            .expect("write target/stray.brink");
+
+        let mut files = collect_source_files(&root);
+        files.sort();
+
+        assert_eq!(
+            files,
+            vec![
+                root.join("legacy.ink"),
+                root.join("main.brink"),
+                root.join("market/barter.brink"),
+            ],
+            "both frontends' sources are admitted, non-source files are not, \
+             and target/ is still pruned for .brink too"
+        );
+
+        std::fs::remove_dir_all(&root).expect("cleanup temp dir");
+    }
+
     /// Issue #1424: a workspace legitimately *rooted* inside an
     /// ignored-dir-named directory (e.g. a `node_modules/vendor-ink` package
     /// opened directly as its own workspace folder) must still have its own
     /// `.ink` files admitted — `is_ignored_dir` is only ever checked against
     /// entries found *while descending from* the walk's starting `dir`
-    /// (`collect_ink_files`'s `Walk`), never against `dir` itself, so the
+    /// (`collect_source_files`'s `Walk`), never against `dir` itself, so the
     /// root's own name never disqualifies it. A genuinely nested ignored directory
     /// further below that same root must still be pruned, exactly as if the
     /// root weren't ignored-named at all.
     #[test]
-    fn collect_ink_files_admits_workspace_root_itself_under_ignored_dir() {
+    fn collect_source_files_admits_workspace_root_itself_under_ignored_dir() {
         let root = temp_dir("root-under-node-modules").join("node_modules/vendor-ink");
         std::fs::create_dir_all(&root).expect("create root under node_modules");
 
@@ -2885,7 +2972,7 @@ mod tests {
         std::fs::write(root.join("target/debug/build.ink"), "-- build --")
             .expect("write target/debug/build.ink");
 
-        let mut files = collect_ink_files(&root);
+        let mut files = collect_source_files(&root);
         files.sort();
 
         assert_eq!(
@@ -2902,7 +2989,7 @@ mod tests {
     /// #1415 regression: `path_under_ignored_dir` — the guard
     /// `did_change_watched_files` applies to whole file-watcher paths,
     /// since it never walks a directory tree entry-by-entry the way
-    /// `collect_ink_files` does — must flag a path whose *any*
+    /// `collect_source_files` does — must flag a path whose *any*
     /// component is `target/`, `.git/`, or `node_modules/`, not just a leaf
     /// directory name, and must leave ordinary paths alone.
     #[test]
@@ -2917,7 +3004,7 @@ mod tests {
         assert!(!path_under_ignored_dir("/repo/targets/main.ink", &[]));
     }
 
-    /// #1415 review finding: path-scope divergence. `collect_ink_files`
+    /// #1415 review finding: path-scope divergence. `collect_source_files`
     /// only ever tests components *below* whichever workspace root it
     /// started walking from, so a workspace root that itself lives inside
     /// `node_modules/` (vendored ink content opened directly as a folder)
