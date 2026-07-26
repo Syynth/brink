@@ -77,8 +77,14 @@
 //!
 //! [`SideTable`] is deliberately generic over its payload: it is
 //! `(node → verdict)` plumbing, so a second payload kind can ride the same
-//! keying and the same lookup without a parallel structure being invented
-//! (issue #1492 is expected to do exactly that).
+//! keying and the same lookup without a parallel structure being invented.
+//! Issue #1492 did exactly that — `crate::coalesce`'s [`CoalesceTable`]
+//! is a `SideTable<CoalesceChain>` carrying `or`-coalescing's recorded
+//! operand/result types to the same LIR-lowering consumer, on this keying,
+//! with no second mechanism.
+//!
+//! [`CoalesceTable`]: crate::CoalesceTable
+//! [`CoalesceChain`]: crate::CoalesceChain
 
 use std::collections::BTreeMap;
 

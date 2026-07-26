@@ -350,12 +350,7 @@ pub fn check(
     // `Mismatch` failures, surfaced at the coalescing expression's own site
     // — strict-mode-only, the compile-time half; gradual is inert with the
     // runtime `TypeError` fault as the (narrower) residual backstop.
-    out.extend(crate::coalesce_mismatch::check(
-        files,
-        index,
-        inference,
-        resolutions,
-    ));
+    out.extend(crate::coalesce::check(files, index, inference, resolutions));
     out
 }
 
@@ -1523,7 +1518,7 @@ mod tests {
 
     /// Native-lowered `(HirFile, SymbolIndex, ResolutionMap)`, the native
     /// counterpart of [`build`] (which parses through `brink_syntax`, the
-    /// ink/brink-extension frontend). Mirrors `coalesce_mismatch`'s own
+    /// ink/brink-extension frontend). Mirrors `coalesce`'s own
     /// `build_native`.
     fn build_native(src: &str) -> (HirFile, SymbolIndex, ResolutionMap) {
         let parsed = brink_syntax_native::parse(src);
