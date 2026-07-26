@@ -15,10 +15,17 @@ caller that skips the analyzer's `ufcs` pass); it is no longer the blanket
 refusal every resolved method call hit.
 
 Web-observable through `compileProject`: a native `.brink` entry using
-method-call syntax onto a field-typed-function, a free function, or a
-prelude verb — previously always a compile refusal (`E144`) — now compiles
-and its `StoryData` runs the call for real. `.ink` compiles are unaffected
-(ink's own lowering cannot produce the multi-segment callee path this pass
-keys on). Auto-ref (a free function reached through method syntax whose
-first parameter is `ref`) stays out of scope — refused with `E143`,
-pointing at #1462.
+method-call syntax onto a free function or a T1b/NS stdlib prelude verb
+(including the collection mutators — `m.insert(k, v)`, `a.push(v)`, etc.,
+lowered the same statement-only way their bare-call form is) — previously
+always a compile refusal (`E144`) — now compiles and its `StoryData` runs
+the call for real. The field-access `FieldCall` verdict also lowers for
+real, but is not yet reachable from any native `.brink` source: the grammar
+cannot yet spell a function-typed struct field
+(`brink-syntax-native`'s `struct_field` parses only bare-path field types),
+so this half is exercised by a hand-rewritten HIR fixture
+(`brink-ir/tests/ufcs_field_call.rs`), not an end-to-end `.brink` case.
+`.ink` compiles are unaffected (ink's own lowering cannot produce the
+multi-segment callee path this pass keys on). Auto-ref (a free function
+reached through method syntax whose first parameter is `ref`) stays out of
+scope — refused with `E143`, pointing at #1462.
