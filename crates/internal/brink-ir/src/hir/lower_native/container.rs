@@ -190,9 +190,10 @@ pub(super) fn lower_top_level_container(
     // DONE; has one ⇒ must return"). A coroutine that falls through
     // without a value is a *checker* error, and synthesizing `-> DONE`
     // here would silently turn that authoring mistake into a story that
-    // quietly ends. The checker diagnostic itself is not built by this
-    // slice (no new toggle machinery — see the issue #1489 fence); this is
-    // the toggle wired into the one mechanism that already exists.
+    // quietly ends. The checker diagnostic itself is `E150`
+    // (`brink_analyzer::strict::check_def`, issue #1551) — landed after
+    // this slice, which only wired the toggle into the mechanism that
+    // already existed here.
     if !node.is_function() && return_type.is_none() {
         super::body::apply_implicit_done(&mut body_block);
     }
