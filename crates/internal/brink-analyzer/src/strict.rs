@@ -408,6 +408,14 @@ fn check_escapes(
         for knot in &hir.knots {
             let kind = knot.symbol_kind();
             if let Some(id) = annotations::def_id_for(index, file, kind, &knot.name.text) {
+                // Issue #1591: "the body" for the return-value checks below
+                // is the knot's own block *plus* every one of its stitches
+                // — a stitch is reachable purely by fall-through when the
+                // knot's own body is empty, so a value-returning `return`
+                // living there counts the same as one in the knot's own
+                // block. See [`has_value_return_over_stitches`].
+                let body_has_value_return =
+                    has_value_return_over_stitches(knot, id, file, index, inference);
                 check_def(
                     id,
                     file,
@@ -419,6 +427,7 @@ fn check_escapes(
                     &knot.body,
                     &names,
                     inference,
+                    body_has_value_return,
                     &mut out,
                 );
             }
@@ -432,7 +441,14 @@ fn check_escapes(
                     // real `return_type` (#1509) is forwarded regardless,
                     // since #1551 made `check_def`'s return-value checks
                     // (escape + fall-through) fire off a declared
-                    // `return_type` too, not just `is_function`.
+                    // `return_type` too, not just `is_function`. A stitch
+                    // has no nested stitches of its own (#1591's merge is
+                    // one level, owned by the knot above), so its own
+                    // `has_value_return` fact needs no merge here.
+                    let body_has_value_return = inference
+                        .bodies
+                        .get(&id)
+                        .is_some_and(|b| b.has_value_return);
                     check_def(
                         id,
                         file,
@@ -444,6 +460,7 @@ fn check_escapes(
                         &stitch.body,
                         &names,
                         inference,
+                        body_has_value_return,
                         &mut out,
                     );
                 }
@@ -518,6 +535,52 @@ pub(crate) fn check_external_escapes(
     out
 }
 
+/// Whether **"the body"** of `knot` — for return-value purposes (`E065`/
+/// `E066` return-type escape, `E150` fall-through, `E067` inferred-void
+/// classification) — ever carries a value-returning `return <expr>`
+/// anywhere: its own block **plus every one of its stitches**
+/// (`docs/typed-mode-spec.md` §3 ruling, issue #1591). A stitch is
+/// reachable from its owning knot purely by fall-through when the knot's
+/// own body is empty — no explicit divert required — or by an explicit
+/// divert; either way it is a continuation of the *same definition's*
+/// execution, not a separate callable, so a value-returning `return`
+/// anywhere in a stitch counts exactly like one in the knot's own block.
+///
+/// `Stitch` has no nested stitches in the HIR (`hir::types::Stitch` carries
+/// no `stitches` field), so this is exactly one level of merge, never
+/// recursive.
+///
+/// This is the **one** has-value-return-over-stitches reading shared by
+/// every consumer that used to carry its own copy of it: [`check_def`]'s
+/// return-value checks (called once per knot below) and
+/// [`collect_void_defs`]'s (`E067`) inferred-void classification. Issue
+/// #1551 fixed the E065/E066 + E150 checks' `is_function`-only gating;
+/// #1054/PR #1585 fixed `collect_void_defs`'s own copy of this exact
+/// stitch-merge read; #1591 is the E150 path's turn, done here by sharing
+/// instead of adding a fourth copy.
+fn has_value_return_over_stitches(
+    knot: &brink_ir::Knot,
+    own_id: DefinitionId,
+    file: FileId,
+    index: &SymbolIndex,
+    inference: &InferenceResult,
+) -> bool {
+    let own = inference
+        .bodies
+        .get(&own_id)
+        .is_some_and(|b| b.has_value_return);
+    own || knot.stitches.iter().any(|st| {
+        annotations::def_id_for(
+            index,
+            file,
+            SymbolKind::Stitch,
+            &format!("{}.{}", knot.name.text, st.name.text),
+        )
+        .and_then(|sid| inference.bodies.get(&sid))
+        .is_some_and(|b| b.has_value_return)
+    })
+}
+
 #[expect(clippy::too_many_arguments, reason = "internal helper, not public API")]
 fn check_def(
     id: DefinitionId,
@@ -530,6 +593,12 @@ fn check_def(
     body: &Block,
     names: &annotations::TypeNames,
     inference: &InferenceResult,
+    // The has-value-return fact for the return-value checks below, read
+    // over "the body" as issue #1591 defines it (the caller's job — see
+    // [`has_value_return_over_stitches`] — since only the caller knows
+    // whether `id` is a knot with stitches to merge in or a stitch, which
+    // is always a leaf).
+    body_has_value_return: bool,
     out: &mut Vec<brink_ir::Diagnostic>,
 ) {
     let Some(sig) = inference.signatures.get(&id) else {
@@ -577,7 +646,9 @@ fn check_def(
         // to any declared-return-value def): a body that never carries a
         // value-returning `return <expr>` — it either falls off the end or
         // only ever bare-`return`s — proves nothing ever flows out of it.
-        // `body_types.has_value_return` is exactly that proof —
+        // `body_has_value_return` is exactly that proof (issue #1591: read
+        // over the def's own block *plus* its stitches, not just the def's
+        // own — see [`has_value_return_over_stitches`]) —
         // `sig.return_ty.is_unknown()` alone can't distinguish "never
         // returns a value" from "returns a value inference couldn't pin
         // down" (a genuine Unknown-escape, handled in the `else` below).
@@ -606,7 +677,7 @@ fn check_def(
         // mismatch, not an escape) must not run the Unknown-escape check —
         // `void` reads as "no return type" for escape purposes on both
         // branches, so it also can't trip `E150` in the `else` below.
-        if body_types.has_value_return && !has_void_annotation {
+        if body_has_value_return && !has_void_annotation {
             let annotated = return_type.is_some_and(|rt| annotations::resolve(rt, names).is_some());
             emit_escape(
                 file,
@@ -617,7 +688,7 @@ fn check_def(
                 annotated,
                 out,
             );
-        } else if declares_return_value && !body_types.has_value_return {
+        } else if declares_return_value && !body_has_value_return {
             out.push(brink_ir::Diagnostic {
                 file,
                 range: name_range,
@@ -992,7 +1063,8 @@ fn check_void_assignments(
 /// `f.sub`, `SymbolKind::Stitch`) with its own `BodyTypes` in
 /// `inference.bodies` — the knot's own `BodyTypes` only covers content
 /// before the first stitch. A knot is only inferred-void when neither its
-/// own body nor any of its stitches carries a value-returning `return`.
+/// own body nor any of its stitches carries a value-returning `return` —
+/// [`has_value_return_over_stitches`] is that shared reading (issue #1591).
 fn collect_void_defs(
     files: &[(FileId, &HirFile)],
     index: &SymbolIndex,
@@ -1012,22 +1084,8 @@ fn collect_void_defs(
                 .return_type
                 .as_ref()
                 .is_some_and(|rt| matches!(rt, TypeExpr::Named { name, .. } if name == "void"));
-            let stitch_returns_value = knot.stitches.iter().any(|st| {
-                annotations::def_id_for(
-                    index,
-                    file,
-                    SymbolKind::Stitch,
-                    &format!("{}.{}", knot.name.text, st.name.text),
-                )
-                .and_then(|sid| inference.bodies.get(&sid))
-                .is_some_and(|b| b.has_value_return)
-            });
             let inferred_void = knot.return_type.is_none()
-                && !stitch_returns_value
-                && inference
-                    .bodies
-                    .get(&id)
-                    .is_some_and(|body_types| !body_types.has_value_return);
+                && !has_value_return_over_stitches(knot, id, file, index, inference);
             if has_void_annotation || inferred_void {
                 out.insert(id);
             }
@@ -3104,6 +3162,29 @@ mod tests {
         assert!(
             !diags.iter().any(|d| d.code == DiagnosticCode::E067),
             "a declared-return-type fall-through must be E150, not also E067: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn stitch_return_value_reached_by_fallthrough_is_not_e150() {
+        // Issue #1591: the exact false positive from the issue body — the
+        // value-returning `return` lives in the stitch (`compute`), reached
+        // by falling straight through the knot's own (empty) body, not by
+        // an explicit divert. `check_def`'s E150 path previously only read
+        // the knot's own `BodyTypes.has_value_return` (`false`, since the
+        // knot's own body before the first stitch never returns), so it
+        // fired E150 even though the function as a whole always returns a
+        // value. Twin of `stitch_return_value_reached_by_fallthrough_is_not_
+        // inferred_void_and_stays_clean_of_e067` above, but for the E150
+        // consumer instead of E067 — both now read the same shared
+        // has-value-return-over-stitches fact.
+        let (hir, index, res) = build("=== function f(): int ===\n= compute\n~ return 5\n");
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
+        assert!(
+            !diags.iter().any(|d| d.code == DiagnosticCode::E150),
+            "{diags:?}"
         );
     }
 
