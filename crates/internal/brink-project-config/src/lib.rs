@@ -227,9 +227,10 @@ pub enum ConfigError {
     /// Malformed TOML syntax. `source` (`toml::de::Error`) carries its own
     /// byte span into the document — see [`ConfigError::span`] — and its
     /// `Display` already renders a `line X, column Y` location plus a
-    /// caret-annotated snippet, so this is the one variant where "a malformed
-    /// value cannot be located precisely" (#1384) is already false once
-    /// `path` is threaded in: syntax errors get file *and* line.
+    /// caret-annotated snippet on its own, independent of `path` (`toml`'s
+    /// own error type does this regardless of whether a path is threaded
+    /// in). What `path` adds here is the file-name attribution this variant
+    /// lacked before #1384; the line/column were always there.
     #[error("invalid TOML syntax in {path}: {source}")]
     Toml {
         path: String,
@@ -331,9 +332,11 @@ pub fn parse_str(text: &str) -> Result<(ProjectConfig, Vec<ConfigWarning>), Conf
 
 /// [`parse_str`], attaching `path` to every [`ConfigError`] it raises
 /// (#1384) — the discovered file's `SourceTree` key or filesystem path,
-/// rendered into each variant's own `Display` (`ConfigError::Toml`'s message
-/// now names both the file *and*, via the wrapped `toml::de::Error`'s own
-/// span, the line/column within it — see [`ConfigError::span`]).
+/// rendered into each variant's own `Display`. `ConfigError::Toml`'s message
+/// already named the line/column on its own, via the wrapped
+/// `toml::de::Error`'s own `Display` (see [`ConfigError::span`]) —
+/// independent of `path`; what threading `path` in adds is the file-name
+/// attribution.
 ///
 /// Every discovery-based caller in the workspace has a path in scope at this
 /// point and should call this rather than [`parse_str`]:
@@ -773,6 +776,10 @@ mod tests {
             err.to_string().contains("chapters/brink.toml"),
             "message must name the file, got: {err}"
         );
+        assert!(
+            matches!(err, ConfigError::InvalidValue { .. }),
+            "expected InvalidValue, got: {err:?}"
+        );
     }
 
     #[test]
@@ -783,6 +790,10 @@ mod tests {
             err.to_string().contains("chapters/brink.toml"),
             "message must name the file, got: {err}"
         );
+        assert!(
+            matches!(err, ConfigError::Toml { .. }),
+            "expected Toml, got: {err:?}"
+        );
     }
 
     #[test]
@@ -790,13 +801,26 @@ mod tests {
         let err = parse_str_at("chapters/brink.toml", "[project]\ndialect = 1\n").unwrap_err();
         assert_eq!(err.path(), "chapters/brink.toml");
         assert!(err.to_string().contains("chapters/brink.toml"));
+        assert!(
+            matches!(err, ConfigError::WrongType { .. }),
+            "expected WrongType, got: {err:?}"
+        );
     }
 
     #[test]
     fn parse_str_at_names_its_path_on_not_a_table() {
-        let err = parse_str_at("chapters/brink.toml", "\"just a string\"").unwrap_err();
+        // `project = 1` parses fine as TOML (root table with an integer
+        // value), so this exercises `NotATable`, not `Toml` — a bare string
+        // like `"just a string"` is invalid TOML *syntax* and would hit the
+        // `Toml` arm instead, duplicating the malformed-syntax test above and
+        // leaving `NotATable`'s `path` field uncovered.
+        let err = parse_str_at("chapters/brink.toml", "project = 1\n").unwrap_err();
         assert_eq!(err.path(), "chapters/brink.toml");
         assert!(err.to_string().contains("chapters/brink.toml"));
+        assert!(
+            matches!(err, ConfigError::NotATable { .. }),
+            "expected NotATable, got: {err:?}"
+        );
     }
 
     /// `parse_str` (the pathless entry point) still falls back to the bare

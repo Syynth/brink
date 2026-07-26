@@ -193,11 +193,33 @@ fn compile_unknown_config_key_is_a_warning_not_a_compile_failure() {
     let story = write_story(&dir, "Hello.\n-> END\n");
     write_config(&dir, "[project]\nfuture_key = \"x\"\n");
 
-    let out = brink().arg("compile").arg(&story).output().unwrap();
+    // `tracing_subscriber::fmt()`'s default `EnvFilter` (no `RUST_LOG` set)
+    // only lets `ERROR` through, so the `tracing::warn!` channel
+    // (`resolve_options` in brink-environment) needs `RUST_LOG=warn`
+    // explicitly to reach stdout — confirmed by direct invocation.
+    let out = brink()
+        .arg("compile")
+        .arg(&story)
+        .env("RUST_LOG", "warn")
+        .output()
+        .unwrap();
     assert!(
         out.status.success(),
         "an unrecognized brink.toml key must warn, not fail compilation: {}",
         String::from_utf8_lossy(&out.stderr)
+    );
+    // #1384: the `tracing::warn!` channel (`resolve_options`'s
+    // `[{config_key}] {warning}`) must name the file, not just the bare
+    // warning text — the CLI-error and LSP-diagnostic channels already had
+    // end-to-end coverage; this one didn't.
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("brink.toml"),
+        "unknown-key warning must name brink.toml, got stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("future_key"),
+        "unknown-key warning must name the offending key, got stdout: {stdout}"
     );
 
     fs::remove_dir_all(&dir).ok();
@@ -234,10 +256,15 @@ fn compile_malformed_brink_toml_names_the_file_in_the_error() {
 
 /// #1384: malformed TOML *syntax* (as opposed to a recognized key holding an
 /// out-of-range value, the case above) carries a byte span from the `toml`
-/// crate — its `Display` renders it as "line X, column Y" plus a
-/// caret-annotated snippet once `ConfigError::Toml` threads `path` through
-/// (`parse_str_at`). Black-box proof this reaches the CLI end to end, not
-/// just `brink-project-config`'s own unit tests around `ConfigError::span`.
+/// crate, and `toml::de::Error`'s own `Display` already renders it as
+/// "line X, column Y" plus a caret-annotated snippet, independent of
+/// `ConfigError::Toml`'s `path` field — this test passes unchanged even with
+/// this PR's production diff reverted (both `brink.toml` and `line 2` were
+/// already produced by the pre-existing hand-rolled `"project config error in
+/// {path}: {e}"` wrapper at the CLI's call site). It stays as a regression
+/// guard for that combined end-to-end message, but is not itself proof that
+/// `path`/`span` threading changed anything reachable from here — see the
+/// `brink-project-config` unit tests around `ConfigError::span` for that.
 #[test]
 fn compile_malformed_toml_syntax_names_its_line_in_the_error() {
     let dir = project_dir("compile-config-malformed-syntax");
