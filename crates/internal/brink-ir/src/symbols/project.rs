@@ -578,6 +578,19 @@ impl Projector {
             stitch,
             None,
         );
+        // Two-binding map iteration (`for k, v in m`, B2 issue #1461): the
+        // second binding is a local too, for hover/goto-def/rename parity
+        // with the first.
+        if let Some(val_name) = &f.val_name {
+            self.push_local(
+                val_name.text.clone(),
+                val_name.range,
+                SymbolKind::Temp,
+                knot,
+                stitch,
+                None,
+            );
+        }
         for s in &f.body {
             self.walk_block_stmt(s, knot, stitch);
         }

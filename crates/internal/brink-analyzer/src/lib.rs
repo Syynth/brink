@@ -67,7 +67,7 @@ pub use manifest::{ModuleMap, ResolvedModule};
 pub use native_admission::validate_native_accept_list;
 pub use protocols::{
     Protocol, ProtocolImplDecl, check_protocol_impls, check_reserved_names,
-    is_reserved_protocol_name, iterate_element_ty,
+    is_reserved_protocol_name, iterate_element_ty, iterate_val_ty,
 };
 pub use resolve::ImportScope;
 pub use signature::{Sig, signature};

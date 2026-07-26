@@ -79,6 +79,16 @@ impl OutputPart {
                 !flags.contains(brink_format::LineFlags::ALL_WS)
                     && !flags.contains(brink_format::LineFlags::EMPTY)
             }
+            // B4 (`docs/stdlib-spec.md` §1.6b): a final-`None` value at the
+            // display boundary resolves to the empty string (see
+            // `value_ops::stringify_display`) — it must not count as
+            // content for leading-newline/glue suppression, matching how
+            // an eagerly-dropped `Value::Null` never reaches the
+            // transcript at all (`push_value_ref`, below). Unlike `Null`,
+            // a `None` value IS retained in the transcript (traceability
+            // is a §1.6b rider) — only its content-ness for whitespace
+            // bookkeeping is suppressed here.
+            Self::ValueRef(Value::OptionVal(None)) => false,
             Self::ValueRef(_) => true,
             _ => false,
         }
@@ -121,7 +131,10 @@ fn resolve_part(
                 String::new()
             }
         }
-        OutputPart::ValueRef(val) => value_ops::stringify(val, program),
+        // B4 (`docs/stdlib-spec.md` §1.6b): the display boundary — a
+        // final-`None` value renders as nothing, not `"none"`. See
+        // `value_ops::stringify_display`'s doc comment for the full ruling.
+        OutputPart::ValueRef(val) => value_ops::stringify_display(val, program),
         OutputPart::Newline
         | OutputPart::Spring
         | OutputPart::Glue
@@ -170,7 +183,12 @@ fn resolve_line_ref(
                                         )
                                     })
                                 }
-                                other => value_ops::stringify(other, program),
+                                // B4 (`docs/stdlib-spec.md` §1.6b) — same
+                                // display-boundary forgiveness as the
+                                // `ValueRef` arm above; the surrounding
+                                // whitespace-collapse logic below already
+                                // treats an empty slot fragment correctly.
+                                other => value_ops::stringify_display(other, program),
                             })
                             .unwrap_or_default();
                         owned.as_str()
@@ -598,7 +616,12 @@ fn mark_glue_removals(parts: &[OutputPart], remove: &mut [bool]) {
                     OutputPart::Glue
                     | OutputPart::Checkpoint
                     | OutputPart::Tag(_)
-                    | OutputPart::Spring => {}
+                    | OutputPart::Spring
+                    // B4 (`docs/stdlib-spec.md` §1.6b): a final-`None`
+                    // value renders empty at the display boundary — same
+                    // pass-through treatment as whitespace-only text below,
+                    // consistent with `OutputPart::is_content`.
+                    | OutputPart::ValueRef(Value::OptionVal(None)) => {}
                     OutputPart::Text(s) if s.trim().is_empty() => {}
                     // Content (Text, LineRef, ValueRef) blocks glue scan.
                     OutputPart::Text(_) | OutputPart::LineRef { .. } | OutputPart::ValueRef(_) => {
@@ -1346,5 +1369,97 @@ mod tests {
             &[Value::String("".into())],
         );
         assert_eq!(result, "Hello world");
+    }
+
+    // ── B4 display-boundary forgiveness (`docs/stdlib-spec.md` §1.6b) ──
+
+    /// A final-`None` template slot renders as nothing — the surrounding
+    /// whitespace collapses exactly like the pre-existing `Null`/empty-
+    /// string slot cases above.
+    #[test]
+    fn template_none_option_slot_renders_as_nothing() {
+        let result = resolve_template(
+            vec![
+                LinePart::Literal("Hello ".into()),
+                LinePart::Slot(0),
+                LinePart::Literal(" world".into()),
+            ],
+            &[Value::none()],
+        );
+        assert_eq!(result, "Hello world");
+    }
+
+    /// `Some(v)` at the same slot position is unaffected by the boundary —
+    /// still `some(<v>)`, the F28 total rendering `stringify` gives it.
+    #[test]
+    fn template_some_option_slot_renders_totally() {
+        let result = resolve_template(
+            vec![LinePart::Literal("val: ".into()), LinePart::Slot(0)],
+            &[Value::some(Value::Int(3))],
+        );
+        assert_eq!(result, "val: some(3)");
+    }
+
+    /// A bare `OutputPart::ValueRef` (the `EmitValue`/unrecognized-content
+    /// path, not a template slot) gets the same forgiveness — and the
+    /// surrounding whitespace collapses across it exactly like it already
+    /// does across an eagerly-dropped `Value::Null` or an empty string
+    /// (`adjacent_whitespace_collapsed`, above): "before " + (nothing) +
+    /// " after" reads as one collapsed space, not two.
+    #[test]
+    fn value_ref_none_option_renders_as_nothing() {
+        let mut buf = OutputBuffer::new();
+        buf.push_text("before ");
+        buf.push_value_ref(Value::none());
+        buf.push_text(" after");
+        assert_eq!(buf.flush(), "before after");
+    }
+
+    /// Traceability rider (§1.6b): the append-only transcript is never
+    /// eagerly resolved (`docs/runtime-restructuring-spec.md`'s
+    /// deferred-resolution model) — a forgiven `None`-render still shows up
+    /// as `Value::OptionVal(None)` in `transcript()`, distinct from a slot
+    /// that carried no value at all. Resolving to text loses the
+    /// information; the structural transcript never does.
+    #[test]
+    fn none_render_is_traceable_in_the_raw_transcript() {
+        let mut buf = OutputBuffer::new();
+        buf.push_value_ref(Value::none());
+        assert!(
+            buf.transcript()
+                .iter()
+                .any(|p| matches!(p, OutputPart::ValueRef(Value::OptionVal(None)))),
+            "the raw None value must survive in the transcript: {:?}",
+            buf.transcript()
+        );
+        // Resolving it, separately, gives the forgiven empty text.
+        assert_eq!(buf.flush(), "");
+    }
+
+    /// A leading `None`-rendering value must not count as content for
+    /// leading-newline suppression — otherwise a story that opens with a
+    /// forgiven interpolation would get a spurious blank line before its
+    /// real content.
+    #[test]
+    fn leading_none_option_value_does_not_block_newline_suppression() {
+        let mut buf = OutputBuffer::new();
+        buf.push_value_ref(Value::none());
+        buf.push_newline();
+        buf.push_text("hello");
+        assert_eq!(buf.flush(), "hello");
+    }
+
+    /// A `None`-rendering value between glue and its target newline must
+    /// not block the glue scan — it passes through like whitespace-only
+    /// text, matching `mark_glue_removals`'s existing arms.
+    #[test]
+    fn none_option_value_does_not_block_glue_scan() {
+        let mut buf = OutputBuffer::new();
+        buf.push_text("hello");
+        buf.push_newline();
+        buf.push_value_ref(Value::none());
+        buf.push_glue();
+        buf.push_text("world");
+        assert_eq!(buf.flush(), "helloworld");
     }
 }

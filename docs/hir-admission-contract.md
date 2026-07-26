@@ -250,7 +250,8 @@ happy path is: native constructs lower to *existing* HIR nodes. Where they do:
 **Native features with no clean ink equivalent — the additions inventory:**
 
 1. **`for k, v` iteration** (ruled 2026-07-18). `ForStmt.var_name` is single
-   (F-K). **Additive field** `val_name: Option<Name>`. *Lean.*
+   (F-K). **Additive field** `val_name: Option<Name>`. *Lean.* **Landed**
+   (#1461, Track B2).
 2. **`enum` declarations + exhaustive `match`** (§13.1, ruled 2026-07-19).
    No HIR node (F-K). New `EnumDecl { name, variants: [{name, fields}] }`; `match`
    can extend `CondKind::Switch` with variant patterns or gain a `CondKind::Match`.
@@ -273,8 +274,8 @@ happy path is: native constructs lower to *existing* HIR nodes. Where they do:
    contract's addressing model should stop asserting exactly-2 (Q4).*
 
 **Verdict:** the native parser needs **one lean additive field** (`for k,v`) for
-v1, plus a **reserved channel** for enums, plus lowering *rules* (companions,
-UFCS) that add no nodes. The rest is reuse. The friction is not missing nodes —
+v1 — **landed** (#1461, Track B2) — plus a **reserved channel** for enums,
+plus lowering *rules* (companions, UFCS) that add no nodes. The rest is reuse. The friction is not missing nodes —
 it is the **ugly nodes it must fabricate** (weave `depth`/`context`, the
 `Return.ptr` convention, the `AstPtr` provenance) and the **silent couplings**
 (§3). The contract's real work is cleaning those, not growing the inventory.

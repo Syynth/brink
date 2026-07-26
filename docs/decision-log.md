@@ -2116,3 +2116,35 @@
 - **SCOPE:** moderate (closes nearly all remaining syntax-round items; docs/prose-dialect-spec.md §8d + §8b.10 + §9)
 - **WHAT:** Rapid-fire maintainer rulings. **(1) Choice typing is cue-only** (flipping the recorded lean): the cue above a choice block types all its options as that speaker's dialogue options; quotes carry no typing semantics; no cue → plain action-choices (PC dialogue options require the PC's cue — explicit); non-spoken options need no rule — an all-bracketed option delivers nothing via the existing `[]` anatomy. **(2) Block id universal** — every run of same-element adjacent content lines carries one. **(3) Centered = `<center>` span**, not an element. **(4) Cue extensions ride the ordinary tag channel** (`@VENDOR #(v.o.)`) — no parsed capture, no new payload machinery; the cue line's tags attach with the cue's data; export mapping may translate known tags to Fountain extensions. **(5) Fused `until cond -> target` deferred** — two-line canonical; sugar can land later breaklessly. **(6) Escape set final**: `\<` `\{` `\#` `\\` inline + `\!` `\@` line-start; unknown escape = compile error. **(7) The output enum is `Step`** (naming closed). **(8) The output format bakes no scene-specific fields**: element data is an open map produced by conventions and handlers — time-of-day or anything else is preset-configurable data, never a privileged field. **(9)** Context-injection and numeric-coercion deferrals stand. The complement-pass page (everything applied) is recorded in the spec at §8d.
 - **WHY:** Cue-only won because the quote mechanism was redundant machinery — the `[]` anatomy already makes non-spoken options deliver nothing, so the cue can type the block wholesale with zero per-option rules, and quotes return to being prose (less inference, the standing posture). Tags-as-extensions and open-map element data are the same judgment applied twice: reuse the existing channel over inventing a parsed field, and keep the wire format free of preset-specific privilege — what a scene heading captures is the preset's business, not the format's. `Step` marks the contract break honestly. The deferral of the until-sugar reflects its cost/benefit (identical semantics, purely additive later).
+
+## Compile-baked attachment ratified (prose #1351)
+- **WHEN:** 2026-07-25
+- **PROJECT:** brink
+- **SYSTEM:** language design (prose rethink #1351) / compiler
+- **SCOPE:** moderate (fixes the attachment layer for the prose build)
+- **WHAT:** Attachment is resolved at **compile time**: cue and parenthetical lines do not survive as runtime output; the following dialogue lines carry `speaker`/`delivery` (and the cue's tags) in their element data. The runtime performs no chaining. (This had fallen out of the open-threads discussion informally; ratified explicitly on maintainer "yes".)
+- **WHY:** The runtime stays dumb and each transcript line is self-attributed — translation, export, and hosts never reconstruct adjacency. Matches the standing "defer nothing the compiler already knows" posture.
+
+## Block id is a dedicated OutputLine field, not element data
+- **WHEN:** 2026-07-25
+- **PROJECT:** brink
+- **SYSTEM:** language design (prose rethink #1351) / runtime output format
+- **SCOPE:** minor/local (format shape)
+- **WHAT:** The universal block id (sitting-5 ruling: every run of same-element adjacent content lines carries one) lives as a **first-class field on `OutputLine`**, not an entry in the open element-data map.
+- **WHY:** The open-map doctrine exists to keep *preset-specific* payloads out of the format; block identity is the opposite case — universal, present on every line — so it earns a typed field. Hosts group lines without knowing any preset.
+
+## `!name` dispatch = ordinary module scope + brink.toml implicit usings
+- **WHEN:** 2026-07-25
+- **PROJECT:** brink
+- **SYSTEM:** language design (prose rethink #1351) / module system
+- **SCOPE:** moderate (dispatch namespace + a project-config surface)
+- **WHAT:** `!name` element-annotation dispatch resolves through **ordinary module scope** — file `use` block plus prelude; there is no separate macro registry. To avoid per-file ceremony, brink.toml gains **C#-style implicit usings**: a project-config list of `use` paths injected into every file's scope (an explicit duplicate `use` is harmless; a file-local name beats an implicit one; ambiguity between two implicit usings errors at the use site demanding qualification). Exact table spelling and precedence text are straw pending the prelude-design docket item (charter §13.3).
+- **WHY:** Maintainer proposed the C# global-usings model directly. It satisfies "technically imported" (the no-invisible-expansion doctrine holds: brink.toml is visible, checked in, deterministic-env input per #1306, and hover/explain-match names the supplying using) while a screenplay preset can still be available project-wide for free.
+
+## Done vs End resolved by host lifecycle, not conformance (#1450)
+- **WHEN:** 2026-07-25
+- **PROJECT:** brink
+- **SYSTEM:** runtime output contract / bevy-brink
+- **SCOPE:** moderate (freezes the `Step` terminal variants)
+- **WHAT:** Keep both `Step::Done` and `Step::End`. **Done** = turn complete; the flow (and its bevy entity) persists and may park/resume. **End** = story permanently over; the host despawns the flow entity. The axis is host-observable lifecycle, exactly as the #1450 dig charter demanded ("decide from bevy-host need, never conformance").
+- **WHY:** Maintainer: "end can despawn the flow entity in the bevy side so i think i do see a bit of value in done vs end." That is concrete host-need evidence — the distinction drives a real lifecycle action, so merging the variants would push a per-flow liveness question onto every host.

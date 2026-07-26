@@ -353,6 +353,11 @@ impl Analyzer {
     fn walk_for_stmt(&mut self, f: &ForStmt, pos: usize) {
         // The iterator binds at the loop head, in scope for the whole body.
         self.decls.push((f.var_name.text.clone(), pos));
+        // Two-binding map iteration (`for k, v in m`, B2 issue #1461): the
+        // second binding is in scope alongside the first.
+        if let Some(val_name) = &f.val_name {
+            self.decls.push((val_name.text.clone(), pos));
+        }
         self.record_reads(&f.iterable, pos);
         let loop_id = self.loops.len();
         self.loops.push((pos, pos));

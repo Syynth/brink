@@ -44,9 +44,11 @@ still open.
 > queue's **F27 ruling (2026-07-19) supersedes it** — Option has NO
 > truthiness (condition-position Option = strict compile error /
 > gradual fault); implementation fix owed, rides #1120. (Queue
-> F27/F28 — truthiness / pre-B4 total `none`/`some(…)` display — are
-> distinct from `phase-c-findings.md`'s F27, the concat naming-axis
-> query, which stays open.) (2) A2's `faults` row is bool-conservative;
+> F27/F28 — truthiness / the pre-B4 total `none`/`some(…)` display,
+> since superseded at the interpolation boundary by B4's None-render
+> forgiveness (§1.6b, issue #1463, SHIPPED) — are distinct from
+> `phase-c-findings.md`'s F27, the concat naming-axis query, which
+> stays open.) (2) A2's `faults` row is bool-conservative;
 > the protocol-contract granularity question is **F29** (audit C1+C2),
 > gating A4.
 

@@ -562,11 +562,19 @@ pub struct AwaitStmt {
     pub condition: Option<Expr>,
 }
 
-/// `for name in expr { … }`.
+/// `for name in expr { … }` — or, on the native surface only, `for key,
+/// val in expr { … }` (B2, issue #1461, docs/stdlib-spec.md §5/§9's F10
+/// ruling: two-binding map iteration replaces `entries()`; no pair shape
+/// ever materializes). `val_name` is the one additive HIR field the B0
+/// fence reserved (docs/b0-sequencing.md:356) — no new node.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForStmt {
     pub ptr: Provenance,
     pub var_name: Name,
+    /// The second binding (`for k, v in m`'s `v`) — always `None` for the
+    /// ink `~ { for … }` grammar, which has no two-binding syntax; native
+    /// `.brink` sets this from `for k, v in …`'s comma-separated form.
+    pub val_name: Option<Name>,
     pub iterable: Expr,
     pub body: Vec<BlockStmt>,
 }

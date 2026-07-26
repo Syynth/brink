@@ -8,7 +8,7 @@ usefully, who didn't:
 ~ temp mira = get(rooms, "Mira")
 ~ temp edda = get(rooms, "Edda")
 The innkeeper runs a finger down the register.
-Mira: {mira}. Edda: {edda}.
+Mira: {mira}. Edda: {string(edda)}.
 {mira == some(3): Mira is upstairs in room 3, same as always.}
 {edda == none: No Edda tonight — the road must have kept her.}
 -> END
@@ -28,6 +28,11 @@ or passed along — and the story kept running. That value's type is
 `Option[T]`, this chapter's subject, and the doctrine it carries is one line
 long: **a fault says "your program is wrong"; Option says "the world didn't
 have one."**
+
+(That scene prints Edda's line through `string(edda)` rather than a bare
+`{edda}` — a deliberate choice, not an oversight. A bare `{edda}` would
+print nothing at all: [How Option prints](#how-option-prints), later in
+this chapter, is where that rule belongs.)
 
 > **Current spelling** — examples in this chapter compile in today's brink
 > dialect: collection literals carry the `#[…]`/`#{…}` sigils and the Option
@@ -143,11 +148,15 @@ ale: {ale}, gin: {gin}
 ```
 
 ```text
-ale: some(0), gin: none
+ale: some(0), gin:
 The ale is first on the slate.
 One of these is on the shelf and one is not.
 The gin arrived on the evening cart.
 ```
+
+(`gin`'s line ends right after the colon — a bare `{gin}` is a `none` at
+the interpolation boundary, and renders as nothing;
+[How Option prints](#how-option-prints) explains why.)
 
 Note the reassignment: an Option variable moves freely between `some(…)`
 and `none` over its life — "what the register currently says about the gin"
@@ -372,38 +381,54 @@ The heaviest night on the tab: 7 coins — the ledger says some(7).
 
 ## How Option prints
 
-Display is total and boring, by ruling (F28): `none` renders as `none`,
-`some(6)` renders as `some(6)` — in interpolation, and identically through
-`string(x)`, which keeps its everything-in, never-fails contract:
+`some(v)` is total and boring forever, by ruling (F28): it renders
+`some(<v>)` everywhere it appears — in interpolation, and identically
+through `string(x)`, which keeps its everything-in, never-fails contract.
+`none` is where the two consumers **diverge**, by a second, later ruling
+(§1.6b, Track B4): `string(none)` still renders the total, boring `"none"`
+forever — F28's totality, preserved for that one intrinsic — but a `none`
+that is the **final** value of an interpolation renders as *nothing at
+all*. Absence rendering as absence is the honest narrative meaning; a
+`none` that leaked into your prose as the word "none" was always a
+debugging artifact, not something a player should read.
 
 ```ink
 ~ temp tab = #[4, 7, 2]
 ~ temp empty: array<int> = #[]
-Tonight's best: {max(tab)}. Empty ledger's best: {max(empty)}.
-Written to the wire: {string(max(tab))}.
+Tonight's best: {max(tab)}, same as {string(max(tab))} via string().
+Empty ledger, interpolated: "{max(empty)}".
+Empty ledger, via string(): {string(max(empty))}.
 -> END
 ```
 
 ```text
-Tonight's best: some(7). Empty ledger's best: none.
-Written to the wire: some(7).
+Tonight's best: some(7), same as some(7) via string().
+Empty ledger, interpolated: "".
+Empty ledger, via string(): none.
 ```
 
-If `some(7)` in prose looks like debugging output leaking into narration —
-it is, honestly: today's rendering favors *visibility* over polish, so an
-Option reaching your prose is easy to notice and route through an explicit
-test instead.
+`some(7)` prints identically both ways — the top line never diverges. The
+bottom two lines are the same `none` value, read through the two
+consumers: interpolated, it vanishes (the quotes above are there so an
+empty result is visible on the page, not part of the rendering rule);
+through `string()`, it still spells out `"none"`.
 
-> **Planned — the display boundary softens (B4).** The ruled package
-> includes one deliberate forgiveness, cut by *position*, not by type: an
-> interpolation whose **final** value is `none` will render as nothing —
-> absence rendering as absence, the honest narrative meaning. Only the
-> boundary shrugs: nested compositions are never forgiven (an Option inside
-> arithmetic inside an interpolation stays a type error), `string()` stays
-> total, and every forgiven `none`-render is traceable in the transcript.
-> That behavior lands with the native surface (B4); until then the total
-> `some(…)`/`none` render above is what ships, and this book teaches what
-> ships.
+The forgiveness is cut by **position**, not by type or dialect: it only
+ever applies to an interpolation's own **final**, top-level value. Compose
+an Option with anything else — `{mood.first() + 1}`, an Option operand in
+concatenation — and `Option[T] ≠ T` strictness still holds; that stays the
+ordinary type error from [`Option[T]` is not `T`](#optiont-is-not-t), never
+silently forgiven. And the forgiveness never destroys information: every
+`None`-render is traceable in the transcript (the runtime's append-only
+output log records the real `Value::OptionVal(None)`, not the empty text
+it happened to render as), so tooling built on the transcript can always
+tell "a `None` rendered here" apart from "nothing was ever emitted here."
+
+Two loose threads, named rather than pretended away: an
+always-`None`-interpolation lint (catching a slot that can *only* ever
+render blank) and how choice text and tags should treat a forgiven `none`
+(an accidentally blank choice differs from an author's deliberate `* []`)
+are both still open questions, not yet answered by an implementation.
 
 ## Option and the collections
 
@@ -452,9 +477,14 @@ value in `==`/arithmetic is a type fault; and the malformed-question faults
   `non_empty` joined with NS-A6 (#1112) and NS-A5 (#1136).
 - **F27: no truthiness** — decision log 2026-07-19 ("F27/F28 ruled");
   `docs/stdlib-spec.md` §1.6. Supersedes the briefly-shipped falsy-`none`.
-- **F28: total display until B4** — same 2026-07-19 ruling; the
-  display-boundary forgiveness (position-cut, nested never forgiven,
-  traceable) ships with the native surface.
+- **F28: `string()`'s totality is forever; the interpolation boundary
+  forgives `none`** — same 2026-07-19 ruling; the display-boundary
+  forgiveness (position-cut, nested never forgiven, traceable) is Track
+  B4, `docs/stdlib-spec.md` §1.6b, SHIPPED (issue #1463). It turned out
+  not to need the native surface — interpolation and `Option[T]` already
+  exist on the current brink dialect, so it landed as a `brink-runtime`
+  display change (`docs/stdlib-sequencing.md`'s Wave B4 entry has the
+  as-built note).
 - **`x or default`** — part of the 2026-07-18 package ruling; the typing
   substrate follows finding F19 (`docs/stdlib-phase-c-findings.md`). Surface
   spelling landed on the native `.brink` frontend in B1 (issue #1460):
