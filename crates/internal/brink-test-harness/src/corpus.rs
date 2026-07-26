@@ -153,14 +153,36 @@ pub fn compile_and_explore_from_ink(
 /// **The honest minimal path** (first light, `docs/b0-sequencing.md`
 /// §B0.10, issue #1106): a single self-contained composition of
 /// `brink_syntax_native::parse` → `brink_ir::hir::lower_native::lower` →
-/// `brink_analyzer` (dialect `Brink`, single file) →
-/// `brink_ir::lir::lower_to_program` → `brink_codegen_inkb::emit` →
-/// `brink_runtime::link` + explore. Deliberately bypasses `brink-db`/salsa
+/// `brink_analyzer` (the real native analyzer configuration, issue #1472 —
+/// see below) → `brink_ir::lir::lower_to_program` → `brink_codegen_inkb::emit`
+/// → `brink_runtime::link` + explore. Deliberately bypasses `brink-db`/salsa
 /// (no incremental caching — every call re-runs the whole pipeline) and the
 /// INCLUDE-closure machinery (native has none; `.brink` file-extension
 /// registration and multi-file project discovery are B0.10's later
 /// project-layer wiring, out of scope here). This proves HIR→episode for
 /// one file, not the full `brink compile scene.brink` CLI path.
+///
+/// **Analyzer configuration (issue #1472):** a real native compile —
+/// `brink-db`'s `per_file_diagnostics_query`, or the `native_diagnostics`
+/// helper in `brink-ir/tests/b5_native_construction.rs` — runs with
+/// `dialect` at its default (`StrictInk`; a native project carries no
+/// dialect opinion unless it explicitly opts in) and `is_native = true`
+/// (the flag that actually selects the native-only analyzer arm: it skips
+/// the ink-only T1b dialect gate entirely, regardless of `dialect`, and
+/// widens the construction-literal checks — E084/E106/E138 — to run outside
+/// the brink-only block). `brink_analyzer::analyze_with_options` /
+/// `finish_analysis` cannot express this combination: that pure,
+/// non-salsa path has no `Language` classification of its own and always
+/// passes `is_native = false` to `per_file_diagnostics` internally (see
+/// `finish_analysis`'s own doc comment) — so this function composes the
+/// same three passes `finish_analysis` does
+/// (`symbol_index` → per-file `resolve` → `per_file_diagnostics` →
+/// `whole_project_diagnostics`) by hand, threading `is_native = true`
+/// through where `finish_analysis` hardcodes it. Using
+/// `analyze_with_options` here previously ran every native e2e fixture
+/// through the *ink* brink-dialect diagnostics arm instead (hardcoded
+/// `Dialect::Brink` + `is_native = false`) — a combination no real
+/// compilation path ever produces.
 ///
 /// Returns `Err` naming the exact stage (parse/lowering/analysis/LIR/
 /// codegen/link) on the first diagnostic or error encountered — a fixture
@@ -188,20 +210,59 @@ pub fn compile_and_explore_from_brink_native(
         &brink_ir::HirFile,
         &brink_ir::SymbolManifest,
     )> = vec![(file_id, &hir, &manifest)];
-    let analysis_opts = brink_analyzer::AnalysisOptions {
-        dialect: brink_analyzer::Dialect::Brink,
-        ..Default::default()
-    };
-    let analysis = brink_analyzer::analyze_with_options(&files_for_analysis, &analysis_opts);
-    if !analysis.diagnostics.is_empty() {
-        return Err(format!("analysis diagnostics: {:?}", analysis.diagnostics));
+
+    // `AnalysisOptions::default()`: `dialect` stays `StrictInk`, `types`
+    // stays unset — a native project's real defaults (see the doc comment
+    // above).
+    let analysis_opts = brink_analyzer::AnalysisOptions::default();
+
+    let (index, mut diagnostics) = brink_analyzer::symbol_index(&[(file_id, &manifest)]);
+    let scope =
+        brink_analyzer::ImportScope::new(hir.module.as_ref().map(|m| m.name.clone()), &hir.imports);
+    let (file_resolutions, resolve_diags) =
+        brink_analyzer::resolve(file_id, &manifest, &index, &scope);
+    diagnostics.extend(resolve_diags);
+    let mut resolutions = brink_analyzer::ResolutionMap::new();
+    resolutions.extend(std::sync::Arc::unwrap_or_clone(file_resolutions));
+
+    // `is_native = true` — the fix (issue #1472): this is the flag real
+    // native compiles pass and `analyze_with_options` never can.
+    diagnostics.extend(brink_analyzer::per_file_diagnostics(
+        file_id,
+        &hir,
+        &resolutions,
+        &index,
+        analysis_opts.dialect,
+        true,
+        analysis_opts.host_manifest.as_ref(),
+    ));
+    // The B0.9 native strict-only gate (`native_strict_only_error`) —
+    // `brink-db`'s `per_file_diagnostics_query` runs this alongside
+    // `per_file_diagnostics` for every native file; included here for the
+    // same reason (a no-op given `analysis_opts.types` is unset).
+    diagnostics.extend(brink_analyzer::native_strict_only_error(
+        file_id,
+        analysis_opts.types,
+    ));
+
+    let (whole_diagnostics, _symbol_meta) = brink_analyzer::whole_project_diagnostics(
+        &files_for_analysis,
+        &index,
+        &resolutions,
+        &analysis_opts,
+        None,
+    );
+    diagnostics.extend(whole_diagnostics);
+
+    if !diagnostics.is_empty() {
+        return Err(format!("analysis diagnostics: {diagnostics:?}"));
     }
 
     let files_for_lir: Vec<(brink_ir::FileId, &brink_ir::HirFile)> = vec![(file_id, &hir)];
     let (program, lir_diags) = brink_ir::lir::lower_to_program(
         &files_for_lir,
-        &analysis.index,
-        &analysis.resolutions,
+        &index,
+        &resolutions,
         &std::collections::HashMap::new(),
     );
     if !lir_diags.is_empty() {
@@ -225,6 +286,84 @@ pub fn explore_from_brink_native(
     config: &ExploreConfig,
 ) -> Result<Vec<Episode>, String> {
     compile_and_explore_from_brink_native(src, config).map(|(_, episodes)| episodes)
+}
+
+#[cfg(test)]
+mod native_analyzer_arm_tests {
+    //! Pins the fix for issue #1472:
+    //! [`compile_and_explore_from_brink_native`] must run the real native
+    //! analyzer configuration (`dialect` defaulted to `StrictInk`,
+    //! `is_native = true`), not the old hardcoded `Dialect::Brink` +
+    //! `is_native = false` combination no real compile ever produces.
+    //!
+    //! Each test below is chosen to discriminate the fix from the old bug
+    //! specifically — not merely to pass under both — so a regression back
+    //! to either half of the old hardcoding (dialect *or* `is_native`) fails
+    //! one of these:
+    //!
+    //! - [`a_duplicate_map_key_is_e138_through_the_harness`] pins
+    //!   `is_native = true`: `per_file_diagnostics`' construction-literal
+    //!   checks (E084/E106/E138) are gated on `dialect == Dialect::Brink ||
+    //!   is_native`. This harness no longer passes `Dialect::Brink` (see
+    //!   the doc comment on `compile_and_explore_from_brink_native` above),
+    //!   so E138 firing here is *only* explained by `is_native = true` — if
+    //!   a future change silently dropped that flag back to `false`, this
+    //!   check would stop firing and this test would fail.
+    //! - [`a_protocol_reserved_function_name_is_not_spuriously_rejected`]
+    //!   pins `dialect` staying off `Brink`: `protocols::check_reserved_names`
+    //!   (E113) only runs `if dialect == Dialect::Brink`, an ink-only-dialect
+    //!   check unrelated to `is_native`. The old hardcode ran it against
+    //!   every native fixture and would reject an ordinary native function
+    //!   named `next` — a name with no special meaning on the native
+    //!   surface at all. If a future change silently restored
+    //!   `Dialect::Brink`, this test would fail.
+    use super::{compile_and_explore_from_brink_native, explore_from_brink_native};
+    use crate::explorer::ExploreConfig;
+
+    fn config() -> ExploreConfig {
+        ExploreConfig::default()
+    }
+
+    #[test]
+    fn a_duplicate_map_key_is_e138_through_the_harness() {
+        let src = "\
+var m = Map { \"a\": 1, \"a\": 2 }
+
+flow main() {
+  Hi.
+}
+";
+        let err = explore_from_brink_native(src, &config())
+            .expect_err("a duplicate map key must be refused, not silently last-won");
+        assert!(
+            err.contains("E138"),
+            "expected the E138 duplicate-key diagnostic, got: {err}"
+        );
+    }
+
+    #[test]
+    fn a_protocol_reserved_function_name_is_not_spuriously_rejected() {
+        // `next` is a protocol-reserved method name only under
+        // `Dialect::Brink` (stdlib-spec §9.6) — it carries no special
+        // meaning as an ordinary native function under the native
+        // surface's real default dialect (`StrictInk`).
+        let src = "\
+fn next() {
+  return 1;
+}
+
+flow main() {
+  Value is {next()}.
+}
+";
+        let (_data, episodes) = compile_and_explore_from_brink_native(src, &config()).expect(
+            "an ordinary native function named `next` must compile cleanly \
+             under the real native dialect default",
+        );
+        let episode = episodes.first().expect("one episode");
+        let text: String = episode.steps.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(text, "Value is 1.\n");
+    }
 }
 
 #[cfg(test)]
