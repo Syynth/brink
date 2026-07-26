@@ -393,6 +393,7 @@ fn knot_heap(k: &Knot) -> usize {
                     + vec_heap(&s.params)
                     + s.params.iter().map(param_heap).sum::<usize>()
                     + block_heap(&s.body)
+                    + opt_type_expr_heap(s.return_type.as_ref())
             })
             .sum::<usize>()
         + opt_type_expr_heap(k.return_type.as_ref())

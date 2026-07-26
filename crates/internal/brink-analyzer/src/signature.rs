@@ -77,9 +77,10 @@ pub struct Sig {
     /// reports those separately). Knots/stitches only; empty for other
     /// symbol kinds.
     pub param_annotations: Vec<Option<Ty>>,
-    /// TM-2: the function-header return type annotation (`): type ===`),
-    /// resolved. `None` when absent, `void`, or unresolved. Knots only —
-    /// `= stitch` headers have no return-type grammar position.
+    /// TM-2: the function-header/stitch-header return type annotation
+    /// (`): type ===` on a knot, `: type` on a stitch — #1509 widened the
+    /// grammar to stitches), resolved. `None` when absent, `void`, or
+    /// unresolved. Knots and stitches only.
     pub return_annotation: Option<Ty>,
 }
 
@@ -429,6 +430,10 @@ pub fn signature(
                                     .and_then(|a| resolve_annotation(a, &names))
                             })
                             .collect();
+                        return_annotation = s
+                            .return_type
+                            .as_ref()
+                            .and_then(|rt| resolve_annotation(rt, &names));
                     }
                 } else if let Some(k) = hir.knots.iter().find(|k| k.name.text == info.name) {
                     is_local = k.is_local;

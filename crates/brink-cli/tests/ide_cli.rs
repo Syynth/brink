@@ -1021,3 +1021,88 @@ fn effects_diff_requires_a_baseline_selector() {
     );
     fs::remove_file(&head).ok();
 }
+
+// ── Issue #1539 review finding: `def --at` on a UFCS call site ─────────
+
+/// 1-based `(line, col)` of `byte_offset` within `src` (matches `--at`'s own
+/// 1-based convention).
+fn line_col(src: &str, byte_offset: usize) -> (usize, usize) {
+    let mut line = 1;
+    let mut col = 1;
+    for (i, ch) in src.char_indices() {
+        if i == byte_offset {
+            break;
+        }
+        if ch == '\n' {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
+    }
+    (line, col)
+}
+
+/// Regression for a review finding on #1539/PR #1543: no test covered the
+/// `brink ide def --at` surface, which the issue names as bug #1 and where
+/// the fix actually lives (`Project::resolve`,
+/// `crates/brink-cli/src/ide/project.rs`). Every other new test added for
+/// #1539 exercises `brink-ide`'s `navigation::find_references`/`rename::*`
+/// directly; none touch `Project::resolve`, so the new CLI UFCS block was
+/// unproven. Uses the existing `nested_native_project` native-project
+/// fixture, per the finding's own suggestion.
+#[test]
+fn at_addressing_on_a_ufcs_call_site_resolves_to_the_free_function() {
+    const SRC: &str = "\
+struct Guest {
+  name: string
+}
+
+fn greet(g, loudness) {
+  return loudness;
+}
+
+fn main() {
+  let g = Guest { name: \"ada\" };
+  let n = g.greet(3);
+}
+";
+    let dir = nested_native_project("def-at-ufcs", &[("story/main.brink", SRC)]);
+
+    let call_byte = SRC.find("greet(3)").expect("call site");
+    let (line, col) = line_col(SRC, call_byte);
+    // Native discovery keys files root-relative to `native_source_root`
+    // (here, `dir/story`), not by absolute filesystem path — `--at`'s FILE
+    // component must match that key (`"main.brink"`), same as
+    // `db.file_id` expects (issue #1295's root-relative convention).
+    let at = format!("main.brink:{line}:{col}");
+
+    let out = brink()
+        .current_dir(&dir)
+        .args(["ide", "def", "--at", &at, "-e"])
+        .arg("story/main.brink")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+
+    let decl_byte = SRC.find("greet(g").expect("decl");
+    let (decl_line, _) = line_col(SRC, decl_byte);
+    let receiver_byte = SRC.find("g = Guest").expect("receiver decl");
+    let (receiver_line, _) = line_col(SRC, receiver_byte);
+
+    assert!(
+        stdout.contains(&format!(":{decl_line}:")),
+        "must jump to the `fn greet` declaration on line {decl_line}, got: {stdout}"
+    );
+    assert!(
+        !stdout.contains(&format!(":{receiver_line}:")),
+        "must NOT jump to the receiver `g`'s own declaration on line {receiver_line} — the \
+         #1539 bug this guards against: {stdout}"
+    );
+    fs::remove_dir_all(&dir).ok();
+}

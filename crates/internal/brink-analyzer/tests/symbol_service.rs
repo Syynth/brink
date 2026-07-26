@@ -285,15 +285,27 @@ fn signature_unannotated_param_is_none_in_param_annotations() {
 }
 
 #[test]
-fn signature_stitch_carries_param_annotations_but_never_a_return_annotation() {
-    // `= stitch` headers have no return-type grammar position (TM-2 §3
-    // scopes `): type ===` to `== knot ==` headers only).
+fn signature_stitch_carries_param_annotations_and_no_return_annotation_when_unannotated() {
     let src = "=== camp ===\nText.\n= fire\n~ temp x: string = who\n-> DONE\n";
     let (hir, _manifest, result) = analyzed(src);
     let def = def_id(&result, SymbolKind::Stitch, "camp.fire");
     let sig = signature(def, &result.index, &[(FileId(0), &hir)], None).expect("known def");
     assert!(sig.param_annotations.is_empty(), "fire has no params");
-    assert_eq!(sig.return_annotation, None);
+    assert_eq!(sig.return_annotation, None, "no return annotation declared");
+}
+
+#[test]
+fn signature_stitch_carries_a_declared_return_annotation() {
+    // #1509: a *nested* stitch's `: type` return clause widens NG-C's
+    // `Knot`-only grammar — `signature()`'s `Sig::return_annotation` (the
+    // same field `brink-ide::hover` reads for both knots and stitches)
+    // must pick it up.
+    let src = "=== camp ===\nText.\n= fire(logs: int): bool\n~ return true\n";
+    let (hir, _manifest, result) = analyzed(src);
+    let def = def_id(&result, SymbolKind::Stitch, "camp.fire");
+    let sig = signature(def, &result.index, &[(FileId(0), &hir)], None).expect("known def");
+    assert_eq!(sig.param_annotations, vec![Some(brink_analyzer::Ty::Int)]);
+    assert_eq!(sig.return_annotation, Some(brink_analyzer::Ty::Bool));
 }
 
 #[test]

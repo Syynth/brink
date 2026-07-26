@@ -71,7 +71,32 @@ fn arb_ref_kind() -> impl Strategy<Value = RefKind> {
         Just(RefKind::Variable),
         Just(RefKind::Function),
         Just(RefKind::List),
+        Just(RefKind::Struct),
     ]
+}
+
+/// Structural exhaustiveness guard (issue #1542, extending the same
+/// exhaustiveness-guard pattern — #667/#883, most recently extended by
+/// #1521 in `brink-runtime`'s `law_transcript_roundtrip.rs`): a match over
+/// every current [`RefKind`] variant with no wildcard arm, so this fails to
+/// compile the moment a new variant is added to the enum. Never called —
+/// the forcing function is the compile error itself. `arb_ref_kind` above
+/// used to hand-list only 4 of `RefKind`'s 5 variants — `Struct` (TM-4b) was
+/// added to the enum without a matching `prop_oneof!` arm, so every
+/// `proptest!` in this file that exercises `arb_ref_kind`/`arb_manifest` ran
+/// 500+ generated cases per run and never once generated a struct-kind ref.
+/// Whoever adds a `RefKind` variant must now also add an arm here — and
+/// extend `arb_ref_kind` to generate it (there is no documented-exclusion
+/// precedent for this enum the way `OutputPart::Checkpoint` has one).
+#[expect(dead_code, reason = "compile-time-only exhaustiveness guard, see doc")]
+fn assert_ref_kind_variants_exhaustive(kind: RefKind) {
+    match kind {
+        RefKind::Divert
+        | RefKind::Variable
+        | RefKind::Function
+        | RefKind::List
+        | RefKind::Struct => {}
+    }
 }
 
 /// Strategy that generates a manifest with 1-5 knots, 0-3 variables,
@@ -99,13 +124,15 @@ fn arb_manifest() -> impl Strategy<Value = SymbolManifest> {
             0..=2,
         ),
         prop::collection::vec(arb_ident(), 0..=2), // externals
+        prop::collection::vec(arb_ident(), 0..=2), // struct names
     )
-        .prop_flat_map(|(knots, vars, lists, externals)| {
+        .prop_flat_map(|(knots, vars, lists, externals, structs)| {
             let knot_names = knots.clone();
             let all_names: Vec<String> = knots
                 .iter()
                 .chain(vars.iter())
                 .chain(externals.iter())
+                .chain(structs.iter())
                 .chain(lists.iter().map(|(name, _)| name))
                 .chain(lists.iter().flat_map(|(_, items)| items.iter()))
                 .cloned()
@@ -167,6 +194,13 @@ fn arb_manifest() -> impl Strategy<Value = SymbolManifest> {
                     offset += name.len() as u32 + 1;
                 }
 
+                for name in &structs {
+                    manifest
+                        .structs
+                        .push(decl_sym(name.clone(), range(offset, name.len() as u32)));
+                    offset += name.len() as u32 + 1;
+                }
+
                 // Each unresolved ref gets a unique offset so ranges don't collide
                 let mut ref_offset = 10_000u32;
                 for (path, kind, scope) in &refs {
@@ -198,6 +232,7 @@ fn arb_two_file_manifests() -> impl Strategy<Value = Vec<(FileId, SymbolManifest
             .chain(m2.variables.iter_mut())
             .chain(m2.lists.iter_mut())
             .chain(m2.externals.iter_mut())
+            .chain(m2.structs.iter_mut())
             .chain(m2.labels.iter_mut())
             .chain(m2.list_items.iter_mut())
         {
@@ -255,7 +290,10 @@ proptest! {
             .filter(|r| resolved_ranges.contains(r))
             .count();
 
-        // Diagnostics that are resolution errors (E024, E025, or E027)
+        // Diagnostics that are resolution errors — one per `RefKind` variant
+        // (E024 divert, E025 variable/function, E027 list, E068 struct).
+        // Function refs also land on E025 (`resolve_function`'s own
+        // `unresolved_diag` call site) — no separate code of its own.
         let unresolved_diag_ranges: HashSet<_> = result
             .diagnostics
             .iter()
@@ -263,6 +301,7 @@ proptest! {
                 d.code == DiagnosticCode::E024
                     || d.code == DiagnosticCode::E025
                     || d.code == DiagnosticCode::E027
+                    || d.code == DiagnosticCode::E068
             })
             .map(|d| d.range)
             .collect();
@@ -508,7 +547,8 @@ proptest! {
         let has_diag = result.diagnostics.iter().any(|d| {
             (d.code == DiagnosticCode::E024
                 || d.code == DiagnosticCode::E025
-                || d.code == DiagnosticCode::E027)
+                || d.code == DiagnosticCode::E027
+                || d.code == DiagnosticCode::E068)
                 && d.range == range(5000, missing.len() as u32)
         });
         prop_assert!(

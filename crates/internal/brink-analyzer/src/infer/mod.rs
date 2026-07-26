@@ -469,7 +469,9 @@ fn collect_defs<'a>(files: &[(FileId, &'a HirFile)], index: &SymbolIndex) -> Vec
                         file: file_id,
                         params: &stitch.params,
                         body: &stitch.body,
-                        return_annotation: None,
+                        // #1509 widened `Stitch` with the same `return_type`
+                        // grammar position `Knot` carries.
+                        return_annotation: stitch.return_type.as_ref(),
                     });
                 }
             }

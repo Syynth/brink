@@ -146,14 +146,15 @@ impl EditorSession {
         };
 
         let abs_offset = self.to_absolute(path, view, offset);
+        let db = self.session.db();
         let refs = brink_ide::navigation::find_references(
+            db,
             analysis,
             file_id,
             TextSize::new(abs_offset),
             include_declaration,
         );
 
-        let db = self.session.db();
         let items: Vec<LocationJs> = refs
             .iter()
             .filter_map(|loc| {
@@ -190,7 +191,8 @@ impl EditorSession {
         };
 
         let abs_offset = self.to_absolute(path, view, offset);
-        match brink_ide::rename::prepare_rename(analysis, file_id, TextSize::new(abs_offset)) {
+        let db = self.session.db();
+        match brink_ide::rename::prepare_rename(db, analysis, file_id, TextSize::new(abs_offset)) {
             Some(range) => {
                 let start = self.to_relative(path, view, range.start().into());
                 let end = self.to_relative(path, view, range.end().into());
