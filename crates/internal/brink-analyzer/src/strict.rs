@@ -2458,6 +2458,41 @@ mod tests {
         );
     }
 
+    // ─── Issue #1168: Option-returning functions no longer E065-escape ──
+
+    /// The issue's tightest repro, at the diagnostic level: `some(x)`
+    /// where `x: int` is never evidenced anywhere else in the body used to
+    /// infer `Option[Unknown]` and trip `E065` with no annotation escape
+    /// hatch. Fixed at the inference layer (`infer::body::InferPass::
+    /// or_own_annotation`) — `strict::check` needs no changes, this pins
+    /// the diagnostic-level outcome.
+    #[test]
+    fn some_of_an_unevidenced_annotated_param_no_longer_escapes() {
+        let (hir, index, res) = build("=== function f(x: int) ===\n~ return some(x)\n");
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    /// `docs/book/src/toolchain/dialect/iteration.md`'s `first_over` fence
+    /// (unmarked from `ink,proposed` in this same PR): a `for` loop over
+    /// an annotated `array<int>` param, `return some(<loop var>)` on one
+    /// path and `return none` on the other — both the return type and the
+    /// loop-var temp used to escape as `Unknown`.
+    #[test]
+    fn first_over_style_option_return_no_longer_escapes() {
+        let (hir, index, res) = build(
+            "=== function first_over(tab: array<int>, floor: int) ===\n\
+             ~ {\n    for coins in tab {\n        if coins > floor {\n            return some(coins)\n        }\n    }\n}\n\
+             ~ return none\n",
+        );
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
     #[test]
     fn void_annotated_function_return_is_exempt() {
         let (hir, index, res) = build("=== function noop(): void ===\n~ return\n");

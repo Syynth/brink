@@ -223,21 +223,10 @@ Options flow through your own functions like any other value, and
 inference handles the signatures exactly as [Values & Types](types.md)
 described — from the body, bottom-up:
 
-<!-- The fence below is marked `ink,proposed` because it does not compile
-     today: issue #1168. A user function whose body returns an `Option[T]`
-     value derived from a verb or variable (`return get(rooms, name)`, or
-     `return some(v)` for a variable `v`) has its return type inferred as
-     `Option[Unknown]` and trips E065 under strict types; there is no
-     annotation escape hatch (`Option[int]` is rejected by E061). The prose
-     immediately below ("`room_of` settles as `(string) -> Option[int]`")
-     describes the intended, ruled behavior. Unmark to plain `ink` once
-     #1168 lands. Minimal repro:
-       VAR m = #{"a": 1} / === function f(k: string) === / ~ return get(m, k)
-       ->  E065: `f`'s return type escapes strict inference as Unknown -->
-```ink,proposed
+```ink
 VAR rooms = #{"Mira": 3, "Old Tom": 1}
 
-Mira: {room_of("Mira")}. Edda: {room_of("Edda")}.
+Mira: {room_of("Mira")}. Edda: {string(room_of("Edda"))}.
 -> END
 
 === function room_of(name: string) ===
