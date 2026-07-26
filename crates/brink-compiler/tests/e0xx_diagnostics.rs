@@ -1119,6 +1119,42 @@ fn e066_coalesce_mismatched_fallback_type() {
     );
 }
 
+/// Issue #1492: the chain fold reaches every step, not just the innermost.
+///
+/// Before the analyzer recorded each step's result type, this compiled
+/// silently — `structs::classify_expr_ty` returns `None` for an
+/// `Expr::Infix` left-hand operand, so the outer `… or "text"` step had no
+/// left-hand type to judge and was skipped. Now the inner step's recorded
+/// `Option[int]` is fed in, and the mismatch is caught where it always was.
+#[test]
+fn e066_coalesce_mismatch_at_a_later_chain_step() {
+    let source = "flow main() {\n  {some(1) or none or \"text\"}\n  -> END\n}\n";
+    let err = compile_native("chain-mismatch", source, native_strict_options())
+        .map(|_| ())
+        .expect_err("a string fallback on an int-element Option chain must fail");
+    let diags = errors_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E066),
+        "expected E066, got: {diags:?}"
+    );
+}
+
+/// The other half of the same fold: a chain whose every step *does* type
+/// still compiles. A fold that rejected too eagerly would break this.
+#[test]
+fn a_well_typed_coalescing_chain_still_compiles_under_strict() {
+    let source = concat!(
+        "fn maybe() {\n  return some(7);\n}\n",
+        "flow main() {\n  {some(1) or maybe() or 99}\n  -> END\n}\n",
+    );
+    let result = compile_native("chain-ok", source, native_strict_options());
+    assert!(
+        result.is_ok(),
+        "a well-typed chain must compile: {:?}",
+        result.map(|_| ()).err()
+    );
+}
+
 // ─── B1b the `as` binding (issue #1475): E145/E146/E147 ────────────────
 //
 // Native-only, same reasoning as the E066 block above — an `AS_BINDING`

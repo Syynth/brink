@@ -1300,6 +1300,27 @@ pub enum Opcode {
     /// `rhs` are both pushed before `Coalesce` ever inspects either, so an
     /// effectful `rhs` (an RNG draw, a mutation) always runs, even when
     /// `lhs` turns out to be `some(_)` and `rhs`'s value is discarded.
+    ///
+    /// ## The runtime check *is* the semantics for an unpinned `lhs`
+    ///
+    /// RULED (maintainer, 2026-07-26, issue #1492 — `docs/decision-log.md`
+    /// "Lowering consumes analyzer types"): typing verdicts belong to
+    /// `brink-analyzer`, which records each `or` step's operand/result
+    /// types for LIR lowering (`brink_analyzer::coalesce_types`). Under
+    /// `types = strict` an ill-typed chain never reaches codegen at all —
+    /// `E066` rejects it during analysis — so this op only ever executes a
+    /// chain analysis either accepted or could not statically pin.
+    ///
+    /// That second case is the gradual-mode posture, and it is deliberate:
+    /// when the left-hand type is unknown (brink dialect, `types =
+    /// gradual` — the un-overridden native default), **the check this op
+    /// performs is the operator's semantics**, not a fallback for a missing
+    /// one. An `OptionVal` coalesces; a plain value raises the `TypeError`
+    /// fault (`brink_runtime::value_ops::coalesce`) — the same class as
+    /// every other gradual runtime check. Strict/native never reaches this
+    /// path with an unpinned `lhs`, and the analyzer records exactly this
+    /// case as `CoalesceShape::RuntimeCheck` so a consumer knows not to
+    /// commit statically to either branch.
     Coalesce,
 
     // ── B1b: the `as` binding (`docs/decision-log.md` 2026-07-26; issue

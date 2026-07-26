@@ -279,11 +279,38 @@ pub fn compile_and_explore_from_brink_native(
     }
 
     let files_for_lir: Vec<(brink_ir::FileId, &brink_ir::HirFile)> = vec![(file_id, &hir)];
-    let (program, lir_diags) = brink_ir::lir::lower_to_program(
+
+    // B3a UFCS (issue #1506): this hand-assembled pipeline has no salsa
+    // layer to memoize `brink-db`'s `ufcs_resolution_query` in, so it runs
+    // the same pass by hand — lazy on the same `project_has_ufcs_call` gate
+    // — and shares the one translation point
+    // (`brink_analyzer::ufcs_lir_lookup`) with the production path. Without
+    // this, every UFCS call site here would fall back to LIR lowering's
+    // defensive `E144` refusal (no verdict recorded), even though analysis
+    // above already proved the site resolves cleanly.
+    let ufcs_table = if brink_analyzer::project_has_ufcs_call(&hir) {
+        let inline_docs = brink_analyzer::project_inline_docs(&[(file_id, &manifest)]);
+        let inference = brink_analyzer::infer_project(
+            &files_for_lir,
+            &index,
+            &resolutions,
+            analysis_opts.host_manifest.as_ref(),
+            &inline_docs,
+        );
+        let (table, _ufcs_diags) =
+            brink_analyzer::ufcs_resolution(&files_for_lir, &index, &resolutions, &inference);
+        brink_analyzer::ufcs_lir_lookup(&table)
+    } else {
+        brink_ir::lir::UfcsLookup::new()
+    };
+
+    let (program, lir_diags) = brink_ir::lir::lower_to_program_with_type_mode(
         &files_for_lir,
         &index,
         &resolutions,
         &std::collections::HashMap::new(),
+        brink_ir::lir::TypeMode::Gradual,
+        &ufcs_table,
     );
     if !lir_diags.is_empty() {
         return Err(format!("LIR lowering diagnostics: {lir_diags:?}"));

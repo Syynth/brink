@@ -119,9 +119,10 @@ fn a_free_function_in_scope_resolves_and_is_recorded_as_a_desugar() {
 /// unresolved reference (`E025`). A *resolvable* method call must now be
 /// completely diagnostic-free **at the analysis layer**.
 ///
-/// It is still refused one layer down, at LIR lowering (`E144`), because
-/// nothing consumes the D2 verdict side table yet — see
-/// `brink-test-harness/tests/b3a_ufcs_e2e.rs` for that end of the path.
+/// LIR lowering now consumes this verdict for real (issue #1506) instead of
+/// refusing every resolved site with `E144` — see
+/// `brink-test-harness/tests/b3a_ufcs_e2e.rs` for that end of the path (the
+/// e2e proof that the call actually compiles and plays).
 #[test]
 fn a_resolved_method_call_raises_no_diagnostic_at_all() {
     let (hir, manifest) = lower(FREE_FN);

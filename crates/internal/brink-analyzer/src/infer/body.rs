@@ -989,7 +989,7 @@ impl InferPass<'_, '_> {
             // mismatch collapses to `Ty::Conflicted` (the same
             // infallible-absorption idiom `unify` uses elsewhere) — this
             // pass only ever *computes* the type, it never diagnoses.
-            // `coalesce_mismatch::check` is the strict-mode-only pass that
+            // `coalesce::check` is the strict-mode-only pass that
             // re-runs `coalesce` at this same expression's own site and
             // pushes `E066` directly when it disagrees (review finding on
             // PR #1469/#1460): the generic Conflicted-escape check
