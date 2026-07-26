@@ -2148,3 +2148,27 @@
 - **SCOPE:** moderate (freezes the `Step` terminal variants)
 - **WHAT:** Keep both `Step::Done` and `Step::End`. **Done** = turn complete; the flow (and its bevy entity) persists and may park/resume. **End** = story permanently over; the host despawns the flow entity. The axis is host-observable lifecycle, exactly as the #1450 dig charter demanded ("decide from bevy-host need, never conformance").
 - **WHY:** Maintainer: "end can despawn the flow entity in the bevy side so i think i do see a bit of value in done vs end." That is concrete host-need evidence — the distinction drives a real lifecycle action, so merging the variants would push a per-flow liveness question onto every host.
+
+## Slugify = tooling materializes the slug into the source (prose #1351)
+- **WHEN:** 2026-07-26
+- **PROJECT:** brink
+- **SYSTEM:** language design (prose rethink #1351) / editor tooling / save stability
+- **SCOPE:** architectural (slug = stitch name = save key via DefinitionId)
+- **WHAT:** Inferred scene-heading slugs are **materialized into the source by tooling**: on format/save, the inferred slug is written as explicit `[slug]` text after the heading; from then on it is ordinary explicit source. Renaming the heading title never moves the slug; re-deriving the slug from a new title is an **explicit editor refactor** (framed with its save-impact), never automatic. A "recalculatable" sigil on machine-written slugs was considered and **rejected** — it would reintroduce the silent-rename hazard materialization exists to kill. The slugify algorithm operates on the preset's isolated title capture (prefix/time-of-day never reach it): lowercase, non-alphanumeric runs → `_`, trim; same-scope collision = compile error demanding a distinct explicit slug. Rider (lean, unvetoed): the compiler accepts never-materialized inferred slugs (agent/no-formatter workflows) with a configurable `unmaterialized-slug` warn-by-default lint via the `[lints]` control plane; `fmt` is the auto-fix.
+- **WHY:** The slug keys visit counts, parked flows, and diverts — an inferred slug that tracks the display title breaks saves on any rename, and the compiler can never warn because it never sees the old text. Materialization keeps zero-ceremony authoring (type the heading, hit save, the slug appears) while making stability structural rather than tooling-vigilance. Same explicit-format posture as everything else in the round: the mark is real, the editor softens it.
+
+## XLIFF v1 excludes element data — element data is locale-invariant by construction
+- **WHEN:** 2026-07-26
+- **PROJECT:** brink
+- **SYSTEM:** intl / prose rethink #1351
+- **SCOPE:** moderate (fixes intl scope for the prose build)
+- **WHAT:** v1 XLIFF export carries content and markup spans only; element data payloads are never exported. The boundary is the `@[element]` capture type: **content-typed captures ride the line table and translate; string-typed captures land in element data and do not**. Consequences accepted: element kind + data live in the base `.inkb` shared across every locale (locale line tables carry parts only); translators cannot corrupt machine-facing data on re-import; speaker/channel display names get no per-line translation (correct — consistency; localized display names later via a roster-level table or XLIFF v2 metadata groups, not a v1 blocker). Known trap, mitigated by discipline + tooling: reader-visible prose routed through a `string` capture silently becomes untranslatable — the rule is "reader-visible ⇒ `content`"; hover shows the handler, and a lint may later flag prose-looking string captures.
+- **WHY:** Maintainer confirmed after ramification review. Keeps the intl pipeline's scope fixed (no open-map serialization in the XLIFF codec) and yields the clean invariant that a line's machine data is identical in every locale.
+
+## `x or y` short-circuits — the landed eager evaluation is a defect (#1471)
+- **WHEN:** 2026-07-26
+- **PROJECT:** brink
+- **SYSTEM:** language design / codegen / runtime
+- **SCOPE:** minor/local (observable evaluation order of one operator)
+- **WHAT:** `or` coalescing **short-circuits**: the RHS is not evaluated when the LHS is `some`. PR #1469's eager both-operands behavior (honestly pinned + flagged unruled by the build itself) is a defect; #1471 files the fix (branch-based lowering, flip the eager pin to a short-circuit proof).
+- **WHY:** `x or expensive_call()` must not run the call on the happy path — side effects make the order observable, and every peer language's coalescing operator short-circuits; eager evaluation would be a standing surprise.
