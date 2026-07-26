@@ -188,6 +188,26 @@ pub fn compile_and_explore_from_ink(
 /// codegen/link) on the first diagnostic or error encountered — a fixture
 /// with real diagnostics at any stage is not silently treated as
 /// "compiles to nothing".
+///
+/// **Coverage delta, not just a correctness delta (issue #1472 review):**
+/// the corrected configuration is strictly *more permissive* than the old
+/// hardcode, not merely different. `per_file_diagnostics`' brink-only block
+/// (`dialect == Dialect::Brink`) — annotation content checks (E061),
+/// `#fn` creation-site checks (E079/E080/E081), `ref` lvalue-path checks
+/// (E080/E097), and protocol reserved-name checks (E113) — no longer runs
+/// at all, since `dialect` now stays at its real native default
+/// (`StrictInk`) instead of the old hardcoded `Brink`. Likewise
+/// `whole_project_diagnostics`' brink-only block (effects exceedance,
+/// the FS-2 `await`-purity gate E105, the NS-A4 comparator-contract gate
+/// E119) stops running. And `resolve_type_policy` — which has no
+/// `is_native` input of its own — now resolves `types` to `Gradual`
+/// (`StrictInk`'s default) instead of the old accidental `Strict` (a
+/// side effect of hardcoding `Dialect::Brink`), so E063/E065/E066 no
+/// longer fire either. A fixture that "still passes unchanged" through
+/// this arm is therefore not evidence those checks still ran and found
+/// nothing — it is evidence they no longer run at all. See issue #1472's
+/// tracking comment for the follow-up to give native projects real
+/// coverage here.
 pub fn compile_and_explore_from_brink_native(
     src: &str,
     config: &ExploreConfig,
@@ -296,28 +316,35 @@ mod native_analyzer_arm_tests {
     //! `is_native = true`), not the old hardcoded `Dialect::Brink` +
     //! `is_native = false` combination no real compile ever produces.
     //!
-    //! Each test below is chosen to discriminate the fix from the old bug
-    //! specifically — not merely to pass under both — so a regression back
-    //! to either half of the old hardcoding (dialect *or* `is_native`) fails
-    //! one of these:
+    //! `is_native = true` itself (`per_file_diagnostics`' construction-
+    //! literal checks — E084/E106/E138 — gated on `dialect ==
+    //! Dialect::Brink || is_native`) is already pinned by the existing
+    //! `crates/internal/brink-test-harness/tests/b5_construction_e2e.rs::
+    //! a_duplicate_map_key_refuses_the_compile` e2e test: byte-identical
+    //! fixture and assertion to what would otherwise duplicate here, via
+    //! the same `explore_from_brink_native` entry point. No copy of it
+    //! lives in this module.
     //!
-    //! - [`a_duplicate_map_key_is_e138_through_the_harness`] pins
-    //!   `is_native = true`: `per_file_diagnostics`' construction-literal
-    //!   checks (E084/E106/E138) are gated on `dialect == Dialect::Brink ||
-    //!   is_native`. This harness no longer passes `Dialect::Brink` (see
-    //!   the doc comment on `compile_and_explore_from_brink_native` above),
-    //!   so E138 firing here is *only* explained by `is_native = true` — if
-    //!   a future change silently dropped that flag back to `false`, this
-    //!   check would stop firing and this test would fail.
-    //! - [`a_protocol_reserved_function_name_is_not_spuriously_rejected`]
-    //!   pins `dialect` staying off `Brink`: `protocols::check_reserved_names`
+    //! - [`the_harness_no_longer_forces_the_brink_dialect`] pins the other
+    //!   half — `dialect` staying off `Brink`: `protocols::check_reserved_names`
     //!   (E113) only runs `if dialect == Dialect::Brink`, an ink-only-dialect
     //!   check unrelated to `is_native`. The old hardcode ran it against
     //!   every native fixture and would reject an ordinary native function
-    //!   named `next` — a name with no special meaning on the native
-    //!   surface at all. If a future change silently restored
+    //!   named `next` — a name with no special meaning under the *harness's*
+    //!   dialect configuration. If a future change silently restored
     //!   `Dialect::Brink`, this test would fail.
-    use super::{compile_and_explore_from_brink_native, explore_from_brink_native};
+    //!
+    //!   **This is a configuration pin, not a normative statement that
+    //!   `next` is safe to use as a function name on the native surface**
+    //!   (issue #1472 review): `docs/stdlib-spec.md` §9.6 F6 (RULED
+    //!   2026-07-19) reserves `display`/`compare`/`next` with no dialect
+    //!   qualification — E113 simply does not *reach* the native surface
+    //!   today, because `check_reserved_names` is wired brink-only
+    //!   (`crates/internal/brink-analyzer/src/lib.rs`'s brink-only block).
+    //!   That is the same class of dialect-vs-`is_native` gap #1464/#1470
+    //!   fixed for E084/E106/E138 — open here, not fixed by this PR. See
+    //!   issue #1472's tracking comment.
+    use super::compile_and_explore_from_brink_native;
     use crate::explorer::ExploreConfig;
 
     fn config() -> ExploreConfig {
@@ -325,28 +352,14 @@ mod native_analyzer_arm_tests {
     }
 
     #[test]
-    fn a_duplicate_map_key_is_e138_through_the_harness() {
-        let src = "\
-var m = Map { \"a\": 1, \"a\": 2 }
-
-flow main() {
-  Hi.
-}
-";
-        let err = explore_from_brink_native(src, &config())
-            .expect_err("a duplicate map key must be refused, not silently last-won");
-        assert!(
-            err.contains("E138"),
-            "expected the E138 duplicate-key diagnostic, got: {err}"
-        );
-    }
-
-    #[test]
-    fn a_protocol_reserved_function_name_is_not_spuriously_rejected() {
-        // `next` is a protocol-reserved method name only under
-        // `Dialect::Brink` (stdlib-spec §9.6) — it carries no special
-        // meaning as an ordinary native function under the native
-        // surface's real default dialect (`StrictInk`).
+    fn the_harness_no_longer_forces_the_brink_dialect() {
+        // `next` is a protocol-reserved method name under
+        // `docs/stdlib-spec.md` §9.6 F6, with no dialect qualification —
+        // but `check_reserved_names` (E113) is wired to run only `if
+        // dialect == Dialect::Brink` (open gap, not asserted correct here;
+        // see the module doc above). This test pins that the harness no
+        // longer hardcodes `Dialect::Brink`, which is what let the old
+        // configuration spuriously reject this fixture.
         let src = "\
 fn next() {
   return 1;
@@ -358,7 +371,7 @@ flow main() {
 ";
         let (_data, episodes) = compile_and_explore_from_brink_native(src, &config()).expect(
             "an ordinary native function named `next` must compile cleanly \
-             under the real native dialect default",
+             under the harness's real native dialect default",
         );
         let episode = episodes.first().expect("one episode");
         let text: String = episode.steps.iter().map(|s| s.text.as_str()).collect();
