@@ -1,0 +1,11 @@
+description = "Root content across INCLUDEd files is spliced at the INCLUDE site, not file-granular (issue #1564, from #1502's scope-discovered comment)"
+mode = "runtime"
+
+[source]
+origin = "brink"
+original_id = "root-content-splice-site"
+
+[classification]
+tier = 3
+feature = "includes"
+tags = ["includes", "ordering"]
