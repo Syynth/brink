@@ -1,0 +1,28 @@
+# Native-only fixture (no ink origin). See ../README.md.
+ink_source = "n/a (native-only; see notes)"
+oracle_case = "n/a (native-only; see notes)"
+family = "type annotations (NG-A/NG-B)"
+status = "hand-written native, episode-identity proven (round_trip.rs only)"
+notes = """
+NG-A/NG-B (issues #1487/#1488, `docs/decision-log.md` 2026-07-26 "NG-C
+ruled: `: type` returns everywhere"): the end-to-end fixture for the
+native `: type` annotation grammar. Not a respelling of any ink source —
+there is no ink original, because the annotations are the point and ink's
+own TM-2 spelling is a different frontend. Same posture as
+`labeled-mid-flow-gather/` (native-only, provenance-free).
+
+Covers the two positions that carry runtime-visible HIR today: a
+parameter annotation (`flow spend(amount: int)`) and a `var` binding
+annotation (`var hp: int = 10`). Both survive the full
+lower -> emit -> reparse -> relower -> replay cycle
+(`crates/internal/brink-respell/tests/round_trip.rs`), which is what
+proves `emit_native`'s annotation spelling agrees with the parser's.
+
+NOT covered here: the `fn`/`flow` return clause (NG-C, #1489). Its HIR
+field (`Knot.return_type`) is populated and emitted, but a
+value-returning flow is a coroutine with no runtime yet — declaring one
+only (correctly) suppresses the implicit `-> DONE`, so there is no
+episode to compare. It is covered at parse/lower level instead
+(`brink-syntax-native`'s `declaration.rs` tests and
+`brink-ir::hir::lower_native`'s own test module).
+"""

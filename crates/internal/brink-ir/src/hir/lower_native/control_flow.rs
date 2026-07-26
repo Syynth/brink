@@ -123,9 +123,16 @@ fn lower_block_item(
     }
 }
 
-/// `let name (= expr)?;` — mirrors `logic_block::lower_block_temp_decl`'s
-/// diagnostic choice (E014) for the missing-name case, for differential
-/// symmetry on malformed input too, not just well-formed shapes.
+/// `let name (: type)? (= expr)?;` — mirrors
+/// `logic_block::lower_block_temp_decl`'s diagnostic choice (E014) for the
+/// missing-name case, for differential symmetry on malformed input too, not
+/// just well-formed shapes.
+///
+/// The annotation (NG-B, issue #1488) lowers to the same `hir::TypeExpr`
+/// the ink dialect's `~ temp x: int = …` ascription produces, so
+/// `brink-analyzer::strict`'s temp firewall (`collect_temps` →
+/// `annotations::resolve`) exempts an annotated native `let` from `E065`
+/// with no analyzer change at all.
 fn lower_temp_decl(
     file_id: FileId,
     temp: &ast::LetStmt,
@@ -141,7 +148,10 @@ fn lower_temp_decl(
         ptr: native_provenance(file_id, NodeClass::TempDecl, temp.syntax()),
         name,
         value,
-        annotation: None,
+        annotation: temp
+            .type_annotation()
+            .as_ref()
+            .and_then(super::types::lower_type_annotation),
     }))
 }
 

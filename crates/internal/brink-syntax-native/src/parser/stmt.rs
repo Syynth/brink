@@ -148,15 +148,20 @@ fn statement(p: &mut Parser<'_, '_>) -> bool {
     expr_or_tail_stmt(p)
 }
 
-/// `let name = expr;` (initializer optional — `let name;` is legal too, the
-/// issue's own hedge on the ruled `let x = e` shape). Distinct from
-/// `var`/`const` (`parser/decl.rs`): those are declaration-layer and
-/// terminator-free; `let` is code-ground and always `;`-terminated.
+/// `let name: type = expr;` (both the annotation and the initializer
+/// optional — `let name;` is legal too, the issue's own hedge on the ruled
+/// `let x = e` shape). Distinct from `var`/`const` (`parser/decl.rs`):
+/// those are declaration-layer and terminator-free; `let` is code-ground
+/// and always `;`-terminated. The `: type` clause is the same one they
+/// take, in the same slot (NG-B, issue #1488) — hence the shared
+/// `decl::binding_annotation`.
 fn let_stmt(p: &mut Parser<'_, '_>) {
     p.start_node(LET_STMT);
     p.bump(); // KW_LET
     p.skip_ws();
     p.expect(IDENT);
+    p.skip_ws();
+    super::decl::binding_annotation(p);
     p.skip_ws();
     if p.eat(EQ) {
         p.skip_ws();

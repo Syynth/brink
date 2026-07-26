@@ -12,6 +12,7 @@ mod source_file;
 mod stmt;
 #[cfg(test)]
 mod tests;
+mod types;
 
 use crate::SyntaxKind::{self, ERROR};
 use crate::lexer;
