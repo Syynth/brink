@@ -247,11 +247,17 @@ fn index_resolutions_by_file(
 /// Declaration-derived global (VAR/CONST) types — read via `signature()`,
 /// the firewall boundary for every non-callable reference in a body.
 ///
-/// `value_type` covers the scalar/list/divert domain; `fn_type` (T1c
-/// follow-up, issue #712) covers `Ty::Fn` separately since `InferredType`
-/// has no `Fn` form (`Sig::fn_type`'s doc) — the two are mutually exclusive
-/// per declaration, so trying `value_type` first and falling back to
-/// `fn_type` never masks either.
+/// Reads [`Sig::value_ty`](crate::Sig::value_ty) — the declaration's type at
+/// full [`Ty`] fidelity. Before issue #1540 this read the narrow
+/// `Sig::value_type` (with a `Sig::fn_type` fallback), which had no
+/// representation for `Array`/`Map`/`Struct`/`Fn`/`Handle`, so a
+/// collection-typed global was invisible to every typed check keyed on this
+/// map — E149 and the TM-3/T1e family all missed `VAR arr = #[…]` entirely.
+/// One field now carries that whole domain, so nothing in it can fall out
+/// again. `option<T>`/`range` are not part of that domain yet: neither has
+/// annotation grammar at all (`crate::annotations::resolve` has no arm for
+/// either), so a `VAR`/`CONST` can't be declared with one in the first
+/// place.
 ///
 /// `pub(crate)` (issue #670) so `structs::check`'s non-literal struct-field
 /// classification can resolve a variable-valued initializer that names a
@@ -266,12 +272,9 @@ pub(crate) fn collect_globals(
     for (&id, info) in &index.symbols {
         if matches!(info.kind, SymbolKind::Variable | SymbolKind::Constant)
             && let Some(sig) = crate::signature::signature(id, index, files, manifest)
+            && let Some(ty) = sig.value_ty.clone()
         {
-            if let Some(vt) = sig.value_type.clone() {
-                globals.insert(id, Ty::from(vt));
-            } else if let Some(ft) = sig.fn_type.clone() {
-                globals.insert(id, ft);
-            }
+            globals.insert(id, ty);
         }
     }
     globals
@@ -470,7 +473,9 @@ fn collect_defs<'a>(files: &[(FileId, &'a HirFile)], index: &SymbolIndex) -> Vec
                         file: file_id,
                         params: &stitch.params,
                         body: &stitch.body,
-                        return_annotation: None,
+                        // #1509 widened `Stitch` with the same `return_type`
+                        // grammar position `Knot` carries.
+                        return_annotation: stitch.return_type.as_ref(),
                     });
                 }
             }
@@ -1164,12 +1169,10 @@ mod tests {
     /// split's advertised latent fix — the array leg no longer narrows its
     /// *index* argument against the array's *element* type (wrong for an
     /// index; the pre-split shared `remove` code did this) — shipped with
-    /// no regression test. `arr` is a `temp` (not a `VAR`: a global's
-    /// static type is purely declaration-derived — `Sig::value_type` has no
-    /// `Array`/`Map` representation at all, `signature.rs`'s
-    /// `ty_to_inferred_type` — so a `VAR` fixture here would leave
-    /// `arg_tys.first()` at `Ty::Unknown` and never even reach the
-    /// `Ty::Array` arm this test exists to guard), so its `Ty::Array(String)`
+    /// no regression test. `arr` is a `temp` — a `VAR` would work equally
+    /// well since issue #1540 gave globals a full-fidelity `Sig::value_ty`,
+    /// but the `temp` spelling is what this test was written against — so
+    /// its `Ty::Array(String)`
     /// element type is genuinely in hand at the call site. If `remove_at`'s
     /// index arm regressed to narrowing against it, `i` would come out
     /// `Ty::String` here instead of staying `Unknown` (`i` is otherwise

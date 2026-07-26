@@ -1017,6 +1017,25 @@ pub struct AnalyzerTablesOwned {
     pub coalesce: brink_ir::lir::CoalesceLookup,
 }
 
+impl AnalyzerTablesOwned {
+    /// Borrow this owned bundle into the [`brink_ir::lir::AnalyzerTables`]
+    /// lowering actually takes — the one place that borrow is assembled
+    /// (issue #1528's review finding). Field-by-field construction at each
+    /// call site meant a third `AnalyzerTables` field would compile-error at
+    /// the call site instead of here, and the cheapest silencer there is a
+    /// throwaway default value rather than actually wiring the new table —
+    /// exactly the silent-empty-table failure this whole function exists to
+    /// prevent. Keeping the borrow here means a new field's compile error
+    /// lands next to this assembly instead.
+    #[must_use]
+    pub fn as_tables(&self) -> brink_ir::lir::AnalyzerTables<'_> {
+        brink_ir::lir::AnalyzerTables {
+            ufcs: &self.ufcs,
+            coalesce: &self.coalesce,
+        }
+    }
+}
+
 /// Assemble every analyzer side-table LIR lowering needs, from scratch, in
 /// one whole-project pass — **the one path a caller with no salsa layer of
 /// its own must use** (issue #1528).

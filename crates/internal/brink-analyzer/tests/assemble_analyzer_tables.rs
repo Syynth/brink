@@ -152,9 +152,13 @@ fn neither_table_is_silently_empty() {
     );
 }
 
-/// A project using neither feature stays at the all-empty default — the
-/// laziness gate this function's doc claims, pinned so a future change
-/// can't accidentally make every project pay for whole-project inference.
+/// A project using neither feature stays at the all-empty default. This
+/// pins the *result* only — it does not observe whether `infer_project` ran,
+/// so it does not by itself prove the laziness gate (`needs_ufcs` /
+/// `needs_coalesce` short-circuiting whole-project inference) is still
+/// wired: an unconditional `infer_project` call would produce the same
+/// all-empty tables for this feature-free fixture and still pass here. See
+/// `assemble_analyzer_tables`'s own doc for the laziness claim itself.
 #[test]
 fn a_project_using_neither_feature_stays_empty() {
     let file_id = FileId(0);

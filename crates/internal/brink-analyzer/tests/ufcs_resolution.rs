@@ -258,11 +258,11 @@ fn a_mutating_prelude_verb_also_resolves_as_a_prelude_desugar() {
 /// definition — a global `VAR` declared in another file must type
 /// correctly here, not read as an unknown receiver demanding an annotation
 /// (`E142`) just because the naive "look it up by name in this file" path
-/// can't see it. (`int`, not a struct: `signature()`'s `value_type` has no
-/// `InferredType` representation for `Ty::Struct` — a separate, documented
-/// gap — so a struct-typed global can never reach `infer::collect_globals`'s
-/// map regardless of this pass; `int` isolates the file-scoping bug this
-/// test pins.)
+/// can't see it. (`int`, not a struct: `int` isolates the file-scoping bug
+/// this test pins from the typing question. A struct-typed global *does*
+/// reach `infer::collect_globals`'s map since issue #1540 gave `Sig` a
+/// full-fidelity `value_ty`; before that it could not, whatever this pass
+/// did.)
 #[test]
 fn a_multi_file_global_receiver_is_typed_from_the_resolved_definition() {
     let (hir_a, manifest_a) = lower("var g: int = 10\n");

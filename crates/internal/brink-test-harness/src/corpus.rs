@@ -306,10 +306,7 @@ pub fn compile_and_explore_from_brink_native(
         &resolutions,
         &std::collections::HashMap::new(),
         brink_ir::lir::TypeMode::Gradual,
-        brink_ir::lir::AnalyzerTables {
-            ufcs: &analyzer_tables.ufcs,
-            coalesce: &analyzer_tables.coalesce,
-        },
+        analyzer_tables.as_tables(),
     );
     if !lir_diags.is_empty() {
         return Err(format!("LIR lowering diagnostics: {lir_diags:?}"));

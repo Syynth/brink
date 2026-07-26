@@ -184,7 +184,8 @@ pub(crate) fn stitch_definition(p: &mut Parser<'_, '_>) {
 /// Parse a stitch header.
 ///
 /// ```text
-/// stitch_header = { "=" ~ !("=" | ">") ~ INLINE_WS+ ~ identifier ~ INLINE_WS* ~ knot_params? }
+/// stitch_header = { "=" ~ !("=" | ">") ~ INLINE_WS+ ~ identifier ~ INLINE_WS* ~ knot_params?
+///                   ~ INLINE_WS* ~ type_annotation? }
 /// ```
 fn stitch_header(p: &mut Parser<'_, '_>) {
     p.start_node(STITCH_HEADER);
@@ -197,6 +198,15 @@ fn stitch_header(p: &mut Parser<'_, '_>) {
 
     if p.current() == L_PAREN {
         knot_params(p);
+        p.skip_ws();
+    }
+
+    // Optional return type annotation (NG-C, issue #1489, widened to
+    // stitches by #1509): `= name(params): type`. Same TM-2 grammar
+    // position as `knot_header`'s — a stitch header just has no trailing
+    // `===` to eat afterward.
+    if at_type_annotation(p) {
+        type_annotation(p);
     }
 
     p.finish_node();

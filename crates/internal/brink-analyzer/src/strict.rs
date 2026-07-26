@@ -306,6 +306,17 @@ pub fn check(
     // array receiver is caught here instead of only at the `MapRemove`
     // runtime fault.
     out.extend(check_array_remove_calls(files, index, inference));
+    // Issue #1540 (second symptom): the UFCS spelling of that same check.
+    // `infer::body::infer_call` types a multi-segment callee `Unknown`
+    // before `infer_intrinsic` runs, so `arr.remove(0)` records no fact for
+    // `check_array_remove_calls` to read — the B3a verdict table is where
+    // the `(receiver type, verb)` pair survives. See `ufcs::check_strict`.
+    out.extend(crate::ufcs::check_strict(
+        files,
+        index,
+        resolutions,
+        inference,
+    ));
     // TM-4b (docs/typed-mode-spec.md §6): missing/extra/mistyped struct
     // construction-literal fields — strict-mode-only, per the crate doc.
     out.extend(crate::structs::check(files, index, inference, resolutions));
@@ -394,13 +405,23 @@ fn check_escapes(
                 if let Some(id) =
                     annotations::def_id_for(index, file, SymbolKind::Stitch, &qualified)
                 {
+                    // `is_function` stays `false` (stitches never carry it,
+                    // per `lower_native::container`'s module doc) — the
+                    // real `return_type` (#1509) is still forwarded rather
+                    // than hardcoded `None`, since `check_def`'s escape
+                    // check itself is `is_function`-gated below; a
+                    // value-returning *non-function* stitch's escape
+                    // coverage is the same pre-existing gap a
+                    // value-returning non-function `Knot` already has
+                    // (out of #1509's scope — the missing field, not this
+                    // gate, is what this issue fixes).
                     check_def(
                         id,
                         file,
                         &qualified,
                         stitch.name.range,
                         false,
-                        None,
+                        stitch.return_type.as_ref(),
                         &stitch.params,
                         &stitch.body,
                         &names,
@@ -885,11 +906,16 @@ fn check_void_assignments(
 }
 
 /// Every function knot whose `): void ===` return annotation resolves to
-/// `void`, by `DefinitionId`. Stitches never carry `return_type` (only
-/// `Knot` does — see the field's doc comment), so only `hir.knots` entries
-/// with `is_function` set are candidates, mirroring `check_escapes`' own
-/// def-id lookup (`kind` tracks `knot.ptr`, since a top-level stitch
-/// promoted to knot status is indexed under `SymbolKind::Stitch`, #626).
+/// `void`, by `DefinitionId`. Only `is_function` knots are function calls
+/// in the sense this check cares about (a value-returning *non-function*
+/// flow/stitch is the coroutine side of the NG-C/#1509 toggle, not a
+/// callable void-or-not function) — so only `hir.knots` entries with
+/// `is_function` set are candidates, mirroring `check_escapes`' own def-id
+/// lookup (`kind` tracks `knot.ptr`, since a top-level stitch promoted to
+/// knot status is indexed under `SymbolKind::Stitch`, #626). A *nested*
+/// `Stitch` never carries `is_function` (no HIR container below `Knot`
+/// does), so it is never a candidate here regardless of its own
+/// `return_type` (#1509).
 fn collect_void_defs(files: &[(FileId, &HirFile)], index: &SymbolIndex) -> BTreeSet<DefinitionId> {
     let mut out = BTreeSet::new();
     for &(file, hir) in files {

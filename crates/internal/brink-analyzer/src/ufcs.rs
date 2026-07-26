@@ -278,9 +278,10 @@ pub type UfcsTable = SideTable<UfcsVerdict>;
 /// on `brink-ir`, never the reverse), so it cannot provide this itself —
 /// see `brink_ir::lir::UfcsVerdict`'s own doc. Every LIR-lowering caller
 /// shares this: `brink-db`'s `ufcs_resolution_query` (the production path)
-/// and `brink-test-harness`'s hand-assembled native pipeline
-/// (`corpus::compile_and_explore_from_brink_native`, which has no salsa
-/// layer to memoize the table in).
+/// and [`assemble_analyzer_tables`](crate::assemble_analyzer_tables) — the
+/// salsa-free path used by `brink-test-harness`
+/// (`corpus::compile_and_explore_from_brink_native`) and any other caller
+/// with no salsa layer of its own to memoize the table in.
 #[must_use]
 pub fn to_lir_lookup(table: &UfcsTable) -> brink_ir::lir::UfcsLookup {
     let entries = table
@@ -351,6 +352,80 @@ pub fn resolve(
     }
 
     (table, diagnostics)
+}
+
+/// The **strict-mode-only** diagnostics that fall out of the verdict table
+/// (issue #1540, second symptom): a typed check keyed on an intrinsic's
+/// receiver must see the UFCS spelling of that intrinsic too.
+///
+/// `infer::body::infer_call` deliberately returns `Ty::Unknown` for a
+/// multi-segment callee *before* `infer_intrinsic` runs (a UFCS receiver is
+/// not the thing being called, so classifying it as a call-through-a-value
+/// would be a false `E066` on every legal method call — see that function's
+/// own note). The consequence is that `arr.remove(0)` records none of the
+/// facts `remove(arr, 0)` records, so every intrinsic-receiver diagnostic
+/// silently stopped at the free-call spelling. This pass is where the
+/// UFCS spelling gets them back: the verdict table already carries the
+/// receiver's resolved `Ty` next to the verb's name, which is exactly the
+/// `(receiver type, verb)` pair those checks key on — no second inference,
+/// and no `TypePolicy` threaded into [`resolve`] (which stays
+/// policy-independent, as LIR lowering and the IDE need it to be).
+///
+/// Strict-mode-only **by convention, not by construction**, exactly like
+/// `coalesce::resolve`'s `E066` half: production reaches this only from
+/// `strict::check`, after `strict::config_error` has confirmed
+/// `types = strict` + `dialect = brink`. A caller that surfaces these
+/// without that gate would emit strict-only codes under `types = gradual`.
+///
+/// Gated on [`project_has_ufcs_call`] internally so a project with no
+/// dotted-callee call anywhere pays nothing — the same laziness
+/// `whole_project_diagnostics` applies to [`resolve`]'s own diagnostics.
+#[must_use]
+pub fn check_strict(
+    files: &[(FileId, &HirFile)],
+    index: &SymbolIndex,
+    resolutions: &ResolutionMap,
+    inference: &InferenceResult,
+) -> Vec<Diagnostic> {
+    if !files.iter().any(|&(_, hir)| project_has_ufcs_call(hir)) {
+        return Vec::new();
+    }
+    // The unconditional `E140`–`E144` half is discarded here: it is already
+    // reported by `whole_project_diagnostics`' own call to `resolve`, and
+    // double-reporting it under strict would be a regression.
+    let (table, _unconditional) = resolve(files, index, resolutions, inference);
+    table
+        .iter()
+        .filter_map(|(key, verdict)| strict_verdict_diagnostic(key, verdict))
+        .collect()
+}
+
+/// One verdict's strict-mode diagnostic, if it has one.
+///
+/// Today that is `E149` alone — `remove` went map-only in issue #1484 with
+/// no compatibility shim, so an array receiver means the site wants
+/// `remove_at`. The free-call spelling of this exact check lives in
+/// `strict::check_array_remove_calls`, reading the fact
+/// `infer::body`'s `remove` arm records; the two spellings must agree, so
+/// the receiver test here (`Ty::Array`) is deliberately the same one.
+///
+/// Every future collection-typed check that keys on `(receiver type, verb)`
+/// belongs in this match rather than in a parallel walk — that is the point
+/// of routing through the verdict table at all.
+fn strict_verdict_diagnostic(key: NodeKey, verdict: &UfcsVerdict) -> Option<Diagnostic> {
+    let UfcsVerdict::PreludeDesugar { receiver, name } = verdict else {
+        return None;
+    };
+    let code = match (name.as_str(), receiver) {
+        ("remove", Ty::Array(_)) => DiagnosticCode::E149,
+        _ => return None,
+    };
+    Some(Diagnostic {
+        file: key.file,
+        range: TextRange::new(key.range.0.into(), key.range.1.into()),
+        message: code.title().to_owned(),
+        code,
+    })
 }
 
 /// Cheap structural scan: does any call in `hir` have a multi-segment

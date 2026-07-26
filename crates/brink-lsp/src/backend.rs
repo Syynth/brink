@@ -1494,12 +1494,17 @@ impl LanguageServer for Backend {
         let idx = LineIndex::new(&snap.source);
         let offset = convert::to_text_size(params.text_document_position.position, &idx);
 
+        // B3a UFCS resolution (issue #1539): a brief, transient lock — see
+        // `goto_definition`'s own comment on the same pattern.
+        let db = lock_db(&self.db);
         let refs = brink_ide::navigation::find_references(
+            &db,
             &snap.analysis,
             snap.file_id,
             offset,
             params.context.include_declaration,
         );
+        drop(db);
 
         if refs.is_empty() {
             return Ok(None);
@@ -1917,10 +1922,15 @@ impl LanguageServer for Backend {
         let idx = LineIndex::new(&snap.source);
         let offset = convert::to_text_size(params.position, &idx);
 
-        let Some(range) = brink_ide::rename::prepare_rename(&snap.analysis, snap.file_id, offset)
+        // B3a UFCS resolution (issue #1539): a brief, transient lock — see
+        // `goto_definition`'s own comment on the same pattern.
+        let db = lock_db(&self.db);
+        let Some(range) =
+            brink_ide::rename::prepare_rename(&db, &snap.analysis, snap.file_id, offset)
         else {
             return Ok(None);
         };
+        drop(db);
 
         Ok(Some(PrepareRenameResponse::Range(convert::to_lsp_range(
             range, &idx,
@@ -1945,11 +1955,15 @@ impl LanguageServer for Backend {
         let idx = LineIndex::new(&snap.source);
         let offset = convert::to_text_size(params.text_document_position.position, &idx);
 
+        // B3a UFCS resolution (issue #1539): a brief, transient lock — see
+        // `goto_definition`'s own comment on the same pattern.
+        let db = lock_db(&self.db);
         let Some(result) =
-            brink_ide::rename::rename(&snap.analysis, snap.file_id, offset, &params.new_name)
+            brink_ide::rename::rename(&db, &snap.analysis, snap.file_id, offset, &params.new_name)
         else {
             return Ok(None);
         };
+        drop(db);
 
         // Convert domain edits to LSP WorkspaceEdit
         let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();

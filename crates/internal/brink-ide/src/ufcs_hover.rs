@@ -7,6 +7,18 @@
 //! analyzer's `ufcs` pass a second time — the D2 ruling justified the side
 //! table partly on exactly this IDE payoff.
 //!
+//! Issue #1539 extended this module's reach beyond hover/go-to-def: the same
+//! narrow method-segment matching ([`ufcs_call_at_offset`] /
+//! [`ufcs_call_at_path_range`]) and the same `db`-identity-space target
+//! resolution ([`ufcs_goto_definition_target`]) are the only correct way to
+//! answer "what does `.verb(...)` mean" for `find_references`/`rename` and
+//! `brink ide def --at` too — those three surfaces used to key off
+//! `ResolutionMap`/`find_def_at_offset` alone, which (like the pre-#1507
+//! hover) resolves a UFCS call site to the *receiver*. `rename` additionally
+//! needs the reverse direction — given a target `DefinitionId`, every UFCS
+//! call site that resolves to it — via `ProjectDb::ufcs_call_sites_for_target`
+//! and [`ufcs_method_range_at_path`].
+//!
 //! ## Why this is a narrow, method-segment-only override
 //!
 //! For a UFCS-shaped call, `brink-analyzer`'s `resolve::resolve_function`
@@ -65,6 +77,7 @@
 //!   ordinary bare call of that name already shows.
 
 use brink_db::ProjectDb;
+use brink_format::DefinitionId;
 use brink_ir::hir::visit::{self, HirVisitor};
 use brink_ir::lir::UfcsVerdict;
 use brink_ir::{Expr, FileId, HirFile, Name};
@@ -89,13 +102,23 @@ struct UfcsCallSite {
     receiver_text: String,
 }
 
-/// Find the UFCS call site whose method segment contains `offset`, if any.
-fn ufcs_call_at_offset(hir: &HirFile, offset: TextSize) -> Option<UfcsCallSite> {
-    struct Finder {
-        offset: TextSize,
+/// Visit every UFCS-shaped call site (`recv.verb(args)` — at least one
+/// receiver segment before the method) in `hir`, stopping at the first one
+/// `matches` accepts. Shared by [`ufcs_call_at_offset`] (matches by cursor
+/// offset, for hover/go-to-def/`def --at`) and [`ufcs_call_at_path_range`]
+/// (matches by the whole path's own range, for consumers that already hold
+/// a `(file, range)` key from [`ProjectDb::ufcs_verdict`]/
+/// `ProjectDb::ufcs_call_sites_for_target` and need the call site's narrow
+/// method-only span back out).
+fn find_ufcs_call(
+    hir: &HirFile,
+    matches: impl Fn(TextRange, &Name) -> bool,
+) -> Option<UfcsCallSite> {
+    struct Finder<'a> {
+        matches: &'a dyn Fn(TextRange, &Name) -> bool,
         found: Option<UfcsCallSite>,
     }
-    impl HirVisitor for Finder {
+    impl HirVisitor for Finder<'_> {
         fn visit_exprs(&self) -> bool {
             true
         }
@@ -115,7 +138,7 @@ fn ufcs_call_at_offset(hir: &HirFile, offset: TextSize) -> Option<UfcsCallSite> 
                 // early return for the same shape).
                 return;
             }
-            if !(method.range.contains(self.offset) || method.range.start() == self.offset) {
+            if !(self.matches)(path.range, method) {
                 return;
             }
             let receiver_text = receiver_segs
@@ -131,11 +154,27 @@ fn ufcs_call_at_offset(hir: &HirFile, offset: TextSize) -> Option<UfcsCallSite> 
         }
     }
     let mut finder = Finder {
-        offset,
+        matches: &matches,
         found: None,
     };
     visit::visit(hir, &mut finder);
     finder.found
+}
+
+/// Find the UFCS call site whose method segment contains `offset`, if any.
+fn ufcs_call_at_offset(hir: &HirFile, offset: TextSize) -> Option<UfcsCallSite> {
+    find_ufcs_call(hir, |_path_range, method| {
+        method.range.contains(offset) || method.range.start() == offset
+    })
+}
+
+/// Find the UFCS call site whose whole `recv.verb` path spans exactly
+/// `path_range` — the reverse direction of [`ufcs_call_at_offset`], for
+/// find-references/rename (issue #1539): those already know a call site's
+/// `(file, path_range)` key (from `ProjectDb::ufcs_call_sites_for_target`)
+/// and need its method-only span to reference/rewrite, not a cursor offset.
+fn ufcs_call_at_path_range(hir: &HirFile, path_range: TextRange) -> Option<UfcsCallSite> {
+    find_ufcs_call(hir, move |range, _method| range == path_range)
 }
 
 /// The UFCS call site and its recorded verdict at `offset`, read from the
@@ -151,6 +190,25 @@ fn ufcs_call_and_verdict(
     let call = ufcs_call_at_offset(hir, offset)?;
     let verdict = db.ufcs_verdict(file_id, call.path_range)?.clone();
     Some((call, verdict))
+}
+
+/// The method-segment range of the UFCS call site at `path_range` in `hir`,
+/// if any — find-references/rename's narrow-span counterpart to
+/// [`ufcs_call_at_path_range`], for consumers that only need the span, not
+/// the receiver text.
+#[must_use]
+pub fn ufcs_method_range_at_path(hir: &HirFile, path_range: TextRange) -> Option<TextRange> {
+    ufcs_call_at_path_range(hir, path_range).map(|call| call.method.range)
+}
+
+/// The method-segment range of the UFCS call site at `offset` in `hir`, if
+/// any — `prepare_rename`'s narrow-span need (issue #1539): the cursor's
+/// own reference range under the cursor, not the resolved target's
+/// declaration range (mirrors how a plain reference's own range, rather
+/// than its target's, is what `prepare_rename` returns elsewhere).
+#[must_use]
+pub fn ufcs_method_range_at_offset(hir: &HirFile, offset: TextSize) -> Option<TextRange> {
+    ufcs_call_at_offset(hir, offset).map(|call| call.method.range)
 }
 
 /// Hover content for the UFCS call site at `offset`, if any (issue #1507 —
@@ -231,6 +289,35 @@ pub fn ufcs_hover(
     })
 }
 
+/// The `DefinitionId` a UFCS call site's go-to-def should jump to.
+///
+/// Doubly-`Option`al on purpose — see [`ufcs_goto_definition`]'s doc for the
+/// outer/inner contract, which this shares. Factored out (issue #1539) so
+/// every consumer that needs the raw target id rather than a resolved
+/// [`LocationResult`] — `find_references`, `rename`, `brink ide def --at` —
+/// reuses this exact method-segment matching instead of re-deriving it.
+#[must_use]
+pub fn ufcs_goto_definition_target(
+    db: &ProjectDb,
+    hir: &HirFile,
+    file_id: FileId,
+    offset: TextSize,
+) -> Option<Option<DefinitionId>> {
+    let (_call, verdict) = ufcs_call_and_verdict(db, hir, file_id, offset)?;
+    let target = match verdict {
+        UfcsVerdict::FreeFnDesugar { target } | UfcsVerdict::FreeFnAutoRef { target } => {
+            Some(target)
+        }
+        // A struct field has no `DefinitionId` of its own, and a prelude
+        // verb is VM-native — neither has anywhere for go-to-def to jump.
+        // Explicit arms rather than a `_ => None` catch-all, so a third
+        // verdict kind added later has to be considered here rather than
+        // silently falling into this case.
+        UfcsVerdict::FieldCall | UfcsVerdict::PreludeDesugar { .. } => None,
+    };
+    Some(target)
+}
+
 /// The definition location a UFCS call site's go-to-def should jump to.
 ///
 /// Doubly-`Option`al on purpose, so the caller can tell "not applicable"
@@ -251,25 +338,18 @@ pub fn ufcs_goto_definition(
     file_id: FileId,
     offset: TextSize,
 ) -> Option<Option<LocationResult>> {
-    let (_call, verdict) = ufcs_call_and_verdict(db, hir, file_id, offset)?;
-    let loc = match verdict {
-        // See the module doc's "Why a `FreeFnDesugar`/`FreeFnAutoRef` target
-        // resolves through `db`, not `analysis`" section.
-        UfcsVerdict::FreeFnDesugar { target } | UfcsVerdict::FreeFnAutoRef { target } => db
-            .resolutions_index()
+    let target = ufcs_goto_definition_target(db, hir, file_id, offset)?;
+    // See the module doc's "Why a `FreeFnDesugar`/`FreeFnAutoRef` target
+    // resolves through `db`, not `analysis`" section.
+    let loc = target.and_then(|target| {
+        db.resolutions_index()
             .index
             .symbols
             .get(&target)
             .map(|info| LocationResult {
                 file: info.file,
                 range: info.range,
-            }),
-        // A struct field has no `DefinitionId` of its own, and a prelude
-        // verb is VM-native — neither has anywhere for go-to-def to jump.
-        // Explicit arms rather than a `_ => None` catch-all, so a third
-        // verdict kind added later has to be considered here rather than
-        // silently falling into this case.
-        UfcsVerdict::FieldCall | UfcsVerdict::PreludeDesugar { .. } => None,
-    };
+            })
+    });
     Some(loc)
 }

@@ -48,8 +48,9 @@ impl ResolutionLookup {
 /// `brink_analyzer::ufcs_lir_lookup` is the one translation point (it can
 /// see both crates, since `brink-analyzer` already depends on `brink-ir`):
 /// `brink-db`'s `ufcs_resolution_query` (the production path) and
-/// `brink-test-harness`'s hand-assembled native pipeline both call it to
-/// build a [`UfcsLookup`] from `brink_analyzer::UfcsTable`.
+/// `brink_analyzer::assemble_analyzer_tables` (the salsa-free path used by
+/// `brink-test-harness` and any other caller with no salsa layer of its own)
+/// both call it to build a [`UfcsLookup`] from `brink_analyzer::UfcsTable`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UfcsVerdict {
     /// The call's final path segment names a function-typed field on the
@@ -128,6 +129,36 @@ impl UfcsLookup {
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
     }
+
+    /// Every call site whose verdict is a [`UfcsVerdict::FreeFnDesugar`] or
+    /// [`UfcsVerdict::FreeFnAutoRef`] targeting `target` — issue #1539: the
+    /// project-wide enumeration `find_references`/`rename` need to also
+    /// rewrite/report a renamed free function's UFCS-desugared call sites,
+    /// not just its plain `ResolutionMap` references. `FieldCall`/
+    /// `PreludeDesugar` verdicts carry no `DefinitionId` and never match.
+    ///
+    /// Sorted by `(file, range.start(), range.end())` — this crate's
+    /// determinism rule (see `crate::determinism`'s doc): the underlying
+    /// `map` is an audited `HashMap`, so an iteration reaching output (an
+    /// edit list, a reference list) must sort first.
+    #[must_use]
+    pub fn call_sites_for_target(&self, target: DefinitionId) -> Vec<(FileId, TextRange)> {
+        let mut sites: Vec<(FileId, TextRange)> = self
+            .map
+            .iter()
+            .filter_map(|(&(file, range), verdict)| match *verdict {
+                UfcsVerdict::FreeFnDesugar { target: t }
+                | UfcsVerdict::FreeFnAutoRef { target: t }
+                    if t == target =>
+                {
+                    Some((file, range))
+                }
+                _ => None,
+            })
+            .collect();
+        sites.sort_by_key(|&(file, range)| (file, range.start(), range.end()));
+        sites
+    }
 }
 
 // ─── B1 `or`-coalescing shape lookup (issue #1492) ─────────────────
@@ -149,8 +180,10 @@ impl UfcsLookup {
 /// the analyzer's own `CoalesceShape` directly.
 /// `brink_analyzer::coalesce_lir_lookup` is the one translation point:
 /// `brink-db`'s `coalesce_types_query` (the production path) and
-/// `brink-test-harness`'s hand-assembled native pipeline both call it to
-/// build a [`CoalesceLookup`] from `brink_analyzer::CoalesceTable`.
+/// `brink_analyzer::assemble_analyzer_tables` (the salsa-free path used by
+/// `brink-test-harness` and any other caller with no salsa layer of its own)
+/// both call it to build a [`CoalesceLookup`] from
+/// `brink_analyzer::CoalesceTable`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CoalesceShape {
     /// `Option[T] or Option[U]` — optionality survives the step, so codegen
