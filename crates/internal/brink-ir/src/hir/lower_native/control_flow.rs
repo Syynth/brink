@@ -26,9 +26,10 @@
 //! `x.field += e` → `Assignment { op: AssignOp::Add, .. }`) — see
 //! `lower_return_stmt`/`lower_block_item`'s `BREAK_STMT`/`CONTINUE_STMT`
 //! arms and `lower_assignment` below. Blocks-as-values (a `STMT_BLOCK`'s
-//! own value when reached in expression position) and UFCS/`#fn` remain
-//! out of this slice — see `expr::lower_expr`'s `STMT_BLOCK` arm doc and
-//! `expr`'s module doc, respectively.
+//! own value when reached in expression position) and `#fn` remain out of
+//! this slice — see `expr::lower_expr`'s `STMT_BLOCK` arm doc and `expr`'s
+//! module doc, respectively. UFCS calls lower structurally here like any
+//! other call; their resolution is `brink-analyzer::ufcs`' (issue #1482).
 
 use brink_syntax_native::SyntaxKind as N;
 use brink_syntax_native::SyntaxNode;
@@ -73,7 +74,7 @@ fn name_from(tok: Option<brink_syntax_native::SyntaxToken>) -> Option<Name> {
 ///
 /// A rejected composition yields `None` — the construct lowers as an
 /// ordinary unbound `if`/`while`, which the F27 condition check then judges
-/// on its own terms. `E140` is Error-severity, so nothing reaches codegen
+/// on its own terms. `E145` is Error-severity, so nothing reaches codegen
 /// either way.
 pub(super) fn lower_as_binding(
     file_id: FileId,
@@ -88,7 +89,7 @@ pub(super) fn lower_as_binding(
         diags.push(diag(
             file_id,
             binding.syntax().text_range(),
-            DiagnosticCode::E140,
+            DiagnosticCode::E145,
         ));
         return None;
     }
@@ -157,9 +158,16 @@ fn lower_block_item(
     }
 }
 
-/// `let name (= expr)?;` — mirrors `logic_block::lower_block_temp_decl`'s
-/// diagnostic choice (E014) for the missing-name case, for differential
-/// symmetry on malformed input too, not just well-formed shapes.
+/// `let name (: type)? (= expr)?;` — mirrors
+/// `logic_block::lower_block_temp_decl`'s diagnostic choice (E014) for the
+/// missing-name case, for differential symmetry on malformed input too, not
+/// just well-formed shapes.
+///
+/// The annotation (NG-B, issue #1488) lowers to the same `hir::TypeExpr`
+/// the ink dialect's `~ temp x: int = …` ascription produces, so
+/// `brink-analyzer::strict`'s temp firewall (`collect_temps` →
+/// `annotations::resolve`) exempts an annotated native `let` from `E065`
+/// with no analyzer change at all.
 fn lower_temp_decl(
     file_id: FileId,
     temp: &ast::LetStmt,
@@ -175,7 +183,10 @@ fn lower_temp_decl(
         ptr: native_provenance(file_id, NodeClass::TempDecl, temp.syntax()),
         name,
         value,
-        annotation: None,
+        annotation: temp
+            .type_annotation()
+            .as_ref()
+            .and_then(super::types::lower_type_annotation),
     }))
 }
 

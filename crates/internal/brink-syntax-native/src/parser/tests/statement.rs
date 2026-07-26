@@ -77,6 +77,40 @@ fn let_stmt_without_initializer() {
     assert!(let_stmt.value().is_none());
 }
 
+#[test]
+fn let_stmt_with_type_annotation_and_initializer() {
+    // NG-B (issue #1488): the `: type` clause sits between the name and the
+    // `=`, the same slot `var`/`const` use.
+    let p = assert_lossless("var x = { let y: int = 1; y }\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let block = stmt_block_of(&p);
+    let let_stmt: ast::LetStmt = find_child(block.syntax()).expect("LET_STMT");
+    let annotation = let_stmt.type_annotation().expect("`: int` annotation");
+    let te = annotation.type_expr().expect("type expr");
+    let Some(ast::TypeExprKind::Name(n)) = te.kind() else {
+        unreachable!("expected a nominal type, tree: {:#?}", te.syntax())
+    };
+    assert_eq!(n.name(), Some("int".to_string()));
+    // The annotation must not be picked up as the initializer.
+    assert_eq!(
+        let_stmt.value().map(|n| n.kind()),
+        Some(SyntaxKind::INTEGER_LIT)
+    );
+}
+
+#[test]
+fn let_stmt_with_type_annotation_and_no_initializer() {
+    let p = assert_lossless("var x = { let y: string; y }\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let block = stmt_block_of(&p);
+    let let_stmt: ast::LetStmt = find_child(block.syntax()).expect("LET_STMT");
+    assert!(let_stmt.type_annotation().is_some());
+    assert!(
+        let_stmt.value().is_none(),
+        "the annotation is not an initializer"
+    );
+}
+
 // ── C. ASSIGN_STMT (including RMW field paths) ──────────────────────
 
 #[test]
@@ -545,7 +579,7 @@ fn while_stmt_as_binding_parses() {
 /// The v1 whole-condition restriction, parser half: an operator directly
 /// after the binding is refused by name, not with a generic
 /// `expected L_BRACE`. (The mirror spelling — a binding over a `&&`
-/// composition — parses fine here and is `brink-ir`'s `E140`.)
+/// composition — parses fine here and is `brink-ir`'s `E145`.)
 #[test]
 fn as_binding_followed_by_an_operator_is_a_named_parse_error() {
     for src in [

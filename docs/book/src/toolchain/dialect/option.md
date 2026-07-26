@@ -37,9 +37,10 @@ this chapter, is where that rule belongs.)
 > **Current spelling** — examples in this chapter compile in today's brink
 > dialect: collection literals carry the `#[…]`/`#{…}` sigils and the Option
 > verbs are free calls (`get(rooms, "Edda")`, `find(s, sub)`). The ruled
-> native `.brink` spellings — method-position calls (`rooms.get("Edda")`)
-> and the `as`-binding — still arrive with further native-frontend work, and
-> this chapter's examples will be respelled then. The `x or default`
+> native `.brink` spelling for method-position calls (`rooms.get("Edda")`)
+> and the `as`-binding (B1b, issue #1475 — see the callout later in this
+> chapter) have both landed on the native surface; this chapter's own
+> respell to that surface is separate, later work. The `x or default`
 > coalescing form has landed (B1, issue #1460) — but **only on the native
 > `.brink` surface**: `or` in the *brink dialect* this chapter's examples
 > use (the `~`-prefixed, `#[…]`-sigil syntax above) is still ink's boolean
@@ -385,11 +386,11 @@ The heaviest night on the tab: 7 coins — the ledger says some(7).
 > The binding is immutable, typed `T` from the condition's `Option[T]`,
 > scoped strictly to the success arm (an `else` never sees it), and
 > rebinds every iteration in `while`. For v1 the binding must be the
-> **entire** condition — composing it with `&&`/`||` is an error (`E140`);
+> **entire** condition — composing it with `&&`/`||` is an error (`E145`);
 > let-chains can land later, additively. An `as` in a *choice guard* is
 > ruled (capture-at-presentation, by value) but not yet implemented — it
 > rides the `.inkb` v6 Choice record, and until then it is diagnosed as
-> not-yet-supported (`E141`). Nothing in *this* chapter changes either
+> not-yet-supported (`E146`). Nothing in *this* chapter changes either
 > way — these examples are brink-dialect, where `or` stays ink's boolean
 > or and there is no `as` binding at all; the chapter's own respell to the
 > native surface is separate, later work.

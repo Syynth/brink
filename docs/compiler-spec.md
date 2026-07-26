@@ -187,7 +187,7 @@ LIR is the critical bridge between the high-level semantic HIR and backend codeg
 - **Loose end resolution:** choices and gathers without explicit diverts get implicit diverts to the next gather target (`gather_target` on `ChoiceSet`).
 - **Built-in function recognition:** intercepts function calls whose names match ink built-in functions (`TURNS_SINCE`, `LIST_COUNT`, `INT`, `FLOOR`, etc.) and converts them to `Expr::CallBuiltin` nodes instead of container calls.
 - **Divert target resolution:** classifies divert targets as `Address`, `Variable` (global holding a divert target), `VariableTemp` (temp/param holding a divert target), `Done`, or `End`.
-- **Call argument resolution:** resolves `ref` arguments to `RefGlobal(DefinitionId)` or `RefTemp(slot, name)`.
+- **Call argument resolution:** resolves `ref` arguments to `RefGlobal(DefinitionId)` or `RefTemp(slot, name)` — always a *cell* reference, never a pointer into a collection's storage (the value model's "`ref` is cell-level" invariant; `docs/runtime-spec.md` §"Value model", `docs/value-model-spec.md` §7).
 - **Template recognition:** the recognizer pass (`recognize.rs`) inspects content lines and produces `RecognizedLine::Plain` or `RecognizedLine::Template` with full metadata (source hash, slot info, source location). Currently recognizes plain text and interpolation patterns (`Text + Interpolation` mixtures). Content with inline conditionals, sequences, or glue mixed with expressions falls back to per-part emission (`ContentEmission::EmitContent`).
 
 ### Pass 5: Codegen (brink-codegen-inkb)

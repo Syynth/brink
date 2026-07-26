@@ -220,7 +220,7 @@ pub(super) fn lower_bound_condition(
     let value = lower_expr(condition, ctx);
     let (slot, name) = declare_shadow_checked(&binding.text, binding.range, ctx);
     // The binding is immutable by ruling — record the slot so every write
-    // path refuses it (`stmts::lower_assign_target`, E143).
+    // path refuses it (`stmts::lower_assign_target`, E148).
     ctx.as_binding_slots.insert(slot);
     lir::Expr::OptionBind {
         value: Box::new(value),

@@ -15,18 +15,20 @@
 //! (blocks-as-values, still unrepresentable as a value — see that arm's
 //! doc).
 //!
-//! **UFCS status (issue #1322):** `lower_call` below already lowers a
+//! **UFCS (issues #1322, #1482):** `lower_call` below lowers a
 //! multi-segment dotted callee (`x.foo(y)`) to `Expr::Call(Path, args)`
-//! unmodified — the shape *parses and structurally lowers* — but the
-//! ruled field-access-wins/free-fn resolution semantics is **not**
-//! implemented: no `brink-analyzer` pass disambiguates a multi-segment
-//! `Call` path today (the existing "FieldAccess/Call ambiguity" fallback
-//! resolves a bare `Expr::Path` used as a *value*, never a `Call` callee),
-//! and ink's own grammar structurally rejects the equivalent shape (E104,
-//! `hir/lower/expr/references.rs::CallExpr`) — there's no working
-//! differential partner to build against. Deferred, honestly, rather than
-//! guessed at; see `crates/internal/brink-ir/tests/b08_native_wave_b_tail.rs`'s
-//! module doc for the full investigation and its pinned gap test.
+//! unmodified, keeping every segment. That is deliberate and load-bearing:
+//! the ruled field-access-wins/free-fn resolution is **type-directed**, so
+//! it cannot be decided here — it lives in `brink-analyzer::ufcs` (B3a,
+//! D1–D5 RULED 2026-07-26), which splits this path into a receiver (every
+//! segment but the last) and a method name, infers the receiver's type, and
+//! records its verdict in a side table for LIR lowering and IDE hover. This
+//! lowering's only job is to preserve the shape; see
+//! `crates/internal/brink-ir/tests/b08_native_wave_b_tail.rs`'s
+//! `ufcs_call_shape_lowers_the_full_dotted_callee_path` for the pin on that
+//! contract. ink's own grammar cannot express the shape at all (E104,
+//! `hir/lower/expr/references.rs::CallExpr`), which is what keeps the ink
+//! corpus out of the analyzer pass by construction.
 //!
 //! **Construction (B5, issue #1464)**: `CONSTRUCT_LITERAL` — the
 //! `TypeName { … }` initializer — lowers through [`lower_construct`] below,

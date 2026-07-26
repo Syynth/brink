@@ -21,7 +21,7 @@
 //! diagnostic". The mirror-image spelling (`if a && find(x) as s { … }`,
 //! where the binding lands on a boolean sub-expression) is not a parse
 //! failure at all — it parses as a binding over `a && find(x)` — and is
-//! rejected downstream by `brink-ir`'s `E140`, which can see the bound
+//! rejected downstream by `brink-ir`'s `E145`, which can see the bound
 //! expression's shape.
 
 use crate::SyntaxKind::{AMP_AMP, AS_BINDING, IDENT, KW_AS, KW_OR, PIPE};

@@ -35,8 +35,15 @@ pub(crate) fn at_fn_decl(p: &Parser<'_, '_>) -> bool {
 
 /// Shared guard for `var`/`const` — the caller has already checked
 /// `p.at(KW_VAR)`/`p.at(KW_CONST)`.
+///
+/// `COLON` joins `EQ` as an accepted third token (NG-B, issue #1488): an
+/// annotated binding (`var hp: int = 10`) puts the annotation where the
+/// initializer's `=` used to be the only legal continuation. The
+/// prose-collision risk Finding #5 guards against is unchanged in
+/// character — neither `var` nor `const` is an English word a content line
+/// plausibly opens with.
 pub(crate) fn at_binding_decl(p: &Parser<'_, '_>) -> bool {
-    p.nth(1) == IDENT && p.nth(2) == EQ
+    p.nth(1) == IDENT && matches!(p.nth(2), EQ | COLON)
 }
 
 pub(crate) fn at_flags_decl(p: &Parser<'_, '_>) -> bool {
@@ -83,6 +90,7 @@ pub(crate) fn flow_decl(p: &mut Parser<'_, '_>, doc: Option<rowan::Checkpoint>) 
     if p.at(L_PAREN) {
         param_list(p);
     }
+    return_type_clause(p);
     decl_body(p, false, "expected a braced body after the flow header");
     p.finish_node();
 }
@@ -98,8 +106,29 @@ pub(crate) fn fn_decl(p: &mut Parser<'_, '_>, doc: Option<rowan::Checkpoint>) {
     if p.at(L_PAREN) {
         param_list(p);
     }
+    return_type_clause(p);
     decl_body(p, true, "expected a braced body after the fn header");
     p.finish_node();
+}
+
+/// The optional `: type` return clause on a `flow`/`fn` header — RULED
+/// 2026-07-26 (`docs/decision-log.md` "NG-C ruled: `: type` returns
+/// everywhere", issue #1489): `fn probability(g: Guest): float { … }`,
+/// matching the lambda convention so the language has exactly one
+/// return-annotation spelling.
+///
+/// **A return-typed header needs an explicit parameter list**, even an
+/// empty one (`flow quest(): QuestResult { … }`, not `flow quest: …`). The
+/// declaration-head lookahead (`at_flow_decl`/`at_fn_decl`, Finding #5)
+/// only commits on `KW IDENT (` or `KW IDENT {`, and widening it to accept
+/// `KW IDENT :` would start claiming ordinary prose lines
+/// (`flow onwards: the river bends.`) as declarations. Requiring the parens
+/// keeps the guard's prose firewall intact and reads the same as the
+/// `RustScript` north star's own `fn f() -> T`.
+fn return_type_clause(p: &mut Parser<'_, '_>) {
+    if super::types::at_type_annotation(p) {
+        super::types::type_annotation(p);
+    }
 }
 
 /// Parse a `flow`/`fn` declaration's body, honoring the body-dialect
@@ -135,9 +164,7 @@ fn decl_body(p: &mut Parser<'_, '_>, code_default: bool, missing_body_msg: &str)
     }
 }
 
-/// `(param, ref param, …)` — shared by `flow`/`fn`/`extern` headers. Types
-/// are out of B0.5's scope (b0-sequencing lists them under B0.6, not
-/// B0.5) — a bare `ref`? `IDENT` is the full shape here.
+/// `(param, ref param: Type, …)` — shared by `flow`/`fn`/`extern` headers.
 fn param_list(p: &mut Parser<'_, '_>) {
     p.start_node(PARAM_LIST);
     p.expect(L_PAREN);
@@ -159,10 +186,18 @@ fn param_list(p: &mut Parser<'_, '_>) {
     p.finish_node();
 }
 
+/// `ref`? `IDENT` (`:` type)? — one parameter (NG-A, issue #1487). The
+/// annotation is optional in the grammar for every header kind; whether an
+/// *un*annotated escaping parameter is an error is `brink-analyzer`'s
+/// strict-mode call (`strict.rs`'s `E065` Unknown-escape and its
+/// annotation firewall), never this parser's.
 fn param(p: &mut Parser<'_, '_>) {
     p.start_node(PARAM);
     p.eat(KW_REF);
     p.expect(IDENT);
+    if super::types::at_type_annotation(p) {
+        super::types::type_annotation(p);
+    }
     p.finish_node();
 }
 
@@ -175,25 +210,39 @@ fn param(p: &mut Parser<'_, '_>) {
 /// ruling applies to code-ground statements, not this declaration-layer
 /// keyword — `var`/`const` keep their existing `NEWLINE`/`}`/EOF-terminated
 /// shape unchanged; only `let` (the new binding keyword) is `;`-terminated.
+///
+/// `var name: type = expr` — the optional annotation sits between the name
+/// and the initializer (NG-B, issue #1488), the same slot `let` uses.
 pub(crate) fn var_decl(p: &mut Parser<'_, '_>, doc: Option<rowan::Checkpoint>) {
     super::doc_comment::open_with_doc(p, VAR_DECL, doc);
     p.bump(); // KW_VAR
     p.expect(IDENT);
+    binding_annotation(p);
     if p.eat(crate::SyntaxKind::EQ) {
         super::expr::expression(p);
     }
     p.finish_node();
 }
 
-/// `const name = expr`.
+/// `const name = expr` / `const name: type = expr`.
 pub(crate) fn const_decl(p: &mut Parser<'_, '_>, doc: Option<rowan::Checkpoint>) {
     super::doc_comment::open_with_doc(p, CONST_DECL, doc);
     p.bump(); // KW_CONST
     p.expect(IDENT);
+    binding_annotation(p);
     if p.eat(crate::SyntaxKind::EQ) {
         super::expr::expression(p);
     }
     p.finish_node();
+}
+
+/// The optional `: type` clause between a binding's name and its `=`
+/// initializer (NG-B, issue #1488). Shared by `var`/`const` here and by
+/// `let` (`parser/stmt.rs`), which is why it lives as its own helper.
+pub(super) fn binding_annotation(p: &mut Parser<'_, '_>) {
+    if super::types::at_type_annotation(p) {
+        super::types::type_annotation(p);
+    }
 }
 
 // ── flags ────────────────────────────────────────────────────────────

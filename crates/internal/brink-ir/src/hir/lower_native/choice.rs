@@ -112,13 +112,13 @@ fn lower_choice(file_id: FileId, c: &ast::Choice, diags: &mut Vec<Diagnostic>) -
     // B1b (issue #1475): guard-`as` is ruled (capture-at-presentation,
     // by-value COW) but rides the `.inkb` v6 Choice record, which has no
     // captured-environment slot yet. Diagnose the binding and lower the
-    // guard without it — `E141` is Error-severity, so nothing half-bound
+    // guard without it — `E146` is Error-severity, so nothing half-bound
     // reaches codegen.
     if let Some(binding) = c.guard().and_then(|g| g.as_binding()) {
         diags.push(diag(
             file_id,
             binding.syntax().text_range(),
-            DiagnosticCode::E141,
+            DiagnosticCode::E146,
         ));
     }
 

@@ -26,12 +26,12 @@ change. Vanilla-ink and brink-dialect stories are byte-identical and the
 oracle corpus is unaffected: the new opcode, node kind and HIR fields are
 reachable only through native `.brink` lowering.
 
-New diagnostics: `E140` (an `as` over a `&&`/`||` composition), `E141` (an
+New diagnostics: `E145` (an `as` over a `&&`/`||` composition), `E146` (an
 `as` in a choice guard — ruled, but sequenced with the `.inkb` v6 Choice
 record, so it is diagnosed as *not yet supported* rather than half-
-lowered), `E142` (an `as` over a statically known non-`Option` condition),
-`E143` (a write to a binding). The runtime gains a matching
-`AsBindingNotOption` fault as `E142`'s gradual-mode residual.
+lowered), `E147` (an `as` over a statically known non-`Option` condition),
+`E148` (a write to a binding). The runtime gains a matching
+`AsBindingNotOption` fault as `E147`'s gradual-mode residual.
 
 F27's `E116` ("an `Option[T]` has no truthiness") no longer fires on a
 condition that carries an `as` binding — the binding is the third explicit

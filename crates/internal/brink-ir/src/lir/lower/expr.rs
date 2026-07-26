@@ -686,6 +686,34 @@ fn lower_call(path: &hir::Path, args: &[hir::Expr], ctx: &mut LowerCtx<'_>) -> l
 
     // Resolve via resolution map
     if let Some(info) = ctx.resolve_path(path.range) {
+        // B3a UFCS (issue #1482): a *multi-segment* callee path resolving to
+        // a value is method-call syntax — the resolution record deliberately
+        // names the **receiver**, and the real target lives in
+        // `brink-analyzer::ufcs`' verdict side table, which this lowering
+        // does not consume yet. Falling through would take the
+        // `Variable`/`Constant` or catch-all arm below and emit a call
+        // against the receiver's own id: a silently wrong program (the
+        // pre-#1482 behavior was an `E025` compile refusal, and that
+        // refusal must not become a miscompile). Refuse loudly instead —
+        // resolution is done, lowering is the remaining work.
+        if path.segments.len() > 1
+            && matches!(
+                info.kind,
+                SymbolKind::Param | SymbolKind::Temp | SymbolKind::Variable | SymbolKind::Constant
+            )
+        {
+            ctx.diagnostics.push(crate::Diagnostic {
+                file: ctx.file,
+                range: path.range,
+                message: format!(
+                    "{}: `{name}` resolves as method-call syntax, but the compiler cannot \
+                     lower it yet — spell the call explicitly as a free call for now",
+                    crate::DiagnosticCode::E144.title(),
+                ),
+                code: crate::DiagnosticCode::E144,
+            });
+            return lir::Expr::Null;
+        }
         match info.kind {
             SymbolKind::List => {
                 // list(n) → ListFromInt; list() → empty list with origin.
@@ -1483,6 +1511,27 @@ fn lower_ref_path_call_arg(
 ) -> lir::CallArg {
     let name = path_to_string(path);
     if let Some(slot) = ctx.temp_slot(&name) {
+        // B1b (issue #1475): `ref` must not bypass an `as` binding's
+        // immutability. `lower_assign_target` is the write-target choke
+        // point for ordinary assignment, but `ref x` never routes through
+        // it — it hands the callee a raw pointer to the slot
+        // (`Opcode::PushTempPointer`), and a `ref`-param write-through
+        // (`Opcode::SetTemp`'s `Value::TempPointer` arm) mutates it
+        // directly. Refuse here too so every write path is actually
+        // covered, not just the ones that go through assignment lowering.
+        if ctx.as_binding_slots.contains(&slot) {
+            ctx.diagnostics.push(crate::Diagnostic {
+                file: ctx.file,
+                range: path.range,
+                message: format!(
+                    "{}: `{name}` is an `as` binding — it is immutable and cannot be passed \
+                     by `ref`",
+                    crate::DiagnosticCode::E148.title(),
+                ),
+                code: crate::DiagnosticCode::E148,
+            });
+            return lir::CallArg::Value(lir::Expr::Null);
+        }
         let name_id = ctx.names.intern(&name);
         return lir::CallArg::RefTemp(slot, name_id);
     }
@@ -1611,6 +1660,27 @@ fn lower_ref_projection_arg(ra: &hir::RefArgExpr, ctx: &mut LowerCtx<'_>) -> lir
     let Some((root, src_segments)) = decompose_projection(&ra.operand) else {
         return lir::CallArg::Value(lower_ref_arg_fence(ra, ctx));
     };
+    // B1b (issue #1475): the same `ref`-bypasses-immutability hole as
+    // `lower_ref_path_call_arg`, but for a projection's *root* (`ref
+    // n.field`, `ref n[0]`) — the root is still the `as` binding's own
+    // slot, so a projection off it is exactly as much a write-through as
+    // a bare `ref n` would be.
+    let root_name = path_to_string(root);
+    if let Some(slot) = ctx.temp_slot(&root_name) {
+        if ctx.as_binding_slots.contains(&slot) {
+            ctx.diagnostics.push(crate::Diagnostic {
+                file: ctx.file,
+                range: root.range,
+                message: format!(
+                    "{}: `{root_name}` is an `as` binding — it is immutable and cannot be \
+                     passed by `ref`",
+                    crate::DiagnosticCode::E148.title(),
+                ),
+                code: crate::DiagnosticCode::E148,
+            });
+            return lir::CallArg::Value(lir::Expr::Null);
+        }
+    }
     let Some(info) = ctx.resolve_path(root.range) else {
         return lir::CallArg::Value(lower_ref_arg_fence(ra, ctx));
     };

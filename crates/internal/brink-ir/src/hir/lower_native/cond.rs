@@ -79,7 +79,7 @@ pub(super) fn lower_conditional(
         let condition = lower_expr(file_id, &cond_node, diags);
         // B1b (issue #1475): the template condition position of the `as`
         // binding — the same construct the statement form takes, so it
-        // reuses the statement form's own lowering (and its E140
+        // reuses the statement form's own lowering (and its E145
         // whole-condition check) verbatim rather than restating the rule.
         let binding = super::control_flow::lower_as_binding(
             file_id,

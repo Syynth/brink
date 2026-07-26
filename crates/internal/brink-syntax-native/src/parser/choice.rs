@@ -98,7 +98,7 @@ fn choice(p: &mut Parser<'_, '_>) {
 /// 2026-07-26, "Choice-guard `as` un-deferred: capture-at-presentation,
 /// by-value (COW), rides v6"), but its implementation waits on the `.inkb`
 /// v6 Choice record growing a captured environment. Accepting it here and
-/// diagnosing it in `brink-ir` (`E141`) is deliberate: a parse-level
+/// diagnosing it in `brink-ir` (`E146`) is deliberate: a parse-level
 /// refusal would say "unexpected token `as`", which reads as "this is not
 /// a language feature" rather than the truth — it is, and it is not
 /// implemented yet.

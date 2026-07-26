@@ -264,7 +264,7 @@ fn check_if(i: &IfStmt, file: FileId, ctx: &MistypeCtx<'_>, out: &mut Vec<Diagno
 /// to write, so F27's `E116` must not fire — the binding is the third
 /// explicit spelling the F27 ruling named, next to `== none`/`== some(x)`.
 /// The inverse check takes its place: an `as` over a statically known
-/// **non**-Option has nothing to unwrap (`E142`).
+/// **non**-Option has nothing to unwrap (`E147`).
 fn check_condition_or_binding(
     cond: &Expr,
     binding: Option<&brink_ir::Name>,
@@ -279,7 +279,7 @@ fn check_condition_or_binding(
     }
 }
 
-/// `E142`: an `as` binding whose condition is statically classifiable and
+/// `E147`: an `as` binding whose condition is statically classifiable and
 /// is not an `Option[T]`.
 ///
 /// Gated exactly like `check_condition`'s `E116`: only a *classifiable*
@@ -307,10 +307,10 @@ fn check_binding_condition(
         range: expr_anchor(cond).unwrap_or(fallback_range),
         message: format!(
             "{}: the `as` binding unwraps an `Option[T]`, but this condition is `{}`",
-            DiagnosticCode::E142.title(),
+            DiagnosticCode::E147.title(),
             ty.display(),
         ),
-        code: DiagnosticCode::E142,
+        code: DiagnosticCode::E147,
     });
 }
 

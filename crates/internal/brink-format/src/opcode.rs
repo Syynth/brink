@@ -434,7 +434,7 @@ const COALESCE: u8 = 0xFB;
 //                          slot untouched and pushes `false`. A
 //                          non-`OptionVal` operand is a runtime fault
 //                          (`RuntimeError::AsBindingNotOption`), the
-//                          gradual-mode residual of the strict-mode `E142`
+//                          gradual-mode residual of the strict-mode `E147`
 //                          the checker raises for the same shape.
 //
 // Test-and-bind is deliberately ONE op rather than a dup/compare/unwrap
@@ -1311,7 +1311,7 @@ pub enum Opcode {
     /// `true`; `none` leaves `slot` untouched and pushes `false`. A
     /// non-`OptionVal` operand faults
     /// ([`RuntimeError::AsBindingNotOption`](crate::opcode) — the
-    /// gradual-mode residual of the checker's `E142`).
+    /// gradual-mode residual of the checker's `E147`).
     ///
     /// The slot is always freshly allocated by the binding itself, so —
     /// unlike [`SetTemp`](Self::SetTemp) — the write needs no

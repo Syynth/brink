@@ -2045,8 +2045,10 @@ pub enum DiagnosticCode {
     /// condition) whose statically-known type is `Option[T]`. Option has
     /// **no** truthiness — truthiness is a quiet coercion of exactly the
     /// kind `Option[T] ≠ T` exists to ban — so a strict-mode author writes
-    /// `== none` / `== some(x)` (or, post-B1, the `as`-binding).
-    /// Strict-mode-only, best-effort static (the "Unknown never disagrees"
+    /// `== none` / `== some(x)`, or the `as`-binding (B1b, issue #1475,
+    /// `brink-analyzer::option_conditions::check_binding_condition`); a
+    /// bound condition never fires this check. Strict-mode-only,
+    /// best-effort static (the "Unknown never disagrees"
     /// posture: an unclassifiable condition stays silently unchecked);
     /// under `types = gradual` the same condition is the
     /// `RuntimeError::OptionTruthiness` turn-terminating fault — the
@@ -2261,6 +2263,42 @@ pub enum DiagnosticCode {
     /// caught at dispatch rather than by the parser.
     E139,
 
+    // ── B3a: UFCS resolution (issue #1482, D1–D5 RULED 2026-07-26,
+    //    `docs/decision-log.md` "UFCS resolution pass designed") ────────
+    /// **D1**: `recv.name(args)`'s receiver type declares a field `name`,
+    /// but that field is not function-typed. Field access *wins outright* —
+    /// a matching-but-non-callable field is a hard error, never a silent
+    /// fall-through to a free function of the same name, so that a call's
+    /// meaning can never hinge on a field's type.
+    E140,
+    /// `recv.name(args)` resolved as neither: the receiver's type declares
+    /// no field `name`, **and** no free function `name` is visible in
+    /// ordinary lexical scope (D4 — the candidate set is lexical scope only;
+    /// there are no method sets or inherent impls). One diagnostic naming
+    /// both attempts, so the author sees the whole search that failed.
+    E141,
+    /// **D3**: `recv.name(args)`'s receiver type is not known at the
+    /// resolution point, so field-access-wins is unanswerable. An annotation
+    /// is demanded rather than the resolution being deferred (E107-family
+    /// posture). Explicitly a *for now* trade — smarter inference ordering
+    /// is planned and additive when it lands.
+    E142,
+    /// **D5 fence**: `recv.name(args)` resolved to a free function whose
+    /// first parameter is declared `ref`. The auto-ref desugar
+    /// (`heal(ref party.members[0], 5)`) is issue #1462, built on top of
+    /// this pass — until it lands the call is refused rather than desugared
+    /// by value, which would silently drop the mutation.
+    E143,
+    /// A UFCS call site that `brink-analyzer::ufcs` **resolved** cleanly has
+    /// reached LIR lowering, which does not consume the verdict side table
+    /// yet. Refused loudly rather than lowered: the callee path's resolution
+    /// record names the *receiver* (the D2 side table is what names the real
+    /// target), so lowering it as an ordinary call would emit a call against
+    /// a local's id and silently produce a wrong program. Same "parses/
+    /// resolves but has no lowering yet" posture as [`Self::E129`], one
+    /// layer further down.
+    E144,
+
     // ── B1b: the `as` binding (issue #1475, RULED `docs/decision-log.md`
     //    2026-07-26 "The `as` binding") ─────────────────────────────────
     /// The v1 whole-condition restriction: an `as` binding was written over
@@ -2271,7 +2309,7 @@ pub enum DiagnosticCode {
     /// is never an `Option[T]` anyway). The mirror spelling, an operator
     /// *after* the binding (`if find(x) as s && …`), is caught one layer
     /// earlier as a parse error (`brink-syntax-native::parser::binding`).
-    E140,
+    E145,
     /// An `as` binding in a **choice guard** (`* {if EXPR as name} [text]`).
     /// Ruled admissible with capture-at-presentation, by-value COW
     /// semantics (`docs/decision-log.md` 2026-07-26, "Choice-guard `as`
@@ -2279,23 +2317,28 @@ pub enum DiagnosticCode {
     /// to ride the pending choice across saves, which needs the `.inkb` v6
     /// Choice record. Diagnosed by name so the construct never half-works
     /// — this is "not yet", not "not a thing".
-    E141,
+    E146,
     /// An `as` binding whose condition is a statically-known **non-Option**
     /// type (`if 5 as n { … }`). The binding unwraps `Option[T]` to `T`;
     /// there is nothing to unwrap here. Strict-mode-only and
     /// classification-gated, exactly like its F27 twin [`Self::E116`]: an
     /// `Unknown`/`Conflicted` condition stays unjudged rather than
     /// guessing.
-    E142,
+    E147,
     /// A write to an `as` binding — `if find(s) as i { i = 0; }`, `pop(i)`,
-    /// `i[0] = x`, … The binding is **immutable** by ruling
+    /// `i[0] = x`, `bump(ref i)`, … The binding is **immutable** by ruling
     /// (`docs/decision-log.md` 2026-07-26): it names the unwrapped payload
     /// the condition proved present, and rebinding it would make the
-    /// narrowing guarantee a lie. Raised at the single LIR write-target
-    /// choke point (`lir::lower::stmts::lower_assign_target`), so every
-    /// write shape — assignment, compound assignment, indexed/field
-    /// assignment root, in-place mutator — is covered by construction.
-    E143,
+    /// narrowing guarantee a lie. Raised at the LIR write-target choke
+    /// point (`lir::lower::stmts::lower_assign_target`) for assignment,
+    /// compound assignment, an indexed/field assignment root, and an
+    /// in-place mutator; and separately at the `ref`-argument choke points
+    /// (`lir::lower::expr::lower_ref_path_call_arg`,
+    /// `lower_ref_projection_arg`), since passing the binding by `ref`
+    /// hands the callee a raw pointer to the slot without ever routing
+    /// through ordinary assignment lowering. Every write shape is covered
+    /// by construction across the two.
+    E148,
 }
 
 impl DiagnosticCode {
@@ -2450,6 +2493,11 @@ impl DiagnosticCode {
             Self::E141 => "E141",
             Self::E142 => "E142",
             Self::E143 => "E143",
+            Self::E144 => "E144",
+            Self::E145 => "E145",
+            Self::E146 => "E146",
+            Self::E147 => "E147",
+            Self::E148 => "E148",
         }
     }
 
@@ -2651,12 +2699,17 @@ impl DiagnosticCode {
             Self::E137 => "native .brink compile requires types = strict",
             Self::E138 => "map construction literal supplies a duplicate key",
             Self::E139 => "construction literal entries do not match the target type's form",
-            Self::E140 => {
+            Self::E140 => "method-call syntax matched a field that is not callable",
+            Self::E141 => "method-call syntax matched neither a field nor a free function",
+            Self::E142 => "method-call receiver type is unknown — annotate it",
+            Self::E143 => "method-call syntax onto a `ref` first parameter is not supported yet",
+            Self::E144 => "native: method call resolves but has no LIR lowering yet",
+            Self::E145 => {
                 "the `as` binding must be the entire condition (no `&&`/`||` composition)"
             }
-            Self::E141 => "the `as` binding in a choice guard is not yet supported",
-            Self::E142 => "the `as` binding requires an `Option[T]` condition",
-            Self::E143 => "an `as` binding is immutable and cannot be assigned to",
+            Self::E146 => "the `as` binding in a choice guard is not yet supported",
+            Self::E147 => "the `as` binding requires an `Option[T]` condition",
+            Self::E148 => "an `as` binding is immutable and cannot be assigned to",
         }
     }
 
@@ -2838,6 +2891,11 @@ impl DiagnosticCode {
             "E141" => Some(Self::E141),
             "E142" => Some(Self::E142),
             "E143" => Some(Self::E143),
+            "E144" => Some(Self::E144),
+            "E145" => Some(Self::E145),
+            "E146" => Some(Self::E146),
+            "E147" => Some(Self::E147),
+            "E148" => Some(Self::E148),
             _ => None,
         }
     }

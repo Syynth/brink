@@ -237,9 +237,13 @@ pub struct LowerCtx<'a> {
     /// indexed/field assignment's root, an in-place mutator like
     /// `pop`/`clear` — resolves its target through
     /// [`super::stmts::lower_assign_target`], which refuses a slot in this
-    /// set (`E143`). Entries are never removed: a slot is allocated fresh
-    /// per binding and never reused, so membership is a permanent property
-    /// of the slot, not of the scope being open.
+    /// set (`E148`). `ref` arguments never route through that choke point
+    /// — they hand the callee a raw pointer to the slot instead — so
+    /// [`super::expr::lower_ref_path_call_arg`] and
+    /// [`super::expr::lower_ref_projection_arg`] separately consult this
+    /// set at their own root. Entries are never removed: a slot is
+    /// allocated fresh per binding and never reused, so membership is a
+    /// permanent property of the slot, not of the scope being open.
     pub as_binding_slots: crate::determinism::LookupSet<u16>,
     /// Every name ever declared via [`LowerCtx::declare_block_local`] in
     /// this frame — i.e. every T1b block-scoped `temp`/`for`-loop-variable

@@ -324,9 +324,9 @@ pub(super) fn lower_assign_target(
                         message: format!(
                             "{}: `{name}` is an `as` binding — it is immutable and cannot be \
                              assigned to or mutated in place",
-                            crate::DiagnosticCode::E143.title(),
+                            crate::DiagnosticCode::E148.title(),
                         ),
-                        code: crate::DiagnosticCode::E143,
+                        code: crate::DiagnosticCode::E148,
                     });
                     return None;
                 }

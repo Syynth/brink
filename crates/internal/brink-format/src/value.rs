@@ -83,11 +83,20 @@ pub enum ValueType {
 
 /// A runtime value in the ink VM.
 ///
-/// Heap-allocating variants (`String`, `List`, `Array`, `Map`) are wrapped in
-/// `Arc` so that cloning a `Value` is always O(1) — a refcount bump, not a
-/// deep copy. This matches C#'s reference-type semantics and makes call-frame
-/// cloning (during `fork_thread`) essentially free. Atomic refcounts are used
-/// so `Value` can flow through Bevy's parallel scheduler.
+/// Heap-allocating variants (`String`, `List`, `Array`, `Map`, `Record`,
+/// `Closure`, `Projection`, `OptionVal`, `Weighted`) are wrapped in `Arc` so
+/// that cloning a `Value` is always O(1) — a refcount bump, not a deep copy —
+/// which makes call-frame cloning (during `fork_thread`) essentially free.
+/// Atomic refcounts are used so `Value` can flow through Bevy's parallel
+/// scheduler.
+///
+/// This `Arc` wrapping is a *performance* mechanism under **value
+/// semantics**, not reference semantics: sharing the underlying allocation
+/// is unobservable (`docs/value-model-spec.md` §3), because every mutating
+/// entry point forks the shared allocation on write (take → `make_mut` →
+/// write-back — see `docs/runtime-spec.md`'s "Value model" section). A
+/// binding that never observed a mutation never sees it, regardless of
+/// whether it shares the `Arc` underneath.
 ///
 /// The `Array`/`Map` collections follow the ratified value model
 /// (`docs/value-model-spec.md` §4/§5): value semantics with copy-on-write
@@ -1635,6 +1644,105 @@ mod tests {
     fn make_mut_returns_none_for_non_collection() {
         assert!(Value::Int(1).array_make_mut().is_none());
         assert!(Value::Int(1).map_make_mut().is_none());
+    }
+
+    /// `record_make_mut` gets the same COW proof as `array_make_mut`/
+    /// `map_make_mut` above — issue #1476's audit found this variant was the
+    /// one collection `make_mut` without a dedicated "copies when shared"
+    /// regression, despite sharing the exact take → `make_mut` → write-back
+    /// discipline (the COW discipline documented on [`Value`] —
+    /// `docs/value-model-spec.md` §4/§5).
+    #[test]
+    fn record_make_mut_copies_when_shared() {
+        let shape = ShapeId(0);
+        let original = Value::record(shape, vec![Value::Int(1), Value::Int(2)]);
+        let mut copy = original.clone(); // shares the Arc
+        copy.record_make_mut().expect("record")[0] = Value::Int(99);
+        assert_eq!(
+            original.as_record().expect("record").1.as_slice(),
+            &[Value::Int(1), Value::Int(2)],
+            "mutating the copy must never be observable through the original"
+        );
+        assert_eq!(
+            copy.as_record().expect("record").1.as_slice(),
+            &[Value::Int(99), Value::Int(2)]
+        );
+        // After the fork both are unique again.
+        assert_eq!(
+            Arc::strong_count(original.as_record().expect("record").1),
+            1
+        );
+    }
+
+    /// The classic nested-collection leak site (issue #1476), one layer
+    /// deeper: a `Record` field itself holds an `Array` (two independent
+    /// `Arc`s stacked — the record's field vec, and the array's backing
+    /// vec). `let y = x` then mutating `x`'s field-array in place must never
+    /// surface through `y`, exactly like a bare `Array`-of-`Array`
+    /// (`rmw-mutator-shared-nested-lvalue`, `tests/tier1-brink/`).
+    ///
+    /// This is pinned only at the `Value` layer, not as an end-to-end
+    /// `tests/tier1-brink/` fixture, because the obvious source form —
+    /// `STRUCT Bag = #{ items: array<int> }`, `push(a.items, 3)` — does not
+    /// currently reach this code path: `push`/`insert`/`remove`'s
+    /// bare-lvalue fast path (`try_lower_mutator_stmt` in
+    /// `brink-ir::lir::lower::blocks`) treats *any* `hir::Expr::Path`
+    /// lvalue, including a multi-segment TM-4b dotted field-access path
+    /// like `a.items`, as a single bare-variable target and resolves the
+    /// whole path's range to its root symbol — unlike plain field
+    /// assignment's `try_lower_field_assignment`, which explicitly special-
+    /// cases `path.segments.len() > 1`. The mutator ends up applied to `a`
+    /// itself (a `Record`) instead of `a`'s `items` field, so `push(a.items,
+    /// 3)` compiles clean but faults at runtime with
+    /// `RuntimeError::NotIndexable("record")` rather than mutating the
+    /// nested array. That is a real compiler bug, not a deliberate
+    /// limitation — tracked separately; this `Value`-layer test is what
+    /// proves the runtime's own COW discipline is already correct once a
+    /// future fix routes this lvalue shape through the field-projection
+    /// path instead.
+    #[test]
+    fn nested_array_inside_record_field_is_isolated_after_copy() {
+        let shape = ShapeId(0);
+        let inner = Value::array(vec![Value::Int(1), Value::Int(2)]);
+        let original = Value::record(shape, vec![Value::String("bag".into()), inner]);
+        let mut copy = original.clone(); // shares both Arcs (record + inner array)
+
+        // Take → make_mut → write-back on the copy's inner array field,
+        // mirroring `collection_ops`'s RMW discipline: pull the field out,
+        // COW-mutate it, write it back into the (already-uniqued) record.
+        let fields = copy.record_make_mut().expect("record");
+        let mut inner_copy = fields[1].clone();
+        inner_copy
+            .array_make_mut()
+            .expect("array")
+            .push(Value::Int(3));
+        fields[1] = inner_copy;
+
+        let original_inner = original
+            .as_record()
+            .expect("record")
+            .1
+            .get(1)
+            .expect("field 1")
+            .as_array()
+            .expect("array");
+        assert_eq!(
+            original_inner.as_slice(),
+            &[Value::Int(1), Value::Int(2)],
+            "mutating the copy's nested array must never be observable through the original record"
+        );
+        let copy_inner = copy
+            .as_record()
+            .expect("record")
+            .1
+            .get(1)
+            .expect("field 1")
+            .as_array()
+            .expect("array");
+        assert_eq!(
+            copy_inner.as_slice(),
+            &[Value::Int(1), Value::Int(2), Value::Int(3)]
+        );
     }
 
     // ── Structural equality with the ptr_eq fast path ──────────────────────

@@ -1034,7 +1034,7 @@ fn conditional_block_without_as_has_no_binding() {
 fn choice_guard_accepts_an_as_binding_for_brink_ir_to_diagnose() {
     // Guard-`as` is ruled but unimplemented (it rides the `.inkb` v6 Choice
     // record) — the grammar accepts it so `brink-ir` can say "not yet
-    // supported" (E141) instead of the parser saying "unexpected token".
+    // supported" (E146) instead of the parser saying "unexpected token".
     let src = "flow f() {\n  {?\n    * {if find(s, \"x\") as i} take it\n  }\n}\n";
     let p = assert_lossless(src);
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());

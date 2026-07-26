@@ -410,9 +410,9 @@ pub enum RuntimeError {
     /// name { … }` where `EXPR` does not evaluate to an `Option[T]`. The
     /// binding's whole job is to unwrap `Option[T]` to `T`, so there is
     /// nothing to bind. This is the gradual-mode residual of the checker's
-    /// strict-mode `E142` (the same statically/dynamically paired posture
+    /// strict-mode `E147` (the same statically/dynamically paired posture
     /// [`Self::OptionTruthiness`] has with `E116`); on the native surface,
-    /// which is strict-only, `E142` catches every statically classifiable
+    /// which is strict-only, `E147` catches every statically classifiable
     /// case first and this fault is the backstop for the rest.
     #[error("the `as` binding requires an Option, got {found}")]
     AsBindingNotOption {
