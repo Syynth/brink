@@ -48,7 +48,7 @@
     }
   ],
   "outcome": {
-    "Error": "Ink had 1 error. It is strongly suggested that you assign an error handler to story.onError. The first issue was: RUNTIME ERROR: '/Users/syynth/code/rs/brink/.claude/worktrees/wf_a14a724c-1b7-5/tests/tier1/choices/conditional-choice-loose-end-in-knot/story.ink' line 6: ran out of content. Do you need a '-> DONE' or '-> END'?"
+    "Error": "Ink had 1 error. It is strongly suggested that you assign an error handler to story.onError. The first issue was: RUNTIME ERROR: '/Users/syynth/code/rs/brink/tests/tier1/choices/nested-choice-loose-end-in-knot/story.ink' line 6: ran out of content. Do you need a '-> DONE' or '-> END'?"
   },
   "choice_path": [
     0,

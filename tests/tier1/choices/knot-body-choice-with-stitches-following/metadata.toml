@@ -1,7 +1,8 @@
 description = "A knot's own top-level body (not a stitch) ends in a gather-less choice set, with a further stitch defined afterward in source. Real ink treats the fall-through as a genuine authoring error (`RuntimeError::RanOutOfContent`) because stitches are addressed only by explicit divert — the trailing `= stitch_two` is never entered implicitly. Insurance fixture for #1522: this shape shares the `is_root_content_scope`-gated `build_continuation_container` path fixed by #1515 (knot-body loose end, not the stitch-body loose end #1515's own fixture — label-scope-error — already covers), but had no corpus coverage."
 
 [source]
-origin = "brink-conformance"
+origin = "brink"
+original_id = "knot-body-choice-with-stitches-following"
 notes = "Authored for issue #1522 (insurance fixture requested by #1515's review): a knot whose own body ends in a gather-less choice set with a stitch following. Oracle generated from the real C# ink runtime (tools/ink-oracle) — confirms C# also raises RanOutOfContent, and confirms the 'trailing extra step' shape (brink additionally emits the choice's own content line before erroring) matches the pre-existing diff_oracle allowance."
 
 [classification]
