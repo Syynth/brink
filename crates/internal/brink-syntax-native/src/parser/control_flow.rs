@@ -22,12 +22,23 @@ use crate::SyntaxKind::{
 
 use super::Parser;
 
+/// Parse a control-flow *head* expression — one directly followed by a `{`
+/// that opens the construct's body, so a trailing `TypeName { … }`
+/// construction literal (B5, issue #1464) must not swallow that brace.
+/// Rust's `no-struct-literal` restriction is the precedent; `(…)` restores
+/// the literal form (`while (Weighted { 1: a }) == w { … }`).
+fn head_expression(p: &mut Parser<'_, '_>) {
+    let saved = p.set_no_construct_literal(true);
+    super::expr::expression(p);
+    p.set_no_construct_literal(saved);
+}
+
 /// `if cond { … } (else if cond { … } | else { … })?`.
 pub(crate) fn if_stmt(p: &mut Parser<'_, '_>) {
     p.start_node(IF_STMT);
     p.bump(); // KW_IF
     p.skip_ws();
-    super::expr::expression(p);
+    head_expression(p);
     p.skip_ws();
     super::stmt::stmt_block(p);
     p.skip_ws();
@@ -58,7 +69,7 @@ pub(crate) fn while_stmt(p: &mut Parser<'_, '_>) {
     p.start_node(WHILE_STMT);
     p.bump(); // KW_WHILE
     p.skip_ws();
-    super::expr::expression(p);
+    head_expression(p);
     p.skip_ws();
     super::stmt::stmt_block(p);
     p.finish_node();
@@ -74,7 +85,7 @@ pub(crate) fn for_stmt(p: &mut Parser<'_, '_>) {
     p.skip_ws();
     p.expect(KW_IN);
     p.skip_ws();
-    super::expr::expression(p);
+    head_expression(p);
     p.skip_ws();
     super::stmt::stmt_block(p);
     p.finish_node();

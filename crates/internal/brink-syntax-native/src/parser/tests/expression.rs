@@ -2,14 +2,17 @@
 //!
 //! Parity target studied: `brink-syntax/src/parser/tests/expression/{mod,cst}.rs`
 //! (71 tests). This grammar is deliberately a *skeleton* (module doc on
-//! `parser/expr.rs`): no array/map/struct/fn-value literals, no ranges, no
-//! indexing, no field access, no postfix `++`/`--`, no compound-assignment
-//! operators — those are all explicitly B0.8+ and don't exist as
+//! `parser/expr.rs`): no array/fn-value sigil literals, no ranges, no
+//! indexing, no field access, no postfix `++`/`--` — those don't exist as
 //! `SyntaxKind`s here yet (checked against `syntax_kind.rs`). So this file
 //! mirrors the parity target's *structure and depth* for the forms that DO
 //! exist: literals, paths, prefix/infix expressions, parenthesization,
-//! `CALL_EXPR`/`ARG_LIST`, and `LAMBDA_EXPR`/`LAMBDA_PARAMS` (tokenized only
-//! — lowering is B0.8, per the node's own doc comment in `syntax_kind.rs`).
+//! `CALL_EXPR`/`ARG_LIST`, `LAMBDA_EXPR`/`LAMBDA_PARAMS` (tokenized only —
+//! lowering is B0.8, per the node's own doc comment in `syntax_kind.rs`),
+//! and — since B5 (issue #1464) — the one construction-initializer grammar
+//! `TypeName { … }` (`CONSTRUCT_LITERAL`/`CONSTRUCT_ENTRY`), which is how
+//! maps and struct construction are spelled on the native surface (there is
+//! no `#{…}`/`Name#{…}` sigil here; that is the brink dialect's spelling).
 //!
 //! Entry point: every case below goes through `var name = <expr>` (or, for
 //! the accessor tests, `const`), since that's the shortest reachable path
@@ -1213,6 +1216,210 @@ fn adversarial_mixed_garbage_tokens_in_call_args() {
     assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
     // Just must not panic; garbage tokens are expected to produce errors.
     assert!(!p.errors().is_empty());
+}
+
+// ── N2. Construction initializers, `TypeName { … }` (B5, #1464) ──────
+// The grammar is one shape for all three ruled entry forms; *meaning* is
+// the `construct` protocol's job one layer up (`brink_ir::hir::construct`),
+// so these tests only ever assert CST shape, never per-type semantics.
+
+/// The empty form — legal grammar, and the shortest thing that proves the
+/// `IDENT`-then-`{` commit fires at all.
+#[test]
+fn construct_literal_empty() {
+    let p = assert_lossless("var m = Map { }\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::CONSTRUCT_LITERAL));
+    assert!(!has_node_kind(&p.syntax(), SyntaxKind::CONSTRUCT_ENTRY));
+}
+
+#[test]
+fn construct_literal_pair_form_produces_one_entry_per_pair() {
+    let p = assert_lossless("var m = Map { \"a\": 1, \"b\": 2 }\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::CONSTRUCT_ENTRY), 2);
+}
+
+#[test]
+fn construct_literal_element_form_produces_one_entry_per_element() {
+    let p = assert_lossless("var f = Flags { Red, Blue, Green }\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::CONSTRUCT_ENTRY), 3);
+}
+
+/// The field form is *the same node shape* as the pair form — pair and
+/// field differ only in what the target type makes of the left side, which
+/// is dispatch, not grammar (`SyntaxKind::CONSTRUCT_ENTRY`'s doc).
+#[test]
+fn construct_literal_field_form_is_the_same_node_shape_as_the_pair_form() {
+    let field = assert_lossless("var p = Point { x: 1, y: 2 }\n");
+    let pair = assert_lossless("var m = Map { x: 1, y: 2 }\n");
+    assert!(field.errors().is_empty(), "errors: {:?}", field.errors());
+    assert_eq!(
+        count_node_kind(&field.syntax(), SyntaxKind::CONSTRUCT_ENTRY),
+        count_node_kind(&pair.syntax(), SyntaxKind::CONSTRUCT_ENTRY),
+    );
+}
+
+#[test]
+fn construct_literal_accepts_a_trailing_comma() {
+    let p = assert_lossless("var m = Map { \"a\": 1, }\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::CONSTRUCT_ENTRY), 1);
+}
+
+#[test]
+fn construct_literal_entries_may_span_lines() {
+    let p = assert_lossless("var m = Map {\n  \"a\": 1,\n  \"b\": 2,\n}\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::CONSTRUCT_ENTRY), 2);
+}
+
+#[test]
+fn construct_literal_nests() {
+    let p = assert_lossless("var m = Map { \"p\": Point { x: 1 } }\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert_eq!(
+        count_node_kind(&p.syntax(), SyntaxKind::CONSTRUCT_LITERAL),
+        2
+    );
+}
+
+/// A `::`-qualified type name is one `PATH`, so the whole spelling is still
+/// a single construction literal (registry lookup is on the last segment).
+#[test]
+fn construct_literal_accepts_a_qualified_type_path() {
+    let p = assert_lossless("var m = std::map::Map { \"a\": 1 }\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::CONSTRUCT_LITERAL));
+}
+
+/// The brace must sit on the type name's own line — a `NEWLINE` is never
+/// trivia here, so this is a plain path followed by an unrelated block, not
+/// a construction literal (the same rule a call's `(` already follows).
+#[test]
+fn a_brace_on_the_next_line_is_not_a_construct_literal() {
+    let p = assert_lossless("var m = Map\n\nflow main() {\n}\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(!has_node_kind(&p.syntax(), SyntaxKind::CONSTRUCT_LITERAL));
+}
+
+/// The `no-struct-literal` restriction (Rust's precedent): in an `if`/
+/// `while`/`for` head the brace opens the body, so a bare path there must
+/// stay a `PATH_EXPR` and the block must stay a `STMT_BLOCK`.
+#[test]
+fn a_control_flow_head_does_not_swallow_its_body_brace() {
+    for src in [
+        "var x = { if ready { 1; } };\n",
+        "var x = { while ready { 1; } };\n",
+        "var x = { for k in bag { 1; } };\n",
+    ] {
+        let p = assert_lossless(src);
+        assert!(p.errors().is_empty(), "{src}: errors: {:?}", p.errors());
+        assert!(
+            !has_node_kind(&p.syntax(), SyntaxKind::CONSTRUCT_LITERAL),
+            "{src}: head brace must open the body, not a construction literal"
+        );
+        assert!(has_node_kind(&p.syntax(), SyntaxKind::STMT_BLOCK));
+    }
+}
+
+/// …and the restriction lifts inside parentheses, so the literal form is
+/// still reachable in a head when the author asks for it.
+#[test]
+fn parentheses_restore_the_construct_literal_inside_a_control_flow_head() {
+    let p = assert_lossless("var x = { if (Point { x: 1 }) == p { 1; } };\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::CONSTRUCT_LITERAL));
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::STMT_BLOCK));
+}
+
+/// The same restriction on the *content-ground* `{if …}`/`{match …}` heads
+/// (`parser::family`), whose arm bodies also open with `{`.
+#[test]
+fn a_content_ground_conditional_head_does_not_swallow_its_arm_brace() {
+    for src in [
+        "flow main() {\n  {if ready {\n    Yes\n  }}\n}\n",
+        "flow main() {\n  {match mood {\n    calm => Calm\n  }}\n}\n",
+    ] {
+        let p = assert_lossless(src);
+        assert!(p.errors().is_empty(), "{src}: errors: {:?}", p.errors());
+        assert!(
+            !has_node_kind(&p.syntax(), SyntaxKind::CONSTRUCT_LITERAL),
+            "{src}: head brace must open the arm, not a construction literal"
+        );
+    }
+}
+
+/// A construction literal nested *inside* a control-flow body is
+/// unrestricted — the restriction is scoped to the head, and `stmt_block`
+/// clears it again.
+#[test]
+fn a_control_flow_body_may_contain_a_construct_literal() {
+    let p = assert_lossless("var x = { if ready { let m = Map { \"a\": 1 }; } };\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::CONSTRUCT_LITERAL));
+}
+
+/// A construction literal is an ordinary atom, so it composes with the rest
+/// of the expression grammar (call argument position here).
+#[test]
+fn construct_literal_in_call_argument_position() {
+    let p = assert_lossless("var x = size(Map { \"a\": 1 })\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::CONSTRUCT_LITERAL));
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::ARG_LIST));
+}
+
+#[test]
+fn unterminated_construct_literal_never_panics() {
+    let src = "var m = Map { \"a\": 1\n";
+    let p = parse(src);
+    assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
+    assert!(!p.errors().is_empty());
+}
+
+#[test]
+fn garbage_inside_a_construct_literal_never_panics() {
+    let src = "var m = Map { @@@ }\n";
+    let p = parse(src);
+    assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
+    assert!(!p.errors().is_empty());
+}
+
+/// Typed-AST accessors: form detection reads the `COLON` token, and
+/// `key`/`value` line up with it.
+#[test]
+fn construct_entry_accessors_distinguish_the_two_forms() {
+    let p = assert_lossless("var m = Map { \"a\": 1 }\n");
+    let lit = p
+        .syntax()
+        .descendants()
+        .find_map(ast::ConstructLiteral::cast)
+        .expect("one CONSTRUCT_LITERAL");
+    assert_eq!(
+        lit.type_path()
+            .expect("type path")
+            .segments()
+            .map(|t| t.text().to_string())
+            .collect::<Vec<_>>(),
+        vec!["Map".to_string()]
+    );
+    let entry = lit.entries().next().expect("one entry");
+    assert!(entry.is_pair());
+    assert_eq!(entry.key().expect("key").kind(), SyntaxKind::STRING_LIT);
+    assert_eq!(entry.value().expect("value").kind(), SyntaxKind::INTEGER_LIT);
+
+    let p = assert_lossless("var f = Flags { Red }\n");
+    let lit = p
+        .syntax()
+        .descendants()
+        .find_map(ast::ConstructLiteral::cast)
+        .expect("one CONSTRUCT_LITERAL");
+    let entry = lit.entries().next().expect("one entry");
+    assert!(!entry.is_pair());
+    assert!(entry.key().is_none());
+    assert_eq!(entry.value().expect("value").kind(), SyntaxKind::PATH_EXPR);
 }
 
 // ── O. Proptest round-trip generator (local to this family file — see  ──

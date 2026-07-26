@@ -259,14 +259,25 @@ surfaces distinguishing an accidental empty choice/tag from a deliberate
 touches, so it inherits the same forgiveness — whether that is the
 intended edge behavior is still open).
 
-### Wave B5 — construction grammar `TypeName { … }`
+### Wave B5 — construction grammar `TypeName { … }` (BUILT, #1464)
 The one initializer grammar, per-type meaning: struct fields / map pairs /
 flags members / `Weighted` multiset / enum-variant payloads / tower
-components. **The protocol-vs-grammar question is #1103** (code-dialect
-sitting) — B5 v1 implements grammar dispatch over the closed set;
-#1103 may later promote it to a construction protocol. **Depends:** B0,
-A5 (refined-literal coercion at construction), A7 (Weighted). **Findings:**
-F17 (Weighted multiset), F5/duplicate policies.
+components. **The protocol-vs-grammar question was #1103 — RULED
+2026-07-23**: construction is **protocol dispatch**, the registry's 4th
+entry (`construct`), not grammar dispatch over a closed set.
+
+**Landed (#1464):** the native grammar (`CONSTRUCT_LITERAL` /
+`CONSTRUCT_ENTRY` — one shape for the element and pair/field forms) plus
+the registry (`brink_ir::hir::construct::ConstructTarget`, std-only:
+`Map`/`Flags`/`Weighted`, with an unregistered name falling through to the
+declared-struct reading). Duplicate map keys are a compile error (**E138**,
+cascade ruling A); a form mismatch is **E139**. Enum-variant payloads and
+tower components are not registered — enums have no HIR node yet
+(`docs/b0-sequencing.md`), and the tower has its own NS-A8 call grammar.
+**Deferred with the ruling:** user-type opt-in (the `impl` spelling), the
+validating `construct → Option` member's spelling, and the spread form.
+**Depends:** B0, A5 (refined-literal coercion at construction), A7
+(Weighted). **Findings:** F17 (Weighted multiset), F5/duplicate policies.
 
 ---
 

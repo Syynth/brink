@@ -80,17 +80,30 @@ pub(crate) fn conditional_block(p: &mut Parser<'_, '_>) {
 /// handling, never in body shape.
 fn conditional_body(p: &mut Parser<'_, '_>) {
     if p.eat(KW_IF) {
-        super::expr::expression(p);
+        head_expression(p);
         if_arm(p);
         if at_else_arm(p) {
             else_branch(p);
         }
     } else if p.eat(KW_MATCH) {
-        super::expr::expression(p);
+        head_expression(p);
         match_arm_list(p);
     } else {
         p.error("expected `if` or `match` after `{`".into());
     }
+}
+
+/// The content-ground counterpart of `control_flow::head_expression`: a
+/// `{if …}`/`{match …}` head is directly followed by its arm-body opener,
+/// which may be `{` (`arm_body`/`match_arm_list`), so a trailing
+/// `TypeName { … }` construction literal (B5, issue #1464) must not
+/// swallow it. The colon form (`{if x: …}`) is unambiguous, but the
+/// restriction is set for both — the head is parsed before either opener
+/// is visible.
+fn head_expression(p: &mut Parser<'_, '_>) {
+    let saved = p.set_no_construct_literal(true);
+    super::expr::expression(p);
+    p.set_no_construct_literal(saved);
 }
 
 fn if_arm(p: &mut Parser<'_, '_>) {

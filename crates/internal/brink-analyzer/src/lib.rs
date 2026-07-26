@@ -500,6 +500,18 @@ pub fn per_file_diagnostics(
         // construction).
         out.extend(protocols::check_reserved_names(&files));
     }
+    // Map-literal duplicate-key error (E138, B5 issue #1464, #1103 cascade
+    // ruling (A), docs/stdlib-spec.md §9.6). Wired WIDER than the
+    // brink-only block above on purpose: this is a `construct`-protocol
+    // rule, and the native surface reaches map literals through
+    // `Map { k: v }` regardless of the (ink-only) `dialect` axis a native
+    // project happens to carry — a `.brink` file compiled under the default
+    // `strict-ink` dialect must still get the error. Under `strict-ink`
+    // *ink* the map literal is already rejected whole by `dialect_gate`
+    // (E051), so nothing new fires there.
+    if dialect == Dialect::Brink || is_native {
+        out.extend(map_keys::check_duplicate_keys(&files));
+    }
     out
 }
 

@@ -49,6 +49,10 @@ use super::Parser;
 pub(crate) fn stmt_block(p: &mut Parser<'_, '_>) {
     p.start_node(STMT_BLOCK);
     p.expect(L_BRACE);
+    // Once inside a block body the `TypeName { … }` restriction a
+    // control-flow head may have set no longer applies — a statement here
+    // is not the head expression (`if a { let m = Map { "k": 1 }; }`).
+    let saved = p.set_no_construct_literal(false);
 
     if p.enter_depth() {
         loop {
@@ -87,6 +91,7 @@ pub(crate) fn stmt_block(p: &mut Parser<'_, '_>) {
         }
     }
 
+    p.set_no_construct_literal(saved);
     p.expect(R_BRACE);
     p.finish_node();
 }

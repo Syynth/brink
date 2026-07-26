@@ -16,13 +16,22 @@
 //! and structurally lowers, `brink_ir::hir::lower_native::expr::
 //! lower_call`) remains unaddressed at the semantic-resolution layer; see
 //! that lowering module's doc for the investigation (issue #1322).
+//!
+//! B5 (issue #1464, #1103 RULED 2026-07-23) adds the **one construction
+//! initializer** `TypeName { … }` as a real atom (`path_or_call` below
+//! commits to `CONSTRUCT_LITERAL` when a path is followed by `{`). It is
+//! grammar only: the three ruled entry forms collapse to two node shapes
+//! here and *meaning* is `brink_ir::hir::construct`'s registry lookup, so
+//! this file still knows nothing about `Map`/`Flags`/`Weighted`/structs.
+//! The one place the grammar has to care is ambiguity — see
+//! `Parser::no_construct_literal`.
 
 use crate::SyntaxKind::{
-    AMP_AMP, ARG_LIST, BANG, BANG_EQ, BOOLEAN_LIT, CALL_EXPR, COLON_COLON, COMMA, DOT, EQ_EQ,
-    FLOAT, FLOAT_LIT, GT, GT_EQ, IDENT, INFIX_EXPR, INTEGER, INTEGER_LIT, KW_FALSE, KW_TRUE,
-    L_BRACE, L_PAREN, LAMBDA_EXPR, LAMBDA_PARAMS, LT, LT_EQ, MINUS, PAREN_EXPR, PATH, PATH_EXPR,
-    PATH_SEGMENT, PERCENT, PIPE, PLUS, PREFIX_EXPR, QUOTE, R_PAREN, SLASH, STAR, STRING_ESCAPE,
-    STRING_LIT, STRING_TEXT,
+    AMP_AMP, ARG_LIST, BANG, BANG_EQ, BOOLEAN_LIT, CALL_EXPR, COLON, COLON_COLON, COMMA,
+    CONSTRUCT_ENTRY, CONSTRUCT_LITERAL, DOT, EQ_EQ, FLOAT, FLOAT_LIT, GT, GT_EQ, IDENT, INFIX_EXPR,
+    INTEGER, INTEGER_LIT, KW_FALSE, KW_TRUE, L_BRACE, L_PAREN, LAMBDA_EXPR, LAMBDA_PARAMS, LT,
+    LT_EQ, MINUS, PAREN_EXPR, PATH, PATH_EXPR, PATH_SEGMENT, PERCENT, PIPE, PLUS, PREFIX_EXPR,
+    QUOTE, R_BRACE, R_PAREN, SLASH, STAR, STRING_ESCAPE, STRING_LIT, STRING_TEXT,
 };
 
 use super::Parser;
@@ -208,7 +217,11 @@ fn atom(p: &mut Parser<'_, '_>) -> bool {
 fn paren_expr(p: &mut Parser<'_, '_>) {
     p.start_node(PAREN_EXPR);
     p.expect(L_PAREN);
+    // Inside `(…)` the construction-literal restriction lifts: the
+    // parenthesis already disambiguates (`if (Point { x: 1 }) == p { … }`).
+    let saved = p.set_no_construct_literal(false);
     expression(p);
+    p.set_no_construct_literal(saved);
     p.expect(R_PAREN);
     p.finish_node();
 }
@@ -250,10 +263,67 @@ fn path_or_call(p: &mut Parser<'_, '_>) {
         p.start_node_at(checkpoint, CALL_EXPR);
         arg_list(p);
         p.finish_node();
+    } else if p.at(L_BRACE) && p.construct_literals_allowed() {
+        // `TypeName { … }` — the construction initializer (B5, issue
+        // #1464). `p.at` skips trivia but never `NEWLINE`, so the brace
+        // must sit on the type name's own line, exactly like a call's
+        // `(` above.
+        p.start_node_at(checkpoint, CONSTRUCT_LITERAL);
+        construct_entry_list(p);
+        p.finish_node();
     } else {
         p.start_node_at(checkpoint, PATH_EXPR);
         p.finish_node();
     }
+}
+
+/// `{ entry, entry, … }` — the brace body of a `TypeName { … }`
+/// construction literal. Trailing comma and the empty form `TypeName { }`
+/// are both accepted, mirroring the brink-dialect sigil literals'
+/// established shape (`brink-syntax`'s `map_literal`/`struct_literal`).
+///
+/// The restriction that brought us here does not apply *inside* the braces
+/// — a nested `Map { "inner": Point { x: 1 } }` is unambiguous — so it is
+/// cleared for the entry list and restored after.
+fn construct_entry_list(p: &mut Parser<'_, '_>) {
+    p.expect(L_BRACE);
+    let saved = p.set_no_construct_literal(false);
+    if p.enter_depth() {
+        loop {
+            p.skip_ws_and_newlines();
+            if p.at(R_BRACE) || p.at_eof() {
+                break;
+            }
+            let before = p.pos();
+            construct_entry(p);
+            if p.pos() == before {
+                p.error_recover("unexpected token in construction literal");
+                continue;
+            }
+            p.skip_ws_and_newlines();
+            if !p.eat(COMMA) {
+                break;
+            }
+        }
+        p.exit_depth();
+    }
+    p.skip_ws_and_newlines();
+    p.set_no_construct_literal(saved);
+    p.expect(R_BRACE);
+}
+
+/// One `CONSTRUCT_ENTRY`: `expr` (element form) or `expr : expr` (the
+/// pair/field form — one grammar shape, since only the target type decides
+/// whether the left side names a key or a field).
+fn construct_entry(p: &mut Parser<'_, '_>) {
+    p.start_node(CONSTRUCT_ENTRY);
+    expression(p);
+    p.skip_ws();
+    if p.eat(COLON) {
+        p.skip_ws_and_newlines();
+        expression(p);
+    }
+    p.finish_node();
 }
 
 /// A dotted/`::`-separated name path (charter §13.2): `::` crosses module
@@ -277,6 +347,9 @@ fn path_segment(p: &mut Parser<'_, '_>) {
 pub(crate) fn arg_list(p: &mut Parser<'_, '_>) {
     p.start_node(ARG_LIST);
     p.expect(L_PAREN);
+    // An argument list is delimited, so the construction-literal
+    // restriction lifts inside it — same reasoning as `paren_expr`.
+    let saved = p.set_no_construct_literal(false);
     p.skip_ws_and_newlines();
     while p.peek_skip_nl() != R_PAREN && !p.at_eof() {
         let before = p.pos();
@@ -292,6 +365,7 @@ pub(crate) fn arg_list(p: &mut Parser<'_, '_>) {
         }
         p.skip_ws_and_newlines();
     }
+    p.set_no_construct_literal(saved);
     p.expect(R_PAREN);
     p.finish_node();
 }
