@@ -247,11 +247,13 @@ fn index_resolutions_by_file(
 /// Declaration-derived global (VAR/CONST) types — read via `signature()`,
 /// the firewall boundary for every non-callable reference in a body.
 ///
-/// `value_type` covers the scalar/list/divert domain; `fn_type` (T1c
-/// follow-up, issue #712) covers `Ty::Fn` separately since `InferredType`
-/// has no `Fn` form (`Sig::fn_type`'s doc) — the two are mutually exclusive
-/// per declaration, so trying `value_type` first and falling back to
-/// `fn_type` never masks either.
+/// Reads [`Sig::value_ty`](crate::Sig::value_ty) — the declaration's type at
+/// full [`Ty`] fidelity. Before issue #1540 this read the narrow
+/// `Sig::value_type` (with a `Sig::fn_type` fallback), which had no
+/// representation for `Array`/`Map`/`Struct`/`Fn`/`Option`/`Range`, so a
+/// collection-typed global was invisible to every typed check keyed on this
+/// map — E149 and the TM-3/T1e family all missed `VAR arr = #[…]` entirely.
+/// One field now carries the whole domain, so nothing can fall out again.
 ///
 /// `pub(crate)` (issue #670) so `structs::check`'s non-literal struct-field
 /// classification can resolve a variable-valued initializer that names a
@@ -266,12 +268,9 @@ pub(crate) fn collect_globals(
     for (&id, info) in &index.symbols {
         if matches!(info.kind, SymbolKind::Variable | SymbolKind::Constant)
             && let Some(sig) = crate::signature::signature(id, index, files, manifest)
+            && let Some(ty) = sig.value_ty.clone()
         {
-            if let Some(vt) = sig.value_type.clone() {
-                globals.insert(id, Ty::from(vt));
-            } else if let Some(ft) = sig.fn_type.clone() {
-                globals.insert(id, ft);
-            }
+            globals.insert(id, ty);
         }
     }
     globals
