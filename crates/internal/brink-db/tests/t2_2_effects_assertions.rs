@@ -403,3 +403,64 @@ fn user_var_named_rng_shadows_the_cell_name_in_clauses() {
     );
     assert_eq!(codes(&diags), Vec::<DiagnosticCode>::new(), "{diags:?}");
 }
+
+// ── The native `.brink` surface (issue #1563) ────────────────────────────
+//
+// A per-declaration `@[effects(…)]` above a native `fn`/`flow` used to be a
+// hard `E129` compile failure in `hir::lower_native`, so this whole surface
+// was unreachable from a `.brink` file. Now that the annotation channel
+// lowers, the *same* frontend-agnostic exceedance check that judges ink
+// assertions judges native ones — these tests are the end-to-end proof that
+// the channel reaches a user through the real salsa pipeline, not just the
+// HIR unit tests in `brink-ir`.
+
+/// `.brink` files route through `lower_native`; the fixtures below need
+/// exactly the same `Dialect::Brink` posture `analyze` already sets (which
+/// also resolves `types` to `Strict`, native's requirement — `E137`).
+fn analyze_native(source: &str) -> Vec<brink_ir::Diagnostic> {
+    let mut db = ProjectDb::new();
+    db.set_analysis_options(brink_opts());
+    db.set_file("main.brink", source.to_owned());
+    db.analysis().diagnostics.clone()
+}
+
+#[test]
+fn native_pure_assertion_is_exceeded_by_a_global_read() {
+    let diags =
+        analyze_native("var gold = 0\n\n@[effects(pure)]\nfn spend() {\n  return gold;\n}\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E103], "{diags:?}");
+    assert!(diags[0].message.contains("reads gold"), "{diags:?}");
+}
+
+#[test]
+fn native_assertion_that_covers_the_body_is_silent() {
+    let diags = analyze_native(
+        "var gold = 0\n\n@[effects(reads(gold))]\nfn spend() {\n  return gold;\n}\n",
+    );
+    assert_eq!(codes(&diags), Vec::<DiagnosticCode>::new(), "{diags:?}");
+}
+
+#[test]
+fn native_writes_clause_exceedance_names_the_written_cell() {
+    let diags = analyze_native(
+        "var gold = 0\n\n@[effects(reads(gold))]\nfn spend(cost) {\n  gold = gold - cost;\n  return gold;\n}\n",
+    );
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E103], "{diags:?}");
+    assert!(diags[0].message.contains("writes gold"), "{diags:?}");
+}
+
+#[test]
+fn native_unknown_cell_name_in_an_assertion_is_e102() {
+    let diags = analyze_native(
+        "var gold = 0\n\n@[effects(reads(nonexistent))]\nfn spend() {\n  return gold;\n}\n",
+    );
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E102], "{diags:?}");
+}
+
+#[test]
+fn native_silent_assertion_is_exceeded_by_a_flow_that_emits() {
+    // The NS-A2 output dimension, on the native surface: a `flow` whose
+    // body writes a line is not `silent`.
+    let diags = analyze_native("@[effects(silent)]\nflow garden() {\n  Petals fall.\n}\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E108], "{diags:?}");
+}

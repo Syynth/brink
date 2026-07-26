@@ -51,16 +51,6 @@ use super::expr::unescape_string_token;
 /// directive tag).
 const WAS: &str = "was";
 
-/// `true` if `node` is a file-level `@[was(…)]` annotation line — the one
-/// annotation [`super::walk_top_level`] must *not* diagnose as unlowered
-/// (`E129`), because [`lower_file_module`] consumes it instead.
-pub(super) fn is_was_annotation(node: &SyntaxNode) -> bool {
-    node.kind() == N::ANNOTATION_LINE
-        && ast::AnnotationLine::cast(node.clone())
-            .and_then(|l| l.name_token())
-            .is_some_and(|t| t.text() == WAS)
-}
-
 /// Scan a native file's top level for a `@[was(…)]` annotation — either the
 /// quoted `@[was("old::path")]` or unquoted `@[was(old::path)]` spelling —
 /// and, if one is present, produce the [`ModuleDecl`] carrying its rename
@@ -90,8 +80,8 @@ pub(super) fn lower_file_module(
         match was_old_path(&line) {
             Some(old) if !old.is_empty() => {
                 // First wins; a redundant second `@[was]` is left recognized
-                // (so `walk_top_level` does not re-diagnose it `E129`) but
-                // otherwise ignored.
+                // (`annotation::handle_line` treats every file-level `@[was]`
+                // as a consumed placement) but otherwise ignored.
                 found.get_or_insert((old, range));
             }
             _ => diags.push(diag(file_id, range, DiagnosticCode::E132)),

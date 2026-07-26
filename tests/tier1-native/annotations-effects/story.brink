@@ -1,0 +1,21 @@
+var gold = 7
+
+@[effects(pure)]
+fn double(n) {
+  return n * 2;
+}
+
+@[effects(silent, reads(gold))]
+fn purse() {
+  return double(gold);
+}
+
+@[effects(reads(gold))]
+flow main() {
+  Purse: {purse()} coins.
+  @[effects(total)]
+  flow tally() {
+    Gold on hand: {gold} -> END
+  }
+  -> tally
+}

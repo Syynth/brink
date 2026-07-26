@@ -2051,12 +2051,15 @@ pub enum DiagnosticCode {
     /// 2026-07-18). Warning: the alias keeps parsing (it shipped in
     /// released surface, `@brink-lang/web@0.11.1`).
     E110,
-    /// An `@[…]` annotation line naming anything other than `effects` —
-    /// the annotation channel's recognized name set is closed (v1: exactly
-    /// one member). Tag-channel directive names do not alias into it.
+    /// An `@[…]` annotation line naming something outside the channel's
+    /// closed name set: `effects` on the ink surface, `effects` or the
+    /// file-level `was` on the native `.brink` surface. Tag-channel
+    /// directive names do not alias into it.
     E111,
-    /// An `@[…]` annotation line outside its one recognized placement (the
-    /// leading run at the top of a knot/stitch body). Never a silent drop,
+    /// An `@[…]` annotation line outside a recognized placement — ink's
+    /// leading run at the top of a knot/stitch body, or native's Rust-shaped
+    /// position directly above a `flow`/`fn` declaration (issue #1563; the
+    /// file-level `@[was]` record for native modules). Never a silent drop,
     /// never content — the `E045` posture, on the annotation channel.
     E112,
 
@@ -2733,9 +2736,11 @@ impl DiagnosticCode {
             Self::E110 => {
                 "`#@effects(…)` is deprecated; use the `@[effects(…)]` annotation spelling"
             }
-            Self::E111 => "unknown annotation name (the `@[…]` channel recognizes only `effects`)",
+            Self::E111 => {
+                "unknown annotation name (the `@[…]` channel recognizes `effects`, plus `was` on a native module)"
+            }
             Self::E112 => {
-                "annotation line outside a recognized placement (top of a knot/stitch body)"
+                "annotation line outside a recognized placement (ink: top of a knot/stitch body; native: directly above a `flow`/`fn`)"
             }
             Self::E113 => {
                 "reserved protocol method name (`display`/`compare`/`next` belong to the protocol registry)"
