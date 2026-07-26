@@ -401,6 +401,8 @@ fn arb_opcode() -> impl Strategy<Value = Opcode> {
         any::<i32>().prop_map(Opcode::CoalesceSome),
         // B1b the `as` binding (issue #1475).
         any::<u16>().prop_map(Opcode::OptionBind),
+        // Seq `remove_at` (issue #1484).
+        Just(Opcode::SeqRemoveAt),
         // NS-A6 rand verbs (#1112).
         Just(Opcode::RandFloat),
         Just(Opcode::RandChance),
@@ -568,6 +570,7 @@ fn assert_opcode_variants_exhaustive(op: &Opcode) {
         | Opcode::MapClear
         | Opcode::CoalesceSome(_)
         | Opcode::OptionBind(_)
+        | Opcode::SeqRemoveAt
         | Opcode::RandFloat
         | Opcode::RandChance
         | Opcode::RandPick

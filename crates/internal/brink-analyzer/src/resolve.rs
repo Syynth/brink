@@ -571,8 +571,9 @@ fn resolve_function(
     }
 
     // T1b stdlib slice 1 (docs/t1b-surface-spec.md §5): `len`/`keys`/
-    // `values`/`contains`/`push`/`insert`/`remove` with no matching user
-    // symbol are the brink-dialect builtins, handled at LIR lowering —
+    // `values`/`contains`/`push`/`insert`/`remove`/`remove_at` with no
+    // matching user symbol are the brink-dialect builtins, handled at LIR
+    // lowering —
     // same "skip resolution, no diagnostic here" treatment as
     // `is_builtin_function` above. Dialect-agnostic at this layer (an
     // author-defined symbol of the same name always wins regardless of
@@ -861,6 +862,11 @@ pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
             | "push"
             | "insert"
             | "remove"
+            // `remove_at(a, i)` (issue #1484, `docs/stdlib-spec.md` §4/§10):
+            // faulting array-index removal, split off `remove` (now
+            // map-only — identity-based, idempotent-total, matching flags
+            // `remove`) so one name no longer spans two removal postures.
+            | "remove_at"
             | "int"
             | "float"
             | "string"

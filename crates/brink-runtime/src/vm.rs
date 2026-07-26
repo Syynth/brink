@@ -1236,6 +1236,7 @@ fn step_impl<R: crate::rng::StoryRng>(
         Opcode::MapGet => collection_ops::map_get(flow)?,
         Opcode::MapInsert => collection_ops::map_insert(flow)?,
         Opcode::MapRemove => collection_ops::map_remove(flow)?,
+        Opcode::SeqRemoveAt => collection_ops::seq_remove_at(flow)?,
         Opcode::MapContains => collection_ops::map_contains(flow)?,
         Opcode::CollectionKeys => collection_ops::collection_keys(flow)?,
         Opcode::CollectionValues => collection_ops::collection_values(flow)?,

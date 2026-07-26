@@ -779,13 +779,28 @@ pub enum Expr {
         value: Box<Expr>,
     },
     /// `IndexSet`'s sibling for the `remove` stdlib mutator (T1b-3, §5):
-    /// evaluates `base`, `key` and pushes the *updated* container — arrays:
-    /// `Vec::remove(key)` (key is an index, `< len`); maps: remove by key
-    /// (no-op if absent). Never produced by ordinary expression lowering;
-    /// only by the mutator-statement desugaring.
+    /// evaluates `base`, `key` and pushes the *updated* container — remove
+    /// by key, no-op if absent. **Map-only as of issue #1484**: `remove`
+    /// uniformly names identity-based, idempotent-total removal; a
+    /// non-map `base` is a runtime fault (`NotIndexable`). Never produced
+    /// by ordinary expression lowering; only by the mutator-statement
+    /// desugaring. The array-index leg this used to cover is
+    /// [`SeqRemoveAt`](Self::SeqRemoveAt).
     CollectionRemove {
         base: Box<Expr>,
         key: Box<Expr>,
+    },
+    /// `IndexSet`'s sibling for the `remove_at` stdlib mutator (issue
+    /// #1484, joining the `_at` faulting-index family with `CharAt`):
+    /// evaluates `base`, `index` and pushes the *updated* array with the
+    /// element at `index` removed (shifts later elements left,
+    /// `Vec::remove`). Array-only: a non-array `base` is a runtime fault
+    /// (`NotIndexable`). `index` must be `< len` — out-of-range faults
+    /// (`IndexOutOfBounds`). Never produced by ordinary expression
+    /// lowering; only by the mutator-statement desugaring.
+    SeqRemoveAt {
+        base: Box<Expr>,
+        index: Box<Expr>,
     },
     /// `[s, i]` → single-character `String`. The `char_at(s, i)` stdlib pure
     /// function (T1b stdlib slice 1 completion, issue #857): `i` indexes

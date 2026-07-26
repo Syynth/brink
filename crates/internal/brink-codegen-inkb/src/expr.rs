@@ -273,6 +273,12 @@ impl ContainerEmitter<'_> {
                 self.emit(Opcode::MapRemove);
             }
 
+            lir::Expr::SeqRemoveAt { base, index } => {
+                self.emit_expr(base, false);
+                self.emit_expr(index, false);
+                self.emit(Opcode::SeqRemoveAt);
+            }
+
             lir::Expr::CharAt { s, index } => {
                 self.emit_expr(s, false);
                 self.emit_expr(index, false);

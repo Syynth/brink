@@ -640,6 +640,8 @@ fn format_opcode(op: &Opcode, r: &Resolver) -> String {
         // B1 `or`-coalescing, short-circuited (issue #1471).
         Opcode::CoalesceSome(off) => format!("coalesce_some {off}"),
         Opcode::OptionBind(slot) => format!("option_bind {slot}"),
+        // Seq `remove_at` (issue #1484).
+        Opcode::SeqRemoveAt => "seq_remove_at".to_owned(),
         // NS-A6 rand verbs (#1112).
         Opcode::RandFloat => "rand_float".to_owned(),
         Opcode::RandChance => "rand_chance".to_owned(),
