@@ -119,6 +119,68 @@ fn dump_tower_of_hanoi_3() {
     print_episode(&ep, "Tower of Hanoi (3 discs)");
 }
 
+/// `runner::record`'s `Line::Done` arm now probes `classify_done`, matching
+/// `explorer::explore` (see `termination.rs`). Pins the one observable
+/// behavior change: a `Done` reached without an explicit `-> DONE` now
+/// surfaces as `Outcome::Error("...ran out of content...")` instead of
+/// `Outcome::Done`, for `record` as well as `explore`.
+#[test]
+fn record_divert_choice_flags_missing_terminal_as_error() {
+    let ep = record_from_ink(
+        "../../../tests/tier1/choices/divert-choice/story.ink",
+        &[0, 0],
+    );
+    assert!(
+        matches!(
+            &ep.outcome,
+            brink_test_harness::Outcome::Error(msg) if msg.contains("ran out of content")
+        ),
+        "expected Outcome::Error containing 'ran out of content', got {:?}",
+        ep.outcome
+    );
+}
+
+/// Counterpart to the above: a fixture that reaches an explicit `-> END`
+/// is unaffected by the `classify_done` probe (its terminal `Line` is
+/// `Line::End`, never `Line::Done`).
+#[test]
+fn record_once_only_choices_reaches_explicit_end() {
+    let ep = record_from_ink(
+        "../../../tests/tier1/choices/I079-once-only-choices-can-link-back-to-self/story.ink",
+        &[0, 0],
+    );
+    assert_eq!(ep.outcome, brink_test_harness::Outcome::Ended);
+}
+
+/// `record` and `explore` must agree on outcome for the same choice path —
+/// exactly the divergence this PR removes (`runner.rs` previously never
+/// probed `classify_done` on a `Done` terminal; `explorer.rs` always did).
+#[test]
+fn record_and_explore_agree_on_divert_choice_outcome() {
+    let recorded = record_from_ink(
+        "../../../tests/tier1/choices/divert-choice/story.ink",
+        &[0, 0],
+    );
+
+    let data = brink_compiler::compile_path(std::path::Path::new(
+        "../../../tests/tier1/choices/divert-choice/story.ink",
+    ))
+    .unwrap()
+    .data;
+    let (program, line_tables) = brink_runtime::link(&data).unwrap();
+    let config = ExploreConfig {
+        max_depth: 5,
+        max_episodes: 50,
+    };
+    let episodes = explore(std::sync::Arc::new(program), line_tables, &config);
+    let explored = episodes
+        .iter()
+        .find(|ep| ep.choice_path == recorded.choice_path)
+        .expect("explore should produce an episode for choice path [0, 0]");
+
+    assert_eq!(explored.outcome, recorded.outcome);
+}
+
 #[test]
 fn dump_explore_once_only() {
     let data = brink_compiler::compile_path(std::path::Path::new(
