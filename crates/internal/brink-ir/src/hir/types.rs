@@ -2344,6 +2344,23 @@ pub enum DiagnosticCode {
     /// through ordinary assignment lowering. Every write shape is covered
     /// by construction across the two.
     E148,
+    /// A `remove(a, i)` call whose first argument is statically known to be
+    /// an array (issue #1532, the #1501 review's migration-tail finding):
+    /// `remove` went map-only in #1484 (identity-based, idempotent-total
+    /// key removal; `docs/t1b-surface-spec.md` §5), and the array-index leg
+    /// it used to also serve moved to its own verb, `remove_at(a, i)`. With
+    /// no compatibility shim, an un-migrated `remove(array, i)` call site
+    /// still parses and type-checks as a call to the (now map-only)
+    /// builtin — `infer::body`'s `remove` arm already has `Ty::Array` in
+    /// hand at the call site — and previously reached codegen clean, only
+    /// faulting at runtime against `MapRemove`'s domain check. Strict-mode-
+    /// only (`infer::body::InferPass::array_remove_calls`,
+    /// `strict::check_array_remove_calls`), matching every other TM-3
+    /// typed-mismatch check in this range — the brink dialect's own
+    /// implicit default is `types = strict` (issue #1127), so this fires
+    /// for the common case; under `types = gradual` the `MapRemove`
+    /// runtime fault stays the backstop, same posture as the rest of TM-3.
+    E149,
 }
 
 impl DiagnosticCode {
@@ -2503,6 +2520,7 @@ impl DiagnosticCode {
             Self::E146 => "E146",
             Self::E147 => "E147",
             Self::E148 => "E148",
+            Self::E149 => "E149",
         }
     }
 
@@ -2715,6 +2733,7 @@ impl DiagnosticCode {
             Self::E146 => "the `as` binding in a choice guard is not yet supported",
             Self::E147 => "the `as` binding requires an `Option[T]` condition",
             Self::E148 => "an `as` binding is immutable and cannot be assigned to",
+            Self::E149 => "`remove` is map-only — did you mean `remove_at`?",
         }
     }
 
@@ -2901,6 +2920,7 @@ impl DiagnosticCode {
             "E146" => Some(Self::E146),
             "E147" => Some(Self::E147),
             "E148" => Some(Self::E148),
+            "E149" => Some(Self::E149),
             _ => None,
         }
     }

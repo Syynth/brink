@@ -1258,3 +1258,61 @@ fn e143_as_binding_is_immutable() {
         );
     }
 }
+
+// ─── `remove`/`remove_at` migration tail (E149, issue #1532) ────────────
+//
+// The #1501 review's follow-up on #1484's `remove`/`remove_at` split:
+// `remove` went map-only with no compatibility shim, so an un-migrated
+// `remove(array, i)` call site used to compile clean and only fault at
+// runtime (`RuntimeError::NotIndexable`, `remove_on_an_array_faults` in
+// `brink-test-harness/tests/tier1_brink.rs`). `infer::body`'s `remove` arm
+// already has `Ty::Array` in hand at the call site, so this is now a
+// compile error — strict-mode-only, matching every other TM-3 typed check
+// in this file (`brink_options()` leaves `types` unset, which resolves to
+// the brink dialect's own implicit-strict default, issue #1127).
+//
+// Every fixture below uses a `temp` for the array, never a `VAR`: a
+// global's static type is purely declaration-derived
+// (`signature.rs::Sig::value_type`, whose `ty_to_inferred_type` downcast
+// has no `Array`/`Map` representation), so `VAR arr = 0` — even
+// immediately reassigned to an array literal, the idiom
+// `remove_on_an_array_faults` uses for the *runtime*-fault twin of this
+// exact call shape — leaves `arr` statically `Unknown` and would never
+// reach `E149`'s `Ty::Array` guard at all.
+
+/// E149 — a statically-known array first argument to `remove`.
+#[test]
+fn e149_remove_on_a_statically_known_array() {
+    let source = "=== main ===\n~ {\n    temp arr = #[1, 2, 3]\n    remove(arr, 0)\n}\n-> DONE\n";
+    assert_error_at(
+        source,
+        brink_options(),
+        DiagnosticCode::E149,
+        "remove(arr, 0)",
+    );
+}
+
+/// `remove` on a map is untouched — the map leg this code guards is the
+/// verb's actual, unaffected posture.
+#[test]
+fn remove_on_a_map_unaffected_by_e149() {
+    let source = "=== main ===\n~ {\n    temp m = #{\"a\": 1}\n    remove(m, \"a\")\n}\n-> DONE\n";
+    let out = compile(source, brink_options())
+        .unwrap_or_else(|e| panic!("remove(m, k) on a map must compile clean: {e:?}"));
+    assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+}
+
+/// Under `types = gradual` the check is inert (T1c/TM-3's universal split
+/// — the runtime `NotIndexable` fault is the residual backstop, proven at
+/// the runtime layer by `tier1_brink.rs`'s `remove_on_an_array_faults`).
+#[test]
+fn e149_inert_under_gradual_types() {
+    let source = "=== main ===\n~ {\n    temp arr = #[1, 2, 3]\n    remove(arr, 0)\n}\n-> DONE\n";
+    let out = compile(source, gradual_options())
+        .unwrap_or_else(|e| panic!("remove(array, i) must still compile under gradual: {e:?}"));
+    assert!(
+        out.warnings.iter().all(|d| d.code != DiagnosticCode::E149),
+        "E149 must not fire under types = gradual: {:?}",
+        out.warnings
+    );
+}

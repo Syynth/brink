@@ -301,6 +301,11 @@ pub fn check(
     // recorded map onto the existing TM-3 codes (E065/E066 escapes, E063
     // typed mismatches), never parallel ones.
     out.extend(check_value_calls(files, index, inference));
+    // Issue #1532 (#1501 review, migration-tail finding 1): `remove`'s
+    // pre-#1484 array leg has no compatibility shim — a statically-known
+    // array receiver is caught here instead of only at the `MapRemove`
+    // runtime fault.
+    out.extend(check_array_remove_calls(files, index, inference));
     // TM-4b (docs/typed-mode-spec.md §6): missing/extra/mistyped struct
     // construction-literal fields — strict-mode-only, per the crate doc.
     out.extend(crate::structs::check(files, index, inference, resolutions));
@@ -780,6 +785,54 @@ fn check_value_calls(
                     range: fact.range,
                     message,
                     code,
+                });
+            }
+        }
+    }
+    out
+}
+
+// ── `remove`/`remove_at` migration tail (issue #1532, `E149`) ─────────
+
+/// Report every [`crate::infer::body`]-recorded array-typed `remove(a, i)`
+/// call site (`BodyResult::array_remove_calls`, threaded through
+/// [`crate::infer::BodyTypes`]) as `E149`. Same shape as
+/// [`check_value_calls`] — walk every inferable def, read its recorded
+/// facts, map each straight onto one diagnostic — but the fact carries no
+/// per-call detail to interpolate (the message is fixed), so there is no
+/// `match` here.
+fn check_array_remove_calls(
+    files: &[(FileId, &HirFile)],
+    index: &SymbolIndex,
+    inference: &InferenceResult,
+) -> Vec<brink_ir::Diagnostic> {
+    let mut out = Vec::new();
+    for &(file, hir) in files {
+        let mut def_ids: Vec<DefinitionId> = Vec::new();
+        for knot in &hir.knots {
+            let kind = knot.symbol_kind();
+            if let Some(id) = annotations::def_id_for(index, file, kind, &knot.name.text) {
+                def_ids.push(id);
+            }
+            for stitch in &knot.stitches {
+                let qualified = format!("{}.{}", knot.name.text, stitch.name.text);
+                if let Some(id) =
+                    annotations::def_id_for(index, file, SymbolKind::Stitch, &qualified)
+                {
+                    def_ids.push(id);
+                }
+            }
+        }
+        for id in def_ids {
+            let Some(body) = inference.bodies.get(&id) else {
+                continue;
+            };
+            for &range in &body.array_remove_calls {
+                out.push(brink_ir::Diagnostic {
+                    file,
+                    range,
+                    message: brink_ir::DiagnosticCode::E149.title().to_owned(),
+                    code: brink_ir::DiagnosticCode::E149,
                 });
             }
         }

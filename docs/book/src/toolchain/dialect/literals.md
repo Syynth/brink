@@ -404,7 +404,10 @@ nothing about a map-key removal implies an array-index removal, or vice
 versa). The fix is naming, not flattening: `remove_at` joins the `_at`
 faulting-index family with `char_at`, leaving `remove` to mean exactly
 one thing — identity-based, idempotent-total removal (map keys today;
-flags values once flags land).
+flags values once flags land). There is no compatibility shim: a
+pre-#1484 `remove(array, i)` call site is `E149` (issue #1532) under
+`types = strict`, the brink dialect's own implicit default; under
+`types = gradual` it stays a runtime `NotIndexable` fault.
 
 **One spelling per concept, eventually.** Today's dialect ships
 `insert(m, k, v)` as a slice-1 free function, but the ruled native
