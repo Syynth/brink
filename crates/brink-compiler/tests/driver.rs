@@ -676,9 +676,19 @@ fn native_or_coalescing_unpinned_lhs_coalesces_an_option() {
 
 /// The same call-shaped fallback un-chained, and falling through: a `none`
 /// `lhs` hands the whole step over to `maybe()`'s own `Option`, which the
-/// trailing plain fallback then collapses. Together with the test above
-/// this covers both operand orders of the two-Option form the recorded
-/// verdict drives.
+/// trailing plain fallback then collapses.
+///
+/// This is **fall-through-only** coverage, not a verdict pin: the inner
+/// step's `lhs` is the literal `none`, so it always takes the fallback
+/// branch, and codegen only emits `MakeSome` on the *unwrap* (`some(v)`)
+/// branch (`brink_codegen_inkb::expr`'s `Coalesce` arm) — never on
+/// fall-through. That means this fixture prints `Chained: 7` identically
+/// whether the inner step's recorded shape is `PreserveOption` or the
+/// `RuntimeCheck` default, so it does not pin
+/// `brink_ir::lir::CoalesceShape` here. The test above
+/// (`native_or_coalescing_chain_with_intermediate_call_yields_the_leading_some`)
+/// is the one that actually exercises `MakeSome`, because its `lhs` is a
+/// real `some(5)` at runtime and takes the unwrap branch.
 #[test]
 fn native_or_coalescing_falls_through_to_an_option_returning_call() {
     let output = compile_and_run_native(
