@@ -957,9 +957,9 @@ fn return_redirect_to_done_lowers_as_plain_divert() {
 }
 
 #[test]
-fn unrecognized_body_construct_is_diagnosed_not_dropped() {
+fn misplaced_body_annotation_is_diagnosed_not_dropped() {
     let (hir, _m, diags) = lower_src("flow a() {\n  @[effects(pure)]\n}\n");
-    // The unrecognized construct itself produces no statement — the only
+    // The misplaced annotation itself produces no statement — the only
     // statement is the flow's synthesized implicit `-> DONE` (charter §15).
     let body = &hir.knots[0].body;
     assert_eq!(body.stmts.len(), 1, "only the implicit `-> DONE`: {body:?}");
@@ -967,9 +967,13 @@ fn unrecognized_body_construct_is_diagnosed_not_dropped() {
         &body.stmts[0],
         Stmt::Divert(d) if d.target.path == DivertPath::Done
     ));
+    // A recognized name (`effects`) with nothing following it inside a body
+    // is not the placement `annotation::is_consumed_position` accepts (a
+    // `flow`/`fn` head immediately after) — E112, not the blanket E129 —
+    // but it is still diagnosed, never silently dropped.
     assert!(
-        diags.iter().any(|d| d.code == DiagnosticCode::E129),
-        "an unwired body-position construct must be diagnosed, not silently dropped: {diags:?}"
+        diags.iter().any(|d| d.code == DiagnosticCode::E112),
+        "a misplaced body-position annotation must be diagnosed, not silently dropped: {diags:?}"
     );
 }
 
