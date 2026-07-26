@@ -1,24 +1,30 @@
 //! B3a end-to-end: UFCS resolution on the native surface, through the real
 //! `.brink` pipeline (issue #1482; D1–D5 RULED 2026-07-26 —
-//! `docs/decision-log.md` "UFCS resolution pass designed").
+//! `docs/decision-log.md` "UFCS resolution pass designed"). Issue #1506
+//! wired LIR lowering to actually consume the verdict table instead of
+//! refusing every resolved site with `E144`.
 //!
 //! The unit tests in `brink-analyzer/tests/ufcs_resolution.rs` prove the
 //! *pass* (verdicts + the four diagnostic outcomes). This file proves the
 //! **user path**: a real `.brink` source reaching
 //! `brink_test_harness::corpus::explore_from_brink_native` — the same
 //! honest minimal native pipeline `b5_construction_e2e.rs` and
-//! `first_light.rs` run — gets each ruled outcome as a compile refusal,
-//! with the *right* code.
+//! `first_light.rs` run — gets each ruled outcome as either a compile
+//! refusal with the *right* code, or — for the two verdicts LIR lowering
+//! now emits real code for (`FreeFnDesugar`, `PreludeDesugar`) — actually
+//! compiles and plays, byte-identical to the equivalent explicit free call.
 //!
-//! Every case here is a refusal, and that is the point of the file rather
-//! than a shortfall: before this pass every UFCS-shaped call was refused
-//! indiscriminately as `E025` ("unresolved variable reference"), and the
-//! bar this pass has to clear is that each site now fails — or succeeds —
-//! *for its own ruled reason*. A **resolved** call reaches `E144` at LIR
-//! lowering (`brink-ir::lir::lower::expr::lower_call`), which does not
-//! consume the D2 verdict side table yet; the E144 case below is the guard
-//! that the resolution never silently lowers into a call against the
-//! receiver's own id.
+//! `FieldCall` (field access wins over a free function of the same name) is
+//! exercised only at the LIR-lowering unit level
+//! (`brink-ir/tests/lir_lowering/ufcs_field_call.rs`): the native surface
+//! cannot yet spell a function-typed struct field
+//! (`brink-analyzer::ufcs`'s own test file notes the same gap), so there is
+//! no real `.brink` source that reaches it today.
+//!
+//! Before this pass every UFCS-shaped call was refused indiscriminately as
+//! `E025` ("unresolved variable reference"); the bar the pass (and now its
+//! LIR consumer) has to clear is that each site fails — or succeeds — *for
+//! its own ruled reason*.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -31,6 +37,20 @@ fn refuse(src: &str) -> String {
         Ok(_) => panic!("fixture must be refused, but it compiled"),
         Err(e) => e,
     }
+}
+
+/// Compile-and-play, expecting success; returns the concatenated text of
+/// the single episode.
+fn play(src: &str) -> String {
+    let episodes = explore_from_brink_native(src, &ExploreConfig::default())
+        .unwrap_or_else(|e| panic!("native fixture must compile and play: {e}"));
+    episodes
+        .first()
+        .expect("one episode")
+        .steps
+        .iter()
+        .map(|s| s.text.clone())
+        .collect()
 }
 
 /// A `.brink` file whose `shout()` body is `BODY`.
@@ -60,18 +80,39 @@ fn greet(g, loudness) {
 }
 ";
 
-/// A resolvable method call no longer fails as an unresolved reference —
-/// it gets all the way to LIR lowering and stops there, loudly (`E144`),
-/// because the verdict side table has no consumer yet. The pre-#1482
-/// `E025` must be gone: that is the observable proof the resolution ran.
+/// Issue #1506: a resolvable method call whose verdict is `FreeFnDesugar`
+/// now compiles and plays for real — `g.greet(3)` desugars to
+/// `greet(g, 3)` at LIR lowering (`lower_ufcs_call`/
+/// `lower_ufcs_desugared_call`), producing the identical output the
+/// explicit free-call spelling does (see
+/// `the_explicit_free_call_spelling_still_plays` below). Before #1506 this
+/// same source reached `E144` at LIR lowering; before #1482 it was `E025`.
 #[test]
-fn a_resolved_method_call_reaches_lowering_and_is_refused_there_not_as_e025() {
-    let err = refuse(&program(GREET, "return g.greet(3);"));
-    assert!(err.contains("E144"), "expected E144, got: {err}");
-    assert!(
-        !err.contains("E025"),
-        "the unresolved-reference refusal must be gone: {err}"
+fn a_free_fn_desugar_compiles_and_plays_via_ufcs_syntax() {
+    let out = play(&program(GREET, "return g.greet(3);"));
+    assert_eq!(out, "3\n");
+}
+
+/// Issue #1506: `PreludeDesugar` also lowers for real — `m.len()` desugars
+/// through the same T1b/NS stdlib dispatch the bare `len(m)` call in
+/// `b5_construction_e2e.rs`'s `map_construction_plays` reaches, over the
+/// same `Map { … }` construction literal, so the two are directly
+/// comparable: identical output, method-call spelling.
+#[test]
+fn a_prelude_desugar_compiles_and_plays_via_ufcs_syntax() {
+    let out = play(
+        "\
+fn count() {
+  let m = Map { \"a\": 1, \"b\": 2, \"c\": 3 };
+  return m.len();
+}
+
+flow main() {
+  Size is {count()}.
+}
+",
     );
+    assert_eq!(out, "Size is 3.\n");
 }
 
 /// D1: a matching but non-callable field is a hard error, and it never

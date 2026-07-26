@@ -568,30 +568,85 @@ pub(crate) fn whole_project_diagnostics_query(
 
     // B3a UFCS resolution (issue #1482, D1–D5 RULED 2026-07-26) — last,
     // matching `brink_analyzer::whole_project_diagnostics`' own composition
-    // order, and lazy on the same argument every block above uses: a project
-    // with no dotted-callee call anywhere never triggers inference here.
-    // (Every ink project is in that set by construction — ink's own lowering
-    // cannot produce a multi-segment callee path; see `brink-analyzer`'s
-    // `ufcs` module doc.) Reuses the FG-narrowed, per-SCC-memoized
-    // `type_inference_query` rather than letting the analyzer recompute
-    // inference from scratch, exactly as the strict block above does.
-    if hir_refs
-        .iter()
-        .any(|&(_, hir)| brink_analyzer::project_has_ufcs_call(hir))
-    {
-        let inference = type_inference_query(db, project);
-        let (_table, ufcs_diags) = brink_analyzer::resolve_ufcs_calls(
-            &hir_refs,
-            &resolved.index,
-            &resolved.resolutions,
-            inference.as_ref(),
-        );
-        diagnostics.extend(ufcs_diags);
-    }
+    // order. The verdict table itself (issue #1506) is [`ufcs_resolution_
+    // query`]'s own memo, shared with LIR lowering — this just takes the
+    // diagnostics half.
+    diagnostics.extend(
+        ufcs_resolution_query(db, project)
+            .diagnostics
+            .iter()
+            .cloned(),
+    );
 
     WholeProjectDiagnostics {
         diagnostics,
         symbol_meta,
+    }
+}
+
+/// B3a UFCS resolution (issue #1482/#1506): the project's verdict table,
+/// translated to `brink-ir`'s own lowering-facing mirror type
+/// (`brink_ir::lir::UfcsLookup`) at this one seam — see that type's doc for
+/// why `brink-ir` can't name `brink_analyzer::UfcsVerdict` directly (it sits
+/// below `brink-analyzer` in the crate graph).
+///
+/// Memoized once per project and read by three call sites —
+/// [`whole_project_diagnostics_query`] (the diagnostics half), and (issue
+/// #1506) `lir_knot_chunk_query`'s per-knot LIR lowering plus
+/// `lir_lowering_query`'s own root-content step — so all three see the same
+/// table rather than each re-running whole-project inference.
+///
+/// Lazy on the same argument [`whole_project_diagnostics_query`]'s old
+/// inline check used: a project with no dotted-callee call anywhere never
+/// triggers inference here (every ink project is in that set by
+/// construction — ink's own lowering cannot produce a multi-segment callee
+/// path; see `brink-analyzer`'s `ufcs` module doc), and builds (and stays
+/// pointer-stable at) the empty table.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct UfcsResolution {
+    pub table: brink_ir::lir::UfcsLookup,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+#[salsa::tracked(returns(ref))]
+pub(crate) fn ufcs_resolution_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+) -> UfcsResolution {
+    let resolved = resolutions_index_query(db, project);
+    let hir_refs: Vec<(FileId, &HirFile)> = project
+        .files(db)
+        .iter()
+        .map(|f| (f.file_id(db), &lowered_query(db, *f).hir))
+        .collect();
+
+    if !hir_refs
+        .iter()
+        .any(|&(_, hir)| brink_analyzer::project_has_ufcs_call(hir))
+    {
+        return UfcsResolution {
+            table: brink_ir::lir::UfcsLookup::new(),
+            diagnostics: Vec::new(),
+        };
+    }
+
+    // Reuses the FG-narrowed, per-SCC-memoized `type_inference_query`
+    // rather than letting the analyzer recompute inference from scratch —
+    // the same seam `whole_project_diagnostics_query`'s strict block above
+    // reuses.
+    let inference = type_inference_query(db, project);
+    let (table, diagnostics) = brink_analyzer::ufcs_resolution(
+        &hir_refs,
+        &resolved.index,
+        &resolved.resolutions,
+        inference.as_ref(),
+    );
+
+    UfcsResolution {
+        // The one shared translation point (issue #1506) — see
+        // `brink_analyzer::ufcs_lir_lookup`'s own doc.
+        table: brink_analyzer::ufcs_lir_lookup(&table),
+        diagnostics,
     }
 }
 

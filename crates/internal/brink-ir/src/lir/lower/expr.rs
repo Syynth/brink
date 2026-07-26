@@ -1,7 +1,7 @@
 use crate::hir;
 use crate::symbols::SymbolKind;
 
-use super::context::LowerCtx;
+use super::context::{self, LowerCtx};
 use super::decls::list_def_to_global_var;
 use super::lir;
 
@@ -686,33 +686,26 @@ fn lower_call(path: &hir::Path, args: &[hir::Expr], ctx: &mut LowerCtx<'_>) -> l
 
     // Resolve via resolution map
     if let Some(info) = ctx.resolve_path(path.range) {
-        // B3a UFCS (issue #1482): a *multi-segment* callee path resolving to
-        // a value is method-call syntax — the resolution record deliberately
-        // names the **receiver**, and the real target lives in
-        // `brink-analyzer::ufcs`' verdict side table, which this lowering
-        // does not consume yet. Falling through would take the
+        // B3a UFCS (issue #1482/#1506): a *multi-segment* callee path
+        // resolving to a value is method-call syntax — the resolution
+        // record deliberately names the **receiver**, and the real target
+        // lives in `brink-analyzer::ufcs`'s verdict side table
+        // (`ctx.ufcs`, threaded in as `brink-ir`'s own `UfcsVerdict`
+        // mirror — see that type's doc). Falling through would take the
         // `Variable`/`Constant` or catch-all arm below and emit a call
         // against the receiver's own id: a silently wrong program (the
         // pre-#1482 behavior was an `E025` compile refusal, and that
-        // refusal must not become a miscompile). Refuse loudly instead —
-        // resolution is done, lowering is the remaining work.
+        // refusal must not become a miscompile). `lower_ufcs_call` reads
+        // the verdict and lowers each ruled outcome for real; see its own
+        // doc for the E144 fallback this branch still refuses with when no
+        // verdict was recorded.
         if path.segments.len() > 1
             && matches!(
                 info.kind,
                 SymbolKind::Param | SymbolKind::Temp | SymbolKind::Variable | SymbolKind::Constant
             )
         {
-            ctx.diagnostics.push(crate::Diagnostic {
-                file: ctx.file,
-                range: path.range,
-                message: format!(
-                    "{}: `{name}` resolves as method-call syntax, but the compiler cannot \
-                     lower it yet — spell the call explicitly as a free call for now",
-                    crate::DiagnosticCode::E144.title(),
-                ),
-                code: crate::DiagnosticCode::E144,
-            });
-            return lir::Expr::Null;
+            return lower_ufcs_call(&name, path, args, ctx);
         }
         match info.kind {
             SymbolKind::List => {
@@ -775,6 +768,156 @@ fn lower_call(path: &hir::Path, args: &[hir::Expr], ctx: &mut LowerCtx<'_>) -> l
         );
         lir::Expr::Null
     }
+}
+
+/// B3a UFCS lowering (issue #1506): consume `ctx.ufcs`'s verdict (threaded
+/// in from `brink-analyzer::ufcs`'s side table — see [`context::UfcsVerdict`]'s
+/// doc) to lower a call site that resolved as method-call syntax, for real.
+///
+/// Reached only for a *resolved* multi-segment callee path whose head is a
+/// param/temp/variable/constant — `lower_call`'s caller has already
+/// established that. Every such site the analyzer's `ufcs` pass visited
+/// carries a verdict (it is, by construction, UFCS-shaped); a project
+/// compiled through `brink-db` never reaches the `None` arm below in
+/// practice, because a UFCS diagnostic (`E140`–`E143`) is Error-severity and
+/// gates `lir_lowering_query` before it ever runs. The `None` fallback stays
+/// as a real refusal (the pre-#1506 `E144`, verbatim) rather than a panic or
+/// a silent `Null`, for the callers that lower HIR directly without running
+/// analysis first (this crate's own tests/benches, `golden_i078.rs`) — see
+/// #1482's PR description for the miscompile this guards against.
+fn lower_ufcs_call(
+    name: &str,
+    path: &hir::Path,
+    args: &[hir::Expr],
+    ctx: &mut LowerCtx<'_>,
+) -> lir::Expr {
+    let Some(verdict) = ctx.ufcs.get(ctx.file, path.range).cloned() else {
+        ctx.diagnostics.push(crate::Diagnostic {
+            file: ctx.file,
+            range: path.range,
+            message: format!(
+                "{}: `{name}` resolves as method-call syntax, but the compiler cannot \
+                 lower it yet — spell the call explicitly as a free call for now",
+                crate::DiagnosticCode::E144.title(),
+            ),
+            code: crate::DiagnosticCode::E144,
+        });
+        return lir::Expr::Null;
+    };
+    match verdict {
+        // Field access wins (`brink-analyzer::ufcs` D1): the whole path,
+        // head through the final segment, is an ordinary field-access
+        // chain reading the field's (function-typed) value — exactly what
+        // `lower_path`'s own TM-4b/4c dotted-path handling
+        // (`lower_ambiguous_dotted_path`) already builds for `p.x.y` field
+        // reads. Reusing it here means a receiver chain of any depth
+        // (`a.b.c()`) lowers through the one RecordGet-chain builder.
+        context::UfcsVerdict::FieldCall => {
+            let callee = lower_expr(&hir::Expr::Path(path.clone()), ctx);
+            let call_args = args.iter().map(|a| lower_expr(a, ctx)).collect();
+            lir::Expr::CallValue {
+                callee: Box::new(callee),
+                args: call_args,
+            }
+        }
+        // A free function in ordinary lexical scope (D4) — `target(recv,
+        // args…)`, by value only (D5; a `ref`-first-param target is
+        // refused earlier, at analysis, with `E143`).
+        context::UfcsVerdict::FreeFnDesugar { target } => {
+            lower_ufcs_desugared_call(path, args, target, ctx)
+        }
+        // A T1b/NS stdlib prelude verb, or a classic ink builtin, with no
+        // index symbol of its own (D4's other candidate) — `name(recv,
+        // args…)` through the same dispatch an ordinary bare call of that
+        // name already reaches.
+        context::UfcsVerdict::PreludeDesugar { name } => {
+            lower_ufcs_prelude_desugar(path, args, &name, ctx)
+        }
+    }
+}
+
+/// The receiver half of a UFCS desugar: `path` minus its final (method-name)
+/// segment, as a synthetic `hir::Path` reusing `path`'s own range — the
+/// exact range `brink-analyzer::ufcs` recorded the head's resolution
+/// against (`value_receiver_def`), so `lower_path`/`lower_ambiguous_dotted_
+/// path`'s existing `ctx.resolve_path`/`ctx.temp_slot` lookups resolve it
+/// correctly whether the receiver is one segment (`x`) or a dotted chain
+/// (`a.b`).
+fn ufcs_receiver_path(path: &hir::Path) -> hir::Path {
+    let receiver_segs = path.segments.split_last().map_or(&[][..], |(_, rest)| rest);
+    hir::Path {
+        segments: receiver_segs.to_vec(),
+        range: path.range,
+    }
+}
+
+/// `target(receiver, args…)` — the `UfcsVerdict::FreeFnDesugar` shape.
+/// `target` is always a `Knot` or `External` symbol (`brink-analyzer::
+/// ufcs::try_free_fn_desugar` only looks those two kinds up); the receiver
+/// occupies `target`'s first declared parameter, so the arity/`ref` check
+/// for the *rest* of `args` runs against `target`'s params shifted by one.
+fn lower_ufcs_desugared_call(
+    path: &hir::Path,
+    args: &[hir::Expr],
+    target: brink_format::DefinitionId,
+    ctx: &mut LowerCtx<'_>,
+) -> lir::Expr {
+    let receiver_expr = lower_expr(&hir::Expr::Path(ufcs_receiver_path(path)), ctx);
+    let Some(target_info) = ctx.index.symbols.get(&target) else {
+        // Structurally unreachable — `target` came from the analyzer's own
+        // `resolve::lookup_by_name` against this same project index. Guard
+        // rather than panic, per the E053-backstop lesson.
+        return lir::Expr::Null;
+    };
+    let rest_params = target_info.params.get(1..).unwrap_or(&[]);
+    let mut call_args = vec![lir::CallArg::Value(receiver_expr)];
+    call_args.extend(lower_call_args(args, rest_params, ctx));
+
+    if target_info.kind == SymbolKind::External {
+        lir::Expr::CallExternal {
+            target,
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "ink externals have <=255 params"
+            )]
+            arg_count: target_info.params.len() as u8,
+            args: call_args,
+        }
+    } else {
+        lir::Expr::Call {
+            target,
+            args: call_args,
+        }
+    }
+}
+
+/// `name(receiver, args…)` — the `UfcsVerdict::PreludeDesugar` shape.
+/// Dispatches through the same two tables an ordinary bare call of `name`
+/// already reaches: the classic ink builtin table first
+/// ([`recognize_builtin`], `CallBuiltin` — takes already-lowered args), then
+/// the T1b/NS stdlib table ([`lower_t1b_stdlib_call`], which lowers its own
+/// HIR args internally) — mirroring `lower_call`'s own dispatch order.
+fn lower_ufcs_prelude_desugar(
+    path: &hir::Path,
+    args: &[hir::Expr],
+    name: &str,
+    ctx: &mut LowerCtx<'_>,
+) -> lir::Expr {
+    let receiver_path = ufcs_receiver_path(path);
+
+    if let Some(builtin) = recognize_builtin(name) {
+        let mut lowered = vec![lower_expr(&hir::Expr::Path(receiver_path), ctx)];
+        lowered.extend(args.iter().map(|a| lower_expr(a, ctx)));
+        return lir::Expr::CallBuiltin {
+            builtin,
+            args: lowered,
+        };
+    }
+
+    let mut desugared_args = Vec::with_capacity(args.len() + 1);
+    desugared_args.push(hir::Expr::Path(receiver_path));
+    desugared_args.extend(args.iter().cloned());
+    lower_t1b_stdlib_call(name, &desugared_args, path.range, ctx).unwrap_or(lir::Expr::Null)
 }
 
 /// Recognize a T1b stdlib call (`docs/t1b-surface-spec.md` §5) reached with

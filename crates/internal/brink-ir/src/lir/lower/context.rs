@@ -31,6 +31,78 @@ impl ResolutionLookup {
     }
 }
 
+// ─── B3a UFCS verdict lookup (issue #1506) ─────────────────────────
+
+/// Mirror of `brink_analyzer::ufcs::UfcsVerdict`, narrowed to exactly what
+/// LIR lowering needs to pick the right call shape
+/// (`lir::lower::expr::lower_ufcs_call`).
+///
+/// `brink-ir` sits below `brink-analyzer` in the crate graph
+/// (`brink-analyzer` depends on `brink-ir`, never the reverse — see
+/// [`TypeMode`](super::TypeMode)'s doc for the established precedent), so it
+/// cannot name the analyzer's own `UfcsVerdict` directly.
+/// `brink_analyzer::ufcs_lir_lookup` is the one translation point (it can
+/// see both crates, since `brink-analyzer` already depends on `brink-ir`):
+/// `brink-db`'s `ufcs_resolution_query` (the production path) and
+/// `brink-test-harness`'s hand-assembled native pipeline both call it to
+/// build a [`UfcsLookup`] from `brink_analyzer::UfcsTable`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UfcsVerdict {
+    /// The call's final path segment names a function-typed field on the
+    /// receiver's type — lower as a call *through* that field's value
+    /// (`lir::Expr::CallValue`). No further data is needed: the field name
+    /// and the receiver chain are already carried structurally by the HIR
+    /// `Path` this verdict is keyed against.
+    FieldCall,
+    /// The call's final path segment names a free function in ordinary
+    /// lexical scope — lower as `target(receiver, args…)`.
+    FreeFnDesugar { target: DefinitionId },
+    /// The call's final path segment names a T1b/NS stdlib prelude verb (or
+    /// a classic ink builtin) with no index symbol of its own — lower as
+    /// `name(receiver, args…)` through the same builtin/stdlib dispatch an
+    /// ordinary bare call of that name already reaches.
+    PreludeDesugar { name: String },
+}
+
+/// Project-wide `(file, range) → verdict` lookup — the LIR-lowering-facing
+/// counterpart of `brink_analyzer::UfcsTable`. Built once (`brink-db`'s
+/// `ufcs_resolution_query`) and shared read-only across every `LowerCtx` in
+/// a `lower_to_program`/incremental-chunk call, exactly like
+/// [`ResolutionLookup`] above.
+///
+/// Empty by construction for every caller that never ran the analyzer's
+/// `ufcs` pass (this crate's own tests, `compile_bench`, `golden_i078.rs`) —
+/// see `lower_ufcs_call`'s fallback doc for what an empty table means at a
+/// UFCS-shaped call site reached there.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UfcsLookup {
+    map: LookupMap<(FileId, TextRange), UfcsVerdict>,
+}
+
+impl UfcsLookup {
+    /// The empty table — every lookup misses.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Build from `(file, range, verdict)` rows — `brink-db`'s translation
+    /// of `brink_analyzer::UfcsTable::iter()`.
+    #[must_use]
+    pub fn from_entries(entries: Vec<(FileId, TextRange, UfcsVerdict)>) -> Self {
+        Self {
+            map: entries.into_iter().map(|(f, r, v)| ((f, r), v)).collect(),
+        }
+    }
+
+    /// The verdict recorded for the UFCS call site at `range` in `file`, if
+    /// any.
+    #[must_use]
+    pub fn get(&self, file: FileId, range: TextRange) -> Option<&UfcsVerdict> {
+        self.map.get(&(file, range))
+    }
+}
+
 // ─── Name table ─────────────────────────────────────────────────────
 
 /// Intern strings to `NameId`. Deduplicates identical strings.
@@ -293,6 +365,13 @@ pub struct LowerCtx<'a> {
     /// block-scoped shadow of an outer temp of the same name still maps to
     /// its own (correct) shape.
     pub temp_shapes: LookupMap<u16, String>,
+    /// B3a UFCS (issue #1506): the project-wide verdict lookup
+    /// `lir::lower::expr::lower_ufcs_call` reads to lower a resolved
+    /// method-call-syntax callee for real. Shared, read-only, identical
+    /// across every `LowerCtx` in a single `lower_to_program`/incremental-
+    /// chunk call — the same threading discipline as `structs`. Empty for
+    /// every caller that never ran the analyzer's `ufcs` pass.
+    pub ufcs: &'a UfcsLookup,
 }
 
 impl<'a> LowerCtx<'a> {
