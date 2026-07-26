@@ -39,24 +39,39 @@ pub struct Sig {
     /// (notably `infer::collect_globals`) picks up the annotated type
     /// automatically, with no seam change.
     pub value_type: Option<InferredType>,
-    /// A VAR/CONST's declaration-derived function-value type, `fn(T…): R`
-    /// (T1c follow-up, issue #712, docs/t1c-spec.md §4) — `None` for every
-    /// other symbol kind and for a VAR/CONST that isn't fn-typed. Kept
-    /// separate from `value_type` rather than widening it: `InferredType`
-    /// has no `Fn` form (by design — it predates T1c and stays the narrow,
-    /// wire-adjacent domain `infer_value_meta`/hover share), so a `Ty::Fn`
-    /// would otherwise be silently dropped exactly like the `Array`/`Map`/
-    /// `Struct` gap `ty_to_inferred_type` already documents. Populated two
-    /// ways, annotation winning per the TM-2 firewall (same rule as
-    /// `value_type`'s override):
-    /// - an explicit `: fn(T…): R` annotation on the VAR/CONST itself, or
-    /// - a bare `#fn(target, args…)` initializer, in which case the type is
-    ///   the bound prefix consumed from `target`'s *own* declaration-derived
-    ///   signature (`param_annotations`/`return_annotation` — a second,
-    ///   single-level `signature()` call, never the target's body). An
-    ///   unannotated target param/return reads as `Ty::Unknown` in the row,
-    ///   same conservative fallback declaration-derived typing always uses.
-    pub fn_type: Option<Ty>,
+    /// A VAR/CONST's declaration-derived type at **full [`Ty`] fidelity**
+    /// (issue #1540) — `None` for every other symbol kind, and for a
+    /// VAR/CONST whose declaration determines no type at all.
+    ///
+    /// This is the field every *typed* consumer reads (`collect_globals` in
+    /// both this crate and `brink-db`'s narrowed mirror); `value_type` above
+    /// stays exactly as narrow as it was, because it is the wire-adjacent
+    /// domain `infer_value_meta`/hover share and widening it would leak
+    /// `Array`/`Map`/`Struct`/`Fn`/`Option`/`Range` into that schema.
+    ///
+    /// Populated in TM-2 firewall order — annotation first, then the
+    /// initializer:
+    /// - an explicit `: type` annotation on the VAR/CONST, resolved by
+    ///   [`crate::annotations::resolve`] with **no downcast** (so
+    ///   `array<int>`, `map<string, int>`, a declared `STRUCT` name,
+    ///   `fn(T…): R` and `handle<K>` all survive — this is the
+    ///   `ty_to_inferred_type` gap issue #1540 closes). `option<T>` and
+    ///   `range` have **no annotation grammar at all**
+    ///   ([`crate::annotations::resolve`] has no arm for either), so a
+    ///   `Ty::Option`/`Ty::Range` value can never actually reach this
+    ///   field yet;
+    /// - else the initializer literal, at the same fidelity
+    ///   ([`literal_ty`]): `#[…]` → `Ty::Array`, `#{…}` → `Ty::Map`,
+    ///   `Name#{…}` → `Ty::Struct`, plus every scalar/`list<L>` form
+    ///   `infer_literal_type` already covered;
+    /// - else a bare `#fn(target, args…)` initializer (T1c follow-up, issue
+    ///   #712, docs/t1c-spec.md §4), in which case the type is the bound
+    ///   prefix consumed from `target`'s *own* declaration-derived signature
+    ///   (`param_annotations`/`return_annotation` — a second, single-level
+    ///   `signature()` call, never the target's body). An unannotated target
+    ///   param/return reads as `Ty::Unknown` in the row, the same
+    ///   conservative fallback declaration-derived typing always uses.
+    pub value_ty: Option<Ty>,
     /// Marked flow-private via a `#@local` directive (knots, stitches, VARs).
     pub is_local: bool,
     /// TM-2 (docs/typed-mode-spec.md §3): declared param type annotations,
@@ -76,12 +91,17 @@ pub struct Sig {
 /// Downcast a resolved [`Ty`] to [`InferredType`] where the two universes
 /// overlap (`Ty`'s scalar leaves plus nominal `list<L>`) — the annotation-
 /// wins substitution for `Sig::value_type`, which predates TM-2 and only
-/// has room for `InferredType`'s narrower domain. `array<T>`/`map<K, V>`
-/// annotations have no `InferredType` representation; those `VAR`s keep
-/// their literal-inferred `value_type` (a strict-mode gap TM-3 owns, not a
-/// silent drop — the full `Ty` is still available via `param_annotations`/
-/// `return_annotation` for knots/stitches, and `crate::resolve_annotation`
-/// directly for any `TypeExpr`).
+/// has room for `InferredType`'s narrower domain (hover + the `@brink-lang/web`
+/// program model read it; widening it would change that schema).
+///
+/// Every `Ty` outside that overlap — `array<T>`, `map<K, V>`, a nominal
+/// `STRUCT`, `fn(T…): R`, `handle<K>`, `option<T>`, `range`, `weighted<T>`,
+/// a tower kind — is **not** dropped: since issue #1540 it is carried at
+/// full fidelity on [`Sig::value_ty`], which is what `infer::collect_globals`
+/// (and `brink-db`'s narrowed mirror of it) reads to give a global its static
+/// type. `param_annotations`/`return_annotation`/`crate::resolve_annotation`
+/// remain the equivalent full-fidelity surfaces for knots/stitches and for
+/// any bare `TypeExpr`.
 fn ty_to_inferred_type(ty: &Ty) -> Option<InferredType> {
     match ty {
         Ty::Int => Some(InferredType::Int),
@@ -93,26 +113,13 @@ fn ty_to_inferred_type(ty: &Ty) -> Option<InferredType> {
         // `Conflicted` (#627): a genuine type conflict has no representable
         // `InferredType` any more than `Unknown` does — this stub is a
         // gradual/advisory consumer, so it reads both the same way.
-        // `Struct` (TM-4b): no `InferredType` representation exists for a
-        // nominal struct shape either — same gap as `Array`/`Map`, not a
-        // silent drop (the full `Ty::Struct` is still available via
-        // `param_annotations`/`return_annotation`/`resolve_annotation`).
-        // `Fn` (T1c): a function-value type has no `InferredType`
-        // representation either — same gap as `Array`/`Map`/`Struct`, not a
-        // silent drop.
-        // `Handle` (T1d-2): same gap again — no `InferredType` variant
-        // represents a nominal handle kind; the full `Ty::Handle` is still
-        // available via `param_annotations`/`return_annotation`/
-        // `resolve_annotation`, not silently dropped.
-        // `Option` (NS-A1): same gap as `Array`/`Map` — no `InferredType`
-        // variant represents a parameterized builtin; not a silent drop.
-        // `Range` (NS-A5): same gap — no `InferredType` variant; not a
-        // silent drop.
-        // `Tower` (NS-A8): same gap again — no `InferredType` variant
-        // represents a tower kind; the full `Ty::Tower` stays available
-        // via the annotation surfaces, not silently dropped.
-        // `Weighted` (NS-A7): same gap again — no `InferredType` variant
-        // represents a parameterized builtin; not a silent drop.
+        // Everything below has no `InferredType` variant to downcast to —
+        // `Array`/`Map` (T1b), `Struct` (TM-4b), `Fn` (T1c), `Handle`
+        // (T1d-2), `Option` (NS-A1), `Range` (NS-A5), `Weighted` (NS-A7),
+        // `Tower` (NS-A8). None of them is a silent drop: since issue #1540
+        // each is carried whole on `Sig::value_ty` (see this function's doc),
+        // which is the field every typed consumer reads. Only the narrow,
+        // wire-adjacent `Sig::value_type` stops here.
         Ty::Weighted(_)
         | Ty::Tower(_)
         | Ty::Array(_)
@@ -141,10 +148,68 @@ fn value_type_with_annotation_override(
         .or(literal_type)
 }
 
-/// A VAR/CONST's declaration-derived `fn(T…): R` type ([`Sig::fn_type`],
-/// T1c follow-up, issue #712) — `None` when neither an `fn(...)`
-/// annotation nor a `#fn(...)` initializer applies.
-fn declared_fn_type(
+/// A VAR/CONST initializer literal's type at full [`Ty`] fidelity (issue
+/// #1540) — the collection-aware sibling of
+/// [`infer_literal_type`](crate::external_check::infer_literal_type), which
+/// stops at [`InferredType`]'s scalar/`list<L>` domain.
+///
+/// Policy parity with `infer::body`'s own per-body literal arms is
+/// deliberate and load-bearing: this declaration-derived stub and the real
+/// HM inference must never disagree about what `#[1, 2, 3]` is, or a
+/// global and a `temp` holding the same literal would type differently.
+/// So the element/key/value joins go through the same
+/// [`unify_all`](crate::infer::unify_all) the body arms use (an empty or
+/// mixed literal lands on `Ty::Unknown`/`Ty::Conflicted` identically), and
+/// a construction literal's type is its written shape name, exactly as
+/// `Expr::StructLiteral`'s arm has it — construction *validity* is
+/// `crate::structs`' job, not this function's.
+///
+/// Nested elements recurse through this same function rather than through
+/// body inference: a declaration default is constant-folded, so the only
+/// element forms that can carry a type here are literals (a call/index/
+/// field access in that position is already `E077`).
+///
+/// Deliberately **not** handled: `Expr::Range`. A range literal never
+/// constant-folds into a declaration default at all (`brink-ir`'s
+/// `lir::lower::decls::is_const_foldable_decl_default` returns `false` for
+/// it), so typing one here would mint `NonEmptyRange` evidence — or its
+/// absence — for a declaration that cannot compile. Moot in practice: a
+/// `range` *annotation* has no grammar either
+/// ([`crate::annotations::resolve`] has no `"range"` arm), so
+/// `declared_value_ty`'s annotation branch can't produce `Ty::Range` any
+/// more than this literal branch can.
+fn literal_ty(expr: &Expr, index: &SymbolIndex) -> Option<Ty> {
+    match expr {
+        Expr::ArrayLiteral(a) => Some(Ty::Array(Box::new(crate::infer::unify_all(
+            a.elements
+                .iter()
+                .map(|e| literal_ty(e, index).unwrap_or(Ty::Unknown)),
+        )))),
+        Expr::MapLiteral(m) => {
+            let keys = m
+                .entries
+                .iter()
+                .map(|(k, _)| literal_ty(k, index).unwrap_or(Ty::Unknown));
+            let vals: Vec<Ty> = m
+                .entries
+                .iter()
+                .map(|(_, v)| literal_ty(v, index).unwrap_or(Ty::Unknown))
+                .collect();
+            Some(Ty::Map(
+                Box::new(crate::infer::unify_all(keys)),
+                Box::new(crate::infer::unify_all(vals)),
+            ))
+        }
+        Expr::StructLiteral(sl) => Some(Ty::Struct(sl.shape.text.clone())),
+        _ => infer_literal_type(expr, index).map(Ty::from),
+    }
+}
+
+/// A VAR/CONST's declaration-derived type at full [`Ty`] fidelity — the
+/// value behind [`Sig::value_ty`] (issue #1540). Resolution order is the
+/// TM-2 firewall's: an explicit annotation wins outright, then the
+/// initializer literal, then a `#fn(…)` initializer.
+fn declared_value_ty(
     value: &Expr,
     annotation: Option<&brink_ir::TypeExpr>,
     index: &SymbolIndex,
@@ -152,16 +217,27 @@ fn declared_fn_type(
     names: &crate::annotations::TypeNames,
     manifest: Option<&HostManifest>,
 ) -> Option<Ty> {
-    // Annotation wins over inference (TM-2 firewall) — same rule as
-    // `value_type_with_annotation_override`, but reading the full `Ty`
-    // straight from `resolve_annotation` instead of downcasting through
-    // `InferredType` (which has no `Fn` form — see `Sig::fn_type`'s doc).
-    if let Some(ann) = annotation
-        && let Some(ty @ Ty::Fn(..)) = resolve_annotation(ann, names)
-    {
+    if let Some(ty) = annotation.and_then(|ann| resolve_annotation(ann, names)) {
         return Some(ty);
     }
+    literal_ty(value, index).or_else(|| declared_fn_type(value, index, files, manifest))
+}
 
+/// A VAR/CONST's declaration-derived `#fn(target, args…)` initializer type
+/// (T1c follow-up, issue #712) — `None` when the initializer isn't a
+/// `#fn(...)` literal. Feeds [`Sig::value_ty`]'s last fallback, after the
+/// annotation and the initializer-literal branches in
+/// [`declared_value_ty`] have both already come up empty — an `fn(...)`
+/// *annotation* is resolved and returned there directly (that call site's
+/// own `if let Some(ty) = annotation.and_then(...)` is strictly earlier in
+/// the firewall order and already covers it), so this function only ever
+/// needs to look at the initializer.
+fn declared_fn_type(
+    value: &Expr,
+    index: &SymbolIndex,
+    files: &[(FileId, &HirFile)],
+    manifest: Option<&HostManifest>,
+) -> Option<Ty> {
     let Expr::FnLiteral(fl) = value else {
         return None;
     };
@@ -250,7 +326,7 @@ pub fn signature(
         .map(|&(_, hir)| hir);
 
     let mut value_type = None;
-    let mut fn_type = None;
+    let mut value_ty = None;
     let mut is_local = false;
     let mut param_annotations = Vec::new();
     let mut return_annotation = None;
@@ -279,10 +355,11 @@ pub fn signature(
                         v.annotation.as_ref(),
                         &names(),
                     );
-                    // T1c follow-up (issue #712): `Ty::Fn` has no
-                    // `InferredType` home, so it's carried on its own field
-                    // — see `Sig::fn_type`.
-                    fn_type = declared_fn_type(
+                    // Issue #1540: the full-fidelity type every typed
+                    // consumer reads — `Ty::Array`/`Map`/`Struct`/`Fn`/
+                    // `Option`/`Range` have no `InferredType` home, so they
+                    // ride here. See `Sig::value_ty`.
+                    value_ty = declared_value_ty(
                         &v.value,
                         v.annotation.as_ref(),
                         index,
@@ -301,8 +378,8 @@ pub fn signature(
                         c.annotation.as_ref(),
                         &names(),
                     );
-                    // T1c follow-up (issue #712) — see the `Variable` arm.
-                    fn_type = declared_fn_type(
+                    // Issue #1540 — see the `Variable` arm.
+                    value_ty = declared_value_ty(
                         &c.value,
                         c.annotation.as_ref(),
                         index,
@@ -385,7 +462,7 @@ pub fn signature(
         kind: info.kind,
         params: info.params.clone(),
         value_type,
-        fn_type,
+        value_ty,
         is_local,
         param_annotations,
         return_annotation,

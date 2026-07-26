@@ -1271,14 +1271,16 @@ fn e143_as_binding_is_immutable() {
 // in this file (`brink_options()` leaves `types` unset, which resolves to
 // the brink dialect's own implicit-strict default, issue #1127).
 //
-// Every fixture below uses a `temp` for the array, never a `VAR`: a
-// global's static type is purely declaration-derived
-// (`signature.rs::Sig::value_type`, whose `ty_to_inferred_type` downcast
-// has no `Array`/`Map` representation), so `VAR arr = 0` — even
-// immediately reassigned to an array literal, the idiom
-// `remove_on_an_array_faults` uses for the *runtime*-fault twin of this
-// exact call shape — leaves `arr` statically `Unknown` and would never
-// reach `E149`'s `Ty::Array` guard at all.
+// Issue #1540 closed the global-scope half of this: a `VAR`'s static type
+// is still purely declaration-derived, but it is now derived at full `Ty`
+// fidelity (`signature.rs::Sig::value_ty`) instead of through the
+// `InferredType` downcast that had no `Array`/`Map` representation, so
+// `VAR arr = #[…]` reaches `E149`'s `Ty::Array` guard exactly like a
+// `temp` does — see `e149_remove_on_a_statically_known_global_array`.
+// What is still out of reach is `VAR arr = 0` *reassigned* to an array
+// literal (the idiom `remove_on_an_array_faults` uses for the
+// runtime-fault twin of this call shape): a declaration-derived type
+// cannot see a later assignment, so that global is statically `Int`.
 
 /// E149 — a statically-known array first argument to `remove`.
 #[test]
@@ -1292,6 +1294,47 @@ fn e149_remove_on_a_statically_known_array() {
     );
 }
 
+/// E149 — issue #1540: the same statically-known array, spelled as a global
+/// `VAR` with an array-literal default. This is the authoring idiom the
+/// issue names, and before the `Sig::value_ty` fix it compiled clean here
+/// (the global typed as nothing at all) while the `temp` twin above
+/// reported.
+#[test]
+fn e149_remove_on_a_statically_known_global_array() {
+    let source = "VAR arr = #[1, 2, 3]\n=== main ===\n~ remove(arr, 0)\n-> DONE\n";
+    assert_error_at(
+        source,
+        brink_options(),
+        DiagnosticCode::E149,
+        "remove(arr, 0)",
+    );
+}
+
+/// E149 — the annotated spelling of the same global (`ty_to_inferred_type`'s
+/// gap proper: an `array<T>` annotation had no `InferredType` form, so it
+/// was dropped and the *initializer* decided the global's static type).
+#[test]
+fn e149_remove_on_an_array_annotated_global() {
+    let source = "VAR arr: array<int> = #[1, 2, 3]\n=== main ===\n~ remove(arr, 0)\n-> DONE\n";
+    assert_error_at(
+        source,
+        brink_options(),
+        DiagnosticCode::E149,
+        "remove(arr, 0)",
+    );
+}
+
+/// A map-typed *global* is untouched by the widening — the same map leg the
+/// `temp` fixture below guards, proven at global scope too so #1540's wider
+/// `value_ty` cannot start reporting the verb's legal receiver.
+#[test]
+fn remove_on_a_global_map_unaffected_by_e149() {
+    let source = "VAR m = #{\"a\": 1}\n=== main ===\n~ remove(m, \"a\")\n-> DONE\n";
+    let out = compile(source, brink_options())
+        .unwrap_or_else(|e| panic!("remove(m, k) on a global map must compile clean: {e:?}"));
+    assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+}
+
 /// `remove` on a map is untouched — the map leg this code guards is the
 /// verb's actual, unaffected posture.
 #[test]
@@ -1299,6 +1342,57 @@ fn remove_on_a_map_unaffected_by_e149() {
     let source = "=== main ===\n~ {\n    temp m = #{\"a\": 1}\n    remove(m, \"a\")\n}\n-> DONE\n";
     let out = compile(source, brink_options())
         .unwrap_or_else(|e| panic!("remove(m, k) on a map must compile clean: {e:?}"));
+    assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+}
+
+// ─── E149 through the UFCS spelling (issue #1540, second symptom) ──────
+//
+// `infer::body::infer_call` types a multi-segment callee `Ty::Unknown`
+// *before* `infer_intrinsic` runs (a UFCS receiver isn't the thing being
+// called), so `arr.remove(0)` recorded none of the facts `remove(arr, 0)`
+// records and every intrinsic-receiver diagnostic silently stopped at the
+// free-call spelling. `ufcs::check_strict` reads the B3a verdict table
+// instead, which already carries the receiver's resolved `Ty` beside the
+// verb's name.
+//
+// These are native (`.brink`) fixtures because UFCS is native-only by
+// construction (ink's own lowering never builds a multi-segment callee
+// path — see `brink-analyzer::ufcs`'s module doc). The receiver comes from
+// `keys(m)` rather than an array literal: the native surface has no array
+// literal at all today (`construct::ConstructTarget` registers `Map`,
+// `Flags` and `Weighted` only), so an array-returning intrinsic is how a
+// native author actually gets one.
+
+/// E149 fires on the UFCS spelling of an array `remove`.
+#[test]
+fn e149_ufcs_remove_on_a_statically_known_array() {
+    let source = "fn main() {\n  let m = Map { \"a\": 1 };\n  let ks = keys(m);\n  ks.remove(0);\n  \
+                  return 1;\n}\n";
+    let err = compile_native("ufcs-remove", source, native_strict_options())
+        .map(|_| ())
+        .unwrap_err();
+    let diags = errors_of(err);
+    assert_code_at_nth(&diags, DiagnosticCode::E149, source, "ks.remove(0)", 0);
+}
+
+/// The verb's legal receiver is untouched by the UFCS leg: a *map* receiver
+/// must stay clean, or the check would refuse `remove`'s actual posture.
+#[test]
+fn ufcs_remove_on_a_map_unaffected_by_e149() {
+    let source = "fn main() {\n  let m = Map { \"a\": 1 };\n  m.remove(\"a\");\n  return 1;\n}\n";
+    let out = compile_native("ufcs-remove-map", source, native_strict_options())
+        .unwrap_or_else(|e| panic!("`m.remove(k)` on a map must compile clean: {e:?}"));
+    assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+}
+
+/// The migration target itself: `remove_at` on the same array receiver is
+/// what the author is being pointed at, so it must compile clean.
+#[test]
+fn ufcs_remove_at_on_an_array_is_the_clean_migration_target() {
+    let source = "fn main() {\n  let m = Map { \"a\": 1 };\n  let ks = keys(m);\n  \
+                  ks.remove_at(0);\n  return 1;\n}\n";
+    let out = compile_native("ufcs-remove-at", source, native_strict_options())
+        .unwrap_or_else(|e| panic!("`ks.remove_at(i)` must compile clean: {e:?}"));
     assert!(out.warnings.is_empty(), "{:?}", out.warnings);
 }
 

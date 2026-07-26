@@ -263,7 +263,7 @@ fn sig_heap(sig: &Sig) -> usize {
     string_heap(&sig.name)
         + vec_heap(&sig.params)
         + sig.params.iter().map(param_info_heap).sum::<usize>()
-        + sig.fn_type.as_ref().map_or(0, ty_heap)
+        + sig.value_ty.as_ref().map_or(0, ty_heap)
         + vec_heap(&sig.param_annotations)
         + sig
             .param_annotations
@@ -467,7 +467,7 @@ mod tests {
             kind: brink_ir::SymbolKind::Knot,
             params: Vec::new(),
             value_type: None,
-            fn_type: None,
+            value_ty: None,
             is_local: false,
             param_annotations: Vec::new(),
             return_annotation: None,
@@ -490,7 +490,7 @@ mod tests {
             kind: brink_ir::SymbolKind::Knot,
             params: Vec::new(),
             value_type: None,
-            fn_type: None,
+            value_ty: None,
             is_local: false,
             param_annotations: Vec::new(),
             return_annotation: None,

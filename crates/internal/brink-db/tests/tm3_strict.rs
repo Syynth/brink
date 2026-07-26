@@ -147,7 +147,8 @@ fn strict_analyze_populates_the_memoized_whole_project_inference() {
 /// `brink-analyzer`'s own unit tests exercise directly. A global `VAR`
 /// holding a `#fn(...)` value, called with a wrong-typed argument, must
 /// surface `E063` here too — proving the narrowed globals map picked up the
-/// same `Sig::fn_type` fix, not just the whole-project one.
+/// same `Sig::value_ty` fix (`Sig::fn_type` before issue #1540 generalized
+/// it), not just the whole-project one.
 #[test]
 fn strict_global_fn_value_mismatch_reaches_production_diagnostics() {
     let mut db = ProjectDb::new();
