@@ -88,13 +88,21 @@ fn struct_decl_fields() {
     let fields: Vec<_> = sd.fields().collect();
     assert_eq!(fields.len(), 2);
     assert_eq!(fields[0].name_token().expect("name").text(), "name");
-    let ty_segs: Vec<_> = fields[0]
-        .type_path()
-        .expect("type path")
-        .segments()
-        .map(|t| t.text().to_string())
-        .collect();
-    assert_eq!(ty_segs, vec!["string".to_string()]);
+    let ty = fields[0]
+        .type_annotation()
+        .expect("type annotation")
+        .type_expr()
+        .expect("type expr");
+    // `panic!` is denied in production code (`clippy.toml` exempts
+    // `unwrap`/`expect` in tests, not `panic!` itself) — reach the same
+    // "fail with a message" outcome via `Option::expect` on a
+    // deliberately-`None` fallback instead.
+    let name = match ty.kind() {
+        Some(crate::ast::TypeExprKind::Name(n)) => n.name(),
+        _ => None,
+    }
+    .expect("expected a bare type name");
+    assert_eq!(name, "string");
 }
 
 #[test]

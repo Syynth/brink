@@ -106,11 +106,11 @@ mod heap_size;
 pub use analysis::ResolvedProject;
 pub(crate) use analysis::{
     analysis_diagnostics_query, analysis_query, await_purity_diagnostics_query,
-    call_site_diagnostics_query, call_site_metas_query, comparator_contract_diagnostics_query,
-    contributor_diagnostics_query, diagnostics_query, effects_assertion_diagnostics_query,
-    external_meta_query, has_errors_in_closure_query, has_errors_query, inline_docs_query,
-    per_file_diagnostics_query, resolutions_index_query, ufcs_resolution_query, value_meta_query,
-    whole_project_diagnostics_query,
+    call_site_diagnostics_query, call_site_metas_query, coalesce_types_query,
+    comparator_contract_diagnostics_query, contributor_diagnostics_query, diagnostics_query,
+    effects_assertion_diagnostics_query, external_meta_query, has_errors_in_closure_query,
+    has_errors_query, inline_docs_query, per_file_diagnostics_query, resolutions_index_query,
+    ufcs_resolution_query, value_meta_query, whole_project_diagnostics_query,
 };
 
 // ─── Database ────────────────────────────────────────────────────────
@@ -190,6 +190,10 @@ impl Default for BrinkDatabase {
                 // `whole_project_diagnostics_query` (diagnostics half) and
                 // LIR lowering (`lir_knot_chunk_query`/`lir_lowering_query`).
                 .ingredient::<ufcs_resolution_query>()
+                // B1 `or`-coalescing (issue #1471/#1492): the recorded
+                // per-step chain shapes LIR lowering consumes
+                // (`lir_knot_chunk_query`/`lir_lowering_query`).
+                .ingredient::<coalesce_types_query>()
                 .ingredient::<analysis_diagnostics_query>()
                 .ingredient::<analysis_query>()
                 .ingredient::<diagnostics_query>()
@@ -1713,6 +1717,7 @@ pub(crate) fn lir_knot_chunk_query(
     };
 
     let ufcs = &ufcs_resolution_query(db, project).table;
+    let coalesce = coalesce_types_query(db, project);
     let (chunk, diagnostics) = brink_ir::lir::lower_knot_chunk_incremental(
         hir_file,
         knot,
@@ -1723,6 +1728,7 @@ pub(crate) fn lir_knot_chunk_query(
         type_mode,
         file_id,
         ufcs,
+        coalesce,
     );
     LoweredChunk {
         chunk: Arc::new(chunk),
@@ -1851,12 +1857,14 @@ pub(crate) fn lir_lowering_query(db: &dyn salsa::Database, project: ProjectInput
         .collect();
     let prelude = brink_ir::lir::assemble_prelude((*prelude_decls.decls).clone(), normalized);
     let ufcs = &ufcs_resolution_query(db, project).table;
+    let coalesce = coalesce_types_query(db, project);
     let (root_chunks, root_temp_slots) = brink_ir::lir::lower_root_content_for_prelude(
         &prelude,
         &resolved.index,
         &resolved.resolutions,
         &paths,
         ufcs,
+        coalesce,
     );
 
     // Interleave in walk order (per file: root content, then that file's

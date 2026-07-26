@@ -41,11 +41,12 @@ fn name_from(tok: Option<SyntaxToken>) -> Option<Name> {
     })
 }
 
-/// The `: type` annotation on a `var`/`const` binding, lowered to HIR
-/// (NG-B, issue #1488). `None` when unwritten — the same shape the ink
-/// dialect's TM-2 `VAR x: int = …` produces, so an annotated native global
-/// is exempt from `brink-analyzer::strict`'s `E065` Unknown-escape exactly
-/// as an annotated ink one is.
+/// The `: type` annotation on a `var`/`const` binding or a `struct` field,
+/// lowered to HIR (NG-B, issue #1488; reused for struct fields by NG-E,
+/// issue #1505). `None` when unwritten — the same shape the ink dialect's
+/// TM-2 `VAR x: int = …` produces, so an annotated native global is exempt
+/// from `brink-analyzer::strict`'s `E065` Unknown-escape exactly as an
+/// annotated ink one is.
 fn binding_annotation(annotation: Option<&ast::TypeAnnotation>) -> Option<TypeExpr> {
     annotation.and_then(super::types::lower_type_annotation)
 }
@@ -170,17 +171,11 @@ pub(super) fn lower_struct_decl(
         .fields()
         .filter_map(|f| {
             let field_name = name_from(f.name_token());
-            let ty = f.type_path().map(|p| {
-                let joined = p
-                    .segments()
-                    .map(|t| t.text().to_string())
-                    .collect::<Vec<_>>()
-                    .join(".");
-                TypeExpr::Named {
-                    name: joined,
-                    range: p.syntax().text_range(),
-                }
-            });
+            // NG-E (issue #1505): the field's `: type` clause is now a full
+            // `type_expr` (bare name, generic instantiation, or function
+            // type), not just a dotted path — same lowering helper every
+            // other `: type` position in this dialect uses.
+            let ty = binding_annotation(f.type_annotation().as_ref());
             if let (Some(n), Some(ty)) = (field_name, ty) {
                 Some(StructFieldDecl { name: n, ty })
             } else {
@@ -260,9 +255,9 @@ pub(super) fn lower_extern_decl(
     })
 }
 
-/// Every `IDENT` a native `PATH_SEGMENT` chain visits — reused by the
-/// struct-field type lowering above and left available for `import`/`use`
-/// lowering (`super::import`).
+/// Every `IDENT` a native `PATH_SEGMENT` chain visits — used by
+/// `import`/`use` lowering (`super::import`). Struct-field types now go
+/// through `super::types::lower_type_annotation` instead (NG-E, #1505).
 pub(super) fn joined_path_text(path: &ast::Path) -> String {
     lower_path(path)
         .segments

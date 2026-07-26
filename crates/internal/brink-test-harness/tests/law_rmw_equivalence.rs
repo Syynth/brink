@@ -5,7 +5,7 @@
 //! read-modify-write compiles to *take out of slot → `make_mut` → write
 //! back*". `tests/proptest_t1b.rs` and `tests/take_rmw.rs` already prove this
 //! law for array element writes (`a[i] = v`, chained `grid[y][x] = v`) and
-//! the array mutator stdlib (`push`/`insert`/`remove`) against a `Vec`
+//! the array mutator stdlib (`push`/`insert`/`remove_at`) against a `Vec`
 //! reference. This file extends the same law to the two RMW target shapes
 //! those files don't cover:
 //!

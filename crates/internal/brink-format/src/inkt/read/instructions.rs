@@ -362,11 +362,16 @@ fn parse_instruction(pair: P<'_>) -> Result<Opcode, InktParseError> {
         "map_contains_value" => Ok(Opcode::MapContainsValue),
         "map_clear" => Ok(Opcode::MapClear),
 
-        // B1 `or`-coalescing (issue #1460)
-        "coalesce" => Ok(Opcode::Coalesce),
+        // B1 `or`-coalescing, short-circuited (issue #1471)
+        "coalesce_some" => Ok(Opcode::CoalesceSome(parse_operand_i32(
+            &operands, 0, mnemonic,
+        )?)),
         "option_bind" => Ok(Opcode::OptionBind(parse_operand_u16(
             &operands, 0, mnemonic,
         )?)),
+
+        // Seq `remove_at` (issue #1484)
+        "seq_remove_at" => Ok(Opcode::SeqRemoveAt),
 
         // NS-A6 rand verbs
         "rand_float" => Ok(Opcode::RandFloat),

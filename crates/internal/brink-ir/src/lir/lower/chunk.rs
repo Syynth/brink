@@ -368,7 +368,15 @@ fn remap_expr(expr: &mut lir::Expr, map: &[NameId]) {
             remap_expr(start, map);
             remap_expr(end, map);
         }
-        Expr::Infix(l, _, r) => {
+        // B1 `or`-coalescing (#1471) is a dedicated variant, not generic
+        // `Infix` — same two-subexpression walk; `shape` carries no
+        // `NameId` to remap.
+        Expr::Infix(l, _, r)
+        | Expr::Coalesce {
+            lhs: l,
+            rhs: r,
+            shape: _,
+        } => {
             remap_expr(l, map);
             remap_expr(r, map);
         }
@@ -411,7 +419,7 @@ fn remap_expr(expr: &mut lir::Expr, map: &[NameId]) {
                 remap_expr(v, map);
             }
         }
-        Expr::Index { base, index } => {
+        Expr::Index { base, index } | Expr::SeqRemoveAt { base, index } => {
             remap_expr(base, map);
             remap_expr(index, map);
         }

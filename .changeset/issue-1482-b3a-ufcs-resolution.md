@@ -9,9 +9,9 @@ as an unresolved reference. A field on the receiver's type wins outright
 fall-through), otherwise the call desugars onto a free function in ordinary
 lexical scope; neither is one diagnostic naming both attempts (`E141`), an
 unknown receiver type demands an annotation (`E142`), and a `ref` first
-parameter is refused until auto-ref lands (`E143`). A resolved call is
-refused at lowering (`E144`) until the verdict side table has a codegen
-consumer.
+parameter was refused here (`E143`); auto-ref lands separately in #1462, in
+this same release. A resolved call is refused at lowering (`E144`) until the
+verdict side table has a codegen consumer.
 
 Web-observable through `compileProject`'s diagnostics: a `.brink` entry with
 method-call syntax previously reported `E025` ("unresolved variable

@@ -999,7 +999,8 @@ impl InferPass<'_, '_> {
             // coalescing expression used directly in content/argument
             // position never does. Under `types = gradual` neither compile-
             // time check runs; the runtime `TypeError` fault
-            // (`value_ops::coalesce`) is the sole backstop there, and only
+            // (`value_ops::coalesce_unwrap_some`, backing
+            // `Opcode::CoalesceSome`) is the sole backstop there, and only
             // for a non-Option `lhs` (see that function's own doc for the
             // `Mismatch` case's narrower coverage).
             InfixOp::Coalesce => {
@@ -1481,13 +1482,16 @@ impl InferPass<'_, '_> {
                 }
                 Ty::Unknown
             }
+            // `remove` (issue #1484, decision log "Quick-docket closures"
+            // 2026-07-26): map-only now — identity-based, idempotent-total
+            // removal (map keys; flags values once flags land). The
+            // array-index leg this used to also narrow (observing the
+            // second argument against the *element* type, which was wrong
+            // for an index argument anyway — a latent bug this split
+            // fixes) moved to `remove_at` below.
             "remove" => {
-                if let Some(item) = args.get(1) {
-                    match arg_tys.first() {
-                        Some(Ty::Array(elem)) => self.observe(item, elem),
-                        Some(Ty::Map(k, _)) => self.observe(item, k),
-                        _ => {}
-                    }
+                if let (Some(Ty::Map(k, _)), Some(item)) = (arg_tys.first(), args.get(1)) {
+                    self.observe(item, k);
                 }
                 if let Some(container) = args.first() {
                     self.record_write(container);
@@ -1606,16 +1610,22 @@ impl InferPass<'_, '_> {
                 }
                 Ty::Bool
             }
-            // `clear(ref m)` (§5), `shuffle(ref a)` (§7, NS-A6), and
-            // `sort(ref a)` (§4b, NS-A4 — the F0 imperative twin of
-            // `sorted`): statement-only in-place mutators — a receiver
-            // write, no value (the `push` shape, #880: the intrinsics'
-            // effect behavior is declared at introduction). Arms merged
-            // per clippy match_same_arms (the #694 `len | int` precedent);
+            // `clear(ref m)` (§5), `shuffle(ref a)` (§7, NS-A6), `sort(ref
+            // a)` (§4b, NS-A4 — the F0 imperative twin of `sorted`), and
+            // `remove_at(a, i)` (issue #1484, joining the `_at`
+            // faulting-index family with `char_at`): statement-only
+            // in-place mutators — a receiver write, no value (the `push`
+            // shape, #880: the intrinsics' effect behavior is declared at
+            // introduction). `remove_at`'s `i` is an index, not an element
+            // — like `insert`'s array leg (also index-typed), it isn't
+            // narrowed against the array's element type; the runtime op's
+            // own domain check (`i` must be an `Int`) is the wrong-type
+            // backstop, matching `char_at`'s posture. Arms merged per
+            // clippy match_same_arms (the #694 `len | int` precedent);
             // `sort`'s mode-dependent NaN behavior is entirely the runtime
             // op's (rows stay mode-independent — the conservative faults
             // bit rides the intrinsic table).
-            "clear" | "shuffle" | "sort" => {
+            "clear" | "shuffle" | "sort" | "remove_at" => {
                 if let Some(container) = args.first() {
                     self.record_write(container);
                 }
