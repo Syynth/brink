@@ -80,7 +80,7 @@ use brink_db::ProjectDb;
 use brink_format::DefinitionId;
 use brink_ir::hir::visit::{self, HirVisitor};
 use brink_ir::lir::UfcsVerdict;
-use brink_ir::{Expr, FileId, HirFile, Name};
+use brink_ir::{Expr, FileId, HirFile, Name, SymbolKind};
 use rowan::{TextRange, TextSize};
 
 use crate::hover::HoverInfo;
@@ -230,6 +230,103 @@ pub fn ufcs_method_range_at_path(hir: &HirFile, path_range: TextRange) -> Option
 #[must_use]
 pub fn ufcs_receiver_head_range_at_path(hir: &HirFile, path_range: TextRange) -> Option<TextRange> {
     ufcs_call_at_path_range(hir, path_range).map(|call| call.receiver_head_range)
+}
+
+/// A plain (non-call) dotted-field-access reference site (`p.x.y`) — the
+/// non-UFCS-call mirror of [`UfcsCallSite`], for issue #1560.
+struct FieldAccessRefSite {
+    /// The FIRST segment's own range (`p`'s own span for `p.x.y`).
+    head_range: TextRange,
+}
+
+/// Find the plain (non-call) `Expr::Path` in `hir` whose whole range is
+/// exactly `path_range` and which has more than one segment — the shape
+/// `resolve::lookup_variable`'s dotted-field-access fallback (step 11 in
+/// `brink-analyzer/src/resolve.rs`) records a whole-path `ResolvedRef`
+/// against. A single-segment path never reaches that fallback (steps 1-2
+/// already check the *whole* path for locals/globals first), and an
+/// `Expr::Call`'s callee path is [`ufcs_call_at_path_range`]'s shape, not
+/// this one — the two are structurally distinct HIR nodes, so there is no
+/// overlap between the two narrowing functions' matches.
+fn find_field_access_ref(hir: &HirFile, path_range: TextRange) -> Option<FieldAccessRefSite> {
+    struct Finder {
+        path_range: TextRange,
+        found: Option<FieldAccessRefSite>,
+    }
+    impl HirVisitor for Finder {
+        fn visit_exprs(&self) -> bool {
+            true
+        }
+        fn enter_expr(&mut self, expr: &Expr) {
+            if self.found.is_some() {
+                return;
+            }
+            let Expr::Path(path) = expr else {
+                return;
+            };
+            if path.range != self.path_range {
+                return;
+            }
+            let Some((head, rest)) = path.segments.split_first() else {
+                return;
+            };
+            if rest.is_empty() {
+                // A bare single-segment path — never the dotted-field-access
+                // fallback shape (see this function's own doc).
+                return;
+            }
+            self.found = Some(FieldAccessRefSite {
+                head_range: head.range,
+            });
+        }
+    }
+    let mut finder = Finder {
+        path_range,
+        found: None,
+    };
+    visit::visit(hir, &mut finder);
+    finder.found
+}
+
+/// The FIRST segment's own range (`p`'s own span for `p.x.y`) of the plain
+/// (non-UFCS-call) dotted-field-access reference at `path_range` in `hir`,
+/// if any — issue #1560, the non-UFCS-call mirror of
+/// [`ufcs_receiver_head_range_at_path`].
+///
+/// `resolve::lookup_variable`'s dotted-field-access fallback (step 11,
+/// `resolve.rs:474-503`) records the SAME whole-path `ResolvedRef` shape the
+/// UFCS-callee fallback does — for a plain reference like `p.x.y` (not a
+/// call), the resolved target is the head variable/constant/local itself,
+/// and the trailing segments are field names carried structurally by the
+/// HIR `Path`, not by resolution. A caller that finds a `ResolvedRef` whose
+/// range equals a plain field-access reference site's whole-path range must
+/// narrow to this span instead of using the `ResolvedRef`'s range directly,
+/// or a rename of the head variable collapses `p.x.y` into `newname`,
+/// silently dropping `.x.y`.
+///
+/// `target_kind` must be the `SymbolKind` of the `ResolvedRef`'s own target
+/// — narrowing only ever applies when it is `Variable`, `Constant`,
+/// `Param`, or `Temp`, the only kinds the analyzer's fallback can resolve a
+/// *multi*-segment path to (mirroring `resolve::resolve_function`'s own
+/// UFCS-callee fallback, which applies the identical restriction to its
+/// receiver lookup). A legitimate whole-path reference to some other kind
+/// (e.g. a qualified `knot.stitch` visit-count reference, step 8) has the
+/// same whole-path `ResolvedRef` shape but is not field access on a value —
+/// checking `target_kind` here, rather than trusting every caller to gate
+/// correctly, keeps that case from being wrongly narrowed too.
+#[must_use]
+pub fn field_access_head_range_at_path(
+    hir: &HirFile,
+    path_range: TextRange,
+    target_kind: SymbolKind,
+) -> Option<TextRange> {
+    if !matches!(
+        target_kind,
+        SymbolKind::Variable | SymbolKind::Constant | SymbolKind::Param | SymbolKind::Temp
+    ) {
+        return None;
+    }
+    find_field_access_ref(hir, path_range).map(|site| site.head_range)
 }
 
 /// The method-segment range of the UFCS call site at `offset` in `hir`, if

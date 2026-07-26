@@ -110,7 +110,7 @@ pub fn rename(
         .hir(file_id)
         .and_then(|hir| crate::ufcs_hover::ufcs_goto_definition_target(db, hir, file_id, offset));
 
-    let (decl_file, decl_range, analysis_def_id, db_def_id) = match ufcs_target {
+    let (decl_file, decl_range, analysis_def_id, db_def_id, target_kind) = match ufcs_target {
         // A field call or prelude intrinsic has no `DefinitionId` — not
         // renameable.
         Some(None) => return None,
@@ -120,7 +120,7 @@ pub fn rename(
                 return None;
             }
             let analysis_id = analysis_identity_of(analysis, info.file, info.range)?;
-            (info.file, info.range, analysis_id, target)
+            (info.file, info.range, analysis_id, target, info.kind)
         }
         None => {
             let info = find_def_at_offset(analysis, file_id, offset)?;
@@ -128,7 +128,7 @@ pub fn rename(
                 return None;
             }
             let db_id = db_identity_of(db, info.file, info.range)?;
-            (info.file, info.range, info.id, db_id)
+            (info.file, info.range, info.id, db_id, info.kind)
         }
     };
 
@@ -152,12 +152,26 @@ pub fn rename(
     // `ufcs_hover::ufcs_receiver_head_range_at_path`, or the edit collapses
     // `g.greet(3)` into `newname(3)`, silently dropping the method
     // segment.
+    //
+    // Issue #1560 (the non-UFCS-call half of the same bug):
+    // `resolve::lookup_variable`'s dotted-field-access fallback (step 11)
+    // records the SAME whole-path shape for a plain (non-call) reference
+    // like `p.x.y` — narrowed the same way via
+    // `ufcs_hover::field_access_head_range_at_path`, or the edit collapses
+    // `p.x.y` into `newname`, silently dropping `.x.y`.
     for resolved in &analysis.resolutions {
         if resolved.target == analysis_def_id {
             let range = db
                 .hir(resolved.file)
                 .and_then(|hir| {
                     crate::ufcs_hover::ufcs_receiver_head_range_at_path(hir, resolved.range)
+                        .or_else(|| {
+                            crate::ufcs_hover::field_access_head_range_at_path(
+                                hir,
+                                resolved.range,
+                                target_kind,
+                            )
+                        })
                 })
                 .unwrap_or(resolved.range);
             edits.push(FileEdit {
@@ -638,6 +652,102 @@ fn main() {
             .is_none(),
             "a stale analysis/db identity-space mismatch must refuse the rename, not emit a \
              partial edit set"
+        );
+    }
+
+    // ── Issue #1560: renaming the HEAD of a plain (non-UFCS-call) dotted
+    // field access leaves the trailing field segments intact — the
+    // non-call mirror of #1550, which fixed the analogous UFCS-receiver
+    // case (`recv.verb(args)`). `resolve::lookup_variable`'s
+    // dotted-field-access fallback (step 11, resolve.rs:474-503) records
+    // the SAME whole-path `ResolvedRef` shape for a plain reference like
+    // `p.x.y` (no call involved) ─────────────────────────────────────────
+
+    const FIELD_ACCESS_SRC: &str = "\
+struct Point {
+  y: int
+}
+
+struct Guest {
+  x: Point
+}
+
+fn main() {
+  let p = Guest { x: Point { y: 2 } };
+  let n = p.x.y;
+}
+";
+
+    #[test]
+    fn renaming_the_head_of_a_plain_field_access_edits_only_the_head_segment() {
+        // The core #1560 bug: `resolve::lookup_variable`'s
+        // dotted-field-access fallback recorded the head variable `p`'s
+        // resolved reference range as the *whole* `p.x.y` path. Renaming
+        // `p` (declared by `let p = Guest { .. }`) then produced an edit
+        // spanning all of `p.x.y`, so applying it collapsed `p.x.y` down to
+        // `newname` — silently dropping both field segments.
+        let (s, id) = native_session(FIELD_ACCESS_SRC);
+        let decl_pos =
+            u32::try_from(FIELD_ACCESS_SRC.find("p = Guest").expect("decl")).expect("offset");
+        let analysis = s.analysis().expect("analysis");
+
+        let result =
+            rename(s.db(), analysis, id, TextSize::from(decl_pos), "newname").expect("rename");
+
+        let ref_pos = u32::try_from(FIELD_ACCESS_SRC.find("p.x.y").expect("ref")).expect("offset");
+        let found = result
+            .edits
+            .iter()
+            .find(|e| e.file == id && e.range.start() == TextSize::from(ref_pos));
+        assert!(
+            found.is_some(),
+            "expected an edit at the field-access reference's head segment, got {:?}",
+            result
+                .edits
+                .iter()
+                .map(|e| (e.range, e.new_text.as_str()))
+                .collect::<Vec<_>>()
+        );
+        let edit = found.expect("checked above");
+        assert_eq!(edit.new_text, "newname");
+        assert_eq!(
+            usize::from(edit.range.end()) - usize::from(edit.range.start()),
+            1,
+            "the edit must span only the head's own `p` segment (1 byte), not the whole \
+             `p.x.y` path — got {:?}",
+            edit.range
+        );
+    }
+
+    #[test]
+    fn rename_safe_on_the_head_of_a_plain_field_access_produces_a_valid_program() {
+        // End-to-end counterpart of the test above, via the studio-facing
+        // `rename_safe` path: the folded `new_source` must keep both field
+        // segments (`newname.x.y`), never collapse to a bare reference
+        // (`newname`), and the rename must introduce no new diagnostics.
+        let (s, id) = native_session(FIELD_ACCESS_SRC);
+        let decl_pos =
+            u32::try_from(FIELD_ACCESS_SRC.find("p = Guest").expect("decl")).expect("offset");
+
+        let res = rename_safe(&s, id, TextSize::from(decl_pos), "newname").expect("rename");
+
+        let new_source = res.new_source.as_deref().expect("new_source");
+        assert!(
+            new_source.contains("let n = newname.x.y;"),
+            "both field segments must survive the head rename: {new_source}"
+        );
+        assert!(
+            !new_source.contains("let n = newname;"),
+            "the head rename must not collapse into a bare reference, dropping the field \
+             segments: {new_source}"
+        );
+        assert!(
+            res.introduced.is_empty(),
+            "a correct head rename introduces no new diagnostics, got {:?}",
+            res.introduced
+                .iter()
+                .map(|d| (d.code.as_str(), d.message.as_str()))
+                .collect::<Vec<_>>()
         );
     }
 }

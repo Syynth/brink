@@ -189,7 +189,7 @@ pub fn find_references(
         .hir(file_id)
         .and_then(|hir| crate::ufcs_hover::ufcs_goto_definition_target(db, hir, file_id, offset));
 
-    let (analysis_def_id, db_def_id) = match ufcs_target {
+    let (analysis_def_id, db_def_id, target_kind) = match ufcs_target {
         // A field call or prelude intrinsic has no `DefinitionId` at all —
         // stop here rather than falling through to the generic lookup
         // below, which would resolve to the receiver instead.
@@ -205,7 +205,7 @@ pub fn find_references(
                 // reference/declaration this same symbol also has.
                 return Vec::new();
             };
-            (analysis_id, target)
+            (analysis_id, target, info.kind)
         }
         None => {
             let def_id = analysis
@@ -238,7 +238,7 @@ pub fn find_references(
                 // UFCS call site desugaring to this same free function.
                 return Vec::new();
             };
-            (def_id, db_def_id)
+            (def_id, db_def_id, info.kind)
         }
     };
 
@@ -263,12 +263,26 @@ pub fn find_references(
     // so it's narrowed to the receiver's own first segment via
     // `ufcs_hover::ufcs_receiver_head_range_at_path` — the same narrowing
     // `rename`'s plain-reference loop applies for the same reason.
+    //
+    // Issue #1560 (the non-UFCS-call half of the same bug):
+    // `resolve::lookup_variable`'s dotted-field-access fallback (step 11)
+    // records the SAME whole-path shape for a plain (non-call) reference
+    // like `p.x.y` — narrowed the same way via
+    // `ufcs_hover::field_access_head_range_at_path`, or a reference to `p`
+    // wrongly reports `.x.y` as part of its own range too.
     for resolved in &analysis.resolutions {
         if resolved.target == analysis_def_id {
             let range = db
                 .hir(resolved.file)
                 .and_then(|hir| {
                     crate::ufcs_hover::ufcs_receiver_head_range_at_path(hir, resolved.range)
+                        .or_else(|| {
+                            crate::ufcs_hover::field_access_head_range_at_path(
+                                hir,
+                                resolved.range,
+                                target_kind,
+                            )
+                        })
                 })
                 .unwrap_or(resolved.range);
             locations.push(LocationResult {
@@ -590,6 +604,69 @@ fn main() {
             "a stale analysis/db identity-space mismatch must return no references, not a \
              partial list, got {:?}",
             refs.iter().map(|l| l.range).collect::<Vec<_>>()
+        );
+    }
+
+    // ── Issue #1560: find_references on the HEAD of a plain (non-UFCS-call)
+    // dotted field access reports only the head segment — the non-call
+    // mirror of #1550's
+    // `find_references_from_a_ufcs_receiver_declaration_reports_only_the_receiver_segment`
+    // ──────────────────────────────────────────────────────────────────
+
+    const FIELD_ACCESS_SRC: &str = "\
+struct Point {
+  y: int
+}
+
+struct Guest {
+  x: Point
+}
+
+fn main() {
+  let p = Guest { x: Point { y: 2 } };
+  let n = p.x.y;
+}
+";
+
+    #[test]
+    fn find_references_from_a_plain_field_access_head_declaration_reports_only_the_head_segment() {
+        // `resolve::lookup_variable`'s dotted-field-access fallback (step
+        // 11, resolve.rs:474-503) records the head variable's (`p`'s)
+        // `ResolvedRef` against the *whole* `p.x.y` path, not just `p`'s
+        // own segment — mirroring the D2 side table's own key, and the
+        // #1550 UFCS-receiver bug this issue is the non-call half of.
+        // Reporting that whole-path range as a reference to `p` would
+        // wrongly include the `.x.y` field segments; the reported span at
+        // the reference site must be exactly the 1-byte `p` segment.
+        let mut session = IdeSession::new();
+        let file_id = session.update_and_analyze("test.brink", FIELD_ACCESS_SRC.to_string());
+        let analysis = session.analysis().expect("analysis");
+        let decl_pos =
+            u32::try_from(FIELD_ACCESS_SRC.find("p = Guest").expect("decl")).expect("offset");
+
+        let refs = find_references(
+            session.db(),
+            analysis,
+            file_id,
+            TextSize::from(decl_pos),
+            false,
+        );
+
+        let ref_pos = u32::try_from(FIELD_ACCESS_SRC.find("p.x.y").expect("ref")).expect("offset");
+        let found = refs
+            .iter()
+            .find(|loc| loc.file == file_id && loc.range.start() == TextSize::from(ref_pos));
+        assert!(
+            found.is_some(),
+            "expected the field-access reference's head segment among references, got {:?}",
+            refs.iter().map(|l| l.range).collect::<Vec<_>>()
+        );
+        let range = found.expect("checked above").range;
+        assert_eq!(
+            usize::from(range.end()) - usize::from(range.start()),
+            1,
+            "the reported reference must span only the head's own `p` segment (1 byte), not \
+             the whole `p.x.y` path — got {range:?}"
         );
     }
 }
