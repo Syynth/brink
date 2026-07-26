@@ -361,6 +361,13 @@ impl Collector {
             if let Some(e) = &branch.condition {
                 self.walk_expr(e);
             }
+            // B1b (issue #1475): the template form's `as` binding needs the
+            // same range admission `walk_if_stmt`/`walk_while_stmt` already
+            // give the statement forms — otherwise a malformed/empty
+            // binding range in `{if EXPR as n: … else: …}` escapes E124.
+            if let Some(binding) = &branch.binding {
+                self.check_range(binding.range);
+            }
             self.check_terminal_last(&branch.body.stmts); // E127
             self.walk_block(&branch.body, prefix);
         }
@@ -446,6 +453,9 @@ impl Collector {
     fn walk_if_stmt(&mut self, i: &IfStmt) {
         self.check_range(i.ptr.text_range());
         self.walk_expr(&i.condition);
+        if let Some(binding) = &i.binding {
+            self.check_range(binding.range);
+        }
         for s in &i.body {
             self.walk_block_stmt(s);
         }
@@ -463,6 +473,9 @@ impl Collector {
     fn walk_while_stmt(&mut self, w: &WhileStmt) {
         self.check_range(w.ptr.text_range());
         self.walk_expr(&w.condition);
+        if let Some(binding) = &w.binding {
+            self.check_range(binding.range);
+        }
         for s in &w.body {
             self.walk_block_stmt(s);
         }
@@ -1020,6 +1033,7 @@ mod tests {
             kind: CondKind::InitialCondition,
             branches: vec![CondBranch {
                 condition: None,
+                binding: None,
                 body: branch_body,
                 container_id: None,
             }],
@@ -1027,6 +1041,36 @@ mod tests {
         hir.knots[0].body.stmts.insert(0, Stmt::Conditional(cond));
         let diags = validate_admission(FileId(0), &hir, &manifest, len);
         assert!(codes(&diags).contains(&DiagnosticCode::E127), "{diags:?}");
+    }
+
+    /// B1b (issue #1475), review finding: `walk_if_stmt`/`walk_while_stmt`
+    /// both `check_range` their `binding`, but `walk_conditional` — the
+    /// template `{if EXPR as n: … else: …}` form's walker — didn't, so a
+    /// malformed binding range there escaped E124 entirely. Same synthetic
+    /// hand-built-HIR technique as `e127_divert_not_last_in_inline_branch`:
+    /// `Conditional`/`CondBranch::binding` is native-only, so there's no
+    /// ink-dialect source that produces one to lower.
+    #[test]
+    fn e124_template_as_binding_out_of_bounds_is_malformed() {
+        let (mut hir, manifest, len) = lower_src("== knot ==\nHello\n-> END\n");
+        let synthetic_range = TextRange::new(0.into(), 1.into());
+        let past_eof = len + TextSize::from(1000);
+        let cond = Conditional {
+            ptr: Provenance::synthetic(NodeClass::Conditional, synthetic_range),
+            kind: CondKind::InitialCondition,
+            branches: vec![CondBranch {
+                condition: Some(Expr::Bool(true)),
+                binding: Some(brink_ir::hir::Name {
+                    text: "n".to_string(),
+                    range: TextRange::new(len, past_eof),
+                }),
+                body: Block::from_stmts(Vec::new()),
+                container_id: None,
+            }],
+        };
+        hir.knots[0].body.stmts.insert(0, Stmt::Conditional(cond));
+        let diags = validate_admission(FileId(0), &hir, &manifest, len);
+        assert!(codes(&diags).contains(&DiagnosticCode::E124), "{diags:?}");
     }
 
     #[test]

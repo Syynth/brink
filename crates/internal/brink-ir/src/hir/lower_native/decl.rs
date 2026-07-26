@@ -41,7 +41,16 @@ fn name_from(tok: Option<SyntaxToken>) -> Option<Name> {
     })
 }
 
-/// `var name = expr`.
+/// The `: type` annotation on a `var`/`const` binding, lowered to HIR
+/// (NG-B, issue #1488). `None` when unwritten — the same shape the ink
+/// dialect's TM-2 `VAR x: int = …` produces, so an annotated native global
+/// is exempt from `brink-analyzer::strict`'s `E065` Unknown-escape exactly
+/// as an annotated ink one is.
+fn binding_annotation(annotation: Option<&ast::TypeAnnotation>) -> Option<TypeExpr> {
+    annotation.and_then(super::types::lower_type_annotation)
+}
+
+/// `var name = expr` / `var name: type = expr`.
 pub(super) fn lower_var_decl(
     file_id: FileId,
     node: &ast::VarDecl,
@@ -63,14 +72,14 @@ pub(super) fn lower_var_decl(
         name,
         value,
         is_local: false,
-        annotation: None,
+        annotation: binding_annotation(node.type_annotation().as_ref()),
         doc,
         visibility: None,
         was: None,
     })
 }
 
-/// `const name = expr`.
+/// `const name = expr` / `const name: type = expr`.
 pub(super) fn lower_const_decl(
     file_id: FileId,
     node: &ast::ConstDecl,
@@ -91,7 +100,7 @@ pub(super) fn lower_const_decl(
         ptr: native_provenance(file_id, NodeClass::ConstDecl, node.syntax()),
         name,
         value,
-        annotation: None,
+        annotation: binding_annotation(node.type_annotation().as_ref()),
         doc,
         visibility: None,
         was: None,
@@ -217,6 +226,16 @@ pub(super) fn lower_extern_decl(
             // an existing wart, not one this slice introduces; flagged for
             // #1106 as worth a shared diagnostic in a follow-up rather than
             // diverging the two frontends' `ExternalDecl.params` semantics.
+            //
+            // A `: type` annotation (NG-A, issue #1487) lands in the same
+            // place for the same reason: `ParamInfo` has no annotation slot,
+            // and `brink-analyzer::strict`'s `check_external` already
+            // records that no inline-annotation exemption exists for an
+            // `EXTERNAL` at all. So an annotated native `extern` parameter is
+            // *accepted by the grammar* (it rides the shared `param_list`
+            // rule) and carries no HIR meaning — widening `ParamInfo` is the
+            // same cross-frontend change as the `ref` wart above and belongs
+            // with it, not here.
             p.name_token().map(|t| ParamInfo {
                 name: t.text().to_string(),
                 is_ref: false,

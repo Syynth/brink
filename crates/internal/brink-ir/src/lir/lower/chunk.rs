@@ -415,6 +415,12 @@ fn remap_expr(expr: &mut lir::Expr, map: &[NameId]) {
             remap_expr(base, map);
             remap_expr(index, map);
         }
+        // B1b (issue #1475): the `as` binding's own name is a temp name
+        // like any other `GetTemp`/`TakeTemp` name and relocates with them.
+        Expr::OptionBind { value, name, .. } => {
+            remap_expr(value, map);
+            relocate(name, map);
+        }
         Expr::IndexSet { base, index, value } => {
             remap_expr(base, map);
             remap_expr(index, map);

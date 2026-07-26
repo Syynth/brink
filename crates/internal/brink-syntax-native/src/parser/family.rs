@@ -81,6 +81,15 @@ pub(crate) fn conditional_block(p: &mut Parser<'_, '_>) {
 fn conditional_body(p: &mut Parser<'_, '_>) {
     if p.eat(KW_IF) {
         head_expression(p);
+        // `{if EXPR as NAME: … else: …}` (B1b, issue #1475) — the template
+        // condition position of the SAME `as` binding the statement form
+        // takes, riding the already-ruled `{if}` spelling rather than a
+        // second binding grammar. Scoped to the `IF_ARM` only, never the
+        // `ELSE_BRANCH`.
+        p.skip_ws();
+        if super::binding::at_as_binding(p) {
+            super::binding::as_binding(p);
+        }
         if_arm(p);
         if at_else_arm(p) {
             else_branch(p);

@@ -36,6 +36,7 @@ use crate::{AssignOp, Diagnostic, DiagnosticCode, InfixOp};
 
 use super::context::LowerCtx;
 use super::context::TypeMode;
+use super::context::UfcsVerdict;
 use super::expr::lower_expr;
 use super::lir;
 
@@ -89,8 +90,16 @@ fn lower_block_stmt(stmt: &hir::BlockStmt, ctx: &mut LowerCtx<'_>, out: &mut Vec
                 super::stmts::emit_await_lowering_fence(ctx, w.ptr.text_range());
                 return;
             }
-            let condition = lower_expr(&w.condition, ctx);
+            // Same bracket shape as `lower_if_branch`: the scope opens
+            // before the condition so an `as` binding declares into it.
+            // `LogicWhile` re-evaluates `condition` each pass, so the
+            // binding rebinds per iteration with no extra machinery (B1b,
+            // issue #1475).
             ctx.push_block_scope();
+            let condition = match &w.binding {
+                Some(binding) => lower_bound_condition(&w.condition, binding, ctx),
+                None => lower_expr(&w.condition, ctx),
+            };
             ctx.loop_depth += 1;
             let body = lower_block_stmt_list(&w.body, ctx);
             ctx.loop_depth -= 1;
@@ -160,8 +169,15 @@ fn lower_if_branch(
     ctx: &mut LowerCtx<'_>,
     branches: &mut Vec<lir::CondBranch>,
 ) {
-    let condition = Some(lower_expr(&if_stmt.condition, ctx));
+    // The scope opens BEFORE the condition so an `as` binding (B1b, issue
+    // #1475) can declare into it; it closes after the success arm, which is
+    // exactly the binding's ruled scope — the `else`/`else if` arms below
+    // are lowered outside the bracket and never see the name.
     ctx.push_block_scope();
+    let condition = Some(match &if_stmt.binding {
+        Some(binding) => lower_bound_condition(&if_stmt.condition, binding, ctx),
+        None => lower_expr(&if_stmt.condition, ctx),
+    });
     let body = lower_block_stmt_list(&if_stmt.body, ctx);
     ctx.pop_block_scope();
     branches.push(lir::CondBranch { condition, body });
@@ -178,6 +194,39 @@ fn lower_if_branch(
             });
         }
         None => {}
+    }
+}
+
+/// Lower a condition that carries an `as` binding (B1b, issue #1475) into
+/// the `OptionBind` condition expression, with the binding's scope already
+/// open.
+///
+/// The caller **must** be inside its own `push_block_scope` bracket when it
+/// calls this and must pop it after lowering the success arm — that bracket
+/// IS the "scoped strictly to the success arm" rule (an `else`/`else if`
+/// arm is lowered outside it, so the name is invisible there).
+///
+/// The binding shares `declare_shadow_checked`'s slot allocation and E054
+/// shadow warning with an ordinary block `let`: an `as` binding is a
+/// block-scoped immutable local, so shadowing an outer temp is legal and
+/// warned about in exactly the same way.
+pub(super) fn lower_bound_condition(
+    condition: &hir::Expr,
+    binding: &crate::Name,
+    ctx: &mut LowerCtx<'_>,
+) -> lir::Expr {
+    // The condition is evaluated before the name becomes visible, so
+    // `if find(s) as s { … }` reads the OUTER `s` in its own condition —
+    // the same rule `lower_block_temp_decl` applies to `let x = x`.
+    let value = lower_expr(condition, ctx);
+    let (slot, name) = declare_shadow_checked(&binding.text, binding.range, ctx);
+    // The binding is immutable by ruling — record the slot so every write
+    // path refuses it (`stmts::lower_assign_target`, E148).
+    ctx.as_binding_slots.insert(slot);
+    lir::Expr::OptionBind {
+        value: Box::new(value),
+        slot,
+        name,
     }
 }
 
@@ -1010,10 +1059,6 @@ fn try_lower_seed_stmt(
     true
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "one desugar arm per mutator kind — the NS-A7 heap_push arm pushed this past 100"
-)]
 pub(super) fn try_lower_mutator_stmt(
     expr: &hir::Expr,
     ctx: &mut LowerCtx<'_>,
@@ -1031,6 +1076,35 @@ pub(super) fn try_lower_mutator_stmt(
         return false;
     }
 
+    // B3a UFCS (issue #1506): `m.insert(k, v)` reaches here as a
+    // multi-segment `Call` path. `path_to_string` on a multi-segment path
+    // yields the dotted string ("m.insert"), which never matches
+    // `MutatorKind::from_name` (it only recognizes the bare verb) — so
+    // without this arm, every mutator verb spelled as method-call syntax
+    // fell through to `lower_call`'s UFCS dispatch
+    // (`lower_ufcs_prelude_desugar` → `lower_t1b_stdlib_call`), which
+    // unconditionally refuses every mutator name with E056 ("used in
+    // expression position") even from statement position. A UFCS call site
+    // always carries a resolution at `path.range` naming the *receiver*
+    // (see `expr::lower_ufcs_call`'s own doc), so the ordinary
+    // `ctx.resolve_path(path.range).is_some()` shadow check below would
+    // always bail out for one of these — this arm runs first, reading the
+    // analyzer's verdict directly instead of that resolution, and splices
+    // the receiver in as the mutator's first argument before running the
+    // same RMW expansion a bare `insert(m, k, v)` statement gets.
+    if path.segments.len() > 1
+        && let Some(UfcsVerdict::PreludeDesugar { name: verb }) =
+            ctx.ufcs.get(ctx.file, path.range).cloned()
+        && let Some(kind) = MutatorKind::from_name(&verb)
+    {
+        let receiver = super::expr::ufcs_receiver_path(path);
+        let mut desugared_args = Vec::with_capacity(args.len() + 1);
+        desugared_args.push(hir::Expr::Path(receiver));
+        desugared_args.extend(args.iter().cloned());
+        lower_mutator_call(kind, &verb, path, &desugared_args, ctx, out);
+        return true;
+    }
+
     let Some(kind) = MutatorKind::from_name(&name) else {
         return false;
     };
@@ -1038,6 +1112,25 @@ pub(super) fn try_lower_mutator_stmt(
         return false;
     }
 
+    lower_mutator_call(kind, &name, path, args, ctx, out);
+    true
+}
+
+/// The arity check / lvalue check / RMW-expansion body shared by
+/// [`try_lower_mutator_stmt`]'s two call shapes: the direct call
+/// (`insert(m, k, v)`) and the UFCS desugar (`m.insert(k, v)`, issue
+/// #1506) — in the UFCS case the caller has already spliced the receiver
+/// into `args[0]`, so from here on both shapes are identical. `name` is the
+/// bare mutator verb (never the dotted UFCS spelling) — used only for
+/// diagnostic messages.
+fn lower_mutator_call(
+    kind: MutatorKind,
+    name: &str,
+    path: &hir::Path,
+    args: &[hir::Expr],
+    ctx: &mut LowerCtx<'_>,
+    out: &mut Vec<lir::Stmt>,
+) {
     // RULED 2026-07-12 (#581, docs/decision-log.md): a mutator arity
     // mismatch is a targeted compile error naming the expected signature
     // (E058), replacing the generic E031 warning this used to share with
@@ -1063,7 +1156,7 @@ pub(super) fn try_lower_mutator_stmt(
             ),
             code: DiagnosticCode::E058,
         });
-        return true;
+        return;
     }
 
     let lvalue_expr = &args[0];
@@ -1077,7 +1170,7 @@ pub(super) fn try_lower_mutator_stmt(
             ),
             code: DiagnosticCode::E055,
         });
-        return true;
+        return;
     }
 
     // Bare-variable lvalue (`push(a, v)`, not `push(grid[y], v)`) — the
@@ -1089,7 +1182,7 @@ pub(super) fn try_lower_mutator_stmt(
     // completes, so Take buys nothing at any level but the root.
     if let hir::Expr::Path(_) = lvalue_expr {
         lower_bare_mutator(kind, lvalue_expr, args, ctx, out);
-        return true;
+        return;
     }
 
     let Some((root_target, idx_slots, c_slots)) =
@@ -1099,12 +1192,12 @@ pub(super) fn try_lower_mutator_stmt(
         // guarded rather than asserted so a future grammar change can't
         // corrupt output instead of doing nothing (same discipline as
         // `lower_indexed_assignment`'s `n == 0` guard).
-        return true;
+        return;
     };
     // `lower_lvalue_container_chain` always pushes the root as `c_slots[0]`
     // before ever returning `Some`, so `c_slots` is never empty.
     let Some(&(last_slot, last_name)) = c_slots.last() else {
-        return true;
+        return;
     };
     let container = || lir::Expr::GetTemp(last_slot, last_name);
 
@@ -1159,7 +1252,6 @@ pub(super) fn try_lower_mutator_stmt(
         value: new_container,
     });
     writeback_lvalue_container_chain(root_target, &idx_slots, &c_slots, out);
-    true
 }
 
 /// Fast path for a mutator (`push`/`insert`/`remove`/`remove_at`) whose

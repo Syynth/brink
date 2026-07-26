@@ -60,7 +60,7 @@ The compiler's own test suite follows the same rule: the entire oracle
 corpus — every `.ink` file with a golden C# transcript — compiles under
 `strict-ink`. If a dialect extension ever leaked into that corpus, or if
 `strict-ink` ever started accepting extension syntax, the CI gate that pins
-5,577 passing oracle episodes would fail immediately.
+5,598 passing oracle episodes would fail immediately.
 
 ## What doesn't change
 

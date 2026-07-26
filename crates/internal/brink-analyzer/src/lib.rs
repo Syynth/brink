@@ -8,7 +8,7 @@
 mod admission;
 mod annotations;
 mod await_purity;
-mod coalesce_mismatch;
+mod coalesce;
 mod comparator_contract;
 mod conversions;
 mod determinism;
@@ -31,6 +31,7 @@ mod signature;
 mod strict;
 mod structs;
 mod type_resolution;
+mod ufcs;
 mod validate;
 
 use std::collections::BTreeMap;
@@ -46,6 +47,7 @@ pub use await_purity::{
 pub use brink_ir::FileId;
 pub use brink_ir::ResolutionMap;
 pub use brink_project_config::ProjectConfig;
+pub use coalesce::{CoalesceChain, CoalesceShape, CoalesceStep, CoalesceTable};
 pub use comparator_contract::{
     check as comparator_contract_diagnostics, comparator_callees, hir_has_comparator_site,
 };
@@ -77,6 +79,10 @@ pub use strict::{
     resolve_type_policy,
 };
 pub use structs::{ShapeInfo, declared_shapes};
+pub use ufcs::{
+    NodeKey, SideTable, UfcsTable, UfcsVerdict, project_has_ufcs_call,
+    resolve as resolve_ufcs_calls, to_lir_lookup as ufcs_lir_lookup,
+};
 
 use brink_format::DefinitionId;
 use brink_ir::{
@@ -901,7 +907,94 @@ pub fn whole_project_diagnostics(
         }
     }
 
+    // B3a UFCS resolution (issue #1482, D1–D5 RULED 2026-07-26). Only the
+    // diagnostics land here; the verdict side table itself is served to LIR
+    // lowering and the IDE through [`ufcs_resolution`], which runs the same
+    // pass over the same inputs.
+    //
+    // Dialect-independent, for the reason `ufcs`' module doc gives: a
+    // multi-segment `Expr::Call` path can only originate in the native
+    // frontend, so the gate is structural rather than policy-driven — the
+    // ink corpus never reaches this pass. Lazy on the same argument as
+    // `needs_effects` above: a project with no dotted-callee call anywhere
+    // pays nothing.
+    if hir_inputs
+        .iter()
+        .any(|&(_, hir)| ufcs::project_has_ufcs_call(hir))
+    {
+        let owned_inference;
+        let inference = if let Some(inf) = strict_inference {
+            inf
+        } else {
+            owned_inference = infer::infer_project(
+                &hir_inputs,
+                index,
+                resolutions,
+                opts.host_manifest.as_ref(),
+                &inline_docs,
+            );
+            &owned_inference
+        };
+        let (_table, ufcs_diags) = ufcs::resolve(&hir_inputs, index, resolutions, inference);
+        diagnostics.extend(ufcs_diags);
+    }
+
     (diagnostics, symbol_meta)
+}
+
+/// The B3a UFCS verdict side table for a project (issue #1482, D2): the
+/// `node → resolved target` channel LIR lowering reads to choose between
+/// emitting a call through a field's value and emitting the desugared free
+/// call `name(recv, args)`, and that IDE hover/go-to-def reads to name the
+/// real target of a method-call-shaped site.
+///
+/// Split out from [`whole_project_diagnostics`] — which keeps the same
+/// pass's *diagnostics* — because the two consumers want opposite halves of
+/// one result and neither should pay for the other's.
+#[must_use]
+pub fn ufcs_resolution(
+    files: &[(FileId, &HirFile)],
+    index: &SymbolIndex,
+    resolutions: &ResolutionMap,
+    inference: &InferenceResult,
+) -> (UfcsTable, Vec<Diagnostic>) {
+    ufcs::resolve(files, index, resolutions, inference)
+}
+
+/// The B1 `or`-coalescing typing side table for a project (issue #1492):
+/// the `chain root → per-step operand/result types` channel LIR lowering
+/// reads to choose a chain's code shape — "inner stays `Option`" vs
+/// "unwrap at the end" — instead of re-deriving the answer from syntax it
+/// cannot see through (a call's return type, a `VAR`'s declared type).
+///
+/// Keyed by [`brink_ir::hir::expr_span`] of the chain root, the derivation
+/// both sides share; see [`CoalesceChain`] for the step order and
+/// `coalesce`'s module doc for why absence (an unkeyable or ambiguously
+/// keyed chain) is always safe — the consumer falls back to the runtime
+/// check, which is what gradual mode does regardless.
+///
+/// Split out from [`whole_project_diagnostics`] — which keeps the same
+/// pass's `E066` *diagnostics* — exactly as [`ufcs_resolution`] is, and for
+/// the same reason: the two consumers want opposite halves of one result.
+///
+/// Unlike [`ufcs_resolution`] (whose diagnostics run unconditionally inside
+/// [`whole_project_diagnostics`]), the `E066` diagnostics this function
+/// also returns are **strict-mode-only by convention, not by construction**:
+/// production code reaches them only from `strict::check`, after
+/// `strict::config_error` has confirmed `types = strict` + `dialect =
+/// brink` (see `coalesce::resolve`'s own doc for that entry condition), but
+/// this function itself performs no such gate — it walks every file
+/// unconditionally. A caller that surfaces its `Vec<Diagnostic>` without
+/// re-checking `type_policy`/`dialect` itself would emit strict-only
+/// `E066` under `types = gradual`.
+#[must_use]
+pub fn coalesce_types(
+    files: &[(FileId, &HirFile)],
+    index: &SymbolIndex,
+    inference: &InferenceResult,
+    resolutions: &ResolutionMap,
+) -> (CoalesceTable, Vec<Diagnostic>) {
+    coalesce::resolve(files, index, inference, resolutions)
 }
 
 /// Cheap structural scan: does any knot/stitch in `hir` carry a

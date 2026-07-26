@@ -270,6 +270,17 @@ impl ContainerEmitter<'_> {
                 self.emit(Opcode::MakeSome);
             }
 
+            // ── B1b: the `as` binding (issue #1475) ──────────────────
+            // The bind is fused into the condition's own evaluation: push
+            // the `Option[T]`, then one op both tests it and (on `some`)
+            // writes the unwrapped payload to the binding's slot. `name`
+            // is lowering-time provenance only — the slot is what the VM
+            // addresses, exactly as for `GetTemp`/`SetTemp`.
+            lir::Expr::OptionBind { value, slot, .. } => {
+                self.emit_expr(value, false);
+                self.emit(Opcode::OptionBind(*slot));
+            }
+
             lir::Expr::StrFind { s, sub } => {
                 self.emit_expr(s, false);
                 self.emit_expr(sub, false);

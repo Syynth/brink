@@ -398,10 +398,27 @@ pub enum RuntimeError {
     /// truthiness — truthiness is a quiet coercion of exactly the kind
     /// `Option[T] ≠ T` exists to ban — so this is the gradual-mode
     /// turn-terminating fault; `types = strict` reports the same condition
-    /// statically (E116). Authors write `== none` / `== some(x)` (or, post-B1,
-    /// the `as`-binding). Supersedes NS-A1's shipped falsy-none behavior.
+    /// statically (E116). Authors write `== none` / `== some(x)`, or the
+    /// `as`-binding (B1b, issue #1475 — see [`Self::AsBindingNotOption`],
+    /// its own fault). Supersedes NS-A1's shipped falsy-none behavior.
     #[error("an Option has no truthiness — test `== none` / `== some(x)` explicitly")]
     OptionTruthiness,
+
+    // ── B1b: the `as` binding (`docs/decision-log.md` 2026-07-26, issue
+    // #1475) ─────────────────────────────────────────────────────────────
+    /// `Opcode::OptionBind` received a non-`Option` operand — `if EXPR as
+    /// name { … }` where `EXPR` does not evaluate to an `Option[T]`. The
+    /// binding's whole job is to unwrap `Option[T]` to `T`, so there is
+    /// nothing to bind. This is the gradual-mode residual of the checker's
+    /// strict-mode `E147` (the same statically/dynamically paired posture
+    /// [`Self::OptionTruthiness`] has with `E116`); on the native surface,
+    /// which is strict-only, `E147` catches every statically classifiable
+    /// case first and this fault is the backstop for the rest.
+    #[error("the `as` binding requires an Option, got {found}")]
+    AsBindingNotOption {
+        /// The offending operand's runtime type name (`vm::value_type_name`).
+        found: &'static str,
+    },
 
     // ── NS-A5: the inhabited-range refinement (`docs/stdlib-spec.md` §7,
     // F8 ruled 2026-07-19) ────────────────────────────────────────────────

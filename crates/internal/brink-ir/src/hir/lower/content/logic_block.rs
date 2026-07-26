@@ -147,6 +147,9 @@ fn lower_while_stmt(
     Ok(BlockStmt::While(WhileStmt {
         ptr: scope.prov(NodeClass::While, w.syntax()),
         condition,
+        // The `as` binding is native-surface-only (B1b, issue #1475): the
+        // ink/brink-dialect `~ { while … }` grammar has no `as`.
+        binding: None,
         body,
         is_await: w.is_await(),
     }))
@@ -217,6 +220,8 @@ fn lower_if_stmt(
     Ok(IfStmt {
         ptr: scope.prov(NodeClass::If, if_stmt.syntax()),
         condition,
+        // Native-surface-only — see `lower_while_stmt`'s twin note.
+        binding: None,
         body,
         else_branch,
     })

@@ -1,0 +1,969 @@
+//! B1 `or`-coalescing typing: the recorded operand/result types
+//! ([`resolve`]) and the static mismatch check derived from them
+//! ([`check`]) — `docs/stdlib-spec.md` §1.6a, issues #1460 and #1492.
+//!
+//! ## Two halves of one pass (issue #1492)
+//!
+//! RULED (maintainer, 2026-07-26, `docs/decision-log.md` "Lowering consumes
+//! analyzer types"): **typing verdicts belong to the analyzer; lowering
+//! consumes recorded types, never re-derives them.** A syntactic
+//! shape-sniff in LIR lowering cannot see through an `Expr::Call` to its
+//! declared return type, nor through a bare `Path` to a `VAR`/temp declared
+//! `Option[T]` — both are type questions, and the answer already exists
+//! here.
+//!
+//! So this pass produces two things from one walk:
+//!
+//! - a [`CoalesceTable`] — the `node → verdict` side channel LIR lowering
+//!   reads to pick a chain's code shape ("inner stays `Option`" vs "unwrap
+//!   at the end"), reusing #1482's [`SideTable`] plumbing verbatim rather
+//!   than inventing a second mechanism; and
+//! - the `E066` diagnostics, which are now *derived from the recorded
+//!   verdicts* rather than computed alongside them, so a chain that lowers
+//!   and a chain that is rejected can never disagree about its own types.
+//!
+//! ## Chains, and why the table is keyed at the chain root
+//!
+//! `a or b or c` is a left-associative `Expr::Infix(Infix(a, or, b), or,
+//! c)`. `Expr::Infix` carries **no `Provenance` of its own**, and neither
+//! do the scalar literals that so often terminate a chain, so the
+//! `(FileId, TextRange)` [`NodeKey`] of a chain and of its own left spine
+//! are frequently *identical* (`brink_ir::hir::expr_span`'s own doc spells
+//! this out). Keying every step separately would therefore hand a consumer
+//! one node's verdict under another node's key — a miscompile.
+//!
+//! Instead one entry is recorded per **chain root**, carrying every step's
+//! verdict in innermost-first order ([`CoalesceChain::steps`]), and any key
+//! that two distinct roots would share is **poisoned** (dropped entirely).
+//! Absence is always safe: a consumer with no verdict falls back to the
+//! runtime check, which is what gradual mode does anyway.
+//!
+//! ## The old shape, retained
+//!
+//! `infer::ty::coalesce`'s two failure shapes (`CoalesceError::LeftNotOption`,
+//! `CoalesceError::Mismatch`) were being silently absorbed into
+//! `Ty::Conflicted` by `infer::body::InferPass::infer_infix`'s
+//! `InfixOp::Coalesce` arm, with no diagnostic ever raised at the
+//! coalescing expression itself. The arm's own doc comment claimed the
+//! generic `E066` Conflicted-escape check (`strict::check`) was a
+//! sufficient backstop — it is not: that check only fires once a
+//! `Conflicted` value reaches a *signature or body-local slot* boundary,
+//! which a coalescing expression used directly in content/argument
+//! position (`{some(1) or "text"}`, never bound to a slot) never does. This
+//! module closes that gap directly, at the coalescing expression's own
+//! site, mirroring `conversions`/`range_refinement`/`option_conditions`'s
+//! own strict-mode-only, expression-position posture exactly (the same
+//! `strict::check` wiring point, the same `structs::classify_expr_ty`
+//! inference-substrate classification, the same "Unknown never disagrees —
+//! stays silently unchecked, the runtime fault is the residual backstop"
+//! posture for anything not statically classifiable).
+//!
+//! Folding the chain (issue #1492) *widens* that check: before, only a
+//! chain's innermost step was ever judged, because `classify_expr_ty`
+//! returns `None` for an `Expr::Infix` operand, so `{some(1) or none or
+//! "text"}` passed analysis silently. The fold feeds each step's recorded
+//! result type in as the next step's left-hand type, so every step is
+//! judged — the issue's "an ill-typed chain never reaches lowering".
+//!
+//! Strict-mode-only: under `types = gradual` (including native's
+//! un-overridden default — B0.10's dialect-keyed strict-only wiring has not
+//! landed, `strict.rs`'s own `native_strict_only_error` doc) this module is
+//! never invoked, and the runtime `TypeError` fault
+//! (`brink_runtime::value_ops::coalesce`) is the sole backstop — see that
+//! function's doc for the fault's actual (narrower-than-previously-claimed)
+//! coverage: it only catches a non-Option left-hand side, not a mismatched
+//! fallback type.
+//!
+//! Reuses `infer::ty::coalesce` itself — the identical typing rule
+//! `infer::body::InferPass::infer_infix`'s `InfixOp::Coalesce` arm calls —
+//! rather than re-deriving a parallel mismatch rule, so the two can never
+//! drift apart.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use brink_format::DefinitionId;
+use brink_ir::hir::expr_span;
+use brink_ir::hir::visit::{self, ContentContext, HirVisitor};
+use brink_ir::{
+    Choice, Content, Diagnostic, DiagnosticCode, Expr, FileId, HirFile, InfixOp, Knot,
+    ResolutionMap, Stitch, Stmt, SymbolIndex, SymbolKind,
+};
+use rowan::TextRange;
+
+use crate::annotations;
+use crate::infer::{self, CoalesceError, InferenceResult, InferredSig, Ty};
+use crate::structs::{self, MistypeCtx};
+use crate::ufcs::{NodeKey, SideTable};
+
+// ─── The recorded verdict (issue #1492) ──────────────────────────────
+
+/// Which of `infer::ty::coalesce`'s three outcomes one `or` step took —
+/// the shape question LIR lowering asks, answered from types instead of
+/// syntax.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoalesceShape {
+    /// `Option[T] or Option[U]` — optionality survives the step, so the
+    /// step's value stays an `Option` for whatever consumes it (the next
+    /// step of a chain, or the expression's own consumer).
+    PreserveOption,
+    /// `Option[T] or U` — the step collapses to the plain value type.
+    Collapse,
+    /// The left-hand type is not statically pinned (`Ty::Unknown` /
+    /// `Ty::Conflicted` — gradual mode, or a strict escape already reported
+    /// by `E065`/`E066`).
+    ///
+    /// **The runtime check is the semantics here** (RULED 2026-07-26, and
+    /// documented on `brink_format::Opcode::Coalesce`): an `Option` value
+    /// coalesces, a plain value faults, exactly like every other gradual
+    /// runtime check. A consumer must not statically commit to either
+    /// shape on this verdict.
+    RuntimeCheck,
+}
+
+/// The recorded types of one `or` step, in the left-associative order the
+/// grammar builds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoalesceStep {
+    /// The left-hand type. For the innermost step this is the classified
+    /// operand; for every later step it is the previous step's `result`.
+    pub lhs: Ty,
+    /// The fallback operand's classified type.
+    pub rhs: Ty,
+    /// `infer::ty::coalesce(lhs, rhs)` — the step's value type.
+    pub result: Ty,
+    /// The shape [`Self::result`] implies for a consumer.
+    pub shape: CoalesceShape,
+}
+
+/// Every step of one `or`-coalescing chain, innermost first.
+///
+/// `a or b or c` records two steps: `[a or b, (that) or c]`. A consumer
+/// walking the HIR meets the chain root *first* and descends its left
+/// spine, so it consumes this vector back-to-front; the order is fixed
+/// here (and only here) so producer and consumer cannot drift.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoalesceChain {
+    /// The chain's steps, innermost first. Never empty.
+    pub steps: Vec<CoalesceStep>,
+}
+
+/// Every `or`-coalescing chain's recorded typing, keyed at the chain root
+/// (see the module doc for why not per step).
+pub type CoalesceTable = SideTable<CoalesceChain>;
+
+/// Record every `or`-coalescing chain's operand/result types and report the
+/// `E066` mismatches that fall out of the same fold.
+///
+/// Callers only reach this once `strict::config_error` has confirmed
+/// `types = strict` + `dialect = brink` (mirrors `conversions::check`'s own
+/// entry condition — same wiring point, `strict::check`) — *for the
+/// diagnostics*. The table half is served separately through
+/// [`crate::coalesce_types`], mirroring `ufcs_resolution`'s split for the
+/// same reason: the two consumers want opposite halves of one result and
+/// neither should pay for the other's.
+#[must_use]
+pub fn resolve(
+    files: &[(FileId, &HirFile)],
+    index: &SymbolIndex,
+    inference: &InferenceResult,
+    resolutions: &ResolutionMap,
+) -> (CoalesceTable, Vec<Diagnostic>) {
+    let globals = crate::infer::collect_globals(files, index, None);
+    let mut out = Vec::new();
+    // `None` marks a poisoned key: two distinct chain roots derived the same
+    // `(file, range)` identity, so neither verdict may be served (module
+    // doc). Collected first, filtered into the table at the end.
+    let mut recorded: BTreeMap<NodeKey, Option<CoalesceChain>> = BTreeMap::new();
+    for &(file, hir) in files {
+        let resolution_by_range = resolution_index(resolutions, file);
+        let mut v = CoalesceVisitor {
+            file,
+            index,
+            globals: &globals,
+            signatures: &inference.signatures,
+            bodies: &inference.bodies,
+            resolution_by_range: &resolution_by_range,
+            current_knot_name: None,
+            knot_locals: None,
+            stitch_locals: None,
+            fallback: TextRange::new(0.into(), 0.into()),
+            spine: BTreeSet::new(),
+            recorded: &mut recorded,
+            diagnostics: &mut out,
+        };
+        visit::visit(hir, &mut v);
+        // File-level VAR/CONST initializers aren't part of `visit::visit`'s
+        // block-tree walk — same gap `conversions::check`'s own doc
+        // explains, same fix (a small hand recursion over just these).
+        let ctx = MistypeCtx {
+            index,
+            globals: &globals,
+            signatures: &inference.signatures,
+            resolution_by_range: &resolution_by_range,
+            locals: None,
+        };
+        for var in &hir.variables {
+            check_expr(
+                &var.value,
+                var.ptr.text_range(),
+                file,
+                &ctx,
+                &mut recorded,
+                &mut out,
+            );
+        }
+        for c in &hir.constants {
+            check_expr(
+                &c.value,
+                c.ptr.text_range(),
+                file,
+                &ctx,
+                &mut recorded,
+                &mut out,
+            );
+        }
+    }
+    let mut table = CoalesceTable::new();
+    for (key, chain) in recorded {
+        if let Some(chain) = chain {
+            table.insert(key, chain);
+        }
+    }
+    (table, out)
+}
+
+/// Strict-mode-only `or`-coalescing mismatch checks over every
+/// `InfixOp::Coalesce` expression in the project — [`resolve`]'s diagnostic
+/// half, the shape `strict::check` wires in.
+#[must_use]
+pub fn check(
+    files: &[(FileId, &HirFile)],
+    index: &SymbolIndex,
+    inference: &InferenceResult,
+    resolutions: &ResolutionMap,
+) -> Vec<Diagnostic> {
+    resolve(files, index, inference, resolutions).1
+}
+
+struct CoalesceVisitor<'a> {
+    file: FileId,
+    index: &'a SymbolIndex,
+    globals: &'a BTreeMap<DefinitionId, Ty>,
+    signatures: &'a BTreeMap<DefinitionId, InferredSig>,
+    bodies: &'a BTreeMap<DefinitionId, crate::infer::BodyTypes>,
+    resolution_by_range: &'a BTreeMap<(u32, u32), DefinitionId>,
+    /// The currently-open knot's own name — `enter_stitch` needs it to
+    /// reconstruct the qualified `knot.stitch` name a stitch is indexed
+    /// under. Mirrors `structs::ConstructionVisitor`'s identical field.
+    current_knot_name: Option<String>,
+    /// The enclosing knot's own finalized locals, set for the duration of
+    /// its body (and every stitch nested inside it, until `enter_stitch`
+    /// overrides it with the stitch's own). Mirrors
+    /// `structs::ConstructionVisitor`'s identical field.
+    knot_locals: Option<&'a BTreeMap<String, Ty>>,
+    /// The currently-open stitch's own finalized locals, if any — takes
+    /// priority over `knot_locals` while set.
+    stitch_locals: Option<&'a BTreeMap<String, Ty>>,
+    /// Diagnostic anchor of last resort: the nearest enclosing statement's
+    /// (or content line's, or choice's) own `Provenance` range, updated as
+    /// the walk descends. A coalescing operand carries its own tighter
+    /// range whenever [`expr_anchor`] can find one (a path, a call's
+    /// callee); this is only reached for operand shapes with none of their
+    /// own (a bare literal — `{5 or 9}`, the review-finding fixture).
+    fallback: TextRange,
+    /// Addresses of the coalescing nodes already consumed as part of an
+    /// enclosing chain. `walk_expr` calls `enter_expr` on every node of a
+    /// chain's left spine as well as on its root, but a chain is analysed
+    /// (and recorded) exactly once, at its root; this is how the spine
+    /// nodes are recognized on the way past. Addresses only — never
+    /// dereferenced, and stable because the HIR is not mutated during the
+    /// walk. Membership only — never iterated — but a `BTreeSet` anyway,
+    /// per the crate's determinism lint.
+    spine: BTreeSet<usize>,
+    /// Chain-root verdicts, `None` for a poisoned (ambiguously keyed) one.
+    recorded: &'a mut BTreeMap<NodeKey, Option<CoalesceChain>>,
+    diagnostics: &'a mut Vec<Diagnostic>,
+}
+
+impl<'a> CoalesceVisitor<'a> {
+    fn current_locals(&self) -> Option<&'a BTreeMap<String, Ty>> {
+        self.stitch_locals.or(self.knot_locals)
+    }
+
+    fn ctx(&self) -> MistypeCtx<'a> {
+        MistypeCtx {
+            index: self.index,
+            globals: self.globals,
+            signatures: self.signatures,
+            resolution_by_range: self.resolution_by_range,
+            locals: self.current_locals(),
+        }
+    }
+
+    /// The `DefinitionId` a knot/stitch's own name resolves to — mirrors
+    /// `structs::ConstructionVisitor::knot_def_id` exactly (same #626
+    /// top-level-stitch-promoted-to-knot rationale).
+    fn knot_def_id(&self, knot: &Knot) -> Option<DefinitionId> {
+        let kind = knot.symbol_kind();
+        annotations::def_id_for(self.index, self.file, kind, &knot.name.text)
+    }
+}
+
+impl HirVisitor for CoalesceVisitor<'_> {
+    fn visit_exprs(&self) -> bool {
+        true
+    }
+
+    fn enter_knot(&mut self, knot: &Knot) {
+        self.current_knot_name = Some(knot.name.text.clone());
+        self.knot_locals = self
+            .knot_def_id(knot)
+            .and_then(|id| self.bodies.get(&id))
+            .map(|b| &b.locals);
+    }
+
+    fn exit_knot(&mut self, _knot: &Knot) {
+        self.current_knot_name = None;
+        self.knot_locals = None;
+    }
+
+    fn enter_stitch(&mut self, stitch: &Stitch) {
+        // Stitches are indexed by qualified `knot.stitch` name — mirrors
+        // `structs::ConstructionVisitor::enter_stitch` exactly.
+        self.stitch_locals = self.current_knot_name.as_ref().and_then(|knot_name| {
+            let qualified = format!("{knot_name}.{}", stitch.name.text);
+            annotations::def_id_for(self.index, self.file, SymbolKind::Stitch, &qualified)
+                .and_then(|id| self.bodies.get(&id))
+                .map(|b| &b.locals)
+        });
+    }
+
+    fn exit_stitch(&mut self, _stitch: &Stitch) {
+        self.stitch_locals = None;
+    }
+
+    fn enter_stmt(&mut self, stmt: &Stmt) {
+        if let Some(range) = stmt_anchor(stmt) {
+            self.fallback = range;
+        }
+    }
+
+    fn enter_content(&mut self, content: &Content, _ctx: ContentContext) {
+        if let Some(ptr) = content.ptr {
+            self.fallback = ptr.text_range();
+        }
+    }
+
+    fn enter_choice(&mut self, choice: &Choice) {
+        self.fallback = choice.ptr.text_range();
+    }
+
+    fn enter_expr(&mut self, expr: &Expr) {
+        // A chain's left spine is analysed at its root, so the spine nodes
+        // `walk_expr` hands over on the way down are consumed and dropped.
+        if self.spine.remove(&std::ptr::from_ref(expr).addr()) {
+            return;
+        }
+        if coalesce_operands(expr).is_none() {
+            return;
+        }
+        for node in chain_spine(expr).iter().skip(1) {
+            self.spine.insert(std::ptr::from_ref(*node).addr());
+        }
+        let ctx = self.ctx();
+        analyze_chain(
+            expr,
+            self.fallback,
+            self.file,
+            &ctx,
+            self.recorded,
+            self.diagnostics,
+        );
+    }
+}
+
+/// Recurse into `expr` looking for coalescing chains — used only for
+/// the file-level VAR/CONST initializers `visit::visit` doesn't cover;
+/// every other position is already reached through the `HirVisitor` walk
+/// above. Mirrors `conversions::check_expr`'s own shape, with the same
+/// "analyse a chain once, at its root" discipline `enter_expr` keeps (here
+/// it falls out of the recursion shape — the spine is never re-entered).
+fn check_expr(
+    expr: &Expr,
+    fallback: TextRange,
+    file: FileId,
+    ctx: &MistypeCtx<'_>,
+    recorded: &mut BTreeMap<NodeKey, Option<CoalesceChain>>,
+    out: &mut Vec<Diagnostic>,
+) {
+    if coalesce_operands(expr).is_some() {
+        analyze_chain(expr, fallback, file, ctx, recorded, out);
+        for operand in chain_operands(expr) {
+            check_expr(operand, fallback, file, ctx, recorded, out);
+        }
+        return;
+    }
+    for child in expr_children(expr) {
+        check_expr(child, fallback, file, ctx, recorded, out);
+    }
+}
+
+/// Direct child expressions of `expr` — mirrors `conversions::expr_children`
+/// (same rationale: needed only because `check_expr` runs outside the
+/// `HirVisitor` walk).
+fn expr_children(expr: &Expr) -> Vec<&Expr> {
+    match expr {
+        Expr::Prefix(_, inner) | Expr::Postfix(inner, _) => vec![inner],
+        Expr::FieldAccess(fa) => vec![&fa.base],
+        Expr::Infix(lhs, _, rhs) => vec![lhs, rhs],
+        Expr::Call(_, args) => args.iter().collect(),
+        Expr::ArrayLiteral(a) => a.elements.iter().collect(),
+        Expr::MapLiteral(m) => m.entries.iter().flat_map(|(k, v)| [k, v]).collect(),
+        Expr::Index(idx) => vec![&idx.base, &idx.index],
+        Expr::StructLiteral(sl) => sl.fields.iter().map(|(_, v)| v).collect(),
+        Expr::FnLiteral(fl) => fl.args.iter().collect(),
+        Expr::RefArg(ra) => vec![&ra.operand],
+        Expr::Range(r) => vec![&r.start, &r.end],
+        Expr::String(s) => s
+            .parts
+            .iter()
+            .filter_map(|p| match p {
+                brink_ir::StringPart::Interpolation(e) => Some(e.as_ref()),
+                brink_ir::StringPart::Literal(_) => None,
+            })
+            .collect(),
+        Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Bool(_)
+        | Expr::Null
+        | Expr::Path(_)
+        | Expr::DivertTarget(_)
+        | Expr::ListLiteral(_) => Vec::new(),
+    }
+}
+
+/// The two operands of a coalescing node, or `None` for anything else.
+fn coalesce_operands(expr: &Expr) -> Option<(&Expr, &Expr)> {
+    match expr {
+        Expr::Infix(lhs, InfixOp::Coalesce, rhs) => Some((lhs, rhs)),
+        _ => None,
+    }
+}
+
+/// The coalescing chain rooted at `root`, **outermost first**: `root`
+/// itself, then its left-hand operand for as long as that is a coalescing
+/// node too. `a or b or c` yields `[(… or c), (a or b)]`.
+///
+/// Empty when `root` is not a coalescing node at all.
+fn chain_spine(root: &Expr) -> Vec<&Expr> {
+    let mut spine = Vec::new();
+    let mut cursor = root;
+    while let Some((lhs, _)) = coalesce_operands(cursor) {
+        spine.push(cursor);
+        cursor = lhs;
+    }
+    spine
+}
+
+/// The operand subtrees hanging off the chain rooted at `root` — every
+/// step's fallback, plus the innermost left-hand operand — i.e. everything
+/// under `root` that is *not* a spine node.
+fn chain_operands(root: &Expr) -> Vec<&Expr> {
+    let spine = chain_spine(root);
+    let mut out: Vec<&Expr> = spine
+        .iter()
+        .filter_map(|node| coalesce_operands(node).map(|(_, rhs)| rhs))
+        .collect();
+    if let Some(innermost) = spine.last()
+        && let Some((lhs, _)) = coalesce_operands(innermost)
+    {
+        out.push(lhs);
+    }
+    out
+}
+
+/// Fold the coalescing chain rooted at `root`, left-associatively: classify
+/// the innermost left-hand operand once, then feed each step's result type
+/// in as the next step's left-hand type ([`infer::coalesce`] — the same rule
+/// `infer::body`'s own `InfixOp::Coalesce` arm calls, never a parallel one).
+///
+/// A step that types cleanly is recorded; the first step that disagrees
+/// raises `E066` and abandons the chain (nothing is recorded — an ill-typed
+/// chain must never hand a consumer a verdict). The innermost left-hand
+/// operand not classifying to a statically-known [`Ty`] (an untyped
+/// parameter with no other use, say) does **not** abandon the chain: it is
+/// recorded as [`Ty::Unknown`], which `infer::coalesce` always accepts
+/// (`(Unknown, _) -> Ok(Unknown)`, never an error), so the step is recorded
+/// with [`CoalesceShape::RuntimeCheck`] — the unpinned-`lhs` posture
+/// `Opcode::Coalesce`'s own doc describes, and it propagates: every later
+/// step folds from `Unknown` too. A step whose *fallback* operand does not
+/// classify is different — the shape question ("is the fallback
+/// `Option`-shaped?") has no safe unpinned answer, so that abandons the
+/// chain silently, the same "Unknown never disagrees" posture every
+/// sibling module in this crate takes; the runtime fault remains the
+/// backstop.
+///
+/// The verdict is keyed by [`expr_span`] of the root — the derivation LIR
+/// lowering shares, in `brink-ir`, so producer and consumer cannot drift.
+/// A root whose subtree carries no source range at all cannot be keyed, and
+/// a key two distinct roots would share is poisoned rather than served.
+fn analyze_chain(
+    root: &Expr,
+    fallback: TextRange,
+    file: FileId,
+    ctx: &MistypeCtx<'_>,
+    recorded: &mut BTreeMap<NodeKey, Option<CoalesceChain>>,
+    out: &mut Vec<Diagnostic>,
+) {
+    let spine = chain_spine(root);
+    let mut steps = Vec::with_capacity(spine.len());
+    let mut carried: Option<Ty> = None;
+    for node in spine.iter().rev() {
+        let Some((lhs_expr, rhs_expr)) = coalesce_operands(node) else {
+            return;
+        };
+        let lhs = match carried.take() {
+            Some(ty) => ty,
+            // An unclassifiable innermost left-hand operand is recorded as
+            // `Unknown`, not bailed on: `infer::coalesce`'s `(Unknown, _)`
+            // arm always accepts it, so this yields a real
+            // `CoalesceShape::RuntimeCheck` step instead of silently
+            // recording nothing (see this function's own doc).
+            None => classify_coalesce_operand(lhs_expr, ctx).unwrap_or(Ty::Unknown),
+        };
+        let Some(rhs) = classify_coalesce_operand(rhs_expr, ctx) else {
+            return;
+        };
+        match infer::coalesce(&lhs, &rhs) {
+            Ok(result) => {
+                let shape = step_shape(&lhs, &rhs);
+                carried = Some(result.clone());
+                steps.push(CoalesceStep {
+                    lhs,
+                    rhs,
+                    result,
+                    shape,
+                });
+            }
+            Err(err) => {
+                let range = expr_anchor(lhs_expr)
+                    .or_else(|| expr_anchor(rhs_expr))
+                    .unwrap_or(fallback);
+                out.push(Diagnostic {
+                    file,
+                    range,
+                    message: coalesce_error_message(&err),
+                    code: DiagnosticCode::E066,
+                });
+                return;
+            }
+        }
+    }
+    if steps.is_empty() {
+        return;
+    }
+    let Some(range) = expr_span(root) else {
+        return;
+    };
+    let key = NodeKey::new(file, range);
+    recorded
+        .entry(key)
+        .and_modify(|slot| *slot = None)
+        .or_insert(Some(CoalesceChain { steps }));
+}
+
+/// Which shape one step's operand types imply, per the `docs/stdlib-spec.md`
+/// §1.6a rule [`infer::coalesce`] encodes: an `Option` fallback keeps
+/// optionality, a plain fallback collapses, and an unpinned left-hand type
+/// commits to neither.
+fn step_shape(lhs: &Ty, rhs: &Ty) -> CoalesceShape {
+    if matches!(lhs, Ty::Unknown | Ty::Conflicted) {
+        return CoalesceShape::RuntimeCheck;
+    }
+    if matches!(rhs, Ty::Option(_)) {
+        CoalesceShape::PreserveOption
+    } else {
+        CoalesceShape::Collapse
+    }
+}
+
+fn coalesce_error_message(err: &CoalesceError) -> String {
+    match err {
+        CoalesceError::LeftNotOption(ty) => format!(
+            "{}: `or`-coalescing requires an `Option[T]` left-hand side (docs/stdlib-spec.md \
+             §1.6a) — found `{}`",
+            DiagnosticCode::E066.title(),
+            ty.display(),
+        ),
+        CoalesceError::Mismatch { element, fallback } => format!(
+            "{}: `or`-coalescing's fallback type disagrees with the `Option`'s element type \
+             (docs/stdlib-spec.md §1.6a) — `{}` vs `{}`",
+            DiagnosticCode::E066.title(),
+            element.display(),
+            fallback.display(),
+        ),
+    }
+}
+
+/// Classify a coalescing operand's own statically-known type —
+/// [`structs::classify_expr_ty`]'s existing inference-substrate
+/// classification (Path/resolved-Call/Index/literals) first, extended with
+/// the two shapes it doesn't cover and
+/// `option_conditions::condition_is_option` already special-cases for the
+/// identical reason: an unresolved (builtin, not author-shadowed) call to
+/// an Option-returning intrinsic, and the bare unresolved `none` literal.
+/// `some(x)` additionally classifies its own inner element, recursively —
+/// the one extra step `condition_is_option` doesn't need (it only cares
+/// whether the type is `Option`, not what element it carries).
+fn classify_coalesce_operand(expr: &Expr, ctx: &MistypeCtx<'_>) -> Option<Ty> {
+    match expr {
+        Expr::Call(path, args) => {
+            if let [seg] = path.segments.as_slice()
+                && !ctx.resolution_by_range.contains_key(&range_key(path.range))
+            {
+                if seg.text == "some" {
+                    let elem = args
+                        .first()
+                        .and_then(|a| classify_coalesce_operand(a, ctx))
+                        .unwrap_or(Ty::Unknown);
+                    return Some(Ty::Option(Box::new(elem)));
+                }
+                if crate::infer::intrinsic_returns_option(&seg.text) {
+                    return Some(Ty::Option(Box::new(Ty::Unknown)));
+                }
+            }
+            structs::classify_expr_ty(expr, ctx)
+        }
+        Expr::Path(p) => {
+            if let [seg] = p.segments.as_slice()
+                && seg.text == "none"
+                && !ctx.resolution_by_range.contains_key(&range_key(p.range))
+            {
+                return Some(Ty::Option(Box::new(Ty::Unknown)));
+            }
+            structs::classify_expr_ty(expr, ctx)
+        }
+        _ => structs::classify_expr_ty(expr, ctx),
+    }
+}
+
+/// A best-effort own-range for an operand expression, for diagnostic
+/// anchoring — mirrors `option_conditions::expr_anchor` exactly (same
+/// shapes carry a source range: a path, a call's callee path, and the
+/// roots reachable through unary/index/field/infix wrappers). `None` falls
+/// back to the enclosing statement/content/choice's own span.
+fn expr_anchor(expr: &Expr) -> Option<TextRange> {
+    match expr {
+        Expr::Path(p) => Some(p.range),
+        Expr::Call(path, _) => Some(path.range),
+        Expr::Prefix(_, inner) | Expr::Postfix(inner, _) => expr_anchor(inner),
+        Expr::Index(idx) => expr_anchor(&idx.base),
+        Expr::FieldAccess(fa) => expr_anchor(&fa.base),
+        Expr::Infix(lhs, _, rhs) => expr_anchor(lhs).or_else(|| expr_anchor(rhs)),
+        _ => None,
+    }
+}
+
+/// The nearest source range a statement carries on its own `Provenance`, if
+/// any — `enter_stmt`'s fallback-anchor update. `ChoiceSet` and
+/// `LabeledBlock` carry no `ptr` of their own (their children — `Choice`,
+/// nested statements — do, picked up by `enter_choice`/their own
+/// `enter_stmt`); `ExprStmt`/`EndOfLine` likewise have nothing to offer.
+fn stmt_anchor(stmt: &Stmt) -> Option<TextRange> {
+    match stmt {
+        Stmt::Content(c) => c.ptr.map(|p| p.text_range()),
+        Stmt::Divert(d) => d.ptr.map(|p| p.text_range()),
+        Stmt::TunnelCall(t) => Some(t.ptr.text_range()),
+        Stmt::ThreadStart(t) => Some(t.ptr.text_range()),
+        Stmt::TempDecl(t) => Some(t.ptr.text_range()),
+        Stmt::Assignment(a) => Some(a.ptr.text_range()),
+        Stmt::Return(r) => r.ptr.map(|p| p.text_range()),
+        Stmt::Conditional(c) => Some(c.ptr.text_range()),
+        Stmt::Sequence(s) => Some(s.ptr.text_range()),
+        Stmt::LogicBlock(lb) => Some(lb.ptr.text_range()),
+        Stmt::Await(a) => Some(a.ptr.text_range()),
+        Stmt::ChoiceSet(_) | Stmt::LabeledBlock(_) | Stmt::ExprStmt(_) | Stmt::EndOfLine => None,
+    }
+}
+
+fn range_key(range: TextRange) -> (u32, u32) {
+    (range.start().into(), range.end().into())
+}
+
+/// This file's own reference resolutions, projected to a range-keyed lookup
+/// — mirrors `conversions::resolution_index`/`option_conditions`'s own copy.
+fn resolution_index(
+    resolutions: &ResolutionMap,
+    file: FileId,
+) -> BTreeMap<(u32, u32), DefinitionId> {
+    resolutions
+        .iter()
+        .filter(|r| r.file == file)
+        .map(|r| (range_key(r.range), r.target))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use brink_ir::{FileId as HirFileId, SymbolIndex};
+
+    /// Native-lowered `(HirFile, SymbolIndex, ResolutionMap, InferenceResult)`
+    /// — `InfixOp::Coalesce` is produced only by `hir::lower_native`
+    /// (B1, issue #1460), so unlike every other check module's test harness
+    /// in this crate (which parses through `brink_syntax`, the ink/brink-
+    /// extension frontend), this one must go through the native frontend.
+    fn build_native(src: &str) -> (HirFile, SymbolIndex, ResolutionMap, InferenceResult) {
+        let parse = brink_syntax_native::parse(src);
+        assert!(
+            parse.errors().is_empty(),
+            "fixture must parse cleanly: {:?}",
+            parse.errors()
+        );
+        let tree = parse.tree();
+        let (hir, manifest, _diag) = brink_ir::hir::lower_native::lower(HirFileId(0), &tree);
+        let (index, _diag) = crate::symbol_index(&[(HirFileId(0), &manifest)]);
+        let (resolutions, _diag) = crate::resolve(
+            HirFileId(0),
+            &manifest,
+            &index,
+            &crate::ImportScope::default(),
+        );
+        let inference = crate::infer_project(
+            &[(HirFileId(0), &hir)],
+            &index,
+            &resolutions,
+            None,
+            &BTreeMap::new(),
+        );
+        (hir, (*index).clone(), (*resolutions).clone(), inference)
+    }
+
+    fn check_all(src: &str) -> Vec<Diagnostic> {
+        let (hir, index, resolutions, inference) = build_native(src);
+        check(&[(HirFileId(0), &hir)], &index, &inference, &resolutions)
+    }
+
+    #[test]
+    fn non_option_left_hand_side_is_e066() {
+        let diags = check_all("flow main() {\n  {5 or 9}\n  -> END\n}\n");
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E066);
+    }
+
+    #[test]
+    fn mismatched_fallback_type_is_e066() {
+        let diags = check_all("flow main() {\n  {some(1) or \"text\"}\n  -> END\n}\n");
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E066);
+    }
+
+    #[test]
+    fn collapse_form_with_agreeing_types_is_clean() {
+        let diags = check_all("flow main() {\n  {some(1) or 2}\n  -> END\n}\n");
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn two_option_form_with_agreeing_types_is_clean() {
+        let diags = check_all("flow main() {\n  {some(1) or none}\n  -> END\n}\n");
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn unclassifiable_operand_stays_silently_unchecked() {
+        // `x`'s type isn't statically known here (no other use to infer
+        // from) — "Unknown never disagrees", same posture every sibling
+        // check in this crate takes.
+        let diags = check_all("flow main(x) {\n  {x or 9}\n  -> END\n}\n");
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    /// Companion to the diagnostics-only assertion above: an unpinned
+    /// left-hand type is not merely diagnostic-clean, it is recorded as a
+    /// real `CoalesceShape::RuntimeCheck` step — the unpinned-`lhs` posture
+    /// `Opcode::Coalesce`'s own doc claims. Pins the review finding that
+    /// this branch was previously unreachable (the operand fell through a
+    /// silent `return` instead of ever reaching `step_shape`).
+    ///
+    /// `!x` (an `Expr::Prefix` wrapping the param, carrying its span) rather
+    /// than the bare param path itself: a bare single-segment param/temp
+    /// path used *directly* as a coalescing `lhs` gets narrowed to
+    /// `Option[…]` by `infer::body`'s own feedback
+    /// (`coalesce_lhs_param_narrows_to_option_of_the_rhs_type`), so it
+    /// always classifies. `Expr::Prefix` is neither a shape `observe`
+    /// narrows (only a bare `Path`) nor one `classify_expr_ty` handles at
+    /// all (only Path/Call/Index beyond literals) — genuinely
+    /// unclassifiable, and still keyable (`expr_span` recurses through
+    /// `Prefix` into `x`'s own span, unlike the bare-literal
+    /// `an_unkeyable_chain_records_no_verdict` fixture).
+    #[test]
+    fn unpinned_left_hand_side_records_a_runtime_check_step() {
+        // `fn`'s plain `{ }` routes through the code-ground `stmt_block`
+        // (unlike `flow`'s, which is content-ground and reads a leading `!`
+        // inside `{ }` as a once-only sequence marker, not boolean negation
+        // — this fixture must be a `fn` body to get a real `Expr::Prefix`).
+        let src = concat!(
+            "fn f(x) {\n  return !x or 9;\n}\n",
+            "flow main() {\n  -> END\n}\n",
+        );
+        let chain = only_chain(src);
+        assert_eq!(chain.steps.len(), 1, "{chain:?}");
+        let step = &chain.steps[0];
+        assert_eq!(step.lhs, Ty::Unknown);
+        assert_eq!(step.rhs, Ty::Int);
+        assert_eq!(step.result, Ty::Unknown);
+        assert_eq!(step.shape, CoalesceShape::RuntimeCheck);
+    }
+
+    // ─── The recorded side channel (issue #1492) ──────────────────────
+
+    fn table_of(src: &str) -> CoalesceTable {
+        let (hir, index, resolutions, inference) = build_native(src);
+        resolve(&[(HirFileId(0), &hir)], &index, &inference, &resolutions).0
+    }
+
+    /// The single recorded chain in a one-chain fixture.
+    fn only_chain(src: &str) -> CoalesceChain {
+        let table = table_of(src);
+        assert_eq!(table.len(), 1, "expected exactly one chain: {table:?}");
+        let (_key, chain) = table.iter().next().expect("one entry");
+        chain.clone()
+    }
+
+    fn opt(inner: Ty) -> Ty {
+        Ty::Option(Box::new(inner))
+    }
+
+    #[test]
+    fn collapse_form_records_the_collapsed_value_type() {
+        let chain = only_chain("flow main() {\n  {some(1) or 2}\n  -> END\n}\n");
+        assert_eq!(chain.steps.len(), 1);
+        let step = &chain.steps[0];
+        assert_eq!(step.lhs, opt(Ty::Int));
+        assert_eq!(step.rhs, Ty::Int);
+        assert_eq!(step.result, Ty::Int);
+        assert_eq!(step.shape, CoalesceShape::Collapse);
+    }
+
+    #[test]
+    fn two_option_form_records_preserved_optionality() {
+        let chain = only_chain("flow main() {\n  {some(1) or none}\n  -> END\n}\n");
+        assert_eq!(chain.steps.len(), 1);
+        let step = &chain.steps[0];
+        assert_eq!(step.shape, CoalesceShape::PreserveOption);
+        assert!(
+            matches!(step.result, Ty::Option(_)),
+            "optionality survives: {:?}",
+            step.result
+        );
+    }
+
+    /// The verdict LIR lowering needs and no syntactic shape-sniff can
+    /// reach: the fallback is a *call*, so "is the fallback `Option`-shaped"
+    /// is answerable only from the callee's recorded return type.
+    #[test]
+    fn a_call_fallback_is_typed_from_its_return_type_not_its_syntax() {
+        let src = concat!(
+            "fn maybe() {\n  return some(7);\n}\n",
+            "flow main() {\n  {some(1) or maybe()}\n  -> END\n}\n",
+        );
+        let chain = only_chain(src);
+        assert_eq!(chain.steps.len(), 1);
+        assert_eq!(chain.steps[0].rhs, opt(Ty::Int));
+        assert_eq!(chain.steps[0].shape, CoalesceShape::PreserveOption);
+    }
+
+    /// The chain the whole side channel exists for: an `Option`-returning
+    /// call in the middle keeps the inner step optional, and only the final
+    /// plain fallback collapses.
+    #[test]
+    fn a_chain_records_every_step_innermost_first() {
+        let src = concat!(
+            "fn maybe() {\n  return some(7);\n}\n",
+            "flow main() {\n  {some(1) or maybe() or 99}\n  -> END\n}\n",
+        );
+        let chain = only_chain(src);
+        assert_eq!(chain.steps.len(), 2, "{chain:?}");
+        assert_eq!(chain.steps[0].shape, CoalesceShape::PreserveOption);
+        assert_eq!(chain.steps[0].result, opt(Ty::Int));
+        // The inner step's result is the outer step's left-hand type — the
+        // fold, not a re-classification of the `Expr::Infix` node (which
+        // `classify_expr_ty` cannot type at all).
+        assert_eq!(chain.steps[1].lhs, opt(Ty::Int));
+        assert_eq!(chain.steps[1].rhs, Ty::Int);
+        assert_eq!(chain.steps[1].result, Ty::Int);
+        assert_eq!(chain.steps[1].shape, CoalesceShape::Collapse);
+    }
+
+    /// A bare `Path` to a declared `Option[int]` temp as the fallback — the
+    /// w56 scope finding folded into #1492. Syntax says "an identifier";
+    /// the recorded type says `Option[int]`, so optionality is preserved.
+    #[test]
+    fn an_option_typed_path_fallback_preserves_optionality() {
+        let src = concat!(
+            "fn pick() {\n",
+            "  let fallback = some(3);\n",
+            "  return some(1) or fallback;\n",
+            "}\n",
+            "flow main() {\n  -> END\n}\n",
+        );
+        let chain = only_chain(src);
+        assert_eq!(chain.steps.len(), 1, "{chain:?}");
+        assert_eq!(chain.steps[0].rhs, opt(Ty::Int));
+        assert_eq!(chain.steps[0].shape, CoalesceShape::PreserveOption);
+    }
+
+    /// The widening the fold buys: before #1492 only a chain's innermost
+    /// step was judged (`classify_expr_ty` returns `None` for an
+    /// `Expr::Infix` left-hand operand), so this compiled silently.
+    #[test]
+    fn a_mismatch_at_a_later_chain_step_is_now_e066() {
+        let diags = check_all("flow main() {\n  {some(1) or none or \"text\"}\n  -> END\n}\n");
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E066);
+    }
+
+    #[test]
+    fn an_ill_typed_chain_records_no_verdict() {
+        let table = table_of("flow main() {\n  {some(1) or \"text\"}\n  -> END\n}\n");
+        assert!(table.is_empty(), "{table:?}");
+    }
+
+    #[test]
+    fn an_unkeyable_chain_records_no_verdict() {
+        // No operand carries a source range, so `expr_span` yields `None`
+        // and there is no identity to serve the verdict under. (It is also
+        // `E066`, but the point here is the key, not the diagnostic.)
+        let table = table_of("flow main() {\n  {5 or 9}\n  -> END\n}\n");
+        assert!(table.is_empty(), "{table:?}");
+    }
+
+    #[test]
+    fn each_chain_is_recorded_once_at_its_root() {
+        let src = concat!(
+            "fn maybe() {\n  return some(7);\n}\n",
+            "flow main() {\n  {some(1) or maybe() or 99}\n  {some(2) or 3}\n  -> END\n}\n",
+        );
+        let table = table_of(src);
+        assert_eq!(table.len(), 2, "one entry per chain root: {table:?}");
+    }
+
+    /// Two chains in the same file whose spans genuinely differ stay
+    /// separately addressable — the poisoning rule must not be a blanket
+    /// "any second chain wins/loses".
+    #[test]
+    fn sibling_chains_keep_distinct_keys() {
+        let src = "flow main() {\n  {some(1) or 2}\n  {some(1) or 2}\n  -> END\n}\n";
+        let table = table_of(src);
+        assert_eq!(table.len(), 2, "{table:?}");
+    }
+
+    #[test]
+    fn a_var_initializer_chain_is_recorded_too() {
+        let src = "var v = some(1) or 2\nflow main() {\n  -> END\n}\n";
+        let chain = only_chain(src);
+        assert_eq!(chain.steps.len(), 1);
+        assert_eq!(chain.steps[0].shape, CoalesceShape::Collapse);
+    }
+}

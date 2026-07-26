@@ -585,6 +585,54 @@ fn resolve_function(
         return;
     }
 
+    // B3a UFCS-shaped callee (issue #1482, D1–D5 RULED 2026-07-26): every
+    // static dotted-path interpretation above has failed, but the path's
+    // *head* segment alone names a value in scope — this is method-call
+    // syntax on that value (`g.greet(3)`), not an unresolved static path.
+    // Exactly the TM-4b fallback `lookup_variable`'s step 11 already applies
+    // to a dotted *value* reference (`p.x.y`), applied to the callee
+    // position: the resolved target is the head value itself, and the
+    // trailing segment is carried structurally by the HIR `Path`.
+    //
+    // Which of the two meanings that trailing segment has (a callable field
+    // of the receiver's type, or a free function to desugar onto) is a
+    // *type-directed* question this resolution pass cannot answer — so it
+    // resolves the receiver and stays silent, and `brink-analyzer::ufcs`
+    // owns the verdict and every diagnostic for the site (`E140`–`E143`).
+    // Suppressing `E025` here is what keeps a legal method call
+    // diagnostic-free and an illegal one from being reported twice.
+    //
+    // Inert for the ink corpus by construction: ink's own `FunctionCall`
+    // lowering always builds a single-segment callee path, so no ink source
+    // can reach this branch (see `ufcs`' module doc).
+    //
+    // `arg_count.is_some()` narrows this to a real **call site**. A
+    // `RefKind::Function` reference is also recorded for a `#fn(target)`
+    // literal's target, and that one always carries `arg_count: None`
+    // (`project_manifest`'s own documented distinction — `#fn` binds a
+    // *prefix* of the param row, so it has no call arity). A dotted `#fn`
+    // target is not method-call syntax and has no UFCS verdict; it must
+    // keep failing as an unresolved reference here rather than silently
+    // resolving to its head value.
+    if uref.arg_count.is_some()
+        && let Some((head, _rest)) = path.split_once('.')
+        && let Some(id) = lookup_local_in_scope(locals, head, &uref.scope).or_else(|| {
+            lookup_by_name(
+                index,
+                scope,
+                head,
+                &[SymbolKind::Variable, SymbolKind::Constant],
+            )
+        })
+    {
+        map.push(ResolvedRef {
+            file: file_id,
+            range: uref.range,
+            target: id,
+        });
+        return;
+    }
+
     diagnostics.push(unresolved_diag(
         file_id,
         uref.range,

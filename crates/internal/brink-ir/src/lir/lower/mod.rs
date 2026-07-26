@@ -20,7 +20,7 @@ use super::types as lir;
 use context::{LowerCtx, NameTable, ResolutionLookup, TempMap};
 
 pub use chunk::ScopeChunk;
-pub use context::TypeMode;
+pub use context::{TypeMode, UfcsLookup, UfcsVerdict};
 pub use structs::{StructFieldEntry, StructShapeData, StructShapeEntry, build_struct_shape_data};
 
 /// Defensive backstop for `brink-analyzer`'s dialect gate (E051/E052).
@@ -84,6 +84,7 @@ pub fn lower_to_program(
         resolutions,
         file_paths,
         context::TypeMode::Gradual,
+        &context::UfcsLookup::new(),
     )
 }
 
@@ -129,6 +130,7 @@ pub fn lower_to_program_with_type_mode(
     resolutions: &ResolutionMap,
     file_paths: &LookupMap<FileId, String>,
     type_mode: context::TypeMode,
+    ufcs: &context::UfcsLookup,
 ) -> (Option<lir::Program>, Vec<crate::Diagnostic>) {
     // FG-4d/e: this whole-project entry runs the same three pure phases
     // `brink-db`'s production link phase (`lir_lowering_query`) composes
@@ -153,6 +155,7 @@ pub fn lower_to_program_with_type_mode(
         prelude.root_id,
         file_paths,
         &struct_ctx,
+        ufcs,
     );
 
     // Diagnostic order mirrors the old monolithic path exactly: declaration
@@ -175,6 +178,7 @@ pub fn lower_to_program_with_type_mode(
                 &struct_ctx,
                 prelude.root_id,
                 file_id,
+                ufcs,
             );
             ordered_chunks.push(chunk);
             lir_diagnostics.extend(diags);
@@ -431,6 +435,7 @@ fn lower_root_content_chunks(
     root_id: brink_format::DefinitionId,
     file_paths: &LookupMap<FileId, String>,
     struct_ctx: &context::StructCtx<'_>,
+    ufcs: &context::UfcsLookup,
 ) -> (Vec<(chunk::ScopeChunk, Vec<crate::Diagnostic>)>, u16) {
     let mut chunks = Vec::new();
 
@@ -446,7 +451,7 @@ fn lower_root_content_chunks(
     for &(file_id, hir_file) in files {
         let mut local_names = NameTable::new();
         let mut diagnostics = Vec::new();
-        let (stmts, block_children) = {
+        let (stmts, mut block_children) = {
             let mut ctx = make_ctx(
                 file_id,
                 resolutions,
@@ -456,17 +461,20 @@ fn lower_root_content_chunks(
                 &mut ids,
                 root_id,
                 String::new(),
+                true,
                 &[],
                 file_paths,
                 &mut block_slot,
                 &mut diagnostics,
                 struct_ctx,
+                ufcs,
             );
             let mut cc = 0;
             let mut gc = 0;
             ctx.ids.reset_seq_counter();
             lower_block_with_children(&hir_file.root_content, &mut ctx, &mut cc, &mut gc)
         };
+        attach_root_final_gather(file_id, &mut block_children, &mut ids);
         chunks.push((
             chunk::ScopeChunk::root_content(stmts, block_children, local_names.into_entries()),
             diagnostics,
@@ -491,6 +499,7 @@ fn lower_knot_chunk(
     struct_ctx: &context::StructCtx<'_>,
     root_id: brink_format::DefinitionId,
     file_id: FileId,
+    ufcs: &context::UfcsLookup,
 ) -> (chunk::ScopeChunk, Vec<crate::Diagnostic>) {
     let mut local_names = NameTable::new();
     let mut ids = context::IdAllocator::new();
@@ -508,6 +517,7 @@ fn lower_knot_chunk(
         file_paths,
         &mut diagnostics,
         struct_ctx,
+        ufcs,
     );
     (
         chunk::ScopeChunk::knot(knot_container, local_names.into_entries()),
@@ -539,6 +549,7 @@ pub fn lower_knot_chunk_incremental(
     shape_data: &StructShapeData,
     type_mode: context::TypeMode,
     file_id: FileId,
+    ufcs: &context::UfcsLookup,
 ) -> (chunk::ScopeChunk, Vec<crate::Diagnostic>) {
     let resolutions = ResolutionLookup::build(resolutions);
     let mut throwaway = NameTable::new();
@@ -558,6 +569,7 @@ pub fn lower_knot_chunk_incremental(
         &struct_ctx,
         context::root_definition_id(),
         file_id,
+        ufcs,
     )
 }
 
@@ -577,6 +589,7 @@ pub fn lower_root_content_for_prelude(
     index: &SymbolIndex,
     resolutions: &ResolutionMap,
     file_paths: &LookupMap<FileId, String>,
+    ufcs: &context::UfcsLookup,
 ) -> (Vec<(chunk::ScopeChunk, Vec<crate::Diagnostic>)>, u16) {
     let resolutions = ResolutionLookup::build(resolutions);
     let struct_ctx = prelude.struct_ctx();
@@ -587,6 +600,7 @@ pub fn lower_root_content_for_prelude(
         prelude.root_id,
         file_paths,
         &struct_ctx,
+        ufcs,
     )
 }
 
@@ -665,6 +679,7 @@ fn lower_knot(
     file_paths: &LookupMap<FileId, String>,
     diagnostics: &mut Vec<crate::Diagnostic>,
     structs: &context::StructCtx<'_>,
+    ufcs: &context::UfcsLookup,
 ) -> lir::Container {
     let knot_name = &knot.name.text;
     let knot_id = lookup_container_id(index, knot_name).unwrap_or(root_id);
@@ -691,11 +706,13 @@ fn lower_knot(
         ids,
         root_id,
         knot_name.clone(),
+        false,
         &knot_param_names,
         file_paths,
         &mut block_slot,
         diagnostics,
         structs,
+        ufcs,
     );
     let mut cc = 0;
     let mut gc = 0;
@@ -718,6 +735,7 @@ fn lower_knot(
             &mut block_slot,
             diagnostics,
             structs,
+            ufcs,
         ));
     }
 
@@ -766,6 +784,7 @@ fn lower_stitch(
     block_slot: &mut u16,
     diagnostics: &mut Vec<crate::Diagnostic>,
     structs: &context::StructCtx<'_>,
+    ufcs: &context::UfcsLookup,
 ) -> lir::Container {
     let stitch_name = &stitch.name.text;
     let stitch_path = format!("{}.{stitch_name}", knot.name.text);
@@ -783,11 +802,13 @@ fn lower_stitch(
         ids,
         root_id,
         stitch_path,
+        false,
         &stitch_param_names,
         file_paths,
         block_slot,
         diagnostics,
         structs,
+        ufcs,
     );
     let mut cc = 0;
     let mut gc = 0;
@@ -962,7 +983,21 @@ fn lower_block_with_children(
                     .iter()
                     .enumerate()
                     .map(|(branch_idx, b)| {
-                        let condition = b.condition.as_ref().map(|e| expr::lower_expr(e, ctx));
+                        // B1b (issue #1475): the block-level `{if EXPR as
+                        // n: … else: …}` template form. The branch body
+                        // becomes its own container, but containers share
+                        // the enclosing call frame's temp slots, so the
+                        // binding's slot is visible inside it — the scope
+                        // bracket below is the lowering-time name scope,
+                        // and it closes before the next branch is walked.
+                        ctx.push_block_scope();
+                        let condition = match (b.condition.as_ref(), b.binding.as_ref()) {
+                            (Some(e), Some(binding)) => {
+                                Some(blocks::lower_bound_condition(e, binding, ctx))
+                            }
+                            (Some(e), None) => Some(expr::lower_expr(e, ctx)),
+                            (None, _) => None,
+                        };
 
                         // Set scope_path for this branch so nested containers
                         // (choices, gathers, nested conditionals) get unique IDs.
@@ -997,6 +1032,9 @@ fn lower_block_with_children(
                             local: false,
                         };
                         children.push(branch_container);
+                        // Closes the `as`-binding scope opened above — the
+                        // next branch (an `else`) must not see the name.
+                        ctx.pop_block_scope();
 
                         // The branch body in the Conditional struct is just EnterContainer
                         lir::CondBranch {
@@ -1197,16 +1235,29 @@ fn build_continuation_container(
         .is_some_and(|label| ctx.lookup_address_id(&label.text).is_some());
 
     if continuation.stmts.is_empty() && continuation.label.is_none() {
-        // Empty continuation with no label — implicit gather with Done
+        // Empty continuation with no label — the choice set is the last
+        // thing in its enclosing block. At the story's root content this
+        // is a safe implicit end (real ink lets root content run out), so
+        // emit the same `-> DONE` a genuine `-> DONE` statement would
+        // produce. Inside a knot/stitch, though, running off the end
+        // without an explicit `-> DONE`/`-> END` is a real ink runtime
+        // error ("ran out of content") — leaving the body empty here lets
+        // the VM's normal frame-exhaustion path (`handle_frame_exhaustion`)
+        // surface that instead of masking it as a safe exit (issue #1503).
+        let body = if ctx.is_root_content_scope {
+            vec![lir::Stmt::Divert(lir::Divert {
+                target: lir::DivertTarget::Done,
+                args: Vec::new(),
+            })]
+        } else {
+            Vec::new()
+        };
         return lir::Container {
             id,
             name: Some(display_name),
             kind: lir::ContainerKind::Gather,
             params: Vec::new(),
-            body: vec![lir::Stmt::Divert(lir::Divert {
-                target: lir::DivertTarget::Done,
-                args: Vec::new(),
-            })],
+            body,
             children: Vec::new(),
             counting_flags: CountingFlags::empty(),
             temp_slot_count: 0,
@@ -1442,11 +1493,13 @@ fn make_ctx<'a>(
     ids: &'a mut context::IdAllocator,
     root_id: brink_format::DefinitionId,
     scope_path: String,
+    is_root_content_scope: bool,
     param_names: &[&str],
     file_paths: &'a LookupMap<FileId, String>,
     next_block_slot: &'a mut u16,
     diagnostics: &'a mut Vec<crate::Diagnostic>,
     structs: &'a context::StructCtx<'a>,
+    ufcs: &'a context::UfcsLookup,
 ) -> LowerCtx<'a> {
     LowerCtx {
         file,
@@ -1456,6 +1509,7 @@ fn make_ctx<'a>(
         names,
         ids,
         scope_path,
+        is_root_content_scope,
         pending_children: Vec::new(),
         visible_temps: param_names.iter().map(|s| (*s).to_string()).collect(),
         file_paths,
@@ -1463,11 +1517,13 @@ fn make_ctx<'a>(
         choice_gather_target: None,
         next_block_slot,
         block_scopes: Vec::new(),
+        as_binding_slots: LookupSet::new(),
         block_scoped_temp_names: LookupSet::new(),
         diagnostics,
         loop_depth: 0,
         structs,
         temp_shapes: LookupMap::new(),
+        ufcs,
     }
 }
 
@@ -1780,6 +1836,127 @@ fn collect_counting_refs_expr(
         }
         _ => {}
     }
+}
+
+/// Display name of the synthesized root terminus container. `-` is not a
+/// legal character in an ink label and the auto-gather convention is the
+/// numeric `g-{index}`, so this segment can never collide with an authored
+/// or auto-generated gather name.
+const ROOT_TERMINUS_NAME: &str = "g-final";
+
+/// Mirror inklecate's **implicit final gather** at the end of the root weave
+/// (`FlowBase.SplitWeaveAndSubFlowContent`, `FlowBase.cs:69-72`, which appends
+/// `Gather(null, 1)` + `-> DONE` when lowering the root story): a branch that
+/// simply runs out of root-weave content ends the flow cleanly instead of
+/// faulting with `RanOutOfContent`.
+///
+/// The root container's own trailing `Divert(Done)`
+/// ([`assemble_program`]) cannot serve this purpose: a gather is reached by
+/// `goto`, which clears the container stack, so once execution lands in a
+/// gather container the root body is no longer on the frame and its `Done`
+/// can never run.
+///
+/// **Root scope only** (#1448). A knot, stitch, tunnel or function whose
+/// content runs out is a genuine authoring error that C# ink reports and
+/// brink must keep reporting — extending a terminus to every weave terminus
+/// regresses those cases.
+fn attach_root_final_gather(
+    file_id: FileId,
+    children: &mut Vec<lir::Container>,
+    ids: &mut context::IdAllocator,
+) {
+    // `#` never appears in a lowering scope path, so this key cannot collide
+    // with a real container address. Keyed per file because each file's
+    // root-level content is lowered as its own chunk (and its own weave).
+    let terminus_id = ids.alloc_address(&format!("#root-terminus.{}", file_id.0));
+
+    if !patch_root_loose_end(children, terminus_id) {
+        return;
+    }
+
+    children.push(lir::Container {
+        id: terminus_id,
+        name: Some(ROOT_TERMINUS_NAME.to_string()),
+        kind: lir::ContainerKind::Gather,
+        params: Vec::new(),
+        body: vec![lir::Stmt::Divert(lir::Divert {
+            target: lir::DivertTarget::Done,
+            args: Vec::new(),
+        })],
+        children: Vec::new(),
+        counting_flags: CountingFlags::empty(),
+        temp_slot_count: 0,
+        labeled: false,
+        inline: false,
+        is_function: false,
+        local: false,
+    });
+}
+
+/// Divert the root weave's outermost loose end to `terminus`, returning
+/// whether one was found (and therefore whether the terminus container is
+/// reachable and worth emitting).
+///
+/// HIR nests each choice set's post-gather content into that set's
+/// continuation, so the root weave's outermost loose end is the tail of the
+/// gather chain hanging off the last root-level child: descend while a gather
+/// ends with another `ChoiceSet` (its continuation gather holds the deeper
+/// content), then patch the first gather that does not.
+///
+/// Nothing is patched when the tail already ends in a terminal — an authored
+/// `-> DONE` / `-> END` / divert is not a loose end, and unlike
+/// [`patch_innermost_gather`] this must never overwrite one.
+///
+/// An `inline` gather (the wrapper a source-level standalone gather lowers to)
+/// is never patched in its own right: it is entered with `EnterContainer` and
+/// returns to its parent when exhausted, so it already falls through to the
+/// root body's own `Done`. Its *children* are still descended into, because a
+/// choice set inside it diverts — clearing the container stack — into a
+/// continuation gather that is a genuine loose end.
+fn patch_root_loose_end(
+    children: &mut [lir::Container],
+    terminus: brink_format::DefinitionId,
+) -> bool {
+    let Some(gather) = children
+        .last_mut()
+        .filter(|c| c.kind == lir::ContainerKind::Gather)
+    else {
+        return false;
+    };
+
+    if gather
+        .body
+        .last()
+        .is_some_and(|s| matches!(s, lir::Stmt::ChoiceSet(_)))
+    {
+        return patch_root_loose_end(&mut gather.children, terminus);
+    }
+
+    if gather.inline {
+        return false;
+    }
+
+    let ends_terminal = gather.body.last().is_some_and(|s| {
+        matches!(
+            s,
+            lir::Stmt::Divert(d)
+                if matches!(
+                    d.target,
+                    lir::DivertTarget::End
+                        | lir::DivertTarget::Done
+                        | lir::DivertTarget::Address(_)
+                )
+        )
+    });
+    if ends_terminal {
+        return false;
+    }
+
+    gather.body.push(lir::Stmt::Divert(lir::Divert {
+        target: lir::DivertTarget::Address(terminus),
+        args: Vec::new(),
+    }));
+    true
 }
 
 /// Recursively find the innermost gather container in a chain of

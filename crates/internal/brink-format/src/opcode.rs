@@ -420,20 +420,47 @@ const COLLECT: u8 = 0xFA;
 //                  typing rule with no codegen branching required.
 const COALESCE: u8 = 0xFB;
 
+// B1b the `as` binding (`docs/decision-log.md` 2026-07-26 "The `as`
+// binding: one construct, both condition positions, `{if}` spelling";
+// issue #1475 — this PR's own reservation, same "assigned here" precedent
+// as the blocks above). Three free bytes remained after B1's `COALESCE`
+// (`0xFC`-`0xFD` + `0xFF`); this claims the first. Native-surface-only:
+// nothing in the ink/brink dialects has an `as` binding to lower.
+//
+//   0xFC OptionBind(slot)  `[opt]` → `[bool]`: `opt` must be an
+//                          `OptionVal`. `some(v)` writes `v` — the
+//                          UNWRAPPED payload, typed `T` — into temp
+//                          `slot` and pushes `true`; `none` leaves the
+//                          slot untouched and pushes `false`. A
+//                          non-`OptionVal` operand is a runtime fault
+//                          (`RuntimeError::AsBindingNotOption`), the
+//                          gradual-mode residual of the strict-mode `E147`
+//                          the checker raises for the same shape.
+//
+// Test-and-bind is deliberately ONE op rather than a dup/compare/unwrap
+// sequence: it keeps the whole binding inside condition evaluation, which
+// is what makes `while EXPR as n { … }` rebind per iteration for free and
+// lets an inline `{if EXPR as n: …}` bind without hoisting a statement out
+// of its content line. The write is a plain frame-local store with no
+// `ref`/pointer write-through (unlike `SetTemp`): an `as` binding always
+// declares a FRESH slot, so it can never alias a `ref` parameter's cell.
+const OPTION_BIND: u8 = 0xFC;
+
 // Seq `remove_at` (issue #1484, decision log "Quick-docket closures"
 // 2026-07-26; `docs/stdlib-spec.md` §4/§10 — this PR's own reservation,
-// same "assigned here" precedent as the blocks above). Claims the second of
-// the four bytes `Coalesce`'s comment noted free (`0xFC`-`0xFD` + `0xFF`
-// remained after `0xFB`). `MapRemove` (`0xC5`) is restricted to maps as of
-// this PR — the array-index leg it used to generalize over moves here under
-// its own name, joining the `_at` faulting-index family with `CharAt`.
+// same "assigned here" precedent as the blocks above). `OptionBind` claimed
+// the first of the three bytes `Coalesce`'s comment noted free
+// (`0xFC`-`0xFD` + `0xFF` remained after `0xFB`); this claims the next
+// (`0xFD`). `MapRemove` (`0xC5`) is restricted to maps as of this PR — the
+// array-index leg it used to generalize over moves here under its own name,
+// joining the `_at` faulting-index family with `CharAt`.
 //
-//   0xFC SeqRemoveAt  `[a, i]` → updated array with the element at `i`
+//   0xFD SeqRemoveAt  `[a, i]` → updated array with the element at `i`
 //                     removed (shifts later elements left). Turn-terminating
 //                     fault on `i` out of `[0, len)` (`IndexOutOfBounds`,
 //                     matching `IndexGet`/`IndexSet`) or a non-array `a`
 //                     (`NotIndexable`).
-const SEQ_REMOVE_AT: u8 = 0xFC;
+const SEQ_REMOVE_AT: u8 = 0xFD;
 
 // List ops
 const LIST_CONTAINS: u8 = 0xB0;
@@ -1293,7 +1320,45 @@ pub enum Opcode {
     /// `rhs` are both pushed before `Coalesce` ever inspects either, so an
     /// effectful `rhs` (an RNG draw, a mutation) always runs, even when
     /// `lhs` turns out to be `some(_)` and `rhs`'s value is discarded.
+    ///
+    /// ## The runtime check *is* the semantics for an unpinned `lhs`
+    ///
+    /// RULED (maintainer, 2026-07-26, issue #1492 — `docs/decision-log.md`
+    /// "Lowering consumes analyzer types"): typing verdicts belong to
+    /// `brink-analyzer`, which records each `or` step's operand/result
+    /// types for LIR lowering (`brink_analyzer::coalesce_types`). Under
+    /// `types = strict` an ill-typed chain never reaches codegen at all —
+    /// `E066` rejects it during analysis — so this op only ever executes a
+    /// chain analysis either accepted or could not statically pin.
+    ///
+    /// That second case is the gradual-mode posture, and it is deliberate:
+    /// when the left-hand type is unknown (brink dialect, `types =
+    /// gradual` — the un-overridden native default), **the check this op
+    /// performs is the operator's semantics**, not a fallback for a missing
+    /// one. An `OptionVal` coalesces; a plain value raises the `TypeError`
+    /// fault (`brink_runtime::value_ops::coalesce`) — the same class as
+    /// every other gradual runtime check. Strict/native never reaches this
+    /// path with an unpinned `lhs`, and the analyzer records exactly this
+    /// case as `CoalesceShape::RuntimeCheck` so a consumer knows not to
+    /// commit statically to either branch.
     Coalesce,
+
+    // ── B1b: the `as` binding (`docs/decision-log.md` 2026-07-26; issue
+    //    #1475) ──────────────────────────────────────────────────────────
+    /// `[opt]` → `[bool]` — the `as` binding's fused test-and-bind
+    /// (`if EXPR as name { … }`, `while EXPR as name { … }`,
+    /// `{if EXPR as name: … else: …}`). `opt` must be an `OptionVal`:
+    /// `some(v)` stores the **unwrapped** `v` in temp `slot` and pushes
+    /// `true`; `none` leaves `slot` untouched and pushes `false`. A
+    /// non-`OptionVal` operand faults
+    /// ([`RuntimeError::AsBindingNotOption`](crate::opcode) — the
+    /// gradual-mode residual of the checker's `E147`).
+    ///
+    /// The slot is always freshly allocated by the binding itself, so —
+    /// unlike [`SetTemp`](Self::SetTemp) — the write needs no
+    /// pointer/projection write-through: an `as` binding can never land on
+    /// a `ref` parameter's cell. Native-surface only.
+    OptionBind(u16),
 
     // ── Seq `remove_at` (issue #1484, `docs/stdlib-spec.md` §4/§10) ───────
     /// `[a, i]` → updated array with the element at `i` removed (shifts
@@ -1755,6 +1820,10 @@ impl Opcode {
 
             // B1 `or`-coalescing
             Self::Coalesce => write_u8(buf, COALESCE),
+            Self::OptionBind(slot) => {
+                write_u8(buf, OPTION_BIND);
+                write_u16(buf, slot);
+            }
             Self::SeqRemoveAt => write_u8(buf, SEQ_REMOVE_AT),
             Self::RandFloat => write_u8(buf, RAND_FLOAT),
             Self::RandChance => write_u8(buf, RAND_CHANCE),
@@ -2018,6 +2087,7 @@ impl Opcode {
 
             // B1 `or`-coalescing
             COALESCE => Self::Coalesce,
+            OPTION_BIND => Self::OptionBind(read_u16(buf, offset)?),
             SEQ_REMOVE_AT => Self::SeqRemoveAt,
             RAND_FLOAT => Self::RandFloat,
             RAND_CHANCE => Self::RandChance,
@@ -2422,6 +2492,28 @@ mod tests {
         assert_eq!(buf[0], 0xFB, "Coalesce encoded to unexpected discriminant");
     }
 
+    /// B1b the `as` binding (issue #1475): one opcode with a `u16` slot
+    /// immediate, encoded like `SetTemp`/`GetTemp`.
+    #[test]
+    fn roundtrip_b1b_option_bind() {
+        roundtrip(&Opcode::OptionBind(0));
+        roundtrip(&Opcode::OptionBind(7));
+        roundtrip(&Opcode::OptionBind(u16::MAX));
+    }
+
+    /// `OptionBind` claims the first byte free after B1's `Coalesce`
+    /// (`0xFB`) — same "the reservation comment is the source of truth"
+    /// posture as `coalesce_opcode_byte_is_0xfb` above.
+    #[test]
+    fn option_bind_opcode_byte_is_0xfc() {
+        let mut buf = Vec::new();
+        Opcode::OptionBind(1).encode(&mut buf);
+        assert_eq!(
+            buf[0], 0xFC,
+            "OptionBind encoded to unexpected discriminant"
+        );
+    }
+
     /// Seq `remove_at` (issue #1484): one opcode, one byte, no operand —
     /// same shape as `Coalesce` above.
     #[test]
@@ -2429,16 +2521,16 @@ mod tests {
         roundtrip(&Opcode::SeqRemoveAt);
     }
 
-    /// `SeqRemoveAt` claims the second of the four bytes `Coalesce`'s
-    /// comment noted free (`0xFC`-`0xFD` + `0xFF` remained after `0xFB`) —
-    /// the reservation comment above `SEQ_REMOVE_AT` is the actual
+    /// `SeqRemoveAt` claims the byte free after `OptionBind`
+    /// (`0xFC`-`0xFD` + `0xFF` remained after `0xFB`; `OptionBind` claimed
+    /// `0xFC`) — the reservation comment above `SEQ_REMOVE_AT` is the actual
     /// (implementation-level) source of truth this test pins.
     #[test]
-    fn seq_remove_at_opcode_byte_is_0xfc() {
+    fn seq_remove_at_opcode_byte_is_0xfd() {
         let mut buf = Vec::new();
         Opcode::SeqRemoveAt.encode(&mut buf);
         assert_eq!(
-            buf[0], 0xFC,
+            buf[0], 0xFD,
             "SeqRemoveAt encoded to unexpected discriminant"
         );
     }

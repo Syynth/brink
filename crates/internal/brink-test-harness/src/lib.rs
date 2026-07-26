@@ -12,6 +12,7 @@ pub mod ground_truth;
 pub mod oracle;
 pub mod runner;
 pub mod snapshot_fmt;
+mod termination;
 
 pub use diff::{EpisodeDiff, StepDiff, diff};
 pub use episode::*;

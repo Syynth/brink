@@ -1298,6 +1298,42 @@ fn step_impl<R: crate::rng::StoryRng>(
             flow.value_stack.push(value_ops::coalesce(lhs, rhs)?);
         }
 
+        // ── B1b: the `as` binding (issue #1475) ──────────────────────
+        // Fused test-and-bind. The slot is always freshly allocated by
+        // the binding, so — unlike `SetTemp` — this is a plain
+        // frame-local store: no `VariablePointer`/`TempPointer`/
+        // `Projection` write-through case can arise, because nothing has
+        // ever written a pointer into a slot that only this op and the
+        // binding's own reads address.
+        Opcode::OptionBind(slot) => {
+            let opt = flow.pop_value()?;
+            let bound = match opt {
+                Value::OptionVal(Some(payload)) => {
+                    Some(Arc::try_unwrap(payload).unwrap_or_else(|shared| (*shared).clone()))
+                }
+                Value::OptionVal(None) => None,
+                other => {
+                    return Err(RuntimeError::AsBindingNotOption {
+                        found: value_type_name(&other),
+                    });
+                }
+            };
+            let matched = bound.is_some();
+            if let Some(value) = bound {
+                let thread = flow.current_thread_mut();
+                let frame = thread
+                    .call_stack
+                    .last_mut()
+                    .ok_or(RuntimeError::CallStackUnderflow)?;
+                let idx = slot as usize;
+                while frame.temps.len() <= idx {
+                    frame.temps.push(Value::Null);
+                }
+                frame.temps[idx] = value;
+            }
+            flow.value_stack.push(Value::Bool(matched));
+        }
+
         // ── NS-A6: the `std::rand` draw verbs (#1112,
         // `docs/stdlib-spec.md` §7). Every draw is an ordinary write to
         // the one RNG cell (`DefinitionId::RNG_CELL`) — recorded for the

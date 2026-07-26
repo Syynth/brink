@@ -109,7 +109,7 @@ pub(crate) use analysis::{
     call_site_diagnostics_query, call_site_metas_query, comparator_contract_diagnostics_query,
     contributor_diagnostics_query, diagnostics_query, effects_assertion_diagnostics_query,
     external_meta_query, has_errors_in_closure_query, has_errors_query, inline_docs_query,
-    per_file_diagnostics_query, resolutions_index_query, value_meta_query,
+    per_file_diagnostics_query, resolutions_index_query, ufcs_resolution_query, value_meta_query,
     whole_project_diagnostics_query,
 };
 
@@ -186,6 +186,10 @@ impl Default for BrinkDatabase {
                 .ingredient::<value_meta_query>()
                 .ingredient::<call_site_diagnostics_query>()
                 .ingredient::<whole_project_diagnostics_query>()
+                // B3a UFCS (issue #1506): the verdict table, shared by
+                // `whole_project_diagnostics_query` (diagnostics half) and
+                // LIR lowering (`lir_knot_chunk_query`/`lir_lowering_query`).
+                .ingredient::<ufcs_resolution_query>()
                 .ingredient::<analysis_diagnostics_query>()
                 .ingredient::<analysis_query>()
                 .ingredient::<diagnostics_query>()
@@ -1708,6 +1712,7 @@ pub(crate) fn lir_knot_chunk_query(
         return LoweredChunk::default();
     };
 
+    let ufcs = &ufcs_resolution_query(db, project).table;
     let (chunk, diagnostics) = brink_ir::lir::lower_knot_chunk_incremental(
         hir_file,
         knot,
@@ -1717,6 +1722,7 @@ pub(crate) fn lir_knot_chunk_query(
         shape_data,
         type_mode,
         file_id,
+        ufcs,
     );
     LoweredChunk {
         chunk: Arc::new(chunk),
@@ -1844,11 +1850,13 @@ pub(crate) fn lir_lowering_query(db: &dyn salsa::Database, project: ProjectInput
         })
         .collect();
     let prelude = brink_ir::lir::assemble_prelude((*prelude_decls.decls).clone(), normalized);
+    let ufcs = &ufcs_resolution_query(db, project).table;
     let (root_chunks, root_temp_slots) = brink_ir::lir::lower_root_content_for_prelude(
         &prelude,
         &resolved.index,
         &resolved.resolutions,
         &paths,
+        ufcs,
     );
 
     // Interleave in walk order (per file: root content, then that file's

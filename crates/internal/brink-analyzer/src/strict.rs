@@ -350,12 +350,7 @@ pub fn check(
     // `Mismatch` failures, surfaced at the coalescing expression's own site
     // — strict-mode-only, the compile-time half; gradual is inert with the
     // runtime `TypeError` fault as the (narrower) residual backstop.
-    out.extend(crate::coalesce_mismatch::check(
-        files,
-        index,
-        inference,
-        resolutions,
-    ));
+    out.extend(crate::coalesce::check(files, index, inference, resolutions));
     out
 }
 
@@ -1508,6 +1503,89 @@ mod tests {
             Some(&manifest),
         );
         assert!(diags.is_empty(), "annotation supplies the type: {diags:?}");
+    }
+
+    // ── NG-A/NG-B: the annotation firewall reaches the NATIVE frontend ──
+    //
+    // Issues #1487/#1488. Native is strict-only (E137, #1342), so before
+    // the `: type` grammar existed every escaping native param/binding was
+    // structurally condemned to `E065` — this module's annotation firewall
+    // (`check_def`'s `p.annotation` / `collect_temps`' `annotation_ty`
+    // exemption, which exempts an `Unknown` escape but never a
+    // `Conflicted` one) was unreachable from a `.brink` file. These prove
+    // it now fires, through the same `check` entry point the ink fixtures
+    // above use — the annotations land in the same `hir::TypeExpr` slots.
+
+    /// Native-lowered `(HirFile, SymbolIndex, ResolutionMap)`, the native
+    /// counterpart of [`build`] (which parses through `brink_syntax`, the
+    /// ink/brink-extension frontend). Mirrors `coalesce`'s own
+    /// `build_native`.
+    fn build_native(src: &str) -> (HirFile, SymbolIndex, ResolutionMap) {
+        let parsed = brink_syntax_native::parse(src);
+        assert!(
+            parsed.errors().is_empty(),
+            "fixture must parse cleanly: {:?}",
+            parsed.errors()
+        );
+        let tree = parsed.tree();
+        let (hir, manifest, _diag) = brink_ir::hir::lower_native::lower(FileId(0), &tree);
+        let (index, _diag) = crate::symbol_index(&[(FileId(0), &manifest)]);
+        let (resolutions, _diag) =
+            crate::resolve(FileId(0), &manifest, &index, &crate::ImportScope::default());
+        (hir, (*index).clone(), (*resolutions).clone())
+    }
+
+    fn native_strict_diags(src: &str) -> Vec<Diagnostic> {
+        let (hir, index, res) = build_native(src);
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        check(&[(FileId(0), &hir)], &index, &inference, &res, None)
+    }
+
+    #[test]
+    fn native_unannotated_param_escapes_as_unknown() {
+        // The baseline the exemption is measured against — without it the
+        // next test would pass with the firewall deleted.
+        let diags = native_strict_diags("flow noop(x) {\n  Hello.\n}\n");
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E065);
+    }
+
+    #[test]
+    fn native_annotated_param_is_exempt_from_unknown_escape() {
+        let diags = native_strict_diags("flow noop(x: int) {\n  Hello.\n}\n");
+        assert!(
+            diags.is_empty(),
+            "the `: int` annotation supplies the type: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn native_unresolvable_param_annotation_still_escapes() {
+        // The firewall exempts a *resolvable* annotation only
+        // (`annotations::resolve`) — an unrecognized name supplies nothing.
+        let diags = native_strict_diags("flow noop(x: Nonesuch) {\n  Hello.\n}\n");
+        assert!(
+            diags.iter().any(|d| d.code == DiagnosticCode::E065),
+            "an unresolvable annotation must not exempt the slot: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn native_annotated_let_is_exempt_from_unknown_escape() {
+        // NG-B's binding half: an ascribed `let` inside a code-ground `fn`
+        // body reaches `collect_temps`' `annotation_ty` exemption.
+        let bare = native_strict_diags("fn f(n: int): int {\n  let t;\n  return n;\n}\n");
+        assert!(
+            bare.iter().any(|d| d.code == DiagnosticCode::E065),
+            "an unannotated, uninferable `let` escapes: {bare:?}"
+        );
+        let annotated =
+            native_strict_diags("fn f(n: int): int {\n  let t: string;\n  return n;\n}\n");
+        assert!(
+            annotated.is_empty(),
+            "the `: string` ascription supplies the type: {annotated:?}"
+        );
     }
 
     #[test]
