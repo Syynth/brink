@@ -234,8 +234,11 @@ pub enum Value {
     /// `x == y`; an Option is never equal to a bare `T` (the ruled
     /// `Option[T] ≠ T` strictness holds at the value layer too). Display
     /// (`stringify`/`string(x)`): `none` / `some(<inner>)` — the boring,
-    /// stable form; the §1.6 display-boundary forgiveness is Track B4 and
-    /// deliberately NOT implemented here.
+    /// stable form, total forever (F28). The §1.6b display-boundary
+    /// forgiveness (Track B4) is a `brink-runtime`-only concern layered on
+    /// top at read time (`value_ops::stringify_display`) — deliberately
+    /// not implemented at this value-definition layer, since `string()`
+    /// and every non-display consumer must keep seeing the total form.
     OptionVal(Option<Arc<Value>>),
     /// An integer range value (NS-A5, `docs/stdlib-spec.md` §7 — F7, ruled
     /// 2026-07-19: "ranges are a REAL Value kind"). `start..end` (exclusive)

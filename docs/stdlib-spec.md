@@ -65,16 +65,28 @@ dangles; charter fix owed.)
    shrugs). Riders: the forgiveness is TRACEABLE (transcript/debug
    records None-renders; an always-None-interpolation lint ⏳);
    choice-text and tag surfaces are named edges (accidental empty
-   choice text vs the deliberate `* []`) ⏳. **F27 RULED
+   choice text vs the deliberate `* []`) ⏳. **SHIPPED 2026-07-25
+   (Track B4, issue #1463)**: `brink-runtime`'s `value_ops::
+   stringify_display` is the boundary — a final `Value::OptionVal(None)`
+   at an interpolation/template-slot position renders `""`; every other
+   value (including `Some(v)`) still delegates to the ordinary
+   `stringify`. The transcript riders is satisfied by construction — the
+   append-only transcript/`Fragment` model never eagerly resolves output
+   parts, so a forgiven `None`-render still shows up as
+   `Value::OptionVal(None)` in `OutputBuffer::transcript()`. The
+   always-None-interpolation lint and the choice-text/tag named-edge
+   question remain open (deferred, not silently dropped — see
+   `docs/stdlib-sequencing.md`'s Wave B4 entry). **F27 RULED
    (2026-07-19): Option has NO truthiness** — a condition-position
    `Option[T]` is a compile error under strict and a runtime fault
    under gradual; the author writes `== none`, `== some(x)`, or
    (post-B1) the `as`-binding. Truthiness is a quiet coercion of
    exactly the kind `Option[T] ≠ T` exists to ban. (Supersedes
    A1's shipped falsy-none — implementation fix owed.) **F28 RULED
-   (2026-07-19)**: `none`/`some(…)` render totally in display
-   until B4's boundary-forgiveness arrives; `string()`'s ruled
-   totality is preserved.
+   (2026-07-19)**: `none`/`some(…)` render totally via `string()`
+   forever (`value_ops::stringify`, unaffected by B4); the interpolation
+   boundary's `none` render was the interim behavior B4 (above)
+   superseded.
 
 ## 2. Domain 1 — math (RULED)
 

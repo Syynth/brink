@@ -426,8 +426,10 @@ kind: honest answers to reasonable questions, and they come back as a
 value you can test.
 
 An `Option[T]` is either `some(x)` — the world had one, here it is — or
-`none`. It renders in output exactly as it reads, and you test it with
-explicit equality:
+`none`. `some(x)` always renders as `some(x)`; a bare `none` at the
+**final** value of an interpolation renders as nothing at all — absence
+rendering as absence ([Option and Absence](option.md#how-option-prints)
+has the full display rule). You test it with explicit equality:
 
 ```ink
 ~ temp tab = #[4, 7, 2, 5]
@@ -443,11 +445,14 @@ Settled the last entry, {settled} — {len(tab)} remain.
 
 ```text
 Heaviest night on the tab: some(7).
-Edda's room: none. Mira's room: some(3).
+Edda's room: . Mira's room: some(3).
 Settled the last entry, some(5) — 3 remain.
 The seven-coin night is still second in the ledger.
 No Edda on the register tonight.
 ```
+
+(Edda's room prints nothing, not the word `none` — that's the
+interpolation boundary at work, not a rendering bug.)
 
 Two fences keep the doctrine honest. First, `Option[T]` has **no
 truthiness** — `{first(tab): …}` is not "is there a first element", it is

@@ -239,12 +239,27 @@ signatures). **Findings:** F0 (sort_by's ref-ness decides its rvalue-
 receiver behavior — **must be ruled** so UFCS knows whether `a.sort_by(c)`
 on an rvalue is an error).
 
-### Wave B4 — display-boundary None-render in interpolation
-The §1.6 forgiveness: a final-None interpolation renders as nothing;
+### Wave B4 — display-boundary None-render in interpolation (SHIPPED, issue #1463)
+The §1.6b forgiveness: a final-None interpolation renders as nothing;
 everywhere else `Option[T] ≠ T` strict; nested compositions never
 forgiven; the traceability rider (transcript/debug records None-renders).
-**Depends:** B0, A1. **Findings:** F1 (does the boundary also govern
-`string()`), F12 (emits still fires on None-interp).
+**Turned out not to depend on B0** — `{…}` interpolation and `Option[T]`
+already exist on the current brink dialect (the same "early host" pattern
+§0's opening note argues for), so the boundary shipped as a
+`brink-runtime` value-display change (`value_ops::stringify_display`),
+oracle- and brink-corpus-covered immediately, with no native-parser
+surface involved at all; the `B0 --> B4` edge above is stale for this
+reason (not re-drawn here — flagged, not fixed, to keep this diff
+narrow). **Findings:** F1 — RESOLVED, the boundary does **not** govern
+`string()` (§1.6's own text: "`string()`'s ruled totality is preserved");
+F12 — RESOLVED by inspection, `note_effect_emit` fires unconditionally in
+`vm.rs` before the output push, independent of whether the pushed value
+later resolves to empty text. **Deferred as named-edge riders (not
+implemented here):** the always-None-interpolation lint; choice-text/tag
+surfaces distinguishing an accidental empty choice/tag from a deliberate
+`* []` (choice display text shares the fragment-resolution path this wave
+touches, so it inherits the same forgiveness — whether that is the
+intended edge behavior is still open).
 
 ### Wave B5 — construction grammar `TypeName { … }`
 The one initializer grammar, per-type meaning: struct fields / map pairs /

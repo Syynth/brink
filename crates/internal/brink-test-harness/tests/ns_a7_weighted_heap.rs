@@ -272,11 +272,15 @@ fn heap_push_pop_peek_drain_ascending_end_to_end() {
          empty peek: {heap_peek(open)}\n\
          -> END\n",
     );
+    // B4 (`docs/stdlib-spec.md` §1.6b, issue #1463): `empty peek`'s final
+    // value is `none` at the interpolation boundary, so it renders as
+    // nothing — not the interim total `"none"` this fixture pinned before
+    // B4 shipped.
     assert_eq!(
         run_to_end(&mut story),
         "peek: some(0)\n\
          drain: some(0) some(3) some(3) some(7) some(11) some(42)\n\
-         empty peek: none\n"
+         empty peek:\n"
     );
 }
 

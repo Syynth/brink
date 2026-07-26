@@ -4,8 +4,11 @@
 // display path (F1, ruled 2026-07-19): interpolation `{p}` and the
 // `string()` conversion intrinsic must render identically. Nested structs
 // recurse; structs inside collections and Options render through the same
-// path; `none`/`some(…)` render totally (F28) until B4's display-boundary
-// forgiveness arrives with the native surface.
+// path. `some(…)` renders totally at both consumers (F28); a final `none`
+// at the interpolation boundary now renders as *nothing* (§1.6b, Track B4)
+// while `string(none)` still renders `"none"` (F28's totality, preserved
+// for that one intrinsic) — the two consumers deliberately diverge for
+// `None` only, proven by the `absent` / `absent via string` pair below.
 
 STRUCT Point = #{
     x: float,
@@ -35,4 +38,5 @@ nested: {seg}
 in array: {pts}
 option: {o}
 absent: {find("abc", "z")}
+absent via string: {string(find("abc", "z"))}
 -> DONE

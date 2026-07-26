@@ -348,7 +348,7 @@ peek: {heap_peek(open)}
 ~ temp first = heap_pop(open)
 ~ temp second = heap_pop(open)
 popped: {first} then {second}
-drain: {heap_pop(open)} {heap_pop(open)} {heap_pop(open)} {heap_pop(open)}
+drain: {heap_pop(open)} {heap_pop(open)} {heap_pop(open)} {string(heap_pop(open))}
 -> END
 ```
 
@@ -361,7 +361,10 @@ drain: some(7) some(8) some(9) none
 Everything in that transcript is doctrine you've already met. The pops
 come back as `Option[T]` because an empty heap is *absence*, not a bug
 — the [Option chapter's](option.md) line verbatim, and the final `none`
-is the drain loop's natural stopping signal. `heap_push` is a
+is the drain loop's natural stopping signal (spelled `string(…)` on that
+last pop only, so the signal stays *visible* on the page — a bare
+`{heap_pop(open)}` on the exhausted heap would print nothing at all,
+per [How Option prints](option.md#how-option-prints)). `heap_push` is a
 statement-only, lvalue-first mutator (`E055`/`E056`/`E058`, exactly the
 `sort` family's manners); `heap_pop` is a hybrid like `pop` — it
 mutates *and* answers, so it's legal in expression position, with the
