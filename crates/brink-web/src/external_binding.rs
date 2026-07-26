@@ -477,11 +477,23 @@ mod binding_wasm_tests {
         // Issue #1573: both cases deliver a `done`-type `Line`; `didSafeExit`
         // is the production-reachable way to tell them apart.
         let safe = runner("Hello.\n-> DONE\n");
-        let _ = cont(&safe);
+        let json = cont(&safe);
+        let lines: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            lines.as_array().and_then(|a| a.last()).map(|l| &l["type"]),
+            Some(&serde_json::Value::String("done".to_owned())),
+            "{json}"
+        );
         assert!(safe.did_safe_exit());
 
         let unsafe_ = runner("-> k\n== k ==\nHello.\n");
-        let _ = cont(&unsafe_);
+        let json = cont(&unsafe_);
+        let lines: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            lines.as_array().and_then(|a| a.last()).map(|l| &l["type"]),
+            Some(&serde_json::Value::String("done".to_owned())),
+            "{json}"
+        );
         assert!(!unsafe_.did_safe_exit());
     }
 }

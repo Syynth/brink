@@ -1356,14 +1356,40 @@ impl<R: StoryRng> Story<R> {
         out
     }
 
-    /// Returns whether the last execution cycle ended with a safe exit
-    /// (explicit `-> DONE` opcode). If false after a `Done` line, the
-    /// story ran out of content — the next `continue_single` call will
-    /// return [`RuntimeError::RanOutOfContent`] instead of more text. See
-    /// [`FlowInstance::did_safe_exit`] for the full contract.
+    /// Returns whether the last execution cycle of the **default** flow
+    /// ended with a safe exit (explicit `-> DONE` opcode). If false after a
+    /// `Done` line, the story ran out of content — the next
+    /// `continue_single` call will return [`RuntimeError::RanOutOfContent`]
+    /// instead of more text. See [`FlowInstance::did_safe_exit`] for the
+    /// full contract.
+    ///
+    /// This reads only `self.default` — for a named flow (spawned via
+    /// [`spawn_flow`](Self::spawn_flow) or one of the isolated
+    /// `instances`), use [`did_safe_exit_flow`](Self::did_safe_exit_flow)
+    /// instead. Calling this after `continue_flow*` on a named flow
+    /// silently returns the default flow's stale value.
     #[must_use]
     pub fn did_safe_exit(&self) -> bool {
         self.default.did_safe_exit()
+    }
+
+    /// Like [`did_safe_exit`](Self::did_safe_exit), but for a named flow
+    /// (shared or isolated) rather than the default flow. Mirrors
+    /// [`debug_snapshot_flow`](Self::debug_snapshot_flow)'s lookup shape:
+    /// checks `shared_instances` first, then falls back to the isolated
+    /// `instances`.
+    ///
+    /// # Errors
+    /// [`UnknownFlow`](RuntimeError::UnknownFlow) if no flow named `name`
+    /// exists (shared or isolated).
+    pub fn did_safe_exit_flow(&self, name: &str) -> Result<bool, RuntimeError> {
+        if let Some(instance) = self.shared_instances.get(name) {
+            Ok(instance.did_safe_exit())
+        } else if let Some((instance, _ctx, _local)) = self.instances.get(name) {
+            Ok(instance.did_safe_exit())
+        } else {
+            Err(RuntimeError::UnknownFlow(name.to_owned()))
+        }
     }
 
     /// Returns whether the last execution cycle passed through an empty

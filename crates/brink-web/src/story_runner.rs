@@ -608,12 +608,16 @@ impl StoryRunner {
         !self.recorder.borrow().is_empty()
     }
 
-    /// Whether the last execution cycle ended with a safe exit (an
-    /// explicit `-> DONE`), as opposed to the flow running out of content.
-    /// Both deliver a `done`-type `Line`; read this right after one to
-    /// tell them apart — `false` means the next `continueStory`/
-    /// `continueSingle`/`advanceOne` call will error instead of returning
-    /// more text. `false` if no story is loaded. See
+    /// Whether the last execution cycle of the **default** flow ended with
+    /// a safe exit (an explicit `-> DONE`), as opposed to the flow running
+    /// out of content. Both deliver a `done`-type `Line`; read this right
+    /// after one to tell them apart — `false` means the next
+    /// `continueStory`/`continueSingle`/`advanceOne` call will error
+    /// instead of returning more text. `false` if no story is loaded.
+    ///
+    /// This reflects only the default flow — it does **not** track flows
+    /// spawned/continued via `spawnFlow`/`continueFlow`/
+    /// `continueFlowMaximally`. See
     /// [`brink_runtime::Story::did_safe_exit`] (issue #1573).
     #[must_use]
     pub fn did_safe_exit(&self) -> bool {

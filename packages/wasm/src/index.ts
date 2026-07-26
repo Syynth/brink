@@ -1175,6 +1175,18 @@ export class StoryRunnerHandle {
     return this.runner.has_recording();
   }
 
+  /** Whether the last execution cycle of the default flow ended with a safe
+   * exit (an explicit `-> DONE`), as opposed to running out of content.
+   * Both deliver a `done`-type line; read this right after one to tell
+   * them apart — `false` means the next `continueStory`/`continueSingle`/
+   * `advanceOne` call will throw instead of returning more text. `false`
+   * if no story is loaded. Reflects only the default flow, not flows
+   * spawned/continued via `spawnFlow`/`continueFlow`/
+   * `continueFlowMaximally` (issue #1573). */
+  didSafeExit(): boolean {
+    return this.runner.did_safe_exit();
+  }
+
   /** Structured, name-resolved snapshot of the runtime's current state. */
   debugSnapshot(): DebugState {
     return JSON.parse(this.runner.debug_snapshot()) as DebugState;
@@ -1975,6 +1987,18 @@ export class StorySessionHandle {
   /** Whether the session is parked on a deferred external. */
   hasPendingExternal(): boolean {
     return this.session.has_pending_external();
+  }
+
+  /** Whether the last execution cycle of the default flow ended with a safe
+   * exit (an explicit `-> DONE`), as opposed to running out of content.
+   * Both deliver a `done`-type line; read this right after one to tell
+   * them apart — `false` means the next `continueSingle`/`advance` call
+   * will throw instead of returning more text. `false` if no session is
+   * initialized. Reflects only the default flow, not flows
+   * spawned/continued via `spawnFlow`/`continueFlow`/
+   * `continueFlowMaximally` (issue #1573). */
+  didSafeExit(): boolean {
+    return this.session.did_safe_exit();
   }
 
   /** Set a global variable. Turn-boundary only: throws mid-turn (drain the

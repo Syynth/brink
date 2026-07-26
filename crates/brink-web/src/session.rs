@@ -381,12 +381,16 @@ impl WebSession {
             .is_some_and(brink_runtime::StorySession::has_pending_external)
     }
 
-    /// Whether the last execution cycle ended with a safe exit (an
-    /// explicit `-> DONE`), as opposed to the flow running out of content.
-    /// Both deliver a `done`-type `Line`; read this right after one to
-    /// tell them apart — `false` means the next `continueSingle`/
-    /// `advance` call will error instead of returning more text. `false`
-    /// if no session is initialized. See
+    /// Whether the last execution cycle of the **default** flow ended with
+    /// a safe exit (an explicit `-> DONE`), as opposed to the flow running
+    /// out of content. Both deliver a `done`-type `Line`; read this right
+    /// after one to tell them apart — `false` means the next
+    /// `continueSingle`/`advance` call will error instead of returning
+    /// more text. `false` if no session is initialized.
+    ///
+    /// This reflects only the default flow — it does **not** track flows
+    /// spawned/continued via `spawnFlow`/`continueFlow`/
+    /// `continueFlowMaximally`. See
     /// [`brink_runtime::Story::did_safe_exit`] (issue #1573).
     #[must_use]
     pub fn did_safe_exit(&self) -> bool {
