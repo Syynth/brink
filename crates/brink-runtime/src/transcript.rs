@@ -16,9 +16,38 @@
 //!   u32 LE            content CRC-32 (4)
 //!
 //! Body:
-//!   u32 LE            part count
-//!   [Part]*           encoded parts
+//!   u32 LE            top-level part count
+//!   [Part]*           encoded top-level parts
+//!
+//!   u32 LE            fragment count
+//!   ( u32 LE          this fragment's part count
+//!     [Part]*          encoded fragment parts
+//!   )*
+//!
+//!   ( u32 LE          this fragment's tag count      -- #953, trailing section
+//!     [str]*           tags, in fragment order        (see below)
+//!   )*
 //! ```
+//!
+//! The fragment section and the trailing fragment-tags section are both
+//! **backward-compat optional**: `read_transcript` treats "no bytes left"
+//! at either boundary as "this section is absent", not as truncated input,
+//! and falls back to an empty `Vec` (zero fragments, or every fragment's
+//! `tags: Vec::new()`) rather than erroring. This lets a `.brkt` written
+//! before a section existed keep decoding under a newer reader.
+//!
+//! The fragment-tags section is written as a distinct trailing section
+//! *after* every fragment's parts — one `(tag count, [str]*)` block per
+//! fragment, in the same order the fragments themselves were written —
+//! rather than inlined into each fragment's own record. An inline layout
+//! could not tell "this fragment has a tags section" apart from "the next
+//! fragment's part bytes happen to start here" once a `.brkt` written
+//! before tags existed was read by tags-aware code; the trailing-section
+//! layout sidesteps that ambiguity by using the same "any bytes left?"
+//! probe already used for the fragment section itself. Fixes #953:
+//! `Fragment::tags` was silently dropped by this codec. See
+//! `write_transcript`/`read_transcript` below for the code-level version of
+//! this note.
 
 use alloc::string::String;
 use alloc::sync::Arc;
