@@ -1843,7 +1843,8 @@ mod tests {
         // gap (#1551 asked to "decide (and document)" this shape; the
         // decision is deferred), not a fixed contract — this test exists
         // so a future change to that decision has to touch it deliberately.
-        let diags = native_strict_diags("flow quest(): int ~{\n  if true {\n    return 1;\n  }\n}\n");
+        let diags =
+            native_strict_diags("flow quest(): int ~{\n  if true {\n    return 1;\n  }\n}\n");
         assert!(
             diags.is_empty(),
             "partial-path fall-through is not currently detected: {diags:?}"
