@@ -1,0 +1,18 @@
+fn present() {
+  if some(41) as n {
+    return n + 1;
+  }
+  return 0;
+}
+
+fn absent() {
+  if none as n {
+    return n;
+  }
+  return -7;
+}
+
+flow main() {
+  Present: {present()}
+  Absent: {absent()} -> END
+}

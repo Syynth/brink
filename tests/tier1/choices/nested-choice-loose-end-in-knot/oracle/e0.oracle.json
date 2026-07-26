@@ -1,0 +1,61 @@
+{
+  "steps": [
+    {
+      "text": "",
+      "tags": [],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "first option",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "first option\n",
+      "tags": [],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "nested option",
+              "index": 0,
+              "tags": []
+            }
+          ],
+          "selected": 0
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "nested option\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 2
+    }
+  ],
+  "outcome": {
+    "Error": "Ink had 1 error. It is strongly suggested that you assign an error handler to story.onError. The first issue was: RUNTIME ERROR: '/Users/syynth/code/rs/brink/tests/tier1/choices/nested-choice-loose-end-in-knot/story.ink' line 6: ran out of content. Do you need a '-> DONE' or '-> END'?"
+  },
+  "choice_path": [
+    0,
+    0
+  ],
+  "initial_state": {
+    "variables": {},
+    "turn_index": 0
+  }
+}

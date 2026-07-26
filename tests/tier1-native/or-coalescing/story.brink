@@ -1,0 +1,14 @@
+var counter = 0
+
+fn bump() {
+  counter = counter + 1;
+  return 99;
+}
+
+flow main() {
+  Collapse some: {some(5) or 99}
+  Collapse none: {none or 99}
+  Chain: {none or none or 7}
+  Short circuit: {some(1) or bump()}
+  Counter after: {counter} -> END
+}
