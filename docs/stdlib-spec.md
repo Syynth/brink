@@ -135,7 +135,9 @@ observation is repr-transparent. Spec'd as a PERFORMANCE CONTRACT
 ("O(1), non-allocating"), regression-guarded via bench-counters
 (arc_clones/cow_copies). The Java-substring leak is named: wire/
 saves always materialize; creation applies a view≪base size
-heuristic (ratio ⏳). Distinct from #829's REF projections (the
+heuristic (ratio RULED 2026-07-26: constants are Distinct from #829's REF projections (the
+  implementation-tunable performance facts pinned by the
+  bench-counters, never semantics; tuned only with evidence).
 mutating write-through cousin, still icebox, reserved wire slot) —
 cross-referenced so views ≠ projections.
 
@@ -459,7 +461,9 @@ precedent, oracle byte-identical):
   table-building shows dossier demand, a validating constructor
   verb returning `Option` kills the construction-fault residual
   the way `nonempty()` did for ranges. `len`, iteration, and
-  mutation ⏳ — v1 is construct-and-roll.
+  mutation RULED OUT for v1 (2026-07-26, maintainer: agent
+  invention, low value) — construct-and-roll stands; any further
+  surface is evidence-gated.
 - **Heap/priority queue — the humble form first.** Proposal: verbs
   over arrays, not a new type — `heap_push(ref a, x)`,
   `heap_pop(ref a)` → `Option`, `heap_peek(a)` → `Option` (empty
@@ -525,7 +529,10 @@ precedent, oracle byte-identical):
    spelling — supersession note there when this lands. Holes'
    release policy — **PARKED past this sitting by the maintainer**
    (2026-07-18); it survives the closers as the one deliberately
-   open authorial-workflow judgment.
+   open authorial-workflow judgment. *(2026-07-26: stays parked,
+   re-homed to the NS-T editor round; lean for when it opens —
+   holes ride the `[lints]` control plane, the same shape as the
+   unmaterialized-slug lint.)*
 3. **Prelude — final list assembled from the per-domain marks:**
    entire math kit incl. trig (§2's generous ruling) · `len
    contains char_at` (text) · `len contains push` (seq) · `len`
@@ -668,20 +675,21 @@ precedent, oracle byte-identical):
   as #1103; holes' release policy parked by the maintainer).
 - **§§1–9 are now fully ruled.** The sitting's remaining work is
   Phase C.
-- In-section ⏳s: tower mini-spec (§2b) · view-materialization
-  ratio (§3b) · weighted-table mutation surface (§8) · holes'
-  release policy (§9.2, maintainer-parked) · protocol
-  implementation spelling + compare/equality coherence line
-  (§9.6) ·
-  inhabited-range type/validator spelling (§7, code-dialect
-  sitting). **Closed since**: initializer protocol-vs-grammar —
-  #1103 RULED 2026-07-23 (it is protocol dispatch; see §9.6's
-  `construct` entry) and BUILT by #1464.
-- Maintainer-attention note: `remove` now names three verbs with
-  divergent postures — seq remove-by-index (OOB ⇒ fault, the
-  indexing contract), map remove-by-key (idempotent-total), flags
-  subtract (idempotent-total). Legal under intrinsic overloading;
-  flagged so the divergence is chosen, not accidental.
+- In-section ⏳s (pruned 2026-07-26 — ratio ruled, weighted
+  surface ruled out for v1, holes re-homed to NS-T): tower
+  mini-spec (§2b) · protocol implementation spelling +
+  compare/equality coherence line (§9.6) · inhabited-range
+  type/validator spelling (§7, code-dialect sitting). **Closed
+  since**: initializer protocol-vs-grammar — #1103 RULED
+  2026-07-23 (protocol dispatch; §9.6's `construct` entry),
+  BUILT by #1464.
+- `remove` divergence **RESOLVED 2026-07-26: accidental — made
+  consistent by renaming, not by flattening postures** (#1484):
+  seq remove-by-index → **`remove_at`** (joining the `_at`
+  faulting-index family with `char_at`); **`remove` uniformly
+  names identity-based idempotent-total removal** (map keys,
+  flags values). Each posture was right for its domain; the
+  accident was one name spanning both.
 - **Lambdas RULED early (2026-07-19, airport sitting — the
   code-dialect opening item closed pre-sitting)**: **Rust pipes
   with colon returns** — `|g| g.awake`, `|g: Guest|: bool { … }`,
