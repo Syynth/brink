@@ -14,8 +14,8 @@ salsa database so that (a) a second language frontend can join the same
 query graph (the #397 growth path), (b) recompiles after an edit redo
 only what the edit dirtied (#460), and (c) the IDE layer reads the same
 queries instead of maintaining bespoke whole-project walks. Behavior is
-**unchanged throughout phase 0** — every slice is oracle-gated (ratchet
-5,577 must not move) and the corpus report must be identical.
+**unchanged throughout phase 0** — every slice is oracle-gated (`RATCHET_EPISODE_COUNT`
+must not move) and the corpus report must be identical.
 
 **Non-goals of phase 0.** No language growth (that starts after slice C).
 No type checking (`signature` lands as a stub). No IR rewrites — HIR,
@@ -136,7 +136,7 @@ about the *pass structure*, not necessarily crate boundaries.
 
 ## 6. Verification strategy
 
-1. **Oracle gate** on every slice: ratchet 5,577 byte-identical, corpus
+1. **Oracle gate** on every slice: ratchet `RATCHET_EPISODE_COUNT` byte-identical, corpus
    report unchanged.
 2. **Incremental == from-scratch**: a fuzz/property harness that applies
    random edit sequences to corpus projects and asserts the incremental

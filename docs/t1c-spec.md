@@ -191,7 +191,7 @@ implementation review):
 
 Per the T1b divergence discipline:
 
-- **Oracle gate**: ratchet 5,577 byte-identical on every slice;
+- **Oracle gate**: ratchet `RATCHET_EPISODE_COUNT` byte-identical on every slice;
   strict-ink corpus never sees `#fn`.
 - **Tier-1 corpus wing**: `tests/tier1-brink/` grows function-value
   cases with hand-written expected transcripts — creation, both call

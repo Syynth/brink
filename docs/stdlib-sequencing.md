@@ -16,7 +16,7 @@ through the RMW discipline, and `#@`-channel annotations. Track B (native
 surface) waits on the prototype parser (the season's next artifact).
 
 **Why the current brink dialect is the early host (load-bearing).** The
-oracle/test-harness machinery (`brink-test-harness`, the 5,577-episode
+oracle/test-harness machinery (`brink-test-harness`, the `RATCHET_EPISODE_COUNT`-episode
 ratchet, insta snapshots) already covers the brink dialect end-to-end. A
 verb implemented as a brink-dialect intrinsic — `Option[T]`, the
 heap verbs, `Weighted[T]`, the effect-row extensions — gets **oracle and

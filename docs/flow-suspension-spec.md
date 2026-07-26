@@ -212,7 +212,7 @@ manual (non-bevy) hosts.
 - **Park-depth cap = 8**; at-cap is a turn-terminating runtime fault
   (parks nest only through tunnel chains; real stories sit at 1–2).
 - **Oracle bar**: FS-3's opcodes are vanilla-unreachable; the ratchet
-  stays byte-identical at 5,577 with no corpus regeneration. That is
+  stays byte-identical at `RATCHET_EPISODE_COUNT` with no corpus regeneration. That is
   the acceptance criterion.
 
 ### 10.5 Recorded future directions (icebox, not designed)
