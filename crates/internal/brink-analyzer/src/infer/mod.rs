@@ -2054,6 +2054,45 @@ mod tests {
         assert_eq!(sig.params, vec![Ty::Int]);
     }
 
+    /// Review correction (w65, changeset wording): only an ANNOTATED param
+    /// or an ASCRIBED temp reaches `self.annotated` (`infer_def_body`'s
+    /// `annotated` map + `register_ascription`) — an unascribed temp
+    /// merely *copying* an annotated param's value does not inherit that
+    /// annotation transitively. `v` here has no `: T` ascription of its
+    /// own, so `some(v)` still infers `Option[Unknown]`, pinning the
+    /// boundary the `.changeset/issue-1168-option-return-inference.md`
+    /// wording now names explicitly ("annotated param / ascribed temp",
+    /// not any "param/temp passed straight through").
+    #[test]
+    fn unascribed_temp_copy_of_an_annotated_param_does_not_inherit_the_annotation() {
+        let (hir, index, res) =
+            build("=== function f(x: int) ===\n~ temp v = x\n~ return some(v)\n");
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let sig = sig_of(&result, &index, "f");
+        assert_eq!(sig.return_ty, Ty::Option(Box::new(Ty::Unknown)));
+    }
+
+    /// Review correction (w65): `contains`'s `self.observe(needle, elem)`
+    /// call derives `elem` from `arg_tys[0]` (the container's shape) — if
+    /// that shape were read from `tab`'s own annotation-fallback type
+    /// (`read_tys`) instead of its evidence-only type (`arg_tys`), `tab`'s
+    /// `array<int>` annotation would become body *evidence* for `needle`
+    /// (the sibling arg), silently discarding `needle`'s own `string`
+    /// annotation. `tab` has no other evidence anywhere in the body, so
+    /// this pins that `contains`'s observe call never reads the
+    /// annotation-shadowed slice: `needle` must still export its own
+    /// declared `string`, not `tab`'s element type `int`.
+    #[test]
+    fn intrinsic_sibling_arg_never_seeds_from_a_containers_own_annotation() {
+        let (hir, index, res) = build(
+            "=== function f(tab: array<int>, needle: string) ===\n\
+             ~ return contains(tab, needle)\n",
+        );
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let sig = sig_of(&result, &index, "f");
+        assert_eq!(sig.params, vec![Ty::Array(Box::new(Ty::Int)), Ty::String]);
+    }
+
     #[test]
     fn return_annotation_overlays_an_unconstrained_return() {
         // `return hp` types Unknown from the body alone (nothing pins hp

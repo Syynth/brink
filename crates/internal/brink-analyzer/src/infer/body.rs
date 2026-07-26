@@ -1086,26 +1086,36 @@ impl InferPass<'_, '_> {
         // (shadow-fallback, matching `brink_analyzer::resolve::
         // is_t1b_stdlib_name` — a real def always wins the resolve() above).
         if let [seg] = path.segments.as_slice() {
-            // Issue #1168: a stdlib verb's arg type here is a pure *read* —
-            // every intrinsic arm only inspects `arg_tys` to shape its own
-            // result (`some(x)` → `Option[typeof x]`, `get(m, k)` → the
-            // map's value type), never joins it against a second operand
-            // the way `infer_infix`'s comparison/arithmetic arms do. So an
-            // arg that's merely an annotated param/temp *passed through*
-            // with no other evidence anywhere in the body — the exact
-            // shape `some(x)` and `get(m, k)` take in `docs/book/src/
-            // toolchain/dialect/{option,iteration}.md`'s fences — should
-            // still carry its own declared type here, same "annotation
-            // wins over nothing" overlay `infer_def_body` already applies
-            // to the exported param/return slots (see `own_annotation`'s
-            // doc for why `infer_infix` deliberately does NOT get this
-            // fallback).
-            let arg_tys: Vec<Ty> = args
+            // Issue #1168 (review correction, w65): NOT every intrinsic arm
+            // only inspects `arg_tys` to shape its own result — `contains`,
+            // `push`/`heap_push`, `insert`, `remove`, `index_of`, `get`, and
+            // `contains_value` all call `self.observe(<sibling arg>, <type
+            // derived from arg_tys[0]>)`, writing evidence into
+            // `self.locals` for a *second* argument. Passing an
+            // annotation-shadowed `arg_tys` into `infer_intrinsic`
+            // uniformly would make one param's annotation become body
+            // *evidence* for a sibling param — exactly the seeding
+            // `infer_def_body`'s "overlay, never replace" design exists to
+            // avoid, and would silently discard the sibling's own
+            // annotation or manufacture a spurious `E066` if the sibling is
+            // later compared against something else.
+            //
+            // So `arg_tys` (below) stays the original, evidence-only
+            // vector — every observe-bearing arm keeps matching on it
+            // unchanged. `read_tys` is a *separate* fallback-shadowed copy,
+            // threaded through only for arms that shape their own return
+            // type from a value that is purely read, never joined against a
+            // second operand (`some(x)` → `Option[typeof x]`; `get(m, k)`'s
+            // *return type* — its `observe(key_arg, k)` call still matches
+            // on the unshadowed `arg_tys`, so `m`'s annotation alone can
+            // never seed `k`'s inference). See `own_annotation`'s doc for
+            // why `infer_infix` deliberately gets neither slice.
+            let read_tys: Vec<Ty> = args
                 .iter()
                 .zip(arg_tys.iter())
                 .map(|(a, ty)| self.or_own_annotation(a, ty.clone()))
                 .collect();
-            return self.infer_intrinsic(&seg.text, path.range, args, &arg_tys);
+            return self.infer_intrinsic(&seg.text, path.range, args, &arg_tys, &read_tys);
         }
         Ty::Unknown
     }
@@ -1456,6 +1466,7 @@ impl InferPass<'_, '_> {
         range: TextRange,
         args: &[Expr],
         arg_tys: &[Ty],
+        read_tys: &[Ty],
     ) -> Ty {
         // NS-A2 fault dimension (issue #1108, from #1097) + NS-A6 RNG-cell
         // writes (issue #1112, "every draw is an ordinary write"): both
@@ -1685,16 +1696,21 @@ impl InferPass<'_, '_> {
                 ret
             }
             // `get(m, k)` → `Option[V]` (§5, martyr #3); the key narrows
-            // against the map's key type.
-            "get" => match arg_tys.first() {
-                Some(Ty::Map(k, v)) => {
-                    if let Some(key_arg) = args.get(1) {
-                        self.observe(key_arg, k);
-                    }
-                    Ty::Option(v.clone())
+            // against the map's key type — from `arg_tys` (evidence-only:
+            // issue #1168's review correction, see `infer_call`'s comment
+            // — `m`'s annotation must never become `k`'s evidence). The
+            // return type's own map shape comes from `read_tys`, so `m`'s
+            // own annotation still resolves `get(m, k)`'s result when `m`
+            // is otherwise unevidenced (the confirmed #1168 repro).
+            "get" => {
+                if let (Some(Ty::Map(k, _)), Some(key_arg)) = (arg_tys.first(), args.get(1)) {
+                    self.observe(key_arg, k);
                 }
-                _ => Ty::Option(Box::new(Ty::Unknown)),
-            },
+                match read_tys.first() {
+                    Some(Ty::Map(_, v)) => Ty::Option(v.clone()),
+                    _ => Ty::Option(Box::new(Ty::Unknown)),
+                }
+            }
             // `contains_value(m, v)` → bool (§5); the needle narrows
             // against the map's value type.
             "contains_value" => {
@@ -1725,8 +1741,11 @@ impl InferPass<'_, '_> {
                 Ty::Unknown
             }
             // `some(x)` → `Option[typeof x]` (§1.4) — the constructor is
-            // where a bare element type becomes optional.
-            "some" => Ty::Option(Box::new(arg_tys.first().cloned().unwrap_or(Ty::Unknown))),
+            // where a bare element type becomes optional. `x` is read here,
+            // never joined against a second operand, so this is the one
+            // arm where `read_tys` (issue #1168's annotation fallback) is
+            // safe unconditionally: there is no sibling to seed.
+            "some" => Ty::Option(Box::new(read_tys.first().cloned().unwrap_or(Ty::Unknown))),
             // ── NS-A8 numeric tower (issue #1114,
             // `docs/tower-mini-spec.md`). Constructors return their kind;
             // numeric lanes observe `float` (int lanes coerce through the
