@@ -2484,10 +2484,12 @@ fn lower_native_file(file_id: FileId, parse: &NativeParse) -> LoweredFile {
     // decision-log 2026-07-22 "Flows end implicitly (native)" item 4) — the
     // relocated residual value of ink's retired "ran out of content" error.
     // Deliberately folded into `diagnostics`, never `admission`: unlike the
-    // B0.9 accept-list below, this is `Severity::Warning`-base, opt-in, and
-    // configurable through `[lints]` like any other tier-able diagnostic —
-    // it must flow through `apply_suppressions`/`effective_severity` in
-    // `partition_diagnostics`, which only `diagnostics` does.
+    // B0.9 accept-list below, this is `Severity::Warning`-base, on by
+    // default (not opt-in — see the lint module's own doc), and
+    // configurable/suppressible through `[lints]`/`//brink-disable` like
+    // any other tier-able diagnostic — it must flow through
+    // `apply_suppressions`/`effective_severity` in `partition_diagnostics`,
+    // which only `diagnostics` does.
     diagnostics.extend(brink_analyzer::check_native_choice_dead_end(file_id, &hir));
 
     // B0.3 admission validator (docs/hir-admission-contract.md §4.2, issue
