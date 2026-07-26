@@ -588,6 +588,31 @@ pub enum SyntaxKind {
     /// the brink-dialect's `~ await cond` produces.
     UNTIL_STMT,
 
+    // ── Node kinds — the type-annotation grammar (NG-A/B/C, issues ──────
+    // ── #1487/#1488/#1489; `docs/decision-log.md` 2026-07-26 "NG-C ─────
+    // ── ruled: `: type` returns everywhere") ────────────────────────────
+    // One `: type` spelling in every position: `fn f(g: Guest): float`,
+    // `flow f(): Quest`, `let x: int = 1;`, `var hp: int = 10`,
+    // `|g: Guest|: bool { … }`. Structurally mirrors the brink dialect's
+    // own TM-2 grammar (`brink-syntax/src/parser/types.rs`) so both
+    // frontends lower to the same `brink_ir::hir::TypeExpr` shape.
+    /// `: type_expr` — the annotation clause itself (the `:` token plus
+    /// exactly one [`Self::TYPE_EXPR`] child).
+    TYPE_ANNOTATION,
+    /// A type expression: wraps exactly one of [`Self::TYPE_NAME`],
+    /// [`Self::TYPE_GENERIC`], or [`Self::TYPE_FN`].
+    TYPE_EXPR,
+    /// A bare nominal type name — `int`, `string`, a struct name. The
+    /// grammar accepts any `IDENT`; recognizing the fixed set is a semantic
+    /// check (`brink-analyzer`), never this parser's concern.
+    TYPE_NAME,
+    /// `name<arg, …>` — `list<L>`, `map<K, V>`, or any unrecognized
+    /// generic head.
+    TYPE_GENERIC,
+    /// `fn(type, …): type` — a function type. Parses here; the checker
+    /// decides what it means.
+    TYPE_FN,
+
     /// A parse-error wrapper node — swallows one unexpected token so error
     /// recovery always makes forward progress.
     ERROR,

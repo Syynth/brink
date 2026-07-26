@@ -124,6 +124,7 @@ mod doc_comment;
 mod expr;
 mod module;
 pub mod provenance;
+mod types;
 
 use brink_syntax_native::SyntaxKind as N;
 use brink_syntax_native::ast::{self, AstNode as _};
@@ -437,6 +438,14 @@ impl FlowOrFn {
         match self {
             Self::Flow(f) => f.body(),
             Self::Fn(f) => f.body(),
+        }
+    }
+
+    /// The header's `: type` return clause, if written (NG-C, issue #1489).
+    fn return_type(&self) -> Option<ast::TypeAnnotation> {
+        match self {
+            Self::Flow(f) => f.return_type(),
+            Self::Fn(f) => f.return_type(),
         }
     }
 

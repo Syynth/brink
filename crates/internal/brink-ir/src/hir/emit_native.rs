@@ -53,9 +53,17 @@
 //! more than this slice's scope; still refused, not guessed); most `Expr`
 //! variants beyond literals/paths/operators/calls (collections, structs,
 //! refs, `#fn`); any knot/stitch/decl directive channel (`is_local`,
-//! `#@effects`, `#@was`, visibility, doc comments, return-type
-//! annotations); `IncludeSite`, `ModuleDecl`, `Import`, file-level
+//! `#@effects`, `#@was`, visibility, doc comments); `IncludeSite`,
+//! `ModuleDecl`, `Import`, file-level
 //! `VisibilityDirective`/`was_directives`.
+//!
+//! Type annotations are **supported** in every position the native grammar
+//! spells them (NG-A/B/C, issues #1487/#1488/#1489): parameters
+//! (`fn f(g: Guest)`), `var`/`const` bindings, and a `flow`/`fn` header's
+//! `: type` return clause. They used to be listed above as an unsupported
+//! channel — correct while native had no annotation grammar at all, but a
+//! `.brink` file can now *contain* them, so refusing to spell them back
+//! would make legal native source un-round-trippable.
 
 use std::fmt::Write as _;
 
@@ -269,32 +277,36 @@ pub fn emit_file(hir: &HirFile) -> Result<String, EmitError> {
 // ─── Top-level declarations ─────────────────────────────────────────
 
 fn emit_var_decl(out: &mut String, v: &VarDecl) -> Result<(), EmitError> {
-    if v.is_local
-        || v.annotation.is_some()
-        || v.doc.is_some()
-        || v.visibility.is_some()
-        || v.was.is_some()
-    {
-        return Err(unsupported(
-            "var directive/annotation channel",
-            &v.name.text,
-        ));
+    if v.is_local || v.doc.is_some() || v.visibility.is_some() || v.was.is_some() {
+        return Err(unsupported("var directive channel", &v.name.text));
     }
+    let ty = emit_binding_annotation(v.annotation.as_ref(), &v.name.text)?;
     let value = emit_expr(&v.value, &v.name.text)?;
-    let _ = writeln!(out, "var {} = {value}", v.name.text);
+    let _ = writeln!(out, "var {}{ty} = {value}", v.name.text);
     Ok(())
 }
 
 fn emit_const_decl(out: &mut String, c: &ConstDecl) -> Result<(), EmitError> {
-    if c.annotation.is_some() || c.doc.is_some() || c.visibility.is_some() || c.was.is_some() {
-        return Err(unsupported(
-            "const directive/annotation channel",
-            &c.name.text,
-        ));
+    if c.doc.is_some() || c.visibility.is_some() || c.was.is_some() {
+        return Err(unsupported("const directive channel", &c.name.text));
     }
+    let ty = emit_binding_annotation(c.annotation.as_ref(), &c.name.text)?;
     let value = emit_expr(&c.value, &c.name.text)?;
-    let _ = writeln!(out, "const {} = {value}", c.name.text);
+    let _ = writeln!(out, "const {}{ty} = {value}", c.name.text);
     Ok(())
+}
+
+/// `": T"` for an annotated binding, `""` for an unannotated one — the
+/// exact text that goes between a `var`/`const` name and its `=` (NG-B,
+/// issue #1488).
+fn emit_binding_annotation(
+    annotation: Option<&TypeExpr>,
+    context: &str,
+) -> Result<String, EmitError> {
+    annotation.map_or_else(
+        || Ok(String::new()),
+        |ty| Ok(format!(": {}", emit_type(ty, context)?)),
+    )
 }
 
 fn emit_flags_decl(out: &mut String, l: &ListDecl) -> Result<(), EmitError> {
@@ -376,7 +388,6 @@ fn emit_params(params: &[Param], context: &str) -> Result<String, EmitError> {
 fn emit_knot(out: &mut String, k: &Knot) -> Result<(), EmitError> {
     if k.is_local
         || k.effects_assertion.is_some()
-        || k.return_type.is_some()
         || k.doc.is_some()
         || k.visibility.is_some()
         || k.was.is_some()
@@ -385,7 +396,10 @@ fn emit_knot(out: &mut String, k: &Knot) -> Result<(), EmitError> {
     }
     let keyword = if k.is_function { "fn" } else { "flow" };
     let params = emit_params(&k.params, &k.name.text)?;
-    let _ = writeln!(out, "{keyword} {}({params}) {{", k.name.text);
+    // The ruled `: type` return clause goes after the parameter list
+    // (NG-C, issue #1489) — never before the `(`, and never as an arrow.
+    let ret = emit_binding_annotation(k.return_type.as_ref(), &k.name.text)?;
+    let _ = writeln!(out, "{keyword} {}({params}){ret} {{", k.name.text);
     emit_block_stmts(out, &k.body, 1, &k.name.text)?;
     for s in &k.stitches {
         emit_stitch(out, s, 1)?;

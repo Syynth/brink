@@ -758,6 +758,20 @@ fn dotted_without_call_is_path_expr_not_call_expr() {
 // comment on `LAMBDA_EXPR`: "B0.5 tokenizes pipes; B0.8 does not lower
 // them") — these are parse-only shape tests, no semantic coverage expected.
 
+/// The declared names of a `LAMBDA_PARAMS` node's parameters, in source
+/// order. Each one is a `PARAM` node (the same shape `fn`/`flow` headers
+/// use) since NG-A gave lambda parameters optional `: type` annotations —
+/// before that they were bare `IDENT` tokens directly under
+/// `LAMBDA_PARAMS`.
+fn lambda_param_names(params: &SyntaxNode) -> Vec<String> {
+    params
+        .children()
+        .filter_map(ast::Param::cast)
+        .filter_map(|p| p.name_token())
+        .map(|t| t.text().to_string())
+        .collect()
+}
+
 #[test]
 fn lambda_pipe_tokenizes_and_parses() {
     let src = "var f = |x, y| x + y\n";
@@ -794,12 +808,7 @@ fn lambda_one_param() {
         .children()
         .find(|n| n.kind() == SyntaxKind::LAMBDA_PARAMS)
         .expect("LAMBDA_PARAMS");
-    let idents: Vec<_> = params
-        .children_with_tokens()
-        .filter_map(rowan::NodeOrToken::into_token)
-        .filter(|t| t.kind() == SyntaxKind::IDENT)
-        .map(|t| t.text().to_string())
-        .collect();
+    let idents = lambda_param_names(&params);
     assert_eq!(idents, vec!["x".to_string()]);
 }
 
@@ -816,12 +825,7 @@ fn lambda_multiple_params() {
         .children()
         .find(|n| n.kind() == SyntaxKind::LAMBDA_PARAMS)
         .expect("LAMBDA_PARAMS");
-    let idents: Vec<_> = params
-        .children_with_tokens()
-        .filter_map(rowan::NodeOrToken::into_token)
-        .filter(|t| t.kind() == SyntaxKind::IDENT)
-        .map(|t| t.text().to_string())
-        .collect();
+    let idents = lambda_param_names(&params);
     assert_eq!(
         idents,
         vec!["x".to_string(), "y".to_string(), "z".to_string()]
@@ -841,12 +845,7 @@ fn lambda_params_trailing_comma() {
         .children()
         .find(|n| n.kind() == SyntaxKind::LAMBDA_PARAMS)
         .expect("LAMBDA_PARAMS");
-    let idents: Vec<_> = params
-        .children_with_tokens()
-        .filter_map(rowan::NodeOrToken::into_token)
-        .filter(|t| t.kind() == SyntaxKind::IDENT)
-        .map(|t| t.text().to_string())
-        .collect();
+    let idents = lambda_param_names(&params);
     assert_eq!(idents, vec!["x".to_string(), "y".to_string()]);
 }
 
@@ -868,6 +867,117 @@ fn lambda_nested_in_call_argument() {
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
     assert!(has_node_kind(&p.syntax(), SyntaxKind::LAMBDA_EXPR));
     assert!(has_node_kind(&p.syntax(), SyntaxKind::CALL_EXPR));
+}
+
+// ── I-bis. Lambda type annotations (NG-A, issue #1487) ───────────────
+//
+// GRAMMAR ONLY. `LAMBDA_EXPR` still has no HIR lowering (charter §7/§8,
+// "B0.5 tokenizes pipes; B0.8 does not lower them") — `lower_native` sends
+// the whole node to its `E129` fence with or without annotations, so these
+// are parse-shape tests, exactly like every other lambda test above.
+
+fn lambda_of(p: &Parse) -> ast::LambdaExpr {
+    p.syntax()
+        .descendants()
+        .find_map(ast::LambdaExpr::cast)
+        .expect("LAMBDA_EXPR")
+}
+
+fn lambda_params_of(lambda: &ast::LambdaExpr) -> SyntaxNode {
+    lambda
+        .syntax()
+        .children()
+        .find(|n| n.kind() == SyntaxKind::LAMBDA_PARAMS)
+        .expect("LAMBDA_PARAMS")
+}
+
+#[test]
+fn lambda_param_takes_a_type_annotation() {
+    let p = assert_lossless("var f = |g: Guest| g\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let lambda = lambda_of(&p);
+    let params = lambda_params_of(&lambda);
+    assert_eq!(lambda_param_names(&params), vec!["g".to_string()]);
+    let param = params.children().find_map(ast::Param::cast).expect("PARAM");
+    let te = param
+        .type_annotation()
+        .expect("annotation")
+        .type_expr()
+        .expect("type expr");
+    let Some(ast::TypeExprKind::Name(n)) = te.kind() else {
+        unreachable!("expected a nominal type, tree: {:#?}", te.syntax())
+    };
+    assert_eq!(n.name(), Some("Guest".to_string()));
+}
+
+#[test]
+fn lambda_takes_a_colon_return_annotation_before_a_braced_body() {
+    // The ratified surface (2026-07-23): `|g: Guest|: bool { … }`. `bool`
+    // is the *return type*, and the brace opens the body — it must NOT be
+    // read as a `bool { … }` construction literal.
+    let p = assert_lossless("var f = |g: Guest|: bool { g }\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let lambda = lambda_of(&p);
+    let annotation = lambda
+        .syntax()
+        .children()
+        .find_map(ast::TypeAnnotation::cast)
+        .expect("the lambda's own `: bool` return annotation");
+    let te = annotation.type_expr().expect("type expr");
+    let Some(ast::TypeExprKind::Name(n)) = te.kind() else {
+        unreachable!("expected a nominal type, tree: {:#?}", te.syntax())
+    };
+    assert_eq!(n.name(), Some("bool".to_string()));
+    assert!(
+        !has_node_kind(lambda.syntax(), SyntaxKind::CONSTRUCT_LITERAL),
+        "the body brace must not read as a construction literal, tree: {:#?}",
+        lambda.syntax()
+    );
+    assert!(has_node_kind(lambda.syntax(), SyntaxKind::STMT_BLOCK));
+}
+
+#[test]
+fn zero_arg_lambda_takes_a_return_annotation() {
+    let p = assert_lossless("var f = ||: int { 1 }\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let lambda = lambda_of(&p);
+    assert!(lambda_param_names(&lambda_params_of(&lambda)).is_empty());
+    assert!(
+        lambda
+            .syntax()
+            .children()
+            .any(|n| n.kind() == SyntaxKind::TYPE_ANNOTATION)
+    );
+}
+
+#[test]
+fn unannotated_lambda_has_no_return_annotation() {
+    let p = assert_lossless("var f = |x| x\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let lambda = lambda_of(&p);
+    assert!(
+        !lambda
+            .syntax()
+            .children()
+            .any(|n| n.kind() == SyntaxKind::TYPE_ANNOTATION)
+    );
+}
+
+#[test]
+fn a_lambda_key_in_a_construction_entry_keeps_the_entry_colon() {
+    // The one adjacency worth pinning: a `:` that follows a lambda *body*
+    // belongs to the enclosing construction entry, not to the lambda —
+    // only a `:` immediately after the closing `|` is a return annotation.
+    let p = assert_lossless("var m = Map { \"k\": |x| x }\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let lambda = lambda_of(&p);
+    assert!(
+        !lambda
+            .syntax()
+            .children()
+            .any(|n| n.kind() == SyntaxKind::TYPE_ANNOTATION)
+    );
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::CONSTRUCT_ENTRY));
 }
 
 // ── J. Typed AST accessors (arithmetic/call accessor coverage — the ──

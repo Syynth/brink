@@ -130,6 +130,14 @@ ast_node!(UntilStmt, UNTIL_STMT);
 ast_node!(BreakStmt, BREAK_STMT);
 ast_node!(ContinueStmt, CONTINUE_STMT);
 
+// ── The type-annotation grammar (NG-A/B/C, #1487/#1488/#1489) ────────
+
+ast_node!(TypeAnnotation, TYPE_ANNOTATION);
+ast_node!(TypeExpr, TYPE_EXPR);
+ast_node!(TypeName, TYPE_NAME);
+ast_node!(TypeGeneric, TYPE_GENERIC);
+ast_node!(TypeFn, TYPE_FN);
+
 // ── Error recovery ───────────────────────────────────────────────────
 
 ast_node!(Error, ERROR);
@@ -261,6 +269,14 @@ impl FlowDecl {
     /// statement grammar has no declaration-dispatch arm — `parser/stmt.rs`
     /// never produces a `FLOW_DECL` child), so a `~{ }`-bodied flow simply
     /// yields none here, same as an empty body would.
+    /// The header's `: type` return clause, if written (NG-C, #1489).
+    /// Declaring one is the ruled coroutine-vs-state toggle: a flow *with*
+    /// a return type must produce a value, and (unlike a plain flow) does
+    /// not pick up the implicit `-> DONE` on fall-through.
+    pub fn return_type(&self) -> Option<TypeAnnotation> {
+        support::child(&self.syntax)
+    }
+
     pub fn stitches(&self) -> impl Iterator<Item = FlowDecl> {
         match self.body() {
             Some(Body::Prose(b)) => support::children::<FlowDecl>(&b.syntax).collect::<Vec<_>>(),
@@ -281,6 +297,12 @@ impl FnDecl {
     }
 
     pub fn param_list(&self) -> Option<ParamList> {
+        support::child(&self.syntax)
+    }
+
+    /// The header's `: type` return clause, if written (NG-C, #1489) —
+    /// `fn probability(g: Guest): float { … }`.
+    pub fn return_type(&self) -> Option<TypeAnnotation> {
         support::child(&self.syntax)
     }
 
@@ -308,9 +330,16 @@ impl Param {
         support::token(&self.syntax, IDENT)
     }
 
-    /// `true` if this parameter is `ref`-marked.
+    /// `true` if this parameter is `ref`-marked. Always `false` for a
+    /// lambda parameter — `ref` captures don't exist (RULED 2026-07-23) and
+    /// `parser/expr.rs::lambda_param` never accepts the keyword.
     pub fn is_ref(&self) -> bool {
         support::token(&self.syntax, SyntaxKind::KW_REF).is_some()
+    }
+
+    /// The parameter's `: type` annotation, if written (NG-A, #1487).
+    pub fn type_annotation(&self) -> Option<TypeAnnotation> {
+        support::child(&self.syntax)
     }
 }
 
@@ -344,17 +373,32 @@ impl VarDecl {
     /// The initializer expression's root node, if the `=` clause was
     /// present. `var name = expr` always parses the initializer as exactly
     /// one child node (whatever expression-grammar kind it is) after the
-    /// `IDENT`, so "the first child node" is unambiguous.
+    /// `IDENT`, so "the first child node that is neither the leading doc
+    /// comment nor the `: type` annotation" is unambiguous.
     pub fn value(&self) -> Option<SyntaxNode> {
         self.syntax
             .children()
-            .find(|n| n.kind() != SyntaxKind::DOC_COMMENT)
+            .find(|n| !is_binding_prefix(n.kind()))
+    }
+
+    /// The binding's `: type` annotation, if written (NG-B, #1488).
+    pub fn type_annotation(&self) -> Option<TypeAnnotation> {
+        support::child(&self.syntax)
     }
 
     /// The leading `///` doc comment, if one is attached (B0.6b).
     pub fn doc(&self) -> Option<DocComment> {
         support::child(&self.syntax)
     }
+}
+
+/// Child-node kinds that precede a binding's initializer and must never be
+/// mistaken for it: the leading `///` doc comment and the `: type`
+/// annotation (NG-B, #1488). Shared by [`VarDecl::value`],
+/// [`ConstDecl::value`] and [`LetStmt::value`] so a future prefix child
+/// only has to be listed once.
+fn is_binding_prefix(kind: SyntaxKind) -> bool {
+    matches!(kind, SyntaxKind::DOC_COMMENT | SyntaxKind::TYPE_ANNOTATION)
 }
 
 impl ConstDecl {
@@ -366,7 +410,12 @@ impl ConstDecl {
     pub fn value(&self) -> Option<SyntaxNode> {
         self.syntax
             .children()
-            .find(|n| n.kind() != SyntaxKind::DOC_COMMENT)
+            .find(|n| !is_binding_prefix(n.kind()))
+    }
+
+    /// See [`VarDecl::type_annotation`].
+    pub fn type_annotation(&self) -> Option<TypeAnnotation> {
+        support::child(&self.syntax)
     }
 
     /// The leading `///` doc comment, if one is attached (B0.6b).
@@ -419,6 +468,90 @@ impl StructDecl {
     /// The leading `///` doc comment, if one is attached (B0.6b).
     pub fn doc(&self) -> Option<DocComment> {
         support::child(&self.syntax)
+    }
+}
+
+// ── The type-annotation grammar (NG-A/B/C, #1487/#1488/#1489) ────────
+//
+// Shapes mirror the brink dialect's own TM-2 AST (`brink-syntax`'s
+// `TypeAnnotation`/`TypeExpr`/`TypeName`/`TypeGeneric`/`TypeFn`) so both
+// frontends can lower to the same `brink_ir::hir::TypeExpr`.
+
+impl TypeAnnotation {
+    /// The annotated type expression after the `:`.
+    pub fn type_expr(&self) -> Option<TypeExpr> {
+        support::child(&self.syntax)
+    }
+}
+
+/// What a [`TypeExpr`] wraps — exactly one of these per node.
+pub enum TypeExprKind {
+    Name(TypeName),
+    Generic(TypeGeneric),
+    Fn(TypeFn),
+}
+
+impl TypeExpr {
+    /// The single child this type expression wraps.
+    ///
+    /// `None` only for a malformed or depth-limited `TYPE_EXPR` — every
+    /// well-formed one has exactly one of these.
+    pub fn kind(&self) -> Option<TypeExprKind> {
+        if let Some(n) = support::child::<TypeName>(&self.syntax) {
+            Some(TypeExprKind::Name(n))
+        } else if let Some(g) = support::child::<TypeGeneric>(&self.syntax) {
+            Some(TypeExprKind::Generic(g))
+        } else {
+            support::child::<TypeFn>(&self.syntax).map(TypeExprKind::Fn)
+        }
+    }
+}
+
+impl TypeName {
+    pub fn name_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, IDENT)
+    }
+
+    /// The bare type name text (e.g. `"int"`, or an unrecognized name — the
+    /// grammar accepts any identifier; validity is a semantic check).
+    pub fn name(&self) -> Option<String> {
+        self.name_token().map(|t| t.text().to_string())
+    }
+}
+
+impl TypeGeneric {
+    pub fn name_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, IDENT)
+    }
+
+    /// The generic head name (e.g. `"list"`, `"map"`).
+    pub fn name(&self) -> Option<String> {
+        self.name_token().map(|t| t.text().to_string())
+    }
+
+    /// The type arguments in source order (e.g. `[K, V]` for `map<K, V>`).
+    pub fn args(&self) -> impl Iterator<Item = TypeExpr> {
+        support::children(&self.syntax)
+    }
+}
+
+impl TypeFn {
+    /// Every `TYPE_EXPR` child in source order: the last is the return
+    /// type, every earlier one is a parameter type.
+    fn type_exprs(&self) -> Vec<TypeExpr> {
+        support::children(&self.syntax).collect()
+    }
+
+    /// Parameter types, in declaration order.
+    pub fn params(&self) -> Vec<TypeExpr> {
+        let mut exprs = self.type_exprs();
+        exprs.pop(); // drop the return type (no-op when the list is empty)
+        exprs
+    }
+
+    /// The return type after `:`.
+    pub fn return_type(&self) -> Option<TypeExpr> {
+        self.type_exprs().pop()
     }
 }
 
@@ -1116,7 +1249,14 @@ impl LetStmt {
     /// The initializer expression's root node, if the `=` clause was
     /// present (optional, see `parser/stmt.rs::let_stmt`'s doc comment).
     pub fn value(&self) -> Option<SyntaxNode> {
-        self.syntax.children().next()
+        self.syntax
+            .children()
+            .find(|n| !is_binding_prefix(n.kind()))
+    }
+
+    /// The binding's `: type` annotation, if written (NG-B, #1488).
+    pub fn type_annotation(&self) -> Option<TypeAnnotation> {
+        support::child(&self.syntax)
     }
 }
 
