@@ -2475,17 +2475,8 @@ pub async fn analysis_loop(
                 .map(|(id, hir, manifest)| (*id, hir, manifest))
                 .collect();
             let mut result = brink_analyzer::analyze_with_modules(&file_refs, &modules, &opts);
-
             let members: Vec<_> = inputs.iter().map(|(id, _, _)| *id).collect();
-            // Scoped to this project's own members — `module_diags` is
-            // whole-workspace, and a collision in an unrelated project must
-            // not be attributed to this one (#1553).
-            result.diagnostics.extend(
-                module_diags
-                    .iter()
-                    .filter(|d| members.contains(&d.file))
-                    .cloned(),
-            );
+            fold_module_diagnostics(&mut result, &module_diags, &members);
             by_root.insert(*root, Arc::new(result));
 
             for &member in &members {
@@ -2528,6 +2519,27 @@ pub async fn analysis_loop(
             })
             .await;
     }
+}
+
+/// Fold the module map's own diagnostics (`E085` stem collisions) into one
+/// project's analysis result (issue #1553).
+///
+/// `brink_analyzer::analyze_with_modules` is handed the *finished* map, so it
+/// cannot re-derive them; without this a collision a db-driven compile catches
+/// never reaches the editor. `module_diags` is whole-workspace, so it is
+/// filtered to `members` — a collision in an unrelated project must not be
+/// attributed to this one.
+fn fold_module_diagnostics(
+    result: &mut AnalysisResult,
+    module_diags: &[brink_ir::Diagnostic],
+    members: &[brink_ir::FileId],
+) {
+    result.diagnostics.extend(
+        module_diags
+            .iter()
+            .filter(|d| members.contains(&d.file))
+            .cloned(),
+    );
 }
 
 /// Build a `DiagnosticRelatedInformation` pointing to a project root file.

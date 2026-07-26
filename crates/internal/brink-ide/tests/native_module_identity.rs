@@ -117,7 +117,10 @@ fn native_analysis_ids_key_the_db_per_def_queries() {
 /// session's analysis, keys the db's per-def query.
 #[test]
 fn native_cross_file_hover_shows_the_db_backed_effect_row() {
-    assert_native_cross_file_hover(&native_session());
+    let (session, main_id) = native_session();
+    let content =
+        cross_file_hover_content(&session, main_id).expect("hover over the divert target");
+    assert_native_cross_file_hover(&content);
 }
 
 /// The same user-visible path under the **default** dialect — no
@@ -127,26 +130,30 @@ fn native_cross_file_hover_shows_the_db_backed_effect_row() {
 /// `Dialect::Brink`-only test above left the default path uncovered.
 #[test]
 fn native_cross_file_hover_under_default_dialect() {
-    assert_native_cross_file_hover(&native_session_with(None));
+    let (session, main_id) = native_session_with(None);
+    let content =
+        cross_file_hover_content(&session, main_id).expect("hover over the divert target");
+    assert_native_cross_file_hover(&content);
 }
 
-fn assert_native_cross_file_hover(session: &(IdeSession, brink_ir::FileId)) {
-    let (session, main_id) = (&session.0, session.1);
-    let analysis = session.analysis().expect("analysis");
-    let offset = u32::try_from(MAIN.find("haggle\n}").expect("divert target")).expect("offset");
+/// Hover markdown for the `-> haggle` divert target in `main.brink`, or
+/// `None` if the session has no analysis / the offset yields no hover.
+fn cross_file_hover_content(session: &IdeSession, main_id: brink_ir::FileId) -> Option<String> {
+    let analysis = session.analysis()?;
+    let offset = u32::try_from(MAIN.find("haggle\n}")?).ok()?;
     let files = session.db().file_metadata();
-
-    let content = hover(
+    let info = hover(
         analysis,
         session.db(),
         main_id,
         MAIN,
         TextSize::from(offset),
         &files,
-    )
-    .expect("hover over the divert target")
-    .content;
+    )?;
+    Some(info.content)
+}
 
+fn assert_native_cross_file_hover(content: &str) {
     assert!(content.contains("**knot** `haggle`"), "{content}");
     assert!(
         content.contains("*Defined in `market/barter.brink`*"),
