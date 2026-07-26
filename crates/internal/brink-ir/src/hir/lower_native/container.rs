@@ -232,21 +232,14 @@ fn lower_stitch(
     };
     let params = lower_params(node.param_list());
 
-    // A return type on a *stitch* has nowhere to go: `hir::Stitch` has no
-    // `return_type` field (only `Knot` does — the ink dialect's own
-    // `= stitch` grammar never had a return clause either), so the ruled
-    // coroutine toggle can't be honored one level down. Flag it with the
-    // native "parses but has no HIR lowering yet" fence rather than
-    // dropping it silently (CLAUDE.md: silent drops are bugs) — NG-C's
-    // scope is `Knot.return_type`; widening `Stitch` is a shared-HIR change
-    // for a follow-up.
-    if let Some(rt) = node.return_type() {
-        diags.push(diag(
-            file_id,
-            rt.syntax().text_range(),
-            DiagnosticCode::E129,
-        ));
-    }
+    // `flow gate(): int { … }` (NG-C, issue #1489; widened to stitches by
+    // #1509, RULED 2026-07-26): a nested flow's return type carries the
+    // same coroutine-vs-state toggle a top-level flow/fn's does — see the
+    // implicit-`-> DONE` guard below.
+    let return_type = node
+        .return_type()
+        .as_ref()
+        .and_then(super::types::lower_type_annotation);
 
     // Depth-3 fence (Q4(b)): a `flow` nested inside *this* stitch's body is
     // one level too deep. Reject each occurrence loudly; do not lower it,
@@ -282,9 +275,16 @@ fn lower_stitch(
     // stitch is always the tunnel-return spelling, never an explicit
     // function return.
     super::body::fixup_return_kind(false, &mut body_block);
-    // Stitches are never functions, so they always inherit the implicit-end
-    // grace (charter §15): fall off the end → synthesized `-> DONE`.
-    super::body::apply_implicit_done(&mut body_block);
+    // Stitches are never functions, so a non-value-returning one always
+    // inherits the implicit-end grace (charter §15): fall off the end →
+    // synthesized `-> DONE`. A value-returning stitch is the coroutine side
+    // of the toggle (mirrors `lower_top_level_container`'s `Knot` guard):
+    // declaring a return type means it must return, so no implicit DONE is
+    // synthesized here — an author's missing return would otherwise be
+    // silently rewritten into a quiet ending.
+    if return_type.is_none() {
+        super::body::apply_implicit_done(&mut body_block);
+    }
     Some(Stitch {
         ptr: native_provenance(file_id, NodeClass::Stitch, syntax),
         name,
@@ -292,6 +292,7 @@ fn lower_stitch(
         body: body_block,
         is_local: false,
         effects_assertion: None,
+        return_type,
         doc,
         visibility: None,
         was: None,
