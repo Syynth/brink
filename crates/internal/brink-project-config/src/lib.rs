@@ -19,7 +19,9 @@
 //!   ([`discover_from_entry`], [`find_config`]);
 //! - **parses** it, tolerating unknown keys as warnings rather than errors
 //!   (forward compat — an older `brink` binary shouldn't choke on a
-//!   `brink.toml` written for a newer schema) ([`parse_str`]);
+//!   `brink.toml` written for a newer schema) ([`parse_str`],
+//!   [`parse_str_at`] — the latter threads the discovered path into every
+//!   [`ConfigError`] it raises, #1384);
 //! - defines the two policy enums the file can set ([`Dialect`],
 //!   [`TypePolicy`]); applying them to an `AnalysisOptions` lives in
 //!   `brink-analyzer` (`AnalysisOptions::apply_project_config`), honoring
@@ -203,6 +205,16 @@ impl fmt::Display for ConfigWarning {
 /// these are genuine failures: malformed TOML syntax, or a *recognized* key
 /// holding a value outside its enum (`dialect = "sideways"`) — never an
 /// unrecognized key, which is always a warning.
+///
+/// Every variant carries `path` — the file this error came from (#1384: the
+/// path/span threading [`parse_str`]'s doc comment describes below). Before
+/// #1384 only [`ConfigError::Io`] carried one; a caller with a discovered
+/// path in scope (every one of them, in practice — see [`parse_str_at`]) had
+/// to re-derive and hand-format the "which file" prefix itself for every
+/// other variant, a duplicated, easy-to-forget convention that is exactly
+/// how #1369 happened in the first place (`LoadError::Config` lost its path
+/// for a release when that hand-formatting was dropped). Structural fields
+/// mean a new caller gets it for free.
 #[derive(Debug, Error)]
 pub enum ConfigError {
     /// The file exists but couldn't be read (permissions, race, …).
@@ -212,23 +224,76 @@ pub enum ConfigError {
         #[source]
         source: std::io::Error,
     },
-    /// Malformed TOML syntax.
-    #[error("invalid TOML syntax: {0}")]
-    Toml(#[from] toml::de::Error),
+    /// Malformed TOML syntax. `source` (`toml::de::Error`) carries its own
+    /// byte span into the document — see [`ConfigError::span`] — and its
+    /// `Display` already renders a `line X, column Y` location plus a
+    /// caret-annotated snippet, so this is the one variant where "a malformed
+    /// value cannot be located precisely" (#1384) is already false once
+    /// `path` is threaded in: syntax errors get file *and* line.
+    #[error("invalid TOML syntax in {path}: {source}")]
+    Toml {
+        path: String,
+        #[source]
+        source: toml::de::Error,
+    },
     /// The document's root, or a table where one is expected, isn't a table.
-    #[error("`{key}` must be a table, found {found}")]
-    NotATable { key: String, found: &'static str },
+    #[error("`{key}` must be a table, found {found} (in {path})")]
+    NotATable {
+        path: String,
+        key: String,
+        found: &'static str,
+    },
     /// A recognized key's value has the wrong TOML type (e.g. `dialect = 1`).
-    #[error("`{key}` must be a string, found {found}")]
-    WrongType { key: String, found: &'static str },
+    #[error("`{key}` must be a string, found {found} (in {path})")]
+    WrongType {
+        path: String,
+        key: String,
+        found: &'static str,
+    },
     /// A recognized key's value is a string, but not one of its allowed
-    /// variants (e.g. `dialect = "sideways"`).
-    #[error("`{key}` must be one of {expected:?}, found {found:?}")]
+    /// variants (e.g. `dialect = "sideways"`). No span: this fires *after*
+    /// the document parsed successfully — a syntactically valid string in an
+    /// out-of-range value — so the `toml` crate never attaches a byte range
+    /// to it the way it does for [`ConfigError::Toml`]; `path` is the most
+    /// precise location available (#1384).
+    #[error("`{key}` must be one of {expected:?}, found {found:?} (in {path})")]
     InvalidValue {
+        path: String,
         key: String,
         expected: &'static [&'static str],
         found: String,
     },
+}
+
+impl ConfigError {
+    /// The file this error came from, for every variant (#1384).
+    #[must_use]
+    pub fn path(&self) -> &str {
+        match self {
+            ConfigError::Io { path, .. } => path.to_str().unwrap_or_default(),
+            ConfigError::Toml { path, .. }
+            | ConfigError::NotATable { path, .. }
+            | ConfigError::WrongType { path, .. }
+            | ConfigError::InvalidValue { path, .. } => path,
+        }
+    }
+
+    /// The byte range into the parsed document where this error occurred,
+    /// when the underlying TOML parser reported one (#1384) — only ever
+    /// `Some` for [`ConfigError::Toml`] (malformed syntax): every other
+    /// variant is raised *after* the document parsed successfully (a
+    /// recognized key holding an out-of-range value, or the wrong shape), so
+    /// there is no narrower-than-"the whole file" location the `toml` crate
+    /// ever attached to it. Centralizes the match `brink-lsp` previously
+    /// re-derived itself (`toml_span_to_lsp_range`) so a new caller doesn't
+    /// have to.
+    #[must_use]
+    pub fn span(&self) -> Option<std::ops::Range<usize>> {
+        match self {
+            ConfigError::Toml { source, .. } => source.span(),
+            _ => None,
+        }
+    }
 }
 
 /// A successfully discovered + parsed `brink.toml`.
@@ -251,12 +316,44 @@ pub struct LoadedConfig {
 /// Unknown top-level keys and unknown `[project]` keys become
 /// [`ConfigWarning`]s. Only malformed TOML syntax or a recognized key with
 /// an invalid value is a [`ConfigError`].
+///
+/// Every [`ConfigError`] this can raise still needs *some* `path` (#1384);
+/// this is [`parse_str_at`] with [`CONFIG_FILE_NAME`] as a fallback label,
+/// for the one caller that genuinely has no location of its own — an
+/// embedder pushing raw `brink.toml` text it read through its own host API,
+/// with no discovered key to give (`EditorSession::apply_project_config` in
+/// `brink-web`). A caller that *did* discover the file (walked up to find
+/// it, has a `SourceTree` key or filesystem path in hand) should call
+/// [`parse_str_at`] directly with that path instead.
 pub fn parse_str(text: &str) -> Result<(ProjectConfig, Vec<ConfigWarning>), ConfigError> {
-    let doc: Value = toml::from_str(text)?;
+    parse_str_at(CONFIG_FILE_NAME, text)
+}
+
+/// [`parse_str`], attaching `path` to every [`ConfigError`] it raises
+/// (#1384) — the discovered file's `SourceTree` key or filesystem path,
+/// rendered into each variant's own `Display` (`ConfigError::Toml`'s message
+/// now names both the file *and*, via the wrapped `toml::de::Error`'s own
+/// span, the line/column within it — see [`ConfigError::span`]).
+///
+/// Every discovery-based caller in the workspace has a path in scope at this
+/// point and should call this rather than [`parse_str`]:
+/// [`load_from_entry`], `brink-environment::resolve_options`, `brink ide`'s
+/// `resolve_analysis_options`, brink-web's `discover_project_config`, and
+/// the LSP's `resolve_language_options`.
+pub fn parse_str_at(
+    path: impl Into<String>,
+    text: &str,
+) -> Result<(ProjectConfig, Vec<ConfigWarning>), ConfigError> {
+    let path = path.into();
+    let doc: Value = toml::from_str(text).map_err(|source| ConfigError::Toml {
+        path: path.clone(),
+        source,
+    })?;
     let root = match doc {
         Value::Table(t) => t,
         other => {
             return Err(ConfigError::NotATable {
+                path,
                 key: "<root>".to_owned(),
                 found: value_type_name(&other),
             });
@@ -272,6 +369,7 @@ pub fn parse_str(text: &str) -> Result<(ProjectConfig, Vec<ConfigWarning>), Conf
                 Value::Table(t) => t,
                 other => {
                     return Err(ConfigError::NotATable {
+                        path,
                         key: "project".to_owned(),
                         found: value_type_name(other),
                     });
@@ -279,8 +377,8 @@ pub fn parse_str(text: &str) -> Result<(ProjectConfig, Vec<ConfigWarning>), Conf
             };
             for (pkey, pvalue) in project {
                 match pkey.as_str() {
-                    "dialect" => config.dialect = Some(parse_dialect(pkey, pvalue)?),
-                    "types" => config.types = Some(parse_types(pkey, pvalue)?),
+                    "dialect" => config.dialect = Some(parse_dialect(&path, pkey, pvalue)?),
+                    "types" => config.types = Some(parse_types(&path, pkey, pvalue)?),
                     _ => warnings.push(ConfigWarning(format!(
                         "unknown key `project.{pkey}` in {CONFIG_FILE_NAME} (ignored)"
                     ))),
@@ -291,6 +389,7 @@ pub fn parse_str(text: &str) -> Result<(ProjectConfig, Vec<ConfigWarning>), Conf
                 Value::Table(t) => t,
                 other => {
                     return Err(ConfigError::NotATable {
+                        path,
                         key: "lints".to_owned(),
                         found: value_type_name(other),
                     });
@@ -298,11 +397,11 @@ pub fn parse_str(text: &str) -> Result<(ProjectConfig, Vec<ConfigWarning>), Conf
             };
             for (lkey, lvalue) in lints {
                 if lkey == "deny-warnings" {
-                    config.deny_warnings = Some(parse_deny_warnings(lkey, lvalue)?);
+                    config.deny_warnings = Some(parse_deny_warnings(&path, lkey, lvalue)?);
                 } else {
                     config
                         .lints
-                        .insert(lkey.clone(), parse_lint_level(lkey, lvalue)?);
+                        .insert(lkey.clone(), parse_lint_level(&path, lkey, lvalue)?);
                 }
             }
         } else {
@@ -315,8 +414,9 @@ pub fn parse_str(text: &str) -> Result<(ProjectConfig, Vec<ConfigWarning>), Conf
     Ok((config, warnings))
 }
 
-fn parse_dialect(key: &str, value: &Value) -> Result<Dialect, ConfigError> {
+fn parse_dialect(path: &str, key: &str, value: &Value) -> Result<Dialect, ConfigError> {
     let s = value.as_str().ok_or_else(|| ConfigError::WrongType {
+        path: path.to_owned(),
         key: format!("project.{key}"),
         found: value_type_name(value),
     })?;
@@ -324,6 +424,7 @@ fn parse_dialect(key: &str, value: &Value) -> Result<Dialect, ConfigError> {
         "brink" => Ok(Dialect::Brink),
         "strict-ink" => Ok(Dialect::StrictInk),
         other => Err(ConfigError::InvalidValue {
+            path: path.to_owned(),
             key: format!("project.{key}"),
             expected: &["brink", "strict-ink"],
             found: other.to_owned(),
@@ -331,8 +432,9 @@ fn parse_dialect(key: &str, value: &Value) -> Result<Dialect, ConfigError> {
     }
 }
 
-fn parse_types(key: &str, value: &Value) -> Result<TypePolicy, ConfigError> {
+fn parse_types(path: &str, key: &str, value: &Value) -> Result<TypePolicy, ConfigError> {
     let s = value.as_str().ok_or_else(|| ConfigError::WrongType {
+        path: path.to_owned(),
         key: format!("project.{key}"),
         found: value_type_name(value),
     })?;
@@ -340,6 +442,7 @@ fn parse_types(key: &str, value: &Value) -> Result<TypePolicy, ConfigError> {
         "gradual" => Ok(TypePolicy::Gradual),
         "strict" => Ok(TypePolicy::Strict),
         other => Err(ConfigError::InvalidValue {
+            path: path.to_owned(),
             key: format!("project.{key}"),
             expected: &["gradual", "strict"],
             found: other.to_owned(),
@@ -347,15 +450,17 @@ fn parse_types(key: &str, value: &Value) -> Result<TypePolicy, ConfigError> {
     }
 }
 
-fn parse_deny_warnings(key: &str, value: &Value) -> Result<bool, ConfigError> {
+fn parse_deny_warnings(path: &str, key: &str, value: &Value) -> Result<bool, ConfigError> {
     value.as_bool().ok_or_else(|| ConfigError::WrongType {
+        path: path.to_owned(),
         key: format!("lints.{key}"),
         found: value_type_name(value),
     })
 }
 
-fn parse_lint_level(key: &str, value: &Value) -> Result<LintLevel, ConfigError> {
+fn parse_lint_level(path: &str, key: &str, value: &Value) -> Result<LintLevel, ConfigError> {
     let s = value.as_str().ok_or_else(|| ConfigError::WrongType {
+        path: path.to_owned(),
         key: format!("lints.{key}"),
         found: value_type_name(value),
     })?;
@@ -364,6 +469,7 @@ fn parse_lint_level(key: &str, value: &Value) -> Result<LintLevel, ConfigError> 
         "warn" => Ok(LintLevel::Warn),
         "deny" => Ok(LintLevel::Deny),
         other => Err(ConfigError::InvalidValue {
+            path: path.to_owned(),
             key: format!("lints.{key}"),
             expected: &["allow", "warn", "deny"],
             found: other.to_owned(),
@@ -544,7 +650,7 @@ pub fn load_from_entry(entry_file: &Path) -> Result<Option<LoadedConfig>, Config
         path: path.clone(),
         source,
     })?;
-    let (config, warnings) = parse_str(&text)?;
+    let (config, warnings) = parse_str_at(path.display().to_string(), &text)?;
     Ok(Some(LoadedConfig {
         path,
         config,
@@ -641,7 +747,7 @@ mod tests {
     #[test]
     fn malformed_toml_is_an_error() {
         let err = parse_str("this is not [ toml").unwrap_err();
-        assert!(matches!(err, ConfigError::Toml(_)));
+        assert!(matches!(err, ConfigError::Toml { .. }));
     }
 
     #[test]
@@ -649,8 +755,87 @@ mod tests {
         let err = parse_str("\"just a string\"").unwrap_err();
         assert!(matches!(
             err,
-            ConfigError::NotATable { .. } | ConfigError::Toml(_)
+            ConfigError::NotATable { .. } | ConfigError::Toml { .. }
         ));
+    }
+
+    // ── path/span threading (#1384) ─────────────────────────────────────
+
+    /// Every [`ConfigError`] channel names the file it came from — the CLI
+    /// message, the LSP diagnostic, and now (#1384) the error's own
+    /// `Display`, structurally rather than by convention at each call site.
+    #[test]
+    fn parse_str_at_names_its_path_on_invalid_value() {
+        let err =
+            parse_str_at("chapters/brink.toml", "[project]\ndialect = \"sideways\"\n").unwrap_err();
+        assert_eq!(err.path(), "chapters/brink.toml");
+        assert!(
+            err.to_string().contains("chapters/brink.toml"),
+            "message must name the file, got: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_str_at_names_its_path_on_malformed_toml() {
+        let err = parse_str_at("chapters/brink.toml", "this is not [ toml").unwrap_err();
+        assert_eq!(err.path(), "chapters/brink.toml");
+        assert!(
+            err.to_string().contains("chapters/brink.toml"),
+            "message must name the file, got: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_str_at_names_its_path_on_wrong_type() {
+        let err = parse_str_at("chapters/brink.toml", "[project]\ndialect = 1\n").unwrap_err();
+        assert_eq!(err.path(), "chapters/brink.toml");
+        assert!(err.to_string().contains("chapters/brink.toml"));
+    }
+
+    #[test]
+    fn parse_str_at_names_its_path_on_not_a_table() {
+        let err = parse_str_at("chapters/brink.toml", "\"just a string\"").unwrap_err();
+        assert_eq!(err.path(), "chapters/brink.toml");
+        assert!(err.to_string().contains("chapters/brink.toml"));
+    }
+
+    /// `parse_str` (the pathless entry point) still falls back to the bare
+    /// [`CONFIG_FILE_NAME`] rather than an empty/absent path — a caller with
+    /// no discovered location still gets a named, non-empty `path()`.
+    #[test]
+    fn parse_str_falls_back_to_config_file_name_as_path() {
+        let err = parse_str("[project]\ndialect = \"sideways\"\n").unwrap_err();
+        assert_eq!(err.path(), CONFIG_FILE_NAME);
+    }
+
+    /// Malformed TOML *syntax* carries a byte span from the underlying
+    /// `toml` crate — a malformed value's line, not just its file, is
+    /// locatable (#1384's "a malformed value cannot be located precisely"
+    /// gap, for the syntax-error half of it). The span must point at the
+    /// actual offending text, not just be present.
+    #[test]
+    fn toml_syntax_error_carries_a_span_pointing_at_the_bad_text() {
+        let text = "[project]\ndialect = \"brink\" oops\n";
+        let err = parse_str_at("brink.toml", text).unwrap_err();
+        let span = err.span().expect("malformed TOML syntax must carry a span");
+        assert!(span.start > 0, "span must not point at the file start");
+        // The reported range must fall on the malformed second line, not the
+        // first (well-formed) line.
+        let first_line_end = text.find('\n').unwrap();
+        assert!(
+            span.start > first_line_end,
+            "span {span:?} must point past the first line (ends at {first_line_end})"
+        );
+    }
+
+    /// `InvalidValue` fires *after* the document parses successfully (a
+    /// syntactically fine string that just isn't a recognized variant), so
+    /// there is no narrower-than-file location available — `span()` must be
+    /// `None`, not a stale or zeroed range that looks meaningful but isn't.
+    #[test]
+    fn invalid_value_error_has_no_span() {
+        let err = parse_str_at("brink.toml", "[project]\ndialect = \"sideways\"\n").unwrap_err();
+        assert_eq!(err.span(), None);
     }
 
     // ── [lints] ──────────────────────────────────────────────────────

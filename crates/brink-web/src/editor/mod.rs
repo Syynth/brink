@@ -344,8 +344,8 @@ impl EditorSession {
         let text = brink_source_tree::SourceTree::read(&tree, &config_key).map_err(|e| {
             JsError::new(&format!("failed to read project config {config_key}: {e}"))
         })?;
-        let (config, warnings) = brink_project_config::parse_str(&text)
-            .map_err(|e| JsError::new(&format!("invalid brink.toml at {config_key}: {e}")))?;
+        let (config, warnings) = brink_project_config::parse_str_at(config_key.clone(), &text)
+            .map_err(|e| JsError::new(&e.to_string()))?;
 
         let mut all_warnings: Vec<String> = warnings.into_iter().map(|w| w.0).collect();
         all_warnings.extend(self.apply_parsed_config(&config));
@@ -3867,9 +3867,10 @@ mod dialect_wasm_tests {
     /// The discovery-path (#1414) companion to
     /// `apply_project_config_rejects_malformed_toml`: malformed TOML
     /// discovered from the session's own in-memory document tree hits
-    /// `discover_project_config`'s own `parse_str` arm (the distinct
-    /// "invalid brink.toml at {config_key}" message) — still a rejected
-    /// `Result`, never a panic.
+    /// `discover_project_config`'s own `parse_str_at` call (#1384; the
+    /// discovered `config_key` is threaded straight into the `ConfigError`,
+    /// so its own `Display` names the file) — still a rejected `Result`,
+    /// never a panic.
     #[wasm_bindgen_test]
     fn discover_project_config_rejects_malformed_toml() {
         let mut s = EditorSession::new();

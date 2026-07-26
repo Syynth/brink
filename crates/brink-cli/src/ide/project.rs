@@ -52,7 +52,10 @@ use super::handlers::{Mutation, emit_mutation};
 /// `tree`-relative key, so without `root` a warning could only ever print
 /// the bare `brink.toml`, leaving the user unable to tell *which*
 /// `brink.toml` (of possibly several on disk across invocations) warned
-/// (review finding on #1403/PR #1412).
+/// (review finding on #1403/PR #1412). The same `root`-joined path is now
+/// also threaded into `parse_str_at` (#1384), so a parse failure's own
+/// `Display` names the full path too, rather than relying solely on the
+/// `format!` wrapper this function used to hand-roll for that purpose.
 fn resolve_analysis_options(
     tree: &dyn SourceTree,
     root: &Path,
@@ -65,9 +68,9 @@ fn resolve_analysis_options(
         let text = tree
             .read(&config_key)
             .map_err(|e| format!("failed to read project config {config_key}: {e}"))?;
-        let (config, warnings) = brink_project_config::parse_str(&text)
-            .map_err(|e| format!("project config error in {config_key}: {e}"))?;
         let config_path = root.join(&config_key).display().to_string();
+        let (config, warnings) = brink_project_config::parse_str_at(config_path.clone(), &text)
+            .map_err(|e| e.to_string())?;
         for warning in &warnings {
             let _ = writeln!(io::stderr(), "warning: [{config_path}] {warning}");
         }
