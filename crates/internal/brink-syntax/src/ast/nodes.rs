@@ -742,6 +742,14 @@ impl StitchHeader {
     pub fn params(&self) -> Option<KnotParams> {
         support::child(&self.syntax)
     }
+
+    /// The return type annotation after the params (NG-C, issue #1489,
+    /// widened to stitches by #1509: `= name(params): type`), if present —
+    /// the same TM-2 grammar position `KnotHeader::return_type` parses,
+    /// minus the trailing `===` a stitch header never has.
+    pub fn return_type(&self) -> Option<TypeAnnotation> {
+        support::child(&self.syntax)
+    }
 }
 
 // ── StitchBody ───────────────────────────────────────────────────────

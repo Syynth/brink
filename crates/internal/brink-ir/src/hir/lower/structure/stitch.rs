@@ -13,6 +13,7 @@ use super::super::directive::{
 };
 use super::super::doc_comment::{DocPolicy, parse_doc_comment};
 use super::super::helpers::make_name;
+use super::super::types::lower_type_annotation;
 use super::knot::lower_knot_params;
 
 pub(super) fn lower_top_level_stitch(
@@ -66,6 +67,14 @@ pub(super) fn lower_top_level_stitch(
         }
     }
 
+    // `= stitch(params): type` (NG-C, issue #1489, widened to stitches by
+    // #1509) — a promoted top-level stitch becomes a `Knot`, so its parsed
+    // return type rides `Knot::return_type` exactly like a real `== knot ==`
+    // header's.
+    let return_type = header
+        .return_type()
+        .and_then(|ta| lower_type_annotation(&ta));
+
     Ok(Knot {
         ptr: scope.prov(NodeClass::Stitch, stitch.syntax()),
         name,
@@ -75,11 +84,7 @@ pub(super) fn lower_top_level_stitch(
         stitches: Vec::new(),
         is_local,
         effects_assertion,
-        // `= stitch` headers never carry a return-type annotation — that
-        // grammar only exists on `== knot ==` headers (TM-2, docs/typed-mode-spec.md
-        // §3: `): type ===`), which this promoted-top-level-stitch path
-        // never parses through.
-        return_type: None,
+        return_type,
         doc,
         visibility,
         was,
@@ -143,6 +148,13 @@ pub(super) fn lower_stitch(
         }
     }
 
+    // `= name(params): type` (NG-C, issue #1489, widened to stitches by
+    // #1509): the same TM-2 return-type grammar position `lower_knot`
+    // parses off `KnotHeader`, now also read off `StitchHeader`.
+    let return_type = header
+        .return_type()
+        .and_then(|ta| lower_type_annotation(&ta));
+
     Ok(Stitch {
         ptr: scope.prov(NodeClass::Stitch, stitch.syntax()),
         name,
@@ -150,6 +162,7 @@ pub(super) fn lower_stitch(
         body,
         is_local,
         effects_assertion,
+        return_type,
         doc,
         visibility,
         was,

@@ -261,6 +261,14 @@ pub struct Stitch {
     /// The `#@effects(…)` assertion directive line at the top of the body,
     /// if any (T2-2, docs/effects-spec.md §10, issue #861).
     pub effects_assertion: Option<EffectsAssertion>,
+    /// The stitch-header return type annotation (NG-C, issue #1489, widened
+    /// to stitches by #1509: `= name(params): type` for ink, `flow
+    /// name(params): type { … }` for a nested native flow). `None` when
+    /// absent — same "no annotation" vs. explicit-`void` distinction as
+    /// [`Knot::return_type`], and the same coroutine-vs-state toggle: a
+    /// nested native flow that declares one is exempted from the
+    /// implicit-`-> DONE` grace (`lower_native::container::lower_stitch`).
+    pub return_type: Option<TypeExpr>,
     /// Inline `///` doc-comment metadata, if any (B0.4). See [`Knot::doc`].
     pub doc: Option<crate::host_manifest::DocBlock>,
     /// Explicit `#@private`/`#@public` visibility override, if any (B0.4).

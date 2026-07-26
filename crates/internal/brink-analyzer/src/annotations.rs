@@ -254,6 +254,9 @@ fn check_stitch(stitch: &Stitch, file: FileId, names: &TypeNames, out: &mut Vec<
             check_one(te, names, file, out);
         }
     }
+    if let Some(rt) = &stitch.return_type {
+        check_one(rt, names, file, out);
+    }
 }
 
 /// Check one type expression (and recursively, its generic args / fn
@@ -459,6 +462,11 @@ fn check_stitch_mismatch(
             continue;
         };
         report_if_mismatched(ann, &ann_ty, body_ty, file, out);
+    }
+    if let Some(rt) = &stitch.return_type
+        && let Some(ann_ty) = resolve(rt, names)
+    {
+        report_if_mismatched(rt, &ann_ty, &inferred.return_ty, file, out);
     }
 }
 

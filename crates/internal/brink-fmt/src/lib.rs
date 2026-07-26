@@ -301,6 +301,19 @@ mod tests {
     }
 
     #[test]
+    fn stitch_return_type_annotation_canonicalizes_too() {
+        // #1509: a stitch header's `: type` return clause is a single-line
+        // token-collapsing pass same as a knot header's (see the module
+        // note above) — no dedicated stitch formatting code needed, but
+        // this pins the "for free" claim down for the stitch case
+        // specifically.
+        assert_eq!(
+            fmt("=== camp ===\n=fire(logs:int)  :  int\n~ return logs\n"),
+            "=== camp ===\n\n  = fire(logs: int): int\n    ~ return logs\n"
+        );
+    }
+
+    #[test]
     fn var_type_annotation_formats_verbatim_modulo_trailing_whitespace() {
         assert_eq!(fmt("VAR gold: int = 100   \n"), "VAR gold: int = 100\n");
     }
