@@ -3,27 +3,38 @@
 //! `brink_ir::ResolvedRef::range` for a call (`Expr::Call(path, _)`) must be
 //! **exactly `path.range`** — the callee `Path`'s own whole span, never a
 //! narrowed sub-segment. That single range is an independent `(FileId,
-//! TextRange)` lookup key at least four separate consumers rely on:
+//! TextRange)` lookup key at least six separate consumers rely on:
 //!
 //! 1. `brink_ir::lir::lower::expr::lower_call`'s `ctx.resolve_path(path.range)`;
 //! 2. `brink_ir::lir::lower::expr::ufcs_receiver_path`, which deliberately
 //!    keeps `path.range` on the desugared receiver sub-path so lookup 1
 //!    still hits for the receiver too;
 //! 3. `brink_analyzer::strict`'s `E067` void-assignment check
-//!    (`check_void_root`'s `resolution_by_range` lookup); and
+//!    (`check_void_root`'s `resolution_by_range` lookup);
 //! 4. `brink_analyzer::coalesce`'s operand classifier (`classify_coalesce_
-//!    operand`'s `resolution_by_range` lookup).
+//!    operand`'s `resolution_by_range` lookup);
+//! 5. `brink_analyzer::ufcs::value_receiver_def`'s `resolution_by_range`
+//!    lookup on the callee path — the mirror of `resolve::resolve_function`'s
+//!    own UFCS-shaped fallback, which must agree with it or a call is
+//!    diagnosed twice or not at all; and
+//! 6. `brink_analyzer::infer::body::infer_call`'s `self.resolve(path.range)`
+//!    (backed by the same `resolution_by_range` map), whose B3a branch
+//!    explicitly handles a multi-segment (dotted UFCS) callee path.
 //!
-//! Before this test existed, nothing in the repo failed if a future change
-//! narrowed the range at its one production site
-//! (`brink_analyzer::resolve::resolve_function`, fed by
-//! `brink_ir::symbols::project::Collector::walk_expr`'s `Expr::Call` arm) —
-//! exactly the bug class #1539/#1550/#1560 kept rediscovering, caught only
-//! by an alert reviewer for #1550's build, never by a test. This file pins
-//! the production range directly, then proves it round-trips through two of
-//! the four consumers above (lowering's `lower_call`/`ufcs_receiver_path`
-//! pair, and `strict`'s void-use check) via their real, unmodified code
-//! paths.
+//! Before this test existed, nothing pinned the production range as a
+//! reusable, named contract — this file makes the range itself, and every
+//! consumer above, an explicit regression surface rather than relying on
+//! whichever end-to-end fixture happens to exercise a given call shape. The
+//! bug class it targets (#1539/#1550/#1560) was caught only by an alert
+//! reviewer for #1550's build, not by any test at the time. This file pins
+//! the production range directly, then proves it round-trips through three
+//! of the six consumers above: `strict`'s void-use check, and — over a
+//! **dotted-chain** receiver (`o.inner.n.bump(…)`, two field segments deep,
+//! deliberately distinct from the single-segment shape
+//! `brink-test-harness/tests/b3a_ufcs_e2e.rs`'s
+//! `auto_ref_mutates_a_local_receiver_end_to_end` already covers) —
+//! `lower_call`'s and `ufcs_receiver_path`'s independent lookups, via their
+//! real, unmodified code paths.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -61,9 +72,9 @@ fn ref_texts<'a>(src: &'a str, resolutions: &brink_ir::ResolutionMap) -> Vec<&'a
 }
 
 /// No standalone reference to `g` anywhere but inside the call path itself
-/// (unlike [`UFCS_SRC`] below, which also returns `g`) — so a `"g"` entry
-/// in the resolution map can only mean the call-path range narrowed to the
-/// receiver segment alone, never a legitimate unrelated variable reference.
+/// — so a `"g"` entry in the resolution map can only mean the call-path
+/// range narrowed to the receiver segment alone, never a legitimate
+/// unrelated variable reference.
 const UFCS_PIN_SRC: &str = "\
 fn bump(ref n, amount) {
   n = n + amount;
@@ -75,15 +86,37 @@ fn total() {
 }
 ";
 
-const UFCS_SRC: &str = "\
-fn bump(ref n, amount) {
-  n = n + amount;
+/// A **dotted-chain** receiver (`o.inner.n`, two field segments deep) —
+/// deliberately distinct from [`UFCS_PIN_SRC`]/[`the_pinned_whole_path_
+/// range_round_trips_through_lower_call_and_ufcs_receiver_path`]'s
+/// single-segment receiver (`g`), and from `b3a_ufcs_e2e.rs`'s
+/// `auto_ref_mutates_a_local_receiver_end_to_end` (same single-segment
+/// shape). `ufcs_receiver_path`'s own doc calls out that it must resolve
+/// correctly "whether the receiver is one segment (`x`) or a dotted chain
+/// (`a.b`)" — this fixture is the dotted-chain half of that claim, proven
+/// end-to-end rather than only at the unit level (`brink-ir/tests/
+/// ufcs_auto_ref.rs`'s `a_dotted_receiver_auto_refs_as_an_explicit_
+/// projection`, which supplies its verdict by hand rather than through the
+/// real analyzer).
+const UFCS_DOTTED_SRC: &str = "\
+struct Inner {
+  n: int
+}
+
+struct Outer {
+  inner: Inner
+}
+
+var o: Outer = 0
+
+fn bump(ref x, amount) {
+  x = x + amount;
 }
 
 fn total() {
-  let g = 1;
-  g.bump(5);
-  return g;
+  o = Outer { inner: Inner { n: 1 } };
+  o.inner.n.bump(5);
+  return o.inner.n;
 }
 
 flow main() {
@@ -115,11 +148,13 @@ fn ufcs_call_path_resolves_to_the_whole_path_span_not_a_sub_segment() {
 }
 
 /// Round-trips that exact whole-path range through two independent
-/// consumers at once: `lower_call`'s own `ctx.resolve_path(path.range)`
-/// (which must resolve `g.bump`'s range to the receiver `g`, taking the B3a
-/// UFCS branch) and `ufcs_receiver_path` (which must then reuse the same
-/// range so lowering the desugared receiver argument resolves it a second
-/// time, correctly, as a mutable `ref` binding onto the *same* local `g`).
+/// consumers at once, over a **dotted-chain** receiver: `lower_call`'s own
+/// `ctx.resolve_path(path.range)` (which must resolve `o.inner.n.bump`'s
+/// range to the durable root `o`, taking the B3a UFCS branch) and
+/// `ufcs_receiver_path` (which must then reuse the same range so lowering
+/// the desugared receiver argument resolves it a second time, correctly, as
+/// a two-segment `ref` projection — `inner`, then `n` — onto the *same*
+/// global `o`).
 ///
 /// If either consumer's key ever drifted from the analyzer's whole-path
 /// range — independently, since they are two different lookups against the
@@ -128,7 +163,7 @@ fn ufcs_call_path_resolves_to_the_whole_path_span_not_a_sub_segment() {
 /// below would catch it either way.
 #[test]
 fn the_pinned_whole_path_range_round_trips_through_lower_call_and_ufcs_receiver_path() {
-    let episodes = explore_from_brink_native(UFCS_SRC, &ExploreConfig::default())
+    let episodes = explore_from_brink_native(UFCS_DOTTED_SRC, &ExploreConfig::default())
         .unwrap_or_else(|e| panic!("UFCS auto-ref fixture must compile and play: {e}"));
     let out: String = episodes
         .first()
@@ -139,8 +174,9 @@ fn the_pinned_whole_path_range_round_trips_through_lower_call_and_ufcs_receiver_
         .collect();
     assert_eq!(
         out, "Total is 6.\n",
-        "g.bump(5)'s mutation must be visible in `g` afterwards — only possible if \
-         lower_call and ufcs_receiver_path both resolved the identical whole-path range"
+        "o.inner.n.bump(5)'s mutation must be visible in `o.inner.n` afterwards — only \
+         possible if lower_call and ufcs_receiver_path both resolved the identical \
+         whole-path range, over a two-segment dotted-chain receiver"
     );
 }
 

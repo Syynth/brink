@@ -835,6 +835,9 @@ impl UfcsVisitor<'_> {
     /// id, the same way `structs::resolved_symbol_ty` types any other
     /// resolved reference.
     fn value_receiver_def(&self, path: &HirPath) -> Option<DefinitionId> {
+        // `path.range` here is the callee `Path`'s whole span — this lookup
+        // is one of the four consumers keyed on the call-path
+        // `ResolvedRef::range` contract (issue #1561); see that field's doc.
         let key = (path.range.start().into(), path.range.end().into());
         let &target = self.resolution_by_range.get(&key)?;
         match self.index.symbols.get(&target) {

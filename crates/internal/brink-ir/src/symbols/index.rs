@@ -148,14 +148,14 @@ impl SymbolKind {
 /// branch — never to a receiver-only or method-only sub-segment).
 ///
 /// This is produced once, structurally, by
-/// `brink_ir::symbols::project::Collector::walk_expr`'s `Expr::Call` arm
+/// `brink_ir::symbols::project::Projector::walk_expr`'s `Expr::Call` arm
 /// (`path.range` is what it hands to `push_ref`, becoming
 /// `UnresolvedRef::range`), and every push site in
 /// `brink-analyzer::resolve::resolve_function` carries it through
 /// unchanged as `ResolvedRef::range` — see that function's own doc for the
 /// full push-site list.
 ///
-/// It is then an **exact lookup key** at least four separate consumers
+/// It is then an **exact lookup key** at least six separate consumers
 /// key their own `(FileId, range)` maps on, independently:
 ///
 /// - `brink_ir::lir::lower::expr::lower_call`'s `ctx.resolve_path(path.range)`;
@@ -166,9 +166,16 @@ impl SymbolKind {
 ///   expression;
 /// - `brink_analyzer::strict::check_void_root`'s
 ///   `resolution_by_range.get(&range_key(path.range))` (the `E067`
-///   void-assignment check); and
+///   void-assignment check);
 /// - `brink_analyzer::coalesce::classify_coalesce_operand`'s equivalent
-///   `resolution_by_range` lookup on a coalescing operand's call.
+///   `resolution_by_range` lookup on a coalescing operand's call;
+/// - `brink_analyzer::ufcs::value_receiver_def`'s
+///   `resolution_by_range.get(&key)` lookup on the callee path — the mirror
+///   of `resolve::resolve_function`'s own UFCS-shaped fallback, which must
+///   agree with it or a call is diagnosed twice or not at all; and
+/// - `brink_analyzer::infer::body::infer_call`'s `self.resolve(path.range)`
+///   (backed by the same `resolution_by_range` map), whose B3a branch
+///   explicitly handles a multi-segment (dotted UFCS) callee path.
 ///
 /// Narrowing this range anywhere upstream — even in service of a real bug
 /// fix elsewhere, e.g. a rename edit that must span only one segment — is a
