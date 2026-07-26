@@ -30,9 +30,9 @@ pub mod lower;
 mod types;
 
 pub use lower::{
-    LirPrelude, PreludeDecls, ScopeChunk, StructShapeData, TypeMode, assemble_prelude,
-    assemble_program, build_prelude, build_prelude_decls, build_struct_shape_data,
-    lower_knot_chunk_incremental, lower_root_content_for_prelude, lower_to_program,
-    lower_to_program_with_type_mode,
+    LirPrelude, PreludeDecls, ScopeChunk, StructShapeData, TypeMode, UfcsLookup, UfcsVerdict,
+    assemble_prelude, assemble_program, build_prelude, build_prelude_decls,
+    build_struct_shape_data, lower_knot_chunk_incremental, lower_root_content_for_prelude,
+    lower_to_program, lower_to_program_with_type_mode,
 };
 pub use types::*;
