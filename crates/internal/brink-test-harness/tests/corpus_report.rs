@@ -264,6 +264,45 @@ fn corpus_report() {
     native_corpus_report();
 }
 
+/// Describe a `native_corpus_report` output mismatch with enough detail to
+/// actually locate the regression: the first differing byte offset plus
+/// truncated, escaped snippets of both strings. A byte-length-only message
+/// (e.g. "expected 12 bytes, got 12") renders identically whenever a
+/// one-character regression happens to preserve length — exactly the
+/// common case this report exists to surface.
+fn describe_output_mismatch(expected: &str, actual: &str) -> String {
+    const SNIPPET_CHARS: usize = 80;
+
+    let diff_at = expected
+        .bytes()
+        .zip(actual.bytes())
+        .position(|(e, a)| e != a)
+        .unwrap_or_else(|| expected.len().min(actual.len()));
+
+    format!(
+        "output mismatch at byte {diff_at} (expected {} bytes, got {} bytes)\n\
+         \x20     expected: {}\n\
+         \x20     actual:   {}",
+        expected.len(),
+        actual.len(),
+        truncate_escaped(expected, SNIPPET_CHARS),
+        truncate_escaped(actual, SNIPPET_CHARS),
+    )
+}
+
+/// Truncate `s` to at most `max_chars` characters and escape control/
+/// non-printable characters (`\n`, `\t`, …) so a mismatch snippet renders
+/// on one line instead of visually merging into the report's row layout.
+fn truncate_escaped(s: &str, max_chars: usize) -> String {
+    let truncated: String = s.chars().take(max_chars).collect();
+    let ellipsis = if s.chars().count() > max_chars {
+        "…"
+    } else {
+        ""
+    };
+    format!("{}{ellipsis}", truncated.escape_debug())
+}
+
 /// `tests/tier1-native/` — the native (`.brink`) self-referential golden
 /// corpus (issue #1529). Printed as its own clearly-labeled section,
 /// *never* folded into the oracle CASES/EPISODES totals above: native
@@ -325,15 +364,7 @@ fn native_corpus_report() {
                 pass += 1;
                 rows.push((name, true, String::new()));
             }
-            Ok(actual) => rows.push((
-                name,
-                false,
-                format!(
-                    "output mismatch (expected {} bytes, got {})",
-                    expected.len(),
-                    actual.len()
-                ),
-            )),
+            Ok(actual) => rows.push((name, false, describe_output_mismatch(&expected, &actual))),
             Err(e) => rows.push((name, false, e)),
         }
     }

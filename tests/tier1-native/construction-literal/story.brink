@@ -3,11 +3,19 @@ struct Point {
   y: int
 }
 
+flags Mood = calm, wary, hostile
+
 fn describe() {
   let p = Point { x: 3, y: 4 };
   return p.x + p.y;
 }
 
+fn mood() {
+  let m = Flags { calm };
+  return m;
+}
+
 flow main() {
-  Sum: {describe()} -> END
+  Sum: {describe()}
+  Mood: {mood()} -> END
 }

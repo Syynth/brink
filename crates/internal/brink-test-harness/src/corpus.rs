@@ -130,8 +130,18 @@ pub fn load_golden_transcript(path: &Path, case_label: &str) -> Result<String, S
 /// is a fixture-authoring bug, so this surfaces it as an `Err` rather than
 /// guessing which choice to take.
 ///
-/// Returns `Err` on any compile error, link error, or runtime fault, or if
-/// the program ever reaches [`brink_runtime::Line::Choices`].
+/// Returns `Err` on any compile error, link error, or runtime fault, if
+/// the program ever reaches [`brink_runtime::Line::Choices`], or if it
+/// produces more than [`brink_runtime::FlowInstance::LINE_LIMIT`] lines
+/// without reaching a terminal one.
+///
+/// The line count is capped so a fixture that diverts back to itself while
+/// emitting text (e.g. `flow main() { Hi -> main }`) fails loudly instead
+/// of hanging `cargo test --workspace` or `corpus_report` — see the repo's
+/// "VM tests must not hang" / "guard against unbounded growth" rules. This
+/// mirrors [`brink_runtime::FlowInstance::drive_to_terminal`]'s own
+/// `LINE_LIMIT` cap; `continue_single` alone only enforces the per-line
+/// step limit, not a cap on the number of lines produced.
 pub fn run_native_transcript(brink_path: &Path) -> Result<String, String> {
     let output = brink_compiler::compile_path(brink_path)
         .map_err(|e| format!("compile {}: {e}", brink_path.display()))?;
@@ -143,6 +153,7 @@ pub fn run_native_transcript(brink_path: &Path) -> Result<String, String> {
     );
 
     let mut out = String::new();
+    let mut line_count = 0usize;
     loop {
         match story
             .continue_single()
@@ -162,6 +173,16 @@ pub fn run_native_transcript(brink_path: &Path) -> Result<String, String> {
                     brink_path.display()
                 ));
             }
+        }
+        line_count += 1;
+        if line_count >= brink_runtime::FlowInstance::LINE_LIMIT {
+            return Err(format!(
+                "{} produced {} lines without reaching a terminal Line — exceeded \
+                 FlowInstance::LINE_LIMIT ({})",
+                brink_path.display(),
+                line_count,
+                brink_runtime::FlowInstance::LINE_LIMIT
+            ));
         }
     }
     Ok(out)

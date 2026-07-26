@@ -100,16 +100,22 @@ fn ufcs_desugar_forms() {
 /// B5 construction literals (issue #1464): `TypeName { field: value, … }`
 /// against an unregistered type name falls through to the declared-struct
 /// reading (`Expr::StructLiteral`) — construct, read, and use a field
-/// value end to end.
+/// value end to end. Also covers the registered-`flags` variant
+/// (`Flags { calm }`), so this corpus case exercises a real registry
+/// construction target, not just the unregistered fall-through (`Map { … }`
+/// gets only incidental coverage elsewhere, via `for-k-v`/`ufcs`).
 #[test]
 fn construction_literal() {
     assert_case("construction-literal");
 }
 
 /// B2 two-binding `for k, v in m` (issue #1461): desugars to a container
-/// snapshot plus a `LogicWhile` binding `k`/`v` each iteration — summing
-/// every value in a three-entry map proves the loop actually runs to
-/// completion, not just that it lowers.
+/// snapshot plus a `LogicWhile` binding `k`/`v` each iteration. Uses a
+/// non-alphabetical insertion order (`z`, `a`, `m`) and accumulates both
+/// `k` (into a string) and `v` (summed) so the golden pins the key
+/// binding and iteration order, not just that the loop runs to
+/// completion — a case that only summed `v` would still pass with a
+/// garbage `k` binding.
 #[test]
 fn for_k_v() {
     assert_case("for-k-v");
