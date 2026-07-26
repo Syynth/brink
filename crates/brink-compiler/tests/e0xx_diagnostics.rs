@@ -13,7 +13,13 @@
 //! - E031, E035, E054, E055, E056, E075, E076, E077, E078 —
 //!   `brink-test-harness/tests/tier1_brink.rs`
 //! - E051 — `tests/t1b_dialect_gate.rs`
-//! - E063, E064, E065, E066, E067 — `tests/tm3_strict_policy.rs`
+//! - E063, E064, E065, E067 — `tests/tm3_strict_policy.rs`. E066 is *also*
+//!   covered there (the general Conflicted-escape case) — the two
+//!   `or`-coalescing fixtures near the bottom of this file are a deliberate
+//!   exception, native-only (`InfixOp::Coalesce`) and disk-based (their own
+//!   `compile_native` helper), kept here per the review finding that added
+//!   them (PR #1469/#1460) rather than growing a second disk-based harness
+//!   in `tm3_strict_policy.rs` for one code.
 //!
 //! Codes retired as unreachable (lane-A audit findings + hygiene follow-up
 //! #709; see enum docs for rationale):
@@ -1041,5 +1047,74 @@ fn e113_list_member_named_next_stays_legal_in_brink() {
         out.warnings.iter().all(|d| d.code != DiagnosticCode::E113),
         "{:?}",
         out.warnings
+    );
+}
+
+// ─── E066 (`or`-coalescing mismatch): review finding on PR #1469/#1460 ──
+//
+// `InfixOp::Coalesce` is produced only by native `hir::lower_native`
+// (B1, issue #1460) — every fixture above compiles through `brink-syntax`
+// (the ink/brink-extension frontend, dispatched via a `main.ink`-suffixed
+// in-memory entry), which can never reach it. Native discovery
+// (`brink_driver::Driver::discover_native`) also reads straight off disk
+// (`RealFs`), bypassing this file's `compile()` harness's in-memory
+// `read_file` callback entirely — so these two fixtures need their own
+// disk-based helper rather than a `main.brink`-suffixed `compile()` call.
+
+/// Compile a native `.brink` entry from disk with explicit analysis
+/// options — mirrors `crates/brink-compiler/tests/driver.rs`'s own
+/// `compile_and_run_native` helper, minus the run-to-completion step (these
+/// fixtures are expected to fail the compile, not execute).
+fn compile_native(
+    dir_suffix: &str,
+    source: &str,
+    options: AnalysisOptions,
+) -> Result<brink_compiler::CompileOutput, brink_compiler::CompileError> {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-e0xx-coalesce-{dir_suffix}-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("main.brink"), source).unwrap();
+    let result = brink_compiler::compile_path_with_options(&dir.join("main.brink"), options);
+    std::fs::remove_dir_all(&dir).ok();
+    result
+}
+
+/// `types = strict` explicit (native's own default resolves to `Gradual`
+/// today — B0.10's dialect-keyed strict-only wiring has not landed, see
+/// `brink-analyzer::strict::native_strict_only_error`'s doc); `is_native`
+/// skips `E064`'s ink-only dialect check regardless of `dialect`'s value.
+fn native_strict_options() -> AnalysisOptions {
+    AnalysisOptions {
+        types: Some(TypePolicy::Strict),
+        ..AnalysisOptions::default()
+    }
+}
+
+#[test]
+fn e066_coalesce_non_option_left_hand_side() {
+    let source = "flow main() {\n  {5 or 9}\n  -> END\n}\n";
+    let err = compile_native("left-not-option", source, native_strict_options())
+        .map(|_| ())
+        .expect_err("a concrete-typed left-hand side must fail under types = strict");
+    let diags = errors_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E066),
+        "expected E066, got: {diags:?}"
+    );
+}
+
+#[test]
+fn e066_coalesce_mismatched_fallback_type() {
+    let source = "flow main() {\n  {some(1) or \"text\"}\n  -> END\n}\n";
+    let err = compile_native("mismatch", source, native_strict_options())
+        .map(|_| ())
+        .expect_err("an int-element Option coalesced against a string fallback must fail");
+    let diags = errors_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E066),
+        "expected E066, got: {diags:?}"
     );
 }

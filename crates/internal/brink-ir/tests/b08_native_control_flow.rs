@@ -528,6 +528,43 @@ var x = {
     };
     assert_eq!(native_for.var_name.text, ink_for.var_name.text);
     assert_eq!(native_for.body.len(), ink_for.body.len());
+    assert!(
+        native_for.val_name.is_none(),
+        "single-binding `for` has no second binding"
+    );
+    assert!(
+        ink_for.val_name.is_none(),
+        "the ink `~ {{ for … }}` grammar has no two-binding syntax at all — \
+         always None, not just unset for this fixture"
+    );
+}
+
+/// `for k, v in m` — two-binding map iteration (B2, issue #1461,
+/// docs/stdlib-spec.md §5/§9's F10 ruling). Native-only: the ink `~ { for
+/// … }` T1b grammar has no two-binding spelling, so there is no
+/// differential partner here — this pins the native shape directly, the
+/// one additive HIR field the B0 fence reserved (`val_name`,
+/// docs/b0-sequencing.md:356).
+#[test]
+fn for_stmt_two_binding_populates_val_name() {
+    let native_src = "\
+var x = {
+  for k, v in m {
+    log(k, v);
+  }
+}
+";
+    let (native_stmts, diags) = native_block_stmts(native_src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let BlockStmt::For(native_for) = &native_stmts[0] else {
+        panic!("expected For");
+    };
+    assert_eq!(native_for.var_name.text, "k");
+    let val_name = native_for
+        .val_name
+        .as_ref()
+        .expect("two-binding `for` populates val_name");
+    assert_eq!(val_name.text, "v");
 }
 
 /// `until <cond>;` (native's sole condition-park spelling) lowers to the

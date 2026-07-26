@@ -397,10 +397,13 @@ pub enum CoalesceError {
 ///   (nothing is known to check — same posture as every other gradual
 ///   position); `Conflicted` anywhere stays `Conflicted` via the join.
 ///
-/// **Typing only — no surface spelling.** The brink dialect has no `or`
-/// coalescing operator to hang this on (`InfixOp::Or` is ink's boolean
-/// `||`, oracle-frozen); the surface spelling is Track B1
-/// (`docs/stdlib-sequencing.md` §3), which will consume exactly this rule.
+/// **Surface spelling landed in B1** (issue #1460): `InfixOp::Coalesce`,
+/// produced only by native lowering (`hir::lower_native::expr::infix_op`,
+/// the `KW_OR` token). The brink/ink dialect still has no coalescing
+/// operator to hang this on — `InfixOp::Or` there stays ink's boolean
+/// `||`, oracle-frozen and untouched — so this rule is consumed
+/// exclusively by [`super::body::InferPass::infer_infix`]'s
+/// `InfixOp::Coalesce` arm.
 pub fn coalesce(lhs: &Ty, rhs: &Ty) -> Result<Ty, CoalesceError> {
     match (lhs, rhs) {
         // Two-Option form: keep optionality, join elements.

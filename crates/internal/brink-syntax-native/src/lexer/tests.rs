@@ -18,7 +18,7 @@ fn empty_source_is_empty() {
 #[test]
 fn keywords_classify() {
     let toks = assert_lossless(
-        "flow fn var const flags struct extern import use module return ref if match else while for in until as true false END DONE",
+        "flow fn var const flags struct extern import use module return ref if match else while for in until as or true false END DONE",
     );
     let kinds: Vec<_> = toks
         .iter()
@@ -30,7 +30,7 @@ fn keywords_classify() {
         vec![
             KW_FLOW, KW_FN, KW_VAR, KW_CONST, KW_FLAGS, KW_STRUCT, KW_EXTERN, KW_IMPORT, KW_USE,
             KW_MODULE, KW_RETURN, KW_REF, KW_IF, KW_MATCH, KW_ELSE, KW_WHILE, KW_FOR, KW_IN,
-            KW_UNTIL, KW_AS, KW_TRUE, KW_FALSE, KW_END, KW_DONE,
+            KW_UNTIL, KW_AS, KW_OR, KW_TRUE, KW_FALSE, KW_END, KW_DONE,
         ]
     );
 }

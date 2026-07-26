@@ -750,18 +750,45 @@ fn lower_chained_indexed_assignment(
     });
 }
 
-/// Lower `for x in arr { … }` / `for k in map { … }` (§2). Desugars to an
-/// index-based `LogicWhile` — dedicated iterator opcodes are deliberately
-/// not part of the T1b surface (`docs/format-v4-rfc.md` §3 note); the
-/// iterable is snapshotted once via `CollectionKeys` (which returns the
-/// array unchanged for an array input — see that opcode's doc — so one
-/// snapshot expression correctly covers both "iterate values" and "iterate
-/// keys" without a static array/map type distinction).
+/// Lower `for x in arr { … }` / `for k in map { … }` — or, on the native
+/// surface, `for k, v in map { … }` (§2, plus B2 issue #1461 for the
+/// two-binding form). Desugars to an index-based `LogicWhile` — dedicated
+/// iterator opcodes are deliberately not part of the T1b surface
+/// (`docs/format-v4-rfc.md` §3 note); the iterable is snapshotted once via
+/// `CollectionKeys` (which returns the array unchanged for an array input
+/// — see that opcode's doc — so one snapshot expression correctly covers
+/// both "iterate values" and "iterate keys" without a static array/map
+/// type distinction).
+///
+/// The two-binding form (`f.val_name.is_some()`) is exactly the F10-ruled
+/// desugar (`docs/stdlib-spec.md` §5/§9: "`for k, v in m` ... desugars to
+/// key-iteration + `let v = m[k]`, total by construction, no pair shape
+/// ever materializes") — an extra `DeclareTemp` reading `container[key]`
+/// at the top of the body, right after `key` itself is declared. The
+/// container is evaluated exactly once, into its own synthetic temp,
+/// *before* the keys snapshot — it's read twice (once to snapshot its
+/// keys, once per-iteration to index it), and `f.iterable` may be an
+/// arbitrary expression (e.g. a call) that must not run twice. The
+/// single-binding form keeps the original one-snapshot shape byte-for-byte
+/// unchanged (no synthetic container temp) since it only ever reads the
+/// snapshot.
+#[expect(
+    clippy::similar_names,
+    reason = "var_name/val_name are the ForStmt field names (k/v's HIR spelling, B2 #1461) — \
+              not a pair a rename would clarify"
+)]
 fn lower_for_stmt(f: &hir::ForStmt, ctx: &mut LowerCtx<'_>, out: &mut Vec<lir::Stmt>) {
     let iterable = lower_expr(&f.iterable, ctx);
+    let snapshot_source = if f.val_name.is_some() {
+        let (container_slot, container_name) =
+            declare_synthetic("__for_container", iterable, ctx, out);
+        lir::Expr::GetTemp(container_slot, container_name)
+    } else {
+        iterable
+    };
     let (snap_slot, snap_name) = declare_synthetic(
         "__for_snapshot",
-        lir::Expr::CollectionKeys(Box::new(iterable)),
+        lir::Expr::CollectionKeys(Box::new(snapshot_source.clone())),
         ctx,
         out,
     );
@@ -785,6 +812,17 @@ fn lower_for_stmt(f: &hir::ForStmt, ctx: &mut LowerCtx<'_>, out: &mut Vec<lir::S
             index: Box::new(lir::Expr::GetTemp(idx_slot, idx_name)),
         }),
     }];
+    if let Some(val_name) = &f.val_name {
+        let (val_slot, val_name_id) = declare_shadow_checked(&val_name.text, val_name.range, ctx);
+        body.push(lir::Stmt::DeclareTemp {
+            slot: val_slot,
+            name: val_name_id,
+            value: Some(lir::Expr::Index {
+                base: Box::new(snapshot_source),
+                index: Box::new(lir::Expr::GetTemp(var_slot, var_name)),
+            }),
+        });
+    }
     ctx.loop_depth += 1;
     body.extend(lower_block_stmt_list(&f.body, ctx));
     ctx.loop_depth -= 1;

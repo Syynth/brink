@@ -8,6 +8,7 @@
 mod admission;
 mod annotations;
 mod await_purity;
+mod coalesce_mismatch;
 mod comparator_contract;
 mod conversions;
 mod determinism;
@@ -67,7 +68,7 @@ pub use manifest::{ModuleMap, ResolvedModule};
 pub use native_admission::validate_native_accept_list;
 pub use protocols::{
     Protocol, ProtocolImplDecl, check_protocol_impls, check_reserved_names,
-    is_reserved_protocol_name, iterate_element_ty,
+    is_reserved_protocol_name, iterate_element_ty, iterate_val_ty,
 };
 pub use resolve::ImportScope;
 pub use signature::{Sig, signature};
@@ -477,20 +478,6 @@ pub fn per_file_diagnostics(
         // comment just above (a reference's resolution record always
         // carries the file the reference itself lives in).
         out.extend(ref_projection::check(&files, file_resolutions, index));
-        // Struct construction-literal duplicate-field check (E084, issue
-        // #675) — same brink-only rule, and unlike `structs::check`'s
-        // missing/extra/mistyped trio this runs under *both* `types`
-        // policies (see `structs`' module doc): a repeated field name is a
-        // structural mistake detectable from the literal alone, with no
-        // shape resolution or whole-project inference needed.
-        out.extend(structs::check_duplicates(&files));
-        // Map-literal key-domain warning (E106, issue #598,
-        // docs/t1b-surface-spec.md §3) — same brink-only rule and the same
-        // policy-independence `structs::check_duplicates` documents: a
-        // statically-visible non-key-domain literal key is a structural
-        // authoring mistake detectable from the literal alone, no shape
-        // resolution or whole-project inference needed.
-        out.extend(map_keys::check(&files));
         // NS-A3 protocol-registry name reservation (E113, F6 ruled
         // 2026-07-19, docs/stdlib-spec.md §9.6): `display`/`compare`/`next`
         // are reserved method names under the brink dialect — an author
@@ -500,16 +487,33 @@ pub fn per_file_diagnostics(
         // construction).
         out.extend(protocols::check_reserved_names(&files));
     }
-    // Map-literal duplicate-key error (E138, B5 issue #1464, #1103 cascade
-    // ruling (A), docs/stdlib-spec.md §9.6). Wired WIDER than the
-    // brink-only block above on purpose: this is a `construct`-protocol
-    // rule, and the native surface reaches map literals through
-    // `Map { k: v }` regardless of the (ink-only) `dialect` axis a native
-    // project happens to carry — a `.brink` file compiled under the default
-    // `strict-ink` dialect must still get the error. Under `strict-ink`
-    // *ink* the map literal is already rejected whole by `dialect_gate`
-    // (E051), so nothing new fires there.
+    // The three construction-literal checks below are wired WIDER than the
+    // brink-only block above on purpose (B5, issue #1464, #1103 cascade
+    // ruling (A), docs/stdlib-spec.md §9.6): `TypeName { … }` construction
+    // reaches `StructLiteral`/`MapLiteral` through the native surface
+    // (`Map { k: v }`, `Point { x: 1 }`) regardless of the (ink-only)
+    // `dialect` axis a native project happens to carry — a `.brink` file
+    // compiled under the default `strict-ink` dialect must still get these
+    // errors. Under `strict-ink` *ink* the literal sigils (`#{…}`) are
+    // already rejected whole by `dialect_gate` (E051), so nothing new fires
+    // there.
     if dialect == Dialect::Brink || is_native {
+        // Struct construction-literal duplicate-field check (E084, issue
+        // #675) — unlike `structs::check`'s missing/extra/mistyped trio
+        // this runs under *both* `types` policies (see `structs`' module
+        // doc): a repeated field name is a structural mistake detectable
+        // from the literal alone, with no shape resolution or
+        // whole-project inference needed.
+        out.extend(structs::check_duplicates(&files));
+        // Map-literal key-domain warning (E106, issue #598,
+        // docs/t1b-surface-spec.md §3) — same policy-independence
+        // `structs::check_duplicates` documents: a statically-visible
+        // non-key-domain literal key is a structural authoring mistake
+        // detectable from the literal alone, no shape resolution or
+        // whole-project inference needed.
+        out.extend(map_keys::check(&files));
+        // Map-literal duplicate-key error (E138, B5 issue #1464, #1103
+        // cascade ruling (A)).
         out.extend(map_keys::check_duplicate_keys(&files));
     }
     out

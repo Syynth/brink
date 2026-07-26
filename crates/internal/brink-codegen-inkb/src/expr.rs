@@ -631,6 +631,7 @@ fn infix_op_to_opcode(op: brink_ir::InfixOp) -> Opcode {
         brink_ir::InfixOp::Or => Opcode::Or,
         brink_ir::InfixOp::Has => Opcode::ListContains,
         brink_ir::InfixOp::HasNot => Opcode::ListNotContains,
+        brink_ir::InfixOp::Coalesce => Opcode::Coalesce,
     }
 }
 

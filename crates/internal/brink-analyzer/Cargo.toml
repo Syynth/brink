@@ -21,6 +21,11 @@ serde = { workspace = true }
 
 [dev-dependencies]
 proptest.workspace = true
+# B1 `or`-coalescing test fixtures (issue #1460): `InfixOp::Coalesce` is
+# produced only by `hir::lower_native`, so `coalesce_mismatch`'s own tests
+# must parse through the native frontend rather than `brink-syntax` (the
+# ink/brink-extension frontend every other check module's tests use).
+brink-syntax-native = { workspace = true }
 
 [lints]
 workspace = true

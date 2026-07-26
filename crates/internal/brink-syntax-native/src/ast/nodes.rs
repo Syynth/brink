@@ -791,6 +791,7 @@ impl InfixExpr {
                         | SyntaxKind::SLASH
                         | SyntaxKind::PERCENT
                         | SyntaxKind::PIPE
+                        | SyntaxKind::KW_OR
                 )
             })
     }
@@ -1212,9 +1213,21 @@ impl WhileStmt {
 }
 
 impl ForStmt {
-    /// The loop-binding identifier (`for NAME in …`).
+    /// The loop-binding identifier (`for NAME in …`) — the key binding for
+    /// the two-binding form (`for NAME, val_name in …`).
     pub fn name_token(&self) -> Option<SyntaxToken> {
-        support::token(&self.syntax, IDENT)
+        support::tokens(&self.syntax, IDENT).next()
+    }
+
+    /// The second loop-binding identifier (`for key, VAL in …`), when
+    /// present — two-binding map iteration (B2, issue #1461,
+    /// docs/stdlib-spec.md §5/§9's F10 ruling). `None` for the
+    /// single-binding form. Both binding idents are direct `FOR_STMT`
+    /// tokens (the iterable and body are nested nodes, never direct
+    /// `IDENT` children), so the second direct `IDENT` token is
+    /// unambiguously this binding.
+    pub fn val_name_token(&self) -> Option<SyntaxToken> {
+        support::tokens(&self.syntax, IDENT).nth(1)
     }
 
     /// The iterable expression — `FOR_STMT`'s only child node that isn't

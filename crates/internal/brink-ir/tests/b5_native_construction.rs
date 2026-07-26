@@ -297,3 +297,35 @@ fn dynamic_keys_are_not_reported_as_duplicates() {
         "a non-literal key is not statically comparable: {diags:?}"
     );
 }
+
+// ── E084/E106 must also reach the native surface ────────────────────
+//
+// A review finding on an earlier revision of this PR caught these two
+// checks left wired brink-only in `per_file_diagnostics` even though this
+// same PR is what first makes `Expr::StructLiteral`/`Expr::MapLiteral`
+// reachable from `.brink` source via `TypeName { … }` — on the real native
+// combination (`dialect` at its `strict-ink` default, `is_native = true`),
+// `struct P { x: int }` + `var p = P { x: 1, x: 2 }` produced zero
+// diagnostics and `lower_struct_literal` silently last-won on placement.
+// These pin the fix the same way `a_duplicate_map_key_is_e138_on_a_native_file`
+// pins `E138`.
+
+#[test]
+fn a_duplicate_struct_field_is_e084_on_a_native_file() {
+    let diags = native_diagnostics("struct P { x: int }\nvar p = P { x: 1, x: 2 }\n");
+    let dup: Vec<_> = diags
+        .iter()
+        .filter(|d| d.code == DiagnosticCode::E084)
+        .collect();
+    assert_eq!(dup.len(), 1, "expected exactly one E084: {diags:?}");
+}
+
+#[test]
+fn an_out_of_domain_map_key_is_e106_on_a_native_file() {
+    let diags = native_diagnostics("var m = Map { 3.5: 1 }\n");
+    let dup: Vec<_> = diags
+        .iter()
+        .filter(|d| d.code == DiagnosticCode::E106)
+        .collect();
+    assert_eq!(dup.len(), 1, "expected exactly one E106: {diags:?}");
+}

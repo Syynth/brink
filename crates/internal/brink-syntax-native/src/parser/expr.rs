@@ -29,8 +29,8 @@
 use crate::SyntaxKind::{
     AMP_AMP, ARG_LIST, BANG, BANG_EQ, BOOLEAN_LIT, CALL_EXPR, COLON, COLON_COLON, COMMA,
     CONSTRUCT_ENTRY, CONSTRUCT_LITERAL, DOT, EQ_EQ, FLOAT, FLOAT_LIT, GT, GT_EQ, IDENT, INFIX_EXPR,
-    INTEGER, INTEGER_LIT, KW_FALSE, KW_TRUE, L_BRACE, L_PAREN, LAMBDA_EXPR, LAMBDA_PARAMS, LT,
-    LT_EQ, MINUS, PAREN_EXPR, PATH, PATH_EXPR, PATH_SEGMENT, PERCENT, PIPE, PLUS, PREFIX_EXPR,
+    INTEGER, INTEGER_LIT, KW_FALSE, KW_OR, KW_TRUE, L_BRACE, L_PAREN, LAMBDA_EXPR, LAMBDA_PARAMS,
+    LT, LT_EQ, MINUS, PAREN_EXPR, PATH, PATH_EXPR, PATH_SEGMENT, PERCENT, PIPE, PLUS, PREFIX_EXPR,
     QUOTE, R_BRACE, R_PAREN, SLASH, STAR, STRING_ESCAPE, STRING_LIT, STRING_TEXT,
 };
 
@@ -42,13 +42,21 @@ use super::Parser;
 #[repr(u8)]
 enum Prec {
     None = 0,
-    Or = 1,         // ||
-    And = 2,        // &&
-    Equality = 3,   // ==, !=
-    Comparison = 4, // <, >, <=, >=
-    Add = 5,        // +, -
-    Mul = 6,        // *, /, %
-    Prefix = 7,     // -, ! (unary)
+    // `or`-coalescing (B1, `docs/stdlib-spec.md` §1.6a, issue #1460) sits
+    // looser than every boolean/comparison/arithmetic operator — an
+    // implementation decision (no ruling fixes this), following the
+    // conventional null-coalescing placement (C# `??`, Kotlin `?:`: both
+    // bind looser than `||`) so `a or b == c` reads as `a or (b == c)`,
+    // matching "supply a final value for this whole condition" rather than
+    // silently absorbing a comparison as the fallback.
+    Coalesce = 1,   // or
+    Or = 2,         // ||
+    And = 3,        // &&
+    Equality = 4,   // ==, !=
+    Comparison = 5, // <, >, <=, >=
+    Add = 6,        // +, -
+    Mul = 7,        // *, /, %
+    Prefix = 8,     // -, ! (unary)
 }
 
 impl Prec {
@@ -60,15 +68,18 @@ impl Prec {
     /// just consumed). Reusing `self` unchanged here would instead pull a
     /// second operator at the *same* precedence into the RHS, producing
     /// right-associative parses for symmetric-precedence operators (`-`,
-    /// `/`, `%`, `<`, `>`, `<=`, `>=`, `==`, `!=`, `&&`, `||`) — invisible
-    /// for `+`/`*` since they're mathematically associative, but silently
-    /// wrong for `-`/`/` (`10 - 3 - 2` would group as `10 - (3 - 2)` = 9
-    /// instead of `(10 - 3) - 2` = 5). Saturates at `Prefix`, the highest
-    /// level: nothing binds tighter, so no further operator is ever pulled
-    /// in past a prefix expression either.
+    /// `/`, `%`, `<`, `>`, `<=`, `>=`, `==`, `!=`, `&&`, `||`, `or`) —
+    /// invisible for `+`/`*` since they're mathematically associative, but
+    /// silently wrong for `-`/`/` (`10 - 3 - 2` would group as
+    /// `10 - (3 - 2)` = 9 instead of `(10 - 3) - 2` = 5) and semantically
+    /// significant for `or` (left-associative chaining is the ruled typing
+    /// rule's own associativity — `infer::ty::coalesce`'s doc). Saturates
+    /// at `Prefix`, the highest level: nothing binds tighter, so no
+    /// further operator is ever pulled in past a prefix expression either.
     fn next(self) -> Prec {
         match self {
-            Prec::None => Prec::Or,
+            Prec::None => Prec::Coalesce,
+            Prec::Coalesce => Prec::Or,
             Prec::Or => Prec::And,
             Prec::And => Prec::Equality,
             Prec::Equality => Prec::Comparison,
@@ -81,6 +92,7 @@ impl Prec {
 
 fn infix_binding_power(kind: crate::SyntaxKind) -> Option<Prec> {
     Some(match kind {
+        KW_OR => Prec::Coalesce,
         AMP_AMP => Prec::And,
         EQ_EQ | BANG_EQ => Prec::Equality,
         LT | GT | LT_EQ | GT_EQ => Prec::Comparison,

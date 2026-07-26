@@ -16,14 +16,19 @@
 //! non-key-domain literal key is a structural authoring mistake detectable
 //! from the literal alone, so this runs under *both* `types` policies
 //! (unlike `structs::check`'s missing/extra/mistyped trio, which is
-//! strict-only because it needs a resolved shape). [`check`] is wired in
-//! unconditionally under `dialect = brink` — map literals don't exist at
-//! all under `strict-ink` *ink*, being already rejected whole by
-//! `dialect_gate`'s E051, so critiquing the inside of rejected syntax would
-//! be noise (same rule `per_file_diagnostics`'s brink-only block already
-//! documents). [`check_duplicate_keys`] is wired one step wider — it also
-//! runs for a native file, which reaches map literals through
-//! `Map { k: v }` whatever the (ink-only) `dialect` axis says.
+//! strict-only because it needs a resolved shape). Both [`check`] and
+//! [`check_duplicate_keys`] are wired in under `dialect = Brink ||
+//! is_native` — wider than the brink-only block the rest of
+//! `per_file_diagnostics` uses, matching `structs::check_duplicates`'s own
+//! `E084` wiring (same module doc reasoning): B5 (issue #1464, #1103
+//! cascade ruling (A)) made `TypeName { … }` construction reach
+//! `MapLiteral` through the native surface (`Map { k: v }`) as well as the
+//! brink dialect's own `#{…}` spelling, so a `.brink` file compiled under
+//! the default `strict-ink` dialect must still get both `E106` and `E138`.
+//! Under `strict-ink` *ink* map literals don't exist at all — `#{…}` is
+//! already rejected whole by `dialect_gate`'s E051, so critiquing the
+//! inside of rejected syntax would be noise — and no native surface exists
+//! there to reach one either, so nothing new fires.
 //!
 //! Scoped to **statically classifiable** key expressions — a literal kind
 //! is either obviously in the domain (`Expr::Int`/`Expr::Bool`/`Expr::String`)
@@ -44,9 +49,8 @@ use brink_ir::{Diagnostic, DiagnosticCode, Expr, FileId, HirFile, MapLiteral};
 type LiteralCheck = fn(&MapLiteral, FileId, &mut Vec<Diagnostic>);
 
 /// Map-literal key-domain checks over every `#{...}` literal in the project.
-/// Callers wire this in per-file, unconditionally under `dialect = brink`
-/// (see module doc) — no `types`-policy gate, no shape/resolution table
-/// needed.
+/// Callers wire this in per-file, under `dialect = Brink || is_native` (see
+/// module doc) — no `types`-policy gate, no shape/resolution table needed.
 #[must_use]
 pub fn check(files: &[(FileId, &HirFile)]) -> Vec<Diagnostic> {
     walk_map_literals(files, check_literal)
@@ -56,12 +60,13 @@ pub fn check(files: &[(FileId, &HirFile)]) -> Vec<Diagnostic> {
 /// issue #1464, #1103 cascade ruling (A) — "duplicate keys in a map literal
 /// are a **compile error**, consistent with struct dup-field").
 ///
-/// Split from [`check`] because its wiring is wider: this rule is about the
-/// *construction* protocol, which the native surface reaches through
+/// Split from [`check`] because it is a distinct rule (key-domain vs.
+/// duplicate-key), not because of wiring — both now share the same
+/// `dialect = Brink || is_native` gate (see module doc): this rule is about
+/// the *construction* protocol, which the native surface reaches through
 /// `Map { k: v }` (`brink_ir::hir::construct`) as well as the brink
 /// dialect's `#{…}` sigil — both lower to the same [`MapLiteral`], so one
-/// pass serves both surfaces, but the caller must run it for a native file
-/// even when the (ink-only) `dialect` axis is not `brink`.
+/// pass serves both surfaces.
 #[must_use]
 pub fn check_duplicate_keys(files: &[(FileId, &HirFile)]) -> Vec<Diagnostic> {
     walk_map_literals(files, check_duplicates_in_literal)
@@ -199,6 +204,19 @@ enum StaticKey {
     Str(String),
 }
 
+impl std::fmt::Display for StaticKey {
+    /// Renders the key the way it would be spelled as a map-literal key, so
+    /// the `E138` message can name the exact key that collided (`1`,
+    /// `true`, `"a"`) instead of only pointing at the enclosing literal.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StaticKey::Int(v) => write!(f, "{v}"),
+            StaticKey::Bool(b) => write!(f, "{b}"),
+            StaticKey::Str(s) => write!(f, "{s:?}"),
+        }
+    }
+}
+
 /// The compile-time identity of a key expression, when it has one.
 ///
 /// Deliberately narrow, the same "Unknown never disagrees" posture the
@@ -230,7 +248,7 @@ fn check_duplicates_in_literal(m: &MapLiteral, file: FileId, out: &mut Vec<Diagn
         let Some(k) = static_key(key) else {
             continue;
         };
-        if seen.insert(k) {
+        if seen.insert(k.clone()) {
             continue;
         }
         out.push(Diagnostic {
@@ -240,7 +258,7 @@ fn check_duplicates_in_literal(m: &MapLiteral, file: FileId, out: &mut Vec<Diagn
             // fallback `check_literal`'s `E106` diagnostic documents.
             range: m.ptr.text_range(),
             message: format!(
-                "{}: a later entry overwrites an earlier one",
+                "{}: duplicate key `{k}` — an earlier entry already supplies it",
                 DiagnosticCode::E138.title(),
             ),
             code: DiagnosticCode::E138,
@@ -477,6 +495,41 @@ mod tests {
     fn each_extra_occurrence_reports_once() {
         let diags = dup_src("=== main ===\n~ temp m = #{1: \"a\", 1: \"b\", 1: \"c\"}\n-> DONE\n");
         assert_eq!(diags.len(), 2, "{diags:?}");
+    }
+
+    /// The message names the offending key rather than describing the
+    /// rejected last-wins behavior — cascade ruling (A) makes this a
+    /// compile error precisely so nothing ever overwrites anything.
+    #[test]
+    fn the_message_names_the_duplicated_key() {
+        let diags = dup_src("=== main ===\n~ temp m = #{1: \"a\", 1: \"b\"}\n-> DONE\n");
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert!(
+            diags[0].message.contains('1'),
+            "message should name the key `1`: {:?}",
+            diags[0].message
+        );
+
+        let diags = dup_src("=== main ===\n~ temp m = #{\"k\": 1, \"k\": 2}\n-> DONE\n");
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert!(
+            diags[0].message.contains("\"k\""),
+            "message should name the key `\"k\"`: {:?}",
+            diags[0].message
+        );
+    }
+
+    /// Three occurrences of one key report twice, and the two diagnostics
+    /// are distinguishable — a review finding on an earlier revision of
+    /// this pass noted the messages were byte-identical duplicates that
+    /// named neither the key nor which occurrence collided.
+    #[test]
+    fn each_occurrence_reports_the_same_named_key() {
+        let diags = dup_src("=== main ===\n~ temp m = #{1: \"a\", 1: \"b\", 1: \"c\"}\n-> DONE\n");
+        assert_eq!(diags.len(), 2, "{diags:?}");
+        for d in &diags {
+            assert!(d.message.contains('1'), "{:?}", d.message);
+        }
     }
 
     #[test]

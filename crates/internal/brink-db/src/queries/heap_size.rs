@@ -44,6 +44,8 @@ use brink_ir::{
     DeclaredSymbol, Diagnostic, DivertPath, DivertTarget, ElseBranch, HirFile, IfStmt, Knot, Name,
     Param, ParamInfo, Path, Sequence, Stmt, Tag, TempDecl, TypeExpr, VarDecl,
 };
+#[cfg(test)]
+use brink_ir::{Expr, ForStmt, NodeClass, Provenance};
 
 #[cfg(test)]
 use super::lower_file;
@@ -219,7 +221,11 @@ fn block_stmt_heap(bs: &BlockStmt) -> usize {
         BlockStmt::Return(r) => vec_heap(&r.onwards_args),
         BlockStmt::If(i) => if_stmt_heap(i),
         BlockStmt::While(w) => block_stmts_heap(&w.body),
-        BlockStmt::For(f) => name_heap(&f.var_name) + block_stmts_heap(&f.body),
+        BlockStmt::For(f) => {
+            name_heap(&f.var_name)
+                + f.val_name.as_ref().map_or(0, name_heap)
+                + block_stmts_heap(&f.body)
+        }
         BlockStmt::Assignment(_)
         | BlockStmt::Break(_)
         | BlockStmt::Continue(_)
@@ -596,6 +602,48 @@ mod tests {
         assert!(
             big_size > small_size,
             "expected the 50x-longer story to report more heap: small={small_size} big={big_size}"
+        );
+    }
+
+    fn dummy_provenance() -> Provenance {
+        Provenance::synthetic(
+            NodeClass::For,
+            rowan::TextRange::new(rowan::TextSize::new(0), rowan::TextSize::new(1)),
+        )
+    }
+
+    fn dummy_name(text: &str) -> Name {
+        Name {
+            text: text.to_string(),
+            range: rowan::TextRange::new(rowan::TextSize::new(0), rowan::TextSize::new(1)),
+        }
+    }
+
+    /// Regression for the two-binding `for k, v in m` HIR field
+    /// (`ForStmt.val_name`, #1461): `block_stmt_heap` must count it, or the
+    /// heap estimate silently undercounts every two-binding loop.
+    #[test]
+    fn block_stmt_heap_counts_for_val_name() {
+        let single_binding = BlockStmt::For(ForStmt {
+            ptr: dummy_provenance(),
+            var_name: dummy_name("k"),
+            val_name: None,
+            iterable: Expr::Int(0),
+            body: Vec::new(),
+        });
+        let two_binding = BlockStmt::For(ForStmt {
+            ptr: dummy_provenance(),
+            var_name: dummy_name("k"),
+            val_name: Some(dummy_name("very_long_value_binding_name")),
+            iterable: Expr::Int(0),
+            body: Vec::new(),
+        });
+
+        let single_size = block_stmt_heap(&single_binding);
+        let two_size = block_stmt_heap(&two_binding);
+        assert!(
+            two_size > single_size,
+            "expected val_name to grow the heap estimate: single={single_size} two={two_size}"
         );
     }
 }

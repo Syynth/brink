@@ -232,6 +232,12 @@ fn infix_op(tok: &SyntaxToken) -> Option<InfixOp> {
         N::LT_EQ => Some(InfixOp::LtEq),
         N::GT_EQ => Some(InfixOp::GtEq),
         N::AMP_AMP => Some(InfixOp::And),
+        // B1 `or`-coalescing (`docs/stdlib-spec.md` §1.6a, issue #1460):
+        // the single `KW_OR` token, distinct from `is_double_pipe()`'s
+        // `||` above — `InfixOp::Coalesce`, never `InfixOp::Or` (ink's
+        // boolean disjunction, oracle-frozen and unreachable from this
+        // lowering path).
+        N::KW_OR => Some(InfixOp::Coalesce),
         _ => None,
     }
 }

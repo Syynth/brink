@@ -17,7 +17,8 @@
 //! sole condition-park spelling, retiring `await` (decision-log item 4).
 
 use crate::SyntaxKind::{
-    ELSE_CLAUSE, FOR_STMT, IDENT, IF_STMT, KW_ELSE, KW_IF, KW_IN, SEMICOLON, UNTIL_STMT, WHILE_STMT,
+    COMMA, ELSE_CLAUSE, FOR_STMT, IDENT, IF_STMT, KW_ELSE, KW_IF, KW_IN, SEMICOLON, UNTIL_STMT,
+    WHILE_STMT,
 };
 
 use super::Parser;
@@ -75,14 +76,25 @@ pub(crate) fn while_stmt(p: &mut Parser<'_, '_>) {
     p.finish_node();
 }
 
-/// `for name in expr { … }` — single-binding iteration (the existing HIR
-/// `ForStmt` shape; no destructuring).
+/// `for name in expr { … }` — single-binding iteration — or `for key, val
+/// in expr { … }` — two-binding iteration (B2, issue #1461,
+/// docs/stdlib-spec.md §5/§9's F10 ruling: "`for k, v in m` two-binding
+/// iteration ... no pair shape ever materializes"). The second binding is
+/// the one additive HIR field the B0 fence reserved (`val_name`,
+/// docs/b0-sequencing.md:356) — no new node, no destructuring beyond the
+/// flat `name, name` pair.
 pub(crate) fn for_stmt(p: &mut Parser<'_, '_>) {
     p.start_node(FOR_STMT);
     p.bump(); // KW_FOR
     p.skip_ws();
     p.expect(IDENT);
     p.skip_ws();
+    if p.at(COMMA) {
+        p.bump(); // COMMA
+        p.skip_ws();
+        p.expect(IDENT);
+        p.skip_ws();
+    }
     p.expect(KW_IN);
     p.skip_ws();
     head_expression(p);

@@ -116,7 +116,7 @@ No analyzer pass hard-panics on a violated HIR invariant in production; **the un
 - **blocks-as-values** (code dialect everything-is-expression): NO HIR support. `Stmt`/`Expr` are separated; `LogicBlock` is a `Stmt` that yields nothing. Semantics-touching → parking-lot.
 - **deep nesting > knot.stitch**: NO HIR support. `Knot.stitches: Vec<Stitch>`; `Stitch` has no sub-stitches; stamp recurses exactly 2 levels; name conventions bake in 2 (`.matches('.').count()==2`). Real gap.
 - **`for`-generated choices**: sugar over the recursive-thread pattern; lowers to existing `ThreadStart` + `ChoiceSet` (charter §5/§7). No new node.
-- **`for k, v`** (ruled 2026-07-18): `ForStmt.var_name: Name` is single (`hir/types.rs:444`). Needs an additive `val_name: Option<Name>`.
+- **`for k, v`** (ruled 2026-07-18): `ForStmt.var_name: Name` is single (`hir/types.rs:444`). Additive `val_name: Option<Name>` **landed** (#1461, Track B2).
 - **enums** (§13.1, ruled 2026-07-19): NO HIR node. New `EnumDecl` + exhaustive `match` (could extend `CondKind` or reuse `Switch`). Additive.
 - **impl blocks / companions** (S4, ruled 2026-07-19): lower to fns in a virtual companion module — `Npc::greet` is the only real name, `DefinitionId = (companion-module, name)`. NO new HIR container; reuse `Knot(fn)` + module qualification.
 - **UFCS** (`x.foo(y)` ≡ `foo(x, y)`): resolves via existing `Expr::FieldAccess` vs `Call` disambiguation, already an analyzer job (`hir/types.rs:712` doc). No new node.

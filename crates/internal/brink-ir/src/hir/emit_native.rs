@@ -1001,6 +1001,7 @@ fn infix_op_str(op: InfixOp) -> &'static str {
         InfixOp::Or => "||",
         InfixOp::Has => "?",
         InfixOp::HasNot => "!?",
+        InfixOp::Coalesce => "or",
     }
 }
 

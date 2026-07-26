@@ -273,6 +273,11 @@ fn lower_while_stmt(
     })
 }
 
+#[expect(
+    clippy::similar_names,
+    reason = "var_name/val_name are the ForStmt field names (k/v's HIR spelling, B2 #1461) — \
+              not a pair a rename would clarify"
+)]
 fn lower_for_stmt(
     file_id: FileId,
     f: &ast::ForStmt,
@@ -283,6 +288,10 @@ fn lower_for_stmt(
         diags.push(diag(file_id, range, DiagnosticCode::E014));
         return None;
     };
+    // Two-binding map iteration (`for k, v in m`, B2 #1461): the second
+    // `IDENT` after the comma, when the grammar admitted one. `None` for
+    // the ordinary single-binding form.
+    let val_name = name_from(f.val_name_token());
     let Some(iterable_node) = f.iterable() else {
         diags.push(diag(file_id, range, DiagnosticCode::E015));
         return None;
@@ -295,6 +304,7 @@ fn lower_for_stmt(
     Some(ForStmt {
         ptr: native_provenance(file_id, NodeClass::For, f.syntax()),
         var_name,
+        val_name,
         iterable,
         body,
     })

@@ -362,6 +362,9 @@ fn parse_instruction(pair: P<'_>) -> Result<Opcode, InktParseError> {
         "map_contains_value" => Ok(Opcode::MapContainsValue),
         "map_clear" => Ok(Opcode::MapClear),
 
+        // B1 `or`-coalescing (issue #1460)
+        "coalesce" => Ok(Opcode::Coalesce),
+
         // NS-A6 rand verbs
         "rand_float" => Ok(Opcode::RandFloat),
         "rand_chance" => Ok(Opcode::RandChance),
