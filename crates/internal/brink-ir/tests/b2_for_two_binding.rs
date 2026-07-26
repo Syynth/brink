@@ -13,21 +13,32 @@
 //! This drives real native `.brink` source all the way through the
 //! production pipeline — `brink_syntax_native::parse` →
 //! `hir::lower_native::lower` → `brink_analyzer::analyze_with_options` →
-//! `lir::lower_to_program` — the exact call sequence
-//! `brink-test-harness::corpus::compile_and_explore_from_brink_native` uses
-//! for a real `.brink` file, stopping one step short of codegen so the test
-//! can inspect the `lir::Container` body shape directly instead of only
-//! observing "it compiled".
+//! `lir::lower_to_program` — the same low-level pipeline shape
+//! `brink-test-harness::corpus::compile_and_explore_from_brink_native` runs,
+//! stopping one step short of codegen so the test can inspect the
+//! `lir::Container` body shape directly instead of only observing "it
+//! compiled". **Not** the same analyzer configuration as that harness
+//! function any more (issue #1472): this file deliberately hardcodes
+//! `dialect: Dialect::Brink` below to reach `TypePolicy::Strict` — see the
+//! next paragraph — where the harness's fixed version now passes
+//! `dialect: StrictInk` (its real default) with `is_native: true`, since
+//! `resolve_type_policy` has no `is_native` input of its own to force
+//! strict typing by (a gap this issue's investigation surfaced and flagged,
+//! not fixed).
 //!
 //! The iterable (`m`) is an untyped `fn` parameter, not a real map value:
 //! the native surface has no map (or array) literal grammar yet (B5,
 //! `TypeName { … }` construction, #1103, is unfiled), and no type-
 //! annotation syntax for parameters either — so there is currently no way
 //! to construct, or even *declare the type of*, a real collection from
-//! `.brink` source at all. Native is also strict-typed unconditionally
-//! (dialect `Brink` always resolves to `TypePolicy::Strict`, issue #1127 —
-//! there is no native gradual mode to fall back to), so an `Unknown`-typed
-//! loop binding is a hard `E065` ("escapes strict inference as Unknown"),
+//! `.brink` source at all. Native is *meant* to be strict-typed
+//! unconditionally (docs/decision-log.md "Typing posture ruled": "gradual
+//! typing does not exist on the native surface") but nothing keys that off
+//! `is_native` today — only `dialect == Brink` resolves to
+//! `TypePolicy::Strict` (issue #1127), so this fixture reaches it by
+//! hardcoding `dialect: Dialect::Brink` directly rather than through any
+//! native-specific policy. So an `Unknown`-typed loop binding is a hard
+//! `E065` ("escapes strict inference as Unknown"),
 //! not a warning. Concretely: **`for k, v in m` cannot be written
 //! analysis-clean anywhere on the native surface today** — not because of
 //! anything this change does, but because nothing on the native surface
