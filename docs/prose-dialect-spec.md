@@ -629,6 +629,13 @@ grace.
    (PR #1500); #1449 is un-deferred and partly delivered (PR #1513
    folds the episode-builder terminal handling into a single
    classifier; the Step/OutputLine runtime redesign itself remains).
+   The runtime half is #1520, written up in
+   `docs/design/yield-time-terminal-classifier.md` — it needs two
+   rulings before code moves: **where the classification surfaces**
+   (a `Line`-shaped change now vs. folding into `Step`, per §7/§8b.7)
+   and **whether the `RanOutOfContent` fault moves to the same
+   `continue`** (a ratchet-moving change that would retire #1522's
+   extra-step allowance).
 5. **Deferred details**: context injection; numeric capture coercion;
    fused-`until` sugar; indent-level style tokens; which-blocks
    question closed by §8d.2.

@@ -21,6 +21,11 @@
 //! matching the oracle's deferred-error termination model (`Explorer.cs`'s
 //! `TerminalError` path), where the C# runtime throws from `Continue()` on
 //! the condition brink defers.
+//!
+//! Deleting that probe is the runtime-side ask of issue #1520; see
+//! `docs/design/yield-time-terminal-classifier.md` for why it is blocked
+//! on two maintainer rulings (where the classification surfaces, and
+//! whether the fault moves to the same `continue`).
 
 use brink_runtime::{Story, StoryRng, WriteObserver};
 
