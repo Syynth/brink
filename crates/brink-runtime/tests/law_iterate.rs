@@ -51,9 +51,9 @@ fn arb_map_key() -> impl Strategy<Value = MapKey> {
     ]
 }
 
-/// Structural exhaustiveness guard (issue #1542, same pattern as issue
-/// #1521's guards in `brink-runtime`'s `law_transcript_roundtrip.rs` and
-/// `brink-format`'s `proptest_inkb.rs`/`proptest_inkt.rs`): a match over
+/// Structural exhaustiveness guard (issue #1542, extending the same
+/// exhaustiveness-guard pattern — #667/#883, most recently extended by
+/// #1521 in `brink-runtime`'s `law_transcript_roundtrip.rs`): a match over
 /// every current [`MapKey`] variant with no wildcard arm, so this fails to
 /// compile the moment a new variant is added to the enum. Never called —
 /// the forcing function is the compile error itself, at edit time rather
