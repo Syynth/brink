@@ -1666,20 +1666,20 @@ fn lower_ref_projection_arg(ra: &hir::RefArgExpr, ctx: &mut LowerCtx<'_>) -> lir
     // slot, so a projection off it is exactly as much a write-through as
     // a bare `ref n` would be.
     let root_name = path_to_string(root);
-    if let Some(slot) = ctx.temp_slot(&root_name) {
-        if ctx.as_binding_slots.contains(&slot) {
-            ctx.diagnostics.push(crate::Diagnostic {
-                file: ctx.file,
-                range: root.range,
-                message: format!(
-                    "{}: `{root_name}` is an `as` binding — it is immutable and cannot be \
-                     passed by `ref`",
-                    crate::DiagnosticCode::E148.title(),
-                ),
-                code: crate::DiagnosticCode::E148,
-            });
-            return lir::CallArg::Value(lir::Expr::Null);
-        }
+    if let Some(slot) = ctx.temp_slot(&root_name)
+        && ctx.as_binding_slots.contains(&slot)
+    {
+        ctx.diagnostics.push(crate::Diagnostic {
+            file: ctx.file,
+            range: root.range,
+            message: format!(
+                "{}: `{root_name}` is an `as` binding — it is immutable and cannot be passed \
+                 by `ref`",
+                crate::DiagnosticCode::E148.title(),
+            ),
+            code: crate::DiagnosticCode::E148,
+        });
+        return lir::CallArg::Value(lir::Expr::Null);
     }
     let Some(info) = ctx.resolve_path(root.range) else {
         return lir::CallArg::Value(lower_ref_arg_fence(ra, ctx));
