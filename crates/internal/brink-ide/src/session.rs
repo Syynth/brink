@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use brink_analyzer::{
-    AnalysisOptions, AnalysisResult, Dialect, ExternalCheckSeverity, LintPolicy,
+    AnalysisOptions, AnalysisResult, Dialect, ExternalCheckSeverity, LintPolicy, ModuleMap,
     SemanticTypeDiagnosticSeverity, TypePolicy,
 };
 use brink_db::{CompileProduct, ProjectDb};
@@ -20,6 +20,13 @@ use crate::hir_projection::{Projection, project_hir, project_hir_structural};
 /// A snapshot of analysis inputs, cloned out of the db for background analysis.
 pub struct IdeSnapshot {
     inputs: Vec<(FileId, HirFile, SymbolManifest)>,
+    /// The project's resolved modules, cloned out of the db alongside the
+    /// inputs (issue #1526). Module identity is a db-layer fact (it needs
+    /// file *paths*, which analysis inputs don't carry), and it qualifies
+    /// `DefinitionId`s — so without it this snapshot's ids would not match
+    /// the ones the db's per-def queries are keyed by, and every native
+    /// `.brink` symbol would miss.
+    modules: ModuleMap,
     host_manifest: Option<HostManifest>,
     external_check: ExternalCheckSeverity,
     semantic_type_check: SemanticTypeDiagnosticSeverity,
@@ -54,7 +61,7 @@ impl IdeSnapshot {
             // this policy" failure mode #1160's scope note flagged.
             lints: self.lints.clone(),
         };
-        brink_analyzer::analyze_with_options(&refs, &opts)
+        brink_analyzer::analyze_with_modules(&refs, &self.modules, &opts)
     }
 }
 
@@ -312,6 +319,7 @@ impl IdeSession {
     pub fn snapshot(&self) -> IdeSnapshot {
         IdeSnapshot {
             inputs: self.db.analysis_inputs(),
+            modules: self.db.module_map().clone(),
             host_manifest: self.host_manifest.clone(),
             external_check: self.external_check,
             semantic_type_check: self.semantic_type_check,
@@ -407,7 +415,12 @@ impl IdeSession {
                 .iter()
                 .map(|(id, hir, manifest)| (*id, hir, manifest))
                 .collect();
-            brink_analyzer::analyze_with_options(&refs, &self.analysis_options())
+            // The throwaway db's own module map (#1526) — the overlay keeps
+            // every file at its current path, but a native file's identity
+            // is path-derived, so analyzing module-blind here would make the
+            // gate's ids disagree with the returned db's.
+            let modules = db.module_map().clone();
+            brink_analyzer::analyze_with_modules(&refs, &modules, &self.analysis_options())
         };
         (result, db)
     }
@@ -438,7 +451,12 @@ impl IdeSession {
                 .iter()
                 .map(|(id, hir, manifest)| (*id, hir, manifest))
                 .collect();
-            brink_analyzer::analyze_with_options(&refs, &self.analysis_options())
+            // The projected db's own module map (#1526). This path *moves*
+            // files to new keys, and a native file's module is its path, so
+            // the map has to come from the projected db — the whole point of
+            // the gate is to model identity after the move.
+            let modules = db.module_map().clone();
+            brink_analyzer::analyze_with_modules(&refs, &modules, &self.analysis_options())
         };
         (result, db)
     }

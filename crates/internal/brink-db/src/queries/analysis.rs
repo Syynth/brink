@@ -29,9 +29,11 @@
 //   diagnostics-laden bundle.
 // - [`analysis_diagnostics_query`] — the DIAGNOSTICS half: every diagnostic
 //   source merged, in the same order `finish_analysis` produces them, so
-//   `db.analysis()` stays output-identical to the monolithic
-//   `brink_analyzer::analyze_with_options` path (pinned by
-//   `query_equivalence.rs`).
+//   `db.analysis()` stays output-identical to the monolithic, module-aware
+//   `brink_analyzer::analyze_with_modules` path (pinned by
+//   `query_equivalence.rs`) — only equal to the module-*blind*
+//   `analyze_with_options` for ink projects without a declared `#@module`,
+//   see `ProjectDb::module_map`'s doc (issue #1526).
 // - [`analysis_query`] — kept as a thin assembler over the above three for
 //   `db.analysis()`'s existing LSP/IDE/CLI-facing `AnalysisResult` shape.
 //   [`diagnostics_query`] and [`lir_query`] read
@@ -746,9 +748,12 @@ pub(crate) fn analysis_diagnostics_query(
 /// [`whole_project_diagnostics_query`] rather than calling
 /// [`brink_analyzer::finish_analysis`] directly) — `db.analysis()`'s public
 /// shape, kept for LSP/IDE/CLI consumers that want the whole bundled
-/// result. Output-identical to the pre-FG-3 query and to the monolithic
-/// `analyze_with_options` path (pinned by `query_equivalence.rs`); the
-/// decomposition changes *dependency edges*, not values. Narrower consumers
+/// result. Output-identical to the pre-FG-3 query and to the monolithic,
+/// module-aware `analyze_with_modules` path (pinned by
+/// `query_equivalence.rs`) — only equal to the module-*blind*
+/// `analyze_with_options` for ink projects without a declared `#@module`,
+/// see `ProjectDb::module_map`'s doc (issue #1526); the decomposition
+/// changes *dependency edges*, not values. Narrower consumers
 /// ([`diagnostics_query`], [`lir_query`]) read the three sub-queries
 /// directly instead of through this bundle.
 #[salsa::tracked(returns(ref))]

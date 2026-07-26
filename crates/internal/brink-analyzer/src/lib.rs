@@ -381,8 +381,49 @@ pub fn analyze(files: &[(FileId, &HirFile, &SymbolManifest)]) -> AnalysisResult 
 
 /// Run cross-file semantic analysis with explicit tooling options, including
 /// an optional host-capability manifest and its external-check severity.
+///
+/// **Module-blind** (issue #1526): with no [`ModuleMap`] there is nothing to
+/// qualify identity by, so every symbol hashes by bare name (`module: None`)
+/// and the import scope is inert. That is byte-identical to `brink-db` for
+/// the undeclared-stem-module world — the entire ink corpus that carries no
+/// `#@module` — and *diverges* for any file whose real module is declared:
+/// an ink file with `#@module(name)`, and **every** native `.brink` file
+/// (whose module is its path, `story::…`, always declared — see
+/// `brink_db::modules::native_module_path`). A `DefinitionId` minted here
+/// for such a file does not match the one `brink-db`'s queries mint for the
+/// same declaration, so it cannot be used as a key into `db.effects` /
+/// `db.signature` / `db.infer_body`.
+///
+/// Callers that hold a `ProjectDb` — every IDE/LSP path — must use
+/// [`analyze_with_modules`] with `ProjectDb::module_map()` instead.
 pub fn analyze_with_options(
     files: &[(FileId, &HirFile, &SymbolManifest)],
+    opts: &AnalysisOptions,
+) -> AnalysisResult {
+    analyze_with_modules(files, &ModuleMap::new(), opts)
+}
+
+/// Run cross-file semantic analysis against the project's resolved
+/// [`ModuleMap`] — the module-aware form of [`analyze_with_options`]
+/// (issue #1526).
+///
+/// `modules` is the map `brink-db`'s `module_map_query` computes (file stems,
+/// `#@module` declarations, the INCLUDE graph, and — for native `.brink`
+/// files — the path-derived `story::…` identity). Feeding it here makes this
+/// path mint the *same* `DefinitionId`s as `brink-db`'s
+/// `symbol_index_query`/`resolve_query`, which is what lets an IDE feature
+/// use a symbol from this result as a key into the db's per-def queries
+/// (`effects`/`signature`/`infer_body`).
+///
+/// Module identity is never recomputed here: the map is an input, minted by
+/// the one layer that knows file paths, so a native file's save-key-critical
+/// identity stays a pure function of its path and cannot drift between the
+/// two paths.
+///
+/// An empty map reproduces [`analyze_with_options`] exactly.
+pub fn analyze_with_modules(
+    files: &[(FileId, &HirFile, &SymbolManifest)],
+    modules: &ModuleMap,
     opts: &AnalysisOptions,
 ) -> AnalysisResult {
     let manifest_inputs: Vec<(FileId, &SymbolManifest)> = files
@@ -390,16 +431,26 @@ pub fn analyze_with_options(
         .map(|&(id, _hir, manifest)| (id, manifest))
         .collect();
 
-    let (index, mut diagnostics) = symbol_index(&manifest_inputs);
+    let (index, mut diagnostics) =
+        symbol_index_with_modules(&manifest_inputs, modules, opts.dialect);
     let mut resolutions = ResolutionMap::new();
     for &(file_id, hir, manifest) in files {
-        // Import-scoped resolution (M-2d, issue #790). This whole-project
-        // convenience path uses the non-module-qualified `symbol_index`, so
-        // every symbol carries `module: None` and the scope is inert (flat
-        // resolution) — but building it from the file's own HIR keeps this
-        // path honest and mirrors the real `brink-db` pipeline, which feeds
-        // the INCLUDE-resolved module.
-        let scope = ImportScope::new(hir.module.as_ref().map(|m| m.name.clone()), &hir.imports);
+        // Import-scoped resolution (M-2d, issue #790), matching
+        // `brink-db`'s `resolve_query`: the resolved **declared** module
+        // scopes the file's references. The map is authoritative when it
+        // covers this file — notably for a native file, whose `hir.module`
+        // carries a deliberately empty `name` (it exists only to hold the
+        // authored `@[was]`; see `brink_ir::hir::lower_native::module`) and
+        // would otherwise scope the file to the module named `""`.
+        //
+        // Falling back to the file's own HIR keeps the map-free
+        // (`analyze_with_options`) path byte-identical to what it was before
+        // this parameter existed.
+        let declared_module = match modules.get(&file_id) {
+            Some(resolved) => resolved.declared.then(|| resolved.name.clone()),
+            None => hir.module.as_ref().map(|m| m.name.clone()),
+        };
+        let scope = ImportScope::new(declared_module, &hir.imports);
         let (file_map, file_diags) = resolve(file_id, manifest, &index, &scope);
         resolutions.extend(Arc::unwrap_or_clone(file_map));
         diagnostics.extend(file_diags);
