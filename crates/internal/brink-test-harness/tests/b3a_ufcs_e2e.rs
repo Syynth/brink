@@ -16,7 +16,7 @@
 //!
 //! `FieldCall` (field access wins over a free function of the same name) is
 //! exercised only at the LIR-lowering unit level
-//! (`brink-ir/tests/lir_lowering/ufcs_field_call.rs`): the native surface
+//! (`brink-ir/tests/ufcs_field_call.rs`): the native surface
 //! cannot yet spell a function-typed struct field
 //! (`brink-analyzer::ufcs`'s own test file notes the same gap), so there is
 //! no real `.brink` source that reaches it today.
@@ -104,6 +104,34 @@ fn a_prelude_desugar_compiles_and_plays_via_ufcs_syntax() {
         "\
 fn count() {
   let m = Map { \"a\": 1, \"b\": 2, \"c\": 3 };
+  return m.len();
+}
+
+flow main() {
+  Size is {count()}.
+}
+",
+    );
+    assert_eq!(out, "Size is 3.\n");
+}
+
+/// Review finding on issue #1506: `PreludeDesugar` must also cover the
+/// statement-only collection mutators (`push`/`insert`/`remove`/`clear`/
+/// `sort`/`sort_by`/`heap_push`) — these never reach
+/// `lower_ufcs_prelude_desugar`'s stdlib dispatch, which unconditionally
+/// refuses every mutator name with `E056` ("used in expression position").
+/// `try_lower_mutator_stmt` (the same statement-position recognizer a bare
+/// `insert(m, k, v)` call reaches) must instead recognize the UFCS shape
+/// and splice the receiver in as the mutator's first argument. Before the
+/// fix, `m.insert("c", 3)` spuriously hit `E056` even though it's used as a
+/// statement, not an expression.
+#[test]
+fn a_prelude_desugar_mutator_compiles_and_plays_via_ufcs_syntax() {
+    let out = play(
+        "\
+fn count() {
+  let m = Map { \"a\": 1, \"b\": 2 };
+  m.insert(\"c\", 3);
   return m.len();
 }
 

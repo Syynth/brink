@@ -843,7 +843,7 @@ fn lower_ufcs_call(
 /// path`'s existing `ctx.resolve_path`/`ctx.temp_slot` lookups resolve it
 /// correctly whether the receiver is one segment (`x`) or a dotted chain
 /// (`a.b`).
-fn ufcs_receiver_path(path: &hir::Path) -> hir::Path {
+pub(super) fn ufcs_receiver_path(path: &hir::Path) -> hir::Path {
     let receiver_segs = path.segments.split_last().map_or(&[][..], |(_, rest)| rest);
     hir::Path {
         segments: receiver_segs.to_vec(),
