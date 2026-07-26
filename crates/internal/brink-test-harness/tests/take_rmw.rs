@@ -172,8 +172,8 @@ proptest! {
 /// arrays too, since neither the compiler nor the runtime can tell the two
 /// apart before the container is taken). So the root now ends up
 /// `Value::Null` on this fault, matching the trade-off
-/// `fault_during_insert_leaves_root_null`/`fault_during_remove_leaves_root_null`
-/// below already document for `insert`/`remove`.
+/// `fault_during_insert_leaves_root_null`/`fault_during_remove_at_leaves_root_null`
+/// below already document for `insert`/`remove_at`.
 #[test]
 fn fault_during_flat_index_assignment_leaves_root_null() {
     let source = "VAR arr = 0\n~ {\n    arr = #[1, 2, 3]\n    arr[10] = 99\n}\n{arr[0]}\n-> END\n";
@@ -266,12 +266,13 @@ fn fault_during_insert_leaves_root_null() {
     );
 }
 
-/// `remove(a, i)` with `i` out of bounds — same documented `Value::Null`
-/// outcome as `insert`'s fault case above.
+/// `remove_at(a, i)` with `i` out of bounds — same documented `Value::Null`
+/// outcome as `insert`'s fault case above (issue #1484: this used to be
+/// `remove(a, i)`; the array-index leg is `remove_at` now).
 #[test]
-fn fault_during_remove_leaves_root_null() {
+fn fault_during_remove_at_leaves_root_null() {
     let source =
-        "VAR arr = 0\n~ {\n    arr = #[1, 2, 3]\n    remove(arr, 99)\n}\n{arr[0]}\n-> END\n";
+        "VAR arr = 0\n~ {\n    arr = #[1, 2, 3]\n    remove_at(arr, 99)\n}\n{arr[0]}\n-> END\n";
     let mut story = compile(source);
     let err = run_to_completion_or_fault(&mut story).expect_err("index 99 is out of bounds");
     assert!(

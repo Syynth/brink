@@ -554,8 +554,8 @@ fn lower_indexed_assignment(
 /// take-based mutate step rather than before it, so the root can be left
 /// `Value::Null` on one of those — the same documented, deliberate
 /// no-precheck trade-off `fault_during_insert_leaves_root_null`/
-/// `fault_during_remove_leaves_root_null` (runtime crate) already accept for
-/// `insert`/`remove`'s author-supplied keys ("a fault anywhere mid-turn
+/// `fault_during_remove_at_leaves_root_null` (runtime crate) already accept for
+/// `insert`/`remove`/`remove_at`'s author-supplied keys ("a fault anywhere mid-turn
 /// already leaves earlier same-turn mutations applied"). See
 /// `fault_during_flat_index_assignment_leaves_root_null` (runtime crate,
 /// renamed by #856 from `..._leaves_root_unchanged`) for the property test.
@@ -615,7 +615,7 @@ fn lower_flat_indexed_assignment(
     //    `IndexSet` can still fault (array OOB, invalid-domain map key,
     //    non-collection root) — the documented, deliberate trade-off
     //    `fault_during_insert_leaves_root_null` already accepts for
-    //    `insert`/`remove`'s author-supplied keys applies here too.
+    //    `insert`/`remove`/`remove_at`'s author-supplied keys applies here too.
     let (c_slot, c_name) = declare_synthetic("__c", take_expr_for_target(&root_target), ctx, out);
 
     // 5. Mutate in place: base is a *take* from `c_slot` too — `c_slot`'s
@@ -843,12 +843,13 @@ fn lower_for_stmt(f: &hir::ForStmt, ctx: &mut LowerCtx<'_>, out: &mut Vec<lir::S
 
 // ─── T1b stdlib slice 1 mutators (§5) ──────────────────────────────────
 //
-// `push(a, v)` / `insert(x, k_or_i, v)` / `remove(x, k_or_i)` require an
-// lvalue first argument and lower through the same take → `make_mut` →
-// write-back RMW discipline as indexed assignment (§4) — desugaring to a
-// chain of synthetic-temp `Assign`s exactly like `lower_indexed_assignment`
-// above, just with a `CollectionInsert`/`CollectionRemove` mutate step
-// instead of the deepest level's `IndexSet`.
+// `push(a, v)` / `insert(x, k_or_i, v)` / `remove(m, k)` / `remove_at(a, i)`
+// require an lvalue first argument and lower through the same take →
+// `make_mut` → write-back RMW discipline as indexed assignment (§4) —
+// desugaring to a chain of synthetic-temp `Assign`s exactly like
+// `lower_indexed_assignment` above, just with a
+// `CollectionInsert`/`CollectionRemove`/`SeqRemoveAt` mutate step instead
+// of the deepest level's `IndexSet`.
 
 /// The chain state [`lower_lvalue_container_chain`] returns: the root
 /// assign target, the materialized index temps, and the materialized
@@ -867,8 +868,14 @@ enum MutatorKind {
     Push,
     /// `insert(x, k_or_i, v)` — 3 args.
     Insert,
-    /// `remove(x, k_or_i)` — 2 args.
+    /// `remove(m, k)` — 2 args. Map-only as of issue #1484: `remove`
+    /// uniformly names identity-based, idempotent-total removal (map keys,
+    /// flags values). The array-index leg lives at `RemoveAt` now.
     Remove,
+    /// `remove_at(a, i)` — 2 args (issue #1484, joining the `_at`
+    /// faulting-index family with `char_at`): removes the array element at
+    /// `i`, faulting out of bounds.
+    RemoveAt,
     /// `clear(m)` — 1 arg (NS-A1, `docs/stdlib-spec.md` §5): empty the map
     /// in place, total.
     Clear,
@@ -895,16 +902,16 @@ enum MutatorKind {
 }
 
 impl MutatorKind {
-    /// The three mutator names are a subset of
-    /// `super::expr::is_t1b_stdlib_name` (which also covers the four pure
-    /// functions) — kept as an explicit `matches!` here rather than
-    /// depending on that function so this module doesn't need to filter out
-    /// the pure names on every call.
+    /// The mutator names are a subset of `super::expr::is_t1b_stdlib_name`
+    /// (which also covers the pure functions) — kept as an explicit
+    /// `matches!` here rather than depending on that function so this
+    /// module doesn't need to filter out the pure names on every call.
     fn from_name(name: &str) -> Option<Self> {
         match name {
             "push" => Some(Self::Push),
             "insert" => Some(Self::Insert),
             "remove" => Some(Self::Remove),
+            "remove_at" => Some(Self::RemoveAt),
             "clear" => Some(Self::Clear),
             "shuffle" => Some(Self::Shuffle),
             "sort" => Some(Self::Sort),
@@ -917,7 +924,7 @@ impl MutatorKind {
     fn expected_argc(self) -> usize {
         match self {
             Self::Clear | Self::Shuffle | Self::Sort => 1,
-            Self::Push | Self::Remove | Self::SortBy | Self::HeapPush => 2,
+            Self::Push | Self::Remove | Self::RemoveAt | Self::SortBy | Self::HeapPush => 2,
             Self::Insert => 3,
         }
     }
@@ -928,7 +935,8 @@ impl MutatorKind {
         match self {
             Self::Push => "push(container, value)",
             Self::Insert => "insert(container, key_or_index, value)",
-            Self::Remove => "remove(container, key_or_index)",
+            Self::Remove => "remove(map, key)",
+            Self::RemoveAt => "remove_at(array, index)",
             Self::Clear => "clear(map)",
             Self::Shuffle => "shuffle(array)",
             Self::Sort => "sort(array)",
@@ -950,10 +958,11 @@ fn is_lvalue_expr(expr: &hir::Expr) -> bool {
     }
 }
 
-/// Recognize and fully lower a `push`/`insert`/`remove` call statement
-/// (§5), splicing its RMW expansion into `out`. Returns `false` (nothing
-/// pushed) when `expr` isn't one of these three calls, or resolves to a
-/// real user symbol — a temp/param holding a divert target, or a resolved
+/// Recognize and fully lower a `push`/`insert`/`remove`/`remove_at` call
+/// statement (§5), splicing its RMW expansion into `out`. Returns `false`
+/// (nothing pushed) when `expr` isn't one of these mutator calls, or
+/// resolves to a real user symbol — a temp/param holding a divert target,
+/// or a resolved
 /// knot/external/list/variable (shadowed; the caller falls through to
 /// ordinary call lowering, and `brink-analyzer`'s symbol-declaration pass
 /// separately emits the E035 shadow warning at the declaration site).
@@ -1039,7 +1048,7 @@ pub(super) fn try_lower_mutator_stmt(
     // failure). E058 is Error-severity, so `brink-db`'s `lir_query` now
     // refuses to hand back a `Program` for it, exactly like E055/E056.
     // Pure-function arity checking (ordinary knot/external calls) is
-    // untouched — this only covers the three mutator names.
+    // untouched — this only covers the mutator names.
     let expected = kind.expected_argc();
     if args.len() != expected {
         ctx.diagnostics.push(Diagnostic {
@@ -1124,6 +1133,13 @@ pub(super) fn try_lower_mutator_stmt(
                 key: Box::new(key),
             }
         }
+        MutatorKind::RemoveAt => {
+            let index = lower_expr(&args[1], ctx);
+            lir::Expr::SeqRemoveAt {
+                base: Box::new(container()),
+                index: Box::new(index),
+            }
+        }
         MutatorKind::Clear => lir::Expr::MapClear(Box::new(container())),
         MutatorKind::Shuffle => lir::Expr::RandShuffle(Box::new(container())),
         MutatorKind::Sort => lir::Expr::SeqSorted(Box::new(container())),
@@ -1146,14 +1162,15 @@ pub(super) fn try_lower_mutator_stmt(
     true
 }
 
-/// Fast path for a mutator (`push`/`insert`/`remove`) whose lvalue is a
-/// bare variable — mirrors [`lower_flat_indexed_assignment`]'s Take-based
-/// RMW (issue #576): the root is taken (not cloned) only *after* every
-/// mutator argument is fully evaluated into its own synthetic temp, since
-/// any of them may reference the root by name (e.g. `insert(a, 0, a[0])`);
-/// the container fed to `CollectionInsert`/`CollectionRemove` is itself a
-/// take from the synthetic root temp, so `array_make_mut`/`map_make_mut`
-/// sees a unique `Arc` whenever nothing else aliases the container.
+/// Fast path for a mutator (`push`/`insert`/`remove`/`remove_at`) whose
+/// lvalue is a bare variable — mirrors [`lower_flat_indexed_assignment`]'s
+/// Take-based RMW (issue #576): the root is taken (not cloned) only *after*
+/// every mutator argument is fully evaluated into its own synthetic temp,
+/// since any of them may reference the root by name (e.g. `insert(a, 0,
+/// a[0])`); the container fed to
+/// `CollectionInsert`/`CollectionRemove`/`SeqRemoveAt` is itself a take
+/// from the synthetic root temp, so `array_make_mut`/`map_make_mut` sees a
+/// unique `Arc` whenever nothing else aliases the container.
 ///
 /// **Fault-during-RMW slot state**: `push`'s key is always `len(container)`
 /// — by construction always a valid insert index — so `push` can only ever
@@ -1163,8 +1180,8 @@ pub(super) fn try_lower_mutator_stmt(
 /// root, giving `push` the same "root is never lost to a fault" guarantee
 /// `lower_flat_indexed_assignment` has — and for free, since that same
 /// `CollectionLen` read also IS the value `push`'s key needs. `insert`/
-/// `remove` at an arbitrary author-supplied key don't get an equivalent
-/// cheap pre-check (validating an arbitrary key/index without mutating
+/// `remove`/`remove_at` at an arbitrary author-supplied key don't get an
+/// equivalent cheap pre-check (validating an arbitrary key/index without mutating
 /// would need a dedicated "is this key valid" primitive this issue doesn't
 /// add — see the PR's scope notes): a fault there leaves the root holding
 /// `Value::Null`, a deliberate, documented, and tested trade-off consistent
@@ -1234,6 +1251,10 @@ fn lower_bare_mutator(
         MutatorKind::Remove => lir::Expr::CollectionRemove {
             base: Box::new(lir::Expr::TakeTemp(c_slot, c_name)),
             key: Box::new(lir::Expr::GetTemp(arg_slots[0].0, arg_slots[0].1)),
+        },
+        MutatorKind::RemoveAt => lir::Expr::SeqRemoveAt {
+            base: Box::new(lir::Expr::TakeTemp(c_slot, c_name)),
+            index: Box::new(lir::Expr::GetTemp(arg_slots[0].0, arg_slots[0].1)),
         },
         MutatorKind::Clear => lir::Expr::MapClear(Box::new(lir::Expr::TakeTemp(c_slot, c_name))),
         MutatorKind::Shuffle => {

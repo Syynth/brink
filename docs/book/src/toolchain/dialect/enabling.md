@@ -4,7 +4,7 @@
 
 If you don't ask for anything, `brink compile` compiles **plain ink**. Every
 construct this chapter describes — `~ { … }` blocks, `#[…]`/`#{…}` literals,
-postfix indexing, `push`/`insert`/`remove` — is a **compile error** under the
+postfix indexing, `push`/`insert`/`remove`/`remove_at` — is a **compile error** under the
 default dialect, `strict-ink`:
 
 ```sh

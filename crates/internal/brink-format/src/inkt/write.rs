@@ -745,6 +745,8 @@ fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
         Opcode::MapClear => write!(w, "map_clear"),
         // B1 `or`-coalescing (issue #1460).
         Opcode::Coalesce => write!(w, "coalesce"),
+        // Seq `remove_at` (issue #1484).
+        Opcode::SeqRemoveAt => write!(w, "seq_remove_at"),
         // NS-A6 rand verbs (#1112).
         Opcode::RandFloat => write!(w, "rand_float"),
         Opcode::RandChance => write!(w, "rand_chance"),

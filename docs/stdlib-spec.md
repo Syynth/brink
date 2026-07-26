@@ -197,20 +197,23 @@ cross-referenced so views ≠ projections.
   sigil-free because values are COW (no aliasing/escape to warn
   about) and the mutation lives in the effect row regardless.
   **Naming (RULED with it)**: imperative = in-place (`sort push
-  insert remove reverse`), past-participle = functional (`sorted
-  reversed`) — the verb carries the mutation signal; the
+  insert remove remove_at reverse`), past-participle = functional
+  (`sorted reversed`) — the verb carries the mutation signal; the
   confusion lattice closes from both sides (`let b = a.sort()` =
   unit type error; `a.sorted().push(x)` = rvalue error).
 - Verbs: `len first last index_of contains slice(view) concat
-  sort sort_by sorted sorted_by reversed min max push pop insert remove
-  each map filter fold filter_map`. **Absence returns (RULED
-  2026-07-18, flipping the earlier empty⇒fault posture — one
-  doctrine, no day-one exceptions)**: `first last min max pop` →
-  `Option` on empty; `index_of` → `Option[int]` (martyr #2,
-  redeemed). OOB *indexing* (`a[i]`, `insert`, remove-by-index)
-  stays a fault — an index you computed wrong is a bug; an empty
-  extremum is absence. Prelude: `len contains push`; rest
-  `std::seq`.
+  sort sort_by sorted sorted_by reversed min max push pop insert
+  remove_at each map filter fold filter_map`. **Absence returns
+  (RULED 2026-07-18, flipping the earlier empty⇒fault posture —
+  one doctrine, no day-one exceptions)**: `first last min max pop`
+  → `Option` on empty; `index_of` → `Option[int]` (martyr #2,
+  redeemed). OOB *indexing* (`a[i]`, `insert`, `remove_at`) stays
+  a fault — an index you computed wrong is a bug; an empty
+  extremum is absence. **`remove` is NOT a seq verb** — the
+  array-index leg RESOLVED 2026-07-26 to `remove_at` (#1484, the
+  `_at` faulting-index family with `char_at`); `remove` names only
+  the map/flags identity-based, idempotent-total posture (§5/§6).
+  Prelude: `len contains push`; rest `std::seq`.
 - **The `list` reclaim dissolves**: type is `[T]`, literal `[…]`,
   vocabulary is "array"; the word "list" RETIRES entirely.
 

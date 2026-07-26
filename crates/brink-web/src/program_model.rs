@@ -639,6 +639,8 @@ fn format_opcode(op: &Opcode, r: &Resolver) -> String {
         Opcode::MapClear => "map_clear".to_owned(),
         // B1 `or`-coalescing (issue #1460).
         Opcode::Coalesce => "coalesce".to_owned(),
+        // Seq `remove_at` (issue #1484).
+        Opcode::SeqRemoveAt => "seq_remove_at".to_owned(),
         // NS-A6 rand verbs (#1112).
         Opcode::RandFloat => "rand_float".to_owned(),
         Opcode::RandChance => "rand_chance".to_owned(),

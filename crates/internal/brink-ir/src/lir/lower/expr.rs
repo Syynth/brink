@@ -763,10 +763,11 @@ fn lower_call(path: &hir::Path, args: &[hir::Expr], ctx: &mut LowerCtx<'_>) -> l
 /// `brink-analyzer`'s dialect gate, extended in T1b-3 to flag an unresolved
 /// call to one of these names under `strict-ink`).
 ///
-/// `push`/`insert`/`remove` (the mutators) are statement-only — recognized
-/// and fully lowered by `blocks::try_lower_mutator_stmt` *before* a call
-/// expression ever reaches here. Reaching here with one of those three names
-/// means the author used it in expression position (`~ x = push(a, v)`),
+/// `push`/`insert`/`remove`/`remove_at` (the mutators) are statement-only —
+/// recognized and fully lowered by `blocks::try_lower_mutator_stmt` *before*
+/// a call expression ever reaches here. Reaching here with one of those
+/// mutator names means the author used it in expression position (`~ x =
+/// push(a, v)`),
 /// which is invalid since mutators return nothing (§5) — E056.
 #[expect(
     clippy::too_many_lines,
@@ -853,7 +854,7 @@ fn lower_t1b_stdlib_call(
         // same E056 misuse the original three get. NS-A4 adds `sort`/
         // `sort_by` (F0: imperative = in-place, `void` — `sorted`/
         // `sorted_by` are the expression twins below).
-        "push" | "insert" | "remove" | "clear" | "sort" | "sort_by" | "heap_push" => {
+        "push" | "insert" | "remove" | "remove_at" | "clear" | "sort" | "sort_by" | "heap_push" => {
             ctx.diagnostics.push(crate::Diagnostic {
                 file: ctx.file,
                 range: call_range,
@@ -1385,6 +1386,11 @@ pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
             | "push"
             | "insert"
             | "remove"
+            // `remove_at(a, i)` (issue #1484, `docs/stdlib-spec.md` §4/§10):
+            // faulting array-index removal, split off `remove` (now
+            // map-only — identity-based, idempotent-total, matching flags
+            // `remove`) so one name no longer spans two removal postures.
+            | "remove_at"
             | "int"
             | "float"
             | "string"

@@ -438,7 +438,7 @@ without the theory: half its verb table returns `Option[T]`, its
 and its empty-literal rule is E107's twin (a value born without a type must
 be told one at birth). What this chapter adds is the frame those verbs sit
 in — why `get` and `m[k]` *both* exist (a question and a claim, not a
-redundancy), why `pop` on empty is `none` while `remove` out of bounds is
+redundancy), why `pop` on empty is `none` while `remove_at` out of bounds is
 a fault (absence versus a wrong claim), and why none of these answers will
 ever swap categories: the fault-vs-absence line is a ruling, not a
 convention.

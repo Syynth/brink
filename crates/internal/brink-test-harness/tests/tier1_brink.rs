@@ -253,8 +253,8 @@ fn stdlib_insert_array_and_map() {
 }
 
 #[test]
-fn stdlib_remove_array_and_map() {
-    assert_case("stdlib-remove");
+fn stdlib_remove_and_remove_at() {
+    assert_case("stdlib-remove-and-remove-at");
 }
 
 #[test]
@@ -399,7 +399,7 @@ fn every_case_directory_has_a_test() {
         "stdlib-keys-and-values",
         "stdlib-push",
         "stdlib-insert",
-        "stdlib-remove",
+        "stdlib-remove-and-remove-at",
         "stdlib-mutator-nested-lvalue",
         "stdlib-shadowing",
         "stdlib-char-at",
@@ -948,8 +948,8 @@ fn run_to_error(source: &str) -> brink_runtime::RuntimeError {
 }
 
 #[test]
-fn remove_array_index_out_of_bounds_faults() {
-    let source = "VAR arr = 0\n~ {\n    arr = #[1, 2]\n    remove(arr, 5)\n}\nDone.\n-> END\n";
+fn remove_at_array_index_out_of_bounds_faults() {
+    let source = "VAR arr = 0\n~ {\n    arr = #[1, 2]\n    remove_at(arr, 5)\n}\nDone.\n-> END\n";
     let err = run_to_error(source);
     assert!(
         matches!(
@@ -957,6 +957,29 @@ fn remove_array_index_out_of_bounds_faults() {
             brink_runtime::RuntimeError::IndexOutOfBounds { index: 5, len: 2 }
         ),
         "expected IndexOutOfBounds, got {err:?}"
+    );
+}
+
+#[test]
+fn remove_on_an_array_faults() {
+    // Issue #1484: `remove` is map-only now — an array root is
+    // `NotIndexable`, not index-based removal (that's `remove_at`'s job).
+    let source = "VAR arr = 0\n~ {\n    arr = #[1, 2]\n    remove(arr, 0)\n}\nDone.\n-> END\n";
+    let err = run_to_error(source);
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::NotIndexable("array")),
+        "expected NotIndexable(\"array\"), got {err:?}"
+    );
+}
+
+#[test]
+fn remove_at_on_a_map_faults() {
+    // The split's other half: `remove_at` no longer accepts a map.
+    let source = "VAR m = 0\n~ {\n    m = #{\"a\": 1}\n    remove_at(m, 0)\n}\nDone.\n-> END\n";
+    let err = run_to_error(source);
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::NotIndexable("map")),
+        "expected NotIndexable(\"map\"), got {err:?}"
     );
 }
 
@@ -985,8 +1008,8 @@ fn contains_on_a_non_collection_faults() {
 
 // ── #587 breadth pass: every stdlib function x faults (§5, value-model §11c) ─
 //
-// `contains`/`push`/`insert`/`remove` on non-collection/out-of-bounds roots
-// are covered above and in `take_rmw.rs`. This section rounds out `len`,
+// `contains`/`push`/`insert`/`remove`/`remove_at` on non-collection/
+// out-of-bounds roots are covered above and in `take_rmw.rs`. This section rounds out `len`,
 // `keys`, `values` (including the `values(array)` edge, which faults —
 // `collection_values` is Map-only, unlike `collection_keys`'s deliberate
 // array-identity pass-through documented on `collection_ops::collection_keys`).
@@ -1378,7 +1401,7 @@ fn every_stdlib_name_is_rejected_under_strict_ink_and_compiles_under_brink() {
     // resolution status, so an unresolved `push(arr)` call is flagged
     // exactly like `len(arr)` regardless of arity/lvalue-ness (those checks
     // are downstream, brink-dialect-only concerns E055/E058).
-    let strict_ink_call_sites: [(&str, &str); 7] = [
+    let strict_ink_call_sites: [(&str, &str); 8] = [
         ("len", "len(arr)"),
         ("keys", "keys(arr)"),
         ("values", "values(arr)"),
@@ -1386,6 +1409,7 @@ fn every_stdlib_name_is_rejected_under_strict_ink_and_compiles_under_brink() {
         ("push", "push(arr)"),
         ("insert", "insert(arr)"),
         ("remove", "remove(arr)"),
+        ("remove_at", "remove_at(arr)"),
     ];
     for (name, call) in strict_ink_call_sites {
         let source = format!("VAR arr = 0\n~ x = {call}\nDone.\n-> END\n");
@@ -1416,14 +1440,15 @@ fn every_stdlib_name_is_rejected_under_strict_ink_and_compiles_under_brink() {
     // Under `Dialect::Brink`, each name resolves and lowers cleanly with a
     // signature-correct call: pure functions as an expression, mutators as
     // an lvalue-first statement (§5).
-    let brink_call_sites: [(&str, &str); 7] = [
+    let brink_call_sites: [(&str, &str); 8] = [
         ("len", "temp x = len(arr)"),
         ("keys", "temp x = keys(arr)"),
         ("values", "temp x = values(m)"),
         ("contains", "temp x = contains(arr, 1)"),
         ("push", "push(arr, 3)"),
         ("insert", "insert(arr, 0, 9)"),
-        ("remove", "remove(arr, 0)"),
+        ("remove", "remove(m, \"a\")"),
+        ("remove_at", "remove_at(arr, 0)"),
     ];
     for (name, stmt) in brink_call_sites {
         let brink_source = format!(

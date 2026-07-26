@@ -420,6 +420,21 @@ const COLLECT: u8 = 0xFA;
 //                  typing rule with no codegen branching required.
 const COALESCE: u8 = 0xFB;
 
+// Seq `remove_at` (issue #1484, decision log "Quick-docket closures"
+// 2026-07-26; `docs/stdlib-spec.md` §4/§10 — this PR's own reservation,
+// same "assigned here" precedent as the blocks above). Claims the second of
+// the four bytes `Coalesce`'s comment noted free (`0xFC`-`0xFD` + `0xFF`
+// remained after `0xFB`). `MapRemove` (`0xC5`) is restricted to maps as of
+// this PR — the array-index leg it used to generalize over moves here under
+// its own name, joining the `_at` faulting-index family with `CharAt`.
+//
+//   0xFC SeqRemoveAt  `[a, i]` → updated array with the element at `i`
+//                     removed (shifts later elements left). Turn-terminating
+//                     fault on `i` out of `[0, len)` (`IndexOutOfBounds`,
+//                     matching `IndexGet`/`IndexSet`) or a non-array `a`
+//                     (`NotIndexable`).
+const SEQ_REMOVE_AT: u8 = 0xFC;
+
 // List ops
 const LIST_CONTAINS: u8 = 0xB0;
 const LIST_NOT_CONTAINS: u8 = 0xB1;
@@ -1071,7 +1086,11 @@ pub enum Opcode {
     /// `IndexSet`, a missing key is not a fault — this is the stdlib
     /// `insert()` mutator's primitive).
     MapInsert,
-    /// `[map, key]` → updated map with `key` removed (no-op if absent).
+    /// `[map, key]` → updated map with `key` removed (no-op if absent — the
+    /// stdlib `remove()` mutator's primitive). Map-only as of issue #1484:
+    /// a non-map container is a turn-terminating fault (`NotIndexable`).
+    /// The array-index leg this op used to generalize over is
+    /// [`SeqRemoveAt`](Self::SeqRemoveAt).
     MapRemove,
     /// `[map, key]` → `Bool`.
     MapContains,
@@ -1275,6 +1294,16 @@ pub enum Opcode {
     /// effectful `rhs` (an RNG draw, a mutation) always runs, even when
     /// `lhs` turns out to be `some(_)` and `rhs`'s value is discarded.
     Coalesce,
+
+    // ── Seq `remove_at` (issue #1484, `docs/stdlib-spec.md` §4/§10) ───────
+    /// `[a, i]` → updated array with the element at `i` removed (shifts
+    /// later elements left) — the stdlib `remove_at()` mutator's primitive,
+    /// the array-index leg [`MapRemove`](Self::MapRemove) generalized over
+    /// before this PR. Array-only: a non-array `a` is a turn-terminating
+    /// fault (`NotIndexable`). `i` must be an `Int` in `[0, len)` — strictly
+    /// less than `len`, matching `IndexGet`/`IndexSet` (there is no element
+    /// to remove at `len`, unlike `MapInsert`'s append-friendly `<=`).
+    SeqRemoveAt,
 
     // ── NS-A6: the `std::rand` draw verbs (`docs/stdlib-spec.md` §7,
     // ruled 2026-07-18; `docs/stdlib-sequencing.md` §2 Wave A6). Every op
@@ -1726,6 +1755,7 @@ impl Opcode {
 
             // B1 `or`-coalescing
             Self::Coalesce => write_u8(buf, COALESCE),
+            Self::SeqRemoveAt => write_u8(buf, SEQ_REMOVE_AT),
             Self::RandFloat => write_u8(buf, RAND_FLOAT),
             Self::RandChance => write_u8(buf, RAND_CHANCE),
             Self::RandPick => write_u8(buf, RAND_PICK),
@@ -1988,6 +2018,7 @@ impl Opcode {
 
             // B1 `or`-coalescing
             COALESCE => Self::Coalesce,
+            SEQ_REMOVE_AT => Self::SeqRemoveAt,
             RAND_FLOAT => Self::RandFloat,
             RAND_CHANCE => Self::RandChance,
             RAND_PICK => Self::RandPick,
@@ -2389,6 +2420,27 @@ mod tests {
         let mut buf = Vec::new();
         Opcode::Coalesce.encode(&mut buf);
         assert_eq!(buf[0], 0xFB, "Coalesce encoded to unexpected discriminant");
+    }
+
+    /// Seq `remove_at` (issue #1484): one opcode, one byte, no operand —
+    /// same shape as `Coalesce` above.
+    #[test]
+    fn roundtrip_seq_remove_at() {
+        roundtrip(&Opcode::SeqRemoveAt);
+    }
+
+    /// `SeqRemoveAt` claims the second of the four bytes `Coalesce`'s
+    /// comment noted free (`0xFC`-`0xFD` + `0xFF` remained after `0xFB`) —
+    /// the reservation comment above `SEQ_REMOVE_AT` is the actual
+    /// (implementation-level) source of truth this test pins.
+    #[test]
+    fn seq_remove_at_opcode_byte_is_0xfc() {
+        let mut buf = Vec::new();
+        Opcode::SeqRemoveAt.encode(&mut buf);
+        assert_eq!(
+            buf[0], 0xFC,
+            "SeqRemoveAt encoded to unexpected discriminant"
+        );
     }
 
     #[test]
