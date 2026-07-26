@@ -8,11 +8,14 @@
 //! (`auto_ref_mutates_a_local_receiver_end_to_end` and its global-`VAR`
 //! twin). What that file *cannot* reach is the **projection** shape: a T1e
 //! projection's root must be a durable cell (`docs/t1e-spec.md` §2), and the
-//! native surface has no way to spell a struct-typed global today — a
-//! construction literal is refused as a `VAR` default (`E075`) and a
-//! struct-typed declaration derives no type in `infer::collect_globals`
-//! (`InferredType` has no struct form), so the analyzer answers `E142`
-//! before auto-ref is ever consulted. This file therefore drives the
+//! native surface has no way to spell a struct-typed global today. Issue
+//! #1540 closed half of that: a struct-annotated or struct-literal-
+//! initialized declaration now *does* derive `Ty::Struct` in
+//! `infer::collect_globals` (`Sig::value_ty`), so `E142` is no longer the
+//! blocker. What still blocks it is the other half, tracked by issue #1530:
+//! a construction literal is refused as a `VAR` default (`E075`), because
+//! `lir::ConstValue` has no record-carrying variant. This file therefore
+//! drives the
 //! lowering with a hand-assembled verdict table, mirroring the workaround
 //! `ufcs_field_call.rs` documents for the same class of gap, so the arm is
 //! covered rather than assumed.

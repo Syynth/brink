@@ -500,6 +500,23 @@ impl ProjectDb {
             .get(file, range)
     }
 
+    /// Every UFCS call site (`recv.verb(args)`) whose verdict desugars to a
+    /// free function targeting `target`, project-wide (issue #1539) — reads
+    /// the same memoized `ufcs_resolution_query` table
+    /// [`ufcs_verdict`](Self::ufcs_verdict) does. The `find_references`/
+    /// `rename` counterpart to that single-site lookup: renaming or listing
+    /// references to a free function must also reach every UFCS call site
+    /// that resolves to it, not just its plain `ResolutionMap` references.
+    #[must_use]
+    pub fn ufcs_call_sites_for_target(
+        &self,
+        target: DefinitionId,
+    ) -> Vec<(FileId, rowan::TextRange)> {
+        ufcs_resolution_query(&self.salsa, self.project)
+            .table
+            .call_sites_for_target(target)
+    }
+
     /// Per-file type diagnostics (`type_diagnostics(FileId)`). Advisory-only
     /// in this slice — always empty (see `type_diagnostics_query`'s docs).
     pub fn type_diagnostics(&self, id: FileId) -> Option<&[Diagnostic]> {

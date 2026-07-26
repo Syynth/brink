@@ -499,13 +499,12 @@ mod tests {
         // `v`'s declaration-derived type is a concrete `divert` (its own
         // divert-target initializer) — out of `int`/`float`'s permitted
         // domain, so this now fires exactly like a literal `-> knot`
-        // argument would. (A global's `array`/`map`/`struct`-literal
-        // initializer can't drive this same test: `collect_globals`'s
-        // `InferredType` projection has no representation for those shapes —
-        // a pre-existing, documented gap in `signature::ty_to_inferred_type`,
-        // not something this issue's scope touches. `divert` and `list` are
-        // the two non-scalar shapes `InferredType` *does* carry, so those are
-        // what exercise the global-scope dispatch path here.)
+        // argument would. (Issue #1540 widened `collect_globals` to full
+        // `Ty` fidelity, so a global's `array`/`map`/`struct`-literal
+        // initializer now drives this same dispatch too — see
+        // `global_array_valued_argument_fires_since_the_value_ty_widening`
+        // just below. `divert` stays the fixture here because it is the
+        // shape this issue's own scope introduced.)
         let diags = check_all(
             "=== knot ===\nHello.\n-> DONE\nVAR v = -> knot\n=== main ===\n~ x = int(v)\n-> DONE\n",
         );
@@ -516,6 +515,20 @@ mod tests {
             "{:?}",
             diags[0].message
         );
+    }
+
+    /// Issue #1540: the collection shapes that used to be dropped on the
+    /// way into `collect_globals` now reach this dispatch. Before the
+    /// `Sig::value_ty` widening this compiled clean — a latent miss, not a
+    /// design choice — while the `temp` twin
+    /// (`temp_variable_valued_argument_fires_when_provably_mistyped`)
+    /// reported for the identical value.
+    #[test]
+    fn global_array_valued_argument_fires_since_the_value_ty_widening() {
+        let diags = check_all("VAR xs = #[1, 2]\n=== main ===\n~ x = int(xs)\n-> DONE\n");
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E078);
+        assert!(diags[0].message.contains("array"), "{:?}", diags[0].message);
     }
 
     #[test]

@@ -421,7 +421,11 @@ fn emit_stitch(out: &mut String, s: &Stitch, depth: usize) -> Result<(), EmitErr
     }
     let indent = "  ".repeat(depth);
     let params = emit_params(&s.params, &s.name.text)?;
-    let _ = writeln!(out, "{indent}flow {}({params}) {{", s.name.text);
+    // The ruled `: type` return clause (NG-C, issue #1489, widened to
+    // stitches by #1509) — same position as a top-level `flow`/`fn`'s, see
+    // `emit_knot`.
+    let ret = emit_annotation_suffix(s.return_type.as_ref());
+    let _ = writeln!(out, "{indent}flow {}({params}){ret} {{", s.name.text);
     emit_block_stmts(out, &s.body, depth + 1, &s.name.text)?;
     let _ = writeln!(out, "{indent}}}");
     Ok(())
@@ -1191,6 +1195,27 @@ mod tests {
             matches!(annotation, TypeExpr::Fn { .. }),
             "expected a re-lowered TypeExpr::Fn, got {annotation:?}"
         );
+    }
+
+    /// #1509: a *nested* flow's `: type` return clause (`hir::Stitch::
+    /// return_type`, widening NG-C's `Knot.return_type`) must round-trip
+    /// through the emitter exactly like a top-level flow/fn's does
+    /// (`emit_knot`'s own `ret` suffix) — `emit_stitch` used to omit it
+    /// silently.
+    #[test]
+    fn stitch_return_type_round_trips() {
+        let src = "flow garden() {\n  flow gate(): int {\n    Onward.\n  }\n}\n";
+        let emitted = lower_and_emit(src).expect("stitch return type must now emit");
+        assert!(
+            emitted.contains("gate(): int"),
+            "expected the emitted source to spell the stitch's return type back out:\n{emitted}"
+        );
+
+        let hir = reparse_and_lower(&emitted);
+        match &hir.knots[0].stitches[0].return_type {
+            Some(TypeExpr::Named { name, .. }) => assert_eq!(name, "int"),
+            other => panic!("re-lowered stitch lost its return type: {other:?}"),
+        }
     }
 
     /// B1b (issue #1475): a template `{if}` conditional's `as` binding must

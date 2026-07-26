@@ -1253,17 +1253,46 @@ fn a_return_typed_flow_does_not_get_the_implicit_done() {
 }
 
 #[test]
-fn a_return_typed_stitch_is_flagged_not_silently_dropped() {
-    // `hir::Stitch` has no `return_type` field, so the clause cannot be
-    // honored one level down. It must be reported (E129, the native
-    // "parses but has no HIR lowering yet" fence), never dropped in
-    // silence.
+fn a_return_typed_stitch_lowers_to_stitch_return_type() {
+    // #1509: `hir::Stitch` now carries the same `return_type` field
+    // `Knot` does, so a nested flow's `: type` clause is honored one level
+    // down instead of being E129-fenced away.
     let (hir, _m, diags) = lower_src("flow garden() {\n  flow gate(): int {\n    Creak.\n  }\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let stitch = &hir.knots[0].stitches[0];
+    assert_eq!(named(stitch.return_type.as_ref()), Some("int"));
+}
+
+#[test]
+fn plain_stitch_has_no_return_type() {
+    let (hir, _m, diags) = lower_src("flow garden() {\n  flow gate() {\n    Creak.\n  }\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert!(hir.knots[0].stitches[0].return_type.is_none());
+}
+
+#[test]
+fn a_return_typed_stitch_does_not_get_the_implicit_done() {
+    // Same coroutine-vs-state toggle as a top-level flow/fn (see
+    // `a_return_typed_flow_does_not_get_the_implicit_done`), now honored
+    // one level down (#1509).
+    let (plain, _m, diags) = lower_src("flow garden() {\n  flow gate() {\n    Creak.\n  }\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     assert!(
-        diags.iter().any(|d| d.code == DiagnosticCode::E129),
-        "a return-typed stitch must be flagged: {diags:?}"
+        matches!(plain.knots[0].stitches[0].body.stmts.last(), Some(Stmt::Divert(d))
+            if d.target.path == crate::DivertPath::Done),
+        "a plain stitch still ends implicitly: {:?}",
+        plain.knots[0].stitches[0].body.stmts
     );
-    assert_eq!(hir.knots[0].stitches.len(), 1, "the stitch still lowers");
+
+    let (typed, _m, diags) =
+        lower_src("flow garden() {\n  flow gate(): int {\n    Creak.\n  }\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert!(
+        !matches!(typed.knots[0].stitches[0].body.stmts.last(), Some(Stmt::Divert(d))
+            if d.target.path == crate::DivertPath::Done),
+        "a value-returning stitch must not be given an implicit DONE: {:?}",
+        typed.knots[0].stitches[0].body.stmts
+    );
 }
 
 #[test]
