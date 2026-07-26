@@ -773,6 +773,10 @@ fn resolution_index(
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::panic,
+    reason = "test-only assertions; see sibling test modules"
+)]
 mod tests {
     use super::*;
     use brink_ir::{FileId as HirFileId, SymbolIndex};
