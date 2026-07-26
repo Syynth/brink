@@ -268,6 +268,20 @@ pub struct LowerCtx<'a> {
     pub ids: &'a mut IdAllocator,
     /// Current container path prefix (e.g. `"knot"`, `"knot.stitch"`).
     pub scope_path: String,
+    /// Whether this lowering call is inside a file's root content (as
+    /// opposed to a knot or stitch body). Fixed for the lifetime of one
+    /// `lower_root_content_chunks`/`lower_knot`/`lower_stitch` call — unlike
+    /// `scope_path`, nested conditionals/sequences/choice bodies never
+    /// change it, so it reliably answers "are we at the story's top level"
+    /// regardless of how deeply nested the current statement is.
+    ///
+    /// Used to gate the implicit `-> DONE` a `ChoiceSet`'s empty, unlabeled
+    /// continuation gets (`build_continuation_container`): falling off the
+    /// end of the *root* content is a safe implicit end (ink's own
+    /// behavior), but falling off the end of a knot/stitch without an
+    /// explicit `-> DONE`/`-> END` is a genuine `RanOutOfContent` runtime
+    /// error in real ink — see issue #1503.
+    pub is_root_content_scope: bool,
     /// Child containers created during content lowering (inline sequences).
     /// Drained by the caller after each statement.
     pub pending_children: Vec<super::lir::Container>,
