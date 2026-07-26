@@ -255,7 +255,7 @@ mod tests {
                 .syntax()
                 .descendants()
                 .find(|n| n.kind() == SyntaxKind::STITCH_HEADER)
-                .unwrap_or_else(|| panic!("no STITCH_HEADER for {src:?}"));
+                .expect("STITCH_HEADER node for the parsed stitch");
             assert!(
                 stitch_header
                     .descendants()
