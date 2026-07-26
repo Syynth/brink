@@ -446,6 +446,9 @@ impl Collector {
     fn walk_if_stmt(&mut self, i: &IfStmt) {
         self.check_range(i.ptr.text_range());
         self.walk_expr(&i.condition);
+        if let Some(binding) = &i.binding {
+            self.check_range(binding.range);
+        }
         for s in &i.body {
             self.walk_block_stmt(s);
         }
@@ -463,6 +466,9 @@ impl Collector {
     fn walk_while_stmt(&mut self, w: &WhileStmt) {
         self.check_range(w.ptr.text_range());
         self.walk_expr(&w.condition);
+        if let Some(binding) = &w.binding {
+            self.check_range(binding.range);
+        }
         for s in &w.body {
             self.walk_block_stmt(s);
         }

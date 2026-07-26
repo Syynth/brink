@@ -130,6 +130,10 @@ ast_node!(UntilStmt, UNTIL_STMT);
 ast_node!(BreakStmt, BREAK_STMT);
 ast_node!(ContinueStmt, CONTINUE_STMT);
 
+// ── The `as` binding (B1b, issue #1475) ──────────────────────────────
+
+ast_node!(AsBinding, AS_BINDING);
+
 // ── Error recovery ───────────────────────────────────────────────────
 
 ast_node!(Error, ERROR);
@@ -909,10 +913,21 @@ impl Choice {
 }
 
 impl ChoiceGuard {
-    /// The guard's condition expression — `CHOICE_GUARD`'s only child node
-    /// (`L_BRACE KW_IF expression R_BRACE`; the braces/keyword are tokens).
+    /// The guard's condition expression — `CHOICE_GUARD`'s first child node
+    /// (`L_BRACE KW_IF expression (AS_BINDING)? R_BRACE`; the braces/keyword
+    /// are tokens).
     pub fn expr(&self) -> Option<SyntaxNode> {
-        self.syntax.children().next()
+        self.syntax
+            .children()
+            .find(|n| n.kind() != SyntaxKind::AS_BINDING)
+    }
+
+    /// The `as NAME` binding, when the author wrote one. Ruled but NOT yet
+    /// implemented (it rides the `.inkb` v6 Choice record) — `brink-ir`'s
+    /// choice lowering turns a present binding into `E141`, never into
+    /// working code (`parser/choice.rs::choice_guard`'s doc).
+    pub fn as_binding(&self) -> Option<AsBinding> {
+        support::child(&self.syntax)
     }
 }
 
@@ -970,9 +985,19 @@ impl ConditionalBlock {
         self.syntax.children().find(|n| {
             !matches!(
                 n.kind(),
-                SyntaxKind::IF_ARM | SyntaxKind::ELSE_BRANCH | SyntaxKind::MATCH_ARM
+                SyntaxKind::IF_ARM
+                    | SyntaxKind::ELSE_BRANCH
+                    | SyntaxKind::MATCH_ARM
+                    | SyntaxKind::AS_BINDING
             )
         })
+    }
+
+    /// The `as NAME` binding (B1b, issue #1475) of the template condition
+    /// form `{if EXPR as NAME: … else: …}`, when present. Never set for
+    /// `match` — a `match` head is a subject, not a condition.
+    pub fn as_binding(&self) -> Option<AsBinding> {
+        support::child(&self.syntax)
     }
 
     pub fn if_arm(&self) -> Option<IfArm> {
@@ -1167,12 +1192,21 @@ impl ExprStmt {
 
 impl IfStmt {
     /// The head condition — `IF_STMT`'s only child node that isn't the
-    /// `STMT_BLOCK` body or the trailing `ELSE_CLAUSE` (mirrors
-    /// `ConditionalBlock::condition`'s same-shaped lookup).
+    /// `STMT_BLOCK` body, the trailing `ELSE_CLAUSE`, or the `AS_BINDING`
+    /// suffix (mirrors `ConditionalBlock::condition`'s same-shaped lookup).
     pub fn condition(&self) -> Option<SyntaxNode> {
-        self.syntax
-            .children()
-            .find(|n| !matches!(n.kind(), SyntaxKind::STMT_BLOCK | SyntaxKind::ELSE_CLAUSE))
+        self.syntax.children().find(|n| {
+            !matches!(
+                n.kind(),
+                SyntaxKind::STMT_BLOCK | SyntaxKind::ELSE_CLAUSE | SyntaxKind::AS_BINDING
+            )
+        })
+    }
+
+    /// The `as NAME` binding (B1b, issue #1475), when the condition carries
+    /// one.
+    pub fn as_binding(&self) -> Option<AsBinding> {
+        support::child(&self.syntax)
     }
 
     pub fn body(&self) -> Option<StmtBlock> {
@@ -1181,6 +1215,14 @@ impl IfStmt {
 
     pub fn else_clause(&self) -> Option<ElseClause> {
         support::child(&self.syntax)
+    }
+}
+
+impl AsBinding {
+    /// The bound name (`as NAME`). `None` only for a malformed binding the
+    /// parser already diagnosed (`as` with no identifier after it).
+    pub fn name_token(&self) -> Option<SyntaxToken> {
+        support::tokens(&self.syntax, IDENT).next()
     }
 }
 
@@ -1200,11 +1242,18 @@ impl ElseClause {
 
 impl WhileStmt {
     /// The loop condition — `WHILE_STMT`'s only child node that isn't the
-    /// `STMT_BLOCK` body.
+    /// `STMT_BLOCK` body or the `AS_BINDING` suffix.
     pub fn condition(&self) -> Option<SyntaxNode> {
         self.syntax
             .children()
-            .find(|n| n.kind() != SyntaxKind::STMT_BLOCK)
+            .find(|n| !matches!(n.kind(), SyntaxKind::STMT_BLOCK | SyntaxKind::AS_BINDING))
+    }
+
+    /// The `as NAME` binding (B1b, issue #1475), when the condition carries
+    /// one. Rebinds on every iteration — the condition (and with it this
+    /// binding) is re-evaluated per pass.
+    pub fn as_binding(&self) -> Option<AsBinding> {
+        support::child(&self.syntax)
     }
 
     pub fn body(&self) -> Option<StmtBlock> {

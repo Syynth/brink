@@ -311,6 +311,25 @@ pub(super) fn lower_assign_target(
         hir::Expr::Path(path) => {
             let name = path_to_string(path);
             if let Some(slot) = ctx.temp_slot(&name) {
+                // B1b (issue #1475): an `as` binding is immutable. Every
+                // write path funnels through here — plain/compound
+                // assignment, an indexed or field assignment's root cell,
+                // and the in-place mutators (`pop`, `clear`, …) — so this
+                // one refusal covers them all rather than each site
+                // re-deriving the rule.
+                if ctx.as_binding_slots.contains(&slot) {
+                    ctx.diagnostics.push(crate::Diagnostic {
+                        file: ctx.file,
+                        range: path.range,
+                        message: format!(
+                            "{}: `{name}` is an `as` binding — it is immutable and cannot be \
+                             assigned to or mutated in place",
+                            crate::DiagnosticCode::E143.title(),
+                        ),
+                        code: crate::DiagnosticCode::E143,
+                    });
+                    return None;
+                }
                 let name_id = ctx.names.intern(&name);
                 return Some(lir::AssignTarget::Temp(slot, name_id));
             }

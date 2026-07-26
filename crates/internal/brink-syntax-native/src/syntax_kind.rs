@@ -588,6 +588,24 @@ pub enum SyntaxKind {
     /// the brink-dialect's `~ await cond` produces.
     UNTIL_STMT,
 
+    // ── Node kind — the `as` binding (B1b, issue #1475, ruled ──────────
+    // ── `docs/decision-log.md` 2026-07-26 "The `as` binding") ──────────
+    /// `as NAME` — the condition-position Option binding, in BOTH of the
+    /// language's condition positions: the statement forms
+    /// ([`Self::IF_STMT`], [`Self::WHILE_STMT`]) and the template form
+    /// ([`Self::CONDITIONAL_BLOCK`]'s `{if …: … else: …}`). One construct,
+    /// one node kind — the ruling explicitly refused a second binding
+    /// grammar. Always the LAST child node of the construct it binds in,
+    /// following the head expression, so every existing "first child node
+    /// that isn't a body/arm" condition accessor keeps working.
+    ///
+    /// Parsed (but never lowered) inside a [`Self::CHOICE_GUARD`] too:
+    /// guard-`as` is admitted by the language but **implemented** only
+    /// once the `.inkb` v6 Choice record grows a captured environment, so
+    /// `brink-ir` diagnoses it as not-yet-supported (`E141`) rather than
+    /// letting it half-work.
+    AS_BINDING,
+
     /// A parse-error wrapper node — swallows one unexpected token so error
     /// recovery always makes forward progress.
     ERROR,

@@ -231,6 +231,16 @@ pub struct LowerCtx<'a> {
     /// name (docs/t1b-surface-spec.md §2) without disturbing the outer
     /// slot's storage.
     pub block_scopes: Vec<Vec<(String, u16)>>,
+    /// Temp slots that hold an `as` binding (B1b, issue #1475). The
+    /// binding is **immutable** by ruling, and this is what makes that
+    /// enforceable: every write path — plain assignment, compound `+=`,
+    /// indexed/field assignment's root, an in-place mutator like
+    /// `pop`/`clear` — resolves its target through
+    /// [`super::stmts::lower_assign_target`], which refuses a slot in this
+    /// set (`E143`). Entries are never removed: a slot is allocated fresh
+    /// per binding and never reused, so membership is a permanent property
+    /// of the slot, not of the scope being open.
+    pub as_binding_slots: crate::determinism::LookupSet<u16>,
     /// Every name ever declared via [`LowerCtx::declare_block_local`] in
     /// this frame — i.e. every T1b block-scoped `temp`/`for`-loop-variable
     /// name, whether or not its `~ { … }` block is still open. Unlike

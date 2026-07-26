@@ -158,7 +158,9 @@ fn conditional_heap(c: &Conditional) -> usize {
 }
 
 fn cond_branch_heap(b: &CondBranch) -> usize {
-    block_heap(&b.body)
+    // The `as` binding's `Name` is heap-allocated like every other
+    // (B1b, issue #1475) — see `block_stmt_heap`'s `ForStmt::val_name`.
+    b.binding.as_ref().map_or(0, name_heap) + block_heap(&b.body)
 }
 
 fn sequence_heap(s: &Sequence) -> usize {
@@ -220,7 +222,9 @@ fn block_stmt_heap(bs: &BlockStmt) -> usize {
         BlockStmt::TempDecl(td) => temp_decl_heap(td),
         BlockStmt::Return(r) => vec_heap(&r.onwards_args),
         BlockStmt::If(i) => if_stmt_heap(i),
-        BlockStmt::While(w) => block_stmts_heap(&w.body),
+        BlockStmt::While(w) => {
+            w.binding.as_ref().map_or(0, name_heap) + block_stmts_heap(&w.body)
+        }
         BlockStmt::For(f) => {
             name_heap(&f.var_name)
                 + f.val_name.as_ref().map_or(0, name_heap)
@@ -235,7 +239,9 @@ fn block_stmt_heap(bs: &BlockStmt) -> usize {
 }
 
 fn if_stmt_heap(i: &IfStmt) -> usize {
-    block_stmts_heap(&i.body) + i.else_branch.as_ref().map_or(0, else_branch_heap)
+    i.binding.as_ref().map_or(0, name_heap)
+        + block_stmts_heap(&i.body)
+        + i.else_branch.as_ref().map_or(0, else_branch_heap)
 }
 
 fn else_branch_heap(e: &ElseBranch) -> usize {

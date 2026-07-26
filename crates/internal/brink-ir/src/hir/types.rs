@@ -519,6 +519,13 @@ pub enum BlockStmt {
 pub struct IfStmt {
     pub ptr: Provenance,
     pub condition: Expr,
+    /// `if EXPR as NAME { … }` — the condition-position Option binding
+    /// (B1b, issue #1475). Immutable, typed `T` from the condition's
+    /// `Option[T]`, and scoped strictly to [`Self::body`]: an
+    /// [`ElseBranch`] never sees it. Native-surface-only — the ink/brink
+    /// dialect `~ { if … }` grammar has no `as` and always leaves this
+    /// `None`.
+    pub binding: Option<Name>,
     pub body: Vec<BlockStmt>,
     pub else_branch: Option<ElseBranch>,
 }
@@ -538,6 +545,11 @@ pub enum ElseBranch {
 pub struct WhileStmt {
     pub ptr: Provenance,
     pub condition: Expr,
+    /// `while EXPR as NAME { … }` — the same binding [`IfStmt::binding`]
+    /// carries, **rebound on every iteration** (B1b, issue #1475): the
+    /// condition is re-evaluated per pass, so the binding tracks each
+    /// pass's own `some` payload rather than snapshotting the first.
+    pub binding: Option<Name>,
     pub body: Vec<BlockStmt>,
     /// `while await cond { … }`: yield-with-policy — waking IS condition-true
     /// (docs/flow-suspension-spec.md §3, the wake contract). A plain `while`
@@ -723,6 +735,13 @@ pub struct Conditional {
 pub struct CondBranch {
     /// `None` for the else branch.
     pub condition: Option<Expr>,
+    /// The `as` binding of the template condition form `{if EXPR as NAME:
+    /// … else: …}` (B1b, issue #1475, ruled `docs/decision-log.md`
+    /// 2026-07-26). Native-only: the ink/brink-dialect conditional
+    /// lowerings never set it. Immutable, typed `T` from the condition's
+    /// `Option[T]`, and visible **only** in this branch's own `body` — an
+    /// `else` branch (`condition: None`) always carries `None` here.
+    pub binding: Option<Name>,
     pub body: Block,
     /// Pre-assigned container ID for this branch's container.
     /// Stamped by [`super::stamp_container_ids`].
@@ -2241,6 +2260,42 @@ pub enum DiagnosticCode {
     /// ([`crate::hir::construct::ConstructTarget::form`]), so a mismatch is
     /// caught at dispatch rather than by the parser.
     E139,
+
+    // ── B1b: the `as` binding (issue #1475, RULED `docs/decision-log.md`
+    //    2026-07-26 "The `as` binding") ─────────────────────────────────
+    /// The v1 whole-condition restriction: an `as` binding was written over
+    /// a `&&`/`||` composition (`if a && find(x) as s { … }`). The ruling
+    /// fixes the binding as the **entire** condition for v1 — let-chains
+    /// can land later, additively — so a boolean composition under the
+    /// binding is refused rather than silently binding the composite (which
+    /// is never an `Option[T]` anyway). The mirror spelling, an operator
+    /// *after* the binding (`if find(x) as s && …`), is caught one layer
+    /// earlier as a parse error (`brink-syntax-native::parser::binding`).
+    E140,
+    /// An `as` binding in a **choice guard** (`* {if EXPR as name} [text]`).
+    /// Ruled admissible with capture-at-presentation, by-value COW
+    /// semantics (`docs/decision-log.md` 2026-07-26, "Choice-guard `as`
+    /// un-deferred"), but **not yet implemented**: the captured value has
+    /// to ride the pending choice across saves, which needs the `.inkb` v6
+    /// Choice record. Diagnosed by name so the construct never half-works
+    /// — this is "not yet", not "not a thing".
+    E141,
+    /// An `as` binding whose condition is a statically-known **non-Option**
+    /// type (`if 5 as n { … }`). The binding unwraps `Option[T]` to `T`;
+    /// there is nothing to unwrap here. Strict-mode-only and
+    /// classification-gated, exactly like its F27 twin [`Self::E116`]: an
+    /// `Unknown`/`Conflicted` condition stays unjudged rather than
+    /// guessing.
+    E142,
+    /// A write to an `as` binding — `if find(s) as i { i = 0; }`, `pop(i)`,
+    /// `i[0] = x`, … The binding is **immutable** by ruling
+    /// (`docs/decision-log.md` 2026-07-26): it names the unwrapped payload
+    /// the condition proved present, and rebinding it would make the
+    /// narrowing guarantee a lie. Raised at the single LIR write-target
+    /// choke point (`lir::lower::stmts::lower_assign_target`), so every
+    /// write shape — assignment, compound assignment, indexed/field
+    /// assignment root, in-place mutator — is covered by construction.
+    E143,
 }
 
 impl DiagnosticCode {
@@ -2391,6 +2446,10 @@ impl DiagnosticCode {
             Self::E137 => "E137",
             Self::E138 => "E138",
             Self::E139 => "E139",
+            Self::E140 => "E140",
+            Self::E141 => "E141",
+            Self::E142 => "E142",
+            Self::E143 => "E143",
         }
     }
 
@@ -2592,6 +2651,10 @@ impl DiagnosticCode {
             Self::E137 => "native .brink compile requires types = strict",
             Self::E138 => "map construction literal supplies a duplicate key",
             Self::E139 => "construction literal entries do not match the target type's form",
+            Self::E140 => "the `as` binding must be the entire condition (no `&&`/`||` composition)",
+            Self::E141 => "the `as` binding in a choice guard is not yet supported",
+            Self::E142 => "the `as` binding requires an `Option[T]` condition",
+            Self::E143 => "an `as` binding is immutable and cannot be assigned to",
         }
     }
 
@@ -2769,6 +2832,10 @@ impl DiagnosticCode {
             "E137" => Some(Self::E137),
             "E138" => Some(Self::E138),
             "E139" => Some(Self::E139),
+            "E140" => Some(Self::E140),
+            "E141" => Some(Self::E141),
+            "E142" => Some(Self::E142),
+            "E143" => Some(Self::E143),
             _ => None,
         }
     }

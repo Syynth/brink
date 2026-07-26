@@ -77,19 +77,33 @@ pub(super) fn lower_conditional(
             };
         };
         let condition = lower_expr(file_id, &cond_node, diags);
+        // B1b (issue #1475): the template condition position of the `as`
+        // binding — the same construct the statement form takes, so it
+        // reuses the statement form's own lowering (and its E140
+        // whole-condition check) verbatim rather than restating the rule.
+        let binding = super::control_flow::lower_as_binding(
+            file_id,
+            cb.as_binding().as_ref(),
+            &condition,
+            diags,
+        );
         let mut branches = Vec::new();
         let if_body = cb.if_arm().map_or_else(Block::default, |arm| {
             lower_arm_items(file_id, arm.syntax(), diags)
         });
         branches.push(CondBranch {
             condition: Some(condition),
+            binding,
             body: if_body,
             container_id: None,
         });
         if let Some(eb) = cb.else_arm() {
             let else_body = lower_arm_items(file_id, eb.syntax(), diags);
             branches.push(CondBranch {
+                // Scoped strictly to the success arm — the `else` never
+                // sees the binding.
                 condition: None,
+                binding: None,
                 body: else_body,
                 container_id: None,
             });
@@ -168,6 +182,8 @@ fn lower_match_arm(
     };
     CondBranch {
         condition,
+        // `match` arms are patterns, not conditions — no binding position.
+        binding: None,
         body,
         container_id: None,
     }

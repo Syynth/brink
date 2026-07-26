@@ -46,8 +46,23 @@ fn lower_content_part(part: &hir::ContentPart, ctx: &mut LowerCtx<'_>) -> lir::C
                 .branches
                 .iter()
                 .map(|b| {
-                    let condition = b.condition.as_ref().map(|e| lower_expr(e, ctx));
+                    // B1b (issue #1475): `{if EXPR as n: …}` written inline
+                    // on a content line. The scope bracket spans condition
+                    // + body only, so the binding dies at the arm boundary
+                    // exactly as in the statement form — and because the
+                    // bind rides the condition expression itself
+                    // (`lir::Expr::OptionBind`), nothing has to be hoisted
+                    // out of the content line to make room for it.
+                    ctx.push_block_scope();
+                    let condition = match (b.condition.as_ref(), b.binding.as_ref()) {
+                        (Some(e), Some(binding)) => {
+                            Some(super::blocks::lower_bound_condition(e, binding, ctx))
+                        }
+                        (Some(e), None) => Some(lower_expr(e, ctx)),
+                        (None, _) => None,
+                    };
                     let body = lower_inline_block(&b.body, ctx);
+                    ctx.pop_block_scope();
                     lir::CondBranch { condition, body }
                 })
                 .collect();

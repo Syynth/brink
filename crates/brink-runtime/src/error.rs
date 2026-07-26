@@ -403,6 +403,22 @@ pub enum RuntimeError {
     #[error("an Option has no truthiness — test `== none` / `== some(x)` explicitly")]
     OptionTruthiness,
 
+    // ── B1b: the `as` binding (`docs/decision-log.md` 2026-07-26, issue
+    // #1475) ─────────────────────────────────────────────────────────────
+    /// `Opcode::OptionBind` received a non-`Option` operand — `if EXPR as
+    /// name { … }` where `EXPR` does not evaluate to an `Option[T]`. The
+    /// binding's whole job is to unwrap `Option[T]` to `T`, so there is
+    /// nothing to bind. This is the gradual-mode residual of the checker's
+    /// strict-mode `E142` (the same statically/dynamically paired posture
+    /// [`Self::OptionTruthiness`] has with `E116`); on the native surface,
+    /// which is strict-only, `E142` catches every statically classifiable
+    /// case first and this fault is the backstop for the rest.
+    #[error("the `as` binding requires an Option, got {found}")]
+    AsBindingNotOption {
+        /// The offending operand's runtime type name (`Value::value_type`).
+        found: &'static str,
+    },
+
     // ── NS-A5: the inhabited-range refinement (`docs/stdlib-spec.md` §7,
     // F8 ruled 2026-07-19) ────────────────────────────────────────────────
     /// `int(range)` reached an **empty** range at runtime — the F8 gradual-

@@ -25,8 +25,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use brink_format::DefinitionId;
 use brink_ir::{
     Block, BlockStmt, Choice, ChoiceSet, CondKind, Conditional, Content, ContentPart, DivertPath,
-    DivertTarget, ElseBranch, Expr, IfStmt, InfixOp, LogicBlock, Path as HirPath, PrefixOp, Stmt,
-    StringPart, SymbolIndex, SymbolKind,
+    DivertTarget, ElseBranch, Expr, IfStmt, InfixOp, LogicBlock, Name, Path as HirPath, PrefixOp,
+    Stmt, StringPart, SymbolIndex, SymbolKind,
 };
 use rowan::TextRange;
 
@@ -1991,9 +1991,27 @@ impl InferPass<'_, '_> {
         }
         for branch in &cond.branches {
             if let Some(e) = &branch.condition {
-                self.infer_expr(e); // condition position — no forcing.
+                let cond_ty = self.infer_expr(e); // condition position — no forcing.
+                self.bind_as_binding(branch.binding.as_ref(), &cond_ty);
             }
             self.infer_block(&branch.body);
+        }
+    }
+
+    /// Type an `as` binding (B1b, issue #1475): `Option[T]` unwraps to `T`.
+    ///
+    /// A condition that isn't a statically known `Option` leaves the
+    /// binding `Unknown` rather than guessing — `option_conditions::check`
+    /// owns that judgment (`E142` for a classifiable non-Option, silence for
+    /// `Unknown`/`Conflicted`, the "Unknown never disagrees" rule this
+    /// module applies everywhere else).
+    fn bind_as_binding(&mut self, binding: Option<&Name>, cond_ty: &Ty) {
+        if let Some(name) = binding {
+            let bound = match cond_ty {
+                Ty::Option(inner) => (**inner).clone(),
+                _ => Ty::Unknown,
+            };
+            self.bind_local(&name.text, &bound);
         }
     }
 
@@ -2030,7 +2048,10 @@ impl InferPass<'_, '_> {
             BlockStmt::Return(r) => self.infer_return(r.value.as_ref(), &r.onwards_args),
             BlockStmt::If(i) => self.infer_if(i),
             BlockStmt::While(w) => {
-                self.infer_expr(&w.condition); // condition position — no forcing.
+                let cond_ty = self.infer_expr(&w.condition); // condition position — no forcing.
+                // `while EXPR as n` rebinds each iteration, but every pass
+                // binds the SAME static type, so one binding here is exact.
+                self.bind_as_binding(w.binding.as_ref(), &cond_ty);
                 for s in &w.body {
                     self.infer_block_stmt(s);
                 }
@@ -2086,7 +2107,8 @@ impl InferPass<'_, '_> {
     }
 
     fn infer_if(&mut self, i: &IfStmt) {
-        self.infer_expr(&i.condition); // condition position — no forcing.
+        let cond_ty = self.infer_expr(&i.condition); // condition position — no forcing.
+        self.bind_as_binding(i.binding.as_ref(), &cond_ty);
         for s in &i.body {
             self.infer_block_stmt(s);
         }

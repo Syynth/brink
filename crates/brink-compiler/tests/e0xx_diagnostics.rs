@@ -1118,3 +1118,93 @@ fn e066_coalesce_mismatched_fallback_type() {
         "expected E066, got: {diags:?}"
     );
 }
+
+// ─── B1b the `as` binding (issue #1475): E140/E141/E142 ────────────────
+//
+// Native-only, same reasoning as the E066 block above — an `AS_BINDING`
+// node exists only in the native grammar, so these reuse `compile_native`.
+
+/// E140 — the v1 whole-condition restriction, caught at HIR lowering when
+/// the binding sits on top of a `&&` composition. (The mirror spelling, an
+/// operator *after* the binding, is a parse error instead; see
+/// `brink-syntax-native`'s `parser::tests::statement`.)
+#[test]
+fn e140_as_binding_over_a_boolean_composition() {
+    let source = "flow main() ~{
+  if true && some(1) as n {
+    return n;
+  }
+}
+";
+    let err = compile_native("as-composed", source, native_strict_options())
+        .map(|_| ())
+        .expect_err("`as` over a `&&` composition must fail");
+    let diags = errors_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E140),
+        "expected E140, got: {diags:?}"
+    );
+}
+
+/// E141 — guard-`as` is ruled but rides the `.inkb` v6 Choice record, so it
+/// is diagnosed as *not yet supported* rather than half-lowered.
+#[test]
+fn e141_as_binding_in_a_choice_guard_is_not_yet_supported() {
+    let source = "flow main() {
+  {?
+    * {if some(1) as n} take it
+  }
+  -> END
+}
+";
+    let err = compile_native("as-guard", source, native_strict_options())
+        .map(|_| ())
+        .expect_err("guard-`as` must be refused until the v6 Choice record lands");
+    let diags = errors_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E141),
+        "expected E141, got: {diags:?}"
+    );
+}
+
+/// E142 — the binding unwraps `Option[T]`; a statically classifiable
+/// non-Option condition has nothing to unwrap. The strict-mode twin of the
+/// runtime's `AsBindingNotOption` fault.
+#[test]
+fn e142_as_binding_on_a_non_option_condition() {
+    let source = "flow main() {
+  {if 5 as n: got {n} else: nope}
+  -> END
+}
+";
+    let err = compile_native("as-not-option", source, native_strict_options())
+        .map(|_| ())
+        .expect_err("`as` over an int condition must fail under types = strict");
+    let diags = errors_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E142),
+        "expected E142, got: {diags:?}"
+    );
+}
+
+/// E143 — the binding is immutable by ruling. Every write shape resolves
+/// its target through the same LIR choke point, so all three are refused:
+/// plain assignment, compound assignment, and an in-place mutator.
+#[test]
+fn e143_as_binding_is_immutable() {
+    for (suffix, write) in [
+        ("as-imm-assign", "n = 1;"),
+        ("as-imm-compound", "n += 1;"),
+        ("as-imm-mutator", "pop(n);"),
+    ] {
+        let source = format!("flow main() ~{{\n  if some(1) as n {{\n    {write}\n  }}\n}}\n");
+        let err = compile_native(suffix, &source, native_strict_options())
+            .map(|_| ())
+            .unwrap_err();
+        let diags = errors_of(err);
+        assert!(
+            diags.iter().any(|d| d.code == DiagnosticCode::E143),
+            "expected E143 for `{write}`, got: {diags:?}"
+        );
+    }
+}
