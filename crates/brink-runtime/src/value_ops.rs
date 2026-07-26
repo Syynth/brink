@@ -1034,7 +1034,7 @@ fn list_ordinal_shift(lv: &ListValue, shift: i32, program: &Program) -> ListValu
 /// statically-guaranteed invariant: native's strict-only wiring (B0.10)
 /// has not landed (`brink-analyzer::strict::native_strict_only_error`'s own
 /// doc), so a native compile with an un-overridden default `types` policy
-/// runs zero strict-mode checks — `coalesce_mismatch::check`'s `E066`
+/// runs zero strict-mode checks — `brink_analyzer::coalesce::check`'s `E066`
 /// (review finding on PR #1469/#1460) only fires when a caller has
 /// explicitly set `types = strict`. A non-Option `lhs` reaching here can
 /// therefore be an un-caught author mistake, not only malformed bytecode;
@@ -1051,7 +1051,7 @@ fn list_ordinal_shift(lv: &ListValue, shift: i32, program: &Program) -> ListValu
 /// concrete values by the time this runs, and `some(1)`'s `rhs` not being
 /// an `OptionVal` is indistinguishable from the intended collapse form — it
 /// silently unwraps to `1`. That case has no runtime backstop at all;
-/// `coalesce_mismatch::check`'s compile-time `E066` is the only place it is
+/// `brink_analyzer::coalesce::check`'s compile-time `E066` is the only place it is
 /// ever caught.
 pub(crate) fn coalesce(lhs: Value, rhs: Value) -> Result<Value, RuntimeError> {
     match lhs {
