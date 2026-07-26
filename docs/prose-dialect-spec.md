@@ -249,16 +249,29 @@ fn radio(chan: string, text: content) {
   **`content`** = first-class value via the existing fragment-capture
   path, **translation-resident and measurable**; prose-bodied
   handlers (`>{ }`) are once-translated parameterized templates.
-- **`@[style]` — declared editor presentation (RULED, addendum 3).**
+- **`@[style]` — declared editor presentation (RULED, addenda 3–4).**
   A companion annotation mapping captures (and `line` = the whole
-  line) to **style hooks**: each hook emits a stable semantic
-  class/data-attribute (the editor's existing class-contract
-  pattern), plus optional *basic* inline defaults (color, weight,
-  italic) that themes override. The conventions value gains the same
-  style column, so declarative elements use the identical field.
-  **Editor-presentation only** — buffer decoration, firmly distinct
-  from the runtime markup layer (output styling = the handler emits
-  markup spans).
+  line; `dispatch` = the `!name` prefix) to style values, drawn from
+  a **built-in presentation vocabulary** — a closed,
+  LSP-semantic-token-style set every conforming editor implements
+  natively, *no plugin or CSS required*: alignment
+  (`left`/`center`/`right`), emphasis (`bold`, `italic`, `dim`,
+  `mono`), case (`uppercase`), and **`conceal`** (riding the shipped
+  hidden-span / atomic-range machinery — also the declared spelling
+  for hiding the dispatch prefix). Raw color remains a basic
+  theme-overridable default; any other name is a **custom hook**
+  emitting a stable `brink-*` class for host CSS. The conventions
+  value gains the same style column — and with it **the screenplay
+  preset becomes self-describing**: transitions declare
+  `[right, uppercase]`, cues `[uppercase]`, replacing the editor's
+  hardcoded screenplay CSS; a bare token-conforming editor renders
+  screenplay correctly with zero configuration. Degradation stated up
+  front: the full set renders in the CM6 package; plain LSP carries
+  emphasis/color via standard semantic-token modifiers but has no
+  alignment/conceal. **Editor-presentation only** — buffer
+  decoration, firmly distinct from the runtime markup layer (output
+  styling = the handler emits markup spans). Considered-deferred:
+  indent-level tokens.
 - **Tooling transparency (no invisible expansion)** — unchanged:
   `LineContext` carries the matched handler (fn + source location)
   and capture bindings as spans (now with their style hooks); hover
