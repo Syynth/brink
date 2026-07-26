@@ -52,6 +52,7 @@ pub(crate) fn lower_ink_with_type_mode(
         &std::collections::HashMap::new(),
         type_mode,
         &lir::UfcsLookup::new(),
+        &lir::CoalesceLookup::new(),
     )
 }
 

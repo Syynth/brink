@@ -59,6 +59,29 @@ impl ContainerEmitter<'_> {
                 self.emit(infix_op_to_opcode(*op));
             }
 
+            // B1 `or`-coalescing, short-circuited (issue #1471) — a real
+            // branch, not a binary opcode, so `rhs`'s bytecode is only on
+            // the path that actually reaches it (the `none` fall-through).
+            // See `lir::Expr::Coalesce`'s own doc for the full shape.
+            lir::Expr::Coalesce { lhs, rhs, shape } => {
+                self.emit_expr(lhs, false);
+                // Pops `lhs`; `some(v)` pushes the unwrapped `v` and jumps
+                // to `some_site` below; `none` pushes nothing and falls
+                // through into the `rhs` evaluation right here.
+                let some_site = self.emit_jump_placeholder(Opcode::CoalesceSome(0));
+                self.emit_expr(rhs, false);
+                let end_site = self.emit_jump_placeholder(Opcode::Jump(0));
+                self.patch_jump(some_site);
+                // Only reached via the `some(v)` jump, with the unwrapped
+                // `v` on top — re-wrap when the analyzer's recorded typing
+                // says this step keeps its `Option`, so both branches agree
+                // on shape at the join below.
+                if matches!(shape, brink_ir::lir::CoalesceShape::PreserveOption) {
+                    self.emit(Opcode::MakeSome);
+                }
+                self.patch_jump(end_site);
+            }
+
             lir::Expr::Postfix(inner, op) => {
                 self.emit_expr(inner, false);
                 match op {
@@ -648,7 +671,14 @@ fn infix_op_to_opcode(op: brink_ir::InfixOp) -> Opcode {
         brink_ir::InfixOp::Or => Opcode::Or,
         brink_ir::InfixOp::Has => Opcode::ListContains,
         brink_ir::InfixOp::HasNot => Opcode::ListNotContains,
-        brink_ir::InfixOp::Coalesce => Opcode::Coalesce,
+        // Structurally unreachable: `lir::lower::expr::lower_expr`
+        // special-cases `InfixOp::Coalesce` into `lir::Expr::Coalesce`
+        // (issue #1471's short-circuit branch) before it can ever become a
+        // generic `lir::Expr::Infix` — the only shape that reaches this
+        // function. See `lir::Expr::Coalesce`'s own doc.
+        brink_ir::InfixOp::Coalesce => {
+            unreachable!("InfixOp::Coalesce lowers to lir::Expr::Coalesce, never generic Infix")
+        }
     }
 }
 

@@ -112,6 +112,99 @@ impl UfcsLookup {
     }
 }
 
+// ─── B1 `or`-coalescing shape lookup (issue #1492) ─────────────────
+
+/// Mirror of `brink_analyzer::CoalesceShape`, narrowed to exactly what LIR
+/// lowering needs to pick one `or` step's code shape
+/// (`lir::lower::expr::lower_coalesce_chain`).
+///
+/// RULED (maintainer, 2026-07-26, `docs/decision-log.md` "Lowering consumes
+/// analyzer types"): **typing verdicts belong to the analyzer; lowering
+/// consumes recorded types, never re-derives them.** A syntactic shape-sniff
+/// here cannot see through an `Expr::Call` to its declared return type, nor
+/// through a bare `Path` to a `VAR`/temp declared `Option[T]` — both are type
+/// questions, and the answer already exists in `brink-analyzer::coalesce`.
+///
+/// `brink-ir` sits below `brink-analyzer` in the crate graph
+/// (`brink-analyzer` depends on `brink-ir`, never the reverse — see
+/// [`UfcsVerdict`]'s doc for the established precedent), so it cannot name
+/// the analyzer's own `CoalesceShape` directly.
+/// `brink_analyzer::coalesce_lir_lookup` is the one translation point:
+/// `brink-db`'s `coalesce_types_query` (the production path) and
+/// `brink-test-harness`'s hand-assembled native pipeline both call it to
+/// build a [`CoalesceLookup`] from `brink_analyzer::CoalesceTable`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CoalesceShape {
+    /// `Option[T] or Option[U]` — optionality survives the step, so codegen
+    /// re-wraps the unwrapped `some(v)` branch with a `MakeSome` at the
+    /// join point, keeping both branches the same shape.
+    PreserveOption,
+    /// `Option[T] or U` — the step collapses to the plain value type, so
+    /// the unwrapped `v` stands as-is and no `MakeSome` is emitted.
+    Collapse,
+    /// The left-hand type is not statically pinned (gradual mode, or a
+    /// strict escape already reported by `E065`/`E066`), or the analyzer
+    /// recorded no verdict for this chain at all — absence and this verdict
+    /// mean the same thing, which is why it is also the [`Default`].
+    ///
+    /// **The runtime check is the semantics here** (RULED 2026-07-26, issue
+    /// #1492; documented on `brink_format::Opcode::CoalesceSome`): an
+    /// `Option` value coalesces, a plain value faults, exactly like every
+    /// other gradual runtime check. Codegen emits no `MakeSome` — with `rhs`
+    /// possibly never evaluated there is no value to read a shape off, and
+    /// the unwrapped collapse form is the one shape that stays sound for
+    /// the `(Option[T],T)->T` reading the runtime check admits.
+    #[default]
+    RuntimeCheck,
+}
+
+/// Project-wide `(file, range) → per-step shapes` lookup for `or`-coalescing
+/// chains — the LIR-lowering-facing counterpart of
+/// `brink_analyzer::CoalesceTable`. Built once (`brink-db`'s
+/// `coalesce_types_query`) and shared read-only across every `LowerCtx` in a
+/// `lower_to_program`/incremental-chunk call, exactly like [`UfcsLookup`]
+/// above.
+///
+/// Keyed at the **chain root** by [`crate::hir::expr_span`] — the derivation
+/// both sides share — carrying every step's shape innermost-first, because
+/// a chain and its own left spine frequently have identical spans (see
+/// `brink_analyzer::coalesce`'s module doc). Lowering therefore looks a
+/// chain up exactly once, at its root, and never at a spine node.
+///
+/// Empty by construction for every caller that never ran the analyzer's
+/// `coalesce` pass (this crate's own tests, `compile_bench`,
+/// `golden_i078.rs`) — a miss means [`CoalesceShape::RuntimeCheck`], which
+/// is always sound.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CoalesceLookup {
+    map: LookupMap<(FileId, TextRange), Vec<CoalesceShape>>,
+}
+
+impl CoalesceLookup {
+    /// The empty table — every lookup misses.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Build from `(file, range, shapes)` rows — `brink-analyzer`'s
+    /// translation of `brink_analyzer::CoalesceTable::iter()`. `shapes` is
+    /// innermost-step-first, matching `CoalesceChain::steps`.
+    #[must_use]
+    pub fn from_entries(entries: Vec<(FileId, TextRange, Vec<CoalesceShape>)>) -> Self {
+        Self {
+            map: entries.into_iter().map(|(f, r, v)| ((f, r), v)).collect(),
+        }
+    }
+
+    /// The per-step shapes recorded for the coalescing chain rooted at
+    /// `range` in `file`, innermost first, if any.
+    #[must_use]
+    pub fn get(&self, file: FileId, range: TextRange) -> Option<&[CoalesceShape]> {
+        self.map.get(&(file, range)).map(Vec::as_slice)
+    }
+}
+
 // ─── Name table ─────────────────────────────────────────────────────
 
 /// Intern strings to `NameId`. Deduplicates identical strings.
@@ -395,6 +488,15 @@ pub struct LowerCtx<'a> {
     /// chunk call — the same threading discipline as `structs`. Empty for
     /// every caller that never ran the analyzer's `ufcs` pass.
     pub ufcs: &'a UfcsLookup,
+    /// B1 `or`-coalescing (issue #1492): the project-wide per-step shape
+    /// lookup `lir::lower::expr::lower_coalesce_chain` reads to decide
+    /// whether each `or` step keeps its `Option` or collapses. Shared,
+    /// read-only, identical across every `LowerCtx` in a single
+    /// `lower_to_program`/incremental-chunk call — the same threading
+    /// discipline as `ufcs`. Empty for every caller that never ran the
+    /// analyzer's `coalesce` pass, which reads as
+    /// [`CoalesceShape::RuntimeCheck`] everywhere.
+    pub coalesce: &'a CoalesceLookup,
 }
 
 impl<'a> LowerCtx<'a> {

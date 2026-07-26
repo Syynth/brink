@@ -409,21 +409,34 @@ const COLLECT: u8 = 0xFA;
 // lowering alone produces, so this opcode is unreachable from the
 // oracle-covered brink/ink dialects.
 //
-//   0xFB Coalesce  `[lhs, rhs]` → per the ruled typing
-//                  (`(Option[T],T)->T`, `(Option[T],Option[T])->Option[T]`):
-//                  `lhs` must be `OptionVal`; `none` yields `rhs` unchanged,
-//                  `some(v)` yields `v` unwrapped if `rhs` is not itself an
-//                  `OptionVal` (the collapse form), else the original
-//                  `some(v)` unchanged (the two-Option form, keeping
-//                  optionality for chaining) — decided dynamically from
-//                  `rhs`'s runtime shape, matching the statically-checked
-//                  typing rule with no codegen branching required.
-const COALESCE: u8 = 0xFB;
+// **RETIRED (issue #1471): the binary `Coalesce` opcode this byte
+// originally held is gone.** It evaluated both operands unconditionally
+// before combining them — an unruled implementation decision (PR
+// #1469/#1460) the maintainer then ruled must short-circuit instead: `x or
+// expensive()` may only run `expensive()` when `x` is `none`. A binary
+// opcode cannot do that (both operands are already on the stack by the time
+// it runs), so `InfixOp::Coalesce` lowers to a real branch
+// (`lir::Expr::Coalesce`) instead of the generic `Infix` → binary-opcode
+// path every other operator uses. This byte is reused for the branch
+// primitive that replaces it:
+//
+//   0xFB CoalesceSome(rel)  pops `lhs` (must be `OptionVal`); `some(v)`
+//                  pushes the unwrapped `v` and jumps `rel` bytes forward
+//                  (same relative-offset convention as `Jump`/
+//                  `JumpIfFalse`); `none` pushes nothing and falls through
+//                  to the very next instruction, which evaluates `rhs` —
+//                  the short-circuit itself: `rhs`'s bytecode is simply
+//                  never reached when `lhs` is `some`. Codegen emits a
+//                  `MakeSome` at the jump target when — and only when — the
+//                  analyzer recorded `CoalesceShape::PreserveOption` for
+//                  that step, re-wrapping the unwrapped value so both
+//                  branches agree on shape at the join.
+const COALESCE_SOME: u8 = 0xFB;
 
 // B1b the `as` binding (`docs/decision-log.md` 2026-07-26 "The `as`
 // binding: one construct, both condition positions, `{if}` spelling";
 // issue #1475 — this PR's own reservation, same "assigned here" precedent
-// as the blocks above). Three free bytes remained after B1's `COALESCE`
+// as the blocks above). Three free bytes remained after B1's `COALESCE_SOME`
 // (`0xFC`-`0xFD` + `0xFF`); this claims the first. Native-surface-only:
 // nothing in the ink/brink dialects has an `as` binding to lower.
 //
@@ -1297,51 +1310,62 @@ pub enum Opcode {
     /// Fault on a non-map.
     MapClear,
 
-    // ── B1: `or`-coalescing (`docs/stdlib-spec.md` §1.6a, issue #1460) ────
-    /// `[lhs, rhs]` → per the ruled coalescing typing
-    /// (`(Option[T],T)->T`, `(Option[T],Option[T])->Option[T]`): `lhs`
-    /// must be an `OptionVal`. `none` yields `rhs` unchanged; `some(v)`
-    /// yields the unwrapped `v` when `rhs` is not itself an `OptionVal`
-    /// (the collapse form), or the original `some(v)` unchanged when
-    /// `rhs` is an `OptionVal` (the two-Option form, preserving
-    /// optionality for chaining) — decided from `rhs`'s runtime shape, the
-    /// same information the static typing rule already used to pick this
-    /// branch, so no separate codegen variant is needed. Native-surface
-    /// only: reachable exclusively through `InfixOp::Coalesce`, which the
-    /// native lowering path alone produces (`InfixOp::Or`, ink's boolean
-    /// `||`, is untouched and oracle-frozen).
+    // ── B1: `or`-coalescing (`docs/stdlib-spec.md` §1.6a, issue #1460),
+    // short-circuited per issue #1471's ruling ──────────────────────────
+    /// Pops `lhs` (must be an `OptionVal`). `some(v)` pushes the unwrapped
+    /// `v` and jumps `rel` bytes forward (the same relative-offset
+    /// convention as [`Jump`](Self::Jump)/[`JumpIfFalse`](Self::JumpIfFalse));
+    /// `none` pushes nothing and falls through to the next instruction,
+    /// which evaluates `rhs`. That fall-through *is* the short-circuit:
+    /// `rhs`'s bytecode is only ever reached when `lhs` is `none` — `x or
+    /// expensive()` runs `expensive()` exactly once, and only on `none`
+    /// (RULED, issue #1471, flipping the eager evaluation PR #1469/#1460
+    /// landed and flagged as unruled). Native-surface only: reachable
+    /// exclusively through `InfixOp::Coalesce`, which the native lowering
+    /// path alone produces (`InfixOp::Or`, ink's boolean `||`, is untouched
+    /// and oracle-frozen).
     ///
-    /// **Both operands are always evaluated before this op runs — an
-    /// unruled implementation decision** (review finding on PR
-    /// #1469/#1460, raised on #1460 for a ruling; see
-    /// `brink_ir::InfixOp::Coalesce`'s own doc). Unlike C#'s `??`/Kotlin's
-    /// `?:` — the conventions this operator's precedence placement was
-    /// modeled on — this codegen path has no short-circuit: `lhs` and
-    /// `rhs` are both pushed before `Coalesce` ever inspects either, so an
-    /// effectful `rhs` (an RNG draw, a mutation) always runs, even when
-    /// `lhs` turns out to be `some(_)` and `rhs`'s value is discarded.
+    /// The jump target is where the two branches join: the `some(v)` branch
+    /// has already unwrapped to `v`, and the `none` branch pushed `rhs`
+    /// as-is. Codegen emits a [`MakeSome`](Self::MakeSome) right at that
+    /// target exactly when the step's recorded typing says `rhs` is itself
+    /// `Option[U]` (the two-Option form, `(Option[T],Option[T]) ->
+    /// Option[U]`, preserving optionality for chaining), so both branches
+    /// agree on shape at the join; for the collapse form
+    /// (`(Option[T],T)->T`) no `MakeSome` is emitted and `v` stands
+    /// unwrapped. The retired binary opcode decided that from `rhs`'s
+    /// *runtime* value; short-circuiting rules that out (`rhs` may never
+    /// run by the time the answer is needed), so the decision is made at
+    /// lowering time from the analyzer's recorded types — see below.
     ///
-    /// ## The runtime check *is* the semantics for an unpinned `lhs`
+    /// ## Where the collapse-vs-preserve answer comes from
     ///
     /// RULED (maintainer, 2026-07-26, issue #1492 — `docs/decision-log.md`
     /// "Lowering consumes analyzer types"): typing verdicts belong to
     /// `brink-analyzer`, which records each `or` step's operand/result
-    /// types for LIR lowering (`brink_analyzer::coalesce_types`). Under
-    /// `types = strict` an ill-typed chain never reaches codegen at all —
-    /// `E066` rejects it during analysis — so this op only ever executes a
-    /// chain analysis either accepted or could not statically pin.
+    /// types for LIR lowering (`brink_analyzer::coalesce_types`, threaded
+    /// to lowering as `brink_ir::lir::CoalesceLookup`). Lowering *consumes*
+    /// that verdict; it never re-derives it from syntax. Under `types =
+    /// strict` an ill-typed chain never reaches codegen at all — `E066`
+    /// rejects it during analysis — so this op only ever executes a chain
+    /// analysis either accepted or could not statically pin.
+    ///
+    /// ## The runtime check *is* the semantics for an unpinned `lhs`
     ///
     /// That second case is the gradual-mode posture, and it is deliberate:
     /// when the left-hand type is unknown (brink dialect, `types =
     /// gradual` — the un-overridden native default), **the check this op
     /// performs is the operator's semantics**, not a fallback for a missing
     /// one. An `OptionVal` coalesces; a plain value raises the `TypeError`
-    /// fault (`brink_runtime::value_ops::coalesce`) — the same class as
-    /// every other gradual runtime check. Strict/native never reaches this
-    /// path with an unpinned `lhs`, and the analyzer records exactly this
-    /// case as `CoalesceShape::RuntimeCheck` so a consumer knows not to
-    /// commit statically to either branch.
-    Coalesce,
+    /// fault (`brink_runtime::value_ops::coalesce_unwrap_some`) — the same
+    /// class as every other gradual runtime check. Strict/native never
+    /// reaches this path with an unpinned `lhs`, and the analyzer records
+    /// exactly this case as `CoalesceShape::RuntimeCheck`, on which codegen
+    /// emits no `MakeSome`: with `rhs` possibly never evaluated there is no
+    /// value to read a shape off, so the unwrapped collapse form is the one
+    /// shape that stays sound for the `(Option[T],T)->T` reading the check
+    /// admits.
+    CoalesceSome(i32),
 
     // ── B1b: the `as` binding (`docs/decision-log.md` 2026-07-26; issue
     //    #1475) ──────────────────────────────────────────────────────────
@@ -1818,8 +1842,11 @@ impl Opcode {
             Self::MapContainsValue => write_u8(buf, MAP_CONTAINS_VALUE),
             Self::MapClear => write_u8(buf, MAP_CLEAR),
 
-            // B1 `or`-coalescing
-            Self::Coalesce => write_u8(buf, COALESCE),
+            // B1 `or`-coalescing, short-circuited (#1471)
+            Self::CoalesceSome(offset) => {
+                write_u8(buf, COALESCE_SOME);
+                write_i32(buf, offset);
+            }
             Self::OptionBind(slot) => {
                 write_u8(buf, OPTION_BIND);
                 write_u16(buf, slot);
@@ -2085,8 +2112,8 @@ impl Opcode {
             MAP_CONTAINS_VALUE => Self::MapContainsValue,
             MAP_CLEAR => Self::MapClear,
 
-            // B1 `or`-coalescing
-            COALESCE => Self::Coalesce,
+            // B1 `or`-coalescing, short-circuited (#1471)
+            COALESCE_SOME => Self::CoalesceSome(read_i32(buf, offset)?),
             OPTION_BIND => Self::OptionBind(read_u16(buf, offset)?),
             SEQ_REMOVE_AT => Self::SeqRemoveAt,
             RAND_FLOAT => Self::RandFloat,
@@ -2476,20 +2503,28 @@ mod tests {
 
     /// B1 `or`-coalescing (issue #1460): one opcode, one byte, no operand.
     #[test]
-    fn roundtrip_b1_coalesce() {
-        roundtrip(&Opcode::Coalesce);
+    fn roundtrip_b1_coalesce_some() {
+        roundtrip(&Opcode::CoalesceSome(0));
+        roundtrip(&Opcode::CoalesceSome(-42));
+        roundtrip(&Opcode::CoalesceSome(100));
     }
 
-    /// `Coalesce` claims the first of the four bytes free after NS-A7's
+    /// `CoalesceSome` claims the first of the four bytes free after NS-A7's
     /// `Collect` (`0xFA`) — `docs/format-v4-rfc.md` §5 explicitly does NOT
     /// freeze numeric opcode assignments (only the name/encoding
-    /// *inventory*); the reservation comment above `COALESCE` is the actual
-    /// (implementation-level) source of truth this test pins.
+    /// *inventory*); the reservation comment above `COALESCE_SOME` is the
+    /// actual (implementation-level) source of truth this test pins. Same
+    /// byte the retired binary `Coalesce` opcode held (#1460) — reused, not
+    /// freed, since #1471 replaced that opcode's job rather than adding a
+    /// new one alongside it.
     #[test]
-    fn coalesce_opcode_byte_is_0xfb() {
+    fn coalesce_some_opcode_byte_is_0xfb() {
         let mut buf = Vec::new();
-        Opcode::Coalesce.encode(&mut buf);
-        assert_eq!(buf[0], 0xFB, "Coalesce encoded to unexpected discriminant");
+        Opcode::CoalesceSome(0).encode(&mut buf);
+        assert_eq!(
+            buf[0], 0xFB,
+            "CoalesceSome encoded to unexpected discriminant"
+        );
     }
 
     /// B1b the `as` binding (issue #1475): one opcode with a `u16` slot

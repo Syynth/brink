@@ -371,7 +371,10 @@ The heaviest night on the tab: 7 coins — the ledger says some(7).
 > `.brink` surface. The coalescing form `x or default` collapses an Option
 > into a value (`get(rooms, "Edda") or 0`), chaining left-to-right and
 > staying optional until the final non-Option fallback
-> (`get(m, k) or get(m, k2) or 0`). The **`as`-binding** tests and unwraps
+> (`get(m, k) or get(m, k2) or 0`). It **short-circuits** (ruled, issue
+> #1471): a fallback is evaluated only when everything to its left came
+> back `none`, so `x or expensive()` never pays for `expensive()` when `x`
+> is already `some(_)`. The **`as`-binding** tests and unwraps
 > in one move, and it is one construct in both of the language's condition
 > positions — the statement form and the template form, riding the ruled
 > `{if …}` spelling:

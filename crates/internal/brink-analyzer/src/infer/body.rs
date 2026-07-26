@@ -999,7 +999,8 @@ impl InferPass<'_, '_> {
             // coalescing expression used directly in content/argument
             // position never does. Under `types = gradual` neither compile-
             // time check runs; the runtime `TypeError` fault
-            // (`value_ops::coalesce`) is the sole backstop there, and only
+            // (`value_ops::coalesce_unwrap_some`, backing
+            // `Opcode::CoalesceSome`) is the sole backstop there, and only
             // for a non-Option `lhs` (see that function's own doc for the
             // `Mismatch` case's narrower coverage).
             InfixOp::Coalesce => {
