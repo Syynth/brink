@@ -1,0 +1,10 @@
+description = "A choice nested inside another choice's own body (a nested weave branch), where the innermost choice set has no gather and nothing follows it anywhere in the enclosing knot. Real ink raises `RuntimeError::RanOutOfContent` on the fall-through, same as a top-level knot/stitch loose end. Insurance fixture for #1522: exercises the same is_root_content_scope-gated build_continuation_container path fixed by #1515, one nesting level deeper than any existing fixture (label-scope-error's loose end is at the top level of a stitch body, not nested inside a sibling choice's own content) — this shape had no corpus coverage."
+
+[source]
+origin = "brink-conformance"
+notes = "Authored for issue #1522 (insurance fixture requested by #1515's review, described there as the 'conditional-branch-nested variant inside a knot' — a loose end inside a nested choice branch, not the ink `{condition: ...}` block syntax, which real ink's compiler rejects outright for un-diverted nested choices: 'choices nested in conditionals or sequences need to explicitly divert afterwards'). Oracle generated from the real C# ink runtime (tools/ink-oracle)."
+
+[classification]
+tier = 1
+feature = "choices"
+tags = ["choices", "ran-out-of-content", "loose-end", "nested-choice"]
