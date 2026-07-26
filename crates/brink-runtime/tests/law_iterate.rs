@@ -51,6 +51,24 @@ fn arb_map_key() -> impl Strategy<Value = MapKey> {
     ]
 }
 
+/// Structural exhaustiveness guard (issue #1542, same pattern as issue
+/// #1521's guards in `brink-runtime`'s `law_transcript_roundtrip.rs` and
+/// `brink-format`'s `proptest_inkb.rs`/`proptest_inkt.rs`): a match over
+/// every current [`MapKey`] variant with no wildcard arm, so this fails to
+/// compile the moment a new variant is added to the enum. Never called —
+/// the forcing function is the compile error itself, at edit time rather
+/// than at some later PR's `cargo build`. `arb_map_key` above already
+/// covers all three current variants; this pins that "all three" against a
+/// future `MapKey` addition (`docs/format-v4-rfc.md`'s Tier-1 value surface
+/// work is the likeliest source of one) silently keeping this map-key law
+/// green while generating zero coverage for the new key kind.
+#[expect(dead_code, reason = "compile-time-only exhaustiveness guard, see doc")]
+fn assert_map_key_variants_exhaustive(key: &MapKey) {
+    match key {
+        MapKey::Int(_) | MapKey::Str(_) | MapKey::Bool(_) => {}
+    }
+}
+
 fn arb_map() -> impl Strategy<Value = OrderedMap> {
     proptest::collection::vec((arb_map_key(), arb_element()), 0..12).prop_map(|entries| {
         let mut m = OrderedMap::new();
