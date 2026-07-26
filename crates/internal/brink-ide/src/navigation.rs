@@ -199,4 +199,51 @@ fn main() {
             "a prelude intrinsic has no DefinitionId to jump to"
         );
     }
+
+    #[test]
+    fn goto_definition_on_a_ufcs_field_call_finds_no_target() {
+        // Fixture mirrors `brink-analyzer`'s
+        // `a_function_typed_field_wins_and_is_recorded_as_a_field_call`
+        // (crates/internal/brink-analyzer/tests/ufcs_resolution.rs). A
+        // struct field is not an index symbol — `ufcs_goto_definition`
+        // returns `Some(None)` here (resolved, but nowhere to jump), which
+        // must surface as `None` rather than falling through to the
+        // receiver's own declaration.
+        let src = "\
+struct Guest {
+  greet: fn(int): int
+}
+
+fn main() {
+  let g = Guest { greet: \"hi\" };
+  let n = g.greet(3);
+}
+";
+        assert!(
+            goto_definition_at_native(src, "greet(3)").is_none(),
+            "a field call has no DefinitionId to jump to"
+        );
+    }
+
+    #[test]
+    fn goto_definition_on_a_ufcs_free_fn_auto_ref_jumps_to_the_free_function() {
+        // Fixture mirrors `brink-analyzer`'s
+        // `a_ref_first_param_auto_refs_a_frame_local_receiver`
+        // (crates/internal/brink-analyzer/tests/ufcs_resolution.rs). Proves
+        // the `FreeFnAutoRef` arm is live — it reaches `target` through an
+        // or-pattern shared with `FreeFnDesugar`, so nothing else exercises
+        // it independently.
+        let src = "\
+fn bump(ref n, amount) {
+  n = n + amount;
+}
+
+fn main() {
+  let g = 1;
+  g.bump(5);
+}
+";
+        let (text, _start) = goto_definition_at_native(src, "bump(5)").expect("jump target");
+        assert_eq!(text, "bump", "must jump to the `fn bump` declaration");
+    }
 }

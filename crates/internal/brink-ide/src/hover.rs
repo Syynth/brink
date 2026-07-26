@@ -761,4 +761,48 @@ fn main() {
         assert!(content.contains("len(x) -> int"), "{content}");
         assert!(content.contains("desugared from `g.len(…)`"), "{content}");
     }
+
+    #[test]
+    fn hover_on_a_ufcs_field_call_shows_the_field_call_verdict() {
+        // Fixture mirrors `brink-analyzer`'s
+        // `a_function_typed_field_wins_and_is_recorded_as_a_field_call`
+        // (crates/internal/brink-analyzer/tests/ufcs_resolution.rs) — a
+        // function-typed field wins over a same-named free function (D1).
+        let src = "\
+struct Guest {
+  greet: fn(int): int
+}
+
+fn main() {
+  let g = Guest { greet: \"hi\" };
+  let n = g.greet(3);
+}
+";
+        let content = hover_at_native(src, "greet(3)").expect("hover on the method segment");
+        assert!(content.contains("**field call**"), "{content}");
+        assert!(content.contains("g.greet(…)"), "{content}");
+    }
+
+    #[test]
+    fn hover_on_a_ufcs_free_fn_auto_ref_shows_the_by_ref_verdict() {
+        // Fixture mirrors `brink-analyzer`'s
+        // `a_ref_first_param_auto_refs_a_frame_local_receiver`
+        // (crates/internal/brink-analyzer/tests/ufcs_resolution.rs) — `bump`'s
+        // first parameter is `ref`, so the desugar passes the receiver by
+        // reference (D5 auto-ref, issue #1462).
+        let src = "\
+fn bump(ref n, amount) {
+  n = n + amount;
+}
+
+fn main() {
+  let g = 1;
+  g.bump(5);
+}
+";
+        let content = hover_at_native(src, "bump(5)").expect("hover on the method segment");
+        assert!(content.contains("**free function (by ref)**"), "{content}");
+        assert!(content.contains("bump(ref g, …)"), "{content}");
+        assert!(content.contains("passed by reference"), "{content}");
+    }
 }
