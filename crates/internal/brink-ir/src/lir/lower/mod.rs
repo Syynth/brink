@@ -446,7 +446,7 @@ fn lower_root_content_chunks(
     for &(file_id, hir_file) in files {
         let mut local_names = NameTable::new();
         let mut diagnostics = Vec::new();
-        let (stmts, block_children) = {
+        let (stmts, mut block_children) = {
             let mut ctx = make_ctx(
                 file_id,
                 resolutions,
@@ -467,6 +467,7 @@ fn lower_root_content_chunks(
             ctx.ids.reset_seq_counter();
             lower_block_with_children(&hir_file.root_content, &mut ctx, &mut cc, &mut gc)
         };
+        attach_root_final_gather(file_id, &mut block_children, &mut ids);
         chunks.push((
             chunk::ScopeChunk::root_content(stmts, block_children, local_names.into_entries()),
             diagnostics,
@@ -1798,6 +1799,127 @@ fn collect_counting_refs_expr(
         }
         _ => {}
     }
+}
+
+/// Display name of the synthesized root terminus container. `-` is not a
+/// legal character in an ink label and the auto-gather convention is the
+/// numeric `g-{index}`, so this segment can never collide with an authored
+/// or auto-generated gather name.
+const ROOT_TERMINUS_NAME: &str = "g-final";
+
+/// Mirror inklecate's **implicit final gather** at the end of the root weave
+/// (`FlowBase.SplitWeaveAndSubFlowContent`, `FlowBase.cs:69-72`, which appends
+/// `Gather(null, 1)` + `-> DONE` when lowering the root story): a branch that
+/// simply runs out of root-weave content ends the flow cleanly instead of
+/// faulting with `RanOutOfContent`.
+///
+/// The root container's own trailing `Divert(Done)`
+/// ([`assemble_program`]) cannot serve this purpose: a gather is reached by
+/// `goto`, which clears the container stack, so once execution lands in a
+/// gather container the root body is no longer on the frame and its `Done`
+/// can never run.
+///
+/// **Root scope only** (#1448). A knot, stitch, tunnel or function whose
+/// content runs out is a genuine authoring error that C# ink reports and
+/// brink must keep reporting — extending a terminus to every weave terminus
+/// regresses those cases.
+fn attach_root_final_gather(
+    file_id: FileId,
+    children: &mut Vec<lir::Container>,
+    ids: &mut context::IdAllocator,
+) {
+    // `#` never appears in a lowering scope path, so this key cannot collide
+    // with a real container address. Keyed per file because each file's
+    // root-level content is lowered as its own chunk (and its own weave).
+    let terminus_id = ids.alloc_address(&format!("#root-terminus.{}", file_id.0));
+
+    if !patch_root_loose_end(children, terminus_id) {
+        return;
+    }
+
+    children.push(lir::Container {
+        id: terminus_id,
+        name: Some(ROOT_TERMINUS_NAME.to_string()),
+        kind: lir::ContainerKind::Gather,
+        params: Vec::new(),
+        body: vec![lir::Stmt::Divert(lir::Divert {
+            target: lir::DivertTarget::Done,
+            args: Vec::new(),
+        })],
+        children: Vec::new(),
+        counting_flags: CountingFlags::empty(),
+        temp_slot_count: 0,
+        labeled: false,
+        inline: false,
+        is_function: false,
+        local: false,
+    });
+}
+
+/// Divert the root weave's outermost loose end to `terminus`, returning
+/// whether one was found (and therefore whether the terminus container is
+/// reachable and worth emitting).
+///
+/// HIR nests each choice set's post-gather content into that set's
+/// continuation, so the root weave's outermost loose end is the tail of the
+/// gather chain hanging off the last root-level child: descend while a gather
+/// ends with another `ChoiceSet` (its continuation gather holds the deeper
+/// content), then patch the first gather that does not.
+///
+/// Nothing is patched when the tail already ends in a terminal — an authored
+/// `-> DONE` / `-> END` / divert is not a loose end, and unlike
+/// [`patch_innermost_gather`] this must never overwrite one.
+///
+/// An `inline` gather (the wrapper a source-level standalone gather lowers to)
+/// is never patched in its own right: it is entered with `EnterContainer` and
+/// returns to its parent when exhausted, so it already falls through to the
+/// root body's own `Done`. Its *children* are still descended into, because a
+/// choice set inside it diverts — clearing the container stack — into a
+/// continuation gather that is a genuine loose end.
+fn patch_root_loose_end(
+    children: &mut [lir::Container],
+    terminus: brink_format::DefinitionId,
+) -> bool {
+    let Some(gather) = children
+        .last_mut()
+        .filter(|c| c.kind == lir::ContainerKind::Gather)
+    else {
+        return false;
+    };
+
+    if gather
+        .body
+        .last()
+        .is_some_and(|s| matches!(s, lir::Stmt::ChoiceSet(_)))
+    {
+        return patch_root_loose_end(&mut gather.children, terminus);
+    }
+
+    if gather.inline {
+        return false;
+    }
+
+    let ends_terminal = gather.body.last().is_some_and(|s| {
+        matches!(
+            s,
+            lir::Stmt::Divert(d)
+                if matches!(
+                    d.target,
+                    lir::DivertTarget::End
+                        | lir::DivertTarget::Done
+                        | lir::DivertTarget::Address(_)
+                )
+        )
+    });
+    if ends_terminal {
+        return false;
+    }
+
+    gather.body.push(lir::Stmt::Divert(lir::Divert {
+        target: lir::DivertTarget::Address(terminus),
+        args: Vec::new(),
+    }));
+    true
 }
 
 /// Recursively find the innermost gather container in a chain of
