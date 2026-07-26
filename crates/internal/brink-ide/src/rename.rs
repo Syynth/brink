@@ -141,12 +141,28 @@ pub fn rename(
         new_text: new_name.to_owned(),
     });
 
-    // 2. Rename all plain reference sites (analysis's own identity space)
+    // 2. Rename all plain reference sites (analysis's own identity space).
+    //
+    // Issue #1550: a `ResolvedRef` here may be a UFCS call site's
+    // *receiver* — `resolve::resolve_function`'s UFCS-shaped fallback
+    // records the receiver's resolution against the *whole* `recv.verb`
+    // path, not just the receiver's own segment (mirroring the D2 side
+    // table's own key). Renaming the receiver must therefore narrow that
+    // whole-path range down to the receiver's own first segment via
+    // `ufcs_hover::ufcs_receiver_head_range_at_path`, or the edit collapses
+    // `g.greet(3)` into `newname(3)`, silently dropping the method
+    // segment.
     for resolved in &analysis.resolutions {
         if resolved.target == analysis_def_id {
+            let range = db
+                .hir(resolved.file)
+                .and_then(|hir| {
+                    crate::ufcs_hover::ufcs_receiver_head_range_at_path(hir, resolved.range)
+                })
+                .unwrap_or(resolved.range);
             edits.push(FileEdit {
                 file: resolved.file,
-                range: resolved.range,
+                range,
                 new_text: new_name.to_owned(),
             });
         }
@@ -426,6 +442,85 @@ fn main() {
         assert!(
             !new_source.contains("greet"),
             "old name fully removed: {new_source}"
+        );
+    }
+
+    // ── Issue #1550: renaming the RECEIVER of a UFCS call leaves the
+    // method segment intact (the mirror of #1539, which fixed renaming the
+    // *method*) ────────────────────────────────────────────────────────
+
+    #[test]
+    fn renaming_the_receiver_of_a_ufcs_call_site_edits_only_the_receiver_segment() {
+        // The core #1550 bug: `brink-analyzer::resolve`'s UFCS-shaped-callee
+        // fallback recorded the receiver's resolved reference range as the
+        // *whole* `recv.verb` path. Renaming the receiver `g` (declared by
+        // `let g = Guest { .. }`) then produced an edit spanning all of
+        // `g.greet`, so applying it collapsed `g.greet(3)` down to
+        // `newname(3)` — silently dropping the method segment and
+        // corrupting the program from a "safe" rename.
+        let (s, id) = native_session(UFCS_FREE_FN_SRC);
+        let decl_pos =
+            u32::try_from(UFCS_FREE_FN_SRC.find("g = Guest").expect("decl")).expect("offset");
+        let analysis = s.analysis().expect("analysis");
+
+        let result =
+            rename(s.db(), analysis, id, TextSize::from(decl_pos), "newname").expect("rename");
+
+        let call_pos =
+            u32::try_from(UFCS_FREE_FN_SRC.find("g.greet(3)").expect("call")).expect("offset");
+        let found = result
+            .edits
+            .iter()
+            .find(|e| e.file == id && e.range.start() == TextSize::from(call_pos));
+        assert!(
+            found.is_some(),
+            "expected an edit at the UFCS call site's receiver segment, got {:?}",
+            result
+                .edits
+                .iter()
+                .map(|e| (e.range, e.new_text.as_str()))
+                .collect::<Vec<_>>()
+        );
+        let edit = found.expect("checked above");
+        assert_eq!(edit.new_text, "newname");
+        assert_eq!(
+            usize::from(edit.range.end()) - usize::from(edit.range.start()),
+            1,
+            "the edit must span only the receiver's own `g` segment (1 byte), not the whole \
+             `g.greet` path — got {:?}",
+            edit.range
+        );
+    }
+
+    #[test]
+    fn rename_safe_on_the_receiver_of_a_ufcs_call_site_produces_a_valid_program() {
+        // End-to-end counterpart of the test above, via the studio-facing
+        // `rename_safe` path: the folded `new_source` must keep the method
+        // segment (`newname.greet(3)`), never collapse to a bare call
+        // (`newname(3)`), and the rename must introduce no new diagnostics.
+        let (s, id) = native_session(UFCS_FREE_FN_SRC);
+        let decl_pos =
+            u32::try_from(UFCS_FREE_FN_SRC.find("g = Guest").expect("decl")).expect("offset");
+
+        let res = rename_safe(&s, id, TextSize::from(decl_pos), "newname").expect("rename");
+
+        let new_source = res.new_source.as_deref().expect("new_source");
+        assert!(
+            new_source.contains("newname.greet(3)"),
+            "the method segment must survive the receiver rename: {new_source}"
+        );
+        assert!(
+            !new_source.contains("newname(3)"),
+            "the receiver rename must not collapse into a bare call, dropping the method \
+             segment: {new_source}"
+        );
+        assert!(
+            res.introduced.is_empty(),
+            "a correct receiver rename introduces no new diagnostics, got {:?}",
+            res.introduced
+                .iter()
+                .map(|d| (d.code.as_str(), d.message.as_str()))
+                .collect::<Vec<_>>()
         );
     }
 

@@ -18,5 +18,5 @@ brink now reports again.
 Playground/editor projects that `INCLUDE` a file ending in an unterminated
 weave get the same diagnosis the reference compiler gives instead of quietly
 truncating; a trailing weave in the entry file still ends cleanly. Oracle
-conformance: 5,599 → 5,603 passing episodes, 359 → 361 passing cases (two new
+conformance: 5,601 → 5,605 passing episodes, 361 → 363 passing cases (two new
 `tier3/includes` cases; no existing episode changed).

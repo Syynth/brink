@@ -260,4 +260,136 @@ fn corpus_report() {
     println!("  OVERALL — {grand_cases_pass}/{grand_cases_total} cases passing ({grand_pct}%)");
     println!("  EPISODES — {grand_episodes_pass}/{grand_episodes_total} passing ({ep_pct}%)");
     println!("============================================================");
+
+    native_corpus_report();
+}
+
+/// Describe a `native_corpus_report` output mismatch with enough detail to
+/// actually locate the regression: the first differing byte offset plus
+/// truncated, escaped snippets of both strings. A byte-length-only message
+/// (e.g. "expected 12 bytes, got 12") renders identically whenever a
+/// one-character regression happens to preserve length — exactly the
+/// common case this report exists to surface.
+fn describe_output_mismatch(expected: &str, actual: &str) -> String {
+    const SNIPPET_CHARS: usize = 80;
+
+    let diff_at = expected
+        .bytes()
+        .zip(actual.bytes())
+        .position(|(e, a)| e != a)
+        .unwrap_or_else(|| expected.len().min(actual.len()));
+
+    format!(
+        "output mismatch at byte {diff_at} (expected {} bytes, got {} bytes)\n\
+         \x20     expected: {}\n\
+         \x20     actual:   {}",
+        expected.len(),
+        actual.len(),
+        truncate_escaped(expected, SNIPPET_CHARS),
+        truncate_escaped(actual, SNIPPET_CHARS),
+    )
+}
+
+/// Truncate `s` to at most `max_chars` characters and escape control/
+/// non-printable characters (`\n`, `\t`, …) so a mismatch snippet renders
+/// on one line instead of visually merging into the report's row layout.
+fn truncate_escaped(s: &str, max_chars: usize) -> String {
+    let truncated: String = s.chars().take(max_chars).collect();
+    let ellipsis = if s.chars().count() > max_chars {
+        "…"
+    } else {
+        ""
+    };
+    format!("{}{ellipsis}", truncated.escape_debug())
+}
+
+/// `tests/tier1-native/` — the native (`.brink`) self-referential golden
+/// corpus (issue #1529). Printed as its own clearly-labeled section,
+/// *never* folded into the oracle CASES/EPISODES totals above: native
+/// source has no C# ink counterpart, so a case here passing or failing
+/// says nothing about oracle conformance, and the oracle ratchet
+/// (`RATCHET_EPISODE_COUNT` in `oracle_snapshots.rs`) must stay a
+/// completely separate number from whatever this prints. See
+/// `tier1_native.rs`'s module doc for the full rationale and
+/// `brink_test_harness::corpus::run_native_transcript` for how each case
+/// is run — this report and that test share the exact same run path so
+/// they can never silently disagree.
+#[expect(
+    clippy::print_stdout,
+    reason = "this is a diagnostic report, not production output"
+)]
+fn native_corpus_report() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("..")
+        .join("tests")
+        .join("tier1-native");
+
+    let mut cases: Vec<PathBuf> = std::fs::read_dir(&root)
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    cases.sort();
+
+    if cases.is_empty() {
+        return;
+    }
+
+    let mut pass = 0usize;
+    let mut rows: Vec<(String, bool, String)> = Vec::new();
+
+    for case_dir in &cases {
+        let name = case_dir
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+
+        let expected = match brink_test_harness::corpus::load_golden_transcript(
+            &case_dir.join("expected.txt"),
+            &name,
+        ) {
+            Ok(e) => e,
+            Err(e) => {
+                rows.push((name, false, e));
+                continue;
+            }
+        };
+
+        match brink_test_harness::corpus::run_native_transcript(&case_dir.join("story.brink")) {
+            Ok(actual) if actual == expected => {
+                pass += 1;
+                rows.push((name, true, String::new()));
+            }
+            Ok(actual) => rows.push((name, false, describe_output_mismatch(&expected, &actual))),
+            Err(e) => rows.push((name, false, e)),
+        }
+    }
+
+    let total = rows.len();
+
+    println!();
+    println!("============================================================");
+    println!(
+        "  TIER1-NATIVE (self-referential, NOT oracle-derived, issue #1529) \
+         — {pass}/{total} cases passing"
+    );
+    println!("============================================================");
+    for (name, ok, detail) in &rows {
+        let check = if *ok { "✓" } else { " " };
+        if *ok {
+            println!("  {check} {name}");
+        } else {
+            println!("  {check} {name}  FAILED: {detail}");
+        }
+    }
+    println!();
+    println!(
+        "  ⚠ These goldens have no C# oracle counterpart — this section is entirely \
+         separate from the OVERALL/EPISODES totals above and from the oracle ratchet."
+    );
+    println!("============================================================");
 }

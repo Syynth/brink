@@ -1,0 +1,4 @@
+HP before: 10
+HP after heal: 15
+Doubled: 42
+Tally: 3
