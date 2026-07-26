@@ -198,14 +198,19 @@ fn arb_output_part() -> impl Strategy<Value = OutputPart> {
 /// #667/#883): a match over every current [`OutputPart`] variant with **no
 /// wildcard arm**, so this fails to compile the moment a new variant is
 /// added to the enum. Never called — the only purpose is the compile-time
-/// forcing function: `arb_output_part` below used to be a free-standing
+/// forcing function: `arb_output_part` above used to be a free-standing
 /// `prop_oneof!` over 7 hand-listed variants, so a newly added `OutputPart`
 /// variant got zero generated coverage and the round-trip law stayed green
 /// having tested nothing about it. Whoever adds an `OutputPart` variant must
 /// now also add an arm here — and either extend `arb_output_part` to
 /// generate it, or (like `Checkpoint` below) document why it is deliberately
-/// excluded. This matters now: the `.inkb` v6 bump is expected to add new
-/// part kinds (`docs/prose-dialect-spec.md`).
+/// excluded. This is a prophylactic guard, not a response to a scheduled
+/// change to this exact enum: the nearest ruled `.inkb` v6 wire churn is the
+/// decision-log "Choice-guard `as` un-deferred ... rides v6" entry
+/// (2026-07-26), which grows the `Choice` record, not `OutputPart` — and
+/// `docs/prose-dialect-spec.md` §4.4 puts markup spans in the line table's
+/// `LinePart`, explicitly *not* the runtime fragment model this enum is
+/// part of.
 #[expect(dead_code, reason = "compile-time-only exhaustiveness guard, see doc")]
 fn assert_output_part_variants_exhaustive(part: &OutputPart) {
     match part {

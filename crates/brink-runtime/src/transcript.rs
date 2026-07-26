@@ -29,6 +29,13 @@
 //!   )*
 //! ```
 //!
+//! Both "part count" fields above count only **persisted** parts —
+//! `OutputPart::Checkpoint` is a transient capture marker that is filtered
+//! out before encoding (see [`is_persisted`]) and contributes zero bytes to
+//! `[Part]*`, so the count must exclude it too or a reader following this
+//! doc to extend the format would write `parts.len()` and produce a byte
+//! stream whose declared count disagrees with what it actually encoded.
+//!
 //! The fragment section and the trailing fragment-tags section are both
 //! **backward-compat optional**: `read_transcript` treats "no bytes left"
 //! at either boundary as "this section is absent", not as truncated input,
