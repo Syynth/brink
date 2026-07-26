@@ -16,10 +16,10 @@
 // 4-cell route (see dfs-grid-path's header for why DFS does not).
 //
 // ERGONOMICS-FINDINGS:
-// - No native queue type: a FIFO is "array + push at the back, `remove`
-//   at index 0 for the front". `remove(arr, 0)` is an O(n) shift-left on
+// - No native queue type: a FIFO is "array + push at the back, `remove_at`
+//   at index 0 for the front". `remove_at(arr, 0)` is an O(n) shift-left on
 //   every single dequeue (per `docs/book/.../stdlib.md`'s own description
-//   of `remove`'s array semantics) — for this corpus's tiny grids that's
+//   of `remove_at`'s array semantics) — for this corpus's tiny grids that's
 //   invisible, but it means BFS's `O(V+E)` textbook complexity quietly
 //   becomes `O(V*(V+E))` in wall-clock terms the moment a grid is large
 //   enough to matter. A true ring buffer (fixed-size array + head/tail
@@ -96,7 +96,7 @@ VAR found = false
 
     while len(queue) > 0 {
         temp cur = queue[0]
-        remove(queue, 0)
+        remove_at(queue, 0)
         nodes_visited = nodes_visited + 1
 
         if cur.r == goal.r and cur.c == goal.c {
