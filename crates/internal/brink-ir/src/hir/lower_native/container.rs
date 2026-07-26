@@ -206,7 +206,9 @@ pub(super) fn lower_top_level_container(
         body: body_block,
         stitches,
         is_local: false,
-        effects_assertion: None,
+        // The attached `@[effects(…)]` assertion, if the declaration carries
+        // one (issue #1563, [`super::annotation`]).
+        effects_assertion: super::annotation::effects_assertion(file_id, syntax, diags),
         return_type,
         doc,
         visibility: None,
@@ -292,7 +294,9 @@ fn lower_stitch(
         params,
         body: body_block,
         is_local: false,
-        effects_assertion: None,
+        // Same annotation channel as a top-level container — a nested
+        // `flow`'s `@[effects(…)]` sits above its own head (issue #1563).
+        effects_assertion: super::annotation::effects_assertion(file_id, syntax, diags),
         return_type,
         doc,
         visibility: None,

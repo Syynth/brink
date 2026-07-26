@@ -1,12 +1,14 @@
 //! `var`/`const`/`flags`/`struct`/`extern` → their HIR decl nodes
 //! (`docs/b0-sequencing.md` §B0.6).
 //!
-//! Directive/annotation channel population (`is_local`, `effects_assertion`,
-//! `visibility`, `@[was]`) is deliberately **not** wired in this slice — see
-//! the `lower_native` module doc's judgment-call list. Every decl node
-//! below carries those B0.4 additive fields as their empty default
-//! (`None`/`false`), which is honest (no directive syntax was consumed to
-//! produce them) rather than fabricated. `///` docs ARE wired (B0.6b,
+//! The directive channels that *do* have native syntax are wired elsewhere:
+//! the `@[…]` annotation channel in [`super::annotation`] (`@[effects(…)]`
+//! → `effects_assertion` on a `flow`/`fn`, issue #1563) and the file-level
+//! `@[was]` module-rename record in [`super::module`]. Neither has a ruled
+//! meaning on the `var`/`const`/`flags`/`struct`/`extern` declarations this
+//! module owns, so every decl node below carries `is_local`/`visibility`/
+//! `was` as their empty default (`None`/`false`) — honest (no syntax exists
+//! to consume) rather than fabricated. `///` docs ARE wired (B0.6b,
 //! `docs/decision-log.md` 2026-07-20) — see [`super::doc_comment`].
 
 use brink_syntax_native::SyntaxKind as N;

@@ -31,7 +31,8 @@
 //! the `as` binding (issue #1475), UFCS calls — free-fn/auto-ref/prelude
 //! desugar (issue #1482), `TypeName { … }` construction literals
 //! (issue #1464), two-binding `for k, v in` map iteration (issue #1461),
-//! and the `@[was(…)]` module-rename annotation (issue #1286/#1355).
+//! the `@[was(…)]` module-rename annotation (issue #1286/#1355), and the
+//! per-declaration `@[effects(…)]` annotation channel (issue #1563).
 //! Complements, never replaces, `driver.rs`'s fine-grained unit-level
 //! assertions on the same features.
 //!
@@ -122,10 +123,7 @@ fn for_k_v() {
 }
 
 /// The `@[was("old::path")]` file-level module-rename annotation
-/// (issue #1286/#1355) parses and lowers cleanly on a real compile —
-/// the shipped slice of the native annotation grammar (per-declaration
-/// `@[…]` directives are still unwired and are *not* claimed here; see
-/// `brink_ir::hir::lower_native`'s module doc, judgment call #5). The
+/// (issue #1286/#1355) parses and lowers cleanly on a real compile. The
 /// annotation's full DefinitionId-continuity-across-a-rename semantics
 /// are a project/db-layer concern covered by `brink-ir`/`brink-db`'s own
 /// tests, not by this single-compile transcript corpus — this case's
@@ -133,6 +131,19 @@ fn for_k_v() {
 #[test]
 fn annotations_was() {
     assert_case("annotations-was");
+}
+
+/// Per-declaration `@[effects(…)]` annotations (issue #1563) on a top-level
+/// `fn`, a top-level `flow`, and a nested `flow` (the `Stitch` level). Until
+/// this landed, every one of these lines hard-failed the compile with
+/// `E129`, so the case's primary signal is exactly that: an annotated
+/// `.brink` story compiles and runs at all. The assertions themselves are
+/// exceedance-only and satisfied here, so a clean transcript also pins that
+/// a *correct* assertion stays silent — `brink-db`'s
+/// `t2_2_effects_assertions.rs` owns the exceeding-assertion direction.
+#[test]
+fn annotations_effects() {
+    assert_case("annotations-effects");
 }
 
 /// Every `tests/tier1-native/` case directory is exercised by a `#[test]`
@@ -146,6 +157,7 @@ fn every_case_directory_has_a_test() {
         "construction-literal",
         "for-k-v",
         "annotations-was",
+        "annotations-effects",
     ];
     let mut found: Vec<String> = std::fs::read_dir(corpus_dir())
         .expect("read tests/tier1-native")
