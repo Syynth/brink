@@ -1153,3 +1153,163 @@ fn first_was_wins_when_several_are_present() {
         "first `@[was]` wins"
     );
 }
+
+// ── NG-A/NG-B/NG-C: `: type` annotations reach HIR ───────────────────
+//
+// Issues #1487/#1488/#1489. Every annotation position lowers to the SAME
+// `hir::TypeExpr` the ink dialect's TM-2 grammar produces, so downstream
+// consumers (`brink-analyzer::strict`'s annotation firewall above all)
+// need no native-specific branch.
+
+/// The nominal name of a `TypeExpr::Named`, for compact assertions.
+fn named(ty: Option<&crate::TypeExpr>) -> Option<&str> {
+    match ty? {
+        crate::TypeExpr::Named { name, .. } => Some(name.as_str()),
+        _ => None,
+    }
+}
+
+#[test]
+fn annotated_params_lower_to_type_exprs() {
+    let (hir, _m, diags) = lower_src("fn probability(g: Guest, ref n: int) {\n  return 1;\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let params = &hir.knots[0].params;
+    assert_eq!(params.len(), 2);
+    assert_eq!(named(params[0].annotation.as_ref()), Some("Guest"));
+    assert!(!params[0].is_ref);
+    assert_eq!(named(params[1].annotation.as_ref()), Some("int"));
+    assert!(params[1].is_ref, "`ref` survives alongside the annotation");
+}
+
+#[test]
+fn unannotated_param_still_lowers_with_none() {
+    let (hir, _m, diags) = lower_src("fn heal(hp) {\n  return hp;\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert!(hir.knots[0].params[0].annotation.is_none());
+}
+
+#[test]
+fn generic_param_annotation_lowers_with_its_arguments() {
+    let (hir, _m, diags) = lower_src("fn tally(m: map<string, int>) {\n  return 1;\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let Some(crate::TypeExpr::Generic { name, args, .. }) =
+        hir.knots[0].params[0].annotation.as_ref()
+    else {
+        unreachable!("expected a generic annotation: {:?}", hir.knots[0].params);
+    };
+    assert_eq!(name, "map");
+    let arg_names: Vec<Option<&str>> = args.iter().map(|a| named(Some(a))).collect();
+    assert_eq!(arg_names, vec![Some("string"), Some("int")]);
+}
+
+#[test]
+fn stitch_params_take_annotations_too() {
+    let (hir, _m, diags) =
+        lower_src("flow garden() {\n  flow gate(hp: int) {\n    Creak.\n  }\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let stitch = &hir.knots[0].stitches[0];
+    assert_eq!(named(stitch.params[0].annotation.as_ref()), Some("int"));
+}
+
+#[test]
+fn fn_return_type_lowers_to_knot_return_type() {
+    let (hir, _m, diags) = lower_src("fn probability(g: Guest): float {\n  return 1;\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(named(hir.knots[0].return_type.as_ref()), Some("float"));
+}
+
+#[test]
+fn plain_flow_has_no_return_type() {
+    let (hir, _m, diags) = lower_src("flow greet() {\n  Hi.\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert!(hir.knots[0].return_type.is_none());
+}
+
+#[test]
+fn a_return_typed_flow_does_not_get_the_implicit_done() {
+    // The ruled coroutine-vs-state toggle (`docs/decision-log.md`
+    // 2026-07-22 implicit-end ruling, item 3): "no return type ⇒ ends
+    // implicitly as DONE; has one ⇒ must return". A plain flow's
+    // fall-through still picks up the synthesized `-> DONE`; a
+    // value-returning one must not, or an author's missing return would be
+    // silently rewritten into a quiet ending.
+    let (plain, _m, diags) = lower_src("flow quest() {\n  Onward.\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert!(
+        matches!(plain.knots[0].body.stmts.last(), Some(Stmt::Divert(d))
+            if d.target.path == crate::DivertPath::Done),
+        "a plain flow still ends implicitly: {:?}",
+        plain.knots[0].body.stmts
+    );
+
+    let (typed, _m, diags) = lower_src("flow quest(): int {\n  Onward.\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert!(
+        !matches!(typed.knots[0].body.stmts.last(), Some(Stmt::Divert(d))
+            if d.target.path == crate::DivertPath::Done),
+        "a value-returning flow must not be given an implicit DONE: {:?}",
+        typed.knots[0].body.stmts
+    );
+}
+
+#[test]
+fn a_return_typed_stitch_is_flagged_not_silently_dropped() {
+    // `hir::Stitch` has no `return_type` field, so the clause cannot be
+    // honored one level down. It must be reported (E129, the native
+    // "parses but has no HIR lowering yet" fence), never dropped in
+    // silence.
+    let (hir, _m, diags) = lower_src("flow garden() {\n  flow gate(): int {\n    Creak.\n  }\n}\n");
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E129),
+        "a return-typed stitch must be flagged: {diags:?}"
+    );
+    assert_eq!(hir.knots[0].stitches.len(), 1, "the stitch still lowers");
+}
+
+#[test]
+fn annotated_var_and_const_lower_their_annotations() {
+    let (hir, _m, diags) = lower_src("var hp: int = 10\nconst MAX: int = 100\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(named(hir.variables[0].annotation.as_ref()), Some("int"));
+    assert_eq!(named(hir.constants[0].annotation.as_ref()), Some("int"));
+    // The annotation is not mistaken for the initializer.
+    assert!(matches!(hir.variables[0].value, Expr::Int(_)));
+    assert!(matches!(hir.constants[0].value, Expr::Int(_)));
+}
+
+#[test]
+fn unannotated_var_lowers_with_none() {
+    let (hir, _m, diags) = lower_src("var hp = 10\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert!(hir.variables[0].annotation.is_none());
+}
+
+#[test]
+fn annotated_let_lowers_to_temp_decl_annotation() {
+    let (hir, _m, diags) =
+        lower_src("fn heal(hp: int): int {\n  let boost: int = 2;\n  return hp + boost;\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let temp = first_temp_decl(&hir.knots[0].body);
+    assert_eq!(temp.name.text, "boost");
+    assert_eq!(named(temp.annotation.as_ref()), Some("int"));
+}
+
+#[test]
+fn unannotated_let_lowers_with_none() {
+    let (hir, _m, diags) = lower_src("fn heal(hp) {\n  let boost = 2;\n  return hp + boost;\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert!(first_temp_decl(&hir.knots[0].body).annotation.is_none());
+}
+
+/// The first `let` binding in a code-ground `fn` body — the `STMT_BLOCK`
+/// lowers to a single `Stmt::LogicBlock` whose `BlockStmt`s are the
+/// statements.
+fn first_temp_decl(body: &crate::Block) -> &crate::TempDecl {
+    let Some(Stmt::LogicBlock(lb)) = body.stmts.first() else {
+        unreachable!("expected a code-ground body: {:?}", body.stmts);
+    };
+    let Some(BlockStmt::TempDecl(temp)) = lb.stmts.first() else {
+        unreachable!("expected a temp decl: {:?}", lb.stmts);
+    };
+    temp
+}

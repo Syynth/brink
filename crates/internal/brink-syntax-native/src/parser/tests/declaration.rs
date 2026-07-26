@@ -1192,6 +1192,246 @@ fn module_decl_missing_closing_brace_recovers_via_block_eof() {
     );
 }
 
+// ── NG-A/NG-B/NG-C: the `: type` annotation grammar ──────────────────
+//
+// One spelling in every position (`docs/decision-log.md` 2026-07-26 "NG-C
+// ruled: `: type` returns everywhere", issues #1487/#1488/#1489).
+
+/// The `TYPE_NAME`/`TYPE_GENERIC` head texts of every `TYPE_EXPR` under
+/// `node`, in source order — a compact way to assert an annotation's shape
+/// without spelling the whole tree.
+fn type_heads(node: &SyntaxNode) -> Vec<String> {
+    node.descendants()
+        .filter_map(ast::TypeExpr::cast)
+        .filter_map(|te| match te.kind()? {
+            ast::TypeExprKind::Name(n) => n.name(),
+            ast::TypeExprKind::Generic(g) => g.name(),
+            ast::TypeExprKind::Fn(_) => Some("fn".to_string()),
+        })
+        .collect()
+}
+
+#[test]
+fn fn_param_takes_a_type_annotation() {
+    let p = assert_lossless("fn probability(g: Guest) {\n  return 1;\n}\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::FnDecl = find_child(&p.syntax()).expect("fn decl");
+    let param = decl
+        .param_list()
+        .expect("param list")
+        .params()
+        .next()
+        .expect("one param");
+    assert_eq!(param.name_token().expect("name").text(), "g");
+    let annotation = param.type_annotation().expect("`: Guest` annotation");
+    assert_eq!(type_heads(annotation.syntax()), vec!["Guest".to_string()]);
+}
+
+#[test]
+fn unannotated_param_still_parses_with_no_annotation() {
+    // The annotation is optional everywhere — the pre-NG-A shape is
+    // untouched, which is what keeps every existing fixture parsing.
+    let p = assert_lossless("fn heal(hp) {\n  return hp;\n}\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::FnDecl = find_child(&p.syntax()).expect("fn decl");
+    let param = decl
+        .param_list()
+        .expect("param list")
+        .params()
+        .next()
+        .expect("one param");
+    assert!(param.type_annotation().is_none());
+}
+
+#[test]
+fn ref_param_takes_a_type_annotation_after_the_name() {
+    let p = assert_lossless("flow spend(ref gold: int) {\n  Spent.\n}\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::FlowDecl = find_child(&p.syntax()).expect("flow decl");
+    let param = decl
+        .param_list()
+        .expect("param list")
+        .params()
+        .next()
+        .expect("one param");
+    assert!(param.is_ref());
+    assert_eq!(
+        type_heads(param.type_annotation().expect("annotation").syntax()),
+        vec!["int".to_string()]
+    );
+}
+
+#[test]
+fn extern_params_take_type_annotations_via_the_shared_param_list() {
+    let p = assert_lossless("extern log(msg: string, level: int)\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::ExternDecl = find_child(&p.syntax()).expect("extern decl");
+    let heads: Vec<String> = decl
+        .param_list()
+        .expect("param list")
+        .params()
+        .map(|param| type_heads(param.type_annotation().expect("annotation").syntax()).join(""))
+        .collect();
+    assert_eq!(heads, vec!["string".to_string(), "int".to_string()]);
+}
+
+#[test]
+fn generic_and_nested_generic_type_arguments_parse() {
+    let p = assert_lossless("fn tally(m: map<string, list<int>>) {\n  return 1;\n}\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::FnDecl = find_child(&p.syntax()).expect("fn decl");
+    let annotation = decl
+        .param_list()
+        .expect("param list")
+        .params()
+        .next()
+        .expect("one param")
+        .type_annotation()
+        .expect("annotation");
+    // Outer head first, then its arguments in source order.
+    assert_eq!(
+        type_heads(annotation.syntax()),
+        vec![
+            "map".to_string(),
+            "string".to_string(),
+            "list".to_string(),
+            "int".to_string()
+        ]
+    );
+}
+
+#[test]
+fn fn_type_annotation_parses_with_its_colon_return() {
+    let p = assert_lossless("fn apply(f: fn(int): bool) {\n  return 1;\n}\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::FnDecl = find_child(&p.syntax()).expect("fn decl");
+    let annotation = decl
+        .param_list()
+        .expect("param list")
+        .params()
+        .next()
+        .expect("one param")
+        .type_annotation()
+        .expect("annotation");
+    let te = annotation.type_expr().expect("type expr");
+    let Some(ast::TypeExprKind::Fn(f)) = te.kind() else {
+        unreachable!("expected a fn type, tree: {:#?}", te.syntax())
+    };
+    assert_eq!(f.params().len(), 1);
+    assert_eq!(
+        type_heads(f.return_type().expect("return type").syntax()),
+        vec!["bool".to_string()]
+    );
+}
+
+#[test]
+fn fn_header_takes_a_colon_return_type_after_the_param_list() {
+    // The RULED spelling (2026-07-26, #1489): `: type` after `)`, never an
+    // arrow (`->` is unconditionally a divert).
+    let p = assert_lossless("fn probability(g: Guest): float {\n  return 1;\n}\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::FnDecl = find_child(&p.syntax()).expect("fn decl");
+    assert_eq!(
+        type_heads(decl.return_type().expect("return clause").syntax()),
+        vec!["float".to_string()]
+    );
+    // The return clause must not be confused with a parameter's own.
+    let param = decl
+        .param_list()
+        .expect("param list")
+        .params()
+        .next()
+        .expect("one param");
+    assert_eq!(
+        type_heads(param.type_annotation().expect("annotation").syntax()),
+        vec!["Guest".to_string()]
+    );
+    assert!(
+        decl.body().is_some(),
+        "the body still parses after `: float`"
+    );
+}
+
+#[test]
+fn flow_header_takes_a_colon_return_type_on_an_empty_param_list() {
+    let p = assert_lossless("flow quest(): QuestResult {\n  return;\n}\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::FlowDecl = find_child(&p.syntax()).expect("flow decl");
+    assert_eq!(
+        type_heads(decl.return_type().expect("return clause").syntax()),
+        vec!["QuestResult".to_string()]
+    );
+}
+
+#[test]
+fn plain_flow_header_has_no_return_clause() {
+    let p = assert_lossless("flow greet() {\n  Hi.\n}\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::FlowDecl = find_child(&p.syntax()).expect("flow decl");
+    assert!(decl.return_type().is_none());
+}
+
+#[test]
+fn a_prose_line_starting_with_flow_is_still_prose_not_a_return_typed_decl() {
+    // The declaration-head lookahead is deliberately NOT widened to accept
+    // `flow IDENT :` (see `decl::return_type_clause`'s doc) — doing so
+    // would claim ordinary prose. This is the case that guards it.
+    let src = "flow onwards: the river bends.\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(
+        !has_node_kind(&p.syntax(), SyntaxKind::FLOW_DECL),
+        "tree: {:#?}",
+        p.syntax()
+    );
+}
+
+#[test]
+fn var_and_const_take_type_annotations_before_the_initializer() {
+    let p = assert_lossless("var hp: int = 10\nconst MAX: int = 100\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let var: ast::VarDecl = find_child(&p.syntax()).expect("var decl");
+    assert_eq!(
+        type_heads(var.type_annotation().expect("annotation").syntax()),
+        vec!["int".to_string()]
+    );
+    // The annotation must not be mistaken for the initializer.
+    assert_eq!(
+        var.value().expect("initializer").kind(),
+        SyntaxKind::INTEGER_LIT
+    );
+    let konst: ast::ConstDecl = find_child(&p.syntax()).expect("const decl");
+    assert_eq!(
+        type_heads(konst.type_annotation().expect("annotation").syntax()),
+        vec!["int".to_string()]
+    );
+    assert_eq!(
+        konst.value().expect("initializer").kind(),
+        SyntaxKind::INTEGER_LIT
+    );
+}
+
+#[test]
+fn unannotated_var_initializer_is_unchanged() {
+    let p = assert_lossless("var hp = 10\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let var: ast::VarDecl = find_child(&p.syntax()).expect("var decl");
+    assert!(var.type_annotation().is_none());
+    assert_eq!(
+        var.value().expect("initializer").kind(),
+        SyntaxKind::INTEGER_LIT
+    );
+}
+
+#[test]
+fn a_type_annotation_with_no_type_after_it_records_an_error() {
+    let p = assert_lossless("var hp: = 10\n");
+    assert!(
+        !p.errors().is_empty(),
+        "a bare `:` with no type must be diagnosed"
+    );
+}
+
 // ── Adversarial: property-based coverage scoped to declarations ───────
 //
 // Mirrors `tests/proptest_native.rs`'s generator style (studied from that

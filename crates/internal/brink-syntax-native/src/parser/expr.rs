@@ -30,8 +30,8 @@ use crate::SyntaxKind::{
     AMP_AMP, ARG_LIST, BANG, BANG_EQ, BOOLEAN_LIT, CALL_EXPR, COLON, COLON_COLON, COMMA,
     CONSTRUCT_ENTRY, CONSTRUCT_LITERAL, DOT, EQ_EQ, FLOAT, FLOAT_LIT, GT, GT_EQ, IDENT, INFIX_EXPR,
     INTEGER, INTEGER_LIT, KW_FALSE, KW_OR, KW_TRUE, L_BRACE, L_PAREN, LAMBDA_EXPR, LAMBDA_PARAMS,
-    LT, LT_EQ, MINUS, PAREN_EXPR, PATH, PATH_EXPR, PATH_SEGMENT, PERCENT, PIPE, PLUS, PREFIX_EXPR,
-    QUOTE, R_BRACE, R_PAREN, SLASH, STAR, STRING_ESCAPE, STRING_LIT, STRING_TEXT,
+    LT, LT_EQ, MINUS, PARAM, PAREN_EXPR, PATH, PATH_EXPR, PATH_SEGMENT, PERCENT, PIPE, PLUS,
+    PREFIX_EXPR, QUOTE, R_BRACE, R_PAREN, SLASH, STAR, STRING_ESCAPE, STRING_LIT, STRING_TEXT,
 };
 
 use super::Parser;
@@ -238,23 +238,45 @@ fn paren_expr(p: &mut Parser<'_, '_>) {
     p.finish_node();
 }
 
-/// `|x, y| expr` — lambda pipes, tokenized and structurally parsed;
-/// lowering is explicitly deferred (charter §7/§8, b0-sequencing §B0.5:
-/// "B0.5 tokenizes pipes; B0.8 does not lower them").
+/// `|x, y| expr` / `|g: Guest|: bool { … }` — lambda pipes, tokenized and
+/// structurally parsed; lowering is explicitly deferred (charter §7/§8,
+/// b0-sequencing §B0.5: "B0.5 tokenizes pipes; B0.8 does not lower them"),
+/// so the annotations added here (NG-A, issue #1487) are **grammar-only**
+/// too — a `LAMBDA_EXPR` still lands behind `lower_native`'s `E129` fence
+/// whether or not it carries types.
+///
+/// The optional return annotation sits between the closing pipe and the
+/// body (ratified 2026-07-23, `docs/decision-log.md` "Lambda surface =
+/// Rust pipes with colon returns"). Unambiguous by position: a `:`
+/// immediately after `|` can start nothing else, and the annotation's
+/// `type_expr` never swallows a following `{` (a `TYPE_NAME` stops at the
+/// identifier, so `|g|: bool { g.awake }` reads `bool` as the return type
+/// and the brace as the body — not a `bool { … }` construction literal).
 fn lambda_expr(p: &mut Parser<'_, '_>) {
     p.start_node(LAMBDA_EXPR);
     lambda_params(p);
+    if super::types::at_type_annotation(p) {
+        super::types::type_annotation(p);
+    }
     p.skip_ws();
     expression(p);
     p.finish_node();
 }
 
+/// `|`, then zero or more `IDENT (: type)?` parameters, then `|`.
+///
+/// Each parameter is wrapped in the same `PARAM` node the declaration
+/// grammar uses (`parser/decl.rs::param`), so `ast::Param`'s accessors read
+/// a lambda parameter exactly as they read a `fn` one. `ref` is *not*
+/// accepted here — brink lambdas capture by value always, with no ref
+/// captures (RULED 2026-07-23) — so a lambda `PARAM` always reports
+/// `is_ref() == false`.
 fn lambda_params(p: &mut Parser<'_, '_>) {
     p.start_node(LAMBDA_PARAMS);
     p.expect(PIPE);
     while !p.at(PIPE) && !p.at_eof() {
         let before = p.pos();
-        p.expect(IDENT);
+        lambda_param(p);
         if p.pos() == before {
             p.error_recover("unexpected token in lambda parameter list");
             continue;
@@ -264,6 +286,18 @@ fn lambda_params(p: &mut Parser<'_, '_>) {
         }
     }
     p.expect(PIPE);
+    p.finish_node();
+}
+
+fn lambda_param(p: &mut Parser<'_, '_>) {
+    if !p.at(IDENT) {
+        return;
+    }
+    p.start_node(PARAM);
+    p.expect(IDENT);
+    if super::types::at_type_annotation(p) {
+        super::types::type_annotation(p);
+    }
     p.finish_node();
 }
 
