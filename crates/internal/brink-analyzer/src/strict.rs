@@ -306,6 +306,17 @@ pub fn check(
     // array receiver is caught here instead of only at the `MapRemove`
     // runtime fault.
     out.extend(check_array_remove_calls(files, index, inference));
+    // Issue #1540 (second symptom): the UFCS spelling of that same check.
+    // `infer::body::infer_call` types a multi-segment callee `Unknown`
+    // before `infer_intrinsic` runs, so `arr.remove(0)` records no fact for
+    // `check_array_remove_calls` to read — the B3a verdict table is where
+    // the `(receiver type, verb)` pair survives. See `ufcs::check_strict`.
+    out.extend(crate::ufcs::check_strict(
+        files,
+        index,
+        resolutions,
+        inference,
+    ));
     // TM-4b (docs/typed-mode-spec.md §6): missing/extra/mistyped struct
     // construction-literal fields — strict-mode-only, per the crate doc.
     out.extend(crate::structs::check(files, index, inference, resolutions));
