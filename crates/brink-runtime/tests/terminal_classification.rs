@@ -72,6 +72,14 @@ fn ran_out_of_content_faults_on_the_call_after_the_done_line() {
         "the line's text is delivered: {text:?}"
     );
 
+    // Issue #1573: the classification is *also* readable directly at the
+    // yield, via the production `did_safe_exit` accessor — no deferred call
+    // required.
+    assert!(
+        !story.did_safe_exit(),
+        "did_safe_exit must be false right after the ran-out-of-content Done line"
+    );
+
     // The classification only surfaces on the following call.
     assert!(
         matches!(story.continue_single(), Err(RuntimeError::RanOutOfContent)),
@@ -89,6 +97,14 @@ fn explicit_done_is_a_safe_exit_and_does_not_fault() {
 
     let (terminal, _) = drive_to_terminal(&mut story);
     assert!(matches!(terminal, Line::Done { .. }));
+
+    // Issue #1573: `did_safe_exit` is readable on the production API and
+    // distinguishes this case from the ran-out-of-content one above without
+    // an extra `continue_single` call.
+    assert!(
+        story.did_safe_exit(),
+        "did_safe_exit must be true right after an explicit -> DONE"
+    );
 
     // A safe exit resets `Active` and steps the VM again rather than
     // faulting; with no content left, that yields an empty `Line::Done`,

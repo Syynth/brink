@@ -471,4 +471,17 @@ mod binding_wasm_tests {
             "default sees the flow's write; got {line}"
         );
     }
+
+    #[wasm_bindgen_test]
+    fn did_safe_exit_distinguishes_explicit_done_from_ran_out_of_content() {
+        // Issue #1573: both cases deliver a `done`-type `Line`; `didSafeExit`
+        // is the production-reachable way to tell them apart.
+        let safe = runner("Hello.\n-> DONE\n");
+        let _ = cont(&safe);
+        assert!(safe.did_safe_exit());
+
+        let unsafe_ = runner("-> k\n== k ==\nHello.\n");
+        let _ = cont(&unsafe_);
+        assert!(!unsafe_.did_safe_exit());
+    }
 }

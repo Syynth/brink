@@ -608,6 +608,21 @@ impl StoryRunner {
         !self.recorder.borrow().is_empty()
     }
 
+    /// Whether the last execution cycle ended with a safe exit (an
+    /// explicit `-> DONE`), as opposed to the flow running out of content.
+    /// Both deliver a `done`-type `Line`; read this right after one to
+    /// tell them apart — `false` means the next `continueStory`/
+    /// `continueSingle`/`advanceOne` call will error instead of returning
+    /// more text. `false` if no story is loaded. See
+    /// [`brink_runtime::Story::did_safe_exit`] (issue #1573).
+    #[must_use]
+    pub fn did_safe_exit(&self) -> bool {
+        self.story
+            .borrow()
+            .as_ref()
+            .is_some_and(brink_runtime::Story::did_safe_exit)
+    }
+
     /// Structured, name-resolved snapshot of the runtime's current state for
     /// the studio State View — status, current location, globals, call stack,
     /// visit counts, pending choices, and rng. Returns JSON (`DebugState`).

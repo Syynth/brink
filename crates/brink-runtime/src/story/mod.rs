@@ -1358,10 +1358,12 @@ impl<R: StoryRng> Story<R> {
 
     /// Returns whether the last execution cycle ended with a safe exit
     /// (explicit `-> DONE` opcode). If false after a `Done` line, the
-    /// story ran out of content.
-    #[cfg(feature = "testing")]
+    /// story ran out of content — the next `continue_single` call will
+    /// return [`RuntimeError::RanOutOfContent`] instead of more text. See
+    /// [`FlowInstance::did_safe_exit`] for the full contract.
+    #[must_use]
     pub fn did_safe_exit(&self) -> bool {
-        self.default.flow.did_safe_exit
+        self.default.did_safe_exit()
     }
 
     /// Returns whether the last execution cycle passed through an empty
