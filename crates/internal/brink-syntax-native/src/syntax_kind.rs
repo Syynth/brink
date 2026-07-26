@@ -288,7 +288,11 @@ pub enum SyntaxKind {
     FN_DECL,
     /// Shared param-list shape for `FLOW_DECL`/`FN_DECL`.
     PARAM_LIST,
-    /// One parameter: `ref`? `IDENT`.
+    /// One parameter: `ref`? `IDENT` (`:` type)? (NG-A, #1487). Also the
+    /// node lambda parameters use under `LAMBDA_PARAMS` — they used to be
+    /// bare `IDENT` tokens directly there, but now each gets its own
+    /// `PARAM` so a `: type` annotation attaches to the right one (`ref`
+    /// is still not accepted on a lambda parameter).
     PARAM,
     /// `var name = expr`.
     VAR_DECL,
@@ -490,6 +494,9 @@ pub enum SyntaxKind {
     /// lowering is explicitly deferred (charter §7/§8: "B0.5 tokenizes
     /// pipes; B0.8 does not lower them").
     LAMBDA_EXPR,
+    /// Holds one `PARAM` child per lambda parameter (NG-A, #1487) — each
+    /// parameter used to be a bare `IDENT` token directly under this node;
+    /// promoting them to `PARAM` lets `: type` attach to the right one.
     LAMBDA_PARAMS,
 
     // ── Node kinds — the construction initializer (B5, issue #1464, ─────

@@ -269,20 +269,20 @@ impl FlowDecl {
     /// statement grammar has no declaration-dispatch arm — `parser/stmt.rs`
     /// never produces a `FLOW_DECL` child), so a `~{ }`-bodied flow simply
     /// yields none here, same as an empty body would.
-    /// The header's `: type` return clause, if written (NG-C, #1489).
-    /// Declaring one is the ruled coroutine-vs-state toggle: a flow *with*
-    /// a return type must produce a value, and (unlike a plain flow) does
-    /// not pick up the implicit `-> DONE` on fall-through.
-    pub fn return_type(&self) -> Option<TypeAnnotation> {
-        support::child(&self.syntax)
-    }
-
     pub fn stitches(&self) -> impl Iterator<Item = FlowDecl> {
         match self.body() {
             Some(Body::Prose(b)) => support::children::<FlowDecl>(&b.syntax).collect::<Vec<_>>(),
             _ => Vec::new(),
         }
         .into_iter()
+    }
+
+    /// The header's `: type` return clause, if written (NG-C, #1489).
+    /// Declaring one is the ruled coroutine-vs-state toggle: a flow *with*
+    /// a return type must produce a value, and (unlike a plain flow) does
+    /// not pick up the implicit `-> DONE` on fall-through.
+    pub fn return_type(&self) -> Option<TypeAnnotation> {
+        support::child(&self.syntax)
     }
 
     /// The leading `///` doc comment, if one is attached (B0.6b).

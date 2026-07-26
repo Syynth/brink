@@ -280,7 +280,7 @@ fn emit_var_decl(out: &mut String, v: &VarDecl) -> Result<(), EmitError> {
     if v.is_local || v.doc.is_some() || v.visibility.is_some() || v.was.is_some() {
         return Err(unsupported("var directive channel", &v.name.text));
     }
-    let ty = emit_binding_annotation(v.annotation.as_ref(), &v.name.text)?;
+    let ty = emit_annotation_suffix(v.annotation.as_ref());
     let value = emit_expr(&v.value, &v.name.text)?;
     let _ = writeln!(out, "var {}{ty} = {value}", v.name.text);
     Ok(())
@@ -290,23 +290,19 @@ fn emit_const_decl(out: &mut String, c: &ConstDecl) -> Result<(), EmitError> {
     if c.doc.is_some() || c.visibility.is_some() || c.was.is_some() {
         return Err(unsupported("const directive channel", &c.name.text));
     }
-    let ty = emit_binding_annotation(c.annotation.as_ref(), &c.name.text)?;
+    let ty = emit_annotation_suffix(c.annotation.as_ref());
     let value = emit_expr(&c.value, &c.name.text)?;
     let _ = writeln!(out, "const {}{ty} = {value}", c.name.text);
     Ok(())
 }
 
-/// `": T"` for an annotated binding, `""` for an unannotated one — the
-/// exact text that goes between a `var`/`const` name and its `=` (NG-B,
-/// issue #1488).
-fn emit_binding_annotation(
-    annotation: Option<&TypeExpr>,
-    context: &str,
-) -> Result<String, EmitError> {
-    annotation.map_or_else(
-        || Ok(String::new()),
-        |ty| Ok(format!(": {}", emit_type(ty, context)?)),
-    )
+/// `": T"` for an annotated binding or return clause, `""` when absent.
+/// Used both for the text between a `var`/`const` name and its `=` (NG-B,
+/// issue #1488) and, in [`emit_knot`], for a `fn`/`flow` header's `: type`
+/// return clause after the parameter list (NG-C, issue #1489) — the
+/// rendering is identical, only what follows the annotation differs.
+fn emit_annotation_suffix(annotation: Option<&TypeExpr>) -> String {
+    annotation.map_or_else(String::new, |ty| format!(": {}", emit_type(ty)))
 }
 
 fn emit_flags_decl(out: &mut String, l: &ListDecl) -> Result<(), EmitError> {
@@ -334,7 +330,7 @@ fn emit_struct_decl(out: &mut String, s: &StructDecl) -> Result<(), EmitError> {
     }
     let _ = writeln!(out, "struct {} {{", s.name.text);
     for f in &s.fields {
-        let ty = emit_type(&f.ty, &s.name.text)?;
+        let ty = emit_type(&f.ty);
         let _ = writeln!(out, "  {}: {ty}", f.name.text);
     }
     let _ = writeln!(out, "}}");
@@ -350,15 +346,21 @@ fn emit_external_decl(out: &mut String, e: &ExternalDecl) -> Result<(), EmitErro
     Ok(())
 }
 
-fn emit_type(ty: &TypeExpr, context: &str) -> Result<String, EmitError> {
+/// Every `TypeExpr` shape has a faithful native spelling (NG-A/B/C,
+/// issues #1487/#1488/#1489), so unlike the rest of this module's
+/// `emit_*` functions, this one is infallible — there is no
+/// `EmitError::Unsupported` arm to grow here.
+fn emit_type(ty: &TypeExpr) -> String {
     match ty {
-        TypeExpr::Named { name, .. } => Ok(name.clone()),
+        TypeExpr::Named { name, .. } => name.clone(),
         TypeExpr::Generic { name, args, .. } => {
-            let rendered: Result<Vec<String>, EmitError> =
-                args.iter().map(|a| emit_type(a, context)).collect();
-            Ok(format!("{name}<{}>", rendered?.join(", ")))
+            let rendered: Vec<String> = args.iter().map(emit_type).collect();
+            format!("{name}<{}>", rendered.join(", "))
         }
-        TypeExpr::Fn { .. } => Err(unsupported("fn(...) type expression", context)),
+        TypeExpr::Fn { params, ret, .. } => {
+            let rendered: Vec<String> = params.iter().map(emit_type).collect();
+            format!("fn({}): {}", rendered.join(", "), emit_type(ret))
+        }
     }
 }
 
@@ -372,7 +374,7 @@ fn emit_param(p: &Param, context: &str) -> Result<String, EmitError> {
     }
     s.push_str(&p.name.text);
     if let Some(ty) = &p.annotation {
-        let _ = write!(s, ": {}", emit_type(ty, context)?);
+        let _ = write!(s, ": {}", emit_type(ty));
     }
     Ok(s)
 }
@@ -398,7 +400,7 @@ fn emit_knot(out: &mut String, k: &Knot) -> Result<(), EmitError> {
     let params = emit_params(&k.params, &k.name.text)?;
     // The ruled `: type` return clause goes after the parameter list
     // (NG-C, issue #1489) — never before the `(`, and never as an arrow.
-    let ret = emit_binding_annotation(k.return_type.as_ref(), &k.name.text)?;
+    let ret = emit_annotation_suffix(k.return_type.as_ref());
     let _ = writeln!(out, "{keyword} {}({params}){ret} {{", k.name.text);
     emit_block_stmts(out, &k.body, 1, &k.name.text)?;
     for s in &k.stitches {
@@ -1141,6 +1143,36 @@ mod tests {
         assert!(
             emitted.lines().any(|l| l.trim() == "(again) Loop point."),
             "expected the label to attach to the following content line:\n{emitted}"
+        );
+    }
+
+    /// A `fn(params…): ret` type annotation (e.g. `f: fn(int): bool`) is
+    /// legal native source per
+    /// `fn_type_annotation_parses_with_its_colon_return`
+    /// (`brink-syntax-native::parser::tests::declaration`), so the emitter
+    /// must spell it back rather than refuse — the module doc's "supported"
+    /// claim would otherwise be false for this one `TypeExpr` shape.
+    #[test]
+    fn fn_type_annotation_round_trips() {
+        // A `flow` (not `fn`) so the body stays prose-ground — `fn`'s
+        // default code-ground body is a separate, pre-existing emission
+        // gap (a whole code body lowers to one `Stmt::LogicBlock`, and
+        // `LogicBlock` bodies aren't emittable yet); this test is only
+        // about the `fn(...)` *type* annotation on the parameter.
+        let src = "flow apply(f: fn(int): bool) {\n  Hello.\n}\n";
+        let emitted = lower_and_emit(src).expect("fn(...) type annotation must now emit");
+        assert!(
+            emitted.contains("fn(int): bool"),
+            "expected the emitted source to spell the fn(...) type back out:\n{emitted}"
+        );
+
+        let hir = reparse_and_lower(&emitted);
+        let Some(annotation) = &hir.knots[0].params[0].annotation else {
+            panic!("re-lowered param lost its type annotation");
+        };
+        assert!(
+            matches!(annotation, TypeExpr::Fn { .. }),
+            "expected a re-lowered TypeExpr::Fn, got {annotation:?}"
         );
     }
 }
