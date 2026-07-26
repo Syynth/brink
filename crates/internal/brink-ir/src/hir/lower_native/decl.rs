@@ -257,16 +257,18 @@ pub(super) fn lower_extern_decl(
     })
 }
 
-/// Every `IDENT` a native `PATH_SEGMENT` chain visits — used by
-/// `import`/`use` lowering (`super::import`). Struct-field types now go
-/// through `super::types::lower_type_annotation` instead (NG-E, #1505).
+/// Every `IDENT` a native `PATH_SEGMENT` chain visits, joined into a native
+/// module name — used by `import` lowering (`super::import`). `::`-separated,
+/// the one spelling a real module name has (issue #1581; see
+/// `super::import`'s module doc). Struct-field types now go through
+/// `super::types::lower_type_annotation` instead (NG-E, #1505).
 pub(super) fn joined_path_text(path: &ast::Path) -> String {
     lower_path(path)
         .segments
         .iter()
         .map(|n| n.text.as_str())
         .collect::<Vec<_>>()
-        .join(".")
+        .join("::")
 }
 
 /// `true` if `node` sits directly inside `SOURCE_FILE` or a (possibly
