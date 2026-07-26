@@ -39,8 +39,10 @@ iteration surface currently stand.
 > logic blocks. The loop syntax itself — `for name in expr { … }`,
 > `while cond { … }`, `break`, `continue` — is already the ruled shape;
 > what changes with the native frontend is the spelling around it (bare
-> `[…]` literals, method calls, lambdas), plus the ruled two-binding form
-> `for k, v in m`, which is not parseable today (see below).
+> `[…]` literals, method calls, lambdas). The ruled two-binding form
+> `for k, v in m` now parses and lowers on the native `.brink` surface;
+> this chapter's `~ { … }` brink-dialect examples still have no
+> two-binding spelling (see below).
 
 ## Loops compute; prose narrates
 
@@ -234,13 +236,15 @@ Reading keys and values together is the everyday map loop:
 Mira is in room 3. Old Tom is in room 1. Edda is in room 7.
 ```
 
-> **Planned — `for k, v in m` (B2).** The ruled pair spelling is the
-> two-binding loop: `for guest, room in rooms { … }`, defined as exactly
-> the desugar you just wrote by hand — key iteration plus a `room =
-> rooms[guest]` read at the top of each pass, total by construction, no
-> pair value ever materializing. The ruling is done (2026-07-19, with
-> F10); the parser only takes the single-binding form today. Until it
-> lands, `for k in m` + `m[k]` *is* the pair story.
+> **Landed on the native surface — `for k, v in m` (B2).** The ruled pair
+> spelling is the two-binding loop: `for guest, room in rooms { … }`,
+> defined as exactly the desugar you just wrote by hand — key iteration
+> plus a `room = rooms[guest]` read at the top of each pass, total by
+> construction, no pair value ever materializing. The ruling landed
+> 2026-07-19 (with F10) and the two-binding form now parses and lowers
+> on the native `.brink` parser (#1461). This chapter's `~ { … }`
+> brink-dialect surface has no two-binding spelling yet, so `for k in m`
+> + `m[k]` is still the pair story for the examples above.
 
 ## Counting with ranges
 
@@ -523,7 +527,9 @@ safety-limit error — mid-step, instance spent, restart from a snapshot.
   is a deliberate exception to live pull; removed-key reads fault
   honestly) — decision log 2026-07-19 (Phase C findings ruling);
   `docs/stdlib-spec.md` §5. The `for k, v in m` desugar ruled with it;
-  surface arrives with Track B2.
+  the native `.brink` surface landed with Track B2 (#1461); the
+  `~ { … }` brink dialect this chapter teaches has no two-binding
+  spelling yet.
 - **F7/F8: ranges as a real Value kind; empty ranges iterate zero
   times; refinements inert under gradual** — decision log 2026-07-19;
   `docs/stdlib-spec.md` §7; NS-A5 (#1136).
