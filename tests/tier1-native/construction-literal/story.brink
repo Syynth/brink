@@ -1,0 +1,13 @@
+struct Point {
+  x: int,
+  y: int
+}
+
+fn describe() {
+  let p = Point { x: 3, y: 4 };
+  return p.x + p.y;
+}
+
+flow main() {
+  Sum: {describe()} -> END
+}

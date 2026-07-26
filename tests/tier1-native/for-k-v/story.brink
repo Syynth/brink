@@ -1,0 +1,12 @@
+fn sum_pairs() {
+  let m = Map { "a": 10, "b": 20, "c": 30 };
+  let total = 0;
+  for k, v in m {
+    total = total + v;
+  }
+  return total;
+}
+
+flow main() {
+  Total: {sum_pairs()} -> END
+}

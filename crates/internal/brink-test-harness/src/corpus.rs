@@ -118,6 +118,55 @@ pub fn load_golden_transcript(path: &Path, case_label: &str) -> Result<String, S
     Ok(content)
 }
 
+/// Compile a native `.brink` file from disk with the brink compiler, link,
+/// and run it to completion, returning the concatenated output text.
+///
+/// Used by the `tests/tier1-native/` self-referential golden corpus
+/// (issue #1529 — see `tier1_native.rs`'s module doc for why this corpus
+/// has no oracle to diff against) and by `corpus_report`'s native section,
+/// so the two never drift on how a case is run. Every case in that corpus
+/// is a straight-line, choice-free program by convention (mirroring
+/// `tests/tier1-brink/`'s own convention) — a case that presents choices
+/// is a fixture-authoring bug, so this surfaces it as an `Err` rather than
+/// guessing which choice to take.
+///
+/// Returns `Err` on any compile error, link error, or runtime fault, or if
+/// the program ever reaches [`brink_runtime::Line::Choices`].
+pub fn run_native_transcript(brink_path: &Path) -> Result<String, String> {
+    let output = brink_compiler::compile_path(brink_path)
+        .map_err(|e| format!("compile {}: {e}", brink_path.display()))?;
+    let (program, line_tables) = brink_runtime::link(&output.data)
+        .map_err(|e| format!("link {}: {e}", brink_path.display()))?;
+    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(
+        std::sync::Arc::new(program),
+        line_tables,
+    );
+
+    let mut out = String::new();
+    loop {
+        match story
+            .continue_single()
+            .map_err(|e| format!("runtime error in {}: {e}", brink_path.display()))?
+        {
+            brink_runtime::Line::Text { text, .. } => out.push_str(&text),
+            brink_runtime::Line::Done { text, .. }
+            | brink_runtime::Line::End { text, .. }
+            | brink_runtime::Line::Suspended { text, .. } => {
+                out.push_str(&text);
+                break;
+            }
+            brink_runtime::Line::Choices { .. } => {
+                return Err(format!(
+                    "{} presented choices — tier1-native cases must be choice-free \
+                     straight-line programs",
+                    brink_path.display()
+                ));
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// Compile a `.ink` file with the brink compiler, link, and explore.
 ///
 /// Returns `Err` if compilation or linking fails.
