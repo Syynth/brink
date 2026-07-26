@@ -508,11 +508,15 @@ unless marked:
 9. **Compact cue `@NAME: text`** (the Yarn cross): cue + single
    dialogue line fused, as a second declared pattern beside the block
    cue. Accepted on the sample page.
-10. **Choice typing: 🔶 lean (c)** — the cue above a choice block
-    supplies the speaker; **quoted** option text marks a spoken
-    (dialogue-)choice, unquoted/bracketed options are action-choices;
-    mixed blocks legal; with no cue, quoted options attribute to the
-    roster's PC. Recorded as lean, cheap to flip.
+10. **Choice typing: RULED (sitting 5) — cue-only.** The cue above a
+    choice block types **all** its options as that speaker's dialogue
+    options; quotes carry **no** typing semantics (quotes are just
+    prose). No cue → options are plain action-choices (want PC
+    dialogue options? write the PC's cue — explicit, like everything
+    else). Non-spoken options need no special rule: an all-bracketed
+    option (`* [Slip away] -> alley`) delivers nothing via the
+    existing `[]` anatomy, so nothing is "spoken" regardless of the
+    cue. The quote-based lean (c) is superseded.
 11. **Point markers** (`<pause/>`, `<sfx name="bell"/>`) named as an
     explicit span use case — in-text events, mapping to XLIFF `<x/>`.
 12. **Parking is not a Step** (the questline case, §8c): `until`
@@ -542,25 +546,90 @@ dimension infers into the flow's effect row. The fused
 decoration: the parked line renders as an *awaits: criteria → SCENE
 TITLE* annotation via the display-name machinery.
 
+## 8d. Sitting 5 — rapid closure rulings (2026-07-25)
+
+1. **Choice typing: cue-only** (see §8b.10, superseding the lean).
+2. **Block id is universal** (RULED): every run of same-element
+   adjacent content lines carries one; hosts aggregate or ignore.
+3. **Centered = `<center>` markup span** (RULED). Not an element.
+4. **Cue extensions ride the tag channel** (RULED): `@VENDOR #(v.o.)`
+   — no parsed `ext` capture, no new payload machinery; the cue
+   line's tags attach with the cue's data, and the export mapping may
+   translate known tags to Fountain extensions.
+5. **Fused `until cond -> target`: deferred.** Two-line is the
+   canonical v1 spelling; the sugar can land later without breaking
+   anything.
+6. **Escape set final** (RULED): `\<` `\{` `\#` `\\` inline,
+   `\!` `\@` line-start; backslash before anything else is a
+   compile error.
+7. **The output enum is `Step`** (RULED — §7's naming ⏳ closed).
+8. **No baked scene fields in the output format** (RULED): element
+   data stays an **open map** that conventions (declarative captures)
+   and handlers produce; time-of-day, or anything else a project
+   wants, is preset-configurable data — never a privileged field.
+9. Context injection and numeric capture coercion: deferrals stand.
+
+### The complement-pass page (everything applied)
+
+```
+INT. MARKET SQUARE - NIGHT [market] #act1
+
+The square is empty. A single lantern gutters against the dark.
+
+@VENDOR #(v.o.)
+(hushed)
+You shouldn't be here after dark. The gates closed an hour ago.
+
+@KID: Says who? <i>You?</i>
+
+@VENDOR: The curfew, kid. <sfx name="bell"/> That.
+
+!radio TAC-2: All units, market square sweep in five.
+
+{?
+  @KID
+  * "I was just leaving."[] I muttered, backing away.
+  * "Make me."
+    The vendor's eyes narrow. Bad start.
+  * [Slip into the alley] -> alley_escape
+}
+The bell tolls again. <pause/> Somewhere above, a door slams.
+
+~ until patrol_started
+-> alley_escape
+
+EXT. COLD ALLEY - CONTINUOUS [alley_escape]
+
+<center>LATER</center>
+
+Cold brick. Distant bells.
+```
+
+Reading notes: the heading is a header-scoped stitch with slug + tag;
+the cue's extension is a tag; block cue and compact cue coexist; the
+`!radio` line dispatches by name to its handler (rendered per its
+`@[style]`); all three options are KID's dialogue-choices (the
+bracketed one delivers nothing — `[]` anatomy); the rejoin is the
+next line after `}`; the park then the invisible divert; arrival at
+the second heading fires `scene_entered` (the cut, by decoration);
+`<center>` is a span. Every mark is real; the editor supplies the
+grace.
+
 ## 9. Open threads ⏳ (the resumption points)
 
-1. **Syntax round remainder** — cue extensions (`(V.O.)`/`(O.S.)` as
-   parsed payload vs opaque), centered's fate (lean: span), the fused
-   `until cond -> target` sugar call, escape-set finalization, the
-   `std::conventions` types design (§3.5), the §3.5b deferred
-   context-injection question, and the final
-   complement-pass read over a full page.
-2. **Choice typing** — flip-or-ratify the 🔶 lean (c) (§8b.10).
-3. **Translation, round 2** — element data in XLIFF (speaker names
-   translatable?), per-locale budgets, the bump batching, scene-title
-   localization under call-lowering (§8b.7 rider), and the Yarn
-   persisted-line-ID fork (§8b.13).
-4. **Per-path export design** (§2b.4) — Fountain/FDX/VO-sheet
-   renderers as intl-exporter siblings; the element↔Fountain mapping.
-5. **Terminal cluster — parked**: #1448 / #1449 / #1450, deferred
+1. **The `std::conventions` types** design pass (the later-stage
+   module-authoring surface, §3.5) — the last substantial prose-round
+   design item.
+2. **Translation, round 2** — element data in XLIFF, per-locale
+   budgets, the bump batching, scene-title localization under
+   call-lowering, the Yarn persisted-line-ID fork.
+3. **Per-path export design** (§2b.4) — Fountain/FDX/VO-sheet
+   renderers; export mapping incl. tag→extension translation (§8d.4).
+4. **Terminal cluster — parked**: #1448 / #1449 / #1450, deferred
    until the runtime/compiler window.
-6. **§7 output naming** (`Line`/`Step`/`StoryEvent`) — shape ruled in
-   substance; which element kinds form blocks (lean: id universal).
-7. **Editor implications (NS-T)** — line-local classification vs the
-   nesting-property dialect; the §2b.3 bridge features; the §8c park
-   decoration. #1350/#1131 stay held on this round.
+5. **Deferred details**: context injection; numeric capture coercion;
+   fused-`until` sugar; indent-level style tokens; which-blocks
+   question closed by §8d.2.
+6. **Editor implications (NS-T)** — #1350/#1131 stay held; the bridge
+   features (§2b.3), the park decoration (§8c), the built-in token
+   vocabulary (§3.5b) are their incoming scope.
