@@ -2401,7 +2401,7 @@ pub async fn analysis_loop(
         // carried (both read the revision under the db lock; the analysis reads
         // at-or-after the write). Tagged `Analysis`, this therefore wins the
         // `DiagnosticsPublisher` anti-downgrade rule against that per-file set.
-        let (generation, projects, file_meta, per_file_diags, file_suppressions) = {
+        let (generation, projects, modules, file_meta, per_file_diags, file_suppressions) = {
             let db = lock_db(&db);
             let generation = generation.load(Ordering::Relaxed);
             let project_defs = db.compute_projects();
@@ -2409,6 +2409,14 @@ pub async fn analysis_loop(
                 .iter()
                 .map(|(root, members)| (*root, db.analysis_inputs_for(members)))
                 .collect();
+            // The project's resolved modules (#1526), cloned out under the
+            // same lock as the inputs they qualify. Module identity needs
+            // file paths, which the analysis inputs don't carry — without it
+            // this pass mints `DefinitionId`s that don't match the db's, so
+            // every native `.brink` symbol misses in `db.effects`/
+            // `db.signature`/`db.infer_body`. Keyed by `FileId`, so the
+            // whole-workspace map is a harmless superset for each project.
+            let modules = db.module_map().clone();
             let meta = db.file_metadata();
             let diags: Vec<_> = meta
                 .iter()
@@ -2418,7 +2426,14 @@ pub async fn analysis_loop(
                 meta.iter()
                     .filter_map(|(fid, _, _)| Some((*fid, db.suppressions(*fid)?.clone())))
                     .collect();
-            (generation, project_inputs, meta, diags, suppressions)
+            (
+                generation,
+                project_inputs,
+                modules,
+                meta,
+                diags,
+                suppressions,
+            )
         };
 
         // Run per-project analysis OUTSIDE the lock
@@ -2431,7 +2446,7 @@ pub async fn analysis_loop(
                 .iter()
                 .map(|(id, hir, manifest)| (*id, hir, manifest))
                 .collect();
-            let result = brink_analyzer::analyze_with_options(&file_refs, &opts);
+            let result = brink_analyzer::analyze_with_modules(&file_refs, &modules, &opts);
             by_root.insert(*root, Arc::new(result));
 
             let members: Vec<_> = inputs.iter().map(|(id, _, _)| *id).collect();

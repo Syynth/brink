@@ -348,3 +348,58 @@ fn diagnostics_query_covers_lowering_and_analysis() {
         "unresolved divert should surface in diagnostics(FileId)"
     );
 }
+
+/// **Native `.brink` identity is module-qualified** (issue #1526), so the
+/// module-*blind* `brink_analyzer::analyze_with_options` cannot stand in for
+/// the db here the way it does for the undeclared-stem-module ink corpus
+/// above: a native file's module is its path (`market/barter.brink` →
+/// `story::market::barter`) and is always declared, so it folds into every
+/// `DefinitionId` the db mints.
+///
+/// `analyze_with_modules`, fed `ProjectDb::module_map()`, is the entry point
+/// that agrees — which is what lets an out-of-db analysis pass (the LSP's,
+/// `IdeSession`'s) hand ids to `db.effects`/`db.signature`/`db.infer_body`.
+/// The module-blind path is asserted to *disagree* in the same test, so this
+/// is not vacuous: it would pass with `analyze_with_modules` aliased back to
+/// `analyze_with_options` only if native identity stopped being qualified at
+/// all.
+#[test]
+fn native_module_aware_analysis_matches_db_identity() {
+    let files: &[(&str, &str)] = &[
+        ("main.brink", "flow start() {\n  The market is busy.\n}\n"),
+        (
+            "market/barter.brink",
+            "flow haggle() {\n  You haggle over the price.\n}\n",
+        ),
+    ];
+    let mut db = db_with(files);
+    db.set_analysis_options(AnalysisOptions {
+        dialect: brink_analyzer::Dialect::Brink,
+        ..AnalysisOptions::default()
+    });
+    let opts = db.analysis_options().clone();
+
+    let inputs = db.analysis_inputs();
+    let refs: Vec<(FileId, &HirFile, &SymbolManifest)> = inputs
+        .iter()
+        .map(|(id, hir, manifest)| (*id, hir, manifest))
+        .collect();
+
+    let db_ids: Vec<_> = db.symbol_index().symbols.keys().copied().collect();
+    assert_eq!(db_ids.len(), 2, "two flows, two ids: {db_ids:?}");
+
+    let module_aware = brink_analyzer::analyze_with_modules(&refs, db.module_map(), &opts);
+    let aware_ids: Vec<_> = module_aware.index.symbols.keys().copied().collect();
+    assert_eq!(
+        aware_ids, db_ids,
+        "module-aware analysis must mint the db's `DefinitionId`s for native files"
+    );
+
+    let module_blind = brink_analyzer::analyze_with_options(&refs, &opts);
+    let blind_ids: Vec<_> = module_blind.index.symbols.keys().copied().collect();
+    assert_ne!(
+        blind_ids, db_ids,
+        "non-vacuity: the module-blind path must NOT match — if it does, \
+         native identity stopped being path-qualified"
+    );
+}

@@ -19,7 +19,7 @@ use crate::queries::{
     SourceFile, analysis_query, call_site_diagnostics_query, call_site_metas_query,
     diagnostics_query, effects_query, has_errors_query, include_graph_query, infer_body_query,
     inferred_signature_query, lir_knot_chunk_query, lir_prelude_decls_query, lir_query,
-    lowered_query, parse_native_query, parse_query, per_file_diagnostics_query,
+    lowered_query, module_map_query, parse_native_query, parse_query, per_file_diagnostics_query,
     resolutions_index_query, resolve_query, signature_query, story_data_query, suppressions_query,
     symbol_index_query, type_diagnostics_query, type_inference_query, ufcs_resolution_query,
     value_meta_query,
@@ -345,6 +345,22 @@ impl ProjectDb {
     /// produced alongside [`symbol_index`](Self::symbol_index).
     pub fn symbol_index_diagnostics(&self) -> &[Diagnostic] {
         &symbol_index_query(&self.salsa, self.project).1
+    }
+
+    /// Every file's resolved module (M-1, docs/modules-spec.md §1/§5) — the
+    /// map that qualifies `DefinitionId` identity, built here from file
+    /// stems, `#@module` declarations, the INCLUDE graph, and (for native
+    /// `.brink` files) the path-derived `story::…` module.
+    ///
+    /// Exposed (issue #1526) for callers that must run
+    /// [`brink_analyzer::analyze_with_modules`] *outside* the db — the LSP's
+    /// background analysis pass and [`analysis_inputs`](Self::analysis_inputs)
+    /// consumers generally — so their `DefinitionId`s match the ones this
+    /// db's per-def queries ([`effects`](Self::effects),
+    /// [`signature`](Self::signature), [`infer_body`](Self::infer_body)) are
+    /// keyed by. Identity is minted here and nowhere else.
+    pub fn module_map(&self) -> &brink_analyzer::ModuleMap {
+        &module_map_query(&self.salsa, self.project).0
     }
 
     /// One file's resolved references + resolution diagnostics (layer 2,
