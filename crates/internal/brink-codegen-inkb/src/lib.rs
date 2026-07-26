@@ -644,6 +644,7 @@ fn const_value_type(v: &lir::ConstValue) -> brink_format::ValueType {
         lir::ConstValue::Null => brink_format::ValueType::Null,
         lir::ConstValue::Array(_) => brink_format::ValueType::Array,
         lir::ConstValue::Map(_) => brink_format::ValueType::Map,
+        lir::ConstValue::Record { .. } => brink_format::ValueType::Record,
         lir::ConstValue::FnRef(_) => brink_format::ValueType::FnRef,
         lir::ConstValue::Closure { .. } => brink_format::ValueType::Closure,
     }
@@ -682,6 +683,17 @@ fn const_to_value(
             }
             Value::map(map)
         }
+        // A record baked into a declaration default (#1530). `fields` is
+        // already in the shape's declaration order — the same order
+        // `RecordNew` pushes and `Value::Record` stores — so there is
+        // nothing left to reorder here.
+        lir::ConstValue::Record { shape_id, fields } => Value::record(
+            brink_format::ShapeId(*shape_id),
+            fields
+                .iter()
+                .map(|f| const_to_value(f, name_table, name_index))
+                .collect(),
+        ),
         // Function values baked into a declaration default (T1c, #700). The
         // param name is interned (deduped) into the story name table so it
         // resolves to the same string the target container's `params` table

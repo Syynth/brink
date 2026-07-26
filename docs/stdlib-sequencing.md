@@ -285,11 +285,13 @@ rule. `E143` is repurposed as the ruled refusal for a receiver that cannot
 be written through (a `CONST`; a projection rooted in a frame-local; and the
 ruled rvalue receivers `[1,2].push(3)`/`a.sorted().push(x)` once the grammar
 can spell them at all). A non-`ref` first parameter is untouched — plain
-by-value desugar, no lvalue requirement. **Not yet reachable end to end:**
-the *projection* receiver, because the native surface cannot spell a
-struct-typed durable global today (a construction literal is refused as a
-`VAR` default, `E075`) — covered at the LIR-lowering level instead
-(`brink-ir/tests/ufcs_auto_ref.rs`).
+by-value desugar, no lvalue requirement. The *projection* receiver is
+reachable end to end since issue #1530 made a struct-typed durable global
+spellable (a well-formed construction literal is now a legal `VAR` default);
+`brink-test-harness/tests/b3a_ufcs_e2e.rs`'s
+`auto_ref_mutates_a_projection_off_a_durable_global_end_to_end` drives it
+through the real `.brink` pipeline, alongside the LIR-lowering coverage in
+`brink-ir/tests/ufcs_auto_ref.rs`.
 
 ### Wave B4 — display-boundary None-render in interpolation (SHIPPED, issue #1463)
 The §1.6b forgiveness: a final-None interpolation renders as nothing;

@@ -327,20 +327,30 @@ pub fn build_prelude_decls(
     let mut names = NameTable::new();
     let root_id = context::root_definition_id();
 
+    // The struct-shape table is built *first* (issue #1530): a `VAR`/`CONST`
+    // whose default is a construction literal folds into
+    // `lir::ConstValue::Record`, which needs the shape's id and declaration
+    // field order. Nothing in the shape table depends on the collected
+    // declarations, so this is a pure reordering — it only moves the struct
+    // and field names ahead of the declaration names in the seeded
+    // `NameTable`, and a `NameId` is an index into that same seed, emitted
+    // alongside it.
+    let shape_table = structs::build_shape_table(files, &mut names);
+    let global_shapes = structs::build_global_shape_map(files, index, &shape_table);
+
     let mut decl_diagnostics = Vec::new();
     let mut globals = decls::collect_globals(
         files,
         index,
         &mut names,
         &resolutions_lookup,
+        &shape_table,
         &mut decl_diagnostics,
     );
     let (lists, list_items, list_globals) = decls::collect_lists(files, index, &mut names);
     globals.extend(list_globals);
     let externals = decls::collect_externals(files, index, &mut names);
 
-    let shape_table = structs::build_shape_table(files, &mut names);
-    let global_shapes = structs::build_global_shape_map(files, index, &shape_table);
     let name_seed = names.into_entries();
 
     let mut private_defs: Vec<brink_format::DefinitionId> = index

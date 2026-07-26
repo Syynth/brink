@@ -1710,14 +1710,28 @@ pub enum DiagnosticCode {
     E074,
 
     // ── decls constant-folding backstops (#673) ───────────────────────
-    /// A struct construction literal (`Name#{…}`) appears as a `VAR`/`CONST`
-    /// declaration's default. `eval_const_expr` (`brink-ir::lir::lower::
-    /// decls`) has no compile-time representation for a record value — a
-    /// global's default is baked into `StoryData` at compile time, so there
-    /// is no runtime construction path to defer to the way a mid-story
-    /// `p = Point#{…}` assignment has. A real, non-suppressible compile
-    /// error (never a silent `Null`) until declaration-default structs get
-    /// a design (`ConstValue` would need a struct-carrying variant).
+    /// A struct construction literal used as a `VAR`/`CONST` declaration
+    /// default doesn't match its declared shape: it omits a declared field,
+    /// or supplies one the shape doesn't declare.
+    ///
+    /// A *well-formed* construction literal is a legal declaration default
+    /// (issue #1530): `eval_const_struct_literal` folds it into
+    /// `lir::ConstValue::Record`, which is what makes a struct-typed durable
+    /// global — and therefore the T1e projection-receiver path
+    /// (`docs/t1e-spec.md` §2, which requires a durable root) — spellable at
+    /// all. Before #1530 this code was the blanket refusal of *every* struct
+    /// literal in that position, because `ConstValue` had no record-carrying
+    /// variant.
+    ///
+    /// Mid-story `p = Point#{…}` construction with a mismatched shape is a
+    /// runtime construction fault (`RecordNew` against an invalid shape id,
+    /// value-model-spec §11c's gradual path); a declaration default is baked
+    /// into `StoryData` with no runtime construction step to fault at, so
+    /// this is the compile-time equivalent — a real, non-suppressible error,
+    /// never a half-built record. Under `types = strict` `brink-analyzer`'s
+    /// `structs::check` reports the more precise [`Self::E069`]/
+    /// [`Self::E070`] for the same literal; this backstop is
+    /// policy-independent.
     E075,
     /// A map literal used as a `VAR`/`CONST` declaration default has a key
     /// that isn't a compile-time-constant scalar in the ratified map-key
@@ -1745,10 +1759,12 @@ pub enum DiagnosticCode {
     /// for real and is not flagged — only a resolved `SymbolKind::Variable`
     /// (or an unresolved path, left to the analyzer's own diagnostic) is
     /// exempt from the fold-for-real behavior, matching
-    /// `is_const_foldable_decl_default`'s top-level twin (`E083`). (A
-    /// struct literal nested at this position is unconditionally `E075`
-    /// regardless of field content — `ConstValue` has no record variant at
-    /// all — so a bad field inside it never reaches this arm.)
+    /// `is_const_foldable_decl_default`'s top-level twin (`E083`). (Since
+    /// #1530 a struct literal at this position folds for real, so a
+    /// never-foldable *field* of a nested construction literal reaches this
+    /// arm exactly as an array element or map value does; before #1530 the
+    /// whole literal was unconditionally `E075` regardless of field
+    /// content.)
     E077,
     // ── TM-3 completion: conversion intrinsics (docs/typed-mode-spec.md
     // §4, maintainer ruling 2026-07-13, issue #659) ──────────────────────
@@ -2693,7 +2709,7 @@ impl DiagnosticCode {
             }
             Self::E074 => "chained field-write projection (p.a.b = v) is not supported",
             Self::E075 => {
-                "struct construction literal is not supported as a VAR/CONST declaration default"
+                "struct construction literal in a VAR/CONST declaration default does not match its declared shape"
             }
             Self::E076 => {
                 "map literal key in a VAR/CONST declaration default is not a compile-time-constant scalar (int/string/bool)"

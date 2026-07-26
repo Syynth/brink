@@ -140,6 +140,21 @@ pub enum ConstValue {
     /// Keys are restricted to the ratified scalar domain by construction —
     /// [`ConstMapKey`] has no variant for anything else.
     Map(Vec<(ConstMapKey, ConstValue)>),
+    /// A compile-time-constant record — a `Name#{…}` / `Name { … }`
+    /// construction literal used as a `VAR`/`CONST` declaration default
+    /// (issue #1530). `shape_id` is the dense `ShapeId` the project's
+    /// `ShapeTable` assigned to the named `STRUCT`, and `fields` is in that
+    /// shape's **declaration** order — the same flat, shape-ordered layout
+    /// `Value::Record` and the `RecordNew` opcode use, so no reordering is
+    /// left for codegen to do.
+    ///
+    /// Only ever well-formed: a literal whose shape doesn't resolve, that
+    /// misses a declared field, or that supplies an undeclared one never
+    /// reaches this variant (see `decls::eval_const_struct_literal`).
+    Record {
+        shape_id: u32,
+        fields: Vec<ConstValue>,
+    },
     /// A zero-bound function value baked into a declaration default
     /// (`VAR f = #fn(name)`), T1c — `docs/t1c-spec.md` §2/§6.
     FnRef(DefinitionId),
