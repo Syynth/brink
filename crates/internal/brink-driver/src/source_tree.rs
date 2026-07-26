@@ -559,6 +559,77 @@ mod tests {
         fs::remove_dir_all(&wrapper).expect("cleanup temp dir");
     }
 
+    /// Issue #1387 (2/3): `find_config_in_tree`'s #1370 direct probe (no
+    /// `list()` walk — see its doc comment) works by calling `RealFs::read`
+    /// on each `{ancestor}/brink.toml` candidate and treating anything but
+    /// `NotFound` as "found". `find_config_in_tree_reports_found_when_the_
+    /// candidate_read_errors_non_not_found` (brink-project-config) pins that
+    /// contract against a hand-written mock `SourceTree`; this pins the same
+    /// contract against a *real* `RealFs`, with an actual symlink: a
+    /// `brink.toml` that is a symlink to a real file elsewhere must resolve
+    /// exactly as a plain file would (`fs::read_to_string`, which `RealFs::
+    /// read` wraps, follows symlinks) — both `RealFs::read` and the probe
+    /// that depends on it must see the target's real content, not treat the
+    /// symlink as absent or unreadable.
+    #[cfg(unix)]
+    #[test]
+    fn real_fs_read_and_find_config_in_tree_follow_a_symlinked_brink_toml() {
+        use std::os::unix::fs::symlink;
+
+        let root = temp_dir("realfs-symlink-config");
+        fs::write(
+            root.join("real-brink.toml"),
+            "[project]\ndialect = \"brink\"\n",
+        )
+        .expect("write real-brink.toml");
+        symlink(root.join("real-brink.toml"), root.join("brink.toml"))
+            .expect("symlink brink.toml -> real-brink.toml");
+        fs::write(root.join("main.brink"), "flow main() {}").expect("write main.brink");
+
+        let tree = RealFs::new(&root);
+        assert_eq!(
+            tree.read("brink.toml").expect("read follows the symlink"),
+            "[project]\ndialect = \"brink\"\n"
+        );
+
+        let found = brink_project_config::find_config_in_tree(&tree, "")
+            .expect("probe read succeeds")
+            .expect("the symlinked brink.toml is discovered");
+        assert_eq!(found, "brink.toml");
+
+        fs::remove_dir_all(&root).expect("cleanup temp dir");
+    }
+
+    /// Issue #1387 (2/3), the other edge case: a `brink.toml` that is
+    /// actually a *directory* on disk (a plausible authoring mistake — an
+    /// empty `mkdir brink.toml` instead of a file, or a half-finished
+    /// project scaffold). `RealFs::read` must surface this as an `Err`
+    /// (`fs::read_to_string` on a directory never panics — it errors), and
+    /// `find_config_in_tree`'s probe must still treat that error as "found"
+    /// per its documented contract ("any other error kind ... means a
+    /// `brink.toml` *exists* at this candidate but this probe couldn't read
+    /// it — treated as found"): the caller's own subsequent `read` of the
+    /// returned key is what turns this into a path-attributed load error
+    /// (`brink-environment`'s `LoadError::ConfigRead`), not a silent
+    /// "no config" fallback to defaults.
+    #[test]
+    fn real_fs_read_and_find_config_in_tree_report_a_directory_shaped_brink_toml_as_found() {
+        let root = temp_dir("realfs-dir-config");
+        fs::create_dir_all(root.join("brink.toml")).expect("mkdir brink.toml (directory)");
+        fs::write(root.join("main.brink"), "flow main() {}").expect("write main.brink");
+
+        let tree = RealFs::new(&root);
+        tree.read("brink.toml")
+            .expect_err("reading a directory as a config file must error, not panic");
+
+        let found = brink_project_config::find_config_in_tree(&tree, "")
+            .expect("the directory's read error is not propagated as an Err")
+            .expect("a directory-shaped brink.toml is still reported as found");
+        assert_eq!(found, "brink.toml");
+
+        fs::remove_dir_all(&root).expect("cleanup temp dir");
+    }
+
     /// Build a throwaway git repo with one commit containing `files`
     /// (relative path -> content), and return its directory plus the
     /// resulting commit sha.

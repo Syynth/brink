@@ -1409,6 +1409,15 @@ export interface ProjectSource {
    * recompiling; every other file is served verbatim. */
   entry: string;
   /** Every source file in the project, keyed by path exactly as its
-   * `INCLUDE` directives name it. */
+   * `INCLUDE` directives name it.
+   *
+   * `brink.toml` is **not** implicitly included — this map becomes the
+   * literal file set `compile_fragment` compiles over, and its `brink.toml`
+   * discovery walk only ever sees keys actually present here. Include a
+   * `"brink.toml"` key (with the project's real config text) if the
+   * fragment compile should honor the project's `dialect`/`types`/`[lints]`
+   * policy; omit it and the fragment compiles under
+   * `AnalysisOptions::default()` instead — never an error, just the
+   * unconfigured defaults, exactly as if no `brink.toml` existed. */
   files: Record<string, string>;
 }
