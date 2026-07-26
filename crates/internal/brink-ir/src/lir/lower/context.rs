@@ -117,6 +117,17 @@ impl UfcsLookup {
     pub fn get(&self, file: FileId, range: TextRange) -> Option<&UfcsVerdict> {
         self.map.get(&(file, range))
     }
+
+    /// Whether this table carries any recorded verdict at all — a project
+    /// with no UFCS-shaped call anywhere stays at the empty table
+    /// ([`Self::new`]'s doc). Exists so a caller assembling this table can
+    /// assert it actually got populated instead of silently staying empty
+    /// (issue #1528's coverage test) without needing a specific `(file,
+    /// range)` key to probe with.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
 }
 
 // ─── B1 `or`-coalescing shape lookup (issue #1492) ─────────────────
@@ -210,6 +221,14 @@ impl CoalesceLookup {
     pub fn get(&self, file: FileId, range: TextRange) -> Option<&[CoalesceShape]> {
         self.map.get(&(file, range)).map(Vec::as_slice)
     }
+
+    /// Whether this table carries any recorded chain at all —
+    /// [`UfcsLookup::is_empty`]'s sibling, same rationale (issue #1528's
+    /// coverage test).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
 }
 
 // ─── Analyzer side-table bundle (issue #1527) ──────────────────────
@@ -229,6 +248,14 @@ impl CoalesceLookup {
 /// to avoid mid-PR churn — this bundle is that fix. A future table (the
 /// v6/Step work) now means adding one field here, not touching every
 /// signature between the entry points and `LowerCtx` again.
+///
+/// A future table also means adding one field to
+/// `brink_analyzer::AnalyzerTablesOwned` and wiring it into
+/// `brink_analyzer::assemble_analyzer_tables` (issue #1528) — the one place
+/// a caller with no salsa layer of its own (`brink-test-harness`'s
+/// `corpus.rs`) assembles the owned tables this struct then borrows from;
+/// forgetting that step is what let the harness silently lower with an
+/// empty table for a table the production `brink-db` path already had.
 ///
 /// `Copy` — it's two references, cheap to pass by value everywhere instead
 /// of threading yet another `&`.
