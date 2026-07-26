@@ -288,14 +288,16 @@ fn mixed_index_then_field_write_emits_e074() {
 
 #[test]
 fn single_level_field_write_lowers_via_take_make_mut_write_back() {
-    // #673: a struct literal is no longer a legal VAR *declaration default*
-    // (that now emits a real E075 diagnostic, not a silent Null) — this
-    // test's actual concern is the RMW field-write desugaring, so `p` gets
-    // a scalar placeholder default (no TM-2 annotation here, so `types =
-    // gradual`'s advisory-only E063 is the worst this scalar/struct
-    // mismatch could trigger) and the real `Point` value is constructed via
-    // assignment, same as `tests/tier1-brink/struct-construct-read-write/
-    // story.ink`'s established pattern.
+    // This test's concern is the RMW field-write desugaring, not the
+    // declaration default: `p` keeps a scalar placeholder default (no TM-2
+    // annotation here, so `types = gradual`'s advisory-only E063 is the
+    // worst this scalar/struct mismatch could trigger) and the real `Point`
+    // value is constructed via assignment, same as
+    // `tests/tier1-brink/struct-construct-read-write/story.ink`'s
+    // established pattern. (#673 *required* that shape; since #1530 a
+    // construction literal is a legal default too, and
+    // `collection_struct_literal_declaration_defaults.rs` covers it — the
+    // placeholder is kept here so the assignment path stays exercised.)
     let src = "STRUCT Point = #{x: float, y: float}\nVAR p = 0\n\
         ~ p = Point#{x: 1.0, y: 2.0}\n~ p.x = 9.0\nHello.\n";
     let (program, diags) = lower_ink_with_warnings(src);
@@ -375,9 +377,10 @@ fn gradual_construction_field_mismatch_uses_fault_sentinel_shape_id() {
 
 #[test]
 fn strict_mode_known_shape_field_read_uses_static_offset() {
-    // #673: `VAR p: Point = Point#{...}` used to be exactly the pattern
-    // `eval_const_expr` silently dropped to `Null` — now a real E075. `p`
-    // gets the same `VAR p: Point = 0` + assignment shape
+    // `VAR p: Point = Point#{...}` was the pattern #673 silently dropped to
+    // `Null`, then refused with E075; since #1530 it folds into a real
+    // `ConstValue::Record`. This test keeps the `VAR p: Point = 0` +
+    // assignment shape
     // `tm4c_structs_codegen.rs`'s `strict_and_gradual_produce_equivalent_
     // output_for_well_formed_program` already establishes (a scalar
     // placeholder default under a struct annotation doesn't trip E063 —
@@ -416,12 +419,10 @@ fn gradual_mode_never_emits_static_offset_even_with_annotation() {
     // (the default) — the annotation is "optional seasoning" there, never
     // enforced, so trusting it for a static offset would be unsound (see
     // `expr::static_offset_for`'s doc). Must fall back to the by-name op.
-    // #673: same fixture rewrite as
-    // `strict_mode_known_shape_field_read_uses_static_offset` above — a
-    // struct literal is no longer legal as the declaration default itself
-    // (real E075 now), so `p` gets a scalar placeholder default and the
-    // annotation stays for this test's actual point (the annotation being
-    // *ignored* under gradual).
+    // Same fixture shape as
+    // `strict_mode_known_shape_field_read_uses_static_offset` above — `p`
+    // keeps a scalar placeholder default and the annotation stays for this
+    // test's actual point (the annotation being *ignored* under gradual).
     let src = "STRUCT Point = #{x: float, y: float}\nVAR p: Point = 0\n\
         ~ p = Point#{x: 1.0, y: 2.0}\n~ temp v = p.y\nHello.\n";
     let (program, diags) = lower_ink_with_warnings(src);

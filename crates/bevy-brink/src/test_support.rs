@@ -73,9 +73,11 @@ pub fn compile_test_story_brink(
 /// [`compile_test_story_brink`] with an explicit `types = gradual` opt-out
 /// (NS-A9 flipped the brink dialect's default to strict). For fixtures whose
 /// *subject* is regime-independent runtime behavior but whose construction is
-/// gradual-locked — e.g. the `VAR x = 0` → struct-reassign placeholder idiom
-/// (struct literals are not legal declaration defaults, E075), which strict
-/// types as the scalar and rejects at the reassignment.
+/// gradual-locked — e.g. the `VAR x = 0` → struct-reassign placeholder
+/// idiom, which strict types as the scalar and rejects at the reassignment.
+/// (That idiom predates #1530, which made a well-formed construction
+/// literal a legal declaration default; migrating these fixtures onto the
+/// direct spelling is a separate pass.)
 pub fn compile_test_story_brink_gradual(
     source: &str,
 ) -> (Program, Vec<Vec<brink_format::LineEntry>>, World) {

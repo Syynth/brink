@@ -395,6 +395,130 @@ flow main() {
     assert!(err.contains("cannot mutate"), "ruled wording: {err}");
 }
 
+/// The **positive** half of the durable-root rule, and the one arm of D5
+/// this file could not reach until issue #1530: a projection whose root
+/// *is* a durable cell (`docs/t1e-spec.md` §2) auto-refs through the
+/// projection and the write survives the call.
+///
+/// Before #1530 a struct-typed global was unspellable — `var g: Guest =
+/// Guest { hp: 1 }` was refused at LIR lowering (`E075`: `lir::ConstValue`
+/// had no record-carrying variant), so the only receivers this file could
+/// build were frame-locals, and the projection arm was covered solely by
+/// `brink-ir/tests/ufcs_auto_ref.rs`'s hand-assembled verdict table. That
+/// also made `E143`'s own remediation advice — bind the receiver to a
+/// durable cell — point at something the language could not express.
+///
+/// Note the boundary: this is the durable-**global** root. Whether a
+/// frame-local should ever be a legal projection receiver is issue #1531
+/// (RULING REQUEST, unresolved); the refusal test above pins today's
+/// behavior and is deliberately left alone.
+#[test]
+fn auto_ref_mutates_a_projection_off_a_durable_global_end_to_end() {
+    let out = play(
+        "\
+struct Guest {
+  hp: int
+}
+
+var g: Guest = Guest { hp: 1 }
+
+fn heal(ref h, amount) {
+  h = h + amount;
+}
+
+fn total() {
+  g.hp.heal(5);
+  return g.hp;
+}
+
+flow main() {
+  HP is {total()}.
+}
+",
+    );
+    assert_eq!(out, "HP is 6.\n");
+}
+
+/// The same durable-global receiver with the type annotation *omitted* —
+/// #1530 was reported for both `var g: Guest = Guest { … }` and
+/// `var g = Guest { … }`, so both spellings get a fixture. The declared
+/// default's own literal carries the shape either way.
+#[test]
+fn auto_ref_mutates_a_projection_off_an_unannotated_global_end_to_end() {
+    let out = play(
+        "\
+struct Guest {
+  hp: int
+}
+
+var g = Guest { hp: 1 }
+
+fn heal(ref h, amount) {
+  h = h + amount;
+}
+
+fn total() {
+  g.hp.heal(5);
+  return g.hp;
+}
+
+flow main() {
+  HP is {total()}.
+}
+",
+    );
+    assert_eq!(out, "HP is 6.\n");
+}
+
+/// The declaration default is a real baked record, not just a shape the
+/// projection can be lowered against: reading a field before anything
+/// writes to it yields the value the literal declared.
+#[test]
+fn a_struct_typed_global_reads_its_declared_default_before_any_write() {
+    let out = play(
+        "\
+struct Guest {
+  name: string
+  hp: int
+}
+
+var g = Guest { name: \"ada\", hp: 7 }
+
+fn describe() {
+  return g.hp;
+}
+
+flow main() {
+  HP is {describe()}.
+}
+",
+    );
+    assert_eq!(out, "HP is 7.\n");
+}
+
+/// The malformed half of #1530's narrowed `E075`: a declaration default
+/// that omits a declared field has no `RecordNew` runtime step left to
+/// fault at (the value is baked into `StoryData`), so it stays a compile
+/// error rather than baking a half-built record.
+#[test]
+fn a_struct_typed_global_missing_a_declared_field_refuses_the_compile() {
+    let err = refuse(
+        "\
+struct Guest {
+  name: string
+  hp: int
+}
+
+var g = Guest { hp: 7 }
+
+flow main() {
+  {g.hp}
+}
+",
+    );
+    assert!(err.contains("E075"), "expected E075, got: {err}");
+}
+
 /// The explicit free-call spelling keeps working end to end — the sugar is
 /// additive, and this is the workaround every refusal above points authors
 /// at.

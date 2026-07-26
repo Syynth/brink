@@ -145,6 +145,18 @@ pub(crate) fn find_global<'a>(program: &'a lir::Program, name: &str) -> &'a lir:
         .unwrap_or_else(|| panic!("no global named {name:?}"))
 }
 
+/// The `ShapeId` the project's shape table assigned to the `STRUCT` named
+/// `name` — so a test can assert a folded [`lir::ConstValue::Record`] names
+/// the right shape without hard-coding the dense id.
+pub(crate) fn shape_id_of(program: &lir::Program, name: &str) -> u32 {
+    program
+        .struct_shapes
+        .iter()
+        .find(|s| program.name_table[s.name.0 as usize] == name)
+        .unwrap_or_else(|| panic!("no STRUCT named {name:?}"))
+        .id
+}
+
 /// Recursively count containers of a given kind in the tree.
 pub(crate) fn count_kind(container: &lir::Container, kind: lir::ContainerKind) -> usize {
     let mut count = usize::from(container.kind == kind);

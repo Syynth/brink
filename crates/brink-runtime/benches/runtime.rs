@@ -154,9 +154,9 @@ fn compile_story(ink_rel: &str) -> StoryData {
 fn compile_story_brink(ink_rel: &str) -> StoryData {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(ink_rel);
     // NS-A9: explicit gradual — the bench fixture uses the `VAR x = 0` →
-    // collection-reassign placeholder idiom the strict default rejects
-    // (E075-locked, same as the t1e corpus); the bench measures runtime
-    // throughput, not typing regime.
+    // collection-reassign placeholder idiom the strict default rejects (same
+    // shape as the t1e corpus); the bench measures runtime throughput, not
+    // typing regime.
     let options = AnalysisOptions {
         dialect: Dialect::Brink,
         types: Some(brink_compiler::TypePolicy::Gradual),

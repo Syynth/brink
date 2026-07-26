@@ -462,10 +462,10 @@ fn signature_var_nested_array_literal_default_recurses() {
 /// struct-annotated globals through the declared type)". Both spellings
 /// (annotation and construction literal) now reach `Ty::Struct`, which is
 /// what `E142`'s unknown-receiver check reads. #1530's *second* half —
-/// admitting a construction literal as a `VAR` default at all — is
-/// untouched here: `brink-ir`'s `eval_const_struct_literal` still reports
-/// `E075` unconditionally, because `lir::ConstValue` has no record-carrying
-/// variant (a format question, per issue #673's own note).
+/// admitting a construction literal as a `VAR` default at all — landed
+/// separately in `brink-ir`'s `eval_const_struct_literal`, which now folds a
+/// well-formed literal into `lir::ConstValue::Record`; `E075` was narrowed
+/// to the shape-mismatch cases.
 #[test]
 fn signature_var_struct_annotation_and_literal_both_reach_ty_struct() {
     let annotated = "STRUCT Point = #{x: float}\nVAR p: Point = 0\n";

@@ -5,20 +5,21 @@
 //!
 //! The end-to-end proof that this compiles, plays, and leaves the mutation
 //! visible in the caller lives in `brink-test-harness/tests/b3a_ufcs_e2e.rs`
-//! (`auto_ref_mutates_a_local_receiver_end_to_end` and its global-`VAR`
-//! twin). What that file *cannot* reach is the **projection** shape: a T1e
-//! projection's root must be a durable cell (`docs/t1e-spec.md` §2), and the
-//! native surface has no way to spell a struct-typed global today. Issue
-//! #1540 closed half of that: a struct-annotated or struct-literal-
-//! initialized declaration now *does* derive `Ty::Struct` in
-//! `infer::collect_globals` (`Sig::value_ty`), so `E142` is no longer the
-//! blocker. What still blocks it is the other half, tracked by issue #1530:
-//! a construction literal is refused as a `VAR` default (`E075`), because
-//! `lir::ConstValue` has no record-carrying variant. This file therefore
-//! drives the
-//! lowering with a hand-assembled verdict table, mirroring the workaround
-//! `ufcs_field_call.rs` documents for the same class of gap, so the arm is
-//! covered rather than assumed.
+//! (`auto_ref_mutates_a_local_receiver_end_to_end`, its global-`VAR` twin,
+//! and — since issue #1530 made a struct-typed durable global spellable —
+//! `auto_ref_mutates_a_projection_off_a_durable_global_end_to_end` for the
+//! **projection** shape, whose root must be a durable cell per
+//! `docs/t1e-spec.md` §2).
+//!
+//! Reaching that took two halves. #1540 gave a struct-annotated or
+//! struct-literal-initialized declaration a real `Ty::Struct` in
+//! `infer::collect_globals` (`Sig::value_ty`), so `E142` stopped blocking
+//! it; #1530 folded a well-formed construction literal into
+//! `lir::ConstValue::Record`, so `E075` stopped refusing the `VAR` default.
+//! This file still drives the lowering with a hand-assembled verdict table
+//! — the unit-level view of the same arm, mirroring `ufcs_field_call.rs` —
+//! so the LIR shape is asserted directly rather than only inferred from the
+//! played output.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 // Issue #801: this crate's `clippy.toml` disallows bare `HashMap`/`HashSet`
