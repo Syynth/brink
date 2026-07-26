@@ -93,7 +93,7 @@ use brink_db::ProjectDb;
 use brink_format::DefinitionId;
 use brink_ir::hir::visit::{self, HirVisitor};
 use brink_ir::lir::UfcsVerdict;
-use brink_ir::{Expr, FileId, HirFile, Name, SymbolKind};
+use brink_ir::{DivertPath, DivertTarget, Expr, FileId, HirFile, Name, Path, Stmt, SymbolKind};
 use rowan::{TextRange, TextSize};
 
 use crate::hover::HoverInfo;
@@ -183,7 +183,11 @@ fn find_ufcs_call(
         matches: &matches,
         found: None,
     };
-    visit::visit(hir, &mut finder);
+    // `visit_with_decl_initializers`, not `visit` (issue #1571): a UFCS call
+    // can be written in a `VAR`/`CONST` initializer (`VAR n = p.scaled(2)`),
+    // which `symbols::project_manifest` walks and records a reference from,
+    // but which the block-tree-only `visit` never reaches.
+    visit::visit_with_decl_initializers(hir, &mut finder);
     finder.found
 }
 
@@ -297,7 +301,11 @@ fn find_field_access_ref(hir: &HirFile, path_range: TextRange) -> Option<FieldAc
         path_range,
         found: None,
     };
-    visit::visit(hir, &mut finder);
+    // See `find_ufcs_call` for why this is the initializer-aware walk: a
+    // dotted field access is just as legal in `VAR n = p.x.y` as in a knot
+    // body, and #1571's whole point is that the block-tree-only `visit`
+    // never reached the former.
+    visit::visit_with_decl_initializers(hir, &mut finder);
     finder.found
 }
 
@@ -340,6 +348,153 @@ pub fn field_access_head_range_at_path(
         return None;
     }
     find_field_access_ref(hir, path_range).map(|site| site.head_range)
+}
+
+/// Find the multi-segment path in `hir` whose whole range is exactly
+/// `path_range` and return its LAST segment's own range.
+///
+/// Unlike [`find_field_access_ref`] (which only has to consider
+/// `Expr::Path`, the single shape `lookup_variable`'s step-11 fallback can
+/// fire on), a *qualified* reference to a stitch / list item / label is
+/// written in every path-bearing HIR position there is, and
+/// `symbols::project::Projector` records a whole-path `UnresolvedRef` from
+/// each of them:
+///
+/// - `Stmt::Divert` / `Stmt::TunnelCall` / `Stmt::ThreadStart` — the
+///   `-> hub.market`, `-> hub.market ->`, `<- hub.market` forms
+///   (`Projector::walk_divert_target`);
+/// - `Expr::DivertTarget` — a divert target used as a *value*
+///   (`~ t = -> hub.market`);
+/// - `Expr::ListLiteral` — each `(Colors.Red, Colors.Green)` member path;
+/// - `Expr::Path` — a plain value-position reference (`~ y = hub.market`,
+///   `{Colors.Red}`).
+///
+/// A call's callee path (`Expr::Call`), a function literal's target
+/// (`Expr::FnLiteral`, both `RefKind::Function`) and a struct literal's
+/// shape (`Expr::StructLiteral`, `RefKind::Struct`) are deliberately
+/// absent: `resolve`'s `resolve_function` has no stitch / list-item /
+/// label lookup at all, and `resolve_struct_ref` resolves only against
+/// `SymbolKind::Struct`, so neither reference position can ever target one
+/// of the kinds [`qualified_tail_range_at_path`] gates on.
+fn find_qualified_tail(hir: &HirFile, path_range: TextRange) -> Option<TextRange> {
+    struct Finder {
+        path_range: TextRange,
+        found: Option<TextRange>,
+    }
+    impl Finder {
+        fn consider(&mut self, path: &Path) {
+            if self.found.is_some() || path.range != self.path_range {
+                return;
+            }
+            let Some((tail, leading)) = path.segments.split_last() else {
+                return;
+            };
+            if leading.is_empty() {
+                // A bare single-segment path — its whole range already *is*
+                // the target's own segment, so there is nothing to narrow.
+                return;
+            }
+            self.found = Some(tail.range);
+        }
+        fn consider_target(&mut self, target: &DivertTarget) {
+            if let DivertPath::Path(p) = &target.path {
+                self.consider(p);
+            }
+        }
+    }
+    impl HirVisitor for Finder {
+        fn visit_exprs(&self) -> bool {
+            true
+        }
+        fn enter_stmt(&mut self, stmt: &Stmt) {
+            match stmt {
+                Stmt::Divert(d) => self.consider_target(&d.target),
+                Stmt::ThreadStart(t) => self.consider_target(&t.target),
+                Stmt::TunnelCall(t) => {
+                    for target in &t.targets {
+                        self.consider_target(target);
+                    }
+                }
+                _ => {}
+            }
+        }
+        fn enter_expr(&mut self, expr: &Expr) {
+            match expr {
+                Expr::Path(p) | Expr::DivertTarget(p) => self.consider(p),
+                Expr::ListLiteral(items) => {
+                    for p in items {
+                        self.consider(p);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut finder = Finder {
+        path_range,
+        found: None,
+    };
+    visit::visit_with_decl_initializers(hir, &mut finder);
+    finder.found
+}
+
+/// The LAST segment's own range (`market`'s span for `hub.market`, `Red`'s
+/// for `Colors.Red`) of the qualified reference at `path_range` in `hir`, if
+/// any — issue #1571, the *tail* mirror of
+/// [`field_access_head_range_at_path`].
+///
+/// The whole-path `ResolvedRef` shape that #1550/#1560 narrowed from the
+/// head has a second, equally corrupting reading: when the resolved target
+/// is a **stitch** (`resolve::lookup_variable` steps 6–8, `lookup_divert`), a
+/// **list item** (step 4) or a **label** (steps 8–10), the segment that
+/// actually names it is the path's *last* one, not its first. Rewriting the
+/// whole range there collapses `-> hub.market` into `-> newname` and
+/// `Colors.Red` into `Crimson`, silently dropping the qualifier — the same
+/// silent-corruption class, from the other end.
+///
+/// `target_kind` must be the `SymbolKind` of the `ResolvedRef`'s own target.
+/// The gate is checked here rather than at each call site, and is disjoint
+/// by construction from [`field_access_head_range_at_path`]'s
+/// `Variable | Constant | Param | Temp`: a reference can be narrowed to the
+/// head or to the tail, never to both, because the two kind sets do not
+/// intersect.
+#[must_use]
+pub fn qualified_tail_range_at_path(
+    hir: &HirFile,
+    path_range: TextRange,
+    target_kind: SymbolKind,
+) -> Option<TextRange> {
+    if !matches!(
+        target_kind,
+        SymbolKind::Stitch | SymbolKind::ListItem | SymbolKind::Label
+    ) {
+        return None;
+    }
+    find_qualified_tail(hir, path_range)
+}
+
+/// Narrow a `ResolvedRef`'s range down to the single segment that actually
+/// names the resolved symbol, or `None` when the range already spans exactly
+/// that segment.
+///
+/// The one place the three whole-path narrowings are composed, so every
+/// consumer of `analysis.resolutions` that rewrites or reports a reference
+/// range — `rename`, `find_references`, `prepare_rename` — applies the same
+/// set (issue #1571; before it, `prepare_rename` applied none of them and
+/// highlighted the whole `p.x.y` / `recv.verb` path on an F2 at its head).
+///
+/// The three are mutually exclusive: [`ufcs_receiver_head_range_at_path`]
+/// matches only an `Expr::Call` callee path, and the other two are gated on
+/// disjoint `SymbolKind` sets (see their own docs).
+#[must_use]
+pub fn narrowed_reference_range(
+    hir: &HirFile,
+    ref_range: TextRange,
+    target_kind: SymbolKind,
+) -> Option<TextRange> {
+    ufcs_receiver_head_range_at_path(hir, ref_range)
+        .or_else(|| field_access_head_range_at_path(hir, ref_range, target_kind))
+        .or_else(|| qualified_tail_range_at_path(hir, ref_range, target_kind))
 }
 
 /// The method-segment range of the UFCS call site at `offset` in `hir`, if

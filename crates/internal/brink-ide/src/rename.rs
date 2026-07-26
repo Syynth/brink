@@ -65,11 +65,25 @@ pub fn prepare_rename(
     }
 
     // Return the range of the symbol under the cursor (reference or definition site)
+    //
+    // Issue #1571: the reference range may be a *whole dotted path* the
+    // symbol only owns one segment of — `p` in `p.x.y`, `recv` in
+    // `recv.verb(…)`, `market` in `-> hub.market`. Returning it unnarrowed
+    // made F2 on the head/receiver segment highlight (and offer to replace)
+    // the whole path, contradicting the range `rename` then actually edits.
+    // The same composed narrowing `rename` and `find_references` apply is
+    // applied here, so the highlighted range and the edited range agree.
     analysis
         .resolutions
         .iter()
         .find(|r| r.file == file_id && (r.range.contains(offset) || r.range.start() == offset))
-        .map(|r| r.range)
+        .map(|r| {
+            db.hir(file_id)
+                .and_then(|hir| {
+                    crate::ufcs_hover::narrowed_reference_range(hir, r.range, info.kind)
+                })
+                .unwrap_or(r.range)
+        })
         .or_else(|| (info.file == file_id).then_some(info.range))
 }
 
@@ -156,22 +170,23 @@ pub fn rename(
     // Issue #1560 (the non-UFCS-call half of the same bug):
     // `resolve::lookup_variable`'s dotted-field-access fallback (step 11)
     // records the SAME whole-path shape for a plain (non-call) reference
-    // like `p.x.y` — narrowed the same way via
-    // `ufcs_hover::field_access_head_range_at_path`, or the edit collapses
-    // `p.x.y` into `newname`, silently dropping `.x.y`.
+    // like `p.x.y` — narrowed the same way, or the edit collapses `p.x.y`
+    // into `newname`, silently dropping `.x.y`.
+    //
+    // Issue #1571 (the tail half): when the target is a stitch, list item
+    // or label, the same whole-path shape names the symbol with its *last*
+    // segment instead — `-> hub.market`, `Colors.Red` — so an unnarrowed
+    // edit collapses the qualifier away from the other end.
+    //
+    // All three narrowings are composed by
+    // `ufcs_hover::narrowed_reference_range`, shared with `find_references`
+    // and `prepare_rename`.
     for resolved in &analysis.resolutions {
         if resolved.target == analysis_def_id {
             let range = db
                 .hir(resolved.file)
                 .and_then(|hir| {
-                    crate::ufcs_hover::ufcs_receiver_head_range_at_path(hir, resolved.range)
-                        .or_else(|| {
-                            crate::ufcs_hover::field_access_head_range_at_path(
-                                hir,
-                                resolved.range,
-                                target_kind,
-                            )
-                        })
+                    crate::ufcs_hover::narrowed_reference_range(hir, resolved.range, target_kind)
                 })
                 .unwrap_or(resolved.range);
             edits.push(FileEdit {
@@ -810,10 +825,10 @@ fn main() {
         // reference. Fixture mirrors
         // `resolve::resolution_fallback_static_dotted_path_wins_over_a_colliding_variable_name`.
         //
-        // This asserts only that the reference is *not narrowed to the
-        // head* — the semantically correct rewrite of the reference itself
-        // (`hub.newname`, not `newname.market`) is a separate, pre-existing
-        // bug, out of scope here.
+        // The head guard is asserted here; the *correct* rewrite of the same
+        // reference (`hub.newname`) is issue #1571's tail narrowing, asserted
+        // by `renaming_a_stitch_rewrites_only_the_tail_segment_of_a_qualified_reference`
+        // below.
         let src = "=== hub ===\n= market\nHi.\n-> DONE\n=== main ===\n~ y = hub.market\n-> DONE\n";
         let (s, id) = session(src);
         let hir = s.hir(id).expect("hir");
@@ -836,5 +851,274 @@ fn main() {
                 edit.range
             );
         }
+    }
+
+    // ── Issue #1571 variant 1: the TAIL half of the whole-path
+    // `ResolvedRef` bug. When the resolved target is a stitch, a list item
+    // or a label, the segment that names it is the path's *last* one —
+    // rewriting the whole range collapses `-> hub.market` to `-> newname`
+    // and `Colors.Red` to `Crimson`, dropping the qualifier ───────────────
+
+    #[test]
+    fn renaming_a_stitch_rewrites_only_the_tail_segment_of_a_qualified_reference() {
+        // `~ y = hub.market` lowers to a 2-segment `Expr::Path` whose whole
+        // range is the `ResolvedRef`'s range, targeting the stitch
+        // `market`. Unnarrowed, the rename edit spans all of `hub.market`.
+        let src = "=== hub ===\n= market\nHi.\n-> DONE\n=== main ===\n~ y = hub.market\n-> DONE\n";
+        let (s, id) = session(src);
+        let hir = s.hir(id).expect("hir");
+        let decl_pos = declaration_offset(hir, "hub", Some("market")).expect("stitch decl");
+        let analysis = s.analysis().expect("analysis");
+
+        let result = rename(s.db(), analysis, id, decl_pos, "newname").expect("rename");
+
+        let tail_pos =
+            u32::try_from(src.find("hub.market").expect("ref") + "hub.".len()).expect("offset");
+        let found = result
+            .edits
+            .iter()
+            .find(|e| e.file == id && e.range.start() == TextSize::from(tail_pos));
+        assert!(
+            found.is_some(),
+            "expected an edit at the qualified reference's tail segment, got {:?}",
+            result
+                .edits
+                .iter()
+                .map(|e| (e.range, e.new_text.as_str()))
+                .collect::<Vec<_>>()
+        );
+        let edit = found.expect("checked above");
+        assert_eq!(
+            usize::from(edit.range.end()) - usize::from(edit.range.start()),
+            "market".len(),
+            "the edit must span only the `market` segment, not the whole `hub.market` path — \
+             got {:?}",
+            edit.range
+        );
+    }
+
+    #[test]
+    fn rename_safe_on_a_stitch_keeps_the_qualifier_of_a_divert_reference() {
+        // The divert form of the same bug, end-to-end: `Projector::
+        // walk_divert_target` records the whole `hub.market` path range for
+        // a `-> hub.market` divert exactly as the expression form does, and
+        // a divert lives on `Stmt::Divert` rather than `Expr::Path` — a
+        // shape `find_field_access_ref` never looks at. Before #1571 this
+        // rewrote the divert to `-> newname`, which resolves to nothing.
+        let src = "=== hub ===\n= market\nHi.\n-> DONE\n=== main ===\n-> hub.market\n";
+        let (s, id) = session(src);
+        let hir = s.hir(id).expect("hir");
+        let decl_pos = declaration_offset(hir, "hub", Some("market")).expect("stitch decl");
+
+        let res = rename_safe(&s, id, decl_pos, "newname").expect("rename");
+
+        let new_source = res.new_source.as_deref().expect("new_source");
+        assert!(
+            new_source.contains("-> hub.newname"),
+            "the divert must keep its `hub.` qualifier: {new_source}"
+        );
+        assert!(
+            !new_source.contains("-> newname"),
+            "the divert must not collapse to the bare stitch name: {new_source}"
+        );
+        // Deliberately no `res.introduced.is_empty()` assertion here, unlike
+        // the `.ink` knot rename above: a *stitch* declaration is also
+        // recorded as a resolved reference at its own declaration range, so
+        // `rename` emits two identical-range edits for it and `apply_edits`
+        // splices both — mangling the declaration line. That duplicate-edit
+        // bug is independent of this issue (it reproduces with no dotted
+        // path in the fixture at all, and predates #1571); it is reported
+        // separately rather than fixed here.
+    }
+
+    #[test]
+    fn renaming_a_list_item_keeps_the_list_qualifier_at_every_reference() {
+        // `Colors.Red` resolves (via `lookup_variable` step 4) to the list
+        // item `Red`, whose declaration is the bare `Red` inside the `LIST`
+        // line — so an unnarrowed rewrite of the whole-path reference range
+        // collapsed `Colors.Red` to `Crimson`.
+        //
+        // The `VAR c = Colors.Red` reference is deliberately part of this
+        // fixture: it is a declaration *initializer*, which
+        // `project_manifest` walks but `hir::visit::visit` did not — so it
+        // also pins issue #1571's `visit_with_decl_initializers` change
+        // (variant 2) on the tail side.
+        let src = "LIST Colors = Red, Green\nVAR c = Colors.Red\n=== main ===\n~ c = Colors.Red\n\
+                   -> DONE\n";
+        let (s, id) = session(src);
+        let analysis = s.analysis().expect("analysis");
+        let decl_pos = analysis
+            .index
+            .symbols
+            .values()
+            .find(|i| i.kind == brink_ir::SymbolKind::ListItem && i.name == "Colors.Red")
+            .map(|i| i.range.start())
+            .expect("the `Red` list-item declaration");
+
+        let result = rename(s.db(), analysis, id, decl_pos, "Crimson").expect("rename");
+
+        for occurrence in ["VAR c = Colors.Red", "~ c = Colors.Red"] {
+            let tail_pos = u32::try_from(
+                src.find(occurrence).expect("occurrence") + occurrence.len() - "Red".len(),
+            )
+            .expect("offset");
+            let found = result
+                .edits
+                .iter()
+                .find(|e| e.file == id && e.range.start() == TextSize::from(tail_pos));
+            assert!(
+                found.is_some(),
+                "expected a tail-only edit for `{occurrence}`, got {:?}",
+                result
+                    .edits
+                    .iter()
+                    .map(|e| (e.range, e.new_text.as_str()))
+                    .collect::<Vec<_>>()
+            );
+            let edit = found.expect("checked above");
+            assert_eq!(
+                usize::from(edit.range.end()) - usize::from(edit.range.start()),
+                "Red".len(),
+                "the edit for `{occurrence}` must span only `Red`, not the whole `Colors.Red` \
+                 path — got {:?}",
+                edit.range
+            );
+        }
+    }
+
+    #[test]
+    fn renaming_a_knot_level_label_rewrites_only_the_tail_segment_of_a_qualified_reference() {
+        // Review finding on this PR: `qualified_tail_range_at_path` gates on
+        // `Stitch | ListItem | Label`, but only the Stitch and ListItem
+        // variants had a regression test. `Label` is a live corruption path
+        // of its own: `resolve::lookup_divert`'s dotted branch looks up
+        // `&[SymbolKind::Stitch, SymbolKind::Label]`, and
+        // `Projector::qualify_label` stores a knot-level label as
+        // `hub.mylabel` — so `-> hub.mylabel` records the same whole-path
+        // `ResolvedRef` shape a stitch reference does, and collapsed to
+        // `-> newname` before this PR.
+        let src = "=== hub ===\n- (mylabel) Hi.\n-> DONE\n=== main ===\n-> hub.mylabel\n";
+        let (s, id) = session(src);
+        let analysis = s.analysis().expect("analysis");
+        let decl_pos = analysis
+            .index
+            .symbols
+            .values()
+            .find(|i| i.kind == brink_ir::SymbolKind::Label && i.name == "hub.mylabel")
+            .map(|i| i.range.start())
+            .expect("the `mylabel` label declaration");
+
+        let result = rename(s.db(), analysis, id, decl_pos, "newname").expect("rename");
+
+        let tail_pos =
+            u32::try_from(src.find("hub.mylabel").expect("ref") + "hub.".len()).expect("offset");
+        let found = result
+            .edits
+            .iter()
+            .find(|e| e.file == id && e.range.start() == TextSize::from(tail_pos));
+        assert!(
+            found.is_some(),
+            "expected an edit at the qualified reference's tail segment, got {:?}",
+            result
+                .edits
+                .iter()
+                .map(|e| (e.range, e.new_text.as_str()))
+                .collect::<Vec<_>>()
+        );
+        let edit = found.expect("checked above");
+        assert_eq!(
+            usize::from(edit.range.end()) - usize::from(edit.range.start()),
+            "mylabel".len(),
+            "the edit must span only the `mylabel` segment, not the whole `hub.mylabel` path — \
+             got {:?}",
+            edit.range
+        );
+    }
+
+    // ── Issue #1571 variant 2: `VAR`/`CONST` initializer expressions
+    // bypassed the narrowing walker entirely. `symbols::project_manifest`
+    // walks them and records whole-path `UnresolvedRef`s, but
+    // `hir::visit::visit` covered only `root_content` + knot/stitch bodies,
+    // so no narrowing helper could ever see the HIR path behind such a
+    // reference ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn renaming_a_variable_edits_only_the_head_segment_inside_decl_initializers() {
+        // `VAR n = p.x` / `CONST k = p.y` both resolve through
+        // `lookup_variable`'s step-11 field-access fallback to `p`, at the
+        // whole `p.x` / `p.y` range. Before #1571 the narrowing found no
+        // matching HIR path (the walker never entered a declaration
+        // initializer), so both edits spanned the whole path and applying
+        // the rename dropped the field segments.
+        let src = "VAR p = 0\nVAR n = p.x\nCONST k = p.y\n=== main ===\n-> DONE\n";
+        let (s, id) = session(src);
+        let decl_pos = u32::try_from(src.find("p = 0").expect("decl")).expect("offset");
+        let analysis = s.analysis().expect("analysis");
+
+        let result =
+            rename(s.db(), analysis, id, TextSize::from(decl_pos), "newname").expect("rename");
+
+        for occurrence in ["p.x", "p.y"] {
+            let ref_pos = u32::try_from(src.find(occurrence).expect("ref")).expect("offset");
+            let found = result
+                .edits
+                .iter()
+                .find(|e| e.file == id && e.range.start() == TextSize::from(ref_pos));
+            assert!(
+                found.is_some(),
+                "expected an edit at `{occurrence}`'s head segment, got {:?}",
+                result
+                    .edits
+                    .iter()
+                    .map(|e| (e.range, e.new_text.as_str()))
+                    .collect::<Vec<_>>()
+            );
+            let edit = found.expect("checked above");
+            assert_eq!(
+                usize::from(edit.range.end()) - usize::from(edit.range.start()),
+                1,
+                "the edit inside the declaration initializer must span only the 1-byte `p` \
+                 head, not the whole `{occurrence}` path — got {:?}",
+                edit.range
+            );
+        }
+    }
+
+    // ── Issue #1571 variant 3: `prepare_rename` returned the whole
+    // dotted-path range, so F2 on the head/receiver segment highlighted a
+    // span wider than the one `rename` then edits ───────────────────────
+
+    #[test]
+    fn prepare_rename_on_a_field_access_head_offers_only_the_head_segment() {
+        let src = "VAR p = 0\n=== main ===\n~ y = p.x\n-> DONE\n";
+        let (s, id) = session(src);
+        let ref_pos = u32::try_from(src.find("p.x").expect("ref")).expect("offset");
+        let analysis = s.analysis().expect("analysis");
+
+        let range = prepare_rename(s.db(), analysis, id, TextSize::from(ref_pos))
+            .expect("the head segment is renameable");
+
+        assert_eq!(
+            (range.start(), range.end()),
+            (TextSize::from(ref_pos), TextSize::from(ref_pos + 1)),
+            "F2 on `p` must offer only the `p` segment, not the whole `p.x` path"
+        );
+    }
+
+    #[test]
+    fn prepare_rename_on_a_ufcs_receiver_offers_only_the_receiver_segment() {
+        let (s, id) = native_session(UFCS_FREE_FN_SRC);
+        let recv_pos =
+            u32::try_from(UFCS_FREE_FN_SRC.find("g.greet(3)").expect("recv")).expect("offset");
+        let analysis = s.analysis().expect("analysis");
+
+        let range = prepare_rename(s.db(), analysis, id, TextSize::from(recv_pos))
+            .expect("the receiver segment is renameable");
+
+        assert_eq!(
+            (range.start(), range.end()),
+            (TextSize::from(recv_pos), TextSize::from(recv_pos + 1)),
+            "F2 on `g` must offer only the receiver segment, not the whole `g.greet` path"
+        );
     }
 }

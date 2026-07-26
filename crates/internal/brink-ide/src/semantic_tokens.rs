@@ -26,6 +26,7 @@ pub fn token_type_names() -> &'static [&'static str] {
         "decorator",  // 11 tags (#)
         "label",      // 12 labels, gather names
         "struct",     // 13 STRUCT declarations (TM-4b)
+        "property",   // 14 struct-field segments of a dotted field access
     ]
 }
 
@@ -55,6 +56,7 @@ const TT_PARAMETER: u32 = 10;
 const TT_DECORATOR: u32 = 11;
 const TT_LABEL: u32 = 12;
 const TT_STRUCT: u32 = 13;
+const TT_PROPERTY: u32 = 14;
 
 // ── Modifier bitmasks ──────────────────────────────────────────────
 
@@ -299,25 +301,89 @@ fn classify_ident_by_resolution(
     }
 
     // Try the parent IDENTIFIER node range (resolutions may use the node range)
-    if let Some(parent) = token.parent() {
-        if parent.kind() == SyntaxKind::IDENTIFIER
-            && let Some(&sym_kind) = resolution_index.get(&parent.text_range())
-        {
-            return symbol_kind_to_classification(sym_kind);
-        }
-        // Try the PATH grandparent range too
-        if parent.kind() == SyntaxKind::IDENTIFIER
-            && let Some(grandparent) = parent.parent()
-            && grandparent.kind() == SyntaxKind::PATH
-            && let Some(&sym_kind) = resolution_index.get(&grandparent.text_range())
-        {
-            return symbol_kind_to_classification(sym_kind);
-        }
+    let Some(parent) = token.parent() else {
+        return GENERIC_VARIABLE;
+    };
+    if parent.kind() == SyntaxKind::IDENTIFIER
+        && let Some(&sym_kind) = resolution_index.get(&parent.text_range())
+    {
+        return symbol_kind_to_classification(sym_kind);
     }
 
-    // Fallback: generic variable
+    // Try the enclosing PATH node's range. A dotted reference's resolution is
+    // recorded against the *whole* path (`brink_ir::ResolvedRef::range`'s
+    // load-bearing whole-path contract, pinned by #1561), so this is the only
+    // range a segment of `p.x.y` / `Colors.Red` can be looked up by. The
+    // segment tokens sit directly under `PATH` in some shapes and inside an
+    // `IDENTIFIER` wrapper in others, so both are accepted.
+    let path = if parent.kind() == SyntaxKind::PATH {
+        Some(parent.clone())
+    } else if parent.kind() == SyntaxKind::IDENTIFIER {
+        parent.parent().filter(|gp| gp.kind() == SyntaxKind::PATH)
+    } else {
+        None
+    };
+    if let Some(path) = path
+        && let Some(&sym_kind) = resolution_index.get(&path.text_range())
+    {
+        return classify_path_segment(&path, token, sym_kind);
+    }
+
+    GENERIC_VARIABLE
+}
+
+/// The classification for an identifier no resolution accounts for.
+const GENERIC_VARIABLE: Classification = Classification {
+    token_type: TT_VARIABLE,
+    modifiers: 0,
+};
+
+/// Classify one segment of a dotted `PATH` whose *whole* range carries the
+/// resolution `sym_kind` (issue #1571).
+///
+/// Only ONE segment of such a path actually names the resolved symbol —
+/// handing `sym_kind`'s colour to all of them rendered `p.x.y` as a single
+/// flat `variable` run. Which segment it is depends on the kind, exactly as
+/// it does for `rename`'s range narrowing (`ufcs_hover`'s
+/// `field_access_head_range_at_path` vs `qualified_tail_range_at_path`):
+///
+/// - a **value** (`Variable`/`Constant`/`Param`/`Temp`) is named by the
+///   *head* — `p` in `p.x.y` (`resolve::lookup_variable` step 11) — and the
+///   trailing segments are struct field names, so they get `property`;
+/// - a **stitch**, **list item** or **label** is named by the *tail* —
+///   `market` in `hub.market`, `Red` in `Colors.Red` — and the leading
+///   segments are qualifiers this pass cannot resolve on their own, so they
+///   keep the unresolved-identifier fallback;
+/// - every other kind resolves from a single-segment path, where head and
+///   tail are the same token.
+fn classify_path_segment(
+    path: &SyntaxNode,
+    token: &brink_syntax::SyntaxToken,
+    sym_kind: SymbolKind,
+) -> Classification {
+    let named_by_tail = matches!(
+        sym_kind,
+        SymbolKind::Stitch | SymbolKind::ListItem | SymbolKind::Label
+    );
+    let segments: Vec<TextRange> = path
+        .descendants_with_tokens()
+        .filter_map(rowan::NodeOrToken::into_token)
+        .filter(|t| t.kind() == SyntaxKind::IDENT)
+        .map(|t| t.text_range())
+        .collect();
+    let naming = if named_by_tail {
+        segments.last()
+    } else {
+        segments.first()
+    };
+    if naming == Some(&token.text_range()) {
+        return symbol_kind_to_classification(sym_kind);
+    }
+    if named_by_tail {
+        return GENERIC_VARIABLE;
+    }
     Classification {
-        token_type: TT_VARIABLE,
+        token_type: TT_PROPERTY,
         modifiers: 0,
     }
 }
@@ -518,6 +584,72 @@ mod tests {
         let root = parse.syntax();
         let analysis = empty_analysis();
         semantic_tokens(source, &root, &analysis, FileId(0))
+    }
+
+    /// Tokens produced against a *real* analysis (resolutions included),
+    /// rather than [`empty_analysis`]'s resolution-free stand-in — the
+    /// resolution index is what drives dotted-path classification.
+    fn analyzed_tokens(source: &str) -> Vec<RawToken> {
+        let mut session = crate::session::IdeSession::new();
+        let file_id = session.update_and_analyze("t.ink", source.to_string());
+        let root = session.syntax_root(file_id).expect("syntax root");
+        let analysis = session.analysis().expect("analysis");
+        semantic_tokens(source, &root, analysis, file_id)
+    }
+
+    #[test]
+    fn field_access_segments_are_not_coloured_as_the_head_variable() {
+        // Issue #1571: the `ResolvedRef` for `p.x` is recorded against the
+        // *whole* path (a load-bearing contract pinned by #1561), so the
+        // PATH-grandparent fallback used to hand every segment of the path
+        // the head variable's own classification — `p.x` rendered as one
+        // flat `variable` run. Only the head names the variable; the rest
+        // are struct field names.
+        let src = "VAR p = 0\n=== main ===\n~ y = p.x\n-> DONE\n";
+        let tokens = analyzed_tokens(src);
+
+        // Line 2 is `~ y = p.x`: `p` at column 6, `x` at column 8.
+        let at = |line: u32, col: u32| {
+            tokens
+                .iter()
+                .find(|t| t.line == line && t.start_char == col)
+                .expect("a semantic token at the requested line/column")
+        };
+        assert_eq!(
+            at(2, 6).token_type,
+            TT_VARIABLE,
+            "the head segment still names the resolved variable"
+        );
+        assert_eq!(
+            at(2, 8).token_type,
+            TT_PROPERTY,
+            "the trailing field segment must not reuse the head variable's colour"
+        );
+    }
+
+    #[test]
+    fn a_qualified_list_item_reference_colours_its_tail_segment() {
+        // The kind gate's other side: `Colors.Red` resolves to a LIST ITEM,
+        // which the path's *last* segment names — so `Red` gets the
+        // enumMember colour and the `Colors.` qualifier (a symbol this pass
+        // resolves nothing for on its own) keeps the plain fallback, rather
+        // than the whole path being painted one colour.
+        let src = "LIST Colors = Red, Green\n=== main ===\n~ c = Colors.Red\n-> DONE\n";
+        let tokens = analyzed_tokens(src);
+
+        // Line 2 is `~ c = Colors.Red`: `Colors` at column 6, `Red` at 13.
+        let at = |line: u32, col: u32| {
+            tokens
+                .iter()
+                .find(|t| t.line == line && t.start_char == col)
+                .expect("a semantic token at the requested line/column")
+        };
+        assert_eq!(at(2, 13).token_type, TT_ENUM_MEMBER, "`Red` names the item");
+        assert_eq!(
+            at(2, 6).token_type,
+            TT_VARIABLE,
+            "the `Colors` qualifier must not be painted as the item itself"
+        );
     }
 
     #[test]
