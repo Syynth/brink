@@ -652,6 +652,11 @@ impl Projector {
                 self.walk_expr(&ie.rhs, knot, stitch);
             }
             Expr::Call(path, args) => {
+                // `path.range` here — the callee `Path`'s own *whole* span —
+                // is the origin of the call-path `ResolvedRef::range`
+                // contract four downstream consumers key lookups on
+                // unchanged; see that field's doc (issue #1561). Never
+                // narrow this to a sub-segment.
                 self.push_ref(
                     path_text(path),
                     path.range,

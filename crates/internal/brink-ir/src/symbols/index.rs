@@ -136,11 +136,58 @@ impl SymbolKind {
 // ─── Resolution types ───────────────────────────────────────────────
 
 /// A resolved reference: a use-site that has been matched to a definition.
+///
+/// ## The `range` contract for a call-path reference (issue #1561)
+///
+/// For a call (`brink_ir::hir::Expr::Call(path, _)`), `range` **must equal
+/// `path.range` exactly** — the callee `Path` node's own whole span, from
+/// its first segment through its last. This holds for both an ordinary
+/// single-segment callee (`f()`) and a UFCS-shaped multi-segment one
+/// (`recv.verb(args)`, where the whole-path range still resolves to the
+/// **receiver**, per `brink-analyzer::resolve::resolve_function`'s B3a
+/// branch — never to a receiver-only or method-only sub-segment).
+///
+/// This is produced once, structurally, by
+/// `brink_ir::symbols::project::Collector::walk_expr`'s `Expr::Call` arm
+/// (`path.range` is what it hands to `push_ref`, becoming
+/// `UnresolvedRef::range`), and every push site in
+/// `brink-analyzer::resolve::resolve_function` carries it through
+/// unchanged as `ResolvedRef::range` — see that function's own doc for the
+/// full push-site list.
+///
+/// It is then an **exact lookup key** at least four separate consumers
+/// key their own `(FileId, range)` maps on, independently:
+///
+/// - `brink_ir::lir::lower::expr::lower_call`'s `ctx.resolve_path(path.range)`;
+/// - `brink_ir::lir::lower::expr::ufcs_receiver_path`, which deliberately
+///   keeps `path.range` (not a receiver-only sub-range) on the desugared
+///   receiver sub-path it builds, precisely so the *same* `resolve_path`
+///   lookup above still hits when lowering that receiver as its own
+///   expression;
+/// - `brink_analyzer::strict::check_void_root`'s
+///   `resolution_by_range.get(&range_key(path.range))` (the `E067`
+///   void-assignment check); and
+/// - `brink_analyzer::coalesce::classify_coalesce_operand`'s equivalent
+///   `resolution_by_range` lookup on a coalescing operand's call.
+///
+/// Narrowing this range anywhere upstream — even in service of a real bug
+/// fix elsewhere, e.g. a rename edit that must span only one segment — is a
+/// silent miscompile here: every consumer above misses its lookup and
+/// either falls back to a wrong resolution or refuses the compile with no
+/// clue this field is the cause. That happened once already (#1550/#1554)
+/// and was caught only by review, not by a test — hence this doc and the
+/// cross-layer regression test in
+/// `brink-test-harness/tests/resolved_ref_range_contract.rs`. A narrowing
+/// fix for a *different* consumer (e.g. an IDE rename edit) belongs at that
+/// consumer's own layer, never here — `brink-ide::ufcs_hover`'s
+/// segment-narrowing helpers are the established pattern.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedRef {
     /// Which file the reference appears in.
     pub file: FileId,
-    /// Source span of the reference.
+    /// Source span of the reference. For a call-path reference this is
+    /// load-bearing beyond diagnostics — see the contract on this struct's
+    /// own doc (issue #1561).
     pub range: TextRange,
     /// The definition this reference resolves to.
     pub target: DefinitionId,

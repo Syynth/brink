@@ -687,6 +687,13 @@ fn coalesce_error_message(err: &CoalesceError) -> String {
 fn classify_coalesce_operand(expr: &Expr, ctx: &MistypeCtx<'_>) -> Option<Ty> {
     match expr {
         Expr::Call(path, args) => {
+            // `path.range` here is the same call-path `ResolvedRef::range`
+            // key `lir::lower::expr::lower_call`/`ufcs_receiver_path` and
+            // `strict::check_void_root` also key on unchanged (issue
+            // #1561; see that field's doc). This particular lookup is a
+            // *negative* check — presence means a real user symbol shadows
+            // the `some`/intrinsic pseudo-function name, so this call must
+            // not be treated as the built-in coalescing sugar.
             if let [seg] = path.segments.as_slice()
                 && !ctx.resolution_by_range.contains_key(&range_key(path.range))
             {

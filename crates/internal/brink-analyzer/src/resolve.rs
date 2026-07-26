@@ -502,6 +502,23 @@ fn lookup_variable(
     VarResult::NotFound
 }
 
+/// Resolve a call-path reference (`RefKind::Function`).
+///
+/// **Range contract (issue #1561):** every `ResolvedRef` pushed below
+/// carries `range: uref.range` unchanged — never narrowed to a sub-segment
+/// (receiver-only, method-only). By construction (`brink_ir::symbols::
+/// project::Collector::walk_expr`'s `Expr::Call` arm) `uref.range` is
+/// already the callee `Path`'s own whole span, so this function's only
+/// obligation is to *not disturb it*. That whole-path range is the exact
+/// `(FileId, TextRange)` lookup key `lir::lower::expr::lower_call` and
+/// `ufcs_receiver_path`, `strict::check_void_root`, and `coalesce`'s
+/// operand classifier all independently key on — see
+/// [`brink_ir::ResolvedRef::range`]'s doc for the full consumer list and
+/// the cross-layer regression test. A narrower range here (e.g. to support
+/// a rename edit) is a silent miscompile for all four; narrowing for a
+/// rename belongs at `brink-ide`'s own consumption layer instead
+/// (`ufcs_hover`'s segment-narrowing helpers are the established pattern —
+/// see #1550/#1554).
 fn resolve_function(
     index: &SymbolIndex,
     scope: &ImportScope,
