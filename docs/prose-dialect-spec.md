@@ -203,6 +203,64 @@ block-level delivery is API sugar / host aggregation over the id, robust
 under control flow (id-matching, not positional). Screenplay `(CONT'D)` is
 derivable (same speaker, new block) — an editor/preset concern, not wire.
 
+### 3.5b The `@[element]` annotation surface (RULED, sitting 4 addendum 2)
+
+The **second authoring surface**, and the one that ships first:
+
+```brink
+@[element("^%% (?<chan>[A-Z0-9-]+): (?<text>.+)$")]
+fn radio_line(chan: string, text: content) {
+    host::radio_ping(chan)
+    > [{chan}] {text}
+}
+```
+
+A prose line matching the pattern **lowers to a call** to the annotated
+fn. Properties, all RULED:
+
+- **Zero comptime.** The annotation is static metadata; the rewrite is
+  ordinary lowering; the body runs at *runtime* under its declared
+  effect row — "arbitrary within the effect bounds required by the
+  compiler," enforced by the existing row machinery. The disciplined
+  member of the macro family: an expansion that can only ever be *one
+  call* has no hygiene problem — the arbitrariness lives inside a
+  function, where the language already governs it.
+- **Two surfaces, one interface.** The producer sweeps annotations and
+  folds them into the *same resolved conventions value* as the
+  declarative side — editor, exporter, translator still read one value.
+- **Role boundary**: annotations declare content/call-shaped elements
+  only; **attachment, chains, and structure stay declarative**
+  (preset/module) — those are facts about relationships between lines,
+  not behaviors of one.
+- **Capture contract**: named captures bind to parameters **by name**
+  (arity/name mismatches are compile errors at the annotation).
+  `string` param = literal when the capture is static, stringified at
+  the call boundary when dynamic. **`content` param** = a first-class
+  content value via the existing fragment-capture path
+  (`BeginFragment…EndFragment → FragmentRef`); the captured prose
+  compiles **through the normal line path**, so it is
+  **translation-resident and measurable** like any authored line.
+  Deferred: numeric capture coercion; context injection (a handler
+  reading attachment data like `speaker`); `Option` params for
+  optional captures fall out when wanted.
+- **Prose-bodied handlers** compose: `@[element(…)] fn x(…) >{ … }` —
+  the template is translated *once*, parameterized by captures.
+- **Staging flip (amends §3.5's plan): v1 = built-in screenplay preset
+  + annotations** — no comptime machinery at all; the
+  conventions-module evaluation arrives later for authoring full
+  custom presets. The maintainer's favorite surface ships first.
+- **Tooling transparency (RULED: no invisible expansion).** The
+  compiler exposes per-line classification metadata through the
+  `LineContext`/ide query family: matched element kind, **the matching
+  rule/handler** (fn + source location), **capture bindings as spans**,
+  and the disposition. Hover on a matched line shows the handler's
+  signature and body; an **explain-match query** answers "is this line
+  matched, by what, what did the captures bind" — and on a miss, which
+  declared patterns were attempted. Capture spans double as decoration
+  ranges. Rides the existing wasm/ide query surface (NS-T consumes).
+- **Match ordering ⏳ (rule owed)**: lean — declaration order, with
+  overlap diagnostics when two patterns can match the same line.
+
 ## 4. The markup layer
 
 ### 4.1 Syntax (RULED)
@@ -467,9 +525,8 @@ TITLE* annotation via the display-name machinery.
 1. **Syntax round remainder** — cue extensions (`(V.O.)`/`(O.S.)` as
    parsed payload vs opaque), centered's fate (lean: span), the fused
    `until cond -> target` sugar call, escape-set finalization, the
-   conventions-file *concrete* format (it must now express: patterns,
-   roles, chains, payload + address captures, succession, export
-   mapping, and the §8b.8 lowering column), and the final
+   `std::conventions` types design (§3.5), the §3.5b **match-ordering
+   rule** and deferred context-injection question, and the final
    complement-pass read over a full page.
 2. **Choice typing** — flip-or-ratify the 🔶 lean (c) (§8b.10).
 3. **Translation, round 2** — element data in XLIFF (speaker names
