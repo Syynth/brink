@@ -1094,7 +1094,7 @@ pub(super) fn try_lower_mutator_stmt(
     // same RMW expansion a bare `insert(m, k, v)` statement gets.
     if path.segments.len() > 1
         && let Some(UfcsVerdict::PreludeDesugar { name: verb }) =
-            ctx.ufcs.get(ctx.file, path.range).cloned()
+            ctx.tables.ufcs.get(ctx.file, path.range).cloned()
         && let Some(kind) = MutatorKind::from_name(&verb)
     {
         let receiver = super::expr::ufcs_receiver_path(path);
