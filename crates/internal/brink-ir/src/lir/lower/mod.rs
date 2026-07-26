@@ -456,6 +456,7 @@ fn lower_root_content_chunks(
                 &mut ids,
                 root_id,
                 String::new(),
+                true,
                 &[],
                 file_paths,
                 &mut block_slot,
@@ -692,6 +693,7 @@ fn lower_knot(
         ids,
         root_id,
         knot_name.clone(),
+        false,
         &knot_param_names,
         file_paths,
         &mut block_slot,
@@ -784,6 +786,7 @@ fn lower_stitch(
         ids,
         root_id,
         stitch_path,
+        false,
         &stitch_param_names,
         file_paths,
         block_slot,
@@ -1215,16 +1218,29 @@ fn build_continuation_container(
         .is_some_and(|label| ctx.lookup_address_id(&label.text).is_some());
 
     if continuation.stmts.is_empty() && continuation.label.is_none() {
-        // Empty continuation with no label — implicit gather with Done
+        // Empty continuation with no label — the choice set is the last
+        // thing in its enclosing block. At the story's root content this
+        // is a safe implicit end (real ink lets root content run out), so
+        // emit the same `-> DONE` a genuine `-> DONE` statement would
+        // produce. Inside a knot/stitch, though, running off the end
+        // without an explicit `-> DONE`/`-> END` is a real ink runtime
+        // error ("ran out of content") — leaving the body empty here lets
+        // the VM's normal frame-exhaustion path (`handle_frame_exhaustion`)
+        // surface that instead of masking it as a safe exit (issue #1503).
+        let body = if ctx.is_root_content_scope {
+            vec![lir::Stmt::Divert(lir::Divert {
+                target: lir::DivertTarget::Done,
+                args: Vec::new(),
+            })]
+        } else {
+            Vec::new()
+        };
         return lir::Container {
             id,
             name: Some(display_name),
             kind: lir::ContainerKind::Gather,
             params: Vec::new(),
-            body: vec![lir::Stmt::Divert(lir::Divert {
-                target: lir::DivertTarget::Done,
-                args: Vec::new(),
-            })],
+            body,
             children: Vec::new(),
             counting_flags: CountingFlags::empty(),
             temp_slot_count: 0,
@@ -1460,6 +1476,7 @@ fn make_ctx<'a>(
     ids: &'a mut context::IdAllocator,
     root_id: brink_format::DefinitionId,
     scope_path: String,
+    is_root_content_scope: bool,
     param_names: &[&str],
     file_paths: &'a LookupMap<FileId, String>,
     next_block_slot: &'a mut u16,
@@ -1474,6 +1491,7 @@ fn make_ctx<'a>(
         names,
         ids,
         scope_path,
+        is_root_content_scope,
         pending_children: Vec::new(),
         visible_temps: param_names.iter().map(|s| (*s).to_string()).collect(),
         file_paths,
