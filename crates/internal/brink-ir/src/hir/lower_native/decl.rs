@@ -46,10 +46,8 @@ fn name_from(tok: Option<SyntaxToken>) -> Option<Name> {
 /// dialect's TM-2 `VAR x: int = …` produces, so an annotated native global
 /// is exempt from `brink-analyzer::strict`'s `E065` Unknown-escape exactly
 /// as an annotated ink one is.
-fn binding_annotation(annotation: Option<ast::TypeAnnotation>) -> Option<TypeExpr> {
-    annotation
-        .as_ref()
-        .and_then(super::types::lower_type_annotation)
+fn binding_annotation(annotation: Option<&ast::TypeAnnotation>) -> Option<TypeExpr> {
+    annotation.and_then(super::types::lower_type_annotation)
 }
 
 /// `var name = expr` / `var name: type = expr`.
@@ -74,7 +72,7 @@ pub(super) fn lower_var_decl(
         name,
         value,
         is_local: false,
-        annotation: binding_annotation(node.type_annotation()),
+        annotation: binding_annotation(node.type_annotation().as_ref()),
         doc,
         visibility: None,
         was: None,
@@ -102,7 +100,7 @@ pub(super) fn lower_const_decl(
         ptr: native_provenance(file_id, NodeClass::ConstDecl, node.syntax()),
         name,
         value,
-        annotation: binding_annotation(node.type_annotation()),
+        annotation: binding_annotation(node.type_annotation().as_ref()),
         doc,
         visibility: None,
         was: None,
