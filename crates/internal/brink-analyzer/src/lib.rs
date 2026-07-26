@@ -976,6 +976,17 @@ pub fn ufcs_resolution(
 /// Split out from [`whole_project_diagnostics`] — which keeps the same
 /// pass's `E066` *diagnostics* — exactly as [`ufcs_resolution`] is, and for
 /// the same reason: the two consumers want opposite halves of one result.
+///
+/// Unlike [`ufcs_resolution`] (whose diagnostics run unconditionally inside
+/// [`whole_project_diagnostics`]), the `E066` diagnostics this function
+/// also returns are **strict-mode-only by convention, not by construction**:
+/// production code reaches them only from `strict::check`, after
+/// `strict::config_error` has confirmed `types = strict` + `dialect =
+/// brink` (see `coalesce::resolve`'s own doc for that entry condition), but
+/// this function itself performs no such gate — it walks every file
+/// unconditionally. A caller that surfaces its `Vec<Diagnostic>` without
+/// re-checking `type_policy`/`dialect` itself would emit strict-only
+/// `E066` under `types = gradual`.
 #[must_use]
 pub fn coalesce_types(
     files: &[(FileId, &HirFile)],

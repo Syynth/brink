@@ -489,9 +489,17 @@ fn chain_operands(root: &Expr) -> Vec<&Expr> {
 ///
 /// A step that types cleanly is recorded; the first step that disagrees
 /// raises `E066` and abandons the chain (nothing is recorded — an ill-typed
-/// chain must never hand a consumer a verdict). A step whose fallback
-/// operand does not classify to a statically-known [`Ty`] at all abandons
-/// the chain silently, the same "Unknown never disagrees" posture every
+/// chain must never hand a consumer a verdict). The innermost left-hand
+/// operand not classifying to a statically-known [`Ty`] (an untyped
+/// parameter with no other use, say) does **not** abandon the chain: it is
+/// recorded as [`Ty::Unknown`], which `infer::coalesce` always accepts
+/// (`(Unknown, _) -> Ok(Unknown)`, never an error), so the step is recorded
+/// with [`CoalesceShape::RuntimeCheck`] — the unpinned-`lhs` posture
+/// `Opcode::Coalesce`'s own doc describes, and it propagates: every later
+/// step folds from `Unknown` too. A step whose *fallback* operand does not
+/// classify is different — the shape question ("is the fallback
+/// `Option`-shaped?") has no safe unpinned answer, so that abandons the
+/// chain silently, the same "Unknown never disagrees" posture every
 /// sibling module in this crate takes; the runtime fault remains the
 /// backstop.
 ///
@@ -516,10 +524,12 @@ fn analyze_chain(
         };
         let lhs = match carried.take() {
             Some(ty) => ty,
-            None => match classify_coalesce_operand(lhs_expr, ctx) {
-                Some(ty) => ty,
-                None => return,
-            },
+            // An unclassifiable innermost left-hand operand is recorded as
+            // `Unknown`, not bailed on: `infer::coalesce`'s `(Unknown, _)`
+            // arm always accepts it, so this yields a real
+            // `CoalesceShape::RuntimeCheck` step instead of silently
+            // recording nothing (see this function's own doc).
+            None => classify_coalesce_operand(lhs_expr, ctx).unwrap_or(Ty::Unknown),
         };
         let Some(rhs) = classify_coalesce_operand(rhs_expr, ctx) else {
             return;
@@ -767,6 +777,43 @@ mod tests {
         // check in this crate takes.
         let diags = check_all("flow main(x) {\n  {x or 9}\n  -> END\n}\n");
         assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    /// Companion to the diagnostics-only assertion above: an unpinned
+    /// left-hand type is not merely diagnostic-clean, it is recorded as a
+    /// real `CoalesceShape::RuntimeCheck` step — the unpinned-`lhs` posture
+    /// `Opcode::Coalesce`'s own doc claims. Pins the review finding that
+    /// this branch was previously unreachable (the operand fell through a
+    /// silent `return` instead of ever reaching `step_shape`).
+    ///
+    /// `!x` (an `Expr::Prefix` wrapping the param, carrying its span) rather
+    /// than the bare param path itself: a bare single-segment param/temp
+    /// path used *directly* as a coalescing `lhs` gets narrowed to
+    /// `Option[…]` by `infer::body`'s own feedback
+    /// (`coalesce_lhs_param_narrows_to_option_of_the_rhs_type`), so it
+    /// always classifies. `Expr::Prefix` is neither a shape `observe`
+    /// narrows (only a bare `Path`) nor one `classify_expr_ty` handles at
+    /// all (only Path/Call/Index beyond literals) — genuinely
+    /// unclassifiable, and still keyable (`expr_span` recurses through
+    /// `Prefix` into `x`'s own span, unlike the bare-literal
+    /// `an_unkeyable_chain_records_no_verdict` fixture).
+    #[test]
+    fn unpinned_left_hand_side_records_a_runtime_check_step() {
+        // `fn`'s plain `{ }` routes through the code-ground `stmt_block`
+        // (unlike `flow`'s, which is content-ground and reads a leading `!`
+        // inside `{ }` as a once-only sequence marker, not boolean negation
+        // — this fixture must be a `fn` body to get a real `Expr::Prefix`).
+        let src = concat!(
+            "fn f(x) {\n  return !x or 9;\n}\n",
+            "flow main() {\n  -> END\n}\n",
+        );
+        let chain = only_chain(src);
+        assert_eq!(chain.steps.len(), 1, "{chain:?}");
+        let step = &chain.steps[0];
+        assert_eq!(step.lhs, Ty::Unknown);
+        assert_eq!(step.rhs, Ty::Int);
+        assert_eq!(step.result, Ty::Unknown);
+        assert_eq!(step.shape, CoalesceShape::RuntimeCheck);
     }
 
     // ─── The recorded side channel (issue #1492) ──────────────────────
