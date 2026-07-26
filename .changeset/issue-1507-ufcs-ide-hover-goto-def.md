@@ -17,7 +17,3 @@ declaration when there is one, and does nothing (rather than jumping to the
 receiver) when the verdict has no `DefinitionId` to jump to. The override is
 scoped to exactly the method segment's own range — hovering/jumping from the
 receiver itself is unaffected.
-
-`EditorSession::goto_definition` (`brink-web`) now needs a `&ProjectDb`
-to read the memoized verdict, so its call site now passes one — a
-source-compatible addition, no other public signature changes.
