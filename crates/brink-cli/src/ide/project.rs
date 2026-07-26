@@ -196,11 +196,20 @@ impl Project {
     /// Resolve a query's target to a single symbol — by `--at FILE:LINE:COL`
     /// (cursor → the symbol there, resolving a reference to its definition) or
     /// by qualified name.
+    ///
+    /// B3a UFCS resolution (issue #1539): `--at` routes through the same
+    /// verdict table `navigation::goto_definition`/`ufcs_hover` use before
+    /// falling back to `find_def_at_offset` — without this, a cursor on a
+    /// UFCS call's method segment (`recv.verb`) resolved to the *receiver*
+    /// instead of the free function `.verb(...)` dispatches to, exactly the
+    /// bug #1534 already fixed for hover/go-to-def. Owned, not borrowed: the
+    /// UFCS path's symbol comes from `db.resolutions_index()`, a freshly
+    /// computed `Arc` local to this call, not `self.analysis`.
     pub(super) fn resolve(
         &self,
         addr: &Address,
         kind: Option<KindFilter>,
-    ) -> Result<&SymbolInfo, String> {
+    ) -> Result<SymbolInfo, String> {
         if let Some(at) = &addr.at {
             let (file, line, col) = parse_at(at)?;
             let db = self.driver.db();
@@ -210,10 +219,24 @@ impl Project {
             let src = db.source(file_id).unwrap_or_default();
             // `--at` is 1-based; LineIndex (like line_col) is 0-based.
             let offset = LineIndex::new(src).offset(line.saturating_sub(1), col.saturating_sub(1));
+
+            if let Some(hir) = db.hir(file_id)
+                && let Some(target) =
+                    brink_ide::ufcs_hover::ufcs_goto_definition_target(db, hir, file_id, offset)
+            {
+                // `target.is_none()` (field call / prelude intrinsic): resolved,
+                // but nowhere to jump — stop here rather than falling through to
+                // the receiver's own declaration.
+                return target
+                    .and_then(|id| db.resolutions_index().index.symbols.get(&id).cloned())
+                    .ok_or_else(|| format!("no symbol at {at}"));
+            }
+
             find_def_at_offset(&self.analysis, file_id, offset)
+                .cloned()
                 .ok_or_else(|| format!("no symbol at {at}"))
         } else if let Some(name) = &addr.symbol {
-            self.resolve_unique(name, kind)
+            self.resolve_unique(name, kind).cloned()
         } else {
             Err("provide a symbol name or --at FILE:LINE:COL".to_string())
         }

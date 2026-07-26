@@ -1,5 +1,6 @@
 use brink_analyzer::AnalysisResult;
 use brink_db::ProjectDb;
+use brink_format::DefinitionId;
 use brink_ir::{FileId, SymbolInfo};
 use rowan::TextRange;
 
@@ -73,52 +74,165 @@ pub fn goto_definition(
     })
 }
 
+/// Re-derive `(file, range)`'s `DefinitionId` in `db`'s own identity space
+/// (issue #1539). A caller-supplied [`AnalysisResult`] (`IdeSession`'s
+/// cached analysis, the LSP's `analysis_loop`) is built by
+/// `brink_analyzer::analyze_with_options`, an intentionally module-*blind*
+/// convenience path; `ProjectDb::ufcs_call_sites_for_target` only speaks
+/// `db.resolutions_index()`'s module-aware identity space — see
+/// `crate::ufcs_hover`'s module doc's "Why a `FreeFnDesugar`/`FreeFnAutoRef`
+/// target resolves through `db`, not `analysis`" section. A declaration's
+/// own source range is stable across both computations, so this correlates
+/// by that instead of trusting a caller-supplied id directly.
+fn db_identity_of(db: &ProjectDb, file: FileId, range: TextRange) -> Option<DefinitionId> {
+    db.resolutions_index()
+        .index
+        .symbols
+        .values()
+        .find(|info| info.file == file && info.range == range)
+        .map(|info| info.id)
+}
+
+/// The mirror of [`db_identity_of`]: re-derive `(file, range)`'s
+/// `DefinitionId` in a caller-supplied `analysis`'s own identity space,
+/// starting from a `db`-space id (e.g. a UFCS verdict's `target`). Needed so
+/// a UFCS-originated lookup can still find the declaration/plain-reference
+/// entries that live in `analysis.index`/`analysis.resolutions`, which are
+/// keyed by `analysis`'s own (possibly different) ids.
+fn analysis_identity_of(
+    analysis: &AnalysisResult,
+    file: FileId,
+    range: TextRange,
+) -> Option<DefinitionId> {
+    analysis
+        .index
+        .symbols
+        .values()
+        .find(|info| info.file == file && info.range == range)
+        .map(|info| info.id)
+}
+
+/// Every UFCS call site (project-wide) that desugars to `target` — a
+/// free-function `DefinitionId` in `db`'s own identity space — as reference
+/// locations pointing at each call's narrow method segment.
+fn ufcs_reference_locations(db: &ProjectDb, target: DefinitionId) -> Vec<LocationResult> {
+    let mut out = Vec::new();
+    for (file, path_range) in db.ufcs_call_sites_for_target(target) {
+        let Some(hir) = db.hir(file) else {
+            continue;
+        };
+        let Some(method_range) = crate::ufcs_hover::ufcs_method_range_at_path(hir, path_range)
+        else {
+            continue;
+        };
+        out.push(LocationResult {
+            file,
+            range: method_range,
+        });
+    }
+    out
+}
+
 /// Find all references to the symbol at `offset`.
+///
+/// B3a UFCS resolution (issue #1539): if `offset` sits on a UFCS call
+/// site's method segment, the target is resolved straight through `db`'s
+/// verdict table (see `crate::ufcs_hover`'s module doc) — the plain
+/// `analysis.resolutions` lookup below would otherwise find the
+/// *receiver*'s own resolution entry there, exactly the bug
+/// `goto_definition` above already works around. Either way, every UFCS
+/// call site that desugars to the resolved target is enumerated from `db`
+/// too, alongside the plain `ResolutionMap` references —
+/// `analysis.resolutions` never carries a UFCS call site's true target, by
+/// the analyzer's own design (see `ufcs_hover`'s doc). The two id spaces
+/// ([`db_identity_of`]/[`analysis_identity_of`]) are correlated by
+/// declaration range rather than assumed equal, since `analysis` may be a
+/// caller-supplied, module-blind snapshot.
 pub fn find_references(
+    db: &ProjectDb,
     analysis: &AnalysisResult,
     file_id: FileId,
     offset: rowan::TextSize,
     include_declaration: bool,
 ) -> Vec<LocationResult> {
-    let def_id = analysis
-        .resolutions
-        .iter()
-        .find(|r| r.file == file_id && (r.range.contains(offset) || r.range.start() == offset))
-        .map(|r| r.target)
-        .or_else(|| {
-            analysis
+    let ufcs_target = db
+        .hir(file_id)
+        .and_then(|hir| crate::ufcs_hover::ufcs_goto_definition_target(db, hir, file_id, offset));
+
+    let (analysis_def_id, db_def_id) = match ufcs_target {
+        // A field call or prelude intrinsic has no `DefinitionId` at all —
+        // stop here rather than falling through to the generic lookup
+        // below, which would resolve to the receiver instead.
+        Some(None) => return Vec::new(),
+        Some(Some(target)) => {
+            let analysis_id = db
+                .resolutions_index()
                 .index
                 .symbols
-                .values()
-                .find(|info| {
-                    info.file == file_id
-                        && (info.range.contains(offset) || info.range.start() == offset)
+                .get(&target)
+                .and_then(|info| analysis_identity_of(analysis, info.file, info.range));
+            (analysis_id, Some(target))
+        }
+        None => {
+            let def_id = analysis
+                .resolutions
+                .iter()
+                .find(|r| {
+                    r.file == file_id && (r.range.contains(offset) || r.range.start() == offset)
                 })
-                .map(|info| info.id)
-        });
-
-    let Some(def_id) = def_id else {
-        return Vec::new();
+                .map(|r| r.target)
+                .or_else(|| {
+                    analysis
+                        .index
+                        .symbols
+                        .values()
+                        .find(|info| {
+                            info.file == file_id
+                                && (info.range.contains(offset) || info.range.start() == offset)
+                        })
+                        .map(|info| info.id)
+                });
+            let db_def_id = def_id.and_then(|id| {
+                analysis
+                    .index
+                    .symbols
+                    .get(&id)
+                    .and_then(|info| db_identity_of(db, info.file, info.range))
+            });
+            (def_id, db_def_id)
+        }
     };
+
+    if analysis_def_id.is_none() && db_def_id.is_none() {
+        return Vec::new();
+    }
 
     let mut locations = Vec::new();
 
-    // Include the definition itself if requested
-    if include_declaration && let Some(info) = analysis.index.symbols.get(&def_id) {
-        locations.push(LocationResult {
-            file: info.file,
-            range: info.range,
-        });
-    }
-
-    // Collect all reference sites that resolve to this definition
-    for resolved in &analysis.resolutions {
-        if resolved.target == def_id {
+    if let Some(def_id) = analysis_def_id {
+        // Include the definition itself if requested
+        if include_declaration && let Some(info) = analysis.index.symbols.get(&def_id) {
             locations.push(LocationResult {
-                file: resolved.file,
-                range: resolved.range,
+                file: info.file,
+                range: info.range,
             });
         }
+
+        // Collect all reference sites that resolve to this definition
+        for resolved in &analysis.resolutions {
+            if resolved.target == def_id {
+                locations.push(LocationResult {
+                    file: resolved.file,
+                    range: resolved.range,
+                });
+            }
+        }
+    }
+
+    // UFCS-desugared call sites targeting the same free function (issue
+    // #1539).
+    if let Some(db_def_id) = db_def_id {
+        locations.extend(ufcs_reference_locations(db, db_def_id));
     }
 
     locations
@@ -128,7 +242,7 @@ pub fn find_references(
 mod tests {
     use rowan::TextSize;
 
-    use super::goto_definition;
+    use super::{find_references, goto_definition};
     use crate::session::IdeSession;
 
     const UFCS_FREE_FN_SRC: &str = "\
@@ -245,5 +359,66 @@ fn main() {
 ";
         let (text, _start) = goto_definition_at_native(src, "bump(5)").expect("jump target");
         assert_eq!(text, "bump", "must jump to the `fn bump` declaration");
+    }
+
+    // ── Issue #1539: find_references follows UFCS call sites ─────────────
+
+    #[test]
+    fn find_references_from_a_free_fn_declaration_includes_its_ufcs_call_site() {
+        // `fn greet` is called once via UFCS (`g.greet(3)`) and never called
+        // directly. Before #1539, `analysis.resolutions` never carried this
+        // call site's true target, so a references query from the
+        // declaration found nothing.
+        let mut session = IdeSession::new();
+        let file_id = session.update_and_analyze("test.brink", UFCS_FREE_FN_SRC.to_string());
+        let analysis = session.analysis().expect("analysis");
+        let decl_pos =
+            u32::try_from(UFCS_FREE_FN_SRC.find("greet(g").expect("decl")).expect("offset");
+
+        let refs = find_references(
+            session.db(),
+            analysis,
+            file_id,
+            TextSize::from(decl_pos),
+            false,
+        );
+
+        let call_pos =
+            u32::try_from(UFCS_FREE_FN_SRC.find("greet(3)").expect("call")).expect("offset");
+        assert!(
+            refs.iter()
+                .any(|loc| loc.file == file_id && loc.range.start() == TextSize::from(call_pos)),
+            "expected the UFCS call site's method segment among references, got {:?}",
+            refs.iter().map(|l| l.range).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn find_references_from_a_ufcs_call_site_targets_the_free_function() {
+        // Querying references *from* the UFCS call site's method segment
+        // (rather than the declaration) must resolve to the free function,
+        // not the receiver — mirroring `goto_definition`'s own fix.
+        let mut session = IdeSession::new();
+        let file_id = session.update_and_analyze("test.brink", UFCS_FREE_FN_SRC.to_string());
+        let analysis = session.analysis().expect("analysis");
+        let call_pos =
+            u32::try_from(UFCS_FREE_FN_SRC.find("greet(3)").expect("call")).expect("offset");
+
+        let refs = find_references(
+            session.db(),
+            analysis,
+            file_id,
+            TextSize::from(call_pos),
+            true,
+        );
+
+        let decl_pos =
+            u32::try_from(UFCS_FREE_FN_SRC.find("greet(g").expect("decl")).expect("offset");
+        assert!(
+            refs.iter()
+                .any(|loc| loc.file == file_id && loc.range.start() == TextSize::from(decl_pos)),
+            "expected the `fn greet` declaration among references, got {:?}",
+            refs.iter().map(|l| l.range).collect::<Vec<_>>()
+        );
     }
 }
