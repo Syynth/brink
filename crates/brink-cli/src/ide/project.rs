@@ -196,11 +196,36 @@ impl Project {
     /// Resolve a query's target to a single symbol — by `--at FILE:LINE:COL`
     /// (cursor → the symbol there, resolving a reference to its definition) or
     /// by qualified name.
+    ///
+    /// B3a UFCS resolution (issue #1539): `--at` routes through the same
+    /// verdict table `navigation::goto_definition`/`ufcs_hover` use before
+    /// falling back to `find_def_at_offset` — without this, a cursor on a
+    /// UFCS call's method segment (`recv.verb`) resolved to the *receiver*
+    /// instead of the free function `.verb(...)` dispatches to, exactly the
+    /// bug #1534 already fixed for hover/go-to-def. Owned, not borrowed: the
+    /// UFCS path's symbol comes from `db.resolutions_index()`, a freshly
+    /// computed `Arc` local to this call, not `self.analysis`.
+    ///
+    /// Review finding on #1539/PR #1543: this resolver is shared by `def`,
+    /// `hover`, `references`, and `rename --at` (all four route through
+    /// `Project::resolve`), so the UFCS override only short-circuits on a
+    /// verdict that actually names a `DefinitionId`
+    /// (`FreeFnDesugar`/`FreeFnAutoRef` — the case this fix targets). A
+    /// field-call/prelude-intrinsic verdict (resolved, but with no
+    /// `DefinitionId` to report) falls through to the generic
+    /// `find_def_at_offset` lookup below exactly as if `offset` weren't on a
+    /// UFCS call at all — its pre-#1539 behavior (reporting the *receiver*'s
+    /// own declaration) — rather than hard-failing with `"no symbol at
+    /// {at}"` for all four commands. Turning that case into a hard error
+    /// would have been a new, undocumented behavior change to
+    /// `hover`/`references`/`rename --at` that issue #1539 never asked for
+    /// (it named only `def --at`, `find_references`, and `rename` as the
+    /// three UFCS-*receiver*-target bugs to fix).
     pub(super) fn resolve(
         &self,
         addr: &Address,
         kind: Option<KindFilter>,
-    ) -> Result<&SymbolInfo, String> {
+    ) -> Result<SymbolInfo, String> {
         if let Some(at) = &addr.at {
             let (file, line, col) = parse_at(at)?;
             let db = self.driver.db();
@@ -210,10 +235,25 @@ impl Project {
             let src = db.source(file_id).unwrap_or_default();
             // `--at` is 1-based; LineIndex (like line_col) is 0-based.
             let offset = LineIndex::new(src).offset(line.saturating_sub(1), col.saturating_sub(1));
+
+            if let Some(hir) = db.hir(file_id)
+                && let Some(Some(target)) =
+                    brink_ide::ufcs_hover::ufcs_goto_definition_target(db, hir, file_id, offset)
+            {
+                return db
+                    .resolutions_index()
+                    .index
+                    .symbols
+                    .get(&target)
+                    .cloned()
+                    .ok_or_else(|| format!("no symbol at {at}"));
+            }
+
             find_def_at_offset(&self.analysis, file_id, offset)
+                .cloned()
                 .ok_or_else(|| format!("no symbol at {at}"))
         } else if let Some(name) = &addr.symbol {
-            self.resolve_unique(name, kind)
+            self.resolve_unique(name, kind).cloned()
         } else {
             Err("provide a symbol name or --at FILE:LINE:COL".to_string())
         }

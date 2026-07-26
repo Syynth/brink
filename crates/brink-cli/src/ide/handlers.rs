@@ -68,7 +68,13 @@ pub(super) fn run_references(
     let sym = project.resolve(addr, opts.kind)?;
     // The definition offset is a valid query position: find_references resolves
     // the symbol there and collects every use (optionally including the decl).
-    let refs = find_references(&project.analysis, sym.file, sym.range.start(), include_decl);
+    let refs = find_references(
+        project.driver.db(),
+        &project.analysis,
+        sym.file,
+        sym.range.start(),
+        include_decl,
+    );
 
     if exists {
         return Ok(if refs.is_empty() {
@@ -160,6 +166,7 @@ pub(super) fn run_symbols(
 
 pub(super) fn run_unused(opts: &CommonOpts) -> Result<ExitCode, String> {
     let project = Project::load(&opts.entry)?;
+    let db = project.driver.db();
     let mut unused: Vec<SymEntry> = project
         .analysis
         .index
@@ -167,7 +174,7 @@ pub(super) fn run_unused(opts: &CommonOpts) -> Result<ExitCode, String> {
         .values()
         .filter(|info| opts.kind.is_none_or(|k| k.matches(info.kind)))
         .filter(|info| {
-            find_references(&project.analysis, info.file, info.range.start(), false).is_empty()
+            find_references(db, &project.analysis, info.file, info.range.start(), false).is_empty()
         })
         .map(|info| SymEntry {
             name: info.name.clone(),
@@ -263,13 +270,19 @@ pub(super) fn run_rename(
 ) -> Result<ExitCode, String> {
     let project = Project::load(&opts.entry)?;
     let sym = project.resolve(addr, opts.kind)?;
-    let result =
-        rename(&project.analysis, sym.file, sym.range.start(), new_name).ok_or_else(|| {
-            format!(
-                "'{}' cannot be renamed (a built-in or unresolved symbol)",
-                sym.name
-            )
-        })?;
+    let result = rename(
+        project.driver.db(),
+        &project.analysis,
+        sym.file,
+        sym.range.start(),
+        new_name,
+    )
+    .ok_or_else(|| {
+        format!(
+            "'{}' cannot be renamed (a built-in or unresolved symbol)",
+            sym.name
+        )
+    })?;
     if result.edits.is_empty() {
         return Err("rename produced no edits".to_string());
     }

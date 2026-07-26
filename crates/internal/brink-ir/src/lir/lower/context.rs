@@ -117,6 +117,36 @@ impl UfcsLookup {
     pub fn get(&self, file: FileId, range: TextRange) -> Option<&UfcsVerdict> {
         self.map.get(&(file, range))
     }
+
+    /// Every call site whose verdict is a [`UfcsVerdict::FreeFnDesugar`] or
+    /// [`UfcsVerdict::FreeFnAutoRef`] targeting `target` — issue #1539: the
+    /// project-wide enumeration `find_references`/`rename` need to also
+    /// rewrite/report a renamed free function's UFCS-desugared call sites,
+    /// not just its plain `ResolutionMap` references. `FieldCall`/
+    /// `PreludeDesugar` verdicts carry no `DefinitionId` and never match.
+    ///
+    /// Sorted by `(file, range.start(), range.end())` — this crate's
+    /// determinism rule (see `crate::determinism`'s doc): the underlying
+    /// `map` is an audited `HashMap`, so an iteration reaching output (an
+    /// edit list, a reference list) must sort first.
+    #[must_use]
+    pub fn call_sites_for_target(&self, target: DefinitionId) -> Vec<(FileId, TextRange)> {
+        let mut sites: Vec<(FileId, TextRange)> = self
+            .map
+            .iter()
+            .filter_map(|(&(file, range), verdict)| match *verdict {
+                UfcsVerdict::FreeFnDesugar { target: t }
+                | UfcsVerdict::FreeFnAutoRef { target: t }
+                    if t == target =>
+                {
+                    Some((file, range))
+                }
+                _ => None,
+            })
+            .collect();
+        sites.sort_by_key(|&(file, range)| (file, range.start(), range.end()));
+        sites
+    }
 }
 
 // ─── B1 `or`-coalescing shape lookup (issue #1492) ─────────────────
