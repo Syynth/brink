@@ -1718,6 +1718,7 @@ pub(crate) fn lir_knot_chunk_query(
 
     let ufcs = &ufcs_resolution_query(db, project).table;
     let coalesce = coalesce_types_query(db, project);
+    let tables = brink_ir::lir::AnalyzerTables { ufcs, coalesce };
     let (chunk, diagnostics) = brink_ir::lir::lower_knot_chunk_incremental(
         hir_file,
         knot,
@@ -1727,8 +1728,7 @@ pub(crate) fn lir_knot_chunk_query(
         shape_data,
         type_mode,
         file_id,
-        ufcs,
-        coalesce,
+        tables,
     );
     LoweredChunk {
         chunk: Arc::new(chunk),
@@ -1858,13 +1858,13 @@ pub(crate) fn lir_lowering_query(db: &dyn salsa::Database, project: ProjectInput
     let prelude = brink_ir::lir::assemble_prelude((*prelude_decls.decls).clone(), normalized);
     let ufcs = &ufcs_resolution_query(db, project).table;
     let coalesce = coalesce_types_query(db, project);
+    let tables = brink_ir::lir::AnalyzerTables { ufcs, coalesce };
     let (root_chunks, root_temp_slots) = brink_ir::lir::lower_root_content_for_prelude(
         &prelude,
         &resolved.index,
         &resolved.resolutions,
         &paths,
-        ufcs,
-        coalesce,
+        tables,
     );
 
     // Interleave in walk order (per file: root content, then that file's

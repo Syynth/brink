@@ -654,7 +654,7 @@ pub enum Expr {
     /// opcode read the answer off `rhs`'s actual runtime value, but
     /// short-circuiting means `rhs` may never run by the time the join
     /// point needs to know. So lowering **consumes the analyzer's recorded
-    /// verdict** for the step (`ctx.coalesce`, keyed at the chain root —
+    /// verdict** for the step (`ctx.tables.coalesce`, keyed at the chain root —
     /// RULED 2026-07-26, `docs/decision-log.md` "Lowering consumes analyzer
     /// types") rather than sniffing `rhs`'s syntax, which could not see
     /// through a call's return type or an `Option`-typed local anyway.
