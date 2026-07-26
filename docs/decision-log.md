@@ -2172,3 +2172,11 @@
 - **SCOPE:** minor/local (observable evaluation order of one operator)
 - **WHAT:** `or` coalescing **short-circuits**: the RHS is not evaluated when the LHS is `some`. PR #1469's eager both-operands behavior (honestly pinned + flagged unruled by the build itself) is a defect; #1471 files the fix (branch-based lowering, flip the eager pin to a short-circuit proof).
 - **WHY:** `x or expensive_call()` must not run the call on the happy path — side effects make the order observable, and every peer language's coalescing operator short-circuits; eager evaluation would be a standing surprise.
+
+## The `as` binding: one construct, both condition positions, `{if}` spelling
+- **WHEN:** 2026-07-26
+- **PROJECT:** brink
+- **SYSTEM:** language design (Option surface, F27 lineage) / native syntax
+- **SCOPE:** moderate (fixes the binding-form pattern for the language)
+- **WHAT:** The two documented `as`-binding spellings (draft F16's statement form; the Option book chapter's template form) are **not competitors — they are the same `if` construct in brink's two condition positions**: `if EXPR as NAME { … }` in statements, and `{if EXPR as NAME: … else: …}` in templates, per the already-ruled template-conditional spelling (charter §, `{if cond: …}` — maintainer reconfirmed; the book chapter's bare `{EXPR as r: …}` is stale on the native surface and gets a docs fix). Semantics ruled once: the binding is **immutable**, typed `T` from `Option[T]`, scoped strictly to the success arm; in `while`, it rebinds each iteration; **v1 restriction: the `as` binding must be the entire condition** — no `&&`/`||` composition (let-chains lineage can land later breaklessly). **Explicitly deferred:** `as` in choice guards (`* {if cond} [text]`) — a guard evaluates at presentation time while the body runs at pick time, so a binding's freshness across that gap needs its own ruling before admission.
+- **WHY:** Whichever binding grammar shipped first would set the pattern for all future binding forms, so the reconciliation had to precede the build. Unifying on the single `if` keyword adds zero new syntax surface (the template position already exists), and the whole-condition restriction keeps v1 scoping trivial to specify while leaving the chain extension purely additive.
