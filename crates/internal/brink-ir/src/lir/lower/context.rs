@@ -33,9 +33,13 @@ impl ResolutionLookup {
 
 // ─── B3a UFCS verdict lookup (issue #1506) ─────────────────────────
 
-/// Mirror of `brink_analyzer::ufcs::UfcsVerdict`, narrowed to exactly what
-/// LIR lowering needs to pick the right call shape
-/// (`lir::lower::expr::lower_ufcs_call`).
+/// Mirror of `brink_analyzer::ufcs::UfcsVerdict`, narrowed to what LIR
+/// lowering needs to pick the right call shape
+/// (`lir::lower::expr::lower_ufcs_call`). `brink-ide`'s hover/go-to-def
+/// wiring (issue #1507, `ufcs_hover` module) is a second reader of this same
+/// mirror — it reads verdicts through `brink_db::ProjectDb::ufcs_verdict`
+/// rather than lowering-specific data, so nothing here is LIR-lowering-only
+/// even though lowering is still this type's original consumer.
 ///
 /// `brink-ir` sits below `brink-analyzer` in the crate graph
 /// (`brink-analyzer` depends on `brink-ir`, never the reverse — see
@@ -73,11 +77,14 @@ pub enum UfcsVerdict {
     PreludeDesugar { name: String },
 }
 
-/// Project-wide `(file, range) → verdict` lookup — the LIR-lowering-facing
+/// Project-wide `(file, range) → verdict` lookup — the `brink-ir`-facing
 /// counterpart of `brink_analyzer::UfcsTable`. Built once (`brink-db`'s
 /// `ufcs_resolution_query`) and shared read-only across every `LowerCtx` in
 /// a `lower_to_program`/incremental-chunk call, exactly like
-/// [`ResolutionLookup`] above.
+/// [`ResolutionLookup`] above — plus, since issue #1507, `brink-ide`'s
+/// hover/go-to-def wiring reads individual verdicts out of the same
+/// memoized table via `brink_db::ProjectDb::ufcs_verdict`, so this is no
+/// longer an LIR-lowering-exclusive structure.
 ///
 /// Empty by construction for every caller that never ran the analyzer's
 /// `ufcs` pass (this crate's own tests, `compile_bench`, `golden_i078.rs`) —
@@ -203,6 +210,34 @@ impl CoalesceLookup {
     pub fn get(&self, file: FileId, range: TextRange) -> Option<&[CoalesceShape]> {
         self.map.get(&(file, range)).map(Vec::as_slice)
     }
+}
+
+// ─── Analyzer side-table bundle (issue #1527) ──────────────────────
+
+/// Every analyzer-produced side-table LIR lowering reads to make a
+/// resolution-dependent codegen choice, bundled into one value instead of
+/// one `&Lookup` parameter per table.
+///
+/// Before this bundle, each new side-table ([`UfcsLookup`] for B3a UFCS,
+/// then [`CoalesceLookup`] for B1 `or`-coalescing) added its own parameter
+/// to every lowering signature between
+/// [`super::lower_to_program_with_type_mode`] and [`LowerCtx`] itself —
+/// eight signatures deep, forcing
+/// `lower_root_content_chunks` to carry
+/// `#[expect(clippy::too_many_arguments)]`. Two independent reviewers
+/// (#1471, #1479) hit the same pain point and deliberately deferred the fix
+/// to avoid mid-PR churn — this bundle is that fix. A future table (the
+/// v6/Step work) now means adding one field here, not touching every
+/// signature between the entry points and `LowerCtx` again.
+///
+/// `Copy` — it's two references, cheap to pass by value everywhere instead
+/// of threading yet another `&`.
+#[derive(Debug, Clone, Copy)]
+pub struct AnalyzerTables<'a> {
+    /// B3a UFCS (issue #1506) — see [`UfcsLookup`]'s own doc.
+    pub ufcs: &'a UfcsLookup,
+    /// B1 `or`-coalescing (issue #1492) — see [`CoalesceLookup`]'s own doc.
+    pub coalesce: &'a CoalesceLookup,
 }
 
 // ─── Name table ─────────────────────────────────────────────────────
@@ -481,22 +516,12 @@ pub struct LowerCtx<'a> {
     /// block-scoped shadow of an outer temp of the same name still maps to
     /// its own (correct) shape.
     pub temp_shapes: LookupMap<u16, String>,
-    /// B3a UFCS (issue #1506): the project-wide verdict lookup
-    /// `lir::lower::expr::lower_ufcs_call` reads to lower a resolved
-    /// method-call-syntax callee for real. Shared, read-only, identical
-    /// across every `LowerCtx` in a single `lower_to_program`/incremental-
-    /// chunk call — the same threading discipline as `structs`. Empty for
-    /// every caller that never ran the analyzer's `ufcs` pass.
-    pub ufcs: &'a UfcsLookup,
-    /// B1 `or`-coalescing (issue #1492): the project-wide per-step shape
-    /// lookup `lir::lower::expr::lower_coalesce_chain` reads to decide
-    /// whether each `or` step keeps its `Option` or collapses. Shared,
-    /// read-only, identical across every `LowerCtx` in a single
-    /// `lower_to_program`/incremental-chunk call — the same threading
-    /// discipline as `ufcs`. Empty for every caller that never ran the
-    /// analyzer's `coalesce` pass, which reads as
-    /// [`CoalesceShape::RuntimeCheck`] everywhere.
-    pub coalesce: &'a CoalesceLookup,
+    /// The analyzer-produced side-tables (B3a UFCS, B1 `or`-coalescing,
+    /// issue #1527) — shared, read-only, identical across every `LowerCtx`
+    /// in a single `lower_to_program`/incremental-chunk call, the same
+    /// threading discipline as `structs`. Empty for every caller that never
+    /// ran the corresponding analyzer pass — see [`AnalyzerTables`]'s doc.
+    pub tables: AnalyzerTables<'a>,
 }
 
 impl<'a> LowerCtx<'a> {

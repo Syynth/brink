@@ -173,7 +173,7 @@ pub fn lower_expr(expr: &hir::Expr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
 fn lower_coalesce_chain(root: &hir::Expr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
     let spine = coalesce_chain_spine(root);
     let shapes = crate::hir::expr_span(root)
-        .and_then(|range| ctx.coalesce.get(ctx.file, range))
+        .and_then(|range| ctx.tables.coalesce.get(ctx.file, range))
         .filter(|shapes| shapes.len() == spine.len());
 
     // `spine` is outermost-first; walk it in reverse so the fold runs
@@ -779,7 +779,7 @@ fn lower_call(path: &hir::Path, args: &[hir::Expr], ctx: &mut LowerCtx<'_>) -> l
         // resolving to a value is method-call syntax — the resolution
         // record deliberately names the **receiver**, and the real target
         // lives in `brink-analyzer::ufcs`'s verdict side table
-        // (`ctx.ufcs`, threaded in as `brink-ir`'s own `UfcsVerdict`
+        // (`ctx.tables.ufcs`, threaded in as `brink-ir`'s own `UfcsVerdict`
         // mirror — see that type's doc). Falling through would take the
         // `Variable`/`Constant` or catch-all arm below and emit a call
         // against the receiver's own id: a silently wrong program (the
@@ -859,7 +859,7 @@ fn lower_call(path: &hir::Path, args: &[hir::Expr], ctx: &mut LowerCtx<'_>) -> l
     }
 }
 
-/// B3a UFCS lowering (issue #1506): consume `ctx.ufcs`'s verdict (threaded
+/// B3a UFCS lowering (issue #1506): consume `ctx.tables.ufcs`'s verdict (threaded
 /// in from `brink-analyzer::ufcs`'s side table — see [`context::UfcsVerdict`]'s
 /// doc) to lower a call site that resolved as method-call syntax, for real.
 ///
@@ -910,7 +910,7 @@ fn lower_ufcs_call(
     args: &[hir::Expr],
     ctx: &mut LowerCtx<'_>,
 ) -> lir::Expr {
-    let Some(verdict) = ctx.ufcs.get(ctx.file, path.range).cloned() else {
+    let Some(verdict) = ctx.tables.ufcs.get(ctx.file, path.range).cloned() else {
         return push_ufcs_lowering_refusal(name, path.range, ctx);
     };
     match verdict {

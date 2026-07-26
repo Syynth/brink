@@ -95,9 +95,14 @@ impl EditorSession {
         };
 
         let abs_offset = self.to_absolute(path, view, offset);
-        match brink_ide::navigation::goto_definition(analysis, file_id, TextSize::new(abs_offset)) {
+        let db = self.session.db();
+        match brink_ide::navigation::goto_definition(
+            db,
+            analysis,
+            file_id,
+            TextSize::new(abs_offset),
+        ) {
             Some(loc) => {
-                let db = self.session.db();
                 let file_path = db.file_path(loc.file).unwrap_or_default().to_owned();
                 let (start, end) = if loc.file == file_id {
                     // Same file: adjust to view-relative UTF-16 offsets

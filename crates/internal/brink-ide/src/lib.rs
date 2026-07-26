@@ -33,6 +33,7 @@ pub mod structural_move;
 pub mod structural_result;
 mod text;
 pub mod trivia;
+pub mod ufcs_hover;
 
 pub use completion::{
     CompletionContext, CursorScope, cursor_scope, detect_completion_context, is_visible_in_context,

@@ -51,8 +51,10 @@ pub(crate) fn lower_ink_with_type_mode(
         &result.resolutions,
         &std::collections::HashMap::new(),
         type_mode,
-        &lir::UfcsLookup::new(),
-        &lir::CoalesceLookup::new(),
+        lir::AnalyzerTables {
+            ufcs: &lir::UfcsLookup::new(),
+            coalesce: &lir::CoalesceLookup::new(),
+        },
     )
 }
 
