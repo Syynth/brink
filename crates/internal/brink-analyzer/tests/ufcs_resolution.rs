@@ -429,6 +429,33 @@ fn main() {
     assert!(verdicts(&hir, &manifest).is_empty());
 }
 
+/// Collects every multi-segment callee path an HIR file contains — the
+/// shape `brink-analyzer::ufcs` keys on.
+#[derive(Default)]
+struct MultiSegmentCalleeScan {
+    found: Vec<String>,
+}
+
+impl visit::HirVisitor for MultiSegmentCalleeScan {
+    fn visit_exprs(&self) -> bool {
+        true
+    }
+
+    fn enter_expr(&mut self, expr: &brink_ir::Expr) {
+        if let brink_ir::Expr::Call(path, _) = expr
+            && path.segments.len() > 1
+        {
+            self.found.push(
+                path.segments
+                    .iter()
+                    .map(|s: &Name| s.text.clone())
+                    .collect::<Vec<_>>()
+                    .join("."),
+            );
+        }
+    }
+}
+
 /// The ink dialect is untouched **by construction**: ink's own
 /// `FunctionCall` lowering always builds a single-segment callee path, so
 /// no ink source can produce the shape this pass keys on. Pinned here so a
@@ -443,32 +470,35 @@ fn ink_never_produces_a_multi_segment_callee_path() {
     assert!(parse.errors().is_empty(), "{:?}", parse.errors());
     let (hir, _manifest, _diags) = brink_ir::hir::lower(FileId(0), &parse.tree());
 
-    struct Scan {
-        multi: Vec<String>,
-    }
-    impl visit::HirVisitor for Scan {
-        fn visit_exprs(&self) -> bool {
-            true
-        }
-        fn enter_expr(&mut self, expr: &brink_ir::Expr) {
-            if let brink_ir::Expr::Call(path, _) = expr
-                && path.segments.len() > 1
-            {
-                self.multi.push(
-                    path.segments
-                        .iter()
-                        .map(|s: &Name| s.text.clone())
-                        .collect::<Vec<_>>()
-                        .join("."),
-                );
-            }
-        }
-    }
-    let mut scan = Scan { multi: Vec::new() };
+    let mut scan = MultiSegmentCalleeScan::default();
     visit::visit(&hir, &mut scan);
     assert!(
-        scan.multi.is_empty(),
+        scan.found.is_empty(),
         "ink lowering produced a multi-segment callee path: {:?}",
-        scan.multi
+        scan.found
+    );
+}
+
+/// A `#fn(target)` literal's target is *also* recorded as a
+/// `RefKind::Function` reference, but it is not a call site and has no UFCS
+/// verdict — so `resolve::resolve_function`'s UFCS-shaped fallback must not
+/// claim it. The manifest's own `arg_count` distinction is what separates
+/// them (`#fn` binds a prefix of the param row, so it records `None`), and
+/// this pins that a dotted `#fn` target keeps failing as an unresolved
+/// reference rather than silently resolving to its head value.
+#[test]
+fn a_dotted_fn_literal_target_is_not_claimed_as_a_ufcs_callee() {
+    let parse = brink_syntax::parse("VAR g = 0\n\n== start ==\n~ temp f = #fn(g.greet)\n-> END\n");
+    assert!(parse.errors().is_empty(), "{:?}", parse.errors());
+    let (hir, manifest, _diags) = brink_ir::hir::lower(FileId(0), &parse.tree());
+    let files = vec![(FileId(0), &hir, &manifest)];
+    let analysis = brink_analyzer::analyze(&files);
+    assert!(
+        analysis
+            .diagnostics
+            .iter()
+            .any(|d| d.code == DiagnosticCode::E025),
+        "expected the unresolved-reference error to survive: {:?}",
+        analysis.diagnostics
     );
 }

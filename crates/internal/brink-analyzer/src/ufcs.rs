@@ -60,9 +60,17 @@
 //! The verdict is recorded in a **side table** keyed by node
 //! ([`SideTable`]), not written back into the HIR — HIR stays immutable,
 //! matching the analyzer's existing "inference results travel beside the
-//! tree" posture (`infer::InferenceResult`). LIR lowering reads the table to
-//! emit either a field-value call or the desugared free call; IDE
-//! hover/go-to-def reads it to name the real target.
+//! tree" posture (`infer::InferenceResult`).
+//!
+//! **Neither consumer is wired yet**, and that is deliberate: the table is
+//! published as the seam (`brink_analyzer::ufcs_resolution`) the two ruled
+//! consumers will read — LIR lowering, to emit either a call through the
+//! field's value or the desugared free call, and IDE hover/go-to-def, to
+//! name the real target rather than the receiver the
+//! [`ResolutionMap`] records for the callee path. Until LIR lowering does
+//! read it, a *resolved* site is refused there with
+//! [`DiagnosticCode::E144`] rather than lowered against the receiver's own
+//! id, which would be a silently wrong program.
 //!
 //! [`SideTable`] is deliberately generic over its payload: it is
 //! `(node → verdict)` plumbing, so a second payload kind can ride the same
@@ -394,7 +402,7 @@ impl UfcsVisitor<'_> {
             self.push(
                 path.range,
                 DiagnosticCode::E142,
-                format!(
+                &format!(
                     "cannot resolve `{receiver_text}.{method}(…)`: the type of `{receiver_text}` \
                      is not known here, so it is undecidable whether `{method}` is one of its \
                      fields — annotate the receiver",
@@ -405,72 +413,12 @@ impl UfcsVisitor<'_> {
         };
 
         // Step 2 — field access wins outright (D1).
-        if let Ty::Struct(shape_name) = &receiver_ty
-            && let Some(shape) = self.shapes.get(shape_name)
-            && let Some(field_ty) = shape.field_ty(&method.text)
-        {
-            if matches!(field_ty, Ty::Fn(..)) {
-                self.table.insert(
-                    NodeKey::new(self.file, path.range),
-                    UfcsVerdict::FieldCall {
-                        receiver: receiver_ty.clone(),
-                        field: method.text.clone(),
-                        field_ty: field_ty.clone(),
-                    },
-                );
-            } else {
-                self.push(
-                    path.range,
-                    DiagnosticCode::E140,
-                    format!(
-                        "field `{field}` on `{shape_name}` is not callable (its type is \
-                         `{found}`) — field access wins over a free function of the same name, \
-                         so this is never re-read as `{field}({receiver_text}, …)`",
-                        field = method.text,
-                        found = display_ty(field_ty),
-                    ),
-                );
-            }
+        if self.try_field_call(path, method, &receiver_ty, &receiver_text) {
             return;
         }
 
         // Step 3 — a free function in ordinary lexical scope (D4).
-        if let Some(target) = crate::resolve::lookup_by_name(
-            self.index,
-            self.scope,
-            &method.text,
-            &[SymbolKind::Knot, SymbolKind::External],
-        ) {
-            // D5 fence: by-value desugar only until #1462 lands auto-ref.
-            if self
-                .index
-                .symbols
-                .get(&target)
-                .and_then(|info| info.params.first())
-                .is_some_and(|p| p.is_ref)
-            {
-                self.push(
-                    path.range,
-                    DiagnosticCode::E143,
-                    format!(
-                        "`{name}`'s first parameter is `ref`, and method-call syntax onto a \
-                         `ref` parameter (auto-ref) is not supported yet — see issue #1462. \
-                         Spell the call explicitly as `{name}(ref {receiver_text}{comma})` for \
-                         now",
-                        name = method.text,
-                        comma = if arg_count == 0 { "" } else { ", …" },
-                    ),
-                );
-                return;
-            }
-            self.table.insert(
-                NodeKey::new(self.file, path.range),
-                UfcsVerdict::FreeFnDesugar {
-                    receiver: receiver_ty,
-                    name: method.text.clone(),
-                    target,
-                },
-            );
+        if self.try_free_fn_desugar(path, method, receiver_ty.clone(), &receiver_text, arg_count) {
             return;
         }
 
@@ -478,13 +426,102 @@ impl UfcsVisitor<'_> {
         self.push(
             path.range,
             DiagnosticCode::E141,
-            format!(
+            &format!(
                 "cannot resolve `{receiver_text}.{method}(…)`: `{recv_ty}` declares no field \
                  `{method}`, and no function `{method}` is in scope here",
                 method = method.text,
                 recv_ty = display_ty(&receiver_ty),
             ),
         );
+    }
+
+    /// Step 2 (D1). Returns `true` when the receiver's type declares a field
+    /// of the called name — the call is settled either way, as a
+    /// [`UfcsVerdict::FieldCall`] or as the `E140` hard error, and never
+    /// falls through to step 3.
+    fn try_field_call(
+        &mut self,
+        path: &HirPath,
+        method: &brink_ir::Name,
+        receiver_ty: &Ty,
+        receiver_text: &str,
+    ) -> bool {
+        let Ty::Struct(shape_name) = receiver_ty else {
+            return false;
+        };
+        let Some(field_ty) = self
+            .shapes
+            .get(shape_name)
+            .and_then(|shape| shape.field_ty(&method.text))
+        else {
+            return false;
+        };
+        if matches!(field_ty, Ty::Fn(..)) {
+            let verdict = UfcsVerdict::FieldCall {
+                receiver: receiver_ty.clone(),
+                field: method.text.clone(),
+                field_ty: field_ty.clone(),
+            };
+            self.table
+                .insert(NodeKey::new(self.file, path.range), verdict);
+        } else {
+            let message = format!(
+                "field `{field}` on `{shape_name}` is not callable (its type is `{found}`) — \
+                 field access wins over a free function of the same name, so this is never \
+                 re-read as `{field}({receiver_text}, …)`",
+                field = method.text,
+                found = display_ty(field_ty),
+            );
+            self.push(path.range, DiagnosticCode::E140, &message);
+        }
+        true
+    }
+
+    /// Step 3 (D4/D5). Returns `true` when a free function of the called
+    /// name is in ordinary lexical scope — recorded as the by-value desugar,
+    /// or refused with `E143` when its first parameter is `ref` (auto-ref is
+    /// issue #1462, built on top of this pass).
+    fn try_free_fn_desugar(
+        &mut self,
+        path: &HirPath,
+        method: &brink_ir::Name,
+        receiver_ty: Ty,
+        receiver_text: &str,
+        arg_count: usize,
+    ) -> bool {
+        let Some(target) = crate::resolve::lookup_by_name(
+            self.index,
+            self.scope,
+            &method.text,
+            &[SymbolKind::Knot, SymbolKind::External],
+        ) else {
+            return false;
+        };
+        let first_param_is_ref = self
+            .index
+            .symbols
+            .get(&target)
+            .and_then(|info| info.params.first())
+            .is_some_and(|p| p.is_ref);
+        if first_param_is_ref {
+            let message = format!(
+                "`{name}`'s first parameter is `ref`, and method-call syntax onto a `ref` \
+                 parameter (auto-ref) is not supported yet — see issue #1462. Spell the call \
+                 explicitly as `{name}(ref {receiver_text}{comma})` for now",
+                name = method.text,
+                comma = if arg_count == 0 { "" } else { ", …" },
+            );
+            self.push(path.range, DiagnosticCode::E143, &message);
+            return true;
+        }
+        let verdict = UfcsVerdict::FreeFnDesugar {
+            receiver: receiver_ty,
+            name: method.text.clone(),
+            target,
+        };
+        self.table
+            .insert(NodeKey::new(self.file, path.range), verdict);
+        true
     }
 
     /// Whether `path` is a *method-call-shaped* callee: the resolver
@@ -544,7 +581,7 @@ impl UfcsVisitor<'_> {
         self.globals.get(&id).cloned()
     }
 
-    fn push(&mut self, range: TextRange, code: DiagnosticCode, detail: String) {
+    fn push(&mut self, range: TextRange, code: DiagnosticCode, detail: &str) {
         self.diagnostics.push(Diagnostic {
             file: self.file,
             range,

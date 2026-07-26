@@ -604,7 +604,17 @@ fn resolve_function(
     // Inert for the ink corpus by construction: ink's own `FunctionCall`
     // lowering always builds a single-segment callee path, so no ink source
     // can reach this branch (see `ufcs`' module doc).
-    if let Some((head, _rest)) = path.split_once('.')
+    //
+    // `arg_count.is_some()` narrows this to a real **call site**. A
+    // `RefKind::Function` reference is also recorded for a `#fn(target)`
+    // literal's target, and that one always carries `arg_count: None`
+    // (`project_manifest`'s own documented distinction — `#fn` binds a
+    // *prefix* of the param row, so it has no call arity). A dotted `#fn`
+    // target is not method-call syntax and has no UFCS verdict; it must
+    // keep failing as an unresolved reference here rather than silently
+    // resolving to its head value.
+    if uref.arg_count.is_some()
+        && let Some((head, _rest)) = path.split_once('.')
         && let Some(id) = lookup_local_in_scope(locals, head, &uref.scope).or_else(|| {
             lookup_by_name(
                 index,
