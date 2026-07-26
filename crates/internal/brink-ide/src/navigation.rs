@@ -252,12 +252,28 @@ pub fn find_references(
         });
     }
 
-    // Collect all reference sites that resolve to this definition
+    // Collect all reference sites that resolve to this definition.
+    //
+    // Issue #1550: a `ResolvedRef` here may be a UFCS call site's
+    // *receiver* — `resolve::resolve_function`'s UFCS-shaped fallback
+    // records the receiver's resolution against the *whole* `recv.verb`
+    // path (mirroring the D2 side table's own key), not just the
+    // receiver's own segment. Reporting that whole-path range as a
+    // reference to the receiver would wrongly include the method segment,
+    // so it's narrowed to the receiver's own first segment via
+    // `ufcs_hover::ufcs_receiver_head_range_at_path` — the same narrowing
+    // `rename`'s plain-reference loop applies for the same reason.
     for resolved in &analysis.resolutions {
         if resolved.target == analysis_def_id {
+            let range = db
+                .hir(resolved.file)
+                .and_then(|hir| {
+                    crate::ufcs_hover::ufcs_receiver_head_range_at_path(hir, resolved.range)
+                })
+                .unwrap_or(resolved.range);
             locations.push(LocationResult {
                 file: resolved.file,
-                range: resolved.range,
+                range,
             });
         }
     }
@@ -450,6 +466,51 @@ fn main() {
                 .any(|loc| loc.file == file_id && loc.range.start() == TextSize::from(decl_pos)),
             "expected the `fn greet` declaration among references, got {:?}",
             refs.iter().map(|l| l.range).collect::<Vec<_>>()
+        );
+    }
+
+    // ── Issue #1550: find_references narrows a UFCS receiver reference to
+    // its own segment (the mirror of #1539, from the receiver side) ──────
+
+    #[test]
+    fn find_references_from_a_ufcs_receiver_declaration_reports_only_the_receiver_segment() {
+        // `resolve::resolve_function`'s UFCS-shaped-callee fallback records
+        // the receiver's (`g`'s) `ResolvedRef` against the *whole*
+        // `g.greet` path, not just `g`'s own segment (mirroring the D2 side
+        // table's own key). Reporting that whole-path range as a reference
+        // to `g` would wrongly include the `.greet` method segment — the
+        // reported span at the call site must be exactly the 1-byte `g`
+        // segment.
+        let mut session = IdeSession::new();
+        let file_id = session.update_and_analyze("test.brink", UFCS_FREE_FN_SRC.to_string());
+        let analysis = session.analysis().expect("analysis");
+        let decl_pos =
+            u32::try_from(UFCS_FREE_FN_SRC.find("g = Guest").expect("decl")).expect("offset");
+
+        let refs = find_references(
+            session.db(),
+            analysis,
+            file_id,
+            TextSize::from(decl_pos),
+            false,
+        );
+
+        let call_pos =
+            u32::try_from(UFCS_FREE_FN_SRC.find("g.greet(3)").expect("call")).expect("offset");
+        let found = refs
+            .iter()
+            .find(|loc| loc.file == file_id && loc.range.start() == TextSize::from(call_pos));
+        assert!(
+            found.is_some(),
+            "expected the UFCS call site's receiver segment among references, got {:?}",
+            refs.iter().map(|l| l.range).collect::<Vec<_>>()
+        );
+        let range = found.expect("checked above").range;
+        assert_eq!(
+            usize::from(range.end()) - usize::from(range.start()),
+            1,
+            "the reported reference must span only the receiver's own `g` segment (1 byte), \
+             not the whole `g.greet` path — got {range:?}"
         );
     }
 

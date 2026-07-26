@@ -1,0 +1,11 @@
+description = "A trailing weave in an INCLUDEd file runs out of content (issue #1502)"
+mode = "runtime"
+
+[source]
+origin = "brink"
+original_id = "included-file-trailing-weave"
+
+[classification]
+tier = 3
+feature = "includes"
+tags = ["includes", "weave", "gather"]

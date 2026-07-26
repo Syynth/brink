@@ -371,8 +371,16 @@ pub fn check(
 }
 
 /// Unknown-escape (`E065`) + Conflicted-escape (`E066`) over every inferable
-/// def's params, return type (function knots only — an ordinary knot has no
-/// return-value concept), and temps.
+/// def's params, return type, and temps. Return-value semantics — and so
+/// the return-type escape check plus the fall-through check ([`E150`],
+/// issue #1551) — apply to any def that is `is_function` (a `fn`) *or*
+/// carries a declared, non-`void` return-type annotation (a value-returning
+/// flow/stitch, the coroutine side of the ruled toggle,
+/// `docs/decision-log.md` 2026-07-22 implicit-end ruling item 3); an
+/// ordinary knot/stitch with neither has no return-value concept at all and
+/// stays entirely unchecked.
+///
+/// [`E150`]: brink_ir::DiagnosticCode::E150
 #[must_use]
 fn check_escapes(
     files: &[(FileId, &HirFile)],
@@ -407,14 +415,10 @@ fn check_escapes(
                 {
                     // `is_function` stays `false` (stitches never carry it,
                     // per `lower_native::container`'s module doc) — the
-                    // real `return_type` (#1509) is still forwarded rather
-                    // than hardcoded `None`, since `check_def`'s escape
-                    // check itself is `is_function`-gated below; a
-                    // value-returning *non-function* stitch's escape
-                    // coverage is the same pre-existing gap a
-                    // value-returning non-function `Knot` already has
-                    // (out of #1509's scope — the missing field, not this
-                    // gate, is what this issue fixes).
+                    // real `return_type` (#1509) is forwarded regardless,
+                    // since #1551 made `check_def`'s return-value checks
+                    // (escape + fall-through) fire off a declared
+                    // `return_type` too, not just `is_function`.
                     check_def(
                         id,
                         file,
@@ -543,28 +547,53 @@ fn check_def(
         );
     }
 
-    // Return type: only function knots carry return-value semantics; a
-    // `void`-annotated function never needs a concrete return type either.
-    if is_function {
-        let has_void_annotation = return_type
-            .is_some_and(|rt| matches!(rt, TypeExpr::Named { name, .. } if name == "void"));
-        // Issue #1028: a function whose body never carries a value-returning
-        // `return <expr>` — it either falls off the end or only ever
-        // bare-`return`s — infers as void exactly like an explicit `: void`
-        // annotation, rather than escaping as Unknown. typed-mode-spec §3
-        // only documents `void` as something the *author* writes for a
-        // no-return function; it is silent on what a same-shaped body
-        // without the annotation should infer as. The conservative reading
-        // (spec gap, flagged in the PR) is that inference shouldn't demand
-        // an annotation to say what the body already proves: nothing ever
-        // flows out of it. `body_types.has_value_return` is exactly that
-        // proof — `sig.return_ty.is_unknown()` alone can't distinguish
-        // "never returns a value" from "returns a value inference couldn't
-        // pin down" (a genuine Unknown-escape, left unaffected below).
-        let is_void = has_void_annotation || !body_types.has_value_return;
-        let annotated =
-            is_void || return_type.is_some_and(|rt| annotations::resolve(rt, names).is_some());
-        if !is_void {
+    // Return type: return-value semantics apply to a `fn` (`is_function`)
+    // *or* to any def carrying a declared, non-`void` return-type
+    // annotation (issue #1551 — a value-returning flow/stitch is the
+    // coroutine side of the ruled toggle, `docs/decision-log.md`
+    // 2026-07-22 implicit-end ruling item 3: "no return type ⇒ ends
+    // implicitly as DONE; has one ⇒ must return"). A `void`-annotated def
+    // never needs a concrete return value either way — `void` reads as "no
+    // return type" for this purpose on both a `fn` and a flow/stitch.
+    let has_void_annotation =
+        return_type.is_some_and(|rt| matches!(rt, TypeExpr::Named { name, .. } if name == "void"));
+    let declares_return_value = return_type.is_some() && !has_void_annotation;
+    if is_function || declares_return_value {
+        // Issue #1028 (originally `is_function`-only) / #1551 (generalized
+        // to any declared-return-value def): a body that never carries a
+        // value-returning `return <expr>` — it either falls off the end or
+        // only ever bare-`return`s — proves nothing ever flows out of it.
+        // `body_types.has_value_return` is exactly that proof —
+        // `sig.return_ty.is_unknown()` alone can't distinguish "never
+        // returns a value" from "returns a value inference couldn't pin
+        // down" (a genuine Unknown-escape, handled in the `else` below).
+        //
+        // What "never returns a value" *means* differs by whether a return
+        // value was promised:
+        //   - No declared return type (bare `fn`, typed-mode-spec §3 is
+        //     silent on this shape): inference shouldn't demand an
+        //     annotation to say what the body already proves — reads as
+        //     `void`, same as an explicit `: void` annotation. Nothing to
+        //     report.
+        //   - A declared, non-`void` return type: the author promised a
+        //     value every path must supply. Falling through is the ruled
+        //     **checker error** (`E150`, decision-log 2026-07-22 item 3),
+        //     never a silent implicit `void` — and never satisfied by an
+        //     implicit `-> DONE` synthesized at HIR lowering (`DONE` ends
+        //     the turn, not the value contract). This also fixes a latent
+        //     gap in the *pre-existing* `is_function` case: an annotated
+        //     `fn f(): int { … }` with no `return` anywhere previously
+        //     inferred `is_void = true` via the old blanket
+        //     `!has_value_return` short-circuit and skipped checking
+        //     entirely — silent despite the declared `int`.
+        // `!has_void_annotation` here matters even though `has_value_return`
+        // alone looks sufficient: a `: void`-annotated def whose body does
+        // carry a value-returning `return <expr>` (a body/annotation
+        // mismatch, not an escape) must not run the Unknown-escape check —
+        // `void` reads as "no return type" for escape purposes on both
+        // branches, so it also can't trip `E150` in the `else` below.
+        if body_types.has_value_return && !has_void_annotation {
+            let annotated = return_type.is_some_and(|rt| annotations::resolve(rt, names).is_some());
             emit_escape(
                 file,
                 def_label,
@@ -574,6 +603,15 @@ fn check_def(
                 annotated,
                 out,
             );
+        } else if declares_return_value && !body_types.has_value_return {
+            out.push(brink_ir::Diagnostic {
+                file,
+                range: name_range,
+                message: format!(
+                    "`{def_label}` declares a return type but its body never returns a value"
+                ),
+                code: brink_ir::DiagnosticCode::E150,
+            });
         }
     }
 
@@ -1664,6 +1702,152 @@ mod tests {
         assert!(
             annotated.is_empty(),
             "the `: string` ascription supplies the type: {annotated:?}"
+        );
+    }
+
+    // ── issue #1551: return-escape check extended past `is_function` ──
+    //
+    // `docs/decision-log.md` 2026-07-22 implicit-end ruling item 3: "a flow
+    // that declares a return type must produce a value... falling through
+    // without a value is a checker error" — these prove the checker
+    // diagnostic that ruling promised (deferred at the time, per
+    // `hir::lower_native::container`'s "not built by this slice" comment)
+    // now fires, for both a top-level flow (knot) and a nested flow
+    // (stitch), and that it is a distinct code (`E150`) from Unknown-escape
+    // (`E065`) — the annotation-fallback in `infer::body::infer_def_body`
+    // backfills a no-return body's inferred type from the declared
+    // annotation, so E065's `Ty`-based classification structurally cannot
+    // see a missing return (it comes out `Clean`).
+
+    #[test]
+    fn native_value_returning_knot_falling_through_is_e150() {
+        // Mirrors `a_return_typed_flow_does_not_get_the_implicit_done` in
+        // `brink-ir`'s own lowering tests — same fixture, now checked.
+        let diags = native_strict_diags("flow quest(): int {\n  Onward.\n}\n");
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E150);
+        assert!(
+            diags[0].message.contains("never returns a value"),
+            "{:?}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn native_value_returning_nested_stitch_falling_through_is_e150() {
+        // Mirrors `a_return_typed_stitch_does_not_get_the_implicit_done`.
+        let diags =
+            native_strict_diags("flow garden() {\n  flow gate(): int {\n    Creak.\n  }\n}\n");
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E150);
+    }
+
+    #[test]
+    fn native_value_returning_knot_that_always_returns_is_clean() {
+        // The flip side of the falling-through cases above: a value-typed
+        // flow whose body actually returns a concrete, resolvable value
+        // gets no E150 (has_value_return is true) and is checked as an
+        // ordinary Unknown/Conflicted escape instead — clean here since
+        // `int` is concrete.
+        let diags = native_strict_diags("flow quest(): int ~{\n  return 5;\n}\n");
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn native_value_returning_nested_stitch_that_always_returns_is_clean() {
+        let diags =
+            native_strict_diags("flow garden() {\n  flow gate(): int ~{\n    return 5;\n  }\n}\n");
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn native_value_returning_knot_with_unresolvable_return_still_escapes_as_unknown() {
+        // A value is returned (has_value_return = true), so this goes
+        // through the ordinary escape check, not E150 — an unconstrained
+        // param's value flowing straight out is a genuine Unknown-escape.
+        let diags = native_strict_diags("flow quest(x): int ~{\n  return x;\n}\n");
+        assert!(
+            diags.iter().any(|d| d.code == DiagnosticCode::E065),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn native_void_annotated_knot_falling_through_is_exempt_from_e150() {
+        // `: void` reads as "no return type" for the fall-through check on
+        // a flow, same as it does for a `fn` — never E150.
+        let diags = native_strict_diags("flow quest(): void {\n  Onward.\n}\n");
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn native_plain_knot_and_stitch_with_no_return_type_stay_unchecked() {
+        // Baseline: no declared return type at all (and not `is_function`)
+        // — no return-value concept, exactly as before #1551.
+        let diags = native_strict_diags("flow quest() {\n  Onward.\n}\n");
+        assert!(diags.is_empty(), "{diags:?}");
+        let nested_diags =
+            native_strict_diags("flow garden() {\n  flow gate() {\n    Creak.\n  }\n}\n");
+        assert!(nested_diags.is_empty(), "{nested_diags:?}");
+    }
+
+    #[test]
+    fn native_annotated_function_falling_through_is_e150_latent_bug_fix() {
+        // A pre-existing gap in the `is_function` case itself (found while
+        // fixing #1551): before this fix, `fn f(): int { … no return … }`
+        // inferred `is_void = true` via the old blanket
+        // `!has_value_return` short-circuit and skipped checking
+        // entirely — silently accepting a declared `int` that the body
+        // never produces. Now a declared, non-void return type on a
+        // no-return function is E150 too, the same as a flow/stitch.
+        let diags = native_strict_diags("fn noop(): int {\n  let x = 1;\n}\n");
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E150);
+    }
+
+    #[test]
+    fn native_void_annotated_def_that_actually_returns_a_value_is_exempt() {
+        // Regression guard (review finding on #1556): a `: void`-annotated
+        // def whose body *does* carry a value-returning `return <expr>` —
+        // a body/annotation mismatch, not covered by this checker — must
+        // not fall into the Unknown-escape branch just because
+        // `has_value_return` is true. `void` reads as "no return type" for
+        // escape purposes on both a `fn` and a flow/stitch, so the two
+        // must agree: neither emits anything here (in particular, no
+        // spurious second `E065` alongside whatever caught the param).
+        // The param is annotated (exempt from its own Unknown-escape) so
+        // any diagnostic here can only be the spurious return-type check.
+        let function_diags = native_strict_diags("fn f(x: int): void {\n  return x;\n}\n");
+        assert!(
+            function_diags.is_empty(),
+            "a void-annotated fn's own return value must not escape-check: {function_diags:?}"
+        );
+        let flow_diags = native_strict_diags("flow gate(x: int): void ~{\n  return x;\n}\n");
+        assert!(
+            flow_diags.is_empty(),
+            "the flow/stitch twin must agree with the fn case: {flow_diags:?}"
+        );
+    }
+
+    #[test]
+    fn native_value_returning_knot_with_a_partial_return_path_is_undocumented_gap() {
+        // Pins the currently-undecided partial-path behavior the E150
+        // message reword (review finding on #1556) made explicit: E150 only
+        // fires when the body carries *no* value-returning `return`
+        // anywhere (`has_value_return == false`). A body that returns a
+        // value on *some* paths but can also fall through another (the
+        // `else`-less `if` here) has `has_value_return == true`, so it
+        // takes the ordinary escape-check branch instead — no E150, no
+        // fall-through diagnostic of any kind, even though the `else` path
+        // still falls through without a value. This is a known, documented
+        // gap (#1551 asked to "decide (and document)" this shape; the
+        // decision is deferred), not a fixed contract — this test exists
+        // so a future change to that decision has to touch it deliberately.
+        let diags =
+            native_strict_diags("flow quest(): int ~{\n  if true {\n    return 1;\n  }\n}\n");
+        assert!(
+            diags.is_empty(),
+            "partial-path fall-through is not currently detected: {diags:?}"
         );
     }
 

@@ -1,0 +1,21 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier3/includes/entry-file-trailing-weave
+oracle: 2, brink: 2, matched: 2
+passing: 2/2
+
+=== episode [0] === PASS
+> "A line from the included file.\n" [Continue]
+> "The entry file opens a weave.\n" [Choices: "first branch" (0), "second branch" (1) -> 0]
+> "first branch\n" [Continue]
+> "and gathers, with no terminator\n" [Done]
+outcome: Done
+
+=== episode [1] === PASS
+> "A line from the included file.\n" [Continue]
+> "The entry file opens a weave.\n" [Choices: "first branch" (0), "second branch" (1) -> 1]
+> "second branch\n" [Continue]
+> "and gathers, with no terminator\n" [Done]
+outcome: Done
