@@ -1,0 +1,39 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier3/includes/choice-accumulation-across-include
+oracle: 2, brink: 2, matched: 2
+passing: 0/2
+
+=== episode [0] === FAIL
+> "Sub opens a weave.\n" [Choices: "choice one" (0), "choice two" (1) -> 0]
+> "choice one\n" [Continue]
+> "gathered.\n" [Done]
+outcome: Done
+  step 0: outcome differs
+    oracle: Terminal("Continue")
+    brink:  Choices { presented: [ChoiceRecord { text: "choice one", index: 0, tags: [] }, ChoiceRecord { text: "choice two", index: 1, tags: [] }], selected: 0 }
+  step 1: text differs
+    oracle: "After the include.\n"
+    brink:  "choice one\n"
+  step 2: text differs
+    oracle: "choice one\n"
+    brink:  "gathered.\n"
+  step 3: missing (oracle: "gathered.\n")
+
+=== episode [1] === FAIL
+> "Sub opens a weave.\n" [Choices: "choice one" (0), "choice two" (1) -> 1]
+> "choice two\n" [Continue]
+> "gathered.\n" [Done]
+outcome: Done
+  step 0: outcome differs
+    oracle: Terminal("Continue")
+    brink:  Choices { presented: [ChoiceRecord { text: "choice one", index: 0, tags: [] }, ChoiceRecord { text: "choice two", index: 1, tags: [] }], selected: 1 }
+  step 1: text differs
+    oracle: "After the include.\n"
+    brink:  "choice two\n"
+  step 2: text differs
+    oracle: "choice two\n"
+    brink:  "gathered.\n"
+  step 3: missing (oracle: "gathered.\n")
