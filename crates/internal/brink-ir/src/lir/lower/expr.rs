@@ -162,16 +162,21 @@ pub fn lower_expr(expr: &hir::Expr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
 /// produced, so nothing that depends on lowering order (name interning,
 /// sequence-id allocation) shifts.
 ///
-/// A chain with no recorded verdict — an unkeyable root, a poisoned key, an
-/// analysis that never ran, or a length disagreement between the recorded
-/// steps and the spine — falls back to [`context::CoalesceShape::RuntimeCheck`]
-/// for every step. Absence is always safe: that verdict is exactly the
-/// gradual-mode posture, where the runtime check *is* the semantics.
+/// The lookup itself goes through [`context::ChainRootKey::for_root`]
+/// (issue #1518), which re-derives the chain's structural length from
+/// `root` and refuses to serve an entry whose step count disagrees — the
+/// structural version of "never look a spine node up", not just this
+/// function's own discipline of calling `lower_coalesce_chain` exclusively
+/// from the root dispatch in [`lower_expr`]. A chain with no recorded
+/// verdict — an unkeyable root, a poisoned key, an analysis that never ran,
+/// or a spine-vs-root length disagreement — falls back to
+/// [`context::CoalesceShape::RuntimeCheck`] for every step. Absence is
+/// always safe: that verdict is exactly the gradual-mode posture, where the
+/// runtime check *is* the semantics.
 fn lower_coalesce_chain(root: &hir::Expr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
     let spine = coalesce_chain_spine(root);
-    let shapes = crate::hir::expr_span(root)
-        .and_then(|range| ctx.coalesce.get(ctx.file, range))
-        .filter(|shapes| shapes.len() == spine.len());
+    let shapes =
+        context::ChainRootKey::for_root(ctx.file, root).and_then(|key| ctx.coalesce.get(key));
 
     // `spine` is outermost-first; walk it in reverse so the fold runs
     // innermost-first, the order `CoalesceChain::steps` is recorded in.
@@ -212,7 +217,12 @@ fn lower_coalesce_chain(root: &hir::Expr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
 /// operand for as long as that is a coalescing node too. Mirrors
 /// `brink_analyzer::coalesce::chain_spine` exactly, so producer and consumer
 /// agree on what one chain is.
-fn coalesce_chain_spine(root: &hir::Expr) -> Vec<(&hir::Expr, &hir::Expr)> {
+///
+/// `pub(super)`: also the one place [`context::ChainRootKey::for_root`]
+/// (issue #1518) derives a chain's structural length from, so the "how many
+/// steps does this node's own spine have" question is answered identically
+/// everywhere it is asked.
+pub(super) fn coalesce_chain_spine(root: &hir::Expr) -> Vec<(&hir::Expr, &hir::Expr)> {
     let mut spine = Vec::new();
     let mut cursor = root;
     while let hir::Expr::Infix(lhs, crate::InfixOp::Coalesce, rhs) = cursor {

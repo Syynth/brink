@@ -38,6 +38,22 @@
 //! Absence is always safe: a consumer with no verdict falls back to the
 //! runtime check, which is what gradual mode does anyway.
 //!
+//! That poisoning rule only guards **root-vs-root** collisions — two
+//! unrelated chains deriving the same key. It says nothing about a
+//! **root-vs-its-own-spine** lookup, since (as above) they collide by
+//! design, not by accident: a spine node was never meant to be looked up on
+//! its own at all, only consumed as part of its root's fold. Before issue
+//! #1518, the only thing preventing a future LIR consumer from looking a
+//! spine node up directly — and being served the root's multi-step
+//! verdict under the spine node's own shorter identity — was a doc
+//! sentence on this module. That is now structural on the reading side:
+//! `brink_ir::lir::lower::context::ChainRootKey::for_root` re-derives a
+//! node's own chain length from the node every time a lookup is built, and
+//! `CoalesceLookup::get` refuses any stored entry whose step count
+//! disagrees — a spine node's self-derived length is always strictly
+//! shorter than the root's it shares a key with, so the mismatch is
+//! unconditional. See that type's doc for the full argument.
+//!
 //! ## The old shape, retained
 //!
 //! `infer::ty::coalesce`'s two failure shapes (`CoalesceError::LeftNotOption`,

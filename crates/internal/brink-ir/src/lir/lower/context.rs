@@ -6,6 +6,7 @@ use rowan::TextRange;
 
 use crate::FileId;
 use crate::determinism::{LookupMap, LookupSet};
+use crate::hir;
 use crate::symbols::{ResolutionMap, SymbolIndex, SymbolInfo};
 
 use super::structs::{GlobalShapeMap, ShapeTable};
@@ -169,7 +170,11 @@ pub enum CoalesceShape {
 /// both sides share — carrying every step's shape innermost-first, because
 /// a chain and its own left spine frequently have identical spans (see
 /// `brink_analyzer::coalesce`'s module doc). Lowering therefore looks a
-/// chain up exactly once, at its root, and never at a spine node.
+/// chain up exactly once, at its root, and never at a spine node — and
+/// [`Self::get`] enforces that structurally (issue #1518) rather than
+/// relying on every caller to remember it: it takes the root node itself
+/// ([`ChainRootKey`]), not a bare range, so a spine-vs-root confusion can
+/// never surface as a served-but-wrong verdict, only as a safe miss.
 ///
 /// Empty by construction for every caller that never ran the analyzer's
 /// `coalesce` pass (this crate's own tests, `compile_bench`,
@@ -197,11 +202,86 @@ impl CoalesceLookup {
         }
     }
 
-    /// The per-step shapes recorded for the coalescing chain rooted at
-    /// `range` in `file`, innermost first, if any.
+    /// The per-step shapes recorded for the coalescing chain `key` names,
+    /// innermost first, if any.
+    ///
+    /// `key` is only constructible via [`ChainRootKey::for_root`], which
+    /// re-derives the chain's own structural length from the node every
+    /// time — see that type's doc for why a bare `(file, range)` accessor
+    /// was the hazard issue #1518 closes.
     #[must_use]
-    pub fn get(&self, file: FileId, range: TextRange) -> Option<&[CoalesceShape]> {
-        self.map.get(&(file, range)).map(Vec::as_slice)
+    pub fn get(&self, key: ChainRootKey) -> Option<&[CoalesceShape]> {
+        self.map
+            .get(&(key.file, key.range))
+            .filter(|shapes| shapes.len() == key.len)
+            .map(Vec::as_slice)
+    }
+}
+
+/// Structural proof that a [`CoalesceLookup::get`] query targets a chain's
+/// own root, not a spine node sharing its key — the guard issue #1518 adds.
+///
+/// ## The hazard
+///
+/// `Expr::Infix` and scalar literals carry no `Provenance`
+/// (`crate::hir::expr_span`'s own doc), so a chain root and its own left
+/// spine frequently derive the *identical* `(file, range)` lookup key
+/// (`brink_analyzer::coalesce`'s module doc: `some(a) or f() or 99` spans
+/// exactly what `some(a) or f()` does — the trailing literal contributes no
+/// range to widen the union). Before this type, [`CoalesceLookup`] was a
+/// bare range-keyed map: a lookup built from any `&hir::Expr` sharing that
+/// range — root or spine, indistinguishable by range alone — would be
+/// served the *same* stored entry. A caller holding a spine node (reached,
+/// say, by a generic HIR visitor with no notion of "chain root") would
+/// therefore read the *root's* multi-step verdict under the spine node's
+/// own, shorter identity: the exact miscompile class the analyzer's
+/// root-vs-root poisoning rule exists for, just on the other side of the
+/// crate boundary and for a different pair of colliding nodes.
+///
+/// ## Why the length check closes it
+///
+/// [`Self::for_root`] re-derives both the lookup range *and* the node's own
+/// structural chain length (`lir::lower::expr::coalesce_chain_spine(root).len()`)
+/// from `root` itself, every time. [`CoalesceLookup::get`] then refuses any
+/// stored entry whose step count disagrees with that length. A spine node
+/// always has *strictly fewer* coalescing ancestors on its own left spine
+/// than the root it shares a key with — that is what makes it a spine node
+/// of that root rather than an unrelated chain — so its self-derived length
+/// is always shorter than the stored entry's, and the mismatch is
+/// unconditional: it can never coincidentally agree. A spine-vs-root
+/// confusion therefore degrades to a miss, exactly like a poisoned key or an
+/// analysis that never ran — [`CoalesceShape::RuntimeCheck`] for every step,
+/// always sound, never the wrong verdict.
+///
+/// Root-vs-root collisions (two *unrelated* chains deriving the same key)
+/// are a separate hazard, closed upstream by `brink_analyzer::coalesce`'s
+/// own poisoning rule: a colliding pair is never inserted into the table at
+/// all, so both sides simply miss here regardless of length.
+#[derive(Debug, Clone, Copy)]
+pub struct ChainRootKey {
+    file: FileId,
+    range: TextRange,
+    len: usize,
+}
+
+impl ChainRootKey {
+    /// Derive the key for the coalescing chain rooted at `root` in `file`,
+    /// or `None` when `root` is not itself a coalescing node, or its
+    /// subtree carries no source span to key by at all (`crate::hir::expr_span`
+    /// is best-effort — see that function's own doc).
+    ///
+    /// Recomputed fresh from `root` every call — there is deliberately no
+    /// way to build a `ChainRootKey` from a bare `(file, range)` pair, which
+    /// is exactly the shortcut that let a spine node's range masquerade as
+    /// its root's.
+    #[must_use]
+    pub fn for_root(file: FileId, root: &hir::Expr) -> Option<Self> {
+        let range = hir::expr_span(root)?;
+        let len = super::expr::coalesce_chain_spine(root).len();
+        if len == 0 {
+            return None;
+        }
+        Some(Self { file, range, len })
     }
 }
 
@@ -742,5 +822,97 @@ mod tests {
         assert_eq!(map.get("y"), Some(1));
         assert_eq!(map.get("z"), None);
         assert_eq!(map.total_slots(), 2);
+    }
+
+    // ─── ChainRootKey / CoalesceLookup (issue #1518) ───────────────────
+
+    fn path_expr(start: u32, end: u32) -> hir::Expr {
+        let range = TextRange::new(start.into(), end.into());
+        hir::Expr::Path(hir::Path {
+            segments: vec![hir::Name {
+                text: "x".to_string(),
+                range,
+            }],
+            range,
+        })
+    }
+
+    /// `a or b or 99` — a two-step chain whose trailing fallback (`99`, a
+    /// bare `Expr::Int`) carries no `Provenance`, so the root's own
+    /// `expr_span` degrades to exactly the range of its left spine (`a or
+    /// b`) — the collision `brink_analyzer::coalesce`'s module doc names.
+    /// Returns `(root, inner_spine_node)`.
+    fn colliding_chain() -> (hir::Expr, hir::Expr) {
+        let a = path_expr(0, 1);
+        let b = path_expr(5, 6);
+        let inner = hir::Expr::Infix(Box::new(a), crate::InfixOp::Coalesce, Box::new(b));
+        let root = hir::Expr::Infix(
+            Box::new(inner.clone()),
+            crate::InfixOp::Coalesce,
+            Box::new(hir::Expr::Int(99)),
+        );
+        (root, inner)
+    }
+
+    #[test]
+    fn root_and_its_own_spine_share_a_span() {
+        let (root, inner) = colliding_chain();
+        assert_eq!(hir::expr_span(&root), hir::expr_span(&inner));
+    }
+
+    #[test]
+    fn chain_root_key_reads_back_the_root_verdict() {
+        let (root, _inner) = colliding_chain();
+        let file = FileId(0);
+        let range = hir::expr_span(&root).expect("provenance-carrying operands");
+        let table = CoalesceLookup::from_entries(vec![(
+            file,
+            range,
+            vec![CoalesceShape::Collapse, CoalesceShape::PreserveOption],
+        )]);
+        let key = ChainRootKey::for_root(file, &root).expect("root is a coalescing chain");
+        assert_eq!(
+            table.get(key),
+            Some([CoalesceShape::Collapse, CoalesceShape::PreserveOption].as_slice())
+        );
+    }
+
+    /// The regression this issue closes: `inner` shares `root`'s exact
+    /// lookup range, but is only a **one**-step chain on its own. A lookup
+    /// built from `inner` must never be served `root`'s two-step verdict —
+    /// [`ChainRootKey::for_root`]'s length check must refuse it instead.
+    #[test]
+    fn spine_lookup_never_receives_the_roots_verdict() {
+        let (root, inner) = colliding_chain();
+        let file = FileId(0);
+        let range = hir::expr_span(&root).expect("provenance-carrying operands");
+        let table = CoalesceLookup::from_entries(vec![(
+            file,
+            range,
+            vec![CoalesceShape::Collapse, CoalesceShape::PreserveOption],
+        )]);
+        let spine_key =
+            ChainRootKey::for_root(file, &inner).expect("inner is itself a coalescing node");
+        assert_eq!(
+            table.get(spine_key),
+            None,
+            "a spine node's own (shorter) key must miss, never serve the root's verdict"
+        );
+    }
+
+    #[test]
+    fn chain_root_key_is_none_for_a_non_coalescing_node() {
+        let leaf = path_expr(0, 1);
+        assert!(ChainRootKey::for_root(FileId(0), &leaf).is_none());
+    }
+
+    #[test]
+    fn chain_root_key_is_none_for_an_unkeyable_all_literal_chain() {
+        let unkeyable = hir::Expr::Infix(
+            Box::new(hir::Expr::Int(5)),
+            crate::InfixOp::Coalesce,
+            Box::new(hir::Expr::Int(9)),
+        );
+        assert!(ChainRootKey::for_root(FileId(0), &unkeyable).is_none());
     }
 }

@@ -20,7 +20,7 @@ use super::types as lir;
 use context::{LowerCtx, NameTable, ResolutionLookup, TempMap};
 
 pub use chunk::ScopeChunk;
-pub use context::{CoalesceLookup, CoalesceShape, TypeMode, UfcsLookup, UfcsVerdict};
+pub use context::{ChainRootKey, CoalesceLookup, CoalesceShape, TypeMode, UfcsLookup, UfcsVerdict};
 pub use structs::{StructFieldEntry, StructShapeData, StructShapeEntry, build_struct_shape_data};
 
 /// Defensive backstop for `brink-analyzer`'s dialect gate (E051/E052).
