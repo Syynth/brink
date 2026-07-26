@@ -120,6 +120,13 @@ impl Driver {
             &file_refs,
             self.db.module_map(),
             self.db.analysis_options(),
+            // Unchanged from before `analyze_with_modules` gained this
+            // parameter (issue #1562): `file_ids` is an arbitrary caller-
+            // chosen subset, not necessarily anchored at a project root, so
+            // there is no single file to ask `ProjectDb::is_native` about
+            // here the way `brink-lsp`'s `analysis_loop` can for its own
+            // per-project-root call.
+            false,
         );
         result.diagnostics.extend(
             self.db

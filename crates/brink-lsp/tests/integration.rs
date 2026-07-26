@@ -2386,3 +2386,102 @@ fn native_homonym_flows_keep_the_db_backed_hover_under_the_declared_dialect() {
         );
     }
 }
+
+/// Default-dialect counterpart of
+/// `native_homonym_flows_keep_the_db_backed_hover_under_the_declared_dialect`
+/// above (issue #1562 review finding): no `initializationOptions.dialect` at
+/// all — the common case, since a native workspace has no ink dialect to
+/// declare in the first place. `brink-db`'s `symbol_index_query` now widens
+/// M-2d cross-declared-module coexistence with the same `project_is_native`
+/// seam `whole_project_diagnostics_query` already uses for the ink-only
+/// `E064` gate (`crates/internal/brink-db/src/queries/mod.rs`), so this must
+/// hold under the *default* `Dialect::StrictInk` exactly as it holds under a
+/// client-declared `dialect: "brink"`.
+///
+/// Pinned directly against `textDocument/publishDiagnostics` rather than
+/// hover alone: before the fix, the stale default dialect made
+/// `alpha`/`beta`'s second-registered `greet` an ordinary same-name
+/// redefinition, which is a diagnosable `E022` — not just a missing hover
+/// row.
+#[test]
+fn native_homonym_flows_coexist_under_the_default_dialect() {
+    const MAX_MESSAGES: u64 = 2000;
+
+    let root = unique_tmp_dir("native-homonym-default-dialect");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("alpha.brink"), NATIVE_ALPHA).unwrap();
+    std::fs::write(root.join("beta.brink"), NATIVE_BETA).unwrap();
+
+    // No declared dialect — the case the M-2d gate must not depend on.
+    let (mut child, mut stdin, mut stdout) = start_server_at(&root, None);
+
+    let alpha_uri = format!("file://{}", root.join("alpha.brink").display());
+    let beta_uri = format!("file://{}", root.join("beta.brink").display());
+    did_open_native(&mut stdin, &alpha_uri, NATIVE_ALPHA);
+    did_open_native(&mut stdin, &beta_uri, NATIVE_BETA);
+
+    // Collect the version-less background-analysis `publishDiagnostics` set
+    // (the #695 convention every helper in this file relies on) for *both*
+    // files along the way to the pass that has seen both —
+    // `wait_for_analysis_pass_where` only tracks a single `uri`.
+    let mut alpha_diags: Vec<Value> = Vec::new();
+    let mut beta_diags: Vec<Value> = Vec::new();
+    let mut settled = false;
+    for _ in 0..MAX_MESSAGES {
+        let msg = recv(&mut stdout);
+        if msg["method"] == "textDocument/publishDiagnostics" && msg["params"]["version"].is_null()
+        {
+            let diags = msg["params"]["diagnostics"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            if msg["params"]["uri"] == alpha_uri {
+                alpha_diags = diags;
+            } else if msg["params"]["uri"] == beta_uri {
+                beta_diags = diags;
+            }
+        } else if msg["method"] == "$/brink/backgroundAnalysisComplete" {
+            let file_count = msg["params"]["file_count"].as_u64().unwrap_or(0);
+            if file_count >= 2 {
+                settled = true;
+                break;
+            }
+        }
+    }
+    assert!(
+        settled,
+        "background analysis never signaled a matching completion within {MAX_MESSAGES} messages"
+    );
+
+    // `flow greet()` is line 1 in both files (line 0 is the doc comment).
+    let alpha = hover_at(&mut stdin, &mut stdout, 2, &alpha_uri, 1, 7);
+    let beta = hover_at(&mut stdin, &mut stdout, 3, &beta_uri, 1, 7);
+
+    drop(stdin);
+    drop(stdout);
+    let _ = child.wait();
+    std::fs::remove_dir_all(&root).unwrap();
+
+    assert!(
+        alpha_diags.is_empty(),
+        "alpha.brink must not get a duplicate-definition diagnostic for its own \
+         declared-module `greet` under the default dialect (#1562): {alpha_diags:?}"
+    );
+    assert!(
+        beta_diags.is_empty(),
+        "beta.brink must not get a duplicate-definition diagnostic for its own \
+         declared-module `greet` under the default dialect (#1562): {beta_diags:?}"
+    );
+
+    for (label, resp) in [("alpha", &alpha), ("beta", &beta)] {
+        let md = resp["result"]["contents"]["value"].as_str().unwrap_or("");
+        assert!(
+            md.contains("**knot** `greet`"),
+            "hover over `{label}`'s own `greet` must resolve: {resp}"
+        );
+        assert!(
+            md.contains("**effects**"),
+            "`{label}`'s db-backed effect row is missing under the default dialect: {resp}"
+        );
+    }
+}

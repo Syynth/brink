@@ -314,7 +314,15 @@ impl ProjectDb {
     }
 
     /// Whether `id` is a native (`.brink`) module rather than an ink file.
-    fn is_native(&self, id: FileId) -> bool {
+    ///
+    /// `pub` (issue #1562 review finding) so a caller running the off-db
+    /// `brink_analyzer::analyze_with_modules` pass per project root —
+    /// `brink-lsp`'s `analysis_loop`, which needs the same "does this
+    /// project's dialect axis even apply" answer
+    /// [`crate::queries::project_is_native`] gives the salsa-backed
+    /// `symbol_index_query` — can ask it of a project's root `FileId`
+    /// without rederiving [`crate::queries::file_language`] itself.
+    pub fn is_native(&self, id: FileId) -> bool {
         self.file_path(id).is_some_and(|path| {
             crate::queries::file_language(path) == crate::queries::Language::Native
         })

@@ -992,8 +992,9 @@ fn resolve_language_options(
 /// True if `path`'s file name is exactly
 /// `brink_project_config::CONFIG_FILE_NAME` ("brink.toml") — used to route
 /// `did_change_watched_files` events for the project config file to
-/// [`Backend::reload_brink_toml`] instead of `ProjectDb`, which only ever
-/// tracks `.ink` source (#1055 gap 2).
+/// [`Backend::reload_brink_toml`] instead of `ProjectDb`, which tracks
+/// `.ink` and `.brink` source but never the project config file itself
+/// (#1055 gap 2).
 fn is_brink_toml_path(path: &str) -> bool {
     std::path::Path::new(path)
         .file_name()
@@ -1264,11 +1265,11 @@ impl LanguageServer for Backend {
             };
 
             if is_brink_toml_path(&path) {
-                // brink.toml isn't tracked in `ProjectDb` (it's not `.ink`
-                // source), so there's no "already admitted" state to
-                // preserve the way there is for `.ink` files below — an
-                // ignored-dir brink.toml (e.g. a vendored config under
-                // node_modules/) is never authoritative, so skip it
+                // brink.toml isn't tracked in `ProjectDb` (it's not source —
+                // `.ink` or `.brink`), so there's no "already admitted"
+                // state to preserve the way there is for the source files
+                // below — an ignored-dir brink.toml (e.g. a vendored config
+                // under node_modules/) is never authoritative, so skip it
                 // unconditionally.
                 if path_under_ignored_dir(&path, &roots) {
                     continue;
@@ -2473,9 +2474,15 @@ pub async fn analysis_loop(
             }
             let generation = generation.load(Ordering::Relaxed);
             let project_defs = db.compute_projects();
+            // `is_native` per root (issue #1562 review finding), captured
+            // under the same lock as `project_defs`: the off-db pass below
+            // has no `Language` classification of its own, so without this
+            // M-2d cross-declared-module coexistence stayed gated on a
+            // client having declared `dialect: "brink"` — a native project
+            // has no dialect to be wrong about.
             let project_inputs: Vec<_> = project_defs
                 .iter()
-                .map(|(root, members)| (*root, db.analysis_inputs_for(members)))
+                .map(|(root, m)| (*root, db.analysis_inputs_for(m), db.is_native(*root)))
                 .collect();
             // The project's resolved modules (#1526), cloned out under the
             // same lock as the inputs they qualify. Module identity needs
@@ -2515,12 +2522,10 @@ pub async fn analysis_loop(
         let mut file_to_roots: HashMap<brink_ir::FileId, Vec<brink_ir::FileId>> = HashMap::new();
         let mut project_members = HashMap::new();
 
-        for (root, inputs) in &projects {
-            let file_refs: Vec<_> = inputs
-                .iter()
-                .map(|(id, hir, manifest)| (*id, hir, manifest))
-                .collect();
-            let mut result = brink_analyzer::analyze_with_modules(&file_refs, &modules, &opts);
+        for (root, inputs, is_native) in &projects {
+            let file_refs: Vec<_> = inputs.iter().map(|(id, hir, m)| (*id, hir, m)).collect();
+            let mut result =
+                brink_analyzer::analyze_with_modules(&file_refs, &modules, &opts, *is_native);
             let members: Vec<_> = inputs.iter().map(|(id, _, _)| *id).collect();
             fold_module_diagnostics(&mut result, &module_diags, &members);
             by_root.insert(*root, Arc::new(result));

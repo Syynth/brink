@@ -258,10 +258,14 @@ The implementation:
 
 ```rust
 impl Driver {
-    /// Discover independent projects from include relationships.
+    /// Compute independent projects: ink files by `INCLUDE` reachability,
+    /// native `.brink` files as one project (issue #1562).
     ///
-    /// A "project" is a root .ink file plus everything it transitively INCLUDEs.
-    /// Roots are files not included by any other file.
+    /// For ink, a "project" is a root .ink file plus everything it
+    /// transitively INCLUDEs; roots are files not included by any other
+    /// file. Every native `.brink` file in the db belongs to the single
+    /// native project instead — native has no `INCLUDE`, so the discovered
+    /// module set is the compilation unit.
     /// Returns (root, members) pairs sorted by root FileId.
     pub fn compute_projects(&self) -> Vec<(FileId, Vec<FileId>)>;
 }
@@ -345,7 +349,8 @@ impl ProjectDb {
     /// File IDs in topological include order from entry.
     pub fn file_ids_topo(&self, entry: FileId) -> Vec<FileId>;
 
-    /// Compute independent projects from include relationships.
+    /// Compute independent projects: ink files by `INCLUDE` reachability,
+    /// native `.brink` files as one project (issue #1562).
     pub fn compute_projects(&self) -> Vec<(FileId, Vec<FileId>)>;
 
     /// Detect circular includes. Returns the cycle path if found.

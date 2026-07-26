@@ -67,7 +67,10 @@ impl IdeSnapshot {
             // this policy" failure mode #1160's scope note flagged.
             lints: self.lints.clone(),
         };
-        let mut result = brink_analyzer::analyze_with_modules(&refs, &self.modules, &opts);
+        // Unchanged from before `analyze_with_modules` gained this parameter
+        // (issue #1562): this snapshot path is not one of the review
+        // finding's covered surfaces (`brink-lsp`'s `analysis_loop`).
+        let mut result = brink_analyzer::analyze_with_modules(&refs, &self.modules, &opts, false);
         // The db-only half of the module map (issue #1553) — see
         // `module_diagnostics`. Scoped to this snapshot's own files so a
         // partial snapshot never reports a collision it doesn't contain.
@@ -476,8 +479,14 @@ impl IdeSession {
             // is path-derived, so analyzing module-blind here would make the
             // gate's ids disagree with the returned db's.
             let modules = db.module_map().clone();
-            let mut result =
-                brink_analyzer::analyze_with_modules(&refs, &modules, &self.analysis_options());
+            // Unchanged from before `analyze_with_modules` gained this
+            // parameter (issue #1562): out of the review finding's scope.
+            let mut result = brink_analyzer::analyze_with_modules(
+                &refs,
+                &modules,
+                &self.analysis_options(),
+                false,
+            );
             // The map's db-only diagnostics half (#1553) — the whole point of
             // the gate is to report the diagnostics an edit *would* introduce,
             // and a stem collision is one of them.
@@ -523,8 +532,14 @@ impl IdeSession {
             // the map has to come from the projected db — the whole point of
             // the gate is to model identity after the move.
             let modules = db.module_map().clone();
-            let mut result =
-                brink_analyzer::analyze_with_modules(&refs, &modules, &self.analysis_options());
+            // Unchanged from before `analyze_with_modules` gained this
+            // parameter (issue #1562): out of the review finding's scope.
+            let mut result = brink_analyzer::analyze_with_modules(
+                &refs,
+                &modules,
+                &self.analysis_options(),
+                false,
+            );
             // A move is exactly the edit that can *introduce* a stem
             // collision, so the gate has to see the map's diagnostics half
             // (#1553).
