@@ -93,6 +93,33 @@ flow main() {
     assert_eq!(out, "X is 3.\n");
 }
 
+/// NG-E (issue #1505) widened `struct_field` from a bare `PATH` to the
+/// full `type_expr` production, so a container-typed field (`map<K, V>`)
+/// is a first-class struct field shape now, not just a parser/CST
+/// curiosity — it survives lowering, codegen, linking, and actually plays.
+/// `Map { … }` is a real native construct literal (`ConstructTarget::Map`),
+/// so this exercises both widened productions together.
+#[test]
+fn container_typed_struct_field_plays() {
+    let out = play(
+        "\
+struct Bag {
+  m: map<string, int>
+}
+
+fn count() {
+  let b = Bag { m: Map { \"a\": 1, \"b\": 2 } };
+  return len(b.m);
+}
+
+flow main() {
+  Size is {count()}.
+}
+",
+    );
+    assert_eq!(out, "Size is 2.\n");
+}
+
 /// Cascade ruling (B): the **total** `Weighted { … }` literal. It compiles
 /// and links (the desugar reaches codegen)…
 #[test]

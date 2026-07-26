@@ -7,7 +7,8 @@ dotted `PATH` to the full `type_expr` production (function types, generic
 instantiations). A `.brink` source compiled through `@brink-lang/web` may
 now declare a function-typed field (`greet: fn(int): int`) or a
 container-typed field (`list<int>`, `map<K, V>`) where it previously hit a
-parse error. A `::`-qualified struct field type (`geo::Point`) is a new,
-documented gap — `type_expr` accepts a single `IDENT` only, matching the
-same restriction the brink dialect's own type-annotation grammar already
-has everywhere else.
+parse error. A module-qualified struct field type — whether spelled
+`geo::Point` or the documented `geo.Point` form (`docs/modules-spec.md`) —
+is a new, documented gap — `type_expr` accepts a single `IDENT` only,
+matching the same restriction the brink dialect's own type-annotation
+grammar already has everywhere else.

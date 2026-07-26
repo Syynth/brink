@@ -696,6 +696,20 @@ fn struct_field_dotted_type_path_is_a_documented_gap_not_a_panic() {
         "expected the unsupported `::`-qualified type name to surface at least one error"
     );
     assert!(has_node_kind(&p.syntax(), SyntaxKind::STRUCT_DECL));
+
+    // `a.b` is the module-qualified spelling `docs/modules-spec.md`
+    // documents, so it's the more likely real-source form of the two — and
+    // the same `type_name_or_generic`-only-accepts-a-single-`IDENT` gap
+    // swallows it too: `struct_field` reports "unexpected token in struct
+    // body" for the dangling `.Point` continuation, and a spurious
+    // `STRUCT_FIELD` named `loc` with `Point` orphaned outside it is what
+    // HIR lowering silently drops. Same contract, same assertions.
+    let p = assert_lossless("struct W {\n  loc: geo.Point\n}\n");
+    assert!(
+        !p.errors().is_empty(),
+        "expected the unsupported `.`-qualified type name to surface at least one error"
+    );
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::STRUCT_DECL));
 }
 
 #[test]
