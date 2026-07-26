@@ -1173,6 +1173,11 @@ fn check_void_root(
     let Expr::Call(path, _) = expr else {
         return;
     };
+    // `path.range` — the callee `Path`'s own whole span — is the exact key
+    // the analyzer's `ResolvedRef::range` produced for this call site
+    // (issue #1561; see that field's doc for the other three consumers
+    // keying on the same contract). A narrowed range here would silently
+    // stop finding a resolution and E067 would never fire.
     let Some(&def_id) = resolution_by_range.get(&range_key(path.range)) else {
         return;
     };

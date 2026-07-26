@@ -8,7 +8,4 @@ original_id = "TestNestedInclude"
 [classification]
 tier = 3
 feature = "includes"
-tags = []
-
-[skip]
-reason = "Could not extract ink source"
+tags = ["includes"]
