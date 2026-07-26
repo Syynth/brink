@@ -1,0 +1,4 @@
+@[was("old::module::path")]
+flow main() {
+  Result: 42 -> END
+}
