@@ -238,6 +238,18 @@ signatures). **Findings:** F0 (sort_by's ref-ness decides its rvalue-
 receiver behavior — **must be ruled** so UFCS knows whether `a.sort_by(c)`
 on an rvalue is an error).
 
+**B3a — the resolution pass itself (SHIPPED, issue #1482).** The wave split
+once the pass was designed (D1–D5 RULED 2026-07-26): `brink-analyzer::ufcs`
+is the type-directed pass that decides `recv.name(args)` — field access wins
+outright (`E140` when the matching field is not callable), else a free
+function in ordinary lexical scope is desugared to `name(recv, args)`
+(`E141` when neither, `E142` when the receiver's type is unknown), with the
+verdict recorded in a `node → verdict` side table for LIR lowering and IDE
+hover. **Auto-ref is explicitly not in it**: a free function with a `ref`
+first parameter reached through method syntax is refused with `E143` rather
+than desugared by value, and lifting that fence is the remaining B3 work
+(issue #1462), built on top of the pass.
+
 ### Wave B4 — display-boundary None-render in interpolation (SHIPPED, issue #1463)
 The §1.6b forgiveness: a final-None interpolation renders as nothing;
 everywhere else `Option[T] ≠ T` strict; nested compositions never

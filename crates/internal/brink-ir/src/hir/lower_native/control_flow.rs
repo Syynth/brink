@@ -26,9 +26,10 @@
 //! `x.field += e` → `Assignment { op: AssignOp::Add, .. }`) — see
 //! `lower_return_stmt`/`lower_block_item`'s `BREAK_STMT`/`CONTINUE_STMT`
 //! arms and `lower_assignment` below. Blocks-as-values (a `STMT_BLOCK`'s
-//! own value when reached in expression position) and UFCS/`#fn` remain
-//! out of this slice — see `expr::lower_expr`'s `STMT_BLOCK` arm doc and
-//! `expr`'s module doc, respectively.
+//! own value when reached in expression position) and `#fn` remain out of
+//! this slice — see `expr::lower_expr`'s `STMT_BLOCK` arm doc and `expr`'s
+//! module doc, respectively. UFCS calls lower structurally here like any
+//! other call; their resolution is `brink-analyzer::ufcs`' (issue #1482).
 
 use brink_syntax_native::SyntaxKind as N;
 use brink_syntax_native::SyntaxNode;

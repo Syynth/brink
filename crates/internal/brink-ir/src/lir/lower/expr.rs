@@ -686,6 +686,34 @@ fn lower_call(path: &hir::Path, args: &[hir::Expr], ctx: &mut LowerCtx<'_>) -> l
 
     // Resolve via resolution map
     if let Some(info) = ctx.resolve_path(path.range) {
+        // B3a UFCS (issue #1482): a *multi-segment* callee path resolving to
+        // a value is method-call syntax — the resolution record deliberately
+        // names the **receiver**, and the real target lives in
+        // `brink-analyzer::ufcs`' verdict side table, which this lowering
+        // does not consume yet. Falling through would take the
+        // `Variable`/`Constant` or catch-all arm below and emit a call
+        // against the receiver's own id: a silently wrong program (the
+        // pre-#1482 behavior was an `E025` compile refusal, and that
+        // refusal must not become a miscompile). Refuse loudly instead —
+        // resolution is done, lowering is the remaining work.
+        if path.segments.len() > 1
+            && matches!(
+                info.kind,
+                SymbolKind::Param | SymbolKind::Temp | SymbolKind::Variable | SymbolKind::Constant
+            )
+        {
+            ctx.diagnostics.push(crate::Diagnostic {
+                file: ctx.file,
+                range: path.range,
+                message: format!(
+                    "{}: `{name}` resolves as method-call syntax, but the compiler cannot \
+                     lower it yet — spell the call explicitly as a free call for now",
+                    crate::DiagnosticCode::E144.title(),
+                ),
+                code: crate::DiagnosticCode::E144,
+            });
+            return lir::Expr::Null;
+        }
         match info.kind {
             SymbolKind::List => {
                 // list(n) → ListFromInt; list() → empty list with origin.

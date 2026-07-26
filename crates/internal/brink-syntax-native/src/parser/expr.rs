@@ -12,10 +12,12 @@
 //! dispatched from `super::stmt`/`super::control_flow` — none of them are
 //! expression atoms (no case for them exists here), so this stays the
 //! shared expression *skeleton*, not the statement grammar itself. UFCS
-//! *resolution* (the call shape already parses — `path_or_call` below —
-//! and structurally lowers, `brink_ir::hir::lower_native::expr::
-//! lower_call`) remains unaddressed at the semantic-resolution layer; see
-//! that lowering module's doc for the investigation (issue #1322).
+//! *resolution* is deliberately not here: the call shape parses
+//! (`path_or_call` below) and structurally lowers
+//! (`brink_ir::hir::lower_native::expr::lower_call`), and the
+//! field-access-wins/free-fn verdict — being type-directed — is settled by
+//! `brink-analyzer::ufcs` (issue #1482, B3a); see that lowering module's
+//! doc.
 //!
 //! B5 (issue #1464, #1103 RULED 2026-07-23) adds the **one construction
 //! initializer** `TypeName { … }` as a real atom (`path_or_call` below

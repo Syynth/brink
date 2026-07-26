@@ -476,10 +476,10 @@ pub enum SyntaxKind {
     // #1322) adds `return`/`break`/`continue`/compound-assign, as more
     // statement kinds (`docs/b0-sequencing.md` §B0.8, `docs/decision-log.md`
     // 2026-07-23 "Code-ground sitting"). UFCS *resolution* (field-access-
-    // wins vs. free-fn desugar) remains unaddressed — the call shape
-    // parses and structurally lowers as-is; see
-    // `brink_ir::hir::lower_native::expr`'s module doc for the
-    // investigation (issue #1322).
+    // wins vs. free-fn desugar) is not a grammar concern at all: the call
+    // shape parses and structurally lowers as-is, and the type-directed
+    // verdict is `brink-analyzer::ufcs`' job (issue #1482, B3a) — see
+    // `brink_ir::hir::lower_native::expr`'s module doc.
     INTEGER_LIT,
     FLOAT_LIT,
     STRING_LIT,
