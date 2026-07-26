@@ -174,6 +174,10 @@ fn lower_for_stmt(
     Ok(BlockStmt::For(ForStmt {
         ptr: scope.prov(NodeClass::For, f.syntax()),
         var_name,
+        // The ink `~ { for … }` T1b grammar has no two-binding syntax
+        // (`ast::ForStmt::identifier` is single-binding only) — `val_name`
+        // is a native-`.brink`-only spelling (B2, issue #1461).
+        val_name: None,
         iterable,
         body,
     }))

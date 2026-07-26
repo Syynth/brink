@@ -471,6 +471,9 @@ impl Collector {
     fn walk_for_stmt(&mut self, f: &ForStmt) {
         self.check_range(f.ptr.text_range());
         self.check_range(f.var_name.range);
+        if let Some(val_name) = &f.val_name {
+            self.check_range(val_name.range);
+        }
         self.walk_expr(&f.iterable);
         for s in &f.body {
             self.walk_block_stmt(s);
