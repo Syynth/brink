@@ -1134,9 +1134,8 @@ fn e140_as_binding_over_a_boolean_composition() {
     // to `InfixOp::And` and `||` to `InfixOp::Or`, and the whole-condition
     // rule refuses either as the bound expression.
     for (suffix, op) in [("as-composed-and", "&&"), ("as-composed-or", "||")] {
-        let source = format!(
-            "flow main() ~{{\n  if true {op} some(1) as n {{\n    return n;\n  }}\n}}\n"
-        );
+        let source =
+            format!("flow main() ~{{\n  if true {op} some(1) as n {{\n    return n;\n  }}\n}}\n");
         let Err(err) = compile_native(suffix, &source, native_strict_options()).map(|_| ()) else {
             panic!("`as` over a `{op}` composition must fail");
         };
