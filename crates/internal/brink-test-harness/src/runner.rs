@@ -6,7 +6,7 @@ use brink_runtime::{DotNetRng, Line, Program, Story, WriteObserver};
 use crate::episode::{
     ChoiceRecord, Episode, Outcome, StateSnapshot, StateWrite, StepOutcome, StepRecord,
 };
-use crate::termination::{classify_done, terminal_step};
+use crate::termination::{classify_done, push_terminal};
 
 /// Configuration for recording an episode.
 pub struct RunConfig {
@@ -115,7 +115,7 @@ pub fn record(
             }
 
             Line::Done { text, tags } => {
-                steps.push(terminal_step(text, tags, StepOutcome::Done, writes));
+                push_terminal(&mut steps, text, tags, StepOutcome::Done, writes);
                 // Probe for the deferred "ran out of content" error when
                 // the story didn't reach an explicit -> DONE. Matches
                 // explorer.rs's classification — see termination.rs.
@@ -132,7 +132,7 @@ pub fn record(
             // like a safely-exited `Done`; runtime-unreachable today behind
             // the E052 fence.
             Line::Suspended { text, tags } => {
-                steps.push(terminal_step(text, tags, StepOutcome::Done, writes));
+                push_terminal(&mut steps, text, tags, StepOutcome::Done, writes);
                 return Episode {
                     steps,
                     outcome: Outcome::Done,
@@ -142,7 +142,7 @@ pub fn record(
             }
 
             Line::End { text, tags } => {
-                steps.push(terminal_step(text, tags, StepOutcome::Ended, writes));
+                push_terminal(&mut steps, text, tags, StepOutcome::Ended, writes);
                 return Episode {
                     steps,
                     outcome: Outcome::Ended,

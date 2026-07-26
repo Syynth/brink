@@ -35,8 +35,9 @@ impl StepRecord {
     /// Build a step record for a plain `continue_single_observed` call.
     ///
     /// Every episode builder (`explorer.rs`, `runner.rs`) constructs steps
-    /// this way — `external_calls` is always empty here; it's populated by
-    /// binding-aware callers elsewhere, never by these two builders.
+    /// this way — `external_calls` is always empty here. No producer in the
+    /// repository currently populates `external_calls`; every write site is
+    /// `Vec::new()`.
     pub fn new(
         text: String,
         tags: Vec<String>,

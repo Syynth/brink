@@ -9,7 +9,7 @@ use brink_runtime::{DotNetRng, Line, Program, Story, WriteObserver};
 use crate::episode::{
     ChoiceRecord, Episode, Outcome, StateSnapshot, StateWrite, StepOutcome, StepRecord,
 };
-use crate::termination::{classify_done, terminal_step};
+use crate::termination::{classify_done, push_terminal};
 
 /// Configuration for branch exploration.
 pub struct ExploreConfig {
@@ -157,7 +157,7 @@ fn explore_inner(
             }
 
             Line::Done { text, tags } => {
-                steps.push(terminal_step(text, tags, StepOutcome::Done, writes));
+                push_terminal(&mut steps, text, tags, StepOutcome::Done, writes);
                 // Probe for the deferred "ran out of content" error
                 // when the story didn't reach an explicit -> DONE.
                 let outcome = classify_done(&mut story, &mut recorder);
@@ -171,7 +171,7 @@ fn explore_inner(
             }
 
             Line::End { text, tags } => {
-                steps.push(terminal_step(text, tags, StepOutcome::Ended, writes));
+                push_terminal(&mut steps, text, tags, StepOutcome::Ended, writes);
                 episodes.push(Episode {
                     steps,
                     outcome: Outcome::Ended,
@@ -187,7 +187,7 @@ fn explore_inner(
             // completed turn so exploration terminates cleanly rather than
             // silently dropping the step.
             Line::Suspended { text, tags } => {
-                steps.push(terminal_step(text, tags, StepOutcome::Done, writes));
+                push_terminal(&mut steps, text, tags, StepOutcome::Done, writes);
                 episodes.push(Episode {
                     steps,
                     outcome: Outcome::Done,
