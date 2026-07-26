@@ -31,6 +31,28 @@ pub struct StepRecord {
     pub writes: Vec<StateWrite>,
 }
 
+impl StepRecord {
+    /// Build a step record for a plain `continue_single_observed` call.
+    ///
+    /// Every episode builder (`explorer.rs`, `runner.rs`) constructs steps
+    /// this way — `external_calls` is always empty here; it's populated by
+    /// binding-aware callers elsewhere, never by these two builders.
+    pub fn new(
+        text: String,
+        tags: Vec<String>,
+        outcome: StepOutcome,
+        writes: Vec<StateWrite>,
+    ) -> Self {
+        Self {
+            text,
+            tags,
+            outcome,
+            external_calls: Vec::new(),
+            writes,
+        }
+    }
+}
+
 /// The outcome of a single step.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum StepOutcome {
