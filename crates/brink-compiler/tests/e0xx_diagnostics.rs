@@ -1410,3 +1410,27 @@ fn e149_inert_under_gradual_types() {
         out.warnings
     );
 }
+
+// ─── E150 (issue #1551): declared-return-value def falls through ───────
+//
+// Native-only, same reasoning as the E066/`as`-binding blocks above — a
+// declared, non-`void` return-type annotation on a flow/stitch only exists
+// in the native grammar, so this reuses `compile_native`. `gate` is the
+// return-value producer whose fall-through is under test; `main` just gives
+// the file a valid entry point.
+
+/// E150 fires through the real pipeline (parse → HIR lower → analyze) when
+/// a `flow` declares a non-`void` return type and its body never reaches a
+/// value-returning `return <expr>`.
+#[test]
+fn e150_value_returning_flow_falling_through() {
+    let source = "flow main() {\n  Hi.\n}\n\nflow gate(): int {\n  Onward.\n}\n";
+    let err = compile_native("e150", source, native_strict_options())
+        .map(|_| ())
+        .expect_err("a declared-return-value flow that falls through must fail");
+    let diags = errors_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E150),
+        "expected E150, got: {diags:?}"
+    );
+}

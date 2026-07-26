@@ -586,7 +586,13 @@ fn check_def(
         //     inferred `is_void = true` via the old blanket
         //     `!has_value_return` short-circuit and skipped checking
         //     entirely — silent despite the declared `int`.
-        if body_types.has_value_return {
+        // `!has_void_annotation` here matters even though `has_value_return`
+        // alone looks sufficient: a `: void`-annotated def whose body does
+        // carry a value-returning `return <expr>` (a body/annotation
+        // mismatch, not an escape) must not run the Unknown-escape check —
+        // `void` reads as "no return type" for escape purposes on both
+        // branches, so it also can't trip `E150` in the `else` below.
+        if body_types.has_value_return && !has_void_annotation {
             let annotated = return_type.is_some_and(|rt| annotations::resolve(rt, names).is_some());
             emit_escape(
                 file,
@@ -597,13 +603,12 @@ fn check_def(
                 annotated,
                 out,
             );
-        } else if declares_return_value {
+        } else if declares_return_value && !body_types.has_value_return {
             out.push(brink_ir::Diagnostic {
                 file,
                 range: name_range,
                 message: format!(
-                    "`{def_label}` declares a return type but its body may fall through \
-                     without returning a value — every path must `return <expr>`"
+                    "`{def_label}` declares a return type but its body never returns a value"
                 ),
                 code: brink_ir::DiagnosticCode::E150,
             });
@@ -1722,7 +1727,7 @@ mod tests {
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E150);
         assert!(
-            diags[0].message.contains("fall through"),
+            diags[0].message.contains("never returns a value"),
             "{:?}",
             diags[0].message
         );
@@ -1798,6 +1803,51 @@ mod tests {
         let diags = native_strict_diags("fn noop(): int {\n  let x = 1;\n}\n");
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E150);
+    }
+
+    #[test]
+    fn native_void_annotated_def_that_actually_returns_a_value_is_exempt() {
+        // Regression guard (review finding on #1556): a `: void`-annotated
+        // def whose body *does* carry a value-returning `return <expr>` —
+        // a body/annotation mismatch, not covered by this checker — must
+        // not fall into the Unknown-escape branch just because
+        // `has_value_return` is true. `void` reads as "no return type" for
+        // escape purposes on both a `fn` and a flow/stitch, so the two
+        // must agree: neither emits anything here (in particular, no
+        // spurious second `E065` alongside whatever caught the param).
+        // The param is annotated (exempt from its own Unknown-escape) so
+        // any diagnostic here can only be the spurious return-type check.
+        let function_diags = native_strict_diags("fn f(x: int): void {\n  return x;\n}\n");
+        assert!(
+            function_diags.is_empty(),
+            "a void-annotated fn's own return value must not escape-check: {function_diags:?}"
+        );
+        let flow_diags = native_strict_diags("flow gate(x: int): void ~{\n  return x;\n}\n");
+        assert!(
+            flow_diags.is_empty(),
+            "the flow/stitch twin must agree with the fn case: {flow_diags:?}"
+        );
+    }
+
+    #[test]
+    fn native_value_returning_knot_with_a_partial_return_path_is_undocumented_gap() {
+        // Pins the currently-undecided partial-path behavior the E150
+        // message reword (review finding on #1556) made explicit: E150 only
+        // fires when the body carries *no* value-returning `return`
+        // anywhere (`has_value_return == false`). A body that returns a
+        // value on *some* paths but can also fall through another (the
+        // `else`-less `if` here) has `has_value_return == true`, so it
+        // takes the ordinary escape-check branch instead — no E150, no
+        // fall-through diagnostic of any kind, even though the `else` path
+        // still falls through without a value. This is a known, documented
+        // gap (#1551 asked to "decide (and document)" this shape; the
+        // decision is deferred), not a fixed contract — this test exists
+        // so a future change to that decision has to touch it deliberately.
+        let diags = native_strict_diags("flow quest(): int ~{\n  if true {\n    return 1;\n  }\n}\n");
+        assert!(
+            diags.is_empty(),
+            "partial-path fall-through is not currently detected: {diags:?}"
+        );
     }
 
     #[test]
