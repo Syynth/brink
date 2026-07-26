@@ -220,7 +220,7 @@ fn expr_children(expr: &Expr) -> Vec<&Expr> {
     match expr {
         Expr::Prefix(_, inner) | Expr::Postfix(inner, _) => vec![inner],
         Expr::FieldAccess(fa) => vec![&fa.base],
-        Expr::Infix(lhs, _, rhs) => vec![lhs, rhs],
+        Expr::Infix(ie) => vec![&ie.lhs, &ie.rhs],
         Expr::Call(_, args) | Expr::FnLiteral(brink_ir::FnLiteral { args, .. }) => {
             args.iter().collect()
         }

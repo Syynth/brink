@@ -160,7 +160,7 @@ fn the_key_is_expr_span_of_the_chain_root() {
 
     // Reconstruct the key the way a consumer holding the HIR node does.
     let root = find_coalesce(&hir).expect("the fixture has one coalescing expression");
-    let range = brink_ir::hir::expr_span(root).expect("the root spans `some(1)`");
+    let range = brink_ir::hir::expr_span(root).expect("the root carries its own range");
     assert!(
         recorded.at(FileId(0), range).is_some(),
         "consumer-side key missed: {recorded:?}"
@@ -179,7 +179,7 @@ fn find_coalesce(hir: &HirFile) -> Option<&brink_ir::Expr> {
             if let brink_ir::Stmt::Content(c) = stmt {
                 for part in &c.parts {
                     if let brink_ir::ContentPart::Interpolation(e) = part
-                        && matches!(e, brink_ir::Expr::Infix(_, brink_ir::InfixOp::Coalesce, _))
+                        && matches!(e, brink_ir::Expr::Infix(ie) if ie.op == brink_ir::InfixOp::Coalesce)
                         && out.found.is_none()
                     {
                         out.found = Some(e);

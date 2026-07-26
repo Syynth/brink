@@ -647,9 +647,9 @@ impl Projector {
             Expr::Prefix(_, inner) | Expr::Postfix(inner, _) => {
                 self.walk_expr(inner, knot, stitch);
             }
-            Expr::Infix(l, _, r) => {
-                self.walk_expr(l, knot, stitch);
-                self.walk_expr(r, knot, stitch);
+            Expr::Infix(ie) => {
+                self.walk_expr(&ie.lhs, knot, stitch);
+                self.walk_expr(&ie.rhs, knot, stitch);
             }
             Expr::Call(path, args) => {
                 self.push_ref(

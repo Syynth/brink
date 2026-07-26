@@ -982,12 +982,12 @@ fn emit_expr(e: &Expr, context: &str) -> Result<String, EmitError> {
             };
             Ok(format!("{op_str}{}", emit_expr(inner, context)?))
         }
-        Expr::Infix(lhs, op, rhs) => {
-            let op_str = infix_op_str(*op);
+        Expr::Infix(ie) => {
+            let op_str = infix_op_str(ie.op);
             Ok(format!(
                 "{} {op_str} {}",
-                emit_expr(lhs, context)?,
-                emit_expr(rhs, context)?
+                emit_expr(&ie.lhs, context)?,
+                emit_expr(&ie.rhs, context)?
             ))
         }
         Expr::Postfix(inner, op) => {

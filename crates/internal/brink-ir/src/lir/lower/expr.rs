@@ -82,12 +82,14 @@ pub fn lower_expr(expr: &hir::Expr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
         // B1 `or`-coalescing, short-circuited (issue #1471) — the one
         // `InfixOp` that does not fall through to the generic form below.
         // Handled a whole chain at a time; see `lower_coalesce_chain`.
-        hir::Expr::Infix(_, crate::InfixOp::Coalesce, _) => lower_coalesce_chain(expr, ctx),
+        hir::Expr::Infix(ie) if ie.op == crate::InfixOp::Coalesce => {
+            lower_coalesce_chain(expr, ctx)
+        }
 
-        hir::Expr::Infix(lhs, op, rhs) => lir::Expr::Infix(
-            Box::new(lower_expr(lhs, ctx)),
-            *op,
-            Box::new(lower_expr(rhs, ctx)),
+        hir::Expr::Infix(ie) => lir::Expr::Infix(
+            Box::new(lower_expr(&ie.lhs, ctx)),
+            ie.op,
+            Box::new(lower_expr(&ie.rhs, ctx)),
         ),
 
         hir::Expr::Postfix(inner, op) => lir::Expr::Postfix(Box::new(lower_expr(inner, ctx)), *op),
@@ -149,22 +151,23 @@ pub fn lower_expr(expr: &hir::Expr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
 ///
 /// `a or b or c` parses left-associatively as `Infix(Infix(a, or, b), or,
 /// c)`. The chain is lowered here in one pass rather than by recursing into
-/// the left spine, because the verdict side table is keyed at the chain root
-/// only: `hir::expr_span` of a chain and of its own left spine are
-/// frequently *identical* (`brink_analyzer::coalesce`'s module doc spells
-/// this out), so looking a spine node up would hand it another node's
-/// verdict — a miscompile. Operand subtrees are lowered through the ordinary
-/// [`lower_expr`], so a chain nested inside an operand (`a or (b or c)`) is
-/// reached as its own root, exactly as the analyzer records it.
+/// the left spine, because that is the unit the analyzer folds and records:
+/// one entry per chain, keyed at its root by `hir::expr_span` (since issue
+/// #1517, the root infix node's *own* provenance range, which is distinct
+/// from every spine node's). Operand subtrees are lowered through the
+/// ordinary [`lower_expr`], so a chain nested inside an operand
+/// (`a or (b or c)`) is reached as its own root, exactly as the analyzer
+/// records it.
 ///
 /// Operands are lowered in source order (innermost `lhs`, then each `rhs`
 /// outward), byte-identical to what the old recursive `Infix` lowering
 /// produced, so nothing that depends on lowering order (name interning,
 /// sequence-id allocation) shifts.
 ///
-/// A chain with no recorded verdict — an unkeyable root, a poisoned key, an
-/// analysis that never ran, or a length disagreement between the recorded
-/// steps and the spine — falls back to [`context::CoalesceShape::RuntimeCheck`]
+/// A chain with no recorded verdict — an ill-typed chain the analyzer
+/// abandoned, an analysis that never ran, or a length disagreement between
+/// the recorded steps and the spine — falls back to
+/// [`context::CoalesceShape::RuntimeCheck`]
 /// for every step. Absence is always safe: that verdict is exactly the
 /// gradual-mode posture, where the runtime check *is* the semantics.
 fn lower_coalesce_chain(root: &hir::Expr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
@@ -215,9 +218,11 @@ fn lower_coalesce_chain(root: &hir::Expr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
 fn coalesce_chain_spine(root: &hir::Expr) -> Vec<(&hir::Expr, &hir::Expr)> {
     let mut spine = Vec::new();
     let mut cursor = root;
-    while let hir::Expr::Infix(lhs, crate::InfixOp::Coalesce, rhs) = cursor {
-        spine.push((lhs.as_ref(), rhs.as_ref()));
-        cursor = lhs;
+    while let hir::Expr::Infix(ie) = cursor
+        && ie.op == crate::InfixOp::Coalesce
+    {
+        spine.push((ie.lhs.as_ref(), ie.rhs.as_ref()));
+        cursor = &ie.lhs;
     }
     spine
 }
@@ -2070,6 +2075,16 @@ mod tests {
         );
     }
 
+    /// Fabricated provenance for a hand-built infix node: these spine
+    /// tests build HIR directly, with no syntax tree to stamp from, and
+    /// nothing here reads the range back.
+    fn synthetic_infix_prov() -> crate::Provenance {
+        crate::Provenance::synthetic(
+            crate::NodeClass::Infix,
+            rowan::TextRange::new(0.into(), 1.into()),
+        )
+    }
+
     /// The consumer half of the `or`-coalescing side-channel contract
     /// (issue #1471/#1492): a chain's spine must be enumerated exactly the
     /// way `brink_analyzer::coalesce::chain_spine` enumerates it —
@@ -2080,7 +2095,12 @@ mod tests {
     #[test]
     fn coalesce_chain_spine_walks_the_left_spine_outermost_first() {
         fn coalesce(lhs: hir::Expr, rhs: hir::Expr) -> hir::Expr {
-            hir::Expr::Infix(Box::new(lhs), crate::InfixOp::Coalesce, Box::new(rhs))
+            hir::Expr::Infix(hir::InfixExpr::new(
+                synthetic_infix_prov(),
+                lhs,
+                crate::InfixOp::Coalesce,
+                rhs,
+            ))
         }
 
         // `a or b or c` → Infix(Infix(a, or, b), or, c).
@@ -2111,11 +2131,12 @@ mod tests {
     fn coalesce_chain_spine_is_empty_for_a_non_coalescing_expr() {
         assert!(coalesce_chain_spine(&hir::Expr::Int(1)).is_empty());
         assert!(
-            coalesce_chain_spine(&hir::Expr::Infix(
-                Box::new(hir::Expr::Int(1)),
+            coalesce_chain_spine(&hir::Expr::Infix(hir::InfixExpr::new(
+                synthetic_infix_prov(),
+                hir::Expr::Int(1),
                 crate::InfixOp::Or,
-                Box::new(hir::Expr::Int(2)),
-            ))
+                hir::Expr::Int(2),
+            )))
             .is_empty()
         );
     }

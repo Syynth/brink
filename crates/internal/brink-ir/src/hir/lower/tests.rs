@@ -89,9 +89,10 @@ fn lower_infix_expression() {
             assert!(
                 matches!(
                     &td.value,
-                    Some(Expr::Infix(lhs, InfixOp::Add, rhs))
-                    if matches!(lhs.as_ref(), Expr::Int(3))
-                    && matches!(rhs.as_ref(), Expr::Int(4))
+                    Some(Expr::Infix(ie))
+                    if ie.op == InfixOp::Add
+                    && matches!(ie.lhs.as_ref(), Expr::Int(3))
+                    && matches!(ie.rhs.as_ref(), Expr::Int(4))
                 ),
                 "expected 3 + 4, got {:?}",
                 td.value

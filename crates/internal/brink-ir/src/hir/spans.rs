@@ -13,26 +13,32 @@
 //! both sides already depend on, so the two can never disagree about what
 //! range identifies an expression.
 //!
-//! ## Why it is best-effort
+//! ## Own provenance first, subtree union as the fallback
 //!
-//! Not every HIR expression carries source provenance. `Expr::Infix` is a
-//! bare `(Box<Expr>, InfixOp, Box<Expr>)` tuple with no `Provenance` of its
-//! own, and the scalar literal variants (`Int`, `Float`, `Bool`, `Null`)
-//! carry none either — only `Path`s (their `range`) and the
-//! `Provenance`-carrying extension shapes do. So this function returns the
-//! **union of every range reachable in the subtree**, or `None` when the
-//! subtree contains not a single ranged node (`5 or 9`).
+//! An expression that carries its own [`crate::Provenance`] — every
+//! extension shape, and (since issue #1517) [`crate::InfixExpr`] — is keyed
+//! by **that node's own range**, so it is separately addressable from every
+//! other node in the tree.
 //!
-//! Two consequences a consumer must respect, both of which the side-table
-//! producer already handles by recording nothing rather than guessing:
+//! The variants with no provenance of their own — `Prefix`/`Postfix`,
+//! `Call`, `String` interpolation, `Path`/`ListLiteral`, and the scalar
+//! literals (`Int`, `Float`, `Bool`, `Null`) — fall back to the **union of
+//! every range reachable in the subtree**, or `None` when the subtree
+//! contains not a single ranged node. A consumer keying one of *those*
+//! shapes still inherits the old caveats: a `None` span cannot be keyed at
+//! all, and a wrapper can share a span with the operand it wraps (`-x`
+//! spans exactly what `x` does).
 //!
-//! - A `None` span cannot be keyed at all.
-//! - Two *distinct* nodes can share a span — most importantly an `or`-chain
-//!   and its own left spine, since a trailing literal fallback contributes
-//!   no range (`some(a) or f() or 99` spans exactly what `some(a) or f()`
-//!   does). A producer keying nodes by this span must therefore detect the
-//!   collision and drop **both** entries; a verdict for the wrong node is a
-//!   miscompile, an absent verdict is only a missed optimization.
+//! ### The collision issue #1517 removed
+//!
+//! Before infix nodes carried provenance, this function's union was the
+//! *only* identity available for them, and a left-associative chain shared
+//! it with its own left spine whenever the trailing operand contributed no
+//! range (`some(a) or f() or 99` spanned exactly what `some(a) or f()`
+//! did). The two ruled side-table consumers had to detect that collision
+//! and drop both entries. They no longer do: an infix node's own range
+//! strictly contains its left operand's, so a chain root and its spine are
+//! always distinct keys.
 //!
 //! This is deliberately *not* a diagnostic anchor — `brink-analyzer`'s own
 //! `expr_anchor` helpers stay the anchor policy (leftmost meaningful token).
@@ -42,12 +48,15 @@ use rowan::TextRange;
 
 use crate::hir::types::{Expr, StringPart};
 
-/// The union of every source range reachable inside `expr`, or `None` when
-/// the subtree carries no source provenance at all.
+/// The node's own provenance range where it has one, else the union of
+/// every source range reachable inside `expr` — `None` only when neither is
+/// available.
 ///
 /// See the module doc for the contract: this is an **identity key** for
-/// side-table lookups, best-effort by construction, and callers must treat
-/// both `None` and a collision between two distinct nodes as "no verdict".
+/// side-table lookups. It is exact for a provenance-carrying node (every
+/// extension shape, and [`Expr::Infix`]); for the remaining shapes it stays
+/// best-effort, so a caller keying one of those must still treat `None` and
+/// a collision with a wrapped operand as "no verdict".
 #[must_use]
 pub fn expr_span(expr: &Expr) -> Option<TextRange> {
     let mut span = None;
@@ -67,10 +76,10 @@ pub fn expr_span(expr: &Expr) -> Option<TextRange> {
             }
         }
         Expr::Prefix(_, inner) | Expr::Postfix(inner, _) => cover(&mut span, expr_span(inner)),
-        Expr::Infix(lhs, _, rhs) => {
-            cover(&mut span, expr_span(lhs));
-            cover(&mut span, expr_span(rhs));
-        }
+        // An infix node's own range (issue #1517) — never the subtree
+        // union, which is exactly what used to collide a chain with its own
+        // left spine.
+        Expr::Infix(ie) => return Some(ie.ptr.range),
         Expr::Call(path, args) => {
             cover(&mut span, Some(path.range));
             for a in args {
@@ -187,33 +196,44 @@ mod tests {
     }
 
     #[test]
-    fn an_infix_spans_the_union_of_its_ranged_operands() {
+    fn an_infix_spans_its_own_node() {
         let src = "flow main() {\n  {a or b}\n  -> END\n}\n";
         let e = first_logic_expr(src);
-        let span = expr_span(&e).expect("both operands are paths");
+        let span = expr_span(&e).expect("an infix node carries its own range");
         assert_eq!(text(src, span), "a or b");
     }
 
+    /// The #1517 fix, pinned: a chain whose trailing operand carries no
+    /// range of its own is still distinguishable from its own left spine,
+    /// because the span now comes from the infix node's own provenance
+    /// instead of the union of its subtree. This is the exact fixture that
+    /// used to collide, and the reason both side-table consumers needed a
+    /// collision-poisoning workaround.
     #[test]
-    fn a_trailing_scalar_literal_contributes_nothing() {
-        // The collision the module doc warns about, demonstrated: the whole
-        // chain spans exactly what its left spine spans, because `99` has
-        // no range of its own. A side-table producer must poison this key,
-        // not guess which node it meant.
+    fn a_chain_and_its_left_spine_have_distinct_spans() {
         let src = "flow main() {\n  {a or b or 99}\n  -> END\n}\n";
         let e = first_logic_expr(src);
-        let whole = expr_span(&e).expect("chain has ranged operands");
-        let covered = text(src, whole);
-        assert!(
-            covered.starts_with("a or b") && !covered.contains("99"),
-            "the trailing literal must contribute nothing, got {covered:?}"
-        );
-        let Expr::Infix(inner, _, _) = &e else {
+        let whole = expr_span(&e).expect("chain carries its own range");
+        assert_eq!(text(src, whole), "a or b or 99");
+        let Expr::Infix(root) = &e else {
             panic!("expected a left-associative chain, got {e:?}");
         };
-        // The collision itself: the chain and its own left spine are
-        // indistinguishable by this key.
-        assert_eq!(expr_span(inner), Some(whole));
+        let inner = expr_span(&root.lhs).expect("the left spine is an infix too");
+        assert_eq!(text(src, inner), "a or b");
+        assert_ne!(inner, whole, "root and spine must be separately keyable");
+    }
+
+    /// The trailing literal itself is still span-less — #1517 gave infix
+    /// nodes provenance, not the scalar literal variants. It no longer
+    /// matters for keying, because nothing keys a bare literal.
+    #[test]
+    fn a_trailing_scalar_literal_still_carries_no_span_of_its_own() {
+        let src = "flow main() {\n  {a or b or 99}\n  -> END\n}\n";
+        let e = first_logic_expr(src);
+        let Expr::Infix(root) = &e else {
+            panic!("expected a left-associative chain, got {e:?}");
+        };
+        assert_eq!(expr_span(&root.rhs), None);
     }
 
     #[test]
@@ -224,10 +244,14 @@ mod tests {
         assert_eq!(text(src, span), "f(a, b");
     }
 
+    /// Before #1517 this subtree had no span at all (neither operand is
+    /// ranged, and the infix node had nothing of its own), so it could not
+    /// be keyed. The infix node's own provenance now keys it.
     #[test]
-    fn an_all_literal_subtree_has_no_span() {
+    fn an_all_literal_infix_is_keyed_by_the_operation_itself() {
         let src = "flow main() {\n  {5 or 9}\n  -> END\n}\n";
         let e = first_logic_expr(src);
-        assert_eq!(expr_span(&e), None);
+        let span = expr_span(&e).expect("the operation carries its own range");
+        assert_eq!(text(src, span), "5 or 9");
     }
 }

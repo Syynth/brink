@@ -147,6 +147,8 @@ pub enum NodeClass {
     ExternalDecl = 48,
     /// An `INCLUDE` site.
     Include = 49,
+    /// An infix (binary) operation — `lhs op rhs` (issue #1517).
+    Infix = 50,
 }
 
 impl NodeClass {
@@ -198,6 +200,7 @@ impl NodeClass {
             47 => Self::StructDecl,
             48 => Self::ExternalDecl,
             49 => Self::Include,
+            50 => Self::Infix,
             _ => return None,
         })
     }
@@ -362,7 +365,7 @@ mod tests {
                 assert_eq!(class.as_u16(), v);
             }
         }
-        assert_eq!(NodeClass::from_u16(NodeClass::Include.as_u16() + 1), None);
+        assert_eq!(NodeClass::from_u16(NodeClass::Infix.as_u16() + 1), None);
         assert_eq!(NodeClass::from_u16(2), None, "generic range is reserved");
     }
 
