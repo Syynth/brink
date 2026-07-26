@@ -2427,6 +2427,23 @@ pub enum DiagnosticCode {
     /// treated as satisfying this — DONE ends the *turn*, not the value
     /// contract.
     E150,
+
+    // ── Native lint: asymmetric choice-branch dead-end (issue #1219,
+    //    decision-log 2026-07-22 "Flows end implicitly (native)" item 4) ──
+    /// A native `{? … }` choice's own body falls through (no divert/return)
+    /// while a sibling choice in the same set diverts onward, at a genuine
+    /// dead end (nothing follows the choice point to reconverge into) — the
+    /// residual value of ink's retired "ran out of content" error,
+    /// relocated to a narrow, **opt-in, warning-severity** lint
+    /// (`brink_analyzer::native_choice_dead_end`) rather than a blocking
+    /// runtime fault. Fires only for the *mixed* case — some siblings
+    /// divert, at least one doesn't — never for a choice set where every
+    /// branch falls through (an ordinary menu that ends) or where the
+    /// choice set's `continuation` is non-empty (native has no gather,
+    /// `docs/native-surface-charter.md` §5 — a non-empty continuation is
+    /// the dissolved gather, and every falling-through branch reconverging
+    /// there is ordinary weave structure, not a mistake).
+    E151,
 }
 
 impl DiagnosticCode {
@@ -2588,6 +2605,7 @@ impl DiagnosticCode {
             Self::E148 => "E148",
             Self::E149 => "E149",
             Self::E150 => "E150",
+            Self::E151 => "E151",
         }
     }
 
@@ -2806,6 +2824,9 @@ impl DiagnosticCode {
             Self::E150 => {
                 "declares a return type but the body may fall through without returning a value"
             }
+            Self::E151 => {
+                "native: this choice branch falls through while a sibling diverts — did you mean to add `-> …`, or `-> DONE` to end deliberately?"
+            }
         }
     }
 
@@ -2831,7 +2852,8 @@ impl DiagnosticCode {
             | Self::E106
             | Self::E110
             | Self::E131
-            | Self::E132 => Severity::Warning,
+            | Self::E132
+            | Self::E151 => Severity::Warning,
             _ => Severity::Error,
         }
     }
@@ -2994,6 +3016,7 @@ impl DiagnosticCode {
             "E148" => Some(Self::E148),
             "E149" => Some(Self::E149),
             "E150" => Some(Self::E150),
+            "E151" => Some(Self::E151),
             _ => None,
         }
     }
