@@ -411,7 +411,7 @@ fn remap_expr(expr: &mut lir::Expr, map: &[NameId]) {
                 remap_expr(v, map);
             }
         }
-        Expr::Index { base, index } => {
+        Expr::Index { base, index } | Expr::SeqRemoveAt { base, index } => {
             remap_expr(base, map);
             remap_expr(index, map);
         }

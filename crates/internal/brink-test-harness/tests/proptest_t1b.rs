@@ -242,12 +242,14 @@ proptest! {
         prop_assert_eq!(out.trim(), expected.trim());
     }
 
-    /// `insert(a, i, v)` (shift right) then `remove(a, j)` (shift left) on a
-    /// compiled brink program must equal the same sequence of `Vec::insert`/
-    /// `Vec::remove` calls on a Rust reference — the RMW chain equivalence
-    /// law (§6) extended to the mutators, not just indexed assignment.
+    /// `insert(a, i, v)` (shift right) then `remove_at(a, j)` (shift left)
+    /// on a compiled brink program must equal the same sequence of
+    /// `Vec::insert`/`Vec::remove` calls on a Rust reference — the RMW chain
+    /// equivalence law (§6) extended to the mutators, not just indexed
+    /// assignment. (Issue #1484: this used `remove(a, j)`; the array-index
+    /// leg is `remove_at` now.)
     #[test]
-    fn insert_then_remove_matches_manual_vec_ops(
+    fn insert_then_remove_at_matches_manual_vec_ops(
         base in prop::collection::vec(0i32..100, 1..5),
         insert_at in 0usize..5,
         insert_v in -1000i32..1000,
@@ -264,7 +266,7 @@ proptest! {
             base.iter().map(i32::to_string).collect::<Vec<_>>().join(", ")
         );
         let source = format!(
-            "VAR arr = 0\nVAR out = \"\"\n~ {{\n    arr = {literal}\n    insert(arr, {clamped_insert}, {insert_v})\n    remove(arr, {remove_at})\n    for x in arr {{\n        out = out + \" \" + x\n    }}\n}}\n{{out}}\n-> END\n",
+            "VAR arr = 0\nVAR out = \"\"\n~ {{\n    arr = {literal}\n    insert(arr, {clamped_insert}, {insert_v})\n    remove_at(arr, {remove_at})\n    for x in arr {{\n        out = out + \" \" + x\n    }}\n}}\n{{out}}\n-> END\n",
         );
         let out = run_brink(&source);
         let expected = space_joined(&reference);
