@@ -458,6 +458,24 @@ fn native_unknown_cell_name_in_an_assertion_is_e102() {
 }
 
 #[test]
+fn native_stitch_silent_assertion_is_exceeded_by_an_emitting_nested_flow() {
+    // The `Stitch` half of the channel (`container::lower_stitch` calling
+    // `annotation::effects_assertion`) needs its own end-to-end proof that
+    // the analyzer resolves it. Every other native fixture in this file
+    // attaches `@[effects(…)]` to a top-level `fn`/`flow`, which is
+    // satisfied identically whether or not
+    // `effects_assertions::find_def_id(..., SymbolKind::Stitch, ...)` ever
+    // finds the nested def — the golden corpus case has the same gap (its
+    // stitch assertion is satisfied, not exceeded). A nested `flow` whose
+    // body emits content is not `silent`, so this can only go green if the
+    // stitch path actually reaches the exceedance checker.
+    let diags = analyze_native(
+        "flow main() {\n  @[effects(silent)]\n  flow tally() {\n    Gold falls.\n  }\n  -> tally\n}\n",
+    );
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E108], "{diags:?}");
+}
+
+#[test]
 fn native_silent_assertion_is_exceeded_by_a_flow_that_emits() {
     // The NS-A2 output dimension, on the native surface: a `flow` whose
     // body writes a line is not `silent`.
