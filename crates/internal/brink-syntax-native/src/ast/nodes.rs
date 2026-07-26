@@ -564,9 +564,11 @@ impl StructField {
         support::token(&self.syntax, IDENT)
     }
 
-    /// The field's declared type — a bare dotted path in this skeleton
-    /// grammar (no generics/fn-types, `parser/decl.rs::struct_field`).
-    pub fn type_path(&self) -> Option<Path> {
+    /// The field's `: type` annotation (NG-E, issue #1505) — a full
+    /// `type_expr` (bare name, generic instantiation, or function type),
+    /// the same production every other `: type` position in this grammar
+    /// uses (`Param::type_annotation`, `VarDecl::type_annotation`, …).
+    pub fn type_annotation(&self) -> Option<TypeAnnotation> {
         support::child(&self.syntax)
     }
 }

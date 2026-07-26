@@ -334,14 +334,21 @@ pub(crate) fn struct_decl(p: &mut Parser<'_, '_>, doc: Option<rowan::Checkpoint>
     p.finish_node();
 }
 
+/// `IDENT ~ ":" ~ type_expr` — a struct field's name and declared type
+/// (NG-E, issue #1505). The type clause is the shared `TYPE_ANNOTATION`
+/// wrapper (`super::types::type_annotation`), the same node every other
+/// `: type` position in this grammar produces (`param`, `binding_annotation`,
+/// `return_type_clause`), so a field's type may now be a generic
+/// instantiation (`list<int>`, `map<K, V>`) or a function type
+/// (`fn(int): bool`) — not just a bare dotted path — unblocking
+/// function-typed and container-typed struct fields (#1482, #1487).
 fn struct_field(p: &mut Parser<'_, '_>) {
     if !p.at(IDENT) {
         return;
     }
     p.start_node(STRUCT_FIELD);
     p.expect(IDENT);
-    p.expect(COLON);
-    super::expr::path(p);
+    super::types::type_annotation(p);
     p.finish_node();
 }
 

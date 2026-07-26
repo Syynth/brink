@@ -7,22 +7,20 @@
 //! `ufcs_resolution` for the D2 verdict side table LIR lowering and IDE
 //! hover read.
 //!
-//! One deliberate exception is documented at
-//! [`a_function_typed_field_wins_and_is_recorded_as_a_field_call`]: a
-//! *function-typed* struct field cannot be spelled on the native surface
-//! yet (native `struct` field types are bare paths — there is no `fn(…): T`
-//! type-expression grammar there), so that one fixture patches the lowered
-//! `TypeExpr` directly. Its negative twin (`E140`, D1's hard error) needs no
-//! such help and runs on plain source.
+//! Every declared field *type* is real source too, including the
+//! function-typed and generic (`array<int>`) shapes NG-E (issue #1505)
+//! unblocked by widening `brink-syntax-native`'s `struct_field` grammar from
+//! a bare `PATH` to the real `type_expr` production. The one remaining
+//! device is [`array_receiver_fixture`]'s field *value* (`items: 0` for a
+//! declared `array<int>`) — the native surface still has no array-literal
+//! grammar to construct a real value of that type with, so only the
+//! receiver's declared type is trustworthy there, never its value.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use brink_analyzer::{AnalysisOptions, UfcsVerdict};
 use brink_ir::hir::lower_native;
-use brink_ir::{
-    Diagnostic, DiagnosticCode, FileId, HirFile, Name, SymbolManifest, TypeExpr, hir::visit,
-};
-use rowan::{TextRange, TextSize};
+use brink_ir::{Diagnostic, DiagnosticCode, FileId, HirFile, Name, SymbolManifest, hir::visit};
 
 fn lower(src: &str) -> (HirFile, SymbolManifest) {
     let parse = brink_syntax_native::parse(src);
@@ -183,17 +181,19 @@ fn main() {
 
 // ─── Step 3: the T1b/NS stdlib prelude fallback (D4) ──────────────────
 
-/// A receiver typed `array<int>` — same "patch the field's `TypeExpr` after
-/// lowering" device [`a_function_typed_field_wins_and_is_recorded_as_a_field_call`]
-/// uses, since the native surface has no array-literal grammar yet to
-/// construct a real `array<int>` *value* with. The field's declared type
-/// (read straight from `structs::declared_shapes`, not from inference) is
-/// all a receiver's type needs — the shape backing it is otherwise inert.
+/// A receiver typed `array<int>` — NG-E (issue #1505) means this is now
+/// spelled directly (`items: array<int>`), no more HIR-patching the
+/// `TypeExpr` after the fact. The field's *value* (`items: 0`) still doesn't
+/// match its declared type — the native surface has no array-literal
+/// grammar yet to construct a real `array<int>` *value* with — but that's
+/// harmless here: the field's declared type (read straight from
+/// `structs::declared_shapes`, not from inference) is all a receiver's type
+/// needs, and the shape backing it is otherwise inert.
 fn array_receiver_fixture(call_expr: &str) -> (HirFile, SymbolManifest) {
-    let (mut hir, manifest) = lower(&format!(
+    lower(&format!(
         "\
 struct Bag {{
-  items: int
+  items: array<int>
 }}
 
 fn main() {{
@@ -201,17 +201,7 @@ fn main() {{
   let n = {call_expr};
 }}
 "
-    ));
-    let zero = TextRange::new(TextSize::from(0), TextSize::from(0));
-    hir.structs[0].fields[0].ty = TypeExpr::Generic {
-        name: "array".into(),
-        args: vec![TypeExpr::Named {
-            name: "int".into(),
-            range: zero,
-        }],
-        range: zero,
-    };
-    (hir, manifest)
+    ))
 }
 
 /// D4's candidate set for step 3 is "ordinary lexical scope only (file
@@ -373,18 +363,18 @@ fn main() {
 /// The positive half of field-access-wins: a **function-typed** field is
 /// called through its own value, and the verdict says so.
 ///
-/// The native surface cannot spell a `fn(…): T` field type yet — `struct`
-/// field types parse as bare paths (`brink-syntax-native`'s
-/// `parser::decl::struct_field`), so this test lowers the ordinary source
-/// and then rewrites the one field's `TypeExpr` to the function type the
-/// grammar will eventually admit. Everything downstream of the shape table
-/// (`structs::declared_shapes` → `ufcs::resolve`) is exercised for real.
+/// NG-E (issue #1505) widened `brink-syntax-native`'s `struct_field`
+/// grammar from a bare `PATH` to the real `type_expr` production, so a
+/// `fn(…): T` field type is spelled directly on real source — no more
+/// rewriting the lowered `TypeExpr` by hand. Everything from parsing
+/// onward — the shape table (`structs::declared_shapes` → `ufcs::resolve`)
+/// included — is exercised for real.
 #[test]
 fn a_function_typed_field_wins_and_is_recorded_as_a_field_call() {
-    let (mut hir, manifest) = lower(
+    let (hir, manifest) = lower(
         "\
 struct Guest {
-  greet: string
+  greet: fn(int): int
 }
 
 fn main() {
@@ -393,18 +383,6 @@ fn main() {
 }
 ",
     );
-    let zero = TextRange::new(TextSize::from(0), TextSize::from(0));
-    hir.structs[0].fields[0].ty = TypeExpr::Fn {
-        params: vec![TypeExpr::Named {
-            name: "int".into(),
-            range: zero,
-        }],
-        ret: Box::new(TypeExpr::Named {
-            name: "int".into(),
-            range: zero,
-        }),
-        range: zero,
-    };
 
     let verdicts = verdicts(&hir, &manifest);
     assert_eq!(verdicts.len(), 1, "one UFCS site: {verdicts:?}");

@@ -16,10 +16,16 @@
 //!
 //! `FieldCall` (field access wins over a free function of the same name) is
 //! exercised only at the LIR-lowering unit level
-//! (`brink-ir/tests/ufcs_field_call.rs`): the native surface
-//! cannot yet spell a function-typed struct field
-//! (`brink-analyzer::ufcs`'s own test file notes the same gap), so there is
-//! no real `.brink` source that reaches it today.
+//! (`brink-ir/tests/ufcs_field_call.rs`): NG-E (issue #1505) widened
+//! `brink-syntax-native`'s `struct_field` grammar to spell a function-typed
+//! field (`greet: fn(int): int`) for real, so that unit test now drives a
+//! real `.brink` fixture through parse → lower → analyze → resolve →
+//! LIR-lower. What's still missing for a fixture *here* — one that actually
+//! plays through the VM like every other test in this file — is a
+//! first-class function *value* on the native surface (`#fn(target, args…)`,
+//! T1c §2, is `brink-syntax`-only today); a struct literal can declare a
+//! `fn`-typed field but has nothing real to assign it. Tracked as a
+//! follow-up on #1505 rather than bundled here.
 //!
 //! Before this pass every UFCS-shaped call was refused indiscriminately as
 //! `E025` ("unresolved variable reference"); the bar the pass (and now its

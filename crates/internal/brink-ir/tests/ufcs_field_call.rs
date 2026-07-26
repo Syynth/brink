@@ -3,17 +3,25 @@
 //! *through* the field's value (`lir::Expr::CallValue`) rather than the
 //! desugared free call `name(recv, args)` `FreeFnDesugar` produces.
 //!
-//! The native surface cannot yet spell a function-typed struct field —
-//! `struct` field types parse as bare paths
-//! (`brink-syntax-native`'s `parser::decl::struct_field`) — so, mirroring
-//! `brink-analyzer::tests::ufcs_resolution`'s own
-//! `a_function_typed_field_wins_and_is_recorded_as_a_field_call`, this test
-//! lowers ordinary source and then rewrites the one field's `TypeExpr` to
-//! the function type the grammar will eventually admit. Everything
-//! downstream of that rewrite — the analyzer's verdict, `brink-analyzer::
-//! ufcs_lir_lookup`'s translation, and this crate's own LIR lowering — runs
-//! for real; there is no fixture for a real `.brink` source reaching this
-//! path today (see `brink-test-harness/tests/b3a_ufcs_e2e.rs`'s module doc).
+//! NG-E (issue #1505) widened `brink-syntax-native`'s `struct_field`
+//! grammar from a bare `PATH` to the real `type_expr` production, so a
+//! function-typed struct field (`greet: fn(int): int`) is now spelled on
+//! real native source — no more hand-patching the lowered `TypeExpr` after
+//! the fact (the pre-#1505 shape this test and
+//! `brink-analyzer::tests::ufcs_resolution`'s
+//! `a_function_typed_field_wins_and_is_recorded_as_a_field_call` both used).
+//! Everything from parsing onward — the analyzer's verdict,
+//! `brink-analyzer::ufcs_lir_lookup`'s translation, and this crate's own LIR
+//! lowering — now runs on a real `.brink` fixture.
+//!
+//! The field's *value* in the construction literal is still not a real
+//! callable (the native surface has no first-class function-value syntax
+//! yet — `#fn(target, args…)`, T1c §2, is `brink-syntax`-only); UFCS
+//! resolution and LIR lowering are driven entirely by the field's
+//! *declared* type, so this doesn't block proving the `FieldCall` path for
+//! real — see `brink-test-harness/tests/b3a_ufcs_e2e.rs`'s module doc for
+//! the follow-up that would close that last gap (actually playing the call
+//! through the VM).
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 // Issue #801: this crate's `clippy.toml` disallows bare `HashMap`/`HashSet`
@@ -29,7 +37,6 @@
 
 use brink_ir::hir::lower_native;
 use brink_ir::{FileId, TypeExpr, lir};
-use rowan::{TextRange, TextSize};
 
 #[test]
 #[expect(
@@ -42,7 +49,7 @@ use rowan::{TextRange, TextSize};
 fn a_field_call_verdict_lowers_as_a_call_through_the_fields_value() {
     let src = "\
 struct Guest {
-  greet: string
+  greet: fn(int): int
 }
 
 fn main() {
@@ -57,26 +64,16 @@ fn main() {
         parsed.errors()
     );
     let file_id = FileId(0);
-    let (mut hir, manifest, lower_diags) = lower_native::lower(file_id, &parsed.tree());
+    let (hir, manifest, lower_diags) = lower_native::lower(file_id, &parsed.tree());
     assert!(
         lower_diags.is_empty(),
         "lowering diagnostics: {lower_diags:?}"
     );
-
-    // The one native-surface gap this test works around — see the module
-    // doc. `greet`'s declared type becomes `fn(int): int`.
-    let zero = TextRange::new(TextSize::from(0), TextSize::from(0));
-    hir.structs[0].fields[0].ty = TypeExpr::Fn {
-        params: vec![TypeExpr::Named {
-            name: "int".into(),
-            range: zero,
-        }],
-        ret: Box::new(TypeExpr::Named {
-            name: "int".into(),
-            range: zero,
-        }),
-        range: zero,
-    };
+    assert!(
+        matches!(hir.structs[0].fields[0].ty, TypeExpr::Fn { .. }),
+        "the `greet` field must lower to a real HIR fn type: {:?}",
+        hir.structs[0].fields[0].ty
+    );
 
     // The same hand-assembled "honest minimal native pipeline"
     // `brink-test-harness::corpus::compile_and_explore_from_brink_native`
