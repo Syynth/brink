@@ -599,11 +599,12 @@ pub(crate) struct UfcsResolution {
 /// type's doc for why `brink-ir` can't name `brink_analyzer::UfcsVerdict`
 /// directly (it sits below `brink-analyzer` in the crate graph).
 ///
-/// Memoized once per project and read by three call sites —
-/// [`whole_project_diagnostics_query`] (the diagnostics half), and (issue
-/// #1506) `lir_knot_chunk_query`'s per-knot LIR lowering plus
-/// `lir_lowering_query`'s own root-content step — so all three see the same
-/// table rather than each re-running whole-project inference.
+/// Memoized once per project and read by four call sites —
+/// [`whole_project_diagnostics_query`] (the diagnostics half), (issue #1506)
+/// `lir_knot_chunk_query`'s per-knot LIR lowering plus `lir_lowering_query`'s
+/// own root-content step, and (issue #1507) `ProjectDb::ufcs_verdict`, which
+/// `brink-ide`'s hover/go-to-def wiring reads through — so all four see the
+/// same table rather than each re-running whole-project inference.
 ///
 /// Lazy on the same argument [`whole_project_diagnostics_query`]'s old
 /// inline check used: a project with no dotted-callee call anywhere never

@@ -33,9 +33,13 @@ impl ResolutionLookup {
 
 // ─── B3a UFCS verdict lookup (issue #1506) ─────────────────────────
 
-/// Mirror of `brink_analyzer::ufcs::UfcsVerdict`, narrowed to exactly what
-/// LIR lowering needs to pick the right call shape
-/// (`lir::lower::expr::lower_ufcs_call`).
+/// Mirror of `brink_analyzer::ufcs::UfcsVerdict`, narrowed to what LIR
+/// lowering needs to pick the right call shape
+/// (`lir::lower::expr::lower_ufcs_call`). `brink-ide`'s hover/go-to-def
+/// wiring (issue #1507, `ufcs_hover` module) is a second reader of this same
+/// mirror — it reads verdicts through `brink_db::ProjectDb::ufcs_verdict`
+/// rather than lowering-specific data, so nothing here is LIR-lowering-only
+/// even though lowering is still this type's original consumer.
 ///
 /// `brink-ir` sits below `brink-analyzer` in the crate graph
 /// (`brink-analyzer` depends on `brink-ir`, never the reverse — see
@@ -73,11 +77,14 @@ pub enum UfcsVerdict {
     PreludeDesugar { name: String },
 }
 
-/// Project-wide `(file, range) → verdict` lookup — the LIR-lowering-facing
+/// Project-wide `(file, range) → verdict` lookup — the `brink-ir`-facing
 /// counterpart of `brink_analyzer::UfcsTable`. Built once (`brink-db`'s
 /// `ufcs_resolution_query`) and shared read-only across every `LowerCtx` in
 /// a `lower_to_program`/incremental-chunk call, exactly like
-/// [`ResolutionLookup`] above.
+/// [`ResolutionLookup`] above — plus, since issue #1507, `brink-ide`'s
+/// hover/go-to-def wiring reads individual verdicts out of the same
+/// memoized table via `brink_db::ProjectDb::ufcs_verdict`, so this is no
+/// longer an LIR-lowering-exclusive structure.
 ///
 /// Empty by construction for every caller that never ran the analyzer's
 /// `ufcs` pass (this crate's own tests, `compile_bench`, `golden_i078.rs`) —
