@@ -337,13 +337,19 @@ impl IdeSession {
     /// B0.9 native strict-only check (`E137`, which needs an explicit
     /// `types = gradual`) were silently gated off, among others.
     ///
-    /// An unchanged value is a salsa no-op, so this never invalidates memos
-    /// on its own. [`compile`](Self::compile) still writes its own (possibly
-    /// overriding) options — the next option change re-establishes the
+    /// Guarded against unchanged values: salsa's `set_analysis_options`
+    /// stamps the current revision unconditionally on every write, so an
+    /// unguarded call would invalidate every direct reader
+    /// (`per_file_diagnostics_query`, `symbol_index_query`, `resolve_query`,
+    /// `lir_query`/`story_data`) even when the value didn't actually change.
+    /// [`compile`](Self::compile) still writes its own (possibly overriding)
+    /// options unconditionally — the next option change re-establishes the
     /// session's.
     fn sync_db_options(&mut self) {
         let options = self.analysis_options();
-        self.db.set_analysis_options(options);
+        if self.db.analysis_options() != &options {
+            self.db.set_analysis_options(options);
+        }
     }
 
     /// Add or update a source file in the database.
