@@ -78,7 +78,7 @@ pub use protocols::{
     is_reserved_protocol_name, iterate_element_ty, iterate_val_ty,
 };
 pub use resolve::ImportScope;
-pub use signature::{Sig, signature};
+pub use signature::{Sig, local_signature, signature};
 pub use strict::{
     LintLevel, LintPolicy, TypePolicy, effective_severity, native_strict_only_error,
     resolve_type_policy,

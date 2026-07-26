@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use rowan::TextRange;
 
 use super::{Scope, SymbolKind};
+use crate::TypeExpr;
 use crate::host_manifest::DocBlock;
 
 /// Per-file symbol collection for cross-file resolution by the analyzer.
@@ -69,6 +70,15 @@ pub struct LocalSymbol {
     pub kind: super::SymbolKind,
     /// For params: ref/divert metadata.
     pub param_detail: Option<super::ParamInfo>,
+    /// The TM-2 (docs/typed-mode-spec.md §3) inline `: type` annotation on
+    /// this local's own declaration, if any — a param's `name: type` or a
+    /// `~ temp name: type = expr`'s ascription (issue #530: the per-file
+    /// locals path `brink_analyzer::local_signature` reads to serve a
+    /// `Param`/`Temp` `DefinitionId` a real signature instead of the
+    /// `None` `signature_query` returns for one). `None` for a local with
+    /// no annotation grammar at all (a `for`-loop binding, an `as` binding)
+    /// as well as an unannotated param/temp.
+    pub annotation: Option<TypeExpr>,
 }
 
 /// An unresolved reference that needs cross-file resolution.
