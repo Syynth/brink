@@ -566,6 +566,29 @@ pub(crate) fn whole_project_diagnostics_query(
         );
     }
 
+    // B3a UFCS resolution (issue #1482, D1–D5 RULED 2026-07-26) — last,
+    // matching `brink_analyzer::whole_project_diagnostics`' own composition
+    // order, and lazy on the same argument every block above uses: a project
+    // with no dotted-callee call anywhere never triggers inference here.
+    // (Every ink project is in that set by construction — ink's own lowering
+    // cannot produce a multi-segment callee path; see `brink-analyzer`'s
+    // `ufcs` module doc.) Reuses the FG-narrowed, per-SCC-memoized
+    // `type_inference_query` rather than letting the analyzer recompute
+    // inference from scratch, exactly as the strict block above does.
+    if hir_refs
+        .iter()
+        .any(|&(_, hir)| brink_analyzer::project_has_ufcs_call(hir))
+    {
+        let inference = type_inference_query(db, project);
+        let (_table, ufcs_diags) = brink_analyzer::resolve_ufcs_calls(
+            &hir_refs,
+            &resolved.index,
+            &resolved.resolutions,
+            inference.as_ref(),
+        );
+        diagnostics.extend(ufcs_diags);
+    }
+
     WholeProjectDiagnostics {
         diagnostics,
         symbol_meta,

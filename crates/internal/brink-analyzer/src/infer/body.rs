@@ -1034,6 +1034,21 @@ impl InferPass<'_, '_> {
                 None => def.tag() == brink_format::DefinitionTag::LocalVar,
             };
             if is_value_callee {
+                // B3a (issue #1482): a *multi-segment* callee path whose
+                // resolution landed on a value is a UFCS-shaped call
+                // (`g.greet(3)`) — the resolver records the receiver as the
+                // target, the trailing segment being a field name or a free
+                // function's name. The receiver is not itself the thing
+                // being called, so classifying it as a T1c call-through-a-
+                // value would report the receiver's own (non-`Fn`) type as
+                // "not callable" — a false `E066` on every legal method
+                // call. `brink-analyzer::ufcs` owns this site's checking;
+                // the call's own type stays `Unknown` here, the same
+                // posture `Expr::FieldAccess` already takes (no static
+                // field-type table is threaded through inference).
+                if path.segments.len() > 1 {
+                    return Ty::Unknown;
+                }
                 return self.infer_value_call(path, def, args, &arg_tys);
             }
             self.record_call_edge(def);

@@ -31,6 +31,7 @@ mod signature;
 mod strict;
 mod structs;
 mod type_resolution;
+mod ufcs;
 mod validate;
 
 use std::collections::BTreeMap;
@@ -77,6 +78,10 @@ pub use strict::{
     resolve_type_policy,
 };
 pub use structs::{ShapeInfo, declared_shapes};
+pub use ufcs::{
+    NodeKey, SideTable, UfcsTable, UfcsVerdict, project_has_ufcs_call,
+    resolve as resolve_ufcs_calls,
+};
 
 use brink_format::DefinitionId;
 use brink_ir::{
@@ -901,7 +906,58 @@ pub fn whole_project_diagnostics(
         }
     }
 
+    // B3a UFCS resolution (issue #1482, D1–D5 RULED 2026-07-26). Only the
+    // diagnostics land here; the verdict side table itself is served to LIR
+    // lowering and the IDE through [`ufcs_resolution`], which runs the same
+    // pass over the same inputs.
+    //
+    // Dialect-independent, for the reason `ufcs`' module doc gives: a
+    // multi-segment `Expr::Call` path can only originate in the native
+    // frontend, so the gate is structural rather than policy-driven — the
+    // ink corpus never reaches this pass. Lazy on the same argument as
+    // `needs_effects` above: a project with no dotted-callee call anywhere
+    // pays nothing.
+    if hir_inputs
+        .iter()
+        .any(|&(_, hir)| ufcs::project_has_ufcs_call(hir))
+    {
+        let owned_inference;
+        let inference = if let Some(inf) = strict_inference {
+            inf
+        } else {
+            owned_inference = infer::infer_project(
+                &hir_inputs,
+                index,
+                resolutions,
+                opts.host_manifest.as_ref(),
+                &inline_docs,
+            );
+            &owned_inference
+        };
+        let (_table, ufcs_diags) = ufcs::resolve(&hir_inputs, index, resolutions, inference);
+        diagnostics.extend(ufcs_diags);
+    }
+
     (diagnostics, symbol_meta)
+}
+
+/// The B3a UFCS verdict side table for a project (issue #1482, D2): the
+/// `node → resolved target` channel LIR lowering reads to choose between
+/// emitting a call through a field's value and emitting the desugared free
+/// call `name(recv, args)`, and that IDE hover/go-to-def reads to name the
+/// real target of a method-call-shaped site.
+///
+/// Split out from [`whole_project_diagnostics`] — which keeps the same
+/// pass's *diagnostics* — because the two consumers want opposite halves of
+/// one result and neither should pay for the other's.
+#[must_use]
+pub fn ufcs_resolution(
+    files: &[(FileId, &HirFile)],
+    index: &SymbolIndex,
+    resolutions: &ResolutionMap,
+    inference: &InferenceResult,
+) -> (UfcsTable, Vec<Diagnostic>) {
+    ufcs::resolve(files, index, resolutions, inference)
 }
 
 /// Cheap structural scan: does any knot/stitch in `hir` carry a

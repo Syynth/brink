@@ -14,8 +14,9 @@
 //! control_flow`) — see that module's doc for the NF-2 fence. B0.8 Wave B
 //! *tail* (issue #1322) fills in the rest of the ruled surface #1177
 //! didn't cover: `return e`/`break`/`continue` (below, this module) and
-//! compound/RMW assignment (`at_assignment`/`assign_stmt`, below) — UFCS
-//! resolution and `#fn` function values remain out of scope, see
+//! compound/RMW assignment (`at_assignment`/`assign_stmt`, below) — `#fn`
+//! function values remain out of scope, and UFCS *resolution* is the
+//! analyzer's (issue #1482), not this layer's; see
 //! `hir::lower_native::expr`'s module doc. Rides `expr.rs`'s expression
 //! skeleton — this is the statement *layer* over it, not a replacement.
 //!
