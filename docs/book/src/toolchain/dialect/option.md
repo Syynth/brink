@@ -365,19 +365,34 @@ The heaviest night on the tab: 7 coins — the ledger says some(7).
 ```
 
 > **Landed on the native surface, still planned for this (brink-dialect)
-> chapter (B1, issue #1460).** The ruled Option package includes its
-> ergonomics. The coalescing form `x or default` collapses an Option into a
-> value (`get(rooms, "Edda") or 0`), chaining left-to-right and staying
-> optional until the final non-Option fallback
-> (`get(m, k) or get(m, k2) or 0`) — this now compiles on the native
-> `.brink` surface. The `as`-binding that tests and unwraps in one move
-> (sketched here as `{get(rooms, "Edda") as r: room {r} it is}`) does
-> **not**: its precise grammar was never ruled beyond illustrative
-> sketches like this one, so it remains undelivered pending a design round
-> (house rule 7 — declining to invent syntax). Nothing in *this* chapter
-> changes yet either way — these examples are brink-dialect, where `or`
-> stays ink's boolean or; the chapter's own respell to the native surface
-> is separate, later work.
+> chapter (B1/B1b, issues #1460 and #1475).** The ruled Option package
+> includes its ergonomics, and both halves now compile on the native
+> `.brink` surface. The coalescing form `x or default` collapses an Option
+> into a value (`get(rooms, "Edda") or 0`), chaining left-to-right and
+> staying optional until the final non-Option fallback
+> (`get(m, k) or get(m, k2) or 0`). The **`as`-binding** tests and unwraps
+> in one move, and it is one construct in both of the language's condition
+> positions — the statement form and the template form, riding the ruled
+> `{if …}` spelling:
+>
+> ```brink
+> if get(rooms, "Edda") as r {
+>     // `r` is a plain `int` here — the Option is already unwrapped
+> }
+> {if get(rooms, "Edda") as r: room {r} it is else: no room tonight}
+> ```
+>
+> The binding is immutable, typed `T` from the condition's `Option[T]`,
+> scoped strictly to the success arm (an `else` never sees it), and
+> rebinds every iteration in `while`. For v1 the binding must be the
+> **entire** condition — composing it with `&&`/`||` is an error (`E140`);
+> let-chains can land later, additively. An `as` in a *choice guard* is
+> ruled (capture-at-presentation, by value) but not yet implemented — it
+> rides the `.inkb` v6 Choice record, and until then it is diagnosed as
+> not-yet-supported (`E141`). Nothing in *this* chapter changes either
+> way — these examples are brink-dialect, where `or` stays ink's boolean
+> or and there is no `as` binding at all; the chapter's own respell to the
+> native surface is separate, later work.
 
 ## How Option prints
 
@@ -491,9 +506,14 @@ value in `==`/arithmetic is a type fault; and the malformed-question faults
   `InfixOp::Coalesce`, distinct from the brink dialect's oracle-frozen
   `InfixOp::Or` (ink's boolean `||`).
 - **The `as`-binding** — named as the post-B1 condition-position spelling
-  by F27 (below), but its precise grammar was never promoted from
-  illustrative sketch to a decision-log ruling — still undelivered,
-  Track B1 (`docs/stdlib-sequencing.md` §3) remains its home once ruled.
+  by F27 (below), then ruled in full by the decision log's 2026-07-26
+  entry "The `as` binding: one construct, both condition positions,
+  `{if}` spelling" (immutable, typed `T` from `Option[T]`, scoped to the
+  success arm, rebinding per iteration in `while`, whole-condition-only
+  for v1). Landed on the native `.brink` surface in B1b (issue #1475).
+  Choice-guard `as` is ruled separately the same day
+  ("Choice-guard `as` un-deferred: capture-at-presentation, by-value
+  (COW), rides v6") and is deliberately **not** implemented yet.
 - **Bare `none` needs a type from context** — `docs/stdlib-spec.md` §1.4;
   E107's declaration rule (#1107).
 - **`Option[T]` in the static type language (inferable today, annotatable

@@ -1026,6 +1026,7 @@ mod tests {
             kind: CondKind::InitialCondition,
             branches: vec![CondBranch {
                 condition: None,
+                binding: None,
                 body: branch_body,
                 container_id: None,
             }],

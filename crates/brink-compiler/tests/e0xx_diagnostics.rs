@@ -1130,20 +1130,22 @@ fn e066_coalesce_mismatched_fallback_type() {
 /// `brink-syntax-native`'s `parser::tests::statement`.)
 #[test]
 fn e140_as_binding_over_a_boolean_composition() {
-    let source = "flow main() ~{
-  if true && some(1) as n {
-    return n;
-  }
-}
-";
-    let err = compile_native("as-composed", source, native_strict_options())
-        .map(|_| ())
-        .expect_err("`as` over a `&&` composition must fail");
-    let diags = errors_of(err);
-    assert!(
-        diags.iter().any(|d| d.code == DiagnosticCode::E140),
-        "expected E140, got: {diags:?}"
-    );
+    // Both boolean operators, not just `&&`: the native lowering maps `&&`
+    // to `InfixOp::And` and `||` to `InfixOp::Or`, and the whole-condition
+    // rule refuses either as the bound expression.
+    for (suffix, op) in [("as-composed-and", "&&"), ("as-composed-or", "||")] {
+        let source = format!(
+            "flow main() ~{{\n  if true {op} some(1) as n {{\n    return n;\n  }}\n}}\n"
+        );
+        let Err(err) = compile_native(suffix, &source, native_strict_options()).map(|_| ()) else {
+            panic!("`as` over a `{op}` composition must fail");
+        };
+        let diags = errors_of(err);
+        assert!(
+            diags.iter().any(|d| d.code == DiagnosticCode::E140),
+            "expected E140 for `{op}`, got: {diags:?}"
+        );
+    }
 }
 
 /// E141 — guard-`as` is ruled but rides the `.inkb` v6 Choice record, so it

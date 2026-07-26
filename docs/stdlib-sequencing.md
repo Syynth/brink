@@ -216,11 +216,30 @@ These cannot pump until the prototype native parser (B0) exists; each
 also depends on its Track A substrate being green so the surface lowers to
 *tested* semantics.
 
-### Wave B1 — `or`-coalescing spelling + `as`-binding unwrap
+### Wave B1 — `or`-coalescing spelling + `as`-binding unwrap (BUILT)
 `x or default` surface (typing from A1); the `EXPR as NAME` Option-unwrap
 in `if`/`while` (F16 — the primary consumer of every Option-returning
 verb, `while heap_pop(ref h) as node`, `if m.get(k) as v`). **Depends:**
 B0, A1.
+
+**Landed in two slices.** B1 (#1460) shipped `x or default` as
+`InfixOp::Coalesce` + `Opcode::Coalesce`, and honestly *declined* the
+`as`-binding: its grammar existed only as illustrative sketches, in two
+mutually inconsistent shapes. The reconciliation was ruled 2026-07-26
+("The `as` binding: one construct, both condition positions, `{if}`
+spelling") and built as **B1b (#1475)** — one grammar rule
+(`AS_BINDING`) serving the statement condition position (`if`/`while`)
+and the template one (`{if EXPR as NAME: … else: …}`), lowered to one
+fused test-and-bind opcode (`Opcode::OptionBind`). Binding immutable
+(**E143**), typed `T` from `Option[T]`, scoped strictly to the success
+arm, rebinding per iteration in `while`; whole-condition-only for v1
+(**E140** — let-chains stay additively available later); a non-Option
+condition is **E142** (runtime residual:
+`RuntimeError::AsBindingNotOption`). **Deliberately not implemented:**
+`as` in a choice guard — ruled the same day
+(capture-at-presentation, by value, serialized with the pending choice)
+but sequenced with the `.inkb` v6 Choice record, so B1b diagnoses it as
+not-yet-supported (**E141**) rather than half-lowering it.
 
 ### Wave B2 — `for k, v in m` / `for ref x in xs` / `for` over `iterate`
 The two-binding map desugar (**F10** — exact lowering + snapshot-keys

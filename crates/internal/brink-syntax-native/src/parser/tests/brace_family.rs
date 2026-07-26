@@ -995,7 +995,10 @@ fn conditional_block_carries_an_as_binding_on_the_colon_form() {
     assert!(cb.is_if());
     // The head expression accessor must still find the condition, not the
     // trailing `AS_BINDING` sibling.
-    assert_eq!(cb.condition().map(|n| n.kind()), Some(SyntaxKind::PATH_EXPR));
+    assert_eq!(
+        cb.condition().map(|n| n.kind()),
+        Some(SyntaxKind::PATH_EXPR)
+    );
     assert_eq!(
         cb.as_binding()
             .and_then(|b| b.name_token())

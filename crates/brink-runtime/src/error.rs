@@ -398,8 +398,9 @@ pub enum RuntimeError {
     /// truthiness — truthiness is a quiet coercion of exactly the kind
     /// `Option[T] ≠ T` exists to ban — so this is the gradual-mode
     /// turn-terminating fault; `types = strict` reports the same condition
-    /// statically (E116). Authors write `== none` / `== some(x)` (or, post-B1,
-    /// the `as`-binding). Supersedes NS-A1's shipped falsy-none behavior.
+    /// statically (E116). Authors write `== none` / `== some(x)`, or the
+    /// `as`-binding (B1b, issue #1475 — see [`Self::AsBindingNotOption`],
+    /// its own fault). Supersedes NS-A1's shipped falsy-none behavior.
     #[error("an Option has no truthiness — test `== none` / `== some(x)` explicitly")]
     OptionTruthiness,
 
@@ -415,7 +416,7 @@ pub enum RuntimeError {
     /// case first and this fault is the backstop for the rest.
     #[error("the `as` binding requires an Option, got {found}")]
     AsBindingNotOption {
-        /// The offending operand's runtime type name (`Value::value_type`).
+        /// The offending operand's runtime type name (`vm::value_type_name`).
         found: &'static str,
     },
 

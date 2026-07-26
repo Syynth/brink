@@ -6,8 +6,9 @@
 //! branch, a choice guard, an `await` condition) is a compile error under
 //! `types = strict` and a runtime fault under gradual
 //! (`RuntimeError::OptionTruthiness`). Authors write `== none` /
-//! `== some(x)` (or, post-B1, the `as`-binding). This supersedes NS-A1's
-//! shipped falsy-none truthiness.
+//! `== some(x)`, or the `as`-binding (B1b, issue #1475 — see
+//! `check_binding_condition` below, which owns its inverse check). This
+//! supersedes NS-A1's shipped falsy-none truthiness.
 //!
 //! Strict-mode-only, mirroring `conversions::check`'s gating and
 //! classification posture exactly: wired into `strict::check`, judging only

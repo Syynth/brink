@@ -80,7 +80,8 @@ dangles; charter fix owed.)
    (2026-07-19): Option has NO truthiness** — a condition-position
    `Option[T]` is a compile error under strict and a runtime fault
    under gradual; the author writes `== none`, `== some(x)`, or
-   (post-B1) the `as`-binding. Truthiness is a quiet coercion of
+   the `as`-binding (RULED 2026-07-26, SHIPPED on the native
+   surface in B1b, issue #1475). Truthiness is a quiet coercion of
    exactly the kind `Option[T] ≠ T` exists to ban. (Supersedes
    A1's shipped falsy-none — implementation fix owed.) **F28 RULED
    (2026-07-19)**: `none`/`some(…)` render totally via `string()`

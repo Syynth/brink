@@ -2651,7 +2651,9 @@ impl DiagnosticCode {
             Self::E137 => "native .brink compile requires types = strict",
             Self::E138 => "map construction literal supplies a duplicate key",
             Self::E139 => "construction literal entries do not match the target type's form",
-            Self::E140 => "the `as` binding must be the entire condition (no `&&`/`||` composition)",
+            Self::E140 => {
+                "the `as` binding must be the entire condition (no `&&`/`||` composition)"
+            }
             Self::E141 => "the `as` binding in a choice guard is not yet supported",
             Self::E142 => "the `as` binding requires an `Option[T]` condition",
             Self::E143 => "an `as` binding is immutable and cannot be assigned to",

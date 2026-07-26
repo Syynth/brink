@@ -222,9 +222,7 @@ fn block_stmt_heap(bs: &BlockStmt) -> usize {
         BlockStmt::TempDecl(td) => temp_decl_heap(td),
         BlockStmt::Return(r) => vec_heap(&r.onwards_args),
         BlockStmt::If(i) => if_stmt_heap(i),
-        BlockStmt::While(w) => {
-            w.binding.as_ref().map_or(0, name_heap) + block_stmts_heap(&w.body)
-        }
+        BlockStmt::While(w) => w.binding.as_ref().map_or(0, name_heap) + block_stmts_heap(&w.body),
         BlockStmt::For(f) => {
             name_heap(&f.var_name)
                 + f.val_name.as_ref().map_or(0, name_heap)
