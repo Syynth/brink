@@ -267,22 +267,23 @@ pub fn find_references(
     // Issue #1560 (the non-UFCS-call half of the same bug):
     // `resolve::lookup_variable`'s dotted-field-access fallback (step 11)
     // records the SAME whole-path shape for a plain (non-call) reference
-    // like `p.x.y` — narrowed the same way via
-    // `ufcs_hover::field_access_head_range_at_path`, or a reference to `p`
-    // wrongly reports `.x.y` as part of its own range too.
+    // like `p.x.y` — narrowed the same way, or a reference to `p` wrongly
+    // reports `.x.y` as part of its own range too.
+    //
+    // Issue #1571 (the tail half): a qualified reference to a stitch, list
+    // item or label (`-> hub.market`, `Colors.Red`) names its target with
+    // the path's *last* segment, so an unnarrowed range wrongly reports the
+    // qualifier as part of the reference.
+    //
+    // All three narrowings are composed by
+    // `ufcs_hover::narrowed_reference_range`, shared with `rename` and
+    // `prepare_rename`.
     for resolved in &analysis.resolutions {
         if resolved.target == analysis_def_id {
             let range = db
                 .hir(resolved.file)
                 .and_then(|hir| {
-                    crate::ufcs_hover::ufcs_receiver_head_range_at_path(hir, resolved.range)
-                        .or_else(|| {
-                            crate::ufcs_hover::field_access_head_range_at_path(
-                                hir,
-                                resolved.range,
-                                target_kind,
-                            )
-                        })
+                    crate::ufcs_hover::narrowed_reference_range(hir, resolved.range, target_kind)
                 })
                 .unwrap_or(resolved.range);
             locations.push(LocationResult {
@@ -667,6 +668,42 @@ fn main() {
             1,
             "the reported reference must span only the head's own `p` segment (1 byte), not \
              the whole `p.x.y` path — got {range:?}"
+        );
+    }
+
+    #[test]
+    fn find_references_on_a_stitch_reports_only_the_tail_segment_of_a_qualified_reference() {
+        // Issue #1571, the tail half: a qualified `-> hub.market` divert
+        // records its `ResolvedRef` against the whole `hub.market` path,
+        // targeting the *stitch*. Reporting that whole range as a reference
+        // to `market` wrongly swallows the `hub.` qualifier — the same
+        // over-wide span #1550/#1560 fixed from the head end.
+        let src = "=== hub ===\n= market\nHi.\n-> DONE\n=== main ===\n-> hub.market\n";
+        let mut session = IdeSession::new();
+        let file_id = session.update_and_analyze("t.ink", src.to_string());
+        let hir = session.hir(file_id).expect("hir");
+        let decl_pos =
+            crate::rename::declaration_offset(hir, "hub", Some("market")).expect("stitch decl");
+        let analysis = session.analysis().expect("analysis");
+
+        let refs = find_references(session.db(), analysis, file_id, decl_pos, false);
+
+        let tail_pos =
+            u32::try_from(src.find("hub.market").expect("ref") + "hub.".len()).expect("offset");
+        let found = refs
+            .iter()
+            .find(|loc| loc.file == file_id && loc.range.start() == TextSize::from(tail_pos));
+        assert!(
+            found.is_some(),
+            "expected the qualified reference's tail segment among references, got {:?}",
+            refs.iter().map(|l| l.range).collect::<Vec<_>>()
+        );
+        let range = found.expect("checked above").range;
+        assert_eq!(
+            usize::from(range.end()) - usize::from(range.start()),
+            "market".len(),
+            "the reported reference must span only the `market` segment, not the whole \
+             `hub.market` path — got {range:?}"
         );
     }
 }

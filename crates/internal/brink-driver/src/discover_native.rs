@@ -270,4 +270,143 @@ mod tests {
             "no partial load: a.brink must not have been set either"
         );
     }
+
+    /// EDITOR-VS-COMPILE IDENTITY PARITY (issue #1572).
+    ///
+    /// `native_module_path` is contractually a function of a **root-relative**
+    /// key, and `discover_native` above is the only loader that produces such
+    /// keys. A long-lived editor session cannot: `brink-lsp` keys `ProjectDb`
+    /// by **absolute OS path**, because every path it holds round-trips
+    /// through a `file://` URI. Before #1572 that meant every native module
+    /// name (and therefore every `DefinitionId`) the editor minted embedded
+    /// the machine's directory layout and silently diverged from a real
+    /// compile of the very same tree — self-consistent, but fatal to any
+    /// save-key, `@[was]`-migration, or editor-vs-compile comparison.
+    ///
+    /// So: run a **real compile** of a real on-disk tree through the real
+    /// [`RealFs`] seam, register the same tree the way the LSP does
+    /// (absolute keys + `set_native_root`), and require the two to mint
+    /// byte-identical module names *and* `DefinitionId`s. The third database
+    /// — absolute keys with **no** declared root, i.e. the pre-#1572 editor —
+    /// pins that this is not vacuous: it must still diverge.
+    #[test]
+    fn absolute_keys_plus_native_root_mint_compile_identical_identity() {
+        use std::fs;
+
+        use crate::source_tree::RealFs;
+
+        const FILES: [(&str, &str); 3] = [
+            ("main.brink", "flow start() {\n  The market is busy.\n}\n"),
+            (
+                "market/barter.brink",
+                "flow haggle() {\n  You haggle over the price.\n}\n",
+            ),
+            (
+                "npcs/quests/intro.brink",
+                "flow intro() {\n  A stranger waves.\n}\n",
+            ),
+        ];
+
+        let root = temp_dir("native-identity-parity");
+        for (key, source) in FILES {
+            let path = root.join(key);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).expect("create fixture dir");
+            }
+            fs::write(&path, source).expect("write fixture file");
+        }
+
+        // (1) The real compile: root-relative keys, straight off disk.
+        let mut compiled = native_db();
+        discover_native(&mut compiled, &RealFs::new(&root)).expect("discovery succeeds");
+
+        // (2) The editor: absolute keys, root declared.
+        let mut editor = native_db();
+        editor.set_native_root(Some(root.to_string_lossy().into_owned()));
+        register_absolute(&mut editor, &root, &FILES);
+
+        // (3) The pre-#1572 editor: absolute keys, no root declared.
+        let mut drifted = native_db();
+        register_absolute(&mut drifted, &root, &FILES);
+
+        let compiled_identity = flow_identity(&compiled);
+        let editor_identity = flow_identity(&editor);
+        let drifted_identity = flow_identity(&drifted);
+
+        fs::remove_dir_all(&root).expect("clean up fixture tree");
+
+        // Sanity: the compile really did derive path-shaped module names, so
+        // the equality below is comparing something meaningful.
+        assert_eq!(
+            compiled_identity
+                .get("haggle")
+                .map(|(module, _)| module.as_str()),
+            Some("story::market::barter"),
+            "compile-side module identity, got {compiled_identity:?}"
+        );
+
+        assert_eq!(
+            editor_identity, compiled_identity,
+            "an editor keying by absolute path must mint the SAME native module \
+             names and `DefinitionId`s a real compile of the same tree mints"
+        );
+        assert_ne!(
+            drifted_identity, compiled_identity,
+            "guard against a vacuous test: without a declared native root the \
+             absolute-keyed database must still diverge, got {drifted_identity:?}"
+        );
+    }
+
+    /// A `ProjectDb` under the analysis posture the native harness uses.
+    fn native_db() -> ProjectDb {
+        let mut db = ProjectDb::new();
+        db.set_analysis_options(brink_analyzer::AnalysisOptions {
+            dialect: brink_analyzer::Dialect::Brink,
+            ..brink_analyzer::AnalysisOptions::default()
+        });
+        db
+    }
+
+    /// Register `files` (root-relative key + source) under their **absolute**
+    /// paths beneath `root` — exactly how `brink-lsp` admits a workspace file.
+    fn register_absolute(db: &mut ProjectDb, root: &Path, files: &[(&str, &str)]) {
+        for (key, source) in files {
+            let path = root.join(key);
+            db.set_file(&path.to_string_lossy(), (*source).to_string());
+        }
+    }
+
+    /// Flow name → (declaring module, `DefinitionId`) for every knot symbol in
+    /// `db`'s analysis — the identity pair a save key is built from.
+    fn flow_identity(db: &ProjectDb) -> BTreeMap<String, (String, brink_format::DefinitionId)> {
+        let index = db.symbol_index();
+        index
+            .symbols
+            .iter()
+            .filter(|(_, s)| s.kind == brink_ir::SymbolKind::Knot)
+            .filter_map(|(id, s)| Some((s.name.clone(), (s.module.clone()?, *id))))
+            .collect()
+    }
+
+    /// A fresh, empty temp directory, unique per call (pid + a monotonic
+    /// counter + a nanosecond timestamp) so parallel test runs never collide.
+    /// Mirrors `source_tree`'s own test helper — both are `#[cfg(test)]`
+    /// module-private, so neither can borrow the other's.
+    fn temp_dir(label: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default();
+        let dir = std::env::temp_dir().join(format!(
+            "brink-discover-native-test-{label}-{}-{n}-{nanos}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
 }
