@@ -367,6 +367,20 @@ pub fn check(
     // — strict-mode-only, the compile-time half; gradual is inert with the
     // runtime `TypeError` fault as the (narrower) residual backstop.
     out.extend(crate::coalesce::check(files, index, inference, resolutions));
+    // `contains(m, needle)` static key-domain warning (E152, issue #582,
+    // companion to #580's ruling): a needle statically visible as outside
+    // the int/string/bool key domain, against a receiver statically
+    // visible as a map, always returns `false` at runtime — flagged at
+    // compile time rather than left as a silent always-false membership
+    // test. Strict-mode-only, same inference-substrate-backed domain-check
+    // family as `conversions`/`range_refinement` above (see
+    // `contains_domain`'s own module doc for why).
+    out.extend(crate::contains_domain::check(
+        files,
+        index,
+        inference,
+        resolutions,
+    ));
     out
 }
 

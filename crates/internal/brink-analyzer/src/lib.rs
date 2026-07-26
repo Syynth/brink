@@ -10,6 +10,7 @@ mod annotations;
 mod await_purity;
 mod coalesce;
 mod comparator_contract;
+mod contains_domain;
 mod conversions;
 mod determinism;
 mod dialect_gate;
