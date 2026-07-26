@@ -586,9 +586,18 @@ pub(crate) fn whole_project_diagnostics_query(
 
 /// B3a UFCS resolution (issue #1482/#1506): the project's verdict table,
 /// translated to `brink-ir`'s own lowering-facing mirror type
-/// (`brink_ir::lir::UfcsLookup`) at this one seam — see that type's doc for
-/// why `brink-ir` can't name `brink_analyzer::UfcsVerdict` directly (it sits
-/// below `brink-analyzer` in the crate graph).
+/// (`brink_ir::lir::UfcsLookup`), plus the diagnostics the analyzer's `ufcs`
+/// pass produced alongside it.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct UfcsResolution {
+    pub table: brink_ir::lir::UfcsLookup,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Compute [`UfcsResolution`], translating the analyzer's verdict table to
+/// `brink-ir`'s own lowering-facing mirror type at this one seam — see that
+/// type's doc for why `brink-ir` can't name `brink_analyzer::UfcsVerdict`
+/// directly (it sits below `brink-analyzer` in the crate graph).
 ///
 /// Memoized once per project and read by three call sites —
 /// [`whole_project_diagnostics_query`] (the diagnostics half), and (issue
@@ -602,12 +611,6 @@ pub(crate) fn whole_project_diagnostics_query(
 /// construction — ink's own lowering cannot produce a multi-segment callee
 /// path; see `brink-analyzer`'s `ufcs` module doc), and builds (and stays
 /// pointer-stable at) the empty table.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct UfcsResolution {
-    pub table: brink_ir::lir::UfcsLookup,
-    pub diagnostics: Vec<Diagnostic>,
-}
-
 #[salsa::tracked(returns(ref))]
 pub(crate) fn ufcs_resolution_query(
     db: &dyn salsa::Database,
