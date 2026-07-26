@@ -609,6 +609,29 @@ fn native_or_coalescing_chain_with_intermediate_call_yields_the_leading_some() {
     );
 }
 
+/// A `VisitCount`/`DivertTarget`/`TURNS_SINCE` reference reachable only
+/// through a coalesce operand must still register on the counting walk
+/// (`lir::lower::collect_counting_refs_expr`) — a BLOCKING silent-data-drop
+/// finding on PR #1479: the new `lir::Expr::Coalesce` variant fell into the
+/// walker's `_ => {}` catch-all, so the referenced container's
+/// `CountingFlags::VISITS` was never set and its visit count read back `0`
+/// instead of the true count. No diagnostic, no fault — just a wrong
+/// number, which is exactly the class of bug this repo's rules call a bug
+/// until proven otherwise.
+#[test]
+fn native_or_coalescing_rhs_visit_count_reference_is_tracked() {
+    let output = compile_and_run_native(
+        "visit-count",
+        "flow main() {\n  -> other\n}\n\
+         flow other() {\n  V: {none or other} -> END\n}\n",
+    );
+    assert!(
+        output.contains("V: 1"),
+        "expected `other`'s visit count to be tracked through the coalesce \
+         operand, got: {output:?}"
+    );
+}
+
 /// The `CoalesceShape::RuntimeCheck` posture, still intact (RULED, issue
 /// #1492, documented on `brink_format::Opcode::CoalesceSome`): with an
 /// unpinned left-hand type — an untyped parameter under the native default

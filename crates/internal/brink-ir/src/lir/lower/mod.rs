@@ -1832,7 +1832,11 @@ fn collect_counting_refs_expr(
         lir::Expr::Prefix(_, inner) | lir::Expr::Postfix(inner, _) => {
             collect_counting_refs_expr(inner, visit_ids, turns_ids);
         }
-        lir::Expr::Infix(lhs, _, rhs) => {
+        // B1 `or`-coalescing (#1471) is a dedicated variant, not generic
+        // `Infix` — but the walk is identical (both operands, `shape`
+        // carries no reference), so it rides the same arm rather than a
+        // duplicate one, matching `chunk::remap_expr`'s precedent.
+        lir::Expr::Infix(lhs, _, rhs) | lir::Expr::Coalesce { lhs, rhs, shape: _ } => {
             collect_counting_refs_expr(lhs, visit_ids, turns_ids);
             collect_counting_refs_expr(rhs, visit_ids, turns_ids);
         }
