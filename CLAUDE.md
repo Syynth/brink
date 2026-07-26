@@ -92,6 +92,13 @@ loop {
 
 `continue_maximally()` returns `Vec<Line>` — the last element is always a terminal variant (`Done`, `Choices`, or `End`).
 
+`Line::Done` is delivered both for an explicit `-> DONE` and for a flow
+that ran out of content with nothing left to run — call
+`Story::did_safe_exit()` (or `FlowInstance::did_safe_exit()`) right after
+receiving it to tell the two apart; `false` means the *next*
+`continue_single`/`advance` call will return `RuntimeError::RanOutOfContent`
+instead of more text.
+
 `FlowInstance` adds lower-level entry points for orchestration layers (e.g. `bevy-brink`):
 
 - `advance()` → `StepOutcome::{ Line(Line), AwaitingExternal }` — like `step_single_line` but surfaces a deferred external (`ExternalResult::Pending`) cleanly instead of erroring, so a world-access binding can pause and be resolved out-of-band. `step_single_line` is the thin wrapper that maps `AwaitingExternal` back to an error.

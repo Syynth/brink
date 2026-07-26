@@ -49,8 +49,9 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
+use brink_analyzer::{LintLevel, LintPolicy};
 use brink_compiler::{AnalysisOptions, DiagnosticCode, Dialect, TypePolicy};
 use brink_ir::host_manifest::{
     BaseType, Constraint, HostManifest, ManifestExternal, ManifestParam, SemanticTypeDef, TypeRef,
@@ -1432,5 +1433,180 @@ fn e150_value_returning_flow_falling_through() {
     assert!(
         diags.iter().any(|d| d.code == DiagnosticCode::E150),
         "expected E150, got: {diags:?}"
+    );
+}
+
+// ─── E151 (issue #1219): asymmetric choice-branch dead-end lint ────────
+//
+// Native-only, same `compile_native` posture as E150/E066 above — the `{?
+// … }` choice-point grammar this lint reads only exists on the native
+// surface. `AnalysisOptions::default()` suffices throughout: the lint is
+// independent of the `types` policy.
+
+/// The issue's own worked example: one choice diverts (`-> riposte`), its
+/// sibling falls through with narration and nothing else follows the choice
+/// point — a genuine dead end. Warning-severity, so the compile still
+/// succeeds; `E151` shows up in `out.warnings`, never `out` (errors).
+#[test]
+fn e151_mixed_tail_at_a_dead_end_is_flagged() {
+    let source = "flow main() {\n  {?\n    * Parry -> riposte\n    * [Dodge] {\n      \
+                  You sidestep the blade.\n    }\n  }\n}\n\nflow riposte() {\n}\n";
+    let out = compile_native("e151-dead-end", source, AnalysisOptions::default())
+        .unwrap_or_else(|e| panic!("a Warning-severity lint must not fail the compile: {e:?}"));
+    assert!(
+        out.warnings.iter().any(|d| d.code == DiagnosticCode::E151),
+        "expected E151, got: {:?}",
+        out.warnings
+    );
+}
+
+/// The precision-critical exclusion: content follows the choice point (the
+/// dissolved gather, `docs/native-surface-charter.md` §5), so the
+/// undiverted `[Dodge]` branch converges there by design — ordinary
+/// asymmetric-weave reconvergence, not a dead end. Must never fire.
+#[test]
+fn e151_reconverging_into_the_dissolved_gather_is_not_flagged() {
+    let source = "flow main() {\n  {?\n    * Parry -> riposte\n    * Dodge\n  }\n  \
+                  You catch your breath.\n}\n\nflow riposte() {\n}\n";
+    let out = compile_native("e151-gather", source, AnalysisOptions::default())
+        .unwrap_or_else(|e| panic!("must compile clean: {e:?}"));
+    assert!(
+        out.warnings.iter().all(|d| d.code != DiagnosticCode::E151),
+        "reconvergence into the dissolved gather must not fire E151, got: {:?}",
+        out.warnings
+    );
+}
+
+/// Every branch diverts — fully symmetric, no fingerprint of a forgotten
+/// `->`. Must never fire.
+#[test]
+fn e151_all_branches_diverging_is_not_flagged() {
+    let source = "flow main() {\n  {?\n    * Parry -> riposte\n    * Dodge -> riposte\n  }\n}\n\n\
+                  flow riposte() {\n}\n";
+    let out = compile_native("e151-all-diverge", source, AnalysisOptions::default())
+        .unwrap_or_else(|e| panic!("must compile clean: {e:?}"));
+    assert!(
+        out.warnings.iter().all(|d| d.code != DiagnosticCode::E151),
+        "a fully symmetric diverging choice set must not fire E151, got: {:?}",
+        out.warnings
+    );
+}
+
+/// No branch diverts — "a menu that ends" (decision-log 2026-07-22 item 4's
+/// own wording), the ordinary implicit-DONE shape this whole ruling exists
+/// to make silent. Must never fire.
+#[test]
+fn e151_all_branches_falling_through_is_not_flagged() {
+    let source = "flow main() {\n  {?\n    * Wait\n    * Look\n  }\n}\n";
+    let out = compile_native("e151-all-unit", source, AnalysisOptions::default())
+        .unwrap_or_else(|e| panic!("must compile clean: {e:?}"));
+    assert!(
+        out.warnings.iter().all(|d| d.code != DiagnosticCode::E151),
+        "a symmetric menu-that-ends choice set must not fire E151, got: {:?}",
+        out.warnings
+    );
+}
+
+// ─── E151 review follow-up: the four false-positive/false-negative shapes
+// a literal-last-statement `diverges()` missed (PR #1575 review finding 1),
+// each proven end to end through the real pipeline, not just the unit-level
+// `terminates()` coverage in `native_choice_dead_end.rs` itself.
+
+/// (a) G-1 label absorption: the diverting branch's `-> combat` ends up one
+/// level down inside a trailing `Stmt::LabeledBlock` once `(again)` labels
+/// the content line that precedes it. Must not be told to add `->` — it
+/// already has one.
+#[test]
+fn e151_label_absorbed_divert_is_not_flagged() {
+    let source = "flow main() {\n  {?\n    * [Talk] {\n      (again) You talk.\n      \
+                  -> combat\n    }\n    * Fight -> combat\n  }\n}\n\nflow combat() {\n}\n";
+    let out = compile_native("e151-label-absorbed", source, AnalysisOptions::default())
+        .unwrap_or_else(|e| panic!("must compile clean: {e:?}"));
+    assert!(
+        out.warnings.iter().all(|d| d.code != DiagnosticCode::E151),
+        "a divert wrapped in a trailing label-absorbed block must not be flagged, got: {:?}",
+        out.warnings
+    );
+}
+
+/// (b) An inline divert before a braced body (`* [Talk] -> combat { … }`)
+/// lowers the divert *first*, not last. Must not be flagged (and must not
+/// contradict the E033 "unreachable code after divert" this shape
+/// independently earns).
+#[test]
+fn e151_leading_divert_before_a_braced_body_is_not_flagged() {
+    let source = "flow main() {\n  {?\n    * [Talk] -> combat {\n      You talk.\n    }\n    \
+                  * Fight -> combat\n  }\n}\n\nflow combat() {\n}\n";
+    let out = compile_native("e151-leading-divert", source, AnalysisOptions::default())
+        .unwrap_or_else(|e| panic!("must compile clean: {e:?}"));
+    assert!(
+        out.warnings.iter().all(|d| d.code != DiagnosticCode::E151),
+        "a divert preceding a braced body must not be flagged, got: {:?}",
+        out.warnings
+    );
+}
+
+/// (c) Every arm of a trailing conditional diverges (with an explicit
+/// `else`) — a terminator in substance, even though it's not itself a
+/// `Divert`/`Return` statement. Must not be flagged.
+#[test]
+fn e151_all_arms_diverging_conditional_is_not_flagged() {
+    let source = "flow main() {\n  {?\n    * [Talk] {\n      {if true {\n        \
+                  -> combat\n      } else {\n        -> combat\n      }}\n    }\n    \
+                  * Fight -> combat\n  }\n}\n\nflow combat() {\n}\n";
+    let out = compile_native(
+        "e151-all-arms-conditional",
+        source,
+        AnalysisOptions::default(),
+    )
+    .unwrap_or_else(|e| panic!("must compile clean: {e:?}"));
+    assert!(
+        out.warnings.iter().all(|d| d.code != DiagnosticCode::E151),
+        "a conditional whose every arm diverges must not be flagged, got: {:?}",
+        out.warnings
+    );
+}
+
+/// (d) The canonical nested-menu shape: a choice's own body ends in a
+/// further `{? … }` choice point. That inner point is checked entirely on
+/// its own (both its choices divert, so it's clean) — it must not make the
+/// *outer* choice look like a dead end just because it isn't a `Divert`.
+#[test]
+fn e151_trailing_nested_choice_point_is_not_a_dead_end() {
+    let source = "flow main() {\n  {?\n    * [Talk] {\n      Hello.\n      {?\n        \
+                  * Ask -> combat\n        * Leave -> combat\n      }\n    }\n    \
+                  * Fight -> combat\n  }\n}\n\nflow combat() {\n}\n";
+    let out = compile_native("e151-nested-menu", source, AnalysisOptions::default())
+        .unwrap_or_else(|e| panic!("must compile clean: {e:?}"));
+    assert!(
+        out.warnings.iter().all(|d| d.code != DiagnosticCode::E151),
+        "a trailing nested choice point must not make the outer choice a dead end, got: {:?}",
+        out.warnings
+    );
+}
+
+/// The `[lints]` control plane, end to end (not just the unit-level
+/// `effective_severity` mechanism `brink-analyzer::strict`'s own tests
+/// already exercise generically over E014/E022): `E151 = "deny"` must
+/// promote this specific lint from `Warning` to a real compile `Error`
+/// through the actual pipeline.
+#[test]
+fn e151_denied_through_the_lints_control_plane_becomes_an_error() {
+    let source = "flow main() {\n  {?\n    * Parry -> riposte\n    * [Dodge] {\n      \
+                  You sidestep the blade.\n    }\n  }\n}\n\nflow riposte() {\n}\n";
+    let options = AnalysisOptions {
+        lints: LintPolicy {
+            overrides: BTreeMap::from([("E151".to_owned(), LintLevel::Deny)]),
+            deny_warnings: false,
+        },
+        ..AnalysisOptions::default()
+    };
+    let err = compile_native("e151-denied", source, options)
+        .map(|_| ())
+        .expect_err("`[lints] E151 = deny` must promote the lint to a compile error");
+    let diags = errors_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E151),
+        "expected E151 among errors, got: {diags:?}"
     );
 }

@@ -381,6 +381,25 @@ impl WebSession {
             .is_some_and(brink_runtime::StorySession::has_pending_external)
     }
 
+    /// Whether the last execution cycle of the **default** flow ended with
+    /// a safe exit (an explicit `-> DONE`), as opposed to the flow running
+    /// out of content. Both deliver a `done`-type `Line`; read this right
+    /// after one to tell them apart — `false` means the next
+    /// `continueSingle`/`advance` call will error instead of returning
+    /// more text. `false` if no session is initialized.
+    ///
+    /// This reflects only the default flow — it does **not** track flows
+    /// spawned/continued via `spawnFlow`/`continueFlow`/
+    /// `continueFlowMaximally`. See
+    /// [`brink_runtime::Story::did_safe_exit`] (issue #1573).
+    #[must_use]
+    pub fn did_safe_exit(&self) -> bool {
+        self.session
+            .borrow()
+            .as_ref()
+            .is_some_and(|s| s.story().did_safe_exit())
+    }
+
     // ── Turn-boundary mutations (journaled) ──────────────────────
 
     /// Set a global variable. Turn-boundary only: errors mid-turn (drain the
@@ -833,6 +852,24 @@ mod websession_wasm_tests {
             .iter()
             .any(|e| e["kind"]["type"] == "external" && e["kind"]["result"]["Int"] == 7);
         assert!(has_external_event, "{journal}");
+    }
+
+    #[wasm_bindgen_test]
+    fn did_safe_exit_distinguishes_explicit_done_from_ran_out_of_content() {
+        // Issue #1573: both cases deliver a `done`-type `Line`; `didSafeExit`
+        // is the production-reachable way to tell them apart without an
+        // extra `continueSingle` call.
+        let safe = new_session("Hello.\n-> DONE\n");
+        let json = safe.continue_single().expect("first line");
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["type"], "done", "{json}");
+        assert!(safe.did_safe_exit());
+
+        let unsafe_ = new_session("-> k\n== k ==\nHello.\n");
+        let json = unsafe_.continue_single().expect("first line");
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["type"], "done", "{json}");
+        assert!(!unsafe_.did_safe_exit());
     }
 
     #[wasm_bindgen_test]

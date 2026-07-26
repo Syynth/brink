@@ -57,15 +57,30 @@ Two structural observations fall straight out of the table:
 
 ### 2b. Why the consumer probe exists at all
 
-`Story::did_safe_exit` is `#[cfg(feature = "testing")]`
-(`story/mod.rs`). `brink-test-harness` enables that feature
+**Update (#1573):** `Story::did_safe_exit` (and the new
+`FlowInstance::did_safe_exit`, for orchestration layers that drive a flow
+directly) are no longer `#[cfg(feature = "testing")]` — they are ordinary
+`pub fn`s on the production surface. `bevy-brink`, `brink-web`,
+`brink-cli`'s TUI, and `brink-ide` can now read the flag directly after a
+`Line::Done` instead of calling `continue` again and catching
+`RuntimeError::RanOutOfContent`. This closes #1573's specific complaint
+(no production-reachable predicate at all) but is deliberately **not**
+the R1 classification-surface ruling below — it exposes today's
+already-computed `did_safe_exit` bit as-is, without moving where or when
+the classification happens (sites 1–5 in the table above, and the
+deferred-fault timing in `advance_with_limit`, are unchanged). R1/R2 and
+the `Step` migration itself remain open.
+
+Previously: `Story::did_safe_exit` was `#[cfg(feature = "testing")]`
+(`story/mod.rs`), enabled only by `brink-test-harness`
 (`Cargo.toml`: `brink-runtime = { workspace = true, features =
-["testing"] }`); **no production consumer can**. So for
-`bevy-brink`, `brink-web`, `brink-cli`'s TUI and `brink-ide`, the only
-way to learn whether a `Line::Done` was a clean `-> DONE` or a story that
-ran out of content is to call `continue` again and catch the error. That
-is the reconstruction #1520 wants deleted, and it is currently *the only
-available mechanism* off the testing feature.
+["testing"] }`), so no production consumer could reach it — the only way
+to learn whether a `Line::Done` was a clean `-> DONE` or a story that ran
+out of content was to call `continue` again and catch the error. That
+reconstruction is what #1520 (this document) still wants deleted from the
+*harness's* `classify_done` (site 6), which needs more than the flag —
+see its module doc in `termination.rs` for why the extra call survives
+#1573 (it also materializes the oracle-comparable error string).
 
 ## 3. What a single classifier would have to produce
 
