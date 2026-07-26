@@ -1163,12 +1163,10 @@ mod tests {
     /// split's advertised latent fix — the array leg no longer narrows its
     /// *index* argument against the array's *element* type (wrong for an
     /// index; the pre-split shared `remove` code did this) — shipped with
-    /// no regression test. `arr` is a `temp` (not a `VAR`: a global's
-    /// static type is purely declaration-derived — `Sig::value_type` has no
-    /// `Array`/`Map` representation at all, `signature.rs`'s
-    /// `ty_to_inferred_type` — so a `VAR` fixture here would leave
-    /// `arg_tys.first()` at `Ty::Unknown` and never even reach the
-    /// `Ty::Array` arm this test exists to guard), so its `Ty::Array(String)`
+    /// no regression test. `arr` is a `temp` — a `VAR` would work equally
+    /// well since issue #1540 gave globals a full-fidelity `Sig::value_ty`,
+    /// but the `temp` spelling is what this test was written against — so
+    /// its `Ty::Array(String)`
     /// element type is genuinely in hand at the call site. If `remove_at`'s
     /// index arm regressed to narrowing against it, `i` would come out
     /// `Ty::String` here instead of staying `Unknown` (`i` is otherwise
