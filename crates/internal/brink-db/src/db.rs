@@ -19,10 +19,10 @@ use crate::queries::{
     SourceFile, analysis_query, call_site_diagnostics_query, call_site_metas_query,
     diagnostics_query, effects_query, has_errors_query, include_graph_query, infer_body_query,
     inferred_signature_query, lir_knot_chunk_query, lir_prelude_decls_query, lir_query,
-    lowered_query, module_map_query, parse_native_query, parse_query, per_file_diagnostics_query,
-    resolutions_index_query, resolve_query, signature_query, story_data_query, suppressions_query,
-    symbol_index_query, type_diagnostics_query, type_inference_query, ufcs_resolution_query,
-    value_meta_query,
+    local_signature_query, lowered_query, module_map_query, parse_native_query, parse_query,
+    per_file_diagnostics_query, resolutions_index_query, resolve_query, signature_query,
+    story_data_query, suppressions_query, symbol_index_query, type_diagnostics_query,
+    type_inference_query, ufcs_resolution_query, value_meta_query,
 };
 
 /// Stateful incremental project database.
@@ -498,6 +498,23 @@ impl ProjectDb {
     /// for an unknown definition id.
     pub fn signature(&self, def: DefinitionId) -> Option<Arc<Sig>> {
         signature_query(&self.salsa, self.project, DefKey::new(&self.salsa, def))
+    }
+
+    /// Signature stub for a **local** (`Param`/`Temp`) `def`, declared in
+    /// `id` (issue #530): the per-file locals path [`signature`](Self::signature)
+    /// itself can't take — see `local_signature_query`'s doc for why a
+    /// local's `DefinitionId` needs a caller-supplied file. `None` for an
+    /// unknown file id or a `def` not declared as a local in that file
+    /// (including a declaration id — those stay [`signature`](Self::signature)'s
+    /// job).
+    pub fn local_signature(&self, id: FileId, def: DefinitionId) -> Option<Arc<Sig>> {
+        let file = *self.files.get(&id)?;
+        local_signature_query(
+            &self.salsa,
+            self.project,
+            file,
+            DefKey::new(&self.salsa, def),
+        )
     }
 
     /// Full cross-file analysis over all files, honoring the registered

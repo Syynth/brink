@@ -8,6 +8,11 @@
 //! pass (this crate's `memory.rs` module docs explain why `None` was the
 //! right default until specific queries earned an estimator).
 //!
+//! [`super::local_signature_query`] (issue #530) shares [`signature_heap_size`]
+//! rather than earning its own estimator: its output is the identical
+//! `Option<Arc<Sig>>` shape `signature_query` returns, just resolved via a
+//! per-file path, so the same walk applies unchanged.
+//!
 //! ## Scope: best-effort, not byte-exact
 //!
 //! These walk `Vec`/`String`/`BTreeMap` allocations — the dominant heap

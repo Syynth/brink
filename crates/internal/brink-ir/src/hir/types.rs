@@ -2460,6 +2460,26 @@ pub enum DiagnosticCode {
     /// the dissolved gather, and every falling-through branch reconverging
     /// there is ordinary weave structure, not a mistake).
     E151,
+
+    /// A `contains(m, needle)` call whose `needle` argument is statically
+    /// visible as outside the map key domain (int/string/bool) while `m`
+    /// is statically visible as a map — companion to the #580 ruling
+    /// (`docs/decision-log.md` 2026-07-12 "contains(map, non-key-domain
+    /// needle) returns false"): the call can never do anything but return
+    /// `false` at runtime, so the always-false result is a compile-time
+    /// warning rather than a silent footgun. Strict-mode-only
+    /// (`brink_analyzer::contains_domain`, wired into `strict::check`
+    /// alongside `conversions`/`range_refinement` — the same
+    /// inference-substrate-backed domain-check family): needs the
+    /// project's whole-program `InferenceResult`
+    /// (`structs::classify_expr_ty`) to classify a variable/call/
+    /// index-valued needle, which is only ever computed under `types =
+    /// strict`. Under `types = gradual` this stays silent and the
+    /// runtime's total `false` return is the sole (correct, non-faulting)
+    /// backstop. `Warning`-severity like `E106`'s map-literal-key sibling
+    /// check, so it flows through the ordinary suppressible `diagnostics`
+    /// channel and is re-levelable via the project's `[lints]` table.
+    E152,
 }
 
 impl DiagnosticCode {
@@ -2622,6 +2642,7 @@ impl DiagnosticCode {
             Self::E149 => "E149",
             Self::E150 => "E150",
             Self::E151 => "E151",
+            Self::E152 => "E152",
         }
     }
 
@@ -2843,6 +2864,9 @@ impl DiagnosticCode {
             Self::E151 => {
                 "native: this choice branch falls through while a sibling diverts — did you mean to add `-> …`, or `-> DONE` to end deliberately?"
             }
+            Self::E152 => {
+                "`contains`'s needle is statically outside the map key domain — this call always returns `false`"
+            }
         }
     }
 
@@ -2869,7 +2893,8 @@ impl DiagnosticCode {
             | Self::E110
             | Self::E131
             | Self::E132
-            | Self::E151 => Severity::Warning,
+            | Self::E151
+            | Self::E152 => Severity::Warning,
             _ => Severity::Error,
         }
     }
@@ -3033,6 +3058,7 @@ impl DiagnosticCode {
             "E149" => Some(Self::E149),
             "E150" => Some(Self::E150),
             "E151" => Some(Self::E151),
+            "E152" => Some(Self::E152),
             _ => None,
         }
     }
