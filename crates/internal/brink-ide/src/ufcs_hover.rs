@@ -100,6 +100,14 @@ struct UfcsCallSite {
     /// Every segment before `method`, dot-joined exactly as written (`a.b`
     /// for `a.b.verb()`).
     receiver_text: String,
+    /// The FIRST receiver segment's own range (`a`'s own span for
+    /// `a.b.verb()`) — issue #1550's narrow-span need: `resolve`'s
+    /// UFCS-shaped-callee fallback records the receiver's `ResolvedRef`
+    /// against the *whole* `recv.verb` path (mirroring the D2 side table's
+    /// own key), so a plain-reference rename of just the receiver must
+    /// narrow that whole-path range down to this span itself, or it
+    /// silently corrupts the trailing method segment.
+    receiver_head_range: TextRange,
 }
 
 /// Visit every UFCS-shaped call site (`recv.verb(args)` — at least one
@@ -141,6 +149,10 @@ fn find_ufcs_call(
             if !(self.matches)(path.range, method) {
                 return;
             }
+            // Non-empty per the `receiver_segs.is_empty()` guard above.
+            let Some(receiver_head) = receiver_segs.first() else {
+                return;
+            };
             let receiver_text = receiver_segs
                 .iter()
                 .map(|s| s.text.as_str())
@@ -150,6 +162,7 @@ fn find_ufcs_call(
                 path_range: path.range,
                 method: method.clone(),
                 receiver_text,
+                receiver_head_range: receiver_head.range,
             });
         }
     }
@@ -199,6 +212,24 @@ fn ufcs_call_and_verdict(
 #[must_use]
 pub fn ufcs_method_range_at_path(hir: &HirFile, path_range: TextRange) -> Option<TextRange> {
     ufcs_call_at_path_range(hir, path_range).map(|call| call.method.range)
+}
+
+/// The FIRST receiver segment's own range (`a`'s own span for
+/// `a.b.verb()`) of the UFCS call site at `path_range` in `hir`, if any.
+///
+/// Issue #1550 (mirror of #1539, from the receiver side): `resolve`'s
+/// UFCS-shaped-callee fallback records the receiver's `ResolvedRef` against
+/// the *whole* `recv.verb` path (`path_range` here — the same key
+/// [`ufcs_method_range_at_path`] takes), targeting the receiver's own
+/// `DefinitionId`. A plain-reference rename of just the receiver that
+/// blindly rewrites that whole-path range therefore corrupts the trailing
+/// method segment (`g.greet(3)` collapsing to `newname(3)` instead of
+/// `newname.greet(3)`). Callers that find a `ResolvedRef` whose range
+/// equals a UFCS call site's `path_range` should narrow to this span
+/// instead of using the `ResolvedRef`'s range directly.
+#[must_use]
+pub fn ufcs_receiver_head_range_at_path(hir: &HirFile, path_range: TextRange) -> Option<TextRange> {
+    ufcs_call_at_path_range(hir, path_range).map(|call| call.receiver_head_range)
 }
 
 /// The method-segment range of the UFCS call site at `offset` in `hir`, if
