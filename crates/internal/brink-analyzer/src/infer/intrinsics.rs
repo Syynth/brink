@@ -65,6 +65,10 @@ pub(crate) fn intrinsic_effects(name: &str, arg_count: usize) -> IntrinsicEffect
                 | "push"
                 | "insert"
                 | "remove"
+                // `remove_at(a, i)` (issue #1484): the array-index leg
+                // split off `remove` — same OOB fault path `remove` used to
+                // carry for arrays.
+                | "remove_at"
                 | "int"
                 | "float"
                 | "char_at"
@@ -167,10 +171,12 @@ pub(crate) fn intrinsic_effects(name: &str, arg_count: usize) -> IntrinsicEffect
 ///   arrays are conservatively kept (the recursive roster check belongs
 ///   to a finer rung).
 /// - **Never discharged** (value-dependent or parse-domain faults):
-///   `insert`/`remove` (OOB), `char_at` (OOB), `int`/`float`/`INT`/
-///   `FLOAT` (parse/domain), `chance`/`pick`/`shuffle`/`shuffled`
-///   (wrong-type but rand-coupled — kept simple), `non_empty`, the tower
-///   family, `sort_by`/`sorted_by` (comparator dispatch + `⊕cmp`).
+///   `insert`/`remove_at` (OOB — issue #1484 split `remove_at` off `remove`
+///   for exactly this array-index posture), `remove` (invalid-domain map
+///   key), `char_at` (OOB), `int`/`float`/`INT`/`FLOAT` (parse/domain),
+///   `chance`/`pick`/`shuffle`/`shuffled` (wrong-type but rand-coupled —
+///   kept simple), `non_empty`, the tower family, `sort_by`/`sorted_by`
+///   (comparator dispatch + `⊕cmp`).
 pub(crate) fn intrinsic_fault_discharged(name: &str, arg_tys: &[super::Ty]) -> bool {
     use super::Ty;
     let scalar_orderable = |t: &Ty| matches!(t, Ty::Int | Ty::String | Ty::Bool);

@@ -24,7 +24,7 @@ This chapter covers:
 - **[Indexing & Mutation](./indexing.md)** — `a[i]`, `a[i] = v`, and the
   runtime faults that replace ink's usual silent tolerance.
 - **[Standard Library](./stdlib.md)** — `len`/`keys`/`values`/`contains` and
-  the mutating `push`/`insert`/`remove`.
+  the mutating `push`/`insert`/`remove`/`remove_at`.
 - **[Types](./types.md)** — gradual vs. strict, inline annotations,
   structs, and the visit-count idiom that survives strict mode unchanged.
 - **[Conformance](./conformance.md)** — how the dialect coexists with the

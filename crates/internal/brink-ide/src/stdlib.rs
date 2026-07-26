@@ -1,7 +1,9 @@
 //! T1b stdlib slice 1 metadata (docs/t1b-surface-spec.md §5) — the shared
-//! data table behind completion, hover, and signature help for the seven
+//! data table behind completion, hover, and signature help for the eight
 //! brink-dialect free functions (`len`/`keys`/`values`/`contains`/`push`/
-//! `insert`/`remove`).
+//! `insert`/`remove`/`remove_at` — `remove_at` added by issue #1484's
+//! `remove`/`remove_at` split, decision log "Quick-docket closures"
+//! 2026-07-26).
 //!
 //! A pure, dialect-agnostic data table: callers decide whether/how to gate
 //! by [`brink_analyzer::Dialect`] (completion and signature help gate to
@@ -10,17 +12,18 @@
 //!
 //! Kept in sync by hand with `brink_analyzer::resolve::is_t1b_stdlib_name`
 //! and `brink_ir::lir::lower::expr::is_t1b_stdlib_name` — a third hand-kept
-//! copy of the same seven names, for the same reason the other two give
-//! (#571): no shared dependency edge from the IDE layer down into either
-//! crate's private list, and seven literals aren't worth inventing one for.
+//! copy of the same names, for the same reason the other two give (#571):
+//! no shared dependency edge from the IDE layer down into either crate's
+//! private list, and eight literals aren't worth inventing one for.
 
 /// One stdlib slice-1 function's static signature + docs.
 #[derive(Debug, Clone, Copy)]
 pub struct StdlibFn {
     pub name: &'static str,
     pub params: &'static [StdlibParam],
-    /// `None` for the lvalue mutators (`push`/`insert`/`remove`) — they
-    /// return nothing and are statement-only (docs/t1b-surface-spec.md §5).
+    /// `None` for the lvalue mutators (`push`/`insert`/`remove`/
+    /// `remove_at`) — they return nothing and are statement-only
+    /// (docs/t1b-surface-spec.md §5).
     pub returns: Option<&'static str>,
     /// One-line semantics, used as the hover body and signature-help
     /// documentation.
@@ -134,10 +137,19 @@ pub const STDLIB_FUNCTIONS: &[StdlibFn] = &[
     },
     StdlibFn {
         name: "remove",
-        params: &[lvalue_param("x"), param("k_or_i")],
+        params: &[lvalue_param("m"), param("k")],
         returns: None,
-        doc: "Mutates x in place: removes a map key, or the array element \
-              at index k_or_i. x must be an lvalue.",
+        doc: "Mutates map m in place, removing key k — a no-op if k was \
+              already absent. m must be an lvalue. For an array, see \
+              remove_at.",
+    },
+    StdlibFn {
+        name: "remove_at",
+        params: &[lvalue_param("a"), param("i")],
+        returns: None,
+        doc: "Mutates array a in place, removing the element at index i \
+              (shifts later elements left). a must be an lvalue; i out of \
+              bounds faults.",
     },
 ];
 
@@ -152,19 +164,26 @@ mod tests {
     use super::{STDLIB_FUNCTIONS, stdlib_fn};
 
     #[test]
-    fn all_seven_names_present() {
+    fn all_eight_names_present() {
         let names: Vec<_> = STDLIB_FUNCTIONS.iter().map(|f| f.name).collect();
         assert_eq!(
             names,
             [
-                "len", "keys", "values", "contains", "push", "insert", "remove"
+                "len",
+                "keys",
+                "values",
+                "contains",
+                "push",
+                "insert",
+                "remove",
+                "remove_at"
             ]
         );
     }
 
     #[test]
     fn mutators_have_an_lvalue_first_param_and_no_return() {
-        for name in ["push", "insert", "remove"] {
+        for name in ["push", "insert", "remove", "remove_at"] {
             let f = stdlib_fn(name).expect("stdlib function present");
             assert!(f.is_mutator(), "{name} is a mutator");
             assert!(f.params[0].is_lvalue, "{name}'s first param is an lvalue");

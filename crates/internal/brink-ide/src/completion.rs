@@ -583,7 +583,7 @@ mod tests {
     #[test]
     fn stdlib_completions_offered_in_brink_dialect_logic_context() {
         let items = stdlib_completions(&CompletionContext::Logic, brink_analyzer::Dialect::Brink);
-        assert_eq!(items.len(), 7, "all seven stdlib names: {items:?}");
+        assert_eq!(items.len(), 8, "all eight stdlib names: {items:?}");
     }
 
     #[test]
@@ -592,7 +592,7 @@ mod tests {
             &CompletionContext::InlineExpr,
             brink_analyzer::Dialect::Brink,
         );
-        assert_eq!(items.len(), 7);
+        assert_eq!(items.len(), 8);
     }
 
     #[test]

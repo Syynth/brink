@@ -1,5 +1,6 @@
 use brink_format::{AliasEntry, CountingFlags, DefinitionId, NameId};
 
+use crate::lir::lower::CoalesceShape;
 use crate::{AssignOp, InfixOp, PostfixOp, PrefixOp, SequenceType};
 
 // ─── Program ─────────────────────────────────────────────────────────
@@ -632,8 +633,36 @@ pub enum Expr {
 
     // ── Operations ──────────────────────────────────────────────
     Prefix(PrefixOp, Box<Expr>),
+    /// Every `InfixOp` except [`InfixOp::Coalesce`] — that one variant is
+    /// special-cased at lowering time and never reaches this generic form;
+    /// see [`Coalesce`](Self::Coalesce)'s own doc for why.
     Infix(Box<Expr>, InfixOp, Box<Expr>),
     Postfix(Box<Expr>, PostfixOp),
+    /// One step of `x or default` (B1, `docs/stdlib-spec.md` §1.6a, issue
+    /// #1460), short-circuited per issue #1471's ruling —
+    /// `hir::Expr::Infix(_, InfixOp::Coalesce, _)`'s dedicated lowering,
+    /// never folded into the generic [`Infix`](Self::Infix) form the way
+    /// every other `InfixOp` is. Codegens to a real branch
+    /// (`Opcode::CoalesceSome`) rather than a binary opcode, so `rhs` is
+    /// only evaluated when `lhs` turns out to be `none` — a binary opcode
+    /// cannot do that, since both operands would already be on the stack
+    /// before it ran.
+    ///
+    /// `shape` is the collapse-vs-two-Option decision the ruled typing
+    /// makes (`(Option[T],T)->T` vs `(Option[T],Option[T])->Option[U]`).
+    /// It has to be decided *before* the branch runs: the retired binary
+    /// opcode read the answer off `rhs`'s actual runtime value, but
+    /// short-circuiting means `rhs` may never run by the time the join
+    /// point needs to know. So lowering **consumes the analyzer's recorded
+    /// verdict** for the step (`ctx.coalesce`, keyed at the chain root —
+    /// RULED 2026-07-26, `docs/decision-log.md` "Lowering consumes analyzer
+    /// types") rather than sniffing `rhs`'s syntax, which could not see
+    /// through a call's return type or an `Option`-typed local anyway.
+    Coalesce {
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
+        shape: CoalesceShape,
+    },
 
     // ── Calls ───────────────────────────────────────────────────
     /// Call a knot/stitch as a function (ink `== function`).
@@ -750,13 +779,28 @@ pub enum Expr {
         value: Box<Expr>,
     },
     /// `IndexSet`'s sibling for the `remove` stdlib mutator (T1b-3, §5):
-    /// evaluates `base`, `key` and pushes the *updated* container — arrays:
-    /// `Vec::remove(key)` (key is an index, `< len`); maps: remove by key
-    /// (no-op if absent). Never produced by ordinary expression lowering;
-    /// only by the mutator-statement desugaring.
+    /// evaluates `base`, `key` and pushes the *updated* container — remove
+    /// by key, no-op if absent. **Map-only as of issue #1484**: `remove`
+    /// uniformly names identity-based, idempotent-total removal; a
+    /// non-map `base` is a runtime fault (`NotIndexable`). Never produced
+    /// by ordinary expression lowering; only by the mutator-statement
+    /// desugaring. The array-index leg this used to cover is
+    /// [`SeqRemoveAt`](Self::SeqRemoveAt).
     CollectionRemove {
         base: Box<Expr>,
         key: Box<Expr>,
+    },
+    /// `IndexSet`'s sibling for the `remove_at` stdlib mutator (issue
+    /// #1484, joining the `_at` faulting-index family with `CharAt`):
+    /// evaluates `base`, `index` and pushes the *updated* array with the
+    /// element at `index` removed (shifts later elements left,
+    /// `Vec::remove`). Array-only: a non-array `base` is a runtime fault
+    /// (`NotIndexable`). `index` must be `< len` — out-of-range faults
+    /// (`IndexOutOfBounds`). Never produced by ordinary expression
+    /// lowering; only by the mutator-statement desugaring.
+    SeqRemoveAt {
+        base: Box<Expr>,
+        index: Box<Expr>,
     },
     /// `[s, i]` → single-character `String`. The `char_at(s, i)` stdlib pure
     /// function (T1b stdlib slice 1 completion, issue #857): `i` indexes

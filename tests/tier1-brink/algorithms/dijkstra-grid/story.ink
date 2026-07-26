@@ -67,12 +67,12 @@
 // PRIORITY QUEUE — NO NATIVE HEAP (this is the finding this file exists
 // to produce; see also astar-grid/story.ink, which hits the identical
 // wall):
-// - brink's stdlib has no heap/priority-queue type. The only mutators are
-//   `push`/`insert`/`remove` (`docs/book/.../stdlib.md`), all flat-array
-//   operations. `pq_insert` below is textbook "sorted-insertion array":
-//   linear-scan to find the insertion point, then `insert(pq, idx,
-//   entry)`. That scan is `O(n)`, and popping the minimum is `remove(pq,
-//   0)` — `bfs-grid-path`'s finding about `remove(arr, 0)` being an O(n)
+// - brink's stdlib has no heap/priority-queue type. The only array mutators
+//   are `push`/`insert`/`remove_at` (`docs/book/.../stdlib.md`), all
+//   flat-array operations. `pq_insert` below is textbook "sorted-insertion
+//   array": linear-scan to find the insertion point, then `insert(pq, idx,
+//   entry)`. That scan is `O(n)`, and popping the minimum is `remove_at(pq,
+//   0)` — `bfs-grid-path`'s finding about `remove_at(arr, 0)` being an O(n)
 //   shift applies here too, so a single "pop-min" is `O(n)` from the
 //   removal alone, on top of the `O(n)` insertion scan every relaxation
 //   pays. A binary heap would make both `O(log n)`. For this corpus's
@@ -143,7 +143,7 @@ VAR found = false
 
     while len(pq) > 0 {
         temp top = pq[0]
-        remove(pq, 0)
+        remove_at(pq, 0)
 
         if visited[top.r][top.c] == false {
             visited[top.r][top.c] = true

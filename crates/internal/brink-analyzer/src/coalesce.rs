@@ -69,7 +69,10 @@
 //! un-overridden default — B0.10's dialect-keyed strict-only wiring has not
 //! landed, `strict.rs`'s own `native_strict_only_error` doc) this module is
 //! never invoked, and the runtime `TypeError` fault
-//! (`brink_runtime::value_ops::coalesce`) is the sole backstop — see that
+//! (`brink_runtime::value_ops::coalesce_unwrap_some`, backing
+//! `Opcode::CoalesceSome` — issue #1471 replaced the binary `Coalesce`
+//! opcode this originally named with a short-circuiting branch) is the sole
+//! backstop — see that
 //! function's doc for the fault's actual (narrower-than-previously-claimed)
 //! coverage: it only catches a non-Option left-hand side, not a mismatched
 //! fallback type.
@@ -113,7 +116,7 @@ pub enum CoalesceShape {
     /// by `E065`/`E066`).
     ///
     /// **The runtime check is the semantics here** (RULED 2026-07-26, and
-    /// documented on `brink_format::Opcode::Coalesce`): an `Option` value
+    /// documented on `brink_format::Opcode::CoalesceSome`): an `Option` value
     /// coalesces, a plain value faults, exactly like every other gradual
     /// runtime check. A consumer must not statically commit to either
     /// shape on this verdict.
@@ -150,6 +153,79 @@ pub struct CoalesceChain {
 /// Every `or`-coalescing chain's recorded typing, keyed at the chain root
 /// (see the module doc for why not per step).
 pub type CoalesceTable = SideTable<CoalesceChain>;
+
+/// Translate a [`CoalesceTable`] into `brink-ir`'s own lowering-facing
+/// mirror — the **one** translation point between the two crates (issue
+/// #1471), exactly as [`crate::ufcs_lir_lookup`] is for the UFCS table.
+///
+/// `brink-ir` sits below `brink-analyzer` in the crate graph, so it cannot
+/// name [`CoalesceShape`]; `brink_ir::lir::CoalesceShape`'s own doc explains
+/// the mirror. Only the per-step *shape* crosses — the recorded `Ty`s
+/// themselves are analysis detail lowering has no use for. Step order
+/// (innermost first) is preserved verbatim: it is the order
+/// `lir::lower::expr::lower_coalesce_chain` folds a chain in.
+#[must_use]
+pub fn to_lir_lookup(table: &CoalesceTable) -> brink_ir::lir::CoalesceLookup {
+    let entries = table
+        .iter()
+        .map(|(key, chain)| {
+            let range = TextRange::new(key.range.0.into(), key.range.1.into());
+            let shapes = chain
+                .steps
+                .iter()
+                .map(|step| match step.shape {
+                    CoalesceShape::PreserveOption => brink_ir::lir::CoalesceShape::PreserveOption,
+                    CoalesceShape::Collapse => brink_ir::lir::CoalesceShape::Collapse,
+                    CoalesceShape::RuntimeCheck => brink_ir::lir::CoalesceShape::RuntimeCheck,
+                })
+                .collect();
+            (key.file, range, shapes)
+        })
+        .collect();
+    brink_ir::lir::CoalesceLookup::from_entries(entries)
+}
+
+/// Cheap structural scan: does any expression in `hir` coalesce? The
+/// laziness gate for [`resolve`]'s caller — a project with no `or`-coalescing
+/// anywhere (every ink-dialect project, by construction: `InfixOp::Coalesce`
+/// is native-lowering-only) never triggers whole-project inference on this
+/// pass's account, mirroring [`crate::project_has_ufcs_call`]'s own shape.
+///
+/// Covers the file-level `VAR`/`CONST` initializers too, which
+/// `visit::visit`'s block-tree walk does not reach — the same gap
+/// [`resolve`] itself patches by hand.
+#[must_use]
+pub fn project_has_coalesce(hir: &HirFile) -> bool {
+    struct Scan {
+        found: bool,
+    }
+    impl HirVisitor for Scan {
+        fn visit_exprs(&self) -> bool {
+            true
+        }
+        fn enter_expr(&mut self, expr: &Expr) {
+            if coalesce_operands(expr).is_some() {
+                self.found = true;
+            }
+        }
+    }
+    let mut scan = Scan { found: false };
+    visit::visit(hir, &mut scan);
+    scan.found
+        || hir
+            .variables
+            .iter()
+            .map(|v| &v.value)
+            .chain(hir.constants.iter().map(|c| &c.value))
+            .any(expr_contains_coalesce)
+}
+
+/// Whether `expr` or any subexpression coalesces — [`project_has_coalesce`]'s
+/// initializer half, over the same [`expr_children`] recursion
+/// [`check_expr`] walks.
+fn expr_contains_coalesce(expr: &Expr) -> bool {
+    coalesce_operands(expr).is_some() || expr_children(expr).into_iter().any(expr_contains_coalesce)
+}
 
 /// Record every `or`-coalescing chain's operand/result types and report the
 /// `E066` mismatches that fall out of the same fold.
@@ -495,7 +571,7 @@ fn chain_operands(root: &Expr) -> Vec<&Expr> {
 /// recorded as [`Ty::Unknown`], which `infer::coalesce` always accepts
 /// (`(Unknown, _) -> Ok(Unknown)`, never an error), so the step is recorded
 /// with [`CoalesceShape::RuntimeCheck`] — the unpinned-`lhs` posture
-/// `Opcode::Coalesce`'s own doc describes, and it propagates: every later
+/// `Opcode::CoalesceSome`'s own doc describes, and it propagates: every later
 /// step folds from `Unknown` too. A step whose *fallback* operand does not
 /// classify is different — the shape question ("is the fallback
 /// `Option`-shaped?") has no safe unpinned answer, so that abandons the
@@ -782,7 +858,7 @@ mod tests {
     /// Companion to the diagnostics-only assertion above: an unpinned
     /// left-hand type is not merely diagnostic-clean, it is recorded as a
     /// real `CoalesceShape::RuntimeCheck` step — the unpinned-`lhs` posture
-    /// `Opcode::Coalesce`'s own doc claims. Pins the review finding that
+    /// `Opcode::CoalesceSome`'s own doc claims. Pins the review finding that
     /// this branch was previously unreachable (the operand fell through a
     /// silent `return` instead of ever reaching `step_shape`).
     ///

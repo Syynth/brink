@@ -47,7 +47,10 @@ pub use await_purity::{
 pub use brink_ir::FileId;
 pub use brink_ir::ResolutionMap;
 pub use brink_project_config::ProjectConfig;
-pub use coalesce::{CoalesceChain, CoalesceShape, CoalesceStep, CoalesceTable};
+pub use coalesce::{
+    CoalesceChain, CoalesceShape, CoalesceStep, CoalesceTable, project_has_coalesce,
+    to_lir_lookup as coalesce_lir_lookup,
+};
 pub use comparator_contract::{
     check as comparator_contract_diagnostics, comparator_callees, hir_has_comparator_site,
 };

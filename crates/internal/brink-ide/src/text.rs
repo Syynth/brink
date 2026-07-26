@@ -93,7 +93,7 @@ pub fn builtin_hover_text(name: &str) -> Option<String> {
 
 /// Return hover markdown for a T1b stdlib slice 1 function
 /// (docs/t1b-surface-spec.md §5 — `len`/`keys`/`values`/`contains`/`push`/
-/// `insert`/`remove`), or `None` if `name` isn't one.
+/// `insert`/`remove`/`remove_at`), or `None` if `name` isn't one.
 ///
 /// Dialect-agnostic by design, like [`builtin_hover_text`]: hovering a name
 /// is informational even in a strict-ink file, where a resolved use of the

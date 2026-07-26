@@ -304,6 +304,28 @@ pub fn compile_and_explore_from_brink_native(
         brink_ir::lir::UfcsLookup::new()
     };
 
+    // B1 `or`-coalescing (issue #1471/#1492): same story as the UFCS table
+    // above — no salsa layer here, so `brink-db`'s `coalesce_types_query`
+    // runs by hand, lazy on the same `project_has_coalesce` gate, through
+    // the one shared translation point. Without it every `or` step would
+    // fall back to `CoalesceShape::RuntimeCheck` and a two-Option chain
+    // would lose its optionality mid-chain.
+    let coalesce_table = if brink_analyzer::project_has_coalesce(&hir) {
+        let inline_docs = brink_analyzer::project_inline_docs(&[(file_id, &manifest)]);
+        let inference = brink_analyzer::infer_project(
+            &files_for_lir,
+            &index,
+            &resolutions,
+            analysis_opts.host_manifest.as_ref(),
+            &inline_docs,
+        );
+        let (table, _e066_diags) =
+            brink_analyzer::coalesce_types(&files_for_lir, &index, &inference, &resolutions);
+        brink_analyzer::coalesce_lir_lookup(&table)
+    } else {
+        brink_ir::lir::CoalesceLookup::new()
+    };
+
     let (program, lir_diags) = brink_ir::lir::lower_to_program_with_type_mode(
         &files_for_lir,
         &index,
@@ -311,6 +333,7 @@ pub fn compile_and_explore_from_brink_native(
         &std::collections::HashMap::new(),
         brink_ir::lir::TypeMode::Gradual,
         &ufcs_table,
+        &coalesce_table,
     );
     if !lir_diags.is_empty() {
         return Err(format!("LIR lowering diagnostics: {lir_diags:?}"));

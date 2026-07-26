@@ -132,6 +132,7 @@ fn main() {
         &std::collections::HashMap::new(),
         lir::TypeMode::Gradual,
         &ufcs,
+        &lir::CoalesceLookup::new(),
     );
     assert!(
         lir_diags.is_empty(),

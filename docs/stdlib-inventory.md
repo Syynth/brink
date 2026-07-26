@@ -260,7 +260,7 @@ scalar-element verbs.
 | `push` | `fn push(ref a: [T], x: T): void` | seq | ✓ | lval | P | — | — | ✅ |
 | `pop` | `fn pop(ref a: [T]): Option[T]` | seq | · | lval | P | **Option[T]** (empty→none) | — | ✅ (0xE8) |
 | `insert` | `fn insert(ref a: [T], i: int, x: T): void` | seq | · | lval | `F:oob` | — | — | ✅ |
-| `remove` | `fn remove(ref a: [T], i: int): ???` **⚠F5b** | seq | · | lval | `F:oob` | — | — | ✅ |
+| `remove_at` | `fn remove_at(ref a: [T], i: int): void` (issue #1484, 2026-07-26 ruling: renamed off `remove` — one name spanning a faulting index-claim and a total identity-removal was accidental; F5b's open return-type question is resolved by the shipped shape: `void`, matching the other `remove`s, not the element) | seq | · | lval | `F:oob` | — | — | ✅ (0xFD) |
 | `each` | `fn each(a: [T], f: fn(T): void): void` | seq | · | val | `⊕f` (writes/emits/tags/faults all compose) | — | — | 🔜 |
 | `map` | `fn map(a: [T], f: fn(T): U): [U]` | seq | · | val | `⊕f` (reads+faults only; f pure-required) | — | — | 🔜 |
 | `filter` | `fn filter(a: [T], pred: fn(T): bool): [T]` | seq | · | val | `⊕pred` (pure-required) | — | — | 🔜 |
