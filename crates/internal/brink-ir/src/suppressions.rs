@@ -559,22 +559,36 @@ mod tests {
         assert!(result.is_empty(), "{result:?}");
     }
 
-    /// An `@[allow]` scope must not satisfy a `brink-expect` on the same
-    /// line — the expectation is a test-harness assertion about what the
-    /// compiler produces, and an annotation silently "meeting" it would be
-    /// a false green. `E036` still fires.
+    /// The real overlap case: a diagnostic that lands on a
+    /// `// brink-expect E014` target line, where that same offset also
+    /// falls inside an `@[allow(E014)]` scope. Per this module's doc
+    /// ("Line directives are therefore matched first, and a diagnostic
+    /// that reaches the allow-scope check is one no `expect` was watching
+    /// for"), the line-directive branch must win: the diagnostic satisfies
+    /// the `expect` and is suppressed there, never reaching the allow-scope
+    /// check at all. If the ordering were reversed, the allow scope would
+    /// swallow the diagnostic first, `expect_satisfied` would stay `false`,
+    /// and a spurious `E036` would appear alongside — the false green this
+    /// module's doc rules out.
     #[test]
     fn allow_scope_does_not_satisfy_a_brink_expect() {
         let source = "// brink-expect E014\nHello\n";
         let mut sup = parse_suppressions(source);
+        // Overlaps the same diagnostic the `brink-expect` line targets.
         sup.allow_scopes = vec![AllowScope {
             range: TextRange::new(0.into(), 100.into()),
             codes: vec![DiagnosticCode::E014],
         }];
-        // No diagnostic at all: the expect is unmet regardless.
-        let result = apply_suppressions(FileId(0), source, Vec::new(), &sup);
-        assert_eq!(result.len(), 1, "{result:?}");
-        assert_eq!(result[0].code, DiagnosticCode::E036);
+        let diags = vec![Diagnostic {
+            file: FileId(0),
+            range: TextRange::new(21.into(), 26.into()), // "Hello" on line 1
+            message: "test".to_string(),
+            code: DiagnosticCode::E014,
+        }];
+        let result = apply_suppressions(FileId(0), source, diags, &sup);
+        // Expect satisfied by the diagnostic, diagnostic suppressed by the
+        // line-directive branch, no E036 — the allow scope never fires.
+        assert!(result.is_empty(), "{result:?}");
     }
 
     #[test]
