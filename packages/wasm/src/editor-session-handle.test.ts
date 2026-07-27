@@ -43,6 +43,16 @@ const hoisted = vi.hoisted(() => {
       calls.push({ method: "discover_project_config", args: [entry] });
       return "[]";
     }
+    set_lint_overrides(json: unknown): string {
+      calls.push({ method: "set_lint_overrides", args: [json] });
+      return "[]";
+    }
+    set_deny_warnings_override(deny: unknown): void {
+      calls.push({ method: "set_deny_warnings_override", args: [deny] });
+    }
+    clear_deny_warnings_override(): void {
+      calls.push({ method: "clear_deny_warnings_override", args: [] });
+    }
   }
   return { calls, EditorSessionStub };
 });
@@ -169,6 +179,63 @@ describe("EditorSessionHandle wasm-lever passthroughs", () => {
       { method: "discover_project_config", args: ["main.ink"] },
     ]);
     expect(warnings).toEqual([]);
+    expect(handle.generation).toBe(before + 1);
+  });
+
+  // Issue #1417: extends the CLI/API `[lints]`/`deny-warnings` override
+  // tier (`brink compile`'s `--deny`/`--warn`/`--allow`/`-D warnings`,
+  // #1373) to the wasm editor session. Same passthrough shape as every
+  // other lever above: method exists on `EditorSessionHandle`, forwards
+  // its argument(s) to the raw wasm binding, bumps `generation`.
+
+  it("exposes setLintOverrides (#1417: the lever was unreachable without it)", () => {
+    const handle = new EditorSessionHandle();
+    expect(typeof handle.setLintOverrides).toBe("function");
+  });
+
+  it("forwards setLintOverrides to set_lint_overrides as JSON, parses the warning JSON, and bumps generation", () => {
+    hoisted.calls.length = 0;
+    const handle = new EditorSessionHandle();
+    const before = handle.generation;
+
+    const warnings = handle.setLintOverrides({ E014: "deny" });
+
+    expect(hoisted.calls).toEqual([
+      { method: "set_lint_overrides", args: ['{"E014":"deny"}'] },
+    ]);
+    expect(warnings).toEqual([]);
+    expect(handle.generation).toBe(before + 1);
+  });
+
+  it("exposes setDenyWarningsOverride/clearDenyWarningsOverride (#1417: the levers were unreachable without them)", () => {
+    const handle = new EditorSessionHandle();
+    expect(typeof handle.setDenyWarningsOverride).toBe("function");
+    expect(typeof handle.clearDenyWarningsOverride).toBe("function");
+  });
+
+  it("forwards setDenyWarningsOverride to set_deny_warnings_override and bumps generation", () => {
+    hoisted.calls.length = 0;
+    const handle = new EditorSessionHandle();
+    const before = handle.generation;
+
+    handle.setDenyWarningsOverride(true);
+
+    expect(hoisted.calls).toEqual([
+      { method: "set_deny_warnings_override", args: [true] },
+    ]);
+    expect(handle.generation).toBe(before + 1);
+  });
+
+  it("forwards clearDenyWarningsOverride to clear_deny_warnings_override and bumps generation", () => {
+    hoisted.calls.length = 0;
+    const handle = new EditorSessionHandle();
+    const before = handle.generation;
+
+    handle.clearDenyWarningsOverride();
+
+    expect(hoisted.calls).toEqual([
+      { method: "clear_deny_warnings_override", args: [] },
+    ]);
     expect(handle.generation).toBe(before + 1);
   });
 });
