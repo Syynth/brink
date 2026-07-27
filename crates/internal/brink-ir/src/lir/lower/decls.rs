@@ -714,7 +714,11 @@ fn is_const_foldable_kind(
         // *bounds* referencing CONSTs, not about range-valued CONSTs.
         // Wiring `ConstValue::Range` through the decl-default pipeline is
         // a follow-up if authoring demand appears.
-        | hir::Expr::Range(_) => false,
+        | hir::Expr::Range(_)
+        // Lambdas (issue #1685) never constant-fold: a lambda value is
+        // made at its creation site (its captures are snapshotted there),
+        // so it has no compile-time value at all.
+        | hir::Expr::Lambda(_) => false,
     }
 }
 
@@ -787,7 +791,9 @@ fn is_const_foldable_decl_default(
         // compile-time value even where legal.
         | hir::Expr::RefArg(_)
         // NS-A5 v1: see `is_const_foldable_kind`'s Range arm.
-        | hir::Expr::Range(_) => false,
+        | hir::Expr::Range(_)
+        // Lambdas: see `is_const_foldable_kind`'s Lambda arm.
+        | hir::Expr::Lambda(_) => false,
     }
 }
 

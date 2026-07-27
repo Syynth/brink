@@ -872,6 +872,41 @@ impl InferPass<'_, '_> {
                 self.infer_expr(&ra.operand);
                 Ty::Unknown
             }
+            // A lambda (issue #1685) is fn-colored always, so its type is a
+            // `Ty::Fn` row — built from what is *written*: an annotated
+            // param resolves, an unannotated one stays `Unknown` (mono-HM
+            // narrowing of a lambda's own params from its concrete call
+            // sites is not modeled in this slice, and inventing a type here
+            // would be worse than an honest `Unknown`). The body's value
+            // expression is inferred for its side effects (nested calls,
+            // uses) exactly like an interpolation's is.
+            //
+            // The row carries no effects: `Ty::Fn` has nowhere to put one
+            // (#1680), which is precisely the coordination issue #1685
+            // flagged. When `Ty::Fn` grows rows, a lambda's row is composed
+            // here from its body and its captures (#872).
+            Expr::Lambda(l) => {
+                for e in l.body.value_exprs() {
+                    self.infer_expr(e);
+                }
+                let names = self.ctx.type_names();
+                let params = l
+                    .params
+                    .iter()
+                    .map(|p| {
+                        p.annotation
+                            .as_ref()
+                            .and_then(|te| crate::annotations::resolve(te, &names))
+                            .unwrap_or(Ty::Unknown)
+                    })
+                    .collect();
+                let ret = l
+                    .return_type
+                    .as_ref()
+                    .and_then(|te| crate::annotations::resolve(te, &names))
+                    .unwrap_or(Ty::Unknown);
+                Ty::Fn(params, Box::new(ret))
+            }
             // NS-A5 range literals (docs/stdlib-spec.md §7, F7): both
             // bounds are ints (`observe` narrows int-typed slots used as
             // bounds; the runtime op faults on anything else — harvested

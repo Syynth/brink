@@ -159,6 +159,10 @@ pub enum NodeClass {
     /// #404), mirroring [`Self::ConditionalBranch`] for `- ...` sequence
     /// arms and `|`-separated inline alternatives.
     SequenceBranch = 52,
+    /// A `|x| …` lambda expression — the native surface's anonymous fn
+    /// value (RULED 2026-07-19, issue #1685). Native-only: ink's grammar
+    /// cannot spell a lambda.
+    Lambda = 53,
 }
 
 impl NodeClass {
@@ -213,6 +217,7 @@ impl NodeClass {
             50 => Self::Infix,
             51 => Self::ConditionalBranch,
             52 => Self::SequenceBranch,
+            53 => Self::Lambda,
             _ => return None,
         })
     }

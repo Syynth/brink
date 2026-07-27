@@ -880,6 +880,50 @@ impl ParenExpr {
     }
 }
 
+impl LambdaExpr {
+    /// The `|…|` parameter row (issue #1685). `None` only for a malformed
+    /// node — `parser/expr.rs::lambda_expr` always opens with one, even for
+    /// the zero-arg `||` form (whose row is simply empty).
+    pub fn params(&self) -> Option<LambdaParams> {
+        support::child(&self.syntax)
+    }
+
+    /// The `: type` **return** annotation (`|g|: bool { … }`), if written.
+    ///
+    /// Unambiguous as a direct child: a *parameter's* own annotation lives
+    /// inside that parameter's `PARAM` node, itself inside `LAMBDA_PARAMS`,
+    /// so the only `TYPE_ANNOTATION` directly under `LAMBDA_EXPR` is the
+    /// return one.
+    pub fn return_annotation(&self) -> Option<TypeAnnotation> {
+        support::child(&self.syntax)
+    }
+
+    /// The body's root node — the single expression (`|g| g.awake`) or the
+    /// braced `STMT_BLOCK` (`|g|: bool { … }`). The last child, since the
+    /// parser emits params, then the optional return annotation, then the
+    /// body.
+    pub fn body(&self) -> Option<SyntaxNode> {
+        self.syntax
+            .children()
+            .filter(|n| {
+                !matches!(
+                    n.kind(),
+                    SyntaxKind::LAMBDA_PARAMS | SyntaxKind::TYPE_ANNOTATION
+                )
+            })
+            .last()
+    }
+}
+
+impl LambdaParams {
+    /// The parameters, in source order — the same `PARAM` node the
+    /// declaration grammar uses, so `Param`'s accessors read a lambda
+    /// parameter exactly as they read a `fn` one. Empty for `||`.
+    pub fn params(&self) -> impl Iterator<Item = Param> {
+        support::children(&self.syntax)
+    }
+}
+
 impl PrefixExpr {
     /// The prefix operator token (`-` or `!`).
     pub fn op_token(&self) -> Option<SyntaxToken> {

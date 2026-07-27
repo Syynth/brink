@@ -41,8 +41,8 @@
 
 use super::types::{
     Block, BlockStmt, Choice, ChoiceSet, CondKind, Conditional, Content, ContentPart, DivertTarget,
-    ElseBranch, Expr, ForStmt, HirFile, IfStmt, Knot, LogicBlock, Sequence, Stitch, Stmt,
-    StringPart, WhileStmt,
+    ElseBranch, Expr, ForStmt, HirFile, IfStmt, Knot, LambdaBody, LogicBlock, Sequence, Stitch,
+    Stmt, StringPart, WhileStmt,
 };
 
 /// Where a visited [`Content`] sits in the tree.
@@ -421,6 +421,24 @@ fn walk_expr(expr: &Expr, v: &mut impl HirVisitor) {
         }
         // T1e `ref lvalue-path`: only the operand descends.
         Expr::RefArg(ra) => walk_expr(&ra.operand, v),
+        // A lambda's body (issue #1685): its expressions are part of this
+        // tree — a consumer counting references or collecting spans must
+        // see `|g| g.awake`'s `g.awake`, and a braced body's statements are
+        // walked with the same `walk_block_stmt` any code-ground block
+        // uses. Params/return annotation are declaration data, not `Expr`
+        // children, so they do not descend (same shape as `FnLiteral`'s
+        // static target).
+        Expr::Lambda(l) => match &l.body {
+            LambdaBody::Expr(e) => walk_expr(e, v),
+            LambdaBody::Block { stmts, tail } => {
+                for bs in stmts {
+                    walk_block_stmt(bs, v);
+                }
+                if let Some(t) = tail {
+                    walk_expr(t, v);
+                }
+            }
+        },
         // NS-A5 `start..end` / `start..=end`: both bounds descend.
         Expr::Range(r) => {
             walk_expr(&r.start, v);

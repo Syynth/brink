@@ -142,7 +142,34 @@ pub fn lower_expr(expr: &hir::Expr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
         // fallback arm into this one. T1e-2 lands `MakeProjection`; until
         // then this is a clean, targeted stop, not a silent drop.
         hir::Expr::RefArg(ra) => lower_ref_arg_fence(ra, ctx),
+
+        // Lambdas (issue #1685): the native surface's anonymous fn value
+        // lowers to HIR for real, but has no runtime representation yet —
+        // the runtime's only fn value is T1c's partial application over a
+        // *named* target (`MakeClosure`), and turning an anonymous body
+        // into one is lambda lifting, which needs the resolved capture set
+        // and a synthesized definition. Same E052-fence pattern the `#fn`
+        // and `ref` arms used before their own lowerings landed: a
+        // targeted, loud stop, never a silent drop.
+        hir::Expr::Lambda(l) => lower_lambda_fence(l, ctx),
     }
+}
+
+/// The lambda codegen fence — see the `hir::Expr::Lambda` arm above.
+fn lower_lambda_fence(l: &hir::LambdaExpr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
+    ctx.diagnostics.push(crate::Diagnostic {
+        file: ctx.file,
+        range: l.ptr.text_range(),
+        message: format!(
+            "{}: lambdas (`{}`) lower to HIR but have no runtime representation \
+             yet — lambda lifting to a synthesized function value is a later \
+             slice (issue #1685)",
+            crate::DiagnosticCode::E052.title(),
+            crate::display_expr(&crate::Expr::Lambda(l.clone())),
+        ),
+        code: crate::DiagnosticCode::E052,
+    });
+    lir::Expr::Null
 }
 
 /// Lower a whole `or`-coalescing chain (B1, issue #1460; short-circuited

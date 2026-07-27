@@ -502,6 +502,22 @@ fn collect_reads(expr: &Expr, sink: &mut impl FnMut(&String)) {
             }
         }
         Expr::RefArg(ra) => collect_reads(&ra.operand, sink),
+        // A lambda captures BY VALUE at its creation site (RULED
+        // 2026-07-19, issue #1685), so every local name its body reads is
+        // read *here*, in the enclosing frame, the moment the lambda value
+        // is made — exactly what this collection is for. Descending is
+        // therefore not conservatism, it is the capture semantics.
+        Expr::Lambda(l) => match &l.body {
+            crate::LambdaBody::Expr(e) => collect_reads(e, sink),
+            crate::LambdaBody::Block { stmts, tail } => {
+                for s in stmts {
+                    collect_stmt_reads(s, sink);
+                }
+                if let Some(t) = tail {
+                    collect_reads(t, sink);
+                }
+            }
+        },
         Expr::Range(r) => {
             collect_reads(&r.start, sink);
             collect_reads(&r.end, sink);
@@ -514,6 +530,69 @@ fn collect_reads(expr: &Expr, sink: &mut impl FnMut(&String)) {
         | Expr::Null
         | Expr::DivertTarget(_)
         | Expr::ListLiteral(_) => {}
+    }
+}
+
+/// Collect the single-segment names read by one code-ground statement —
+/// the statement half of [`collect_reads`], reached only through a lambda's
+/// braced body (issue #1685), the one place a statement list hangs off an
+/// expression.
+fn collect_stmt_reads(stmt: &super::types::BlockStmt, sink: &mut impl FnMut(&String)) {
+    use super::types::BlockStmt as B;
+    match stmt {
+        B::TempDecl(t) => {
+            if let Some(e) = &t.value {
+                collect_reads(e, sink);
+            }
+        }
+        B::Assignment(a) => {
+            collect_reads(&a.target, sink);
+            collect_reads(&a.value, sink);
+        }
+        B::Return(r) => {
+            if let Some(e) = &r.value {
+                collect_reads(e, sink);
+            }
+            for a in &r.onwards_args {
+                collect_reads(a, sink);
+            }
+        }
+        B::If(i) => {
+            collect_reads(&i.condition, sink);
+            for s in &i.body {
+                collect_stmt_reads(s, sink);
+            }
+            match &i.else_branch {
+                Some(super::types::ElseBranch::ElseIf(nested)) => {
+                    collect_stmt_reads(&B::If((**nested).clone()), sink);
+                }
+                Some(super::types::ElseBranch::Else(body)) => {
+                    for s in body {
+                        collect_stmt_reads(s, sink);
+                    }
+                }
+                None => {}
+            }
+        }
+        B::While(w) => {
+            collect_reads(&w.condition, sink);
+            for s in &w.body {
+                collect_stmt_reads(s, sink);
+            }
+        }
+        B::For(f) => {
+            collect_reads(&f.iterable, sink);
+            for s in &f.body {
+                collect_stmt_reads(s, sink);
+            }
+        }
+        B::ExprStmt(e) => collect_reads(e, sink),
+        B::Await(a) => {
+            if let Some(e) = &a.condition {
+                collect_reads(e, sink);
+            }
+        }
+        B::Break(_) | B::Continue(_) => {}
     }
 }
 

@@ -129,6 +129,9 @@ pub fn expr_span(expr: &Expr) -> Option<TextRange> {
             cover(&mut span, Some(ra.ptr.range));
             cover(&mut span, expr_span(&ra.operand));
         }
+        // A lambda carries its own provenance (issue #1685), so this is an
+        // exact identity key — the whole `|…| …` range, never the body's.
+        Expr::Lambda(l) => cover(&mut span, Some(l.ptr.range)),
     }
     span
 }

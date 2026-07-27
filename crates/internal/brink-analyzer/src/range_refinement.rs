@@ -229,6 +229,10 @@ fn expr_children(expr: &Expr) -> Vec<&Expr> {
         Expr::StructLiteral(sl) => sl.fields.iter().map(|(_, v)| v).collect(),
         Expr::Index(idx) => vec![&idx.base, &idx.index],
         Expr::RefArg(ra) => vec![&ra.operand],
+        // A lambda's value expression (issue #1685). A braced body's
+        // *statements* are not expressions and cannot be handed to an
+        // expression-only walker — see `LambdaBody::value_exprs`.
+        Expr::Lambda(l) => l.body.value_exprs(),
         Expr::Range(r) => vec![&r.start, &r.end],
         Expr::String(s) => s
             .parts

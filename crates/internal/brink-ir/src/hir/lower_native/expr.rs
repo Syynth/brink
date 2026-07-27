@@ -37,10 +37,14 @@
 //! into this match, per the #1103 ruling. Every registered target desugars
 //! to an HIR shape that already existed.
 //!
-//! `LAMBDA_EXPR` is tokenized/parsed (B0.5) but explicitly unlowered until
-//! the code sitting rules a real anonymous-body node (`docs/b0-sequencing.md`
-//! §3: "B0.5 tokenizes pipes; B0.8 does not lower them") — encountering one
-//! here is E129, not a silent `Expr::Null`.
+//! **Lambdas (issue #1685)**: `LAMBDA_EXPR` lowers for real through
+//! [`super::lambda::lower_lambda`] → [`Expr::Lambda`]. The E129 fence that
+//! stood here — "unlowered until the code sitting rules a real
+//! anonymous-body node" — is gone: the 2026-07-19 airport sitting ruled the
+//! whole surface (Rust pipes with colon returns, by-value capture as the
+//! only mode, single-expression or braced-block bodies), so the
+//! anonymous-body node the fence was waiting on now exists. See
+//! [`super::lambda`]'s module doc for how each half of that ruling lands.
 
 use brink_syntax_native::SyntaxKind as N;
 use brink_syntax_native::ast::{self, AstNode as _};
@@ -116,6 +120,7 @@ pub(super) fn lower_expr(file_id: FileId, node: &SyntaxNode, diags: &mut Vec<Dia
         N::INFIX_EXPR => lower_infix(file_id, node, diags),
         N::CALL_EXPR => lower_call(file_id, node, diags),
         N::CONSTRUCT_LITERAL => lower_construct(file_id, node, diags),
+        N::LAMBDA_EXPR => super::lambda::lower_lambda(file_id, node, diags),
         N::STMT_BLOCK => {
             // Blocks-as-values (decision-log 2026-07-23 item 2) has no HIR
             // representation yet — no `Expr::Block` variant exists, and
@@ -128,9 +133,11 @@ pub(super) fn lower_expr(file_id: FileId, node: &SyntaxNode, diags: &mut Vec<Dia
             // `control_flow::lower_stmt_block` from a real `.brink` file
             // (`var x = { if a { … } };`), not just a differential test
             // fixture. The block's own *value* still can't be produced, so
-            // this arm still ends in E129 — same "loud, not silent"
-            // posture as LAMBDA_EXPR, and an honest one: the statements
-            // inside genuinely have nowhere to live as an `Expr`.
+            // this arm still ends in E129 — "loud, not silent", and an
+            // honest one: the statements inside genuinely have nowhere to
+            // live as an `Expr`. (A lambda's braced body is *not* this
+            // case — it is a function body with a real home, lowered by
+            // `super::lambda` into `LambdaBody::Block`, tail included.)
             if let Some(sb) = ast::StmtBlock::cast(node.clone()) {
                 let _ = super::control_flow::lower_stmt_block(file_id, &sb, diags);
             }
@@ -138,9 +145,9 @@ pub(super) fn lower_expr(file_id: FileId, node: &SyntaxNode, diags: &mut Vec<Dia
             Expr::Null
         }
         _ => {
-            // LAMBDA_EXPR and anything else the expr grammar can produce
-            // that this slice doesn't recognize (e.g. a malformed ERROR
-            // node reaching here) — loud, not a silent Null with no trace.
+            // Anything else the expr grammar can produce that this slice
+            // doesn't recognize (e.g. a malformed ERROR node reaching
+            // here) — loud, not a silent Null with no trace.
             diags.push(diag(file_id, node.text_range(), DiagnosticCode::E129));
             Expr::Null
         }

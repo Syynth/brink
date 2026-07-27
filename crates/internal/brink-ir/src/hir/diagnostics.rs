@@ -1150,6 +1150,24 @@ pub enum DiagnosticCode {
     /// the annotation parses as an annotation but declares nothing this
     /// channel can act on.
     E155,
+
+    // ── Lambdas (native surface, issue #1685) ──────────────────────
+    /// A lambda body assigns to a **captured binding** — a `let`/param
+    /// binding declared outside the lambda and read inside it.
+    ///
+    /// A hard error by the 2026-07-19 ruling ("assignment to a captured
+    /// binding is a compile error"): brink lambdas capture BY VALUE always
+    /// (Rust's `move` as the only mode, no keyword, no ref captures in v1),
+    /// so the binding a lambda body writes to is its own *snapshot* — the
+    /// write can never be observed by the enclosing scope. A snapshot write
+    /// is always a lost write, and this kills the closure-mutation
+    /// confusion structurally rather than letting authors discover it as a
+    /// silent no-op at runtime.
+    ///
+    /// Writes to a *global* (a module-level `var` cell) are not captures
+    /// and are not flagged: a global is a durable cell reached by name, not
+    /// a snapshotted binding.
+    E156,
 }
 
 impl DiagnosticCode {
@@ -1316,6 +1334,7 @@ impl DiagnosticCode {
             Self::E153 => "E153",
             Self::E154 => "E154",
             Self::E155 => "E155",
+            Self::E156 => "E156",
         }
     }
 
@@ -1547,6 +1566,9 @@ impl DiagnosticCode {
             Self::E155 => {
                 "`@[allow(…)]` needs at least one bare diagnostic code, e.g. `@[allow(E151)]`"
             }
+            Self::E156 => {
+                "a lambda cannot assign to a captured binding — captures are by value, so the write would be lost"
+            }
         }
     }
 
@@ -1742,6 +1764,7 @@ impl DiagnosticCode {
             "E153" => Some(Self::E153),
             "E154" => Some(Self::E154),
             "E155" => Some(Self::E155),
+            "E156" => Some(Self::E156),
             _ => None,
         }
     }
