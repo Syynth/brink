@@ -2399,7 +2399,8 @@ static NO_SUPPRESSIONS: Suppressions = Suppressions {
 ///
 /// `lints`: the project's resolved `[lints]` policy (issue #1160), the other
 /// input [`brink_analyzer::effective_severity`] partitions by — per-code
-/// `deny`/`warn`/`allow` overrides plus `deny-warnings`.
+/// `deny`/`warn`/`allow`/`info`/`hint` overrides (issue #1162 added the
+/// latter two) plus `deny-warnings`.
 #[must_use]
 pub fn partition_diagnostics(
     files: &[FileDiagnostics<'_>],

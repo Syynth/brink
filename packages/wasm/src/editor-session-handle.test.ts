@@ -207,6 +207,20 @@ describe("EditorSessionHandle wasm-lever passthroughs", () => {
     expect(handle.generation).toBe(before + 1);
   });
 
+  it("forwards setLintOverrides with an info/hint level (#1162: the advisory tier below Warning)", () => {
+    hoisted.calls.length = 0;
+    const handle = new EditorSessionHandle();
+    const before = handle.generation;
+
+    const warnings = handle.setLintOverrides({ E014: "hint" });
+
+    expect(hoisted.calls).toEqual([
+      { method: "set_lint_overrides", args: ['{"E014":"hint"}'] },
+    ]);
+    expect(warnings).toEqual([]);
+    expect(handle.generation).toBe(before + 1);
+  });
+
   it("exposes setDenyWarningsOverride/clearDenyWarningsOverride (#1417: the levers were unreachable without them)", () => {
     const handle = new EditorSessionHandle();
     expect(typeof handle.setDenyWarningsOverride).toBe("function");

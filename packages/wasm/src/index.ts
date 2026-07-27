@@ -393,7 +393,7 @@ export class EditorSessionHandle {
    * wasm/editor counterpart of `brink compile`'s repeatable
    * `--deny`/`--warn`/`--allow <CODE>` flags and `brink-lsp`'s
    * `initializationOptions.lints`. `overrides` maps a diagnostic code to
-   * `"deny" | "warn" | "allow"`. Wholesale **replaces** this session's
+   * `"deny" | "warn" | "allow" | "info" | "hint"`. Wholesale **replaces** this session's
    * explicit override map (mirrors {@link applyProjectConfig}'s own
    * `[lints]`-replace-not-merge semantics) — pass `{}` to clear every
    * override.
@@ -411,7 +411,7 @@ export class EditorSessionHandle {
    * same channel {@link applyProjectConfig} uses. Re-analyzes
    * immediately.
    */
-  setLintOverrides(overrides: Record<string, "deny" | "warn" | "allow">): string[] {
+  setLintOverrides(overrides: Record<string, "deny" | "warn" | "allow" | "info" | "hint">): string[] {
     this.bump();
     const json = this.session.set_lint_overrides(JSON.stringify(overrides));
     return JSON.parse(json) as string[];

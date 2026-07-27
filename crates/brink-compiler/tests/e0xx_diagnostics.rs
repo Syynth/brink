@@ -303,6 +303,35 @@ fn e014_bare_tilde_logic_line_warns() {
     assert_warning_at("~\nHi\n", default_options(), DiagnosticCode::E014, "~");
 }
 
+/// #1162: a `[lints] E014 = "hint"` policy must reach `CompileOutput::
+/// warnings` with `ResolvedDiagnostic::severity == Severity::Hint` — the CLI
+/// renderer's actual input, not just `brink_analyzer::effective_severity`
+/// called in isolation. Must stay non-blocking exactly like the `Warning`
+/// it's demoted from (`compile` still returns `Ok`).
+#[test]
+fn e014_lints_hint_override_reaches_resolved_diagnostic_severity() {
+    let mut options = default_options();
+    options
+        .lints
+        .overrides
+        .insert("E014".to_owned(), LintLevel::Hint);
+
+    let out = compile("~\nHi\n", options).unwrap_or_else(|e| {
+        panic!("[lints] E014 = \"hint\" must stay non-blocking, compile failed: {e:?}")
+    });
+    let e014 = out
+        .warnings
+        .iter()
+        .find(|d| d.code == DiagnosticCode::E014)
+        .unwrap_or_else(|| panic!("expected an E014 diagnostic, got: {:?}", out.warnings));
+    assert_eq!(
+        e014.severity,
+        brink_ir::Severity::Hint,
+        "ResolvedDiagnostic::severity must carry the [lints]-resolved Hint tier, not E014's raw \
+         Warning default"
+    );
+}
+
 // ─── Expressions (E015–E017, E020, E021) ─────────────────────────────
 
 #[test]

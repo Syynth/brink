@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::io;
 
 pub use brink_analyzer::{
-    AnalysisOptions, AnalysisResult, Dialect, LintLevel, LintPolicy, TypePolicy,
+    AnalysisOptions, AnalysisResult, Dialect, LintLevel, LintPolicy, TypePolicy, effective_severity,
 };
 pub use brink_db::{CompileProduct, LirProduct, ProjectDb, SourceTree};
 pub use brink_ir::FileId;
