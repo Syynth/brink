@@ -227,9 +227,13 @@ pub fn resolve_value_call_action(source: &str, data: &CodeActionData) -> Option<
 
     let last_kept_end: usize = args[total_keep - 1].syntax().text_range().end().into();
     // `ARG_LIST` never includes the surrounding parens (`divert::arg_list`
-    // starts after `(` and stops before `)`) — the closing paren is the
-    // `FUNCTION_CALL` node's own last byte.
-    let close_paren = usize::from(fc.syntax().text_range().end()).checked_sub(1)?;
+    // starts after `(` and stops before `)`), and the `FUNCTION_CALL`
+    // node's own last byte is only `)` when the parser actually found and
+    // consumed one — re-locate the real closing `)` token instead of
+    // assuming it, since parse-error recovery (an unterminated call) can
+    // leave the node closed without one. See
+    // `crate::text::closing_paren_offset`.
+    let close_paren = crate::text::closing_paren_offset(fc.syntax())?;
 
     let mut out = String::with_capacity(source.len());
     out.push_str(source.get(..last_kept_end)?);
@@ -309,6 +313,26 @@ mod tests {
                 .all(|d| d.code != brink_ir::DiagnosticCode::E063),
             "{diags:?}"
         );
+    }
+
+    #[test]
+    fn resolve_returns_none_when_closing_paren_is_missing() {
+        // Unterminated `call(...)` — same parse-error-recovery hazard as
+        // `creation_site_fix::trim_fn_literal_args`: the FUNCTION_CALL node
+        // never gets an `R_PAREN` token, so assuming `text_range().end() -
+        // 1` is `)` would silently fuse "3" with whatever follows.
+        let src = format!(
+            "{HEAL}=== main ===\n~ temp f = #fn(heal)\n~ temp r = call(f, 1, 2, 3\n-> DONE\n"
+        );
+        let fixed = resolve_value_call_action(
+            &src,
+            &CodeActionData::TrimValueCallArgs {
+                verb: "call".to_owned(),
+                occurrence: 0,
+                keep: 2,
+            },
+        );
+        assert_eq!(fixed, None);
     }
 
     #[test]

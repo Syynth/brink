@@ -3055,15 +3055,18 @@ fn json_u64_as_usize(data: &serde_json::Value, field: &str) -> usize {
 /// Decode a `code_action_resolve` request's `data` payload (the `kind`
 /// discriminator plus the rest of the JSON object built by
 /// [`code_action_data_to_json`]) back into a [`CodeActionData`]. `None` for
-/// an unrecognized `kind` (also covers `MoveStitch`/`PromoteStitch`/
-/// `DemoteKnot`, which have no `kind` string here — see that fn's own doc:
-/// they are surfaced but not yet resolvable over LSP).
+/// an unrecognized `kind` — this also covers `ReorderStitch`/`MoveStitch`/
+/// `PromoteStitch`/`DemoteKnot`: [`code_action_data_to_json`] *does* emit a
+/// `kind` string for each of them (`"reorder_stitch"`/`"move_stitch"`/
+/// `"promote_stitch"`/`"demote_knot"`), they simply have no decode arm below, so
+/// resolve is a no-op for them (see that fn's own doc: they are surfaced but
+/// not yet resolvable over LSP).
 ///
 /// Split out of [`Backend::code_action_resolve`] to keep that function under
-/// the workspace's `too_many_lines` lint budget — the two other multi-arm
-/// dispatch tables in this file ([`code_action_data_to_json`] and
-/// `format_config_from_options`) already live as their own free functions
-/// for the same reason.
+/// the workspace's `too_many_lines` lint budget — the other multi-arm
+/// dispatch table in this file, [`code_action_data_to_json`], already lives
+/// as its own free function for the same reason (`format_config_from_options`
+/// is the same pattern but lives in `backend/adapters.rs`, imported above).
 ///
 /// [`CodeActionData`]: brink_ide::code_actions::CodeActionData
 fn code_action_data_from_json(

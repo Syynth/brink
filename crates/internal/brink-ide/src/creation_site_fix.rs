@@ -16,7 +16,12 @@
 //!   it is correctly left out of the span, but a `val` param *inside* the
 //!   span has no safe value to synthesize, so the whole fix is skipped in
 //!   that case — under-fixing (staying silent) rather than guessing a value
-//!   the author never wrote.
+//!   the author never wrote. The fix is also withheld outright when an
+//!   *already-bound* `ref` argument itself carries an E080 (bound to a
+//!   temp/param/CONST/field-projection instead of a durable `VAR`) — see
+//!   [`has_e080_on_bound_arg`] — since appending the missing args would
+//!   still leave that pre-existing E080 behind, breaking the "always leaves
+//!   the call fully bound" guarantee.
 //!
 //! **E079** (target is not a function definition) has no offered fix here:
 //! there is no single mechanical rewrite that recovers the author's intent
@@ -140,14 +145,45 @@ pub fn fn_value_actions(db: &ProjectDb, file_id: FileId, offset: u32) -> Vec<Cod
         });
     }
 
-    // E080 — a `ref` param with no bound arg at all.
-    if let Some(action) =
-        bind_ref_args_action(&index, &info.params, args_len, &target_name, occurrence)
+    // E080 — a `ref` param with no bound arg at all. Only offered when no
+    // *already-bound* argument itself carries an E080 (see
+    // `has_e080_on_bound_arg`'s doc) — otherwise the fix would add the
+    // missing args and still leave the call not compiling.
+    if !has_e080_on_bound_arg(db, file_id, &fl, args_len)
+        && let Some(action) =
+            bind_ref_args_action(&index, &info.params, args_len, &target_name, occurrence)
     {
         actions.push(action);
     }
 
     actions
+}
+
+/// Whether any *already-bound* argument (`fl`'s args at index `< args_len`)
+/// itself carries an E080 diagnostic — e.g. a `ref` param bound to a
+/// temp/param/CONST/field-projection instead of a durable `VAR`
+/// (`fn_values::FnValueVisitor::check_ref_arg`, which anchors that
+/// diagnostic at the argument's own range, not the whole `#fn(...)`
+/// literal's).
+///
+/// [`fn_value_actions`]'s "bind ref argument(s)" fix only ever *appends*
+/// args for the currently-*unbound* trailing `ref` params — it can never
+/// clear a diagnostic on an argument that is already there. Offering it
+/// anyway when one of those exists would leave the call still not
+/// compiling after the "fix", contradicting this module's guarantee that
+/// the fix always leaves the call fully bound (see module doc). Skipping
+/// under-fixes rather than guessing here — same posture as the `val`-param-
+/// inside-the-span case in [`bind_ref_args_action`]'s own doc.
+fn has_e080_on_bound_arg(db: &ProjectDb, file_id: FileId, fl: &FnLiteral, args_len: usize) -> bool {
+    let Some(diags) = db.diagnostics(file_id) else {
+        return false;
+    };
+    fl.args().take(args_len).any(|arg| {
+        let arg_range = arg.syntax().text_range();
+        diags
+            .iter()
+            .any(|d| d.code == DiagnosticCode::E080 && arg_range.contains_range(d.range))
+    })
 }
 
 /// The E080 "bind ref argument(s)" fix, split out of
@@ -295,10 +331,11 @@ fn trim_fn_literal_args(
     } else {
         args[keep - 1].syntax().text_range().end().into()
     };
-    // The FN_LITERAL node's own text range always ends right after its
-    // closing `)` (the parser's `fn_literal` wraps `p.expect(R_PAREN)`
-    // inside the node before `finish_node`), so the last byte is `)`.
-    let close_paren = usize::from(fl.syntax().text_range().end()).checked_sub(1)?;
+    // Re-locate the real closing `)` token rather than assuming the node's
+    // `text_range().end() - 1` is a `)` byte — that assumption breaks under
+    // parse-error recovery (an unterminated `#fn(...)`), see
+    // `crate::text::closing_paren_offset`.
+    let close_paren = crate::text::closing_paren_offset(fl.syntax())?;
 
     let mut out = String::with_capacity(source.len());
     out.push_str(source.get(..last_kept_end)?);
@@ -405,6 +442,18 @@ mod tests {
     }
 
     #[test]
+    fn trim_returns_none_when_closing_paren_is_missing() {
+        // Unterminated `#fn(...)` — parser error-recovery (`p.expect
+        // (R_PAREN)` without a `)` to consume) leaves the FN_LITERAL node
+        // without ever bumping an `R_PAREN` token, so its `text_range().
+        // end()` does not land on a `)` byte. Splicing at `end() - 1` would
+        // silently fuse the "2" argument with the newline that actually
+        // follows the node instead of failing safe.
+        let src = format!("{PURE}=== main ===\n~ temp f = #fn(double, 1, 2\n-> DONE\n");
+        assert_eq!(trim_fn_literal_args(&src, "double", 0, 1), None);
+    }
+
+    #[test]
     fn no_trim_offer_when_binding_is_exact() {
         let src = format!("{PURE}=== main ===\n~ temp f = #fn(double, 1)\n-> DONE\n");
         let session = session_with(&src);
@@ -494,14 +543,62 @@ mod tests {
     }
 
     #[test]
+    fn no_bind_offer_when_an_already_bound_ref_arg_has_its_own_e080() {
+        // `heal2`'s first ref param (`hp`) is bound to `t`, a temp — not a
+        // durable cell, so it carries its own E080. The second ref param
+        // (`mp`) is unbound and has a matching `VAR mp` in scope, so in
+        // isolation the span-fill logic would happily offer "bind `mp`" —
+        // but applying that fix would still leave `hp`'s E080 behind,
+        // contradicting the "always leaves the call fully bound" guarantee
+        // (module doc). No fix must be offered at all.
+        let src = "=== function heal2(ref hp, ref mp) ===\n~ hp = hp + 1\n~ mp = mp + 1\n\
+                   ~ return hp\n\nVAR mp = 5\n=== main ===\n~ temp t = 1\n\
+                   ~ temp f = #fn(heal2, t)\n-> DONE\n"
+            .to_owned();
+        let session = session_with(&src);
+        let file = session.file_id("test.ink").expect("file id");
+        let diags = session.db().diagnostics(file).expect("diagnostics");
+        assert!(
+            diags.iter().any(|d| d.code == DiagnosticCode::E080),
+            "fixture must actually carry an E080 on the bound `t` arg: {diags:?}"
+        );
+        let off = u32::try_from(src.find("#fn(heal2").expect("site") + 5).expect("fits");
+        assert!(fn_value_actions(session.db(), file, off).is_empty());
+    }
+
+    #[test]
     fn no_bind_offer_when_var_name_is_ambiguous() {
-        // Two files each declare a global `hp` — ambiguous, so no fix.
+        // Two files each declare their own `#@module` with a global `VAR
+        // hp`. Under M-2d cross-declared-module coexistence (issue #790,
+        // `brink_analyzer::manifest::
+        // cross_declared_module_duplicate_coexists_under_brink`) both
+        // survive in the index as genuinely distinct `SymbolKind::Variable`
+        // entries sharing the bare name `hp` — `matching_global_var` cannot
+        // pick one, so no fix.
+        //
+        // Two files declaring `VAR hp` under the *same* (undeclared) module
+        // do NOT reach this path: `symbol_index_with_modules` hashes an
+        // undeclared module's names bare, so the two `hp`s collide as the
+        // *same* `DefinitionId` (one duplicate-declaration diagnostic, one
+        // surviving index entry) rather than genuinely two entries to
+        // disambiguate between — that fixture does not exercise this guard
+        // at all, it degenerates to `no_bind_offer_when_no_matching_var_in_
+        // scope`'s single-entry case.
+        //
+        // `a.ink`'s `VAR hp` is also required in its own right: the `ref
+        // hp` parameter inside `HEAL` is indexed as `SymbolKind::Param`,
+        // which `matching_global_var`'s `SymbolKind::Variable` filter
+        // discards, so `HEAL` alone never contributes to the ambiguity.
         let mut session = IdeSession::new();
-        let a = format!("{HEAL}=== main ===\n~ temp f = #fn(heal)\n-> DONE\n");
+        session.set_language_dialect(brink_analyzer::Dialect::Brink);
+        let a = format!(
+            "#@module(a)\n{HEAL}VAR hp = 10\n=== main ===\n~ temp f = #fn(heal)\n-> DONE\n"
+        );
+        let b = "#@module(b)\nVAR hp = 1\n-> END\n".to_owned();
         session.update_source("a.ink", a.clone());
-        session.update_source("b.ink", "VAR hp = 1\n-> END\n".to_owned());
+        session.update_source("b.ink", b.clone());
         session.update_and_analyze("a.ink", a.clone());
-        session.update_and_analyze("b.ink", "VAR hp = 1\n-> END\n".to_owned());
+        session.update_and_analyze("b.ink", b);
         let file = session.file_id("a.ink").expect("file id");
         let off = u32::try_from(a.find("#fn(heal)").expect("site") + 5).expect("fits");
         assert!(fn_value_actions(session.db(), file, off).is_empty());
