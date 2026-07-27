@@ -203,6 +203,19 @@ impl<M: Send + Sync + 'static> BrinkBindings<M> {
     pub(crate) fn query_access(&self, name: &str) -> Option<&Access> {
         self.query_access.get(name)
     }
+
+    /// `true` iff `name` is registered as a
+    /// [`bind_brink_command`](BrinkBindingsAppExt::bind_brink_command)
+    /// binding — consulted by `crate::sleep`'s wake-condition purity gate
+    /// (issue #1609): a command binding mutates the World when its parsed
+    /// event is triggered, so a wake condition reaching one is impure
+    /// regardless of whether a [`CapabilityManifest`](crate::capability::CapabilityManifest)
+    /// entry exists for it. `bevy-brink` knows the binding kind locally —
+    /// this needs no manifest entry to answer.
+    #[must_use]
+    pub(crate) fn is_command(&self, name: &str) -> bool {
+        self.commands.contains_key(name)
+    }
 }
 
 /// An [`ExternalFnHandler`] backed by a [`BrinkBindings`] registry.

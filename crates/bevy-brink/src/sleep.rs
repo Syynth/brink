@@ -87,9 +87,11 @@
 //!   condition whose effect row shows writes — including writes performed
 //!   transitively through a host-registered `EXTERNAL` binding the
 //!   [`CapabilityManifest`] declares `writes` for (issue #1040, the #995
-//!   follow-up; `docs/effects-spec.md` §9/§13) — is rejected loudly
-//!   ([`WakeConditionPurityError`]) and never called, not even once. A
-//!   dynamically-resolved fn-value condition
+//!   follow-up; `docs/effects-spec.md` §9/§13), or through a
+//!   [`bind_brink_command`](crate::bindings::BrinkBindingsAppExt::bind_brink_command)-bound
+//!   `EXTERNAL` regardless of manifest presence (issue #1609, an #1096
+//!   follow-up) — is rejected loudly ([`WakeConditionPurityError`]) and never
+//!   called, not even once. A dynamically-resolved fn-value condition
 //!   ([`FlowSleep::with_condition_value`], issue #1078) runs the same gate
 //!   via [`check_value_condition_purity`] instead.
 //!
@@ -116,7 +118,7 @@ use brink_runtime::{Program, StoryStatus};
 use thiserror::Error;
 
 use crate::asset::{BrinkProgram, ProgramAsset};
-use crate::bindings::{call_ink_function, call_ink_function_value};
+use crate::bindings::{BrinkBindings, call_ink_function, call_ink_function_value};
 use crate::capability::{
     CapabilityChanges, CapabilityManifest, CapabilityRegistry, ContainerAccess,
 };
@@ -493,19 +495,20 @@ impl<M: Send + Sync + 'static> FlowSleep<M> {
 // A manifest entry with no `writes` (reads-only, or no `effects` key at all —
 // §13.2's opt-in default) is accepted: it does not touch a write-capable ECS
 // capability, and purity is exactly "no writes". An `EXTERNAL` name with **no
-// manifest entry at all** is likewise accepted, deliberately matching the
-// BH-1 access join's posture (`resolve_call_atom`, `crate::capability`):
-// "a call whose `NameId` doesn't resolve, or that has no manifest entry at
-// all, contributes no access — silently, since not every `EXTERNAL` touches
-// ECS state (§13.2's `effects` key is opt-in)". Rejecting an unregistered
-// external here would fault the flow permanently — the same missed-wake bug
-// class the #913 detect-merge ruling treats as the worse failure mode
-// (`docs/decision-log.md` 2026-07-18, "a missed wake is the engine-race bug
-// class") — for a binding (e.g. a `bind_brink_fn` helper) that legitimately
-// never touches ECS state and was accepted before this check existed. Only a
-// manifest entry that affirmatively declares `writes` is rejected; the
-// manifest is an honesty contract, not a security boundary (the host is the
-// TCB — `docs/effects-spec.md` §9).
+// manifest entry at all** is likewise accepted (unless it is a
+// `bind_brink_command` binding — see the #1609 paragraph below), deliberately
+// matching the BH-1 access join's posture (`resolve_call_atom`,
+// `crate::capability`): "a call whose `NameId` doesn't resolve, or that has
+// no manifest entry at all, contributes no access — silently, since not
+// every `EXTERNAL` touches ECS state (§13.2's `effects` key is opt-in)".
+// Rejecting an unregistered external here would fault the flow permanently —
+// the same missed-wake bug class the #913 detect-merge ruling treats as the
+// worse failure mode (`docs/decision-log.md` 2026-07-18, "a missed wake is
+// the engine-race bug class") — for a binding (e.g. a `bind_brink_fn`
+// helper) that legitimately never touches ECS state and was accepted before
+// this check existed. Only a manifest entry that affirmatively declares
+// `writes` is rejected; the manifest is an honesty contract, not a security
+// boundary (the host is the TCB — `docs/effects-spec.md` §9).
 //
 // A story whose `EffectRows` table is empty entirely (a converter-built
 // program, or a program that never went through the compiler's effects
@@ -533,24 +536,44 @@ impl<M: Send + Sync + 'static> FlowSleep<M> {
 // branch on it exactly like the named path — `check_value_condition_purity`
 // gates admission, `call_ink_function_value` (`crate::bindings`) evaluates.
 //
-// **Known hazard, not yet closed** (filed as #1609, a #1096 follow-up): a
-// `bind_brink_command`-bound `EXTERNAL` with no [`CapabilityManifest`] entry
-// passes `check_external_calls_purity` above — "no manifest entry at all
-// accepts" is deliberate (a `bind_brink_fn` helper that never touches ECS
-// state shouldn't need one), but it means a wake condition naming a
+// **Closed** (issue #1609, a #1096 follow-up): a `bind_brink_command`-bound
+// `EXTERNAL` with no [`CapabilityManifest`] entry used to pass
+// `check_external_calls_purity` above — "no manifest entry at all accepts"
+// is deliberate (a `bind_brink_fn` helper that never touches ECS state
+// shouldn't need one), but it meant a wake condition naming a
 // `call_ink_function`/`call_ink_function_value` path that reaches a
-// `bind_brink_command` binding is accepted as pure even though, since
-// #1096's fix, that path now fires a real Bevy event on every re-evaluation
+// `bind_brink_command` binding was accepted as pure even though, since
+// #1096's fix, that path fires a real Bevy event on every re-evaluation
 // pass — where before #1096 it was inert (silently ran the in-story
-// fallback instead). The event fires through `resolve_brink_calls`
-// (`crate::call`, the deferred `commands.brink_call(...)` path) too, for the
-// same reason: it drives `call_ink_function` under the hood. Neither
-// `check_named_condition_purity` nor `check_value_condition_purity` consults
-// `BrinkBindings<M>::commands` — bevy-brink has that binding-kind
-// information locally and wouldn't need a manifest entry to reject it, but
-// nothing here does yet. Extending the purity check to reject a name present
-// in `BrinkBindings<M>::commands` is the fix; tracked as a follow-up rather
-// than done here.
+// fallback instead). `check_named_condition_purity`/
+// `check_value_condition_purity` (and the `check_row_purity`/
+// `check_external_calls_purity` helpers they share) now take an optional
+// [`BrinkBindings<M>`] reference and reject any call whose target name is
+// present in [`BrinkBindings::is_command`] — bevy-brink has that
+// binding-kind information locally, so this needs no manifest entry at all
+// to answer, unlike the #1040 manifest-`writes` check above. `run_flow_sleep`
+// fetches the app's `BrinkBindings<M>` resource (absent entirely if the host
+// never registered any binding) alongside the `CapabilityManifest` and
+// threads it through. This is scoped to `bind_brink_command` only: a pure
+// (`bind_brink_fn`) binding is not rejected by this check. A world-query
+// (`bind_brink_query`) binding is *also* not rejected here, but not because
+// its World access is out of reach — `call_ink_function`/
+// `call_ink_function_value` (`crate::bindings`, the same drivers
+// `run_flow_sleep` uses to evaluate a condition) resolve a query binding
+// **inline**, synchronously, mid-evaluation (`docs/bevy-brink.md`'s binding
+// table: "flow pauses (`Pending`); a driver runs it via `run_system_with`
+// between suspensions, then resumes" — the pause/resume is internal to the
+// single call, not a cross-frame park a wake condition's re-evaluation could
+// dodge). Widening this gate to cover write-capable query bindings is a
+// design question left open (whether/how to distinguish a read-only query
+// system from a writing one), not something this fix's scope covers.
+//
+// `resolve_brink_calls` (`crate::call`, the deferred
+// `commands.brink_call(...)` path) also drives `call_ink_function` under the
+// hood and so can also fire a command event — but it is an explicit,
+// engine-initiated call, not a `FlowSleep` re-evaluation, so it is outside
+// this gate's contract (`docs/effects-spec.md` §13.1 point 2 only binds
+// wake-condition purity) and unaffected by this fix.
 
 /// A wake condition failed the attach-time purity check. See the module
 /// section above for the contract this enforces.
@@ -633,6 +656,26 @@ pub enum WakeConditionPurityError {
         /// deduplicated.
         writes: Vec<String>,
     },
+    /// The condition (or a dispatch fallback its row folds in) calls a
+    /// [`bind_brink_command`](crate::bindings::BrinkBindingsAppExt::bind_brink_command)-bound
+    /// `EXTERNAL` (issue #1609, an #1096 follow-up). Rejected regardless of
+    /// [`CapabilityManifest`] presence: `bevy-brink` knows the binding kind
+    /// locally, and a command binding mutates the World when its parsed
+    /// event is triggered, so a wake condition reaching it would let
+    /// re-evaluation fire that mutation repeatedly (§13.1 point 2).
+    #[error(
+        "wake condition `{condition}` is not pure: it calls `{external}`, a bind_brink_command \
+         binding — a command binding mutates the World when triggered, and a FlowSleep \
+         condition is re-evaluated whenever a dependency moves (docs/effects-spec.md §13.1 \
+         point 2), so a command-bound wake condition is rejected regardless of \
+         CapabilityManifest presence (issue #1609)"
+    )]
+    CommandBinding {
+        /// The condition name/path/label.
+        condition: String,
+        /// The command-bound external's name.
+        external: String,
+    },
 }
 
 /// Find the `EffectRows` entry for `def`, if this story's table carries one.
@@ -656,10 +699,17 @@ fn write_names(program: &Program, ids: &[DefinitionId]) -> Vec<String> {
 
 /// The shared purity check once a condition token has resolved to a `row`
 /// (see the module section above for exactly what this inspects).
-fn check_row_purity(
+///
+/// `bindings` is `None` when the host never registered any
+/// [`BrinkBindings<M>`] (no `bind_brink_*` call at all — the resource is
+/// inserted lazily) — in that case there is no `commands` bucket to consult,
+/// so the #1609 command-binding check below is trivially skipped, same as an
+/// empty registry would be.
+fn check_row_purity<M: Send + Sync + 'static>(
     program: &Program,
     row: &EffectRowEntry,
     manifest: &CapabilityManifest,
+    bindings: Option<&BrinkBindings<M>>,
     condition_label: &str,
 ) -> Result<(), WakeConditionPurityError> {
     if row.direct.opaque
@@ -673,9 +723,15 @@ fn check_row_purity(
         });
     }
 
-    check_external_calls_purity(program, &row.direct, manifest, condition_label)?;
+    check_external_calls_purity(program, &row.direct, manifest, bindings, condition_label)?;
     for dispatch in &row.dispatches {
-        check_external_calls_purity(program, &dispatch.fallback, manifest, condition_label)?;
+        check_external_calls_purity(
+            program,
+            &dispatch.fallback,
+            manifest,
+            bindings,
+            condition_label,
+        )?;
     }
 
     let mut writes = write_names(program, &row.direct.writes);
@@ -694,23 +750,36 @@ fn check_row_purity(
     }
 }
 
-/// Issue #1040 (the #995 follow-up): check every `EXTERNAL` call atom in
-/// `direct` (a row's direct part, or a dispatch's static fallback) against
-/// `manifest`'s declared `effects.writes`. See the module section above for
-/// the full contract: a manifest entry declaring `writes` rejects; a
-/// reads-only entry, a no-`effects`-key entry, or no manifest entry at all
-/// (the same opt-in posture `crate::capability::resolve_call_atom` applies)
-/// all accept.
-fn check_external_calls_purity(
+/// Issue #1040 (the #995 follow-up) + issue #1609: check every `EXTERNAL`
+/// call atom in `direct` (a row's direct part, or a dispatch's static
+/// fallback) against, in order: `bindings`'s `commands` registry (#1609 — a
+/// `bind_brink_command`-bound name rejects **unconditionally**, no manifest
+/// entry needed), then `manifest`'s declared `effects.writes` (#1040). See
+/// the module section above for the full contract: a command-bound name, or
+/// a manifest entry declaring `writes`, rejects; a reads-only entry, a
+/// no-`effects`-key entry, or no manifest entry at all for a non-command
+/// name (the same opt-in posture `crate::capability::resolve_call_atom`
+/// applies) all accept.
+fn check_external_calls_purity<M: Send + Sync + 'static>(
     program: &Program,
     direct: &DirectEffects,
     manifest: &CapabilityManifest,
+    bindings: Option<&BrinkBindings<M>>,
     condition_label: &str,
 ) -> Result<(), WakeConditionPurityError> {
     for call in &direct.calls {
         let external_name = program
             .name_checked(call.name)
             .map_or_else(|| format!("<{:?}>", call.name), str::to_owned);
+        // #1609: a command-bound name rejects unconditionally — bevy-brink
+        // knows this binding kind locally, so no manifest entry is needed
+        // (or consulted) to reject it.
+        if bindings.is_some_and(|b| b.is_command(&external_name)) {
+            return Err(WakeConditionPurityError::CommandBinding {
+                condition: condition_label.to_owned(),
+                external: external_name,
+            });
+        }
         // No manifest entry at all accepts, same as a reads-only/no-`effects`
         // entry — see the doc comment above.
         if let Some(external) = manifest.external(&external_name)
@@ -741,14 +810,18 @@ fn check_external_calls_purity(
 /// `manifest` threads the host's [`CapabilityManifest`] (issue #1040) so a
 /// condition calling a host-registered `EXTERNAL` binding is checked against
 /// that binding's declared `effects.writes`, not just the row's own
-/// ink-level writes.
+/// ink-level writes. `bindings` threads the host's [`BrinkBindings<M>`]
+/// registry (issue #1609) so a condition calling a `bind_brink_command`
+/// binding is rejected outright, regardless of manifest presence — pass
+/// `None` if the host never registered any binding for marker `M`.
 ///
 /// # Errors
 /// See [`WakeConditionPurityError`].
-pub fn check_named_condition_purity(
+pub fn check_named_condition_purity<M: Send + Sync + 'static>(
     program: &Program,
     effect_rows: &[EffectRowEntry],
     manifest: &CapabilityManifest,
+    bindings: Option<&BrinkBindings<M>>,
     condition: &str,
 ) -> Result<(), WakeConditionPurityError> {
     if effect_rows.is_empty() {
@@ -764,7 +837,7 @@ pub fn check_named_condition_purity(
             condition: condition.to_owned(),
         }
     })?;
-    check_row_purity(program, row, manifest, condition)
+    check_row_purity(program, row, manifest, bindings, condition)
 }
 
 /// Check purity for a **dynamic fn-value** wake condition — a `Value`
@@ -774,15 +847,17 @@ pub fn check_named_condition_purity(
 /// `EffectRows` row [`check_named_condition_purity`] does.
 ///
 /// Same empty-`effect_rows` bypass as [`check_named_condition_purity`]. Same
-/// `manifest` threading (issue #1040) as [`check_named_condition_purity`].
+/// `manifest`/`bindings` threading (issues #1040/#1609) as
+/// [`check_named_condition_purity`].
 ///
 /// # Errors
 /// See [`WakeConditionPurityError`]. [`WakeConditionPurityError::NotAFunctionValue`]
 /// if `value` isn't a function value at all.
-pub fn check_value_condition_purity(
+pub fn check_value_condition_purity<M: Send + Sync + 'static>(
     program: &Program,
     effect_rows: &[EffectRowEntry],
     manifest: &CapabilityManifest,
+    bindings: Option<&BrinkBindings<M>>,
     value: &Value,
 ) -> Result<(), WakeConditionPurityError> {
     if effect_rows.is_empty() {
@@ -799,7 +874,7 @@ pub fn check_value_condition_purity(
             condition: label.clone(),
         }
     })?;
-    check_row_purity(program, row, manifest, &label)
+    check_row_purity(program, row, manifest, bindings, &label)
 }
 
 /// Ink truthiness for a wake condition's return value: a `Bool(true)`, a
@@ -984,6 +1059,12 @@ pub fn run_flow_sleep<M: Send + Sync + 'static>(
         // marker's stories share, per `crate::capability`'s module docs), so a
         // single fetch here covers every candidate this pass gathers.
         let manifest = world.resource::<CapabilityManifest>();
+        // The `BrinkBindings<M>` registry (issue #1609): `None` if the host
+        // never registered any `bind_brink_*` binding for this marker (the
+        // resource is inserted lazily) — `check_named_condition_purity`/
+        // `check_value_condition_purity` treat that the same as an empty
+        // `commands` bucket.
+        let bindings = world.get_resource::<BrinkBindings<M>>();
         for (entity, sleep, flow, program_ref) in gather.iter(world) {
             let status = flow.inner.status();
             // An `-> END` flow is dead; the policy is inert (§13.1 point 5).
@@ -1030,6 +1111,7 @@ pub fn run_flow_sleep<M: Send + Sync + 'static>(
                                     &asset.program,
                                     &asset.effect_rows,
                                     manifest,
+                                    bindings,
                                     value,
                                 )
                             } else {
@@ -1037,6 +1119,7 @@ pub fn run_flow_sleep<M: Send + Sync + 'static>(
                                     &asset.program,
                                     &asset.effect_rows,
                                     manifest,
+                                    bindings,
                                     &sleep.condition,
                                 )
                             };
