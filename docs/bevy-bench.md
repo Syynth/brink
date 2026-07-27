@@ -140,9 +140,10 @@ over the generated matrix — re-add after regenerating).
 
 `--mode parallel` runs the matrix through BH-3's parallel driver
 (`advance_batch_parallel`, #927: the Step phase on `ComputeTaskPool`
-through an `UnsafeWorldCell`; Collect/Step/Apply shared verbatim with
-`advance_batch`, so the two are byte-identical — the determinism law) and
-writes `parallel-driver.{csv,md}`. Column mapping is identical to batch
+through an `UnsafeWorldCell`; Step and Apply are literally the same
+functions shared with `advance_batch`, while Collect is a hand-duplicated
+query kept filter-identical by hand (#1633), so the two drivers are
+byte-identical — the determinism law) and writes `parallel-driver.{csv,md}`. Column mapping is identical to batch
 mode. The run prints `compute_task_pool_threads=` — bevy's task pools are
 process-global, so record that number with any capture; `--compute-threads
 N` pins the pool size for thread-curve exploration (print-only, one size

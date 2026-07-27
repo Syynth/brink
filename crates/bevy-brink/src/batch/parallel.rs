@@ -17,15 +17,26 @@
 //! > **parallel ≡ serial-in-flow-id-order, byte-identical.**
 //!
 //! It holds here **by construction**, not by luck: [`advance_batch_parallel`]
-//! shares Collect, per-flow Step ([`super::step_one`]), and Apply
-//! ([`super::apply_batch_writes`]) with the serial [`advance_batch`] verbatim.
-//! The only difference is *where* the Step loop runs — the task pool instead
-//! of the main thread. Because each flow steps against a **private clone** of
-//! the frame-start world and buffers its writes (BH-2's proven core), the
-//! Step phase touches no shared mutable state, so thread interleaving cannot
-//! affect any flow's outcome; Apply then flushes every buffer in flow-id
-//! order, so the converged world is a pure function of the flow-id order — the
-//! same order the serial driver applies in.
+//! shares per-flow Step ([`super::step_one`]) and Apply
+//! ([`super::apply_batch_writes`]) with the serial [`advance_batch`] verbatim
+//! — literally the same functions, called from both drivers. Collect is *not*
+//! a shared function (each driver walks its own `Query`/`QueryState`, since
+//! one runs as a system param and the other against a raw `&mut World`), so it
+//! must be kept **filter-identical by hand**: same pending predicate
+//! (`!has_pending_external() && sleep.is_none_or(FlowSleep::wants_collect)`),
+//! same flow-id order, same asset-loaded gate. Issue #1633 is the standing
+//! example of what happens when this duplication drifts — the parallel
+//! Collect omitted the `FlowSleep` filter entirely for a time, a real BH-3
+//! violation once a `FlowSleep`-bearing flow entered the batch (undetected
+//! because the law-verifying fuzz test's workload never included one). The
+//! only difference the two drivers are *meant* to have is *where* the Step
+//! loop runs — the task pool instead of the main thread. Because each flow
+//! steps against a **private clone** of the frame-start world and buffers its
+//! writes (BH-2's proven core), the Step phase touches no shared mutable
+//! state, so thread interleaving cannot affect any flow's outcome; Apply then
+//! flushes every buffer in flow-id order, so the converged world is a pure
+//! function of the flow-id order — the same order the serial driver applies
+//! in.
 //!
 //! Per the ruling, **parallelism is a perf feature, never a correctness
 //! dependency**: if the law ever fails to hold, quarantine this module and
@@ -65,6 +76,7 @@ use crate::capability::CapabilityTable;
 use crate::flow::BrinkFlow;
 use crate::globals::{BrinkGlobals, BrinkWorldPolicy};
 use crate::line_tables::BrinkLocale;
+use crate::sleep::FlowSleep;
 use crate::wake_delta::BrinkWorldDelta;
 
 /// One collected flow's fully-resolved batch inputs — owned so it survives the
@@ -94,9 +106,12 @@ struct Job<'w> {
 /// **Parallel** batch-mode flow driver (§12.2–§12.4; BH-3): identical
 /// semantics to [`advance_batch`](super::advance_batch), but the Step phase
 /// runs on [`ComputeTaskPool`] with each flow's `FlowInstance` accessed through
-/// an [`UnsafeWorldCell`] (bevy's own executor pattern). Collect, per-flow
-/// Step, and the flow-id-ordered Apply are shared verbatim with the serial
-/// driver, so the two are **byte-identical** (the determinism law).
+/// an [`UnsafeWorldCell`] (bevy's own executor pattern). Per-flow Step
+/// ([`super::step_one`]) and the flow-id-ordered Apply
+/// ([`super::apply_batch_writes`]) are literally the same functions shared
+/// with the serial driver; Collect is a hand-duplicated query kept
+/// filter-identical by hand (see the module docs above). Together these keep
+/// the two drivers **byte-identical** (the determinism law).
 ///
 /// This is an **exclusive system** (§12.5 "Level 2 v1": the exclusive-system
 /// driver with internal per-flow parallelism). Like
@@ -126,7 +141,21 @@ pub fn advance_batch_parallel<M: Send + Sync + 'static>(world: &mut World) {
     // into owned `Prep`s, so the query/resource borrows can be dropped before
     // the parallel Step takes the world cell. Flow-id (Entity) order is all the
     // frame-start guarantee needs.
-    let mut query = world.query::<(Entity, &BrinkFlow<M>, &BrinkProgram<M>, &BrinkLocale<M>)>();
+    //
+    // BH-4 (§13.1; #973; issue #1633): match the serial driver's Collect
+    // exactly — a flow under a `FlowSleep` policy that isn't woken (parked /
+    // cancelled / faulted) is filtered out here too. Before this fix the
+    // parallel driver force-stepped every `FlowSleep`-bearing flow regardless
+    // of wake state, a real divergence from the serial driver observable
+    // through the BH-3 determinism law (`parallel_equals_serial_*`) — see
+    // `advance_batch` above for the shared rationale.
+    let mut query = world.query::<(
+        Entity,
+        &BrinkFlow<M>,
+        &BrinkProgram<M>,
+        &BrinkLocale<M>,
+        Option<&FlowSleep<M>>,
+    )>();
     let policy_local = world
         .get_resource::<BrinkWorldPolicy<M>>()
         .is_some_and(|p| homes_any_local(&p.policy));
@@ -136,8 +165,10 @@ pub fn advance_batch_parallel<M: Send + Sync + 'static>(world: &mut World) {
 
     let mut preps: Vec<Prep> = query
         .iter(world)
-        .filter(|(_, flow, _, _)| !flow.inner.has_pending_external())
-        .filter_map(|(entity, _, program_ref, locale)| {
+        .filter(|(_, flow, _, _, sleep)| {
+            !flow.inner.has_pending_external() && sleep.is_none_or(FlowSleep::wants_collect)
+        })
+        .filter_map(|(entity, _, program_ref, locale, _)| {
             // Match the serial driver's order: require both assets loaded
             // before deciding anything (an unloaded flow is neither stepped
             // nor skip-counted — it is simply left for a later turn).
