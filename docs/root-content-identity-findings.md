@@ -1,0 +1,300 @@
+# Root-content `DefinitionId` identity — findings and recommended fix shape
+
+**Issue:** [#1504](https://github.com/Syynth/brink/issues/1504) (`needs-design`)
+**Status:** analysis only — no production code changed. The fix shape needs the
+FG-4d owner's ruling before it is built.
+**Baseline:** every measurement below was taken at commit `999581354`
+(`main`, workspace version `0.0.11`).
+
+## TL;DR
+
+Both findings in #1504 reproduce. One of them is worse than the issue says.
+
+- **(a) is not a latent landmine — it is a live, silent miscompile.** Any ink
+  project where the entry file *and* an `INCLUDE`d file both carry root-level
+  weave content compiles to a program with duplicate container ids. The
+  linker's address map is last-write-wins, so **picking a choice from the
+  included file runs the entry file's choice body instead.** Reachable through
+  the ordinary `brink_compiler::compile` entry point with a plain `INCLUDE` —
+  no unusual flags, no native dialect, no incremental session.
+- **(b) reproduces**, but the precise failure is *save-key churn under an
+  unrelated edit*, not a break of the FG-4d `incremental ≡ from-scratch` gate.
+  See [Correcting the framing of (b)](#correcting-the-framing-of-b).
+- **#1504 does not have to wait for #1442.** The collisions in (a) are entirely
+  in *anonymous* weave containers, whose identity must stay structural. #1442's
+  rename-invariance question is about *named* definitions. These are separable
+  layers; see [Recommended shape](#recommended-shape).
+
+## Evidence
+
+Four acceptance tests ship with this analysis. They assert the behavior brink
+*should* have and are `#[ignore]`d, because the fix is design-gated —
+un-ignoring them is the acceptance criterion for #1504.
+
+- `crates/internal/brink-ir/tests/lir_lowering/root_content_definition_id_soundness.rs`
+- `crates/brink-compiler/tests/issue_1504_root_content_identity.rs`
+
+Run them with `--ignored` at `999581354` and all four fail. Verbatim:
+
+```
+duplicate container ids in the compiled program: [
+    "0x1779765f903c98e appears 2x",
+    "0x1dde84850f175fb appears 2x",
+    "0x1ef2ee91775101d appears 2x",
+]
+
+picking `inc one` ran the wrong choice body; got: "main one\nMAIN-ONE-BODY\nmain gathered\n"
+
+two files' root weaves share DefinitionIds: [
+    "Address(0x779765f903c98e) -> [\"c-0\", \"c-0\"]",
+    "Address(0xdde84850f175fb) -> [\"c-1\", \"c-1\"]",
+    "Address(0xef2ee91775101d) -> [\"g-0\", \"g-0\"]",
+]
+
+the root terminus address moved when an unrelated INCLUDE was added
+  left: Some(Address(0x49590a9a660758))
+ right: Some(Address(0xbd6652c9fc545d))
+```
+
+The second line is the one that matters. Given:
+
+```ink
+// main.ink
+INCLUDE inc.ink
+* main one
+  MAIN-ONE-BODY
+* main two
+  MAIN-TWO-BODY
+- main gathered
+```
+
+```ink
+// inc.ink
+* inc one
+  INC-ONE-BODY
+* inc two
+  INC-TWO-BODY
+- inc gathered
+```
+
+the player is offered `inc one` / `inc two`, picks `inc one`, and the runtime
+prints `main one` / `MAIN-ONE-BODY`. `INC-ONE-BODY` is unreachable.
+
+## Mechanism
+
+### (a) Cross-file collisions
+
+Three facts compose into the bug.
+
+1. **Root-content scope paths are unqualified by file.**
+   `lower_root_content_chunks` loops over every file and hands `make_ctx` an
+   empty scope path *unconditionally*
+   (`crates/internal/brink-ir/src/lir/lower/mod.rs:487` — a literal
+   `String::new()` inside the per-file loop that starts at `:475`). A knot
+   scopes its children under the knot name; root content has no such prefix,
+   for any file.
+
+2. **`alloc_address` is a pure hash of that path.**
+   `IdAllocator::alloc_address`
+   (`crates/internal/brink-ir/src/lir/lower/context.rs:392`) memoizes in a
+   `used` map and otherwise returns
+   `DefinitionId::new(DefinitionTag::Address, hash_path(path))`. It has **no
+   collision-avoidance step** — the same path always yields the same id, by
+   design (that is what makes it content-pure for FG-4d).
+
+3. **Per-file counters restart.** The choice/gather counters (`cc`/`gc`) are
+   locals re-initialized to `0` on each loop iteration, and
+   `ctx.ids.reset_seq_counter()` is called per file
+   (`mod.rs:498`). So file A's first choice and file B's first choice are both
+   named `c-0`.
+
+Composed: `hash_path("c-0")` is computed twice and returns the same
+`DefinitionId` both times.
+
+Note that the *shared* `IdAllocator` is not the cause. Because `alloc_address`
+is a pure hash, giving each file its own allocator would produce exactly the
+same colliding ids. The sole cause is the unqualified path. This matters for
+the fix: "per-file allocators" alone does not fix anything.
+
+### Blast radius
+
+`DefinitionId` is the key for three distinct things, and a collision corrupts
+all three:
+
+| Consumer | Coordinate | Behavior on collision |
+|---|---|---|
+| Linker address map | `crates/brink-runtime/src/linker.rs:88` (`address_map.insert(cdef.id, …)`) | Last-write-wins. Diverts to the earlier container silently land in the later one. **This is the observed miscompile.** |
+| Linker container map | `crates/brink-runtime/src/linker.rs:40` (`container_map.insert(cdef.id, idx)`) | Last-write-wins, same way. |
+| Save state | `crates/brink-runtime/src/save.rs:113–115` (visit/turn counts keyed by `container.id`) | Two containers share one visit counter, so read counts and sequence progression conflate across files. |
+
+One consumer that is *not* affected, contrary to what a first read suggests:
+codegen's `scope_line_tables`
+(`crates/internal/brink-codegen-inkb/src/lib.rs:261`,
+`entry(scope_id).or_default()`) does merge entries — but only scope-kind
+containers open a new scope (`is_scope_kind`, `lib.rs:397`, is
+`Root | Knot | Stitch`), and gathers/choices inherit the enclosing scope id.
+Every file's root content therefore already shares the root scope's line table
+*by design*. The intl/XLIFF surface is not additionally damaged by this
+collision.
+
+### Why the oracle never caught it
+
+The oracle corpus exercises multi-file projects, but root-level *weave* content
+in an `INCLUDE`d file is unusual authoring — an included file normally contains
+only knots. The collision needs two files that each open a root-level choice or
+gather. Nothing in `tests/tier{1,2,3}` does that, so the ratchet is blind to it.
+This is worth a corpus case regardless of which fix shape wins.
+
+### (b) The `FileId`-keyed terminus address
+
+`attach_root_final_gather` keys the synthesized terminus:
+
+```rust
+// crates/internal/brink-ir/src/lir/lower/mod.rs:1957
+let terminus_id = ids.alloc_address(&format!("#root-terminus.{}", file_id.0));
+```
+
+This is the only `alloc_address` call in `brink-ir` whose key is a `FileId`
+rather than a scope path. The existing comment above it is candid about the
+motive: keeping the file in the key left single-file programs' addresses
+byte-identical to what #1448/#1500 shipped.
+
+#### Correcting the framing of (b)
+
+The issue says "file order changes the address," and cites FG-4d
+history-independence. Both are true, but the FG-4d gate that actually breaks is
+narrower than it looks, and the report should be precise:
+
+- `docs/fine-grained-salsa-proposal.md:488` states the constraint as
+  *"id assignment must be history-independent — an incremental re-link after N
+  edits produces the same bytes as a fresh build of the same source … Assignment
+  must therefore be content/tree-derived, never allocation-history-derived."*
+- `FileId` assignment **is** deterministic for a fixed source tree: for ink,
+  `compilation_closure_files` orders the closure with
+  `IncludeGraph::topological_order(entry)`
+  (`crates/internal/brink-db/src/queries/mod.rs:525`). So an incremental re-link
+  and a from-scratch build of the *same* tree agree. The
+  `incremental ≡ from-scratch` gate is **not** violated.
+- What *is* violated is content-purity across an edit. The entry file's `FileId`
+  is a function of how many files discovery walked before it, so **adding an
+  unrelated `INCLUDE` anywhere in the project moves the terminus address**, even
+  though the entry file's own text is byte-identical. That is the measured
+  result above (`0x49590a9a660758` → `0xbd6652c9fc545d`). Since the terminus
+  carries visit counts, that is save-key churn triggered by an edit to a
+  different file.
+
+So (b) is a real defect and does need fixing, but it should be filed as
+*save-key stability*, not as an FG-4d gate failure. The `incremental ≡
+from-scratch` check will never catch it, which is precisely why it survived.
+
+## The migration problem
+
+There is no way to migrate an anonymous container's id.
+
+`save.rs`'s rebinding path (`rebind_address`, `save.rs:301`) resolves a stale
+saved id through `program.resolve_alias`. That alias table is populated from
+author-written `@[was("…")]` annotations, which are **name-based**. A knot that
+was renamed can carry `@[was]`; an anonymous `c-0` or `g-0` has no name to
+teach, and no author-visible identity to attach an annotation to.
+
+Consequence: **any fix that changes anonymous container ids silently
+invalidates the visit counts and sequence positions in existing saves, with no
+migration path and no load-time diagnostic.** That is not an argument against
+fixing it — it is an argument for fixing it *now*, at `0.0.11`, rather than
+after 1.0. The cost of this change is monotonically increasing.
+
+## Coordination with #1442
+
+The maintainer's reopening comment on #1442 asks for one answer across #1504,
+#1442, and the `@[was]` facility. Having traced both, the recommendation is
+that **the identity question has two layers, and the two issues live in
+different ones**:
+
+| | Named definitions (knots, stitches, labeled gathers, globals, lists) | Anonymous weave containers (`c-N`, `g-N`, `b-N`) |
+|---|---|---|
+| Has author-visible identity? | Yes | No |
+| Can carry `@[was]` lineage? | Yes | No |
+| Rename-invariant id possible? | Yes — mint at creation, persist in a ledger | No — there is no "name" to hold invariant |
+| Identity must be | Minted + carried | Structural (a path) |
+| Issue that lives here | **#1442** (rename churn), `@[was]` | **#1504** (collisions, purity) |
+
+#1442 needs identity that survives a *rename*. #1504's collisions are 100% in
+anonymous containers, which have no name to rename — every colliding id in the
+evidence above is a `c-N` or `g-N`. Their identity is inherently structural and
+will remain a path under *any* design, including one that later mints
+rename-invariant ids for named definitions.
+
+**Therefore #1504 can be settled without pre-judging #1442.** Qualifying an
+anonymous container's structural path with its owning module is compatible with
+every candidate answer to #1442, because it changes what the path *is*, not
+whether named definitions derive their ids from paths at all. Bundling them
+risks blocking a live miscompile behind a much larger design question.
+
+This is a recommendation, not a ruling — the owner may still prefer one
+combined change.
+
+## Recommended shape
+
+### Primary: qualify root-content scope paths by owning module
+
+Replace the unconditional `String::new()` at `mod.rs:487` with the file's
+module path, so file A's first root choice is `story::a::c-0` and file B's is
+`story::b::c-0`. The exact spelling should match whatever the native dialect
+already uses for module paths (`HirFile.module`), with ink files deriving one
+from their normalized root-relative source path.
+
+Fold (b) into the same change: the terminus key becomes
+`{module_path}#root-terminus`, dropping the `FileId` entirely and making it
+content-derived like every other `alloc_address` call.
+
+Why this shape:
+
+- Fixes (a) and (b) with one concept, at one locus.
+- Keeps the existing `hash(path)` model, so FG-4d purity and the
+  `incremental ≡ from-scratch` gate are preserved by construction.
+- Does not foreclose any answer to #1442.
+- Uniform: no special-casing of the entry file (see the rejected variant
+  below).
+
+Known costs, which are the substance of the ruling being requested:
+
+1. **Every project's root-content ids change once**, including single-file
+   projects, invalidating anonymous-container visit counts in existing saves
+   with no migration path (see above). At `0.0.11` this is judged cheap; it
+   will not stay cheap.
+2. **File renames become a new id-churn axis.** Once the path includes the
+   module, renaming `inc.ink` churns its root-content ids — the same class of
+   problem #1442 reports for scope renames, now extended to files. This is a
+   genuine argument for solving both together, and the owner should weigh it.
+   Note the churn is bounded to root-level weave content; knots are already
+   qualified by name and unaffected.
+
+### Variant considered and rejected: keep the entry file unqualified
+
+Qualifying only *included* files would leave single-file projects
+byte-identical and confine the save break to projects that are already
+miscompiling. Rejected because it makes an id depend on a file's *role* in the
+project rather than on its own identity, so moving a file from included to
+entry silently rewrites its ids — trading a one-time break for a permanent
+sharp edge.
+
+### Rejected: content-hash discriminator
+
+#1504 floats "per-file allocators with a content-derived discriminator." If
+"content" means the file's *source text*, this should be rejected outright:
+every edit to a file would change every id in it, making save-key churn
+continuous rather than one-time. If "content" means the module path, it is the
+primary recommendation above — but note the per-file allocator itself is
+irrelevant, since `alloc_address` is a pure hash (see
+[Mechanism](#a-cross-file-collisions)).
+
+## Suggested follow-ups
+
+Independent of the ruling:
+
+- Add a tier-1 corpus case with root-level weave content in an `INCLUDE`d file,
+  so the oracle covers the shape at all.
+- Consider a codegen-level assertion that no two containers share a
+  `DefinitionId`. This bug reached the runtime silently; the compiler had
+  every opportunity to reject it. That guard is cheap, is independent of the
+  identity ruling, and would have caught this at authoring time.
