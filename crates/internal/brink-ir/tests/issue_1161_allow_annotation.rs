@@ -301,7 +301,10 @@ fn allow_on_a_statement_scopes_only_that_statement() {
     assert_eq!(scopes.len(), 1, "{scopes:?}");
 
     let text = covered(src, &scopes[0]);
-    assert!(text.contains("Steel."), "scope should cover Steel.: {text:?}");
+    assert!(
+        text.contains("Steel."),
+        "scope should cover Steel.: {text:?}"
+    );
     assert!(
         !text.contains("Copper."),
         "scope should not reach the sibling statement: {text:?}"
