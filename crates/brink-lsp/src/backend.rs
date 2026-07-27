@@ -1181,8 +1181,10 @@ fn is_brink_toml_path(path: &str) -> bool {
 /// `node_modules/` (vendored ink content opened directly as a folder) still
 /// has its own files admitted — only descendants' ignored-dir components
 /// count, never the root's own ancestry (#1415 review: path-scope
-/// divergence from the prune this helper claims to mirror). A path with no
-/// matching root falls back to checking every component, same as before.
+/// divergence from the prune this helper claims to mirror). A path under
+/// **non-empty** `roots`, none of which is a prefix of it, falls back to
+/// checking every component, same as before — see below for what happens
+/// when `roots` itself is empty.
 ///
 /// `roots` itself can be empty — single-file mode (no workspace folders and
 /// no legacy `root_uri`), or a watcher event that lands before `initialize`
@@ -3198,6 +3200,22 @@ mod tests {
         ));
         assert!(!path_under_ignored_dir("/repo/src/main.ink", roots));
         assert!(!path_under_ignored_dir("/repo/targets/main.ink", roots));
+    }
+
+    /// #1603 review: with a **non-empty** `roots`, none of which is a prefix
+    /// of `path`, `path_under_ignored_dir` falls back to checking every
+    /// component of the raw, unscoped path (the `.unwrap_or(full)` branch) —
+    /// deliberately preserved pre-#1434 behavior, distinct from the
+    /// empty-`roots` case which declines to prune entirely (see
+    /// `path_under_ignored_dir_does_not_prune_without_a_root`). This was the
+    /// only reachable case left with no direct test.
+    #[test]
+    fn path_under_ignored_dir_matches_any_component_when_no_root_prefixes_it() {
+        let root = std::path::PathBuf::from("/repo");
+        assert!(path_under_ignored_dir(
+            "/elsewhere/node_modules/pkg/main.ink",
+            std::slice::from_ref(&root)
+        ));
     }
 
     /// #1434 regression (the issue's own acceptance criterion): with
