@@ -533,7 +533,7 @@ impl<M: Send + Sync + 'static> FlowSleep<M> {
 // branch on it exactly like the named path — `check_value_condition_purity`
 // gates admission, `call_ink_function_value` (`crate::bindings`) evaluates.
 //
-// **Known hazard, not yet closed** (filed as a #1096 follow-up): a
+// **Known hazard, not yet closed** (filed as #1609, a #1096 follow-up): a
 // `bind_brink_command`-bound `EXTERNAL` with no [`CapabilityManifest`] entry
 // passes `check_external_calls_purity` above — "no manifest entry at all
 // accepts" is deliberate (a `bind_brink_fn` helper that never touches ECS
