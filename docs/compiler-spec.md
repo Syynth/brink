@@ -155,7 +155,7 @@ For the compiler, `driver.discover()` is a single call that loads the entire pro
    - E033: unreachable code after divert/return/tunnel (warning)
    - E034: choice set consisting entirely of fallback choices (warning)
 
-After analysis, `brink-driver::Driver::collect_diagnostics()` gathers both per-file lowering diagnostics and cross-file analysis diagnostics, applies suppression directives (`brink-disable`, `brink-expect`), and partitions into errors and warnings. See [brink-driver-spec](brink-driver-spec.md).
+After analysis, `brink-driver::Driver::collect_diagnostics()` gathers both per-file lowering diagnostics and cross-file analysis diagnostics, applies suppression directives (`brink-disable`, `brink-expect`, and the native-dialect declaration-scoped `@[allow(…)]` annotation), and partitions into errors and warnings. See [brink-driver-spec](brink-driver-spec.md).
 
 ### Pass 4: LIR Lower (brink-ir::lir)
 

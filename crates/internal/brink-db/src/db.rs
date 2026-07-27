@@ -280,7 +280,10 @@ impl ProjectDb {
         Some(lowered_query(&self.salsa, *file).admission.as_slice())
     }
 
-    /// Get parsed suppression directives for a file.
+    /// Get suppression directives for a file — the text-scanned
+    /// `brink-disable`/`brink-expect` comments merged with the file's
+    /// HIR-derived `@[allow(…)]` scopes (issue #1161), i.e. parsed ∪
+    /// HIR-derived, not parsed alone.
     pub fn suppressions(&self, id: FileId) -> Option<&Suppressions> {
         let file = self.files.get(&id)?;
         Some(suppressions_query(&self.salsa, *file))

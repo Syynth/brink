@@ -133,6 +133,27 @@ fn annotations_was() {
     assert_case("annotations-was");
 }
 
+/// The `@[allow(Exxx, …)]` source-level suppression annotation (issue
+/// #1161) at all three attachment points a native file offers: a top-level
+/// `var`, a top-level `flow` (alongside an `@[effects(…)]` on the same
+/// declaration), and a nested `flow` (the `Stitch` level).
+///
+/// The signal here is deliberately narrow — **compile-and-run**, exactly
+/// like `annotations_was` above. Every one of these lines was a hard `E111`
+/// ("unknown annotation name") compile failure before this landed, so a
+/// running transcript is a real regression guard; but a transcript can
+/// never show a *suppressed* diagnostic, and this corpus is choice-free by
+/// construction (`run_native_transcript` rejects a story that presents
+/// choices), which rules out driving the native `E151` dead-end lint from
+/// here. The suppression semantics themselves — including the
+/// source-`allow`-beats-project-`deny` ruling and the `E153`/`E154`/`E155`
+/// rejections — are pinned end-to-end in `brink-compiler`'s
+/// `tests/e0xx_diagnostics.rs`.
+#[test]
+fn annotations_allow() {
+    assert_case("annotations-allow");
+}
+
 /// Per-declaration `@[effects(…)]` annotations (issue #1563) on a top-level
 /// `fn`, a top-level `flow`, and a nested `flow` (the `Stitch` level). Until
 /// this landed, every one of these lines hard-failed the compile with
@@ -158,6 +179,7 @@ fn every_case_directory_has_a_test() {
         "for-k-v",
         "annotations-was",
         "annotations-effects",
+        "annotations-allow",
     ];
     let mut found: Vec<String> = std::fs::read_dir(corpus_dir())
         .expect("read tests/tier1-native")

@@ -411,12 +411,25 @@ pub(crate) fn file_language(path: &str) -> Language {
     }
 }
 
-/// Parsed suppression/expectation directives for one file.
+/// Parsed suppression/expectation directives for one file — both channels
+/// merged into the one value every [`apply_suppressions`] call site reads.
+///
+/// The `//brink-disable`/`//brink-expect` comment channel is a pure text
+/// scan ([`parse_suppressions`]). The `@[allow(Exxx, …)]` annotation channel
+/// (issue #1161) rides the real `@[…]` grammar, so its declaration-scoped
+/// records are produced by lowering and picked up here off
+/// [`brink_ir::HirFile::allow_scopes`] — always empty for an ink file, whose
+/// annotation channel has no `allow` tenant. Reading [`lowered_query`] costs
+/// nothing extra in practice: every consumer of this query already reads the
+/// same file's lowering diagnostics alongside it.
 ///
 /// `lru = 4096`: per-file runaway-guard ceiling (issue #647).
 #[salsa::tracked(returns(ref), lru = 4096)]
 pub(crate) fn suppressions_query(db: &dyn salsa::Database, file: SourceFile) -> Suppressions {
-    parse_suppressions(file.text(db))
+    let mut out = parse_suppressions(file.text(db));
+    out.allow_scopes
+        .clone_from(&lowered_query(db, file).hir.allow_scopes);
+    out
 }
 
 /// The `INCLUDE` graph over the whole project. Always complete — edges are
@@ -2361,6 +2374,7 @@ static NO_SUPPRESSIONS: Suppressions = Suppressions {
     disable_all: false,
     disable_file: false,
     line_directives: std::collections::BTreeMap::new(),
+    allow_scopes: Vec::new(),
 };
 
 /// Collect all diagnostics (lowering + analysis), apply suppressions, and

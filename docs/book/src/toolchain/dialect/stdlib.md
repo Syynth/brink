@@ -67,7 +67,8 @@ Unlike indexed reads, `contains` never faults — it always answers `true` or
   only (it stays silent under `types = gradual`, where the runtime's total
   `false` above remains the only behavior), and like other warnings it can
   be re-leveled or suppressed via `[lints]` (e.g. `E152 = "deny"` or
-  `E152 = "allow"`) or a `//brink-disable` comment.
+  `E152 = "allow"`), a `//brink-disable` comment, or (native dialect only)
+  a declaration-scoped `@[allow(E152)]` annotation.
 
 ## Mutators require an lvalue
 

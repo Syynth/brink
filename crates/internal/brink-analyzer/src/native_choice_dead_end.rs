@@ -16,7 +16,8 @@
 //! tier-able diagnostic, which means it fires on every compile with no
 //! per-project or per-file enable step. "Opt-in" would mean silent unless
 //! explicitly turned on; what this actually has is the ordinary
-//! `[lints]`/`//brink-disable` machinery every `Warning`-base code gets —
+//! `[lints]`/`//brink-disable`/`@[allow(E151)]` machinery every
+//! `Warning`-base code gets —
 //! `brink_analyzer::strict::effective_severity` maps an explicit
 //! `[lints] E151 = "allow"` to `Severity::Warning` (never fully silent, only
 //! "never escalate"), and under a project's `[lints] deny-warnings = true`
