@@ -10,6 +10,8 @@
 //! `cargo test` never runs its `main()` — see that file's module docs).
 
 use std::io;
+#[cfg(feature = "bench-counters")]
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use bevy::MinimalPlugins;
@@ -486,6 +488,28 @@ fn compile_scenario_story(
     Ok(brink_runtime::link(&output.data)?)
 }
 
+/// Serializes the `bench-counters` reset→drive→snapshot critical section in
+/// [`measure_app`] across concurrently-running threads in the same process
+/// (#1167).
+///
+/// `brink_runtime::bench_counters` is process-global mutable state — two
+/// bare `AtomicU64`s with no per-caller isolation (see that module's docs).
+/// `cargo test`'s default harness runs every `#[test]` fn on its own OS
+/// thread, and several tests in this crate's `tests/scenario_bench_model.rs`
+/// call into `measure_app` (directly, or via [`run_scenario`]/
+/// [`run_batch_scenario`]/[`run_parallel_scenario`]), each doing its own
+/// `reset()` → drive frames → `snapshot()`. Without serialization, one
+/// thread's `reset()` can zero counters a *different*, concurrently-running
+/// thread already accumulated but hasn't `snapshot()`-ed yet — that thread
+/// then reads a spurious `0` even though its own scenario genuinely
+/// performed COW copies / Arc-clones. That is the exact "COW-copy counter
+/// reads 0" flake root-caused in #1167 (a test-isolation race over shared
+/// global state, not a bug in the COW mechanism or the assertion). The lock
+/// only exists when the counters exist (`bench-counters` feature) — without
+/// the feature there is no global state to race over.
+#[cfg(feature = "bench-counters")]
+static BENCH_COUNTERS_LOCK: Mutex<()> = Mutex::new(());
+
 /// Shared measurement tail for both scenario drivers: drive `config.frames`
 /// frames of a fully set-up `app`, sampling the per-frame wall clock and the
 /// driver's [`PhaseClock`], then fold counters/RSS/percentiles into a
@@ -494,6 +518,15 @@ fn compile_scenario_story(
 /// writes (batch mode's `collect`, folded inside `advance_batch`) samples as
 /// zero, reported as such rather than silently omitted.
 fn measure_app(mut app: App, config: &ScenarioConfig) -> ScenarioResult {
+    // Held for the whole function — see `BENCH_COUNTERS_LOCK`'s docs. A
+    // poisoned lock (a sibling thread panicked mid-section) still yields a
+    // usable guard: the counters themselves can't be poisoned, only the
+    // mutex's bookkeeping, and continuing to serialize is strictly better
+    // than abandoning isolation.
+    #[cfg(feature = "bench-counters")]
+    let _bench_counters_guard = BENCH_COUNTERS_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     #[cfg(feature = "bench-counters")]
     brink_runtime::bench_counters::reset();
 
