@@ -1343,6 +1343,79 @@ fn init_options_lints_hint_publishes_hint_severity() {
     );
 }
 
+// ── #1618: DiagnosticTag::UNNECESSARY on the LSP publish channel ───────
+//
+// `convert::diagnostic_to_lsp`'s `is_unnecessary` classification (unit-level
+// coverage in `src/convert.rs`) has to actually reach the wire — this proves
+// it through a real `brink-lsp` process and `textDocument/publishDiagnostics`,
+// the same "through the LSP publish channel" bar #1367/#1162's own
+// integration tests hold themselves to.
+
+/// `-> DONE` immediately followed by more content in the same block lowers
+/// to `E033` ("unreachable code after divert"), `Warning` by default — one
+/// of the two codes `is_unnecessary` recognizes.
+const E033_PROBE_SOURCE: &str = "\
+== start ==
+-> DONE
+Unreachable.
+";
+
+fn diag_tags(diags: &[Value], code: &str) -> Option<Vec<u64>> {
+    diags
+        .iter()
+        .find(|d| d["code"].as_str() == Some(code))
+        .map(|d| {
+            d["tags"]
+                .as_array()
+                .map(|arr| arr.iter().filter_map(Value::as_u64).collect())
+                .unwrap_or_default()
+        })
+}
+
+/// `E033` must publish with `tags: [1]` (`DiagnosticTag::UNNECESSARY`'s wire
+/// value) so a client dims the unreachable statement instead of just
+/// underlining it — the actual UX payoff #1162 asked for and #1615 deferred.
+#[test]
+fn e033_unreachable_code_publishes_unnecessary_tag() {
+    let root = unique_tmp_dir("unnecessary-tag-e033");
+    std::fs::create_dir_all(&root).unwrap();
+
+    let diags = diagnostics_for_uri_settled(&root, E033_PROBE_SOURCE);
+
+    std::fs::remove_dir_all(&root).unwrap();
+
+    assert_eq!(
+        diag_tags(&diags, "E033"),
+        Some(vec![1]),
+        "E033 should publish DiagnosticTag::UNNECESSARY (wire value 1), got: {diags:?}"
+    );
+}
+
+/// `E014` (bare `~`, "logic line has no effect") is deliberately excluded
+/// from the unnecessary-tag set (see `is_unnecessary`'s doc comment — some of
+/// its emission sites are malformed logic that needs fixing, not deleting),
+/// so it must publish with no `tags` field at all end to end, mirroring
+/// `convert::diagnostic_to_lsp_does_not_tag_unrelated_codes` at the
+/// unit level.
+#[test]
+fn e014_no_effect_does_not_publish_unnecessary_tag() {
+    let root = unique_tmp_dir("unnecessary-tag-e014-excluded");
+    std::fs::create_dir_all(&root).unwrap();
+
+    let diags = diagnostics_for_uri_settled(&root, E014_PROBE_SOURCE);
+
+    std::fs::remove_dir_all(&root).unwrap();
+
+    let e014 = diags
+        .iter()
+        .find(|d| d["code"].as_str() == Some("E014"))
+        .expect("expected an E014 diagnostic");
+    assert!(
+        e014.get("tags").is_none(),
+        "E014 should publish with no tags field, got: {e014:?}"
+    );
+}
+
 // ── #1055: malformed brink.toml diagnostic + live reload ───────────────
 //
 // Two related gaps closed together (see `backend.rs`): (1) a malformed
