@@ -132,6 +132,15 @@ impl<M: Send + Sync + 'static> BrinkPlugin<M> {
     /// calls finds out, rather than silently getting the first one's policy
     /// for every marker.
     ///
+    /// This override also reaches
+    /// [`compile_story_inline`](crate::compile_story_inline) (#1380) — but
+    /// only once `Plugin::build` has actually run, i.e. only *after*
+    /// `app.add_plugins(BrinkPlugin::<M>::default().with_config(...))`
+    /// returns. Calling `compile_story_inline` before that `add_plugins`
+    /// call silently compiles under `OptionOverrides::default()` instead —
+    /// see `compile_story_inline`'s doc comment for the ordering hazard in
+    /// full.
+    ///
     /// Also covers the `[lints]` tier (issue #1394): a `[lints]` table or
     /// `deny-warnings` value set on the passed `ProjectConfig` wins over the
     /// same table in a discovered `brink.toml`, mirroring the CLI's
@@ -411,6 +420,16 @@ impl Plugin for BrinkAssetsPlugin {
         app.register_asset_loader(crate::source_loader::InkLoader {
             override_config: self.config.clone(),
         });
+        // #1380: mirror the same override into a resource so
+        // `compile_story_inline` — a freestanding function with no
+        // `InkLoader` instance to read a field off of — can see it too.
+        // Always inserted (even `None`), from the exact same `self.config`
+        // that seeds `InkLoader` above, so the two entry points can never
+        // read different values.
+        #[cfg(feature = "dev")]
+        app.insert_resource(crate::source_loader::BrinkOverrideConfig(
+            self.config.clone(),
+        ));
         // #1426: the non-log surface for `config.lints`'s rejected codes —
         // see `crate::config_warnings`'s module docs. Inserted eagerly, once,
         // regardless of whether `self.config` is set or has any lint
