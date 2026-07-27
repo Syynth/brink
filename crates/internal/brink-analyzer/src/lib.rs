@@ -217,6 +217,33 @@ impl AnalysisOptions {
     /// Lives here rather than in `brink-project-config` so that crate needs no
     /// workspace dependencies and can publish standalone (#1234) — it owns the
     /// policy *types*, this crate owns applying them to its own options.
+    ///
+    /// ## Invariant: `self` must be fresh, unless you are the editor session
+    ///
+    /// `[lints]` is safe to apply onto a `self` mutated by a prior call —
+    /// full replace, not merge, is exactly what makes that safe (see above).
+    /// `dialect`/`types` are **not**: their "unset means untouched" rule
+    /// means whatever `self.dialect`/`self.types` already held before this
+    /// call silently survives untouched if `config` (and the `_overridden`
+    /// flags) don't set them. That is the whole point for the *one* caller
+    /// meant to reuse a mutated `self` across calls — the editor session,
+    /// re-applying a live-edited `brink.toml` onto its own already-resolved
+    /// options. Every other caller (`brink-cli`, `brink-lsp`'s
+    /// `initialize`, `bevy-brink`, and — the one every mount funnels
+    /// through — `brink-environment::resolve_options`, called fresh inside
+    /// every [`Project::load`](../brink_environment/struct.Project.html#method.load))
+    /// must start each call from a **freshly-constructed**
+    /// [`AnalysisOptions::default()`], never an object left over from a
+    /// previous resolution — otherwise a later, unrelated compile could
+    /// silently inherit an earlier one's resolved `dialect`/`types` whenever
+    /// its own `brink.toml` doesn't set them, breaking the determinism a
+    /// caller doing repeat compiles (e.g. `bevy-brink`'s `InkLoader` on
+    /// every asset (re)load) depends on. Nothing in this method's signature
+    /// enforces that — it takes `&mut self`, so it can't tell "fresh" apart
+    /// from "reused" — which is exactly why this is a documented invariant
+    /// rather than a compiler-checked one; see
+    /// `resolve_options`/`repeat_compiles_do_not_leak_options_across_project_load_calls`
+    /// in `brink-environment` for where it's actually pinned end-to-end.
     pub fn apply_project_config(
         &mut self,
         config: &ProjectConfig,

@@ -1589,6 +1589,88 @@ mod config_discovery_tests {
         );
     }
 
+    /// #1436 (identified from #1430's review thread): the sibling of
+    /// [`plugin_with_config_invalid_lint_code_reaches_brink_config_warnings_resource`]
+    /// above only ever exercised the *unknown-code* rejection class
+    /// (`E9999_TYPO`, "not a recognized diagnostic code") against
+    /// [`BrinkConfigWarnings`](crate::BrinkConfigWarnings) — the
+    /// *non-overridable-code* class ("not overridable", e.g. `E001`, a
+    /// real code whose default severity isn't `Warning`) had this exact
+    /// resource-channel reachability covered only by
+    /// `config_warnings::tests::non_overridable_code_surfaces_a_message_naming_it`,
+    /// which calls `BrinkConfigWarnings::from_config` directly and so
+    /// proves nothing about `with_config`'s own plugin-build wiring — the
+    /// same gap class `plugin_with_config_invalid_lint_code_reaches_brink_config_warnings_resource`
+    /// closed for the unknown-code class. `validate_lint_code`
+    /// (`brink-analyzer`) returns a structurally different `ConfigWarning`
+    /// per rejection class, so covering one does not prove the other is
+    /// wired the same way.
+    #[test]
+    fn plugin_with_config_non_overridable_lint_code_reaches_brink_config_warnings_resource() {
+        let mut lints = std::collections::BTreeMap::new();
+        // A real `DiagnosticCode`, but its base severity is `Error`, not
+        // `Warning` -- never overridable (mirrors
+        // `apply_lint_overrides_rejects_non_overridable_code` in
+        // `brink-analyzer`, and this file's own
+        // `plugin_override_unknown_and_non_overridable_lint_codes_warn_but_valid_entry_still_applies`,
+        // which proves the same code on the `tracing::warn!` channel, not
+        // this resource).
+        lints.insert("E001".to_owned(), brink_project_config::LintLevel::Deny);
+        let (app, _dir) = make_memory_asset_app_with_config(ProjectConfig {
+            lints,
+            ..ProjectConfig::default()
+        });
+
+        let warnings = app.world().resource::<crate::BrinkConfigWarnings>();
+        assert_eq!(warnings.0.len(), 1);
+        assert!(
+            warnings.0[0].contains("E001") && warnings.0[0].contains("not overridable"),
+            "unexpected resource contents: {warnings:?}"
+        );
+    }
+
+    /// #1436 (identified from #1430's review thread): `compile_story_inline`
+    /// shares the exact same `Project::load` seam `InkLoader::load` uses
+    /// (#1380's own doc comment: "the exact same two-call seam
+    /// `InkLoader::load` uses") — so a `with_config` lint-code rejection
+    /// must warn through `compile_story_inline`'s call too, not just the
+    /// asset-loader path
+    /// `plugin_override_unknown_and_non_overridable_lint_codes_warn_but_valid_entry_still_applies`
+    /// already covers. That test (and the `BrinkConfigWarnings`-resource
+    /// tests above) only ever drove the rejection through
+    /// `AssetServer::load` -> `InkLoader::load` -> `Project::load`;
+    /// `compile_story_inline`'s own `Project::load` call
+    /// (`source_loader.rs`, `compile_story_inline`) had no coverage proving
+    /// it reaches the same `tracing::warn!` channel.
+    #[test]
+    fn compile_story_inline_invalid_lint_code_warns_via_tracing() {
+        let captured = captured_warnings();
+
+        let mut lints = std::collections::BTreeMap::new();
+        lints.insert(
+            "E9998_INLINE_TYPO".to_owned(),
+            brink_project_config::LintLevel::Deny,
+        );
+        let (mut app, _dir) = make_memory_asset_app_with_config(ProjectConfig {
+            lints,
+            ..ProjectConfig::default()
+        });
+
+        // The rejected code is never applied (it's invalid, not merged),
+        // so this trivial, diagnostic-free source still compiles cleanly --
+        // the point is to observe the warning, not a failed compile.
+        crate::compile_story_inline(&mut app, "intro.ink", "-> END\n")
+            .expect("E9998_INLINE_TYPO is rejected, not applied, so nothing blocks the compile");
+
+        let joined = captured.lock().unwrap().join("\n");
+        assert!(
+            joined.contains("[lints] `E9998_INLINE_TYPO` is not a recognized diagnostic code"),
+            "an invalid with_config lint code must warn through \
+             compile_story_inline's own Project::load call too, not just \
+             InkLoader's; captured: {joined}"
+        );
+    }
+
     /// Issue #1382 sweep finding: a *second* `BrinkPlugin<M>` registration's
     /// `with_config` override used to vanish with no trace at all once
     /// `BrinkAssetsPlugin` already existed (added by an earlier marker's
