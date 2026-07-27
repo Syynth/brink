@@ -56,24 +56,30 @@ const INK_PLAIN: &str = "=== start ===\nHello.\n-> END\n";
 /// Load `source` into a session under `dialect` with an explicit
 /// `types = gradual`, and return `(live typing diagnostics, db diagnostics)`.
 ///
+/// `None` when the session never produced a cached analysis — surfaced as a
+/// return value rather than an `expect`, because `panic`/`expect_used` are
+/// denied outside `#[test]` fns even in an integration test (the same reason
+/// `dialect_conformance.rs`'s own helper returns `Result`). Callers unwrap it
+/// in the test body, where the lint exemption applies.
+///
 /// The trailing `set_type_policy` is not redundant: option setters funnel
 /// through `IdeSession::reanalyze`, which is what pushes the session's
 /// options into its own db (#1553). `update_and_analyze` does not, so
 /// without a setter call *after* the file lands, the db would read the file
 /// under whatever options were last synced.
-fn both_surfaces(path: &str, source: &str, dialect: Dialect) -> (Vec<Diagnostic>, Vec<Diagnostic>) {
+fn both_surfaces(
+    path: &str,
+    source: &str,
+    dialect: Dialect,
+) -> Option<(Vec<Diagnostic>, Vec<Diagnostic>)> {
     let mut session = IdeSession::new();
     session.set_language_dialect(dialect);
     session.update_and_analyze(path, source.to_owned());
     session.set_type_policy(TypePolicy::Gradual);
 
-    let live = session
-        .analysis()
-        .expect("analysis was run")
-        .diagnostics
-        .clone();
+    let live = session.analysis()?.diagnostics.clone();
     let db = session.db().analysis().diagnostics.clone();
-    (live, db)
+    Some((live, db))
 }
 
 fn has(diags: &[Diagnostic], code: DiagnosticCode) -> bool {
@@ -97,7 +103,8 @@ fn codes(diags: &[Diagnostic]) -> Vec<DiagnosticCode> {
 #[test]
 fn e137_reaches_the_db_but_not_live_typing() {
     for dialect in [Dialect::StrictInk, Dialect::Brink] {
-        let (live, db) = both_surfaces("main.brink", NATIVE_DUP_FIELD, dialect);
+        let (live, db) = both_surfaces("main.brink", NATIVE_DUP_FIELD, dialect)
+            .expect("session produced an analysis");
         assert!(
             has(&db, DiagnosticCode::E137),
             "#1347 inventory drift: the db lost E137 under {dialect:?}; db saw {:?}",
@@ -124,7 +131,8 @@ fn e137_reaches_the_db_but_not_live_typing() {
 /// it isolates `is_native` as the variable, not the dialect.
 #[test]
 fn e084_on_a_native_file_needs_is_native_under_the_default_dialect() {
-    let (live, db) = both_surfaces("main.brink", NATIVE_DUP_FIELD, Dialect::StrictInk);
+    let (live, db) = both_surfaces("main.brink", NATIVE_DUP_FIELD, Dialect::StrictInk)
+        .expect("session produced an analysis");
     assert!(
         has(&db, DiagnosticCode::E084),
         "#1347 inventory drift: the db lost E084; db saw {:?}",
@@ -139,7 +147,8 @@ fn e084_on_a_native_file_needs_is_native_under_the_default_dialect() {
 
     // Same file under `brink`: both surfaces agree, because the dialect arm
     // of the gate is satisfied without `is_native`.
-    let (live, db) = both_surfaces("main.brink", NATIVE_DUP_FIELD, Dialect::Brink);
+    let (live, db) = both_surfaces("main.brink", NATIVE_DUP_FIELD, Dialect::Brink)
+        .expect("session produced an analysis");
     assert!(
         has(&live, DiagnosticCode::E084) && has(&db, DiagnosticCode::E084),
         "under the brink dialect E084 must reach both surfaces; live {:?}, db {:?}",
@@ -162,7 +171,8 @@ fn e084_on_a_native_file_needs_is_native_under_the_default_dialect() {
 /// emitting `E051` here.
 #[test]
 fn live_typing_invents_e051_on_native_syntax_the_db_accepts() {
-    let (live, db) = both_surfaces("main.brink", NATIVE_DUP_FIELD, Dialect::StrictInk);
+    let (live, db) = both_surfaces("main.brink", NATIVE_DUP_FIELD, Dialect::StrictInk)
+        .expect("session produced an analysis");
     assert!(
         has(&live, DiagnosticCode::E051),
         "#1347 appears resolved for the E051 false positive — live typing no longer \
@@ -185,7 +195,8 @@ fn live_typing_invents_e051_on_native_syntax_the_db_accepts() {
 #[test]
 fn ink_files_agree_on_both_surfaces() {
     for dialect in [Dialect::StrictInk, Dialect::Brink] {
-        let (live, db) = both_surfaces("main.ink", INK_PLAIN, dialect);
+        let (live, db) =
+            both_surfaces("main.ink", INK_PLAIN, dialect).expect("session produced an analysis");
         assert_eq!(
             codes(&live),
             codes(&db),
