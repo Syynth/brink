@@ -1256,6 +1256,134 @@ fn ide_check_allow_flag_wins_over_a_conflicting_brink_toml_deny() {
     fs::remove_dir_all(&dir).ok();
 }
 
+// ── #1616: `ide check` renders the full four-tier `Severity` ──────────
+//
+// #1162/#1615 added `Severity::Info`/`Severity::Hint` (a `[lints]` code can
+// be down-leveled below `Warning`) through `DiagnosticCode`/the `[lints]`
+// control plane, LSP `publishDiagnostics`, and `diagnostic_to_js` — but
+// `brink ide check` still built its `DiagEntry`s from `DiagnosticReport`'s
+// binary `errors`/`warnings` partition and stamped a literal `"error"`/
+// `"warning"` string onto every entry regardless of the code's actual
+// resolved severity. These assert what a CONSUMER of the CLI observes (the
+// `--format json` payload and the rendered text line), not an internal enum.
+
+/// `[lints] E014 = "info"` must render as `"info"` in the JSON payload, not
+/// `"warning"` — the exact bug #1616 reports.
+#[test]
+fn ide_check_lints_info_level_renders_as_info_in_json() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-ide-cli-check-info-level-{}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("brink.toml"), "[lints]\nE014 = \"info\"\n").unwrap();
+    fs::write(dir.join("story.ink"), E014_FIXTURE).unwrap();
+
+    let out = brink()
+        .args(["ide", "check", "--format", "json", "-e"])
+        .arg(dir.join("story.ink"))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "an Info-leveled diagnostic must not fail `check` (only Error does): {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let diags = v.as_array().unwrap();
+    assert_eq!(diags.len(), 1, "expected exactly one diagnostic: {v}");
+    assert_eq!(diags[0]["code"], "E014");
+    assert_eq!(
+        diags[0]["severity"], "info",
+        "`[lints] E014 = \"info\"` must render as `\"info\"`, not the pre-#1616 \
+         hardcoded `\"warning\"`: {v}"
+    );
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// Same as above for `[lints] E014 = "hint"`, and also asserts the rendered
+/// `--format text` line (`ide check`'s other consumer-facing surface) starts
+/// with the resolved tier rather than `"warning"`.
+#[test]
+fn ide_check_lints_hint_level_renders_as_hint_in_json_and_text() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-ide-cli-check-hint-level-{}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("brink.toml"), "[lints]\nE014 = \"hint\"\n").unwrap();
+    fs::write(dir.join("story.ink"), E014_FIXTURE).unwrap();
+
+    let json_out = brink()
+        .args(["ide", "check", "--format", "json", "-e"])
+        .arg(dir.join("story.ink"))
+        .output()
+        .unwrap();
+    assert!(json_out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&json_out.stdout).unwrap();
+    let diags = v.as_array().unwrap();
+    assert_eq!(diags.len(), 1, "expected exactly one diagnostic: {v}");
+    assert_eq!(
+        diags[0]["severity"], "hint",
+        "`[lints] E014 = \"hint\"` must render as `\"hint\"`: {v}"
+    );
+
+    let text_out = brink()
+        .args(["ide", "check", "-e"])
+        .arg(dir.join("story.ink"))
+        .output()
+        .unwrap();
+    assert!(text_out.status.success());
+    let stdout = String::from_utf8(text_out.stdout).unwrap();
+    assert!(
+        stdout.starts_with("hint[E014]"),
+        "the rendered text line must start with `hint[E014]`, not `warning[E014]`: {stdout}"
+    );
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// `[lints]` `info`/`hint` reach `rename`'s `introducedDiagnostics` too —
+/// the sibling surface `Project::introduced_diagnostics` shared the same
+/// hardcoded-string bug (#1616). Reuses the `intro`/`shop` collision fixture
+/// `rename_no_lint_flags_introduced_collision_stays_a_warning` established
+/// (E022, `Warning` by default), now down-leveled to `Info` via `brink.toml`.
+#[test]
+fn rename_introduced_diagnostics_respects_lints_info_level() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-ide-cli-rename-introduced-info-{}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("brink.toml"), "[lints]\nE022 = \"info\"\n").unwrap();
+    fs::write(dir.join("story.ink"), FIXTURE).unwrap();
+
+    let out = brink()
+        .args(["ide", "rename", "intro", "--to", "shop", "--format", "json"])
+        .args(["-e"])
+        .arg(dir.join("story.ink"))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "preview mode always exits 0: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let diags = v["introducedDiagnostics"].as_array().unwrap();
+    assert_eq!(
+        diags.len(),
+        1,
+        "expected exactly one introduced diagnostic: {v}"
+    );
+    assert_eq!(diags[0]["code"], "E022");
+    assert_eq!(
+        diags[0]["severity"], "info",
+        "`[lints] E022 = \"info\"` must reach `introducedDiagnostics` as `\"info\"`, not \
+         the pre-#1616 hardcoded `\"warning\"`: {v}"
+    );
+    fs::remove_dir_all(&dir).ok();
+}
+
 // ── #1383: --deny/-D warnings through `introduced_diagnostics` ────────
 //
 // The five tests above prove the override tier reaches `ide check`, which
