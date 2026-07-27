@@ -15,6 +15,20 @@
 //! #1504 is labeled `needs-design` and the fix shape is blocked on the
 //! FG-4d identity ruling. Un-ignoring them is the acceptance criterion.
 //! Do not rewrite them to assert the current (wrong) behavior.
+//!
+//! #1673 added a codegen-boundary guard that refuses a `Program` containing
+//! two containers with the same `DefinitionId` (see
+//! `included_and_entry_root_weaves_trip_the_duplicate_definition_id_guard`
+//! below). That guard now intercepts this exact shape *before* either
+//! `#[ignore]`d test's own `compile_mem(...).unwrap()` — so running them
+//! today (`cargo test -- --ignored`) panics on that `unwrap()` with the
+//! guard's `E060` error rather than reaching the assertions they were
+//! originally written to check. That's the intended effect of #1673: the
+//! underlying #1504(a) id-derivation defect is unchanged, but it now fails
+//! loudly at compile time instead of silently producing wrong player-visible
+//! output. Both tests remain valid as acceptance tests for #1504(a) itself:
+//! once the real fix removes the id collision, the guard has nothing to
+//! fire on and both compiles succeed again, exactly as originally written.
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
@@ -69,6 +83,55 @@ fn included_and_entry_root_weaves_get_distinct_container_ids() {
     assert!(
         dupes.is_empty(),
         "duplicate container ids in the compiled program: {dupes:#?}",
+    );
+}
+
+/// #1673: until #1504(a) lands, this exact shape still produces two
+/// containers with the same `DefinitionId` (proven by the `#[ignore]`d
+/// `included_and_entry_root_weaves_get_distinct_container_ids` above). The
+/// codegen-boundary uniqueness guard (`brink-codegen-inkb`, #1673) must
+/// catch that at compile time — through the ordinary `brink_compiler::
+/// compile` entry point, no unusual flags — instead of letting it reach the
+/// runtime silently, which is what `choosing_an_included_files_choice_
+/// runs_that_files_body` above demonstrates it does downstream of codegen
+/// today.
+///
+/// Deliberately **not** `#[ignore]`d: this must be green both before and
+/// after #1504(a) lands. Before: the guard fires on the collision. After:
+/// the fix removes the collision the guard would have fired on, so
+/// `compile_mem` starts succeeding here too — at which point this test
+/// should be rewritten to assert `Ok`, mirroring the sibling test above.
+#[test]
+fn included_and_entry_root_weaves_trip_the_duplicate_definition_id_guard() {
+    let files: HashMap<&str, &str> = HashMap::from([
+        (
+            "main.ink",
+            "INCLUDE inc.ink\n* main one\n* main two\n- main gathered\n",
+        ),
+        ("inc.ink", "* inc one\n* inc two\n- inc gathered\n"),
+    ]);
+
+    let err = compile_mem("main.ink", &files)
+        .expect_err("the #1504 collision should trip the #1673 codegen guard, not compile");
+
+    // The real pipeline (`driver::compile_with_options`) routes a codegen
+    // `Err` through the diagnostics query (`brink-db`'s `story_data`), which
+    // wraps it as an `E060` `ResolvedDiagnostic` rather than surfacing the
+    // raw `CompileError::Codegen` variant directly — see the `E060` entry in
+    // `e0xx_diagnostics.rs`.
+    let brink_compiler::CompileError::Diagnostics(diagnostics) = err else {
+        panic!("expected CompileError::Diagnostics, got a different variant: {err:?}");
+    };
+    assert_eq!(
+        diagnostics.len(),
+        1,
+        "expected exactly one diagnostic: {diagnostics:#?}"
+    );
+    assert_eq!(diagnostics[0].code, brink_compiler::DiagnosticCode::E060);
+    assert!(
+        diagnostics[0].message.contains("duplicate DefinitionId"),
+        "expected the #1673 guard's message, got: {}",
+        diagnostics[0].message
     );
 }
 
