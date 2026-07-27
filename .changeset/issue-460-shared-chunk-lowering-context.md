@@ -3,8 +3,8 @@
 ---
 
 Faster project compiles and recompiles (#460). The per-knot LIR chunk memos
-behind `compileProject` and the editor session's background analysis used to
-rebuild their whole knot-*invariant* lowering environment — the flattened
+behind `compileProject` used to rebuild their whole knot-*invariant* lowering
+environment — the flattened
 resolution lookup over every project resolution, the reconstructed struct-shape
 tables, and the file-id→path map — once per knot, so the LIR layer cost scaled
 as (knots × project size). It is now built once per project revision and shared

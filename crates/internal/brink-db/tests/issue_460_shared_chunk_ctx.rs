@@ -53,6 +53,31 @@ The story opens.
 -> other
 ";
 
+/// A revision of `MAIN` that edits the `STRUCT Beacon` declaration itself
+/// (reorders `level`/`label` and adds `strength`) plus the `VAR beacon`
+/// initializer that constructs it — every knot body is untouched. This is
+/// the only fixture in this file that moves the `struct_shape_data_query`
+/// edge rather than just the resolutions edge: a chunk-lowering context that
+/// dropped its shape-data read would still pass every other test here.
+const MAIN_STRUCT_EDITED: &str = "\
+INCLUDE lib.ink
+INCLUDE more.ink
+
+STRUCT Beacon = #{
+    label: string,
+    level: int,
+    strength: int,
+}
+
+VAR beacon = Beacon#{label: \"north\", level: 3, strength: 7}
+VAR counter = 0
+
+=== start ===
+The story opens.
+~ counter = counter + bump(2)
+-> other
+";
+
 const LIB: &str = "\
 === other ===
 A line from lib.
@@ -71,8 +96,14 @@ The last stop, counter is {counter}.
 /// A three-file project with the entry's own edited knot last, so an edit to
 /// `lib.ink` is genuinely a *sibling* edit for `main.ink`'s chunks.
 fn project(lib: &str) -> Vec<(&'static str, String)> {
+    project_with_main(MAIN, lib)
+}
+
+/// As [`project`], but with `main.ink`'s source also parameterized — used to
+/// exercise edits to the `STRUCT`/`VAR` declarations rather than knot bodies.
+fn project_with_main(main: &str, lib: &str) -> Vec<(&'static str, String)> {
     vec![
-        ("main.ink", MAIN.to_owned()),
+        ("main.ink", main.to_owned()),
         ("lib.ink", lib.to_owned()),
         ("more.ink", MORE.to_owned()),
     ]
@@ -158,6 +189,32 @@ fn restoring_the_original_source_restores_the_original_bytes() {
         original,
         inkb_bytes(&db),
         "restoring lib.ink's original text did not restore the original artifact"
+    );
+}
+
+/// A struct-declaration edit (reorder + add a field, update the
+/// initializer) is the fixture's shape-table-moving case: unlike the other
+/// tests, no knot body changes here, so only the `struct_shape_data_query`
+/// edge (not the resolutions edge) is disturbed. A shared chunk-lowering
+/// context that read resolutions but silently dropped its shape-data read
+/// would still pass every other test in this file and only fail here.
+#[test]
+fn struct_field_edit_is_byte_identical_to_a_cold_compile() {
+    let mut warm = open(&project(LIB));
+    // Prime every memo, including the chunk memos, before the edit.
+    let _ = inkb_bytes(&warm);
+
+    warm.update_file("main.ink", MAIN_STRUCT_EDITED.to_owned());
+    let warm_bytes = inkb_bytes(&warm);
+
+    let cold = open(&project_with_main(MAIN_STRUCT_EDITED, LIB));
+    let cold_bytes = inkb_bytes(&cold);
+
+    assert_eq!(
+        warm_bytes, cold_bytes,
+        "warm recompile after editing STRUCT Beacon's fields diverged from a cold compile of \
+         the same sources (issue #460: the shared chunk-lowering context must be rebuilt when \
+         struct shapes change, not just when resolutions change)"
     );
 }
 

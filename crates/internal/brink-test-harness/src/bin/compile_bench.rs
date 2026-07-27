@@ -658,9 +658,9 @@ fn bench_synthetic_stages_cold(project: &BTreeMap<String, String>, runs: usize) 
 ///
 /// `update_file` is today's entire incremental layer: it re-parses the edited
 /// file and re-lowers only its changed knots (green-node identity diff).
-/// Everything downstream — analysis, LIR, codegen — recomputes from scratch,
-/// which is precisely the situation #498 exists to document and slice C
-/// (#460) exists to fix.
+/// Everything downstream — analysis, LIR, codegen — recomputes from scratch;
+/// see `docs/compile-time-profile-findings.md` for what that costs and why
+/// the per-container/symbolic-ref split (slice C / #460) stays deferred.
 ///
 /// Reported rows:
 /// - `update_file` — the per-knot-cached re-parse/re-lower of one file
