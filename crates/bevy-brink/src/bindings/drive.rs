@@ -325,7 +325,7 @@ fn begin_eval_by_name<M: Send + Sync + 'static>(
 ///
 /// The result of the *i*-th call is `results[i]`. `M` is the story marker (use
 /// `()` for the default). For callers that don't have `&mut World` (a normal
-/// system), issue deferred `commands.brink_call(...)`s instead.
+/// system), issue a deferred `commands.brink_call_batch(...)` instead.
 ///
 /// ```ignore
 /// // The alarm write-seam, one VM entry instead of N+2:
