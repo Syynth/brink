@@ -168,6 +168,18 @@ fn drive_function_eval_to_done<M: Send + Sync + 'static>(
 /// queue. Called only once evaluation reaches [`NextStep::Done`]; a mid-eval
 /// error drops any triggers queued so far, matching [`advance_flow`]'s
 /// existing drop-on-error precedent for buffered command triggers.
+///
+/// **Ordering this locks in:** because triggers only fire here, at the very
+/// end of the call, a `bind_brink_query` invoked *later* in the *same* call
+/// always runs (via `run_system_with` in [`drive_function_eval_to_done`])
+/// **before** any command trigger buffered earlier in that same call is
+/// fired — a query can never observe a command's World effects within one
+/// call. This is consistent with [`advance_flow`], which likewise flushes
+/// its triggers only once a line is produced, not between suspensions; it's
+/// a non-obvious consequence of the buffer-then-flush shape, not a defect.
+/// (Across separate calls — e.g. [`call_ink_functions`]'s per-call flush —
+/// a later call's query *does* see an earlier call's command effects, since
+/// each call flushes before the next begins.)
 fn flush_eval_triggers(world: &mut World, triggers: Vec<TriggerFn>) {
     for trigger in triggers {
         trigger(world);

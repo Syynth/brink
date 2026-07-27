@@ -526,12 +526,18 @@ check ink against itself):
 
 ### API gaps filed
 
-- **G6 (#1096)** — `call_ink_function`'s evaluation handler silently falls
-  back to the in-story body for a `bind_brink_command`-bound `EXTERNAL`
-  instead of firing the event or erroring — no diagnostic surfaces the
-  mismatch. Discovered because this port's original design (a command-fired
-  alarm) hit it directly; worked around by returning a boolean and having
-  the host write the event itself. New issue, checked for a dupe first.
+- **G6 (#1096) — closed.** `call_ink_function`'s evaluation handler used to
+  silently fall back to the in-story body for a `bind_brink_command`-bound
+  `EXTERNAL` instead of firing the event or erroring — no diagnostic
+  surfaced the mismatch. Discovered because this port's original design (a
+  command-fired alarm) hit it directly; worked around by returning a boolean
+  and having the host write the event itself. Filed as a new issue (checked
+  for a dupe first), and now fixed: `EvalHandler` buffers a
+  `bind_brink_command` trigger the same way `BrinkHandler` does, and the
+  exclusive driver fires it against the World once the call completes. This
+  port keeps the boolean-return workaround rather than switching back to the
+  originally-planned command design — see point 1 in "What was awkward"
+  above and `ink_cameras.rs`'s `sweep_camera` doc comment.
 - **G1 (#1058)** — additional evidence, not a new issue: this port pays the
   batch-call gap **twice** per camera per frame (`sweep_and_detect` +
   `camera_facing`, no batched read-back), and is *excluded* from the

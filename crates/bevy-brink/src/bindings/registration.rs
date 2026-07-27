@@ -248,32 +248,59 @@ impl<M: Send + Sync + 'static> BrinkHandler<'_, M> {
     }
 }
 
+/// Resolve `name` against `bindings`, the shared body of
+/// [`BrinkHandler::call`] and [`EvalHandler::call`].
+///
+/// Factored out so the two handlers can never drift the way they did before
+/// issue #1096: `EvalHandler::call` originally only resolved pure and
+/// query/async bindings, missing the `commands` bucket `BrinkHandler::call`
+/// already handled, so a `bind_brink_command`-bound external reached through
+/// an engine→ink call silently fell through to [`ExternalResult::Fallback`].
+/// A binding kind added to one handler and missed in the other is exactly
+/// that drift; with one shared body, it can't happen again.
+///
+/// A pure binding resolves inline. A command binding parses its args and, on
+/// success, buffers the parsed trigger into `queued` (both handlers hold no
+/// World access mid-step, so the trigger fires later — via
+/// [`BrinkHandler::flush`] for normal playback, or `super::drive`'s
+/// `flush_eval_triggers` for an engine→ink call) and resolves with the
+/// binding's reply; on a parse failure it warns and resolves `Null` without
+/// buffering. A world-access query or async binding yields
+/// [`ExternalResult::Pending`] so the caller's driver can pause and resolve
+/// it out-of-band (a query via `run_system_with` between suspensions; an
+/// async binding via the plugin's resolver on the `step_one` path, or an
+/// error from the one-pass exclusive drivers, which can't await it). An
+/// unregistered name falls back to the in-story body, if any.
+fn resolve_binding<M: Send + Sync + 'static>(
+    bindings: &BrinkBindings<M>,
+    queued: &RefCell<Vec<TriggerFn>>,
+    name: &str,
+    args: &[Value],
+) -> ExternalResult {
+    if let Some(f) = bindings.pure.get(name) {
+        return ExternalResult::Resolved(f(args));
+    }
+    if let Some(parse) = bindings.commands.get(name) {
+        return match parse(args) {
+            Ok(queued_cmd) => {
+                queued.borrow_mut().push(queued_cmd.trigger);
+                ExternalResult::Resolved(queued_cmd.reply)
+            }
+            Err(err) => {
+                warn!("brink command '{name}': {err}; emitting nothing, returning null");
+                ExternalResult::Resolved(Value::Null)
+            }
+        };
+    }
+    if bindings.queries.contains_key(name) || bindings.async_bindings.contains_key(name) {
+        return ExternalResult::Pending;
+    }
+    ExternalResult::Fallback
+}
+
 impl<M: Send + Sync + 'static> ExternalFnHandler for BrinkHandler<'_, M> {
     fn call(&self, name: &str, args: &[Value]) -> ExternalResult {
-        if let Some(f) = self.bindings.pure.get(name) {
-            return ExternalResult::Resolved(f(args));
-        }
-        if let Some(parse) = self.bindings.commands.get(name) {
-            return match parse(args) {
-                Ok(queued) => {
-                    self.queued.borrow_mut().push(queued.trigger);
-                    ExternalResult::Resolved(queued.reply)
-                }
-                Err(err) => {
-                    warn!("brink command '{name}': {err}; emitting nothing, returning null");
-                    ExternalResult::Resolved(Value::Null)
-                }
-            };
-        }
-        if self.bindings.queries.contains_key(name)
-            || self.bindings.async_bindings.contains_key(name)
-        {
-            // World-access query or async (defer-across-frames) binding —
-            // pause so the driver/resolver can run the query against the World
-            // (sync) or hand off to the engine/task pool (async), then resume.
-            return ExternalResult::Pending;
-        }
-        ExternalResult::Fallback
+        resolve_binding(self.bindings, &self.queued, name, args)
     }
 }
 
@@ -331,30 +358,7 @@ impl<M: Send + Sync + 'static> EvalHandler<'_, M> {
 
 impl<M: Send + Sync + 'static> ExternalFnHandler for EvalHandler<'_, M> {
     fn call(&self, name: &str, args: &[Value]) -> ExternalResult {
-        if let Some(f) = self.bindings.pure.get(name) {
-            return ExternalResult::Resolved(f(args));
-        }
-        if let Some(parse) = self.bindings.commands.get(name) {
-            return match parse(args) {
-                Ok(queued) => {
-                    self.queued.borrow_mut().push(queued.trigger);
-                    ExternalResult::Resolved(queued.reply)
-                }
-                Err(err) => {
-                    warn!("brink command '{name}': {err}; emitting nothing, returning null");
-                    ExternalResult::Resolved(Value::Null)
-                }
-            };
-        }
-        if self.bindings.queries.contains_key(name)
-            || self.bindings.async_bindings.contains_key(name)
-        {
-            // World-access query (resolved between suspensions) or async
-            // binding (unsupported in the one-pass engine→ink driver — the
-            // driver maps it to AsyncExternalUnsupported). Pause either way.
-            return ExternalResult::Pending;
-        }
-        ExternalResult::Fallback
+        resolve_binding(self.bindings, &self.queued, name, args)
     }
 }
 
