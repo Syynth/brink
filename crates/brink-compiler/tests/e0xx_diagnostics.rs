@@ -1759,3 +1759,182 @@ fn e152_denied_through_the_lints_control_plane_becomes_an_error() {
         "expected E152 among errors, got: {diags:?}"
     );
 }
+
+// ─── E153 / E154 / E155 (issue #1161): the `@[allow(Exxx, …)]` source-level
+// suppression annotation ─────────────────────────────────────────────────
+//
+// Native-only (the `@[…]` channel's `allow` tenant lowers in
+// `brink_ir::hir::lower_native::annotation`), so every fixture here uses the
+// disk-based `compile_native` helper, like the `or`-coalescing pair above.
+//
+// The E151 dead-end lint is the workhorse warning: it is native, it fires
+// from a compact fixture, and `e151_denied_through_the_lints_control_plane_
+// becomes_an_error` above already pins its `[lints]` behaviour, so these
+// tests can state the *interaction* ruling against a known baseline.
+
+/// The E151 fixture from `e151_denied_…` above, parameterised on what sits
+/// above `flow main()`. Without an annotation it warns; with the right
+/// `@[allow]` it does not.
+fn e151_source(annotation: &str) -> String {
+    format!(
+        "{annotation}flow main() {{\n  {{?\n    * Parry -> riposte\n    * [Dodge] {{\n      \
+         You sidestep the blade.\n    }}\n  }}\n}}\n\nflow riposte() {{\n}}\n"
+    )
+}
+
+/// Baseline, so the suppression tests below cannot pass vacuously: with no
+/// annotation this exact fixture *does* warn.
+#[test]
+fn allow_baseline_the_unannotated_fixture_warns() {
+    let out = compile_native(
+        "allow-baseline",
+        &e151_source(""),
+        AnalysisOptions::default(),
+    )
+    .unwrap_or_else(|e| panic!("must compile: {e:?}"));
+    assert!(
+        out.warnings.iter().any(|d| d.code == DiagnosticCode::E151),
+        "the unannotated fixture must warn, got: {:?}",
+        out.warnings
+    );
+}
+
+/// The headline behaviour: `@[allow(E151)]` above the declaration removes
+/// the warning from the compile output entirely.
+#[test]
+fn allow_annotation_suppresses_the_warning_in_its_scope() {
+    let out = compile_native(
+        "allow-suppresses",
+        &e151_source("@[allow(E151)]\n"),
+        AnalysisOptions::default(),
+    )
+    .unwrap_or_else(|e| panic!("must compile: {e:?}"));
+    assert!(
+        out.warnings.iter().all(|d| d.code != DiagnosticCode::E151),
+        "`@[allow(E151)]` must suppress the lint, got: {:?}",
+        out.warnings
+    );
+}
+
+/// Scoping is real, not a file-wide switch: the same annotation on the
+/// *sibling* declaration leaves `main`'s warning standing.
+#[test]
+fn allow_on_a_sibling_declaration_does_not_suppress() {
+    let source = "flow main() {\n  {?\n    * Parry -> riposte\n    * [Dodge] {\n      \
+                  You sidestep the blade.\n    }\n  }\n}\n\n@[allow(E151)]\nflow riposte() {\n}\n";
+    let out = compile_native("allow-sibling", source, AnalysisOptions::default())
+        .unwrap_or_else(|e| panic!("must compile: {e:?}"));
+    assert!(
+        out.warnings.iter().any(|d| d.code == DiagnosticCode::E151),
+        "an `@[allow]` on another declaration must not reach this one, got: {:?}",
+        out.warnings
+    );
+}
+
+/// **The ruling (issue #1161's open question (b)): a source-level `allow`
+/// beats a project-level `deny`.**
+/// `e151_denied_through_the_lints_control_plane_becomes_an_error` above
+/// proves this exact fixture fails to compile under `[lints] E151 = "deny"`;
+/// adding `@[allow(E151)]` makes it compile again. The annotation is the
+/// more specific, deliberately-authored, reviewable statement, and
+/// `brink.toml` has no way to name one declaration.
+#[test]
+fn a_source_allow_beats_a_project_lints_deny() {
+    let options = AnalysisOptions {
+        lints: LintPolicy {
+            overrides: BTreeMap::from([("E151".to_owned(), LintLevel::Deny)]),
+            deny_warnings: false,
+        },
+        ..AnalysisOptions::default()
+    };
+    let out = compile_native(
+        "allow-beats-deny",
+        &e151_source("@[allow(E151)]\n"),
+        options,
+    )
+    .unwrap_or_else(|e| panic!("`@[allow(E151)]` must survive `[lints] E151 = deny`, got: {e:?}"));
+    // A successful compile already proves no `Error` survived (the pipeline
+    // returns `CompileError::Diagnostics` otherwise); this pins that the
+    // lint is not merely demoted back to a warning either.
+    assert!(
+        out.warnings.iter().all(|d| d.code != DiagnosticCode::E151),
+        "the suppressed lint must appear nowhere, got: {:?}",
+        out.warnings
+    );
+}
+
+/// The same ruling against the blanket knob: `deny-warnings = true` is the
+/// `-D warnings` equivalent, and a source `allow` still wins.
+#[test]
+fn a_source_allow_beats_deny_warnings() {
+    let options = AnalysisOptions {
+        lints: LintPolicy {
+            overrides: BTreeMap::new(),
+            deny_warnings: true,
+        },
+        ..AnalysisOptions::default()
+    };
+    compile_native(
+        "allow-beats-deny-warnings",
+        &e151_source("@[allow(E151)]\n"),
+        options,
+    )
+    .unwrap_or_else(|e| {
+        panic!("`@[allow(E151)]` must survive `[lints] deny-warnings = true`, got: {e:?}")
+    });
+}
+
+/// A misspelled code is `E153` and fails the compile — issue #1161's open
+/// question (c). A typo'd suppression that silently did nothing would be the
+/// worst outcome the directive could have.
+#[test]
+fn e153_unknown_code_in_an_allow_annotation() {
+    let err = compile_native(
+        "e153-unknown-code",
+        &e151_source("@[allow(E1511)]\n"),
+        AnalysisOptions::default(),
+    )
+    .map(|_| ())
+    .expect_err("a misspelled code in `@[allow(…)]` must be a hard error");
+    let diags = errors_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E153),
+        "expected E153 among errors, got: {diags:?}"
+    );
+}
+
+/// `E154`: errors are not suppressible — issue #1161's open question (a).
+/// `E103` (effects exceedance) is a real `Error`-severity code, so naming it
+/// is rejected rather than silently granting a way to ship broken code.
+#[test]
+fn e154_non_suppressible_code_in_an_allow_annotation() {
+    let err = compile_native(
+        "e154-error-code",
+        &e151_source("@[allow(E103)]\n"),
+        AnalysisOptions::default(),
+    )
+    .map(|_| ())
+    .expect_err("an error-severity code in `@[allow(…)]` must be a hard error");
+    let diags = errors_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E154),
+        "expected E154 among errors, got: {diags:?}"
+    );
+}
+
+/// `E155`: the annotation parses but names no code at all.
+#[test]
+fn e155_allow_annotation_with_no_codes() {
+    let err = compile_native(
+        "e155-empty-allow",
+        &e151_source("@[allow()]\n"),
+        AnalysisOptions::default(),
+    )
+    .map(|_| ())
+    .expect_err("`@[allow()]` must be a hard error");
+    let diags = errors_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E155),
+        "expected E155 among errors, got: {diags:?}"
+    );
+}

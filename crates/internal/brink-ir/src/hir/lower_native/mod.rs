@@ -79,7 +79,10 @@
 //! 5. **Decl-level directive/annotation channel — the annotation half is
 //!    now wired.** `@[effects(…)]` above a `flow`/`fn` populates
 //!    `effects_assertion` on the resulting `Knot`/`Stitch` (issue #1563,
-//!    [`annotation`]), which also owns the channel's erasure/diagnosis
+//!    [`annotation`]), and `@[allow(Exxx, …)]` above any declaration
+//!    populates `HirFile::allow_scopes` (issue #1161) — the source-level
+//!    diagnostic-suppression channel. [`annotation`] also owns the
+//!    channel's erasure/diagnosis
 //!    chokepoint so an unknown (`E111`) or misplaced (`E112`) annotation is
 //!    loud instead of blanket-`E129`. Still `None`/`false` on every decl
 //!    node: `is_local` and per-declaration `visibility` — those are
@@ -217,6 +220,11 @@ pub fn lower(
     // [`module`]. `None` when the file declares no `@[was]`.
     let module = module::lower_file_module(file_id, file.syntax(), &mut diags);
 
+    // `@[allow(Exxx, …)]` suppression scopes (issue #1161) — a whole-tree
+    // walk, since a scope is a `(declaration span, codes)` fact rather than
+    // a property of any one HIR node. See [`annotation::allow_scopes`].
+    let allow_scopes = annotation::allow_scopes(file_id, file.syntax(), &mut diags);
+
     let hir = HirFile {
         root_content,
         knots: top.knots,
@@ -237,6 +245,7 @@ pub fn lower(
         // now flows through `module.was` above.
         visibility: Vec::new(),
         was_directives: Vec::new(),
+        allow_scopes,
     };
     let manifest = project_manifest(&hir);
     (hir, manifest, diags)
