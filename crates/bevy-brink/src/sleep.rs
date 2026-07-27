@@ -532,6 +532,25 @@ impl<M: Send + Sync + 'static> FlowSleep<M> {
 // attaches the token directly, and `run_flow_sleep`'s gather/evaluate phases
 // branch on it exactly like the named path — `check_value_condition_purity`
 // gates admission, `call_ink_function_value` (`crate::bindings`) evaluates.
+//
+// **Known hazard, not yet closed** (filed as #1609, a #1096 follow-up): a
+// `bind_brink_command`-bound `EXTERNAL` with no [`CapabilityManifest`] entry
+// passes `check_external_calls_purity` above — "no manifest entry at all
+// accepts" is deliberate (a `bind_brink_fn` helper that never touches ECS
+// state shouldn't need one), but it means a wake condition naming a
+// `call_ink_function`/`call_ink_function_value` path that reaches a
+// `bind_brink_command` binding is accepted as pure even though, since
+// #1096's fix, that path now fires a real Bevy event on every re-evaluation
+// pass — where before #1096 it was inert (silently ran the in-story
+// fallback instead). The event fires through `resolve_brink_calls`
+// (`crate::call`, the deferred `commands.brink_call(...)` path) too, for the
+// same reason: it drives `call_ink_function` under the hood. Neither
+// `check_named_condition_purity` nor `check_value_condition_purity` consults
+// `BrinkBindings<M>::commands` — bevy-brink has that binding-kind
+// information locally and wouldn't need a manifest entry to reject it, but
+// nothing here does yet. Extending the purity check to reject a name present
+// in `BrinkBindings<M>::commands` is the fix; tracked as a follow-up rather
+// than done here.
 
 /// A wake condition failed the attach-time purity check. See the module
 /// section above for the contract this enforces.
