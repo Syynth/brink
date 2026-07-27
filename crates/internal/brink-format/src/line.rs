@@ -18,9 +18,9 @@ bitflags::bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct LineFlags: u8 {
         /// The resolved content is entirely whitespace (but not empty).
-        const ALL_WS = 0b01;
+        const ALL_WS = 0b0100;
         /// The resolved content is empty.
-        const EMPTY  = 0b10;
+        const EMPTY  = 0b1000;
     }
 }
 
@@ -59,7 +59,7 @@ impl LineFlags {
         // Any Slot/Select means we can't guarantee all-whitespace.
         let all_ws = parts.iter().all(|p| match p {
             LinePart::Literal(s) => s.trim().is_empty(),
-            _ => false,
+            LinePart::Slot(_) | LinePart::Select { .. } => false,
         });
         if all_ws {
             flags |= Self::ALL_WS;
@@ -131,6 +131,20 @@ mod tests {
             variants: alloc::vec![(SelectKey::Exact(1), "one".to_string())],
             default: "many".to_string(),
         }
+    }
+
+    #[test]
+    fn bit_values_are_stable_for_persisted_brkt_compatibility() {
+        // `LineFlags` is persisted on the wire in the `.brkt` transcript
+        // format (`transcript.rs`'s `encode_part`/`decode_part`), unlike
+        // `.inkb` where it's recomputed at decode time. Removing
+        // `STARTS_WITH_WS`/`ENDS_WITH_WS` must not renumber the surviving
+        // bits, or a `.brkt` file written before this change would decode
+        // its old `ALL_WS`/`EMPTY` bits (0b0100/0b1000) as different flags
+        // under a newer reader. Pin the values so a future edit here has to
+        // consciously break this guarantee.
+        assert_eq!(LineFlags::ALL_WS.bits(), 0b0100);
+        assert_eq!(LineFlags::EMPTY.bits(), 0b1000);
     }
 
     #[test]

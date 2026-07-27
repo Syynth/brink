@@ -18,6 +18,10 @@ sub-token leading/trailing whitespace concept in ink's reference semantics,
 so these flags encoded a distinction the runtime never needed — this is a
 dead-code removal, not a conformance gap.
 
-`LineFlags` is derived at `.inkb` decode time, not stored on the wire, so
-this has no format-version impact. No observable rendering effect, since
-neither flag had a live consumer.
+`LineFlags` is derived at `.inkb` decode time, not stored on the wire there,
+so this has no `.inkb` format-version impact. `.brkt` (the transcript save
+format) does persist `LineFlags` bits (`transcript.rs`'s `encode_part`/
+`decode_part`), so the bit values for the surviving `ALL_WS`/`EMPTY` flags
+are left unchanged from their prior positions to avoid reinterpreting
+existing `.brkt` files. No observable rendering effect, since neither
+removed flag had a live consumer.
