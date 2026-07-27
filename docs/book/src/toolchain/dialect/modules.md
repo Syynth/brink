@@ -60,8 +60,8 @@ everything stays bare — you never qualify a same-module reference.
 
 There are two spellings.
 
-**Bare import** brings specific names into local scope, optionally renaming them
-with `AS`:
+**Bare import** brings specific names into local scope, optionally binding an
+extra local name to it with `AS`:
 
 ```ink,ignore
 IMPORT { ambush, guard_talk AS gt } FROM quest_3
@@ -70,6 +70,10 @@ IMPORT { ambush, guard_talk AS gt } FROM quest_3
 -> ambush          // used bare
 { gt() }
 ```
+
+`AS` is **additive**, not a rename: `guard_talk` stays resolvable under its
+own name alongside the alias `gt` — unlike Rust's `use … as`, which drops the
+original binding.
 
 **Qualified import** brings the module in under its own name; its exports are
 then reached through a dotted path:

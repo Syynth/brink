@@ -41,6 +41,10 @@ IMPORT quest_3                                      // qualified: -> quest_3.amb
 - **Ambiguity is an error**: if `x` is both an imported module name
   and a visible definition, qualified `x.y` is a compile error —
   fixed with an alias. No silent precedence.
+- **`AS` is additive, not a rename**: `guard_talk AS gt` binds `gt`
+  as a *second* local spelling of `guard_talk` — the source name
+  stays resolvable too. This departs from Rust's `use … as`, which
+  drops the original binding (issue #1590).
 - A bare `a.b` can only mean module-qualified access if `a` was
   imported as a module *in this file* — the reader checks the file
   header, never guesses.

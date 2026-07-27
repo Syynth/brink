@@ -11,6 +11,7 @@ categories.workspace = true
 
 [dependencies]
 brink-syntax = { workspace = true }
+brink-syntax-native = { workspace = true }
 brink-ir = { workspace = true }
 brink-analyzer = { workspace = true }
 brink-format = { workspace = true }
