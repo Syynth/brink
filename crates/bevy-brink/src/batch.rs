@@ -637,7 +637,7 @@ pub(crate) fn flush_deferred<M: Send + Sync + 'static>(
 /// marker `M` as one batch turn with frame-start read pinning, per-flow
 /// buffered writes/commands, and a deterministic flow-id-ordered Apply.
 ///
-/// **Not auto-registered.** Like [`advance_flows`](crate::advance_flows), a
+/// **Not auto-registered.** Like [`advance_flow`](crate::advance_flow), a
 /// host opts in explicitly when it wants the batched, frame-start-consistent
 /// stepping semantics for its flows:
 ///

@@ -408,6 +408,19 @@ impl<M: Send + Sync + 'static> FlowSleep<M> {
     ///
     /// Graduating a `reads`-bookkeeping row dimension (so this is inferred
     /// rather than declared) is tracked as the follow-up to #1146.
+    ///
+    /// **Known tradeoff, not a bug:** once a condition declaring this is
+    /// evaluated even once, it stays perpetually flagged for re-evaluation
+    /// thereafter, even if nothing it actually depends on ever changes again.
+    /// Every Evaluate pass notes an unconditional bookkeeping touch in the
+    /// changed-cell ledger (the unavoidable `&mut BrinkGlobals` residue
+    /// building a condition's context takes), and that residue is itself
+    /// indistinguishable, to the row-directed path, from a real bookkeeping
+    /// write — so a `reads_bookkeeping()` reader's own prior evaluation
+    /// re-triggers the next one. This is deliberately on the over-report side
+    /// of the ledger's "never under-report" law (module docs,
+    /// `crate::wake_delta`): the cost is a self-sustaining re-evaluation,
+    /// never a missed wake.
     #[must_use]
     pub fn reads_bookkeeping(mut self) -> Self {
         self.reads_bookkeeping = true;

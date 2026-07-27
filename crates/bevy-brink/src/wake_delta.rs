@@ -23,8 +23,8 @@
 //! The ledger is only usable when it is a **complete** account of every
 //! change since the last drain. [`BrinkGlobals::inner`](crate::BrinkGlobals)
 //! is a public field: a host system (or a test) can write an ink global
-//! directly, and the serial drivers ([`advance_flows`](crate::advance_flows))
-//! write it without going through batch Apply at all. Neither is recorded
+//! directly, and the serial driver ([`advance_flow`](crate::advance_flow))
+//! writes it without going through batch Apply at all. Neither is recorded
 //! here. Three facts together decide it, and between them every unrecorded
 //! write lands on one side or the other of the driver's own Apply:
 //!
@@ -166,6 +166,17 @@ impl<M: Send + Sync + 'static> BrinkWorldDelta<M> {
     /// that unavoidable `&mut` stops manufacturing a world-changed signal,
     /// and hands the honest residue here instead — an attributed
     /// bookkeeping-only touch.
+    ///
+    /// This is **unconditional**: it notes a bookkeeping touch every time an
+    /// Evaluate phase runs at all, whether or not that particular pass
+    /// actually moved a visit count / turn index / RNG draw. The chosen
+    /// consequence — a `FlowSleep::reads_bookkeeping` condition's own prior
+    /// evaluation is enough to re-flag it for another one, forever, once it
+    /// has evaluated a single time — is documented on
+    /// [`reads_bookkeeping`](crate::FlowSleep::reads_bookkeeping) and covered
+    /// by a regression test in `crate::sleep::tests`. It is the over-report
+    /// side of this module's "never under-report" law, not a missed-wake
+    /// risk.
     pub(crate) fn record_condition_evaluation(&mut self) {
         self.delta.note_bookkeeping();
         self.recorded = true;

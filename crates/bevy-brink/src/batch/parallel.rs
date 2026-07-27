@@ -182,6 +182,28 @@ pub fn advance_batch_parallel<M: Send + Sync + 'static>(world: &mut World) {
         let mut globals = world.resource_mut::<BrinkGlobals<M>>();
         apply_batch_writes(outcomes, &mut globals.inner)
     };
+
+    // Sample the tick — and record it into the ledger — *before* flushing the
+    // deferred command triggers below. Unlike the serial driver (whose
+    // `Commands` system param genuinely defers to the schedule's next sync
+    // point), this is an exclusive system: `queue.apply(world)` runs any
+    // `commands.trigger(...)` observer synchronously, in this same call, and
+    // bevy 0.19 does not advance the world's change tick across
+    // `CommandQueue::apply`. An observer that writes `BrinkGlobals<M>` (the
+    // documented ink→engine pattern) would therefore land on the *same* tick
+    // as this Apply's own write, making it indistinguishable from "nothing
+    // happened after this Apply" to `BrinkWorldDelta::drain`'s tick
+    // comparison — a missed wake. Incrementing the world's change tick right
+    // after sampling guarantees any such flush-time write is strictly newer
+    // than the tick just recorded, so `drain` correctly sees it as foreign.
+    let globals_tick = world
+        .get_resource_ref::<BrinkGlobals<M>>()
+        .map(|globals| globals.last_changed());
+    world.increment_change_tick();
+    if let Some(mut ledger) = world.get_resource_mut::<BrinkWorldDelta<M>>() {
+        record_wake_delta(&mut ledger, &result, globals_changed_on_entry, globals_tick);
+    }
+
     let mut queue = CommandQueue::default();
     {
         let mut commands = Commands::new(&mut queue, world);
@@ -189,12 +211,6 @@ pub fn advance_batch_parallel<M: Send + Sync + 'static>(world: &mut World) {
     }
     queue.apply(world);
 
-    let globals_tick = world
-        .get_resource_ref::<BrinkGlobals<M>>()
-        .map(|globals| globals.last_changed());
-    if let Some(mut ledger) = world.get_resource_mut::<BrinkWorldDelta<M>>() {
-        record_wake_delta(&mut ledger, &result, globals_changed_on_entry, globals_tick);
-    }
     if let Some(mut report) = world.get_resource_mut::<BrinkBatchReport<M>>() {
         report.record(result);
     }

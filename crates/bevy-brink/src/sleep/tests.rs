@@ -1954,6 +1954,61 @@ fn a_declared_bookkeeping_reader_is_dirtied_by_bookkeeping_writes() {
     );
 }
 
+/// Chosen tradeoff, not a bug: `BrinkWorldDelta::record_condition_evaluation`
+/// notes an unconditional bookkeeping touch for every Evaluate pass, whether
+/// or not that pass actually moved a visit count / turn index / RNG draw
+/// (`run_flow_sleep`'s unavoidable `&mut BrinkGlobals` residue — module docs).
+/// A `reads_bookkeeping()` condition's own prior evaluation is therefore
+/// indistinguishable from a real bookkeeping write, so it re-flags itself for
+/// another evaluation with zero real dependency change. Isolated at the
+/// `mark_wake_dirty` level (no `BrinkGlobals` resource at all) so only the
+/// ledger's contribution is exercised — see
+/// `FlowSleep::reads_bookkeeping`'s doc comment for the tradeoff this pins.
+#[test]
+fn a_reads_bookkeeping_conditions_own_evaluation_reflags_it_with_no_real_change() {
+    let mut app = App::new();
+    app.init_resource::<CapabilityRegistry<()>>();
+    app.init_resource::<CapabilityChanges<()>>();
+    app.init_resource::<BrinkWorldDelta<()>>();
+    let entity = app
+        .world_mut()
+        .spawn(
+            FlowSleep::<()>::persistent("should_wake")
+                .reads_bookkeeping()
+                .dormant(),
+        )
+        .id();
+    // Isolate the case under test: pretend the bootstrap evaluation already
+    // ran, so only the ledger's contribution is exercised (not the "never
+    // evaluated" first-run flag, which would flag it regardless).
+    app.world_mut()
+        .get_mut::<FlowSleep<()>>(entity)
+        .expect("policy present")
+        .evaluated_once = true;
+
+    // Simulate exactly what one Evaluate pass leaves behind when it evaluates
+    // this policy and nothing real moves: only the unconditional bookkeeping
+    // residue `record_condition_evaluation` always notes.
+    app.world_mut()
+        .resource_mut::<BrinkWorldDelta<()>>()
+        .record_condition_evaluation();
+
+    app.world_mut()
+        .run_system_once(mark_wake_dirty::<()>)
+        .expect("mark_wake_dirty runs");
+
+    assert!(
+        app.world()
+            .entity(entity)
+            .get::<FlowSleep<()>>()
+            .expect("still attached")
+            .needs_eval,
+        "a `reads_bookkeeping()` policy's own prior evaluation residue — with no \
+         `BrinkGlobals` resource at all and no real dependency change — must still \
+         re-flag it for evaluation: a deliberate over-report, never a missed wake"
+    );
+}
+
 /// An **opaque** row (effects inference couldn't summarize a call it makes —
 /// §3's pessimal top) degrades to the pre-#1146 behavior: any change at all
 /// re-evaluates. Same for no loaded program at all.
@@ -2128,5 +2183,155 @@ fn a_direct_host_write_still_wakes_a_flow_with_a_precise_row() {
         "a host write the changed-cell ledger cannot attribute must fall back to the coarse \
          signal and wake the flow: got {:?}",
         app.world().resource::<TextLog>().0
+    );
+}
+
+/// Regression for the #1146 follow-up parallel-driver missed-wake: bevy 0.19
+/// does not advance the world's change tick across `CommandQueue::apply`, so
+/// an observer that writes `BrinkGlobals<M>` synchronously during
+/// `advance_batch_parallel`'s own deferred-command flush (`flush_deferred` ->
+/// `emit_event` -> `commands.trigger(...)`) used to land on the *same* `Tick`
+/// as the driver's own Apply — indistinguishable, to
+/// `BrinkWorldDelta::drain`'s tick comparison, from "nothing happened after
+/// this Apply". A precise-row sleeper reading the cell the observer wrote was
+/// then never dirtied. Observers on `BrinkTurnDone<M>` writing
+/// `BrinkGlobals<M>` are the documented ink→engine global-write pattern (the
+/// plugin's own `gc_on_turn_done` takes the same `ResMut<BrinkGlobals<M>>`
+/// shape), so this must hold for them.
+///
+/// The sleeper here carries a [`BrinkProgram`] but **no** `BrinkFlow` —
+/// deliberately kept out of any driver's Collect. This is a pre-existing,
+/// separate gap outside this fix's scope: `advance_batch_parallel`'s Collect
+/// query never consults `FlowSleep` at all (unlike the serial driver's
+/// `wants_collect`-filtered Collect), so a real `BrinkFlow`-bearing dormant
+/// sleeper would be force-stepped every turn regardless of its wake state and
+/// prove nothing about the tick-ordering bug under test here. Isolating the
+/// probe this way exercises exactly the mechanism the finding names: does
+/// `mark_wake_dirty` flag a precise-row condition after an observer's
+/// out-of-band write during the parallel driver's own flush?
+#[test]
+fn advance_batch_parallel_observer_write_during_flush_flags_a_precise_row_sleeper() {
+    let mut app = make_test_app();
+    app.add_systems(Update, crate::advance_batch_parallel::<()>);
+
+    let (program, tables, ctx, effect_rows) =
+        crate::test_support::compile_test_story_with_effect_rows(
+            "VAR gate = 0\n\
+             -> waker\n\
+             === waker ===\n\
+             Tick.\n-> DONE\n-> waker\n\
+             === function should_wake() ===\n~ return gate\n",
+        );
+    let gate_idx = program.global_index("gate").expect("gate global exists");
+    let program_handle = app
+        .world_mut()
+        .resource_mut::<Assets<ProgramAsset>>()
+        .add(ProgramAsset {
+            program,
+            initial_context: ctx,
+            effect_rows,
+        });
+    let tables_handle = app
+        .world_mut()
+        .resource_mut::<Assets<LineTablesAsset>>()
+        .add(LineTablesAsset { tables });
+    let story = app
+        .world_mut()
+        .resource_mut::<Assets<BrinkStoryAsset>>()
+        .add(BrinkStoryAsset {
+            program: program_handle.clone(),
+            line_tables: tables_handle,
+        });
+
+    // Every waker turn boundary writes `gate` directly through an observer —
+    // never through batch Apply, the exact seam `BrinkWorldDelta` cannot
+    // record by construction and must instead catch via the tick mismatch.
+    // Unconditional: which window is "the case under test" is controlled
+    // below purely by exactly when `evaluated_once`/`needs_eval` are reset,
+    // not by counting turns.
+    app.add_observer(
+        move |_t: On<BrinkTurnDone<()>>, mut globals: ResMut<BrinkGlobals<()>>| {
+            globals.inner.set_global(gate_idx, Value::Int(1));
+        },
+    );
+
+    // The peer: takes a "Tick." turn every batch turn forever, so every
+    // `advance_batch_parallel` call carries a real Apply (bookkeeping-only
+    // from the ledger's point of view; the observer's `gate` write rides on
+    // top, out of band).
+    app.world_mut()
+        .spawn(BrinkFlowRequest::<()>::builder().story(story).build());
+    app.update(); // fulfills the peer.
+    app.update(); // the peer's first REAL batch turn — always foreign
+    // (`BrinkGlobals` was freshly *inserted*, which the ledger treats as
+    // foreign independent of this fix), and `mark_wake_dirty` is still
+    // gated off (no `FlowSleep` exists yet), so nothing drains it.
+
+    // Drain that foreign turn away *before* the sleeper — and the case
+    // under test — enter the picture. `run_system_once` bypasses the
+    // `any_with_component::<FlowSleep<()>>` schedule gate (no `FlowSleep`
+    // exists yet, so the per-sleeper loop below is simply a no-op), letting
+    // the ledger's sticky `foreign` flag reset without needing the probe
+    // present yet.
+    app.world_mut()
+        .run_system_once(mark_wake_dirty::<()>)
+        .expect("mark_wake_dirty runs");
+
+    // The precise-row probe: `FlowSleep` + a `BrinkProgram` naming the same
+    // compiled story (so `condition_reads` resolves `should_wake`'s real,
+    // precise row), no `BrinkFlow` (see the function doc for why).
+    let sleeper = app
+        .world_mut()
+        .spawn((
+            FlowSleep::<()>::persistent("should_wake").dormant(),
+            BrinkProgram::<()>::new(program_handle),
+        ))
+        .id();
+    // Skip the policy's own unconditional first-ever-evaluation flag
+    // directly, so only the ledger's response to the turn below is
+    // exercised.
+    {
+        let mut sleep = app
+            .world_mut()
+            .get_mut::<FlowSleep<()>>(sleeper)
+            .expect("just spawned");
+        sleep.evaluated_once = true;
+        sleep.needs_eval = false;
+    }
+
+    app.update(); // a clean (non-foreign) peer turn: `mark_wake_dirty` runs
+    // first (drains nothing new — the ledger was just reset above, and
+    // this frame's own turn hasn't been recorded into it yet, so this
+    // pass is a harmless no-op regardless of its own verdict), then
+    // `advance_batch_parallel` records this turn, including the observer's
+    // out-of-band `gate` write during its own deferred-command flush — the
+    // case under test.
+
+    // Force past whatever the frame above's own (harmless, but not
+    // otherwise isolated) `mark_wake_dirty` pass concluded, so the single
+    // `mark_wake_dirty` call below is the only one whose verdict decides
+    // the assertion.
+    {
+        let mut sleep = app
+            .world_mut()
+            .get_mut::<FlowSleep<()>>(sleeper)
+            .expect("still attached");
+        sleep.evaluated_once = true;
+        sleep.needs_eval = false;
+    }
+    app.world_mut()
+        .run_system_once(mark_wake_dirty::<()>)
+        .expect("mark_wake_dirty runs");
+
+    assert!(
+        app.world()
+            .entity(sleeper)
+            .get::<FlowSleep<()>>()
+            .expect("still attached")
+            .needs_eval,
+        "an observer's synchronous write to `gate` during the parallel driver's own \
+         deferred-command flush must still flag a `gate`-reading sleeper for \
+         re-evaluation — a same-tick Apply/observer write must not be reported as a \
+         complete, gate-omitting account"
     );
 }
