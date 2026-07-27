@@ -30,6 +30,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::marker::PhantomData;
 
 use bevy_app::App;
+use bevy_ecs::change_detection::DetectChangesMut as _;
 use bevy_ecs::entity::{Entity, EntityMapper};
 use bevy_ecs::event::EntityEvent;
 use bevy_ecs::observer::On;
@@ -796,9 +797,21 @@ pub fn gc_on_turn_done<M: Send + Sync + 'static>(
         return;
     }
 
-    let Some(globals) = globals.as_deref_mut() else {
+    let Some(globals) = globals.as_mut() else {
         return;
     };
+    // Read-only in effect (issue #1632): the sweep below only *reads*
+    // through the context view `save_flow_state` builds — it takes `&mut`
+    // for the same reason `call_ink_function` does, not because it writes a
+    // global cell. Since this observer fires on every turn-completing frame
+    // once any kind is registered, letting that `&mut` move the resource's
+    // change tick would put a change *outside* the changed-cell ledger every
+    // turn: `BrinkWorldDelta::drain` sees a tick past the one the driver's
+    // own Apply recorded, reports `None`, and the wake pass falls back to
+    // the coarse "anything may have changed" bit — resurrecting #1101's
+    // spurious re-wake for every handle-using host, the half of the root
+    // cause #1146 fixed in `run_flow_sleep` and left standing here.
+    let globals = globals.bypass_change_detection();
 
     let mut reachable: BTreeMap<String, BTreeSet<u64>> = BTreeMap::new();
     // Every flow's own program contributes its globals-view + local state —
