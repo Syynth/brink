@@ -45,12 +45,12 @@
 //!   no enclosing `==knot==`) is declared under `SymbolKind::Stitch` with
 //!   its **bare** name (see `hir::lower::structure::stitch::lower_top_level_stitch`),
 //!   and a label declared before the first knot (`hir.root_content`) is
-//!   bare too (`LowerScope::qualify_label` with no enclosing knot). Both are
-//!   legitimate, corpus-real shapes, not bugs — [`conforms_to_convention`]
-//!   accepts the wider shape rather than flagging real corpus code (per the
-//!   "if a check trips on real code, the check is wrong" rule). Contract
-//!   wording stamped with this carve-out in `docs/hir-admission-contract.md`
-//!   §1.3 (issue #1188).
+//!   bare too (`brink_ir::symbols::project::qualify_label` with no
+//!   enclosing knot). Both are legitimate, corpus-real shapes, not bugs —
+//!   [`conforms_to_convention`] accepts the wider shape rather than
+//!   flagging real corpus code (per the "if a check trips on real code, the
+//!   check is wrong" rule). Contract wording stamped with this carve-out in
+//!   `docs/hir-admission-contract.md` §1.3 (issue #1188).
 //! - **`Param`/`Temp` locals are out of scope for check 1** — the contract's
 //!   "every declared symbol has a corresponding HIR declaration node" reads
 //!   most naturally against [`brink_ir::symbols::DeclaredSymbol`] (the
@@ -72,9 +72,9 @@
 //!   `UnresolvedRef`-registering expressions (tag interpolations, VAR/CONST
 //!   initializers) that check 1 must see. Reusing the shared visitor and
 //!   patching those two gaps in an ad hoc way would still need the same
-//!   knot/stitch scope-prefix threading `LowerScope::qualify_label` uses
-//!   (for label qualification, needed by checks 1/3), so a dedicated walker
-//!   ended up simpler than bolting extra state onto the shared one.
+//!   knot/stitch scope-prefix threading `symbols::project::qualify_label`
+//!   uses (for label qualification, needed by checks 1/3), so a dedicated
+//!   walker ended up simpler than bolting extra state onto the shared one.
 
 use rowan::{TextRange, TextSize};
 
@@ -192,7 +192,7 @@ struct Collector {
     /// candidates an `UnresolvedRef.range` must appear in (check 1a).
     ref_ranges: LookupSet<TextRange>,
     /// Every label declaration found, already qualified to match
-    /// `LowerScope::qualify_label`'s convention (feeds checks 1b/3).
+    /// `symbols::project::qualify_label`'s convention (feeds checks 1b/3).
     labels: Vec<(String, TextRange)>,
     diags: Vec<Diagnostic>,
 }
@@ -1014,23 +1014,16 @@ mod tests {
     }
 
     /// Sibling of `e124_knot_param_range_malformed` for `Stitch.params`.
-    /// Stitch-level params have no real ink-dialect surface to lower from
-    /// (same "native-only shape" situation as
-    /// `e124_template_as_binding_out_of_bounds_is_malformed`), so the param
-    /// is appended directly onto real lowered HIR.
+    /// Stitch params have a real ink-dialect surface (`= stitch(x)`, see
+    /// `parser/tests/knot/cst.rs::stitch_params_in_stitch_header` and
+    /// `hir::lower::structure::stitch::lower_stitch` ->
+    /// `lower_knot_params(header.params(), sink)`), so — like the `Knot`
+    /// sibling above — the malformed range is stamped onto real lowered
+    /// HIR rather than a synthetic node.
     #[test]
     fn e124_stitch_param_range_malformed() {
-        let (mut hir, manifest, len) = lower_src("== knot ==\n= stitch\n-> END\n");
-        let past_eof = len + TextSize::from(1000);
-        hir.knots[0].stitches[0].params.push(brink_ir::hir::Param {
-            name: brink_ir::hir::Name {
-                text: "x".to_string(),
-                range: TextRange::new(len, past_eof),
-            },
-            is_ref: false,
-            is_divert: false,
-            annotation: None,
-        });
+        let (mut hir, manifest, len) = lower_src("== knot ==\n= stitch(x)\n-> END\n");
+        hir.knots[0].stitches[0].params[0].name.range = TextRange::new(len, len);
         let diags = validate_admission(FileId(0), &hir, &manifest, len);
         assert!(codes(&diags).contains(&DiagnosticCode::E124), "{diags:?}");
     }
