@@ -92,23 +92,62 @@ jobs:
           sudo apt-get install --no-install-recommends -y \
             libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-      # bevy-brink (+ bevy-brink-derive) is EXCLUDED from the CI gate: the bevy
-      # dependency graph is the dominant build cost and its examples link a
-      # 300+ rlib binary that intermittently crashes the runner's linker (ld
-      # bus error). Parser/compiler PRs never touch it. Test bevy-brink locally
-      # or via an on-demand job when changing it. (2026-07-20)
+      # bevy-brink (+ bevy-brink-derive) is EXCLUDED from THIS job: the bevy
+      # dependency graph is the dominant build cost and `cargo test` LINKS the
+      # examples — a 300+ rlib binary that intermittently crashed the runner's
+      # linker (ld bus error), hitting parser/compiler PRs that never touch
+      # bevy 3x in one day. (2026-07-20 ruling, still in force.)
+      #
+      # It is NOT unchecked: the required `Test (bench-counters)` job below
+      # lints every bevy-brink target and runs its lib + integration tests in
+      # its own runner slot, in parallel with this one, without linking the
+      # examples (#1641). Do not re-add bevy-brink here — put coverage there.
       - run: cargo test --workspace --exclude bevy-brink --exclude bevy-brink-derive
 
-  # `--features bench-counters` is off by default (it's a compile-time cut,
-  # not a runtime toggle — see `crates/brink-runtime/src/bench_counters.rs`),
-  # so the `test` job above never builds or runs anything gated on it. PR
-  # #921's counter-forwarding proofs
-  # (`collection_global_axis_forwards_nonzero_counters` plus the
-  # bench-counters-gated scenario-story compile+run) only ever ran locally
-  # until this job existed (#923, tracked from #897). A separate job (not a
-  # step folded into `test`) so its own distinct feature/cache combination is
-  # visible in the checks list and a failure here can't be masked by the
-  # default-feature run passing.
+  # The feature-gated / bevy lane. Two things live here, both invisible to the
+  # `test` job above, and both cheap to co-locate because they share one
+  # dependency-graph build:
+  #
+  # 1. `--features bench-counters` is off by default (a compile-time cut, not
+  #    a runtime toggle — see `crates/brink-runtime/src/bench_counters.rs`),
+  #    so the `test` job never builds or runs anything gated on it. PR #921's
+  #    counter-forwarding proofs only ever ran locally until this job existed
+  #    (#923, tracked from #897).
+  #
+  # 2. bevy-brink + bevy-brink-derive, which the `test`, `test-all-features`
+  #    and `static-checks` jobs all exclude (2026-07-20: build cost + an ld
+  #    bus error linking the 300+ rlib `play_story` example). That exclusion
+  #    left a CRATE-SIZED HOLE in the merge gate — ~a dozen bevy-brink PRs
+  #    landed against a gate that ran exactly one of its tests (#1641). The
+  #    two steps below close it without reversing the ruling:
+  #      * clippy `--all-targets` TYPE-CHECKS the examples but never links
+  #        them, so the bus error cannot occur — and it restores the
+  #        compile-check of `examples/book_flows.rs`, which the book's Bevy
+  #        flows page `{{#include}}`s and which no job had checked since the
+  #        exclusion landed.
+  #      * `cargo test --lib --tests` deliberately omits `--examples`, so no
+  #        example binary is linked here either.
+  #    Both run under `--all-features`, which for bevy-brink is a strict
+  #    superset of its default `dev` feature and turns ON `bench-counters`
+  #    (so `scenario_bench_model.rs`'s counter-forwarding test finally runs in
+  #    CI) and `effect-trace`. One feature configuration, therefore one bevy
+  #    graph build, is the whole cost lever: adding a second default-feature
+  #    pass would rebuild the entire bevy graph again for a handful of extra
+  #    test functions. bevy-brink's default-feature COMPILE is still covered
+  #    by the `Check` job's `cargo check --workspace`.
+  #
+  # This is a separate job (not steps folded into `test`) so it claims its own
+  # runner slot and runs in PARALLEL with `test` rather than serializing the
+  # bevy graph onto the critical path, and so a failure here names itself in
+  # the checks list instead of hiding inside a huge workspace test blob.
+  #
+  # The job NAME is load-bearing: "Test (bench-counters)" is in branch
+  # protection's required-checks list, so renaming it would silently drop this
+  # lane out of the merge gate. Change the name only together with the
+  # branch-protection setting.
+  #
+  # Steps use `if: '!cancelled()'` (same rationale as `static-checks`): a
+  # clippy failure must not hide a test failure behind it.
   test-bench-counters:
     name: Test (bench-counters)
     runs-on: ubuntu-latest
@@ -127,9 +166,23 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           shared-key: bench-counters
-      # bevy-brink dropped from CI (see the `test` job) — keep brink-runtime's
-      # bench-counters coverage, which is cheap and bevy-free.
-      - run: cargo test -p brink-runtime --features bench-counters
+      # Cheapest first: brink-runtime's bench-counters coverage is bevy-free.
+      - name: Test (brink-runtime, bench-counters)
+        id: runtime_bench_counters
+        run: cargo test -p brink-runtime --features bench-counters
+      # `--all-targets` covers lib + tests + examples + benches. Clippy only
+      # type-checks, so the examples are compile-checked without ever being
+      # linked (see this job's header comment).
+      - name: Clippy (bevy-brink, all features)
+        id: bevy_clippy
+        if: '!cancelled()'
+        run: cargo clippy -p bevy-brink -p bevy-brink-derive --all-targets --all-features -- -D warnings
+      # `--lib --tests` and NOT `--all-targets`: running the suite must not
+      # link the `play_story` example (the 2026-07-20 ld bus error).
+      - name: Test (bevy-brink, all features)
+        id: bevy_test
+        if: '!cancelled()'
+        run: cargo test -p bevy-brink -p bevy-brink-derive --all-features --lib --tests
 
   # Companion to `clippy-all-features` above — see its comment for why this
   # leg exists and how it subsumes #947. Runtime cost measured comparable to
@@ -154,6 +207,9 @@ jobs:
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           shared-key: all-features
+      # Same bevy-brink exclusion as the `test` job (build cost + the example
+      # link crash). bevy-brink's own `--all-features` test run lives in the
+      # required `Test (bench-counters)` job (#1641).
       - run: cargo test --workspace --all-features --exclude bevy-brink --exclude bevy-brink-derive
 
   # Consolidated static checks (decision 2026-07-22, #1237). Previously six
@@ -192,6 +248,12 @@ jobs:
         id: fmt
         run: cargo fmt --all -- --check
 
+      # Both clippy legs exclude bevy-brink + bevy-brink-derive so this job
+      # never pays for the bevy dependency graph. They are NOT unlinted:
+      # `Test (bench-counters)` runs `clippy -p bevy-brink -p
+      # bevy-brink-derive --all-targets --all-features -- -D warnings` in its
+      # own runner slot, where the graph is already built for that job's test
+      # run (#1641). Lint changes that must reach bevy-brink go there.
       - name: Clippy
         id: clippy
         if: '!cancelled()'
@@ -433,8 +495,11 @@ jobs:
       # breaks the run. The build below is always fresh.
       #
       # The Bevy *flows* page is `{{#include}}`d from crates/bevy-brink/examples/
-      # book_flows.rs and compile-checked by the `test` job (cargo test compiles
-      # examples), so it needs no step here.
+      # book_flows.rs, which is compile-checked by the `Test (bench-counters)`
+      # job's `clippy -p bevy-brink --all-targets` step, so it needs no step
+      # here. (That was previously the `test` job, but bevy-brink has been
+      # excluded from it since 2026-07-20 — leaving this example checked by
+      # nothing at all until #1641.)
       - name: Install Linux dependencies (bevy)
         run: |
           sudo apt-get update
