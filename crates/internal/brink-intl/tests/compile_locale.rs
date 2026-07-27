@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::panic, clippy::unwrap_used)]
 
 use brink_format::{read_inkb_index, read_inkl, write_inkb};
 use brink_intl::{ContentJson, IntlError, LinesJson, compile_locale, export_lines};

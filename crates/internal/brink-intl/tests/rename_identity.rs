@@ -2,7 +2,7 @@
 
 //! Characterization tests for **identity under rename** — the observable
 //! behavior `docs/design/definition-identity-proposals.md` analyzes for
-//! issue #1442 (`needs-design`).
+//! issue #1442.
 //!
 //! Tests 1–3 pin *today's* behavior, including the parts that are still the
 //! problem: R1 (ruled 2026-07-27, PR #1670) kept identity name-derived with
@@ -229,10 +229,7 @@ Fish, mostly.
 
     assert_eq!(
         aliases,
-        vec![(
-            scope_id_of(&before, "hub"),
-            scope_id_of(&after, "plaza")
-        )],
+        vec![(scope_id_of(&before, "hub"), scope_id_of(&after, "plaza"))],
         "the knot's edge is the only one minted; the stitch's `#@was` \
          resolves to its own new id and contributes nothing"
     );
@@ -359,11 +356,7 @@ fn compile_locale_rebinds_a_stale_locale_file_through_the_alias_table() {
 
     let after = compile_story(KNOT_RENAMED);
     let new_knot = scope_id_of(&after, "plaza");
-    let bound: Vec<String> = locale
-        .line_tables
-        .iter()
-        .map(|t| hex(t.scope_id))
-        .collect();
+    let bound: Vec<String> = locale.line_tables.iter().map(|t| hex(t.scope_id)).collect();
     assert_eq!(
         bound,
         vec![new_knot],

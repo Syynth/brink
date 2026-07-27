@@ -479,8 +479,7 @@ mod tests {
 
         let result = regenerate_lines(&new_export, &existing, &[alias(1, 2)]);
         assert_eq!(
-            result.scopes[0].lines[0].content,
-            existing.scopes[0].lines[0].content,
+            result.scopes[0].lines[0].content, existing.scopes[0].lines[0].content,
             "the direct match keeps the translation"
         );
         assert!(
