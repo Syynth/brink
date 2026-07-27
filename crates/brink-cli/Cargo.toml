@@ -28,7 +28,7 @@ brink-fmt = { workspace = true }
 brink-format = { workspace = true, features = ["inkt"] }
 brink-intl = { workspace = true }
 brink-runtime = { workspace = true }
-xliff2 = { workspace = true, features = ["metadata"] }
+xliff2 = { workspace = true }
 clap.workspace = true
 rowan.workspace = true
 serde = { workspace = true }
