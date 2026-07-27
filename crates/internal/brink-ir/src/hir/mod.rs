@@ -6,6 +6,7 @@
 //! are semantic nodes — with weave nesting resolved and syntactic sugar stripped.
 
 pub mod construct;
+mod diagnostics;
 pub(crate) mod doc_block;
 pub mod emit_native;
 pub mod frame_shape;
@@ -19,6 +20,7 @@ mod types;
 pub mod visit;
 
 pub use construct::{ConstructForm, ConstructTarget};
+pub use diagnostics::*;
 pub use frame_shape::{AwaitFrameShape, ContinuationSite, compute_frame_shapes};
 pub use ink_provenance::{InkProvenanceResolver, ink_provenance};
 pub use lower::{WeaveItem, fold_weave, lower, lower_single_knot, lower_top_level};
