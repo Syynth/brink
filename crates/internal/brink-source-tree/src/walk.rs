@@ -11,16 +11,68 @@
 //! [`Walk`] closes that by applying the policy **by construction**: it is
 //! the only recursive `read_dir` loop in the workspace's library code, so a
 //! *new* traversal is pruned the moment it is written, with nothing to
-//! remember. It deliberately offers **no unpruned mode** — the escape hatch
-//! and gitignore-awareness questions are issue #1407's, not this seam's, so
-//! there is currently no way to ask [`Walk`] to descend into `target/`,
-//! `.git/` or `node_modules/` at all.
+//! remember.
 //!
 //! This is host-side code (it touches the real filesystem), sitting here
 //! rather than in `brink-driver` because it is the enforcement half of a
 //! policy this crate already owns. Like `RealFs`/`GitRev`, it is never
 //! *constructed* on a wasm-reachable path — the crate link is not the
 //! constraint (see the [module docs](crate)).
+//!
+//! # Issue #1407: escape hatch, gitignore-awareness, diagnostic
+//!
+//! Before #1407, [`Walk`] deliberately offered **no unpruned mode at all** —
+//! a project legitimately keeping sources under a directory named `target/`,
+//! `.git/`, or `node_modules/` had no way to opt out, got no error, and got
+//! no file. #1407 closes that gap with three decisions:
+//!
+//! 1. **Escape hatch: [`Walk::allow`].** Un-prunes specific directory names
+//!    for one `Walk` — the one legal way to widen past the by-construction
+//!    policy (every other builder, [`Walk::prune_also`], can only narrow
+//!    further). `brink-driver`'s `RealFs` wires this to a new `brink.toml`
+//!    key, `[project] unprune-dirs`
+//!    (`brink_project_config::ProjectConfig::unprune_dirs`) — an explicit,
+//!    checked-in, per-project override, not an environment variable or CLI
+//!    flag, so the escape hatch itself stays a deterministic-compilation
+//!    input (#1306): the same tree, compiled by anyone, unprunes the same
+//!    directories.
+//! 2. **Gitignore-awareness: deliberately NOT implemented.** `.gitignore` is
+//!    not consulted anywhere in this crate, and that is a decision, not an
+//!    oversight. Two reasons, both rooted in #1306 (discovery is a
+//!    deterministic-compilation input):
+//!    - `.gitignore` resolution is not fully determined by the *tracked*
+//!      contents of a repository — a local uncommitted edit to `.gitignore`,
+//!      a per-clone `.git/info/exclude`, and a user's global
+//!      `core.excludesFile` can all change what it matches, so two checkouts
+//!      of byte-identical tracked source could discover a different file set
+//!      and silently compile differently. `unprune-dirs` avoids exactly this:
+//!      it lives in `brink.toml`, which is itself tracked, versioned source —
+//!      the same input on every clone.
+//!    - Correctly implementing gitignore's matching semantics (nested
+//!      `.gitignore` files, `!`-negation, anchoring, `.git/info/exclude`,
+//!      global excludes) is a substantial, easy-to-get-subtly-wrong
+//!      reimplementation of git's own resolution logic; a divergence would
+//!      itself become a silent, hard-to-diagnose "files came and went"
+//!      determinism bug — the same failure class #1306 exists to prevent, not
+//!      a fix for it.
+//!
+//!    The actual pain point the issue names — a legitimately-authored source
+//!    file going silently missing — is closed by items 1 and 3 instead,
+//!    without taking on either cost.
+//! 3. **Diagnostic: [`Walk::warn_on_pruned_sources`] /
+//!    [`Walk::pruned_with_sources`].** A caller opts a `Walk` into watching
+//!    for source-shaped files (by extension) sitting directly inside a
+//!    pruned directory; after the walk is drained,
+//!    [`Walk::pruned_with_sources`] names every pruned directory that
+//!    plausibly held something the author wanted. The check is **shallow**
+//!    (the pruned directory's own immediate children only, not a recursive
+//!    descent) — deliberately bounded so noticing a stray source file inside
+//!    a huge `target/` never turns a cheap prune into an expensive walk of
+//!    the very tree being skipped.
+//!
+//! Every pruned directory is still skipped exactly as before unless
+//! [`Walk::allow`] names it — items 1 and 3 change what the walk *reports*,
+//! never what it silently does by default.
 
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -137,25 +189,34 @@ enum Pending {
 pub struct Walk {
     stack: Vec<Pending>,
     also_pruned: Vec<OsString>,
+    allowed: Vec<OsString>,
+    watch_extensions: Vec<OsString>,
+    pruned_with_sources: Vec<PathBuf>,
 }
 
 impl Walk {
     /// Start a pruned walk rooted at `root`. The
     /// [`IGNORED_DIR_NAMES`](crate::IGNORED_DIR_NAMES) policy applies with
-    /// no opt-in and no opt-out.
+    /// no opt-in and no opt-out — unless [`Walk::allow`] names an entry
+    /// explicitly (issue #1407).
     #[must_use]
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self {
             stack: vec![Pending::Descend(root.into())],
             also_pruned: Vec::new(),
+            allowed: Vec::new(),
+            watch_extensions: Vec::new(),
+            pruned_with_sources: Vec::new(),
         }
     }
 
     /// Prune these additional directory names on top of the standing policy
-    /// — strictly narrowing, never widening (there is no way to un-prune an
-    /// [`IGNORED_DIR_NAMES`](crate::IGNORED_DIR_NAMES) entry). For callers
-    /// with a fixture-layout convention of their own, e.g. the test
-    /// harness's `oracle/`/`episodes/` case directories.
+    /// — strictly narrowing, never widening on its own (there is no way for
+    /// `prune_also` itself to un-prune an
+    /// [`IGNORED_DIR_NAMES`](crate::IGNORED_DIR_NAMES) entry; see
+    /// [`Walk::allow`] for the one builder that can). For callers with a
+    /// fixture-layout convention of their own, e.g. the test harness's
+    /// `oracle/`/`episodes/` case directories.
     #[must_use]
     pub fn prune_also<I, S>(mut self, names: I) -> Self
     where
@@ -166,16 +227,95 @@ impl Walk {
         self
     }
 
+    /// Un-prune these directory names for this `Walk` — the escape hatch
+    /// issue #1407 asked for. A name passed here is never pruned, regardless
+    /// of the standing [`IGNORED_DIR_NAMES`](crate::IGNORED_DIR_NAMES)
+    /// policy or [`Walk::prune_also`]; this is the one legal way to widen a
+    /// `Walk` past its by-construction pruning (see the [module docs](self))
+    /// — every other constructor/builder can only narrow further.
+    /// `brink-driver`'s `RealFs` wires this to `brink.toml`'s
+    /// `[project] unprune-dirs`, so the widening stays an explicit,
+    /// checked-in per-project choice rather than something ambient.
+    #[must_use]
+    pub fn allow<I, S>(mut self, names: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<OsString>,
+    {
+        self.allowed.extend(names.into_iter().map(Into::into));
+        self
+    }
+
+    /// Watch for pruned directories that plausibly held a source file (issue
+    /// #1407's diagnostic half): after the walk is drained,
+    /// [`Walk::pruned_with_sources`] names every pruned directory whose own
+    /// **immediate** children include a file with one of these extensions
+    /// (e.g. `"brink"`, no leading dot). Every pruned directory is still
+    /// skipped exactly as before — this only makes
+    /// [`Walk::pruned_with_sources`] non-empty; it never changes what is
+    /// yielded.
+    ///
+    /// The check is deliberately shallow — the pruned directory's immediate
+    /// children only, never a recursive descent into it — so flagging a
+    /// stray source file inside a huge pruned `target/` never turns a cheap
+    /// prune into an expensive walk of the very tree being skipped.
+    #[must_use]
+    pub fn warn_on_pruned_sources<I, S>(mut self, extensions: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<OsString>,
+    {
+        self.watch_extensions
+            .extend(extensions.into_iter().map(Into::into));
+        self
+    }
+
+    /// Every pruned directory this walk has skipped so far whose own
+    /// immediate children include a file with one of the extensions passed
+    /// to [`Walk::warn_on_pruned_sources`] — empty unless that builder was
+    /// called. Populated incrementally as iteration proceeds (a directory
+    /// not yet reached hasn't been checked yet), so read this only after the
+    /// walk has been fully drained.
+    #[must_use]
+    pub fn pruned_with_sources(&self) -> &[PathBuf] {
+        &self.pruned_with_sources
+    }
+
     /// Whether a directory named `name`, found while descending, is pruned.
+    /// [`Walk::allow`] takes priority over both the standing policy and
+    /// [`Walk::prune_also`] — an allowed name is never pruned by this `Walk`.
     fn is_pruned(&self, name: &OsStr) -> bool {
+        if self.allowed.iter().any(|allowed| allowed == name) {
+            return false;
+        }
         is_ignored_dir(name) || self.also_pruned.iter().any(|pruned| pruned == name)
+    }
+
+    /// Whether `dir`'s own immediate children (not a recursive descent — see
+    /// [`Walk::warn_on_pruned_sources`]) include a file whose extension is
+    /// one of `self.watch_extensions`. An unreadable `dir` reports `false`
+    /// rather than propagating an error — this is a best-effort diagnostic
+    /// check on a directory the walk has already decided to skip, not a
+    /// traversal step that must succeed.
+    fn shallow_contains_watched_extension(&self, dir: &Path) -> bool {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return false;
+        };
+        entries.flatten().any(|entry| {
+            entry
+                .path()
+                .extension()
+                .is_some_and(|ext| self.watch_extensions.iter().any(|watched| watched == ext))
+        })
     }
 
     /// List `dir`'s entries, sorted by file name, with pruned directories
     /// already dropped. A failure to read the directory itself is one error
     /// for the whole directory; a failure to stat a single entry is an error
-    /// for that entry alone.
-    fn children(&self, dir: &Path) -> io::Result<Vec<Pending>> {
+    /// for that entry alone. Takes `&mut self` (not `&self`) because a
+    /// pruned directory that shallowly contains a watched extension is
+    /// recorded into `self.pruned_with_sources` as it's found.
+    fn children(&mut self, dir: &Path) -> io::Result<Vec<Pending>> {
         let mut entries = fs::read_dir(dir)?.collect::<io::Result<Vec<_>>>()?;
         entries.sort_by_key(fs::DirEntry::file_name);
         let mut pending = Vec::with_capacity(entries.len());
@@ -183,6 +323,11 @@ impl Walk {
             match entry.file_type() {
                 Ok(file_type) => {
                     if file_type.is_dir() && self.is_pruned(&entry.file_name()) {
+                        if !self.watch_extensions.is_empty()
+                            && self.shallow_contains_watched_extension(&entry.path())
+                        {
+                            self.pruned_with_sources.push(entry.path());
+                        }
                         continue;
                     }
                     pending.push(Pending::Item(Ok(WalkEntry {
@@ -383,6 +528,113 @@ mod tests {
         fs::remove_dir_all(&root).expect("cleanup temp dir");
     }
 
+    /// `allow` un-prunes a standing [`crate::IGNORED_DIR_NAMES`] entry (issue
+    /// #1407's escape hatch): a `node_modules/` directory that would
+    /// otherwise be pruned entirely is walked and yielded like any other
+    /// directory once its name is passed to `allow`, while a *sibling*
+    /// ignored directory not named in `allow` (`target/`) is still pruned.
+    #[test]
+    fn walk_allow_unprunes_a_named_standing_policy_entry() {
+        let root = temp_dir("allow");
+        write(root.join("main.ink"), "main");
+        write(root.join("node_modules/vendor-ink/lib.ink"), "vendored");
+        write(root.join("target/stray.ink"), "stray");
+
+        assert_eq!(
+            relative(&root, Walk::new(&root).allow(["node_modules"])),
+            vec![
+                "main.ink",
+                "node_modules",
+                "node_modules/vendor-ink",
+                "node_modules/vendor-ink/lib.ink",
+            ],
+            "node_modules/ must be un-pruned by `allow`, target/ must stay pruned"
+        );
+
+        fs::remove_dir_all(&root).expect("cleanup temp dir");
+    }
+
+    /// `warn_on_pruned_sources` + `pruned_with_sources`: a pruned directory
+    /// whose immediate children include a watched-extension file is reported
+    /// once drained; a pruned directory with no matching file is not, and
+    /// neither report changes what the walk actually yields (still nothing
+    /// from inside either pruned directory).
+    #[test]
+    fn walk_pruned_with_sources_reports_only_directories_shallowly_holding_watched_files() {
+        let root = temp_dir("pruned-with-sources");
+        write(root.join("main.ink"), "main");
+        write(root.join("node_modules/stray.ink"), "stray");
+        write(root.join(".git/HEAD"), "ref");
+
+        let mut walk = Walk::new(&root).warn_on_pruned_sources(["ink"]);
+        let yielded: Vec<String> = relative_lossy(&root, walk.by_ref());
+
+        assert_eq!(
+            yielded,
+            vec!["main.ink"],
+            "reporting a pruned directory must not change what is yielded"
+        );
+
+        let pruned: Vec<String> = walk
+            .pruned_with_sources()
+            .iter()
+            .map(|p| {
+                p.strip_prefix(&root)
+                    .expect("pruned path is under root")
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert_eq!(
+            pruned,
+            vec!["node_modules"],
+            "only node_modules/ shallowly holds a watched .ink file; .git/ (HEAD, no \
+             extension) must not be reported"
+        );
+
+        fs::remove_dir_all(&root).expect("cleanup temp dir");
+    }
+
+    /// `warn_on_pruned_sources` only checks a pruned directory's *immediate*
+    /// children, never descending further — a watched file nested two levels
+    /// deep inside the pruned directory is not detected. Documents the
+    /// deliberate shallow-check bound (never an expensive recursive scan of
+    /// a skipped subtree).
+    #[test]
+    fn walk_pruned_with_sources_does_not_recurse_into_the_pruned_directory() {
+        let root = temp_dir("pruned-with-sources-shallow");
+        write(root.join("main.ink"), "main");
+        write(root.join("node_modules/pkg/nested.ink"), "nested");
+
+        let mut walk = Walk::new(&root).warn_on_pruned_sources(["ink"]);
+        let _: Vec<String> = relative_lossy(&root, walk.by_ref());
+
+        assert!(
+            walk.pruned_with_sources().is_empty(),
+            "a watched file two levels deep must not be found by the shallow check, got {:?}",
+            walk.pruned_with_sources()
+        );
+
+        fs::remove_dir_all(&root).expect("cleanup temp dir");
+    }
+
+    /// With no call to `warn_on_pruned_sources`, `pruned_with_sources` stays
+    /// empty even though pruned directories with matching files exist — the
+    /// diagnostic is opt-in, never ambient.
+    #[test]
+    fn walk_pruned_with_sources_is_empty_when_never_requested() {
+        let root = temp_dir("pruned-with-sources-opt-in");
+        write(root.join("main.ink"), "main");
+        write(root.join("node_modules/stray.ink"), "stray");
+
+        let mut walk = Walk::new(&root);
+        let _: Vec<String> = relative_lossy(&root, walk.by_ref());
+
+        assert!(walk.pruned_with_sources().is_empty());
+
+        fs::remove_dir_all(&root).expect("cleanup temp dir");
+    }
+
     /// A nonexistent root yields exactly one error and then ends — callers
     /// that `?` it get the I/O error, callers that `.flatten()` get an empty
     /// walk, and neither loops.
@@ -490,9 +742,13 @@ mod tests {
     }
 
     /// [`relative`] but dropping errored entries — for fixtures that
-    /// deliberately contain an unreadable branch.
-    #[cfg(unix)]
-    fn relative_lossy(root: &Path, walk: Walk) -> Vec<String> {
+    /// deliberately contain an unreadable branch, or for a caller that needs
+    /// to keep the `Walk` alive afterward (via `walk.by_ref()`) to read
+    /// state it accumulated during iteration (e.g. `pruned_with_sources`).
+    fn relative_lossy(
+        root: &Path,
+        walk: impl Iterator<Item = io::Result<WalkEntry>>,
+    ) -> Vec<String> {
         walk.flatten()
             .map(|entry| {
                 entry
