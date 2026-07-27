@@ -9,8 +9,8 @@
 //! the recognizer can match as `Plain` or `Template`.
 
 use super::types::{
-    Block, CondBranch, Conditional, Content, ContentPart, HirFile, Sequence, SequenceType, Stmt,
-    Tag,
+    Block, CondBranch, Conditional, Content, ContentPart, HirFile, Sequence, SequenceBranch,
+    SequenceType, Stmt, Tag,
 };
 
 // ─── Public entry point ─────────────────────────────────────────────
@@ -76,7 +76,7 @@ fn normalize_block(block: &mut Block) {
             }
             Stmt::Sequence(mut seq) => {
                 for branch in &mut seq.branches {
-                    normalize_block(branch);
+                    normalize_block(&mut branch.body);
                 }
                 new_stmts.push(Stmt::Sequence(seq));
             }
@@ -92,7 +92,7 @@ fn normalize_block(block: &mut Block) {
         match stmt {
             Stmt::Sequence(seq) => {
                 for branch in &mut seq.branches {
-                    normalize_block(branch);
+                    normalize_block(&mut branch.body);
                 }
             }
             Stmt::Conditional(cond) => {
@@ -134,7 +134,7 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
         ContentPart::InlineSequence(seq) => {
             let mut branches = Vec::with_capacity(seq.branches.len() + 1);
             for branch in &seq.branches {
-                let mut b = branch.clone();
+                let mut b = branch.body.clone();
                 splice_around(&mut b, &prefix, &suffix, tags, ptr);
                 if trailing_eol {
                     b.stmts.push(Stmt::EndOfLine);
@@ -144,7 +144,10 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
                 // be stale — recompute it (harmless today, load-bearing at the
                 // S3 cutover). This pass runs on cloned HIR right before LIR.
                 b.recompute_tail();
-                branches.push(b);
+                branches.push(SequenceBranch {
+                    ptr: branch.ptr,
+                    body: b,
+                });
             }
 
             // `once` sequences exhaust their branches and then produce nothing.
@@ -164,7 +167,14 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
                     exhausted.stmts.push(Stmt::EndOfLine);
                 }
                 exhausted.recompute_tail();
-                branches.push(exhausted);
+                // Synthesized branch, not sourced from a real arm — the
+                // whole sequence's own span is the narrowest available
+                // fallback (matches the "no dedicated source node" posture
+                // documented on `SequenceBranch`).
+                branches.push(SequenceBranch {
+                    ptr: seq.ptr,
+                    body: exhausted,
+                });
                 // Replace `once` with `stopping` so the exhausted branch repeats.
                 (seq.kind & !SequenceType::ONCE) | SequenceType::STOPPING
             } else {
@@ -188,6 +198,7 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
                 }
                 body.recompute_tail();
                 branches.push(CondBranch {
+                    ptr: branch.ptr,
                     // B1b (issue #1475): a lifted inline `{if EXPR as n: …}`
                     // keeps its binding — this rebuild is a body rewrite
                     // (prefix/suffix splice), not a re-lowering, so dropping
@@ -211,7 +222,11 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
                     else_body.stmts.push(Stmt::EndOfLine);
                 }
                 else_body.recompute_tail();
+                // Synthesized branch, not sourced from a real arm — falls
+                // back to the whole conditional's own span (see
+                // `SequenceBranch`'s doc for the same posture).
                 branches.push(CondBranch {
+                    ptr: cond.ptr,
                     condition: None,
                     binding: None,
                     body: else_body,
@@ -395,11 +410,14 @@ mod tests {
                         })]
                     };
                     let tail = crate::tail_from_stmts(&stmts);
-                    Block {
-                        label: None,
-                        stmts,
-                        container_id: None,
-                        tail,
+                    SequenceBranch {
+                        ptr,
+                        body: Block {
+                            label: None,
+                            stmts,
+                            container_id: None,
+                            tail,
+                        },
                     }
                 })
                 .collect(),
@@ -426,6 +444,7 @@ mod tests {
                     };
                     let tail = crate::tail_from_stmts(&stmts);
                     CondBranch {
+                        ptr,
                         condition,
                         binding: None,
                         body: Block {
@@ -515,6 +534,7 @@ mod tests {
             ptr: dummy_ptr(),
             kind: CondKind::InitialCondition,
             branches: vec![CondBranch {
+                ptr: dummy_ptr(),
                 condition: Some(Expr::Bool(true)),
                 binding: None,
                 body: divert_body,
@@ -572,19 +592,19 @@ mod tests {
         assert_eq!(seq.branches.len(), 2);
 
         // Branch 0: Content("It's a fine day.") + EndOfLine
-        assert_eq!(seq.branches[0].stmts.len(), 2);
-        let Stmt::Content(c0) = &seq.branches[0].stmts[0] else {
+        assert_eq!(seq.branches[0].body.stmts.len(), 2);
+        let Stmt::Content(c0) = &seq.branches[0].body.stmts[0] else {
             panic!("expected Content");
         };
         assert_eq!(content_text(c0), "It's a fine day.");
-        assert!(matches!(seq.branches[0].stmts[1], Stmt::EndOfLine));
+        assert!(matches!(seq.branches[0].body.stmts[1], Stmt::EndOfLine));
 
         // Branch 1: Content("It's a good day.") + EndOfLine
-        let Stmt::Content(c1) = &seq.branches[1].stmts[0] else {
+        let Stmt::Content(c1) = &seq.branches[1].body.stmts[0] else {
             panic!("expected Content");
         };
         assert_eq!(content_text(c1), "It's a good day.");
-        assert!(matches!(seq.branches[1].stmts[1], Stmt::EndOfLine));
+        assert!(matches!(seq.branches[1].body.stmts[1], Stmt::EndOfLine));
     }
 
     #[test]
@@ -639,12 +659,12 @@ mod tests {
         };
 
         // Tags should be on the first content of each branch.
-        let Stmt::Content(c0) = &seq.branches[0].stmts[0] else {
+        let Stmt::Content(c0) = &seq.branches[0].body.stmts[0] else {
             panic!("expected Content");
         };
         assert_eq!(c0.tags.len(), 1);
 
-        let Stmt::Content(c1) = &seq.branches[1].stmts[0] else {
+        let Stmt::Content(c1) = &seq.branches[1].body.stmts[0] else {
             panic!("expected Content");
         };
         assert_eq!(c1.tags.len(), 1);
@@ -668,7 +688,7 @@ mod tests {
             panic!("expected Sequence");
         };
         // No EndOfLine since there was no trailing EOL.
-        assert_eq!(seq.branches[0].stmts.len(), 1);
+        assert_eq!(seq.branches[0].body.stmts.len(), 1);
     }
 
     #[test]
@@ -691,7 +711,7 @@ mod tests {
         assert_eq!(seq.branches.len(), 3);
 
         // Branch 1 (empty) should still get "It's  fine".
-        let Stmt::Content(c1) = &seq.branches[1].stmts[0] else {
+        let Stmt::Content(c1) = &seq.branches[1].body.stmts[0] else {
             panic!("expected Content in empty branch");
         };
         assert_eq!(content_text(c1), "It's  fine");
@@ -760,6 +780,7 @@ mod tests {
             ptr: dummy_ptr(),
             kind: CondKind::IfElse,
             branches: vec![CondBranch {
+                ptr: dummy_ptr(),
                 condition: Some(Expr::Bool(true)),
                 binding: None,
                 body: mk_block(vec![Stmt::Content(body_content), Stmt::EndOfLine]),

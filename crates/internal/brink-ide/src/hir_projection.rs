@@ -413,7 +413,7 @@ impl ProjectionVisitor<'_> {
     /// A sequence's branch bodies as container spans (block-level or inline).
     fn push_seq_branches(&mut self, seq: &Sequence) {
         for branch in &seq.branches {
-            if let Some(ext) = block_extent(branch) {
+            if let Some(ext) = block_extent(&branch.body) {
                 self.push_container(ext, SpanKind::SequenceBranch, None);
             }
         }

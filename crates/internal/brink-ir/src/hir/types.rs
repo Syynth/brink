@@ -741,6 +741,14 @@ pub struct Conditional {
 /// A branch within a multiline conditional.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CondBranch {
+    /// This branch's own source span — condition (if any) plus body —
+    /// distinct from the enclosing [`Conditional::ptr`]'s whole-construct
+    /// span (issue #404). Lets a diagnostic or editor decoration (e.g. a
+    /// `- else:` fold anchor) point at this branch specifically instead of
+    /// the entire conditional. Best-effort: a branch shape with no
+    /// dedicated source node (e.g. the branchless-body form's implicit
+    /// first branch) falls back to the narrowest real span available.
+    pub ptr: Provenance,
     /// `None` for the else branch.
     pub condition: Option<Expr>,
     /// The `as` binding of the template condition form `{if EXPR as NAME:
@@ -761,10 +769,21 @@ pub struct CondBranch {
 pub struct Sequence {
     pub ptr: Provenance,
     pub kind: SequenceType,
-    pub branches: Vec<Block>,
+    pub branches: Vec<SequenceBranch>,
     /// Pre-assigned container ID for the sequence wrapper container.
     /// Stamped by [`super::stamp_container_ids`].
     pub container_id: Option<brink_format::DefinitionId>,
+}
+
+/// A branch (alternative) within a sequence, paired with its own source
+/// span (issue #404) — mirrors [`CondBranch::ptr`]. Best-effort: native's
+/// pipe-separated inline alternatives (`{~ a|b|c}`) have no dedicated
+/// per-alternative CST node, so their span is the union of the
+/// alternative's own child nodes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SequenceBranch {
+    pub ptr: Provenance,
+    pub body: Block,
 }
 
 // ─── Control flow ───────────────────────────────────────────────────

@@ -44,32 +44,7 @@ fn lower_conditional_with_expr(
 
     // Branchless body: `{x: content}`
     if let Some(body) = cond.branchless_body() {
-        use super::super::block::LowerBlock;
-        let block = body.lower_block(scope, sink).unwrap_or_default();
-        branches.push(CondBranch {
-            condition: Some(condition.clone()),
-            binding: None,
-            body: block,
-            container_id: None,
-        });
-        if let Some(else_branch) = body.else_branch()
-            && let Some(ml_branch) = else_branch.branch()
-        {
-            let else_body = ml_branch.body().map_or_else(Block::default, |body| {
-                lower_branch_body(body.syntax(), scope, sink)
-            });
-            branches.push(CondBranch {
-                condition: None,
-                binding: None,
-                body: else_body,
-                container_id: None,
-            });
-        }
-        return Conditional {
-            ptr,
-            kind: CondKind::InitialCondition,
-            branches,
-        };
+        return lower_branchless_body(&body, condition, ptr, scope, sink);
     }
 
     // Inline branches: `{x: a | b}`
@@ -83,6 +58,7 @@ fn lower_conditional_with_expr(
                 None
             };
             branches.push(CondBranch {
+                ptr: scope.prov(NodeClass::ConditionalBranch, b.syntax()),
                 condition: cond_expr,
                 binding: None,
                 body: wrap_content_as_block(b.syntax(), scope, sink),
@@ -112,6 +88,7 @@ fn lower_conditional_with_expr(
                 lower_branch_body(body.syntax(), scope, sink)
             });
             branches.push(CondBranch {
+                ptr: scope.prov(NodeClass::ConditionalBranch, b.syntax()),
                 condition: cond_expr,
                 binding: None,
                 body,
@@ -135,13 +112,59 @@ fn lower_conditional_with_expr(
         };
     }
 
-    // Fallback: bare condition, no body
+    // Fallback: bare condition, no body — no branch node exists at all, so
+    // the whole conditional's own span is the narrowest available.
     branches.push(CondBranch {
+        ptr,
         condition: Some(condition.clone()),
         binding: None,
         body: Block::default(),
         container_id: None,
     });
+    Conditional {
+        ptr,
+        kind: CondKind::InitialCondition,
+        branches,
+    }
+}
+
+/// `{x: content}` / `{x: content | else_body}` (branchless-body form): the
+/// implicit first arm has no dedicated branch node, so its span is its own
+/// body's; the `else` arm (if any) is a real `MultilineBranchCond`.
+fn lower_branchless_body(
+    body: &ast::BranchlessCondBody,
+    condition: &Expr,
+    ptr: Provenance,
+    scope: &LowerScope,
+    sink: &mut impl LowerSink,
+) -> Conditional {
+    use super::super::block::LowerBlock;
+
+    let mut branches = Vec::new();
+    let branch_ptr = scope.prov(NodeClass::ConditionalBranch, body.syntax());
+    let block = body.lower_block(scope, sink).unwrap_or_default();
+    branches.push(CondBranch {
+        ptr: branch_ptr,
+        condition: Some(condition.clone()),
+        binding: None,
+        body: block,
+        container_id: None,
+    });
+    if let Some(else_branch) = body.else_branch()
+        && let Some(ml_branch) = else_branch.branch()
+    {
+        let else_ptr = scope.prov(NodeClass::ConditionalBranch, ml_branch.syntax());
+        let else_body = ml_branch.body().map_or_else(Block::default, |body| {
+            lower_branch_body(body.syntax(), scope, sink)
+        });
+        branches.push(CondBranch {
+            ptr: else_ptr,
+            condition: None,
+            binding: None,
+            body: else_body,
+            container_id: None,
+        });
+    }
     Conditional {
         ptr,
         kind: CondKind::InitialCondition,

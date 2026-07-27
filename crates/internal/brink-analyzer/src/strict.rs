@@ -1191,7 +1191,7 @@ fn check_void_stmt(
         }
         Stmt::Sequence(s) => {
             for branch in &s.branches {
-                check_void_block(file, branch, void_defs, resolution_by_range, out);
+                check_void_block(file, &branch.body, void_defs, resolution_by_range, out);
             }
         }
         Stmt::Content(c) => check_void_content(file, c, void_defs, resolution_by_range, out),
@@ -1233,7 +1233,7 @@ fn check_void_content(
             }
             ContentPart::InlineSequence(s) => {
                 for branch in &s.branches {
-                    check_void_block(file, branch, void_defs, resolution_by_range, out);
+                    check_void_block(file, &branch.body, void_defs, resolution_by_range, out);
                 }
             }
             ContentPart::Interpolation(_)
@@ -1426,7 +1426,7 @@ fn collect_temps_stmt(
         }
         Stmt::Sequence(s) => {
             for branch in &s.branches {
-                collect_temps_block(branch, names, out);
+                collect_temps_block(&branch.body, names, out);
             }
         }
         Stmt::Content(c) => collect_temps_content(c, names, out),
@@ -1462,7 +1462,7 @@ fn collect_temps_content(
             }
             ContentPart::InlineSequence(s) => {
                 for branch in &s.branches {
-                    collect_temps_block(branch, names, out);
+                    collect_temps_block(&branch.body, names, out);
                 }
             }
             ContentPart::Interpolation(_)

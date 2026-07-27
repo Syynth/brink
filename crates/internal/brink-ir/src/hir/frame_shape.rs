@@ -443,7 +443,7 @@ impl Analyzer {
 
     fn walk_sequence(&mut self, seq: &Sequence) {
         for branch in &seq.branches {
-            self.walk_block(branch);
+            self.walk_block(&branch.body);
         }
     }
 }

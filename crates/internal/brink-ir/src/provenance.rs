@@ -149,6 +149,16 @@ pub enum NodeClass {
     Include = 49,
     /// An infix (binary) operation — `lhs op rhs` (issue #1517).
     Infix = 50,
+    /// One branch of a multiline/inline conditional (issue #404) — the
+    /// branch's condition-plus-body span, distinct from the enclosing
+    /// [`Self::Conditional`]'s whole-construct span. Lets a diagnostic or
+    /// editor decoration (e.g. a fold run) anchor to a single `- else:`
+    /// arm instead of the entire `{ ... }` block.
+    ConditionalBranch = 51,
+    /// One branch (alternative) of a sequence/alternation block (issue
+    /// #404), mirroring [`Self::ConditionalBranch`] for `- ...` sequence
+    /// arms and `|`-separated inline alternatives.
+    SequenceBranch = 52,
 }
 
 impl NodeClass {
@@ -201,6 +211,8 @@ impl NodeClass {
             48 => Self::ExternalDecl,
             49 => Self::Include,
             50 => Self::Infix,
+            51 => Self::ConditionalBranch,
+            52 => Self::SequenceBranch,
             _ => return None,
         })
     }
@@ -365,7 +377,10 @@ mod tests {
                 assert_eq!(class.as_u16(), v);
             }
         }
-        assert_eq!(NodeClass::from_u16(NodeClass::Infix.as_u16() + 1), None);
+        assert_eq!(
+            NodeClass::from_u16(NodeClass::SequenceBranch.as_u16() + 1),
+            None
+        );
         assert_eq!(NodeClass::from_u16(2), None, "generic range is reserved");
     }
 

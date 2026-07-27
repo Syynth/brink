@@ -88,7 +88,7 @@ fn lower_inline_sequence(seq: &hir::Sequence, ctx: &mut LowerCtx<'_>) -> lir::Co
     let branches = seq
         .branches
         .iter()
-        .map(|b| lower_inline_block(b, ctx))
+        .map(|b| lower_inline_block(&b.body, ctx))
         .collect();
 
     let display_name = format!("s-{seq_idx}");

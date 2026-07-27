@@ -529,7 +529,7 @@ impl Projector {
 
     fn walk_sequence(&mut self, seq: &Sequence, knot: Option<&str>, stitch: Option<&str>) {
         for branch in &seq.branches {
-            self.walk_block(branch, knot, stitch);
+            self.walk_block(&branch.body, knot, stitch);
         }
     }
 

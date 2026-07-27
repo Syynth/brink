@@ -1105,10 +1105,10 @@ fn lower_block_with_children(
                         let mut bc = 0;
                         let mut gc = 0;
                         let (body, branch_children) =
-                            lower_block_with_children(b, ctx, &mut bc, &mut gc);
+                            lower_block_with_children(&b.body, ctx, &mut bc, &mut gc);
 
                         // Read pre-stamped container ID from HIR branch block.
-                        let branch_id = b.container_id.unwrap_or(ctx.root_id);
+                        let branch_id = b.body.container_id.unwrap_or(ctx.root_id);
 
                         let branch_container = lir::Container {
                             id: branch_id,

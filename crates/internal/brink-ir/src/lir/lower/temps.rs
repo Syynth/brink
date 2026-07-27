@@ -67,7 +67,7 @@ fn collect_temps_from_stmt(stmt: &hir::Stmt, map: &mut TempMap, next_slot: &mut 
         }
         hir::Stmt::Sequence(seq) => {
             for branch in &seq.branches {
-                collect_temps_from_block(branch, map, next_slot);
+                collect_temps_from_block(&branch.body, map, next_slot);
             }
         }
         hir::Stmt::LabeledBlock(block) => {

@@ -182,13 +182,15 @@ fn collect_block(block: &hir::Block, out: &mut Vec<Provenance>) {
             hir::Stmt::Conditional(c) => {
                 out.push(c.ptr);
                 for b in &c.branches {
+                    out.push(b.ptr);
                     collect_block(&b.body, out);
                 }
             }
             hir::Stmt::Sequence(s) => {
                 out.push(s.ptr);
                 for b in &s.branches {
-                    collect_block(b, out);
+                    out.push(b.ptr);
+                    collect_block(&b.body, out);
                 }
             }
             hir::Stmt::LogicBlock(lb) => out.push(lb.ptr),
@@ -466,6 +468,7 @@ fn garble_conditional(c: &mut hir::Conditional) {
         garble_expr(e);
     }
     for branch in &mut c.branches {
+        garble(&mut branch.ptr);
         if let Some(cond) = &mut branch.condition {
             garble_expr(cond);
         }
@@ -476,7 +479,8 @@ fn garble_conditional(c: &mut hir::Conditional) {
 fn garble_sequence(s: &mut hir::Sequence) {
     garble(&mut s.ptr);
     for branch in &mut s.branches {
-        garble_block(branch);
+        garble(&mut branch.ptr);
+        garble_block(&mut branch.body);
     }
 }
 

@@ -179,7 +179,7 @@ fn walk_stmt_for_depth(
         brink_ir::Stmt::Sequence(seq) => {
             set_depth_for_range(seq.ptr.text_range(), depth, line_starts, depth_map);
             for branch in &seq.branches {
-                walk_block_for_depth(branch, depth + 1, line_starts, depth_map);
+                walk_block_for_depth(&branch.body, depth + 1, line_starts, depth_map);
             }
         }
         // T1b `~ { … }` blocks (docs/t1b-surface-spec.md §2, brink
