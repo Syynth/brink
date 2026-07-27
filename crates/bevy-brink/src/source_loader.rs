@@ -1656,6 +1656,20 @@ mod config_discovery_tests {
              'warn, never silently drop' rule every other mount's config \
              resolution already follows); captured: {joined}"
         );
+
+        // Prove the drop, not just its announcement (house rule 19t): the
+        // shared `InkLoader` this app ends up with must still be running
+        // under the strict-ink default, not `MarkerB`'s `dialect = brink`
+        // override -- if a future change ever let a later marker's config
+        // reach `InkLoader` after all, this would start failing (green,
+        // while the warning above kept firing as a lie) unless it's pinned
+        // down here too.
+        dir.insert_asset_text(Path::new("intro.ink"), BRINK_ONLY_SOURCE);
+        let handle = app
+            .world()
+            .resource::<AssetServer>()
+            .load::<BrinkStoryAsset>("intro.ink");
+        wait_for_failed(&mut app, &handle);
     }
 
     #[test]

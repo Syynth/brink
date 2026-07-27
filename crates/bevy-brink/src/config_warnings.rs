@@ -50,7 +50,7 @@ use brink_project_config::ProjectConfig;
 /// appends here — a distinct, single-sentence message (not the
 /// per-lint-code shape above, since none of that config's fields were even
 /// evaluated) pushed by `BrinkPlugin::<M>`'s own
-/// [`Plugin::build`](bevy_app::Plugin) rather than [`Self::from_config`]
+/// [`build`](bevy_app::Plugin::build) rather than `Self::from_config`
 /// below. Previously this whole class of drop reached neither this
 /// resource nor `tracing::warn!` at all (the issue #1382 sweep's finding);
 /// both channels now carry it.
