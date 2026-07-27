@@ -483,17 +483,38 @@ pub fn analyze_with_options(
 ///
 /// An empty map reproduces [`analyze_with_options`] exactly.
 ///
-/// `is_native` (issue #1562 review finding) is the same widening
-/// [`symbol_index_with_modules`]'s own `is_native` describes: M-2d
-/// cross-declared-module coexistence must not depend on `opts.dialect`
-/// being `Dialect::Brink` for a project with no ink dialect to be wrong
-/// about. Callers that know the project's `Language` from a `ProjectDb`
-/// (`brink-lsp`'s `analysis_loop`, via `ProjectDb::is_native`) pass the real
-/// value; every other caller passes `false`, unchanged from before this
-/// parameter existed — [`analyze_with_options`] always does, and so does
-/// this crate's own `finish_analysis`/`per_file_diagnostics`/
-/// `strict_diagnostics` machinery below, which stays scoped to the narrower
-/// ink-only `E064` gate it already had (issue #1348).
+/// `is_native` declares that every file in `files` is native (`.brink`)
+/// source, and selects the native arm of **every** analyzer pass this
+/// function composes (issue #1358) — not just the symbol index it originally
+/// reached (issue #1562):
+///
+/// - [`symbol_index_with_modules`] — M-2d cross-declared-module coexistence
+///   stops depending on `opts.dialect` being `Dialect::Brink`.
+/// - [`per_file_diagnostics`], via [`finish_analysis`] — the ink-only T1b
+///   dialect gate (`E051`) is skipped, and the construction-literal checks
+///   (`E084`/`E106`/`E138`) widen past the brink-only block.
+/// - [`native_strict_only_error`] (`E137`), via [`finish_analysis`] — the
+///   B0.9 strict-only gate, which has no meaning for ink source at all.
+/// - [`strict_diagnostics`], via [`whole_project_diagnostics`] — the ink-only
+///   `types = strict` config error (`E064`) is skipped (issue #1348).
+///
+/// This is the whole point of the flag: before #1358 it reached only the
+/// first bullet, so a caller analyzing native source off-db still got the
+/// ink arm of the per-file and whole-project passes — spurious `E051`/`E064`
+/// on every editor surface, and `E137` unreachable there. `brink-db`'s
+/// salsa queries have always selected these arms from their own
+/// `Language` classification; this makes the pure path able to express the
+/// same combination.
+///
+/// Callers that know the project's `Language` from a `ProjectDb`
+/// (`brink-lsp`'s `analysis_loop` via `ProjectDb::is_native`, `IdeSession`
+/// via `ProjectDb::is_all_native`) pass the real value; every other caller
+/// passes `false`, unchanged from before this parameter existed —
+/// [`analyze_with_options`] always does.
+///
+/// It is a whole-project flag, so `true` is only correct for a file set that
+/// is *entirely* native; a mixed set must pass `false` (the analyzer has no
+/// file paths and so cannot classify per file itself).
 pub fn analyze_with_modules(
     files: &[(FileId, &HirFile, &SymbolManifest)],
     modules: &ModuleMap,
@@ -530,7 +551,15 @@ pub fn analyze_with_modules(
         diagnostics.extend(file_diags);
     }
 
-    finish_analysis(files, index, resolutions, diagnostics, opts, None)
+    finish_analysis(
+        files,
+        index,
+        resolutions,
+        diagnostics,
+        opts,
+        is_native,
+        None,
+    )
 }
 
 /// Per-file diagnostic contributors (issue #632 / FG-3,
@@ -917,12 +946,25 @@ pub fn strict_diagnostics(
 /// error. The `types = strict` + wrong-dialect config error (`E064`) is
 /// computed exactly once, inside [`strict_diagnostics`] (issue #632's
 /// TM-3-interaction fence).
+///
+/// `is_native` (issue #1358): every file is native (`.brink`) source, so the
+/// ink-only `E064` config error is skipped — forwarded verbatim to
+/// [`strict_diagnostics`], whose own `is_native` doc has the reasoning
+/// (issue #1348). `brink-db`'s `whole_project_diagnostics_query` passes its
+/// own `project_is_native` answer at the same seam, but that answer is
+/// entry-anchored — it reads `false` whenever the db has no entry set — so
+/// it does not automatically agree with a caller-computed `is_native` for a
+/// db that never calls `set_entry` (e.g. `IdeSession`'s editor/LSP analysis
+/// path, as opposed to `IdeSession::compile`). Callers of this function are
+/// responsible for supplying an `is_native` that actually matches their file
+/// set.
 #[must_use]
 pub fn whole_project_diagnostics(
     files: &[(FileId, &HirFile, &SymbolManifest)],
     index: &SymbolIndex,
     resolutions: &ResolutionMap,
     opts: &AnalysisOptions,
+    is_native: bool,
     strict_inference: Option<&InferenceResult>,
 ) -> (Vec<Diagnostic>, BTreeMap<DefinitionId, SymbolMeta>) {
     let manifest_inputs: Vec<(FileId, &SymbolManifest)> = files
@@ -948,9 +990,7 @@ pub fn whole_project_diagnostics(
         index,
         resolutions,
         opts,
-        // No `Language` classification exists at this layer (issue #1348) —
-        // same reasoning as `finish_analysis`'s `per_file_diagnostics` call.
-        false,
+        is_native,
         strict_inference,
         &inline_docs,
     ));
@@ -1266,6 +1306,16 @@ fn hir_has_effects_assertion(hir: &HirFile) -> bool {
 /// identical to the monolithic one by construction (pinned by
 /// `query_equivalence.rs`).
 ///
+/// `is_native`: every file in `files` is native (`.brink`) source — see
+/// [`analyze_with_modules`]'s own `is_native` doc for the full list of arms
+/// it selects (issue #1358). Forwarded to [`per_file_diagnostics`] and
+/// [`whole_project_diagnostics`], and it is what makes the B0.9 strict-only
+/// gate ([`native_strict_only_error`], `E137`) reachable from this path at
+/// all. The analyzer has no file paths of its own, so this is a caller-
+/// supplied classification: a caller with a `ProjectDb` reads it from there,
+/// and one without passes `false` (the ink arm, byte-identical to this
+/// function before the parameter existed).
+///
 /// `strict_inference`: see [`whole_project_diagnostics`]'s doc — forwarded
 /// unchanged.
 pub fn finish_analysis(
@@ -1274,6 +1324,7 @@ pub fn finish_analysis(
     resolutions: ResolutionMap,
     mut diagnostics: Vec<Diagnostic>,
     opts: &AnalysisOptions,
+    is_native: bool,
     strict_inference: Option<&infer::InferenceResult>,
 ) -> AnalysisResult {
     for &(file_id, hir, _manifest) in files {
@@ -1288,16 +1339,26 @@ pub fn finish_analysis(
             &file_resolutions,
             &index,
             opts.dialect,
-            // The pure path has no `Language` classification of its own
-            // (issue #1348) — only `brink-db`'s salsa query path, which
-            // knows a file's path, can tell native from ink.
-            false,
+            is_native,
             opts.host_manifest.as_ref(),
         ));
+        if is_native {
+            // The B0.9 native strict-only gate, in the same per-file
+            // position `brink-db`'s `per_file_diagnostics_query` runs it
+            // (right after the per-file contributors for that file), so the
+            // composed and monolithic paths stay order-identical.
+            diagnostics.extend(native_strict_only_error(file_id, opts.types));
+        }
     }
 
-    let (whole_diagnostics, symbol_meta) =
-        whole_project_diagnostics(files, &index, &resolutions, opts, strict_inference);
+    let (whole_diagnostics, symbol_meta) = whole_project_diagnostics(
+        files,
+        &index,
+        &resolutions,
+        opts,
+        is_native,
+        strict_inference,
+    );
     diagnostics.extend(whole_diagnostics);
 
     AnalysisResult {
@@ -1354,9 +1415,9 @@ mod tests {
     use brink_ir::{BaseType, HostManifest, SemanticTypeDef};
 
     use super::{
-        AnalysisOptions, Dialect, FileId, ImportScope, LintLevel, LintPolicy, ProjectConfig,
-        SemanticTypeDiagnosticSeverity, TypePolicy, analyze, analyze_with_options,
-        per_file_diagnostics, resolve, symbol_index,
+        AnalysisOptions, Dialect, FileId, ImportScope, LintLevel, LintPolicy, ModuleMap,
+        ProjectConfig, SemanticTypeDiagnosticSeverity, TypePolicy, analyze, analyze_with_modules,
+        analyze_with_options, per_file_diagnostics, resolve, symbol_index,
     };
 
     /// ink with an `EXTERNAL` whose param is typed with a host semantic type
@@ -1694,6 +1755,169 @@ EXTERNAL add_state(who)
                 .iter()
                 .any(|d| d.code == brink_ir::DiagnosticCode::E051),
             "ink must still see the dialect gate: {diags:?}"
+        );
+    }
+
+    // ── analyze_with_modules: is_native reaches the per-file and
+    //    whole-project arms too (issue #1358) ──────────────────────────
+
+    /// The composed pure path — not just the `per_file_diagnostics` seam
+    /// directly — must skip the ink-only T1b gate for native source.
+    /// Before #1358 `analyze_with_modules`'s `is_native` reached only the
+    /// symbol index, so this `E051` leaked into every editor surface that
+    /// analyzes off-db.
+    #[test]
+    fn analyze_with_modules_is_native_true_skips_the_dialect_gate() {
+        let (hir, manifest) = lower_one("~ x = a[0]\n");
+        let result = analyze_with_modules(
+            &[(FileId(0), &hir, &manifest)],
+            &ModuleMap::new(),
+            &AnalysisOptions::default(),
+            true,
+        );
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E051),
+            "native must never see the ink-only dialect gate: {:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
+    fn analyze_with_modules_is_native_false_unaffected_still_flags_extension_syntax() {
+        let (hir, manifest) = lower_one("~ x = a[0]\n");
+        let result = analyze_with_modules(
+            &[(FileId(0), &hir, &manifest)],
+            &ModuleMap::new(),
+            &AnalysisOptions::default(),
+            false,
+        );
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E051),
+            "ink must still see the dialect gate: {:?}",
+            result.diagnostics
+        );
+    }
+
+    /// `E064` rejects `types = strict` under a non-`brink` **dialect** — an
+    /// ink-only axis. A native project carries `StrictInk` by default (it
+    /// has no dialect opinion), so before #1358 dialing `types = strict` on
+    /// the pure path produced this spurious project-level error.
+    #[test]
+    fn analyze_with_modules_is_native_true_skips_the_ink_only_config_error() {
+        let (hir, manifest) = lower_one("=== start ===\nHello.\n-> DONE\n");
+        let opts = AnalysisOptions {
+            types: Some(TypePolicy::Strict),
+            ..AnalysisOptions::default()
+        };
+        let result = analyze_with_modules(
+            &[(FileId(0), &hir, &manifest)],
+            &ModuleMap::new(),
+            &opts,
+            true,
+        );
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E064),
+            "native has no dialect to be wrong about: {:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
+    fn analyze_with_modules_is_native_false_unaffected_still_fires_config_error() {
+        let (hir, manifest) = lower_one("=== start ===\nHello.\n-> DONE\n");
+        let opts = AnalysisOptions {
+            types: Some(TypePolicy::Strict),
+            ..AnalysisOptions::default()
+        };
+        let result = analyze_with_modules(
+            &[(FileId(0), &hir, &manifest)],
+            &ModuleMap::new(),
+            &opts,
+            false,
+        );
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E064),
+            "ink must still get the config error: {:?}",
+            result.diagnostics
+        );
+    }
+
+    /// The B0.9 strict-only gate (`E137`): explicit `types = gradual` is not
+    /// a policy native source can be compiled under. `brink-db`'s
+    /// `per_file_diagnostics_query` has always run it; the pure path could
+    /// not express it at all before #1358.
+    #[test]
+    fn analyze_with_modules_is_native_true_reports_the_native_strict_only_error() {
+        let (hir, manifest) = lower_one("=== start ===\nHello.\n-> DONE\n");
+        let opts = AnalysisOptions {
+            types: Some(TypePolicy::Gradual),
+            ..AnalysisOptions::default()
+        };
+        let result = analyze_with_modules(
+            &[(FileId(0), &hir, &manifest)],
+            &ModuleMap::new(),
+            &opts,
+            true,
+        );
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E137),
+            "explicit `types = gradual` is a native config error: {:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
+    fn analyze_with_modules_is_native_false_never_reports_the_native_strict_only_error() {
+        let (hir, manifest) = lower_one("=== start ===\nHello.\n-> DONE\n");
+        let opts = AnalysisOptions {
+            types: Some(TypePolicy::Gradual),
+            ..AnalysisOptions::default()
+        };
+        let result = analyze_with_modules(
+            &[(FileId(0), &hir, &manifest)],
+            &ModuleMap::new(),
+            &opts,
+            false,
+        );
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E137),
+            "`E137` is native-only: {:?}",
+            result.diagnostics
+        );
+    }
+
+    /// The module-blind convenience wrapper stays the ink path, byte for
+    /// byte — it has no `Language` classification to offer.
+    #[test]
+    fn analyze_with_options_stays_the_ink_arm() {
+        let (hir, manifest) = lower_one("~ x = a[0]\n");
+        let result =
+            analyze_with_options(&[(FileId(0), &hir, &manifest)], &AnalysisOptions::default());
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E051),
+            "{:?}",
+            result.diagnostics
         );
     }
 

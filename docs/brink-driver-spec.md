@@ -202,7 +202,9 @@ impl Driver {
     /// Does not cache the result (the caller owns it). Module-aware and
     /// options-honoring (#1553): runs with the db's own `module_map()` and
     /// registered `AnalysisOptions`, and folds in the map's stem-collision
-    /// diagnostics for the given files.
+    /// diagnostics for the given files. Native-aware (#1358): an all-native
+    /// `file_ids` selects the native rule arm (no ink-only E051/E064, and
+    /// the B0.9 strict-only E137 gate runs); a mixed subset stays on ink.
     pub fn analyze_project(&self, file_ids: &[FileId]) -> AnalysisResult;
 
     /// Snapshot analysis inputs for a subset of files.

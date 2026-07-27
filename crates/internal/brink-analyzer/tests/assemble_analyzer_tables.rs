@@ -19,22 +19,21 @@
 //! needs a human to extend a fixture like this one.
 //!
 //! `analyze_native` below deliberately mirrors `brink-test-harness`'s
-//! `corpus.rs::compile_and_explore_from_brink_native`'s own hand-assembled
-//! analysis pipeline (`is_native = true`, `dialect` left at its `StrictInk`
-//! default) rather than reaching for this crate's `analyze`/
-//! `analyze_with_options` convenience wrappers — both of those hardcode
-//! `is_native = false` (see `finish_analysis`'s own doc), which spuriously
-//! diagnoses every native-only syntax form this fixture needs (`STRUCT`,
-//! `some`, struct construction literals) as brink-extension-gated (`E051`)
-//! even though it never reaches an ink frontend. Using the real native
-//! configuration here is what makes this test a faithful proof of
+//! `corpus.rs::compile_and_explore_from_brink_native`'s own analysis call
+//! (`is_native = true`, `dialect` left at its `StrictInk` default) rather
+//! than reaching for this crate's `analyze`/`analyze_with_options`
+//! convenience wrappers — both of those hardcode `is_native = false`, which
+//! spuriously diagnoses every native-only syntax form this fixture needs
+//! (`STRUCT`, `some`, struct construction literals) as brink-extension-gated
+//! (`E051`) even though it never reaches an ink frontend. Using the real
+//! native configuration here is what makes this test a faithful proof of
 //! `assemble_analyzer_tables`'s actual (only) caller's inputs.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::sync::Arc;
 
-use brink_analyzer::{AnalysisOptions, ImportScope, ResolutionMap, assemble_analyzer_tables};
+use brink_analyzer::{AnalysisOptions, ModuleMap, ResolutionMap, assemble_analyzer_tables};
 use brink_ir::hir::lower_native;
 use brink_ir::{Diagnostic, FileId, HirFile, SymbolIndex, SymbolManifest};
 
@@ -77,49 +76,21 @@ fn lower(src: &str) -> (HirFile, SymbolManifest) {
     (hir, manifest)
 }
 
-/// `symbol_index` -> `resolve` -> `per_file_diagnostics(is_native = true)`
-/// -> `native_strict_only_error` -> `whole_project_diagnostics` — the exact
-/// sequence `compile_and_explore_from_brink_native` runs, see the module
+/// `analyze_with_modules(is_native = true)` with a module-blind map — the
+/// exact call `compile_and_explore_from_brink_native` makes, see the module
 /// doc for why.
 fn analyze_native(
     file_id: FileId,
     hir: &HirFile,
     manifest: &SymbolManifest,
 ) -> (Arc<SymbolIndex>, ResolutionMap, Vec<Diagnostic>) {
-    let opts = AnalysisOptions::default();
-    let files_for_analysis = vec![(file_id, hir, manifest)];
-
-    let (index, mut diagnostics) = brink_analyzer::symbol_index(&[(file_id, manifest)]);
-    let scope = ImportScope::new(hir.module.as_ref().map(|m| m.name.clone()), &hir.imports);
-    let (file_resolutions, resolve_diags) =
-        brink_analyzer::resolve(file_id, manifest, &index, &scope);
-    diagnostics.extend(resolve_diags);
-    let mut resolutions = ResolutionMap::new();
-    resolutions.extend(std::sync::Arc::unwrap_or_clone(file_resolutions));
-
-    diagnostics.extend(brink_analyzer::per_file_diagnostics(
-        file_id,
-        hir,
-        &resolutions,
-        &index,
-        opts.dialect,
+    let result = brink_analyzer::analyze_with_modules(
+        &[(file_id, hir, manifest)],
+        &ModuleMap::new(),
+        &AnalysisOptions::default(),
         true,
-        opts.host_manifest.as_ref(),
-    ));
-    diagnostics.extend(brink_analyzer::native_strict_only_error(
-        file_id, opts.types,
-    ));
-
-    let (whole_diagnostics, _symbol_meta) = brink_analyzer::whole_project_diagnostics(
-        &files_for_analysis,
-        &index,
-        &resolutions,
-        &opts,
-        None,
     );
-    diagnostics.extend(whole_diagnostics);
-
-    (index, resolutions, diagnostics)
+    (result.index, result.resolutions, result.diagnostics)
 }
 
 #[test]

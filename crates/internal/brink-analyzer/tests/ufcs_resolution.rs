@@ -45,6 +45,8 @@ fn diagnostics(hir: &HirFile, manifest: &SymbolManifest) -> Vec<Diagnostic> {
         &analysis.index,
         &analysis.resolutions,
         &AnalysisOptions::default(),
+        // `is_native`: an ink fixture (issue #1358).
+        false,
         None,
     );
     diags
@@ -288,6 +290,8 @@ fn main() {
         &analysis.index,
         &analysis.resolutions,
         &AnalysisOptions::default(),
+        // `is_native`: an ink fixture (issue #1358).
+        false,
         None,
     );
     assert!(
