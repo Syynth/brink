@@ -1134,8 +1134,7 @@ fn wake_needs_reeval<M: Send + Sync + 'static>(
 /// woken, cancelled, and faulted policies are left alone.
 #[expect(
     clippy::needless_pass_by_value,
-    clippy::type_complexity,
-    reason = "bevy systems take Res/Query by value; the sleeper query tuple is inherently wide"
+    reason = "bevy systems take Res/Query by value"
 )]
 pub fn mark_wake_dirty<M: Send + Sync + 'static>(
     globals: Option<Res<BrinkGlobals<M>>>,
