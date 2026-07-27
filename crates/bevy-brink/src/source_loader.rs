@@ -1815,4 +1815,94 @@ mod config_discovery_tests {
             .load::<BrinkStoryAsset>("stories/ch1/intro.ink");
         wait_for_loaded(&mut app, &handle);
     }
+
+    // ── served `brink.toml`'s own warnings reach the loader path (#1625) ──
+    //
+    // #1430's review thread named two gaps neither #1436's tests
+    // (`plugin_with_config_non_overridable_lint_code_reaches_brink_config_warnings_resource`,
+    // `compile_story_inline_invalid_lint_code_warns_via_tracing`, both above)
+    // nor any other existing test actually closed: a *served* `brink.toml`
+    // -- one discovered next to the story asset through the real
+    // `AssetServer::load` -> `InkLoader::load` -> `Project::load` ->
+    // `resolve_options` seam, not a `with_config`/`InkLoader::override_config`
+    // override -- whose `[lints]` table rejects an entry, or whose top-level
+    // keys include an unknown one, must still warn via `tracing::warn!`.
+    // `resolve_options` (`brink-environment/src/lib.rs`) already does this
+    // unconditionally for a discovered file (`tracing::warn!("[{config_key}]
+    // {warning}")`, both for `parse_str_at`'s own unknown-key warnings and
+    // for `apply_project_config`'s rejected-`[lints]`-entry warnings) -- the
+    // two tests below are the first to actually observe that through the
+    // bevy loader path a real host uses, asserting the full `resolve_options`
+    // -produced message text (not just a code substring) so the two
+    // rejection classes stay distinguishable from each other, per the issue.
+    #[test]
+    fn served_brink_toml_invalid_lint_code_warns_via_tracing() {
+        let captured = captured_warnings();
+
+        let (mut app, dir) = make_memory_asset_app();
+        dir.insert_asset_text(Path::new("intro.ink"), E014_SOURCE);
+        // Uniquely-spelled code (the capture buffer is process-global across
+        // this file's tests) -- a real `DiagnosticCode` whose base severity
+        // isn't `Warning`, so it's rejected as "not overridable" rather than
+        // "not a recognized diagnostic code" (the served-file counterpart of
+        // `plugin_override_unknown_and_non_overridable_lint_codes_warn_but_valid_entry_still_applies`'s
+        // `E001` case, but driven by a *served* file, not `with_config`).
+        dir.insert_asset_text(Path::new("brink.toml"), "[lints]\nE001 = \"deny\"\n");
+
+        let handle = app
+            .world()
+            .resource::<AssetServer>()
+            .load::<BrinkStoryAsset>("intro.ink");
+        // The rejected entry is never applied, so E014 stays a non-blocking
+        // Warning and the load still succeeds -- the point is to observe the
+        // warning, not a failed compile.
+        wait_for_loaded(&mut app, &handle);
+
+        let joined = captured.lock().unwrap().join("\n");
+        assert!(
+            joined.contains("[brink.toml] [lints] `E001` is not overridable"),
+            "a served brink.toml's rejected [lints] entry must warn with the \
+             full resolve_options-produced message (config-key-prefixed, not \
+             just the code substring) through the real AssetServer -> \
+             InkLoader -> Project::load path; captured: {joined}"
+        );
+    }
+
+    #[test]
+    fn served_brink_toml_unknown_top_level_key_warns_via_tracing() {
+        let captured = captured_warnings();
+
+        let (mut app, dir) = make_memory_asset_app();
+        dir.insert_asset_text(Path::new("intro.ink"), BRINK_ONLY_SOURCE);
+        // `[project] dialect = "brink"` so the load still succeeds
+        // (BRINK_ONLY_SOURCE needs it) -- the unknown top-level key alongside
+        // it (not nested under `[project]`, which would instead warn as
+        // "unknown key `project.suprise_typo_key`") is what this test is
+        // actually about, distinguished from the `[lints]`-rejection class
+        // above by asserting the "unknown top-level key" wording
+        // specifically. The bare key must precede the `[project]` table
+        // header -- TOML requires top-level key/value pairs before the
+        // first table.
+        dir.insert_asset_text(
+            Path::new("brink.toml"),
+            "suprise_typo_key = true\n\n[project]\ndialect = \"brink\"\n",
+        );
+
+        let handle = app
+            .world()
+            .resource::<AssetServer>()
+            .load::<BrinkStoryAsset>("intro.ink");
+        wait_for_loaded(&mut app, &handle);
+
+        let joined = captured.lock().unwrap().join("\n");
+        assert!(
+            joined.contains(
+                "[brink.toml] unknown top-level key `suprise_typo_key` in brink.toml (ignored)"
+            ),
+            "a served brink.toml's unknown top-level key must warn with the \
+             full resolve_options-produced message through the real \
+             AssetServer -> InkLoader -> Project::load path, distinguishable \
+             from the [lints]-rejection class; captured: {joined}"
+        );
+    }
 }
