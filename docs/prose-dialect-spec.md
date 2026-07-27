@@ -335,9 +335,13 @@ exactly the externals-manifest pattern.
   Deciding this later would be a mass translation-memory invalidation.
 - **Format cost, acknowledged**: a new `LinePart` tag is a `.inkb`
   version bump (v6) + `.inkl` bump (decoders hard-reject unknown part
-  tags; section 0x07 has no section-local version). **Batch the bump**
-  with the intl spec's future recognizers (inline conditionals →
-  `Select`, sequences as slots) — one bump, all the line-table growth.
+  tags; section 0x07 has no section-local version). **Batch the bump** with the other
+  line-table growth (element data, block id, the Choice captured
+  environment). **Amended 2026-07-27:** the intl spec's "future
+  recognizers" (inline conditionals → `Select`, sequences as slots) are
+  **RETRACTED** and are NOT a v6 payload — source-side branching is
+  handled by branch expansion (decision log 2026-03-15), which needs no
+  format change; `Select` stays target-side only. #1446.
 - **The recognizer is the chokepoint**: marked-up lines must be
   *admitted to line recognition* or they shred into per-run entries and
   stop being single translation units. (Pre-existing: inline

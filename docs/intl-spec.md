@@ -136,7 +136,20 @@ Codegen handles both:
 
 **Interpolation templates:** `[Text, Interpolation, Text, ...]` with at least one `Interpolation` → `LineContent::Template([Literal, Slot, Literal, ...])`. Handles single and multiple interpolations. Each interpolation becomes a `Slot(n)` with its expression pushed to the stack before `EmitLine`.
 
-### Future recognizers
+### Future recognizers — RETRACTED 2026-07-27
+
+> **Superseded.** The two entries below proposed routing *source-side* branching
+> (ink inline conditionals/sequences the author wrote) into `LinePart::Select`,
+> which is the *target-side* mechanism — the one a translator uses to introduce
+> variation the source never had (grammatical gender, plurals). The standing
+> ruling for source-side branching is **branch expansion** (decision log,
+> 2026-03-15): each combination becomes its own complete `LineEntry`, because
+> each combination is a distinct translatable **and separately recordable**
+> line. Routing it through `Select` would hand translators fragments with
+> invisible alternatives and would make VO recording sheets impossible — the
+> exact outcomes that ruling exists to prevent. `Select` stays target-side only.
+> Retained below for provenance; do not build from them (#1446).
+
 
 **Inline conditionals as Select:** `[Text(a), InlineConditional(cond), Text(b)]` → `Template([Literal(a), Select { slot: 0, ... }, Literal(b)])`. Would allow the compiler to produce `LinePart::Select` entries directly from ink inline conditionals. Currently Select entries only come from hand-authored translations compiled via `compile-locale`.
 
