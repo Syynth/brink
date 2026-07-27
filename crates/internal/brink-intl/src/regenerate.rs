@@ -4,10 +4,13 @@
 //! preserved. This module diffs a new export against an existing translated
 //! `lines.json` and produces an updated file with translations carried forward.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
+
+use brink_format::AliasEntry;
 
 use crate::align::{Alignment, align_hashes};
 use crate::json_model::{LineJson, LinesJson, ScopeJson};
+use crate::scope_alias::{ScopeAliasIndex, format_scope_id, parse_scope_id_lenient};
 
 /// Regenerate a `lines.json` by merging translations from `existing` into the
 /// structure of `new_export`.
@@ -16,15 +19,44 @@ use crate::json_model::{LineJson, LinesJson, ScopeJson};
 /// (insertions) have `content: None`. Deleted lines are dropped. Edited lines
 /// (adjacent remove+insert at the same position) carry the old translation
 /// forward with the new hash, signaling implicit `needs_review`.
-pub fn regenerate_lines(new_export: &LinesJson, existing: &LinesJson) -> LinesJson {
+///
+/// `aliases` is the compiled `#@was` alias table of the story `new_export`
+/// came from (`StoryData::alias_table`). A scope whose id moved because it —
+/// or an ancestor — was renamed no longer matches `existing` by id, so it is
+/// looked up under its declared pre-rename ids instead, and its translations
+/// carry forward (#1442). Pass an empty slice when no alias edges are
+/// available; matching then behaves exactly as it did before rebinding
+/// existed. The regenerated file is keyed on the *new* ids, so the rebind is
+/// a one-time cost and the `#@was` directive stays deletable after its
+/// migration window (`docs/modules-spec.md` §5).
+pub fn regenerate_lines(
+    new_export: &LinesJson,
+    existing: &LinesJson,
+    aliases: &[AliasEntry],
+) -> LinesJson {
     let old_scope_map: HashMap<&str, &ScopeJson> =
         existing.scopes.iter().map(|s| (s.id.as_str(), s)).collect();
+    let alias_index = ScopeAliasIndex::new(aliases);
+
+    // A direct id match always wins, so resolve those first and record which
+    // old scopes they consumed; a rebind may then only claim what is left.
+    let claimed: BTreeSet<&str> = new_export
+        .scopes
+        .iter()
+        .filter(|s| old_scope_map.contains_key(s.id.as_str()))
+        .map(|s| s.id.as_str())
+        .collect();
 
     let scopes = new_export
         .scopes
         .iter()
         .map(|new_scope| {
-            let lines = if let Some(old_scope) = old_scope_map.get(new_scope.id.as_str()) {
+            let matched = old_scope_map
+                .get(new_scope.id.as_str())
+                .copied()
+                .or_else(|| find_renamed_scope(new_scope, &old_scope_map, &alias_index, &claimed));
+
+            let lines = if let Some(old_scope) = matched {
                 regenerate_scope_lines(&new_scope.lines, &old_scope.lines)
             } else {
                 // Entirely new scope — all lines untranslated.
@@ -51,6 +83,34 @@ pub fn regenerate_lines(new_export: &LinesJson, existing: &LinesJson) -> LinesJs
         source_checksum: new_export.source_checksum.clone(),
         scopes,
     }
+}
+
+/// Find the pre-rename scope in `existing` that `new_scope` used to be,
+/// following `#@was` alias edges backwards.
+///
+/// Candidates are ascending by id ([`ScopeAliasIndex::previous`]) so the
+/// choice is deterministic when a definition absorbed more than one declared
+/// rename, and already-claimed scopes are skipped so a rebind can never steal
+/// translations from a direct match.
+fn find_renamed_scope<'a>(
+    new_scope: &ScopeJson,
+    old_scope_map: &HashMap<&str, &'a ScopeJson>,
+    aliases: &ScopeAliasIndex,
+    claimed: &BTreeSet<&str>,
+) -> Option<&'a ScopeJson> {
+    if aliases.is_empty() {
+        return None;
+    }
+    // A non-canonical id (a legacy XLIFF `<file id>` display-name fallback)
+    // simply does not participate in rebinding.
+    let new_id = parse_scope_id_lenient(&new_scope.id)?;
+    aliases.previous(new_id).iter().find_map(|old_id| {
+        let old_key = format_scope_id(*old_id);
+        if claimed.contains(old_key.as_str()) {
+            return None;
+        }
+        old_scope_map.get(old_key.as_str()).copied()
+    })
 }
 
 /// Regenerate lines within a single scope using LCS alignment.
@@ -167,7 +227,7 @@ mod tests {
             ],
         )]);
 
-        let result = regenerate_lines(&new_export, &existing);
+        let result = regenerate_lines(&new_export, &existing, &[]);
         assert_eq!(result.scopes.len(), 1);
         let lines = &result.scopes[0].lines;
         assert_eq!(lines.len(), 2);
@@ -194,7 +254,7 @@ mod tests {
             ],
         )]);
 
-        let result = regenerate_lines(&new_export, &existing);
+        let result = regenerate_lines(&new_export, &existing, &[]);
         let lines = &result.scopes[0].lines;
         assert_eq!(lines.len(), 3);
         assert!(lines[0].content.is_some()); // preserved
@@ -220,7 +280,7 @@ mod tests {
             ],
         )]);
 
-        let result = regenerate_lines(&new_export, &existing);
+        let result = regenerate_lines(&new_export, &existing, &[]);
         let lines = &result.scopes[0].lines;
         assert_eq!(lines.len(), 2);
         assert_eq!(lines[0].content, existing.scopes[0].lines[0].content);
@@ -238,7 +298,7 @@ mod tests {
             vec![make_line(0, "xxx", Some("Changed source"), None)],
         )]);
 
-        let result = regenerate_lines(&new_export, &existing);
+        let result = regenerate_lines(&new_export, &existing, &[]);
         let line = &result.scopes[0].lines[0];
         // Old translation preserved.
         assert_eq!(line.content, existing.scopes[0].lines[0].content);
@@ -254,7 +314,7 @@ mod tests {
             vec![make_line(0, "aaa", Some("Hello"), None)],
         )]);
 
-        let result = regenerate_lines(&new_export, &existing);
+        let result = regenerate_lines(&new_export, &existing, &[]);
         assert_eq!(result.scopes.len(), 1);
         assert!(result.scopes[0].lines[0].content.is_none());
     }
@@ -267,7 +327,7 @@ mod tests {
         )]);
         let new_export = make_lines_json(vec![]);
 
-        let result = regenerate_lines(&new_export, &existing);
+        let result = regenerate_lines(&new_export, &existing, &[]);
         assert!(result.scopes.is_empty());
     }
 
@@ -282,7 +342,7 @@ mod tests {
             vec![make_line(0, "aaa", Some("Hello (src)"), None)],
         )]);
 
-        let result = regenerate_lines(&new_export, &existing);
+        let result = regenerate_lines(&new_export, &existing, &[]);
         assert_eq!(
             result.scopes[0].lines[0].audio,
             Some("audio/hi.wav".to_string())
@@ -296,7 +356,7 @@ mod tests {
         new_export.version = 2;
         new_export.source_checksum = "0xdeadbeef".to_string();
 
-        let result = regenerate_lines(&new_export, &existing);
+        let result = regenerate_lines(&new_export, &existing, &[]);
         assert_eq!(result.version, 2);
         assert_eq!(result.source_checksum, "0xdeadbeef");
     }

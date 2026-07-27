@@ -9,6 +9,14 @@ pub enum IntlError {
     InvalidScopeId(String),
     #[error("scope not found in base: {0}")]
     ScopeNotInBase(String),
+    #[error(
+        "scopes [{scope_ids}] all bind to base scope {base_scope_id} after `#@was` rebinding; \
+         resolve the duplicate before compiling this locale"
+    )]
+    AmbiguousScopeRebind {
+        scope_ids: String,
+        base_scope_id: String,
+    },
     #[error("line count mismatch for scope {scope_id}: expected {expected}, got {actual}")]
     LineCountMismatch {
         scope_id: String,
