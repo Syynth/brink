@@ -1255,6 +1255,50 @@ fn check_named_condition_purity_rejects_a_command_bound_external() {
     );
 }
 
+/// The #1609 rejection on the **dynamically-resolved fn-value** condition
+/// path (`FlowSleep::with_condition_value`, issue #1078): mirrors
+/// [`check_named_condition_purity_rejects_a_command_bound_external`] exactly
+/// — same `calling_row`/`touch_state` shape, same registered
+/// `bind_brink_command` binding — but through `check_value_condition_purity`
+/// with a `Value::FnRef` token instead of a name string. `run_flow_sleep`
+/// threads `bindings` into `check_value_condition_purity` the same way it
+/// does for the named path (see the `condition_value` branch in
+/// `run_flow_sleep`'s gather phase), so this closes the coverage gap the
+/// PR's own reachability claim asserted but never exercised.
+#[test]
+fn check_value_condition_purity_rejects_a_command_bound_external() {
+    let (program, _tables, _ctx) = compile_test_story(GATED_STORY_WITH_EXTERNALS);
+    let def = program
+        .definition_id_for_path("should_wake")
+        .expect("should_wake resolves");
+    let touch_state = program
+        .name_id("touch_state")
+        .expect("interned as a call kind");
+    let rows = vec![calling_row(def, call_atom(touch_state))];
+    let token = Value::FnRef(def);
+
+    let mut app = App::new();
+    app.bind_brink_command::<(), TouchState>("touch_state");
+    let bindings = app.world().resource::<BrinkBindings<()>>();
+
+    let err = check_value_condition_purity(
+        &program,
+        &rows,
+        &CapabilityManifest::default(),
+        Some(bindings),
+        &token,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            WakeConditionPurityError::CommandBinding { condition, external }
+                if condition == "should_wake" && external == "touch_state"
+        ),
+        "got {err:?}"
+    );
+}
+
 /// The complementary case the issue's acceptance criteria names explicitly:
 /// "a genuinely pure binding still passes". Registers `read_state` as a
 /// `bind_brink_fn` (pure) binding on the **same** `BrinkBindings<()>`

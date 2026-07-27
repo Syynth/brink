@@ -555,11 +555,18 @@ impl<M: Send + Sync + 'static> FlowSleep<M> {
 // fetches the app's `BrinkBindings<M>` resource (absent entirely if the host
 // never registered any binding) alongside the `CapabilityManifest` and
 // threads it through. This is scoped to `bind_brink_command` only: a pure
-// (`bind_brink_fn`) or world-query (`bind_brink_query`) binding is not
-// rejected by this check (`docs/bevy-brink.md`'s binding taxonomy — a query
-// binding's own World access is a distinct, already-`Pending`-gated
-// mechanism, not something a wake condition's re-evaluation can reach
-// synchronously the way a command trigger fires).
+// (`bind_brink_fn`) binding is not rejected by this check. A world-query
+// (`bind_brink_query`) binding is *also* not rejected here, but not because
+// its World access is out of reach — `call_ink_function`/
+// `call_ink_function_value` (`crate::bindings`, the same drivers
+// `run_flow_sleep` uses to evaluate a condition) resolve a query binding
+// **inline**, synchronously, mid-evaluation (`docs/bevy-brink.md`'s binding
+// table: "flow pauses (`Pending`); a driver runs it via `run_system_with`
+// between suspensions, then resumes" — the pause/resume is internal to the
+// single call, not a cross-frame park a wake condition's re-evaluation could
+// dodge). Widening this gate to cover write-capable query bindings is a
+// design question left open (whether/how to distinguish a read-only query
+// system from a writing one), not something this fix's scope covers.
 //
 // `resolve_brink_calls` (`crate::call`, the deferred
 // `commands.brink_call(...)` path) also drives `call_ink_function` under the
