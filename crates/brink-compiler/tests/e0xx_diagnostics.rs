@@ -1436,6 +1436,37 @@ fn e150_value_returning_flow_falling_through() {
     );
 }
 
+/// Negative sibling of [`e150_value_returning_flow_falling_through`], driven
+/// through the same real pipeline (issue #1591): `gate`'s own body is empty,
+/// so it falls straight through into its nested stitch `compute` — no
+/// explicit divert — and the value-returning `return` lives entirely in
+/// that stitch. `check_def`'s `E150` fall-through check must read the
+/// has-value-return fact merged over `gate`'s stitches
+/// (`has_value_return_over_stitches`), not just `gate`'s own (empty) body,
+/// or this compiles-clean shape would wrongly fail exactly like the
+/// falling-through-with-no-value case above.
+///
+/// `compute` uses code ground (`~{ }`) for its own body — same posture as
+/// `native_value_returning_knot_that_always_returns_is_clean` in
+/// `strict.rs` — since a value-carrying `return <expr>;` is a code-ground
+/// statement; `gate`'s own body stays prose ground (`{ }`) since it holds
+/// only the nested `flow` declaration.
+#[test]
+fn e150_value_returning_flow_reached_only_through_a_fallthrough_stitch_compiles_clean() {
+    let source = "flow main() {\n  Hi.\n}\n\nflow gate(): int {\n  flow compute() ~{\n    return 5;\n  }\n}\n";
+    let out = compile_native("e150-stitch-fallthrough", source, native_strict_options())
+        .unwrap_or_else(|e| {
+            panic!(
+                "a value return reached only via a fall-through stitch must compile clean: {e:?}"
+            )
+        });
+    assert!(
+        out.warnings.iter().all(|d| d.code != DiagnosticCode::E150),
+        "expected no E150, got: {:?}",
+        out.warnings
+    );
+}
+
 // ─── E151 (issue #1219): asymmetric choice-branch dead-end lint ────────
 //
 // Native-only, same `compile_native` posture as E150/E066 above — the `{?
