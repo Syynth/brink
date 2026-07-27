@@ -83,26 +83,27 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-      # bevy-brink's `bevy` dev-dependency (windowed `play_story` example) pulls
-      # in wayland-sys/winit/alsa, whose build scripts need these system libs.
-      # `cargo test` compiles examples, so they're required here.
-      - name: Install Linux dependencies (bevy)
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y \
-            libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      # No "Install Linux dependencies (bevy)" step here: this job excludes
+      # bevy-brink (below), and no other workspace member (the workspace's
+      # `members` glob excludes `demos/*`, the only other crate that depends
+      # on `bevy`) links the bevy umbrella, so `cargo test --workspace`
+      # never touches wayland-sys/winit/alsa's build scripts. The jobs that
+      # genuinely need these system libs — because they build or test
+      # bevy-brink directly — are `test-bench-counters`, `determinism-law`,
+      # and `book`; each installs them itself.
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-      # bevy-brink (+ bevy-brink-derive) is EXCLUDED from THIS job: the bevy
-      # dependency graph is the dominant build cost and `cargo test` LINKS the
-      # examples — a 300+ rlib binary that intermittently crashed the runner's
-      # linker (ld bus error), hitting parser/compiler PRs that never touch
-      # bevy 3x in one day. (2026-07-20 ruling, still in force.)
+      # bevy-brink is EXCLUDED from THIS job: the bevy dependency graph is
+      # the dominant build cost and `cargo test` LINKS the examples — a
+      # 300+ rlib binary that intermittently crashed the runner's linker
+      # (ld bus error), hitting parser/compiler PRs that never touch bevy
+      # 3x in one day. (2026-07-20 ruling, still in force.) bevy-brink-derive
+      # is not excluded — see the `static-checks` job for why.
       #
       # It is NOT unchecked: the required `Test (bench-counters)` job below
       # lints every bevy-brink target and runs its lib + integration tests in
       # its own runner slot, in parallel with this one, without linking the
       # examples (#1641). Do not re-add bevy-brink here — put coverage there.
-      - run: cargo test --workspace --exclude bevy-brink --exclude bevy-brink-derive
+      - run: cargo test --workspace --exclude bevy-brink
 
   # The feature-gated / bevy lane. Two things live here, both invisible to the
   # `test` job above, and both cheap to co-locate because they share one
@@ -114,9 +115,12 @@ jobs:
   #    counter-forwarding proofs only ever ran locally until this job existed
   #    (#923, tracked from #897).
   #
-  # 2. bevy-brink + bevy-brink-derive, which the `test`, `test-all-features`
-  #    and `static-checks` jobs all exclude (2026-07-20: build cost + an ld
-  #    bus error linking the 300+ rlib `play_story` example). That exclusion
+  # 2. bevy-brink, which the `test`, `test-all-features` and `static-checks`
+  #    jobs all exclude (2026-07-20: build cost + an ld bus error linking the
+  #    300+ rlib `play_story` example). bevy-brink-derive is NOT excluded
+  #    anywhere — it's `proc-macro = true` with only syn/quote/proc-macro2 as
+  #    dependencies, so it pays none of the cost the exclusion exists to
+  #    avoid and stays covered by the cheap jobs. The bevy-brink exclusion
   #    left a CRATE-SIZED HOLE in the merge gate — ~a dozen bevy-brink PRs
   #    landed against a gate that ran exactly one of its tests (#1641). The
   #    two steps below close it without reversing the ruling:
@@ -125,8 +129,21 @@ jobs:
   #        compile-check of `examples/book_flows.rs`, which the book's Bevy
   #        flows page `{{#include}}`s and which no job had checked since the
   #        exclusion landed.
-  #      * `cargo test --lib --tests` deliberately omits `--examples`, so no
-  #        example binary is linked here either.
+  #      * `cargo test --lib --tests` deliberately omits `--examples`, so
+  #        `play_story` itself is never linked. But it does NOT eliminate
+  #        link-crash exposure: `tests/scenario_bench_model.rs` and
+  #        `tests/scenario_baseline_tripwire.rs` both `#[path]`-include
+  #        `benches/scenario/model.rs`, which pulls in the `bevy` umbrella
+  #        (MinimalPlugins, AssetPlugin, ComputeTaskPool, …) — the same
+  #        dev-dependency (`bevy = { version = "0.19.0", features =
+  #        ["file_watcher"] }`, default features on) that `play_story`
+  #        links. So this step still links two headless test binaries
+  #        against the full bevy graph; exposure to the 2026-07-20 ld bus
+  #        error is NARROWED to those two binaries, not removed. If it
+  #        recurs here, the escape hatch is either narrowing
+  #        `benches/scenario/model.rs`'s imports to the granular bevy_*
+  #        crates it actually needs instead of the umbrella, or dropping
+  #        this job from branch protection's required-checks list.
   #    Both run under `--all-features`, which for bevy-brink is a strict
   #    superset of its default `dev` feature and turns ON `bench-counters`
   #    (so `scenario_bench_model.rs`'s counter-forwarding test finally runs in
@@ -198,19 +215,16 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-      # Same bevy-brink dev-dependency system libs as the `test` job above.
-      - name: Install Linux dependencies (bevy)
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y \
-            libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      # No "Install Linux dependencies (bevy)" step here either, for the same
+      # reason as the `test` job above: this job also excludes bevy-brink
+      # (below), so nothing it builds touches bevy's system libs.
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           shared-key: all-features
       # Same bevy-brink exclusion as the `test` job (build cost + the example
       # link crash). bevy-brink's own `--all-features` test run lives in the
       # required `Test (bench-counters)` job (#1641).
-      - run: cargo test --workspace --all-features --exclude bevy-brink --exclude bevy-brink-derive
+      - run: cargo test --workspace --all-features --exclude bevy-brink
 
   # Consolidated static checks (decision 2026-07-22, #1237). Previously six
   # separate jobs — Format, Clippy, Clippy (all features), no_std ×2, and the
@@ -248,21 +262,25 @@ jobs:
         id: fmt
         run: cargo fmt --all -- --check
 
-      # Both clippy legs exclude bevy-brink + bevy-brink-derive so this job
-      # never pays for the bevy dependency graph. They are NOT unlinted:
-      # `Test (bench-counters)` runs `clippy -p bevy-brink -p
+      # Both clippy legs exclude bevy-brink so this job never pays for the
+      # bevy dependency graph. bevy-brink-derive is NOT excluded: it's
+      # `proc-macro = true` with only syn/quote/proc-macro2 as dependencies —
+      # zero bevy, zero tests — so it pays none of the build cost the
+      # exclusion exists to avoid and stays covered by this cheap job instead
+      # of being parked behind the 7-minute bevy job. bevy-brink itself is
+      # NOT unlinted: `Test (bench-counters)` runs `clippy -p bevy-brink -p
       # bevy-brink-derive --all-targets --all-features -- -D warnings` in its
       # own runner slot, where the graph is already built for that job's test
       # run (#1641). Lint changes that must reach bevy-brink go there.
       - name: Clippy
         id: clippy
         if: '!cancelled()'
-        run: cargo clippy --workspace --all-targets --exclude bevy-brink --exclude bevy-brink-derive -- -D warnings
+        run: cargo clippy --workspace --all-targets --exclude bevy-brink -- -D warnings
 
       - name: Clippy (all features)
         id: clippy_all
         if: '!cancelled()'
-        run: cargo clippy --workspace --all-targets --all-features --exclude bevy-brink --exclude bevy-brink-derive -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features --exclude bevy-brink -- -D warnings
 
       - name: no_std (brink-format)
         id: nostd_format
@@ -465,7 +483,9 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-      # Same bevy-brink dev-dependency system libs as the `test` job above.
+      # This job runs `cargo test -p bevy-brink` directly (below), so unlike
+      # `test` / `test-all-features` (which exclude bevy-brink and no longer
+      # install these), it genuinely needs bevy's Linux system libs.
       - name: Install Linux dependencies (bevy)
         run: |
           sudo apt-get update
