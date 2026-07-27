@@ -240,19 +240,23 @@ pub fn compile_and_explore_from_ink(
 /// (the flag that actually selects the native-only analyzer arm: it skips
 /// the ink-only T1b dialect gate entirely, regardless of `dialect`, and
 /// widens the construction-literal checks — E084/E106/E138 — to run outside
-/// the brink-only block). `brink_analyzer::analyze_with_options` /
-/// `finish_analysis` cannot express this combination: that pure,
-/// non-salsa path has no `Language` classification of its own and always
-/// passes `is_native = false` to `per_file_diagnostics` internally (see
-/// `finish_analysis`'s own doc comment) — so this function composes the
-/// same three passes `finish_analysis` does
-/// (`symbol_index` → per-file `resolve` → `per_file_diagnostics` →
-/// `whole_project_diagnostics`) by hand, threading `is_native = true`
-/// through where `finish_analysis` hardcodes it. Using
-/// `analyze_with_options` here previously ran every native e2e fixture
-/// through the *ink* brink-dialect diagnostics arm instead (hardcoded
-/// `Dialect::Brink` + `is_native = false`) — a combination no real
-/// compilation path ever produces.
+/// the brink-only block). `brink_analyzer::analyze_with_modules` expresses
+/// exactly this combination since issue #1358 threaded `is_native` through
+/// `finish_analysis` into the per-file and whole-project arms — and made the
+/// B0.9 strict-only gate (`E137`) reachable from the pure path at all — so
+/// this function just calls it with `is_native = true`. It previously
+/// composed those passes by hand (`symbol_index` → per-file `resolve` →
+/// `per_file_diagnostics` → `native_strict_only_error` →
+/// `whole_project_diagnostics`), because the pure path had no way to say
+/// "native"; before *that* it used `analyze_with_options` and ran every
+/// native e2e fixture through the *ink* brink-dialect diagnostics arm
+/// (hardcoded `Dialect::Brink` + `is_native = false`) — a combination no
+/// real compilation path ever produces.
+///
+/// The module-blind `ModuleMap::new()` it passes is right for this harness
+/// specifically: it compiles one in-memory source string that has no path,
+/// so there is no path-derived `story::…` identity to qualify by (unlike a
+/// `ProjectDb`-backed compile, which must pass `db.module_map()`).
 ///
 /// Returns `Err` naming the exact stage (parse/lowering/analysis/LIR/
 /// codegen/link) on the first diagnostic or error encountered — a fixture
@@ -306,43 +310,23 @@ pub fn compile_and_explore_from_brink_native(
     // above).
     let analysis_opts = brink_analyzer::AnalysisOptions::default();
 
-    let (index, mut diagnostics) = brink_analyzer::symbol_index(&[(file_id, &manifest)]);
-    let scope =
-        brink_analyzer::ImportScope::new(hir.module.as_ref().map(|m| m.name.clone()), &hir.imports);
-    let (file_resolutions, resolve_diags) =
-        brink_analyzer::resolve(file_id, &manifest, &index, &scope);
-    diagnostics.extend(resolve_diags);
-    let mut resolutions = brink_analyzer::ResolutionMap::new();
-    resolutions.extend(std::sync::Arc::unwrap_or_clone(file_resolutions));
-
-    // `is_native = true` — the fix (issue #1472): this is the flag real
-    // native compiles pass and `analyze_with_options` never can.
-    diagnostics.extend(brink_analyzer::per_file_diagnostics(
-        file_id,
-        &hir,
-        &resolutions,
-        &index,
-        analysis_opts.dialect,
-        true,
-        analysis_opts.host_manifest.as_ref(),
-    ));
-    // The B0.9 native strict-only gate (`native_strict_only_error`) —
-    // `brink-db`'s `per_file_diagnostics_query` runs this alongside
-    // `per_file_diagnostics` for every native file; included here for the
-    // same reason (a no-op given `analysis_opts.types` is unset).
-    diagnostics.extend(brink_analyzer::native_strict_only_error(
-        file_id,
-        analysis_opts.types,
-    ));
-
-    let (whole_diagnostics, _symbol_meta) = brink_analyzer::whole_project_diagnostics(
+    // `is_native = true` — the flag real native compiles pass, and which
+    // (issue #1358) the pure path now threads through every arm: the ink-only
+    // T1b dialect gate is skipped, the construction-literal checks widen, the
+    // B0.9 strict-only gate (`E137`) runs, and the ink-only `E064` config
+    // error is skipped. An empty `ModuleMap` keeps identity module-blind,
+    // matching this single-file, path-less harness.
+    let brink_analyzer::AnalysisResult {
+        index,
+        resolutions,
+        diagnostics,
+        ..
+    } = brink_analyzer::analyze_with_modules(
         &files_for_analysis,
-        &index,
-        &resolutions,
+        &brink_analyzer::ModuleMap::new(),
         &analysis_opts,
-        None,
+        true,
     );
-    diagnostics.extend(whole_diagnostics);
 
     if !diagnostics.is_empty() {
         return Err(format!("analysis diagnostics: {diagnostics:?}"));
