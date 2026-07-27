@@ -158,6 +158,19 @@ transcript untouched, visit counts not bumped):
   `BrinkCallFailed` **scoped to that entity**, so a result can never be
   mis-correlated with another call. `IntoBrinkArgs` accepts `()`, tuples of
   `Into<Value>`, `Vec<Value>`, or `&[Value]`.
+- `commands.brink_call_batch::<M>(flow, calls).observe(|on: On<BrinkCallBatchResolved>| …)`
+  — deferred **batch** counterpart of `call_ink_functions` (#1076): a
+  normal system queues a whole ordered call list at once. The plugin's
+  `resolve_brink_call_batches` resolves the whole batch through
+  `call_ink_functions` in one VM-eval setup, so the front-to-back
+  ordering and per-call isolation `call_ink_functions` guarantees hold
+  for the deferred path too — not just "these calls happen to land in
+  the same frame." Delivers one `BrinkCallBatchResolved` (one `Result`
+  per call, in call order, no short-circuit on a failing call) scoped to
+  the batch's call entity. Ordering *across* separate deferred requests
+  targeting the same flow in the same frame (whether `brink_call` or
+  `brink_call_batch`) is **not** pinned — fold everything that needs a
+  guaranteed order into one `brink_call_batch`.
 
 **playback with inline world queries** — for a story line like
 `Enemies near: {enemy_count()}.`:
@@ -226,9 +239,11 @@ an interactive window.
   window with text + choices, SPACE to advance, digit keys to choose.
 - ✅ **External-function binding facility** (above): `bind_brink_fn` /
   `bind_brink_command` (+ `#[derive(BrinkCommand)]`) / `bind_brink_query`,
-  `call_ink_function`, `commands.brink_call(...).observe(...)`,
-  `advance_flow`, and the non-exclusive `step_one` → `Advance` pause/resume
-  with the `resolve_pending_externals` plugin system.
+  `call_ink_function` (+ its batch counterpart `call_ink_functions`),
+  `commands.brink_call(...).observe(...)` (+ its deferred batch
+  counterpart `commands.brink_call_batch(...)`, #1076), `advance_flow`,
+  and the non-exclusive `step_one` → `Advance` pause/resume with the
+  `resolve_pending_externals` plugin system.
 - ✅ **Async (defer-across-frames) bindings**: `bind_brink_async` (the
   `BrinkExternalAwaited` + `resolve_brink_external` event primitive) and
   `bind_brink_task` (`AsyncComputeTaskPool` task lifecycle via

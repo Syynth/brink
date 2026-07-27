@@ -334,17 +334,7 @@ impl<M: Send + Sync + 'static> Plugin for BrinkPlugin<M> {
         // Auto-render BrinkTranscript<M> for any flow that has it.
         // No-op for flows that don't (the query just yields nothing).
         app.add_systems(Update, crate::transcript::refresh_transcripts::<M>);
-        // Resolve deferred engine→ink calls (commands.brink_call). Exclusive
-        // (needs &mut World to run query bindings), gated so it only runs
-        // when a call is actually pending.
-        app.add_systems(
-            Update,
-            crate::call::resolve_brink_calls::<M>.run_if(
-                bevy_ecs::schedule::common_conditions::any_with_component::<
-                    crate::call::BrinkCallRequest<M>,
-                >,
-            ),
-        );
+        register_deferred_call_resolvers::<M>(app);
         // Service flows that paused on a pending external during normal
         // playback (a non-exclusive step_one yielded AwaitingQuery): resolve
         // world-access queries inline, fire BrinkExternalAwaited for async
@@ -379,6 +369,36 @@ impl<M: Send + Sync + 'static> Plugin for BrinkPlugin<M> {
         #[cfg(debug_assertions)]
         app.add_systems(Update, crate::request::warn_post_fulfillment_mutations::<M>);
     }
+}
+
+/// Registers the two exclusive resolvers for deferred engine→ink calls
+/// issued from non-exclusive systems: single calls
+/// (`commands.brink_call`, [`crate::call::resolve_brink_calls`]) and
+/// batches (`commands.brink_call_batch`,
+/// [`crate::call::resolve_brink_call_batches`], #1076). Both need `&mut
+/// World` to run world-access query bindings, and both are gated so they
+/// only run when a request is actually pending. Factored out of
+/// [`BrinkPlugin::build`] to keep it under clippy's line-count lint.
+fn register_deferred_call_resolvers<M: Send + Sync + 'static>(app: &mut App) {
+    app.add_systems(
+        Update,
+        crate::call::resolve_brink_calls::<M>.run_if(
+            bevy_ecs::schedule::common_conditions::any_with_component::<
+                crate::call::BrinkCallRequest<M>,
+            >,
+        ),
+    );
+    // Each pending batch runs through call_ink_functions in one VM-eval
+    // setup, so its front-to-back ordering guarantee holds for the
+    // deferred path too, not just the exclusive one.
+    app.add_systems(
+        Update,
+        crate::call::resolve_brink_call_batches::<M>.run_if(
+            bevy_ecs::schedule::common_conditions::any_with_component::<
+                crate::call::BrinkCallBatchRequest<M>,
+            >,
+        ),
+    );
 }
 
 /// Registers asset types and loaders that are shared across all markers.
