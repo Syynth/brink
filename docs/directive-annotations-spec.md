@@ -250,19 +250,23 @@ channel may guess at.
 
 ### 5d. `@[allow(Exxx, …)]` — source-level suppression (issue #1161)
 
-`@[allow(E151, E014)]` above a declaration silences those diagnostic codes
-for the whole span of that declaration — head and body. Native surface
+`@[allow(E151, E014)]` above a declaration or statement silences those
+diagnostic codes for the whole span of whatever follows it — head and body
+for a declaration, the single statement for a statement. Native surface
 only: ink's `@[…]` placement is the top of a knot/stitch *body* and has no
 ruled `allow` tenant, so ink authors keep the line-scoped `//brink-disable`
 comment channel and the project `[lints]` table.
 
-It attaches to *any* declaration, not only the `flow`/`fn` heads
-`@[effects]` requires: the scope is a `(span, codes)` fact recorded on
+It attaches to *any* declaration or statement, not only the `flow`/`fn`
+heads `@[effects]` requires: the scope is a `(span, codes)` fact recorded on
 `HirFile::allow_scopes`, consumed by `brink_ir::suppressions::
 apply_suppressions` — the same filter the comment channel already flows
 through, so every consumer (CLI, LSP, wasm) applies it identically. The
-annotation line itself sits *outside* the scope it creates, so a directive
-can never silence a diagnostic reported on itself.
+attachment rule itself is generic — the next non-trivia sibling after the
+annotation run, whatever node kind that is — so a content line, a divert, or
+a conditional block is as valid a target as a `var`/`flow`/`fn` declaration.
+The annotation line itself sits *outside* the scope it creates, so a
+directive can never silence a diagnostic reported on itself.
 
 Three rulings, each with tests:
 

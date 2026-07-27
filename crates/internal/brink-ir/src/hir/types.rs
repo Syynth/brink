@@ -2868,7 +2868,7 @@ impl DiagnosticCode {
                 "unknown annotation name (the `@[…]` channel recognizes `effects`, plus `was` and `allow` on the native surface)"
             }
             Self::E112 => {
-                "annotation line outside a recognized placement (ink: top of a knot/stitch body; native: directly above a `flow`/`fn`, or above any declaration for `allow`)"
+                "annotation line outside a recognized placement (ink: top of a knot/stitch body; native: directly above a `flow`/`fn`, or above any declaration or statement for `allow`)"
             }
             Self::E113 => {
                 "reserved protocol method name (`display`/`compare`/`next` belong to the protocol registry)"

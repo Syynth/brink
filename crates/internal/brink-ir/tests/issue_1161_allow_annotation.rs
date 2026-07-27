@@ -269,3 +269,41 @@ fn an_unknown_annotation_name_is_still_e111() {
     let (_, diags) = lower("@[deny(E014)]\nflow main() {\n  Steel.\n}\n");
     assert_eq!(codes(&diags), vec![DiagnosticCode::E111], "{diags:?}");
 }
+
+// ── Statement-position attachment ──────────────────────────────────────
+//
+// `is_consumed_position`'s `ALLOW` arm is `attached_declaration(line).
+// is_some()` — the next sibling of *any* kind, not only a declaration head.
+// So `@[allow(…)]` above a plain content line inside a body is accepted
+// (not `E112`) and scopes exactly that one statement, matching issue
+// #1161's own wording ("on a declaration/statement") and
+// directive-annotations-spec.md §5d as widened alongside this test.
+
+/// `@[allow(E014)]` directly above a content line — not a declaration head
+/// at all — is a well-formed, statement-scoped suppression: no `E112`, one
+/// scope recorded.
+#[test]
+fn allow_attaches_to_a_plain_statement_not_only_a_declaration() {
+    let src = "flow main() {\n  @[allow(E014)]\n  Steel.\n  Copper.\n}\n";
+    let scopes = clean_scopes(src);
+    assert_eq!(scopes.len(), 1, "{scopes:?}");
+    assert_eq!(scopes[0].codes, [DiagnosticCode::E014]);
+}
+
+/// The statement-position scope covers only the annotated statement, not
+/// its unannotated siblings — same "attaches to the next sibling only"
+/// contract a declaration-position scope has, just proven on a content line
+/// instead of a `flow`/`fn`/`var` head.
+#[test]
+fn allow_on_a_statement_scopes_only_that_statement() {
+    let src = "flow main() {\n  @[allow(E014)]\n  Steel.\n  Copper.\n}\n";
+    let scopes = clean_scopes(src);
+    assert_eq!(scopes.len(), 1, "{scopes:?}");
+
+    let text = covered(src, &scopes[0]);
+    assert!(text.contains("Steel."), "scope should cover Steel.: {text:?}");
+    assert!(
+        !text.contains("Copper."),
+        "scope should not reach the sibling statement: {text:?}"
+    );
+}
