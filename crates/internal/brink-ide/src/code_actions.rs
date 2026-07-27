@@ -60,6 +60,38 @@ pub enum CodeActionData {
         #[serde(default)]
         native: bool,
     },
+    /// `#fn(target, args…)` E081 quick-fix (issue #744,
+    /// `crate::creation_site_fix`): trim the bound-argument list back to
+    /// `keep` — the target's declared param count. `occurrence` is the
+    /// 0-based index of this `#fn(target, …)` site among every site naming
+    /// `target` in the file, in source order (never a stored byte range —
+    /// see that module's doc for why).
+    TrimFnLiteralArgs {
+        target: String,
+        occurrence: usize,
+        keep: usize,
+    },
+    /// `#fn(target, args…)` E080 quick-fix (issue #744,
+    /// `crate::creation_site_fix`): append `vars` — durable global `VAR`
+    /// names matching the target's unbound trailing `ref` params — as the
+    /// missing bound arguments. `occurrence` matches
+    /// [`Self::TrimFnLiteralArgs`]'s.
+    BindFnLiteralRefArgs {
+        target: String,
+        occurrence: usize,
+        vars: Vec<String>,
+    },
+    /// `call(f, args…)`/`bind(f, args…)` strict over-arity quick-fix (issue
+    /// #744, `crate::value_call_fix`): trim the call's trailing args back to
+    /// `keep` — the count the callee's known type accepts after the callee
+    /// itself. `verb` is `"call"` or `"bind"`; `occurrence` is the 0-based
+    /// index of this `verb(...)` call among every call to `verb` in the
+    /// file, in source order.
+    TrimValueCallArgs {
+        verb: String,
+        occurrence: usize,
+        keep: usize,
+    },
 }
 
 /// A code action offered to the user.
@@ -205,6 +237,12 @@ pub fn resolve_code_action(source: &str, data: &CodeActionData) -> Option<String
             name,
             native,
         } => crate::import_fix::insert_import(source, module, name, *native)?,
+        CodeActionData::TrimFnLiteralArgs { .. } | CodeActionData::BindFnLiteralRefArgs { .. } => {
+            crate::creation_site_fix::resolve_fn_value_action(source, data)?
+        }
+        CodeActionData::TrimValueCallArgs { .. } => {
+            crate::value_call_fix::resolve_value_call_action(source, data)?
+        }
         // These require analysis — caller should use resolve_structural_action.
         CodeActionData::MoveStitch { .. }
         | CodeActionData::PromoteStitch { .. }

@@ -2214,7 +2214,7 @@ impl LanguageServer for Backend {
             return Ok(Some(vec![]));
         };
 
-        let (source, import_actions) = {
+        let (source, import_actions, fn_value_actions, value_call_actions) = {
             let db = lock_db(&self.db);
             let Some(file_id) = db.file_id(&path) else {
                 return Ok(Some(vec![]));
@@ -2230,7 +2230,13 @@ impl LanguageServer for Backend {
             // module-qualified db while the lock is held, then merges into the
             // same code-action list as the source-only actions below.
             let import_actions = brink_ide::import_fix::import_actions(&db, file_id, offset);
-            (source, import_actions)
+            // T1c creation-site + call()/bind() strict quick-fixes (issue
+            // #744): same session-aware merge posture.
+            let fn_value_actions =
+                brink_ide::creation_site_fix::fn_value_actions(&db, file_id, offset);
+            let value_call_actions =
+                brink_ide::value_call_fix::value_call_actions(&db, file_id, offset);
+            (source, import_actions, fn_value_actions, value_call_actions)
         };
 
         let idx = LineIndex::new(&source);
@@ -2240,6 +2246,8 @@ impl LanguageServer for Backend {
 
         let mut domain_actions = brink_ide::code_actions::code_actions(&source, cursor_offset);
         domain_actions.extend(import_actions);
+        domain_actions.extend(fn_value_actions);
+        domain_actions.extend(value_call_actions);
 
         let uri = params.text_document.uri.as_str();
         let lsp_actions = domain_actions
@@ -2297,49 +2305,8 @@ impl LanguageServer for Backend {
             return Ok(action);
         };
 
-        let knot_name = data
-            .get("knot")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default();
-
-        let action_data = match kind {
-            Some("sort_knots") => brink_ide::code_actions::CodeActionData::SortKnots,
-            Some("sort_stitches") => brink_ide::code_actions::CodeActionData::SortStitches {
-                knot: knot_name.to_owned(),
-            },
-            Some("format_knot") => brink_ide::code_actions::CodeActionData::FormatKnot {
-                knot: knot_name.to_owned(),
-            },
-            Some("format_stitch") => {
-                let stitch_name = data
-                    .get("stitch")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default();
-                brink_ide::code_actions::CodeActionData::FormatStitch {
-                    knot: knot_name.to_owned(),
-                    stitch: stitch_name.to_owned(),
-                }
-            }
-            Some("add_import") => {
-                let module = data
-                    .get("module")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default();
-                let name = data
-                    .get("name")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default();
-                let native = data
-                    .get("native")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false);
-                brink_ide::code_actions::CodeActionData::AddImport {
-                    module: module.to_owned(),
-                    name: name.to_owned(),
-                    native,
-                }
-            }
-            _ => return Ok(action),
+        let Some(action_data) = code_action_data_from_json(kind, &data) else {
+            return Ok(action);
         };
 
         let Some(new_source) = brink_ide::code_actions::resolve_code_action(&source, &action_data)
@@ -3047,7 +3014,151 @@ fn code_action_data_to_json(
                 "native": native,
             })
         }
+        brink_ide::code_actions::CodeActionData::TrimFnLiteralArgs {
+            target,
+            occurrence,
+            keep,
+        } => serde_json::json!({
+            "kind": "trim_fn_literal_args", "uri": uri,
+            "target": target, "occurrence": occurrence, "keep": keep,
+        }),
+        brink_ide::code_actions::CodeActionData::BindFnLiteralRefArgs {
+            target,
+            occurrence,
+            vars,
+        } => serde_json::json!({
+            "kind": "bind_fn_literal_ref_args", "uri": uri,
+            "target": target, "occurrence": occurrence, "vars": vars,
+        }),
+        brink_ide::code_actions::CodeActionData::TrimValueCallArgs {
+            verb,
+            occurrence,
+            keep,
+        } => serde_json::json!({
+            "kind": "trim_value_call_args", "uri": uri,
+            "verb": verb, "occurrence": occurrence, "keep": keep,
+        }),
     }
+}
+
+/// Read `data[field]` as a JSON u64 and narrow it to `usize`, clamping
+/// (never wrapping) on a lossy platform/value combination — this data only
+/// ever carries small in-file occurrence/argument counts, but a malformed or
+/// tampered `data` payload must not silently truncate into a wrong index.
+fn json_u64_as_usize(data: &serde_json::Value, field: &str) -> usize {
+    data.get(field)
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|n| usize::try_from(n).ok())
+        .unwrap_or(usize::MAX)
+}
+
+/// Decode a `code_action_resolve` request's `data` payload (the `kind`
+/// discriminator plus the rest of the JSON object built by
+/// [`code_action_data_to_json`]) back into a [`CodeActionData`]. `None` for
+/// an unrecognized `kind` — this also covers `ReorderStitch`/`MoveStitch`/
+/// `PromoteStitch`/`DemoteKnot`: [`code_action_data_to_json`] *does* emit a
+/// `kind` string for each of them (`"reorder_stitch"`/`"move_stitch"`/
+/// `"promote_stitch"`/`"demote_knot"`), they simply have no decode arm below, so
+/// resolve is a no-op for them (see that fn's own doc: they are surfaced but
+/// not yet resolvable over LSP).
+///
+/// Split out of [`Backend::code_action_resolve`] to keep that function under
+/// the workspace's `too_many_lines` lint budget — the other multi-arm
+/// dispatch table in this file, [`code_action_data_to_json`], already lives
+/// as its own free function for the same reason (`format_config_from_options`
+/// is the same pattern but lives in `backend/adapters.rs`, imported above).
+///
+/// [`CodeActionData`]: brink_ide::code_actions::CodeActionData
+fn code_action_data_from_json(
+    kind: Option<&str>,
+    data: &serde_json::Value,
+) -> Option<brink_ide::code_actions::CodeActionData> {
+    let knot_name = data
+        .get("knot")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+
+    Some(match kind {
+        Some("sort_knots") => brink_ide::code_actions::CodeActionData::SortKnots,
+        Some("sort_stitches") => brink_ide::code_actions::CodeActionData::SortStitches {
+            knot: knot_name.to_owned(),
+        },
+        Some("format_knot") => brink_ide::code_actions::CodeActionData::FormatKnot {
+            knot: knot_name.to_owned(),
+        },
+        Some("format_stitch") => {
+            let stitch_name = data
+                .get("stitch")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            brink_ide::code_actions::CodeActionData::FormatStitch {
+                knot: knot_name.to_owned(),
+                stitch: stitch_name.to_owned(),
+            }
+        }
+        Some("add_import") => {
+            let module = data
+                .get("module")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let name = data
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let native = data
+                .get("native")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            brink_ide::code_actions::CodeActionData::AddImport {
+                module: module.to_owned(),
+                name: name.to_owned(),
+                native,
+            }
+        }
+        Some("trim_fn_literal_args") => {
+            let target = data
+                .get("target")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            brink_ide::code_actions::CodeActionData::TrimFnLiteralArgs {
+                target: target.to_owned(),
+                occurrence: json_u64_as_usize(data, "occurrence"),
+                keep: json_u64_as_usize(data, "keep"),
+            }
+        }
+        Some("bind_fn_literal_ref_args") => {
+            let target = data
+                .get("target")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let vars = data
+                .get("vars")
+                .and_then(serde_json::Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default();
+            brink_ide::code_actions::CodeActionData::BindFnLiteralRefArgs {
+                target: target.to_owned(),
+                occurrence: json_u64_as_usize(data, "occurrence"),
+                vars,
+            }
+        }
+        Some("trim_value_call_args") => {
+            let verb = data
+                .get("verb")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            brink_ide::code_actions::CodeActionData::TrimValueCallArgs {
+                verb: verb.to_owned(),
+                occurrence: json_u64_as_usize(data, "occurrence"),
+                keep: json_u64_as_usize(data, "keep"),
+            }
+        }
+        _ => return None,
+    })
 }
 
 #[cfg(test)]
