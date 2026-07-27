@@ -364,6 +364,173 @@ Key semantics from the reference C# ink implementation relevant to compilation:
 - **Gathers:** convergence points in the HIR (with optional labels, content, and tags). Gathers do not own a body — content after a gather is the next sibling statement in the parent block. At the bytecode level, gathers become named containers that choice branches divert to — LIR lowering handles the container creation.
 - **Choices inside conditional blocks:** choices (`*`) can appear inside `{ - condition: ... }` multiline conditional blocks. Gathers (`-`) are explicitly forbidden inside conditional blocks — the reference compiler errors with "You can't use a gather (the dashes) within the { curly braces } context." In the HIR, conditional blocks are structurally opaque — the weave folder does NOT extract choices from inside conditionals to merge them into the outer weave. Instead, choices inside conditionals stay nested within the `Stmt::Conditional` node. Weave transparency is deferred to LIR lowering/codegen via loose end propagation. brink-syntax's `multiline_branch_body` handles this: `STAR`/`PLUS` dispatches to `choice()`, while `MINUS` breaks out of the body loop (gathers end the branch, matching the reference's gather-forbidden semantics).
 
+## Diagnostic Codes
+
+Every diagnostic the compiler can emit has a stable code (`E001`–`E155`) and a
+per-code reference file under [`docs/diagnostics/`](diagnostics/) with a summary,
+explanation, minimal repro, and fix guidance. `DiagnosticCode::as_str` /
+`DiagnosticCode::from_str_code` (`crates/internal/brink-ir/src/hir/types.rs`) are the
+source of truth for the code set; `crates/internal/brink-test-harness/tests/diagnostic_docs_validation.rs`
+asserts every variant has a corresponding doc file and that no orphaned doc files exist.
+
+| Code | Summary |
+| --- | --- |
+| [`E001`](diagnostics/E001.md) | Knot definition is missing a name. |
+| [`E002`](diagnostics/E002.md) | Stitch definition is missing a name. |
+| [`E003`](diagnostics/E003.md) | Knot or stitch parameter is missing a name. |
+| [`E004`](diagnostics/E004.md) | `VAR` declaration is missing a name. |
+| [`E005`](diagnostics/E005.md) | `VAR` declaration is missing an initializer. |
+| [`E006`](diagnostics/E006.md) | `CONST` declaration is missing a name. |
+| [`E007`](diagnostics/E007.md) | `CONST` declaration is missing an initializer. |
+| [`E008`](diagnostics/E008.md) | `LIST` declaration is missing a name. |
+| [`E009`](diagnostics/E009.md) | `LIST` member is missing a name. |
+| [`E010`](diagnostics/E010.md) | `EXTERNAL` declaration is missing a name. |
+| [`E011`](diagnostics/E011.md) | RETIRED — the parser always materializes a `FILE_PATH` node inside `INCLUDE_STMT` (possibly empty) and... |
+| [`E012`](diagnostics/E012.md) | Divert is missing a target. |
+| [`E013`](diagnostics/E013.md) | RETIRED — `parser/divert.rs::path` always creates a `PATH` node (empty on error + E037), so... |
+| [`E014`](diagnostics/E014.md) | Logic line has no effect (bare `~`). |
+| [`E015`](diagnostics/E015.md) | Expression is missing an operand. |
+| [`E016`](diagnostics/E016.md) | Unknown or unsupported operator. |
+| [`E017`](diagnostics/E017.md) | Function call is missing a name. |
+| [`E018`](diagnostics/E018.md) | RETIRED — `parser/divert.rs::path` always creates a `PATH` node (empty on error + E037), so... |
+| [`E019`](diagnostics/E019.md) | RETIRED — the parser only builds a `CHOICE` node after seeing a bullet token, so a bullet-less choice CST... |
+| [`E020`](diagnostics/E020.md) | Inline conditional is missing a condition. |
+| [`E021`](diagnostics/E021.md) | Inline sequence has no branches. |
+| [`E022`](diagnostics/E022.md) | Duplicate knot definition. |
+| [`E023`](diagnostics/E023.md) | Duplicate variable/constant definition. |
+| [`E024`](diagnostics/E024.md) | Unresolved divert target. |
+| [`E025`](diagnostics/E025.md) | Unresolved variable reference. |
+| [`E026`](diagnostics/E026.md) | Duplicate list item. |
+| [`E027`](diagnostics/E027.md) | Ambiguous bare list item reference. |
+| [`E028`](diagnostics/E028.md) | RETIRED — circular INCLUDE is detected at the discovery phase and surfaces as... |
+| [`E029`](diagnostics/E029.md) | Choice nested in conditional without explicit divert. |
+| [`E030`](diagnostics/E030.md) | String interpolation in constant initializer is ignored. |
+| [`E031`](diagnostics/E031.md) | Function call argument count mismatch. |
+| [`E032`](diagnostics/E032.md) | Return statement outside function. |
+| [`E033`](diagnostics/E033.md) | Unreachable code after divert. |
+| [`E034`](diagnostics/E034.md) | Choice set has only fallback choices. |
+| [`E035`](diagnostics/E035.md) | Name shadows a built-in function. |
+| [`E036`](diagnostics/E036.md) | Expected diagnostic not produced (`// brink-expect`). |
+| [`E037`](diagnostics/E037.md) | Syntax error reported by the parser (malformed source). |
+| [`E038`](diagnostics/E038.md) | Malformed `///` doc-comment tag on a declaration. |
+| [`E039`](diagnostics/E039.md) | Registered host manifest disagrees with the ink `EXTERNAL` arity. |
+| [`E040`](diagnostics/E040.md) | Doc-comment / manifest references an unknown semantic type. |
+| [`E041`](diagnostics/E041.md) | External call argument type mismatches the manifest signature. |
+| [`E042`](diagnostics/E042.md) | External call argument violates a closed-domain constraint. |
+| [`E043`](diagnostics/E043.md) | Well-formed `///` doc-comment tag that doesn't apply to this declaration kind (e.g. |
+| [`E044`](diagnostics/E044.md) | Unknown directive name (e.g. |
+| [`E045`](diagnostics/E045.md) | Directive has no valid target in this position. |
+| [`E046`](diagnostics/E046.md) | Directive contains dynamic inline logic — directives are static text. |
+| [`E047`](diagnostics/E047.md) | Directive must be the only tag on its line. |
+| [`E048`](diagnostics/E048.md) | Duplicate directive on one target. |
+| [`E049`](diagnostics/E049.md) | Directive not supported on this target (e.g. |
+| [`E050`](diagnostics/E050.md) | Directive does not take arguments or trailing text. |
+| [`E051`](diagnostics/E051.md) | A brink-extension construct (block, sigil literal, indexing) was used under the `strict-ink` dialect. |
+| [`E052`](diagnostics/E052.md) | A brink-extension construct parses and analyzes cleanly under the `brink` dialect, but its LIR lowering... |
+| [`E053`](diagnostics/E053.md) | RETIRED — previously a non-suppressible backstop rejecting T1b brink-extension HIR nodes (`LogicBlock`,... |
+| [`E054`](diagnostics/E054.md) | A block-scoped `temp` (`~ { … }`, docs/t1b-surface-spec.md §2) or `for` loop variable shadows an... |
+| [`E055`](diagnostics/E055.md) | `push`/`insert`/`remove`'s first argument is not an lvalue (a variable, temp, or indexed path) — mutators... |
+| [`E056`](diagnostics/E056.md) | `push`/`insert`/`remove` was used in expression position — they return nothing and are only valid as a... |
+| [`E057`](diagnostics/E057.md) | `break`/`continue` used outside any enclosing `while`/`for` loop. |
+| [`E058`](diagnostics/E058.md) | Collection mutator (`push`/`insert`/`remove`) called with the wrong number of arguments — a targeted... |
+| [`E059`](diagnostics/E059.md) | A choice set, labeled gather block, multi-line conditional, or sequence was found nested inside inline... |
+| [`E060`](diagnostics/E060.md) | `brink-codegen-inkb` refused to emit bytecode for a `Program` that violates an invariant an earlier,... |
+| [`E061`](diagnostics/E061.md) | A type annotation names something that isn't a recognized nominal type... |
+| [`E062`](diagnostics/E062.md) | RETIRED — : |
+| [`E063`](diagnostics/E063.md) | A param/return/`VAR` type annotation disagrees with the type TM-1's body inference would otherwise derive. |
+| [`E064`](diagnostics/E064.md) | `types = strict` was requested but the project's dialect isn't `brink` — strict typing is a brink-dialect... |
+| [`E065`](diagnostics/E065.md) | Under `types = strict`, a def's inferred signature or body slot (param, return, or temp) resolved to... |
+| [`E066`](diagnostics/E066.md) | Under `types = strict`, a def's inferred signature or body slot resolved to `Ty::Conflicted` — the body's... |
+| [`E067`](diagnostics/E067.md) | Under `types = strict`, a `~ x = f()` / `~ temp x = f()` assigns the result of a call whose resolved def... |
+| [`E068`](diagnostics/E068.md) | A struct construction literal's leading shape name (`Name#{…}`) doesn't name any declared `STRUCT`. |
+| [`E069`](diagnostics/E069.md) | Under `types = strict`, a struct construction literal omits a declared field — names the missing field. |
+| [`E070`](diagnostics/E070.md) | A struct construction literal supplies a field the shape doesn't declare — names the extra field. |
+| [`E071`](diagnostics/E071.md) | Under `types = strict`, a struct construction literal's field initializer disagrees with the field's... |
+| [`E072`](diagnostics/E072.md) | RETIRED — : |
+| [`E073`](diagnostics/E073.md) | Non-suppressible defense-in-depth backstop, mirroring `E053`/`E060`/ (former) `E072`: |
+| [`E074`](diagnostics/E074.md) | A field-write target (`p.field = expr`) is a *chained* projection — `p.a.b = v` or a mixed `p.a[i].b = v`... |
+| [`E075`](diagnostics/E075.md) | A struct construction literal used as a `VAR`/`CONST` declaration default doesn't match its declared shape: |
+| [`E076`](diagnostics/E076.md) | A map literal used as a `VAR`/`CONST` declaration default has a key that isn't a compile-time-constant... |
+| [`E077`](diagnostics/E077.md) | An array element, map value, struct field, or `#fn` bound `val` arg nested inside a `VAR`/`CONST`... |
+| [`E078`](diagnostics/E078.md) | Under `types = strict`, an unresolved (builtin, not author-shadowed) call to `int(x)`/`float(x)` where `x`... |
+| [`E079`](diagnostics/E079.md) | `#fn(name, …)`'s target does not resolve to a statically-named function definition (`=== function name... |
+| [`E080`](diagnostics/E080.md) | A `ref` param of a `#fn` target is not bound in the creation-site prefix, or is bound to a non-durable lvalue. |
+| [`E081`](diagnostics/E081.md) | `#fn(name, args…)` binds more arguments than the target declares — the bound-arg row is a *prefix* of the... |
+| [`E082`](diagnostics/E082.md) | A T1b block-scoped `temp` (`~ { … }`) — or a `for`-loop variable, which desugars the same way — was... |
+| [`E083`](diagnostics/E083.md) | A scalar `VAR`/`CONST` declaration default whose *source expression kind* can never be a compile-time... |
+| [`E084`](diagnostics/E084.md) | A struct construction literal (`Name#{…}`) supplies the same field name more than once. |
+| [`E085`](diagnostics/E085.md) | An *undeclared* file whose module (its file stem) collides with a *declared* module's name... |
+| [`E086`](diagnostics/E086.md) | A malformed `#@module(…)` directive: |
+| [`E087`](diagnostics/E087.md) | A reference resolves to a `#@private` definition in another module. |
+| [`E088`](diagnostics/E088.md) | A bare-form `IMPORT { name } FROM mod` names a definition that the *declared* module `mod` does not... |
+| [`E089`](diagnostics/E089.md) | An `IMPORT` brings the same local name into scope twice (a repeated bare import, or two imports whose... |
+| [`E090`](diagnostics/E090.md) | An `IMPORT` names the importing file's own module — a module cannot import itself; its own names are... |
+| [`E091`](diagnostics/E091.md) | A qualified access `a.b` is ambiguous: |
+| [`E092`](diagnostics/E092.md) | A `#@public`/`#@private` override that restates the module's default (e.g. |
+| [`E093`](diagnostics/E093.md) | Conflicting or repeated visibility directives on one declaration (both `#@private` and `#@public`, or the... |
+| [`E094`](diagnostics/E094.md) | A malformed `#@was(…)` directive: |
+| [`E095`](diagnostics/E095.md) | `#@was(name)` names the thing's own *current* name — a self-alias that would be a no-op entry in the... |
+| [`E096`](diagnostics/E096.md) | Two *declared* modules (`#@module(name)`, different names) each define a same-name, same-kind symbol. |
+| [`E097`](diagnostics/E097.md) | A `ref lvalue-path` projection expression (`ref npc.hp`, `ref inventory[idx]`) appears somewhere other... |
+| [`E098`](diagnostics/E098.md) | A `ref lvalue-path` projection's segment (a dotted field, or a `[…]` index) disagrees with the root's... |
+| [`E099`](diagnostics/E099.md) | A `ref lvalue-path` projection with at least one path segment (dotted field or `[…]` index — a *real*... |
+| [`E100`](diagnostics/E100.md) | `#@effects` with no argument at all (`#@effects`, `#@effects()`, or an argument that parses to nothing) —... |
+| [`E101`](diagnostics/E101.md) | A malformed `#@effects(…)` argument: |
+| [`E102`](diagnostics/E102.md) | A `#@effects(…)` clause names an identifier that isn't a declared global `VAR`/`CONST` (for... |
+| [`E103`](diagnostics/E103.md) | **The exceedance error** (docs/effects-spec.md §10, sitting 2, 2026-07-14 ruling): |
+| [`E104`](diagnostics/E104.md) | A call `expr(args…)` whose callee isn't a bare variable/temp/param name (an `INDEX_EXPR`,... |
+| [`E105`](diagnostics/E105.md) | An `await <cond>` / `while await <cond>` condition is not effect-free. |
+| [`E106`](diagnostics/E106.md) | A `#{key: |
+| [`E107`](diagnostics/E107.md) | A fresh, un-annotated declaration (`VAR x = none`, `CONST x = none`, `~ temp x = none`) whose initializer... |
+| [`E108`](diagnostics/E108.md) | `@[effects(silent)]` exceedance: |
+| [`E109`](diagnostics/E109.md) | `@[effects(total)]` exceedance: |
+| [`E110`](diagnostics/E110.md) | The deprecated `#@effects(…)` tag-channel spelling — superseded by the `@[effects(…)]` annotation final form. |
+| [`E111`](diagnostics/E111.md) | An `@[…]` annotation line naming something outside the channel's closed name set: |
+| [`E112`](diagnostics/E112.md) | An `@[…]` annotation line outside a recognized placement — ink's leading run at the top of a knot/stitch... |
+| [`E113`](diagnostics/E113.md) | A declaration named after a registry protocol method — `display`, `compare`, or `next`: |
+| [`E114`](diagnostics/E114.md) | A registered protocol impl's inferred effect row exceeds its protocol's effect contract (`display`/`compare`: |
+| [`E115`](diagnostics/E115.md) | An ill-formed protocol impl registration: |
+| [`E116`](diagnostics/E116.md) | A condition-position expression (an `if`/`while` condition, a `{cond: |
+| [`E117`](diagnostics/E117.md) | A range-refinement violation under `types = strict` (the E078 precedent — strict-only; gradual mode is... |
+| [`E118`](diagnostics/E118.md) | A protocol impl registration named a numeric-tower kind (`vec2`/`vec3`/`vec4`/`quat`/`mat2`/`mat3`/`mat4`)... |
+| [`E119`](diagnostics/E119.md) | A `sort_by`/`sorted_by` comparator provably breaks the pure·silent contract (§4b: |
+| [`E120`](diagnostics/E120.md) | NS-A7 `Weighted[T]` construction refusal: |
+| [`E121`](diagnostics/E121.md) | Contract §4.2 check 1a (manifest ⇄ HIR agreement): |
+| [`E122`](diagnostics/E122.md) | Contract §4.2 check 1b (manifest ⇄ HIR agreement): |
+| [`E123`](diagnostics/E123.md) | Contract §4.2 check 1c: |
+| [`E124`](diagnostics/E124.md) | Contract §4.2 check 2a (range well-formedness): |
+| [`E125`](diagnostics/E125.md) | Contract §4.2 check 2b (join-key uniqueness, Q2(a)): |
+| [`E126`](diagnostics/E126.md) | Contract §4.2 check 3: |
+| [`E127`](diagnostics/E127.md) | Contract §4.2 check 4: |
+| [`E128`](diagnostics/E128.md) | Contract §4.2 check 5: |
+| [`E129`](diagnostics/E129.md) | A native construct parses cleanly but has no HIR lowering yet in this slice (a nested `module { … }`... |
+| [`E130`](diagnostics/E130.md) | A native `flow` is declared more than two levels deep (a `flow` nested inside another nested `flow`'s... |
+| [`E131`](diagnostics/E131.md) | `<-` (splice) used outside a choice point: |
+| [`E132`](diagnostics/E132.md) | A native file-level `@[was(…)]` rename record carries no quoted old module path — a missing argument, or... |
+| [`E133`](diagnostics/E133.md) | A native file's `root_content` carries something other than the one documented shape a native lowering may... |
+| [`E134`](diagnostics/E134.md) | A native file's HIR carries an `IncludeSite` — native has no textual `INCLUDE` graph (charter §13.2, "the... |
+| [`E135`](diagnostics/E135.md) | A `ThreadStart` (`<- target`) appears somewhere other than the two legal native splice positions B0.7's... |
+| [`E136`](diagnostics/E136.md) | A native `ChoiceSet` carries a `depth`/`context` other than the B0.7-documented neutral values (`depth =... |
+| [`E137`](diagnostics/E137.md) | The B0.9 native strict-only enforcement point: |
+| [`E138`](diagnostics/E138.md) | A map literal supplies the same key twice (`Map { k: |
+| [`E139`](diagnostics/E139.md) | A construction literal's entries are not in the form its target type constructs from — `Map { a }`... |
+| [`E140`](diagnostics/E140.md) | **D1**: |
+| [`E141`](diagnostics/E141.md) | `recv.name(args)` resolved as neither: |
+| [`E142`](diagnostics/E142.md) | **D3**: |
+| [`E143`](diagnostics/E143.md) | **D5**: |
+| [`E144`](diagnostics/E144.md) | A UFCS call site that `brink-analyzer::ufcs` **resolved** cleanly has reached LIR lowering, which does not... |
+| [`E145`](diagnostics/E145.md) | The v1 whole-condition restriction: |
+| [`E146`](diagnostics/E146.md) | An `as` binding in a **choice guard** (`* {if EXPR as name} [text]`). |
+| [`E147`](diagnostics/E147.md) | An `as` binding whose condition is a statically-known **non-Option** type (`if 5 as n { … }`). |
+| [`E148`](diagnostics/E148.md) | A write to an `as` binding — `if find(s) as i { i = 0; }`, `pop(i)`, `i[0] = x`, `bump(ref i)`, … The... |
+| [`E149`](diagnostics/E149.md) | A `remove(a, i)` call whose first argument is statically known to be an array: |
+| [`E150`](diagnostics/E150.md) | A def (function or value-returning flow/stitch) declares a non-`void` return type but its body may fall... |
+| [`E151`](diagnostics/E151.md) | A native `{? … }` choice's own body falls through (no divert/return) while a sibling choice in the same... |
+| [`E152`](diagnostics/E152.md) | A `contains(m, needle)` call whose `needle` argument is statically visible as outside the map key domain... |
+| [`E153`](diagnostics/E153.md) | An `@[allow(…)]` argument is not a diagnostic code this compiler knows (`DiagnosticCode::from_str_code`... |
+| [`E154`](diagnostics/E154.md) | An `@[allow(…)]` names a real diagnostic code that is **not suppressible**: |
+| [`E155`](diagnostics/E155.md) | An `@[allow(…)]` whose argument list is missing, empty, or not a flat list of bare code identifiers... |
+
 ## Known limitations
 
 Issues that are documented here so they are not silently rediscovered. Each should be addressed or explicitly accepted.
