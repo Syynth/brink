@@ -263,8 +263,19 @@ fn check_cross_module_refs(
                     diagnostics.push(Diagnostic {
                         file: r.file,
                         range: r.range,
+                        // Deliberately dialect-blind (issue #1590 companion
+                        // finding): this pass reads only HIR, which never
+                        // carries a native/ink frontend tag ("no dialect tag
+                        // near HIR" — see `brink-db`'s `file_language` doc),
+                        // so the message never spells out a concrete import
+                        // statement — ink's `IMPORT { name } FROM mod` and
+                        // native's `use mod::name;` differ. A consumer that
+                        // *does* know the referring file's dialect
+                        // (`brink-ide::import_fix::import_actions`, via
+                        // `ProjectDb::is_native`) renders the concrete
+                        // quick-fix syntax instead.
                         message: format!(
-                            "unresolved cross-module reference `{name}` — add `IMPORT {{ {name} }} FROM {module}` or `IMPORT {module}` (see modules-spec §2)",
+                            "unresolved cross-module reference `{name}` — import it from `{module}` (see modules-spec §2)",
                             name = target.name,
                             module = tmod,
                         ),
@@ -394,8 +405,8 @@ pub fn check(
 mod tests {
     use brink_format::{DefinitionId, DefinitionTag};
     use brink_ir::{
-        Block, FileId, HirFile, ModuleDecl, ResolvedRef, Scope, SymbolIndex, SymbolInfo,
-        SymbolKind, Visibility,
+        Block, DiagnosticCode, FileId, HirFile, ModuleDecl, ResolvedRef, Scope, SymbolIndex,
+        SymbolInfo, SymbolKind, Visibility,
     };
     use rowan::{TextRange, TextSize};
 
@@ -507,5 +518,57 @@ mod tests {
                 "same-module self-reference must produce no diagnostics, got {diagnostics:?}"
             );
         }
+    }
+
+    /// Issue #1590 companion finding: this pass never sees a native/ink
+    /// frontend tag (HIR is dialect-blind by design — "no dialect tag near
+    /// HIR"), so the `E025` message must not spell out a concrete import
+    /// statement's syntax — ink's `IMPORT { name } FROM mod` reads wrong to a
+    /// native `.brink` author, and there is no signal here to pick the other
+    /// spelling instead. The message stays syntax-free; a consumer that does
+    /// know the referring file's dialect (`brink-ide::import_fix`, via
+    /// `ProjectDb::is_native`) renders the concrete quick-fix text.
+    #[test]
+    fn e025_message_never_hardcodes_a_concrete_import_statement() {
+        let quest = hir_with_module("quest");
+        let town = hir_with_module("town");
+        let files = [(FileId(0), &quest), (FileId(1), &town)];
+
+        let ambush_id = DefinitionId::new(DefinitionTag::Address, 1);
+        let mut index = SymbolIndex::default();
+        index.symbols.insert(
+            ambush_id,
+            SymbolInfo {
+                visibility: Visibility::Public,
+                ..symbol(ambush_id, SymbolKind::Knot, "ambush", Some("quest"), None)
+            },
+        );
+        index
+            .by_name
+            .entry("ambush".to_string())
+            .or_default()
+            .push(ambush_id);
+
+        // `town` references `quest`'s public `ambush` bare, with no IMPORT/
+        // `use` at all — E025 must fire (this is the same well-established
+        // gate `check_cross_module_refs` exercises elsewhere in this test
+        // module and in `brink-ide`'s `import_fix` tests).
+        let resolutions = vec![ResolvedRef {
+            file: FileId(1),
+            range: range(10, 6),
+            target: ambush_id,
+        }];
+
+        let diagnostics = check(&files, &index, &resolutions);
+        let e025: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == DiagnosticCode::E025)
+            .collect();
+        assert_eq!(e025.len(), 1, "expected exactly one E025: {diagnostics:?}");
+        assert!(
+            !e025[0].message.contains("IMPORT"),
+            "E025 message must not hardcode ink's IMPORT syntax: {:?}",
+            e025[0].message
+        );
     }
 }

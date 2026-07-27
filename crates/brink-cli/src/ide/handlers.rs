@@ -40,7 +40,7 @@ use super::project::{
 // ── Commands ────────────────────────────────────────────────────────
 
 pub(super) fn run_def(addr: &Address, opts: &CommonOpts) -> Result<ExitCode, String> {
-    let project = Project::load(&opts.entry)?;
+    let project = Project::load(&opts.entry, &opts.lints.resolve())?;
     let sym = project.resolve(addr, opts.kind)?;
     let loc = project.location_of(sym.file, sym.range);
 
@@ -64,7 +64,7 @@ pub(super) fn run_references(
     count: bool,
     opts: &CommonOpts,
 ) -> Result<ExitCode, String> {
-    let project = Project::load(&opts.entry)?;
+    let project = Project::load(&opts.entry, &opts.lints.resolve())?;
     let sym = project.resolve(addr, opts.kind)?;
     // The definition offset is a valid query position: find_references resolves
     // the symbol there and collects every use (optionally including the decl).
@@ -120,7 +120,7 @@ pub(super) fn run_symbols(
     search: Option<&str>,
     opts: &CommonOpts,
 ) -> Result<ExitCode, String> {
-    let project = Project::load(&opts.entry)?;
+    let project = Project::load(&opts.entry, &opts.lints.resolve())?;
     let mut out = io::stdout().lock();
 
     let entries: Vec<SymEntry> = if let Some(query) = search {
@@ -165,7 +165,7 @@ pub(super) fn run_symbols(
 }
 
 pub(super) fn run_unused(opts: &CommonOpts) -> Result<ExitCode, String> {
-    let project = Project::load(&opts.entry)?;
+    let project = Project::load(&opts.entry, &opts.lints.resolve())?;
     let db = project.driver.db();
     let mut unused: Vec<SymEntry> = project
         .analysis
@@ -207,7 +207,7 @@ pub(super) fn run_unused(opts: &CommonOpts) -> Result<ExitCode, String> {
 }
 
 pub(super) fn run_check(opts: &CommonOpts) -> Result<ExitCode, String> {
-    let project = Project::load(&opts.entry)?;
+    let project = Project::load(&opts.entry, &opts.lints.resolve())?;
     let report = project
         .driver
         .collect_diagnostics(&project.analysis, Some(project.entry_id));
@@ -268,7 +268,7 @@ pub(super) fn run_rename(
     unsafe_mode: bool,
     opts: &CommonOpts,
 ) -> Result<ExitCode, String> {
-    let project = Project::load(&opts.entry)?;
+    let project = Project::load(&opts.entry, &opts.lints.resolve())?;
     let sym = project.resolve(addr, opts.kind)?;
     let result = rename(
         project.driver.db(),
@@ -479,7 +479,7 @@ fn emit_rename_preview(
 }
 
 pub(super) fn run_hover(addr: &Address, opts: &CommonOpts) -> Result<ExitCode, String> {
-    let project = Project::load(&opts.entry)?;
+    let project = Project::load(&opts.entry, &opts.lints.resolve())?;
     let sym = project.resolve(addr, opts.kind)?;
     let db = project.driver.db();
     let source = db.source(sym.file).unwrap_or_default();
@@ -519,7 +519,7 @@ pub(super) fn run_hover(addr: &Address, opts: &CommonOpts) -> Result<ExitCode, S
 }
 
 pub(super) fn run_signature(at: &str, opts: &CommonOpts) -> Result<ExitCode, String> {
-    let project = Project::load(&opts.entry)?;
+    let project = Project::load(&opts.entry, &opts.lints.resolve())?;
     let (file, line, col) = parse_at(at)?;
     let db = project.driver.db();
     let file_id = db
@@ -556,7 +556,7 @@ pub(super) fn run_signature(at: &str, opts: &CommonOpts) -> Result<ExitCode, Str
 }
 
 pub(super) fn run_graph(dot: bool, opts: &CommonOpts) -> Result<ExitCode, String> {
-    let project = Project::load(&opts.entry)?;
+    let project = Project::load(&opts.entry, &opts.lints.resolve())?;
     let db = project.driver.db();
     let ids: Vec<FileId> = db.file_ids().collect();
     let files: Vec<(FileId, &HirFile)> = ids
@@ -589,7 +589,7 @@ pub(super) fn run_graph(dot: bool, opts: &CommonOpts) -> Result<ExitCode, String
 }
 
 pub(super) fn run_lines(file: Option<&str>, opts: &CommonOpts) -> Result<ExitCode, String> {
-    let project = Project::load(&opts.entry)?;
+    let project = Project::load(&opts.entry, &opts.lints.resolve())?;
     let db = project.driver.db();
     let file_id = match file {
         Some(f) => db
@@ -635,7 +635,7 @@ pub(super) fn run_lines(file: Option<&str>, opts: &CommonOpts) -> Result<ExitCod
 // ── Mutating commands: move-file / refactor / actions ───────────────
 
 pub(super) fn run_move_file(old: &str, new: &str, mode: &MutOpts) -> Result<ExitCode, String> {
-    let project = Project::load(&mode.entry)?;
+    let project = Project::load(&mode.entry, &mode.lints.resolve())?;
     let session = project.ide_session();
     let result = rename_file(&session, old, new).map_err(|e| e.to_string())?;
 
@@ -779,19 +779,19 @@ fn emit_move_mutation(
 pub(super) fn run_refactor(op: &RefactorOp) -> Result<ExitCode, String> {
     match op {
         RefactorOp::SortKnots { file, mode } => {
-            let project = Project::load(&mode.entry)?;
+            let project = Project::load(&mode.entry, &mode.lints.resolve())?;
             let (id, source) = project.file_or_entry(file.as_deref())?;
             let new = sort_knots_in_source(&source);
             project.emit_single(id, &source, new, mode)
         }
         RefactorOp::SortStitches { knot, mode } => {
-            let project = Project::load(&mode.entry)?;
+            let project = Project::load(&mode.entry, &mode.lints.resolve())?;
             let (id, source) = project.knot_file(knot)?;
             let new = sort_stitches_in_knot(&source, knot);
             project.emit_single(id, &source, new, mode)
         }
         RefactorOp::Format { target, mode } => {
-            let project = Project::load(&mode.entry)?;
+            let project = Project::load(&mode.entry, &mode.lints.resolve())?;
             let (knot, stitch) = split_dotted(target);
             let (id, source) = project.knot_file(knot)?;
             let new = format_region(&source, knot, stitch);
@@ -802,7 +802,7 @@ pub(super) fn run_refactor(op: &RefactorOp) -> Result<ExitCode, String> {
             direction,
             mode,
         } => {
-            let project = Project::load(&mode.entry)?;
+            let project = Project::load(&mode.entry, &mode.lints.resolve())?;
             let (id, source) = project.knot_file(knot)?;
             let new =
                 reorder_knot(&source, knot, (*direction).into()).map_err(|e| e.to_string())?;
@@ -813,7 +813,7 @@ pub(super) fn run_refactor(op: &RefactorOp) -> Result<ExitCode, String> {
             direction,
             mode,
         } => {
-            let project = Project::load(&mode.entry)?;
+            let project = Project::load(&mode.entry, &mode.lints.resolve())?;
             let (knot, stitch) = split_dotted(target);
             let stitch = stitch.ok_or("reorder-stitch needs KNOT.STITCH")?;
             let (id, source) = project.knot_file(knot)?;
@@ -822,21 +822,21 @@ pub(super) fn run_refactor(op: &RefactorOp) -> Result<ExitCode, String> {
             project.emit_single(id, &source, new, mode)
         }
         RefactorOp::ReorderKnots { order, file, mode } => {
-            let project = Project::load(&mode.entry)?;
+            let project = Project::load(&mode.entry, &mode.lints.resolve())?;
             let (id, source) = project.file_or_entry(file.as_deref())?;
             let names = parse_order(order);
             let new = reorder_knots(&source, &names).map_err(|e| e.to_string())?;
             project.emit_single(id, &source, new, mode)
         }
         RefactorOp::ReorderStitches { knot, order, mode } => {
-            let project = Project::load(&mode.entry)?;
+            let project = Project::load(&mode.entry, &mode.lints.resolve())?;
             let (id, source) = project.knot_file(knot)?;
             let names = parse_order(order);
             let new = reorder_stitches(&source, knot, &names).map_err(|e| e.to_string())?;
             project.emit_single(id, &source, new, mode)
         }
         RefactorOp::MoveStitch { target, dest, mode } => {
-            let project = Project::load(&mode.entry)?;
+            let project = Project::load(&mode.entry, &mode.lints.resolve())?;
             let (knot, stitch) = split_dotted(target);
             let stitch = stitch.ok_or("move-stitch needs KNOT.STITCH")?;
             let (id, source) = project.knot_file(knot)?;
@@ -845,7 +845,7 @@ pub(super) fn run_refactor(op: &RefactorOp) -> Result<ExitCode, String> {
             project.emit_move_result(id, result, mode)
         }
         RefactorOp::PromoteStitch { target, mode } => {
-            let project = Project::load(&mode.entry)?;
+            let project = Project::load(&mode.entry, &mode.lints.resolve())?;
             let (knot, stitch) = split_dotted(target);
             let stitch = stitch.ok_or("promote-stitch needs KNOT.STITCH")?;
             let (id, source) = project.knot_file(knot)?;
@@ -854,7 +854,7 @@ pub(super) fn run_refactor(op: &RefactorOp) -> Result<ExitCode, String> {
             project.emit_move_result(id, result, mode)
         }
         RefactorOp::DemoteKnot { knot, dest, mode } => {
-            let project = Project::load(&mode.entry)?;
+            let project = Project::load(&mode.entry, &mode.lints.resolve())?;
             let (id, source) = project.knot_file(knot)?;
             let result = demote_knot_to_stitch(&source, &project.analysis, id, knot, dest)
                 .map_err(|e| e.to_string())?;
@@ -865,7 +865,7 @@ pub(super) fn run_refactor(op: &RefactorOp) -> Result<ExitCode, String> {
 }
 
 fn run_convert_line(at: &str, target: ConvertTo, mode: &MutOpts) -> Result<ExitCode, String> {
-    let project = Project::load(&mode.entry)?;
+    let project = Project::load(&mode.entry, &mode.lints.resolve())?;
     let (file, line, col) = parse_at(at)?;
     let db = project.driver.db();
     let id = db
@@ -883,7 +883,7 @@ fn run_convert_line(at: &str, target: ConvertTo, mode: &MutOpts) -> Result<ExitC
 }
 
 pub(super) fn run_actions(at: &str, opts: &CommonOpts) -> Result<ExitCode, String> {
-    let project = Project::load(&opts.entry)?;
+    let project = Project::load(&opts.entry, &opts.lints.resolve())?;
     let (file, line, col) = parse_at(at)?;
     let db = project.driver.db();
     let id = db
@@ -931,12 +931,16 @@ struct EffectDiffEntry {
 /// entry file, or a git revision of the same project). Drift *visibility*
 /// only — advisory, no policy (spec §10).
 pub(super) fn run_effects_diff(opts: &EffectsDiffOpts) -> Result<ExitCode, String> {
-    let head = Project::load(&opts.entry)?;
+    let head = Project::load(&opts.entry, &opts.lints.resolve())?;
     let head_rows = head.collect_effect_rows();
 
     let base_rows = match (opts.rev.as_deref(), opts.base.as_deref()) {
-        (Some(rev), None) => load_git_baseline(&opts.entry, rev)?.collect_effect_rows(),
-        (None, Some(base_entry)) => Project::load(base_entry)?.collect_effect_rows(),
+        (Some(rev), None) => {
+            load_git_baseline(&opts.entry, rev, &opts.lints.resolve())?.collect_effect_rows()
+        }
+        (None, Some(base_entry)) => {
+            Project::load(base_entry, &opts.lints.resolve())?.collect_effect_rows()
+        }
         _ => return Err("provide exactly one of --rev <REV> or --base <FILE>".to_string()),
     };
 

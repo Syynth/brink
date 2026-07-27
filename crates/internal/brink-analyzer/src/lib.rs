@@ -167,12 +167,16 @@ impl AnalysisOptions {
     /// without a config file (typically [`AnalysisOptions::default()`]).
     /// `lints` does not follow this rule — see below.
     ///
-    /// `lints`/`deny-warnings` (issue #1160) have no override mechanism yet
-    /// (no CLI flag or editor API sets an individual code's severity or
-    /// `deny-warnings` today), so unlike `dialect`/`types` there is no
-    /// `lints_overridden` parameter — the file's `[lints]` table is instead
-    /// the sole source of truth for [`AnalysisOptions::lints`]: this call
-    /// **replaces** `self.lints` wholesale with the policy resolved from
+    /// `lints`/`deny-warnings` (issue #1160) have their own override
+    /// mechanism — [`Self::apply_lint_overrides`], the CLI-flag/editor-API
+    /// tier used by `brink compile`, `brink ide`, `brink-lsp`'s
+    /// `initializationOptions`, and the wasm `EditorSession` — but unlike
+    /// `dialect`/`types` that tier is applied as a *second, separate call*
+    /// rather than an `_overridden` parameter here, so this call always
+    /// resolves `[lints]` from `config` first: the file's `[lints]` table
+    /// is the sole source of truth for what this call sets on
+    /// [`AnalysisOptions::lints`], and it **replaces** `self.lints` wholesale
+    /// with the policy resolved from
     /// `config` (a code missing from `config.lints`, or an absent `[lints]`
     /// table entirely, resolves to no override for that code; a missing
     /// `deny-warnings` resolves to `false`) rather than merging `config`'s

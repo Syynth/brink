@@ -1,5 +1,6 @@
 mod batch;
 mod ide;
+mod lint_overrides;
 mod tui;
 
 use std::io::{BufRead, IsTerminal, Write as _};
@@ -162,6 +163,17 @@ enum Commands {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
+    /// Migrate an existing XLIFF file's unit ids to the stable scope-id-based
+    /// scheme (#1442), preserving every translation, state, and hash in
+    /// place. Safe to run unconditionally — units already on the new scheme
+    /// are left untouched.
+    MigrateXliff {
+        /// Existing .xlf file (any unit-id scheme)
+        input: PathBuf,
+        /// Output migrated .xlf file (defaults to stdout)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
     /// Format .ink source files
     Fmt {
         /// .ink files to format
@@ -232,6 +244,19 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// Log an `Err` via `tracing::error!` and collapse a fallible command's
+/// result down to the process exit code `main` returns. Pulled out of
+/// `run_command` so each match arm is one line — the match was tripping
+/// `clippy::too_many_lines` on its own repeated `if let Err(e) = … { … }`
+/// boilerplate well before it was doing anything complex per-command.
+fn report_result(result: Result<(), Box<dyn std::error::Error>>) -> ExitCode {
+    if let Err(e) = result {
+        tracing::error!("{e}");
+        return ExitCode::FAILURE;
+    }
+    ExitCode::SUCCESS
+}
+
 fn run_command(command: Commands) -> ExitCode {
     match command {
         Commands::Compile {
@@ -242,65 +267,52 @@ fn run_command(command: Commands) -> ExitCode {
             deny,
             warn,
             allow,
-        } => {
-            return run_compile_command(
-                &input,
-                output.as_deref(),
-                dialect.map(Into::into),
-                types.map(Into::into),
-                &deny,
-                &warn,
-                &allow,
-            );
-        }
-        Commands::Convert { input, output } => {
-            return run_convert_command(&input, output.as_deref());
-        }
+        } => run_compile_command(
+            &input,
+            output.as_deref(),
+            dialect.map(Into::into),
+            types.map(Into::into),
+            &deny,
+            &warn,
+            &allow,
+        ),
+        Commands::Convert { input, output } => run_convert_command(&input, output.as_deref()),
         Commands::ExportXliff {
             input,
             src_lang,
             trg_lang,
             output,
-        } => {
-            if let Err(e) =
-                run_export_xliff(&input, &src_lang, trg_lang.as_deref(), output.as_deref())
-            {
-                tracing::error!("{e}");
-                return ExitCode::FAILURE;
-            }
-        }
+        } => report_result(run_export_xliff(
+            &input,
+            &src_lang,
+            trg_lang.as_deref(),
+            output.as_deref(),
+        )),
         Commands::CompileLocale {
             base,
             xliff,
             locale,
             output,
-        } => {
-            if let Err(e) = run_compile_locale(&base, &xliff, &locale, &output) {
-                tracing::error!("{e}");
-                return ExitCode::FAILURE;
-            }
-        }
+        } => report_result(run_compile_locale(&base, &xliff, &locale, &output)),
         Commands::RegenerateXliff {
             base,
             existing,
             src_lang,
             output,
-        } => {
-            if let Err(e) = run_regenerate_xliff(&base, &existing, &src_lang, output.as_deref()) {
-                tracing::error!("{e}");
-                return ExitCode::FAILURE;
-            }
+        } => report_result(run_regenerate_xliff(
+            &base,
+            &existing,
+            &src_lang,
+            output.as_deref(),
+        )),
+        Commands::MigrateXliff { input, output } => {
+            report_result(run_migrate_xliff(&input, output.as_deref()))
         }
         Commands::Fmt {
             files,
             check,
             stdin,
-        } => {
-            if let Err(e) = run_fmt(&files, check, stdin) {
-                tracing::error!("{e}");
-                return ExitCode::FAILURE;
-            }
-        }
+        } => report_result(run_fmt(&files, check, stdin)),
         Commands::Play {
             file,
             input,
@@ -309,31 +321,21 @@ fn run_command(command: Commands) -> ExitCode {
             save_transcript,
         } => {
             let locale_refs: Vec<&std::path::Path> = locale.iter().map(PathBuf::as_path).collect();
-            if let Err(e) = run_play(
+            report_result(run_play(
                 &file,
                 input.as_deref(),
                 speed,
                 &locale_refs,
                 save_transcript.as_deref(),
-            ) {
-                tracing::error!("{e}");
-                return ExitCode::FAILURE;
-            }
+            ))
         }
         Commands::Replay {
             transcript,
             story,
             locale,
-        } => {
-            if let Err(e) = run_replay(&transcript, &story, locale.as_deref()) {
-                tracing::error!("{e}");
-                return ExitCode::FAILURE;
-            }
-        }
-        Commands::Ide { command } => return ide::run(&command),
+        } => report_result(run_replay(&transcript, &story, locale.as_deref())),
+        Commands::Ide { command } => ide::run(&command),
     }
-
-    ExitCode::SUCCESS
 }
 
 /// Build the #1306 [`Environment`](brink_environment::Environment) for `entry`
@@ -387,46 +389,6 @@ fn compile_entry(
     Ok(brink_environment::compile(&env)?)
 }
 
-/// Resolve `brink compile`'s repeatable `--deny`/`--warn`/`--allow <CODE>`
-/// flags into the per-code override map [`compile_entry`] threads through to
-/// [`brink_environment::OptionOverrides::lints`] (issue #1373). `--deny
-/// warnings` (short form `-D warnings`, mirroring rustc's own `-D warnings`)
-/// is special-cased as `deny-warnings` rather than a per-code override,
-/// since `"warnings"` is never a real `DiagnosticCode` — every other value
-/// is validated downstream, at the one resolution point
-/// (`AnalysisOptions::apply_lint_overrides`), not here.
-///
-/// A code repeated across more than one of `--deny`/`--warn`/`--allow`
-/// resolves to whichever flag is applied last, in `deny`, `warn`, `allow`
-/// order below — a user passing the same code to more than one flag has
-/// already made a contradictory request; this is deliberately simple rather
-/// than rejecting it outright.
-fn resolve_lint_overrides(
-    deny: &[String],
-    warn: &[String],
-    allow: &[String],
-) -> (
-    std::collections::BTreeMap<String, brink_driver::LintLevel>,
-    Option<bool>,
-) {
-    let mut lints = std::collections::BTreeMap::new();
-    let mut deny_warnings = None;
-    for code in deny {
-        if code == "warnings" {
-            deny_warnings = Some(true);
-        } else {
-            lints.insert(code.clone(), brink_driver::LintLevel::Deny);
-        }
-    }
-    for code in warn {
-        lints.insert(code.clone(), brink_driver::LintLevel::Warn);
-    }
-    for code in allow {
-        lints.insert(code.clone(), brink_driver::LintLevel::Allow);
-    }
-    (lints, deny_warnings)
-}
-
 /// `Commands::Compile`'s dispatch, factored out of [`run_command`] (matching
 /// the `Commands::Ide => return ide::run(&command)` shape already used
 /// there) — [`run_command`]'s `match` arms stay one-liners, keeping the
@@ -456,7 +418,7 @@ fn run_compile(
     warn: &[String],
     allow: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (lints, deny_warnings) = resolve_lint_overrides(deny, warn, allow);
+    let (lints, deny_warnings) = lint_overrides::resolve_lint_overrides(deny, warn, allow);
     let output_result = compile_entry(input, dialect, types, lints, deny_warnings)?;
     for w in &output_result.warnings {
         tracing::warn!("[{}] {}", w.code.as_str(), w.message);
@@ -631,6 +593,46 @@ fn run_regenerate_xliff(
 
     let merged_doc = brink_intl::regenerate_locale(&data, index.checksum, src_lang, &existing_doc)?;
     let xml = xliff2::write::to_string(&merged_doc)?;
+
+    if let Some(path) = output {
+        std::fs::write(path, &xml)?;
+    } else {
+        let stdout = std::io::stdout();
+        let mut handle = stdout.lock();
+        handle.write_all(xml.as_bytes())?;
+        handle.write_all(b"\n")?;
+    }
+
+    Ok(())
+}
+
+fn run_migrate_xliff(
+    input: &std::path::Path,
+    output: Option<&std::path::Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let text = std::fs::read_to_string(input)?;
+    let mut doc = xliff2::read::read_xliff(&text)?;
+
+    for file in &doc.files {
+        let has_scope_id = file
+            .extensions
+            .attributes
+            .iter()
+            .any(|a| a.namespace == "brink" && a.local_name == "scope-id");
+        if !has_scope_id {
+            tracing::warn!(
+                "file {:?} has no brink:scope-id extension; migration falls back to \
+                 file.id ({:?}) as the scope id, which will not match a freshly \
+                 exported .xlf for the same scope",
+                file.id,
+                file.id
+            );
+        }
+    }
+
+    let changed = brink_intl::migrate_unit_ids(&mut doc)?;
+    tracing::info!("migrated {changed} unit id(s)");
+    let xml = xliff2::write::to_string(&doc)?;
 
     if let Some(path) = output {
         std::fs::write(path, &xml)?;

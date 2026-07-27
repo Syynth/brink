@@ -1091,6 +1091,21 @@ fn e014_severity(diags: &[Value]) -> Option<u64> {
 /// regardless of version — the client-visible end state — up to the same
 /// settling signal.
 fn diagnostics_for_uri_settled(root: &std::path::Path, source: &str) -> Vec<Value> {
+    diagnostics_for_uri_settled_with_init_options(root, source, Value::Null)
+}
+
+/// Like [`diagnostics_for_uri_settled`], but also sets
+/// `initializationOptions` to `init_options` (`Value::Null` to omit the key
+/// entirely, byte-identical to `diagnostics_for_uri_settled`'s own
+/// behavior) — issue #1417's LSP-side probe for the
+/// `initializationOptions.lints`/`.denyWarnings` CLI/API lint-override
+/// tier, alongside `diagnostics_for_uri_settled`'s existing `brink.toml`
+/// `[lints]` coverage.
+fn diagnostics_for_uri_settled_with_init_options(
+    root: &std::path::Path,
+    source: &str,
+    init_options: Value,
+) -> Vec<Value> {
     const MAX_MESSAGES: u64 = 2000;
 
     let bin = env!("CARGO_BIN_EXE_brink-lsp");
@@ -1104,16 +1119,21 @@ fn diagnostics_for_uri_settled(root: &std::path::Path, source: &str) -> Vec<Valu
     let mut stdin = child.stdin.take().unwrap();
     let mut stdout = BufReader::new(child.stdout.take().unwrap());
 
+    let mut init_params = json!({
+        "capabilities": {},
+        "rootUri": format!("file://{}", root.display()),
+    });
+    if !init_options.is_null() {
+        init_params["initializationOptions"] = init_options;
+    }
+
     send(
         &mut stdin,
         &json!({
             "jsonrpc": "2.0",
             "id": 1,
             "method": "initialize",
-            "params": {
-                "capabilities": {},
-                "rootUri": format!("file://{}", root.display()),
-            }
+            "params": init_params,
         }),
     );
     let (_init_resp, _) = recv_response(&mut stdout, 1);
@@ -1211,6 +1231,88 @@ fn brink_toml_lints_override_promotes_published_severity_to_error() {
         e014_severity(&diags),
         Some(1),
         "[lints] E014 = deny should promote the published severity to Error, got: {diags:?}"
+    );
+}
+
+// ── #1417: initializationOptions.lints/.denyWarnings CLI/API override tier ──
+//
+// Extends #1367's file-only `[lints]` resolution (above) with an explicit
+// client-declared tier — the LSP's counterpart of `brink compile`'s
+// `--deny`/`--warn`/`--allow`/`-D warnings` (#1373) and `BrinkPlugin::
+// with_config` (#1394). `resolve_language_options` applies it last, so it
+// always wins over a conflicting `brink.toml` entry for the same code.
+
+/// `initializationOptions.lints.E014 = "deny"`, no `brink.toml` at all: the
+/// published severity must promote to `Error` — the file-only counterpart
+/// this closes the gap on is
+/// `brink_toml_lints_override_promotes_published_severity_to_error` above.
+#[test]
+fn init_options_lints_deny_promotes_published_severity_to_error() {
+    let root = unique_tmp_dir("init-lints-deny");
+    std::fs::create_dir_all(&root).unwrap();
+
+    let diags = diagnostics_for_uri_settled_with_init_options(
+        &root,
+        E014_PROBE_SOURCE,
+        json!({ "lints": { "E014": "deny" } }),
+    );
+
+    std::fs::remove_dir_all(&root).unwrap();
+
+    assert_eq!(
+        e014_severity(&diags),
+        Some(1),
+        "initializationOptions.lints.E014 = deny should promote the published \
+         severity to Error, got: {diags:?}"
+    );
+}
+
+/// `initializationOptions.denyWarnings = true`: same promotion via the
+/// blanket flag rather than a per-code override, mirroring `-D warnings`.
+#[test]
+fn init_options_deny_warnings_promotes_published_severity_to_error() {
+    let root = unique_tmp_dir("init-deny-warnings");
+    std::fs::create_dir_all(&root).unwrap();
+
+    let diags = diagnostics_for_uri_settled_with_init_options(
+        &root,
+        E014_PROBE_SOURCE,
+        json!({ "denyWarnings": true }),
+    );
+
+    std::fs::remove_dir_all(&root).unwrap();
+
+    assert_eq!(
+        e014_severity(&diags),
+        Some(1),
+        "initializationOptions.denyWarnings = true should promote every Warning \
+         (including E014) to Error, got: {diags:?}"
+    );
+}
+
+/// `initializationOptions.lints.E014 = "deny"` must win over a conflicting
+/// `brink.toml [lints] E014 = "allow"` for the same code (#1005 `CLI/API >
+/// file > default` precedence) — proves the override is applied *after* the
+/// file's own resolution, not merely alongside it.
+#[test]
+fn init_options_lints_deny_wins_over_conflicting_brink_toml_allow() {
+    let root = unique_tmp_dir("init-lints-deny-wins");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("brink.toml"), "[lints]\nE014 = \"allow\"\n").unwrap();
+
+    let diags = diagnostics_for_uri_settled_with_init_options(
+        &root,
+        E014_PROBE_SOURCE,
+        json!({ "lints": { "E014": "deny" } }),
+    );
+
+    std::fs::remove_dir_all(&root).unwrap();
+
+    assert_eq!(
+        e014_severity(&diags),
+        Some(1),
+        "initializationOptions.lints.E014 = deny should win over the file's \
+         [lints] E014 = \"allow\", got: {diags:?}"
     );
 }
 

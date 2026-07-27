@@ -388,6 +388,51 @@ mod compile_fragment_tests {
         );
     }
 
+    // Issue #1387 (1/3): `compile_over_tree`/`Project::load` dispatches on
+    // `entry`'s extension (`brink_environment`'s `collect_sources` doc) —
+    // every test above exercises the `.ink` branch only. `compile_fragment`
+    // itself is dialect-agnostic (it just appends `synthetic_source` to
+    // `entry`'s served content and recompiles), so a `.brink` native entry
+    // should work identically; these two pin that it actually does, using
+    // native `fn`/`flow` syntax rather than ink's `=== ===` knot syntax.
+    //
+    // Caveat: this pins `compile_fragment` itself, not a reachable native
+    // embedder path. `compile_fragment` is not re-exported from
+    // `@brink-lang/web`; its only caller is `packages/wasm/src/index.ts`'s
+    // `StoryRunnerHandle.compileFragment`, which hardcodes ink-only wraps
+    // (`=== function NAME() ===` / `=== NAME ===`) — appended to a `.brink`
+    // entry those are native parse errors. So `evaluate()`'s Tier-1 path
+    // cannot succeed for a native project today; these tests prove the
+    // primitive is dialect-agnostic, not that a native embedder can reach it
+    // (see issue #1387 follow-up for wiring `compileFragment` to native
+    // wrap syntax).
+
+    #[test]
+    fn native_entry_expression_wrap_resolves_against_project_globals() {
+        let src = sources_json(&[(
+            "main.brink",
+            "var gold = 5\n\nflow main() {\n  Hi. -> END\n}\n",
+        )]);
+        let synthetic = "fn __eval_test() {\n  return gold + 1;\n}\n";
+        let json = compile_fragment("main.brink", &src, synthetic);
+        let v: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        assert_eq!(v["ok"], true, "{json}");
+        assert!(v["story_bytes"].is_array(), "{json}");
+    }
+
+    #[test]
+    fn native_entry_content_wrap_interpolates_a_live_global() {
+        let src = sources_json(&[(
+            "main.brink",
+            "var gold = 5\n\nflow main() {\n  Hi. -> END\n}\n",
+        )]);
+        let synthetic = "flow __eval_test() {\n  You have {gold} gold.\n}\n";
+        let json = compile_fragment("main.brink", &src, synthetic);
+        let v: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        assert_eq!(v["ok"], true, "{json}");
+        assert!(v["story_bytes"].is_array(), "{json}");
+    }
+
     #[test]
     fn malformed_served_brink_toml_reports_an_error_not_a_panic() {
         // A discovered-but-unparsable `brink.toml` (bad `dialect` value) is
