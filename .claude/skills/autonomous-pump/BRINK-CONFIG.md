@@ -17,6 +17,7 @@ Fill pump.js's CONFIG from these when running the pump on this repo.
 - Never add app.register_type for #[derive(Reflect)] types; never touch .github/workflows/release.yml; VM tests must not hang (keep step limits).
 - Studio work is dropped; issues below ~#300 are presumed stale and need justification.
 - If an issue's own body says needs-design/deferred, DECLINE and report — do not implement architecture unilaterally (the #458 precedent).
+- A ruling lands in a SPEC, not only in docs/decision-log.md. The log is HISTORY (what was decided, when, why); a spec is the CURRENT normative statement. A decision-log PR that amends no spec leaves the ruling invisible to every future reader — that is how five rulings got re-derived from scratch in one week, and how the ledger audit (2026-07-27, 296 rulings) found 29 ORPHANED / 15 CONTRADICTED. Reviewers check for this explicitly; name the spec file+section.
 
 ## Merge trains
 - Unique TRAIN_WT per wave (e.g. /tmp/pump-merge-train-brink-w4).
