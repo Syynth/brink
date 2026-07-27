@@ -285,6 +285,23 @@ impl Project {
     /// whole native source tree (enumerate every `.brink` key); a `.ink` entry
     /// follows its `INCLUDE` graph from the entry (a BFS over the tree's
     /// reads).
+    ///
+    /// ## Repeat compiles are deterministic
+    ///
+    /// Each call resolves `AnalysisOptions` from a brand-new
+    /// `AnalysisOptions::default()` (see `resolve_options` below) — never one
+    /// left over from a previous call — so two sequential `load` calls for
+    /// unrelated projects never leak `dialect`/`types` between them, even
+    /// though [`AnalysisOptions::apply_project_config`]'s "unset means
+    /// untouched" rule for those two fields would otherwise let a stale
+    /// value silently survive (see that method's own "must be fresh"
+    /// invariant doc). This matters for any caller that calls `load`
+    /// repeatedly against different mounts in the same process — notably
+    /// `bevy-brink`'s `InkLoader`, invoked once per `.ink` asset (re)load —
+    /// where a leaked `dialect` would make the *n*-th load's outcome depend
+    /// on what the (*n*-1)-th load happened to resolve. Pinned by
+    /// `repeat_compiles_do_not_leak_options_across_project_load_calls`
+    /// below.
     pub fn load(
         tree: &dyn SourceTree,
         entry: &str,
@@ -376,6 +393,13 @@ fn resolve_options(
     entry: &str,
     overrides: &OptionOverrides,
 ) -> Result<AnalysisOptions, LoadError> {
+    // Fresh on every call (issue #1436) — never hoisted out of this
+    // function or reused across calls. `apply_project_config`'s
+    // `dialect`/`types` fields are "unset means untouched"; starting from
+    // `default()` every time is what stops one `Project::load` call's
+    // resolved dialect/types from silently surviving into the next,
+    // unrelated one. See `Project::load`'s doc comment and
+    // `AnalysisOptions::apply_project_config`'s "must be fresh" invariant.
     let mut options = AnalysisOptions::default();
 
     if let Some(config_key) = discover_from_entry_in_tree(tree, entry)? {
@@ -705,6 +729,45 @@ mod tests {
         let t = tree(&[("main.brink", "flow main() {}")]);
         let env = Project::load(&t, "main.brink", &OptionOverrides::default()).expect("loads");
         assert_eq!(env.options, AnalysisOptions::default());
+    }
+
+    /// #1436: pins the "repeat compiles are deterministic" invariant
+    /// `Project::load`'s doc comment now names explicitly —
+    /// `resolve_options` must resolve every call from a fresh
+    /// `AnalysisOptions::default()`, never one mutated by a prior call.
+    ///
+    /// First compile resolves `dialect = Brink` from its own `brink.toml`.
+    /// The second, completely unrelated compile has no `brink.toml` at
+    /// all — if `resolve_options` ever stopped constructing `default()`
+    /// fresh (e.g. a future change hoisted/cached `AnalysisOptions` across
+    /// `load` calls "for efficiency"), `apply_project_config`'s "unset
+    /// means untouched" rule for `dialect`/`types` would let the first
+    /// call's `Brink` silently survive into the second call's result
+    /// instead of resolving to the dialect-less default — exactly the
+    /// leak `AnalysisOptions::apply_project_config`'s own "must be fresh"
+    /// doc warns every non-editor-session caller against.
+    #[test]
+    fn repeat_compiles_do_not_leak_options_across_project_load_calls() {
+        let brink_tree = tree(&[
+            ("brink.toml", "[project]\ndialect = \"brink\"\n"),
+            ("main.brink", "flow main() {}"),
+        ]);
+        let first =
+            Project::load(&brink_tree, "main.brink", &OptionOverrides::default()).expect("loads");
+        assert_eq!(first.options.dialect, Dialect::Brink);
+
+        let default_tree = tree(&[("main2.brink", "flow main() {}")]);
+        let second = Project::load(&default_tree, "main2.brink", &OptionOverrides::default())
+            .expect("loads");
+        assert_eq!(
+            second.options,
+            AnalysisOptions::default(),
+            "a later, unrelated Project::load call must never observe an \
+             earlier call's resolved AnalysisOptions -- each call must \
+             resolve from a fresh AnalysisOptions::default(), not a \
+             reused/mutated one; got {:?}",
+            second.options
+        );
     }
 
     #[test]

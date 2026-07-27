@@ -197,8 +197,11 @@ impl AnalysisOptions {
     /// always documented to run *after* this, on top of whatever it just
     /// resolved, and no caller relies on this call preserving lint state
     /// this one didn't itself just set — `self.lints` at call time is
-    /// either a fresh [`AnalysisOptions::default()`] (CLI, LSP, `brink ide`,
-    /// `bevy-brink`) or the previous call's own output (the editor session).
+    /// always a fresh [`AnalysisOptions::default()`] (CLI, LSP, `brink ide`,
+    /// the editor session's own throwaway `AnalysisOptions`, or `bevy-brink`
+    /// via `brink-environment::resolve_options`); see the Invariant section
+    /// below for why every caller constructs fresh rather than reusing a
+    /// prior call's output.
     ///
     /// `brink-project-config` doesn't know the real `DiagnosticCode` set
     /// (kept dependency-free, #1234), so it accepts any string key under
@@ -217,6 +220,46 @@ impl AnalysisOptions {
     /// Lives here rather than in `brink-project-config` so that crate needs no
     /// workspace dependencies and can publish standalone (#1234) — it owns the
     /// policy *types*, this crate owns applying them to its own options.
+    ///
+    /// ## Invariant: `self` must be fresh
+    ///
+    /// `[lints]` would be safe to apply onto a `self` mutated by a prior
+    /// call — full replace, not merge, is exactly what makes that safe (see
+    /// above). `dialect`/`types` are **not**: their "unset means untouched"
+    /// rule means whatever `self.dialect`/`self.types` already held before
+    /// this call would silently survive untouched if `config` (and the
+    /// `_overridden` flags) don't set them. No caller relies on that today
+    /// — there is no exception. Every production call site starts each call
+    /// from a **freshly-constructed** [`AnalysisOptions::default()`]:
+    /// `brink-cli`'s `brink ide`; `brink-lsp`'s `resolve_language_options`
+    /// (called fresh both from `initialize` *and* repeatedly from
+    /// `Backend::reload_brink_toml` on every `brink.toml` edit — the
+    /// repeat-call case this invariant is actually about); `brink-web`'s
+    /// `EditorSession::apply_parsed_config`, via its own throwaway
+    /// `AnalysisOptions::default()` (it never reuses a mutated `self` —
+    /// `dialect`/`types` are applied directly to the session elsewhere, not
+    /// through this method); and — the one every mount funnels through —
+    /// `brink-environment::resolve_options`, called fresh inside every
+    /// [`Project::load`](../brink_environment/struct.Project.html#method.load)).
+    /// `bevy-brink` never calls this method directly; it reaches it solely
+    /// through `resolve_options`. Reusing a mutated `self` would let a
+    /// later, unrelated compile silently inherit an earlier one's resolved
+    /// `dialect`/`types` whenever its own `brink.toml` doesn't set them,
+    /// breaking the determinism a caller doing repeat compiles (e.g.
+    /// `bevy-brink`'s `InkLoader` on every asset (re)load) depends on.
+    /// Nothing in this method's signature enforces starting fresh — it
+    /// takes `&mut self`, so it can't tell "fresh" apart from "reused".
+    /// This is a documented invariant rather than a compiler-checked one
+    /// because enforcing it in the type (e.g. an associated constructor
+    /// like `fn from_project_config(config, dialect_overridden,
+    /// types_overridden) -> (Self, Vec<ConfigWarning>)` that owns
+    /// construction) would mean touching all four production call sites
+    /// plus the ~15 `brink-analyzer` unit tests that call
+    /// `apply_project_config` directly on an already-constructed `options`
+    /// — not because any caller needs `&mut self` reuse; see
+    /// `resolve_options`/`repeat_compiles_do_not_leak_options_across_project_load_calls`
+    /// in `brink-environment` for where the fresh-start invariant is
+    /// actually pinned end-to-end.
     pub fn apply_project_config(
         &mut self,
         config: &ProjectConfig,
