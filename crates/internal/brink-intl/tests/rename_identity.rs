@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::panic, clippy::unwrap_used)]
 
 //! Characterization tests for **identity under rename** — the observable
 //! behavior `docs/design/definition-identity-proposals.md` analyzes for
