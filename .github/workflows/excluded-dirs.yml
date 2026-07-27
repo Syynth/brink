@@ -1,0 +1,120 @@
+name: Excluded Dirs
+
+on:
+  schedule:
+    # Weekly schedule: Tuesday at 00:00 UTC (day after the demo gate)
+    - cron: '0 0 * * 2'
+  workflow_dispatch:
+  # Three workspace-excluded directories (gen-input, brink-loop, zed-brink) get
+  # zero signal from the main `ci.yml` gate — this workflow provides per-directory
+  # coverage (#1396). Path-filtered so it only fires on pushes/PRs that could
+  # affect them, keeping excluded dirs off the critical path for every PR.
+  # Not in branch protection's required-checks list, so advisory: red on a
+  # relevant PR but does not block the merge by itself.
+  pull_request:
+    paths:
+      - 'benchmarks/tools/gen-input/**'
+      - 'benchmarks/drivers/brink-loop/**'
+      - 'crates/zed-brink/**'
+      - 'crates/brink-*/**'
+      - 'crates/internal/**'
+      - 'Cargo.toml'
+      - '.github/workflows/excluded-dirs.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'benchmarks/tools/gen-input/**'
+      - 'benchmarks/drivers/brink-loop/**'
+      - 'crates/zed-brink/**'
+      - 'crates/brink-*/**'
+      - 'crates/internal/**'
+      - 'Cargo.toml'
+      - '.github/workflows/excluded-dirs.yml'
+
+# Least privilege: jobs only read the repo. Grant more per-job if ever needed.
+permissions: {}
+
+env:
+  CARGO_TERM_COLOR: always
+
+# Third-party actions are pinned to full commit SHAs (mutable tags can be
+# repointed at malicious code). The trailing comment tracks the version;
+# Dependabot bumps both together.
+jobs:
+  # Benchmark: gen-input tool
+  gen-input:
+    name: Gen-input
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Format check (benchmarks/tools/gen-input)
+        working-directory: benchmarks/tools/gen-input
+        run: cargo fmt --all -- --check
+      - name: Clippy (benchmarks/tools/gen-input)
+        working-directory: benchmarks/tools/gen-input
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Build (benchmarks/tools/gen-input)
+        working-directory: benchmarks/tools/gen-input
+        run: cargo build --locked
+
+  # Benchmark: brink-loop driver
+  brink-loop:
+    name: Brink-loop
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Format check (benchmarks/drivers/brink-loop)
+        working-directory: benchmarks/drivers/brink-loop
+        run: cargo fmt --all -- --check
+      - name: Clippy (benchmarks/drivers/brink-loop)
+        working-directory: benchmarks/drivers/brink-loop
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Build (benchmarks/drivers/brink-loop)
+        working-directory: benchmarks/drivers/brink-loop
+        run: cargo build --locked
+
+  # Extension: Zed integration
+  zed-brink:
+    name: Zed-brink
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Format check (crates/zed-brink)
+        working-directory: crates/zed-brink
+        run: cargo fmt --all -- --check
+      - name: Clippy (crates/zed-brink)
+        working-directory: crates/zed-brink
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Build (crates/zed-brink)
+        working-directory: crates/zed-brink
+        run: cargo build --locked
+
+  # Fan-in gate so branch protection can require ONE stable check name
+  # instead of tracking per-directory job names.
+  excluded-dirs-gate:
+    name: Excluded Dirs
+    runs-on: ubuntu-latest
+    needs: [gen-input, brink-loop, zed-brink]
+    if: always()
+    steps:
+      - name: All excluded dirs passed
+        run: |
+          gen_input="${{ needs.gen-input.result }}"
+          brink_loop="${{ needs.brink-loop.result }}"
+          zed_brink="${{ needs.zed-brink.result }}"
+          [ "$gen_input" = "success" ] && [ "$brink_loop" = "success" ] && [ "$zed_brink" = "success" ]
