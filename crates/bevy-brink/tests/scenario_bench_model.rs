@@ -25,6 +25,7 @@ fn tiny_config(name: &str, turn_weight: TurnWeight) -> ScenarioConfig {
         flow_count: 3,
         active_fraction: 0.5,
         world_size: 2,
+        story_globals: 0,
         turn_weight,
         frames: 4,
         seed: 42,
@@ -101,8 +102,8 @@ fn every_turn_weight_compiles_and_drives_turns() {
 /// no wall-clock/OS entropy anywhere in the generator.
 #[test]
 fn story_generation_is_deterministic() {
-    let a = generate_story(TurnWeight::Heavy, 7, false);
-    let b = generate_story(TurnWeight::Heavy, 7, false);
+    let a = generate_story(TurnWeight::Heavy, 7, false, 0);
+    let b = generate_story(TurnWeight::Heavy, 7, false, 0);
     assert_eq!(a, b);
 }
 
@@ -110,9 +111,41 @@ fn story_generation_is_deterministic() {
 /// generator branch isn't only exercised for its default-off shape.
 #[test]
 fn story_generation_is_deterministic_with_collection_global() {
-    let a = generate_story(TurnWeight::Medium, 7, true);
-    let b = generate_story(TurnWeight::Medium, 7, true);
+    let a = generate_story(TurnWeight::Medium, 7, true, 0);
+    let b = generate_story(TurnWeight::Medium, 7, true, 0);
     assert_eq!(a, b);
+}
+
+/// #937's brink-World-size axis is wired end to end, not merely declared:
+/// the generator emits exactly `story_globals` extra `VAR`s (a count the
+/// baselines' `story_globals: 0` could never produce), the padded story
+/// still compiles and drives real turns, and — the point of the axis — the
+/// padding lands in the runtime `World` the batch drivers pin their
+/// frame-start reads against, not just in the source text.
+#[test]
+fn story_globals_axis_pads_the_runtime_world() {
+    let padded = generate_story(TurnWeight::Medium, 7, false, 64);
+    assert_eq!(
+        padded.matches("VAR pad_").count(),
+        64,
+        "the generator must emit one padding VAR per requested global"
+    );
+    assert!(
+        !generate_story(TurnWeight::Medium, 7, false, 0).contains("VAR pad_"),
+        "the default (0) must emit none — otherwise this test proves nothing"
+    );
+
+    let config = ScenarioConfig {
+        story_globals: 64,
+        ..tiny_config("story-globals", TurnWeight::Medium)
+    };
+    let result = run_batch_scenario(&config).expect("padded story should compile and drive");
+    assert_result_is_sane(&config, &result);
+    assert!(
+        result.turns_completed > 0,
+        "the padded story must still drive real turns: {result:?}"
+    );
+    assert_eq!(result.flow_anomalies, 0);
 }
 
 #[test]
@@ -131,6 +164,7 @@ fn zero_flows_errors_cleanly() {
         flow_count: 0,
         active_fraction: 0.5,
         world_size: 0,
+        story_globals: 0,
         turn_weight: TurnWeight::Light,
         frames: 1,
         seed: 1,
@@ -149,6 +183,7 @@ fn fully_parked_scenario_completes_zero_turns() {
         flow_count: 5,
         active_fraction: 0.0,
         world_size: 0,
+        story_globals: 0,
         turn_weight: TurnWeight::Light,
         frames: 3,
         seed: 9,
@@ -226,6 +261,7 @@ fn fully_parked_batch_scenario_completes_zero_turns() {
         flow_count: 5,
         active_fraction: 0.0,
         world_size: 0,
+        story_globals: 0,
         turn_weight: TurnWeight::Light,
         frames: 3,
         seed: 9,

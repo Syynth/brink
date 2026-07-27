@@ -151,13 +151,16 @@ impl DriverMode {
     }
 }
 
-/// Parsed CLI: frame count, driver mode, and the parallel mode's optional
+/// Parsed CLI: frame count, driver mode, the parallel mode's optional
 /// `ComputeTaskPool` size override (`--compute-threads N`, thread-curve
-/// exploration runs — see `run()` for why those never write baseline files).
+/// exploration runs), and the optional story-world size override
+/// (`--story-globals N`, #937's frame-start-cost axis). Both overrides are
+/// **exploration-only** — see `run()` for why neither writes baseline files.
 struct Cli {
     frames: usize,
     mode: DriverMode,
     compute_threads: Option<usize>,
+    story_globals: Option<usize>,
 }
 
 fn parse_cli() -> Result<Cli, Box<dyn std::error::Error>> {
@@ -165,6 +168,7 @@ fn parse_cli() -> Result<Cli, Box<dyn std::error::Error>> {
     let mut frames = DEFAULT_FRAMES;
     let mut mode = DriverMode::Serial;
     let mut compute_threads = None;
+    let mut story_globals = None;
     for w in args.windows(2) {
         if w[0] == "--frames" {
             frames = w[1].parse()?;
@@ -185,6 +189,9 @@ fn parse_cli() -> Result<Cli, Box<dyn std::error::Error>> {
         if w[0] == "--compute-threads" {
             compute_threads = Some(w[1].parse()?);
         }
+        if w[0] == "--story-globals" {
+            story_globals = Some(w[1].parse()?);
+        }
     }
     if compute_threads.is_some() && mode != DriverMode::Parallel {
         return Err("--compute-threads only applies to --mode parallel \
@@ -195,6 +202,7 @@ fn parse_cli() -> Result<Cli, Box<dyn std::error::Error>> {
         frames,
         mode,
         compute_threads,
+        story_globals,
     })
 }
 
@@ -206,7 +214,7 @@ fn parse_cli() -> Result<Cli, Box<dyn std::error::Error>> {
 /// `ScenarioConfig` and never reached. Row names carry the mode's label
 /// prefix (`serial-*` / `batch-*` / `parallel-*`) so each mode's baseline
 /// file stays self-describing.
-fn baseline_configs(frames: usize, prefix: &str) -> Vec<ScenarioConfig> {
+fn baseline_configs(frames: usize, prefix: &str, story_globals: usize) -> Vec<ScenarioConfig> {
     let flow_count_rows = [("1", 1), ("100", 100), ("1k", 1_000), ("10k", 10_000)]
         .into_iter()
         .map(|(suffix, flow_count)| ScenarioConfig {
@@ -214,6 +222,7 @@ fn baseline_configs(frames: usize, prefix: &str) -> Vec<ScenarioConfig> {
             flow_count,
             active_fraction: BASELINE_ACTIVE_FRACTION,
             world_size: BASELINE_WORLD_SIZE,
+            story_globals,
             turn_weight: BASELINE_TURN_WEIGHT,
             frames,
             seed: BASELINE_SEED,
@@ -234,6 +243,7 @@ fn baseline_configs(frames: usize, prefix: &str) -> Vec<ScenarioConfig> {
         flow_count: 100,
         active_fraction: BASELINE_ACTIVE_FRACTION,
         world_size: BASELINE_WORLD_SIZE,
+        story_globals,
         turn_weight,
         frames,
         seed: BASELINE_SEED,
@@ -286,17 +296,21 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         frames,
         mode,
         compute_threads,
+        story_globals,
     } = parse_cli()?;
     let label = mode.label();
     println!(
         "scenario_bench | frames={frames} | mode={label} | headless MinimalPlugins runner (issue #900 / #914 / #927)"
     );
+    if let Some(n) = story_globals {
+        println!("scenario_bench | story_globals={n} (brink-World size axis, #937)");
+    }
     println!(
         "scenario_bench | scenario | flow_count | frame_p50_ms | frame_p99_ms | turns_per_sec | rss_delta_kb"
     );
 
     let mut results = Vec::new();
-    for config in baseline_configs(frames, label) {
+    for config in baseline_configs(frames, label, story_globals.unwrap_or(0)) {
         let r = match mode {
             DriverMode::Serial => run_scenario(&config)?,
             DriverMode::Batch => run_batch_scenario(&config)?,
@@ -329,12 +343,13 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         println!("scenario_bench | compute_task_pool_threads={threads}");
     }
 
-    if compute_threads.is_some() {
-        // Thread-curve exploration run: the numbers above are the product;
-        // never let a non-default pool size overwrite the checked-in
-        // baseline pair (which is captured at bevy's default pool size).
+    if compute_threads.is_some() || story_globals.is_some() {
+        // Exploration run: the numbers above are the product; never let a
+        // non-default pool size or a padded story world overwrite the
+        // checked-in baseline pair (captured at bevy's default pool size
+        // against the 1–3-global scenario story).
         println!(
-            "scenario_bench | --compute-threads override active: exploration run, baseline files NOT written"
+            "scenario_bench | axis override active (--compute-threads / --story-globals): exploration run, baseline files NOT written"
         );
         return Ok(());
     }

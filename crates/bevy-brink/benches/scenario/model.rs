@@ -68,9 +68,24 @@ pub struct ScenarioConfig {
     /// every frame); the rest are spawned `ScenarioParked` and never
     /// touched — see the module-level Collect honesty note.
     pub active_fraction: f64,
-    /// Inert background entities sharing the `World` — see the
-    /// module-level `world_size` honesty note.
+    /// Inert background entities sharing the **Bevy** `World` — see the
+    /// module-level `world_size` honesty note. This is an ECS-storage axis;
+    /// it says nothing about the size of the *story* world (see
+    /// [`story_globals`](Self::story_globals)).
     pub world_size: usize,
+    /// Extra declared-but-unused `VAR`s padding the **brink**
+    /// [`World`](brink_runtime::World) — the story-state axis, distinct from
+    /// [`world_size`](Self::world_size)'s Bevy-entity axis.
+    ///
+    /// This is the axis batch mode's frame-start handling scales on: the
+    /// pre-#937 implementation gave every collected flow a private
+    /// `frame_start.clone()`, whose cost is `O(globals + visit/turn-count
+    /// entries)` **per flow, per turn**, so a story with one `VAR` hides the
+    /// cost entirely and a real game's does not. The checked-in baselines all
+    /// hold this at `0` (a 1–3 global story); `--story-globals N` is a
+    /// print-only exploration run that raises it, exactly as
+    /// `--compute-threads` does for the pool size.
+    pub story_globals: usize,
     /// Per-turn ink workload — see [`TurnWeight`].
     pub turn_weight: TurnWeight,
     /// Number of `App::update()` frames to drive.
@@ -156,13 +171,27 @@ fn sentence(rng: &mut Lcg, min_words: usize, max_words: usize) -> String {
 /// `collection_global` (#911, deliverable 3) layers in a `live`/`history`
 /// array pair — see [`ScenarioConfig::collection_global`]'s doc for the
 /// share-then-mutate mechanism this exercises.
-pub fn generate_story(turn_weight: TurnWeight, seed: u64, collection_global: bool) -> String {
+///
+/// `story_globals` (#937) pads the story with that many extra declared,
+/// never-read `VAR`s, growing the brink `World` the batch drivers pin their
+/// frame-start reads against — see [`ScenarioConfig::story_globals`].
+pub fn generate_story(
+    turn_weight: TurnWeight,
+    seed: u64,
+    collection_global: bool,
+    story_globals: usize,
+) -> String {
     let mut rng = Lcg::new(seed);
     let mut s = String::from("// Synthetic scenario story — generated, deterministic (#900).\n");
 
     let needs_counter = matches!(turn_weight, TurnWeight::Medium | TurnWeight::Heavy);
     if needs_counter {
         s.push_str("VAR turn_count = 0\n");
+    }
+    // Padding globals (#937): declared, never read or written, so they add
+    // nothing to per-turn VM work — only to the size of the story world.
+    for i in 0..story_globals {
+        s.push_str(&format!("VAR pad_{i} = 0\n"));
     }
     if collection_global {
         s.push_str("VAR live = 0\nVAR history = 0\n");
@@ -424,7 +453,12 @@ type CompiledStory = (Program, Vec<Vec<brink_format::LineEntry>>);
 fn compile_scenario_story(
     config: &ScenarioConfig,
 ) -> Result<CompiledStory, Box<dyn std::error::Error>> {
-    let source = generate_story(config.turn_weight, config.seed, config.collection_global);
+    let source = generate_story(
+        config.turn_weight,
+        config.seed,
+        config.collection_global,
+        config.story_globals,
+    );
     // NS-A9: explicit gradual — `collection_global` generated stories use
     // the placeholder-then-reassign idiom the strict default rejects; the
     // scenario harness measures runtime behavior, not typing regime.
