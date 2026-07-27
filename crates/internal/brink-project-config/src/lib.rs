@@ -15,8 +15,13 @@
 //! - **discovers** the config file — walking up from the entry `.ink` file's
 //!   directory to the nearest ancestor containing [`CONFIG_FILE_NAME`],
 //!   bounded at a workspace/git boundary (#1425) so the walk can never
-//!   escape the project and pick up an unrelated `brink.toml` far above it
-//!   ([`discover_from_entry`], [`find_config`]);
+//!   escape the project and pick up an unrelated `brink.toml` far above it,
+//!   and **also** bounded by a fixed ancestor-depth cap
+//!   ([`MAX_ANCESTOR_DEPTH`]) so a VCS-less project — no `.git` boundary to
+//!   stop at — still can't climb all the way to the filesystem root (#1435)
+//!   ([`discover_from_entry`], [`find_config`]). A `brink.toml` the bounded
+//!   walk steps over is never silently dropped: [`find_config_with_warnings`]
+//!   reports it back as a [`ConfigWarning`] instead;
 //! - **parses** it, tolerating unknown keys as warnings rather than errors
 //!   (forward compat — an older `brink` binary shouldn't choke on a
 //!   `brink.toml` written for a newer schema) ([`parse_str`],
@@ -492,46 +497,141 @@ fn value_type_name(value: &Value) -> &'static str {
     }
 }
 
+/// Maximum number of ancestor directories [`find_config`]'s walk will climb
+/// above `start_dir`, whether or not a `.git` boundary is ever found (#1435).
+///
+/// #1425 bounded the walk at a workspace/git boundary, but that boundary
+/// only exists for a project under version control — a VCS-less tree has no
+/// `.git` anywhere above it, so the walk still climbed all the way to the
+/// filesystem root, exactly the unbounded-ancestor-walk shape this
+/// codebase's "guard against unbounded growth" rule exists to catch. This
+/// cap closes that gap unconditionally: it applies to *every* walk, not just
+/// the VCS-less case, so the bound is one rule instead of two.
+///
+/// A fixed constant, not an environment- or filesystem-derived limit:
+/// config discovery is a deterministic-compilation input (#1306), so how far
+/// the walk climbs must never vary by machine, `$HOME` depth, or anything
+/// else runtime-observable — only by `start_dir` itself. 32 is generously
+/// above any real project layout in this workspace (the deepest nested
+/// fixture is a handful of levels) while still being nowhere near "walk to
+/// the filesystem root."
+pub const MAX_ANCESTOR_DEPTH: usize = 32;
+
 /// Walk up from `start_dir` (inclusive) through every ancestor directory,
 /// returning the path to the first [`CONFIG_FILE_NAME`] found. This is the
 /// "walk up from the entry file to the nearest `brink.toml`" discovery rule
 /// (#1005) — a project's entry `.ink` file doesn't have to sit directly
 /// beside the config for every mount to find the same one.
 ///
-/// **Bounded at a workspace/git boundary (#1425).** Before checking a
-/// directory's parent, this stops if the directory itself contains a `.git`
-/// entry — the marker of a repository root, whether it's an ordinary
-/// repository (`.git/` is a directory) or a linked worktree (`.git` is a
-/// *file* holding a `gitdir:` pointer, e.g. `.claude/worktrees/*` in this
-/// very repo — checked with [`Path::exists`], not `is_dir`, so both shapes
-/// count). `start_dir` and every ancestor up to and including the boundary
-/// directory are still probed for `brink.toml` — only climbing *past* the
-/// boundary is refused. Without this bound the walk is `Path::parent`-only,
-/// which has no concept of "outside the project": run from deep enough
-/// inside a repo with no `brink.toml` of its own, it keeps climbing past the
-/// repository root and can silently pick up an unrelated `brink.toml` far
-/// above it (in `$HOME`, or another project entirely) — surprising, and a
-/// violation of this codebase's guard-against-unbounded-growth rule. A tree
-/// with no `.git` anywhere above `start_dir` (a bare, VCS-less project) is
-/// unaffected: the walk still runs all the way to the filesystem root,
-/// exactly as before.
+/// A thin wrapper over [`find_config_with_warnings`] that discards its
+/// [`ConfigWarning`]s — for callers with no warning channel of their own to
+/// report them through. A caller that *does* have one (the LSP's
+/// `tracing::warn!`, [`load_from_entry`]'s [`LoadedConfig::warnings`])
+/// should call [`find_config_with_warnings`] directly instead, per house
+/// rule 9 (silent drops are always bugs until proven otherwise).
 #[must_use]
 pub fn find_config(start_dir: &Path) -> Option<PathBuf> {
+    find_config_with_warnings(start_dir).0
+}
+
+/// [`find_config`], additionally reporting when the bounded walk stepped
+/// over a `brink.toml` an author might reasonably have expected to be
+/// discovered (#1435) — never used as the result, only as a
+/// [`ConfigWarning`] so the caller can tell them it was ignored instead of
+/// silently proceeding as if no config existed anywhere.
+///
+/// **Bounded two ways**, either of which stops the search phase:
+///
+/// - **Workspace/git boundary (#1425).** Before checking a directory's
+///   parent, this stops if the directory itself contains a `.git` entry —
+///   the marker of a repository root, whether it's an ordinary repository
+///   (`.git/` is a directory) or a linked worktree (`.git` is a *file*
+///   holding a `gitdir:` pointer, e.g. `.claude/worktrees/*` in this very
+///   repo — checked with [`Path::exists`], not `is_dir`, so both shapes
+///   count; the marker name itself is [`brink_source_tree::GIT_DIR_NAME`],
+///   the same constant [`brink_source_tree::IGNORED_DIR_NAMES`] uses, so the
+///   two never drift apart, #1435).
+/// - **Ancestor depth cap ([`MAX_ANCESTOR_DEPTH`], #1435).** Applies
+///   regardless of any `.git` boundary — the VCS-less case #1425 didn't
+///   cover.
+///
+/// `start_dir` and every ancestor up to and including whichever boundary is
+/// hit first are still probed for `brink.toml` — only climbing *past* it is
+/// refused.
+///
+/// If neither bound stops the walk before it runs out of ancestors
+/// naturally (reaches the filesystem root with nothing found), the search is
+/// exhaustive and there is nothing above to warn about. If a bound *does*
+/// stop it short, a second, equally bounded probe continues past that point
+/// — read-only, purely to check whether a `brink.toml` exists somewhere
+/// above (walk-up call sites in this workspace: [`find_config`],
+/// `brink-lsp`'s `resolve_language_options`, `brink-driver`'s
+/// `native_source_root`) — and if one does, [`ConfigError`]-free but
+/// warning-worthy: the returned path is still `None` (it was never a
+/// candidate the bound allowed), but a [`ConfigWarning`] names it so the
+/// caller can tell the author their file was ignored.
+#[must_use]
+pub fn find_config_with_warnings(start_dir: &Path) -> (Option<PathBuf>, Vec<ConfigWarning>) {
     let mut dir = Some(start_dir);
+    let mut depth = 0usize;
+    // Where (and why) the primary search stopped short of the filesystem
+    // root, if it did — `None` means it ran out of ancestors naturally.
+    let mut stopped_at: Option<(PathBuf, &'static str)> = None;
+
     while let Some(d) = dir {
         let candidate = d.join(CONFIG_FILE_NAME);
         if candidate.is_file() {
-            return Some(candidate);
+            return (Some(candidate), Vec::new());
         }
-        if d.join(".git").exists() {
+        if d.join(brink_source_tree::GIT_DIR_NAME).exists() {
             // Workspace/git boundary: this directory is the repository
             // root (or a linked worktree's root) and had no `brink.toml`
             // of its own — do not climb past it.
-            return None;
+            stopped_at = Some((d.to_path_buf(), "workspace/git boundary"));
+            break;
         }
+        if depth >= MAX_ANCESTOR_DEPTH {
+            // Ancestor depth cap: no `.git` boundary was found within
+            // MAX_ANCESTOR_DEPTH climbs — do not climb further.
+            stopped_at = Some((d.to_path_buf(), "ancestor depth limit"));
+            break;
+        }
+        depth += 1;
         dir = d.parent();
     }
-    None
+
+    let Some((stopped_at, reason)) = stopped_at else {
+        // The walk exhausted every real ancestor without hitting either
+        // bound — there is nothing further up to have missed.
+        return (None, Vec::new());
+    };
+
+    // Bounded peek past the stop point, purely to detect a stray config an
+    // author might expect to be picked up — its existence is reported as a
+    // warning, but it is never returned as a result. Bounded by the same
+    // cap so this detection pass cannot itself become an unbounded climb.
+    let mut probe = stopped_at.parent();
+    let mut probe_depth = 0usize;
+    while let Some(p) = probe {
+        let candidate = p.join(CONFIG_FILE_NAME);
+        if candidate.is_file() {
+            return (
+                None,
+                vec![ConfigWarning(format!(
+                    "{} exists above the {reason} at {} and was ignored (#1435)",
+                    candidate.display(),
+                    stopped_at.display(),
+                ))],
+            );
+        }
+        probe_depth += 1;
+        if probe_depth >= MAX_ANCESTOR_DEPTH {
+            break;
+        }
+        probe = p.parent();
+    }
+
+    (None, Vec::new())
 }
 
 /// [`find_config`], starting from an entry `.ink` file's directory rather
@@ -541,6 +641,18 @@ pub fn find_config(start_dir: &Path) -> Option<PathBuf> {
 pub fn discover_from_entry(entry_file: &Path) -> Option<PathBuf> {
     let start = entry_file.parent().unwrap_or_else(|| Path::new("."));
     find_config(start)
+}
+
+/// [`discover_from_entry`], surfacing [`find_config_with_warnings`]'s
+/// [`ConfigWarning`]s instead of discarding them. [`load_from_entry`] uses
+/// this rather than [`discover_from_entry`] so a config skipped by the
+/// bounded walk is never silently dropped (#1435, house rule 9).
+#[must_use]
+pub fn discover_from_entry_with_warnings(
+    entry_file: &Path,
+) -> (Option<PathBuf>, Vec<ConfigWarning>) {
+    let start = entry_file.parent().unwrap_or_else(|| Path::new("."));
+    find_config_with_warnings(start)
 }
 
 /// [`find_config`], but discovering over a [`SourceTree`] rather than the
@@ -589,13 +701,14 @@ pub fn discover_from_entry(entry_file: &Path) -> Option<PathBuf> {
 /// [`SourceTree::read`] (mirroring how [`find_config`] returns a path the
 /// caller reads via `std::fs`, not file content).
 ///
-/// Already bounded at the tree's own root, so it needed no change for
-/// #1425 (unlike [`find_config`]'s `.git`-directory bound): a key's
-/// ancestors are string-derived (`rsplit_once('/')`), bottoming out at the
-/// empty root key with nothing further to strip — there is no lexical
-/// equivalent of `find_config`'s unbounded `Path::parent` climb here. It can
-/// only ever "escape" the project if the `tree` itself is rooted somewhere
-/// too wide (a caller concern, not this function's).
+/// Already bounded at the tree's own root, so it needed no change for #1425
+/// or #1435 (unlike [`find_config`]'s `.git`-directory and
+/// [`MAX_ANCESTOR_DEPTH`] bounds): a key's ancestors are string-derived
+/// (`rsplit_once('/')`), bottoming out at the empty root key with nothing
+/// further to strip — there is no lexical equivalent of `find_config`'s
+/// `Path::parent` climb here for a depth cap to even apply to. It can only
+/// ever "escape" the project if the `tree` itself is rooted somewhere too
+/// wide (a caller concern, not this function's).
 pub fn find_config_in_tree(tree: &dyn SourceTree, start_key: &str) -> io::Result<Option<String>> {
     let mut dir = start_key.trim_matches('/');
     loop {
@@ -639,26 +752,41 @@ pub fn discover_from_entry_in_tree(
     find_config_in_tree(tree, start)
 }
 
-/// Discover (via [`discover_from_entry`]) and parse (via [`parse_str`]) the
-/// `brink.toml` governing `entry_file`'s project, if one exists.
+/// Discover (via [`discover_from_entry_with_warnings`]) and parse (via
+/// [`parse_str`]) the `brink.toml` governing `entry_file`'s project, if one
+/// exists.
 ///
-/// Returns `Ok(None)` — never an error — when no `brink.toml` is found
-/// anywhere from `entry_file`'s directory up to the filesystem root: missing
-/// file is current behavior exactly, no regression.
-pub fn load_from_entry(entry_file: &Path) -> Result<Option<LoadedConfig>, ConfigError> {
-    let Some(path) = discover_from_entry(entry_file) else {
-        return Ok(None);
+/// Returns `Ok((None, warnings))` — never an error — when no `brink.toml` is
+/// found within the bounded walk (see [`find_config_with_warnings`]):
+/// `warnings` is empty in the ordinary "genuinely no config anywhere" case
+/// (current behavior exactly, no regression), and carries a
+/// [`ConfigWarning`] in the `#1435` case — a `brink.toml` existed above the
+/// walk's workspace/git or ancestor-depth bound and was skipped. Discovery
+/// warnings are returned alongside the result rather than folded into
+/// [`LoadedConfig::warnings`] because there is no [`LoadedConfig`] to hold
+/// them when nothing was loaded; when a config *is* found, this vec is
+/// always empty and [`LoadedConfig::warnings`] (the file's own parse-time
+/// warnings) is the vec to read instead.
+pub fn load_from_entry(
+    entry_file: &Path,
+) -> Result<(Option<LoadedConfig>, Vec<ConfigWarning>), ConfigError> {
+    let (path, discovery_warnings) = discover_from_entry_with_warnings(entry_file);
+    let Some(path) = path else {
+        return Ok((None, discovery_warnings));
     };
     let text = std::fs::read_to_string(&path).map_err(|source| ConfigError::Io {
         path: path.clone(),
         source,
     })?;
     let (config, warnings) = parse_str_at(path.display().to_string(), &text)?;
-    Ok(Some(LoadedConfig {
-        path,
-        config,
-        warnings,
-    }))
+    Ok((
+        Some(LoadedConfig {
+            path,
+            config,
+            warnings,
+        }),
+        Vec::new(),
+    ))
 }
 
 #[cfg(test)]
@@ -1049,10 +1177,11 @@ mod tests {
     }
 
     /// A project with no `.git` anywhere above it (no VCS at all) is
-    /// unaffected by the bound — the walk still runs all the way to the
-    /// filesystem root, exactly as before #1425.
+    /// unaffected by the bound as long as the config is within
+    /// [`MAX_ANCESTOR_DEPTH`] — a shallow nesting (well inside the cap)
+    /// behaves exactly as before #1425/#1435.
     #[test]
-    fn find_config_without_any_git_boundary_still_walks_to_filesystem_root() {
+    fn find_config_without_any_git_boundary_still_finds_config_within_depth_cap() {
         let root = unique_tmp_dir("no-git-anywhere");
         let nested = root.join("a").join("b").join("c");
         std::fs::create_dir_all(&nested).unwrap();
@@ -1065,6 +1194,129 @@ mod tests {
         let found =
             find_config(&nested).expect("should still find brink.toml with no .git anywhere");
         assert_eq!(found, root.join(CONFIG_FILE_NAME));
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    // ── ancestor depth cap, VCS-less trees (#1435) ──────────────────────
+
+    /// Builds `root/d0/d1/.../d{depth-1}`, creating every intermediate
+    /// directory, and returns the deepest one.
+    fn nested_chain(root: &Path, depth: usize) -> PathBuf {
+        let mut dir = root.to_path_buf();
+        for i in 0..depth {
+            dir = dir.join(format!("d{i}"));
+        }
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// The defect #1435 exists to fix: a VCS-less tree (no `.git` anywhere)
+    /// nested deeper than [`MAX_ANCESTOR_DEPTH`] must not have its
+    /// `brink.toml` discovered — before this fix, `find_config`'s
+    /// `Path::parent`-only walk had no stop condition at all here and would
+    /// have found it regardless of depth.
+    #[test]
+    fn find_config_bounds_vcs_less_walk_at_max_ancestor_depth() {
+        let root = unique_tmp_dir("vcs-less-too-deep");
+        let deepest = nested_chain(&root, MAX_ANCESTOR_DEPTH + 10);
+        std::fs::write(
+            root.join(CONFIG_FILE_NAME),
+            "[project]\ndialect = \"brink\"\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            find_config(&deepest),
+            None,
+            "a VCS-less walk must not climb past MAX_ANCESTOR_DEPTH ancestors, even with no \
+             .git boundary to stop it otherwise"
+        );
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A VCS-less tree nested exactly at the cap (not beyond it) still finds
+    /// its `brink.toml` — the cap must not be off-by-one in the stricter
+    /// direction.
+    #[test]
+    fn find_config_finds_config_exactly_at_max_ancestor_depth() {
+        let root = unique_tmp_dir("vcs-less-at-cap");
+        let deepest = nested_chain(&root, MAX_ANCESTOR_DEPTH);
+        std::fs::write(
+            root.join(CONFIG_FILE_NAME),
+            "[project]\ndialect = \"brink\"\n",
+        )
+        .unwrap();
+
+        let found = find_config(&deepest)
+            .expect("a brink.toml exactly MAX_ANCESTOR_DEPTH ancestors up must still be found");
+        assert_eq!(found, root.join(CONFIG_FILE_NAME));
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    // ── silent-drop warnings (#1435) ─────────────────────────────────────
+
+    /// A `brink.toml` sitting above the workspace/git boundary is not just
+    /// silently ignored — [`find_config_with_warnings`] reports it via a
+    /// [`ConfigWarning`] naming both the skipped file and the boundary.
+    #[test]
+    fn find_config_with_warnings_reports_config_skipped_above_git_boundary() {
+        let root = unique_tmp_dir("warn-git-boundary");
+        let repo = root.join("repo");
+        let nested = repo.join("a").join("b");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let stray = root.join(CONFIG_FILE_NAME);
+        std::fs::write(&stray, "[project]\ndialect = \"brink\"\n").unwrap();
+
+        let (found, warnings) = find_config_with_warnings(&nested);
+        assert_eq!(found, None, "the stray config must still never be returned");
+        assert_eq!(warnings.len(), 1, "got: {warnings:?}");
+        assert!(
+            warnings[0].0.contains(&stray.display().to_string()),
+            "warning must name the skipped file, got: {}",
+            warnings[0]
+        );
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The VCS-less analog: a `brink.toml` sitting beyond
+    /// [`MAX_ANCESTOR_DEPTH`] in a tree with no `.git` anywhere is reported
+    /// the same way.
+    #[test]
+    fn find_config_with_warnings_reports_config_skipped_beyond_depth_cap() {
+        let root = unique_tmp_dir("warn-depth-cap");
+        let deepest = nested_chain(&root, MAX_ANCESTOR_DEPTH + 10);
+        let stray = root.join(CONFIG_FILE_NAME);
+        std::fs::write(&stray, "[project]\ndialect = \"brink\"\n").unwrap();
+
+        let (found, warnings) = find_config_with_warnings(&deepest);
+        assert_eq!(found, None, "the stray config must still never be returned");
+        assert_eq!(warnings.len(), 1, "got: {warnings:?}");
+        assert!(
+            warnings[0].0.contains(&stray.display().to_string()),
+            "warning must name the skipped file, got: {}",
+            warnings[0]
+        );
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// No warning when there is genuinely nothing above either — a bound
+    /// firing is not itself warning-worthy, only a bound that actually
+    /// skipped a real config.
+    #[test]
+    fn find_config_with_warnings_is_silent_when_nothing_skipped() {
+        let root = unique_tmp_dir("warn-nothing-to-skip");
+        let deepest = nested_chain(&root, MAX_ANCESTOR_DEPTH + 10);
+        // No brink.toml anywhere in this tree at all.
+
+        let (found, warnings) = find_config_with_warnings(&deepest);
+        assert_eq!(found, None);
+        assert!(warnings.is_empty(), "got: {warnings:?}");
 
         std::fs::remove_dir_all(&root).unwrap();
     }
@@ -1094,7 +1346,38 @@ mod tests {
         let entry = root.join("story.ink");
         std::fs::write(&entry, "content").unwrap();
 
-        assert!(load_from_entry(&entry).unwrap().is_none());
+        let (loaded, warnings) = load_from_entry(&entry).unwrap();
+        assert!(loaded.is_none());
+        assert!(warnings.is_empty(), "got: {warnings:?}");
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// [`load_from_entry`]'s discovery-warning half of #1435: a config
+    /// skipped by the bounded walk is surfaced through this function's own
+    /// return value, not swallowed by its `Ok(None)` "nothing found" case.
+    #[test]
+    fn load_from_entry_surfaces_discovery_warning_when_config_skipped() {
+        let root = unique_tmp_dir("load-skipped-warning");
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let stray = root.join(CONFIG_FILE_NAME);
+        std::fs::write(&stray, "[project]\ndialect = \"brink\"\n").unwrap();
+        let entry = repo.join("story.ink");
+        std::fs::write(&entry, "content").unwrap();
+
+        let (loaded, warnings) = load_from_entry(&entry).unwrap();
+        assert!(
+            loaded.is_none(),
+            "the out-of-repo config must never be loaded"
+        );
+        assert_eq!(warnings.len(), 1, "got: {warnings:?}");
+        assert!(
+            warnings[0].0.contains(&stray.display().to_string()),
+            "warning must name the skipped file, got: {}",
+            warnings[0]
+        );
 
         std::fs::remove_dir_all(&root).unwrap();
     }
@@ -1260,11 +1543,13 @@ mod tests {
         let entry = root.join("story.ink");
         std::fs::write(&entry, "content").unwrap();
 
-        let loaded = load_from_entry(&entry).unwrap().expect("config found");
+        let (loaded, discovery_warnings) = load_from_entry(&entry).unwrap();
+        let loaded = loaded.expect("config found");
         assert_eq!(loaded.path, root.join(CONFIG_FILE_NAME));
         assert_eq!(loaded.config.dialect, Some(Dialect::Brink));
         assert_eq!(loaded.config.types, Some(TypePolicy::Strict));
         assert!(loaded.warnings.is_empty());
+        assert!(discovery_warnings.is_empty(), "got: {discovery_warnings:?}");
 
         std::fs::remove_dir_all(&root).unwrap();
     }
