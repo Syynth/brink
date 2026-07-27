@@ -408,7 +408,7 @@ fn emit_external_decl(out: &mut String, e: &ExternalDecl) -> Result<(), EmitErro
 /// upstream of this emitter — the whole `Import` shape it produces is
 /// exactly what `hir::lower_native::import` needs to reconstruct it), so
 /// the emitter's own blanket refusal predates that fix, not a still-live
-/// gap. `bare: false` is the qualified form (`import module;`, no leaf
+/// gap. `bare: false` is the qualified form (`import module`, no leaf
 /// item — the same shape a single-segment `use module;` also produces, so
 /// `import` is the canonical spelling for either origin, not a guess).
 /// `bare: true` always uses the `use module::{items};` brace form, even
@@ -735,6 +735,13 @@ fn emit_labeled_stmt_stream(
             let _ = writeln!(out, "{head}");
             emit_stmt_stream(out, rest, depth, context)
         }
+        // A `Content`-leading shape none of the three arms above matched
+        // (e.g. tags or trailing statements this function doesn't yet
+        // recognize) — a real gap, refused rather than guessed.
+        [Stmt::Content(_), ..] => Err(unsupported(
+            "labeled line with an unsupported leading shape",
+            context,
+        )),
         // The labeled line's own content was empty (`flush_content`'s
         // empty-flush short-circuit, `lower_native::body`: a bare `(name)`
         // with nothing else on its line produces no `Content` of its own)
@@ -747,10 +754,6 @@ fn emit_labeled_stmt_stream(
         // depth. Subsumes the old all-consumed `[]` case (`emit_stmt_stream`
         // on an empty slice is a no-op), so it is folded in here rather
         // than kept as a separate arm.
-        [Stmt::Content(_), ..] => Err(unsupported(
-            "labeled line with an unsupported leading shape",
-            context,
-        )),
         rest => {
             let _ = writeln!(out, "{head}");
             emit_stmt_stream(out, rest, depth, context)
