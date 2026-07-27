@@ -103,6 +103,55 @@ pub(crate) fn lower_ink_files(sources: &[&str]) -> lir::Program {
     program.unwrap()
 }
 
+/// [`lower_ink_files`] with an explicit per-file path map, mirroring what
+/// the real pipeline supplies (`chunk_lowering_ctx_query`,
+/// `brink-db/src/queries/mod.rs:1838`, populates `file_paths` from each
+/// file's real registered path). `lower_ink_files` always hands lowering an
+/// *empty* map, so it cannot exercise anything keyed on a file's path or
+/// module identity — this variant is for tests that need file identity to
+/// actually differ between sources (e.g. #1504's root-content qualification).
+pub(crate) fn lower_ink_files_with_paths(sources: &[(&str, &str)]) -> lir::Program {
+    let lowered: Vec<(FileId, HirFile, SymbolManifest)> = sources
+        .iter()
+        .enumerate()
+        .map(|(i, (_, source))| {
+            // `usize as u32`: test sources, never more than a handful.
+            let file_id = FileId(u32::try_from(i).unwrap());
+            let parsed = brink_syntax::parse(source);
+            let (mut hir, manifest, _diags) = brink_ir::hir::lower(file_id, &parsed.tree());
+            brink_ir::hir::normalize_file(&mut hir);
+            (file_id, hir, manifest)
+        })
+        .collect();
+
+    let files_for_analysis: Vec<(FileId, &HirFile, &SymbolManifest)> = lowered
+        .iter()
+        .map(|(id, hir, manifest)| (*id, hir, manifest))
+        .collect();
+    let result = brink_analyzer::analyze(&files_for_analysis);
+
+    let file_paths: std::collections::HashMap<FileId, String> = sources
+        .iter()
+        .enumerate()
+        .map(|(i, (path, _))| (FileId(u32::try_from(i).unwrap()), (*path).to_string()))
+        .collect();
+
+    let files_for_lir: Vec<(FileId, &HirFile)> =
+        lowered.iter().map(|(id, hir, _)| (*id, hir)).collect();
+    let (program, _diags) = lir::lower_to_program_with_type_mode(
+        &files_for_lir,
+        &result.index,
+        &result.resolutions,
+        &file_paths,
+        lir::TypeMode::Gradual,
+        lir::AnalyzerTables {
+            ufcs: &lir::UfcsLookup::new(),
+            coalesce: &lir::CoalesceLookup::new(),
+        },
+    );
+    program.unwrap()
+}
+
 /// Get the root container.
 pub(crate) fn root(program: &lir::Program) -> &lir::Container {
     &program.root

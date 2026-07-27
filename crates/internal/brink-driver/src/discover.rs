@@ -129,4 +129,81 @@ mod tests {
     fn resolve_deep_nesting() {
         assert_eq!(resolve_include_path("a/b/c.ink", "d/e.ink"), "a/b/d/e.ink");
     }
+
+    /// #1504(b), reachable form: an editor session that admits an
+    /// `INCLUDE` target before the entry file itself (`brink-lsp`'s
+    /// `load_file_from_disk`, `backend.rs:624`, which can walk-and-load a
+    /// sibling ahead of an explicit `did_open` on the entry) mints the
+    /// entry a different numeric `FileId` than [`super::discover`] does —
+    /// `discover` always seeds its BFS queue with the entry
+    /// (`crate::discover::discover`, `discover.rs:51`), so a from-scratch
+    /// compile always mints the entry `FileId(0)`. The synthesized root
+    /// terminus is keyed by that numeric id
+    /// (`attach_root_final_gather`, `brink-ir/src/lir/lower/mod.rs:1957`),
+    /// not by anything content-derived, so the container-id set an
+    /// editor-order load produces diverges from a real compile of the
+    /// identical tree — the ink-mode sibling of the editor-vs-compile
+    /// identity parity `discover_native.rs:349` already guards for native.
+    #[test]
+    #[ignore = "known bug #1504(b), reachable form: the root-terminus \
+                DefinitionId is keyed by numeric FileId, so loading an \
+                INCLUDE target before the entry file (editor/LSP order) \
+                mints a different id space than a real `discover` compile \
+                of the same tree; fix is blocked on the FG-4d identity \
+                ruling"]
+    fn root_content_ids_agree_between_discover_and_editor_order() {
+        use std::collections::BTreeSet;
+        use std::collections::HashMap;
+
+        use brink_format::DefinitionId;
+
+        const ENTRY: &str = "INCLUDE sibling.ink\n* one\n* two\n- gathered\n";
+        const SIBLING: &str = "=== helper ===\nhelper text\n-> DONE\n";
+
+        fn container_ids(container: &brink_ir::lir::Container, out: &mut BTreeSet<DefinitionId>) {
+            out.insert(container.id);
+            for child in &container.children {
+                container_ids(child, out);
+            }
+        }
+
+        fn ids_via(db: &brink_db::ProjectDb) -> BTreeSet<DefinitionId> {
+            let mut out = BTreeSet::new();
+            let program = db
+                .lir_product()
+                .and_then(|p| p.program.as_ref())
+                .expect("lowering succeeds");
+            container_ids(&program.root, &mut out);
+            out
+        }
+
+        // (1) Compile order: `discover` seeds the BFS from the entry, so
+        // `entry.ink` mints `FileId(0)`.
+        let mut compiled = crate::Driver::new();
+        let files: HashMap<&str, &str> = [("entry.ink", ENTRY), ("sibling.ink", SIBLING)].into();
+        compiled
+            .discover("entry.ink", |path: &str| {
+                files
+                    .get(path)
+                    .map(|s| (*s).to_string())
+                    .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, path))
+            })
+            .expect("discovery succeeds");
+        compiled.db_mut().set_entry("entry.ink");
+
+        // (2) Editor order: the sibling is admitted first (e.g. a workspace
+        // walk, or an `INCLUDE` chased before the entry itself is opened) —
+        // `entry.ink` mints `FileId(1)` instead.
+        let mut edited = crate::Driver::new();
+        edited.db_mut().set_file("sibling.ink", SIBLING.to_string());
+        edited.db_mut().set_file("entry.ink", ENTRY.to_string());
+        edited.db_mut().set_entry("entry.ink");
+
+        assert_eq!(
+            ids_via(edited.db()),
+            ids_via(compiled.db()),
+            "editor-order file registration must mint the SAME root-content \
+             DefinitionIds a real `discover` compile of the same tree mints"
+        );
+    }
 }
