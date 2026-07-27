@@ -2194,9 +2194,14 @@ impl LanguageServer for Backend {
                     .get("name")
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or_default();
+                let native = data
+                    .get("native")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
                 brink_ide::code_actions::CodeActionData::AddImport {
                     module: module.to_owned(),
                     name: name.to_owned(),
+                    native,
                 }
             }
             _ => return Ok(action),
@@ -2897,9 +2902,14 @@ fn code_action_data_to_json(
                 "kind": "demote_knot", "uri": uri, "knot": knot, "dest_knot": dest_knot,
             })
         }
-        brink_ide::code_actions::CodeActionData::AddImport { module, name } => {
+        brink_ide::code_actions::CodeActionData::AddImport {
+            module,
+            name,
+            native,
+        } => {
             serde_json::json!({
                 "kind": "add_import", "uri": uri, "module": module, "name": name,
+                "native": native,
             })
         }
     }

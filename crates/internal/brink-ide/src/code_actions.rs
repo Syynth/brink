@@ -47,13 +47,18 @@ pub enum CodeActionData {
         dest_knot: String,
     },
     /// Auto-import quick-fix (M-4, modules-spec §2/§9): insert
-    /// `IMPORT { name } FROM module` to bring an out-of-scope public
-    /// definition into the referring file. Produced by
-    /// [`crate::import_fix::import_actions`] off an `E025` diagnostic; resolved
-    /// as a pure source rewrite.
+    /// `IMPORT { name } FROM module` (ink) or `use module::name;` (native,
+    /// `native: true`) to bring an out-of-scope public definition into the
+    /// referring file. Produced by [`crate::import_fix::import_actions`] off
+    /// an `E025` diagnostic; resolved as a pure source rewrite. `native`
+    /// travels in the payload (rather than being re-derived at resolve time)
+    /// because [`resolve_code_action`] only ever sees `source: &str` — no
+    /// `FileId`/`ProjectDb` to ask (issue #1590 companion finding).
     AddImport {
         module: String,
         name: String,
+        #[serde(default)]
+        native: bool,
     },
 }
 
@@ -195,9 +200,11 @@ pub fn resolve_code_action(source: &str, data: &CodeActionData) -> Option<String
             stitch,
             direction,
         } => structural_move::reorder_stitch(source, knot, stitch, *direction).ok()?,
-        CodeActionData::AddImport { module, name } => {
-            crate::import_fix::insert_import(source, module, name)?
-        }
+        CodeActionData::AddImport {
+            module,
+            name,
+            native,
+        } => crate::import_fix::insert_import(source, module, name, *native)?,
         // These require analysis — caller should use resolve_structural_action.
         CodeActionData::MoveStitch { .. }
         | CodeActionData::PromoteStitch { .. }
