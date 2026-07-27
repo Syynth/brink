@@ -139,6 +139,26 @@ fn build_app() -> App {
     app
 }
 
+/// Like [`build_app`] but wires the **parallel** driver instead of the
+/// serial one — issue #1633's regression coverage needs both drivers' Collect
+/// to agree on `FlowSleep` filtering, so this mirrors `build_app` exactly
+/// apart from which driver system is registered.
+fn build_app_parallel() -> App {
+    let mut app = make_test_app();
+    app.add_systems(Update, crate::advance_batch_parallel::<()>);
+    app.insert_resource(TextLog::default());
+    app.add_observer(|t: On<BrinkLineDelivered<()>>, mut log: ResMut<TextLog>| {
+        log.0.push_str(&t.event().text);
+    });
+    app.add_observer(|t: On<BrinkTurnDone<()>>, mut log: ResMut<TextLog>| {
+        log.0.push_str(&t.event().text);
+    });
+    app.add_observer(|t: On<BrinkStoryEnded<()>>, mut log: ResMut<TextLog>| {
+        log.0.push_str(&t.event().text);
+    });
+    app
+}
+
 /// Mutate the shared `gate` global (marks `BrinkGlobals` changed, which is the
 /// dependency-change signal `mark_wake_dirty` keys off for detect-capable
 /// policies).
@@ -180,6 +200,52 @@ fn dormant_flow_stays_parked_until_condition_true() {
     assert!(
         app.world().resource::<TextLog>().0.is_empty(),
         "a dormant flow whose condition is false must never run: got {:?}",
+        app.world().resource::<TextLog>().0
+    );
+    // Its policy is still parked, not woken/faulted.
+    let sleep = single_sleep(&mut app);
+    assert_eq!(sleep, SleepState::Parked, "still parked while gate == 0");
+
+    // Flip the dependency true → the flow wakes and runs.
+    set_gate(&mut app, gate_idx, 1);
+    pump(&mut app, 6);
+    assert!(
+        app.world().resource::<TextLog>().0.contains("Woke up!"),
+        "flow should wake and run its first turn once gate != 0: got {:?}",
+        app.world().resource::<TextLog>().0
+    );
+}
+
+/// Regression for issue #1633: the **parallel** driver's Collect must skip a
+/// parked `FlowSleep`-bearing flow exactly like the serial driver's
+/// `wants_collect` filter does. Before the fix, `advance_batch_parallel`'s
+/// Collect never consulted `FlowSleep` at all, so this dormant flow would be
+/// force-stepped every turn regardless of its wake state — producing "Woke
+/// up!" in the log immediately, before the gate ever flips, and diverging
+/// from what the serial driver does with the identical setup (a real,
+/// concrete BH-3 determinism-law violation once a `FlowSleep`-bearing flow
+/// enters a batch driven by both drivers — see `crate::batch::parallel`'s
+/// module docs).
+#[test]
+fn advance_batch_parallel_dormant_flow_stays_parked_until_condition_true() {
+    let mut app = build_app_parallel();
+    let (program, tables, ctx) = compile_test_story(GATED_STORY);
+    let gate_idx = program.global_index("gate").expect("gate global exists");
+    let story = add_story_assets(&mut app, program, tables, ctx);
+
+    // Spawn dormant: the request + a dormant persistent policy on one entity.
+    app.world_mut().spawn((
+        BrinkFlowRequest::<()>::builder().story(story).build(),
+        FlowSleep::<()>::persistent("should_wake").dormant(),
+    ));
+
+    // Fulfill + several wake passes with gate == 0: the flow must never step.
+    pump(&mut app, 6);
+    assert!(
+        app.world().resource::<TextLog>().0.is_empty(),
+        "a dormant flow whose condition is false must never run under the parallel \
+         driver either — Collect must skip it, not just the serial driver's Collect: \
+         got {:?}",
         app.world().resource::<TextLog>().0
     );
     // Its policy is still parked, not woken/faulted.
