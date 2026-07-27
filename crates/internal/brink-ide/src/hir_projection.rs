@@ -15,8 +15,11 @@
 //!
 //! - **Containers:** knot, stitch, choice (full-branch extent), gather
 //!   continuation, and conditional/sequence branches — block-level per-branch,
-//!   inline as one span over the whole `{...}` (inline branch content is
-//!   ptr-less; that granularity is exactly what `line_context` marks per line).
+//!   inline as one span over the whole `{...}` (inline branch content now
+//!   carries a real per-branch `Provenance`, issue #404, but this producer
+//!   still emits one container per construct rather than per branch — that
+//!   coarser granularity is exactly what `line_context` marks per line; see
+//!   `project_content_extras`'s doc for the not-yet-wired per-branch data).
 //! - **`ChoiceLine` vs `ChoiceBody`** (`line_context` `WeaveElement`) is
 //!   **derivable by the consumer**, not split here: a Choice container's first
 //!   line is the choice line, its remaining lines are the body. No producer
@@ -421,11 +424,16 @@ impl ProjectionVisitor<'_> {
 
     /// Project a content node's inline conditionals/sequences and its tags.
     ///
-    /// Inline `{...}` constructs are single-line and their branch content is
-    /// ptr-less (no per-branch source range), so each is emitted as **one**
-    /// container over the whole construct (`ptr`) rather than per-branch — which
-    /// is exactly the granularity `line_context` marks per line. References
-    /// inside interpolations are covered by `enter_expr` (the walker descends).
+    /// Inline `{...}` constructs are single-line; each is emitted as **one**
+    /// container over the whole construct (`ptr`) rather than per-branch,
+    /// which is exactly the granularity `line_context` marks per line. This
+    /// is no longer forced by a data gap — `CondBranch`/`SequenceBranch::ptr`
+    /// now carries a real per-branch source range even for inline branches
+    /// (issue #404) — it is simply not wired up here; a future per-branch
+    /// inline projection would iterate `cond.branches`/`seq.branches` and
+    /// push one container per `branch.ptr` instead of one for the whole
+    /// construct. References inside interpolations are covered by
+    /// `enter_expr` (the walker descends).
     ///
     /// Construct-extent spans ([`SpanKind::Conditional`]/[`SpanKind::Sequence`])
     /// are emitted only for body content (`ctx == Body`): inline logic in a

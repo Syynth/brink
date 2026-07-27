@@ -1,7 +1,8 @@
+use brink_syntax::SyntaxKind;
 use brink_syntax::ast::{self, AstNode};
 
 use crate::Provenance;
-use crate::provenance::NodeClass;
+use crate::provenance::{KindToken, NodeClass};
 
 use crate::{Block, CondBranch, CondKind, Conditional, DiagnosticCode, Expr};
 
@@ -129,8 +130,16 @@ fn lower_conditional_with_expr(
 }
 
 /// `{x: content}` / `{x: content | else_body}` (branchless-body form): the
-/// implicit first arm has no dedicated branch node, so its span is its own
-/// body's; the `else` arm (if any) is a real `MultilineBranchCond`.
+/// implicit first arm has no dedicated branch node. `ElseBranch` is a
+/// *child* of `BranchlessCondBody` (see the parser's
+/// `branchless_body_with_else` CST snapshot), so stamping the whole body
+/// node — as a prior version of this fix did — would make the first arm's
+/// span *contain* the sibling else arm, violating the disjoint-sibling-span
+/// invariant every other branch shape upholds. Instead the first arm's span
+/// is the union of the body's non-`ElseBranch` children, mirroring the
+/// synthetic union-fold `lower_native::cond::branch_span` already uses for
+/// native's pipe-separated inline alternatives; the `else` arm (if any) is
+/// still a real `MultilineBranchCond`.
 fn lower_branchless_body(
     body: &ast::BranchlessCondBody,
     condition: &Expr,
@@ -141,7 +150,7 @@ fn lower_branchless_body(
     use super::super::block::LowerBlock;
 
     let mut branches = Vec::new();
-    let branch_ptr = scope.prov(NodeClass::ConditionalBranch, body.syntax());
+    let branch_ptr = branchless_first_arm_span(body, scope);
     let block = body.lower_block(scope, sink).unwrap_or_default();
     branches.push(CondBranch {
         ptr: branch_ptr,
@@ -170,4 +179,28 @@ fn lower_branchless_body(
         kind: CondKind::InitialCondition,
         branches,
     }
+}
+
+/// The branchless-body implicit first arm's own span (issue #404
+/// correctness fix): the union of `body`'s children that are not the
+/// `- else:` arm. No single live node covers "everything except the else
+/// arm", so this is synthetic — it never resolves back to a syntax node
+/// (see [`KindToken::SYNTHETIC_RAW`]) — but still carries a real byte range
+/// for span-consuming tools (diagnostics, editor folding). Falls back to
+/// the whole body's span when there is no non-else content (e.g. a
+/// branchless body consisting only of `- else:`).
+fn branchless_first_arm_span(body: &ast::BranchlessCondBody, scope: &LowerScope) -> Provenance {
+    let range = body
+        .syntax()
+        .children()
+        .filter(|n| n.kind() != SyntaxKind::ELSE_BRANCH)
+        .map(|n| n.text_range())
+        .fold(None::<rowan::TextRange>, |acc, r| {
+            Some(acc.map_or(r, |a| a.cover(r)))
+        });
+    Provenance::new(
+        scope.file_id,
+        range.unwrap_or_else(|| body.syntax().text_range()),
+        KindToken::synthetic(NodeClass::ConditionalBranch),
+    )
 }
