@@ -305,9 +305,10 @@ mod tests {
         );
     }
 
-    /// The converse of the idempotence test: an ink-syntax existing import is
-    /// invisible to the native frontend, so a native-flagged insert must not
-    /// mistake it for coverage and skip the edit.
+    /// A native-flagged insert for a *different* module than an existing
+    /// `use` line is not coverage (the idempotence check only skips when the
+    /// exact module/name pair is already imported) — the new `use` line is
+    /// appended below the existing one, not before it or in place of it.
     #[test]
     fn native_insert_below_existing_use_block() {
         let src = "use story::market::barter::haggle;\nflow start() {\n  Hi\n}\n";

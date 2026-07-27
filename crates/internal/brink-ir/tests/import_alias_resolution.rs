@@ -207,13 +207,14 @@ fn native_use_alias_resolves_both_alias_and_original_name() {
 /// Negative case: an alias is scoped to the file whose import declared it —
 /// a *different* file that never imported `quest` at all
 /// must not resolve a bare `h` (there is nothing in scope named `h`, aliased
-/// or otherwise), and a bare `haggle` reference is rightly flagged `E025`
-/// (import-required — a public definition in a declared module the file
-/// never imported).
+/// or otherwise — it is simply an unresolved divert target, `E024`), and a
+/// bare `haggle` reference is rightly flagged `E025` (import-required — a
+/// public definition in a declared module the file never imported).
 #[test]
 fn a_file_that_never_imported_the_module_gets_neither_alias_nor_bare_access() {
     const OUTSIDER: &str = "\
 == start ==
+-> h
 -> haggle
 ";
     let (hir, manifest) = lower_ink(IMPORTER_FILE, OUTSIDER);
@@ -229,6 +230,15 @@ fn a_file_that_never_imported_the_module_gets_neither_alias_nor_bare_access() {
     let result =
         brink_analyzer::analyze_with_modules(&inputs, &module_map("story::town"), &opts, true);
 
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|d| d.code == DiagnosticCode::E024),
+        "`h` names nothing in this file's scope — no import, no alias — so \
+         `-> h` must be an unresolved divert target: {:?}",
+        result.diagnostics
+    );
     assert!(
         result
             .diagnostics

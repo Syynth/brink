@@ -1039,6 +1039,17 @@ pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
 /// rarer ambiguous-candidate case, silently keeping the source name resolvable
 /// everywhere else. Rather than ship a rule that only sometimes holds, `AS`
 /// stays purely additive: predictable in every case, in both dialects.
+///
+/// **Precedence when an alias collides with an in-scope direct name**:
+/// [`lookup_by_name_direct`] always runs first, and this function only
+/// consults `scope.aliases` when that direct lookup comes up empty. So if
+/// `IMPORT { haggle AS start } FROM quest` is written in a file that also
+/// defines a knot named `start`, every bare reference to `start` resolves to
+/// the *local* `start` knot — the direct match wins silently, and the alias
+/// is unreachable under that name. Nothing currently diagnoses this
+/// collision (`E089` only dedupes among import items; it never checks
+/// against file-local definitions); a shadowing diagnostic is tracked as a
+/// follow-up rather than blocking this fix.
 pub(crate) fn lookup_by_name(
     index: &SymbolIndex,
     scope: &ImportScope,
@@ -2207,6 +2218,72 @@ mod tests {
             lookup_by_name(&index, &ImportScope::default(), "b", &[SymbolKind::Knot]),
             None,
             "a file with no import scope must never resolve an alias it never declared"
+        );
+    }
+
+    /// Precedence when an alias collides with an in-scope direct name (see
+    /// the doc comment on [`lookup_by_name`]): `lookup_by_name_direct` always
+    /// runs first, so a local knot named `start` wins over an alias `start`
+    /// that a bare import bound to a *different* knot — the alias fallback
+    /// only ever fires once the direct lookup comes up empty. `IMPORT {
+    /// haggle AS start } FROM quest_a` in a file that also defines `start`
+    /// silently loses the alias to the local definition.
+    #[test]
+    fn alias_colliding_with_an_in_scope_direct_name_resolves_to_the_direct_name() {
+        use brink_format::DefinitionTag;
+        let mut index = SymbolIndex::default();
+        let local_start = DefinitionId::new(DefinitionTag::Address, 0x51A47);
+        index.symbols.insert(
+            local_start,
+            SymbolInfo {
+                kind: SymbolKind::Knot,
+                file: FileId(0),
+                range: TextRange::default(),
+                id: local_start,
+                name: "start".to_string(),
+                params: Vec::new(),
+                detail: None,
+                scope: None,
+                param_detail: None,
+                module: None,
+                visibility: Visibility::Public,
+            },
+        );
+        index
+            .by_name
+            .entry("start".to_string())
+            .or_default()
+            .push(local_start);
+
+        let (ambush_index, aliased_target, _b) = two_module_ambush_index();
+        for (name, ids) in ambush_index.by_name {
+            index.by_name.entry(name).or_default().extend(ids);
+        }
+        for (id, info) in ambush_index.symbols {
+            index.symbols.insert(id, info);
+        }
+
+        let scope = ImportScope::new(
+            None,
+            &[Import {
+                module: "quest_a".to_string(),
+                module_range: TextRange::default(),
+                items: vec![ImportItem {
+                    name: "ambush".to_string(),
+                    alias: Some("start".to_string()),
+                    range: TextRange::default(),
+                }],
+                bare: true,
+                range: TextRange::default(),
+            }],
+        );
+
+        assert_eq!(
+            lookup_by_name(&index, &scope, "start", &[SymbolKind::Knot]),
+            Some(local_start),
+            "a direct in-scope `start` must win over the colliding alias — \
+             `ambush AS start` never reaches quest_a's ambush ({aliased_target:?}) \
+             under that name"
         );
     }
 }
