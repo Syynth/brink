@@ -1106,35 +1106,18 @@ fn use_tree_list_nested_bare_group_with_no_leading_path_errors() {
 }
 
 #[test]
-fn use_tree_malformed_missing_path_recovers() {
-    // `use ::foo;` — `at_use_decl`'s weaker two-token check (Finding #5's
-    // documented residual risk: `nth(1)` is `COLON_COLON`, which passes the
-    // guard) commits to `USE_DECL`, but `use_tree` itself sees no `IDENT`
-    // first and records "a `use` needs a module path" without consuming
-    // anything. `USE_DECL` still closes (with just `use` as its content);
-    // the leftover `::foo;` falls through to the next `item()` call as
-    // ordinary prose on its own line — it is NOT silently absorbed into
-    // the `USE_DECL`.
+fn use_tree_malformed_missing_path_does_not_commit() {
+    // `use ::foo;` — after tightening the lookahead (issue #1285), `at_use_decl`
+    // only commits to `USE_DECL` if `nth(1)` is `IDENT`, not `COLON_COLON`. So
+    // `use ::foo;` does not commit, and the entire line falls through to be
+    // treated as prose — much cleaner than partial parsing with an error.
     let src = "use ::foo;\n";
     let p = assert_lossless(src);
-    assert!(
-        p.errors()
-            .iter()
-            .any(|e| e.message.contains("needs a module path")),
-        "expected the use-tree error, got: {:?}",
-        p.errors()
-    );
-    let decl: ast::UseDecl = find_child(&p.syntax()).expect("use decl still recovers");
-    assert!(
-        decl.tree().is_some(),
-        "USE_TREE node still exists, just empty"
-    );
-    assert_eq!(
-        decl.tree().expect("checked above").path_segments().count(),
-        0
-    );
-    // The leftover `::foo;` is not swallowed into USE_DECL's text.
-    assert!(!decl.syntax().text().to_string().contains("foo"));
+    // No error from the parser — the line is treated as prose, not a broken USE_DECL.
+    assert!(p.errors().is_empty(), "no parser errors expected, got: {:?}", p.errors());
+    // No USE_DECL node is created at all.
+    let decl: Option<ast::UseDecl> = find_child(&p.syntax());
+    assert!(decl.is_none(), "no USE_DECL should be created for `use ::foo;`");
 }
 
 #[test]
