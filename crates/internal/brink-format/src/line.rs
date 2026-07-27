@@ -12,19 +12,15 @@ pub enum LineContent {
 bitflags::bitflags! {
     /// Whitespace characteristics of a line, precomputed at compile time.
     ///
-    /// Used by the output buffer to make filtering decisions (suppress leading
-    /// whitespace, collapse adjacent whitespace) without eagerly resolving
-    /// deferred `LineRef` parts.
+    /// Used by the output buffer to make filtering decisions (suppress
+    /// whitespace-only/empty content when there's no content yet) without
+    /// eagerly resolving deferred `LineRef` parts.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub struct LineFlags: u8 {
-        /// The resolved content starts with whitespace.
-        const STARTS_WITH_WS = 0b0001;
-        /// The resolved content ends with whitespace.
-        const ENDS_WITH_WS   = 0b0010;
         /// The resolved content is entirely whitespace (but not empty).
-        const ALL_WS         = 0b0100;
+        const ALL_WS = 0b0100;
         /// The resolved content is empty.
-        const EMPTY          = 0b1000;
+        const EMPTY  = 0b1000;
     }
 }
 
@@ -47,12 +43,6 @@ impl LineFlags {
             return Self::EMPTY;
         }
         let mut flags = Self::empty();
-        if s.starts_with(char::is_whitespace) {
-            flags |= Self::STARTS_WITH_WS;
-        }
-        if s.ends_with(char::is_whitespace) {
-            flags |= Self::ENDS_WITH_WS;
-        }
         if s.trim().is_empty() {
             flags |= Self::ALL_WS;
         }
@@ -65,34 +55,11 @@ impl LineFlags {
         }
         let mut flags = Self::empty();
 
-        // Leading/trailing empty-string literals contribute no characters, so
-        // they must not be mistaken for the part that determines leading/
-        // trailing whitespace — walk past them to the first part that could
-        // actually carry a character.
-        //
-        // Only empty-string `Literal`s are skipped here; every other part
-        // kind (a non-empty `Literal`, `Slot`, `Select`) stops the walk. In
-        // particular `Slot`/`Select` parts that remain after skipping are
-        // left conservative on purpose: their resolved content isn't known
-        // at compile time, so we can't claim they do or don't start/end with
-        // whitespace.
-        if let Some(LinePart::Literal(s)) = parts.iter().find(|p| !p.contributes_no_text())
-            && s.starts_with(char::is_whitespace)
-        {
-            flags |= Self::STARTS_WITH_WS;
-        }
-
-        if let Some(LinePart::Literal(s)) = parts.iter().rev().find(|p| !p.contributes_no_text())
-            && s.ends_with(char::is_whitespace)
-        {
-            flags |= Self::ENDS_WITH_WS;
-        }
-
         // ALL_WS: only true if every part is whitespace-only literals.
         // Any Slot/Select means we can't guarantee all-whitespace.
         let all_ws = parts.iter().all(|p| match p {
             LinePart::Literal(s) => s.trim().is_empty(),
-            _ => false,
+            LinePart::Slot(_) | LinePart::Select { .. } => false,
         });
         if all_ws {
             flags |= Self::ALL_WS;
@@ -118,24 +85,6 @@ pub enum LinePart {
         variants: Vec<(SelectKey, String)>,
         default: String,
     },
-}
-
-impl LinePart {
-    /// Whether this part is guaranteed to contribute no characters to the
-    /// resolved content, and so can never carry leading/trailing whitespace
-    /// itself.
-    ///
-    /// Only an empty-string `Literal` qualifies. This is an exhaustive match
-    /// with no `_` arm on purpose: adding a new `LinePart` variant (e.g. a
-    /// nested `Span`) forces a decision here about whether it can be
-    /// zero-width, rather than silently defaulting to "carries content" or
-    /// "contributes no text".
-    fn contributes_no_text(&self) -> bool {
-        match self {
-            Self::Literal(s) => s.is_empty(),
-            Self::Slot(_) | Self::Select { .. } => false,
-        }
-    }
 }
 
 /// The key for matching a branch in a [`LinePart::Select`].
@@ -185,97 +134,82 @@ mod tests {
     }
 
     #[test]
-    fn leading_slot_is_conservative_but_trailing_literal_still_checked() {
-        // `LinePart::Slot` at the front is content we can't inspect at
-        // compile time, so STARTS_WITH_WS must stay unset — but the
-        // trailing literal is still directly inspectable.
+    fn bit_values_are_stable_for_persisted_brkt_compatibility() {
+        // `LineFlags` is persisted on the wire in the `.brkt` transcript
+        // format (`transcript.rs`'s `encode_part`/`decode_part`), unlike
+        // `.inkb` where it's recomputed at decode time. Removing
+        // `STARTS_WITH_WS`/`ENDS_WITH_WS` must not renumber the surviving
+        // bits, or a `.brkt` file written before this change would decode
+        // its old `ALL_WS`/`EMPTY` bits (0b0100/0b1000) as different flags
+        // under a newer reader. Pin the values so a future edit here has to
+        // consciously break this guarantee.
+        assert_eq!(LineFlags::ALL_WS.bits(), 0b0100);
+        assert_eq!(LineFlags::EMPTY.bits(), 0b1000);
+    }
+
+    #[test]
+    fn empty_plain_string_is_empty() {
+        assert_eq!(LineFlags::from_plain(""), LineFlags::EMPTY);
+    }
+
+    #[test]
+    fn whitespace_only_plain_string_is_all_ws() {
+        let flags = LineFlags::from_plain("   \t\n  ");
+        assert!(flags.contains(LineFlags::ALL_WS));
+        assert!(!flags.contains(LineFlags::EMPTY));
+    }
+
+    #[test]
+    fn mixed_content_plain_string_has_no_flags() {
+        // Leading/trailing whitespace on otherwise non-whitespace content
+        // used to set STARTS_WITH_WS/ENDS_WITH_WS; those flags were removed
+        // (no production consumer — see #1444's follow-up scope note) so
+        // this case now carries no flags at all.
+        let flags = LineFlags::from_plain("  Hello world  ");
+        assert!(flags.is_empty());
+    }
+
+    #[test]
+    fn empty_template_is_empty() {
+        assert_eq!(LineFlags::from_template(&[]), LineFlags::EMPTY);
+    }
+
+    #[test]
+    fn all_whitespace_literal_parts_are_all_ws() {
         let parts = alloc::vec![
-            LinePart::Slot(0),
-            LinePart::Literal("trailing ".to_string())
+            LinePart::Literal("  ".to_string()),
+            LinePart::Literal("\t".to_string()),
         ];
         let flags = LineFlags::from_template(&parts);
-        assert!(!flags.contains(LineFlags::STARTS_WITH_WS));
-        assert!(flags.contains(LineFlags::ENDS_WITH_WS));
+        assert!(flags.contains(LineFlags::ALL_WS));
     }
 
     #[test]
-    fn trailing_slot_is_conservative_but_leading_literal_still_checked() {
-        let parts = alloc::vec![LinePart::Literal(" leading".to_string()), LinePart::Slot(0)];
+    fn a_slot_defeats_all_ws_even_if_every_literal_is_whitespace() {
+        // A Slot's resolved content is unknown at compile time, so ALL_WS
+        // must stay conservative (unset) even when every literal part
+        // present is whitespace-only.
+        let parts = alloc::vec![LinePart::Literal("  ".to_string()), LinePart::Slot(0)];
         let flags = LineFlags::from_template(&parts);
-        assert!(flags.contains(LineFlags::STARTS_WITH_WS));
-        assert!(!flags.contains(LineFlags::ENDS_WITH_WS));
+        assert!(!flags.contains(LineFlags::ALL_WS));
     }
 
     #[test]
-    fn leading_select_is_conservative() {
-        let parts = alloc::vec![select_part(), LinePart::Literal("trailing ".to_string())];
+    fn a_select_defeats_all_ws() {
+        let parts = alloc::vec![select_part(), LinePart::Literal("  ".to_string())];
         let flags = LineFlags::from_template(&parts);
-        assert!(!flags.contains(LineFlags::STARTS_WITH_WS));
-        assert!(flags.contains(LineFlags::ENDS_WITH_WS));
+        assert!(!flags.contains(LineFlags::ALL_WS));
     }
 
     #[test]
-    fn trailing_select_is_conservative() {
-        let parts = alloc::vec![LinePart::Literal(" leading".to_string()), select_part()];
-        let flags = LineFlags::from_template(&parts);
-        assert!(flags.contains(LineFlags::STARTS_WITH_WS));
-        assert!(!flags.contains(LineFlags::ENDS_WITH_WS));
-    }
-
-    #[test]
-    fn empty_leading_literal_does_not_defeat_starts_with_ws() {
-        // Regression for #1444: an empty leading literal contributes no
-        // characters and must not be mistaken for "the first part has no
-        // leading whitespace" — the check must walk past it to the literal
-        // that actually carries content.
-        let parts = alloc::vec![
-            LinePart::Literal(String::new()),
-            LinePart::Literal(" indented".to_string()),
-        ];
-        let flags = LineFlags::from_template(&parts);
-        assert!(flags.contains(LineFlags::STARTS_WITH_WS));
-    }
-
-    #[test]
-    fn empty_trailing_literal_does_not_defeat_ends_with_ws() {
-        let parts = alloc::vec![
-            LinePart::Literal("trailing ".to_string()),
-            LinePart::Literal(String::new()),
-        ];
-        let flags = LineFlags::from_template(&parts);
-        assert!(flags.contains(LineFlags::ENDS_WITH_WS));
-    }
-
-    #[test]
-    fn multiple_empty_leading_literals_are_all_skipped() {
-        let parts = alloc::vec![
-            LinePart::Literal(String::new()),
-            LinePart::Literal(String::new()),
-            LinePart::Literal(" indented".to_string()),
-        ];
-        let flags = LineFlags::from_template(&parts);
-        assert!(flags.contains(LineFlags::STARTS_WITH_WS));
-    }
-
-    #[test]
-    fn empty_leading_literal_then_slot_stays_conservative() {
-        // The empty literal is skipped, landing on the Slot — still
-        // unknowable, so STARTS_WITH_WS correctly stays unset.
-        let parts = alloc::vec![LinePart::Literal(String::new()), LinePart::Slot(0)];
-        let flags = LineFlags::from_template(&parts);
-        assert!(!flags.contains(LineFlags::STARTS_WITH_WS));
-    }
-
-    #[test]
-    fn no_leading_or_trailing_whitespace() {
+    fn mixed_content_template_has_no_flags() {
         let parts = alloc::vec![
             LinePart::Literal("Hello ".to_string()),
             LinePart::Slot(0),
             LinePart::Literal(" world".to_string()),
         ];
         let flags = LineFlags::from_template(&parts);
-        assert!(!flags.contains(LineFlags::STARTS_WITH_WS));
-        assert!(!flags.contains(LineFlags::ENDS_WITH_WS));
+        assert!(flags.is_empty());
     }
 
     #[test]
@@ -285,6 +219,15 @@ mod tests {
         assert_eq!(
             LineFlags::from_content(&content),
             LineFlags::from_template(&parts)
+        );
+    }
+
+    #[test]
+    fn from_content_matches_from_plain_for_plain() {
+        let content = LineContent::Plain("   ".to_string());
+        assert_eq!(
+            LineFlags::from_content(&content),
+            LineFlags::from_plain("   ")
         );
     }
 }

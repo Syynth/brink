@@ -1108,7 +1108,7 @@ mod tests {
                 container_idx: 3,
                 line_idx: 9,
                 slots: vec![Value::Int(1), Value::String(Arc::from("hi"))],
-                flags: LineFlags::STARTS_WITH_WS,
+                flags: LineFlags::ALL_WS,
             },
             OutputPart::ValueRef(Value::Bool(true)),
             OutputPart::Spring,
@@ -1361,7 +1361,7 @@ mod tests {
             container_idx: 42,
             line_idx: 7,
             slots: vec![Value::Int(123), Value::String(Arc::from("hello"))],
-            flags: LineFlags::STARTS_WITH_WS | LineFlags::ENDS_WITH_WS,
+            flags: LineFlags::ALL_WS | LineFlags::EMPTY,
         }];
         let bytes = write_transcript(&parts, 1234, &[]);
         let data = read_transcript(&bytes).unwrap();
@@ -1377,8 +1377,8 @@ mod tests {
                 assert_eq!(*line_idx, 7);
                 assert_eq!(slots.len(), 2);
                 assert!(matches!(&slots[0], Value::Int(123)));
-                assert!(flags.contains(LineFlags::STARTS_WITH_WS));
-                assert!(flags.contains(LineFlags::ENDS_WITH_WS));
+                assert!(flags.contains(LineFlags::ALL_WS));
+                assert!(flags.contains(LineFlags::EMPTY));
             }
             other => unreachable!("expected LineRef, got {other:?}"),
         }
