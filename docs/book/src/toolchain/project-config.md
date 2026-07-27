@@ -21,6 +21,11 @@ config every mount reads.
 dialect = "brink"      # "brink" | "strict-ink" (default: "strict-ink")
 types   = "gradual"    # "gradual" | "strict"   (default: dialect-keyed —
                        # strict for "brink", gradual for "strict-ink")
+unprune-dirs = ["node_modules"]  # directory names a native (.brink) compile
+                                 # must not prune from discovery, on top of
+                                 # the default target/.git/node_modules list
+                                 # — see "Directory discovery pruning" below
+                                 # (issue #1407)
 
 [lints]
 deny-warnings = true   # promote every Warning-severity diagnostic to
@@ -157,6 +162,55 @@ my-project/
     └── chapters/
         └── story.ink    ← brink compile src/chapters/story.ink
 ```
+
+## Directory discovery pruning
+
+A native (`.brink`) compile's discovery walk enumerates every `.brink` file
+under the project root — but never descends into a directory named `target`,
+`.git`, or `node_modules`. These are build output and VCS/dependency
+metadata, never a valid source location, and can be enormous; pruning them
+is the default with no opt-in required.
+
+Before issue #1407, that pruning was absolute: a project that legitimately
+kept `.brink` sources under one of those names got no file and no error —
+the source was silently invisible to every compile. Three things changed:
+
+- **An escape hatch.** `[project] unprune-dirs` (the Schema block above)
+  names directories that should **not** be pruned, on top of the default
+  list. Only entries that are actually one of `target`/`.git`/`node_modules`
+  have any effect — a value outside that set is a no-op (nothing was ever
+  pruned there) and is reported as a warning, the same "unknown key" channel
+  described above, on the theory it's more likely a typo than a deliberate
+  no-op.
+- **A diagnostic.** When discovery prunes a directory that, within a bounded
+  scan of itself, contains a `.brink` file — the shape of "an author
+  probably meant for this to be found" — it's reported as a warning naming
+  the directory and the `unprune-dirs` fix, rather than saying nothing. The
+  scan is bounded by depth and by a total-entry budget (not a full recursive
+  descent), deep enough to catch the `node_modules/<package>/lib.brink`
+  shape an npm-style dependency tree actually uses, but never turning a
+  cheap prune into an expensive walk of the very tree being skipped. A
+  directory named by `unprune-dirs` is, naturally, never reported this way —
+  it wasn't pruned in the first place.
+- **`.gitignore` is deliberately not consulted**, and that's a decision, not
+  a gap. Discovery is a deterministic-compilation input: the same tree,
+  compiled by anyone, must discover the same files. `.gitignore` resolution
+  depends on more than a repository's tracked content — a local uncommitted
+  edit, a per-clone `.git/info/exclude`, a user's global `core.excludesFile`
+  — any of which could make two checkouts of byte-identical tracked source
+  compile differently. `unprune-dirs` avoids exactly that: it lives in
+  `brink.toml`, itself tracked, versioned source, so it resolves the same
+  way on every clone.
+
+Both the escape hatch and the diagnostic live once, as opt-in builders
+(`Walk::allow`, `Walk::warn_on_pruned_sources`) on the shared recursive walk
+every native discovery traversal goes through — so a *new* traversal never
+has to reimplement the pruning policy itself. But each builder is still
+opt-in per traversal: today only the `brink compile` / `brink ide` path
+(`brink-driver`'s `RealFs::list`) wires them up. `brink-lsp`'s own
+workspace-scan walk calls the shared `Walk` unadorned, so an LSP-open
+project honors neither `unprune-dirs` nor the silent-skip diagnostic yet —
+tracked as a follow-up to wire both into `brink-lsp`.
 
 ## Precedence: the file is the default, code wins
 

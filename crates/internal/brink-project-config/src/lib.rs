@@ -56,6 +56,18 @@
 //!                        # below Warning, issue #1162)
 //! ```
 //!
+//! ```toml
+//! [project]
+//! unprune-dirs = ["node_modules"]  # directory names discovery must NOT
+//!                                  # prune, on top of the standing
+//!                                  # `target`/`.git`/`node_modules` policy
+//!                                  # (issue #1407's escape hatch — see
+//!                                  # `brink_source_tree::Walk::allow`). A
+//!                                  # name that isn't one of those three is
+//!                                  # a no-op (there was nothing to
+//!                                  # un-prune) and warns.
+//! ```
+//!
 //! (`E014` — a plainly `Warning`-by-default code — is used here rather than
 //! `E063`: `E063`'s own *base* severity is `types`-policy-dependent (`Error`
 //! under `types = strict`, see `brink_analyzer::effective_severity`'s doc
@@ -93,7 +105,7 @@ use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use brink_source_tree::SourceTree;
+use brink_source_tree::{IGNORED_DIR_NAMES, SourceTree};
 
 /// Compiler dialect: gates T1b brink-extension syntax. Default `StrictInk` —
 /// divergence from the oracle-anchored ink subset is a visible, one-time,
@@ -191,6 +203,19 @@ pub struct ProjectConfig {
     pub lints: BTreeMap<String, LintLevel>,
     /// `[lints] deny-warnings`, if set.
     pub deny_warnings: Option<bool>,
+    /// `[project] unprune-dirs`, if set: directory names discovery must not
+    /// prune, layered on top of the standing
+    /// [`brink_source_tree::IGNORED_DIR_NAMES`] policy (issue #1407's escape
+    /// hatch). Empty (the default) means "the standing policy applies with
+    /// no override" — same "unset means untouched" convention as `lints`.
+    /// Raw strings as written in the file; a name outside
+    /// [`brink_source_tree::IGNORED_DIR_NAMES`] parses fine (this crate
+    /// stays dependency-free of anything beyond `brink_source_tree`, and
+    /// there is nothing wrong in principle with naming a directory that
+    /// isn't pruned in the first place) but is a no-op, so [`parse_str_at`]
+    /// warns about it rather than silently accepting a likely typo (e.g.
+    /// `"node-modules"` instead of `"node_modules"`).
+    pub unprune_dirs: Vec<String>,
 }
 
 impl ProjectConfig {
@@ -202,6 +227,7 @@ impl ProjectConfig {
             && self.types.is_none()
             && self.lints.is_empty()
             && self.deny_warnings.is_none()
+            && self.unprune_dirs.is_empty()
     }
 }
 
@@ -399,6 +425,19 @@ pub fn parse_str_at(
                 match pkey.as_str() {
                     "dialect" => config.dialect = Some(parse_dialect(&path, pkey, pvalue)?),
                     "types" => config.types = Some(parse_types(&path, pkey, pvalue)?),
+                    "unprune-dirs" => {
+                        let dirs = parse_string_list(&path, pkey, pvalue)?;
+                        for dir in &dirs {
+                            if !IGNORED_DIR_NAMES.contains(&dir.as_str()) {
+                                warnings.push(ConfigWarning(format!(
+                                    "`project.unprune-dirs` entry `{dir}` in {CONFIG_FILE_NAME} \
+                                     is not one of {IGNORED_DIR_NAMES:?} — it was never pruned, \
+                                     so this has no effect (check for a typo)"
+                                )));
+                            }
+                        }
+                        config.unprune_dirs = dirs;
+                    }
                     _ => warnings.push(ConfigWarning(format!(
                         "unknown key `project.{pkey}` in {CONFIG_FILE_NAME} (ignored)"
                     ))),
@@ -497,6 +536,29 @@ fn parse_lint_level(path: &str, key: &str, value: &Value) -> Result<LintLevel, C
             found: other.to_owned(),
         }),
     }
+}
+
+/// Parse a TOML array-of-strings value (e.g. `[project] unprune-dirs`).
+/// Every element must itself be a string — a non-string element (`[1, 2]`,
+/// `[true]`) is [`ConfigError::WrongType`], matching the treatment every
+/// other recognized-but-wrong-shaped value gets.
+fn parse_string_list(path: &str, key: &str, value: &Value) -> Result<Vec<String>, ConfigError> {
+    let arr = value.as_array().ok_or_else(|| ConfigError::WrongType {
+        path: path.to_owned(),
+        key: format!("project.{key}"),
+        found: value_type_name(value),
+    })?;
+    arr.iter()
+        .map(|item| {
+            item.as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| ConfigError::WrongType {
+                    path: path.to_owned(),
+                    key: format!("project.{key}"),
+                    found: value_type_name(item),
+                })
+        })
+        .collect()
 }
 
 fn value_type_name(value: &Value) -> &'static str {
@@ -892,6 +954,70 @@ mod tests {
         assert_eq!(config.dialect, Some(Dialect::Brink));
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].0.contains("project.future_key"));
+    }
+
+    // ── unprune-dirs (issue #1407) ──────────────────────────────────────
+
+    #[test]
+    fn parses_unprune_dirs() {
+        let (config, warnings) = parse_str(
+            r#"
+            [project]
+            unprune-dirs = ["node_modules", "target"]
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            config.unprune_dirs,
+            vec!["node_modules".to_string(), "target".to_string()]
+        );
+        assert!(!config.is_empty());
+        assert!(
+            warnings.is_empty(),
+            "both names are real IGNORED_DIR_NAMES entries, no warning expected: {warnings:?}"
+        );
+    }
+
+    /// An `unprune-dirs` entry that isn't one of the three actually-pruned
+    /// names is a no-op (there was nothing to un-prune) — likely a typo, so
+    /// it warns rather than silently doing nothing (house-rule "validate
+    /// user-supplied config keys").
+    #[test]
+    fn unprune_dirs_entry_outside_ignored_dir_names_warns() {
+        let (config, warnings) = parse_str(
+            r#"
+            [project]
+            unprune-dirs = ["node-modules"]
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.unprune_dirs, vec!["node-modules".to_string()]);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].0.contains("node-modules"));
+        assert!(warnings[0].0.contains("unprune-dirs"));
+    }
+
+    #[test]
+    fn unprune_dirs_wrong_element_type_is_an_error() {
+        let err = parse_str("[project]\nunprune-dirs = [1, 2]\n").unwrap_err();
+        assert!(matches!(err, ConfigError::WrongType { .. }));
+    }
+
+    #[test]
+    fn unprune_dirs_not_an_array_is_an_error() {
+        let err = parse_str("[project]\nunprune-dirs = \"node_modules\"\n").unwrap_err();
+        assert!(matches!(err, ConfigError::WrongType { .. }));
+    }
+
+    #[test]
+    fn empty_unprune_dirs_is_not_a_warning_and_leaves_config_empty_by_itself() {
+        let (config, warnings) = parse_str("[project]\nunprune-dirs = []\n").unwrap();
+        assert!(config.unprune_dirs.is_empty());
+        assert!(warnings.is_empty());
+        // An explicit empty array still counts as "set" for `is_empty()`'s
+        // purposes only if non-empty — an empty list is indistinguishable
+        // from unset here, matching `lints`' own empty-map convention.
+        assert!(config.is_empty());
     }
 
     #[test]
