@@ -8,9 +8,12 @@
 //!
 //! 1. [`FlowSleep`] does **not** park a flow — flows park at their own natural
 //!    yield points (turn end, `-> DONE`). The policy governs *waking*: a parked
-//!    flow under a policy is **skipped by Collect** ([`advance_batch`] filters
-//!    it out — [`FlowSleep::wants_collect`] is the predicate), so a parked flow
-//!    costs **zero** per turn.
+//!    flow under a policy is **skipped by Collect** in both drivers
+//!    ([`advance_batch`] and
+//!    [`advance_batch_parallel`](crate::batch::parallel::advance_batch_parallel)
+//!    each filter it out — [`FlowSleep::wants_collect`] is the shared
+//!    predicate), so a parked flow costs **zero** per turn no matter which
+//!    driver a host uses.
 //! 2. A dependency changing triggers **re-evaluation, not waking**: the
 //!    condition (a pure ink fn — purity is provable from its effect row) is
 //!    re-evaluated only when a dependency moved, and the flow wakes **only when

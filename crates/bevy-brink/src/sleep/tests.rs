@@ -2266,15 +2266,17 @@ fn a_direct_host_write_still_wakes_a_flow_with_a_precise_row() {
 /// shape), so this must hold for them.
 ///
 /// The sleeper here carries a [`BrinkProgram`] but **no** `BrinkFlow` —
-/// deliberately kept out of any driver's Collect. This is a pre-existing,
-/// separate gap outside this fix's scope: `advance_batch_parallel`'s Collect
-/// query never consults `FlowSleep` at all (unlike the serial driver's
-/// `wants_collect`-filtered Collect), so a real `BrinkFlow`-bearing dormant
-/// sleeper would be force-stepped every turn regardless of its wake state and
-/// prove nothing about the tick-ordering bug under test here. Isolating the
-/// probe this way exercises exactly the mechanism the finding names: does
-/// `mark_wake_dirty` flag a precise-row condition after an observer's
-/// out-of-band write during the parallel driver's own flush?
+/// deliberately kept out of any driver's Collect. `advance_batch_parallel`'s
+/// Collect now consults `FlowSleep` the same way the serial driver's
+/// `wants_collect`-filtered Collect does (#1633 / this fix), so that gap is
+/// closed; a real `BrinkFlow`-bearing dormant sleeper would no longer be
+/// force-stepped regardless of wake state. The `BrinkFlow`-less shape is kept
+/// here anyway, deliberately, to isolate the tick-ordering mechanism under
+/// test from any Collect behavior at all: this probe exercises exactly the
+/// mechanism the finding names — does `mark_wake_dirty` flag a precise-row
+/// condition after an observer's out-of-band write during the parallel
+/// driver's own flush? — independent of whether Collect would have picked
+/// the flow up.
 #[test]
 fn advance_batch_parallel_observer_write_during_flush_flags_a_precise_row_sleeper() {
     let mut app = make_test_app();

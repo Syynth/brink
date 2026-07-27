@@ -2,14 +2,19 @@
 //! (`docs/effects-spec.md` §12.4; BH-2, #914).
 //!
 //! The Collect / Step / Apply phase model, the per-flow buffered writes, and
-//! the flow-id-ordered Apply live here and are `unsafe`-free. Two drivers share
+//! the flow-id-ordered Apply live here and are `unsafe`-free. Two drivers use
 //! them: the serial [`advance_batch`] (this module) and the **parallel**
 //! [`advance_batch_parallel`](parallel::advance_batch_parallel) (BH-3, #927 —
-//! the sanctioned-unsafe [`parallel`] submodule). They are **byte-identical**
-//! by construction (the determinism law): the parallel driver only moves the
-//! Step *loop* onto [`ComputeTaskPool`](bevy_tasks::ComputeTaskPool); every
-//! flow still steps against a private frame-start clone, so thread interleaving
-//! cannot affect any outcome, and Apply flushes in flow-id order either way.
+//! the sanctioned-unsafe [`parallel`] submodule). Per-flow Step and the
+//! flow-id-ordered Apply are literally the same functions called from both
+//! drivers; each driver walks its own Collect query (one as a system param,
+//! one against a raw `&mut World`) and the two must be kept filter-identical
+//! by hand (#1633 is the standing example of what happens when that drifts).
+//! Together they make the drivers **byte-identical** by construction (the
+//! determinism law): the parallel driver only moves the Step *loop* onto
+//! [`ComputeTaskPool`](bevy_tasks::ComputeTaskPool); every flow still steps
+//! against a private frame-start clone, so thread interleaving cannot affect
+//! any outcome, and Apply flushes in flow-id order either way.
 //!
 //! ## What batch mode changes
 //!

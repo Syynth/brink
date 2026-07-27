@@ -106,9 +106,12 @@ struct Job<'w> {
 /// **Parallel** batch-mode flow driver (§12.2–§12.4; BH-3): identical
 /// semantics to [`advance_batch`](super::advance_batch), but the Step phase
 /// runs on [`ComputeTaskPool`] with each flow's `FlowInstance` accessed through
-/// an [`UnsafeWorldCell`] (bevy's own executor pattern). Collect, per-flow
-/// Step, and the flow-id-ordered Apply are shared verbatim with the serial
-/// driver, so the two are **byte-identical** (the determinism law).
+/// an [`UnsafeWorldCell`] (bevy's own executor pattern). Per-flow Step
+/// ([`super::step_one`]) and the flow-id-ordered Apply
+/// ([`super::apply_batch_writes`]) are literally the same functions shared
+/// with the serial driver; Collect is a hand-duplicated query kept
+/// filter-identical by hand (see the module docs above). Together these keep
+/// the two drivers **byte-identical** (the determinism law).
 ///
 /// This is an **exclusive system** (§12.5 "Level 2 v1": the exclusive-system
 /// driver with internal per-flow parallelism). Like
