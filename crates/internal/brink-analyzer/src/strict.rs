@@ -535,29 +535,37 @@ pub(crate) fn check_external_escapes(
     out
 }
 
-/// Whether **"the body"** of `knot` — for return-value purposes (`E065`/
-/// `E066` return-type escape, `E150` fall-through, `E067` inferred-void
-/// classification) — ever carries a value-returning `return <expr>`
-/// anywhere: its own block **plus every one of its stitches**
-/// (`docs/typed-mode-spec.md` §3 ruling, issue #1591). A stitch is
-/// reachable from its owning knot purely by fall-through when the knot's
-/// own body is empty — no explicit divert required — or by an explicit
-/// divert; either way it is a continuation of the *same definition's*
-/// execution, not a separate callable, so a value-returning `return`
-/// anywhere in a stitch counts exactly like one in the knot's own block.
+/// Whether **"the body"** of `knot` — for the `E150` fall-through check and
+/// `E067` inferred-void classification — ever carries a value-returning
+/// `return <expr>` anywhere: its own block **plus every one of its
+/// stitches** (`docs/typed-mode-spec.md` §3 ruling, issue #1591). A stitch
+/// is reachable from its owning knot purely by fall-through when the
+/// knot's own body is empty — no explicit divert required — or by an
+/// explicit divert; either way it is a continuation of the *same
+/// definition's* execution, not a separate callable, so a value-returning
+/// `return` anywhere in a stitch counts exactly like one in the knot's own
+/// block.
+///
+/// This reading does **not** extend to the `E065`/`E066` return-type
+/// escape check in [`check_def`]: that check reads `sig.return_ty`, which
+/// is inferred per-def and is never merged over stitches (only the
+/// has-value-return *fact* is merged here), so the escape branch keeps
+/// reading the def's own body (`body_types.has_value_return`) rather than
+/// this merged value — merging it there would make an inferred `Unknown`
+/// on the knot's own signature look "proven" by a sibling stitch's return,
+/// which is a different def with its own signature.
 ///
 /// `Stitch` has no nested stitches in the HIR (`hir::types::Stitch` carries
 /// no `stitches` field), so this is exactly one level of merge, never
 /// recursive.
 ///
 /// This is the **one** has-value-return-over-stitches reading shared by
-/// every consumer that used to carry its own copy of it: [`check_def`]'s
-/// return-value checks (called once per knot below) and
-/// [`collect_void_defs`]'s (`E067`) inferred-void classification. Issue
-/// #1551 fixed the E065/E066 + E150 checks' `is_function`-only gating;
-/// #1054/PR #1585 fixed `collect_void_defs`'s own copy of this exact
-/// stitch-merge read; #1591 is the E150 path's turn, done here by sharing
-/// instead of adding a fourth copy.
+/// [`check_def`]'s `E150` fall-through check (called once per knot below)
+/// and [`collect_void_defs`]'s (`E067`) inferred-void classification.
+/// Issue #1551 fixed the E065/E066 + E150 checks' `is_function`-only
+/// gating; #1054/PR #1585 fixed `collect_void_defs`'s own copy of this
+/// exact stitch-merge read; #1591 is the E150 path's turn, done here by
+/// sharing instead of adding a fourth copy.
 fn has_value_return_over_stitches(
     knot: &brink_ir::Knot,
     own_id: DefinitionId,
@@ -593,11 +601,14 @@ fn check_def(
     body: &Block,
     names: &annotations::TypeNames,
     inference: &InferenceResult,
-    // The has-value-return fact for the return-value checks below, read
-    // over "the body" as issue #1591 defines it (the caller's job — see
-    // [`has_value_return_over_stitches`] — since only the caller knows
+    // The has-value-return fact for the `E150` fall-through check below,
+    // read over "the body" as issue #1591 defines it (the caller's job —
+    // see [`has_value_return_over_stitches`] — since only the caller knows
     // whether `id` is a knot with stitches to merge in or a stitch, which
-    // is always a leaf).
+    // is always a leaf). The `E065`/`E066` return-type escape check does
+    // *not* use this merged fact — it reads `body_types.has_value_return`
+    // directly, since the signature it's checking is per-def and is never
+    // merged over stitches.
     body_has_value_return: bool,
     out: &mut Vec<brink_ir::Diagnostic>,
 ) {
@@ -646,12 +657,24 @@ fn check_def(
         // to any declared-return-value def): a body that never carries a
         // value-returning `return <expr>` — it either falls off the end or
         // only ever bare-`return`s — proves nothing ever flows out of it.
-        // `body_has_value_return` is exactly that proof (issue #1591: read
-        // over the def's own block *plus* its stitches, not just the def's
-        // own — see [`has_value_return_over_stitches`]) —
         // `sig.return_ty.is_unknown()` alone can't distinguish "never
         // returns a value" from "returns a value inference couldn't pin
         // down" (a genuine Unknown-escape, handled in the `else` below).
+        //
+        // The two branches below read *different* has-value-return facts
+        // on purpose. The `else if` (E150 fall-through) reads
+        // `body_has_value_return`, the merged fact passed in by the caller
+        // (issue #1591: over the def's own block *plus* its stitches — see
+        // [`has_value_return_over_stitches`]) — a value-returning `return`
+        // reached purely by fall-through into a stitch still proves the
+        // *flow* returns a value. The Unknown-escape branch immediately
+        // below reads `body_types.has_value_return` — this def's own body
+        // only — because it's checking `sig.return_ty`, which inference
+        // computes per-def and never merges over stitches; merging the
+        // fact there without merging the signature would let a sibling
+        // stitch's return "prove" this knot's own Unknown return type,
+        // which is a different def with a different (still-Unknown)
+        // signature.
         //
         // What "never returns a value" *means* differs by whether a return
         // value was promised:
@@ -677,7 +700,7 @@ fn check_def(
         // mismatch, not an escape) must not run the Unknown-escape check —
         // `void` reads as "no return type" for escape purposes on both
         // branches, so it also can't trip `E150` in the `else` below.
-        if body_has_value_return && !has_void_annotation {
+        if body_types.has_value_return && !has_void_annotation {
             let annotated = return_type.is_some_and(|rt| annotations::resolve(rt, names).is_some());
             emit_escape(
                 file,
@@ -1084,7 +1107,16 @@ fn collect_void_defs(
                 .return_type
                 .as_ref()
                 .is_some_and(|rt| matches!(rt, TypeExpr::Named { name, .. } if name == "void"));
+            // `has_value_return_over_stitches` reads `false` for a def with
+            // no `inference.bodies` entry at all, same as it reads `false`
+            // for a body that has one but never returns a value — the two
+            // are different facts ("never inferred" vs. "inferred, no
+            // value return") and only the latter should count as
+            // inferred-void (mirrors the pre-dedupe
+            // `inference.bodies.get(&id).is_some_and(|bt|
+            // !bt.has_value_return)` guard this replaced).
             let inferred_void = knot.return_type.is_none()
+                && inference.bodies.contains_key(&id)
                 && !has_value_return_over_stitches(knot, id, file, index, inference);
             if has_void_annotation || inferred_void {
                 out.insert(id);
@@ -3186,6 +3218,31 @@ mod tests {
             !diags.iter().any(|d| d.code == DiagnosticCode::E150),
             "{diags:?}"
         );
+    }
+
+    #[test]
+    fn unannotated_function_return_value_reached_by_fallthrough_stitch_is_not_e065() {
+        // Regression for a reviewer-caught escape-check false positive:
+        // an unannotated `fn` whose only value-returning `return` lives in
+        // a fall-through stitch must stay clean under strict, exactly like
+        // the identically-shaped own-body spelling (`=== function g() ===
+        // \n~ return 5\n`, clean on both this fix and main). Before the
+        // fix, `check_def`'s E065/E066 escape branch read the *merged*
+        // has-value-return fact (the def's own body plus its stitches, per
+        // `has_value_return_over_stitches`) instead of the def's own body
+        // alone — so it treated the stitch's `return 5` as proof the
+        // *knot's own* inferred return type was resolved, when
+        // `sig.return_ty` (the thing actually being escape-checked) is
+        // still `Unknown`: inference never merges a stitch's return type
+        // into its owning knot's signature, only the has-value-return
+        // *fact* is merged, and only for the E150/E067 consumers. That
+        // made this fall-through spelling a hard compile error while the
+        // own-body spelling compiled clean.
+        let (hir, index, res) = build("=== function f() ===\n= compute\n~ return 5\n");
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
+        assert!(diags.is_empty(), "{diags:?}");
     }
 
     #[test]
