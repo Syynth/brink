@@ -182,15 +182,16 @@ the source was silently invisible to every compile. Three things changed:
   pruned there) and is reported as a warning, the same "unknown key" channel
   described above, on the theory it's more likely a typo than a deliberate
   no-op.
-- **A diagnostic.** When discovery prunes a directory whose own immediate
-  contents include a `.brink` file — the shape of "an author probably meant
-  for this to be found" — it's reported as a warning naming the directory
-  and the `unprune-dirs` fix, rather than saying nothing. The check is
-  shallow (that directory's immediate children only, not a recursive
-  descent into it), so noticing a stray source file inside a huge pruned
-  `target/` never turns a cheap prune into an expensive walk of the very
-  tree being skipped. A directory named by `unprune-dirs` is, naturally,
-  never reported this way — it wasn't pruned in the first place.
+- **A diagnostic.** When discovery prunes a directory that, within a bounded
+  scan of itself, contains a `.brink` file — the shape of "an author
+  probably meant for this to be found" — it's reported as a warning naming
+  the directory and the `unprune-dirs` fix, rather than saying nothing. The
+  scan is bounded by depth and by a total-entry budget (not a full recursive
+  descent), deep enough to catch the `node_modules/<package>/lib.brink`
+  shape an npm-style dependency tree actually uses, but never turning a
+  cheap prune into an expensive walk of the very tree being skipped. A
+  directory named by `unprune-dirs` is, naturally, never reported this way —
+  it wasn't pruned in the first place.
 - **`.gitignore` is deliberately not consulted**, and that's a decision, not
   a gap. Discovery is a deterministic-compilation input: the same tree,
   compiled by anyone, must discover the same files. `.gitignore` resolution
@@ -201,9 +202,15 @@ the source was silently invisible to every compile. Three things changed:
   `brink.toml`, itself tracked, versioned source, so it resolves the same
   way on every clone.
 
-Both the escape hatch and the diagnostic are implemented once, in the shared
-recursive walk every native discovery traversal goes through — so they
-apply uniformly rather than needing to be re-added to each call site.
+Both the escape hatch and the diagnostic live once, as opt-in builders
+(`Walk::allow`, `Walk::warn_on_pruned_sources`) on the shared recursive walk
+every native discovery traversal goes through — so a *new* traversal never
+has to reimplement the pruning policy itself. But each builder is still
+opt-in per traversal: today only the `brink compile` / `brink ide` path
+(`brink-driver`'s `RealFs::list`) wires them up. `brink-lsp`'s own
+workspace-scan walk calls the shared `Walk` unadorned, so an LSP-open
+project honors neither `unprune-dirs` nor the silent-skip diagnostic yet —
+tracked as a follow-up to wire both into `brink-lsp`.
 
 ## Precedence: the file is the default, code wins
 
