@@ -511,11 +511,14 @@ pub enum DiagnosticCode {
     /// module. Fix: make the definition `#@public` and `IMPORT` it, or move
     /// the reference into the module (modules-spec §4/§7).
     E087,
-    /// A bare-form `IMPORT { name } FROM mod` names a definition that the
-    /// *declared* module `mod` does not publicly export. Only enforced
-    /// against declared modules — an import naming an unknown/undeclared
-    /// module is not itself flagged by this code, since this module's
-    /// export set isn't visible to the check (modules-spec §2/§7).
+    /// A bare-form `IMPORT { name } FROM mod` / native `use mod::name;`
+    /// whose trailing segment `name` names neither a definition `mod`
+    /// publicly exports **nor a declared submodule of `mod`** (dual-reading,
+    /// issue #1592 — a trailing segment that resolves to a module licenses
+    /// it instead, matching Rust's `use`; §13.2). Only enforced against
+    /// *declared* modules — an import naming an unknown/undeclared module is
+    /// not itself flagged by this code, since that module's export/submodule
+    /// set isn't visible to the check (modules-spec §2/§7).
     E088,
     /// An `IMPORT` brings the same local name into scope twice (a repeated
     /// bare import, or two imports whose names/aliases collide) — the

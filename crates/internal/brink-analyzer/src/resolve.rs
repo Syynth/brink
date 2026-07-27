@@ -19,19 +19,64 @@ use crate::manifest::local_definition_id;
 /// `ImportScope` collapsed every import to just its module name, so a bare
 /// `IMPORT { other } FROM mod` was (wrongly) treated as importing *all* of
 /// `mod`, silently disagreeing with `import_covers`'s name-precise gate.
+///
+/// # Dual-reading a bare item's trailing segment (issue #1592)
+///
+/// `use story::market::barter;` lowers to a bare import whose sole item is
+/// `barter` "from" module `story::market` (`lower_native::import`'s
+/// item-is-the-leaf reading) — but Rust's `use`, which charter §13.2
+/// commits to lifting verbatim, dual-reads that trailing segment: `barter`
+/// may be an *item* `story::market` exports, or it may itself name the
+/// **module** `story::market::barter` (a real submodule, licensing its own
+/// public exports bare — "its items become referenceable by bare name per
+/// existing import-coverage rules", per the #1592 ruling). Same shape for
+/// every entry in a nested list (`use a::{b, c};` dual-reads `b` and `c`
+/// independently, exactly as `use a::b;` dual-reads `b`).
+///
+/// This is a **per-file** query (`resolve(FileId)`'s incremental contract:
+/// "reads only the symbol index and this file's own manifest — never
+/// another file's content") and has no way to know here whether
+/// `module::name` is a real declared module elsewhere in the project — that
+/// whole-project view exists only in `modules::check`. So both readings are
+/// licensed **unconditionally**: the item pairing is inserted into `bare`
+/// exactly as before, and `module::name` is *also* inserted into
+/// `qualified` as a phantom qualified-module candidate. This is a pure
+/// no-op unless some file's symbol genuinely carries that exact module
+/// name — `classify` only ever matches a *candidate's own* `info.module`
+/// against this set, so an unreal phantom module simply never matches
+/// anything. **Precedence decision (issue #1592, "decide and document"):
+/// both readings apply — there is no exclusion.** They populate disjoint,
+/// non-conflicting sets (`bare` is name-precise; `qualified` is
+/// module-wide), so a name that resolves as *both* an item of `module` and
+/// a module in its own right gets both: the item is bare-importable under
+/// its own name, and the submodule's public exports also become
+/// bare-visible. This mirrors Rust's own per-namespace `use` semantics
+/// (a module and a value can share a name without conflict) without this
+/// codebase needing to model namespaces explicitly. `modules::check`'s
+/// `E088` is the check that validates *this* file's readings against real
+/// project-wide module/export data and diagnoses when a trailing segment
+/// resolves to **neither**.
 #[must_use]
 pub(crate) fn import_coverage_for_file(
     imports: &[Import],
-) -> (BTreeSet<&str>, BTreeSet<(&str, &str)>) {
+) -> (BTreeSet<String>, BTreeSet<(&str, &str)>) {
     let mut qualified = BTreeSet::new();
     let mut bare = BTreeSet::new();
     for import in imports {
         if import.bare {
             for item in &import.items {
                 bare.insert((import.module.as_str(), item.name.as_str()));
+                // Dual-reading (issue #1592, doc above): `item.name` might
+                // itself name a submodule of `import.module` rather than an
+                // item of it. `::`-joining is native's real module-path
+                // separator (`brink_db::modules::native_module_path`); ink's
+                // flat, unnested module names never contain `::`, so this
+                // phantom candidate can never coincide with a real ink
+                // module and this is a complete no-op for the ink dialect.
+                qualified.insert(format!("{}::{}", import.module, item.name));
             }
         } else {
-            qualified.insert(import.module.as_str());
+            qualified.insert(import.module.clone());
         }
     }
     (qualified, bare)
@@ -102,7 +147,7 @@ impl ImportScope {
         }
         Self {
             file_module,
-            qualified_modules: qualified.into_iter().map(str::to_string).collect(),
+            qualified_modules: qualified,
             bare_imports: bare
                 .into_iter()
                 .map(|(module, name)| (module.to_string(), name.to_string()))
