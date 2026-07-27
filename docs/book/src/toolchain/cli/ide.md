@@ -178,7 +178,10 @@ brink ide check -e main.ink --deny E014
 brink ide check -e main.ink -D warnings
 ```
 
-JSON: an array of `{ "severity", "code", "message", "location" }`.
+JSON: an array of `{ "severity", "code", "message", "location" }`. `severity`
+is one of `error` | `warning` | `info` | `hint` — a `[lints]` code
+down-leveled per [project-config.md#lint-severity](../project-config.md#lint-severity)
+renders at its advisory tier at this surface.
 
 ### `hover` — kind, signature, and docs
 
@@ -394,7 +397,10 @@ Locations are always `{ "path", "line" (1-based), "col" (1-based), "byte_start",
 | `move-file` / `refactor` (preview) | `{ diff, files: [path], introducedDiagnostics, safe }` |
 
 `introducedDiagnostics` is an array of `{ severity, code, message, location }`;
-`safe` is `true` when it is empty.
+`safe` is `true` when it is empty. `severity` is one of `error` | `warning` |
+`info` | `hint` — a `[lints]` code down-leveled per
+[project-config.md#lint-severity](../project-config.md#lint-severity) renders
+at its advisory tier at this surface.
 
 ---
 

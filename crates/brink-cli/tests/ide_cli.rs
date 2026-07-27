@@ -1384,6 +1384,46 @@ fn rename_introduced_diagnostics_respects_lints_info_level() {
     fs::remove_dir_all(&dir).ok();
 }
 
+/// Same as above for `[lints] E022 = "hint"` — the `hint` tier twin, so both
+/// new severity tiers are pinned on both the `check` and `introducedDiagnostics`
+/// surfaces this PR fixes.
+#[test]
+fn rename_introduced_diagnostics_respects_lints_hint_level() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-ide-cli-rename-introduced-hint-{}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("brink.toml"), "[lints]\nE022 = \"hint\"\n").unwrap();
+    fs::write(dir.join("story.ink"), FIXTURE).unwrap();
+
+    let out = brink()
+        .args(["ide", "rename", "intro", "--to", "shop", "--format", "json"])
+        .args(["-e"])
+        .arg(dir.join("story.ink"))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "preview mode always exits 0: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let diags = v["introducedDiagnostics"].as_array().unwrap();
+    assert_eq!(
+        diags.len(),
+        1,
+        "expected exactly one introduced diagnostic: {v}"
+    );
+    assert_eq!(diags[0]["code"], "E022");
+    assert_eq!(
+        diags[0]["severity"], "hint",
+        "`[lints] E022 = \"hint\"` must reach `introducedDiagnostics` as `\"hint\"`, not \
+         the pre-#1616 hardcoded `\"warning\"`: {v}"
+    );
+    fs::remove_dir_all(&dir).ok();
+}
+
 // ── #1383: --deny/-D warnings through `introduced_diagnostics` ────────
 //
 // The five tests above prove the override tier reaches `ide check`, which
