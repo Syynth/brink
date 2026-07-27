@@ -662,7 +662,10 @@ impl IdeSession {
     ///   diagnostics should route through `ProjectDb`'s own salsa-level
     ///   `analysis_query`/`per_file_diagnostics_query` surface at all. Forcing
     ///   `compile_project` onto a *different* producer now would prejudge that
-    ///   still-open call rather than wait for it.
+    ///   still-open call rather than wait for it. Still unresolved, but now
+    ///   measured: `docs/live-typing-diagnostics-divergence.md` inventories
+    ///   what the two surfaces actually disagree on (native files only, in
+    ///   both directions), pinned by `tests/live_typing_db_divergence.rs`.
     ///
     /// **Relationship to the #1306 decision-log entry**
     /// (`docs/decision-log.md`, "Compilation environment as a deterministic,
