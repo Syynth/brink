@@ -182,6 +182,19 @@ fn an_error_severity_code_is_not_suppressible() {
     assert!(hir.allow_scopes.is_empty(), "{:?}", hir.allow_scopes);
 }
 
+/// Issue #1617 moved `E095`'s *default* severity to `Hint` (previously
+/// `Warning`). Suppressibility is gated on "not `Error`", not "exactly
+/// `Warning`" (see `parse_allow`'s doc comment) — an `@[allow(E095)]` an
+/// author already had in source before #1617 landed must keep working
+/// exactly as before, not start tripping `E154` the moment the code's
+/// default tier moved underneath it.
+#[test]
+fn a_hint_default_code_is_still_suppressible() {
+    let scopes = clean_scopes("@[allow(E095)]\nflow main() {\n  Steel.\n}\n");
+    assert_eq!(scopes.len(), 1, "{scopes:?}");
+    assert_eq!(scopes[0].codes, [DiagnosticCode::E095]);
+}
+
 /// The B0.3 admission-validator family (`docs/hir-admission-contract.md`
 /// §4.2) is exempt by the issue's own wording. It needs no special case:
 /// every one of `E121`–`E128` is `Error`-severity, so the blanket rule above

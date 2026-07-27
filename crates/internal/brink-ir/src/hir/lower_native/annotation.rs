@@ -322,7 +322,12 @@ fn parse_allow(
             ok = false;
             continue;
         };
-        if code.severity() != Severity::Warning {
+        // Suppressible iff the code's *default* severity is below `Error`
+        // (issue #1617: this must not be a `== Warning` check — `E092`/
+        // `E095` now default to `Hint`, and an `@[allow(E092)]` an author
+        // already had in source must keep suppressing it, not suddenly
+        // trip E154 the moment the code's default tier moved).
+        if code.severity() == Severity::Error {
             diags.push(diag(file_id, name.text_range(), DiagnosticCode::E154));
             ok = false;
             continue;

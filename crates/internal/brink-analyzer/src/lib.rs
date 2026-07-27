@@ -208,7 +208,7 @@ impl AnalysisOptions {
     /// `[lints]` without validation. **This is the point that resolves a
     /// key against the real code set** (this crate owns `DiagnosticCode`)
     /// and decides which codes are actually overridable: a key that isn't a
-    /// real code, or names a code whose default severity isn't `Warning`
+    /// real code, or names a code whose default severity is `Error`
     /// (never reachable through [`effective_severity`]'s hard-error
     /// exemption anyway — see its doc comment), is *not* included in the
     /// replaced [`AnalysisOptions::lints`] and instead earns a returned
@@ -335,15 +335,17 @@ impl AnalysisOptions {
 /// a key against the real code set" channel, shared by
 /// [`AnalysisOptions::apply_project_config`]'s `[lints]` handling and
 /// [`AnalysisOptions::apply_lint_overrides`] — #1373): `Ok(())` if `code` is
-/// overridable (a recognized code whose *default* severity is `Warning`),
-/// otherwise the same-shaped [`ConfigWarning`] both call sites surface,
-/// keeping the wording byte-identical regardless of which tier the code came
-/// from.
+/// overridable (a recognized code whose *default* severity is not `Error` —
+/// `Warning`, or, as of issue #1617, `Info`/`Hint` too, mirroring
+/// [`strict::effective_severity`]'s own hard-error exemption, the only base
+/// severity `[lints]` is never consulted for), otherwise the same-shaped
+/// [`ConfigWarning`] both call sites surface, keeping the wording
+/// byte-identical regardless of which tier the code came from.
 fn validate_lint_code(code: &str) -> Result<(), ConfigWarning> {
     match DiagnosticCode::from_str_code(code) {
-        Some(parsed) if parsed.severity() == Severity::Warning => Ok(()),
+        Some(parsed) if parsed.severity() != Severity::Error => Ok(()),
         Some(_) => Err(ConfigWarning(format!(
-            "[lints] `{code}` is not overridable (its default severity is not `Warning`); ignored"
+            "[lints] `{code}` is not overridable (its default severity is `Error`); ignored"
         ))),
         None => Err(ConfigWarning(format!(
             "[lints] `{code}` is not a recognized diagnostic code; ignored"
@@ -1914,6 +1916,28 @@ EXTERNAL add_state(who)
         let warnings = options.apply_project_config(&config, false, false);
 
         assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn apply_project_config_accepts_a_hint_default_code_override() {
+        // Issue #1617: `E092` now defaults to `Hint`, not `Error` — it must
+        // stay in `validate_lint_code`'s overridable set (only an
+        // `Error`-default code is rejected). Before the #1617 fix,
+        // `validate_lint_code`'s `severity() == Warning` gate would have
+        // rejected this as "not overridable" the moment E092's default
+        // moved off `Warning`.
+        let mut options = AnalysisOptions::default();
+        assert_eq!(
+            brink_ir::DiagnosticCode::E092.severity(),
+            brink_ir::Severity::Hint
+        );
+        let mut config = ProjectConfig::default();
+        config.lints.insert("E092".to_owned(), LintLevel::Deny);
+
+        let warnings = options.apply_project_config(&config, false, false);
+
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(options.lints.overrides.get("E092"), Some(&LintLevel::Deny));
     }
 
     // ── AnalysisOptions::apply_lint_overrides: CLI/API tier (issue #1373) ──

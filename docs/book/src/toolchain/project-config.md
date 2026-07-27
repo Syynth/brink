@@ -47,7 +47,7 @@ reverts any codes a previous, non-empty `[lints]` table had set.
 
 Unknown keys — a stray top-level table, a key inside `[project]`, or a
 `[lints]` entry naming a code this version of `brink` doesn't recognize (or
-one whose default severity isn't `Warning`, so it isn't overridable at all —
+one whose default severity is `Error`, so it isn't overridable at all —
 see [Lint severity](#lint-severity) below) — are reported as
 **warnings**, never compile failures. This is a forward-compatibility
 guarantee: a `brink.toml` written against a newer schema still compiles with
@@ -75,8 +75,17 @@ understand.
   defeat the point of it). These map to the LSP client's `Information`/`Hint`
   `DiagnosticSeverity` — the tier IDE conventions use for advisory findings
   that would be too loud as a `Warning` squiggle (e.g. unused-symbol
-  dimming). No diagnostic code defaults to either tier; a project opts a
-  `Warning`-default code into one explicitly, per code.
+  dimming). A `Warning`-default code can be opted into either tier
+  explicitly, per code. Two codes default there already (issue #1617):
+  `E092` (a `#@public`/`#@private` override that restates the module
+  default) and `E095` (`#@was` naming the definition's own current name) —
+  both are directives whose emission site proves they have zero effect on
+  the compiled output regardless of whether the author acts on them, so
+  `Hint` is their *default*, not just an available override. `[lints]`
+  still applies to a `Hint`-default code the same way it does to a
+  `Warning`-default one — `warn`/`deny`/`allow`/`info`/`hint` all resolve
+  exactly as documented above, an unconfigured code just keeps resolving to
+  its own default tier instead of `Warning`.
 
 ### A source-level `@[allow]` wins
 
@@ -85,15 +94,16 @@ that diagnostic for the declaration's whole span, and it **beats this
 table** — including `E151 = "deny"` and `deny-warnings = true`. The
 annotation names one declaration and was written deliberately; `brink.toml`
 cannot be that specific. What the annotation cannot do is widen the
-suppressible set: it accepts only codes whose *default* severity is
-`Warning`, so no `[lints]` entry can make an error-tier code suppressible,
-and none can make a warning-tier code unsuppressible. Naming an unknown code
-(`E153`) or an error-tier one (`E154`) is itself a compile error — a
-suppression that silently does nothing is never allowed.
+suppressible set: it accepts any code whose *default* severity is not
+`Error` (`Warning`, or, as of issue #1617, `Info`/`Hint` too), so no
+`[lints]` entry can make an error-tier code suppressible, and none can make
+a non-error-tier code unsuppressible. Naming an unknown code (`E153`) or an
+error-tier one (`E154`) is itself a compile error — a suppression that
+silently does nothing is never allowed.
 
-Only codes whose *default* severity is `Warning` are overridable at all — a
-diagnostic that is a hard error by default (e.g. a parse error) can never be
-downgraded through `[lints]`; the table is never even consulted for it.
+Only codes whose *default* severity is not `Error` are overridable at all —
+a diagnostic that is a hard error by default (e.g. a parse error) can never
+be downgraded through `[lints]`; the table is never even consulted for it.
 `E063` (annotation-vs-inference mismatch) is a special case worth knowing:
 its own *base* severity is `types`-policy-dependent (`Error` under `types =
 strict`), so a `[lints]` entry for it is only ever consulted under `types =
@@ -271,8 +281,8 @@ one-off choice that the file must not silently overrule.
   `DiagnosticTag::UNNECESSARY`, which VS Code and similar clients render as
   faded/dimmed rather than underlined. This tag is orthogonal to
   severity — it rides alongside whatever severity the code is published at
-  (including the `Warning` default these two carry today), not another tier
-  like `Info`/`Hint` above.
+  (`E033`'s `Warning` default, or `E095`'s `Hint` default as of issue
+  #1617), not a substitute for either tier above.
 - **The wasm editor session** (`@brink-lang/web`'s `EditorSessionHandle`) has
   no filesystem of its own — but it is inherently virtual, so it discovers
   `brink.toml` the same way `brink compile`/`brink ide` do: by walking its

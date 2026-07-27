@@ -163,17 +163,32 @@ pub fn resolve_type_policy(dialect: crate::Dialect, explicit: Option<TypePolicy>
 ///    error by default can never be downgraded by `[lints]`. This is the
 ///    "conservative overridable set" #1160 asks for: rather than inventing
 ///    a policy for which `Error`-default codes are "safe" to relax, none of
-///    them are reachable through this table at all.
-/// 3. **`[lints]` per-code override**, for a `Warning`-base code only:
-///    `Deny` → `Error`; `Allow` → `Warning`, immune to step 4; `Info`/`Hint`
-///    (issue #1162) → `Severity::Info`/`Severity::Hint`, also immune to step
-///    4 — an author who deliberately down-leveled a code to an advisory tier
-///    does not want `deny-warnings` escalating it back past `Warning`, the
-///    same reasoning `Allow`'s immunity already rests on; `Warn`/unset →
-///    falls through to step 4 exactly like an unconfigured code.
-/// 4. **`deny-warnings`**: a `Warning`-base code with no override (or an
-///    explicit `Warn`) becomes `Error` if `lints.deny_warnings` is set —
-///    the `-D warnings` equivalent.
+///    them are reachable through this table at all. This is the *only*
+///    base severity that short-circuits — a `Warning`-, `Info`-, or
+///    `Hint`-base code all continue to step 3 (issue #1617: once a code's
+///    *default* could itself be `Info`/`Hint`, not just an override's
+///    target, this early return had to stop conflating "already below
+///    `Warning`" with "already `Error`", or a code like `E092`/`E095` would
+///    have silently become permanently unconfigurable the moment its
+///    default moved).
+/// 3. **`[lints]` per-code override**: `Deny` → `Error`; `Allow` → `Warning`,
+///    immune to step 4; `Info`/`Hint` (issue #1162) →
+///    `Severity::Info`/`Severity::Hint`, also immune to step 4 — an author
+///    who deliberately down-leveled a code to an advisory tier does not want
+///    `deny-warnings` escalating it back past `Warning`, the same reasoning
+///    `Allow`'s immunity already rests on; `Warn` → the code's *ordinary*
+///    `Warning` behavior regardless of base (an explicit `warn` on an
+///    `Info`/`Hint`-default code is read as "no, treat this one as a normal
+///    warning here"), subject to step 4; unset → the code's own `base`
+///    unchanged (an unconfigured `Info`/`Hint`-default code stays at that
+///    tier, not promoted to `Warning`), with step 4 only ever escalating a
+///    `Warning` base.
+/// 4. **`deny-warnings`**: a code whose resolved severity from step 3 is
+///    `Warning` becomes `Error` if `lints.deny_warnings` is set — the `-D
+///    warnings` equivalent. An unconfigured `Info`/`Hint`-*default* code is
+///    immune (same rationale as the explicit-override immunity above: it is
+///    deliberately quiet by construction, not by a project override,
+///    but the reason to leave it alone under `-D warnings` doesn't change).
 #[must_use]
 pub fn effective_severity(
     code: brink_ir::DiagnosticCode,
@@ -186,7 +201,7 @@ pub fn effective_severity(
         code.severity()
     };
 
-    if base != brink_ir::Severity::Warning {
+    if base == brink_ir::Severity::Error {
         return base;
     }
 
@@ -195,11 +210,18 @@ pub fn effective_severity(
         Some(LintLevel::Allow) => brink_ir::Severity::Warning,
         Some(LintLevel::Info) => brink_ir::Severity::Info,
         Some(LintLevel::Hint) => brink_ir::Severity::Hint,
-        Some(LintLevel::Warn) | None => {
+        Some(LintLevel::Warn) => {
             if lints.deny_warnings {
                 brink_ir::Severity::Error
             } else {
                 brink_ir::Severity::Warning
+            }
+        }
+        None => {
+            if base == brink_ir::Severity::Warning && lints.deny_warnings {
+                brink_ir::Severity::Error
+            } else {
+                base
             }
         }
     }
@@ -3020,6 +3042,97 @@ mod tests {
         assert_eq!(
             effective_severity(DiagnosticCode::E025, TypePolicy::Gradual, &lints),
             brink_ir::Severity::Error
+        );
+    }
+
+    // ── effective_severity: a Hint-*default* code (issue #1617) ─────
+
+    #[test]
+    fn hint_default_code_stays_hint_with_no_override() {
+        // E092 defaults to Hint (issue #1617) — an absent `[lints]` entry
+        // must resolve to the code's own base, not silently fall back to
+        // `Warning` the way the pre-#1617 `base != Warning` early return
+        // would have (it only ever saw `Warning` or `Error` bases).
+        assert_eq!(DiagnosticCode::E092.severity(), brink_ir::Severity::Hint);
+        assert_eq!(
+            effective_severity(
+                DiagnosticCode::E092,
+                TypePolicy::Gradual,
+                &LintPolicy::default()
+            ),
+            brink_ir::Severity::Hint
+        );
+    }
+
+    #[test]
+    fn hint_default_code_is_still_overridable_by_lints() {
+        // The bug #1617's implementation found: `effective_severity`'s old
+        // `if base != Warning { return base; }` short-circuit treated any
+        // non-`Warning` base (which used to mean only `Error`) as exempt
+        // from `[lints]` entirely. Once a code's *default* could itself be
+        // `Hint`, that same check would have made `E092 = "deny"` silently
+        // do nothing. Cover all five `[lints]` levels against a Hint-base
+        // code to prove the table is consulted in every direction.
+        let deny = LintPolicy {
+            overrides: BTreeMap::from([("E092".to_owned(), LintLevel::Deny)]),
+            deny_warnings: false,
+        };
+        assert_eq!(
+            effective_severity(DiagnosticCode::E092, TypePolicy::Gradual, &deny),
+            brink_ir::Severity::Error
+        );
+
+        let warn = LintPolicy {
+            overrides: BTreeMap::from([("E092".to_owned(), LintLevel::Warn)]),
+            deny_warnings: false,
+        };
+        assert_eq!(
+            effective_severity(DiagnosticCode::E092, TypePolicy::Gradual, &warn),
+            brink_ir::Severity::Warning,
+            "an explicit `warn` on a Hint-default code must resolve to the ordinary Warning tier"
+        );
+
+        let allow = LintPolicy {
+            overrides: BTreeMap::from([("E092".to_owned(), LintLevel::Allow)]),
+            deny_warnings: false,
+        };
+        assert_eq!(
+            effective_severity(DiagnosticCode::E092, TypePolicy::Gradual, &allow),
+            brink_ir::Severity::Warning
+        );
+
+        let info = LintPolicy {
+            overrides: BTreeMap::from([("E092".to_owned(), LintLevel::Info)]),
+            deny_warnings: false,
+        };
+        assert_eq!(
+            effective_severity(DiagnosticCode::E092, TypePolicy::Gradual, &info),
+            brink_ir::Severity::Info
+        );
+
+        let hint = LintPolicy {
+            overrides: BTreeMap::from([("E092".to_owned(), LintLevel::Hint)]),
+            deny_warnings: false,
+        };
+        assert_eq!(
+            effective_severity(DiagnosticCode::E092, TypePolicy::Gradual, &hint),
+            brink_ir::Severity::Hint
+        );
+    }
+
+    #[test]
+    fn deny_warnings_does_not_escalate_an_unconfigured_hint_default_code() {
+        // `-D warnings` only ever escalates a resolved `Warning`. A
+        // Hint-*default* code with no `[lints]` entry is quiet by
+        // construction, the same reasoning that already exempts an
+        // explicit `Allow`/`Info`/`Hint` override from escalation.
+        let lints = LintPolicy {
+            overrides: BTreeMap::new(),
+            deny_warnings: true,
+        };
+        assert_eq!(
+            effective_severity(DiagnosticCode::E092, TypePolicy::Gradual, &lints),
+            brink_ir::Severity::Hint
         );
     }
 
