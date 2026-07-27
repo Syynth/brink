@@ -83,5 +83,27 @@ Worktree isolation duplicates `node_modules` + build outputs per agent. The big 
 - **Reference tool/domain** to study for any mirroring feature (feeds Gate 0).
 - **How to run + drive the app** for the human verification gate.
 
+## The outer loop — ledger reconciliation (a different axis)
+
+Scope reconciliation is **forward-looking**: "what did *this batch's* building reveal?" It cannot see a decision that was ruled and never built, because no agent in the inner loop ever reads the decision log end to end. That is a **backward-looking** question on a slower clock, and it needs its own pass.
+
+There are **three sources of truth**, and each pairwise gap is a distinct failure mode:
+
+| gap | failure | how it hides |
+|---|---|---|
+| log ↔ issues | **ruled, never tracked** | no issue exists, so nothing surfaces it |
+| issues ↔ code | **built, still open** | discovered only by assigning it and finding nothing to do — burns a wave slot |
+| log ↔ code | **ruled, silently contradicted** | the worst: no issue, no failure, the code just quietly disagrees |
+
+**The highest-risk entries are the ones with an assumed home** — "folds into B0.8", "batch the bump with X", "rides the v6 bump". They *look* owned. When the named home closes without delivering, nobody notices. (Real case: the block-as-expression checker was ruled 2026-07-20 "folding into B0.8"; B0.8 closed without it and it had no owner for a week.)
+
+**Run it:** the `ruling-ledger-audit` workflow — extract forward commitments from the log (filtering out entries that merely *record* a change, which cannot orphan) → trace each against issues, PRs, and code → classify DELIVERED / TRACKED / **ORPHANED** / **CONTRADICTED** / SUPERSEDED / UNKNOWN → write `docs/ruling-ledger.md`. The ledger is a **derived view**; the decision log stays immutable (it records what was decided *when*; the ledger records what happened to it). Because the ledger is checked in, subsequent runs are incremental and **its diff is the report**.
+
+**Cadence — two triggers:**
+- **After every design sitting.** That is when rulings are minted and the ruling→issue gap is *created*; catching it there is cheapest.
+- **Every ~10 waves**, plus on track/epic closure, for drift.
+
+**⚠ This task shape invites fabrication** — it is a plausible-sounding audit over material nobody will re-check. Every DELIVERED or CONTRADICTED verdict must cite a merged PR or a `file:line` actually read, and **UNKNOWN must be a permitted verdict**. A confident wrong ledger is worse than an incomplete one, because the next agent trusts it.
+
 ## Run rhythm
 Propose the issue list + the first parallel batch and **wait for the human's OK** before spending tokens. Then: triage → refactor-for-parallelism → pump a batch → reconcile → human drives → file new findings → repeat. **At each milestone boundary, run scope reconciliation** and propose any new/expanded milestones for the human to approve before starting the next one. Report at every checkpoint; stop and surface design (and scope/milestone) decisions rather than guessing.
