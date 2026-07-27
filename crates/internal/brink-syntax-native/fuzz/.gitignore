@@ -1,6 +1,8 @@
 target/
 corpus/
-# Ignore fuzz artifacts, except regression-corpus inputs referenced by
-# tests/fuzz_repro.rs, which are intentionally committed. (Git can't
-# re-include a file under a wholly-excluded dir, so exclude contents.)
+# Exclude artifact contents rather than the directory itself, so a future
+# regression-corpus input referenced by tests/fuzz_repro.rs can be re-included
+# with a `!artifacts/<file>` line once the fuzzer produces its first finding.
+# (Git can't re-include a file under a wholly-excluded dir.) No artifacts are
+# committed yet.
 artifacts/*

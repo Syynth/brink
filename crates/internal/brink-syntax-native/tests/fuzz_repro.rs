@@ -2,11 +2,10 @@
 
 //! Regression-test harness for brink-syntax-native fuzzer findings.
 //!
-//! This module pins crash/timeout artifacts from libfuzzer, allowing discovered
-//! regressions to be caught by CI in the regression-test suite without needing
-//! to run the fuzzer itself. As the fuzzer finds new issues, they are added
-//! as test cases with their artifact data either inlined or included from
-//! ../fuzz/artifacts/.
+//! Once the fuzzer finds an issue, its crash/timeout artifact will be pinned
+//! here as a test case (data either inlined or included from
+//! ../fuzz/artifacts/), allowing the regression to be caught by CI without
+//! needing to run the fuzzer itself.
 //!
 //! **Status:** No fuzzer findings have been pinned yet. This harness is ready
 //! to accept the first finding from #1191's native fuzzer work.
