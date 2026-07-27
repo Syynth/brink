@@ -202,6 +202,30 @@ mod tests {
         }
     }
 
+    fn make_named_scope(id: &str, name: &str, lines: Vec<LineJson>) -> ScopeJson {
+        ScopeJson {
+            name: Some(name.to_string()),
+            id: id.to_string(),
+            lines,
+        }
+    }
+
+    /// A canonical scope id — the `0x{:016x}` spelling `export_lines` emits.
+    fn scope_id(raw: u64) -> String {
+        format_scope_id(brink_format::DefinitionId::new(
+            brink_format::DefinitionTag::Address,
+            raw,
+        ))
+    }
+
+    /// The `old -> new` edge `#@was` compiles to.
+    fn alias(old: u64, new: u64) -> AliasEntry {
+        AliasEntry {
+            old: brink_format::DefinitionId::new(brink_format::DefinitionTag::Address, old),
+            new: brink_format::DefinitionId::new(brink_format::DefinitionTag::Address, new),
+        }
+    }
+
     fn make_lines_json(scopes: Vec<ScopeJson>) -> LinesJson {
         LinesJson {
             version: 1,
@@ -359,5 +383,127 @@ mod tests {
         let result = regenerate_lines(&new_export, &existing, &[]);
         assert_eq!(result.version, 2);
         assert_eq!(result.source_checksum, "0xdeadbeef");
+    }
+
+    // ── #1442: rebinding a scope whose id moved under a declared rename ──
+
+    #[test]
+    fn alias_rebinds_a_renamed_scope() {
+        let existing = make_lines_json(vec![make_named_scope(
+            &scope_id(1),
+            "hub",
+            vec![make_line(0, "aaa", Some("Hola"), Some("audio/hi.wav"))],
+        )]);
+        let new_export = make_lines_json(vec![make_named_scope(
+            &scope_id(2),
+            "plaza",
+            vec![make_line(0, "aaa", Some("Hello"), None)],
+        )]);
+
+        // Without the edge the scope reads as brand new.
+        let blind = regenerate_lines(&new_export, &existing, &[]);
+        assert!(blind.scopes[0].lines[0].content.is_none());
+
+        let rebound = regenerate_lines(&new_export, &existing, &[alias(1, 2)]);
+        assert_eq!(
+            rebound.scopes[0].lines[0].content,
+            existing.scopes[0].lines[0].content
+        );
+        assert_eq!(
+            rebound.scopes[0].lines[0].audio,
+            Some("audio/hi.wav".to_string())
+        );
+        // Output is keyed on the *new* id, so the rebind is a one-time cost.
+        assert_eq!(rebound.scopes[0].id, scope_id(2));
+        assert_eq!(rebound.scopes[0].name.as_deref(), Some("plaza"));
+    }
+
+    /// Root content is an unnamed scope (`export.rs` resolves scope names
+    /// through an `Option`), so anonymous scopes reach the translation file
+    /// too. Rebinding is keyed on the id alone and never consults the name.
+    #[test]
+    fn anonymous_scope_rebinds_by_id_alone() {
+        let existing = make_lines_json(vec![make_scope(
+            &scope_id(1),
+            vec![make_line(0, "aaa", Some("Hola"), None)],
+        )]);
+        let new_export = make_lines_json(vec![make_scope(
+            &scope_id(2),
+            vec![make_line(0, "aaa", Some("Hello"), None)],
+        )]);
+
+        let rebound = regenerate_lines(&new_export, &existing, &[alias(1, 2)]);
+        assert_eq!(
+            rebound.scopes[0].lines[0].content,
+            existing.scopes[0].lines[0].content
+        );
+        assert!(rebound.scopes[0].name.is_none());
+    }
+
+    /// A direct id match must win: an already-regenerated file carries the
+    /// post-rename id, and a stale entry under the pre-rename id must not
+    /// override it.
+    #[test]
+    fn direct_match_wins_over_alias_rebind() {
+        let existing = make_lines_json(vec![
+            make_scope(&scope_id(1), vec![make_line(0, "aaa", Some("STALE"), None)]),
+            make_scope(
+                &scope_id(2),
+                vec![make_line(0, "aaa", Some("CURRENT"), None)],
+            ),
+        ]);
+        let new_export = make_lines_json(vec![make_scope(
+            &scope_id(2),
+            vec![make_line(0, "aaa", Some("Hello"), None)],
+        )]);
+
+        let result = regenerate_lines(&new_export, &existing, &[alias(1, 2)]);
+        assert_eq!(
+            result.scopes[0].lines[0].content,
+            existing.scopes[1].lines[0].content
+        );
+    }
+
+    /// Two new scopes cannot both claim the same old scope: the one that
+    /// matches directly keeps it, and the rebind finds nothing.
+    #[test]
+    fn a_rebind_never_steals_a_directly_matched_scope() {
+        let existing = make_lines_json(vec![make_scope(
+            &scope_id(1),
+            vec![make_line(0, "aaa", Some("Hola"), None)],
+        )]);
+        let new_export = make_lines_json(vec![
+            make_scope(&scope_id(1), vec![make_line(0, "aaa", Some("Hello"), None)]),
+            make_scope(&scope_id(2), vec![make_line(0, "aaa", Some("Hello"), None)]),
+        ]);
+
+        let result = regenerate_lines(&new_export, &existing, &[alias(1, 2)]);
+        assert_eq!(
+            result.scopes[0].lines[0].content,
+            existing.scopes[0].lines[0].content,
+            "the direct match keeps the translation"
+        );
+        assert!(
+            result.scopes[1].lines[0].content.is_none(),
+            "the rebind must not duplicate an already-claimed scope"
+        );
+    }
+
+    /// An XLIFF that predates the `brink:scope-id` extension falls back to
+    /// `<file id>`, a display name, which is not a parseable scope id. Such a
+    /// scope simply does not rebind — it must not panic or error.
+    #[test]
+    fn non_canonical_scope_id_does_not_participate_in_rebinding() {
+        let existing = make_lines_json(vec![make_scope(
+            "intro",
+            vec![make_line(0, "aaa", Some("Hola"), None)],
+        )]);
+        let new_export = make_lines_json(vec![make_scope(
+            "prologue",
+            vec![make_line(0, "aaa", Some("Hello"), None)],
+        )]);
+
+        let result = regenerate_lines(&new_export, &existing, &[alias(1, 2)]);
+        assert!(result.scopes[0].lines[0].content.is_none());
     }
 }

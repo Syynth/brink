@@ -244,3 +244,106 @@ fn end_to_end_localize_and_run() {
         "expected localized text containing '[ES]', got: {text}"
     );
 }
+
+// ── #1442: `#@was` rebinding at compile-locale time ──
+//
+// A stale locale file carries pre-rename scope ids. `compile_locale` reads
+// the base `.inkb`'s own `AliasTable` section and rebinds; the happy path is
+// covered end-to-end in `rename_identity.rs`, so these pin the two edges.
+
+/// A knot plus a stitch. Renaming the knot re-keys both, but `#@was` on the
+/// knot only mints an edge for the knot itself (#1671).
+const RENAME_BEFORE: &str = "\
+== hub ==
+Welcome to the hub.
+-> END
+
+= market
+Fish, mostly.
+-> END
+";
+
+const RENAME_AFTER: &str = "\
+== plaza ==
+#@was(hub)
+Welcome to the hub.
+-> END
+
+= market
+Fish, mostly.
+-> END
+";
+
+/// `#@was` is a brink-dialect extension (`E051` under strict ink).
+fn compile_brink(src: &str) -> brink_format::StoryData {
+    let options = brink_compiler::AnalysisOptions {
+        dialect: brink_compiler::Dialect::Brink,
+        ..brink_compiler::AnalysisOptions::default()
+    };
+    brink_compiler::compile_with_options("story.ink", |_p| Ok(src.to_owned()), options)
+        .unwrap()
+        .data
+}
+
+fn scope_id_of(story: &brink_format::StoryData, name: &str) -> String {
+    export_lines(story, 0)
+        .scopes
+        .into_iter()
+        .find(|s| s.name.as_deref() == Some(name))
+        .unwrap()
+        .id
+}
+
+/// The stitch is re-keyed by the rename but has no alias entry of its own,
+/// so it cannot rebind and must still report `ScopeNotInBase` — naming the
+/// id the translation file actually carried.
+#[test]
+fn a_scope_with_no_alias_edge_still_reports_scope_not_in_base() {
+    let before = compile_brink(RENAME_BEFORE);
+    let after = compile_brink(RENAME_AFTER);
+    let mut inkb = Vec::new();
+    write_inkb(&after, &mut inkb);
+
+    let old_stitch = scope_id_of(&before, "hub.market");
+    let mut stale = export_lines(&before, 0);
+    stale.scopes.retain(|s| s.id == old_stitch);
+    assert_eq!(stale.scopes.len(), 1);
+
+    let err = compile_locale(&inkb, &stale, "es").unwrap_err();
+    match err {
+        IntlError::ScopeNotInBase(id) => assert_eq!(id, old_stitch),
+        other => panic!("expected ScopeNotInBase, got {other:?}"),
+    }
+}
+
+/// A hand-merged file carrying *both* the pre- and post-rename ids for the
+/// same knot would silently drop one of them if the last write won. It is
+/// rejected instead.
+#[test]
+fn two_scopes_rebinding_onto_one_base_scope_are_rejected() {
+    let before = compile_brink(RENAME_BEFORE);
+    let after = compile_brink(RENAME_AFTER);
+    let mut inkb = Vec::new();
+    write_inkb(&after, &mut inkb);
+
+    let old_knot = scope_id_of(&before, "hub");
+    let new_knot = scope_id_of(&after, "plaza");
+
+    let mut merged = export_lines(&before, 0);
+    merged.scopes.retain(|s| s.id == old_knot);
+    let mut post_rename = merged.scopes[0].clone();
+    post_rename.id = new_knot.clone();
+    merged.scopes.push(post_rename);
+
+    let err = compile_locale(&inkb, &merged, "es").unwrap_err();
+    match err {
+        IntlError::AmbiguousScopeRebind {
+            scope_ids,
+            base_scope_id,
+        } => {
+            assert_eq!(scope_ids, format!("{old_knot}, {new_knot}"));
+            assert_eq!(base_scope_id, new_knot);
+        }
+        other => panic!("expected AmbiguousScopeRebind, got {other:?}"),
+    }
+}
