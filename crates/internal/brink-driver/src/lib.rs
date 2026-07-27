@@ -120,13 +120,12 @@ impl Driver {
             &file_refs,
             self.db.module_map(),
             self.db.analysis_options(),
-            // Unchanged from before `analyze_with_modules` gained this
-            // parameter (issue #1562): `file_ids` is an arbitrary caller-
-            // chosen subset, not necessarily anchored at a project root, so
-            // there is no single file to ask `ProjectDb::is_native` about
-            // here the way `brink-lsp`'s `analysis_loop` can for its own
-            // per-project-root call.
-            false,
+            // `is_native` (issue #1358): a whole-*set* flag, so it is
+            // answerable for an arbitrary subset even though no single file
+            // is its root — every file native, or the ink arm. Without it
+            // this path judged native source by the ink rules: spurious
+            // `E051`/`E064`, and the B0.9 strict-only gate (`E137`) missing.
+            !file_ids.is_empty() && file_ids.iter().all(|id| self.db.is_native(*id)),
         );
         result.diagnostics.extend(
             self.db
@@ -261,6 +260,85 @@ mod tests {
         // Sanity: the other file's flow is reachable too.
         assert!(result.index.by_name.contains_key("start"));
         let _ = main;
+    }
+
+    /// [`analyze_project`](Driver::analyze_project) must also judge native
+    /// source by the *native* rules (issue #1358): the flag is a whole-set
+    /// one, so an all-native `file_ids` selects the native arm even though
+    /// the subset has no root to anchor on. Under the ink arm this fixture's
+    /// `struct` declaration and construction literal are rejected as brink
+    /// extensions (`E051`) — asserted here as the non-vacuity guard, so this
+    /// test cannot pass with the wiring removed.
+    #[test]
+    fn analyze_project_judges_an_all_native_subset_by_the_native_rules() {
+        const SRC: &str = "\
+struct Guest {
+  name: string
+}
+
+fn make(): Guest {
+  return Guest { name: \"ada\" };
+}
+
+flow start() {
+  The market is busy.
+  -> END
+}
+";
+        let mut driver = Driver::new();
+        let native = driver.db_mut().update_file("main.brink", SRC.to_owned());
+
+        let result = driver.analyze_project(&[native]);
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E051),
+            "native source must not be judged by the ink-only T1b gate: {:?}",
+            result.diagnostics
+        );
+
+        // The guard: the same inputs through the ink arm do provoke `E051`.
+        let inputs = driver.db().analysis_inputs_for(&[native]);
+        let refs: Vec<_> = inputs.iter().map(|(id, hir, m)| (*id, hir, m)).collect();
+        let ink_arm = brink_analyzer::analyze_with_modules(
+            &refs,
+            driver.db().module_map(),
+            driver.db().analysis_options(),
+            false,
+        );
+        assert!(
+            ink_arm
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E051),
+            "guard: the fixture must provoke `E051` under the ink arm, or \
+             this test proves nothing"
+        );
+    }
+
+    /// A **mixed** subset stays on the ink arm — the flag is whole-set, and
+    /// applying the native arm would judge the ink file by rules it isn't
+    /// written under.
+    #[test]
+    fn analyze_project_falls_back_to_the_ink_rules_for_a_mixed_subset() {
+        let mut driver = Driver::new();
+        let native = driver
+            .db_mut()
+            .update_file("main.brink", "flow start() {\n  Hi.\n}\n".to_owned());
+        let ink = driver
+            .db_mut()
+            .update_file("legacy.ink", "~ x = a[0]\n".to_owned());
+
+        let result = driver.analyze_project(&[native, ink]);
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E051),
+            "a mixed subset must stay on the ink arm: {:?}",
+            result.diagnostics
+        );
     }
 
     /// [`analyze_project`](Driver::analyze_project) folds in the module map's

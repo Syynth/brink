@@ -359,6 +359,25 @@ impl ProjectDb {
         })
     }
 
+    /// Whether **every** file this db holds is a native (`.brink`) module —
+    /// `false` for an empty db or one holding even a single ink file.
+    ///
+    /// The whole-db view of [`crate::queries::project_is_all_native`], for a
+    /// caller that analyzes this db's entire file set as one unit off-db
+    /// (`IdeSession`, whose editor analysis runs
+    /// [`brink_analyzer::analyze_with_modules`] over
+    /// [`analysis_inputs`](Self::analysis_inputs)). That flag is
+    /// whole-project, so it is only correct when the set is *entirely*
+    /// native: a mixed set must analyze as ink, or an ink file would get the
+    /// native arm of passes that would then mis-judge it.
+    ///
+    /// Distinct from [`is_native`](Self::is_native), which answers for one
+    /// file and is what a per-project caller (`brink-lsp`'s `analysis_loop`,
+    /// which analyzes each project root separately) asks of its root.
+    pub fn is_all_native(&self) -> bool {
+        crate::queries::project_is_all_native(&self.salsa, self.project)
+    }
+
     /// The root of the single native project: the file whose **path** sorts
     /// first (`FileId` breaking a tie that paths cannot actually produce).
     /// `None` when the db holds no native file.

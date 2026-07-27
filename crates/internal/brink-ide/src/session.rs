@@ -33,6 +33,14 @@ pub struct IdeSnapshot {
     /// in here a collision a db-driven compile catches never reaches the
     /// editor.
     module_diagnostics: Vec<brink_ir::Diagnostic>,
+    /// Whether every file in this snapshot is native (`.brink`) source
+    /// (issue #1358), read off the db in [`IdeSession::snapshot`]. The
+    /// analyzer has no file paths, so this classification has to travel with
+    /// the inputs — without it the editor's off-db analysis runs the *ink*
+    /// arm over native source: the ink-only T1b dialect gate (`E051`) and
+    /// `types = strict` config error (`E064`) fire spuriously, and the B0.9
+    /// strict-only gate (`E137`) never fires at all.
+    is_native: bool,
     host_manifest: Option<HostManifest>,
     external_check: ExternalCheckSeverity,
     semantic_type_check: SemanticTypeDiagnosticSeverity,
@@ -67,10 +75,11 @@ impl IdeSnapshot {
             // this policy" failure mode #1160's scope note flagged.
             lints: self.lints.clone(),
         };
-        // Unchanged from before `analyze_with_modules` gained this parameter
-        // (issue #1562): this snapshot path is not one of the review
-        // finding's covered surfaces (`brink-lsp`'s `analysis_loop`).
-        let mut result = brink_analyzer::analyze_with_modules(&refs, &self.modules, &opts, false);
+        // The snapshot's own native classification (issue #1358) — see
+        // `is_native`'s field doc. `brink-lsp`'s `analysis_loop` passes the
+        // same thing per project root; this is the editor's equivalent.
+        let mut result =
+            brink_analyzer::analyze_with_modules(&refs, &self.modules, &opts, self.is_native);
         // The db-only half of the module map (issue #1553) — see
         // `module_diagnostics`. Scoped to this snapshot's own files so a
         // partial snapshot never reports a collision it doesn't contain.
@@ -375,6 +384,7 @@ impl IdeSession {
             inputs: self.db.analysis_inputs(),
             modules: self.db.module_map().clone(),
             module_diagnostics: self.db.module_map_diagnostics().to_vec(),
+            is_native: self.db.is_all_native(),
             host_manifest: self.host_manifest.clone(),
             external_check: self.external_check,
             semantic_type_check: self.semantic_type_check,
@@ -479,13 +489,15 @@ impl IdeSession {
             // is path-derived, so analyzing module-blind here would make the
             // gate's ids disagree with the returned db's.
             let modules = db.module_map().clone();
-            // Unchanged from before `analyze_with_modules` gained this
-            // parameter (issue #1562): out of the review finding's scope.
+            // The gate db's own native classification (issue #1358): the
+            // overlay keeps every file at its current path, so this matches
+            // the session — but reading it off the gate db keeps the flag
+            // and the file set that it describes from ever disagreeing.
             let mut result = brink_analyzer::analyze_with_modules(
                 &refs,
                 &modules,
                 &self.analysis_options(),
-                false,
+                db.is_all_native(),
             );
             // The map's db-only diagnostics half (#1553) — the whole point of
             // the gate is to report the diagnostics an edit *would* introduce,
@@ -532,13 +544,16 @@ impl IdeSession {
             // the map has to come from the projected db — the whole point of
             // the gate is to model identity after the move.
             let modules = db.module_map().clone();
-            // Unchanged from before `analyze_with_modules` gained this
-            // parameter (issue #1562): out of the review finding's scope.
+            // The projected db's own native classification (issue #1358).
+            // This path *moves* files to new keys, and `Language` is
+            // extension-derived, so — exactly as for the module map above —
+            // the flag has to come from the projected db to model the file
+            // set after the move.
             let mut result = brink_analyzer::analyze_with_modules(
                 &refs,
                 &modules,
                 &self.analysis_options(),
-                false,
+                db.is_all_native(),
             );
             // A move is exactly the edit that can *introduce* a stem
             // collision, so the gate has to see the map's diagnostics half
@@ -662,7 +677,10 @@ impl IdeSession {
     ///   diagnostics should route through `ProjectDb`'s own salsa-level
     ///   `analysis_query`/`per_file_diagnostics_query` surface at all. Forcing
     ///   `compile_project` onto a *different* producer now would prejudge that
-    ///   still-open call rather than wait for it.
+    ///   still-open call rather than wait for it. Still unresolved, but now
+    ///   measured: `docs/live-typing-diagnostics-divergence.md` inventories
+    ///   what the two surfaces actually disagree on (native files only, in
+    ///   both directions), pinned by `tests/live_typing_db_divergence.rs`.
     ///
     /// **Relationship to the #1306 decision-log entry**
     /// (`docs/decision-log.md`, "Compilation environment as a deterministic,
