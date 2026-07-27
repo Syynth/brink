@@ -173,7 +173,7 @@ With Springs, the output buffer never produces:
 
 #### Format changes
 
-- **`brink-format`**: New `Opcode::Spring`. `LineFlags` bitflags on `LineEntry` (already added: `STARTS_WITH_WS`, `ENDS_WITH_WS`, `ALL_WS`, `EMPTY`) may be simplified or removed once all content is guaranteed clean.
+- **`brink-format`**: New `Opcode::Spring`. `LineFlags` bitflags on `LineEntry` (`ALL_WS`, `EMPTY`) gate live whitespace-only/empty-content suppression. `STARTS_WITH_WS`/`ENDS_WITH_WS` were removed (see #1444's follow-up scope note): they never had a production consumer — the C# reference runtime doesn't do sub-token leading/trailing whitespace detection either — so there was nothing to simplify once Springs landed, only dead bits to drop.
 - **`brink-format`**: `OutputPart::Spring` added to the output buffer.
 - **Compiler** (`brink-codegen-inkb`): Codegen emits `Spring` between non-templateable emissions. Strips boundary whitespace from line content.
 - **Converter** (`brink-converter`): Same change — strip boundary whitespace, insert Springs between consecutive emissions.

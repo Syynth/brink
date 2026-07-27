@@ -1219,17 +1219,24 @@ fn roundtrip_line_entry_with_audio_ref() {
     );
 }
 
-// Regression for #1444: `LineFlags` is derived, not stored — `.inkb`
-// decoding recomputes it from the decoded `LineContent` via
-// `LineFlags::from_content` (see `decode_line_entry`). Round-trip templates
-// whose first/last part is an interpolation slot (or an empty leading
-// literal, which used to defeat the STARTS_WITH_WS check the same way a
-// future zero-width part kind would) through encode+decode and confirm the
-// recomputed flags match what a fresh `LineFlags::from_content` call gives —
-// i.e. the fix holds after going through the wire format, not just in
-// isolation.
+// `LineFlags` is derived, not stored — `.inkb` decoding recomputes it from
+// the decoded `LineContent` via `LineFlags::from_content` (see
+// `decode_line_entry`). Round-trip templates whose first/last part is an
+// interpolation slot (conservative — `ALL_WS` must stay unset) and an
+// all-whitespace-literal template (`ALL_WS` must be set) through
+// encode+decode and confirm the recomputed flags match what a fresh
+// `LineFlags::from_content` call gives, i.e. flags survive the wire format,
+// not just in-memory computation.
+//
+// `STARTS_WITH_WS`/`ENDS_WITH_WS` (previously exercised here as a #1444
+// regression) were removed: they had no production consumer in
+// `brink-runtime` (grep-confirmed — the only reader was `#[cfg(test)]`-only
+// `OutputBuffer::ends_in_whitespace`), and the C# reference runtime's
+// whitespace handling never operates at the sub-token leading/trailing
+// granularity those flags encoded either, so there was no conformance gap
+// behind the missing consumer.
 #[test]
-fn roundtrip_line_flags_for_template_with_edge_slot_and_empty_literal() {
+fn roundtrip_line_flags_for_template_content() {
     use brink_format::{
         ContainerDef, CountingFlags, DefinitionId, DefinitionTag, LineContent, LineEntry,
         LineFlags, LinePart, NameId, ScopeLineTable, StoryData,
@@ -1237,17 +1244,16 @@ fn roundtrip_line_flags_for_template_with_edge_slot_and_empty_literal() {
 
     let scope_id = DefinitionId::new(DefinitionTag::Address, 1);
 
-    // Leading Slot, trailing whitespace literal — conservative on the slot
-    // side, exact on the literal side.
-    let leading_slot = LineContent::Template(vec![
-        LinePart::Slot(0),
-        LinePart::Literal("trailing ".to_string()),
-    ]);
-    // Empty leading literal ahead of a whitespace-leading literal — must not
-    // defeat STARTS_WITH_WS (the bug this issue fixes).
-    let empty_leading_literal = LineContent::Template(vec![
-        LinePart::Literal(String::new()),
-        LinePart::Literal(" indented".to_string()),
+    // Leading Slot alongside a whitespace-only literal — conservative:
+    // the Slot's resolved content is unknown at compile time, so ALL_WS
+    // must stay unset even though the only inspectable literal is
+    // whitespace-only.
+    let leading_slot =
+        LineContent::Template(vec![LinePart::Slot(0), LinePart::Literal("  ".to_string())]);
+    // Every part is a whitespace-only literal — ALL_WS must be set.
+    let all_whitespace_template = LineContent::Template(vec![
+        LinePart::Literal("  ".to_string()),
+        LinePart::Literal("\t".to_string()),
     ]);
 
     let data = StoryData {
@@ -1274,8 +1280,8 @@ fn roundtrip_line_flags_for_template_with_edge_slot_and_empty_literal() {
                     source_location: None,
                 },
                 LineEntry {
-                    content: empty_leading_literal.clone(),
-                    flags: LineFlags::from_content(&empty_leading_literal),
+                    content: all_whitespace_template.clone(),
+                    flags: LineFlags::from_content(&all_whitespace_template),
                     source_hash: 2,
                     audio_ref: None,
                     slot_info: Vec::new(),
@@ -1308,23 +1314,10 @@ fn roundtrip_line_flags_for_template_with_edge_slot_and_empty_literal() {
     assert_eq!(data, recovered);
 
     let recovered_leading_slot = &recovered.line_tables[0].lines[0];
-    assert!(
-        !recovered_leading_slot
-            .flags
-            .contains(LineFlags::STARTS_WITH_WS)
-    );
-    assert!(
-        recovered_leading_slot
-            .flags
-            .contains(LineFlags::ENDS_WITH_WS)
-    );
+    assert!(!recovered_leading_slot.flags.contains(LineFlags::ALL_WS));
 
-    let recovered_empty_leading_literal = &recovered.line_tables[0].lines[1];
-    assert!(
-        recovered_empty_leading_literal
-            .flags
-            .contains(LineFlags::STARTS_WITH_WS)
-    );
+    let recovered_all_whitespace = &recovered.line_tables[0].lines[1];
+    assert!(recovered_all_whitespace.flags.contains(LineFlags::ALL_WS));
 }
 
 // Regression for #954, sibling of the `.inkt` reader's guard (#745): a
