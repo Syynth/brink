@@ -757,10 +757,12 @@ fn minimal_plugins_with_compute_threads(
 /// - **Phase columns.** Collect/Step/Apply are fused inside `advance_batch`;
 ///   the whole batch turn (including its command flush) lands in the `step`
 ///   column, the host auto-pick pass lands in `apply`, and `collect` reads 0.
-/// - **Per-flow snapshot clone.** Each stepped flow clones the frame-start
-///   world (BH-2's documented serial cost; §12.2 "borrow, don't copy" is the
-///   BH-3 optimization) — expect batch `step` to sit above serial `step` at
-///   every flow count until BH-3 lands.
+/// - **Borrowed frame-start reads.** Each stepped flow *borrows* the
+///   frame-start world and overlays its own writes (§12.2 "borrow, don't
+///   copy", #937) rather than cloning it, so batch `step` no longer carries a
+///   per-flow cost proportional to story-world size. The
+///   [`story_globals`](ScenarioConfig::story_globals) axis is what makes that
+///   difference visible; the checked-in baselines hold it at 0.
 pub fn run_batch_scenario(
     config: &ScenarioConfig,
 ) -> Result<ScenarioResult, Box<dyn std::error::Error>> {
