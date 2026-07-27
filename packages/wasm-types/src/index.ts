@@ -1413,8 +1413,14 @@ export interface ProjectSource {
    *
    * `brink.toml` is **not** implicitly included — this map becomes the
    * literal file set `compile_fragment` compiles over, and its `brink.toml`
-   * discovery walk only ever sees keys actually present here. Include a
-   * `"brink.toml"` key (with the project's real config text) if the
+   * discovery is a direct read probe of each `{ancestor}/brink.toml`
+   * candidate walking up from `entry`'s directory (an O(depth) ancestor
+   * probe — it never lists/enumerates this map). That means the key must
+   * sit at `entry`'s own directory or one of its ancestors within this map
+   * (e.g. entry `"src/main.ink"` with a key at `"src/chapters/brink.toml"`
+   * is never on that ancestor chain and is silently ignored); a bare root
+   * `"brink.toml"` key is always on the chain and always safe. Include the
+   * right `"brink.toml"` key (with the project's real config text) if the
    * fragment compile should honor the project's `dialect`/`types`/`[lints]`
    * policy; omit it and the fragment compiles under
    * `AnalysisOptions::default()` instead — never an error, just the

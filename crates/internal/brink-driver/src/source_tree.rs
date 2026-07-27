@@ -592,7 +592,7 @@ mod tests {
             "[project]\ndialect = \"brink\"\n"
         );
 
-        let found = brink_project_config::find_config_in_tree(&tree, "")
+        let found = brink_project_config::discover_from_entry_in_tree(&tree, "main.brink")
             .expect("probe read succeeds")
             .expect("the symlinked brink.toml is discovered");
         assert_eq!(found, "brink.toml");
@@ -622,7 +622,7 @@ mod tests {
         tree.read("brink.toml")
             .expect_err("reading a directory as a config file must error, not panic");
 
-        let found = brink_project_config::find_config_in_tree(&tree, "")
+        let found = brink_project_config::discover_from_entry_in_tree(&tree, "main.brink")
             .expect("the directory's read error is not propagated as an Err")
             .expect("a directory-shaped brink.toml is still reported as found");
         assert_eq!(found, "brink.toml");

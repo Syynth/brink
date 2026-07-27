@@ -395,6 +395,17 @@ mod compile_fragment_tests {
     // `entry`'s served content and recompiles), so a `.brink` native entry
     // should work identically; these two pin that it actually does, using
     // native `fn`/`flow` syntax rather than ink's `=== ===` knot syntax.
+    //
+    // Caveat: this pins `compile_fragment` itself, not a reachable native
+    // embedder path. `compile_fragment` is not re-exported from
+    // `@brink-lang/web`; its only caller is `packages/wasm/src/index.ts`'s
+    // `StoryRunnerHandle.compileFragment`, which hardcodes ink-only wraps
+    // (`=== function NAME() ===` / `=== NAME ===`) — appended to a `.brink`
+    // entry those are native parse errors. So `evaluate()`'s Tier-1 path
+    // cannot succeed for a native project today; these tests prove the
+    // primitive is dialect-agnostic, not that a native embedder can reach it
+    // (see issue #1387 follow-up for wiring `compileFragment` to native
+    // wrap syntax).
 
     #[test]
     fn native_entry_expression_wrap_resolves_against_project_globals() {
