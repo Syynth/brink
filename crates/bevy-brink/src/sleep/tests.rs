@@ -13,6 +13,7 @@ use bevy_ecs::resource::Resource;
 use bevy_ecs::system::{In, ResMut, RunSystemOnce as _};
 use brink_format::{CallAtom, CapabilityParam, DefinitionTag, DirectEffects, DispatchEntry};
 use brink_runtime::ContextAccess as _;
+use serde::{Deserialize, Serialize};
 
 use crate::advance_batch;
 use crate::asset::{BrinkStoryAsset, LineTablesAsset};
@@ -23,6 +24,7 @@ use crate::capability::{
 };
 use crate::event::{BrinkLineDelivered, BrinkStoryEnded, BrinkTurnDone};
 use crate::globals::BrinkGlobals;
+use crate::handle::{BrinkHandleAppExt as _, HandleKind};
 use crate::test_support::{add_story_assets, compile_test_story, make_test_app};
 use crate::{BrinkBatchReport, BrinkFlowRequest};
 
@@ -122,6 +124,29 @@ const GATED_STORY_WITH_EXTERNALS: &str = "VAR gate = 0\n\
      ~ temp a = touch_state(0)\n\
      ~ temp b = read_state(0)\n\
      ~ return 0\n";
+
+/// A minimal [`HandleKind`] whose only job is to make [`HandleKinds`]
+/// non-empty, so the plugin's `gc_on_turn_done` observer stops taking its
+/// `-> DONE` fast path and actually runs its per-turn sweep (issue #1632).
+/// No test ever mints a token of this kind — arming the observer is the
+/// whole point.
+struct SleepProbeKind;
+
+/// [`SleepProbeKind`]'s (never-persisted) save recipe.
+#[derive(Clone, Serialize, Deserialize)]
+struct SleepProbeSaveKey;
+
+impl HandleKind for SleepProbeKind {
+    const KIND: &'static str = "SleepProbe";
+    type Resource = ();
+    type SaveKey = SleepProbeSaveKey;
+    fn save_key(&self, _world: &EcsWorld, _res: &Self::Resource) -> Option<Self::SaveKey> {
+        Some(SleepProbeSaveKey)
+    }
+    fn resolve(&self, _world: &mut EcsWorld, _key: &Self::SaveKey) -> Option<Self::Resource> {
+        Some(())
+    }
+}
 
 fn build_app() -> App {
     let mut app = make_test_app();
@@ -2107,7 +2132,35 @@ fn a_peer_flows_attributed_write_still_wakes_a_sleeper() {
 /// its policy retired.
 #[test]
 fn a_bookkeeping_only_peer_turn_never_re_wakes_a_global_reading_policy() {
+    assert_no_spurious_re_wake_under_an_idle_peer(build_app());
+}
+
+/// The same contract as
+/// [`a_bookkeeping_only_peer_turn_never_re_wakes_a_global_reading_policy`],
+/// for a host that has registered a [`HandleKind`] (issue #1632).
+///
+/// Registering a kind arms the plugin's own `gc_on_turn_done` observer on
+/// `BrinkTurnDone<M>` — the event the batch drivers themselves emit — so it
+/// runs on every turn-completing frame. It takes `ResMut<BrinkGlobals<M>>`
+/// purely to build a read-only context view; before #1632 that `&mut` alone
+/// moved the resource's change tick past the one the driver's Apply
+/// recorded, so [`BrinkWorldDelta::drain`] reported `None`, the pass fell
+/// back to the coarse "anything may have changed" bit, and #1101's spurious
+/// re-wake came back for exactly this class of host. `build_app`/
+/// `make_test_app` never register a kind, which is why the sibling test
+/// above could not catch it.
+#[test]
+fn a_bookkeeping_only_peer_turn_never_re_wakes_a_global_reading_policy_with_a_handle_kind() {
     let mut app = build_app();
+    app.register_handle_kind::<(), SleepProbeKind>(SleepProbeKind);
+    assert_no_spurious_re_wake_under_an_idle_peer(app);
+}
+
+/// The shared body of the two tests above: a dormant `gate`-reading sleeper
+/// plus a peer that takes a bookkeeping-only turn every frame forever. One
+/// host write to `gate` must wake the sleeper exactly once; no peer turn may
+/// ever re-wake it.
+fn assert_no_spurious_re_wake_under_an_idle_peer(mut app: App) {
     let (program, tables, ctx, effect_rows) =
         crate::test_support::compile_test_story_with_effect_rows(IDLE_PEER_STORY);
     let gate_idx = program.global_index("gate").expect("gate global exists");

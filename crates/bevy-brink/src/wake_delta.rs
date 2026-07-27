@@ -46,6 +46,24 @@
 //! pre-#1146 coarse behavior (any change re-checks every parked policy).
 //! Over-report, never under-report — a missed wake is the engine-race bug
 //! class (`docs/decision-log.md` 2026-07-18).
+//!
+//! ## The plugin's own systems must not manufacture that signal
+//!
+//! The third fact is a plain tick comparison, so **any plugin-internal
+//! system that takes `&mut BrinkGlobals` for a read defeats it**: bevy moves
+//! the change tick on the `&mut` alone, and a write that never happened
+//! makes every window unattributable. Building a flow's context view needs
+//! `&mut` even when nothing is written, so this is easy to reintroduce. Both
+//! internal readers handle it explicitly, and a new one must too:
+//!
+//! - [`run_flow_sleep`](crate::run_flow_sleep)'s Evaluate phase snapshots
+//!   and restores the tick, then records the honest residue (an attributed
+//!   bookkeeping touch) into this ledger instead (issue #1146).
+//! - [`gc_on_turn_done`](crate::gc_on_turn_done) — armed on every
+//!   turn-completing frame once a host registers a
+//!   [`HandleKind`](crate::HandleKind) — uses `bypass_change_detection`
+//!   (issue #1632; before that fix, #1101's spurious re-wake was still live
+//!   for every handle-using host).
 
 use std::collections::BTreeSet;
 use std::marker::PhantomData;
