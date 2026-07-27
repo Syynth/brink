@@ -45,6 +45,7 @@
 )]
 
 use bevy_asset::{AssetId, Assets};
+use bevy_ecs::change_detection::DetectChanges;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::query::Access;
 use bevy_ecs::system::Commands;
@@ -56,7 +57,7 @@ use brink_runtime::{Program, World as BrinkWorld};
 
 use super::{
     BatchApplyResult, BrinkBatchReport, FlowBatchOutcome, aggregate_access, apply_batch_writes,
-    flush_deferred, homes_any_local, step_one,
+    flush_deferred, homes_any_local, record_wake_delta, step_one,
 };
 use crate::asset::{BrinkProgram, LineTablesAsset, ProgramAsset};
 use crate::bindings::BrinkBindings;
@@ -64,6 +65,7 @@ use crate::capability::CapabilityTable;
 use crate::flow::BrinkFlow;
 use crate::globals::{BrinkGlobals, BrinkWorldPolicy};
 use crate::line_tables::BrinkLocale;
+use crate::wake_delta::BrinkWorldDelta;
 
 /// One collected flow's fully-resolved batch inputs — owned so it survives the
 /// drop of the query/resource borrows that produced it (Collect runs on the
@@ -105,10 +107,20 @@ struct Job<'w> {
 /// app.add_systems(Update, advance_batch_parallel::<MyStory>);
 /// ```
 pub fn advance_batch_parallel<M: Send + Sync + 'static>(world: &mut World) {
-    // No shared world for `M` yet → nothing to drive.
-    if world.get_resource::<BrinkGlobals<M>>().is_none() {
-        return;
-    }
+    // No shared world for `M` yet → nothing to drive. Read the change bit in
+    // the same breath, *before* Apply takes `&mut` on it (which sets that bit
+    // itself): a writer this driver cannot account for having touched the
+    // shared world since this system last ran is what disqualifies the turn's
+    // changeset as a complete account for the wake pass (issue #1146 — see
+    // `crate::wake_delta`). `last_change_tick_scope` (bevy's exclusive-system
+    // wrapper) makes this the same "since my last run" window the serial
+    // driver's `ResMut` sees.
+    let globals_changed_on_entry = {
+        let Some(globals) = world.get_resource_ref::<BrinkGlobals<M>>() else {
+            return;
+        };
+        globals.is_changed()
+    };
 
     // ── Collect (main thread) ── resolve every pending flow's batch inputs
     // into owned `Prep`s, so the query/resource borrows can be dropped before
@@ -170,6 +182,28 @@ pub fn advance_batch_parallel<M: Send + Sync + 'static>(world: &mut World) {
         let mut globals = world.resource_mut::<BrinkGlobals<M>>();
         apply_batch_writes(outcomes, &mut globals.inner)
     };
+
+    // Sample the tick — and record it into the ledger — *before* flushing the
+    // deferred command triggers below. Unlike the serial driver (whose
+    // `Commands` system param genuinely defers to the schedule's next sync
+    // point), this is an exclusive system: `queue.apply(world)` runs any
+    // `commands.trigger(...)` observer synchronously, in this same call, and
+    // bevy 0.19 does not advance the world's change tick across
+    // `CommandQueue::apply`. An observer that writes `BrinkGlobals<M>` (the
+    // documented ink→engine pattern) would therefore land on the *same* tick
+    // as this Apply's own write, making it indistinguishable from "nothing
+    // happened after this Apply" to `BrinkWorldDelta::drain`'s tick
+    // comparison — a missed wake. Incrementing the world's change tick right
+    // after sampling guarantees any such flush-time write is strictly newer
+    // than the tick just recorded, so `drain` correctly sees it as foreign.
+    let globals_tick = world
+        .get_resource_ref::<BrinkGlobals<M>>()
+        .map(|globals| globals.last_changed());
+    world.increment_change_tick();
+    if let Some(mut ledger) = world.get_resource_mut::<BrinkWorldDelta<M>>() {
+        record_wake_delta(&mut ledger, &result, globals_changed_on_entry, globals_tick);
+    }
+
     let mut queue = CommandQueue::default();
     {
         let mut commands = Commands::new(&mut queue, world);

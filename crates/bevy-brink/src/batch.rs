@@ -82,6 +82,8 @@
 use std::marker::PhantomData;
 
 use bevy_asset::{AssetId, Assets};
+use bevy_ecs::change_detection::DetectChanges;
+use bevy_ecs::change_detection::Tick;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::query::Access;
 use bevy_ecs::resource::Resource;
@@ -100,6 +102,7 @@ use crate::flow::{BrinkFlow, emit_event};
 use crate::globals::{BrinkGlobals, BrinkWorldPolicy};
 use crate::line_tables::BrinkLocale;
 use crate::sleep::FlowSleep;
+use crate::wake_delta::{BrinkWorldDelta, WorldDelta};
 
 /// BH-3's sanctioned-unsafe parallel Step phase (`ComputeTaskPool` +
 /// `UnsafeWorldCell`). The workspace-wide `unsafe_code` deny stands
@@ -169,6 +172,24 @@ impl WriteBuffer {
     fn apply_to(&self, target: &mut World) {
         for w in &self.writes {
             w.apply(target);
+        }
+    }
+
+    /// Fold this flow's changeset into the turn's [`WorldDelta`] — the
+    /// row-directed wake-dirtying ledger (issue #1146). A global write is
+    /// recorded per **slot index** (so a condition reading another cell stays
+    /// inert); every other variant is bookkeeping, which effect rows model no
+    /// read of, so they collapse into the one coarse bit.
+    fn record_into(&self, delta: &mut WorldDelta) {
+        for w in &self.writes {
+            match *w {
+                WorldWrite::Global(idx, _) => delta.note_global(idx),
+                WorldWrite::VisitCount(..)
+                | WorldWrite::TurnCount(..)
+                | WorldWrite::TurnIndex(_)
+                | WorldWrite::RngSeed(_)
+                | WorldWrite::PreviousRandom(_) => delta.note_bookkeeping(),
+            }
         }
     }
 
@@ -490,6 +511,11 @@ pub(crate) struct BatchApplyResult {
     pub skipped_local: usize,
     pub writes_applied: usize,
     pub commands_applied: usize,
+    /// Which shared-world cells this turn's writes actually touched — the
+    /// row-directed wake-dirtying changeset (issue #1146), folded into the
+    /// [`BrinkWorldDelta`] ledger by whichever driver ran. Empty for a turn
+    /// that collected nothing (the `Default` "nothing happened" result).
+    pub changed: WorldDelta,
 }
 
 /// One flow's deferred Apply work — the command triggers and line events that
@@ -521,9 +547,11 @@ pub(crate) fn apply_batch_writes(
     let mut skipped_local = 0usize;
     let mut writes_applied = 0usize;
     let mut commands_applied = 0usize;
+    let mut changed = WorldDelta::default();
 
     for outcome in outcomes {
         outcome.writes.apply_to(world);
+        outcome.writes.record_into(&mut changed);
         writes_applied += outcome.writes.writes.len();
         commands_applied += outcome.triggers.len();
         if outcome.skipped_local {
@@ -559,9 +587,31 @@ pub(crate) fn apply_batch_writes(
             skipped_local,
             writes_applied,
             commands_applied,
+            changed,
         },
         deferred,
     )
+}
+
+/// Fold one batch turn's outcome into the marker's row-directed wake-dirtying
+/// ledger (issue #1146) — the tail both drivers share.
+///
+/// `globals_changed_on_entry` is [`BrinkGlobals`]'s change bit **as read
+/// before** this turn applied anything: `true` means somebody the ledger
+/// cannot see (a host system, the serial driver, a direct
+/// `BrinkGlobals::inner` write) touched the shared world since this driver
+/// last ran, so the window stops being a complete account and the wake pass
+/// must stay conservative. See `crate::wake_delta`'s attribution contract.
+pub(crate) fn record_wake_delta<M: Send + Sync + 'static>(
+    ledger: &mut BrinkWorldDelta<M>,
+    result: &BatchApplyResult,
+    globals_changed_on_entry: bool,
+    globals_tick: Option<Tick>,
+) {
+    if globals_changed_on_entry {
+        ledger.note_foreign();
+    }
+    ledger.record(&result.changed, globals_tick);
 }
 
 /// Apply pass 2 — queue every flow's buffered command triggers then its line
@@ -587,7 +637,7 @@ pub(crate) fn flush_deferred<M: Send + Sync + 'static>(
 /// marker `M` as one batch turn with frame-start read pinning, per-flow
 /// buffered writes/commands, and a deterministic flow-id-ordered Apply.
 ///
-/// **Not auto-registered.** Like [`advance_flows`](crate::advance_flows), a
+/// **Not auto-registered.** Like [`advance_flow`](crate::advance_flow), a
 /// host opts in explicitly when it wants the batched, frame-start-consistent
 /// stepping semantics for its flows:
 ///
@@ -617,11 +667,19 @@ pub fn advance_batch<M: Send + Sync + 'static>(
     bindings: Option<Res<BrinkBindings<M>>>,
     cap_table: Res<CapabilityTable<M>>,
     report: Option<ResMut<BrinkBatchReport<M>>>,
+    wake_delta: Option<ResMut<BrinkWorldDelta<M>>>,
     mut commands: Commands,
 ) {
     let Some(mut globals) = globals else {
         return;
     };
+
+    // Read *before* Apply takes `&mut globals.inner` (which sets the change
+    // bit itself): did anything this driver cannot account for write the
+    // shared world since this system last ran? That is what decides whether
+    // this turn's changeset is usable as a complete account by the wake pass
+    // (issue #1146 — see `crate::wake_delta`).
+    let globals_changed_on_entry = globals.is_changed();
 
     // Host-installed policy: if it homes any unit to `Local`, batch mode can't
     // route those flows (#925) — every flow under `M` shares this one policy.
@@ -708,6 +766,14 @@ pub fn advance_batch<M: Send + Sync + 'static>(
     };
     flush_deferred::<M>(deferred, &mut commands);
 
+    if let Some(mut ledger) = wake_delta {
+        record_wake_delta(
+            &mut ledger,
+            &result,
+            globals_changed_on_entry,
+            Some(globals.last_changed()),
+        );
+    }
     if let Some(mut report) = report {
         report.record(result);
     }
