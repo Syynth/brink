@@ -221,7 +221,7 @@ fn walk_block(file_id: FileId, block: &Block, diags: &mut Vec<Diagnostic>) {
             }
             Stmt::Sequence(s) => {
                 for branch in &s.branches {
-                    walk_block(file_id, branch, diags);
+                    walk_block(file_id, &branch.body, diags);
                 }
             }
             Stmt::Content(_)
@@ -506,6 +506,7 @@ mod tests {
 
     fn cond_branch(condition: Option<Expr>, stmts: Vec<Stmt>) -> brink_ir::hir::CondBranch {
         brink_ir::hir::CondBranch {
+            ptr: Provenance::synthetic(NodeClass::ConditionalBranch, synthetic_range()),
             condition,
             binding: None,
             body: Block::from_stmts(stmts),

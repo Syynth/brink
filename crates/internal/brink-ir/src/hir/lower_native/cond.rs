@@ -18,10 +18,10 @@ use brink_syntax_native::ast::{self, AstNode as _};
 use brink_syntax_native::{SyntaxNode, SyntaxToken};
 
 use crate::hir::FileId;
-use crate::provenance::NodeClass;
+use crate::provenance::{KindToken, NodeClass, Provenance};
 use crate::{
-    Block, CondBranch, CondKind, Conditional, Diagnostic, DiagnosticCode, Sequence, SequenceType,
-    Stmt,
+    Block, CondBranch, CondKind, Conditional, Diagnostic, DiagnosticCode, Sequence, SequenceBranch,
+    SequenceType, Stmt,
 };
 
 use super::body::{lower_block, lower_items};
@@ -88,18 +88,27 @@ pub(super) fn lower_conditional(
             diags,
         );
         let mut branches = Vec::new();
-        let if_body = cb.if_arm().map_or_else(Block::default, |arm| {
+        let if_arm = cb.if_arm();
+        // No dedicated arm node when the parser recovered from a missing
+        // `if_arm` — fall back to the whole conditional's own span.
+        let if_ptr = if_arm.as_ref().map_or(ptr, |arm| {
+            native_provenance(file_id, NodeClass::ConditionalBranch, arm.syntax())
+        });
+        let if_body = if_arm.map_or_else(Block::default, |arm| {
             lower_arm_items(file_id, arm.syntax(), diags)
         });
         branches.push(CondBranch {
+            ptr: if_ptr,
             condition: Some(condition),
             binding,
             body: if_body,
             container_id: None,
         });
         if let Some(eb) = cb.else_arm() {
+            let else_ptr = native_provenance(file_id, NodeClass::ConditionalBranch, eb.syntax());
             let else_body = lower_arm_items(file_id, eb.syntax(), diags);
             branches.push(CondBranch {
+                ptr: else_ptr,
                 // Scoped strictly to the success arm — the `else` never
                 // sees the binding.
                 condition: None,
@@ -181,6 +190,7 @@ fn lower_match_arm(
         Block::default()
     };
     CondBranch {
+        ptr: native_provenance(file_id, NodeClass::ConditionalBranch, arm.syntax()),
         condition,
         // `match` arms are patterns, not conditions — no binding position.
         binding: None,
@@ -234,23 +244,27 @@ pub(super) fn lower_alternation(
     let kind = sequence_type(ab);
     let entries: Vec<ast::Entry> = ab.entries().collect();
 
-    let branches: Vec<Block> = if entries.is_empty() {
+    let branches: Vec<SequenceBranch> = if entries.is_empty() {
         lower_inline_alternation_branches(file_id, ab.syntax(), diags, is_block_level)
     } else {
         entries
             .iter()
             .map(|e| {
+                let branch_ptr = native_provenance(file_id, NodeClass::SequenceBranch, e.syntax());
                 let items: Vec<SyntaxNode> = e.items().collect();
                 let mut stmts = lower_items(file_id, &items, 0, diags);
                 if is_block_level {
                     stmts.insert(0, Stmt::EndOfLine);
                 }
                 let tail = crate::tail_from_stmts(&stmts);
-                Block {
-                    label: None,
-                    stmts,
-                    container_id: None,
-                    tail,
+                SequenceBranch {
+                    ptr: branch_ptr,
+                    body: Block {
+                        label: None,
+                        stmts,
+                        container_id: None,
+                        tail,
+                    },
                 }
             })
             .collect()
@@ -287,7 +301,7 @@ fn lower_inline_alternation_branches(
     ab_syntax: &SyntaxNode,
     diags: &mut Vec<Diagnostic>,
     is_block_level: bool,
-) -> Vec<Block> {
+) -> Vec<SequenceBranch> {
     let mut branches = Vec::new();
     let mut current: Vec<SyntaxNode> = Vec::new();
     let mut past_marker = false;
@@ -301,6 +315,7 @@ fn lower_inline_alternation_branches(
             rowan::NodeOrToken::Token(t) if past_marker && t.kind() == N::PIPE => {
                 branches.push(finish_inline_branch(
                     file_id,
+                    ab_syntax,
                     &current,
                     diags,
                     is_block_level,
@@ -312,6 +327,7 @@ fn lower_inline_alternation_branches(
     }
     branches.push(finish_inline_branch(
         file_id,
+        ab_syntax,
         &current,
         diags,
         is_block_level,
@@ -319,12 +335,36 @@ fn lower_inline_alternation_branches(
     branches
 }
 
+/// This alternative's own span (issue #404): the union of its child nodes.
+/// No dedicated per-alternative wrapper node exists in the CST (this
+/// module's doc), so the union range does not correspond to any single
+/// live syntax node — the [`KindToken::SYNTHETIC_RAW`] marker keeps this
+/// honest (never resolves back to a node) while still carrying a real byte
+/// range for span-consuming tools (diagnostics, editor folding). An empty
+/// alternative (e.g. a bare trailing `|`) falls back to the whole
+/// alternation block's span.
+fn branch_span(file_id: FileId, items: &[SyntaxNode], ab_syntax: &SyntaxNode) -> Provenance {
+    let range = items
+        .iter()
+        .map(SyntaxNode::text_range)
+        .fold(None::<rowan::TextRange>, |acc, r| {
+            Some(acc.map_or(r, |a| a.cover(r)))
+        });
+    Provenance::new(
+        file_id,
+        range.unwrap_or_else(|| ab_syntax.text_range()),
+        KindToken::synthetic(NodeClass::SequenceBranch),
+    )
+}
+
 fn finish_inline_branch(
     file_id: FileId,
+    ab_syntax: &SyntaxNode,
     items: &[SyntaxNode],
     diags: &mut Vec<Diagnostic>,
     is_block_level: bool,
-) -> Block {
+) -> SequenceBranch {
+    let ptr = branch_span(file_id, items, ab_syntax);
     // Never trailing-EOL: a pipe-separated alternative is a fragment, not a
     // whole line (see `body::lower_content_run`'s doc). Only the leading
     // `EndOfLine` (added below, for the block-level case) marks a line
@@ -334,10 +374,13 @@ fn finish_inline_branch(
         stmts.insert(0, Stmt::EndOfLine);
     }
     let tail = crate::tail_from_stmts(&stmts);
-    Block {
-        label: None,
-        stmts,
-        container_id: None,
-        tail,
+    SequenceBranch {
+        ptr,
+        body: Block {
+            label: None,
+            stmts,
+            container_id: None,
+            tail,
+        },
     }
 }

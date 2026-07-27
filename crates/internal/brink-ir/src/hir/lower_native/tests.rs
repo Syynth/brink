@@ -579,7 +579,7 @@ fn block_level_alternation_gets_leading_end_of_line_per_branch() {
     assert_eq!(seq.branches.len(), 3);
     for branch in &seq.branches {
         assert!(
-            matches!(branch.stmts[0], Stmt::EndOfLine),
+            matches!(branch.body.stmts[0], Stmt::EndOfLine),
             "block-level sequence branch must lead with EndOfLine: {branch:?}"
         );
     }
@@ -604,6 +604,7 @@ fn inline_alternation_inside_content_does_not_get_leading_eol() {
     assert_eq!(inline.branches.len(), 2);
     assert!(
         inline.branches[0]
+            .body
             .stmts
             .iter()
             .all(|s| !matches!(s, Stmt::EndOfLine))

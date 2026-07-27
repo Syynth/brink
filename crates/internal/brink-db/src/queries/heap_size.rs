@@ -47,7 +47,7 @@ use brink_format::DefinitionId;
 use brink_ir::{
     Block, BlockStmt, Choice, ChoiceSet, CondBranch, Conditional, Content, ContentPart,
     DeclaredSymbol, Diagnostic, DivertPath, DivertTarget, ElseBranch, HirFile, IfStmt, Knot, Name,
-    Param, ParamInfo, Path, Sequence, Stmt, Tag, TempDecl, TypeExpr, VarDecl,
+    Param, ParamInfo, Path, Sequence, SequenceBranch, Stmt, Tag, TempDecl, TypeExpr, VarDecl,
 };
 #[cfg(test)]
 use brink_ir::{Expr, ForStmt, NodeClass, Provenance};
@@ -169,7 +169,11 @@ fn cond_branch_heap(b: &CondBranch) -> usize {
 }
 
 fn sequence_heap(s: &Sequence) -> usize {
-    vec_heap(&s.branches) + s.branches.iter().map(block_heap).sum::<usize>()
+    vec_heap(&s.branches) + s.branches.iter().map(seq_branch_heap).sum::<usize>()
+}
+
+fn seq_branch_heap(b: &SequenceBranch) -> usize {
+    block_heap(&b.body)
 }
 
 fn choice_heap(c: &Choice) -> usize {

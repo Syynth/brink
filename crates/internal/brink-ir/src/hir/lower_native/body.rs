@@ -358,7 +358,7 @@ pub(super) fn fixup_return_kind(is_function: bool, block: &mut Block) {
             }
             Stmt::Sequence(s) => {
                 for branch in &mut s.branches {
-                    fixup_return_kind(is_function, branch);
+                    fixup_return_kind(is_function, &mut branch.body);
                 }
             }
             Stmt::LogicBlock(lb) => fixup_return_kind_in_block_stmts(is_function, &mut lb.stmts),

@@ -236,12 +236,12 @@ fn stamp_stmt(
                     format!("{child_scope}.{branch_idx}")
                 };
                 let branch_id = alloc_address(&branch_path);
-                branch.container_id = Some(branch_id);
+                branch.body.container_id = Some(branch_id);
 
                 // Sequence branches get fresh counters.
                 let mut bc = 0;
                 let mut gc = 0;
-                for s in &mut branch.stmts {
+                for s in &mut branch.body.stmts {
                     stamp_stmt(
                         s,
                         &child_scope,

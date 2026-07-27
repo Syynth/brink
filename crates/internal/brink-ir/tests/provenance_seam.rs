@@ -156,42 +156,66 @@ fn body_statement_provenance_round_trips() {
 /// Collect the statement-level provenance a body walk can reach (enough
 /// breadth for the round-trip guarantee; the exhaustive per-field walk
 /// lives in the garbling test below).
+///
+/// Synthetic ptrs (`KindToken::SYNTHETIC_RAW`) are deliberately excluded:
+/// they carry a real range but no frontend claims their raw kind, so they
+/// never resolve by construction (`foreign_synthetic_and_stale_provenance_resolve_to_none`
+/// pins that contract) — e.g. the branchless-body implicit first arm's span
+/// (issue #404), which is the union of the body's non-else children rather
+/// than any single live node.
 fn collect_block(block: &hir::Block, out: &mut Vec<Provenance>) {
+    let push = |out: &mut Vec<Provenance>, p: Provenance| {
+        if p.kind.raw != KindToken::SYNTHETIC_RAW {
+            out.push(p);
+        }
+    };
     for stmt in &block.stmts {
         match stmt {
             hir::Stmt::Content(c) => {
-                out.extend(c.ptr);
+                if let Some(p) = c.ptr {
+                    push(out, p);
+                }
                 for tag in &c.tags {
-                    out.push(tag.ptr);
+                    push(out, tag.ptr);
                 }
             }
-            hir::Stmt::Divert(d) => out.extend(d.ptr),
-            hir::Stmt::TunnelCall(t) => out.push(t.ptr),
-            hir::Stmt::ThreadStart(t) => out.push(t.ptr),
-            hir::Stmt::TempDecl(t) => out.push(t.ptr),
-            hir::Stmt::Assignment(a) => out.push(a.ptr),
-            hir::Stmt::Return(r) => out.extend(r.ptr),
+            hir::Stmt::Divert(d) => {
+                if let Some(p) = d.ptr {
+                    push(out, p);
+                }
+            }
+            hir::Stmt::TunnelCall(t) => push(out, t.ptr),
+            hir::Stmt::ThreadStart(t) => push(out, t.ptr),
+            hir::Stmt::TempDecl(t) => push(out, t.ptr),
+            hir::Stmt::Assignment(a) => push(out, a.ptr),
+            hir::Stmt::Return(r) => {
+                if let Some(p) = r.ptr {
+                    push(out, p);
+                }
+            }
             hir::Stmt::ChoiceSet(cs) => {
                 for choice in &cs.choices {
-                    out.push(choice.ptr);
+                    push(out, choice.ptr);
                     collect_block(&choice.body, out);
                 }
                 collect_block(&cs.continuation, out);
             }
             hir::Stmt::LabeledBlock(b) => collect_block(b, out),
             hir::Stmt::Conditional(c) => {
-                out.push(c.ptr);
+                push(out, c.ptr);
                 for b in &c.branches {
+                    push(out, b.ptr);
                     collect_block(&b.body, out);
                 }
             }
             hir::Stmt::Sequence(s) => {
-                out.push(s.ptr);
+                push(out, s.ptr);
                 for b in &s.branches {
-                    collect_block(b, out);
+                    push(out, b.ptr);
+                    collect_block(&b.body, out);
                 }
             }
-            hir::Stmt::LogicBlock(lb) => out.push(lb.ptr),
+            hir::Stmt::LogicBlock(lb) => push(out, lb.ptr),
             hir::Stmt::ExprStmt(_) | hir::Stmt::EndOfLine | hir::Stmt::Await(_) => {}
         }
     }
@@ -466,6 +490,7 @@ fn garble_conditional(c: &mut hir::Conditional) {
         garble_expr(e);
     }
     for branch in &mut c.branches {
+        garble(&mut branch.ptr);
         if let Some(cond) = &mut branch.condition {
             garble_expr(cond);
         }
@@ -476,7 +501,8 @@ fn garble_conditional(c: &mut hir::Conditional) {
 fn garble_sequence(s: &mut hir::Sequence) {
     garble(&mut s.ptr);
     for branch in &mut s.branches {
-        garble_block(branch);
+        garble(&mut branch.ptr);
+        garble_block(&mut branch.body);
     }
 }
 

@@ -354,7 +354,7 @@ fn walk_conditional(cond: &Conditional, ctx: ContentContext, v: &mut impl HirVis
 
 fn walk_sequence(seq: &Sequence, ctx: ContentContext, v: &mut impl HirVisitor) {
     for branch in &seq.branches {
-        walk_block_ctx(branch, ctx, v);
+        walk_block_ctx(&branch.body, ctx, v);
     }
 }
 

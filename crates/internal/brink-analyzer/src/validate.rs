@@ -75,7 +75,7 @@ fn walk_block(block: &Block, dead_end: bool, file_id: FileId, diagnostics: &mut 
             Stmt::Sequence(seq) => {
                 let has_continuation = has_meaningful_stmts_after(&block.stmts, i);
                 for branch in &seq.branches {
-                    walk_block(branch, !has_continuation, file_id, diagnostics);
+                    walk_block(&branch.body, !has_continuation, file_id, diagnostics);
                 }
             }
             Stmt::LabeledBlock(inner) => {

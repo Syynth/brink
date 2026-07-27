@@ -2031,7 +2031,7 @@ impl InferPass<'_, '_> {
             Stmt::Conditional(c) => self.infer_conditional(c),
             Stmt::Sequence(s) => {
                 for branch in &s.branches {
-                    self.infer_block(branch);
+                    self.infer_block(&branch.body);
                 }
             }
             Stmt::ExprStmt(e) => {
@@ -2084,7 +2084,7 @@ impl InferPass<'_, '_> {
                 ContentPart::InlineConditional(c) => self.infer_conditional(c),
                 ContentPart::InlineSequence(s) => {
                     for branch in &s.branches {
-                        self.infer_block(branch);
+                        self.infer_block(&branch.body);
                     }
                 }
                 ContentPart::Text(_) | ContentPart::Glue | ContentPart::Spring => {}

@@ -188,7 +188,7 @@ fn walk_block(file_id: FileId, block: &Block, in_choice_body: bool, diags: &mut 
             }
             Stmt::Sequence(s) => {
                 for branch in &s.branches {
-                    walk_block(file_id, branch, false, diags);
+                    walk_block(file_id, &branch.body, false, diags);
                 }
             }
             Stmt::Content(_)

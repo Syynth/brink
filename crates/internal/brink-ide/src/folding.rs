@@ -558,8 +558,14 @@ fn line_natures(source: &str, ctx: &[LineContext], scaffold_lines: &[bool]) -> V
 /// the two never disagree about where a conditional's braces sit. Only
 /// these two lines per construct are scaffold — intermediate branch
 /// separators (`- else:`) are left at their existing (structural)
-/// classification, since the HIR gives no reliable per-branch source span
-/// to anchor them to.
+/// classification. The HIR now carries a real per-branch source span
+/// (`CondBranch`/`SequenceBranch::ptr`, issue #404), so the data this
+/// function would need to anchor separator lines individually exists; the
+/// remaining blocker is discriminating a bare separator line (safe to
+/// force into machinery scaffold) from ink's same-line-body form
+/// (`- 1: Foo.`, or the one-line-per-alternative sequence idiom), which a
+/// naive "mark every branch's separator line as scaffold" would
+/// misclassify as machinery. See issue #404's follow-up comment.
 fn mark_conditional_scaffold(
     projection: &Projection,
     source: &str,

@@ -108,7 +108,7 @@ fn check_stmt(stmt: &Stmt, file: FileId, ctx: &MistypeCtx<'_>, out: &mut Vec<Dia
         Stmt::LabeledBlock(b) => check_block(b, file, ctx, out),
         Stmt::Sequence(s) => {
             for branch in &s.branches {
-                check_block(branch, file, ctx, out);
+                check_block(&branch.body, file, ctx, out);
             }
         }
         Stmt::LogicBlock(lb) => {
@@ -140,7 +140,7 @@ fn check_content(c: &Content, file: FileId, ctx: &MistypeCtx<'_>, out: &mut Vec<
             ContentPart::InlineConditional(cond) => check_conditional(cond, file, ctx, out),
             ContentPart::InlineSequence(s) => {
                 for branch in &s.branches {
-                    check_block(branch, file, ctx, out);
+                    check_block(&branch.body, file, ctx, out);
                 }
             }
             ContentPart::Interpolation(_)

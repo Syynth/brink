@@ -377,7 +377,7 @@ fn collect_stmt<'a>(stmt: &'a Stmt, out: &mut Vec<AwaitSite<'a>>) {
         }
         Stmt::Sequence(s) => {
             for branch in &s.branches {
-                collect_block(branch, out);
+                collect_block(&branch.body, out);
             }
         }
         Stmt::Content(_)

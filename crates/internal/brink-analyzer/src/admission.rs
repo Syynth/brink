@@ -376,8 +376,8 @@ impl Collector {
     fn walk_sequence(&mut self, seq: &Sequence, prefix: &str) {
         self.check_range(seq.ptr.text_range());
         for branch in &seq.branches {
-            self.check_terminal_last(&branch.stmts); // E127
-            self.walk_block(branch, prefix);
+            self.check_terminal_last(&branch.body.stmts); // E127
+            self.walk_block(&branch.body, prefix);
         }
     }
 
@@ -1033,6 +1033,7 @@ mod tests {
             ptr: Provenance::synthetic(NodeClass::Conditional, synthetic_range),
             kind: CondKind::InitialCondition,
             branches: vec![CondBranch {
+                ptr: Provenance::synthetic(NodeClass::ConditionalBranch, synthetic_range),
                 condition: None,
                 binding: None,
                 body: branch_body,
@@ -1060,6 +1061,7 @@ mod tests {
             ptr: Provenance::synthetic(NodeClass::Conditional, synthetic_range),
             kind: CondKind::InitialCondition,
             branches: vec![CondBranch {
+                ptr: Provenance::synthetic(NodeClass::ConditionalBranch, synthetic_range),
                 condition: Some(Expr::Bool(true)),
                 binding: Some(brink_ir::hir::Name {
                     text: "n".to_string(),

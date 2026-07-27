@@ -255,7 +255,7 @@ fn walk_stmts(stmts: &[Stmt], push: &mut impl FnMut(&Name, &str)) {
             }
             Stmt::Sequence(s) => {
                 for branch in &s.branches {
-                    walk_stmts(&branch.stmts, push);
+                    walk_stmts(&branch.body.stmts, push);
                 }
             }
             Stmt::LogicBlock(lb) => walk_block_stmts(&lb.stmts, push),
@@ -281,7 +281,7 @@ fn walk_content(content: &Content, push: &mut impl FnMut(&Name, &str)) {
             }
             ContentPart::InlineSequence(s) => {
                 for branch in &s.branches {
-                    walk_stmts(&branch.stmts, push);
+                    walk_stmts(&branch.body.stmts, push);
                 }
             }
             ContentPart::Interpolation(_)
