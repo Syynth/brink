@@ -33,4 +33,14 @@ pub enum IntlError {
     MissingSelectData(String),
     #[error("invalid select JSON in originalData: {0}")]
     InvalidSelectJson(String),
+    #[error(
+        "slot index {slot} out of range for scope {scope_id} line {line_index}: \
+         base line has {slot_count} slot(s) (valid indices: 0..{slot_count})"
+    )]
+    SlotIndexOutOfRange {
+        scope_id: String,
+        line_index: u16,
+        slot: u8,
+        slot_count: usize,
+    },
 }

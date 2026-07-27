@@ -2,9 +2,12 @@
 
 use brink_intl::{
     ContentJson, LineJson, LinesJson, PartJson, ScopeJson, SelectJson, compile_locale_xliff,
-    generate_locale, lines_json_to_xliff, regenerate_locale, xliff_to_lines_json,
+    generate_locale, lines_json_to_xliff, migrate_unit_ids, regenerate_locale, xliff_to_lines_json,
 };
-use xliff2::{Content, InlineElement, State, SubUnit};
+use xliff2::{
+    Content, Document, ExtensionAttribute, Extensions, File, InlineElement, Segment, State,
+    SubUnit, Unit,
+};
 
 fn make_line(
     index: u16,
@@ -285,4 +288,167 @@ fn xliff_output_snapshot() {
     let doc = lines_json_to_xliff(&lines, "en", None);
     let xml = xliff2::write::to_string(&doc).unwrap();
     insta::assert_snapshot!(xml);
+}
+
+// ── `brink migrate-xliff`'s actual code path, full XML round trip ──
+//
+// Exercises exactly what `run_migrate_xliff` (crates/brink-cli/src/main.rs)
+// does: `xliff2::read::read_xliff` → `migrate_unit_ids` →
+// `xliff2::write::to_string`, starting from a legacy display-name-id
+// document serialized to XML text (not an in-memory `Document` built and
+// consumed without ever touching the parser/serializer).
+
+/// Build a legacy (pre-#1442) document exactly as `xliff2::write` would
+/// serialize one exported by old brink: unit id built from the display
+/// name, translated content, non-default state, and every `brink:*`
+/// extension attribute this crate emits (`scope-id`, `hash`, `audio`).
+fn make_legacy_document() -> Document {
+    Document {
+        version: "2.0".to_string(),
+        src_lang: "en".to_string(),
+        trg_lang: Some("es".to_string()),
+        files: vec![File {
+            id: "intro".to_string(),
+            original: None,
+            notes: Vec::new(),
+            skeleton: None,
+            groups: Vec::new(),
+            units: vec![Unit {
+                id: "intro:0".to_string(),
+                name: Some("intro".to_string()),
+                translate: None,
+                notes: Vec::new(),
+                sub_units: vec![SubUnit::Segment(Segment {
+                    id: None,
+                    state: Some(State::Translated),
+                    sub_state: None,
+                    source: Content {
+                        lang: None,
+                        elements: vec![InlineElement::Text("Hello".to_string())],
+                    },
+                    target: Some(Content {
+                        lang: None,
+                        elements: vec![InlineElement::Text("Hola".to_string())],
+                    }),
+                })],
+                original_data: None,
+                extensions: Extensions {
+                    elements: Vec::new(),
+                    attributes: vec![
+                        ExtensionAttribute {
+                            namespace: "brink".to_string(),
+                            local_name: "hash".to_string(),
+                            value: "aaa".to_string(),
+                        },
+                        ExtensionAttribute {
+                            namespace: "brink".to_string(),
+                            local_name: "audio".to_string(),
+                            value: "audio/hi.wav".to_string(),
+                        },
+                    ],
+                },
+            }],
+            extensions: Extensions {
+                elements: Vec::new(),
+                attributes: vec![ExtensionAttribute {
+                    namespace: "brink".to_string(),
+                    local_name: "scope-id".to_string(),
+                    value: "0x0100000000000001".to_string(),
+                }],
+            },
+        }],
+        extensions: Extensions {
+            elements: Vec::new(),
+            attributes: vec![
+                ExtensionAttribute {
+                    namespace: "xmlns".to_string(),
+                    local_name: "brink".to_string(),
+                    value: brink_intl::BRINK_NS.to_string(),
+                },
+                ExtensionAttribute {
+                    namespace: "brink".to_string(),
+                    local_name: "checksum".to_string(),
+                    value: "0xdeadbeef".to_string(),
+                },
+                ExtensionAttribute {
+                    namespace: "brink".to_string(),
+                    local_name: "version".to_string(),
+                    value: "1".to_string(),
+                },
+            ],
+        },
+    }
+}
+
+#[test]
+fn migrate_unit_ids_survives_full_xml_round_trip() {
+    let legacy_doc = make_legacy_document();
+
+    // Serialize to XML text, exactly as an archived `.xlf` on disk.
+    let legacy_xml = xliff2::write::to_string(&legacy_doc).unwrap();
+
+    // `run_migrate_xliff`'s actual path: parse XML → migrate → serialize XML.
+    let mut parsed = xliff2::read::read_xliff(&legacy_xml).unwrap();
+    let changed = migrate_unit_ids(&mut parsed).unwrap();
+    assert_eq!(changed, 1);
+    let migrated_xml = xliff2::write::to_string(&parsed).unwrap();
+
+    // Read the migrated XML back once more and assert everything the CLI
+    // promises survives the full round trip.
+    let result = xliff2::read::read_xliff(&migrated_xml).unwrap();
+    let unit = &result.files[0].units[0];
+
+    // Unit id was rewritten to the scope-id-based scheme.
+    assert_eq!(unit.id, "0x0100000000000001:0");
+    // `name` (display-name metadata) untouched.
+    assert_eq!(unit.name, Some("intro".to_string()));
+
+    // Segment state and target content untouched.
+    let SubUnit::Segment(seg) = &unit.sub_units[0] else {
+        unreachable!()
+    };
+    assert_eq!(seg.state, Some(State::Translated));
+    assert_eq!(
+        seg.target.as_ref().unwrap().elements,
+        vec![InlineElement::Text("Hola".to_string())]
+    );
+
+    // Every brink:* extension attribute on the unit untouched.
+    let ext = |local_name: &str| {
+        unit.extensions
+            .attributes
+            .iter()
+            .find(|a| a.namespace == "brink" && a.local_name == local_name)
+            .map(|a| a.value.as_str())
+    };
+    assert_eq!(ext("hash"), Some("aaa"));
+    assert_eq!(ext("audio"), Some("audio/hi.wav"));
+
+    // The file's brink:scope-id extension untouched.
+    let file_ext = |local_name: &str| {
+        result.files[0]
+            .extensions
+            .attributes
+            .iter()
+            .find(|a| a.namespace == "brink" && a.local_name == local_name)
+            .map(|a| a.value.as_str())
+    };
+    assert_eq!(file_ext("scope-id"), Some("0x0100000000000001"));
+
+    // Document-level brink:* extensions (checksum, version) untouched.
+    let doc_ext = |local_name: &str| {
+        result
+            .extensions
+            .attributes
+            .iter()
+            .find(|a| a.namespace == "brink" && a.local_name == local_name)
+            .map(|a| a.value.as_str())
+    };
+    assert_eq!(doc_ext("checksum"), Some("0xdeadbeef"));
+    assert_eq!(doc_ext("version"), Some("1"));
+
+    // Idempotent: migrating the already-migrated document is a no-op.
+    let mut already_migrated = result;
+    let second_pass = migrate_unit_ids(&mut already_migrated).unwrap();
+    assert_eq!(second_pass, 0);
 }

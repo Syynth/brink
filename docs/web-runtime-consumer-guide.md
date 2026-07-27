@@ -134,6 +134,14 @@ version**, then re-evaluations are cheap. You don't manage the cache; just pass
 `projectSource` and re-call `evaluate` as state changes. (Omit it and a Tier-1
 source returns a diagnostic rather than running.)
 
+`files` does **not** implicitly include `brink.toml` — discovery is a direct
+read probe walking up from `entry`'s directory, so a `"brink.toml"` key only
+takes effect when it sits at `entry`'s own directory or an ancestor of it (a
+bare root `"brink.toml"` key is always on that chain). Include it if the
+fragment compile should honor the project's `dialect`/`types`/`[lints]`
+policy; omit it and the fragment compiles under unconfigured defaults instead
+— never an error.
+
 ## `speculate()` — the composable verbs
 
 When `evaluate`'s single-call shape doesn't fit (you want to drive line-by-line,
