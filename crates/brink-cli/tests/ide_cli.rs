@@ -1255,3 +1255,110 @@ fn ide_check_allow_flag_wins_over_a_conflicting_brink_toml_deny() {
     );
     fs::remove_dir_all(&dir).ok();
 }
+
+// ── #1383: --deny/-D warnings through `introduced_diagnostics` ────────
+//
+// The four tests above prove the override tier reaches `ide check`, which
+// reads `Project::load`'s baseline `AnalysisOptions` directly. `rename`/
+// `move-file`/`refactor *` instead gate on `Project::introduced_diagnostics`
+// — a *separate* re-analysis driver (`project.rs`'s own `Driver::new()` +
+// `resolve_analysis_options`) that #1417 wired to the same
+// `self.lint_overrides`, but nothing proved that wiring end to end: a `check`
+// pass tells us nothing about whether the safety-gate re-analysis honors the
+// override. Reuses `FIXTURE`'s existing `intro`/`shop` knots: renaming
+// `intro` to `shop` collides with the real `shop` knot, introducing
+// `E022` ("duplicate knot definition"), `Warning` by default (see
+// `brink-analyzer::resolve::duplicate_knot_emits_warning`) — so the
+// promotion from `"warning"` to `"error"` in `introducedDiagnostics[0]`
+// is a genuine severity flip, not just presence, per the #1383 house rule
+// (assert the observable severity a consumer receives).
+
+#[test]
+fn rename_no_lint_flags_introduced_collision_stays_a_warning() {
+    let f = fixture("rn-collide-severity-default");
+    let out = brink()
+        .args(["ide", "rename", "intro", "--to", "shop", "--format", "json"])
+        .args(["-e"])
+        .arg(&f)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "preview mode always exits 0 regardless of introduced diagnostics: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let diags = v["introducedDiagnostics"].as_array().unwrap();
+    assert_eq!(
+        diags.len(),
+        1,
+        "expected exactly one introduced diagnostic: {v}"
+    );
+    assert_eq!(diags[0]["code"], "E022");
+    assert_eq!(
+        diags[0]["severity"], "warning",
+        "with no --deny/-D warnings flag, the introduced E022 collision must stay a \
+         Warning: {v}"
+    );
+    fs::remove_file(&f).ok();
+}
+
+#[test]
+fn rename_deny_e022_flag_promotes_the_introduced_collision_to_an_error() {
+    let f = fixture("rn-collide-severity-deny");
+    let out = brink()
+        .args(["ide", "rename", "intro", "--to", "shop", "--format", "json"])
+        .args(["--deny", "E022"])
+        .args(["-e"])
+        .arg(&f)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "preview mode always exits 0: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let diags = v["introducedDiagnostics"].as_array().unwrap();
+    assert_eq!(
+        diags.len(),
+        1,
+        "expected exactly one introduced diagnostic: {v}"
+    );
+    assert_eq!(
+        diags[0]["severity"], "error",
+        "--deny E022 must promote the diagnostic `introduced_diagnostics` reports for this \
+         rename to Error: {v}"
+    );
+    fs::remove_file(&f).ok();
+}
+
+#[test]
+fn rename_short_deny_warnings_flag_promotes_the_introduced_collision_to_an_error() {
+    let f = fixture("rn-collide-severity-dw");
+    let out = brink()
+        .args(["ide", "rename", "intro", "--to", "shop", "--format", "json"])
+        .args(["-D", "warnings"])
+        .args(["-e"])
+        .arg(&f)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "preview mode always exits 0: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let diags = v["introducedDiagnostics"].as_array().unwrap();
+    assert_eq!(
+        diags.len(),
+        1,
+        "expected exactly one introduced diagnostic: {v}"
+    );
+    assert_eq!(
+        diags[0]["severity"], "error",
+        "-D warnings must promote every Warning `introduced_diagnostics` reports (including \
+         the E022 collision) to Error: {v}"
+    );
+    fs::remove_file(&f).ok();
+}
