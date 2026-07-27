@@ -4,6 +4,16 @@
 //! locale overlay compilation.
 
 pub mod align;
+
+/// XLIFF 2.0 Metadata module support.
+///
+/// Reserved for future use: per decision-log-2026-07-26, localized display names
+/// (roster-level data such as speaker and channel names) will be stored via XLIFF v2
+/// metadata groups rather than per-line translation. See docs/decision-log.md entry
+/// "XLIFF v1 excludes element data" for the rationale.
+pub mod metadata {
+    pub use xliff2::modules::metadata::*;
+}
 mod compile;
 mod error;
 mod export;
