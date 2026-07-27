@@ -1065,7 +1065,7 @@ fn use_decl_bare_group_with_no_leading_path_is_a_parse_error() {
     // `USE_DECL` — that was explicitly rejected, since a bare group has no
     // module to select from. So this exact top-level shape still never
     // satisfies the `USE_DECL` lookahead (`at_use_decl` only accepts
-    // `IDENT`/`::` after `use`): `use` is bumped bare as leftover prose,
+    // `IDENT` after `use`, issue #1285): `use` is bumped bare as leftover prose,
     // and the `{a, b}` that follows misparses as bare-brace `{expr}`
     // interpolation (`a, b` isn't a valid expression, hence the errors
     // below). This is no longer an open TODO — it's the ruled, intentional
@@ -1106,35 +1106,28 @@ fn use_tree_list_nested_bare_group_with_no_leading_path_errors() {
 }
 
 #[test]
-fn use_tree_malformed_missing_path_recovers() {
-    // `use ::foo;` — `at_use_decl`'s weaker two-token check (Finding #5's
-    // documented residual risk: `nth(1)` is `COLON_COLON`, which passes the
-    // guard) commits to `USE_DECL`, but `use_tree` itself sees no `IDENT`
-    // first and records "a `use` needs a module path" without consuming
-    // anything. `USE_DECL` still closes (with just `use` as its content);
-    // the leftover `::foo;` falls through to the next `item()` call as
-    // ordinary prose on its own line — it is NOT silently absorbed into
-    // the `USE_DECL`.
+fn use_tree_malformed_missing_path_does_not_commit() {
+    // `use ::foo;` — after tightening the lookahead (issue #1285), `at_use_decl`
+    // only commits to `USE_DECL` if `nth(1)` is `IDENT`, not `COLON_COLON`. So
+    // `use ::foo;` does not commit to a (malformed) `USE_DECL` node — but a
+    // typo'd import silently becoming player-facing prose would be its own
+    // bug, so `block::item` emits a targeted diagnostic before falling
+    // through (review finding on #1285's original PR).
     let src = "use ::foo;\n";
     let p = assert_lossless(src);
     assert!(
         p.errors()
             .iter()
-            .any(|e| e.message.contains("needs a module path")),
-        "expected the use-tree error, got: {:?}",
+            .any(|e| e.message.contains("a `use` path cannot start with `::`")),
+        "expected the leading-`::` diagnostic, got: {:?}",
         p.errors()
     );
-    let decl: ast::UseDecl = find_child(&p.syntax()).expect("use decl still recovers");
+    // No USE_DECL node is created at all.
+    let decl: Option<ast::UseDecl> = find_child(&p.syntax());
     assert!(
-        decl.tree().is_some(),
-        "USE_TREE node still exists, just empty"
+        decl.is_none(),
+        "no USE_DECL should be created for `use ::foo;`"
     );
-    assert_eq!(
-        decl.tree().expect("checked above").path_segments().count(),
-        0
-    );
-    // The leftover `::foo;` is not swallowed into USE_DECL's text.
-    assert!(!decl.syntax().text().to_string().contains("foo"));
 }
 
 #[test]
@@ -1629,8 +1622,9 @@ mod prop {
     fn arb_use_decl() -> impl Strategy<Value = String> {
         // Always keep a real leading `IDENT` path segment before any
         // nested group — `at_use_decl`'s lookahead only recognizes
-        // `IDENT`/`COLON_COLON` as the second token (never a bare
-        // `L_BRACE`; see `use_decl_bare_group_with_no_leading_path_is_a_parse_error`
+        // `IDENT` as the second token (issue #1285 tightened this to
+        // reject a leading `COLON_COLON` too; never a bare `L_BRACE`; see
+        // `use_decl_bare_group_with_no_leading_path_is_a_parse_error`
         // above), so a bare-group `use { … };` with no leading path is not
         // a reachable `USE_DECL` shape and must not be generated here.
         (arb_ident(), prop::collection::vec(arb_use_tree(), 1..=3)).prop_map(|(prefix, trees)| {
