@@ -243,9 +243,16 @@ fn fully_parked_batch_scenario_completes_zero_turns() {
 /// `serial-driver.csv` baseline row) is scalar-only, so its `Some(0)` is
 /// indistinguishable from an unwired counter; this is the one config that
 /// can tell the difference.
+///
+/// Un-quarantined by #1167: the flake was never a real "no COW copy
+/// happened" case — `model::BENCH_COUNTERS_LOCK` now serializes every
+/// `measure_app` call's `reset()`→drive→`snapshot()` section, so a
+/// concurrently-running sibling test (several others in this file also
+/// drive `bench_counters` through the same process-global atomics) can no
+/// longer zero this test's counters between accumulation and read. See
+/// that lock's doc comment in `benches/scenario/model.rs` for the full RCA.
 #[cfg(feature = "bench-counters")]
 #[test]
-#[ignore = "flaky: #1167 — COW-copy counter reads 0; quarantined 2026-07-19, un-ignore with the fix"]
 fn collection_global_axis_forwards_nonzero_counters() {
     let config = ScenarioConfig {
         collection_global: true,
