@@ -198,6 +198,52 @@ fn stitch_was_aliases_the_qualified_pre_rename_id() {
     assert_eq!(scope_id_of(&before, "hub"), scope_id_of(&after, "hub"));
 }
 
+/// **3b.** …and a stitch-level `#@was` is *not* an author-side workaround for
+/// the transitive gap in test 2. Declaring `#@was(market)` on an unrenamed
+/// stitch inside a renamed knot qualifies the old name with the knot's
+/// **current** name (`plaza.market`), which is the stitch's new id — a no-op
+/// self-edge, not the `hub.market -> plaza.market` bridge an author would
+/// expect. So #1671 is the only path for a renamed subtree; there is nothing
+/// to hand-write today.
+#[test]
+fn stitch_was_cannot_bridge_an_ancestor_rename() {
+    const KNOT_RENAMED_STITCH_REDECLARED: &str = "\
+== plaza ==
+#@was(hub)
+Welcome to the hub.
+-> END
+
+= market
+#@was(market)
+Fish, mostly.
+-> END
+";
+    let before = compile_story(BEFORE);
+    let after = compile_story(KNOT_RENAMED_STITCH_REDECLARED);
+
+    let aliases: Vec<(String, String)> = after
+        .alias_table
+        .iter()
+        .map(|a| (hex(a.old), hex(a.new)))
+        .collect();
+
+    assert_eq!(
+        aliases,
+        vec![(
+            scope_id_of(&before, "hub"),
+            scope_id_of(&after, "plaza")
+        )],
+        "the knot's edge is the only one minted; the stitch's `#@was` \
+         resolves to its own new id and contributes nothing"
+    );
+    assert!(
+        !aliases
+            .iter()
+            .any(|(old, _)| old == &scope_id_of(&before, "hub.market")),
+        "no edge names the stitch's pre-rename id; aliases={aliases:?}"
+    );
+}
+
 /// A fully translated locale file for `story`: every exported line gets the
 /// same marker translation, so "did this survive" is a simple count.
 fn fully_translated(story: &brink_format::StoryData) -> LinesJson {
