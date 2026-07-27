@@ -152,6 +152,36 @@ fn error_invalid_scope_id() {
 }
 
 #[test]
+fn error_slot_index_out_of_range() {
+    let inkb = make_base_inkb();
+    let mut lines = export_from_inkb(&inkb);
+
+    // I001's line has plain content — zero slots in the base. A translated
+    // template referencing slot 0 has no corresponding base slot.
+    assert!(!lines.scopes.is_empty());
+    assert!(!lines.scopes[0].lines.is_empty());
+    lines.scopes[0].lines[0].content = Some(ContentJson::Template {
+        template: vec![
+            brink_intl::PartJson::Literal("Hola ".to_string()),
+            brink_intl::PartJson::Slot { slot: 0 },
+        ],
+    });
+
+    let err = compile_locale(&inkb, &lines, "es").unwrap_err();
+    assert!(
+        matches!(
+            err,
+            IntlError::SlotIndexOutOfRange {
+                slot: 0,
+                slot_count: 0,
+                ..
+            }
+        ),
+        "expected SlotIndexOutOfRange{{slot: 0, slot_count: 0, ..}}, got {err:?}"
+    );
+}
+
+#[test]
 fn error_empty_locale_tag() {
     let inkb = make_base_inkb();
     let lines = export_from_inkb(&inkb);
