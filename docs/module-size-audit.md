@@ -31,8 +31,13 @@ large test suite. Ranking by total lines puts `strict.rs` (63% tests) above
 `vm.rs` (2% tests), which is exactly backwards as a refactoring priority.
 
 So: **measure production lines, not total lines.** Count a file's
-`#[cfg(test)]` blocks by brace depth and subtract them, and treat files under
-`tests/` as test files.
+`#[cfg(test)]` blocks by brace depth and subtract them, and treat any file
+under a directory literally named `tests` — at **any depth**, not only a
+crate's top-level `tests/` directory — as a test file. This also excludes
+in-`src/` test modules such as
+`brink-syntax-native/src/parser/tests/declaration.rs` (1,793 lines). Under
+this rule, of the 43 files at ≥1,500 total lines, 12 have ≥1,500 lines of
+production code.
 
 Then, for each file that survives that filter, ask three questions in order:
 
@@ -69,6 +74,7 @@ Production lines, excluding inline `#[cfg(test)]` blocks.
 | `brink-ir/src/lir/lower/mod.rs` | 2,063 | 2,063 | **split** — two self-contained post-passes |
 | `brink-ir/src/lir/lower/expr.rs` | 2,156 | 2,061 | **inherent** — one expression lowering |
 | `brink-ir/src/hir/diagnostics.rs` | 1,749 | 1,749 | **inherent** — new; see exemplar below |
+| `brink-ir/src/hir/types.rs` | 1,433 | 1,433 | **split (done, this PR)** — was 3,170 prod, the largest production file in the repo before this PR; now below the ≥1,500 threshold, see exemplar below |
 | `brink-analyzer/src/strict.rs` | 4,111 | 1,539 | **test-extraction** — 63% inline tests |
 | `brink-ir/src/hir/emit_native.rs` | 1,517 | 1,513 | **inherent** — one emitter |
 | `brink-test-harness/src/bin/compile_bench.rs` | 1,506 | 1,506 | **inherent** — a bench binary |
@@ -80,11 +86,22 @@ because their raw line counts keep drawing attention:
 | File | Total | Prod | Note |
 |---|---:|---:|---|
 | `brink-web/src/editor/mod.rs` | 4,212 | 1,042 | 75% inline tests |
+| `brink-runtime/src/collection_ops.rs` | 2,476 | 1,226 | 50% inline tests |
+| `brink-analyzer/src/resolve.rs` | 2,290 | 1,217 | 47% inline tests |
+| `brink-format/src/value.rs` | 2,174 | 1,318 | 39% inline tests |
+| `brink-analyzer/src/lib.rs` | 1,999 | 1,345 | 33% inline tests |
+| `brink-runtime/src/story/mod.rs` | 2,161 | 1,445 | 34% inline tests; direct descendant of #652's #1 charter entry (`story.rs`, 3,503) — see charter reconciliation below |
 | `brink-runtime/src/value_ops.rs` | 3,061 | 1,375 | 55% inline tests |
 | `brink-analyzer/src/infer/mod.rs` | 2,905 | 1,054 | 64% inline tests |
 | `brink-runtime/src/world.rs` | 3,078 | 1,448 | 53% inline tests; cleared in pass 1, still clear |
 | `brink-db/src/db.rs` | 2,278 | 824 | 64% inline tests |
 | `bevy-brink/src/source_loader.rs` | 2,012 | 533 | 74% inline tests |
+
+The five files above the fold (`collection_ops.rs` through `story/mod.rs`) are
+all larger — by both total and production lines — than `db.rs` and
+`source_loader.rs`, which were already named. They are listed here for the
+same reason: raw size keeps drawing attention, and each is confirmed
+production-under-threshold, not a split candidate.
 
 `bevy-brink/src/sleep/tests.rs` (2,461) is a test module in a non-`tests/`
 path, so the production-line heuristic misclassifies it; it is a test file.
@@ -117,6 +134,35 @@ path, so the production-line heuristic misclassifies it; it is a test file.
 - **`strict.rs` (1,539 prod)** — production is barely over threshold and has
   two mild clusters (void-checking, temp collection). The 2,572 lines of inline
   tests are the actual bulk. Extract tests first; reassess after.
+
+### Charter reconciliation (#652)
+
+#652 named eight files by path when it was filed (2026-07-13), plus an
+unenumerated "1,500-line tier". Two weeks of unrelated work have since
+renamed, split, or shrunk several of them. One line per named file, traced to
+its current state:
+
+| #652 path | Current path | Total | Prod | Verdict |
+|---|---|---:|---:|---|
+| `brink-runtime/src/story.rs` | `brink-runtime/src/story/mod.rs` | 2,161 | 1,445 | test-extraction — see second table above |
+| `brink-runtime/src/world.rs` | unchanged | 3,078 | 1,448 | test-extraction — see second table above |
+| `brink-cli/src/ide.rs` | split into `ide/{mod,handlers,commands,project}.rs`; largest is `ide/project.rs` | 1,686 | 1,070 | already resolved by an unrelated prior split — test-extraction, under production threshold |
+| `brink-lsp/src/backend.rs` | unchanged | 3,645 | 3,162 | **split** — see main table above |
+| `brink-syntax/src/ast/nodes.rs` | unchanged | 2,318 | 2,318 | **inherent** — see "assessed, leave alone" above |
+| `brink-fmt/src/lib.rs` | unchanged | 1,294 | 65 | already resolved — shrunk well below threshold by unrelated prior work |
+| `bevy-brink/src/bindings.rs` | unchanged | 71 | 63 | already resolved — shrunk well below threshold by unrelated prior work |
+| `brink-ide/src/structural_move.rs` | unchanged | 1,621 | 1,004 | test-extraction — under production threshold |
+
+Of the eight, two (`backend.rs`, `ast/nodes.rs`) are covered by the main
+verdict table, one (`world.rs`) by the second table, and one (`story.rs`, now
+`story/mod.rs`) has been added to the second table above by this pass. The
+remaining four either already resolved on their own (`ide.rs`, `fmt/lib.rs`,
+`bindings.rs`) or are newly recorded here as test-extraction candidates
+(`structural_move.rs`). No file in the charter is unaccounted for.
+
+The unenumerated "1,500-line tier" is the rest of this document: every file
+≥1,500 total lines in the repo today is measured somewhere above, split
+between the two verdict tables.
 
 ## Exemplar: `hir/types.rs` → `hir/types.rs` + `hir/diagnostics.rs`
 
