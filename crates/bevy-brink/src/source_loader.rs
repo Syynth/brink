@@ -28,6 +28,7 @@ use std::collections::BTreeMap;
 
 use bevy_app::App;
 use bevy_asset::{AssetLoader, Assets, Handle, LoadContext, io::Reader};
+use bevy_ecs::resource::Resource;
 use bevy_reflect::TypePath;
 use brink_environment::{OptionOverrides, Project};
 use brink_project_config::ProjectConfig;
@@ -36,6 +37,45 @@ use brink_source_tree::InMemory;
 use crate::asset::{
     BrinkStoryAsset, LineTablesAsset, ProgramAsset, emit_story_assets, fresh_context,
 };
+
+/// The `with_config` override [`BrinkAssetsPlugin::build`](crate::BrinkAssetsPlugin)
+/// resolved [`InkLoader::override_config`](InkLoader) from, mirrored into a
+/// resource so [`compile_story_inline`] — a freestanding function with only
+/// `&mut App`, no `AssetLoader` instance to read a field off of — can see the
+/// same value (#1380).
+///
+/// Inserted once, unconditionally, whenever `BrinkAssetsPlugin` builds, from
+/// the exact `self.config` that also seeds `InkLoader` — so the two entry
+/// points read the identical override and can never diverge on it, the same
+/// "reuse the resolution path, don't add a second one" fix `InkLoader` itself
+/// got wired the same way `Project::load`'s `OptionOverrides` seam did.
+/// `None` (the default, or no `BrinkAssetsPlugin` in the app at all) means
+/// [`overrides_from_config`] falls through to [`OptionOverrides::default()`],
+/// byte-identical to pre-#1380 behavior for a host that never calls
+/// `with_config`.
+#[derive(Resource, Debug, Clone, Default)]
+pub(crate) struct BrinkOverrideConfig(pub(crate) Option<ProjectConfig>);
+
+/// Build the [`OptionOverrides`] [`Project::load`] expects from a
+/// `with_config` override — the exact `ProjectConfig` -> `OptionOverrides`
+/// mapping both [`InkLoader::load`] and [`compile_story_inline`] need.
+/// Extracted so the two entry points share one mapping rather than each
+/// hand-rolling their own copy that could silently drift apart (#1380,
+/// following the resolution shape #1553/#1559/#1417 used for the
+/// IDE/LSP/wasm option-propagation gaps).
+///
+/// `config: None` (no override at all) yields
+/// [`OptionOverrides::default()`] — every field unset, so `Project::load`
+/// falls through entirely to the discovered `brink.toml` (or the built-in
+/// default).
+fn overrides_from_config(config: Option<&ProjectConfig>) -> OptionOverrides {
+    OptionOverrides {
+        dialect: config.and_then(|c| c.dialect),
+        types: config.and_then(|c| c.types),
+        lints: config.map(|c| c.lints.clone()).unwrap_or_default(),
+        deny_warnings: config.and_then(|c| c.deny_warnings),
+    }
+}
 
 /// Asset loader for `.ink` (source) files.
 ///
@@ -163,17 +203,18 @@ pub enum CompileStoryInlineError {
 /// change to *that* resolution logic can't silently diverge between them
 /// again.
 ///
-/// **One override channel is still divergent.** This call always passes
-/// [`OptionOverrides::default()`] — it has no way to see
-/// [`InkLoader::override_config`], the value [`BrinkPlugin::with_config`](crate::BrinkPlugin::with_config)
-/// / [`BrinkAssetsPlugin::with_config`](crate::BrinkAssetsPlugin::with_config)
-/// installs. So an app built with `BrinkPlugin::with_config(dialect = Brink)`
-/// still compiles inline sources here under the default `StrictInk` dialect,
-/// while the same app's `InkLoader`-loaded assets compile under `Brink` —
-/// the exact class of divergence #1372 was opened to close, just narrowed
-/// from "two independent precedence implementations" down to "one missing
-/// override wire". See #1380 for wiring the plugin's override config through
-/// this entry point.
+/// ## Picks up `with_config` too (#1380)
+///
+/// [`BrinkAssetsPlugin::build`](crate::BrinkAssetsPlugin) mirrors whatever
+/// `with_config` override it resolved for [`InkLoader::override_config`]
+/// into a [`BrinkOverrideConfig`] resource. This function reads that
+/// resource back out of `app`'s `World` (absent — no `BrinkAssetsPlugin` in
+/// the app at all — is treated the same as `None`) and runs it through the
+/// same [`overrides_from_config`] mapping `InkLoader::load` uses, so an app
+/// built with `BrinkPlugin::with_config(dialect = Brink)` now compiles
+/// inline sources under `Brink` too, matching its `InkLoader`-loaded
+/// assets — closing the divergence #1372 narrowed down to "one missing
+/// override wire".
 ///
 /// `name` is the compiler's synthetic entry file name (also its `INCLUDE`
 /// resolution root). Because the tree has exactly one key (`name`), `INCLUDE`
@@ -197,7 +238,12 @@ pub fn compile_story_inline(
     let mut sources = BTreeMap::new();
     sources.insert(name.to_string(), source.to_string());
     let tree = InMemory::new(sources);
-    let env = Project::load(&tree, name, &OptionOverrides::default())?;
+    let override_config = app
+        .world()
+        .get_resource::<BrinkOverrideConfig>()
+        .and_then(|r| r.0.as_ref());
+    let overrides = overrides_from_config(override_config);
+    let env = Project::load(&tree, name, &overrides)?;
     let output = brink_environment::compile(&env)?;
     let (program, tables) = brink_runtime::link(&output.data)?;
     let initial_context = fresh_context(&program);
@@ -413,25 +459,10 @@ impl AssetLoader for InkLoader {
         // side (#1005): `override_config` — set via
         // `BrinkPlugin::with_config` — wins over whatever `brink.toml` (just
         // landed above) supplies. `brink.toml` itself, and applying that
-        // precedence, is entirely `Project::load`'s job.
-        let overrides = OptionOverrides {
-            dialect: self.override_config.as_ref().and_then(|c| c.dialect),
-            types: self.override_config.as_ref().and_then(|c| c.types),
-            // #1394: forward the plugin override's lint tier the same way
-            // as dialect/types — `BrinkPlugin::with_config`'s
-            // `ProjectConfig.lints`/`.deny_warnings` (landed with #1160)
-            // always win over a served `brink.toml`'s `[lints]` table, via
-            // the same `OptionOverrides` seam #1373 gave the CLI. No new
-            // resolution path: `Project::load` below folds these in at the
-            // one point (`AnalysisOptions::apply_lint_overrides`) that
-            // already validates codes for the CLI.
-            lints: self
-                .override_config
-                .as_ref()
-                .map(|c| c.lints.clone())
-                .unwrap_or_default(),
-            deny_warnings: self.override_config.as_ref().and_then(|c| c.deny_warnings),
-        };
+        // precedence, is entirely `Project::load`'s job. #1394's lint tier
+        // and #1380's `compile_story_inline` wiring both go through this
+        // same `overrides_from_config` mapping — no second implementation.
+        let overrides = overrides_from_config(self.override_config.as_ref());
 
         // Land the drained map in a `SourceTree` and go through the
         // producer: `Project::load` resolves `brink.toml` + precedence and
@@ -573,6 +604,83 @@ mod tests {
             ),
             "error message should carry authoring guidance, got: {err}"
         );
+    }
+
+    // ── `with_config` reaches `compile_story_inline` too (#1380) ───────
+    //
+    // `compile_story_inline_has_no_brink_toml_and_uses_default_dialect`
+    // above pins the no-override baseline: `#@private` is rejected under
+    // the default `StrictInk` dialect. These two tests prove a
+    // `BrinkPlugin::with_config` override actually reaches this entry
+    // point too (it didn't, pre-#1380 — see the removed "one override
+    // channel is still divergent" doc note this PR replaces), each picking
+    // a fixture whose outcome only the override — not the default policy
+    // — can flip (house rule 19q).
+
+    /// `dialect = Brink`, set via `BrinkPlugin::with_config`, must reach
+    /// `compile_story_inline`'s `Project::load` call the same way it
+    /// already reaches `InkLoader::load` — proven by compiling the same
+    /// `#@private` brink-extension source the no-override baseline test
+    /// rejects.
+    #[test]
+    fn compile_story_inline_reaches_plugin_with_config_dialect_override() {
+        use brink_project_config::Dialect;
+
+        let mut app = bevy_app::App::new();
+        app.add_plugins(bevy_asset::AssetPlugin::default());
+        app.add_plugins(
+            crate::BrinkPlugin::<()>::default().with_config(ProjectConfig {
+                dialect: Some(Dialect::Brink),
+                ..ProjectConfig::default()
+            }),
+        );
+
+        compile_story_inline(
+            &mut app,
+            "inline.ink",
+            "#@private\nVAR secret = 0\n-> END\n",
+        )
+        .expect(
+            "dialect = Brink override should reach compile_story_inline and permit \
+                 brink-extension syntax the default dialect rejects",
+        );
+    }
+
+    /// The `[lints] deny-warnings` tier (#1394's addition to the same
+    /// `OptionOverrides` seam) reaches `compile_story_inline` too, not just
+    /// `dialect`/`types` — a logic line with no effect (`~` alone,
+    /// `DiagnosticCode::E014`, `Warning` by default) compiles cleanly with
+    /// no override, but a `deny_warnings = true` override relevels it to a
+    /// blocking `Error`.
+    #[test]
+    fn compile_story_inline_reaches_plugin_with_config_deny_warnings_override() {
+        let mut app = bevy_app::App::new();
+        app.add_plugins(bevy_asset::AssetPlugin::default());
+        app.add_plugins(
+            crate::BrinkPlugin::<()>::default().with_config(ProjectConfig {
+                deny_warnings: Some(true),
+                ..ProjectConfig::default()
+            }),
+        );
+
+        let err = compile_story_inline(&mut app, "inline.ink", "Hello.\n~\n-> END\n")
+            .expect_err("deny_warnings override should relevel E014 to a blocking error");
+        assert!(
+            matches!(err, CompileStoryInlineError::Compile(_)),
+            "got {err:?}"
+        );
+    }
+
+    /// Negative control for the two tests above (house rule 19q): the same
+    /// `deny_warnings`-sensitive source compiles cleanly with no
+    /// `with_config` override at all, so the override above is what
+    /// actually flips the outcome, not something else about the fixture.
+    #[test]
+    fn compile_story_inline_without_config_leaves_e014_a_warning() {
+        let mut app = crate::test_support::make_test_app();
+
+        compile_story_inline(&mut app, "inline.ink", "Hello.\n~\n-> END\n")
+            .expect("E014 is a Warning, never blocking, with no deny_warnings override");
     }
 
     // ── ancestor_dirs (#1029 bounded walk-up) ───────────────────────────
