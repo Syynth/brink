@@ -16,7 +16,7 @@ through the RMW discipline, and `#@`-channel annotations. Track B (native
 surface) waits on the prototype parser (the season's next artifact).
 
 **Why the current brink dialect is the early host (load-bearing).** The
-oracle/test-harness machinery (`brink-test-harness`, the 5,577-episode
+oracle/test-harness machinery (`brink-test-harness`, the 5,598-episode
 ratchet, insta snapshots) already covers the brink dialect end-to-end. A
 verb implemented as a brink-dialect intrinsic — `Option[T]`, the
 heap verbs, `Weighted[T]`, the effect-row extensions — gets **oracle and
@@ -216,11 +216,36 @@ These cannot pump until the prototype native parser (B0) exists; each
 also depends on its Track A substrate being green so the surface lowers to
 *tested* semantics.
 
-### Wave B1 — `or`-coalescing spelling + `as`-binding unwrap
+### Wave B1 — `or`-coalescing spelling + `as`-binding unwrap (BUILT)
 `x or default` surface (typing from A1); the `EXPR as NAME` Option-unwrap
 in `if`/`while` (F16 — the primary consumer of every Option-returning
 verb, `while heap_pop(ref h) as node`, `if m.get(k) as v`). **Depends:**
 B0, A1.
+
+**Landed in two slices.** B1 (#1460) shipped `x or default` as
+`InfixOp::Coalesce` + a binary `Opcode::Coalesce` that evaluated both
+operands eagerly, honestly flagging that as an unruled decision; the
+maintainer then ruled **short-circuit** (issue #1471), so the binary opcode
+was retired for the branching `Opcode::CoalesceSome(rel)` (`rhs` runs only
+on `none`) and the collapse-vs-preserve typing decision moved to lowering,
+which consumes the analyzer's recorded per-step types (issue #1492) instead
+of re-deriving them from syntax. B1 also honestly *declined* the
+`as`-binding: its grammar existed only as illustrative sketches, in two
+mutually inconsistent shapes. The reconciliation was ruled 2026-07-26
+("The `as` binding: one construct, both condition positions, `{if}`
+spelling") and built as **B1b (#1475)** — one grammar rule
+(`AS_BINDING`) serving the statement condition position (`if`/`while`)
+and the template one (`{if EXPR as NAME: … else: …}`), lowered to one
+fused test-and-bind opcode (`Opcode::OptionBind`). Binding immutable
+(**E148**), typed `T` from `Option[T]`, scoped strictly to the success
+arm, rebinding per iteration in `while`; whole-condition-only for v1
+(**E145** — let-chains stay additively available later); a non-Option
+condition is **E147** (runtime residual:
+`RuntimeError::AsBindingNotOption`). **Deliberately not implemented:**
+`as` in a choice guard — ruled the same day
+(capture-at-presentation, by value, serialized with the pending choice)
+but sequenced with the `.inkb` v6 Choice record, so B1b diagnoses it as
+not-yet-supported (**E146**) rather than half-lowering it.
 
 ### Wave B2 — `for k, v in m` / `for ref x in xs` / `for` over `iterate`
 The two-binding map desugar (**F10** — exact lowering + snapshot-keys
@@ -237,6 +262,36 @@ resolution. **Depends:** B0, A3 (so completion reads registry + intrinsic
 signatures). **Findings:** F0 (sort_by's ref-ness decides its rvalue-
 receiver behavior — **must be ruled** so UFCS knows whether `a.sort_by(c)`
 on an rvalue is an error).
+
+**B3a — the resolution pass itself (SHIPPED, issue #1482).** The wave split
+once the pass was designed (D1–D5 RULED 2026-07-26): `brink-analyzer::ufcs`
+is the type-directed pass that decides `recv.name(args)` — field access wins
+outright (`E140` when the matching field is not callable), else a free
+function in ordinary lexical scope is desugared to `name(recv, args)`
+(`E141` when neither, `E142` when the receiver's type is unknown), with the
+verdict recorded in a `node → verdict` side table for LIR lowering and IDE
+hover. Auto-ref was explicitly not in it: a free function with a `ref` first
+parameter reached through method syntax was refused rather than desugared by
+value, and lifting that fence was the remaining B3 work.
+
+**B3b — auto-ref (SHIPPED, issue #1462).** D5 landed on top of the pass: a
+`ref` first parameter now makes the receiver an explicit ref-argument
+internally — `gold.bump(1)` → `bump(ref gold, 1)` in desugar notation (the
+native surface has no call-site `ref` keyword; the spellable equivalent is
+the unmarked `bump(gold, 1)`), `party.leader.heal(5)` →
+`heal(ref party.leader, 5)` — riding the T1e ref-argument/projection
+machinery rather than a parallel path — so it inherits T1e's durable-root
+rule. `E143` is repurposed as the ruled refusal for a receiver that cannot
+be written through (a `CONST`; a projection rooted in a frame-local; and the
+ruled rvalue receivers `[1,2].push(3)`/`a.sorted().push(x)` once the grammar
+can spell them at all). A non-`ref` first parameter is untouched — plain
+by-value desugar, no lvalue requirement. The *projection* receiver is
+reachable end to end since issue #1530 made a struct-typed durable global
+spellable (a well-formed construction literal is now a legal `VAR` default);
+`brink-test-harness/tests/b3a_ufcs_e2e.rs`'s
+`auto_ref_mutates_a_projection_off_a_durable_global_end_to_end` drives it
+through the real `.brink` pipeline, alongside the LIR-lowering coverage in
+`brink-ir/tests/ufcs_auto_ref.rs`.
 
 ### Wave B4 — display-boundary None-render in interpolation (SHIPPED, issue #1463)
 The §1.6b forgiveness: a final-None interpolation renders as nothing;

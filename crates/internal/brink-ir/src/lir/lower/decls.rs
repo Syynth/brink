@@ -7,16 +7,24 @@ use crate::{Diagnostic, DiagnosticCode, FileId, hir};
 use super::context::{NameTable, ResolutionLookup};
 use super::expr::const_value_to_map_key;
 use super::lir;
+use super::structs::ShapeTable;
 
 /// Collect global variable/constant definitions from HIR files.
 ///
 /// Evaluates constants first so that variable initializers like `VAR x = c`
 /// can resolve constant references to their values.
+///
+/// `shapes` is the project's already-built [`ShapeTable`] — a struct
+/// construction literal used as a declaration default needs its shape's id
+/// and field order to fold into [`lir::ConstValue::Record`] (issue #1530),
+/// which is why [`super::build_prelude_decls`] builds the shape table
+/// *before* calling this.
 pub fn collect_globals(
     files: &[(FileId, &hir::HirFile)],
     index: &SymbolIndex,
     names: &mut NameTable,
     resolutions: &ResolutionLookup,
+    shapes: &ShapeTable,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Vec<lir::GlobalDef> {
     // Pass 1: evaluate all constants and build a value lookup (keyed
@@ -40,14 +48,14 @@ pub fn collect_globals(
                         code: DiagnosticCode::E083,
                     });
                 }
-                let default = eval_const_expr(
-                    &cst.value,
+                let env = ConstEvalEnv {
                     index,
                     resolutions,
-                    file_id,
-                    &const_values,
-                    diagnostics,
-                );
+                    file: file_id,
+                    const_values: &const_values,
+                    shapes,
+                };
+                let default = eval_const_expr(&cst.value, env, diagnostics);
                 const_values.insert(id, default.clone());
                 globals.push(lir::GlobalDef {
                     id,
@@ -75,14 +83,14 @@ pub fn collect_globals(
                         code: DiagnosticCode::E083,
                     });
                 }
-                let default = eval_const_expr(
-                    &var.value,
+                let env = ConstEvalEnv {
                     index,
                     resolutions,
-                    file_id,
-                    &const_values,
-                    diagnostics,
-                );
+                    file: file_id,
+                    const_values: &const_values,
+                    shapes,
+                };
+                let default = eval_const_expr(&var.value, env, diagnostics);
                 globals.push(lir::GlobalDef {
                     id,
                     name,
@@ -222,6 +230,30 @@ pub(super) fn lookup_global(
     })
 }
 
+/// The read-only environment a declaration-default constant fold resolves
+/// against. Bundled rather than threaded positionally: the fold is deeply
+/// recursive (every collection/struct/`#fn` literal arm re-enters
+/// [`eval_const_expr`] once per element), so passing five unchanging lookups
+/// through each of those call sites buried the one thing that varies — the
+/// expression — and cost nothing in clarity. `Copy`, so an arm can hand it
+/// straight down; the diagnostic sink stays a separate `&mut` parameter,
+/// which is the only thing the fold actually writes to.
+#[derive(Clone, Copy)]
+pub struct ConstEvalEnv<'a> {
+    /// Whole-project symbol index — resolves a folded path to its kind.
+    pub index: &'a SymbolIndex,
+    /// Range → `DefinitionId` resolutions for the file being folded.
+    pub resolutions: &'a ResolutionLookup,
+    /// The file the default being folded was declared in.
+    pub file: FileId,
+    /// Already-folded `CONST` values, so `VAR x = SOME_CONST` resolves.
+    /// Populated as [`collect_globals`]' first pass runs.
+    pub const_values: &'a LookupMap<DefinitionId, lir::ConstValue>,
+    /// The project's struct shapes — a construction literal default needs
+    /// its shape's id and declaration field order (issue #1530).
+    pub shapes: &'a ShapeTable,
+}
+
 /// Evaluate a compile-time constant expression.
 #[expect(
     clippy::cast_possible_truncation,
@@ -229,26 +261,30 @@ pub(super) fn lookup_global(
 )]
 pub fn eval_const_expr(
     expr: &hir::Expr,
-    index: &SymbolIndex,
-    resolutions: &ResolutionLookup,
-    file: FileId,
-    const_values: &LookupMap<DefinitionId, lir::ConstValue>,
+    env: ConstEvalEnv<'_>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> lir::ConstValue {
+    let ConstEvalEnv {
+        index,
+        resolutions,
+        file,
+        const_values,
+        ..
+    } = env;
     match expr {
         hir::Expr::Int(n) => lir::ConstValue::Int(*n),
         hir::Expr::Float(bits) => lir::ConstValue::Float(bits.to_f64() as f32),
         hir::Expr::Bool(b) => lir::ConstValue::Bool(*b),
         hir::Expr::String(s) => eval_const_string(s, file, diagnostics),
         hir::Expr::Prefix(hir::PrefixOp::Negate, inner) => {
-            match eval_const_expr(inner, index, resolutions, file, const_values, diagnostics) {
+            match eval_const_expr(inner, env, diagnostics) {
                 lir::ConstValue::Int(n) => lir::ConstValue::Int(-n),
                 lir::ConstValue::Float(f) => lir::ConstValue::Float(-f),
                 _ => lir::ConstValue::Null,
             }
         }
         hir::Expr::Prefix(hir::PrefixOp::Not, inner) => {
-            match eval_const_expr(inner, index, resolutions, file, const_values, diagnostics) {
+            match eval_const_expr(inner, env, diagnostics) {
                 lir::ConstValue::Bool(b) => lir::ConstValue::Bool(!b),
                 lir::ConstValue::Int(n) => lir::ConstValue::Bool(n == 0),
                 lir::ConstValue::Float(f) => lir::ConstValue::Bool(f == 0.0),
@@ -256,10 +292,10 @@ pub fn eval_const_expr(
                 _ => lir::ConstValue::Null,
             }
         }
-        hir::Expr::Infix(lhs, op, rhs) => {
-            let l = eval_const_expr(lhs, index, resolutions, file, const_values, diagnostics);
-            let r = eval_const_expr(rhs, index, resolutions, file, const_values, diagnostics);
-            eval_const_infix(&l, *op, &r)
+        hir::Expr::Infix(ie) => {
+            let l = eval_const_expr(&ie.lhs, env, diagnostics);
+            let r = eval_const_expr(&ie.rhs, env, diagnostics);
+            eval_const_infix(&l, ie.op, &r)
         }
         hir::Expr::Path(path) => {
             if let Some(id) = resolutions.resolve(file, path.range) {
@@ -324,20 +360,14 @@ pub fn eval_const_expr(
         }
         // #673: `VAR`/`CONST arr = #[…]` — see `eval_const_array_literal`'s
         // doc.
-        hir::Expr::ArrayLiteral(arr) => {
-            eval_const_array_literal(arr, index, resolutions, file, const_values, diagnostics)
-        }
+        hir::Expr::ArrayLiteral(arr) => eval_const_array_literal(arr, env, diagnostics),
         // #673: `VAR`/`CONST m = #{…}` — see `eval_const_map_literal`'s doc.
-        hir::Expr::MapLiteral(map) => {
-            eval_const_map_literal(map, index, resolutions, file, const_values, diagnostics)
-        }
-        // #673: `VAR`/`CONST p = Name#{…}` — see `eval_const_struct_literal`'s
-        // doc.
-        hir::Expr::StructLiteral(sl) => eval_const_struct_literal(sl, file, diagnostics),
+        hir::Expr::MapLiteral(map) => eval_const_map_literal(map, env, diagnostics),
+        // #673/#1530: `VAR`/`CONST p = Name#{…}` — see
+        // `eval_const_struct_literal`'s doc.
+        hir::Expr::StructLiteral(sl) => eval_const_struct_literal(sl, env, diagnostics),
         // T1c-2: `VAR f = #fn(…)` — see `eval_const_fn_literal`'s doc.
-        hir::Expr::FnLiteral(fl) => {
-            eval_const_fn_literal(fl, index, resolutions, file, const_values, diagnostics)
-        }
+        hir::Expr::FnLiteral(fl) => eval_const_fn_literal(fl, env, diagnostics),
         _ => lir::ConstValue::Null,
     }
 }
@@ -356,12 +386,15 @@ pub fn eval_const_expr(
 /// [`is_const_foldable_kind`].
 fn eval_const_array_literal(
     arr: &hir::ArrayLiteral,
-    index: &SymbolIndex,
-    resolutions: &ResolutionLookup,
-    file: FileId,
-    const_values: &LookupMap<DefinitionId, lir::ConstValue>,
+    env: ConstEvalEnv<'_>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> lir::ConstValue {
+    let ConstEvalEnv {
+        index,
+        resolutions,
+        file,
+        ..
+    } = env;
     let mut items = Vec::with_capacity(arr.elements.len());
     for e in &arr.elements {
         if !is_const_foldable_kind(e, index, resolutions, file) {
@@ -372,14 +405,7 @@ fn eval_const_array_literal(
                 code: DiagnosticCode::E077,
             });
         }
-        items.push(eval_const_expr(
-            e,
-            index,
-            resolutions,
-            file,
-            const_values,
-            diagnostics,
-        ));
+        items.push(eval_const_expr(e, env, diagnostics));
     }
     lir::ConstValue::Array(items)
 }
@@ -397,12 +423,15 @@ fn eval_const_array_literal(
 /// `Null`, which is outside the scalar key domain.)
 fn eval_const_map_literal(
     map: &hir::MapLiteral,
-    index: &SymbolIndex,
-    resolutions: &ResolutionLookup,
-    file: FileId,
-    const_values: &LookupMap<DefinitionId, lir::ConstValue>,
+    env: ConstEvalEnv<'_>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> lir::ConstValue {
+    let ConstEvalEnv {
+        index,
+        resolutions,
+        file,
+        ..
+    } = env;
     let mut entries = Vec::with_capacity(map.entries.len());
     for (k, v) in &map.entries {
         if !is_const_foldable_kind(v, index, resolutions, file) {
@@ -413,8 +442,8 @@ fn eval_const_map_literal(
                 code: DiagnosticCode::E077,
             });
         }
-        let key_val = eval_const_expr(k, index, resolutions, file, const_values, diagnostics);
-        let value = eval_const_expr(v, index, resolutions, file, const_values, diagnostics);
+        let key_val = eval_const_expr(k, env, diagnostics);
+        let value = eval_const_expr(v, env, diagnostics);
         match const_value_to_map_key(key_val) {
             Some(key) => entries.push((key, value)),
             None => {
@@ -430,26 +459,110 @@ fn eval_const_map_literal(
     lir::ConstValue::Map(entries)
 }
 
-/// #673: `ConstValue` has no record-carrying variant (adding one is a format
-/// question outside this fix's fence, per the issue), and unlike
-/// arrays/maps there is no existing codegen path to reuse: a global's
-/// default is baked into `StoryData` at compile time, with no `RecordNew`
-/// runtime construction step for a declaration default to defer to the way
-/// a mid-story `p = Point#{…}` assignment has. A real, non-suppressible
-/// compile error (`E075`) replaces the silent `Null` fallthrough — the
-/// minimum-acceptable fix direction the issue names for exactly this case.
+/// #1530: `VAR`/`CONST p = Name#{…}` (brink dialect) / `Name { … }`
+/// (native) — constant-fold a well-formed construction literal into a real
+/// [`lir::ConstValue::Record`], the same way [`eval_const_array_literal`]
+/// and [`eval_const_map_literal`] already fold their own literals.
+///
+/// #673 left this arm as an unconditional `E075` refusal because
+/// `ConstValue` had no record-carrying variant, which made a **struct-typed
+/// durable global unspellable**: `docs/t1e-spec.md` §2 requires a
+/// projection's root to be a durable cell, so no real source could reach
+/// the T1e projection-receiver path end to end, and `E143`'s own remediation
+/// advice ("bind the receiver to a durable cell") pointed at something the
+/// language could not express. The variant is now the same shape-ordered
+/// flat field vector `Value::Record` and `RecordNew` use, so codegen's
+/// `const_to_value` materializes it with no reordering.
+///
+/// Unlike the expression-position twin ([`super::expr`]'s
+/// `lower_struct_literal`) there is no `RecordNew` runtime construction step
+/// left for a malformed literal to fault at — a declaration default is baked
+/// into `StoryData`. So the two malformed cases stay real compile errors,
+/// exactly the compile-time-equivalent-of-the-runtime-fault posture
+/// [`eval_const_map_literal`]'s `E076` already takes for a bad map key:
+///
+/// - an **unresolved shape name** reports `E073`, the same code the
+///   expression-position path's `reject_unresolved_struct_shape` uses;
+/// - a **missing or undeclared field** reports the (now narrowed) `E075`.
+///   Under `types = strict` `brink-analyzer`'s `structs::check` reports the
+///   more precise `E069`/`E070` for the same literal, but that check is
+///   strict-only by ratified policy, so this is the policy-independent
+///   backstop that keeps a `gradual` project from baking a half-built
+///   record into its story data.
+///
+/// A field *value* whose source expression kind can never constant-fold is
+/// the usual `E077`, identical to an array element or map value one level
+/// in. A duplicate field name is `brink-analyzer`'s policy-independent
+/// `E084`; last-wins placement here matches `lower_struct_literal`'s.
 fn eval_const_struct_literal(
     sl: &hir::StructLiteral,
-    file: FileId,
+    env: ConstEvalEnv<'_>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> lir::ConstValue {
-    diagnostics.push(Diagnostic {
+    let ConstEvalEnv {
+        index,
+        resolutions,
         file,
-        range: sl.ptr.text_range(),
-        message: DiagnosticCode::E075.title().to_string(),
-        code: DiagnosticCode::E075,
-    });
-    lir::ConstValue::Null
+        shapes,
+        ..
+    } = env;
+    let Some(shape) = shapes.get(&sl.shape.text) else {
+        diagnostics.push(Diagnostic {
+            file,
+            range: sl.ptr.text_range(),
+            message: DiagnosticCode::E073.title().to_string(),
+            code: DiagnosticCode::E073,
+        });
+        return lir::ConstValue::Null;
+    };
+
+    let mut placed: Vec<Option<lir::ConstValue>> = vec![None; shape.fields.len()];
+    let mut has_extra = false;
+    for (name, value) in &sl.fields {
+        if !is_const_foldable_kind(value, index, resolutions, file) {
+            diagnostics.push(Diagnostic {
+                file,
+                range: sl.ptr.text_range(),
+                message: DiagnosticCode::E077.title().to_string(),
+                code: DiagnosticCode::E077,
+            });
+        }
+        // Every supplied initializer is evaluated, in source order, even one
+        // whose name the shape doesn't declare — a nested literal's own
+        // `E073`/`E076`/`E077` must still be reported rather than skipped
+        // because an unrelated sibling field was misspelled.
+        let folded = eval_const_expr(value, env, diagnostics);
+        match shape.field(&name.text) {
+            Some((offset, _)) => {
+                if let Some(slot) = placed.get_mut(offset as usize) {
+                    *slot = Some(folded);
+                }
+            }
+            None => has_extra = true,
+        }
+    }
+
+    if has_extra || placed.iter().any(Option::is_none) {
+        diagnostics.push(Diagnostic {
+            file,
+            range: sl.ptr.text_range(),
+            message: DiagnosticCode::E075.title().to_string(),
+            code: DiagnosticCode::E075,
+        });
+        return lir::ConstValue::Null;
+    }
+
+    lir::ConstValue::Record {
+        shape_id: shape.id,
+        // The guard above just proved every slot is `Some`; `map_or_else`
+        // rather than `unwrap` anyway (denied in production code), so a
+        // future refactor that weakens that proof degrades to a `Null` field
+        // instead of a panic — the same posture `lower_struct_literal` takes.
+        fields: placed
+            .into_iter()
+            .map(|v| v.unwrap_or(lir::ConstValue::Null))
+            .collect(),
+    }
 }
 
 /// T1c-2: `VAR f = #fn(name, args…)` — bake a function value into the
@@ -463,12 +576,15 @@ fn eval_const_struct_literal(
 /// leaves the analyzer's own diagnostic to stand and folds to `Null`.
 fn eval_const_fn_literal(
     fl: &hir::FnLiteral,
-    index: &SymbolIndex,
-    resolutions: &ResolutionLookup,
-    file: FileId,
-    const_values: &LookupMap<DefinitionId, lir::ConstValue>,
+    env: ConstEvalEnv<'_>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> lir::ConstValue {
+    let ConstEvalEnv {
+        index,
+        resolutions,
+        file,
+        ..
+    } = env;
     let Some(target_id) = resolutions.resolve(file, fl.target.range) else {
         return lir::ConstValue::Null;
     };
@@ -478,7 +594,7 @@ fn eval_const_fn_literal(
     if fl.args.is_empty() {
         return lir::ConstValue::FnRef(target_id);
     }
-    let mut env = Vec::with_capacity(fl.args.len());
+    let mut bound = Vec::with_capacity(fl.args.len());
     for (i, arg) in fl.args.iter().enumerate() {
         let param = target_info.params.get(i);
         let name = param.map_or_else(String::new, |p| p.name.clone());
@@ -497,7 +613,7 @@ fn eval_const_fn_literal(
             }) else {
                 return lir::ConstValue::Null;
             };
-            env.push(lir::ConstClosureEntry::Ref { name, cell });
+            bound.push(lir::ConstClosureEntry::Ref { name, cell });
         } else {
             // #743: a `val` bound arg is exactly an array-element/map-value
             // position one level inside the `#fn(…)` literal — same E077
@@ -512,13 +628,13 @@ fn eval_const_fn_literal(
                     code: DiagnosticCode::E077,
                 });
             }
-            let value = eval_const_expr(arg, index, resolutions, file, const_values, diagnostics);
-            env.push(lir::ConstClosureEntry::Val { name, value });
+            let value = eval_const_expr(arg, env, diagnostics);
+            bound.push(lir::ConstClosureEntry::Val { name, value });
         }
     }
     lir::ConstValue::Closure {
         target: target_id,
-        env,
+        env: bound,
     }
 }
 
@@ -574,9 +690,9 @@ fn is_const_foldable_kind(
             Some(info) if info.kind == SymbolKind::Variable
         ),
         hir::Expr::Prefix(_, inner) => is_const_foldable_kind(inner, index, resolutions, file),
-        hir::Expr::Infix(lhs, _, rhs) => {
-            is_const_foldable_kind(lhs, index, resolutions, file)
-                && is_const_foldable_kind(rhs, index, resolutions, file)
+        hir::Expr::Infix(ie) => {
+            is_const_foldable_kind(&ie.lhs, index, resolutions, file)
+                && is_const_foldable_kind(&ie.rhs, index, resolutions, file)
         }
         hir::Expr::Postfix(..)
         | hir::Expr::Call(..)
@@ -657,9 +773,9 @@ fn is_const_foldable_decl_default(
         hir::Expr::Prefix(_, inner) => {
             is_const_foldable_decl_default(inner, index, resolutions, file)
         }
-        hir::Expr::Infix(lhs, _, rhs) => {
-            is_const_foldable_decl_default(lhs, index, resolutions, file)
-                && is_const_foldable_decl_default(rhs, index, resolutions, file)
+        hir::Expr::Infix(ie) => {
+            is_const_foldable_decl_default(&ie.lhs, index, resolutions, file)
+                && is_const_foldable_decl_default(&ie.rhs, index, resolutions, file)
         }
         hir::Expr::Postfix(..)
         | hir::Expr::Call(..)

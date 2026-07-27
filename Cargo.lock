@@ -2158,6 +2158,7 @@ version = "0.0.11"
 dependencies = [
  "brink-analyzer",
  "brink-db",
+ "brink-format",
  "brink-ir",
  "brink-project-config",
  "brink-source-tree",
@@ -2218,6 +2219,7 @@ dependencies = [
  "brink-ir",
  "brink-runtime",
  "brink-syntax",
+ "brink-syntax-native",
  "insta",
  "rowan",
  "serde",

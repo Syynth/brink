@@ -35,6 +35,19 @@ pub fn hover(
     offset: TextSize,
     project_files: &[(FileId, String, String)],
 ) -> Option<HoverInfo> {
+    // B3a UFCS resolution (issue #1507): a method-call-shaped callee's
+    // `ResolutionMap` entry spans the whole `recv.verb` range and targets
+    // the *receiver* (see `crate::ufcs_hover`'s module doc) — checked first
+    // and narrowly (only the method segment's own range), so it overrides
+    // the receiver-shaped hover below exactly where that would otherwise be
+    // misleading, and is a no-op everywhere else (including hovering `recv`
+    // itself, which still falls through to the generic path).
+    if let Some(hir) = db.hir(file_id)
+        && let Some(info) = crate::ufcs_hover::ufcs_hover(db, hir, file_id, offset, project_files)
+    {
+        return Some(info);
+    }
+
     let content = if let Some(info) = find_def_at_offset(analysis, file_id, offset) {
         let kind_str = match info.kind {
             brink_ir::SymbolKind::Knot => "knot",
@@ -257,14 +270,18 @@ fn signature_strs(
 
 /// TM-5 (#621): the inferred (or declared-but-not-`symbol_meta`-tracked)
 /// type suffix for a `Param`/`Temp` symbol — `symbol_meta` never carries
-/// these (it only covers knots/stitches/externals/VAR/CONST/List). For a
-/// `Param`, the enclosing knot/stitch's declared annotation (matched by
-/// position, same source `signature_strs` reads) still wins over
-/// inference. Either way, falls back to the enclosing callable's inferred
-/// body locals (`params ∪ temps`, keyed by name) so hovering an
-/// unannotated parameter or `temp` still shows a type instead of nothing.
-/// Empty string when nothing resolves (including `Unknown` — showing that
-/// would be noise, not information) or `info` isn't a `Param`/`Temp`.
+/// these (it only covers knots/stitches/externals/VAR/CONST/List). The
+/// local's own TM-2 `: type` annotation (`db.local_signature`, issue #530
+/// — the per-file locals path `signature`/`db.signature` itself can't
+/// take) still wins over inference for *both* a `Param` and a `Temp`
+/// (before #530 only a `Param`'s annotation reached hover, read positionally
+/// off the *enclosing* knot/stitch's own `signature`; a `~ temp x: type`
+/// ascription was silently skipped straight to inference). Either way,
+/// falls back to the enclosing callable's inferred body locals (`params ∪
+/// temps`, keyed by name) so hovering an unannotated parameter or `temp`
+/// still shows a type instead of nothing. Empty string when nothing
+/// resolves (including `Unknown` — showing that would be noise, not
+/// information) or `info` isn't a `Param`/`Temp`.
 fn inferred_local_type_str(
     analysis: &AnalysisResult,
     db: &ProjectDb,
@@ -276,17 +293,12 @@ fn inferred_local_type_str(
     ) {
         return String::new();
     }
-    let enclosing = enclosing_callable(analysis, info);
-    let declared = (info.kind == brink_ir::SymbolKind::Param)
-        .then(|| enclosing.and_then(|def| db.signature(def)))
-        .flatten()
-        .and_then(|sig| {
-            let idx = sig.params.iter().position(|p| p.name == info.name)?;
-            sig.param_annotations.get(idx)?.clone()
-        });
+    let declared = db
+        .local_signature(info.file, info.id)
+        .and_then(|sig| sig.value_ty.clone());
     declared
         .or_else(|| {
-            enclosing
+            enclosing_callable(analysis, info)
                 .and_then(|def| db.infer_body(def))
                 .and_then(|body| body.locals.get(&info.name).cloned())
                 .filter(|ty| !ty.is_unknown())
@@ -318,6 +330,24 @@ mod tests {
         )
         .expect("hover")
         .content
+    }
+
+    /// Like `hover_at`, but for a native `.brink` fixture (B3a UFCS
+    /// resolution is native-only — see `crate::ufcs_hover`'s module doc).
+    fn hover_at_native(src: &str, needle: &str) -> Option<String> {
+        let mut session = IdeSession::new();
+        let file_id = session.update_and_analyze("test.brink", src.to_string());
+        let analysis = session.analysis().expect("analysis");
+        let pos = u32::try_from(src.find(needle).expect("needle present")).expect("offset");
+        hover(
+            analysis,
+            session.db(),
+            file_id,
+            src,
+            TextSize::from(pos),
+            &[],
+        )
+        .map(|info| info.content)
     }
 
     #[test]
@@ -483,6 +513,29 @@ stalls
         let content = hover_at(src, "heal(hp: string)");
         assert!(content.contains("hp: string"), "{content}");
         assert!(!content.contains("hp: int"), "{content}");
+    }
+
+    #[test]
+    fn hover_annotation_wins_over_inference_for_a_temp() {
+        // Before #530 a `~ temp x: type` ascription was skipped straight to
+        // inferred-body display; the declared annotation (`step: float`)
+        // must be what hover shows for the *declaration itself*, not the
+        // inferred int type of the literal `1`.
+        let src = "=== quest ===\n~ temp step: float = 1\nOnward.\n-> END\n";
+        let content = hover_at(src, "step: float");
+        assert!(content.contains("step: float"), "{content}");
+        assert!(!content.contains("step: int"), "{content}");
+    }
+
+    #[test]
+    fn hover_shows_an_annotated_params_declared_type_at_a_use_site() {
+        // Hovering `hp` *inside the body* (not the declaration) must still
+        // resolve to the param's own declared annotation via
+        // `db.local_signature`, not the enclosing knot header's
+        // `signature_strs` path.
+        let src = "=== function heal(hp: string) ===\n~ temp bonus = hp + 1\n~ return bonus\n";
+        let content = hover_at(src, "hp + 1");
+        assert!(content.contains("hp: string"), "{content}");
     }
 
     #[test]
@@ -672,5 +725,106 @@ Spent.
             !content.contains('\u{26A0}'),
             "no warning marker for a registered type: {content}"
         );
+    }
+
+    // ── Issue #1507: UFCS hover reports the D2-resolved target ───────────
+
+    const UFCS_FREE_FN_SRC: &str = "\
+struct Guest {
+  name: string
+}
+
+fn greet(g, loudness) {
+  return loudness;
+}
+
+fn main() {
+  let g = Guest { name: \"ada\" };
+  let n = g.greet(3);
+}
+";
+
+    #[test]
+    fn hover_on_a_ufcs_method_segment_shows_the_free_fn_verdict() {
+        let content =
+            hover_at_native(UFCS_FREE_FN_SRC, "greet(3)").expect("hover on the method segment");
+        assert!(content.contains("**free function**"), "{content}");
+        assert!(content.contains("greet(g, "), "{content}");
+        assert!(content.contains("Desugared from `g.greet(…)`"), "{content}");
+    }
+
+    #[test]
+    fn hover_on_the_receiver_segment_of_a_ufcs_call_is_unaffected() {
+        // Hovering `g` itself (before the dot) must keep showing the
+        // receiver, not the method verdict — the override is narrowly
+        // scoped to the method segment (`crate::ufcs_hover`'s module doc).
+        let content =
+            hover_at_native(UFCS_FREE_FN_SRC, "g.greet(3)").expect("hover on the receiver");
+        assert!(
+            !content.contains("**free function**"),
+            "receiver hover must not show the UFCS verdict: {content}"
+        );
+    }
+
+    #[test]
+    fn hover_on_a_ufcs_prelude_desugar_reuses_the_stdlib_hover_text() {
+        let src = "\
+struct Guest {
+  name: string
+}
+
+fn main() {
+  let g = Guest { name: \"ada\" };
+  let n = g.len();
+}
+";
+        let content = hover_at_native(src, "len()").expect("hover on the method segment");
+        assert!(content.contains("**brink stdlib**"), "{content}");
+        assert!(content.contains("len(x) -> int"), "{content}");
+        assert!(content.contains("desugared from `g.len(…)`"), "{content}");
+    }
+
+    #[test]
+    fn hover_on_a_ufcs_field_call_shows_the_field_call_verdict() {
+        // Fixture mirrors `brink-analyzer`'s
+        // `a_function_typed_field_wins_and_is_recorded_as_a_field_call`
+        // (crates/internal/brink-analyzer/tests/ufcs_resolution.rs) — a
+        // function-typed field wins over a same-named free function (D1).
+        let src = "\
+struct Guest {
+  greet: fn(int): int
+}
+
+fn main() {
+  let g = Guest { greet: \"hi\" };
+  let n = g.greet(3);
+}
+";
+        let content = hover_at_native(src, "greet(3)").expect("hover on the method segment");
+        assert!(content.contains("**field call**"), "{content}");
+        assert!(content.contains("g.greet(…)"), "{content}");
+    }
+
+    #[test]
+    fn hover_on_a_ufcs_free_fn_auto_ref_shows_the_by_ref_verdict() {
+        // Fixture mirrors `brink-analyzer`'s
+        // `a_ref_first_param_auto_refs_a_frame_local_receiver`
+        // (crates/internal/brink-analyzer/tests/ufcs_resolution.rs) — `bump`'s
+        // first parameter is `ref`, so the desugar passes the receiver by
+        // reference (D5 auto-ref, issue #1462).
+        let src = "\
+fn bump(ref n, amount) {
+  n = n + amount;
+}
+
+fn main() {
+  let g = 1;
+  g.bump(5);
+}
+";
+        let content = hover_at_native(src, "bump(5)").expect("hover on the method segment");
+        assert!(content.contains("**free function (by ref)**"), "{content}");
+        assert!(content.contains("bump(ref g, …)"), "{content}");
+        assert!(content.contains("passed by reference"), "{content}");
     }
 }

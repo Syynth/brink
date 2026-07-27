@@ -107,6 +107,10 @@ mod range_values;
 mod read_count_builtin;
 #[path = "lir_lowering/return_statement.rs"]
 mod return_statement;
+#[path = "lir_lowering/root_content_definition_id_soundness.rs"]
+mod root_content_definition_id_soundness;
+#[path = "lir_lowering/root_final_gather.rs"]
+mod root_final_gather;
 #[path = "lir_lowering/sequences.rs"]
 mod sequences;
 #[path = "lir_lowering/stitches.rs"]

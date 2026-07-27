@@ -478,10 +478,11 @@ fn command_triggers_flush_in_flow_id_order() {
 /// ```
 ///
 /// Measures the cost of one batch turn (frame-start snapshot + serial Step
-/// with the per-flow snapshot clone + flow-id-ordered Apply) for a story that
-/// writes one global and ends. The per-flow clone is BH-2's known serial cost
-/// (§12.2's "borrow, don't copy" is the BH-3 optimization) — these numbers
-/// exist to bound it, not to be a throughput target.
+/// with a `FrameStartView` borrow-and-overlay over the shared frame-start
+/// world + flow-id-ordered Apply) for a story that writes one global and
+/// ends. §12.2's "borrow, don't copy" (#937) is the mechanism this bounds —
+/// these numbers exist to bound the borrow + per-flow overlay cost, not to
+/// be a throughput target.
 #[test]
 #[ignore = "scenario harness: wall-clock timing, run explicitly with --ignored --nocapture"]
 fn batch_serial_scenario_numbers() {

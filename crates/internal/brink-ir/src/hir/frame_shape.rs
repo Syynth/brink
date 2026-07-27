@@ -316,6 +316,12 @@ impl Analyzer {
 
     fn walk_if_stmt(&mut self, i: &IfStmt, pos: usize) {
         self.record_reads(&i.condition, pos);
+        // B1b (issue #1475): an `as` binding declares a local at the
+        // condition, in scope for the success arm — the same shape a `for`
+        // variable has at the loop head (`walk_for_stmt`).
+        if let Some(binding) = &i.binding {
+            self.decls.push((binding.text.clone(), pos));
+        }
         for s in &i.body {
             self.walk_block_stmt(s);
         }
@@ -343,6 +349,9 @@ impl Analyzer {
             self.record_await(pos, cond_reads);
         }
         self.record_reads(&w.condition, pos);
+        if let Some(binding) = &w.binding {
+            self.decls.push((binding.text.clone(), pos));
+        }
         for s in &w.body {
             self.walk_block_stmt(s);
         }
@@ -425,13 +434,16 @@ impl Analyzer {
             if let Some(e) = &branch.condition {
                 self.record_reads(e, pos);
             }
+            if let Some(binding) = &branch.binding {
+                self.decls.push((binding.text.clone(), pos));
+            }
             self.walk_block(&branch.body);
         }
     }
 
     fn walk_sequence(&mut self, seq: &Sequence) {
         for branch in &seq.branches {
-            self.walk_block(branch);
+            self.walk_block(&branch.body);
         }
     }
 }
@@ -447,9 +459,9 @@ fn collect_reads(expr: &Expr, sink: &mut impl FnMut(&String)) {
             }
         }
         Expr::Prefix(_, inner) | Expr::Postfix(inner, _) => collect_reads(inner, sink),
-        Expr::Infix(lhs, _, rhs) => {
-            collect_reads(lhs, sink);
-            collect_reads(rhs, sink);
+        Expr::Infix(ie) => {
+            collect_reads(&ie.lhs, sink);
+            collect_reads(&ie.rhs, sink);
         }
         Expr::Call(_path, args) => {
             for arg in args {

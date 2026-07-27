@@ -1026,43 +1026,41 @@ fn list_ordinal_shift(lv: &ListValue, shift: i32, program: &Program) -> ListValu
     }
 }
 
-/// `or`-coalescing (`docs/stdlib-spec.md` §1.6a, issue #1460): `[lhs, rhs]`
-/// → per the ruled typing (`(Option[T],T)->T`,
-/// `(Option[T],Option[T])->Option[T]`).
+/// `or`-coalescing's branch test (`docs/stdlib-spec.md` §1.6a, issue #1460;
+/// short-circuited per issue #1471's ruling), backing
+/// `Opcode::CoalesceSome`.
 ///
-/// `lhs` must be `Value::OptionVal`. Note this is a *runtime* check, not a
-/// statically-guaranteed invariant: native's strict-only wiring (B0.10)
-/// has not landed (`brink-analyzer::strict::native_strict_only_error`'s own
-/// doc), so a native compile with an un-overridden default `types` policy
-/// runs zero strict-mode checks — `coalesce_mismatch::check`'s `E066`
-/// (review finding on PR #1469/#1460) only fires when a caller has
-/// explicitly set `types = strict`. A non-Option `lhs` reaching here can
-/// therefore be an un-caught author mistake, not only malformed bytecode;
-/// it faults rather than guessing either way. `none` yields `rhs` unchanged
-/// (already the right shape by construction, whichever typing branch
-/// produced it). `some(v)` yields the unwrapped `v` when `rhs` is not
-/// itself an `OptionVal` (the collapse form), or the original `some(v)`
-/// unchanged when `rhs` *is* an `OptionVal` (the two-Option form,
-/// preserving optionality for chaining) — decided from `rhs`'s runtime
-/// shape, the same information the static typing rule used to pick the
-/// branch, so no separate opcode or codegen variant is needed for the two
-/// forms. This runtime shape-dispatch is also why a *mismatched* fallback
-/// type (`some(1) or "text"`) is never caught here: both operands are
-/// concrete values by the time this runs, and `some(1)`'s `rhs` not being
-/// an `OptionVal` is indistinguishable from the intended collapse form — it
-/// silently unwraps to `1`. That case has no runtime backstop at all;
-/// `coalesce_mismatch::check`'s compile-time `E066` is the only place it is
-/// ever caught.
-pub(crate) fn coalesce(lhs: Value, rhs: Value) -> Result<Value, RuntimeError> {
-    match lhs {
-        Value::OptionVal(Some(inner)) => {
-            if matches!(rhs, Value::OptionVal(_)) {
-                Ok(Value::OptionVal(Some(inner)))
-            } else {
-                Ok(Arc::try_unwrap(inner).unwrap_or_else(|shared| (*shared).clone()))
-            }
-        }
-        Value::OptionVal(None) => Ok(rhs),
+/// `val` — the already-popped `lhs` — must be `Value::OptionVal`. Note this
+/// is a *runtime* check, not a statically-guaranteed invariant: native's
+/// strict-only wiring (B0.10) has not landed
+/// (`brink-analyzer::strict::native_strict_only_error`'s own doc), so a
+/// native compile with an un-overridden default `types` policy runs zero
+/// strict-mode checks — `brink_analyzer::coalesce::check`'s `E066` (review
+/// finding on PR #1469/#1460) only fires when a caller has explicitly set
+/// `types = strict`. A non-Option `lhs` reaching here can therefore be an
+/// un-caught author mistake, not only malformed bytecode; it faults rather
+/// than guessing either way. That fault is the whole of the gradual-mode
+/// posture ruled on issue #1492: with an unpinned left-hand type, **this
+/// check is the operator's semantics** — an Option coalesces, a plain value
+/// faults.
+///
+/// `Ok(Some(v))` (`some(v)`, unwrapped) tells the caller to push `v` and
+/// take the jump — `rhs`'s bytecode is skipped entirely, the short-circuit
+/// itself. `Ok(None)` (`none`) tells the caller to push nothing and fall
+/// through to evaluate `rhs`; this function is never even told what `rhs`
+/// is. Which typing form applies — `(Option[T],T)->T` (collapse, `v` stands
+/// unwrapped) vs `(Option[T],Option[T])->Option[U]` (preserve, re-wrapped by
+/// a `MakeSome` at the join) — is no longer decided here: short-circuiting
+/// means `rhs` may never run by the time a `some(_)` `lhs` needs the answer,
+/// so that decision moved to lowering time, where it is read off the
+/// analyzer's recorded types (`brink_ir::lir::CoalesceShape`) rather than
+/// off any runtime value. See `Opcode::CoalesceSome`'s own doc.
+pub(crate) fn coalesce_unwrap_some(val: Value) -> Result<Option<Value>, RuntimeError> {
+    match val {
+        Value::OptionVal(Some(inner)) => Ok(Some(
+            Arc::try_unwrap(inner).unwrap_or_else(|shared| (*shared).clone()),
+        )),
+        Value::OptionVal(None) => Ok(None),
         other => Err(RuntimeError::TypeError(format!(
             "or-coalescing requires an Option left-hand side, got {:?}",
             other.value_type()
@@ -1518,53 +1516,37 @@ mod tests {
         );
     }
 
-    /// B1 `or`-coalescing (`docs/stdlib-spec.md` §1.6a, issue #1460): the
-    /// collapse form — `Option[T] or T` — unwraps `some(v)` and passes
-    /// `none` through to the (already-`T`-typed) fallback unchanged.
+    /// B1 `or`-coalescing's branch test (`docs/stdlib-spec.md` §1.6a, issue
+    /// #1460; short-circuited per issue #1471): `some(v)` unwraps to
+    /// `Some(v)`, which tells the VM to push `v` and jump — `rhs` is never
+    /// evaluated. Whether that `v` is then re-wrapped (the two-Option form)
+    /// is codegen's call, from the analyzer's recorded types, not this
+    /// function's.
     #[test]
-    fn coalesce_collapse_form() {
+    fn coalesce_unwrap_some_unwraps_some() {
         assert_eq!(
-            coalesce(Value::some(Value::Int(1)), Value::Int(2)),
-            Ok(Value::Int(1))
+            coalesce_unwrap_some(Value::some(Value::Int(1))),
+            Ok(Some(Value::Int(1)))
         );
-        assert_eq!(coalesce(Value::none(), Value::Int(2)), Ok(Value::Int(2)));
     }
 
-    /// The two-Option form — `Option[T] or Option[T]` — keeps optionality:
-    /// `some(v)` stays wrapped (chaining relies on this), `none` passes the
-    /// right-hand `Option` through unchanged, `some` or `none` alike.
+    /// `none` is `Ok(None)`: push nothing, fall through, and let the `rhs`
+    /// bytecode that codegen emitted right after the opcode run. This
+    /// function is never even told what `rhs` is.
     #[test]
-    fn coalesce_two_option_form_preserves_optionality() {
-        assert_eq!(
-            coalesce(Value::some(Value::Int(1)), Value::some(Value::Int(2))),
-            Ok(Value::some(Value::Int(1)))
-        );
-        assert_eq!(
-            coalesce(Value::none(), Value::some(Value::Int(2))),
-            Ok(Value::some(Value::Int(2)))
-        );
-        assert_eq!(coalesce(Value::none(), Value::none()), Ok(Value::none()));
+    fn coalesce_unwrap_some_none_is_a_no_op() {
+        assert_eq!(coalesce_unwrap_some(Value::none()), Ok(None));
     }
 
-    /// Left-associative chaining (`a or b or default`) falls naturally out
-    /// of repeated application — no bespoke associativity machinery, same
-    /// as the typing rule (`infer::ty::coalesce`'s doc in brink-analyzer).
+    /// A non-Option left-hand side faults rather than guessing — the same
+    /// "your program is wrong" doctrine as every other malformed-question
+    /// fault in this module, and (issue #1492's ruling) the *whole*
+    /// semantics of the operator when the left-hand type could not be
+    /// statically pinned: `CoalesceShape::RuntimeCheck` leans on exactly
+    /// this check.
     #[test]
-    fn coalesce_chains_left_associatively() {
-        let step1 = coalesce(Value::none(), Value::some(Value::Int(2))).unwrap();
-        assert_eq!(coalesce(step1, Value::Int(9)), Ok(Value::Int(2)));
-
-        let step1 = coalesce(Value::none(), Value::none()).unwrap();
-        assert_eq!(coalesce(step1, Value::Int(9)), Ok(Value::Int(9)));
-    }
-
-    /// A non-Option left-hand side is malformed bytecode (strict-mode
-    /// typing on the native surface should never emit this) — faults
-    /// rather than guessing, the same "your program is wrong" doctrine as
-    /// every other malformed-question fault in this module.
-    #[test]
-    fn coalesce_non_option_lhs_faults() {
-        let err = coalesce(Value::Int(1), Value::Int(2)).unwrap_err();
+    fn coalesce_unwrap_some_non_option_lhs_faults() {
+        let err = coalesce_unwrap_some(Value::Int(1)).unwrap_err();
         assert!(matches!(err, RuntimeError::TypeError(_)), "{err:?}");
     }
 

@@ -25,10 +25,25 @@ pub struct StepRecord {
     pub tags: Vec<String>,
     /// What happened at the end of this step.
     pub outcome: StepOutcome,
-    /// External function calls made during this step.
-    pub external_calls: Vec<ExternalCall>,
     /// State mutations observed during this step.
     pub writes: Vec<StateWrite>,
+}
+
+impl StepRecord {
+    /// Build a step record for a plain `continue_single_observed` call.
+    pub fn new(
+        text: String,
+        tags: Vec<String>,
+        outcome: StepOutcome,
+        writes: Vec<StateWrite>,
+    ) -> Self {
+        Self {
+            text,
+            tags,
+            outcome,
+            writes,
+        }
+    }
 }
 
 /// The outcome of a single step.
@@ -53,21 +68,6 @@ pub struct ChoiceRecord {
     pub text: String,
     pub index: usize,
     pub tags: Vec<String>,
-}
-
-/// A record of an external function call.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ExternalCall {
-    pub name: String,
-    pub args: Vec<Value>,
-    pub result: ExternalCallResult,
-}
-
-/// How an external function call was resolved.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum ExternalCallResult {
-    Resolved(Value),
-    Fallback,
 }
 
 /// A single state mutation observed during execution.

@@ -18,7 +18,9 @@
 //! the INCLUDE graph, so it is unit-testable in isolation and produces a
 //! deterministic [`ModuleMap`] regardless of file iteration order.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use brink_analyzer::{ModuleMap, ResolvedModule};
 use brink_ir::{Diagnostic, DiagnosticCode, FileId};
@@ -45,11 +47,44 @@ pub(crate) fn file_stem(path: &str) -> &str {
     name.strip_suffix(".ink").unwrap_or(name)
 }
 
+/// The **root-relative key** a native file's module identity is derived
+/// from, given the database's registered native source root (issue #1572).
+///
+/// [`native_module_path`] is contractually a function of a *root-relative*
+/// key. Native discovery (`brink_driver::discover_native`) already registers
+/// files under exactly such keys, so `root` is `None` there and `path` is
+/// returned untouched. A long-lived editor session is the other case: the LSP
+/// keys `ProjectDb` by **absolute OS path** (it must — every path it holds
+/// round-trips through a `file://` URI), so without the strip below every
+/// module name it minted embedded the machine's directory layout
+/// (`story::Users::…::market::barter`) and diverged from a real compile of the
+/// same tree. Normalizing here, at the one place the identity function is
+/// fed, is the house-rule-19a "normalize before you key" fix: the db keyspace
+/// stays absolute (and collision-free across workspace roots) while identity
+/// stays root-relative.
+///
+/// The strip is purely lexical (`Path::strip_prefix`, component-wise — no
+/// filesystem access, so it is wasm-safe), and a `path` that does not live
+/// under `root` is returned unchanged rather than mangled: a file outside the
+/// configured tree keeps whatever key it was registered under, exactly as
+/// before this function existed.
+pub(crate) fn native_root_relative_key<'a>(root: Option<&str>, path: &'a str) -> Cow<'a, str> {
+    let Some(root) = root.filter(|r| !r.is_empty()) else {
+        return Cow::Borrowed(path);
+    };
+    match Path::new(path).strip_prefix(Path::new(root)) {
+        Ok(rel) => Cow::Owned(rel.to_string_lossy().into_owned()),
+        Err(_) => Cow::Borrowed(path),
+    }
+}
+
 /// A native `.brink` file's module path, derived **purely** from its
 /// root-relative key (decision-log 2026-07-22 "Native module identity: pure
 /// function of the root-relative path"; charter §13.2: path on disk = path
-/// in language). Directory segments become `::`-separated module walls, the
-/// file (`.brink` stripped) is the leaf, and `story::` is the absolute root:
+/// in language) — see [`native_root_relative_key`] for how a caller that
+/// keys by absolute path obtains one. Directory segments become
+/// `::`-separated module walls, the file (`.brink` stripped) is the leaf, and
+/// `story::` is the absolute root:
 ///
 /// - `barter.brink`            → `story::barter`
 /// - `market/barter.brink`     → `story::market::barter`
@@ -216,6 +251,64 @@ mod tests {
             "story::market::barter"
         );
         assert_eq!(native_module_path("./main.brink"), "story::main");
+    }
+
+    /// Issue #1572: with no declared root — every compile path, where
+    /// `discover_native` already keys root-relative — the key is the path,
+    /// untouched.
+    #[test]
+    fn native_root_relative_key_is_identity_without_a_root() {
+        assert_eq!(
+            native_root_relative_key(None, "market/barter.brink"),
+            "market/barter.brink"
+        );
+        // An empty root is treated as "no root", not as a prefix that
+        // matches everything.
+        assert_eq!(
+            native_root_relative_key(Some(""), "market/barter.brink"),
+            "market/barter.brink"
+        );
+    }
+
+    /// Issue #1572: an absolute-keyed consumer (the LSP) that declares its
+    /// tree root gets exactly the key `discover_native` would have produced —
+    /// so `native_module_path` mints compile-identical module identity.
+    #[test]
+    fn native_root_relative_key_strips_a_declared_root() {
+        let root = "/home/dev/game";
+        assert_eq!(
+            native_root_relative_key(Some(root), "/home/dev/game/market/barter.brink"),
+            "market/barter.brink"
+        );
+        assert_eq!(
+            native_module_path(&native_root_relative_key(
+                Some(root),
+                "/home/dev/game/market/barter.brink"
+            )),
+            native_module_path("market/barter.brink"),
+            "the whole point: absolute-keyed identity must equal compile identity"
+        );
+        // A trailing separator on the root is the same root.
+        assert_eq!(
+            native_root_relative_key(Some("/home/dev/game/"), "/home/dev/game/main.brink"),
+            "main.brink"
+        );
+    }
+
+    /// A path outside the declared root keeps whatever key it was registered
+    /// under — never a mangled partial strip. `Path::strip_prefix` matches
+    /// whole components, so a root that is only a *textual* prefix of the
+    /// path (`…/game` vs `…/game-assets`) is not a match either.
+    #[test]
+    fn native_root_relative_key_leaves_paths_outside_the_root_alone() {
+        assert_eq!(
+            native_root_relative_key(Some("/home/dev/game"), "/elsewhere/stray.brink"),
+            "/elsewhere/stray.brink"
+        );
+        assert_eq!(
+            native_root_relative_key(Some("/home/dev/game"), "/home/dev/game-assets/a.brink"),
+            "/home/dev/game-assets/a.brink"
+        );
     }
 
     fn input(file: u32, stem: &str, declared: Option<&str>) -> FileModuleInput {

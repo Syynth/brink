@@ -175,7 +175,16 @@ anchors (F-I#1, F-J).
 - **Names / paths.** `Name.text` and `Path.segments` must be well-formed and
   stamped in the exact qualification convention the index is queried against:
   stitches `knot.stitch`, labels `knot[.stitch].label`, list items `List.item`
-  (F-I#3). Malformed → silent non-resolution.
+  (F-I#3). Malformed → silent non-resolution. **Carve-out (B0.3, issue
+  #1188):** this is the shape for a *nested* stitch/label. Two real,
+  corpus-legitimate shapes are bare (0 dots) instead — a promoted top-level
+  stitch (`= stitch` with no enclosing `==knot==`,
+  `hir::lower::structure::stitch::lower_top_level_stitch`) and a label
+  declared before the first knot (`hir.root_content`,
+  `brink_ir::symbols::project::qualify_label` with no enclosing knot). `E126`
+  (`brink_analyzer::admission::conforms_to_convention`) accepts both the
+  nested and the bare shape for stitches/labels; this is not a bug, and a
+  frontend must be prepared to see either.
 - **Dialect tags.** There is **no dialect tag on any HIR node** (F-B, F-I#10).
   Dialect and type-policy arrive as `AnalysisOptions`. A frontend must not try to
   embed them. (§4 proposes the native frontend declares its dialect to the
@@ -474,7 +483,12 @@ today silent (§3):
    `is_function` is indexed with the function sentinel.
 2. **Range well-formedness** (kills the D2 class at admission): every node range is
    non-empty and within file bounds; no two distinct references share a range
-   (the join key must be unique).
+   (the join key must be unique). **Ruling (B0.3, issue #1188):** unlike check
+   1, `Param`/`Temp` local name ranges ARE in scope here — a `Param.name.range`
+   becomes `LocalSymbol.range` (`symbols::project_manifest`), a load-bearing
+   §1.3 shadowing-order join key, so `Knot`/`Stitch` params are walked for
+   well-formedness even though locals are out of scope for check 1 (which is
+   scoped to `DeclaredSymbol`, not `LocalSymbol`).
 3. **Name-convention conformance** (kills F-I#3 silent failures): stitch/label/
    list-item names match the required qualification shape (`.matches('.').count()`
    expectations made explicit and checked).

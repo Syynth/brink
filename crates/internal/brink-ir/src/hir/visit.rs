@@ -22,7 +22,11 @@
 //! visit:
 //! - the flat file-level declaration vecs (`variables`, `constants`, `lists`,
 //!   `externals`, `includes`) — these are flat, non-recursive, and iterated
-//!   directly by callers that need them;
+//!   directly by callers that need them. A `VAR`/`CONST` initializer is an
+//!   *expression*, though, and one that
+//!   [`crate::symbols::project_manifest`] does record references from — a
+//!   consumer that needs those expressions too drives
+//!   [`visit_with_decl_initializers`] instead of [`visit`] (issue #1571);
 //! - knot / stitch names and params beyond exposing the `Knot` / `Stitch` node
 //!   to the hooks;
 //! - **tag contents** — neither `Content.tags` nor `Choice.tags` are descended,
@@ -125,6 +129,34 @@ pub fn visit(hir: &HirFile, v: &mut impl HirVisitor) {
             v.exit_stitch(stitch);
         }
         v.exit_knot(knot);
+    }
+}
+
+/// Walk everything [`visit`] walks, **plus** the initializer expression of
+/// every file-level `VAR` / `CONST` declaration (issue #1571).
+///
+/// [`visit`] covers the block tree only (see the module doc's Scope section),
+/// so a visitor driven by it never sees `VAR n = p.x.y`'s initializer. But
+/// [`crate::symbols::project_manifest`] *does* walk those initializers and
+/// records an `UnresolvedRef` for each path in them, which the analyzer then
+/// resolves into a `ResolvedRef` at the path's whole-path range. Any consumer
+/// that maps a `ResolvedRef` back onto the HIR path it came from — `brink-ide`'s
+/// rename / find-references segment narrowing — must therefore walk with this
+/// entry point, or every reference written inside a declaration initializer
+/// silently misses the mapping and is handled as if it had no HIR path at all.
+///
+/// Deliberately a second entry point rather than folded into [`visit`]: the
+/// existing structural consumers (folding, story graph, `validate`,
+/// `external_check`) are block-tree walkers by contract, and an initializer
+/// expression is not part of the block tree — widening [`visit`] itself would
+/// silently change what every one of them sees.
+pub fn visit_with_decl_initializers(hir: &HirFile, v: &mut impl HirVisitor) {
+    visit(hir, v);
+    for var in &hir.variables {
+        walk_expr(&var.value, v);
+    }
+    for konst in &hir.constants {
+        walk_expr(&konst.value, v);
     }
 }
 
@@ -322,7 +354,7 @@ fn walk_conditional(cond: &Conditional, ctx: ContentContext, v: &mut impl HirVis
 
 fn walk_sequence(seq: &Sequence, ctx: ContentContext, v: &mut impl HirVisitor) {
     for branch in &seq.branches {
-        walk_block_ctx(branch, ctx, v);
+        walk_block_ctx(&branch.body, ctx, v);
     }
 }
 
@@ -338,9 +370,9 @@ fn walk_expr(expr: &Expr, v: &mut impl HirVisitor) {
             }
         }
         Expr::Prefix(_, inner) | Expr::Postfix(inner, _) => walk_expr(inner, v),
-        Expr::Infix(lhs, _, rhs) => {
-            walk_expr(lhs, v);
-            walk_expr(rhs, v);
+        Expr::Infix(ie) => {
+            walk_expr(&ie.lhs, v);
+            walk_expr(&ie.rhs, v);
         }
         Expr::String(s) => {
             for part in &s.parts {
@@ -475,5 +507,59 @@ mod tests {
 
         assert_eq!(c.exprs, 0, "no expression hooks when visit_exprs is false");
         assert!(c.content >= 1, "content is still visited");
+    }
+
+    /// Issue #1571: `visit` never reaches a `VAR`/`CONST` initializer, even
+    /// though `symbols::project_manifest` walks exactly those expressions and
+    /// records references from them — so a `ResolvedRef` produced inside one
+    /// has no HIR path a `visit`-driven consumer can find.
+    #[test]
+    fn decl_initializers_are_reached_only_by_the_dedicated_entry_point() {
+        let hir = lower_src("VAR c = Colors.Red\nCONST k = Other.Thing\n");
+
+        let mut plain = Counts {
+            visit_exprs: true,
+            ..Default::default()
+        };
+        visit(&hir, &mut plain);
+        assert_eq!(
+            plain.exprs, 0,
+            "`visit` walks the block tree only — no declaration initializers"
+        );
+
+        let mut with_decls = Counts {
+            visit_exprs: true,
+            ..Default::default()
+        };
+        visit_with_decl_initializers(&hir, &mut with_decls);
+        assert_eq!(
+            with_decls.exprs, 2,
+            "both the VAR and the CONST initializer expressions are visited"
+        );
+    }
+
+    #[test]
+    fn decl_initializer_walk_still_covers_everything_visit_covers() {
+        let src = "Hello {name}\n=== greet ===\n= again\n+ [pick] -> greet\n";
+        let hir = lower_src(src);
+
+        let mut plain = Counts {
+            visit_exprs: true,
+            ..Default::default()
+        };
+        visit(&hir, &mut plain);
+        let mut with_decls = Counts {
+            visit_exprs: true,
+            ..Default::default()
+        };
+        visit_with_decl_initializers(&hir, &mut with_decls);
+
+        // No declarations in this fixture, so the two walks must agree exactly.
+        assert_eq!(plain.knots, with_decls.knots);
+        assert_eq!(plain.stitches, with_decls.stitches);
+        assert_eq!(plain.enter_block, with_decls.enter_block);
+        assert_eq!(plain.stmts, with_decls.stmts);
+        assert_eq!(plain.content, with_decls.content);
+        assert_eq!(plain.exprs, with_decls.exprs);
     }
 }

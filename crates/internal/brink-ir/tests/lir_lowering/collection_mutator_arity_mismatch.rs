@@ -38,7 +38,7 @@ fn remove_wrong_arity_emits_e058_naming_the_signature() {
     let (_program, diags) = lower_ink_with_warnings("VAR a = #[1]\n~ remove(a, 0, 1)\n");
     let e058 = find_e058(&diags).expect("expected E058 for remove with 3 arguments");
     assert!(
-        e058.message.contains("remove(container, key_or_index)"),
+        e058.message.contains("remove(map, key)"),
         "message should name the expected signature: {}",
         e058.message
     );

@@ -699,6 +699,9 @@ export class StoryRunner {
   begin_replay(): void { /* no-op */ }
   end_replay(): void { /* no-op */ }
   has_recording(): boolean { return false; }
+  // #1573: `didSafeExit` wrapper passthrough — the mock story never reaches
+  // an explicit `-> DONE`, so this is always false.
+  did_safe_exit(): boolean { return false; }
   // Shared-flow surface (#200): a minimal in-memory flow registry so the studio
   // multi-flow path is exercisable. Each flow ends immediately, like the mock
   // story.
@@ -818,6 +821,9 @@ export class WebSession {
   choose(_index: number): void { this.events += 1; }
   resolve_external(_value: unknown): void { this.events += 1; }
   has_pending_external(): boolean { return false; }
+  // #1573: `didSafeExit` wrapper passthrough — the mock story never reaches
+  // an explicit `-> DONE`, so this is always false.
+  did_safe_exit(): boolean { return false; }
   set_var(_name: string, _value: unknown): boolean { this.events += 1; return true; }
   go_to_path(_path: string, _args: unknown[]): void { this.events += 1; }
   save_state(): string { return JSON.stringify({ globals: {}, visited: [], turn_index: this.turn }); }

@@ -19,9 +19,10 @@ use crate::queries::{
     SourceFile, analysis_query, call_site_diagnostics_query, call_site_metas_query,
     diagnostics_query, effects_query, has_errors_query, include_graph_query, infer_body_query,
     inferred_signature_query, lir_knot_chunk_query, lir_prelude_decls_query, lir_query,
-    lowered_query, parse_native_query, parse_query, per_file_diagnostics_query,
-    resolutions_index_query, resolve_query, signature_query, story_data_query, suppressions_query,
-    symbol_index_query, type_diagnostics_query, type_inference_query, value_meta_query,
+    local_signature_query, lowered_query, module_map_query, parse_native_query, parse_query,
+    per_file_diagnostics_query, resolutions_index_query, resolve_query, signature_query,
+    story_data_query, suppressions_query, symbol_index_query, type_diagnostics_query,
+    type_inference_query, ufcs_resolution_query, value_meta_query,
 };
 
 /// Stateful incremental project database.
@@ -55,7 +56,7 @@ impl ProjectDb {
     /// Create an empty project database.
     pub fn new() -> Self {
         let salsa = BrinkDatabase::default();
-        let project = ProjectInput::new(&salsa, Vec::new(), None, AnalysisOptions::default());
+        let project = ProjectInput::new(&salsa, Vec::new(), None, AnalysisOptions::default(), None);
         Self {
             salsa,
             project,
@@ -175,6 +176,34 @@ impl ProjectDb {
         self.project.analysis_options(&self.salsa)
     }
 
+    /// Register the directory native `.brink` file keys are root-relative
+    /// *to* (issue #1572).
+    ///
+    /// A native file's module — and therefore every `DefinitionId` it
+    /// qualifies — is a pure function of its **root-relative** key
+    /// (decision-log 2026-07-22 "Native module identity"). `brink-driver`'s
+    /// `discover_native` already registers such keys, so a compile leaves
+    /// this `None` and nothing changes. A consumer that must key by some
+    /// other prefix — the LSP keys by absolute OS path, because every path it
+    /// holds round-trips through a `file://` URI — declares that prefix here,
+    /// and the identity it mints then matches a real compile of the same
+    /// tree byte for byte instead of embedding the machine's directory
+    /// layout. Paths not under `root` are unaffected.
+    ///
+    /// Ink (`.ink`) files never consult this: their module is their file
+    /// *stem*, which no path prefix can change.
+    pub fn set_native_root(&mut self, root: Option<String>) {
+        if self.project.native_root(&self.salsa) != &root {
+            self.project.set_native_root(&mut self.salsa).to(root);
+        }
+    }
+
+    /// The registered native source root, if any — see
+    /// [`set_native_root`](Self::set_native_root).
+    pub fn native_root(&self) -> Option<&str> {
+        self.project.native_root(&self.salsa).as_deref()
+    }
+
     /// Look up a file's ID by path.
     pub fn file_id(&self, path: &str) -> Option<FileId> {
         self.path_to_id.get(path).copied()
@@ -251,7 +280,10 @@ impl ProjectDb {
         Some(lowered_query(&self.salsa, *file).admission.as_slice())
     }
 
-    /// Get parsed suppression directives for a file.
+    /// Get suppression directives for a file — the text-scanned
+    /// `brink-disable`/`brink-expect` comments merged with the file's
+    /// HIR-derived `@[allow(…)]` scopes (issue #1161), i.e. parsed ∪
+    /// HIR-derived, not parsed alone.
     pub fn suppressions(&self, id: FileId) -> Option<&Suppressions> {
         let file = self.files.get(&id)?;
         Some(suppressions_query(&self.salsa, *file))
@@ -271,12 +303,99 @@ impl ProjectDb {
         self.include_graph().find_cycle()
     }
 
-    /// Compute independent projects from include relationships.
+    /// Compute independent projects — the unit every editor surface scopes
+    /// itself to (the LSP analyzes one project at a time, and navigation only
+    /// ever sees the files of the project the cursor's file belongs to).
     ///
-    /// Returns `(root, members)` pairs sorted by root `FileId`.
+    /// Returns `(root, members)` pairs sorted by root `FileId`; each
+    /// project's members are sorted by `FileId`.
+    ///
+    /// One rule per frontend:
+    ///
+    /// - **Ink** groups by `INCLUDE` reachability — a root file plus its
+    ///   transitive `INCLUDE` closure (see
+    ///   [`IncludeGraph::compute_projects`](crate::include_graph::IncludeGraph::compute_projects)).
+    ///   Unchanged.
+    /// - **Native `.brink`** files are *one* project, all of them. Issue
+    ///   #1562: `.brink` has no `INCLUDE` (the module system replaced it), so
+    ///   running them through the ink rule made every native file its own
+    ///   single-file project and broke go-to-definition, find-references,
+    ///   completion, and diagnostics across every real native workspace. The
+    ///   rule here is the one
+    ///   [`compilation_closure_files`](crate::queries::compilation_closure_files)
+    ///   already applies to codegen (decision-log *"Native multi-file
+    ///   linking"*, 2026-07-23): the discovered module set **is** the
+    ///   compilation unit, so it is also the editor's scope. No second
+    ///   discovery mechanism is involved — this partitions the files the db
+    ///   already holds.
+    ///
+    /// The two sets are disjoint, so an `INCLUDE` in an ink file that names a
+    /// `.brink` target (not expressible in native, and meaningless as ink)
+    /// contributes no edge: the native file is in the native project only.
     pub fn compute_projects(&self) -> Vec<(FileId, Vec<FileId>)> {
-        let all: Vec<_> = self.file_ids().collect();
-        self.include_graph().compute_projects(&all)
+        let (native, ink): (Vec<FileId>, Vec<FileId>) =
+            self.file_ids().partition(|&id| self.is_native(id));
+
+        let mut projects = self.include_graph().compute_projects(&ink);
+        if let Some(root) = self.native_project_root(&native) {
+            projects.push((root, native));
+        }
+        projects.sort_by_key(|(root, _)| root.0);
+        projects
+    }
+
+    /// Whether `id` is a native (`.brink`) module rather than an ink file.
+    ///
+    /// `pub` (issue #1562 review finding) so a caller running the off-db
+    /// `brink_analyzer::analyze_with_modules` pass per project root —
+    /// `brink-lsp`'s `analysis_loop`, which needs the same "does this
+    /// project's dialect axis even apply" answer
+    /// [`crate::queries::project_is_native`] gives the salsa-backed
+    /// `symbol_index_query` — can ask it of a project's root `FileId`
+    /// without rederiving [`crate::queries::file_language`] itself.
+    pub fn is_native(&self, id: FileId) -> bool {
+        self.file_path(id).is_some_and(|path| {
+            crate::queries::file_language(path) == crate::queries::Language::Native
+        })
+    }
+
+    /// Whether **every** file this db holds is a native (`.brink`) module —
+    /// `false` for an empty db or one holding even a single ink file.
+    ///
+    /// The whole-db view of [`crate::queries::project_is_all_native`], for a
+    /// caller that analyzes this db's entire file set as one unit off-db
+    /// (`IdeSession`, whose editor analysis runs
+    /// [`brink_analyzer::analyze_with_modules`] over
+    /// [`analysis_inputs`](Self::analysis_inputs)). That flag is
+    /// whole-project, so it is only correct when the set is *entirely*
+    /// native: a mixed set must analyze as ink, or an ink file would get the
+    /// native arm of passes that would then mis-judge it.
+    ///
+    /// Distinct from [`is_native`](Self::is_native), which answers for one
+    /// file and is what a per-project caller (`brink-lsp`'s `analysis_loop`,
+    /// which analyzes each project root separately) asks of its root.
+    pub fn is_all_native(&self) -> bool {
+        crate::queries::project_is_all_native(&self.salsa, self.project)
+    }
+
+    /// The root of the single native project: the file whose **path** sorts
+    /// first (`FileId` breaking a tie that paths cannot actually produce).
+    /// `None` when the db holds no native file.
+    ///
+    /// Keyed on the path rather than on the `FileId` — which is how
+    /// [`compilation_closure_files`](crate::queries::compilation_closure_files)
+    /// orders the same file set — because a project root is *identity*, not
+    /// just order: it keys the published per-project analysis and names the
+    /// project in multi-project diagnostics. `FileId`s are minted in
+    /// registration order, which for a long-lived LSP session is `didOpen`
+    /// order and varies run to run; the path does not.
+    fn native_project_root(&self, native: &[FileId]) -> Option<FileId> {
+        native.iter().copied().min_by(|&a, &b| {
+            self.file_path(a)
+                .unwrap_or_default()
+                .cmp(self.file_path(b).unwrap_or_default())
+                .then(a.0.cmp(&b.0))
+        })
     }
 
     /// All files reachable from `entry` via the forward `INCLUDE` graph,
@@ -311,7 +430,12 @@ impl ProjectDb {
     /// Snapshot all analysis inputs for background analysis.
     ///
     /// Returns `(FileId, HirFile, SymbolManifest)` tuples cloned out of the db,
-    /// so the caller can run `brink_analyzer::analyze()` without holding the lock.
+    /// so the caller can run `brink_analyzer::analyze_with_modules` (with
+    /// [`module_map`](Self::module_map), also snapshotted) without holding
+    /// the lock. Issue #1526: a bare `brink_analyzer::analyze()` /
+    /// `analyze_with_options` over these inputs is module-*blind* and mints
+    /// different `DefinitionId`s than this db's own queries for native
+    /// `.brink` files — see [`module_map`](Self::module_map)'s doc.
     pub fn analysis_inputs(&self) -> Vec<(FileId, HirFile, SymbolManifest)> {
         let ids: Vec<_> = self.file_ids().collect();
         self.analysis_inputs_for(&ids)
@@ -346,6 +470,44 @@ impl ProjectDb {
         &symbol_index_query(&self.salsa, self.project).1
     }
 
+    /// Every file's resolved module (M-1, docs/modules-spec.md §1/§5) — the
+    /// map that qualifies `DefinitionId` identity, built here from file
+    /// stems, `#@module` declarations, the INCLUDE graph, and (for native
+    /// `.brink` files) the path-derived `story::…` module.
+    ///
+    /// Exposed (issue #1526) for callers that must run
+    /// [`brink_analyzer::analyze_with_modules`] *outside* the db — the LSP's
+    /// background analysis pass and [`analysis_inputs`](Self::analysis_inputs)
+    /// consumers generally — so their `DefinitionId`s match the ones this
+    /// db's per-def queries ([`effects`](Self::effects),
+    /// [`signature`](Self::signature), [`infer_body`](Self::infer_body)) are
+    /// keyed by. Identity is minted here and nowhere else.
+    ///
+    /// The map's *diagnostics* half is
+    /// [`module_map_diagnostics`](Self::module_map_diagnostics) — an
+    /// off-db `analyze_with_modules` pass has to fold it back in itself
+    /// (issue #1553).
+    pub fn module_map(&self) -> &brink_analyzer::ModuleMap {
+        &module_map_query(&self.salsa, self.project).0
+    }
+
+    /// Stem-collision diagnostics (`E085`) produced alongside
+    /// [`module_map`](Self::module_map): a file with no `#@module` whose
+    /// stem is some *other* file's declared module name.
+    ///
+    /// A db-driven compile picks these up through
+    /// [`symbol_index_diagnostics`](Self::symbol_index_diagnostics), which
+    /// folds them in. A caller that instead runs
+    /// [`brink_analyzer::analyze_with_modules`] outside the db (the LSP's
+    /// background pass, `IdeSession`'s editor analysis) gets only the
+    /// analyzer's own diagnostics, so before issue #1553 the collision was
+    /// silently dropped on every editor surface. Such callers must snapshot
+    /// this alongside [`module_map`](Self::module_map) and extend their
+    /// result with the entries belonging to their file set.
+    pub fn module_map_diagnostics(&self) -> &[Diagnostic] {
+        &module_map_query(&self.salsa, self.project).1
+    }
+
     /// One file's resolved references + resolution diagnostics (layer 2,
     /// `resolve(FileId)`).
     pub fn resolve(&self, id: FileId) -> Option<(Arc<ResolutionMap>, &[Diagnostic])> {
@@ -360,10 +522,31 @@ impl ProjectDb {
         signature_query(&self.salsa, self.project, DefKey::new(&self.salsa, def))
     }
 
+    /// Signature stub for a **local** (`Param`/`Temp`) `def`, declared in
+    /// `id` (issue #530): the per-file locals path [`signature`](Self::signature)
+    /// itself can't take — see `local_signature_query`'s doc for why a
+    /// local's `DefinitionId` needs a caller-supplied file. `None` for an
+    /// unknown file id or a `def` not declared as a local in that file
+    /// (including a declaration id — those stay [`signature`](Self::signature)'s
+    /// job).
+    pub fn local_signature(&self, id: FileId, def: DefinitionId) -> Option<Arc<Sig>> {
+        let file = *self.files.get(&id)?;
+        local_signature_query(
+            &self.salsa,
+            self.project,
+            file,
+            DefKey::new(&self.salsa, def),
+        )
+    }
+
     /// Full cross-file analysis over all files, honoring the registered
-    /// [`AnalysisOptions`]. Memoized; identical to
-    /// `brink_analyzer::analyze_with_options` over
-    /// [`analysis_inputs`](Self::analysis_inputs) by construction.
+    /// [`AnalysisOptions`]. Memoized; module-aware — identical to
+    /// `brink_analyzer::analyze_with_modules` over
+    /// [`analysis_inputs`](Self::analysis_inputs) and
+    /// [`module_map`](Self::module_map) by construction. For native
+    /// `.brink` files this is *not* identical to `analyze_with_options`
+    /// (module-blind), which mints different `DefinitionId`s — see
+    /// [`module_map`](Self::module_map)'s doc (issue #1526).
     pub fn analysis(&self) -> &AnalysisResult {
         analysis_query(&self.salsa, self.project)
     }
@@ -463,6 +646,41 @@ impl ProjectDb {
     /// underlying atom harvest + per-SCC fixpoint.
     pub fn effects(&self, def: DefinitionId) -> Option<Arc<EffectRow>> {
         effects_query(&self.salsa, self.project, DefKey::new(&self.salsa, def))
+    }
+
+    /// The B3a UFCS resolution verdict for the call site at `range` in
+    /// `file` (issue #1507) — reads the same memoized `ufcs_resolution_query`
+    /// (#1506) LIR lowering already shares, rather than re-running the
+    /// analyzer's `ufcs` pass a second time for IDE hover/go-to-def. `None`
+    /// when the pass recorded no verdict at this exact range: not a
+    /// UFCS-shaped call site, an unresolved one (already diagnosed
+    /// E140–E143 elsewhere), or the project has no dotted-callee call
+    /// anywhere (`ufcs_resolution_query`'s own laziness gate).
+    pub fn ufcs_verdict(
+        &self,
+        file: FileId,
+        range: rowan::TextRange,
+    ) -> Option<&brink_ir::lir::UfcsVerdict> {
+        ufcs_resolution_query(&self.salsa, self.project)
+            .table
+            .get(file, range)
+    }
+
+    /// Every UFCS call site (`recv.verb(args)`) whose verdict desugars to a
+    /// free function targeting `target`, project-wide (issue #1539) — reads
+    /// the same memoized `ufcs_resolution_query` table
+    /// [`ufcs_verdict`](Self::ufcs_verdict) does. The `find_references`/
+    /// `rename` counterpart to that single-site lookup: renaming or listing
+    /// references to a free function must also reach every UFCS call site
+    /// that resolves to it, not just its plain `ResolutionMap` references.
+    #[must_use]
+    pub fn ufcs_call_sites_for_target(
+        &self,
+        target: DefinitionId,
+    ) -> Vec<(FileId, rowan::TextRange)> {
+        ufcs_resolution_query(&self.salsa, self.project)
+            .table
+            .call_sites_for_target(target)
     }
 
     /// Per-file type diagnostics (`type_diagnostics(FileId)`). Advisory-only
@@ -714,6 +932,7 @@ mod path_tests {
 #[cfg(test)]
 mod native_seam_tests {
     use super::ProjectDb;
+
     use brink_analyzer::{AnalysisOptions, Dialect};
 
     /// B0.10a gate (issue #1106): a native `.brink` file, registered by the

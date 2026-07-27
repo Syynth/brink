@@ -11,11 +11,22 @@
 //! `heal(ref npc.hp, k)` ≡ manually reading, adding `k`, and writing back.
 //!
 //! Every fixture declares `STRUCT`/`VAR` at true file scope (before any
-//! `=== knot ===` header) with a scalar placeholder default (a struct
-//! construction literal is not a legal `VAR` declaration default, `E075` —
-//! the real value is assigned in a knot body instead), then enters its
-//! entry knot explicitly via `choose_path_string` — the same shape
-//! `tier1_brink.rs`'s save/load fn-value tests already use.
+//! `=== knot ===` header), then enters its entry knot explicitly via
+//! `choose_path_string` — the same shape `tier1_brink.rs`'s save/load
+//! fn-value tests already use.
+//!
+//! Most fixtures use a **scalar placeholder** default (`VAR npc = 0`) and
+//! assign the real record in a knot body: that was mandatory before issue
+//! #1530, when a struct construction literal was refused outright as a
+//! declaration default (`E075`). Since #1530 a well-formed construction
+//! literal folds into `lir::ConstValue::Record` and *is* a legal default —
+//! `a_struct_typed_global_default_is_a_durable_projection_root` below is
+//! written in that spelling. The rest are deliberately left on the
+//! placeholder idiom: they are load-bearing evidence for runtime behavior
+//! (invalidation faults, save/restore) that has nothing to do with how the
+//! root cell was initialized, and migrating them wholesale would churn what
+//! each one proves. See this file's `compile_and_link` doc for the `types`
+//! policy that follows from that.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -30,14 +41,15 @@ use proptest::prelude::*;
 /// Compile `source` (brink dialect) and link it to a runnable program —
 /// same shape `tier1_brink.rs::compile_and_link` uses.
 ///
-/// NS-A9: explicitly gradual. This corpus's fixtures are structurally
-/// locked to the scalar-placeholder-default idiom (`VAR npc = 0`, real
-/// struct assigned in a knot body — a struct construction literal is not a
-/// legal `VAR` declaration default, E075; see the file header), which the
-/// strict regime types as the placeholder's scalar. The subjects here are
-/// runtime projection semantics (regime-independent); until E075 admits
-/// struct literals as declaration defaults these fixtures cannot be
-/// written strict-clean at all — flagged as a follow-up in NS-A9's PR.
+/// NS-A9: explicitly gradual. Most of this corpus's fixtures use the
+/// scalar-placeholder-default idiom (`VAR npc = 0`, real struct assigned in
+/// a knot body; see the file header), which the strict regime types as the
+/// placeholder's scalar. The subjects here are runtime projection semantics
+/// (regime-independent), so gradual is the honest policy for them. Issue
+/// #1530 removed the *blocker* to writing such a fixture strict-clean — a
+/// well-formed construction literal is now a legal declaration default — but
+/// migrating the placeholder fixtures is a separate pass, so this stays
+/// gradual for the whole file.
 fn compile_and_link(source: &str) -> (Arc<brink_runtime::Program>, Vec<Vec<LineEntry>>) {
     let files: HashMap<&str, &str> = HashMap::from([("main.ink", source)]);
     let output = brink_compiler::compile_with_options(
@@ -115,6 +127,29 @@ fn run_entry_until_fault(source: &str, entry: &str) -> RuntimeError {
 
 const NPC_STRUCT: &str = "STRUCT NPC = #{hp: int, name: string}\nVAR npc = 0\n\n";
 const HEAL: &str = "\n=== function heal(ref hp, k) ===\n~ hp = hp + k\n";
+
+// ── Durable root from a declaration default (#1530) ────────────────────
+
+#[test]
+fn a_struct_typed_global_default_is_a_durable_projection_root() {
+    // The spelling T1e §2's durable-root rule always implied but the
+    // language could not express until #1530: the root cell's record comes
+    // straight from the declaration default — no knot-body assignment
+    // primes it — and a projection through it writes back into that cell.
+    //
+    // The two reads bracket the call so the fixture also proves the baked
+    // default is a real record (`10` before any write), not merely a shape
+    // the projection could be lowered against.
+    let src = "STRUCT NPC = #{hp: int, name: string}\n\
+               VAR npc = NPC#{hp: 10, name: \"x\"}\n\n\
+               === main ===\n\
+               {npc.hp}\n\
+               ~ heal(ref npc.hp, 5)\n\
+               {npc.hp}\n-> END\n\
+               \n=== function heal(ref hp, k) ===\n~ hp = hp + k\n";
+    let out = run_entry(src, "main");
+    assert_eq!(out, "10\n15\n");
+}
 
 // ── Overlap write-through (spec §1(3)) ─────────────────────────────────
 

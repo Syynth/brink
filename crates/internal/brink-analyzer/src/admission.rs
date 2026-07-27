@@ -45,11 +45,12 @@
 //!   no enclosing `==knot==`) is declared under `SymbolKind::Stitch` with
 //!   its **bare** name (see `hir::lower::structure::stitch::lower_top_level_stitch`),
 //!   and a label declared before the first knot (`hir.root_content`) is
-//!   bare too (`LowerScope::qualify_label` with no enclosing knot). Both are
-//!   legitimate, corpus-real shapes, not bugs — [`conforms_to_convention`]
-//!   accepts the wider shape rather than flagging real corpus code (per the
-//!   "if a check trips on real code, the check is wrong" rule). Flagged for
-//!   a contract wording fix.
+//!   bare too (`brink_ir::symbols::project::qualify_label` with no
+//!   enclosing knot). Both are legitimate, corpus-real shapes, not bugs —
+//!   [`conforms_to_convention`] accepts the wider shape rather than
+//!   flagging real corpus code (per the "if a check trips on real code, the
+//!   check is wrong" rule). Contract wording stamped with this carve-out in
+//!   `docs/hir-admission-contract.md` §1.3 (issue #1188).
 //! - **`Param`/`Temp` locals are out of scope for check 1** — the contract's
 //!   "every declared symbol has a corresponding HIR declaration node" reads
 //!   most naturally against [`brink_ir::symbols::DeclaredSymbol`] (the
@@ -57,6 +58,12 @@
 //!   names"), a distinct type from `LocalSymbol` (params/temps) with no
 //!   `detail`/`visibility`/`was` fields to agree on. Locals are exercised by
 //!   the existing `E054`/`E082` shadowing checks elsewhere in the pipeline.
+//!   Check 2 (E124 range well-formedness) draws the line differently: a
+//!   `Param.name.range` becomes `LocalSymbol.range`
+//!   (`symbols::project_manifest`), which is a load-bearing shadowing-order
+//!   join key (§1.3 "local shadowing order keys"), so `Knot`/`Stitch`
+//!   params ARE walked for well-formedness even though they're skipped by
+//!   check 1 (issue #1188).
 //! - This pass extends (not replaces) `hir::visit`'s traversal shape but is
 //!   a **purpose-built walker**, not a `HirVisitor` impl: `hir::visit`'s own
 //!   doc comment lists two deliberate gaps — it does not descend into tag
@@ -65,9 +72,9 @@
 //!   `UnresolvedRef`-registering expressions (tag interpolations, VAR/CONST
 //!   initializers) that check 1 must see. Reusing the shared visitor and
 //!   patching those two gaps in an ad hoc way would still need the same
-//!   knot/stitch scope-prefix threading `LowerScope::qualify_label` uses
-//!   (for label qualification, needed by checks 1/3), so a dedicated walker
-//!   ended up simpler than bolting extra state onto the shared one.
+//!   knot/stitch scope-prefix threading `symbols::project::qualify_label`
+//!   uses (for label qualification, needed by checks 1/3), so a dedicated
+//!   walker ended up simpler than bolting extra state onto the shared one.
 
 use rowan::{TextRange, TextSize};
 
@@ -142,10 +149,16 @@ pub fn validate_admission(
     for knot in &hir.knots {
         c.check_range(knot.ptr.text_range());
         c.check_range(knot.name.range);
+        for param in &knot.params {
+            c.check_range(param.name.range);
+        }
         c.walk_block(&knot.body, &knot.name.text);
         for stitch in &knot.stitches {
             c.check_range(stitch.ptr.text_range());
             c.check_range(stitch.name.range);
+            for param in &stitch.params {
+                c.check_range(param.name.range);
+            }
             let prefix = format!("{}.{}", knot.name.text, stitch.name.text);
             c.walk_block(&stitch.body, &prefix);
         }
@@ -179,7 +192,7 @@ struct Collector {
     /// candidates an `UnresolvedRef.range` must appear in (check 1a).
     ref_ranges: LookupSet<TextRange>,
     /// Every label declaration found, already qualified to match
-    /// `LowerScope::qualify_label`'s convention (feeds checks 1b/3).
+    /// `symbols::project::qualify_label`'s convention (feeds checks 1b/3).
     labels: Vec<(String, TextRange)>,
     diags: Vec<Diagnostic>,
 }
@@ -361,6 +374,13 @@ impl Collector {
             if let Some(e) = &branch.condition {
                 self.walk_expr(e);
             }
+            // B1b (issue #1475): the template form's `as` binding needs the
+            // same range admission `walk_if_stmt`/`walk_while_stmt` already
+            // give the statement forms — otherwise a malformed/empty
+            // binding range in `{if EXPR as n: … else: …}` escapes E124.
+            if let Some(binding) = &branch.binding {
+                self.check_range(binding.range);
+            }
             self.check_terminal_last(&branch.body.stmts); // E127
             self.walk_block(&branch.body, prefix);
         }
@@ -369,8 +389,8 @@ impl Collector {
     fn walk_sequence(&mut self, seq: &Sequence, prefix: &str) {
         self.check_range(seq.ptr.text_range());
         for branch in &seq.branches {
-            self.check_terminal_last(&branch.stmts); // E127
-            self.walk_block(branch, prefix);
+            self.check_terminal_last(&branch.body.stmts); // E127
+            self.walk_block(&branch.body, prefix);
         }
     }
 
@@ -446,6 +466,9 @@ impl Collector {
     fn walk_if_stmt(&mut self, i: &IfStmt) {
         self.check_range(i.ptr.text_range());
         self.walk_expr(&i.condition);
+        if let Some(binding) = &i.binding {
+            self.check_range(binding.range);
+        }
         for s in &i.body {
             self.walk_block_stmt(s);
         }
@@ -463,6 +486,9 @@ impl Collector {
     fn walk_while_stmt(&mut self, w: &WhileStmt) {
         self.check_range(w.ptr.text_range());
         self.walk_expr(&w.condition);
+        if let Some(binding) = &w.binding {
+            self.check_range(binding.range);
+        }
         for s in &w.body {
             self.walk_block_stmt(s);
         }
@@ -497,9 +523,10 @@ impl Collector {
                 }
             }
             Expr::Prefix(_, inner) | Expr::Postfix(inner, _) => self.walk_expr(inner),
-            Expr::Infix(l, _, r) => {
-                self.walk_expr(l);
-                self.walk_expr(r);
+            Expr::Infix(ie) => {
+                self.check_range(ie.ptr.text_range());
+                self.walk_expr(&ie.lhs);
+                self.walk_expr(&ie.rhs);
             }
             Expr::Call(path, args) => {
                 self.push_ref(path.range);
@@ -975,6 +1002,32 @@ mod tests {
         assert!(codes(&diags).contains(&DiagnosticCode::E124), "{diags:?}");
     }
 
+    /// Issue #1188 debt 2: `Param` name ranges are load-bearing shadowing-
+    /// order join keys (`LocalSymbol.range`, §1.3), so E124 must walk into
+    /// `Knot.params` even though check 1 (E122) skips locals.
+    #[test]
+    fn e124_knot_param_range_malformed() {
+        let (mut hir, manifest, len) = lower_src("== function foo(x) ==\n~ return x\n");
+        hir.knots[0].params[0].name.range = TextRange::new(len, len);
+        let diags = validate_admission(FileId(0), &hir, &manifest, len);
+        assert!(codes(&diags).contains(&DiagnosticCode::E124), "{diags:?}");
+    }
+
+    /// Sibling of `e124_knot_param_range_malformed` for `Stitch.params`.
+    /// Stitch params have a real ink-dialect surface (`= stitch(x)`, see
+    /// `parser/tests/knot/cst.rs::stitch_params_in_stitch_header` and
+    /// `hir::lower::structure::stitch::lower_stitch` ->
+    /// `lower_knot_params(header.params(), sink)`), so — like the `Knot`
+    /// sibling above — the malformed range is stamped onto real lowered
+    /// HIR rather than a synthetic node.
+    #[test]
+    fn e124_stitch_param_range_malformed() {
+        let (mut hir, manifest, len) = lower_src("== knot ==\n= stitch(x)\n-> END\n");
+        hir.knots[0].stitches[0].params[0].name.range = TextRange::new(len, len);
+        let diags = validate_admission(FileId(0), &hir, &manifest, len);
+        assert!(codes(&diags).contains(&DiagnosticCode::E124), "{diags:?}");
+    }
+
     #[test]
     fn e125_duplicate_unresolved_ref_ranges() {
         let (hir, mut manifest, len) =
@@ -1019,7 +1072,9 @@ mod tests {
             ptr: Provenance::synthetic(NodeClass::Conditional, synthetic_range),
             kind: CondKind::InitialCondition,
             branches: vec![CondBranch {
+                ptr: Provenance::synthetic(NodeClass::ConditionalBranch, synthetic_range),
                 condition: None,
+                binding: None,
                 body: branch_body,
                 container_id: None,
             }],
@@ -1027,6 +1082,37 @@ mod tests {
         hir.knots[0].body.stmts.insert(0, Stmt::Conditional(cond));
         let diags = validate_admission(FileId(0), &hir, &manifest, len);
         assert!(codes(&diags).contains(&DiagnosticCode::E127), "{diags:?}");
+    }
+
+    /// B1b (issue #1475), review finding: `walk_if_stmt`/`walk_while_stmt`
+    /// both `check_range` their `binding`, but `walk_conditional` — the
+    /// template `{if EXPR as n: … else: …}` form's walker — didn't, so a
+    /// malformed binding range there escaped E124 entirely. Same synthetic
+    /// hand-built-HIR technique as `e127_divert_not_last_in_inline_branch`:
+    /// `Conditional`/`CondBranch::binding` is native-only, so there's no
+    /// ink-dialect source that produces one to lower.
+    #[test]
+    fn e124_template_as_binding_out_of_bounds_is_malformed() {
+        let (mut hir, manifest, len) = lower_src("== knot ==\nHello\n-> END\n");
+        let synthetic_range = TextRange::new(0.into(), 1.into());
+        let past_eof = len + TextSize::from(1000);
+        let cond = Conditional {
+            ptr: Provenance::synthetic(NodeClass::Conditional, synthetic_range),
+            kind: CondKind::InitialCondition,
+            branches: vec![CondBranch {
+                ptr: Provenance::synthetic(NodeClass::ConditionalBranch, synthetic_range),
+                condition: Some(Expr::Bool(true)),
+                binding: Some(brink_ir::hir::Name {
+                    text: "n".to_string(),
+                    range: TextRange::new(len, past_eof),
+                }),
+                body: Block::from_stmts(Vec::new()),
+                container_id: None,
+            }],
+        };
+        hir.knots[0].body.stmts.insert(0, Stmt::Conditional(cond));
+        let diags = validate_admission(FileId(0), &hir, &manifest, len);
+        assert!(codes(&diags).contains(&DiagnosticCode::E124), "{diags:?}");
     }
 
     #[test]

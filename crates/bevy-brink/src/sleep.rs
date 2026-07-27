@@ -8,9 +8,12 @@
 //!
 //! 1. [`FlowSleep`] does **not** park a flow — flows park at their own natural
 //!    yield points (turn end, `-> DONE`). The policy governs *waking*: a parked
-//!    flow under a policy is **skipped by Collect** ([`advance_batch`] filters
-//!    it out — [`FlowSleep::wants_collect`] is the predicate), so a parked flow
-//!    costs **zero** per turn.
+//!    flow under a policy is **skipped by Collect** in both drivers
+//!    ([`advance_batch`] and
+//!    [`advance_batch_parallel`](crate::batch::parallel::advance_batch_parallel)
+//!    each filter it out — [`FlowSleep::wants_collect`] is the shared
+//!    predicate), so a parked flow costs **zero** per turn no matter which
+//!    driver a host uses.
 //! 2. A dependency changing triggers **re-evaluation, not waking**: the
 //!    condition (a pure ink fn — purity is provable from its effect row) is
 //!    re-evaluated only when a dependency moved, and the flow wakes **only when
@@ -46,8 +49,16 @@
 //! - **no external-capability dependency** ([`DetectSummary::bits`] empty,
 //!   vacuously [`DetectSummary::all_detect_capable`] `true`): the condition
 //!   reads only ink World state, so it is re-evaluated only when the shared
-//!   World actually changed (bevy change detection on [`BrinkGlobals`]) —
-//!   the cheap path.
+//!   World actually changed — the cheap path. Since issue #1146 "changed"
+//!   here is **row-directed**: a batch turn's Apply records *which* cells it
+//!   wrote ([`BrinkWorldDelta`]), and a policy is re-evaluated only when that
+//!   changeset intersects the reads its condition's effect row declares. A
+//!   turn's bookkeeping writes (visit counts, turn index) are therefore inert
+//!   for a condition that reads a global, which is what stopped #1101's
+//!   spurious re-wake. Where the ledger cannot account for the whole window
+//!   (a serial-mode driver, a host writing [`BrinkGlobals::inner`] directly)
+//!   or the condition's row is missing/opaque, this degrades to plain bevy
+//!   change detection on [`BrinkGlobals`] — the pre-#1146 behavior.
 //! - **any must-poll dependency** (`#913` AND-merge folded a bit to `false`,
 //!   so `all_detect_capable` is `false`): re-evaluated every wake pass. That
 //!   capability's reads are not change-detection-backed, so there is no cheap
@@ -87,9 +98,11 @@
 //!   condition whose effect row shows writes — including writes performed
 //!   transitively through a host-registered `EXTERNAL` binding the
 //!   [`CapabilityManifest`] declares `writes` for (issue #1040, the #995
-//!   follow-up; `docs/effects-spec.md` §9/§13) — is rejected loudly
-//!   ([`WakeConditionPurityError`]) and never called, not even once. A
-//!   dynamically-resolved fn-value condition
+//!   follow-up; `docs/effects-spec.md` §9/§13), or through a
+//!   [`bind_brink_command`](crate::bindings::BrinkBindingsAppExt::bind_brink_command)-bound
+//!   `EXTERNAL` regardless of manifest presence (issue #1609, an #1096
+//!   follow-up) — is rejected loudly ([`WakeConditionPurityError`]) and never
+//!   called, not even once. A dynamically-resolved fn-value condition
 //!   ([`FlowSleep::with_condition_value`], issue #1078) runs the same gate
 //!   via [`check_value_condition_purity`] instead.
 //!
@@ -98,16 +111,16 @@
 //! [`StoryStatus::Done`]: brink_runtime::StoryStatus::Done
 //! [`advance_batch`]: crate::advance_batch
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::marker::PhantomData;
 
 use bevy_asset::Assets;
-use bevy_ecs::change_detection::DetectChanges;
+use bevy_ecs::change_detection::{DetectChanges, DetectChangesMut};
 use bevy_ecs::component::Component;
 use bevy_ecs::entity::Entity;
 use bevy_ecs::query::QueryState;
 use bevy_ecs::reflect::ReflectComponent;
-use bevy_ecs::system::{Local, Query, Res};
+use bevy_ecs::system::{Local, Query, Res, ResMut};
 use bevy_ecs::world::World as EcsWorld;
 use bevy_log::warn;
 use bevy_reflect::Reflect;
@@ -116,12 +129,13 @@ use brink_runtime::{Program, StoryStatus};
 use thiserror::Error;
 
 use crate::asset::{BrinkProgram, ProgramAsset};
-use crate::bindings::{call_ink_function, call_ink_function_value};
+use crate::bindings::{BrinkBindings, call_ink_function, call_ink_function_value};
 use crate::capability::{
     CapabilityChanges, CapabilityManifest, CapabilityRegistry, ContainerAccess,
 };
 use crate::flow::BrinkFlow;
 use crate::globals::BrinkGlobals;
+use crate::wake_delta::{BrinkWorldDelta, WorldDelta};
 
 /// When a woken flow re-parks, does its policy re-arm or retire?
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Reflect)]
@@ -279,6 +293,13 @@ pub struct FlowSleep<M: Send + Sync + 'static = ()> {
     /// latch watches for the condition to become true first. Inert (never
     /// read or flipped) for `Persistent`/`Once`.
     waiting_for: bool,
+    /// Issue #1146: does this condition read story **bookkeeping** (visit
+    /// counts, turn counts, the turn index, RNG state)? Host-declared via
+    /// [`reads_bookkeeping`](Self::reads_bookkeeping) — effect rows model
+    /// only global cells, so the row cannot answer this. Only consulted on
+    /// the row-directed cheap path; a condition whose row is unknown or
+    /// opaque re-evaluates on any change regardless.
+    reads_bookkeeping: bool,
     #[reflect(ignore)]
     _marker: PhantomData<fn() -> M>,
 }
@@ -325,6 +346,7 @@ impl<M: Send + Sync + 'static> FlowSleep<M> {
             needs_eval: false,
             evaluated_once: false,
             waiting_for: true,
+            reads_bookkeeping: false,
             _marker: PhantomData,
         }
     }
@@ -370,6 +392,41 @@ impl<M: Send + Sync + 'static> FlowSleep<M> {
     #[must_use]
     pub fn with_detect(mut self, detect: DetectSummary) -> Self {
         self.detect = detect;
+        self
+    }
+
+    /// Declare that this condition reads story **bookkeeping** — a visit
+    /// count (`{knot}`, `TURNS_SINCE(-> knot)`), a turn count, the turn index
+    /// (`TURNS()`, `CHOICE_COUNT()`), or RNG state (issue #1146). Builder.
+    ///
+    /// The row-directed wake-dirtying path re-evaluates a condition only when
+    /// a cell it reads was actually written, and a condition's read set comes
+    /// from its **effect row** — which models global cells *only*
+    /// (`brink_format::DirectEffects::reads`). Bookkeeping reads are invisible
+    /// to it, so a condition that depends on one must say so here, or it will
+    /// sit parked through the turns that move it. Nothing else needs this: a
+    /// condition reading ink globals is covered by its row automatically, and
+    /// a condition whose row is missing/opaque already re-evaluates on any
+    /// change.
+    ///
+    /// Graduating a `reads`-bookkeeping row dimension (so this is inferred
+    /// rather than declared) is tracked as the follow-up to #1146.
+    ///
+    /// **Known tradeoff, not a bug:** once a condition declaring this is
+    /// evaluated even once, it stays perpetually flagged for re-evaluation
+    /// thereafter, even if nothing it actually depends on ever changes again.
+    /// Every Evaluate pass notes an unconditional bookkeeping touch in the
+    /// changed-cell ledger (the unavoidable `&mut BrinkGlobals` residue
+    /// building a condition's context takes), and that residue is itself
+    /// indistinguishable, to the row-directed path, from a real bookkeeping
+    /// write — so a `reads_bookkeeping()` reader's own prior evaluation
+    /// re-triggers the next one. This is deliberately on the over-report side
+    /// of the ledger's "never under-report" law (module docs,
+    /// `crate::wake_delta`): the cost is a self-sustaining re-evaluation,
+    /// never a missed wake.
+    #[must_use]
+    pub fn reads_bookkeeping(mut self) -> Self {
+        self.reads_bookkeeping = true;
         self
     }
 
@@ -452,6 +509,13 @@ impl<M: Send + Sync + 'static> FlowSleep<M> {
         &self.detect
     }
 
+    /// Whether the host declared this condition a reader of story
+    /// bookkeeping — see [`reads_bookkeeping`](Self::reads_bookkeeping).
+    #[must_use]
+    pub fn declares_bookkeeping_reads(&self) -> bool {
+        self.reads_bookkeeping
+    }
+
     /// Whether Collect should step this flow this turn — the predicate
     /// [`advance_batch`](crate::advance_batch)'s Collect phase applies. Only a
     /// [`Woken`](SleepState::Woken) policy admits the flow; a parked, cancelled,
@@ -493,19 +557,20 @@ impl<M: Send + Sync + 'static> FlowSleep<M> {
 // A manifest entry with no `writes` (reads-only, or no `effects` key at all —
 // §13.2's opt-in default) is accepted: it does not touch a write-capable ECS
 // capability, and purity is exactly "no writes". An `EXTERNAL` name with **no
-// manifest entry at all** is likewise accepted, deliberately matching the
-// BH-1 access join's posture (`resolve_call_atom`, `crate::capability`):
-// "a call whose `NameId` doesn't resolve, or that has no manifest entry at
-// all, contributes no access — silently, since not every `EXTERNAL` touches
-// ECS state (§13.2's `effects` key is opt-in)". Rejecting an unregistered
-// external here would fault the flow permanently — the same missed-wake bug
-// class the #913 detect-merge ruling treats as the worse failure mode
-// (`docs/decision-log.md` 2026-07-18, "a missed wake is the engine-race bug
-// class") — for a binding (e.g. a `bind_brink_fn` helper) that legitimately
-// never touches ECS state and was accepted before this check existed. Only a
-// manifest entry that affirmatively declares `writes` is rejected; the
-// manifest is an honesty contract, not a security boundary (the host is the
-// TCB — `docs/effects-spec.md` §9).
+// manifest entry at all** is likewise accepted (unless it is a
+// `bind_brink_command` binding — see the #1609 paragraph below), deliberately
+// matching the BH-1 access join's posture (`resolve_call_atom`,
+// `crate::capability`): "a call whose `NameId` doesn't resolve, or that has
+// no manifest entry at all, contributes no access — silently, since not
+// every `EXTERNAL` touches ECS state (§13.2's `effects` key is opt-in)".
+// Rejecting an unregistered external here would fault the flow permanently —
+// the same missed-wake bug class the #913 detect-merge ruling treats as the
+// worse failure mode (`docs/decision-log.md` 2026-07-18, "a missed wake is
+// the engine-race bug class") — for a binding (e.g. a `bind_brink_fn`
+// helper) that legitimately never touches ECS state and was accepted before
+// this check existed. Only a manifest entry that affirmatively declares
+// `writes` is rejected; the manifest is an honesty contract, not a security
+// boundary (the host is the TCB — `docs/effects-spec.md` §9).
 //
 // A story whose `EffectRows` table is empty entirely (a converter-built
 // program, or a program that never went through the compiler's effects
@@ -532,6 +597,45 @@ impl<M: Send + Sync + 'static> FlowSleep<M> {
 // attaches the token directly, and `run_flow_sleep`'s gather/evaluate phases
 // branch on it exactly like the named path — `check_value_condition_purity`
 // gates admission, `call_ink_function_value` (`crate::bindings`) evaluates.
+//
+// **Closed** (issue #1609, a #1096 follow-up): a `bind_brink_command`-bound
+// `EXTERNAL` with no [`CapabilityManifest`] entry used to pass
+// `check_external_calls_purity` above — "no manifest entry at all accepts"
+// is deliberate (a `bind_brink_fn` helper that never touches ECS state
+// shouldn't need one), but it meant a wake condition naming a
+// `call_ink_function`/`call_ink_function_value` path that reaches a
+// `bind_brink_command` binding was accepted as pure even though, since
+// #1096's fix, that path fires a real Bevy event on every re-evaluation
+// pass — where before #1096 it was inert (silently ran the in-story
+// fallback instead). `check_named_condition_purity`/
+// `check_value_condition_purity` (and the `check_row_purity`/
+// `check_external_calls_purity` helpers they share) now take an optional
+// [`BrinkBindings<M>`] reference and reject any call whose target name is
+// present in [`BrinkBindings::is_command`] — bevy-brink has that
+// binding-kind information locally, so this needs no manifest entry at all
+// to answer, unlike the #1040 manifest-`writes` check above. `run_flow_sleep`
+// fetches the app's `BrinkBindings<M>` resource (absent entirely if the host
+// never registered any binding) alongside the `CapabilityManifest` and
+// threads it through. This is scoped to `bind_brink_command` only: a pure
+// (`bind_brink_fn`) binding is not rejected by this check. A world-query
+// (`bind_brink_query`) binding is *also* not rejected here, but not because
+// its World access is out of reach — `call_ink_function`/
+// `call_ink_function_value` (`crate::bindings`, the same drivers
+// `run_flow_sleep` uses to evaluate a condition) resolve a query binding
+// **inline**, synchronously, mid-evaluation (`docs/bevy-brink.md`'s binding
+// table: "flow pauses (`Pending`); a driver runs it via `run_system_with`
+// between suspensions, then resumes" — the pause/resume is internal to the
+// single call, not a cross-frame park a wake condition's re-evaluation could
+// dodge). Widening this gate to cover write-capable query bindings is a
+// design question left open (whether/how to distinguish a read-only query
+// system from a writing one), not something this fix's scope covers.
+//
+// `resolve_brink_calls` (`crate::call`, the deferred
+// `commands.brink_call(...)` path) also drives `call_ink_function` under the
+// hood and so can also fire a command event — but it is an explicit,
+// engine-initiated call, not a `FlowSleep` re-evaluation, so it is outside
+// this gate's contract (`docs/effects-spec.md` §13.1 point 2 only binds
+// wake-condition purity) and unaffected by this fix.
 
 /// A wake condition failed the attach-time purity check. See the module
 /// section above for the contract this enforces.
@@ -614,6 +718,26 @@ pub enum WakeConditionPurityError {
         /// deduplicated.
         writes: Vec<String>,
     },
+    /// The condition (or a dispatch fallback its row folds in) calls a
+    /// [`bind_brink_command`](crate::bindings::BrinkBindingsAppExt::bind_brink_command)-bound
+    /// `EXTERNAL` (issue #1609, an #1096 follow-up). Rejected regardless of
+    /// [`CapabilityManifest`] presence: `bevy-brink` knows the binding kind
+    /// locally, and a command binding mutates the World when its parsed
+    /// event is triggered, so a wake condition reaching it would let
+    /// re-evaluation fire that mutation repeatedly (§13.1 point 2).
+    #[error(
+        "wake condition `{condition}` is not pure: it calls `{external}`, a bind_brink_command \
+         binding — a command binding mutates the World when triggered, and a FlowSleep \
+         condition is re-evaluated whenever a dependency moves (docs/effects-spec.md §13.1 \
+         point 2), so a command-bound wake condition is rejected regardless of \
+         CapabilityManifest presence (issue #1609)"
+    )]
+    CommandBinding {
+        /// The condition name/path/label.
+        condition: String,
+        /// The command-bound external's name.
+        external: String,
+    },
 }
 
 /// Find the `EffectRows` entry for `def`, if this story's table carries one.
@@ -637,10 +761,17 @@ fn write_names(program: &Program, ids: &[DefinitionId]) -> Vec<String> {
 
 /// The shared purity check once a condition token has resolved to a `row`
 /// (see the module section above for exactly what this inspects).
-fn check_row_purity(
+///
+/// `bindings` is `None` when the host never registered any
+/// [`BrinkBindings<M>`] (no `bind_brink_*` call at all — the resource is
+/// inserted lazily) — in that case there is no `commands` bucket to consult,
+/// so the #1609 command-binding check below is trivially skipped, same as an
+/// empty registry would be.
+fn check_row_purity<M: Send + Sync + 'static>(
     program: &Program,
     row: &EffectRowEntry,
     manifest: &CapabilityManifest,
+    bindings: Option<&BrinkBindings<M>>,
     condition_label: &str,
 ) -> Result<(), WakeConditionPurityError> {
     if row.direct.opaque
@@ -654,9 +785,15 @@ fn check_row_purity(
         });
     }
 
-    check_external_calls_purity(program, &row.direct, manifest, condition_label)?;
+    check_external_calls_purity(program, &row.direct, manifest, bindings, condition_label)?;
     for dispatch in &row.dispatches {
-        check_external_calls_purity(program, &dispatch.fallback, manifest, condition_label)?;
+        check_external_calls_purity(
+            program,
+            &dispatch.fallback,
+            manifest,
+            bindings,
+            condition_label,
+        )?;
     }
 
     let mut writes = write_names(program, &row.direct.writes);
@@ -675,23 +812,36 @@ fn check_row_purity(
     }
 }
 
-/// Issue #1040 (the #995 follow-up): check every `EXTERNAL` call atom in
-/// `direct` (a row's direct part, or a dispatch's static fallback) against
-/// `manifest`'s declared `effects.writes`. See the module section above for
-/// the full contract: a manifest entry declaring `writes` rejects; a
-/// reads-only entry, a no-`effects`-key entry, or no manifest entry at all
-/// (the same opt-in posture `crate::capability::resolve_call_atom` applies)
-/// all accept.
-fn check_external_calls_purity(
+/// Issue #1040 (the #995 follow-up) + issue #1609: check every `EXTERNAL`
+/// call atom in `direct` (a row's direct part, or a dispatch's static
+/// fallback) against, in order: `bindings`'s `commands` registry (#1609 — a
+/// `bind_brink_command`-bound name rejects **unconditionally**, no manifest
+/// entry needed), then `manifest`'s declared `effects.writes` (#1040). See
+/// the module section above for the full contract: a command-bound name, or
+/// a manifest entry declaring `writes`, rejects; a reads-only entry, a
+/// no-`effects`-key entry, or no manifest entry at all for a non-command
+/// name (the same opt-in posture `crate::capability::resolve_call_atom`
+/// applies) all accept.
+fn check_external_calls_purity<M: Send + Sync + 'static>(
     program: &Program,
     direct: &DirectEffects,
     manifest: &CapabilityManifest,
+    bindings: Option<&BrinkBindings<M>>,
     condition_label: &str,
 ) -> Result<(), WakeConditionPurityError> {
     for call in &direct.calls {
         let external_name = program
             .name_checked(call.name)
             .map_or_else(|| format!("<{:?}>", call.name), str::to_owned);
+        // #1609: a command-bound name rejects unconditionally — bevy-brink
+        // knows this binding kind locally, so no manifest entry is needed
+        // (or consulted) to reject it.
+        if bindings.is_some_and(|b| b.is_command(&external_name)) {
+            return Err(WakeConditionPurityError::CommandBinding {
+                condition: condition_label.to_owned(),
+                external: external_name,
+            });
+        }
         // No manifest entry at all accepts, same as a reads-only/no-`effects`
         // entry — see the doc comment above.
         if let Some(external) = manifest.external(&external_name)
@@ -722,14 +872,18 @@ fn check_external_calls_purity(
 /// `manifest` threads the host's [`CapabilityManifest`] (issue #1040) so a
 /// condition calling a host-registered `EXTERNAL` binding is checked against
 /// that binding's declared `effects.writes`, not just the row's own
-/// ink-level writes.
+/// ink-level writes. `bindings` threads the host's [`BrinkBindings<M>`]
+/// registry (issue #1609) so a condition calling a `bind_brink_command`
+/// binding is rejected outright, regardless of manifest presence — pass
+/// `None` if the host never registered any binding for marker `M`.
 ///
 /// # Errors
 /// See [`WakeConditionPurityError`].
-pub fn check_named_condition_purity(
+pub fn check_named_condition_purity<M: Send + Sync + 'static>(
     program: &Program,
     effect_rows: &[EffectRowEntry],
     manifest: &CapabilityManifest,
+    bindings: Option<&BrinkBindings<M>>,
     condition: &str,
 ) -> Result<(), WakeConditionPurityError> {
     if effect_rows.is_empty() {
@@ -745,7 +899,7 @@ pub fn check_named_condition_purity(
             condition: condition.to_owned(),
         }
     })?;
-    check_row_purity(program, row, manifest, condition)
+    check_row_purity(program, row, manifest, bindings, condition)
 }
 
 /// Check purity for a **dynamic fn-value** wake condition — a `Value`
@@ -755,15 +909,17 @@ pub fn check_named_condition_purity(
 /// `EffectRows` row [`check_named_condition_purity`] does.
 ///
 /// Same empty-`effect_rows` bypass as [`check_named_condition_purity`]. Same
-/// `manifest` threading (issue #1040) as [`check_named_condition_purity`].
+/// `manifest`/`bindings` threading (issues #1040/#1609) as
+/// [`check_named_condition_purity`].
 ///
 /// # Errors
 /// See [`WakeConditionPurityError`]. [`WakeConditionPurityError::NotAFunctionValue`]
 /// if `value` isn't a function value at all.
-pub fn check_value_condition_purity(
+pub fn check_value_condition_purity<M: Send + Sync + 'static>(
     program: &Program,
     effect_rows: &[EffectRowEntry],
     manifest: &CapabilityManifest,
+    bindings: Option<&BrinkBindings<M>>,
     value: &Value,
 ) -> Result<(), WakeConditionPurityError> {
     if effect_rows.is_empty() {
@@ -780,7 +936,113 @@ pub fn check_value_condition_purity(
             condition: label.clone(),
         }
     })?;
-    check_row_purity(program, row, manifest, &label)
+    check_row_purity(program, row, manifest, bindings, &label)
+}
+
+// ── Row-directed wake dirtying (issue #1146, the #1101 fix) ─────────────────
+//
+// A wake condition's **read row** is the dependency set the scheduler needs:
+// re-evaluate a parked policy only when a cell the condition actually reads
+// was written (`docs/effects-spec.md` §11's rows, consumed for scheduler
+// precision). The changed-cell side is `crate::wake_delta`; this side turns a
+// condition into the read set to intersect it with.
+
+/// What a wake condition's effect row says it may read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ConditionReads {
+    /// The row could not be consulted, or does not bound the reads: no
+    /// `ProgramAsset` loaded, a story with no `EffectRows` table at all
+    /// (converter-built — the same bypass the purity gate takes), a condition
+    /// that doesn't resolve, a missing row, an **opaque** row (§3's pessimal
+    /// top — "touches every cell"), or a listed read whose global cell can't
+    /// be resolved to a slot. Any change re-evaluates: over-report, never
+    /// under-report.
+    Unknown,
+    /// The condition reads exactly these global slot indices (possibly none —
+    /// a condition that reads no cell can only be moved by something the row
+    /// does model as a dependency, e.g. a capability component).
+    Globals(BTreeSet<u32>),
+}
+
+/// Resolve `sleep`'s condition to the global slots its effect row says it may
+/// read. See [`ConditionReads::Unknown`] for every case that degrades to the
+/// conservative "assume it reads everything" answer.
+///
+/// Global cells are returned as **slot indices** (not `DefinitionId`s) so the
+/// caller can intersect directly against the [`WorldDelta`] a batch Apply
+/// records, which is keyed by the same `World::set_global` numbering.
+fn condition_reads<M: Send + Sync + 'static>(
+    asset: Option<&ProgramAsset>,
+    sleep: &FlowSleep<M>,
+) -> ConditionReads {
+    let Some(asset) = asset else {
+        return ConditionReads::Unknown;
+    };
+    if asset.effect_rows.is_empty() {
+        return ConditionReads::Unknown;
+    }
+    let def = if let Some(value) = &sleep.condition_value {
+        value.fn_target()
+    } else {
+        asset.program.definition_id_for_path(&sleep.condition)
+    };
+    let Some(def) = def else {
+        return ConditionReads::Unknown;
+    };
+    let Some(row) = effect_row_for(&asset.effect_rows, def) else {
+        return ConditionReads::Unknown;
+    };
+    if row.direct.opaque
+        || row
+            .dispatches
+            .iter()
+            .any(|dispatch| dispatch.fallback.opaque)
+    {
+        return ConditionReads::Unknown;
+    }
+
+    let mut slots = BTreeSet::new();
+    // v1 emits no dispatch entries (call-through-value folds into the direct
+    // part), but a populated dispatch list round-trips — fold each static
+    // fallback's reads in exactly as the purity gate folds its writes.
+    let reads = row
+        .direct
+        .reads
+        .iter()
+        .chain(row.dispatches.iter().flat_map(|d| d.fallback.reads.iter()));
+    for id in reads {
+        // `DefinitionId` → slot index via the program's own global table. A
+        // read the loaded program doesn't declare (a stale row, a `VAR` a
+        // story patch removed) can't be proven unchanged, so it degrades the
+        // whole row rather than being silently dropped.
+        let Some(slot) = asset.program.global_slot(*id) else {
+            return ConditionReads::Unknown;
+        };
+        slots.insert(slot);
+    }
+    ConditionReads::Globals(slots)
+}
+
+/// Does `delta` (a complete account of the shared world's changes this
+/// window) touch anything `sleep`'s condition reads?
+///
+/// The bookkeeping bit is matched against the host's
+/// [`FlowSleep::reads_bookkeeping`] declaration, not the row: effect rows
+/// model global cells only, so a visit-count/turn-index read is invisible to
+/// them (see that builder's docs). An [`ConditionReads::Unknown`] row skips
+/// the question entirely and re-evaluates on any change at all.
+fn delta_touches_condition<M: Send + Sync + 'static>(
+    delta: &WorldDelta,
+    reads: &ConditionReads,
+    sleep: &FlowSleep<M>,
+) -> bool {
+    match reads {
+        ConditionReads::Unknown => !delta.is_empty(),
+        ConditionReads::Globals(slots) => {
+            (delta.touched_bookkeeping() && sleep.reads_bookkeeping)
+                || delta.globals().iter().any(|slot| slots.contains(slot))
+        }
+    }
 }
 
 /// Ink truthiness for a wake condition's return value: a `Bool(true)`, a
@@ -806,8 +1068,11 @@ fn is_condition_true(value: &Value) -> bool {
 /// - **Never evaluated yet** (`!evaluated_once`): always re-evaluate. A
 ///   dormant policy must get its first evaluation even on a quiet frame.
 /// - **No external-capability dependency** ([`DetectSummary::bits`] empty): the
-///   condition reads only ink World state, so [`BrinkGlobals`] change detection
-///   is the whole signal — re-evaluate only when it changed.
+///   condition reads only ink World state, so `world_changed` is the whole
+///   signal — re-evaluate only when it is set. Since #1146 that flag is
+///   already **row-directed** where the caller could prove it (see
+///   [`mark_wake_dirty`]): it means "a cell this condition reads moved", not
+///   merely "something in `BrinkGlobals` moved".
 /// - **Any dependency capability is must-poll** (`#913` AND-merge folded a bit
 ///   to `false`, so `all_detect_capable` is `false`): re-evaluate every pass;
 ///   that capability's reads are not change-detection-backed.
@@ -857,10 +1122,20 @@ fn wake_needs_reeval<M: Send + Sync + 'static>(
 
 /// Ordinary (non-exclusive) system: flag which parked policies need their
 /// condition re-evaluated this frame, consuming the `#913` `detect` verdict and
-/// the two change signals it can observe.
+/// the change signals it can observe.
 ///
-/// - [`BrinkGlobals`] change detection covers conditions that read the shared
-///   ink World.
+/// - The [`BrinkWorldDelta`] changed-cell ledger (issue #1146) covers
+///   conditions that read the shared ink World **per cell**: a policy is
+///   flagged only when a global its condition's effect row lists as a read was
+///   actually written this window, so a turn that only bumped visit counts
+///   leaves a `gate`-reading condition alone (the #1101 spurious re-wake).
+///   Bookkeeping reads are host-declared ([`FlowSleep::reads_bookkeeping`]) —
+///   rows model global cells only. When the ledger cannot account for the
+///   whole window (a serial driver, a direct host write into
+///   [`BrinkGlobals::inner`]) it degrades to the coarse signal below, and so
+///   does a condition whose row is missing or opaque.
+/// - [`BrinkGlobals`] change detection is that coarse signal: any change
+///   re-checks every parked all-detect-capable policy.
 /// - The per-capability component-tick verdict [`CapabilityChanges`] (§12.5,
 ///   #996) covers component-backed **detect-capable** conditions — e.g. an
 ///   `is_player_nearby` reading `Transform`, or a door's `should_open` reading
@@ -881,13 +1156,42 @@ pub fn mark_wake_dirty<M: Send + Sync + 'static>(
     globals: Option<Res<BrinkGlobals<M>>>,
     registry: Res<CapabilityRegistry<M>>,
     changes: Res<CapabilityChanges<M>>,
-    mut sleepers: Query<&mut FlowSleep<M>>,
+    wake_delta: Option<ResMut<BrinkWorldDelta<M>>>,
+    // Optional so the system still runs in a bare `App` with no `AssetPlugin`
+    // (the unit tests below drive it that way); absent, every condition's read
+    // row is `Unknown` and the pass stays conservative.
+    programs: Option<Res<Assets<ProgramAsset>>>,
+    mut sleepers: Query<(&mut FlowSleep<M>, Option<&BrinkProgram<M>>)>,
 ) {
-    let world_changed = globals.as_ref().is_some_and(DetectChanges::is_changed);
-    for mut sleep in &mut sleepers {
+    let coarse_changed = globals.as_ref().is_some_and(DetectChanges::is_changed);
+    let globals_tick = globals.as_ref().map(DetectChanges::last_changed);
+    // Issue #1146: drain the changed-cell ledger once per pass, whatever the
+    // sleepers turn out to need. `Some` means it is a complete account of
+    // every shared-world change since this system last ran, so it *replaces*
+    // the coarse resource-level bit rather than refining it; `None` (a serial
+    // driver, a direct host write, a frame no batch turn ran) falls back to
+    // that bit exactly as before this fix.
+    let delta = wake_delta
+        .map(ResMut::into_inner)
+        .and_then(|ledger| ledger.drain(globals_tick, coarse_changed));
+    for (mut sleep, program_ref) in &mut sleepers {
         if sleep.state != SleepState::Parked {
             continue;
         }
+        let world_changed = match &delta {
+            None => coarse_changed,
+            Some(delta) => {
+                // Only pay for the row lookup when something was actually
+                // written this window.
+                !delta.is_empty() && {
+                    let asset = program_ref
+                        .zip(programs.as_ref())
+                        .and_then(|(program_ref, assets)| assets.get(&program_ref.handle));
+                    let reads = condition_reads(asset, &sleep);
+                    delta_touches_condition(delta, &reads, &sleep)
+                }
+            }
+        };
         if wake_needs_reeval(&sleep, &registry, &changes, world_changed) && !sleep.needs_eval {
             sleep.needs_eval = true;
         }
@@ -965,6 +1269,12 @@ pub fn run_flow_sleep<M: Send + Sync + 'static>(
         // marker's stories share, per `crate::capability`'s module docs), so a
         // single fetch here covers every candidate this pass gathers.
         let manifest = world.resource::<CapabilityManifest>();
+        // The `BrinkBindings<M>` registry (issue #1609): `None` if the host
+        // never registered any `bind_brink_*` binding for this marker (the
+        // resource is inserted lazily) — `check_named_condition_purity`/
+        // `check_value_condition_purity` treat that the same as an empty
+        // `commands` bucket.
+        let bindings = world.get_resource::<BrinkBindings<M>>();
         for (entity, sleep, flow, program_ref) in gather.iter(world) {
             let status = flow.inner.status();
             // An `-> END` flow is dead; the policy is inert (§13.1 point 5).
@@ -1011,6 +1321,7 @@ pub fn run_flow_sleep<M: Send + Sync + 'static>(
                                     &asset.program,
                                     &asset.effect_rows,
                                     manifest,
+                                    bindings,
                                     value,
                                 )
                             } else {
@@ -1018,6 +1329,7 @@ pub fn run_flow_sleep<M: Send + Sync + 'static>(
                                     &asset.program,
                                     &asset.effect_rows,
                                     manifest,
+                                    bindings,
                                     &sleep.condition,
                                 )
                             };
@@ -1078,6 +1390,27 @@ pub fn run_flow_sleep<M: Send + Sync + 'static>(
 
     // ── Evaluate ── each condition runs in its owning flow's context (shared
     // World ⊕ that flow's locals) and cannot advance the visible story.
+    //
+    // Issue #1146: building that context needs `&mut BrinkGlobals<M>`, which
+    // trips bevy's change detection the instant the reference is taken —
+    // even though the condition is purity-gated above and provably writes no
+    // global cell. Left alone that is a **self-sustaining** wake signal: an
+    // evaluation marks the world changed, the change re-flags the same
+    // policy next frame, and it evaluates forever (and, worse, poisons the
+    // changed-cell ledger's attribution for every *other* sleeper under `M`,
+    // since a batch driver cannot tell that write apart from a host's).
+    // Snapshot the change tick around the phase and restore it afterwards;
+    // the one thing an evaluation can still legitimately move — bookkeeping
+    // (a counted container's visit count, an RNG draw), which no effect row
+    // models — is recorded in the ledger instead, so a policy that declares
+    // it reads bookkeeping still sees it.
+    if candidates.is_empty() {
+        return;
+    }
+    let globals_tick = world
+        .get_resource_ref::<BrinkGlobals<M>>()
+        .map(|globals| globals.last_changed());
+
     for candidate in candidates {
         // A dynamically-resolved fn-value token (issue #1078) invokes
         // directly; a named condition resolves by path — mirrors the purity
@@ -1130,6 +1463,18 @@ pub fn run_flow_sleep<M: Send + Sync + 'static>(
                 sleep.state = SleepState::Faulted;
             }
         }
+    }
+
+    // Restore the pre-evaluation change tick (see the phase comment above)
+    // and hand the ledger the conservative bookkeeping touch that replaces
+    // it. Both are no-ops when the marker has neither resource.
+    if let Some(tick) = globals_tick
+        && let Some(mut globals) = world.get_resource_mut::<BrinkGlobals<M>>()
+    {
+        globals.set_last_changed(tick);
+    }
+    if let Some(mut ledger) = world.get_resource_mut::<BrinkWorldDelta<M>>() {
+        ledger.record_condition_evaluation();
     }
 }
 

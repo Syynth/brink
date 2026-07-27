@@ -295,6 +295,14 @@ the type-system per-def shape that TM-2/TM-3 need *now*: linking is a codegen
 incrementality win (#460), not a type-checker unblocker. Front-loading it
 couples this epic to codegen-chunk churn with no TM payoff.
 
+**Measured, and the split is deferred independently of this epic** — see
+`docs/compile-time-profile-findings.md`: on the #498 studio-scale project,
+chunks + link + codegen together are 2.6% of a cold compile and 37% of a warm
+one-line-edit recompile, while T2-3 advisory effect inference is 88% of the
+cold compile. The per-container / symbolic-ref redesign stays parked in #633;
+what shipped instead was the shared per-knot lowering context the profile
+exposed.
+
 ---
 
 ## 6. Memory bounding
@@ -335,7 +343,7 @@ Facts from the current code:
 
 ## 7. Test / verification plan
 
-- **Oracle gate on every slice.** Ratchet `RATCHET_EPISODE_COUNT` (5,577) must
+- **Oracle gate on every slice.** Ratchet `RATCHET_EPISODE_COUNT` must
   not move; corpus report identical. The inference family is advisory-only
   under gradual policy — `type_inference_query` is not read by `lir_query` or
   `story_data_query` — so this holds by construction until TM-3.
@@ -442,8 +450,11 @@ spine-slice method):
   edited file's contributors. Gated by the `query_equivalence` construction.
 - **FG-4 — per-container LIR + symbolic-ref link (= slice C / #460).**
   `lir_query` splits into per-`DefinitionId` chunk memos; `story_data_query`
-  runs the symbolic link/assembly. Measured against #498; the warm-recompile
-  number this slice exists to crush.
+  runs the symbolic link/assembly. **Measured against #498 and deferred** —
+  see `docs/compile-time-profile-findings.md`: chunks + link + codegen are
+  2.6% of cold compile and 37% of warm recompile, dwarfed by T2-3 effect
+  inference's 88%. Parked in #633; the shared per-knot lowering context the
+  profile exposed shipped instead.
 - **FG-5 — memory bounding.** Durable `DefKey`/`SccId` identity (#536
   analogue), count-based LRU on the per-def heavy queries, `heap_size`
   estimators, and the `db_memo_retention` per-def churn assertion (§6).

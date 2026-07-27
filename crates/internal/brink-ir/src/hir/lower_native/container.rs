@@ -91,11 +91,18 @@ fn lower_params(param_list: Option<ast::ParamList>) -> Vec<Param> {
             name_from(p.name_token()).map(|name| Param {
                 name,
                 is_ref: p.is_ref(),
-                // Neither a `->`-typed divert param nor a `: type`
-                // annotation exists in this grammar skeleton
-                // (`parser/decl.rs::param`) — always false/`None`.
+                // No `->`-typed divert param exists in this grammar
+                // (`parser/decl.rs::param`) — always false.
                 is_divert: false,
-                annotation: None,
+                // `name: type` (NG-A, issue #1487) — the same
+                // `hir::TypeExpr` the ink dialect's TM-2 annotations lower
+                // to, so `brink-analyzer::strict`'s annotation firewall
+                // (its `E065` Unknown-escape exemption) reads a native
+                // parameter exactly as it reads an ink one.
+                annotation: p
+                    .type_annotation()
+                    .as_ref()
+                    .and_then(super::types::lower_type_annotation),
             })
         })
         .collect()
@@ -120,6 +127,14 @@ pub(super) fn lower_top_level_container(
         return None;
     };
     let params = lower_params(node.param_list());
+    // `fn probability(g: Guest): float { … }` (NG-C, issue #1489, RULED
+    // 2026-07-26). Declaring a return type is also the ruled
+    // **coroutine-vs-state toggle** — see the implicit-`-> DONE` guard
+    // below.
+    let return_type = node
+        .return_type()
+        .as_ref()
+        .and_then(super::types::lower_type_annotation);
 
     // A nested `flow`/`fn` declaration can only appear inside a
     // *prose*-ground body — `parser/stmt.rs`'s code-ground statement
@@ -168,7 +183,18 @@ pub(super) fn lower_top_level_container(
     // (RULED 2026-07-22; charter §15): a body falling off the end gets a
     // synthesized `-> DONE`. Functions are excluded — they implicitly
     // *return* on exhaustion, not DONE.
-    if !node.is_function() {
+    //
+    // So is a **value-returning flow**: the return-type declaration is the
+    // ruled coroutine-vs-state toggle (`docs/decision-log.md` 2026-07-22
+    // implicit-end ruling, item 3 — "no return type ⇒ ends implicitly as
+    // DONE; has one ⇒ must return"). A coroutine that falls through
+    // without a value is a *checker* error, and synthesizing `-> DONE`
+    // here would silently turn that authoring mistake into a story that
+    // quietly ends. The checker diagnostic itself is `E150`
+    // (`brink_analyzer::strict::check_def`, issue #1551) — landed after
+    // this slice, which only wired the toggle into the mechanism that
+    // already existed here.
+    if !node.is_function() && return_type.is_none() {
         super::body::apply_implicit_done(&mut body_block);
     }
 
@@ -180,8 +206,10 @@ pub(super) fn lower_top_level_container(
         body: body_block,
         stitches,
         is_local: false,
-        effects_assertion: None,
-        return_type: None,
+        // The attached `@[effects(…)]` assertion, if the declaration carries
+        // one (issue #1563, [`super::annotation`]).
+        effects_assertion: super::annotation::effects_assertion(file_id, syntax, diags),
+        return_type,
         doc,
         visibility: None,
         was: None,
@@ -206,6 +234,15 @@ fn lower_stitch(
         return None;
     };
     let params = lower_params(node.param_list());
+
+    // `flow gate(): int { … }` (NG-C, issue #1489; widened to stitches by
+    // #1509, RULED 2026-07-26): a nested flow's return type carries the
+    // same coroutine-vs-state toggle a top-level flow/fn's does — see the
+    // implicit-`-> DONE` guard below.
+    let return_type = node
+        .return_type()
+        .as_ref()
+        .and_then(super::types::lower_type_annotation);
 
     // Depth-3 fence (Q4(b)): a `flow` nested inside *this* stitch's body is
     // one level too deep. Reject each occurrence loudly; do not lower it,
@@ -241,16 +278,26 @@ fn lower_stitch(
     // stitch is always the tunnel-return spelling, never an explicit
     // function return.
     super::body::fixup_return_kind(false, &mut body_block);
-    // Stitches are never functions, so they always inherit the implicit-end
-    // grace (charter §15): fall off the end → synthesized `-> DONE`.
-    super::body::apply_implicit_done(&mut body_block);
+    // Stitches are never functions, so a non-value-returning one always
+    // inherits the implicit-end grace (charter §15): fall off the end →
+    // synthesized `-> DONE`. A value-returning stitch is the coroutine side
+    // of the toggle (mirrors `lower_top_level_container`'s `Knot` guard):
+    // declaring a return type means it must return, so no implicit DONE is
+    // synthesized here — an author's missing return would otherwise be
+    // silently rewritten into a quiet ending.
+    if return_type.is_none() {
+        super::body::apply_implicit_done(&mut body_block);
+    }
     Some(Stitch {
         ptr: native_provenance(file_id, NodeClass::Stitch, syntax),
         name,
         params,
         body: body_block,
         is_local: false,
-        effects_assertion: None,
+        // Same annotation channel as a top-level container — a nested
+        // `flow`'s `@[effects(…)]` sits above its own head (issue #1563).
+        effects_assertion: super::annotation::effects_assertion(file_id, syntax, diags),
+        return_type,
         doc,
         visibility: None,
         was: None,

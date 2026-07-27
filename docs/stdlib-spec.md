@@ -80,7 +80,8 @@ dangles; charter fix owed.)
    (2026-07-19): Option has NO truthiness** — a condition-position
    `Option[T]` is a compile error under strict and a runtime fault
    under gradual; the author writes `== none`, `== some(x)`, or
-   (post-B1) the `as`-binding. Truthiness is a quiet coercion of
+   the `as`-binding (RULED 2026-07-26, SHIPPED on the native
+   surface in B1b, issue #1475). Truthiness is a quiet coercion of
    exactly the kind `Option[T] ≠ T` exists to ban. (Supersedes
    A1's shipped falsy-none — implementation fix owed.) **F28 RULED
    (2026-07-19)**: `none`/`some(…)` render totally via `string()`
@@ -135,7 +136,9 @@ observation is repr-transparent. Spec'd as a PERFORMANCE CONTRACT
 ("O(1), non-allocating"), regression-guarded via bench-counters
 (arc_clones/cow_copies). The Java-substring leak is named: wire/
 saves always materialize; creation applies a view≪base size
-heuristic (ratio ⏳). Distinct from #829's REF projections (the
+heuristic (ratio RULED 2026-07-26: constants are Distinct from #829's REF projections (the
+  implementation-tunable performance facts pinned by the
+  bench-counters, never semantics; tuned only with evidence).
 mutating write-through cousin, still icebox, reserved wire slot) —
 cross-referenced so views ≠ projections.
 
@@ -193,22 +196,27 @@ cross-referenced so views ≠ projections.
   (`push(ref inventory, sword)`) — the sugar is earned in method
   position, the spelled form teaches what it means. Safe
   sigil-free because values are COW (no aliasing/escape to warn
-  about) and the mutation lives in the effect row regardless.
+  about — the value-model statement in `docs/runtime-spec.md` §"Value
+  model", detailed in `docs/value-model-spec.md` §3) and the
+  mutation lives in the effect row regardless.
   **Naming (RULED with it)**: imperative = in-place (`sort push
-  insert remove reverse`), past-participle = functional (`sorted
-  reversed`) — the verb carries the mutation signal; the
+  insert remove remove_at reverse`), past-participle = functional
+  (`sorted reversed`) — the verb carries the mutation signal; the
   confusion lattice closes from both sides (`let b = a.sort()` =
   unit type error; `a.sorted().push(x)` = rvalue error).
 - Verbs: `len first last index_of contains slice(view) concat
-  sort sort_by sorted sorted_by reversed min max push pop insert remove
-  each map filter fold filter_map`. **Absence returns (RULED
-  2026-07-18, flipping the earlier empty⇒fault posture — one
-  doctrine, no day-one exceptions)**: `first last min max pop` →
-  `Option` on empty; `index_of` → `Option[int]` (martyr #2,
-  redeemed). OOB *indexing* (`a[i]`, `insert`, remove-by-index)
-  stays a fault — an index you computed wrong is a bug; an empty
-  extremum is absence. Prelude: `len contains push`; rest
-  `std::seq`.
+  sort sort_by sorted sorted_by reversed min max push pop insert
+  remove_at each map filter fold filter_map`. **Absence returns
+  (RULED 2026-07-18, flipping the earlier empty⇒fault posture —
+  one doctrine, no day-one exceptions)**: `first last min max pop`
+  → `Option` on empty; `index_of` → `Option[int]` (martyr #2,
+  redeemed). OOB *indexing* (`a[i]`, `insert`, `remove_at`) stays
+  a fault — an index you computed wrong is a bug; an empty
+  extremum is absence. **`remove` is NOT a seq verb** — the
+  array-index leg RESOLVED 2026-07-26 to `remove_at` (#1484, the
+  `_at` faulting-index family with `char_at`); `remove` names only
+  the map/flags identity-based, idempotent-total posture (§5/§6).
+  Prelude: `len contains push`; rest `std::seq`.
 - **The `list` reclaim dissolves**: type is `[T]`, literal `[…]`,
   vocabulary is "array"; the word "list" RETIRES entirely.
 
@@ -459,7 +467,9 @@ precedent, oracle byte-identical):
   table-building shows dossier demand, a validating constructor
   verb returning `Option` kills the construction-fault residual
   the way `nonempty()` did for ranges. `len`, iteration, and
-  mutation ⏳ — v1 is construct-and-roll.
+  mutation RULED OUT for v1 (2026-07-26, maintainer: agent
+  invention, low value) — construct-and-roll stands; any further
+  surface is evidence-gated.
 - **Heap/priority queue — the humble form first.** Proposal: verbs
   over arrays, not a new type — `heap_push(ref a, x)`,
   `heap_pop(ref a)` → `Option`, `heap_peek(a)` → `Option` (empty
@@ -525,7 +535,10 @@ precedent, oracle byte-identical):
    spelling — supersession note there when this lands. Holes'
    release policy — **PARKED past this sitting by the maintainer**
    (2026-07-18); it survives the closers as the one deliberately
-   open authorial-workflow judgment.
+   open authorial-workflow judgment. *(2026-07-26: stays parked,
+   re-homed to the NS-T editor round; lean for when it opens —
+   holes ride the `[lints]` control plane, the same shape as the
+   unmaterialized-slug lint.)*
 3. **Prelude — final list assembled from the per-domain marks:**
    entire math kit incl. trig (§2's generous ruling) · `len
    contains char_at` (text) · `len contains push` (seq) · `len`
@@ -668,20 +681,21 @@ precedent, oracle byte-identical):
   as #1103; holes' release policy parked by the maintainer).
 - **§§1–9 are now fully ruled.** The sitting's remaining work is
   Phase C.
-- In-section ⏳s: tower mini-spec (§2b) · view-materialization
-  ratio (§3b) · weighted-table mutation surface (§8) · holes'
-  release policy (§9.2, maintainer-parked) · protocol
-  implementation spelling + compare/equality coherence line
-  (§9.6) ·
-  inhabited-range type/validator spelling (§7, code-dialect
-  sitting). **Closed since**: initializer protocol-vs-grammar —
-  #1103 RULED 2026-07-23 (it is protocol dispatch; see §9.6's
-  `construct` entry) and BUILT by #1464.
-- Maintainer-attention note: `remove` now names three verbs with
-  divergent postures — seq remove-by-index (OOB ⇒ fault, the
-  indexing contract), map remove-by-key (idempotent-total), flags
-  subtract (idempotent-total). Legal under intrinsic overloading;
-  flagged so the divergence is chosen, not accidental.
+- In-section ⏳s (pruned 2026-07-26 — ratio ruled, weighted
+  surface ruled out for v1, holes re-homed to NS-T): tower
+  mini-spec (§2b) · protocol implementation spelling +
+  compare/equality coherence line (§9.6) · inhabited-range
+  type/validator spelling (§7, code-dialect sitting). **Closed
+  since**: initializer protocol-vs-grammar — #1103 RULED
+  2026-07-23 (protocol dispatch; §9.6's `construct` entry),
+  BUILT by #1464.
+- `remove` divergence **RESOLVED 2026-07-26: accidental — made
+  consistent by renaming, not by flattening postures** (#1484):
+  seq remove-by-index → **`remove_at`** (joining the `_at`
+  faulting-index family with `char_at`); **`remove` uniformly
+  names identity-based idempotent-total removal** (map keys,
+  flags values). Each posture was right for its domain; the
+  accident was one name spanning both.
 - **Lambdas RULED early (2026-07-19, airport sitting — the
   code-dialect opening item closed pre-sitting)**: **Rust pipes
   with colon returns** — `|g| g.awake`, `|g: Guest|: bool { … }`,
@@ -705,7 +719,9 @@ precedent, oracle byte-identical):
   as an implementation prerequisite. Pre-registered bet the
   verbs leaned on: **capture is by-value** (COW makes it cheap;
   no ref captures v1, so closures can't smuggle mutable aliases
-  past the auto-ref rules); rows compose through captures per
+  past the auto-ref rules — see the closure-capture bullet of the
+  value-model statement in `docs/runtime-spec.md` §"Value model");
+  rows compose through captures per
   #872. Reopening capture reopens knowingly. (2)
   **Syntax-in-value-position** — one coherent mechanism (operator
   sections vs `(+)`-style operator-values vs named verb twins vs

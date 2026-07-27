@@ -92,6 +92,15 @@ use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::io;
 
+/// The directory-entry name that marks a git repository root — either an
+/// ordinary clone's `.git/` directory, or a linked worktree's `.git`
+/// *file* (a `gitdir:` pointer, e.g. how this repository's own
+/// `.claude/worktrees/*` are laid out). A single source of truth for that
+/// name (issue #1435): before this constant existed, [`IGNORED_DIR_NAMES`]
+/// below and `brink-project-config`'s `find_config` walk-up bound each
+/// hardcoded their own `".git"` literal, free to drift apart.
+pub const GIT_DIR_NAME: &str = ".git";
+
 /// Directory names a recursive filesystem walk should never descend into —
 /// build output and VCS/dependency metadata that is never a valid source
 /// location and can be enormous. Originally added to `brink-driver`'s
@@ -107,7 +116,7 @@ use std::io;
 /// Sharing the *list* was only half the problem: each walk still had to
 /// remember to consult it. [`Walk`] (issue #1433) applies this list by
 /// construction, and is where every recursive traversal enforces it now.
-pub const IGNORED_DIR_NAMES: &[&str] = &["target", ".git", "node_modules"];
+pub const IGNORED_DIR_NAMES: &[&str] = &["target", GIT_DIR_NAME, "node_modules"];
 
 /// Whether `name` (a single directory-entry file name, not a path) is a
 /// conventionally-ignored directory a recursive walk must not descend into.
@@ -130,8 +139,12 @@ pub const IGNORED_DIR_NAMES: &[&str] = &["target", ".git", "node_modules"];
 /// enumerating a tree it wasn't already told the shape of (`brink-driver`'s
 /// `RealFs` walk; `brink-lsp`'s workspace-load walk; the *admission* half of
 /// `brink-lsp`'s file-watcher handler for `.ink` paths, which is handed
-/// individual paths but still decides whether each is new territory). It
-/// does **not** govern **explicit path admission** — code that is handed one
+/// individual paths but still decides whether each is new territory) — this
+/// half only actually prunes when `brink-lsp` has a non-empty
+/// `workspace_roots` to scope the check against; with none (single-file mode,
+/// or a watcher event racing `initialize`), `path_under_ignored_dir` declines
+/// to prune rather than guessing, per #1434. It does **not** govern **explicit
+/// path admission** — code that is handed one
 /// specific path by something outside the walk, with no discretion to skip
 /// it: a user opening a file directly in their editor
 /// (`textDocument/didOpen`), or an `INCLUDE` directive naming a path from
@@ -155,8 +168,11 @@ pub const IGNORED_DIR_NAMES: &[&str] = &["target", ".git", "node_modules"];
 /// separately from `.ink` admission, and applies this guard there under a
 /// stricter rule of its own: an ignored-dir `brink.toml` is never
 /// authoritative config, so that route skips unconditionally, with no
-/// already-tracked exemption. That rule is config-file routing, not `.ink`
-/// source admission, so it isn't part of the policy documented above.
+/// already-tracked exemption — again, only when `workspace_roots` is
+/// non-empty; with no root to scope against, the same #1434 carve-out
+/// applies and the route does not prune at all. That rule is config-file
+/// routing, not `.ink` source admission, so it isn't part of the policy
+/// documented above.
 ///
 /// Decided and written down once here (issue #1424) after #1415 found the
 /// split already held in practice — every admission path's behavior already

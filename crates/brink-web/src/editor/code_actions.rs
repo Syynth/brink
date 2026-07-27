@@ -66,6 +66,19 @@ impl EditorSession {
             abs_offset,
         ));
 
+        // T1c creation-site + call()/bind() strict quick-fixes (issue #744):
+        // same session-aware merge posture as the auto-import offer above.
+        actions.extend(brink_ide::creation_site_fix::fn_value_actions(
+            self.session.db(),
+            file_id,
+            abs_offset,
+        ));
+        actions.extend(brink_ide::value_call_fix::value_call_actions(
+            self.session.db(),
+            file_id,
+            abs_offset,
+        ));
+
         let items: Vec<CodeActionJs> = actions
             .iter()
             .map(|a| CodeActionJs {

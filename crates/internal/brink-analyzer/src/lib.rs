@@ -8,8 +8,9 @@
 mod admission;
 mod annotations;
 mod await_purity;
-mod coalesce_mismatch;
+mod coalesce;
 mod comparator_contract;
+mod contains_domain;
 mod conversions;
 mod determinism;
 mod dialect_gate;
@@ -21,6 +22,7 @@ mod manifest;
 mod map_keys;
 mod modules;
 mod native_admission;
+mod native_choice_dead_end;
 mod option_conditions;
 mod option_rules;
 mod protocols;
@@ -31,6 +33,7 @@ mod signature;
 mod strict;
 mod structs;
 mod type_resolution;
+mod ufcs;
 mod validate;
 
 use std::collections::BTreeMap;
@@ -46,6 +49,10 @@ pub use await_purity::{
 pub use brink_ir::FileId;
 pub use brink_ir::ResolutionMap;
 pub use brink_project_config::ProjectConfig;
+pub use coalesce::{
+    CoalesceChain, CoalesceShape, CoalesceStep, CoalesceTable, project_has_coalesce,
+    to_lir_lookup as coalesce_lir_lookup,
+};
 pub use comparator_contract::{
     check as comparator_contract_diagnostics, comparator_callees, hir_has_comparator_site,
 };
@@ -66,17 +73,22 @@ pub use infer::{
 };
 pub use manifest::{ModuleMap, ResolvedModule};
 pub use native_admission::validate_native_accept_list;
+pub use native_choice_dead_end::check as check_native_choice_dead_end;
 pub use protocols::{
     Protocol, ProtocolImplDecl, check_protocol_impls, check_reserved_names,
     is_reserved_protocol_name, iterate_element_ty, iterate_val_ty,
 };
 pub use resolve::ImportScope;
-pub use signature::{Sig, signature};
+pub use signature::{Sig, local_signature, signature};
 pub use strict::{
     LintLevel, LintPolicy, TypePolicy, effective_severity, native_strict_only_error,
     resolve_type_policy,
 };
 pub use structs::{ShapeInfo, declared_shapes};
+pub use ufcs::{
+    NodeKey, SideTable, UfcsTable, UfcsVerdict, project_has_ufcs_call,
+    resolve as resolve_ufcs_calls, to_lir_lookup as ufcs_lir_lookup,
+};
 
 use brink_format::DefinitionId;
 use brink_ir::{
@@ -155,12 +167,16 @@ impl AnalysisOptions {
     /// without a config file (typically [`AnalysisOptions::default()`]).
     /// `lints` does not follow this rule — see below.
     ///
-    /// `lints`/`deny-warnings` (issue #1160) have no override mechanism yet
-    /// (no CLI flag or editor API sets an individual code's severity or
-    /// `deny-warnings` today), so unlike `dialect`/`types` there is no
-    /// `lints_overridden` parameter — the file's `[lints]` table is instead
-    /// the sole source of truth for [`AnalysisOptions::lints`]: this call
-    /// **replaces** `self.lints` wholesale with the policy resolved from
+    /// `lints`/`deny-warnings` (issue #1160) have their own override
+    /// mechanism — [`Self::apply_lint_overrides`], the CLI-flag/editor-API
+    /// tier used by `brink compile`, `brink ide`, `brink-lsp`'s
+    /// `initializationOptions`, and the wasm `EditorSession` — but unlike
+    /// `dialect`/`types` that tier is applied as a *second, separate call*
+    /// rather than an `_overridden` parameter here, so this call always
+    /// resolves `[lints]` from `config` first: the file's `[lints]` table
+    /// is the sole source of truth for what this call sets on
+    /// [`AnalysisOptions::lints`], and it **replaces** `self.lints` wholesale
+    /// with the policy resolved from
     /// `config` (a code missing from `config.lints`, or an absent `[lints]`
     /// table entirely, resolves to no override for that code; a missing
     /// `deny-warnings` resolves to `false`) rather than merging `config`'s
@@ -181,8 +197,11 @@ impl AnalysisOptions {
     /// always documented to run *after* this, on top of whatever it just
     /// resolved, and no caller relies on this call preserving lint state
     /// this one didn't itself just set — `self.lints` at call time is
-    /// either a fresh [`AnalysisOptions::default()`] (CLI, LSP, `brink ide`,
-    /// `bevy-brink`) or the previous call's own output (the editor session).
+    /// always a fresh [`AnalysisOptions::default()`] (CLI, LSP, `brink ide`,
+    /// the editor session's own throwaway `AnalysisOptions`, or `bevy-brink`
+    /// via `brink-environment::resolve_options`); see the Invariant section
+    /// below for why every caller constructs fresh rather than reusing a
+    /// prior call's output.
     ///
     /// `brink-project-config` doesn't know the real `DiagnosticCode` set
     /// (kept dependency-free, #1234), so it accepts any string key under
@@ -201,6 +220,46 @@ impl AnalysisOptions {
     /// Lives here rather than in `brink-project-config` so that crate needs no
     /// workspace dependencies and can publish standalone (#1234) — it owns the
     /// policy *types*, this crate owns applying them to its own options.
+    ///
+    /// ## Invariant: `self` must be fresh
+    ///
+    /// `[lints]` would be safe to apply onto a `self` mutated by a prior
+    /// call — full replace, not merge, is exactly what makes that safe (see
+    /// above). `dialect`/`types` are **not**: their "unset means untouched"
+    /// rule means whatever `self.dialect`/`self.types` already held before
+    /// this call would silently survive untouched if `config` (and the
+    /// `_overridden` flags) don't set them. No caller relies on that today
+    /// — there is no exception. Every production call site starts each call
+    /// from a **freshly-constructed** [`AnalysisOptions::default()`]:
+    /// `brink-cli`'s `brink ide`; `brink-lsp`'s `resolve_language_options`
+    /// (called fresh both from `initialize` *and* repeatedly from
+    /// `Backend::reload_brink_toml` on every `brink.toml` edit — the
+    /// repeat-call case this invariant is actually about); `brink-web`'s
+    /// `EditorSession::apply_parsed_config`, via its own throwaway
+    /// `AnalysisOptions::default()` (it never reuses a mutated `self` —
+    /// `dialect`/`types` are applied directly to the session elsewhere, not
+    /// through this method); and — the one every mount funnels through —
+    /// `brink-environment::resolve_options`, called fresh inside every
+    /// [`Project::load`](../brink_environment/struct.Project.html#method.load)).
+    /// `bevy-brink` never calls this method directly; it reaches it solely
+    /// through `resolve_options`. Reusing a mutated `self` would let a
+    /// later, unrelated compile silently inherit an earlier one's resolved
+    /// `dialect`/`types` whenever its own `brink.toml` doesn't set them,
+    /// breaking the determinism a caller doing repeat compiles (e.g.
+    /// `bevy-brink`'s `InkLoader` on every asset (re)load) depends on.
+    /// Nothing in this method's signature enforces starting fresh — it
+    /// takes `&mut self`, so it can't tell "fresh" apart from "reused".
+    /// This is a documented invariant rather than a compiler-checked one
+    /// because enforcing it in the type (e.g. an associated constructor
+    /// like `fn from_project_config(config, dialect_overridden,
+    /// types_overridden) -> (Self, Vec<ConfigWarning>)` that owns
+    /// construction) would mean touching all four production call sites
+    /// plus the ~15 `brink-analyzer` unit tests that call
+    /// `apply_project_config` directly on an already-constructed `options`
+    /// — not because any caller needs `&mut self` reuse; see
+    /// `resolve_options`/`repeat_compiles_do_not_leak_options_across_project_load_calls`
+    /// in `brink-environment` for where the fresh-start invariant is
+    /// actually pinned end-to-end.
     pub fn apply_project_config(
         &mut self,
         config: &ProjectConfig,
@@ -335,13 +394,22 @@ pub fn symbol_index(files: &[(FileId, &SymbolManifest)]) -> (Arc<SymbolIndex>, V
 ///
 /// `dialect` gates the M-2c cross-declared-module duplicate escalation
 /// (issue #784): see [`manifest::merge_manifests_with_modules`].
+///
+/// `is_native` (issue #1562 review finding) widens that same gate past the
+/// ink-only `dialect` axis for a native `.brink` project, exactly as
+/// [`strict_diagnostics`]'s own `is_native` widens `E064`'s dialect check —
+/// see [`manifest::merge_manifests_with_modules`]'s doc. Callers with no
+/// `Language` classification of their own pass `false`, unchanged from
+/// before this parameter existed.
 #[must_use]
 pub fn symbol_index_with_modules(
     files: &[(FileId, &SymbolManifest)],
     modules: &ModuleMap,
     dialect: Dialect,
+    is_native: bool,
 ) -> (Arc<SymbolIndex>, Vec<Diagnostic>) {
-    let (index, diagnostics) = manifest::merge_manifests_with_modules(files, modules, dialect);
+    let (index, diagnostics) =
+        manifest::merge_manifests_with_modules(files, modules, dialect, is_native);
     (Arc::new(index), diagnostics)
 }
 
@@ -372,31 +440,126 @@ pub fn analyze(files: &[(FileId, &HirFile, &SymbolManifest)]) -> AnalysisResult 
 
 /// Run cross-file semantic analysis with explicit tooling options, including
 /// an optional host-capability manifest and its external-check severity.
+///
+/// **Module-blind** (issue #1526): with no [`ModuleMap`] there is nothing to
+/// qualify identity by, so every symbol hashes by bare name (`module: None`)
+/// and the import scope is inert. That is byte-identical to `brink-db` for
+/// the undeclared-stem-module world — the entire ink corpus that carries no
+/// `#@module` — and *diverges* for any file whose real module is declared:
+/// an ink file with `#@module(name)`, and **every** native `.brink` file
+/// (whose module is its path, `story::…`, always declared — see
+/// `brink_db::modules::native_module_path`). A `DefinitionId` minted here
+/// for such a file does not match the one `brink-db`'s queries mint for the
+/// same declaration, so it cannot be used as a key into `db.effects` /
+/// `db.signature` / `db.infer_body`.
+///
+/// Callers that hold a `ProjectDb` — every IDE/LSP path — must use
+/// [`analyze_with_modules`] with `ProjectDb::module_map()` instead.
 pub fn analyze_with_options(
     files: &[(FileId, &HirFile, &SymbolManifest)],
     opts: &AnalysisOptions,
+) -> AnalysisResult {
+    // No `Language` classification exists at this layer (issue #1348 /
+    // #1562) — see `analyze_with_modules`'s own `is_native` doc.
+    analyze_with_modules(files, &ModuleMap::new(), opts, false)
+}
+
+/// Run cross-file semantic analysis against the project's resolved
+/// [`ModuleMap`] — the module-aware form of [`analyze_with_options`]
+/// (issue #1526).
+///
+/// `modules` is the map `brink-db`'s `module_map_query` computes (file stems,
+/// `#@module` declarations, the INCLUDE graph, and — for native `.brink`
+/// files — the path-derived `story::…` identity). Feeding it here makes this
+/// path mint the *same* `DefinitionId`s as `brink-db`'s
+/// `symbol_index_query`/`resolve_query`, which is what lets an IDE feature
+/// use a symbol from this result as a key into the db's per-def queries
+/// (`effects`/`signature`/`infer_body`).
+///
+/// Module identity is never recomputed here: the map is an input, minted by
+/// the one layer that knows file paths, so a native file's save-key-critical
+/// identity stays a pure function of its path and cannot drift between the
+/// two paths.
+///
+/// An empty map reproduces [`analyze_with_options`] exactly.
+///
+/// `is_native` declares that every file in `files` is native (`.brink`)
+/// source, and selects the native arm of **every** analyzer pass this
+/// function composes (issue #1358) — not just the symbol index it originally
+/// reached (issue #1562):
+///
+/// - [`symbol_index_with_modules`] — M-2d cross-declared-module coexistence
+///   stops depending on `opts.dialect` being `Dialect::Brink`.
+/// - [`per_file_diagnostics`], via [`finish_analysis`] — the ink-only T1b
+///   dialect gate (`E051`) is skipped, and the construction-literal checks
+///   (`E084`/`E106`/`E138`) widen past the brink-only block.
+/// - [`native_strict_only_error`] (`E137`), via [`finish_analysis`] — the
+///   B0.9 strict-only gate, which has no meaning for ink source at all.
+/// - [`strict_diagnostics`], via [`whole_project_diagnostics`] — the ink-only
+///   `types = strict` config error (`E064`) is skipped (issue #1348).
+///
+/// This is the whole point of the flag: before #1358 it reached only the
+/// first bullet, so a caller analyzing native source off-db still got the
+/// ink arm of the per-file and whole-project passes — spurious `E051`/`E064`
+/// on every editor surface, and `E137` unreachable there. `brink-db`'s
+/// salsa queries have always selected these arms from their own
+/// `Language` classification; this makes the pure path able to express the
+/// same combination.
+///
+/// Callers that know the project's `Language` from a `ProjectDb`
+/// (`brink-lsp`'s `analysis_loop` via `ProjectDb::is_native`, `IdeSession`
+/// via `ProjectDb::is_all_native`) pass the real value; every other caller
+/// passes `false`, unchanged from before this parameter existed —
+/// [`analyze_with_options`] always does.
+///
+/// It is a whole-project flag, so `true` is only correct for a file set that
+/// is *entirely* native; a mixed set must pass `false` (the analyzer has no
+/// file paths and so cannot classify per file itself).
+pub fn analyze_with_modules(
+    files: &[(FileId, &HirFile, &SymbolManifest)],
+    modules: &ModuleMap,
+    opts: &AnalysisOptions,
+    is_native: bool,
 ) -> AnalysisResult {
     let manifest_inputs: Vec<(FileId, &SymbolManifest)> = files
         .iter()
         .map(|&(id, _hir, manifest)| (id, manifest))
         .collect();
 
-    let (index, mut diagnostics) = symbol_index(&manifest_inputs);
+    let (index, mut diagnostics) =
+        symbol_index_with_modules(&manifest_inputs, modules, opts.dialect, is_native);
     let mut resolutions = ResolutionMap::new();
     for &(file_id, hir, manifest) in files {
-        // Import-scoped resolution (M-2d, issue #790). This whole-project
-        // convenience path uses the non-module-qualified `symbol_index`, so
-        // every symbol carries `module: None` and the scope is inert (flat
-        // resolution) — but building it from the file's own HIR keeps this
-        // path honest and mirrors the real `brink-db` pipeline, which feeds
-        // the INCLUDE-resolved module.
-        let scope = ImportScope::new(hir.module.as_ref().map(|m| m.name.clone()), &hir.imports);
+        // Import-scoped resolution (M-2d, issue #790), matching
+        // `brink-db`'s `resolve_query`: the resolved **declared** module
+        // scopes the file's references. The map is authoritative when it
+        // covers this file — notably for a native file, whose `hir.module`
+        // carries a deliberately empty `name` (it exists only to hold the
+        // authored `@[was]`; see `brink_ir::hir::lower_native::module`) and
+        // would otherwise scope the file to the module named `""`.
+        //
+        // Falling back to the file's own HIR keeps the map-free
+        // (`analyze_with_options`) path byte-identical to what it was before
+        // this parameter existed.
+        let declared_module = match modules.get(&file_id) {
+            Some(resolved) => resolved.declared.then(|| resolved.name.clone()),
+            None => hir.module.as_ref().map(|m| m.name.clone()),
+        };
+        let scope = ImportScope::new(declared_module, &hir.imports);
         let (file_map, file_diags) = resolve(file_id, manifest, &index, &scope);
         resolutions.extend(Arc::unwrap_or_clone(file_map));
         diagnostics.extend(file_diags);
     }
 
-    finish_analysis(files, index, resolutions, diagnostics, opts, None)
+    finish_analysis(
+        files,
+        index,
+        resolutions,
+        diagnostics,
+        opts,
+        is_native,
+        None,
+    )
 }
 
 /// Per-file diagnostic contributors (issue #632 / FG-3,
@@ -783,12 +946,25 @@ pub fn strict_diagnostics(
 /// error. The `types = strict` + wrong-dialect config error (`E064`) is
 /// computed exactly once, inside [`strict_diagnostics`] (issue #632's
 /// TM-3-interaction fence).
+///
+/// `is_native` (issue #1358): every file is native (`.brink`) source, so the
+/// ink-only `E064` config error is skipped — forwarded verbatim to
+/// [`strict_diagnostics`], whose own `is_native` doc has the reasoning
+/// (issue #1348). `brink-db`'s `whole_project_diagnostics_query` passes its
+/// own `project_is_native` answer at the same seam, but that answer is
+/// entry-anchored — it reads `false` whenever the db has no entry set — so
+/// it does not automatically agree with a caller-computed `is_native` for a
+/// db that never calls `set_entry` (e.g. `IdeSession`'s editor/LSP analysis
+/// path, as opposed to `IdeSession::compile`). Callers of this function are
+/// responsible for supplying an `is_native` that actually matches their file
+/// set.
 #[must_use]
 pub fn whole_project_diagnostics(
     files: &[(FileId, &HirFile, &SymbolManifest)],
     index: &SymbolIndex,
     resolutions: &ResolutionMap,
     opts: &AnalysisOptions,
+    is_native: bool,
     strict_inference: Option<&InferenceResult>,
 ) -> (Vec<Diagnostic>, BTreeMap<DefinitionId, SymbolMeta>) {
     let manifest_inputs: Vec<(FileId, &SymbolManifest)> = files
@@ -814,9 +990,7 @@ pub fn whole_project_diagnostics(
         index,
         resolutions,
         opts,
-        // No `Language` classification exists at this layer (issue #1348) —
-        // same reasoning as `finish_analysis`'s `per_file_diagnostics` call.
-        false,
+        is_native,
         strict_inference,
         &inline_docs,
     ));
@@ -901,7 +1075,210 @@ pub fn whole_project_diagnostics(
         }
     }
 
+    // B3a UFCS resolution (issue #1482, D1–D5 RULED 2026-07-26). Only the
+    // diagnostics land here; the verdict side table itself is served to LIR
+    // lowering and the IDE through [`ufcs_resolution`], which runs the same
+    // pass over the same inputs.
+    //
+    // Dialect-independent, for the reason `ufcs`' module doc gives: a
+    // multi-segment `Expr::Call` path can only originate in the native
+    // frontend, so the gate is structural rather than policy-driven — the
+    // ink corpus never reaches this pass. Lazy on the same argument as
+    // `needs_effects` above: a project with no dotted-callee call anywhere
+    // pays nothing.
+    if hir_inputs
+        .iter()
+        .any(|&(_, hir)| ufcs::project_has_ufcs_call(hir))
+    {
+        let owned_inference;
+        let inference = if let Some(inf) = strict_inference {
+            inf
+        } else {
+            owned_inference = infer::infer_project(
+                &hir_inputs,
+                index,
+                resolutions,
+                opts.host_manifest.as_ref(),
+                &inline_docs,
+            );
+            &owned_inference
+        };
+        let (_table, ufcs_diags) = ufcs::resolve(&hir_inputs, index, resolutions, inference);
+        diagnostics.extend(ufcs_diags);
+    }
+
     (diagnostics, symbol_meta)
+}
+
+/// The B3a UFCS verdict side table for a project (issue #1482, D2): the
+/// `node → resolved target` channel LIR lowering reads to choose between
+/// emitting a call through a field's value and emitting the desugared free
+/// call `name(recv, args)`, and that IDE hover/go-to-def reads to name the
+/// real target of a method-call-shaped site.
+///
+/// Split out from [`whole_project_diagnostics`] — which keeps the same
+/// pass's *diagnostics* — because the two consumers want opposite halves of
+/// one result and neither should pay for the other's.
+#[must_use]
+pub fn ufcs_resolution(
+    files: &[(FileId, &HirFile)],
+    index: &SymbolIndex,
+    resolutions: &ResolutionMap,
+    inference: &InferenceResult,
+) -> (UfcsTable, Vec<Diagnostic>) {
+    ufcs::resolve(files, index, resolutions, inference)
+}
+
+/// The B1 `or`-coalescing typing side table for a project (issue #1492):
+/// the `chain root → per-step operand/result types` channel LIR lowering
+/// reads to choose a chain's code shape — "inner stays `Option`" vs
+/// "unwrap at the end" — instead of re-deriving the answer from syntax it
+/// cannot see through (a call's return type, a `VAR`'s declared type).
+///
+/// Keyed by [`brink_ir::hir::expr_span`] of the chain root, the derivation
+/// both sides share — since issue #1517, the root `Expr::Infix`'s own
+/// `Provenance` range, so every chain root in a file is separately
+/// addressable. See [`CoalesceChain`] for the step order and `coalesce`'s
+/// module doc for why absence (an ill-typed chain the pass abandoned) is
+/// always safe — the consumer falls back to the runtime check, which is
+/// what gradual mode does regardless.
+///
+/// Split out from [`whole_project_diagnostics`] — which keeps the same
+/// pass's `E066` *diagnostics* — exactly as [`ufcs_resolution`] is, and for
+/// the same reason: the two consumers want opposite halves of one result.
+///
+/// Unlike [`ufcs_resolution`] (whose diagnostics run unconditionally inside
+/// [`whole_project_diagnostics`]), the `E066` diagnostics this function
+/// also returns are **strict-mode-only by convention, not by construction**:
+/// production code reaches them only from `strict::check`, after
+/// `strict::config_error` has confirmed `types = strict` + `dialect =
+/// brink` (see `coalesce::resolve`'s own doc for that entry condition), but
+/// this function itself performs no such gate — it walks every file
+/// unconditionally. A caller that surfaces its `Vec<Diagnostic>` without
+/// re-checking `type_policy`/`dialect` itself would emit strict-only
+/// `E066` under `types = gradual`.
+#[must_use]
+pub fn coalesce_types(
+    files: &[(FileId, &HirFile)],
+    index: &SymbolIndex,
+    inference: &InferenceResult,
+    resolutions: &ResolutionMap,
+) -> (CoalesceTable, Vec<Diagnostic>) {
+    coalesce::resolve(files, index, inference, resolutions)
+}
+
+/// Owned form of [`brink_ir::lir::AnalyzerTables`] (issue #1527) — every
+/// analyzer side-table LIR lowering reads, held by value instead of by the
+/// borrowed references `AnalyzerTables` itself carries. A caller builds one
+/// of these (via [`assemble_analyzer_tables`]) and then borrows its fields
+/// into an `AnalyzerTables` at the lowering call site, exactly as
+/// `brink-db`'s two salsa queries already borrow their own owned
+/// `UfcsLookup`/`CoalesceLookup` locals.
+#[derive(Debug, Clone, Default)]
+pub struct AnalyzerTablesOwned {
+    /// B3a UFCS (issue #1506) — see [`brink_ir::lir::UfcsLookup`]'s own doc.
+    pub ufcs: brink_ir::lir::UfcsLookup,
+    /// B1 `or`-coalescing (issue #1492) — see [`brink_ir::lir::CoalesceLookup`]'s own doc.
+    pub coalesce: brink_ir::lir::CoalesceLookup,
+}
+
+impl AnalyzerTablesOwned {
+    /// Borrow this owned bundle into the [`brink_ir::lir::AnalyzerTables`]
+    /// lowering actually takes — the one place that borrow is assembled
+    /// (issue #1528's review finding). Field-by-field construction at each
+    /// call site meant a third `AnalyzerTables` field would compile-error at
+    /// the call site instead of here, and the cheapest silencer there is a
+    /// throwaway default value rather than actually wiring the new table —
+    /// exactly the silent-empty-table failure this whole function exists to
+    /// prevent. Keeping the borrow here means a new field's compile error
+    /// lands next to this assembly instead.
+    #[must_use]
+    pub fn as_tables(&self) -> brink_ir::lir::AnalyzerTables<'_> {
+        brink_ir::lir::AnalyzerTables {
+            ufcs: &self.ufcs,
+            coalesce: &self.coalesce,
+        }
+    }
+}
+
+/// Assemble every analyzer side-table LIR lowering needs, from scratch, in
+/// one whole-project pass — **the one path a caller with no salsa layer of
+/// its own must use** (issue #1528).
+///
+/// Before this function existed, `brink-test-harness`'s `corpus.rs` hand-
+/// rolled this assembly itself: one `if project_has_*` block per table,
+/// each independently re-running [`infer_project`] — a *third* parallel
+/// implementation of the same gate-then-translate pattern `brink-db`'s two
+/// salsa queries (`ufcs_resolution_query`, `coalesce_types_query`) already
+/// each implement for their own table. That meant a future side-table (the
+/// v6/Step work) had to be *remembered* in three places at once — miss the
+/// harness's copy and lowering there silently got an empty table for it: a
+/// compiling, green-tested, wrong-coverage bug, the same silent-drop class
+/// this repo always treats as a bug. Extending *this* function is the fix
+/// for every salsa-free caller: it is the one place such a caller's
+/// gate+translate needs adding, mirroring how
+/// [`brink_ir::lir::AnalyzerTables`] (issue #1527) is the one place a
+/// future table needs adding to lowering's own signature. `brink-db`'s two
+/// queries stay separate `#[salsa::tracked]` functions on purpose — each
+/// needs its own independent memoization/backdating cutoff, which a single
+/// bundled query would collapse — but both continue to call the exact same
+/// translation primitives this function composes
+/// ([`ufcs_resolution`]/[`coalesce_types`]/[`ufcs_lir_lookup`]/
+/// [`coalesce_lir_lookup`]), so the two paths can't drift on *how* a table
+/// is computed, only on *when* (memoized vs. every call).
+///
+/// Lazy exactly like each table already was individually: [`infer_project`]
+/// runs at most once — shared across every table that needs it, unlike the
+/// old per-table harness blocks which each ran their own copy — and only if
+/// some table's structural gate ([`project_has_ufcs_call`] or
+/// [`project_has_coalesce`]) found something to resolve. A project using
+/// neither feature (every ink-dialect project, by construction — both
+/// features are native-frontend-only) pays nothing and returns the
+/// all-empty default.
+#[must_use]
+pub fn assemble_analyzer_tables(
+    files: &[(FileId, &HirFile)],
+    index: &SymbolIndex,
+    resolutions: &ResolutionMap,
+    host_manifest: Option<&HostManifest>,
+    inline_docs: &BTreeMap<(SymbolKind, String), DocBlock>,
+) -> AnalyzerTablesOwned {
+    let needs_ufcs = files
+        .iter()
+        .any(|&(_, hir)| ufcs::project_has_ufcs_call(hir));
+    let needs_coalesce = files
+        .iter()
+        .any(|&(_, hir)| coalesce::project_has_coalesce(hir));
+
+    let inference = if needs_ufcs || needs_coalesce {
+        Some(infer::infer_project(
+            files,
+            index,
+            resolutions,
+            host_manifest,
+            inline_docs,
+        ))
+    } else {
+        None
+    };
+
+    let ufcs = match (&inference, needs_ufcs) {
+        (Some(inference), true) => {
+            let (table, _ufcs_diagnostics) = ufcs_resolution(files, index, resolutions, inference);
+            ufcs_lir_lookup(&table)
+        }
+        _ => brink_ir::lir::UfcsLookup::new(),
+    };
+
+    let coalesce = match (&inference, needs_coalesce) {
+        (Some(inference), true) => {
+            let (table, _e066_diagnostics) = coalesce_types(files, index, inference, resolutions);
+            coalesce_lir_lookup(&table)
+        }
+        _ => brink_ir::lir::CoalesceLookup::new(),
+    };
+
+    AnalyzerTablesOwned { ufcs, coalesce }
 }
 
 /// Cheap structural scan: does any knot/stitch in `hir` carry a
@@ -929,6 +1306,16 @@ fn hir_has_effects_assertion(hir: &HirFile) -> bool {
 /// identical to the monolithic one by construction (pinned by
 /// `query_equivalence.rs`).
 ///
+/// `is_native`: every file in `files` is native (`.brink`) source — see
+/// [`analyze_with_modules`]'s own `is_native` doc for the full list of arms
+/// it selects (issue #1358). Forwarded to [`per_file_diagnostics`] and
+/// [`whole_project_diagnostics`], and it is what makes the B0.9 strict-only
+/// gate ([`native_strict_only_error`], `E137`) reachable from this path at
+/// all. The analyzer has no file paths of its own, so this is a caller-
+/// supplied classification: a caller with a `ProjectDb` reads it from there,
+/// and one without passes `false` (the ink arm, byte-identical to this
+/// function before the parameter existed).
+///
 /// `strict_inference`: see [`whole_project_diagnostics`]'s doc — forwarded
 /// unchanged.
 pub fn finish_analysis(
@@ -937,6 +1324,7 @@ pub fn finish_analysis(
     resolutions: ResolutionMap,
     mut diagnostics: Vec<Diagnostic>,
     opts: &AnalysisOptions,
+    is_native: bool,
     strict_inference: Option<&infer::InferenceResult>,
 ) -> AnalysisResult {
     for &(file_id, hir, _manifest) in files {
@@ -951,16 +1339,26 @@ pub fn finish_analysis(
             &file_resolutions,
             &index,
             opts.dialect,
-            // The pure path has no `Language` classification of its own
-            // (issue #1348) — only `brink-db`'s salsa query path, which
-            // knows a file's path, can tell native from ink.
-            false,
+            is_native,
             opts.host_manifest.as_ref(),
         ));
+        if is_native {
+            // The B0.9 native strict-only gate, in the same per-file
+            // position `brink-db`'s `per_file_diagnostics_query` runs it
+            // (right after the per-file contributors for that file), so the
+            // composed and monolithic paths stay order-identical.
+            diagnostics.extend(native_strict_only_error(file_id, opts.types));
+        }
     }
 
-    let (whole_diagnostics, symbol_meta) =
-        whole_project_diagnostics(files, &index, &resolutions, opts, strict_inference);
+    let (whole_diagnostics, symbol_meta) = whole_project_diagnostics(
+        files,
+        &index,
+        &resolutions,
+        opts,
+        is_native,
+        strict_inference,
+    );
     diagnostics.extend(whole_diagnostics);
 
     AnalysisResult {
@@ -1017,9 +1415,9 @@ mod tests {
     use brink_ir::{BaseType, HostManifest, SemanticTypeDef};
 
     use super::{
-        AnalysisOptions, Dialect, FileId, ImportScope, LintLevel, LintPolicy, ProjectConfig,
-        SemanticTypeDiagnosticSeverity, TypePolicy, analyze, analyze_with_options,
-        per_file_diagnostics, resolve, symbol_index,
+        AnalysisOptions, Dialect, FileId, ImportScope, LintLevel, LintPolicy, ModuleMap,
+        ProjectConfig, SemanticTypeDiagnosticSeverity, TypePolicy, analyze, analyze_with_modules,
+        analyze_with_options, per_file_diagnostics, resolve, symbol_index,
     };
 
     /// ink with an `EXTERNAL` whose param is typed with a host semantic type
@@ -1357,6 +1755,169 @@ EXTERNAL add_state(who)
                 .iter()
                 .any(|d| d.code == brink_ir::DiagnosticCode::E051),
             "ink must still see the dialect gate: {diags:?}"
+        );
+    }
+
+    // ── analyze_with_modules: is_native reaches the per-file and
+    //    whole-project arms too (issue #1358) ──────────────────────────
+
+    /// The composed pure path — not just the `per_file_diagnostics` seam
+    /// directly — must skip the ink-only T1b gate for native source.
+    /// Before #1358 `analyze_with_modules`'s `is_native` reached only the
+    /// symbol index, so this `E051` leaked into every editor surface that
+    /// analyzes off-db.
+    #[test]
+    fn analyze_with_modules_is_native_true_skips_the_dialect_gate() {
+        let (hir, manifest) = lower_one("~ x = a[0]\n");
+        let result = analyze_with_modules(
+            &[(FileId(0), &hir, &manifest)],
+            &ModuleMap::new(),
+            &AnalysisOptions::default(),
+            true,
+        );
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E051),
+            "native must never see the ink-only dialect gate: {:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
+    fn analyze_with_modules_is_native_false_unaffected_still_flags_extension_syntax() {
+        let (hir, manifest) = lower_one("~ x = a[0]\n");
+        let result = analyze_with_modules(
+            &[(FileId(0), &hir, &manifest)],
+            &ModuleMap::new(),
+            &AnalysisOptions::default(),
+            false,
+        );
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E051),
+            "ink must still see the dialect gate: {:?}",
+            result.diagnostics
+        );
+    }
+
+    /// `E064` rejects `types = strict` under a non-`brink` **dialect** — an
+    /// ink-only axis. A native project carries `StrictInk` by default (it
+    /// has no dialect opinion), so before #1358 dialing `types = strict` on
+    /// the pure path produced this spurious project-level error.
+    #[test]
+    fn analyze_with_modules_is_native_true_skips_the_ink_only_config_error() {
+        let (hir, manifest) = lower_one("=== start ===\nHello.\n-> DONE\n");
+        let opts = AnalysisOptions {
+            types: Some(TypePolicy::Strict),
+            ..AnalysisOptions::default()
+        };
+        let result = analyze_with_modules(
+            &[(FileId(0), &hir, &manifest)],
+            &ModuleMap::new(),
+            &opts,
+            true,
+        );
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E064),
+            "native has no dialect to be wrong about: {:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
+    fn analyze_with_modules_is_native_false_unaffected_still_fires_config_error() {
+        let (hir, manifest) = lower_one("=== start ===\nHello.\n-> DONE\n");
+        let opts = AnalysisOptions {
+            types: Some(TypePolicy::Strict),
+            ..AnalysisOptions::default()
+        };
+        let result = analyze_with_modules(
+            &[(FileId(0), &hir, &manifest)],
+            &ModuleMap::new(),
+            &opts,
+            false,
+        );
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E064),
+            "ink must still get the config error: {:?}",
+            result.diagnostics
+        );
+    }
+
+    /// The B0.9 strict-only gate (`E137`): explicit `types = gradual` is not
+    /// a policy native source can be compiled under. `brink-db`'s
+    /// `per_file_diagnostics_query` has always run it; the pure path could
+    /// not express it at all before #1358.
+    #[test]
+    fn analyze_with_modules_is_native_true_reports_the_native_strict_only_error() {
+        let (hir, manifest) = lower_one("=== start ===\nHello.\n-> DONE\n");
+        let opts = AnalysisOptions {
+            types: Some(TypePolicy::Gradual),
+            ..AnalysisOptions::default()
+        };
+        let result = analyze_with_modules(
+            &[(FileId(0), &hir, &manifest)],
+            &ModuleMap::new(),
+            &opts,
+            true,
+        );
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E137),
+            "explicit `types = gradual` is a native config error: {:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
+    fn analyze_with_modules_is_native_false_never_reports_the_native_strict_only_error() {
+        let (hir, manifest) = lower_one("=== start ===\nHello.\n-> DONE\n");
+        let opts = AnalysisOptions {
+            types: Some(TypePolicy::Gradual),
+            ..AnalysisOptions::default()
+        };
+        let result = analyze_with_modules(
+            &[(FileId(0), &hir, &manifest)],
+            &ModuleMap::new(),
+            &opts,
+            false,
+        );
+        assert!(
+            !result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E137),
+            "`E137` is native-only: {:?}",
+            result.diagnostics
+        );
+    }
+
+    /// The module-blind convenience wrapper stays the ink path, byte for
+    /// byte — it has no `Language` classification to offer.
+    #[test]
+    fn analyze_with_options_stays_the_ink_arm() {
+        let (hir, manifest) = lower_one("~ x = a[0]\n");
+        let result =
+            analyze_with_options(&[(FileId(0), &hir, &manifest)], &AnalysisOptions::default());
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E051),
+            "{:?}",
+            result.diagnostics
         );
     }
 

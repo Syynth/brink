@@ -301,7 +301,13 @@ that is statically outside the domain (a float, an array, a map) gets a
 compile-time **warning**, `E106` ("map-literal key is outside the
 int/string/bool key domain"); a dynamic key expression that turns out bad
 at runtime is the corresponding turn-terminating construction fault. One
-domain, checked early where visible, enforced at runtime always.
+domain, checked early where visible, enforced at runtime always. The same
+key domain governs `contains(m, needle)`: under `types = strict`, when the
+map and the needle's out-of-domain type are both statically visible,
+`E152` flags the call at compile time — `contains` itself stays total and
+never faults (see [`contains` is total](./stdlib.md#contains-is-total)),
+so `E152` is a warning about a call that's always `false`, not a fault
+report.
 
 Order is worth trusting, because it's guaranteed:
 
@@ -350,7 +356,7 @@ nothing (using one in expression position is `E056`), and a functional
 verb doesn't touch its argument.
 
 **Mutating verbs demand a place, not a value.** The first argument of
-`push`/`insert`/`remove`/`clear`/`sort`/`sort_by` must be an **lvalue** —
+`push`/`insert`/`remove`/`remove_at`/`clear`/`sort`/`sort_by` must be an **lvalue** —
 a variable, temp, or indexed path — because the mutated collection has to
 be written back somewhere. Handing one a temporary is `E055` — "`push`
 mutates its first argument — bind it to a variable first":
@@ -386,8 +392,8 @@ And the mutators — statement-only, lvalue-first:
 | `push` | `push(a: [T], x: T)` | append |
 | `insert` | `insert(a: [T], i: int, x: T)` | insert at `i`, `0 ≤ i ≤ len` — the one array write allowed to reach the end |
 | `insert` (map) | `insert(m: [K: V], k: K, v: V)` | today's spelling; `m[k] = v` is the ruled one — see below |
-| `remove` | `remove(a: [T], i: int)` | remove at `i`; out of bounds faults |
-| `remove` (map) | `remove(m: [K: V], k: K)` | total — removing an absent key is a no-op |
+| `remove_at` | `remove_at(a: [T], i: int)` | remove at `i`; out of bounds faults |
+| `remove` | `remove(m: [K: V], k: K)` | total — removing an absent key is a no-op |
 | `clear` | `clear(m: [K: V])` | empty in place |
 | `sort` / `sort_by` | `sort(a: [T])` | in-place ordering — next section |
 | `pop` | `pop(a: [T]): Option[T]` | the hybrid: removes *and* returns the last element — the one mutator legal in expression position |
@@ -396,10 +402,22 @@ Two postures hiding in that table deserve their doctrine lines:
 
 **A deletion is a wish; an index is a claim.** `remove(m, k)` on an
 absent key is a no-op — you wished the key gone, and gone it is,
-idempotently. `remove(a, i)` out of bounds faults — you claimed an
-element existed at `i`, and it didn't. Same verb name, two honest
-postures, chosen deliberately (the divergence is on the record, not
-accidental).
+idempotently. `remove_at(a, i)` out of bounds faults — you claimed an
+element existed at `i`, and it didn't. Both postures are correct for
+their domain, but they used to share one verb name — `remove` covered
+both, which was an accident, not a decision (issue #1484 caught it:
+nothing about a map-key removal implies an array-index removal, or vice
+versa). The fix is naming, not flattening: `remove_at` joins the `_at`
+faulting-index family with `char_at`, leaving `remove` to mean exactly
+one thing — identity-based, idempotent-total removal (map keys today;
+flags values once flags land). There is no compatibility shim: a
+pre-#1484 `remove(array, i)` call site is `E149` (issue #1532) under
+`types = strict`, the brink dialect's own implicit default, *when the
+receiver's array type is statically known* — provable from its own
+body-local uses (a `temp`/param). A `VAR`-held array has no
+`Array`/`Map` representation in the checker's static typing today, so
+that idiom still faults only at runtime, as `NotIndexable`; under
+`types = gradual`, every case stays a runtime `NotIndexable` fault.
 
 **One spelling per concept, eventually.** Today's dialect ships
 `insert(m, k, v)` as a slice-1 free function, but the ruled native
@@ -691,6 +709,8 @@ draw being an effect — is the Randomness chapter's; iteration in full
 | `E116` | an `Option[T]` used as a condition — no truthiness | strict (runtime fault under gradual) |
 | `E117` | `int(r)` over a range not proven inhabited | strict (runtime fault under gradual) |
 | `E119` | a `sort_by`/`sorted_by` comparator provably exceeds pure·silent | both |
+| `E149` | `remove` on a statically-known array — use `remove_at` | strict (runtime fault under gradual) |
+| `E152` | a statically non-key-domain needle in `contains(m, …)` on a statically-known map | strict (warning; runtime returns `false` under gradual) |
 
 ## Where this is ruled
 
@@ -710,6 +730,10 @@ draw being an effect — is the Randomness chapter's; iteration in full
   reserved, remove-total) — `docs/stdlib-spec.md` §5; decision log
   2026-07-18 ("Maps ruled"); order-insensitive equality, decision log
   2026-07-18 ("Map/record equality is insertion-order-insensitive").
+- **The `remove`/`remove_at` split** (seq remove-by-index renamed
+  `remove_at`, `remove` narrowed to identity-based idempotent-total
+  removal) — issue #1484; decision log 2026-07-26 ("Quick-docket
+  closures").
 - **The ordering doctrine and the sort family** (doctrine order, stable
   sort, dev/prod NaN posture, comparator contract) —
   `docs/stdlib-spec.md` §4b; decision log 2026-07-18 ("The ordering

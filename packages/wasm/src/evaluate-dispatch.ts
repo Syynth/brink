@@ -131,6 +131,51 @@ function parseLiteralArg(text: string): ExternalValue | typeof UNPARSEABLE_LITER
   return UNPARSEABLE_LITERAL;
 }
 
+// ── Tier-1 wrap-syntax selection (#1598) ────────────────────────────
+
+/** True when `entry`'s final path segment carries the native `.brink`
+ * extension — mirrors `brink_driver::source_tree::is_native`'s
+ * `Path::extension()` check (a leading-dot dotfile like `.brink` has no
+ * extension in that scheme, so `dot` must not be the first character). Picks
+ * which wrap syntax `compileFragment` appends the synthetic symbol in:
+ * native `fn`/`flow` blocks for a `.brink` entry, ink `=== ===` knots
+ * otherwise. */
+export function isNativeEntry(entry: string): boolean {
+  const base = entry.slice(entry.lastIndexOf("/") + 1);
+  const dot = base.lastIndexOf(".");
+  return dot > 0 && base.slice(dot + 1) === "brink";
+}
+
+/** The expression-wrap synthetic source for a Tier-1 fragment — evaluates
+ * `fragmentSource` as a value via a synthetic zero-arg function named
+ * `symbolName`. Native (`fn NAME() { return (EXPR); }`) or ink
+ * (`=== function NAME() === \n ~ return (EXPR)`) syntax, matching `entry`'s
+ * dialect (`native` from {@link isNativeEntry}). */
+export function expressionWrapSource(
+  symbolName: string,
+  fragmentSource: string,
+  native: boolean,
+): string {
+  return native
+    ? `fn ${symbolName}() {\n  return (${fragmentSource});\n}\n`
+    : `=== function ${symbolName}() ===\n~ return (${fragmentSource})\n`;
+}
+
+/** The content-wrap synthetic source for a Tier-1 fragment — runs
+ * `fragmentSource` as story content under a synthetic knot/flow named
+ * `symbolName`. Native (`flow NAME() { CONTENT }`) or ink (`=== NAME ===
+ * \n CONTENT`) syntax, matching `entry`'s dialect (`native` from
+ * {@link isNativeEntry}). */
+export function contentWrapSource(
+  symbolName: string,
+  fragmentSource: string,
+  native: boolean,
+): string {
+  return native
+    ? `flow ${symbolName}() {\n${fragmentSource}\n}\n`
+    : `=== ${symbolName} ===\n${fragmentSource}\n`;
+}
+
 // ── Tier-1 fragment identity + cache (F5.1) ─────────────────────────
 
 /** A Tier-1 fragment-compile cache entry — either a successfully classified

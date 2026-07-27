@@ -5,6 +5,8 @@ use std::marker::PhantomData;
 use bevy_app::{App, Plugin, Update};
 use bevy_asset::AssetApp;
 use bevy_ecs::schedule::IntoScheduleConfigs as _;
+#[cfg(feature = "dev")]
+use bevy_log::warn;
 use brink_runtime::{ExecMode, WorldPolicy};
 
 use crate::asset::{BrinkStoryAsset, InkbLoader, LineTablesAsset, ProgramAsset};
@@ -27,10 +29,10 @@ use crate::request::fulfill_flow_requests;
 /// **This plugin does not register an auto-advance system.** Most games
 /// drive advancement from input or game-state events, not every tick.
 /// Apps that want per-tick advancement can register
-/// [`advance_flows`](crate::advance_flows) themselves:
+/// [`advance_flow`](crate::advance_flow) themselves:
 ///
 /// ```ignore
-/// app.add_systems(Update, advance_flows::<MyStory>);
+/// app.add_systems(Update, advance_flow::<MyStory>);
 /// ```
 pub struct BrinkPlugin<M: Send + Sync + 'static = ()> {
     policy: WorldPolicy,
@@ -121,7 +123,23 @@ impl<M: Send + Sync + 'static> BrinkPlugin<M> {
     /// `BrinkAssetsPlugin` already exists in the app, same as every other
     /// `BrinkAssetsPlugin`-owned setting. Call
     /// [`BrinkAssetsPlugin::with_config`] directly instead if you're adding
-    /// it standalone.
+    /// it standalone. A dropped later-marker override is not silent (issue
+    /// #1382 sweep): [`Plugin::build`](Plugin) surfaces it through the same
+    /// two channels an unrecognized `[lints]` code uses two paragraphs
+    /// down — a `tracing::warn!` naming the marker type, and an entry
+    /// appended to [`BrinkConfigWarnings`](crate::BrinkConfigWarnings) — so
+    /// a host that adds two `BrinkPlugin<M>`s with conflicting `with_config`
+    /// calls finds out, rather than silently getting the first one's policy
+    /// for every marker.
+    ///
+    /// This override also reaches
+    /// [`compile_story_inline`](crate::compile_story_inline) (#1380) — but
+    /// only once `Plugin::build` has actually run, i.e. only *after*
+    /// `app.add_plugins(BrinkPlugin::<M>::default().with_config(...))`
+    /// returns. Calling `compile_story_inline` before that `add_plugins`
+    /// call silently compiles under `OptionOverrides::default()` instead —
+    /// see `compile_story_inline`'s doc comment for the ordering hazard in
+    /// full.
     ///
     /// Also covers the `[lints]` tier (issue #1394): a `[lints]` table or
     /// `deny-warnings` value set on the passed `ProjectConfig` wins over the
@@ -159,13 +177,47 @@ impl<M: Send + Sync + 'static> BrinkPlugin<M> {
 
 impl<M: Send + Sync + 'static> Plugin for BrinkPlugin<M> {
     fn build(&self, app: &mut App) {
-        if !app.is_plugin_added::<BrinkAssetsPlugin>() {
+        let assets_already_present = app.is_plugin_added::<BrinkAssetsPlugin>();
+        if !assets_already_present {
             #[cfg(feature = "dev")]
             let assets_plugin =
                 BrinkAssetsPlugin::default().with_config_option(self.config.clone());
             #[cfg(not(feature = "dev"))]
             let assets_plugin = BrinkAssetsPlugin::default();
             app.add_plugins(assets_plugin);
+        }
+        // Issue #1382 sweep: `Self::with_config`'s own doc comment already
+        // documented that a *second* `BrinkPlugin<M>` registration's
+        // override is ignored once `BrinkAssetsPlugin` already exists (only
+        // the marker whose plugin actually adds it gets to set the shared
+        // `InkLoader`'s config) — but until now that drop reached neither
+        // the `tracing::warn!` channel every other mount's "warn, never
+        // silently drop" precedent uses, nor `BrinkConfigWarnings` (#1426's
+        // headless-host escape hatch for hosts with no `tracing`
+        // subscriber installed) — exactly the gap `BrinkConfigWarnings`'s
+        // own doc comment used to call out as unresolved. Diagnosed on
+        // both channels now, matching every other silent-drop fix in this
+        // sweep (#1394/#1416/#1417).
+        #[cfg(feature = "dev")]
+        if assets_already_present && self.config.is_some() {
+            let message = format!(
+                "BrinkPlugin::<{}>::with_config's ProjectConfig override was \
+                 ignored: BrinkAssetsPlugin was already added to this app (by \
+                 an earlier BrinkPlugin<M> registration, or added directly) — \
+                 only the BrinkPlugin<M>/BrinkAssetsPlugin instance that \
+                 actually adds BrinkAssetsPlugin can set the shared \
+                 InkLoader's config override. Call BrinkAssetsPlugin::with_config \
+                 directly before adding any BrinkPlugin<M>, or set the override \
+                 on whichever BrinkPlugin<M> is added to the app first.",
+                std::any::type_name::<M>()
+            );
+            warn!("{message}");
+            if let Some(mut warnings) = app
+                .world_mut()
+                .get_resource_mut::<crate::config_warnings::BrinkConfigWarnings>()
+            {
+                warnings.0.push(message);
+            }
         }
         app.insert_resource(BrinkWorldPolicy::<M>::new(self.policy.clone()));
         // F35 (ruled 2026-07-19): the host-selected (or profile-defaulted)
@@ -209,6 +261,15 @@ impl<M: Send + Sync + 'static> Plugin for BrinkPlugin<M> {
         // `app.add_systems(Update, advance_batch::<M>)` when it wants
         // frame-start-consistent batched stepping.
         app.init_resource::<crate::batch::BrinkBatchReport<M>>();
+        // Issue #1146 (the #1101 fix): the row-directed wake-dirtying ledger.
+        // A batch turn's Apply records *which* shared-world cells it wrote;
+        // `mark_wake_dirty` drains it and re-evaluates only the parked
+        // policies whose condition's effect read row intersects that set.
+        // Always present so a host that opts into `advance_batch::<M>` /
+        // `advance_batch_parallel::<M>` gets the precision automatically;
+        // without a batch driver it simply never records and the wake pass
+        // stays on the coarse `BrinkGlobals` change bit.
+        app.init_resource::<crate::wake_delta::BrinkWorldDelta<M>>();
         // BH-4 (docs/effects-spec.md §13.1; #973): reactive sleep. `FlowSleep`
         // is a standing wake policy on a flow entity; parked flows are skipped
         // by Collect (`advance_batch`). `mark_wake_dirty` consults the `#913`
@@ -221,7 +282,7 @@ impl<M: Send + Sync + 'static> Plugin for BrinkPlugin<M> {
         //
         // `.before(advance_batch::<M>)` closes a same-frame race discovered
         // while hardening issue #1081's `WakeArming::Latch` tests: `Collect`
-        // (`advance_batch`) steps any flow whose `FlowSleep::wants_collect()`
+        // — in either driver — steps any flow whose `FlowSleep::wants_collect()`
         // is true (`state == Woken`), and only `run_flow_sleep`'s repark
         // phase clears that back to `Parked` once the woken turn reaches a
         // `Done` boundary. Without an explicit order, a host that also
@@ -244,6 +305,17 @@ impl<M: Send + Sync + 'static> Plugin for BrinkPlugin<M> {
         // regardless of scheduler ordering. Inert if the host never adds
         // `advance_batch::<M>` (an ordering constraint against an absent
         // system is a no-op).
+        //
+        // The same constraint is placed against `advance_batch_parallel::<M>`:
+        // without it, the parallel driver is unconstrained relative to this
+        // chain, so the module docs' "the wake pass is ordered before it"
+        // claim (`crate::wake_delta`, `record_wake_delta`'s doc in
+        // `crate::batch`, `mark_wake_dirty`'s doc) would not actually hold for
+        // a host that opts into the parallel driver. Ordering costs precision
+        // only (an unordered parallel driver still never under-reports), but
+        // pinning it keeps the doc claim true for every driver, not just the
+        // serial one. Inert if the host never adds
+        // `advance_batch_parallel::<M>`.
         app.add_systems(
             Update,
             (
@@ -252,6 +324,7 @@ impl<M: Send + Sync + 'static> Plugin for BrinkPlugin<M> {
             )
                 .chain()
                 .before(crate::batch::advance_batch::<M>)
+                .before(crate::batch::parallel::advance_batch_parallel::<M>)
                 .run_if(
                     bevy_ecs::schedule::common_conditions::any_with_component::<
                         crate::sleep::FlowSleep<M>,
@@ -261,17 +334,7 @@ impl<M: Send + Sync + 'static> Plugin for BrinkPlugin<M> {
         // Auto-render BrinkTranscript<M> for any flow that has it.
         // No-op for flows that don't (the query just yields nothing).
         app.add_systems(Update, crate::transcript::refresh_transcripts::<M>);
-        // Resolve deferred engine→ink calls (commands.brink_call). Exclusive
-        // (needs &mut World to run query bindings), gated so it only runs
-        // when a call is actually pending.
-        app.add_systems(
-            Update,
-            crate::call::resolve_brink_calls::<M>.run_if(
-                bevy_ecs::schedule::common_conditions::any_with_component::<
-                    crate::call::BrinkCallRequest<M>,
-                >,
-            ),
-        );
+        register_deferred_call_resolvers::<M>(app);
         // Service flows that paused on a pending external during normal
         // playback (a non-exclusive step_one yielded AwaitingQuery): resolve
         // world-access queries inline, fire BrinkExternalAwaited for async
@@ -306,6 +369,39 @@ impl<M: Send + Sync + 'static> Plugin for BrinkPlugin<M> {
         #[cfg(debug_assertions)]
         app.add_systems(Update, crate::request::warn_post_fulfillment_mutations::<M>);
     }
+}
+
+/// Registers the two exclusive resolvers for deferred engine→ink calls
+/// issued from non-exclusive systems: single calls
+/// (`commands.brink_call`, [`crate::call::resolve_brink_calls`]) and
+/// batches (`commands.brink_call_batch`,
+/// [`crate::call::resolve_brink_call_batches`], #1076). Both need `&mut
+/// World` to run world-access query bindings, and both are gated so they
+/// only run when a request is actually pending. Factored out of
+/// [`BrinkPlugin::build`] to keep it under clippy's line-count lint.
+fn register_deferred_call_resolvers<M: Send + Sync + 'static>(app: &mut App) {
+    app.add_systems(
+        Update,
+        crate::call::resolve_brink_calls::<M>.run_if(
+            bevy_ecs::schedule::common_conditions::any_with_component::<
+                crate::call::BrinkCallRequest<M>,
+            >,
+        ),
+    );
+    // Each pending batch runs through a single call_ink_functions call, so
+    // its front-to-back ordering guarantee holds for the deferred path too,
+    // not just the exclusive one. (call_ink_functions also amortizes one
+    // VM-eval setup across the batch's calls, but that's a cost saving —
+    // ordering is pinned by the whole list arriving and running
+    // sequentially in one request, not by the setup itself.)
+    app.add_systems(
+        Update,
+        crate::call::resolve_brink_call_batches::<M>.run_if(
+            bevy_ecs::schedule::common_conditions::any_with_component::<
+                crate::call::BrinkCallBatchRequest<M>,
+            >,
+        ),
+    );
 }
 
 /// Registers asset types and loaders that are shared across all markers.
@@ -368,6 +464,16 @@ impl Plugin for BrinkAssetsPlugin {
         app.register_asset_loader(crate::source_loader::InkLoader {
             override_config: self.config.clone(),
         });
+        // #1380: mirror the same override into a resource so
+        // `compile_story_inline` — a freestanding function with no
+        // `InkLoader` instance to read a field off of — can see it too.
+        // Always inserted (even `None`), from the exact same `self.config`
+        // that seeds `InkLoader` above, so the two entry points can never
+        // read different values.
+        #[cfg(feature = "dev")]
+        app.insert_resource(crate::source_loader::BrinkOverrideConfig(
+            self.config.clone(),
+        ));
         // #1426: the non-log surface for `config.lints`'s rejected codes —
         // see `crate::config_warnings`'s module docs. Inserted eagerly, once,
         // regardless of whether `self.config` is set or has any lint

@@ -26,6 +26,42 @@ use rowan::TextRange;
 use super::commands::{Address, Format, KindFilter, MutOpts, kind_name};
 use super::handlers::{Mutation, emit_mutation};
 
+/// Resolved `--deny`/`--warn`/`--allow`/`-D warnings` CLI overrides (issue
+/// #1417) — `brink ide`'s counterpart of
+/// [`brink_environment::OptionOverrides`]'s `.lints`/`.deny_warnings`
+/// fields (#1373), scoped to just those two: `brink ide` has no
+/// `--dialect`/`--types` flags of its own (see [`Project::load`]'s doc
+/// comment), so unlike the CLI's full `OptionOverrides` there is nothing
+/// else to carry. Built once per invocation by
+/// [`super::commands::LintOverrideArgs::resolve`] and threaded through
+/// every `brink ide` entry point that builds its own `Driver`
+/// (`Project::load`, `load_git_baseline`) — then stored on [`Project`]
+/// itself so the safety-gate re-analysis in
+/// [`Project::introduced_diagnostics`] applies the *same* resolved policy
+/// the original load did, without needing its own copy of the raw CLI
+/// flags (reusing the seam #1373/#1394/#1553 established, not inventing a
+/// fourth path).
+#[derive(Clone, Default)]
+pub(super) struct LintOverrides {
+    pub(super) lints: BTreeMap<String, brink_analyzer::LintLevel>,
+    pub(super) deny_warnings: Option<bool>,
+}
+
+/// Render a [`brink_ir::Severity`] as the lowercase string `brink ide`'s
+/// `DiagEntry` JSON/text output uses (issue #1616: extends the CLI
+/// renderer's `"error"`/`"warning"` two-tier rendering to the full
+/// four-tier `Severity` — `Info`/`Hint` included — that #1162/#1615 added
+/// to `DiagnosticCode`/the `[lints]` control plane, so a down-leveled code
+/// is no longer misreported as `"warning"`).
+fn severity_str(severity: brink_ir::Severity) -> &'static str {
+    match severity {
+        brink_ir::Severity::Error => "error",
+        brink_ir::Severity::Warning => "warning",
+        brink_ir::Severity::Info => "info",
+        brink_ir::Severity::Hint => "hint",
+    }
+}
+
 /// Discover + apply `brink.toml` (#1005) to a fresh `AnalysisOptions`,
 /// honoring the "explicit flag always wins over the file" precedence rule.
 /// This is the single source every `brink ide` code path that builds its own
@@ -52,11 +88,21 @@ use super::handlers::{Mutation, emit_mutation};
 /// `tree`-relative key, so without `root` a warning could only ever print
 /// the bare `brink.toml`, leaving the user unable to tell *which*
 /// `brink.toml` (of possibly several on disk across invocations) warned
-/// (review finding on #1403/PR #1412).
+/// (review finding on #1403/PR #1412). The same `root`-joined path is now
+/// also threaded into `parse_str_at` (#1384), so a parse failure's own
+/// `Display` names the full path too, rather than relying solely on the
+/// `format!` wrapper this function used to hand-roll for that purpose.
+///
+/// `overrides` (issue #1417) is applied last, via
+/// `AnalysisOptions::apply_lint_overrides` — the top of the #1005/#1373
+/// `CLI/API > file > default` precedence stack, so an explicit
+/// `--deny`/`--warn`/`--allow`/`-D warnings` always wins over the same code
+/// in a discovered `brink.toml`'s `[lints]` table.
 fn resolve_analysis_options(
     tree: &dyn SourceTree,
     root: &Path,
     entry_key: &str,
+    overrides: &LintOverrides,
 ) -> Result<brink_analyzer::AnalysisOptions, String> {
     let mut options = brink_analyzer::AnalysisOptions::default();
     if let Some(config_key) = brink_project_config::discover_from_entry_in_tree(tree, entry_key)
@@ -65,9 +111,9 @@ fn resolve_analysis_options(
         let text = tree
             .read(&config_key)
             .map_err(|e| format!("failed to read project config {config_key}: {e}"))?;
-        let (config, warnings) = brink_project_config::parse_str(&text)
-            .map_err(|e| format!("project config error in {config_key}: {e}"))?;
         let config_path = root.join(&config_key).display().to_string();
+        let (config, warnings) = brink_project_config::parse_str_at(config_path.clone(), &text)
+            .map_err(|e| e.to_string())?;
         for warning in &warnings {
             let _ = writeln!(io::stderr(), "warning: [{config_path}] {warning}");
         }
@@ -75,6 +121,13 @@ fn resolve_analysis_options(
         for warning in &lint_warnings {
             let _ = writeln!(io::stderr(), "warning: [{config_path}] {warning}");
         }
+    }
+    let override_warnings = options.apply_lint_overrides(&overrides.lints, overrides.deny_warnings);
+    for warning in &override_warnings {
+        // Same "warn, never silently drop" channel as the file-sourced
+        // warnings above (house rule) — no `config_path` prefix since these
+        // came from the CLI, not a file.
+        let _ = writeln!(io::stderr(), "warning: {warning}");
     }
     Ok(options)
 }
@@ -139,6 +192,12 @@ pub(super) struct Project {
     pub(super) driver: Driver,
     pub(super) analysis: AnalysisResult,
     pub(super) entry_id: FileId,
+    /// The resolved `--deny`/`--warn`/`--allow`/`-D warnings` overrides this
+    /// project loaded under (issue #1417), stashed so
+    /// [`Self::introduced_diagnostics`]'s safety-gate re-analysis applies
+    /// the identical policy without needing its own copy of the raw CLI
+    /// flags.
+    lint_overrides: LintOverrides,
 }
 
 impl Project {
@@ -149,18 +208,22 @@ impl Project {
     /// `effects-diff --rev`) sees a multi-file native project's whole file
     /// set, not just the entry), exactly like `brink compile`. Also
     /// discovers a `brink.toml` (#1005) starting from `entry`'s directory
-    /// and applies its `[project] dialect`/`types` to analysis — `brink
-    /// ide` has no `--dialect`/`--types` flags of its own, so the file (or,
-    /// absent one, `AnalysisOptions::default()`, byte-identical to
-    /// pre-#1005 behavior) is the only source. Unknown keys in the file are
-    /// reported as warnings on stderr, never treated as errors.
-    pub(super) fn load(entry: &Path) -> Result<Self, String> {
+    /// and applies its `[project] dialect`/`types`/`[lints]` to analysis —
+    /// `brink ide` has no `--dialect`/`--types` flags of its own, so the
+    /// file (or, absent one, `AnalysisOptions::default()`, byte-identical
+    /// to pre-#1005 behavior) is the only source for those two. `[lints]`
+    /// does have a CLI override tier (`lints`, issue #1417's
+    /// `--deny`/`--warn`/`--allow`/`-D warnings`), applied on top of the
+    /// file by [`resolve_analysis_options`]. Unknown keys in the file (and
+    /// unrecognized/non-overridable override codes) are reported as
+    /// warnings on stderr, never treated as errors.
+    pub(super) fn load(entry: &Path, lints: &LintOverrides) -> Result<Self, String> {
         let root = brink_driver::native_source_root(entry);
         let tree = RealFs::new(&root);
         let entry_key = brink_driver::relative_key(&root, entry);
 
         let mut driver = Driver::new();
-        driver.set_analysis_options(resolve_analysis_options(&tree, &root, &entry_key)?);
+        driver.set_analysis_options(resolve_analysis_options(&tree, &root, &entry_key, lints)?);
 
         let entry_key = if brink_driver::is_native(entry) {
             // Reuse the same `SourceTree` config resolution just probed —
@@ -187,17 +250,43 @@ impl Project {
             driver,
             analysis,
             entry_id,
+            lint_overrides: lints.clone(),
         })
     }
 
     /// Resolve a query's target to a single symbol — by `--at FILE:LINE:COL`
     /// (cursor → the symbol there, resolving a reference to its definition) or
     /// by qualified name.
+    ///
+    /// B3a UFCS resolution (issue #1539): `--at` routes through the same
+    /// verdict table `navigation::goto_definition`/`ufcs_hover` use before
+    /// falling back to `find_def_at_offset` — without this, a cursor on a
+    /// UFCS call's method segment (`recv.verb`) resolved to the *receiver*
+    /// instead of the free function `.verb(...)` dispatches to, exactly the
+    /// bug #1534 already fixed for hover/go-to-def. Owned, not borrowed: the
+    /// UFCS path's symbol comes from `db.resolutions_index()`, a freshly
+    /// computed `Arc` local to this call, not `self.analysis`.
+    ///
+    /// Review finding on #1539/PR #1543: this resolver is shared by `def`,
+    /// `hover`, `references`, and `rename --at` (all four route through
+    /// `Project::resolve`), so the UFCS override only short-circuits on a
+    /// verdict that actually names a `DefinitionId`
+    /// (`FreeFnDesugar`/`FreeFnAutoRef` — the case this fix targets). A
+    /// field-call/prelude-intrinsic verdict (resolved, but with no
+    /// `DefinitionId` to report) falls through to the generic
+    /// `find_def_at_offset` lookup below exactly as if `offset` weren't on a
+    /// UFCS call at all — its pre-#1539 behavior (reporting the *receiver*'s
+    /// own declaration) — rather than hard-failing with `"no symbol at
+    /// {at}"` for all four commands. Turning that case into a hard error
+    /// would have been a new, undocumented behavior change to
+    /// `hover`/`references`/`rename --at` that issue #1539 never asked for
+    /// (it named only `def --at`, `find_references`, and `rename` as the
+    /// three UFCS-*receiver*-target bugs to fix).
     pub(super) fn resolve(
         &self,
         addr: &Address,
         kind: Option<KindFilter>,
-    ) -> Result<&SymbolInfo, String> {
+    ) -> Result<SymbolInfo, String> {
         if let Some(at) = &addr.at {
             let (file, line, col) = parse_at(at)?;
             let db = self.driver.db();
@@ -207,10 +296,25 @@ impl Project {
             let src = db.source(file_id).unwrap_or_default();
             // `--at` is 1-based; LineIndex (like line_col) is 0-based.
             let offset = LineIndex::new(src).offset(line.saturating_sub(1), col.saturating_sub(1));
+
+            if let Some(hir) = db.hir(file_id)
+                && let Some(Some(target)) =
+                    brink_ide::ufcs_hover::ufcs_goto_definition_target(db, hir, file_id, offset)
+            {
+                return db
+                    .resolutions_index()
+                    .index
+                    .symbols
+                    .get(&target)
+                    .cloned()
+                    .ok_or_else(|| format!("no symbol at {at}"));
+            }
+
             find_def_at_offset(&self.analysis, file_id, offset)
+                .cloned()
                 .ok_or_else(|| format!("no symbol at {at}"))
         } else if let Some(name) = &addr.symbol {
-            self.resolve_unique(name, kind)
+            self.resolve_unique(name, kind).cloned()
         } else {
             Err("provide a symbol name or --at FILE:LINE:COL".to_string())
         }
@@ -286,9 +390,20 @@ impl Project {
         }
     }
 
-    pub(super) fn diag_entry(&self, d: &Diagnostic, severity: &str) -> DiagEntry {
+    /// Build a [`DiagEntry`], resolving `d`'s actual severity through
+    /// [`brink_driver::effective_severity`] rather than trusting which of
+    /// `DiagnosticReport`'s two buckets (`errors`/`warnings`) the caller
+    /// pulled `d` from (issue #1616: that partition is binary —
+    /// `effective_severity(...) == Error` or not — so a `[lints]` code
+    /// down-leveled to `Info`/`Hint` still lands in `warnings`, and a
+    /// caller-supplied `"warning"` literal would misreport it here exactly
+    /// as `brink compile`'s CLI renderer did before `ResolvedDiagnostic::
+    /// severity` landed in #1615).
+    pub(super) fn diag_entry(&self, d: &Diagnostic) -> DiagEntry {
+        let opts = self.driver.db().analysis_options();
+        let severity = brink_driver::effective_severity(d.code, opts.type_policy(), &opts.lints);
         DiagEntry {
-            severity: severity.to_string(),
+            severity: severity_str(severity).to_string(),
             code: d.code.as_str().to_string(),
             message: d.message.clone(),
             location: self.location_of(d.file, d.range),
@@ -343,6 +458,7 @@ impl Project {
             &RealFs::new(&root),
             &root,
             &entry_key,
+            &self.lint_overrides,
         )?);
 
         let entry_key = if brink_driver::is_native(entry) {
@@ -394,14 +510,16 @@ impl Project {
                 .or_default() += 1;
         }
 
-        let new_diags = new_report
-            .errors
-            .iter()
-            .map(|d| ("error", d))
-            .chain(new_report.warnings.iter().map(|d| ("warning", d)));
+        let new_diags = new_report.errors.iter().chain(new_report.warnings.iter());
+        // Resolved the same way `diag_entry` does (issue #1616): the
+        // partition above is binary, so a `[lints]` code down-leveled to
+        // `Info`/`Hint` still lands in `new_report.warnings` and must not
+        // be rendered as a literal `"warning"`.
+        let new_opts = driver.db().analysis_options();
+        let new_types = new_opts.type_policy();
 
         let mut introduced = Vec::new();
-        for (severity, d) in new_diags {
+        for d in new_diags {
             let key = (d.code.as_str().to_string(), d.message.clone());
             let count = baseline.entry(key).or_default();
             if *count > 0 {
@@ -415,8 +533,9 @@ impl Project {
                     .to_string();
                 let src = driver.db().source(d.file).unwrap_or_default();
                 let (line, col) = LineIndex::new(src).line_col(d.range.start());
+                let severity = brink_driver::effective_severity(d.code, new_types, &new_opts.lints);
                 introduced.push(DiagEntry {
-                    severity: severity.into(),
+                    severity: severity_str(severity).to_string(),
                     code: d.code.as_str().into(),
                     message: d.message.clone(),
                     location: Loc {
@@ -642,7 +761,11 @@ impl Project {
 /// project at `rev` via `git ls-tree`, so every `.brink` file the revision
 /// contains is discovered and read from git, not the working tree. A `.ink`
 /// entry is unchanged: `git_show`-driven `INCLUDE` BFS.
-pub(super) fn load_git_baseline(entry: &Path, rev: &str) -> Result<Project, String> {
+pub(super) fn load_git_baseline(
+    entry: &Path,
+    rev: &str,
+    lints: &LintOverrides,
+) -> Result<Project, String> {
     let entry_s = entry.to_string_lossy().into_owned();
     let root = brink_driver::native_source_root(entry);
     let entry_key = brink_driver::relative_key(&root, entry);
@@ -651,11 +774,16 @@ pub(super) fn load_git_baseline(entry: &Path, rev: &str) -> Result<Project, Stri
     // Config resolution still reads `brink.toml` off the working tree, not
     // `rev` — the baseline and head sides must agree on the *same* resolved
     // policy (see `load_git_baseline_matches_project_load_analysis_options`
-    // below); only the source content itself is read from `rev`.
+    // below); only the source content itself is read from `rev`. The CLI
+    // override tier (issue #1417) is `lints` here — the caller's own
+    // resolved flags, same as the head side's `Project::load`, so a
+    // `--deny`/`--warn`/`--allow` on the `effects-diff --rev` invocation
+    // governs both sides identically.
     driver.set_analysis_options(resolve_analysis_options(
         &RealFs::new(&root),
         &root,
         &entry_key,
+        lints,
     )?);
 
     let entry_key = if brink_driver::is_native(entry) {
@@ -682,6 +810,7 @@ pub(super) fn load_git_baseline(entry: &Path, rev: &str) -> Result<Project, Stri
         driver,
         analysis,
         entry_id,
+        lint_overrides: lints.clone(),
     })
 }
 
@@ -991,8 +1120,9 @@ mod git_baseline_config_tests {
         let cwd_guard = CwdGuard(original_cwd);
 
         let entry = Path::new("story.ink");
-        let head = Project::load(entry).expect("head loads");
-        let baseline = load_git_baseline(entry, "HEAD").expect("git baseline loads");
+        let head = Project::load(entry, &LintOverrides::default()).expect("head loads");
+        let baseline = load_git_baseline(entry, "HEAD", &LintOverrides::default())
+            .expect("git baseline loads");
 
         assert_eq!(
             head.driver.db().analysis_options().dialect,
@@ -1053,7 +1183,8 @@ mod git_baseline_config_tests {
         let cwd_guard = CwdGuard(original_cwd);
 
         let entry = Path::new("main.brink");
-        let baseline = load_git_baseline(entry, "HEAD").expect("git baseline loads");
+        let baseline = load_git_baseline(entry, "HEAD", &LintOverrides::default())
+            .expect("git baseline loads");
 
         let db = baseline.driver.db();
         let mut paths: Vec<_> = db.file_ids().filter_map(|id| db.file_path(id)).collect();
@@ -1116,7 +1247,7 @@ mod git_baseline_config_tests {
         let cwd_guard = CwdGuard(original_cwd);
 
         let entry = Path::new("main.brink");
-        let err = load_git_baseline(entry, "HEAD")
+        let err = load_git_baseline(entry, "HEAD", &LintOverrides::default())
             .err()
             .expect("baseline load from a repo subdirectory must fail fast, not misalign");
         assert!(
@@ -1184,7 +1315,7 @@ mod git_baseline_config_tests {
         let cwd_guard = CwdGuard(original_cwd);
 
         let entry = Path::new("story.brink");
-        let baseline = load_git_baseline(entry, "HEAD").expect(
+        let baseline = load_git_baseline(entry, "HEAD", &LintOverrides::default()).expect(
             "an out-of-repo brink.toml must be invisible to the bounded walk, not surfaced as \
              an error",
         );
@@ -1298,7 +1429,7 @@ mod git_baseline_config_tests {
         // lexically "start with" `repo` — a separate, narrower quirk of
         // this guard's `Path::starts_with`, not what this test is proving).
         let entry = sibling.join("story.brink");
-        let err = load_git_baseline(&entry, "HEAD")
+        let err = load_git_baseline(&entry, "HEAD", &LintOverrides::default())
             .err()
             .expect("an out-of-repo entry must fail fast via ensure_repo_dir_is_toplevel");
         assert!(
@@ -1355,7 +1486,7 @@ mod git_baseline_config_tests {
         let cwd_guard = CwdGuard(original_cwd);
 
         let entry = Path::new("sub/main.brink");
-        let baseline = load_git_baseline(entry, "HEAD")
+        let baseline = load_git_baseline(entry, "HEAD", &LintOverrides::default())
             .expect("git baseline must succeed for a project rooted in a repo subdirectory");
 
         assert_eq!(
@@ -1406,7 +1537,7 @@ mod ide_session_project_config_tests {
         std::fs::write(dir.join("story.ink"), "Hello.\n-> END\n").unwrap();
 
         let entry = dir.join("story.ink");
-        let project = Project::load(&entry).expect("project loads");
+        let project = Project::load(&entry, &LintOverrides::default()).expect("project loads");
         let session = project.ide_session();
 
         assert_eq!(
@@ -1447,7 +1578,7 @@ mod ide_session_project_config_tests {
         std::fs::write(dir.join("story.ink"), "Hello.\n-> END\n").unwrap();
 
         let entry = dir.join("story.ink");
-        let project = Project::load(&entry).expect("project loads");
+        let project = Project::load(&entry, &LintOverrides::default()).expect("project loads");
         let session = project.ide_session();
 
         assert_eq!(
@@ -1494,8 +1625,13 @@ mod resolve_analysis_options_source_tree_seam_tests {
             ),
         ]));
 
-        let options = resolve_analysis_options(&tree, Path::new("."), "chapters/main.ink")
-            .expect("resolves options over an in-memory tree");
+        let options = resolve_analysis_options(
+            &tree,
+            Path::new("."),
+            "chapters/main.ink",
+            &LintOverrides::default(),
+        )
+        .expect("resolves options over an in-memory tree");
 
         assert_eq!(
             options.dialect,
@@ -1514,8 +1650,9 @@ mod resolve_analysis_options_source_tree_seam_tests {
             "Hello.\n-> END\n".to_string(),
         )]));
 
-        let options = resolve_analysis_options(&tree, Path::new("."), "main.ink")
-            .expect("resolves options with no config");
+        let options =
+            resolve_analysis_options(&tree, Path::new("."), "main.ink", &LintOverrides::default())
+                .expect("resolves options with no config");
 
         assert_eq!(options, brink_analyzer::AnalysisOptions::default());
     }
@@ -1536,8 +1673,13 @@ mod resolve_analysis_options_source_tree_seam_tests {
             ),
         ]));
 
-        let options = resolve_analysis_options(&tree, Path::new("."), "book/chapters/main.ink")
-            .expect("resolves options by walking up the tree");
+        let options = resolve_analysis_options(
+            &tree,
+            Path::new("."),
+            "book/chapters/main.ink",
+            &LintOverrides::default(),
+        )
+        .expect("resolves options by walking up the tree");
 
         assert_eq!(options.dialect, brink_analyzer::Dialect::Brink);
     }

@@ -1,9 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use brink_analyzer::{AnalysisOptions, AnalysisResult, Dialect, LintPolicy, TypePolicy};
+use brink_analyzer::{AnalysisOptions, AnalysisResult, Dialect, LintLevel, LintPolicy, TypePolicy};
 use brink_syntax::ast::AstNode;
 use tokio::sync::{Notify, watch};
 use tower_lsp::jsonrpc::Result;
@@ -109,14 +109,14 @@ pub struct LanguageOptions {
     types: Arc<Mutex<Option<TypePolicy>>>,
     /// Resolved `[lints]` policy (issue #1160/#1367): a discovered
     /// `brink.toml`'s `[lints]` table, applied via
-    /// `AnalysisOptions::apply_project_config` in
-    /// `resolve_language_options`. Mirrors `dialect`/`types` — no
-    /// `initializationOptions` equivalent exists for `[lints]` (it is
-    /// file-only), so this is written only from `resolve_language_options`'s
-    /// output, never from `ConfigOverrides`. Feeds both `analysis_loop`'s
-    /// `AnalysisOptions` and every diagnostic-publish site's
-    /// `effective_severity` call, so a re-leveled code's LSP-published
-    /// severity matches its build-gating severity.
+    /// `AnalysisOptions::apply_project_config`, then overlaid with any
+    /// client-declared `initializationOptions.lints`/`.denyWarnings` (issue
+    /// #1417, `AnalysisOptions::apply_lint_overrides`) — both in
+    /// `resolve_language_options`. Written only from that function's
+    /// output, never read directly off `ConfigOverrides`. Feeds both
+    /// `analysis_loop`'s `AnalysisOptions` and every diagnostic-publish
+    /// site's `effective_severity` call, so a re-leveled code's
+    /// LSP-published severity matches its build-gating severity.
     lints: Arc<Mutex<LintPolicy>>,
 }
 
@@ -421,15 +421,42 @@ impl Backend {
             Err(poisoned) => poisoned.into_inner().clone(),
         };
         let overrides = match self.config_overrides.lock() {
-            Ok(guard) => *guard,
-            Err(poisoned) => *poisoned.into_inner(),
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
         };
 
-        let (resolved, outcome) = resolve_language_options(overrides, &roots);
+        let (resolved, outcome) = resolve_language_options(&overrides, &roots);
 
         self.language.store(resolved);
+        // A `brink.toml` appearing, moving, or disappearing moves the native
+        // source root with it (#1572), so re-register it here too — otherwise
+        // every native module name would stay pinned to whatever root the
+        // session started with.
+        self.register_native_root(&roots, &outcome);
 
         self.publish_config_outcome(&outcome).await;
+    }
+
+    /// Register this session's native source root with `ProjectDb` (#1572),
+    /// so the module identity the editor mints for a `.brink` file equals the
+    /// identity a real compile of the same tree mints.
+    ///
+    /// The LSP keys `ProjectDb` by absolute OS path — it must, since every
+    /// path it holds round-trips through a `file://` URI — but a native
+    /// file's module is contractually a function of its *root-relative* key.
+    /// Declaring the root closes that gap at the one place the identity
+    /// function is fed (see [`brink_db::ProjectDb::set_native_root`]).
+    ///
+    /// Called from `initialize` and from every later
+    /// [`reload_brink_toml`](Self::reload_brink_toml). Goes through
+    /// [`mutate_db`](Self::mutate_db) so the content generation advances:
+    /// changing the root changes every native module name, which is a real
+    /// input change the background pass must re-analyze against.
+    fn register_native_root(&self, roots: &[PathBuf], outcome: &ConfigLoadOutcome) {
+        let root = native_source_root(roots, outcome)
+            .map(|p| p.to_string_lossy().into_owned())
+            .filter(|p| !p.is_empty());
+        self.mutate_db(|db| db.set_native_root(root));
     }
 
     /// Publish per-file diagnostics (parse + lowering only, no analysis).
@@ -567,10 +594,10 @@ impl Backend {
     ///
     /// This is the shared admission sink for every explicit-path load —
     /// [`Self::chase_includes`] (an `INCLUDE` target) and [`Self::walk_and_load`]
-    /// (a path `collect_ink_files` produced while walking the workspace
+    /// (a path `collect_source_files` produced while walking the workspace
     /// root) both call it, and it recurses into itself while chasing
     /// further includes. It never applies `brink_source_tree::is_ignored_dir`
-    /// itself, because each caller has already decided: `collect_ink_files`
+    /// itself, because each caller has already decided: `collect_source_files`
     /// prunes ignored directories upstream during the walk, while
     /// `chase_includes` and `did_open` deliberately admit unconditionally,
     /// per `brink_source_tree::is_ignored_dir`'s "Admission policy" doc
@@ -627,7 +654,8 @@ impl Backend {
         }
     }
 
-    /// Scan workspace directories for .ink files and load them all.
+    /// Scan workspace directories for source files (`.ink` and `.brink`) and
+    /// load them all.
     fn load_workspace_files(&self) {
         let roots = match self.workspace_roots.lock() {
             Ok(guard) => guard.clone(),
@@ -645,19 +673,23 @@ impl Backend {
         db.rebuild_include_graph();
     }
 
-    /// Recursively walk a directory, loading all .ink files. The walk
-    /// itself is delegated to [`collect_ink_files`] — a free function with
-    /// no `Client` dependency — so pruning can be unit-tested directly
+    /// Recursively walk a directory, loading every source file it holds. The
+    /// walk itself is delegated to [`collect_source_files`] — a free function
+    /// with no `Client` dependency — so pruning can be unit-tested directly
     /// without standing up a full `Backend` (issue #1402).
     fn walk_and_load(&self, dir: &std::path::Path) {
-        for path in collect_ink_files(dir) {
+        for path in collect_source_files(dir) {
             let path_str = path.to_string_lossy().into_owned();
             self.load_file_from_disk(&path_str);
         }
     }
 }
 
-/// Recursively collect every `.ink` file path under `dir`, via the shared
+/// Recursively collect every source file path under `dir` — `.ink` **and**
+/// native `.brink` (issue #1562: the scan enumerated `.ink` alone, so in a
+/// native workspace only the files the user happened to `didOpen` ever
+/// reached the db and every cross-file feature was blind to the rest) — via
+/// the shared
 /// [`brink_source_tree::Walk`] — so it never descends into a directory
 /// [`brink_source_tree::IGNORED_DIR_NAMES`] names (`target/`, `.git/`,
 /// `node_modules/`). Before issue #1402, this was the third unpruned
@@ -680,12 +712,21 @@ impl Backend {
 /// Unreadable directories are skipped rather than reported — a workspace
 /// scan is best-effort, exactly as it was when this function swallowed its
 /// own `read_dir` errors.
-fn collect_ink_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+fn collect_source_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     brink_source_tree::Walk::new(dir)
         .flatten()
-        .filter(|entry| !entry.is_dir() && entry.path().extension().is_some_and(|ext| ext == "ink"))
+        .filter(|entry| !entry.is_dir() && is_source_path(entry.path()))
         .map(brink_source_tree::WalkEntry::into_path)
         .collect()
+}
+
+/// Whether `path` names a source file this server tracks: ink (`.ink`) or
+/// native (`.brink`). The same two extensions the `initialized` handler's
+/// file watchers register, and the same axis `brink-db`'s own frontend
+/// dispatch splits on (`.brink` → native parser, everything else → ink).
+fn is_source_path(path: &std::path::Path) -> bool {
+    path.extension()
+        .is_some_and(|ext| ext == "ink" || ext == "brink")
 }
 
 fn lock_db(db: &Arc<Mutex<brink_db::ProjectDb>>) -> std::sync::MutexGuard<'_, brink_db::ProjectDb> {
@@ -774,16 +815,104 @@ fn explicit_initialization_option<'a>(params: &'a InitializeParams, key: &str) -
         .and_then(|v| v.as_str())
 }
 
-/// Client-declared `initializationOptions.dialect`/`.types`, resolved once
-/// from `InitializeParams` (`Some(_)` means the client set the key at all —
-/// see [`explicit_initialization_option`]) and reused, unchanged, by every
-/// later `brink.toml` reload (#1055 gap 2): the client never resends
-/// `initializationOptions` mid-session, only the file's own contribution to
-/// [`resolve_language_options`] can change.
-#[derive(Debug, Clone, Copy, Default)]
+/// Read `initializationOptions.<key>` as a bool, if the client set it —
+/// mirrors [`explicit_initialization_option`] for `denyWarnings` (issue
+/// #1417): `Some(_)` only when the client actually set the key to a JSON
+/// boolean, `None` for a missing key. A key that *is* present but holds a
+/// non-bool value is skipped with a `tracing::warn!` — the same "warn, never
+/// silently drop" channel [`explicit_initialization_lints`] uses for a
+/// present-but-malformed `lints` value — rather than being treated as
+/// silently unset.
+fn explicit_initialization_bool(params: &InitializeParams, key: &str) -> Option<bool> {
+    let value = params
+        .initialization_options
+        .as_ref()
+        .and_then(|opts| opts.get(key))?;
+    if let Some(b) = value.as_bool() {
+        Some(b)
+    } else {
+        tracing::warn!("initializationOptions.{key}: expected a boolean, got {value}, ignored");
+        None
+    }
+}
+
+/// Read `initializationOptions.lints` — a client-declared per-code
+/// lint-level override map (issue #1417), the LSP's counterpart of the
+/// CLI's repeatable `--deny`/`--warn`/`--allow <CODE>` flags (#1373) and
+/// `BrinkPlugin::with_config`'s `ProjectConfig.lints` (#1394). Accepts a
+/// JSON object `{ "<CODE>": "deny" | "warn" | "allow" | "info" | "hint" }`
+/// — the same five strings a `brink.toml` `[lints]` table accepts
+/// (`brink_project_config::parse_lint_level`; `"info"`/`"hint"` added by
+/// issue #1162). A missing key resolves to no overrides at all (an empty
+/// map, the same as never setting the field). A present but non-object
+/// value, or a per-code value that isn't one of the five recognized
+/// strings, is skipped with a `tracing::warn!` — the same "warn, never
+/// silently drop" channel [`resolve_language_options`] already uses for a
+/// `brink.toml`'s own unknown keys — rather than resolving to a hard
+/// `initialize` failure; the real code/overridability validation still
+/// happens once, downstream, in
+/// `AnalysisOptions::apply_lint_overrides` (#1160's `validate_lint_code`
+/// gate).
+fn explicit_initialization_lints(params: &InitializeParams) -> BTreeMap<String, LintLevel> {
+    let mut lints = BTreeMap::new();
+    let Some(value) = params
+        .initialization_options
+        .as_ref()
+        .and_then(|opts| opts.get("lints"))
+    else {
+        return lints;
+    };
+    let Some(obj) = value.as_object() else {
+        tracing::warn!("initializationOptions.lints: expected an object, got {value}, ignored");
+        return lints;
+    };
+    for (code, value) in obj {
+        match value.as_str() {
+            Some("deny") => {
+                lints.insert(code.clone(), LintLevel::Deny);
+            }
+            Some("warn") => {
+                lints.insert(code.clone(), LintLevel::Warn);
+            }
+            Some("allow") => {
+                lints.insert(code.clone(), LintLevel::Allow);
+            }
+            Some("info") => {
+                lints.insert(code.clone(), LintLevel::Info);
+            }
+            Some("hint") => {
+                lints.insert(code.clone(), LintLevel::Hint);
+            }
+            _ => {
+                tracing::warn!(
+                    "initializationOptions.lints.{code}: expected \"allow\" | \"warn\" | \"deny\" | \"info\" | \"hint\", ignored"
+                );
+            }
+        }
+    }
+    lints
+}
+
+/// Client-declared `initializationOptions.dialect`/`.types`/`.lints`/
+/// `.denyWarnings`, resolved once from `InitializeParams` (`Some(_)`/a
+/// non-empty map means the client set the key at all — see
+/// [`explicit_initialization_option`]/[`explicit_initialization_lints`]) and
+/// reused, unchanged, by every later `brink.toml` reload (#1055 gap 2): the
+/// client never resends `initializationOptions` mid-session, only the
+/// file's own contribution to [`resolve_language_options`] can change.
+///
+/// `lints`/`deny_warnings` (issue #1417) extend the same override tier
+/// `dialect`/`types` established (#1030) to `[lints]`, closing the gap this
+/// type's own doc comment used to name explicitly ("no
+/// `initializationOptions` equivalent exists for `[lints]`"). Not `Copy`
+/// (unlike the pre-#1417 `dialect`/`types`-only version) — `lints` is a
+/// `BTreeMap`, so callers now `.clone()` where they used to deref-copy.
+#[derive(Debug, Clone, Default)]
 struct ConfigOverrides {
     dialect: Option<Dialect>,
     types: Option<TypePolicy>,
+    lints: BTreeMap<String, LintLevel>,
+    deny_warnings: Option<bool>,
 }
 
 impl ConfigOverrides {
@@ -798,6 +927,8 @@ impl ConfigOverrides {
                 "gradual" => Some(TypePolicy::Gradual),
                 _ => None,
             }),
+            lints: explicit_initialization_lints(params),
+            deny_warnings: explicit_initialization_bool(params, "denyWarnings"),
         }
     }
 }
@@ -818,8 +949,8 @@ struct ConfigLoadOutcome {
     diagnostic: Option<tower_lsp::lsp_types::Diagnostic>,
 }
 
-/// Best-effort byte-span → LSP range for a `ConfigError::Toml` (malformed
-/// TOML syntax carries a span via `toml::de::Error::span`). Every other
+/// Best-effort byte-span → LSP range for a `ConfigError` (malformed TOML
+/// syntax carries a span — see `ConfigError::span`, #1384). Every other
 /// `ConfigError` variant (unreadable file, a recognized key holding the
 /// wrong shape/value) has no location narrower than "the whole file", and a
 /// span this project's `u32`-based `TextSize` can't represent falls back the
@@ -829,10 +960,7 @@ fn toml_span_to_lsp_range(
     error: &brink_project_config::ConfigError,
     source: Option<&str>,
 ) -> Option<Range> {
-    let brink_project_config::ConfigError::Toml(toml_error) = error else {
-        return None;
-    };
-    let span = toml_error.span()?;
+    let span = error.span()?;
     let source = source?;
     let start = u32::try_from(span.start).ok()?;
     let end = u32::try_from(span.end).ok()?;
@@ -891,8 +1019,8 @@ fn config_error_diagnostic(
 /// Discovery is relative to the **workspace root**, not any single open
 /// file: at `initialize` time the LSP has no "entry file" the way the CLI's
 /// `brink compile <entry>` does, only workspace folders. This reuses
-/// `brink-project-config`'s [`brink_project_config::find_config`] walk
-/// directly (rather than [`brink_project_config::discover_from_entry`],
+/// `brink-project-config`'s [`brink_project_config::find_config_with_warnings`]
+/// walk directly (rather than [`brink_project_config::discover_from_entry`],
 /// which expects a file path to take the parent of) — the walking logic
 /// itself is not duplicated. With multiple workspace folders, only the
 /// first is consulted, mirroring the single-session, single-project-root
@@ -905,7 +1033,11 @@ fn config_error_diagnostic(
 /// rather than refuse to initialize/reload — but also earns a client-visible
 /// diagnostic via the returned [`ConfigLoadOutcome`] (#1055 gap 1): callers
 /// publish it (see [`Backend::publish_config_outcome`]), they don't fail on
-/// it.
+/// it. A `brink.toml` the bounded walk stepped over (a workspace/git
+/// boundary, or the ancestor-depth cap for a VCS-less workspace, #1435) gets
+/// the same `tracing::warn!` treatment — logged, not silently dropped,
+/// though (like the unknown-key case) it never earns its own
+/// `ConfigLoadOutcome::diagnostic`.
 ///
 /// Called once from `initialize` (via `initialized`, which defers the
 /// publish) and again by [`Backend::reload_brink_toml`] on
@@ -913,43 +1045,56 @@ fn config_error_diagnostic(
 /// `brink.toml` itself (#1055 gap 2), so edits apply without a client
 /// restart.
 fn resolve_language_options(
-    overrides: ConfigOverrides,
+    overrides: &ConfigOverrides,
     roots: &[PathBuf],
 ) -> (AnalysisOptions, ConfigLoadOutcome) {
     let mut options = AnalysisOptions::default();
     let mut outcome = ConfigLoadOutcome::default();
 
-    if let Some(root) = roots.first()
-        && let Some(path) = brink_project_config::find_config(root)
-    {
-        outcome.path = Some(path.clone());
-        match std::fs::read_to_string(&path) {
-            Ok(text) => match brink_project_config::parse_str(&text) {
-                Ok((config, warnings)) => {
-                    for warning in &warnings {
-                        tracing::warn!("[{}] {warning}", path.display());
-                    }
-                    let lint_warnings = options.apply_project_config(
-                        &config,
-                        overrides.dialect.is_some(),
-                        overrides.types.is_some(),
-                    );
-                    for warning in &lint_warnings {
-                        tracing::warn!("[{}] {warning}", path.display());
+    if let Some(root) = roots.first() {
+        let (path, discovery_warnings) = brink_project_config::find_config_with_warnings(root);
+        // A config the bounded walk stepped over (#1435) — never used below,
+        // only logged, on the same "warn, never silently drop" channel every
+        // other warning in this function uses.
+        for warning in &discovery_warnings {
+            tracing::warn!("{warning}");
+        }
+        if let Some(path) = path {
+            outcome.path = Some(path.clone());
+            match std::fs::read_to_string(&path) {
+                Ok(text) => {
+                    match brink_project_config::parse_str_at(path.display().to_string(), &text) {
+                        Ok((config, warnings)) => {
+                            for warning in &warnings {
+                                tracing::warn!("[{}] {warning}", path.display());
+                            }
+                            let lint_warnings = options.apply_project_config(
+                                &config,
+                                overrides.dialect.is_some(),
+                                overrides.types.is_some(),
+                            );
+                            for warning in &lint_warnings {
+                                tracing::warn!("[{}] {warning}", path.display());
+                            }
+                        }
+                        Err(e) => {
+                            // `e`'s own `Display` already names `path` (#1384:
+                            // `parse_str_at` threads it into every `ConfigError`),
+                            // so this no longer needs its own `path.display()`
+                            // prefix the way the pre-#1384 bare `parse_str` did.
+                            tracing::warn!("failed to parse: {e}");
+                            outcome.diagnostic = Some(config_error_diagnostic(&e, Some(&text)));
+                        }
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("failed to parse {}: {e}", path.display());
-                    outcome.diagnostic = Some(config_error_diagnostic(&e, Some(&text)));
+                    tracing::warn!("failed to read {}: {e}", path.display());
+                    let err = brink_project_config::ConfigError::Io {
+                        path: path.clone(),
+                        source: e,
+                    };
+                    outcome.diagnostic = Some(config_error_diagnostic(&err, None));
                 }
-            },
-            Err(e) => {
-                tracing::warn!("failed to read {}: {e}", path.display());
-                let err = brink_project_config::ConfigError::Io {
-                    path: path.clone(),
-                    source: e,
-                };
-                outcome.diagnostic = Some(config_error_diagnostic(&err, None));
             }
         }
     }
@@ -970,14 +1115,57 @@ fn resolve_language_options(
         options.types = Some(types);
     }
 
+    // `[lints]`/`deny-warnings` CLI/API override tier (issue #1417),
+    // completing the #1373/#1394 seam for the LSP surface: applied last, on
+    // top of whatever the file above just resolved, so an explicit
+    // `initializationOptions.lints`/`.denyWarnings` always wins over the
+    // same code in a discovered `brink.toml`'s `[lints]` table — the same
+    // `CLI/API > file > default` precedence `dialect`/`types` follow.
+    let lint_override_warnings =
+        options.apply_lint_overrides(&overrides.lints, overrides.deny_warnings);
+    for warning in &lint_override_warnings {
+        // Same "warn, never silently drop" channel as the file-sourced
+        // `[lints]` warnings above (house rule).
+        tracing::warn!("{warning}");
+    }
+
     (options, outcome)
+}
+
+/// The directory this session's native `.brink` keys are root-relative to
+/// (issue #1572), or `None` when there is nothing to anchor to (no workspace
+/// folder and no `brink.toml` — a bare `stdin`-only session).
+///
+/// Mirrors the compiler's own [`brink_driver::native_source_root`] rule at
+/// the one input the LSP actually has: the compiler resolves the root from
+/// the *entry file* (the governing `brink.toml`'s directory, else the entry's
+/// own directory), while a language server has no entry file at all, only
+/// workspace folders. So the same two-step applies with the workspace root
+/// standing in for the entry directory — the discovered `brink.toml`'s
+/// directory wins (`outcome.path` is the very file
+/// [`resolve_language_options`] found by walking up from the first workspace
+/// root), else the first workspace root itself.
+///
+/// Consulting only the *first* root matches every other project-scoped
+/// decision this server makes (`resolve_language_options`, `Backend::dialect`);
+/// a genuinely multi-root native workspace is issue #1572's separate
+/// project-extent finding, not this one.
+fn native_source_root(roots: &[PathBuf], outcome: &ConfigLoadOutcome) -> Option<PathBuf> {
+    outcome
+        .path
+        .as_ref()
+        .and_then(|config| config.parent())
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .map(std::path::Path::to_path_buf)
+        .or_else(|| roots.first().cloned())
 }
 
 /// True if `path`'s file name is exactly
 /// `brink_project_config::CONFIG_FILE_NAME` ("brink.toml") — used to route
 /// `did_change_watched_files` events for the project config file to
-/// [`Backend::reload_brink_toml`] instead of `ProjectDb`, which only ever
-/// tracks `.ink` source (#1055 gap 2).
+/// [`Backend::reload_brink_toml`] instead of `ProjectDb`, which tracks
+/// `.ink` and `.brink` source but never the project config file itself
+/// (#1055 gap 2).
 fn is_brink_toml_path(path: &str) -> bool {
     std::path::Path::new(path)
         .file_name()
@@ -998,7 +1186,7 @@ fn is_brink_toml_path(path: &str) -> bool {
 ///
 /// `did_change_watched_files` receives whole file paths from the client's
 /// file-watcher subscription rather than walking a directory tree itself, so
-/// [`collect_ink_files`]'s per-entry prune (which only ever sees one path
+/// [`collect_source_files`]'s per-entry prune (which only ever sees one path
 /// component at a time while descending, and so never tests the workspace
 /// root's own name or its ancestors) doesn't apply directly here — this walks every component of the already-complete path
 /// instead, using the same shared predicate (issue #1415: `did_change_watched_files`
@@ -1006,15 +1194,34 @@ fn is_brink_toml_path(path: &str) -> bool {
 /// files into `ProjectDb`, after #1370's config discovery, #1381's native
 /// compile walk, and #1402's LSP workspace-load walk).
 ///
-/// `roots` scopes the check to mirror `collect_ink_files`'s walk exactly:
+/// `roots` scopes the check to mirror `collect_source_files`'s walk exactly:
 /// the longest matching entry of `roots` is stripped from `path` before
 /// checking components, so a workspace root that itself lives under e.g.
 /// `node_modules/` (vendored ink content opened directly as a folder) still
 /// has its own files admitted — only descendants' ignored-dir components
 /// count, never the root's own ancestry (#1415 review: path-scope
-/// divergence from the prune this helper claims to mirror). A path with no
-/// matching root falls back to checking every component, same as before.
+/// divergence from the prune this helper claims to mirror). A path under
+/// **non-empty** `roots`, none of which is a prefix of it, falls back to
+/// checking every component, same as before — see below for what happens
+/// when `roots` itself is empty.
+///
+/// `roots` itself can be empty — single-file mode (no workspace folders and
+/// no legacy `root_uri`), or a watcher event that lands before `initialize`
+/// has populated `self.workspace_roots` at all. There, house rule 19a
+/// applies exactly as it did for `native_root` in #1576: with nothing to
+/// strip, the path is returned untouched rather than mangled — this
+/// function declines to prune rather than falling back to matching
+/// components of the raw, unscoped absolute path. That whole-path fallback
+/// is exactly the pre-#1415 behavior, and it treats any directory name that
+/// merely *appears* somewhere in the user's absolute path (a project
+/// checked out under `~/code/node_modules-backup/…`, say) as an ignored
+/// directory, silently rejecting a real file it has no business rejecting
+/// (#1434). No workspace root means there is no root-relative frame to
+/// scope the check against, so the check is skipped rather than guessed.
 fn path_under_ignored_dir(path: &str, roots: &[std::path::PathBuf]) -> bool {
+    if roots.is_empty() {
+        return false;
+    }
     let full = std::path::Path::new(path);
     let scoped = roots
         .iter()
@@ -1060,8 +1267,12 @@ impl LanguageServer for Backend {
         // sending notifications before this handler returns its
         // `InitializeResult`, so `initialized()` publishes it instead.
         let overrides = ConfigOverrides::from_initialize_params(&params);
-        let (resolved, outcome) = resolve_language_options(overrides, &roots);
+        let (resolved, outcome) = resolve_language_options(&overrides, &roots);
         self.language.store(resolved);
+        // #1572: declare the native source root before any file is loaded, so
+        // the very first analysis pass already mints compile-identical native
+        // module identity (`initialized()` runs the workspace scan).
+        self.register_native_root(&roots, &outcome);
         if let Ok(mut guard) = self.config_overrides.lock() {
             *guard = overrides;
         }
@@ -1181,14 +1392,20 @@ impl LanguageServer for Backend {
             self.publish_config_outcome(&outcome).await;
         }
 
-        // Register file watchers for **/*.ink and brink.toml (#1055 gap 2:
-        // previously only .ink files were watched, so an on-disk edit to
-        // brink.toml never reached the server) — fire-and-forget, some test
+        // Register file watchers for **/*.ink, **/*.brink and brink.toml
+        // (#1055 gap 2: previously only .ink files were watched, so an
+        // on-disk edit to brink.toml never reached the server; #1562: native
+        // `.brink` modules were unwatched too, so an on-disk edit to one
+        // never reached the server either) — fire-and-forget, some test
         // clients don't respond to server-initiated requests.
         let client = self.client.clone();
         tokio::spawn(async move {
             let ink_watcher = FileSystemWatcher {
                 glob_pattern: GlobPattern::String("**/*.ink".to_owned()),
+                kind: None,
+            };
+            let native_watcher = FileSystemWatcher {
+                glob_pattern: GlobPattern::String("**/*.brink".to_owned()),
                 kind: None,
             };
             let toml_watcher = FileSystemWatcher {
@@ -1203,7 +1420,7 @@ impl LanguageServer for Backend {
                 method: "workspace/didChangeWatchedFiles".to_owned(),
                 register_options: serde_json::to_value(
                     tower_lsp::lsp_types::DidChangeWatchedFilesRegistrationOptions {
-                        watchers: vec![ink_watcher, toml_watcher],
+                        watchers: vec![ink_watcher, native_watcher, toml_watcher],
                     },
                 )
                 .ok(),
@@ -1213,7 +1430,7 @@ impl LanguageServer for Backend {
             }
         });
 
-        // Scan workspace directories for .ink files
+        // Scan workspace directories for source files
         self.load_workspace_files();
         self.trigger_analysis();
     }
@@ -1242,11 +1459,11 @@ impl LanguageServer for Backend {
             };
 
             if is_brink_toml_path(&path) {
-                // brink.toml isn't tracked in `ProjectDb` (it's not `.ink`
-                // source), so there's no "already admitted" state to
-                // preserve the way there is for `.ink` files below — an
-                // ignored-dir brink.toml (e.g. a vendored config under
-                // node_modules/) is never authoritative, so skip it
+                // brink.toml isn't tracked in `ProjectDb` (it's not source —
+                // `.ink` or `.brink`), so there's no "already admitted"
+                // state to preserve the way there is for the source files
+                // below — an ignored-dir brink.toml (e.g. a vendored config
+                // under node_modules/) is never authoritative, so skip it
                 // unconditionally.
                 if path_under_ignored_dir(&path, &roots) {
                     continue;
@@ -1443,11 +1660,16 @@ impl LanguageServer for Backend {
         let idx = LineIndex::new(&snap.source);
         let offset = convert::to_text_size(params.text_document_position_params.position, &idx);
 
+        // B3a UFCS resolution (issue #1507): a brief, transient lock —
+        // `goto_definition` reads the memoized `db.ufcs_verdict` to jump to
+        // a UFCS-desugared free function instead of the receiver.
+        let db = lock_db(&self.db);
         let Some(loc) =
-            brink_ide::navigation::goto_definition(&snap.analysis, snap.file_id, offset)
+            brink_ide::navigation::goto_definition(&db, &snap.analysis, snap.file_id, offset)
         else {
             return Ok(None);
         };
+        drop(db);
 
         // Find the target file in our snapshot
         let Some((_, target_path, target_source)) = snap
@@ -1487,12 +1709,17 @@ impl LanguageServer for Backend {
         let idx = LineIndex::new(&snap.source);
         let offset = convert::to_text_size(params.text_document_position.position, &idx);
 
+        // B3a UFCS resolution (issue #1539): a brief, transient lock — see
+        // `goto_definition`'s own comment on the same pattern.
+        let db = lock_db(&self.db);
         let refs = brink_ide::navigation::find_references(
+            &db,
             &snap.analysis,
             snap.file_id,
             offset,
             params.context.include_declaration,
         );
+        drop(db);
 
         if refs.is_empty() {
             return Ok(None);
@@ -1910,10 +2137,15 @@ impl LanguageServer for Backend {
         let idx = LineIndex::new(&snap.source);
         let offset = convert::to_text_size(params.position, &idx);
 
-        let Some(range) = brink_ide::rename::prepare_rename(&snap.analysis, snap.file_id, offset)
+        // B3a UFCS resolution (issue #1539): a brief, transient lock — see
+        // `goto_definition`'s own comment on the same pattern.
+        let db = lock_db(&self.db);
+        let Some(range) =
+            brink_ide::rename::prepare_rename(&db, &snap.analysis, snap.file_id, offset)
         else {
             return Ok(None);
         };
+        drop(db);
 
         Ok(Some(PrepareRenameResponse::Range(convert::to_lsp_range(
             range, &idx,
@@ -1938,11 +2170,15 @@ impl LanguageServer for Backend {
         let idx = LineIndex::new(&snap.source);
         let offset = convert::to_text_size(params.text_document_position.position, &idx);
 
+        // B3a UFCS resolution (issue #1539): a brief, transient lock — see
+        // `goto_definition`'s own comment on the same pattern.
+        let db = lock_db(&self.db);
         let Some(result) =
-            brink_ide::rename::rename(&snap.analysis, snap.file_id, offset, &params.new_name)
+            brink_ide::rename::rename(&db, &snap.analysis, snap.file_id, offset, &params.new_name)
         else {
             return Ok(None);
         };
+        drop(db);
 
         // Convert domain edits to LSP WorkspaceEdit
         let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
@@ -1978,7 +2214,7 @@ impl LanguageServer for Backend {
             return Ok(Some(vec![]));
         };
 
-        let (source, import_actions) = {
+        let (source, import_actions, fn_value_actions, value_call_actions) = {
             let db = lock_db(&self.db);
             let Some(file_id) = db.file_id(&path) else {
                 return Ok(Some(vec![]));
@@ -1994,7 +2230,13 @@ impl LanguageServer for Backend {
             // module-qualified db while the lock is held, then merges into the
             // same code-action list as the source-only actions below.
             let import_actions = brink_ide::import_fix::import_actions(&db, file_id, offset);
-            (source, import_actions)
+            // T1c creation-site + call()/bind() strict quick-fixes (issue
+            // #744): same session-aware merge posture.
+            let fn_value_actions =
+                brink_ide::creation_site_fix::fn_value_actions(&db, file_id, offset);
+            let value_call_actions =
+                brink_ide::value_call_fix::value_call_actions(&db, file_id, offset);
+            (source, import_actions, fn_value_actions, value_call_actions)
         };
 
         let idx = LineIndex::new(&source);
@@ -2004,6 +2246,8 @@ impl LanguageServer for Backend {
 
         let mut domain_actions = brink_ide::code_actions::code_actions(&source, cursor_offset);
         domain_actions.extend(import_actions);
+        domain_actions.extend(fn_value_actions);
+        domain_actions.extend(value_call_actions);
 
         let uri = params.text_document.uri.as_str();
         let lsp_actions = domain_actions
@@ -2061,44 +2305,8 @@ impl LanguageServer for Backend {
             return Ok(action);
         };
 
-        let knot_name = data
-            .get("knot")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default();
-
-        let action_data = match kind {
-            Some("sort_knots") => brink_ide::code_actions::CodeActionData::SortKnots,
-            Some("sort_stitches") => brink_ide::code_actions::CodeActionData::SortStitches {
-                knot: knot_name.to_owned(),
-            },
-            Some("format_knot") => brink_ide::code_actions::CodeActionData::FormatKnot {
-                knot: knot_name.to_owned(),
-            },
-            Some("format_stitch") => {
-                let stitch_name = data
-                    .get("stitch")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default();
-                brink_ide::code_actions::CodeActionData::FormatStitch {
-                    knot: knot_name.to_owned(),
-                    stitch: stitch_name.to_owned(),
-                }
-            }
-            Some("add_import") => {
-                let module = data
-                    .get("module")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default();
-                let name = data
-                    .get("name")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default();
-                brink_ide::code_actions::CodeActionData::AddImport {
-                    module: module.to_owned(),
-                    name: name.to_owned(),
-                }
-            }
-            _ => return Ok(action),
+        let Some(action_data) = code_action_data_from_json(kind, &data) else {
+            return Ok(action);
         };
 
         let Some(new_source) = brink_ide::code_actions::resolve_code_action(&source, &action_data)
@@ -2394,14 +2602,67 @@ pub async fn analysis_loop(
         // carried (both read the revision under the db lock; the analysis reads
         // at-or-after the write). Tagged `Analysis`, this therefore wins the
         // `DiagnosticsPublisher` anti-downgrade rule against that per-file set.
-        let (generation, projects, file_meta, per_file_diags, file_suppressions) = {
-            let db = lock_db(&db);
+        let (
+            generation,
+            projects,
+            modules,
+            module_diags,
+            file_meta,
+            per_file_diags,
+            file_suppressions,
+        ) = {
+            let mut db = lock_db(&db);
+            // Push the same options this pass analyzes under into the db as a
+            // salsa input, *before* reading anything derived from it (issue
+            // #1562, folding in the #1553 bug class in its second db holder).
+            //
+            // The published diagnostics come from the off-db
+            // `analyze_with_modules` pass below, which honors `opts` — but
+            // several request handlers read the db's own queries directly:
+            // hover (`db.effects`/`db.signature`/`db.inferred_signature`/
+            // `db.infer_body`), inlay hints, code actions, and rename's UFCS
+            // resolution. `Backend` never wrote this input, so every one of
+            // them ran under `AnalysisOptions::default()` — `Dialect::StrictInk`
+            // no matter what the client declared, which (among other things)
+            // gates off M-2d cross-declared-module coexistence in
+            // `symbol_index_query`. Every native `.brink` file has a declared
+            // module, so two native modules with a same-named flow lost one of
+            // them from the db's index, and every db-backed hover row for it
+            // silently vanished.
+            //
+            // Guarded against unchanged values exactly as `IdeSession::
+            // sync_db_options` is: salsa stamps the current revision on every
+            // write, so an unguarded call here — once per analysis pass, i.e.
+            // once per keystroke — would invalidate every direct reader on
+            // every edit.
+            if db.analysis_options() != &opts {
+                db.set_analysis_options(opts.clone());
+            }
             let generation = generation.load(Ordering::Relaxed);
             let project_defs = db.compute_projects();
+            // `is_native` per root (issue #1562 review finding), captured
+            // under the same lock as `project_defs`: the off-db pass below
+            // has no `Language` classification of its own, so without this
+            // M-2d cross-declared-module coexistence stayed gated on a
+            // client having declared `dialect: "brink"` — a native project
+            // has no dialect to be wrong about.
             let project_inputs: Vec<_> = project_defs
                 .iter()
-                .map(|(root, members)| (*root, db.analysis_inputs_for(members)))
+                .map(|(root, m)| (*root, db.analysis_inputs_for(m), db.is_native(*root)))
                 .collect();
+            // The project's resolved modules (#1526), cloned out under the
+            // same lock as the inputs they qualify. Module identity needs
+            // file paths, which the analysis inputs don't carry — without it
+            // this pass mints `DefinitionId`s that don't match the db's, so
+            // every native `.brink` symbol misses in `db.effects`/
+            // `db.signature`/`db.infer_body`. Keyed by `FileId`, so the
+            // whole-workspace map is a harmless superset for each project.
+            let modules = db.module_map().clone();
+            // The map's diagnostics half (`E085` stem collisions, #1553).
+            // `analyze_with_modules` below is handed the finished map, so it
+            // cannot re-derive them; without folding them back in per project
+            // a collision a db-driven compile catches never reaches the editor.
+            let module_diags = db.module_map_diagnostics().to_vec();
             let meta = db.file_metadata();
             let diags: Vec<_> = meta
                 .iter()
@@ -2411,7 +2672,15 @@ pub async fn analysis_loop(
                 meta.iter()
                     .filter_map(|(fid, _, _)| Some((*fid, db.suppressions(*fid)?.clone())))
                     .collect();
-            (generation, project_inputs, meta, diags, suppressions)
+            (
+                generation,
+                project_inputs,
+                modules,
+                module_diags,
+                meta,
+                diags,
+                suppressions,
+            )
         };
 
         // Run per-project analysis OUTSIDE the lock
@@ -2419,15 +2688,14 @@ pub async fn analysis_loop(
         let mut file_to_roots: HashMap<brink_ir::FileId, Vec<brink_ir::FileId>> = HashMap::new();
         let mut project_members = HashMap::new();
 
-        for (root, inputs) in &projects {
-            let file_refs: Vec<_> = inputs
-                .iter()
-                .map(|(id, hir, manifest)| (*id, hir, manifest))
-                .collect();
-            let result = brink_analyzer::analyze_with_options(&file_refs, &opts);
+        for (root, inputs, is_native) in &projects {
+            let file_refs: Vec<_> = inputs.iter().map(|(id, hir, m)| (*id, hir, m)).collect();
+            let mut result =
+                brink_analyzer::analyze_with_modules(&file_refs, &modules, &opts, *is_native);
+            let members: Vec<_> = inputs.iter().map(|(id, _, _)| *id).collect();
+            fold_module_diagnostics(&mut result, &module_diags, &members);
             by_root.insert(*root, Arc::new(result));
 
-            let members: Vec<_> = inputs.iter().map(|(id, _, _)| *id).collect();
             for &member in &members {
                 file_to_roots.entry(member).or_default().push(*root);
             }
@@ -2468,6 +2736,27 @@ pub async fn analysis_loop(
             })
             .await;
     }
+}
+
+/// Fold the module map's own diagnostics (`E085` stem collisions) into one
+/// project's analysis result (issue #1553).
+///
+/// `brink_analyzer::analyze_with_modules` is handed the *finished* map, so it
+/// cannot re-derive them; without this a collision a db-driven compile catches
+/// never reaches the editor. `module_diags` is whole-workspace, so it is
+/// filtered to `members` — a collision in an unrelated project must not be
+/// attributed to this one.
+fn fold_module_diagnostics(
+    result: &mut AnalysisResult,
+    module_diags: &[brink_ir::Diagnostic],
+    members: &[brink_ir::FileId],
+) {
+    result.diagnostics.extend(
+        module_diags
+            .iter()
+            .filter(|d| members.contains(&d.file))
+            .cloned(),
+    );
 }
 
 /// Build a `DiagnosticRelatedInformation` pointing to a project root file.
@@ -2715,12 +3004,161 @@ fn code_action_data_to_json(
                 "kind": "demote_knot", "uri": uri, "knot": knot, "dest_knot": dest_knot,
             })
         }
-        brink_ide::code_actions::CodeActionData::AddImport { module, name } => {
+        brink_ide::code_actions::CodeActionData::AddImport {
+            module,
+            name,
+            native,
+        } => {
             serde_json::json!({
                 "kind": "add_import", "uri": uri, "module": module, "name": name,
+                "native": native,
             })
         }
+        brink_ide::code_actions::CodeActionData::TrimFnLiteralArgs {
+            target,
+            occurrence,
+            keep,
+        } => serde_json::json!({
+            "kind": "trim_fn_literal_args", "uri": uri,
+            "target": target, "occurrence": occurrence, "keep": keep,
+        }),
+        brink_ide::code_actions::CodeActionData::BindFnLiteralRefArgs {
+            target,
+            occurrence,
+            vars,
+        } => serde_json::json!({
+            "kind": "bind_fn_literal_ref_args", "uri": uri,
+            "target": target, "occurrence": occurrence, "vars": vars,
+        }),
+        brink_ide::code_actions::CodeActionData::TrimValueCallArgs {
+            verb,
+            occurrence,
+            keep,
+        } => serde_json::json!({
+            "kind": "trim_value_call_args", "uri": uri,
+            "verb": verb, "occurrence": occurrence, "keep": keep,
+        }),
     }
+}
+
+/// Read `data[field]` as a JSON u64 and narrow it to `usize`, clamping
+/// (never wrapping) on a lossy platform/value combination — this data only
+/// ever carries small in-file occurrence/argument counts, but a malformed or
+/// tampered `data` payload must not silently truncate into a wrong index.
+fn json_u64_as_usize(data: &serde_json::Value, field: &str) -> usize {
+    data.get(field)
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|n| usize::try_from(n).ok())
+        .unwrap_or(usize::MAX)
+}
+
+/// Decode a `code_action_resolve` request's `data` payload (the `kind`
+/// discriminator plus the rest of the JSON object built by
+/// [`code_action_data_to_json`]) back into a [`CodeActionData`]. `None` for
+/// an unrecognized `kind` — this also covers `ReorderStitch`/`MoveStitch`/
+/// `PromoteStitch`/`DemoteKnot`: [`code_action_data_to_json`] *does* emit a
+/// `kind` string for each of them (`"reorder_stitch"`/`"move_stitch"`/
+/// `"promote_stitch"`/`"demote_knot"`), they simply have no decode arm below, so
+/// resolve is a no-op for them (see that fn's own doc: they are surfaced but
+/// not yet resolvable over LSP).
+///
+/// Split out of [`Backend::code_action_resolve`] to keep that function under
+/// the workspace's `too_many_lines` lint budget — the other multi-arm
+/// dispatch table in this file, [`code_action_data_to_json`], already lives
+/// as its own free function for the same reason (`format_config_from_options`
+/// is the same pattern but lives in `backend/adapters.rs`, imported above).
+///
+/// [`CodeActionData`]: brink_ide::code_actions::CodeActionData
+fn code_action_data_from_json(
+    kind: Option<&str>,
+    data: &serde_json::Value,
+) -> Option<brink_ide::code_actions::CodeActionData> {
+    let knot_name = data
+        .get("knot")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+
+    Some(match kind {
+        Some("sort_knots") => brink_ide::code_actions::CodeActionData::SortKnots,
+        Some("sort_stitches") => brink_ide::code_actions::CodeActionData::SortStitches {
+            knot: knot_name.to_owned(),
+        },
+        Some("format_knot") => brink_ide::code_actions::CodeActionData::FormatKnot {
+            knot: knot_name.to_owned(),
+        },
+        Some("format_stitch") => {
+            let stitch_name = data
+                .get("stitch")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            brink_ide::code_actions::CodeActionData::FormatStitch {
+                knot: knot_name.to_owned(),
+                stitch: stitch_name.to_owned(),
+            }
+        }
+        Some("add_import") => {
+            let module = data
+                .get("module")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let name = data
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let native = data
+                .get("native")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            brink_ide::code_actions::CodeActionData::AddImport {
+                module: module.to_owned(),
+                name: name.to_owned(),
+                native,
+            }
+        }
+        Some("trim_fn_literal_args") => {
+            let target = data
+                .get("target")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            brink_ide::code_actions::CodeActionData::TrimFnLiteralArgs {
+                target: target.to_owned(),
+                occurrence: json_u64_as_usize(data, "occurrence"),
+                keep: json_u64_as_usize(data, "keep"),
+            }
+        }
+        Some("bind_fn_literal_ref_args") => {
+            let target = data
+                .get("target")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            let vars = data
+                .get("vars")
+                .and_then(serde_json::Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default();
+            brink_ide::code_actions::CodeActionData::BindFnLiteralRefArgs {
+                target: target.to_owned(),
+                occurrence: json_u64_as_usize(data, "occurrence"),
+                vars,
+            }
+        }
+        Some("trim_value_call_args") => {
+            let verb = data
+                .get("verb")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            brink_ide::code_actions::CodeActionData::TrimValueCallArgs {
+                verb: verb.to_owned(),
+                occurrence: json_u64_as_usize(data, "occurrence"),
+                keep: json_u64_as_usize(data, "keep"),
+            }
+        }
+        _ => return None,
+    })
 }
 
 #[cfg(test)]
@@ -2728,8 +3166,9 @@ mod tests {
     use tower_lsp::lsp_types::Diagnostic;
 
     use super::{
-        PublishDecision, PublishRecord, PublishTier, collect_ink_files, config_error_diagnostic,
-        path_under_ignored_dir, publish_decision,
+        ConfigLoadOutcome, ConfigOverrides, PublishDecision, PublishRecord, PublishTier,
+        collect_source_files, config_error_diagnostic, native_source_root, path_under_ignored_dir,
+        publish_decision, resolve_language_options,
     };
 
     /// A unique per-test scratch directory under the OS temp dir, mirroring
@@ -2753,7 +3192,7 @@ mod tests {
 
     /// #1402 regression, mirroring #1381's `real_fs_list_skips_ignored_dirs`
     /// shape (`crates/internal/brink-driver/src/source_tree.rs`):
-    /// `collect_ink_files` — the walk `Backend::walk_and_load` delegates to
+    /// `collect_source_files` — the walk `Backend::walk_and_load` delegates to
     /// — must never descend into `target/`, `.git/`, or `node_modules/`.
     /// The fixture plants an unparseable file directly under `target/`
     /// (garbage ink syntax, not merely a stray file) to prove the walk is
@@ -2762,7 +3201,7 @@ mod tests {
     /// which parses it — an unparseable file under an ignored directory
     /// must not break the load.
     #[test]
-    fn collect_ink_files_skips_ignored_dirs() {
+    fn collect_source_files_skips_ignored_dirs() {
         let root = temp_dir("ignored-dirs");
 
         std::fs::write(root.join("main.ink"), "Hello.\n-> DONE\n").expect("write main.ink");
@@ -2781,7 +3220,7 @@ mod tests {
         std::fs::write(root.join("node_modules/some-pkg/index.ink"), "-- pkg --")
             .expect("write node_modules/some-pkg/index.ink");
 
-        let mut files = collect_ink_files(&root);
+        let mut files = collect_source_files(&root);
         files.sort();
 
         assert_eq!(
@@ -2793,17 +3232,58 @@ mod tests {
         std::fs::remove_dir_all(&root).expect("cleanup temp dir");
     }
 
+    /// Issue #1562: the workspace scan must enumerate native `.brink`
+    /// modules as well as `.ink`. Before this, only a `didOpen` ever put a
+    /// `.brink` file in the db, so a native workspace's sibling modules were
+    /// invisible to go-to-definition, find-references, and completion until
+    /// the user opened each one by hand. Non-source files stay out, and the
+    /// ignored-dir prune applies to `.brink` exactly as it does to `.ink`.
+    #[test]
+    fn collect_source_files_admits_native_brink_modules() {
+        let root = temp_dir("native-modules");
+
+        std::fs::write(root.join("main.brink"), "flow start() {\n  Hi.\n}\n")
+            .expect("write main.brink");
+        std::fs::create_dir_all(root.join("market")).expect("mkdir market");
+        std::fs::write(
+            root.join("market/barter.brink"),
+            "flow haggle() {\n  Trade.\n}\n",
+        )
+        .expect("write market/barter.brink");
+        std::fs::write(root.join("legacy.ink"), "Hello.\n-> DONE\n").expect("write legacy.ink");
+        std::fs::write(root.join("README.md"), "# not source\n").expect("write README.md");
+        std::fs::create_dir_all(root.join("target")).expect("mkdir target");
+        std::fs::write(root.join("target/stray.brink"), "flow stray() {\n}\n")
+            .expect("write target/stray.brink");
+
+        let mut files = collect_source_files(&root);
+        files.sort();
+
+        assert_eq!(
+            files,
+            vec![
+                root.join("legacy.ink"),
+                root.join("main.brink"),
+                root.join("market/barter.brink"),
+            ],
+            "both frontends' sources are admitted, non-source files are not, \
+             and target/ is still pruned for .brink too"
+        );
+
+        std::fs::remove_dir_all(&root).expect("cleanup temp dir");
+    }
+
     /// Issue #1424: a workspace legitimately *rooted* inside an
     /// ignored-dir-named directory (e.g. a `node_modules/vendor-ink` package
     /// opened directly as its own workspace folder) must still have its own
     /// `.ink` files admitted — `is_ignored_dir` is only ever checked against
     /// entries found *while descending from* the walk's starting `dir`
-    /// (`collect_ink_files`'s `Walk`), never against `dir` itself, so the
+    /// (`collect_source_files`'s `Walk`), never against `dir` itself, so the
     /// root's own name never disqualifies it. A genuinely nested ignored directory
     /// further below that same root must still be pruned, exactly as if the
     /// root weren't ignored-named at all.
     #[test]
-    fn collect_ink_files_admits_workspace_root_itself_under_ignored_dir() {
+    fn collect_source_files_admits_workspace_root_itself_under_ignored_dir() {
         let root = temp_dir("root-under-node-modules").join("node_modules/vendor-ink");
         std::fs::create_dir_all(&root).expect("create root under node_modules");
 
@@ -2812,7 +3292,7 @@ mod tests {
         std::fs::write(root.join("target/debug/build.ink"), "-- build --")
             .expect("write target/debug/build.ink");
 
-        let mut files = collect_ink_files(&root);
+        let mut files = collect_source_files(&root);
         files.sort();
 
         assert_eq!(
@@ -2829,22 +3309,66 @@ mod tests {
     /// #1415 regression: `path_under_ignored_dir` — the guard
     /// `did_change_watched_files` applies to whole file-watcher paths,
     /// since it never walks a directory tree entry-by-entry the way
-    /// `collect_ink_files` does — must flag a path whose *any*
+    /// `collect_source_files` does — must flag a path whose *any*
     /// component is `target/`, `.git/`, or `node_modules/`, not just a leaf
-    /// directory name, and must leave ordinary paths alone.
+    /// directory name, and must leave ordinary paths alone. Scoped to a
+    /// matching root (rather than `&[]`, which after #1434 skips the check
+    /// entirely — see `path_under_ignored_dir_does_not_prune_without_a_root`
+    /// below) so this still exercises the "any component" claim.
     #[test]
     fn path_under_ignored_dir_matches_any_component() {
-        assert!(path_under_ignored_dir("/repo/target/debug/build.ink", &[]));
-        assert!(path_under_ignored_dir("/repo/.git/objects/pack.ink", &[]));
+        let root = std::path::PathBuf::from("/repo");
+        let roots = std::slice::from_ref(&root);
+        assert!(path_under_ignored_dir(
+            "/repo/target/debug/build.ink",
+            roots
+        ));
+        assert!(path_under_ignored_dir("/repo/.git/objects/pack.ink", roots));
         assert!(path_under_ignored_dir(
             "/repo/node_modules/some-pkg/index.ink",
-            &[]
+            roots
         ));
-        assert!(!path_under_ignored_dir("/repo/src/main.ink", &[]));
-        assert!(!path_under_ignored_dir("/repo/targets/main.ink", &[]));
+        assert!(!path_under_ignored_dir("/repo/src/main.ink", roots));
+        assert!(!path_under_ignored_dir("/repo/targets/main.ink", roots));
     }
 
-    /// #1415 review finding: path-scope divergence. `collect_ink_files`
+    /// #1603 review: with a **non-empty** `roots`, none of which is a prefix
+    /// of `path`, `path_under_ignored_dir` falls back to checking every
+    /// component of the raw, unscoped path (the `.unwrap_or(full)` branch) —
+    /// deliberately preserved pre-#1434 behavior, distinct from the
+    /// empty-`roots` case which declines to prune entirely (see
+    /// `path_under_ignored_dir_does_not_prune_without_a_root`). This was the
+    /// only reachable case left with no direct test.
+    #[test]
+    fn path_under_ignored_dir_matches_any_component_when_no_root_prefixes_it() {
+        let root = std::path::PathBuf::from("/repo");
+        assert!(path_under_ignored_dir(
+            "/elsewhere/node_modules/pkg/main.ink",
+            std::slice::from_ref(&root)
+        ));
+    }
+
+    /// #1434 regression (the issue's own acceptance criterion): with
+    /// `workspace_roots` empty — single-file mode, or a watcher event that
+    /// arrives before `initialize` has populated it — there is no
+    /// root-relative frame to scope the check against. Falling back to the
+    /// pre-#1415 whole-path check (as `path_under_ignored_dir` used to,
+    /// before this fix) would flag any absolute path that merely *contains*
+    /// an ignored-looking component anywhere in its ancestry, even when
+    /// that component has nothing to do with the file's actual project
+    /// tree. The fix declines to prune rather than guessing.
+    #[test]
+    fn path_under_ignored_dir_does_not_prune_without_a_root() {
+        assert!(!path_under_ignored_dir(
+            "/Users/dev/node_modules/my-project/story.ink",
+            &[]
+        ));
+        assert!(!path_under_ignored_dir("/repo/target/debug/build.ink", &[]));
+        assert!(!path_under_ignored_dir("/repo/.git/objects/pack.ink", &[]));
+        assert!(!path_under_ignored_dir("/repo/src/main.ink", &[]));
+    }
+
+    /// #1415 review finding: path-scope divergence. `collect_source_files`
     /// only ever tests components *below* whichever workspace root it
     /// started walking from, so a workspace root that itself lives inside
     /// `node_modules/` (vendored ink content opened directly as a folder)
@@ -2870,9 +3394,10 @@ mod tests {
             std::slice::from_ref(&root)
         ));
 
-        // With no matching root, the check falls back to every component of
-        // the full path (matches the pre-#1415-fix, whole-path behavior).
-        assert!(path_under_ignored_dir(
+        // With `roots` empty — no root at all to scope against — #1434
+        // changed this from falling back to the pre-#1415-fix whole-path
+        // check (which wrongly flagged this file) to declining to prune.
+        assert!(!path_under_ignored_dir(
             "/repo/node_modules/vendor-ink/main.ink",
             &[]
         ));
@@ -2889,6 +3414,7 @@ mod tests {
     #[test]
     fn config_error_diagnostic_is_always_error() {
         let err = brink_project_config::ConfigError::NotATable {
+            path: "brink.toml".to_owned(),
             key: "types".to_owned(),
             found: "string",
         };
@@ -2897,6 +3423,98 @@ mod tests {
             diag.severity,
             Some(tower_lsp::lsp_types::DiagnosticSeverity::ERROR)
         );
+    }
+
+    /// #1384: `resolve_language_options`'s published diagnostic for a
+    /// malformed `brink.toml` must name the file in its message text, not
+    /// just via the diagnostic's implicit file association — a bare
+    /// `ConfigError::Display` pre-#1384 (`error.to_string()` with no path
+    /// prefix) had nothing identifying which file failed once the message
+    /// left the editor's per-file diagnostic list (e.g. in a client's
+    /// aggregated "Problems" pane).
+    #[test]
+    fn resolve_language_options_diagnostic_names_its_path_on_malformed_toml() {
+        let root = temp_dir("config-diagnostic-path");
+        std::fs::write(
+            root.join("brink.toml"),
+            "[project]\ndialect = \"sideways\"\n",
+        )
+        .expect("write brink.toml");
+
+        let (_, outcome) =
+            resolve_language_options(&ConfigOverrides::default(), std::slice::from_ref(&root));
+
+        let diag = outcome
+            .diagnostic
+            .expect("malformed brink.toml must publish a diagnostic");
+        let expected_path = root.join("brink.toml").display().to_string();
+        assert!(
+            diag.message.contains(&expected_path),
+            "diagnostic message must name the file, got: {}",
+            diag.message
+        );
+    }
+
+    /// #1572: `brink_project_config::find_config` only ever walks *up* from
+    /// the workspace root (stopping at a `.git` boundary), so the discovered
+    /// config's directory can never be a subdirectory of the workspace
+    /// folder — the only real shape where the config directory differs from
+    /// the workspace-root fallback is the reverse: opening a *subfolder* of
+    /// a project whose `brink.toml` lives at an ancestor. The fixture puts
+    /// `brink.toml` at `root/` with the workspace folder at `root/game`, and
+    /// obtains the outcome via a real `resolve_language_options` call (the
+    /// only real producer of a `ConfigLoadOutcome`) rather than
+    /// hand-constructing one, so the test proves both the wired path and the
+    /// branch — it would fail if either the config discovery or the
+    /// config-directory branch were dropped.
+    #[test]
+    fn native_source_root_prefers_the_discovered_config_directory() {
+        let root = temp_dir("native-root-config");
+        let game = root.join("game");
+        std::fs::create_dir_all(&game).expect("create game dir");
+        std::fs::write(
+            root.join(brink_project_config::CONFIG_FILE_NAME),
+            "[project]\ndialect = \"brink\"\n",
+        )
+        .expect("write brink.toml");
+
+        let (_, outcome) =
+            resolve_language_options(&ConfigOverrides::default(), std::slice::from_ref(&game));
+
+        assert_eq!(
+            native_source_root(std::slice::from_ref(&game), &outcome),
+            Some(root.clone()),
+            "the governing brink.toml's directory is the native source root"
+        );
+
+        std::fs::remove_dir_all(&root).expect("clean up");
+    }
+
+    /// #1572: with no `brink.toml` anywhere, the first workspace folder is the
+    /// native source root — and with neither (a client that opened no folder
+    /// at all), there is nothing to anchor to, so identity is left exactly as
+    /// registered.
+    #[test]
+    fn native_source_root_falls_back_to_the_first_workspace_root_then_nothing() {
+        let workspace = temp_dir("native-root-fallback");
+        let other = temp_dir("native-root-fallback-second");
+
+        assert_eq!(
+            native_source_root(
+                &[workspace.clone(), other.clone()],
+                &ConfigLoadOutcome::default()
+            ),
+            Some(workspace.clone()),
+            "no config: the FIRST workspace folder anchors identity"
+        );
+        assert_eq!(
+            native_source_root(&[], &ConfigLoadOutcome::default()),
+            None,
+            "no config and no workspace folder: nothing to anchor to"
+        );
+
+        std::fs::remove_dir_all(&workspace).expect("clean up");
+        std::fs::remove_dir_all(&other).expect("clean up");
     }
 
     /// A distinct diagnostic set identified by its message (content equality is

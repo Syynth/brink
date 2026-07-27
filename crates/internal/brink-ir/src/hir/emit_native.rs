@@ -41,28 +41,66 @@
 //! Explicitly unsupported (each a real gap, not an oversight — see
 //! `docs/b0-sequencing.md` §3 and `tests/tier1-brink-respell/README.md`'s
 //! own gap findings for the native-grammar context): `Stmt::TempDecl`/
-//! `Assignment`/`ExprStmt`/`LogicBlock`/`Await` (code-dialect ground, a
-//! different keyword set this slice didn't need);
+//! `Assignment`/`ExprStmt`/`LogicBlock`/`Await` at prose-body position
+//! (code-dialect ground — `lower_native::body` never constructs any of
+//! these outside a `~{ }` logic block, so this is a native-**grammar**
+//! gap, not just an emission one: there is no bare `~ x = expr`-style
+//! prose-body statement to round-trip yet, issue #1335's B0.8b sweep);
 //! `Stmt::Sequence`/`ContentPart::InlineSequence`/`InlineConditional`
-//! (alternations `~`/`&`/`!`/`|` — not exercised by this slice's target
-//! corpus, deferred rather than risked untested); `Stmt::ThreadStart`
+//! (alternations `~`/`&`/`!`/`|` — **unlike the code-dialect-ground gaps
+//! above, this one is emitter-only, not native-grammar**: native's
+//! `ALTERNATION_BLOCK` parses and `lower_native::body`/`expr` already
+//! lower it to real `Sequence`/`InlineSequence`/`InlineConditional` HIR
+//! today, per a #1335 B0.8b re-check — this emitter has simply never
+//! grown the `emit_*` arm for it, a real, closeable, still-open follow-up
+//! this slice didn't take on); `Stmt::ThreadStart`
 //! (a splice `<- flow(args)` has a ruled spelling *inside* a `{?}` choice
 //! point, but only as a sibling of the choice lines around it — the HIR
 //! flattens it into an ordinary preceding/trailing statement with no
 //! marker of that original nesting, so re-nesting it correctly would need
-//! more than this slice's scope; still refused, not guessed); most `Expr`
-//! variants beyond literals/paths/operators/calls (collections, structs,
-//! refs, `#fn`); any knot/stitch/decl directive channel (`is_local`,
-//! `#@effects`, `#@was`, visibility, doc comments, return-type
-//! annotations); `IncludeSite`, `ModuleDecl`, `Import`, file-level
-//! `VisibilityDirective`/`was_directives`.
+//! more than this slice's scope; still refused, not guessed);
+//! `ContentPart::Spring` (the deferred word-break marker
+//! `lower::choice::replace_trailing_ws_with_spring` produces — no native
+//! token forces that same runtime-deferred-whitespace behavior, and
+//! respelling it as a literal space would silently change what renders,
+//! so it stays refused); `CondKind::IfElse` and a prose-body `return`
+//! with a value expression (both native-grammar gaps too — `if`/`else`
+//! has no `else if` chain and `RETURN_STMT` never carries a value at body
+//! position, see `lower_native::cond`'s and `lower_native::body`'s own
+//! findings); most `Expr` variants beyond literals/paths/operators/calls
+//! (collections, structs, refs, `#fn`, a divert target used as a value);
+//! any knot/stitch/decl directive channel (`is_local`, `#@effects`,
+//! `#@was`, visibility, doc comments); `IncludeSite`, `ModuleDecl`,
+//! file-level `VisibilityDirective`/`was_directives`; `@[allow(…)]`
+//! suppression scopes (`HirFile::allow_scopes`, issue #1614/#1161 — the
+//! scope carries only a `(range, codes)` fact with no pointer back to the
+//! declaration it decorates, so there is no way to re-place the
+//! annotation line from here; refused loudly rather than silently
+//! dropping the suppression).
+//!
+//! Type annotations are **supported** in every position the native grammar
+//! spells them (NG-A/B/C, issues #1487/#1488/#1489): parameters
+//! (`fn f(g: Guest)`), `var`/`const` bindings, and a `flow`/`fn` header's
+//! `: type` return clause. They used to be listed above as an unsupported
+//! channel — correct while native had no annotation grammar at all, but a
+//! `.brink` file can now *contain* them, so refusing to spell them back
+//! would make legal native source un-round-trippable.
+//!
+//! `Import` (`use`/`import` declarations, M-2) is likewise **supported**
+//! now: issues #1581/#1590 fixed `Import.module` to be the real
+//! `::`-joined module name (not the ink-era `.`-joined, leaf-inclusive
+//! string) and made an item alias actually take effect, so the shape this
+//! emitter produces is exactly what `hir::lower_native::import` needs to
+//! reconstruct it. It used to be listed above as an unsupported channel —
+//! correct while `Import.module` couldn't match a real module name even
+//! on a clean round-trip, but that is fixed upstream of this emitter now.
 
 use std::fmt::Write as _;
 
 use crate::{
     Block, Choice, ChoiceSet, CondBranch, CondKind, Conditional, ConstDecl, Content, ContentPart,
-    DivertPath, DivertTarget, Expr, ExternalDecl, HirFile, InfixOp, Knot, ListDecl, Name, Param,
-    Path, PostfixOp, PrefixOp, Return, Stitch, Stmt, StringPart, StructDecl, Tag, TypeExpr,
+    DivertPath, DivertTarget, Expr, ExternalDecl, HirFile, Import, InfixOp, Knot, ListDecl, Name,
+    Param, Path, PostfixOp, PrefixOp, Return, Stitch, Stmt, StringPart, StructDecl, Tag, TypeExpr,
     VarDecl,
 };
 
@@ -139,25 +177,17 @@ fn is_synthetic_main_entry(hir: &HirFile) -> bool {
         .any(|k| k.name.text == "main" && k.params.is_empty() && !k.is_function)
 }
 
-/// Emit a complete `.brink` source file from `hir`.
-///
-/// All-or-nothing: the first unsupported construct anywhere in the tree
-/// fails the whole call (see the module doc). Ordering is canonical, not
-/// source-position-preserving — `variables`, `constants`, `lists`
-/// (`flags`), `structs`, `externals`, then `knots` (each knot's own body
-/// content precedes its nested stitches, since `Knot.body`/`Knot.stitches`
-/// are separate fields with no shared interleaving order to reconstruct).
-/// A non-empty `root_content` is wrapped in a synthesized top-level
-/// `flow main() { … }` (see [`EmitError::RootMainCollision`]).
-pub fn emit_file(hir: &HirFile) -> Result<String, EmitError> {
+/// Refuse the file-level channels [`emit_file`] has no spelling for at all
+/// (as opposed to the per-declaration channels each `emit_*` function
+/// checks itself). Split out of [`emit_file`] purely to keep that function
+/// under clippy's line-count lint — these checks have no data to
+/// contribute to the emitted text either way.
+fn refuse_unsupported_file_channels(hir: &HirFile) -> Result<(), EmitError> {
     if !hir.includes.is_empty() {
         return Err(unsupported("INCLUDE sites", "file"));
     }
     if hir.module.is_some() {
         return Err(unsupported("#@module directive", "file"));
-    }
-    if !hir.imports.is_empty() {
-        return Err(unsupported("import/use statements", "file"));
     }
     if !hir.visibility.is_empty() || !hir.was_directives.is_empty() {
         return Err(unsupported(
@@ -165,9 +195,44 @@ pub fn emit_file(hir: &HirFile) -> Result<String, EmitError> {
             "file",
         ));
     }
+    // `@[allow(Exxx, …)]` scopes (issue #1614/#1161) carry only a
+    // `(range, codes)` fact — no pointer back to the declaration they
+    // decorate — so there is no way to re-place the annotation line above
+    // the right node from here. Refusing loudly beats the alternative of
+    // silently dropping the suppression (a `.brink` round-trip that
+    // quietly stops silencing a diagnostic the author explicitly allowed
+    // is a correctness regression, not a formatting nit).
+    if !hir.allow_scopes.is_empty() {
+        return Err(unsupported("@[allow(…)] suppression scopes", "file"));
+    }
+    Ok(())
+}
+
+/// Emit a complete `.brink` source file from `hir`.
+///
+/// All-or-nothing: the first unsupported construct anywhere in the tree
+/// fails the whole call (see the module doc). Ordering is canonical, not
+/// source-position-preserving — `imports`, `variables`, `constants`,
+/// `lists` (`flags`), `structs`, `externals`, then `knots` (each knot's
+/// own body content precedes its nested stitches, since `Knot.body`/
+/// `Knot.stitches` are separate fields with no shared interleaving order
+/// to reconstruct). A non-empty `root_content` is wrapped in a
+/// synthesized top-level `flow main() { … }` (see
+/// [`EmitError::RootMainCollision`]).
+pub fn emit_file(hir: &HirFile) -> Result<String, EmitError> {
+    refuse_unsupported_file_channels(hir)?;
 
     let mut out = String::new();
     let mut wrote_any = false;
+
+    let before = out.len();
+    for import in &hir.imports {
+        emit_import(&mut out, import);
+    }
+    if out.len() != before {
+        out.push('\n');
+        wrote_any = true;
+    }
 
     for v in &hir.variables {
         emit_var_decl(&mut out, v)?;
@@ -269,32 +334,32 @@ pub fn emit_file(hir: &HirFile) -> Result<String, EmitError> {
 // ─── Top-level declarations ─────────────────────────────────────────
 
 fn emit_var_decl(out: &mut String, v: &VarDecl) -> Result<(), EmitError> {
-    if v.is_local
-        || v.annotation.is_some()
-        || v.doc.is_some()
-        || v.visibility.is_some()
-        || v.was.is_some()
-    {
-        return Err(unsupported(
-            "var directive/annotation channel",
-            &v.name.text,
-        ));
+    if v.is_local || v.doc.is_some() || v.visibility.is_some() || v.was.is_some() {
+        return Err(unsupported("var directive channel", &v.name.text));
     }
+    let ty = emit_annotation_suffix(v.annotation.as_ref());
     let value = emit_expr(&v.value, &v.name.text)?;
-    let _ = writeln!(out, "var {} = {value}", v.name.text);
+    let _ = writeln!(out, "var {}{ty} = {value}", v.name.text);
     Ok(())
 }
 
 fn emit_const_decl(out: &mut String, c: &ConstDecl) -> Result<(), EmitError> {
-    if c.annotation.is_some() || c.doc.is_some() || c.visibility.is_some() || c.was.is_some() {
-        return Err(unsupported(
-            "const directive/annotation channel",
-            &c.name.text,
-        ));
+    if c.doc.is_some() || c.visibility.is_some() || c.was.is_some() {
+        return Err(unsupported("const directive channel", &c.name.text));
     }
+    let ty = emit_annotation_suffix(c.annotation.as_ref());
     let value = emit_expr(&c.value, &c.name.text)?;
-    let _ = writeln!(out, "const {} = {value}", c.name.text);
+    let _ = writeln!(out, "const {}{ty} = {value}", c.name.text);
     Ok(())
+}
+
+/// `": T"` for an annotated binding or return clause, `""` when absent.
+/// Used both for the text between a `var`/`const` name and its `=` (NG-B,
+/// issue #1488) and, in [`emit_knot`], for a `fn`/`flow` header's `: type`
+/// return clause after the parameter list (NG-C, issue #1489) — the
+/// rendering is identical, only what follows the annotation differs.
+fn emit_annotation_suffix(annotation: Option<&TypeExpr>) -> String {
+    annotation.map_or_else(String::new, |ty| format!(": {}", emit_type(ty)))
 }
 
 fn emit_flags_decl(out: &mut String, l: &ListDecl) -> Result<(), EmitError> {
@@ -322,7 +387,7 @@ fn emit_struct_decl(out: &mut String, s: &StructDecl) -> Result<(), EmitError> {
     }
     let _ = writeln!(out, "struct {} {{", s.name.text);
     for f in &s.fields {
-        let ty = emit_type(&f.ty, &s.name.text)?;
+        let ty = emit_type(&f.ty);
         let _ = writeln!(out, "  {}: {ty}", f.name.text);
     }
     let _ = writeln!(out, "}}");
@@ -338,15 +403,58 @@ fn emit_external_decl(out: &mut String, e: &ExternalDecl) -> Result<(), EmitErro
     Ok(())
 }
 
-fn emit_type(ty: &TypeExpr, context: &str) -> Result<String, EmitError> {
+/// `Import.module`/`items`/`bare` now round-trip faithfully on their own
+/// (issues #1581/#1590 fixed the `::`-joining and honored aliases, both
+/// upstream of this emitter — the whole `Import` shape it produces is
+/// exactly what `hir::lower_native::import` needs to reconstruct it), so
+/// the emitter's own blanket refusal predates that fix, not a still-live
+/// gap. `bare: false` is the qualified form (`import module`, no leaf
+/// item — the same shape a single-segment `use module;` also produces, so
+/// `import` is the canonical spelling for either origin, not a guess).
+/// `bare: true` always uses the `use module::{items};` brace form, even
+/// for a single item — `use module::item;`'s shorthand is a *parse*
+/// convenience the grammar also accepts, but re-lowering the brace form
+/// yields an identical `Import`, so there is no faithfulness reason to
+/// prefer the shorthand here. Like [`emit_type`], every `Import` shape has
+/// a faithful spelling, so this is infallible too.
+///
+/// `import`'s own grammar (`parser::decl::import_decl`) never consumes a
+/// trailing `;` — unlike every other native declaration, and unlike `use`
+/// (whose `;` is optional but recognized, `parser::decl::use_decl`'s own
+/// doc) — so a `;` after `import module` is not part of the statement at
+/// all; it would parse as a *second*, out-of-position top-level construct
+/// and diagnose `E129`. Only `use`'s brace form gets one here.
+fn emit_import(out: &mut String, import: &Import) {
+    if import.bare {
+        let items: Vec<String> = import
+            .items
+            .iter()
+            .map(|item| match &item.alias {
+                Some(alias) => format!("{} as {alias}", item.name),
+                None => item.name.clone(),
+            })
+            .collect();
+        let _ = writeln!(out, "use {}::{{{}}};", import.module, items.join(", "));
+    } else {
+        let _ = writeln!(out, "import {}", import.module);
+    }
+}
+
+/// Every `TypeExpr` shape has a faithful native spelling (NG-A/B/C,
+/// issues #1487/#1488/#1489), so unlike the rest of this module's
+/// `emit_*` functions, this one is infallible — there is no
+/// `EmitError::Unsupported` arm to grow here.
+fn emit_type(ty: &TypeExpr) -> String {
     match ty {
-        TypeExpr::Named { name, .. } => Ok(name.clone()),
+        TypeExpr::Named { name, .. } => name.clone(),
         TypeExpr::Generic { name, args, .. } => {
-            let rendered: Result<Vec<String>, EmitError> =
-                args.iter().map(|a| emit_type(a, context)).collect();
-            Ok(format!("{name}<{}>", rendered?.join(", ")))
+            let rendered: Vec<String> = args.iter().map(emit_type).collect();
+            format!("{name}<{}>", rendered.join(", "))
         }
-        TypeExpr::Fn { .. } => Err(unsupported("fn(...) type expression", context)),
+        TypeExpr::Fn { params, ret, .. } => {
+            let rendered: Vec<String> = params.iter().map(emit_type).collect();
+            format!("fn({}): {}", rendered.join(", "), emit_type(ret))
+        }
     }
 }
 
@@ -360,7 +468,7 @@ fn emit_param(p: &Param, context: &str) -> Result<String, EmitError> {
     }
     s.push_str(&p.name.text);
     if let Some(ty) = &p.annotation {
-        let _ = write!(s, ": {}", emit_type(ty, context)?);
+        let _ = write!(s, ": {}", emit_type(ty));
     }
     Ok(s)
 }
@@ -376,7 +484,6 @@ fn emit_params(params: &[Param], context: &str) -> Result<String, EmitError> {
 fn emit_knot(out: &mut String, k: &Knot) -> Result<(), EmitError> {
     if k.is_local
         || k.effects_assertion.is_some()
-        || k.return_type.is_some()
         || k.doc.is_some()
         || k.visibility.is_some()
         || k.was.is_some()
@@ -385,7 +492,10 @@ fn emit_knot(out: &mut String, k: &Knot) -> Result<(), EmitError> {
     }
     let keyword = if k.is_function { "fn" } else { "flow" };
     let params = emit_params(&k.params, &k.name.text)?;
-    let _ = writeln!(out, "{keyword} {}({params}) {{", k.name.text);
+    // The ruled `: type` return clause goes after the parameter list
+    // (NG-C, issue #1489) — never before the `(`, and never as an arrow.
+    let ret = emit_annotation_suffix(k.return_type.as_ref());
+    let _ = writeln!(out, "{keyword} {}({params}){ret} {{", k.name.text);
     emit_block_stmts(out, &k.body, 1, &k.name.text)?;
     for s in &k.stitches {
         emit_stitch(out, s, 1)?;
@@ -405,7 +515,11 @@ fn emit_stitch(out: &mut String, s: &Stitch, depth: usize) -> Result<(), EmitErr
     }
     let indent = "  ".repeat(depth);
     let params = emit_params(&s.params, &s.name.text)?;
-    let _ = writeln!(out, "{indent}flow {}({params}) {{", s.name.text);
+    // The ruled `: type` return clause (NG-C, issue #1489, widened to
+    // stitches by #1509) — same position as a top-level `flow`/`fn`'s, see
+    // `emit_knot`.
+    let ret = emit_annotation_suffix(s.return_type.as_ref());
+    let _ = writeln!(out, "{indent}flow {}({params}){ret} {{", s.name.text);
     emit_block_stmts(out, &s.body, depth + 1, &s.name.text)?;
     let _ = writeln!(out, "{indent}}}");
     Ok(())
@@ -621,20 +735,29 @@ fn emit_labeled_stmt_stream(
             let _ = writeln!(out, "{head}");
             emit_stmt_stream(out, rest, depth, context)
         }
-        // The labeled line's own content was empty (`flush_content`'s
-        // empty-flush short-circuit, `lower_native::body`: a bare `(name)`
-        // with nothing else on its line produces no `Content`/`EndOfLine`
-        // of its own) *and* nothing follows it at all — a label on the
-        // very last line of its enclosing stream. A bare label line with
-        // no body is still a faithful, if unusual, respelling.
-        [] => {
-            let _ = writeln!(out, "{head}");
-            Ok(())
-        }
-        _ => Err(unsupported(
+        // A `Content`-leading shape none of the three arms above matched
+        // (e.g. tags or trailing statements this function doesn't yet
+        // recognize) — a real gap, refused rather than guessed.
+        [Stmt::Content(_), ..] => Err(unsupported(
             "labeled line with an unsupported leading shape",
             context,
         )),
+        // The labeled line's own content was empty (`flush_content`'s
+        // empty-flush short-circuit, `lower_native::body`: a bare `(name)`
+        // with nothing else on its line produces no `Content` of its own)
+        // and whatever follows isn't a `Content` line either — most often a
+        // `{?}` choice point sitting directly under the label with nothing
+        // between them (`tests/tier1/choices/I093-default-choices`'s
+        // `- (start)` immediately followed by choice lines), but this
+        // covers any non-`Content` leading shape uniformly: a bare label
+        // line, then the rest of the stream emitted normally at the same
+        // depth. Subsumes the old all-consumed `[]` case (`emit_stmt_stream`
+        // on an empty slice is a no-op), so it is folded in here rather
+        // than kept as a separate arm.
+        rest => {
+            let _ = writeln!(out, "{head}");
+            emit_stmt_stream(out, rest, depth, context)
+        }
     }
 }
 
@@ -805,6 +928,21 @@ fn emit_choice(out: &mut String, depth: usize, c: &Choice, context: &str) -> Res
             out.push(' ');
             emit_choice_body_stmts(out, depth, rest, context)?;
         }
+        // The same-line `Divert`/`TunnelCall` shape above (N-1) only covers
+        // a choice body that is *exactly* that one statement — a gather-
+        // style fold can still absorb further statements onto this same
+        // choice after it (e.g. a trailing un-indented `->DONE` line with
+        // no gather of its own, folded onto the last choice in a weave
+        // that has no separate continuation to hold it — see
+        // `tests/tier1/choices/varying-choice`), which the two-element
+        // patterns above don't match. Braces are always a faithful
+        // respelling of a choice body's full statement stream, divert
+        // included, so fall back to the general block form rather than
+        // refusing a shape the compact one-liner just can't reach.
+        [Stmt::Divert(_) | Stmt::TunnelCall(_), Stmt::EndOfLine, ..] => {
+            out.push(' ');
+            emit_choice_body_stmts(out, depth, stmts, context)?;
+        }
         _ => {
             return Err(unsupported(
                 "malformed choice body (no leading EndOfLine)",
@@ -834,6 +972,17 @@ fn emit_choice_body(
             Ok(())
         }
         [Stmt::EndOfLine, rest @ ..] => emit_choice_body_stmts(out, depth, rest, context),
+        // Unlike a regular choice line, `else` has no inline-content region
+        // of its own to embed a same-line divert in — the native grammar's
+        // `choice_point` loop only recognizes `else` when immediately
+        // followed by `{` (`parser::choice::choice_point`), so an `else`
+        // whose body is a bare `-> target` (ink's classic "no visible
+        // option" fallback choice, lowered with `is_fallback: true` and no
+        // display text — see `tests/tier1/choices/I079-…`) must always
+        // spell with braces, never the regular path's compact one-liner.
+        [Stmt::Divert(_) | Stmt::TunnelCall(_), ..] => {
+            emit_choice_body_stmts(out, depth, body.stmts.as_slice(), context)
+        }
         _ => Err(unsupported(
             "malformed else body (no leading EndOfLine)",
             context,
@@ -875,7 +1024,24 @@ fn emit_conditional(
                     context,
                 ));
             };
-            let _ = writeln!(out, "{indent}{{if {} {{", emit_expr(if_cond, context)?);
+            // B1b (issue #1475): a template `{if}` can carry an `as`
+            // binding — `{if EXPR as n: … else: …}` — and `AS_BINDING` is
+            // proven valid *inside* the braced `{if EXPR as n { … }}` form
+            // too (`brink-syntax-native::parser::tests::brace_family::
+            // conditional_block_carries_an_as_binding_on_the_braced_form`),
+            // so respelling it as a suffix on the condition head is a
+            // faithful round-trip, not a guess at new grammar. Omitting it
+            // would silently change what the respelled source means: the
+            // arm's body could reference a binding that no longer exists.
+            let binding_suffix = match &first.binding {
+                Some(name) => format!(" as {}", name.text),
+                None => String::new(),
+            };
+            let _ = writeln!(
+                out,
+                "{indent}{{if {}{binding_suffix} {{",
+                emit_expr(if_cond, context)?
+            );
             emit_block_stmts(out, &first.body, depth + 1, context)?;
             if let Some(second) = cond.branches.get(1) {
                 if second.condition.is_some() {
@@ -949,12 +1115,12 @@ fn emit_expr(e: &Expr, context: &str) -> Result<String, EmitError> {
             };
             Ok(format!("{op_str}{}", emit_expr(inner, context)?))
         }
-        Expr::Infix(lhs, op, rhs) => {
-            let op_str = infix_op_str(*op);
+        Expr::Infix(ie) => {
+            let op_str = infix_op_str(ie.op);
             Ok(format!(
                 "{} {op_str} {}",
-                emit_expr(lhs, context)?,
-                emit_expr(rhs, context)?
+                emit_expr(&ie.lhs, context)?,
+                emit_expr(&ie.rhs, context)?
             ))
         }
         Expr::Postfix(inner, op) => {
@@ -1127,6 +1293,224 @@ mod tests {
         assert!(
             emitted.lines().any(|l| l.trim() == "(again) Loop point."),
             "expected the label to attach to the following content line:\n{emitted}"
+        );
+    }
+
+    /// A `fn(params…): ret` type annotation (e.g. `f: fn(int): bool`) is
+    /// legal native source per
+    /// `fn_type_annotation_parses_with_its_colon_return`
+    /// (`brink-syntax-native::parser::tests::declaration`), so the emitter
+    /// must spell it back rather than refuse — the module doc's "supported"
+    /// claim would otherwise be false for this one `TypeExpr` shape.
+    #[test]
+    fn fn_type_annotation_round_trips() {
+        // A `flow` (not `fn`) so the body stays prose-ground — `fn`'s
+        // default code-ground body is a separate, pre-existing emission
+        // gap (a whole code body lowers to one `Stmt::LogicBlock`, and
+        // `LogicBlock` bodies aren't emittable yet); this test is only
+        // about the `fn(...)` *type* annotation on the parameter.
+        let src = "flow apply(f: fn(int): bool) {\n  Hello.\n}\n";
+        let emitted = lower_and_emit(src).expect("fn(...) type annotation must now emit");
+        assert!(
+            emitted.contains("fn(int): bool"),
+            "expected the emitted source to spell the fn(...) type back out:\n{emitted}"
+        );
+
+        let hir = reparse_and_lower(&emitted);
+        let Some(annotation) = &hir.knots[0].params[0].annotation else {
+            panic!("re-lowered param lost its type annotation");
+        };
+        assert!(
+            matches!(annotation, TypeExpr::Fn { .. }),
+            "expected a re-lowered TypeExpr::Fn, got {annotation:?}"
+        );
+    }
+
+    /// #1509: a *nested* flow's `: type` return clause (`hir::Stitch::
+    /// return_type`, widening NG-C's `Knot.return_type`) must round-trip
+    /// through the emitter exactly like a top-level flow/fn's does
+    /// (`emit_knot`'s own `ret` suffix) — `emit_stitch` used to omit it
+    /// silently.
+    #[test]
+    fn stitch_return_type_round_trips() {
+        let src = "flow garden() {\n  flow gate(): int {\n    Onward.\n  }\n}\n";
+        let emitted = lower_and_emit(src).expect("stitch return type must now emit");
+        assert!(
+            emitted.contains("gate(): int"),
+            "expected the emitted source to spell the stitch's return type back out:\n{emitted}"
+        );
+
+        let hir = reparse_and_lower(&emitted);
+        match &hir.knots[0].stitches[0].return_type {
+            Some(TypeExpr::Named { name, .. }) => assert_eq!(name, "int"),
+            other => panic!("re-lowered stitch lost its return type: {other:?}"),
+        }
+    }
+
+    /// B1b (issue #1475): a template `{if}` conditional's `as` binding must
+    /// round-trip, not silently disappear. Before this fix
+    /// `CondKind::InitialCondition`'s emission never read
+    /// `CondBranch::binding`, so the respelled source dropped the `as l`
+    /// suffix — a different-behavior HIR behind a green round-trip check,
+    /// since the success arm's body still referenced `l`.
+    #[test]
+    fn conditional_as_binding_round_trips() {
+        let src = "flow a() {\n  {if some(9) as l: number {l} else: nobody}\n}\n";
+        let emitted = lower_and_emit(src).expect("`as` binding conditional must now emit");
+        assert!(
+            emitted.contains("as l"),
+            "emitted source dropped the `as` binding:\n{emitted}"
+        );
+
+        let hir = reparse_and_lower(&emitted);
+        let body = &hir.knots[0].body;
+        let Stmt::Conditional(cond) = &body.stmts[0] else {
+            panic!("expected Conditional as the re-lowered body's first statement: {body:?}");
+        };
+        assert_eq!(
+            cond.branches[0].binding.as_ref().map(|n| n.text.as_str()),
+            Some("l"),
+            "re-lowered conditional lost its `as` binding"
+        );
+    }
+
+    /// Issues #1581/#1590 fixed `Import.module` upstream of this emitter
+    /// (real `::`-joined module names, honored aliases) — `emit_import`
+    /// must now spell `use`/`import` back rather than refuse the whole
+    /// file, covering both the qualified form and the bare form with an
+    /// aliased and an unaliased item.
+    #[test]
+    fn use_and_import_round_trip() {
+        let src = "import story::market\n\
+                    use story::market::barter::haggle;\n\
+                    use story::shop::{gold as g, silver};\n\n\
+                    flow a() {\n  Hi.\n}\n";
+        let emitted = lower_and_emit(src).expect("use/import must now emit");
+
+        let hir = reparse_and_lower(&emitted);
+        assert_eq!(hir.imports.len(), 3, "emitted source:\n{emitted}");
+
+        assert!(!hir.imports[0].bare);
+        assert_eq!(hir.imports[0].module, "story::market");
+        assert!(hir.imports[0].items.is_empty());
+
+        assert!(hir.imports[1].bare);
+        assert_eq!(hir.imports[1].module, "story::market::barter");
+        assert_eq!(hir.imports[1].items.len(), 1);
+        assert_eq!(hir.imports[1].items[0].name, "haggle");
+        assert_eq!(hir.imports[1].items[0].alias, None);
+
+        assert!(hir.imports[2].bare);
+        assert_eq!(hir.imports[2].module, "story::shop");
+        assert_eq!(hir.imports[2].items.len(), 2);
+        assert_eq!(hir.imports[2].items[0].name, "gold");
+        assert_eq!(hir.imports[2].items[0].alias.as_deref(), Some("g"));
+        assert_eq!(hir.imports[2].items[1].name, "silver");
+        assert_eq!(hir.imports[2].items[1].alias, None);
+    }
+
+    /// Issue #1614/#1161: `HirFile::allow_scopes` carries a `(range,
+    /// codes)` fact with no pointer back to the declaration it decorates —
+    /// this emitter has no way to re-place the `@[allow(…)]` line, so a
+    /// file that has one must refuse loudly rather than silently produce
+    /// `.brink` text that has quietly stopped suppressing the diagnostic
+    /// the original author explicitly allowed.
+    #[test]
+    fn allow_scope_is_refused_not_silently_dropped() {
+        let src = "@[allow(E014)]\nvar gold = 0\n";
+        let err = lower_and_emit(src).expect_err("an @[allow(…)] scope must not silently vanish");
+        assert!(
+            matches!(
+                err,
+                EmitError::Unsupported {
+                    what: "@[allow(…)] suppression scopes",
+                    ..
+                }
+            ),
+            "expected the allow-scopes refusal, got {err:?}"
+        );
+    }
+
+    /// A choice's body's own `Stmt` stream always starts `[divert?,
+    /// EndOfLine, …body]` (`lower_native::choice::lower_choice`'s own
+    /// preamble, unconditionally). A same-line divert (N-1) followed by a
+    /// braced body reproduces the same three-element `[Divert, EndOfLine,
+    /// Divert]` leading shape the ink-fed "gather-fold" case does (the one
+    /// the old two-element `[Divert, EndOfLine]` pattern alone never
+    /// covered) — this only checks the emit arm doesn't refuse it and
+    /// produces re-parseable text carrying both diverts; exact re-lowered
+    /// `Stmt` positions aren't asserted (the compact same-line divert
+    /// becomes an ordinary braced-body line on the way back, which is a
+    /// different-but-equally-faithful respelling, not a round-trip
+    /// requirement this shape needs to meet byte-for-byte). See
+    /// `brink-respell`'s `varying_choice` test for the real
+    /// oracle-corpus fixture, proven episode-identical end to end, that
+    /// motivated this fix.
+    #[test]
+    fn choice_body_with_trailing_statement_after_same_line_divert_round_trips() {
+        let src = "flow a() {\n  {?\n    * Hop. -> b {\n      -> c\n    }\n  }\n}\n\
+             flow b() {\n  Hi.\n}\n\
+             flow c() {\n  Hey.\n}\n";
+        let emitted =
+            lower_and_emit(src).expect("a trailing statement after a same-line divert must emit");
+        assert!(emitted.contains("-> b"), "{emitted}");
+        assert!(emitted.contains("-> c"), "{emitted}");
+
+        let hir = reparse_and_lower(&emitted);
+        let Stmt::ChoiceSet(cs) = &hir.knots[0].body.stmts[0] else {
+            panic!(
+                "expected ChoiceSet as the re-lowered body's first statement: {:?}",
+                hir.knots[0].body
+            );
+        };
+        let target_names: Vec<String> = cs.choices[0]
+            .body
+            .stmts
+            .iter()
+            .filter_map(|s| match s {
+                Stmt::Divert(d) => match &d.target.path {
+                    DivertPath::Path(p) => Some(emit_path(p)),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        assert_eq!(target_names, vec!["b".to_string(), "c".to_string()]);
+    }
+
+    /// A bare `(name)` label with nothing else on its own line, immediately
+    /// followed by a `{?}` choice point — a `Stmt::LabeledBlock` whose
+    /// *first* statement is a `ChoiceSet`, not `Content`
+    /// (`tests/tier1/choices/default-choices`'s ` - (start)` is the real
+    /// oracle-corpus shape this generalizes from — mechanically respelling
+    /// it does emit and reparse cleanly now, but that fixture's ` - (start)`
+    /// sits in *root* content, which needs `emit_file`'s synthesized
+    /// `flow main() { … }` wrapper; that gives the gather a different
+    /// qualified address path than the ink original and fails the
+    /// differential on an unrelated addressing mismatch, not this fix —
+    /// see the PR's own findings, not a `brink-respell` fixture, since it
+    /// can't be made green without touching root-content addressing. This
+    /// test isolates the same leading-shape fix inside an ordinary `flow`,
+    /// with no root-content synthesis in the way).
+    #[test]
+    fn labeled_block_immediately_followed_by_choice_point_round_trips() {
+        let src = "flow a() {\n  (start)\n  {?\n    *[Choice 1]\n    *[Choice 2]\n  }\n}\n";
+        let emitted =
+            lower_and_emit(src).expect("a label directly above a choice point must now emit");
+        assert!(emitted.contains("(start)"), "{emitted}");
+
+        let hir = reparse_and_lower(&emitted);
+        let Stmt::LabeledBlock(b) = &hir.knots[0].body.stmts[0] else {
+            panic!(
+                "expected LabeledBlock as the re-lowered body's first statement: {:?}",
+                hir.knots[0].body
+            );
+        };
+        assert_eq!(b.label.as_ref().map(|n| n.text.as_str()), Some("start"));
+        assert!(
+            matches!(b.stmts.as_slice(), [Stmt::ChoiceSet(_)]),
+            "expected the label's body to be exactly a ChoiceSet: {:?}",
+            b.stmts
         );
     }
 }

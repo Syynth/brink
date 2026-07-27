@@ -611,6 +611,37 @@ fn flags_without_eq_shape_is_prose_not_a_decl() {
 
 // ── struct: field shapes, generic-type gap, malformed bodies ──────────
 
+/// Narrow a [`ast::TypeExpr`] to its `Name` variant, or fail — `panic!` is
+/// denied in this crate's production-lint set (`clippy.toml` exempts
+/// `unwrap`/`expect` in tests, not `panic!` itself), so this reaches the
+/// same "fail with a message" outcome through `Option::expect` on a
+/// deliberately-`None` fallback instead.
+fn expect_type_name(te: &ast::TypeExpr) -> String {
+    match te.kind() {
+        Some(ast::TypeExprKind::Name(n)) => n.name(),
+        _ => None,
+    }
+    .expect("expected a bare type name")
+}
+
+/// See [`expect_type_name`] — the `Generic` variant.
+fn expect_type_generic(te: &ast::TypeExpr) -> ast::TypeGeneric {
+    match te.kind() {
+        Some(ast::TypeExprKind::Generic(g)) => Some(g),
+        _ => None,
+    }
+    .expect("expected a generic type")
+}
+
+/// See [`expect_type_name`] — the `Fn` variant.
+fn expect_type_fn(te: &ast::TypeExpr) -> ast::TypeFn {
+    match te.kind() {
+        Some(ast::TypeExprKind::Fn(f)) => Some(f),
+        _ => None,
+    }
+    .expect("expected a fn type")
+}
+
 #[test]
 fn struct_decl_single_field() {
     let p = assert_lossless("struct Wrapper {\n  value: int\n}\n");
@@ -619,13 +650,12 @@ fn struct_decl_single_field() {
     let fields: Vec<_> = decl.fields().collect();
     assert_eq!(fields.len(), 1);
     assert_eq!(fields[0].name_token().expect("name").text(), "value");
-    let ty = fields[0].type_path().expect("type path");
-    assert_eq!(
-        ty.segments()
-            .map(|t| t.text().to_string())
-            .collect::<Vec<_>>(),
-        vec!["int"]
-    );
+    let ty = fields[0]
+        .type_annotation()
+        .expect("type annotation")
+        .type_expr()
+        .expect("type expr");
+    assert_eq!(expect_type_name(&ty), "int");
 }
 
 #[test]
@@ -649,20 +679,37 @@ fn struct_decl_empty_body() {
 }
 
 #[test]
-fn struct_field_dotted_type_path() {
-    // `path()` accepts `.`/`::`-joined segments — a struct field's type may
-    // be a module-qualified path, not just a bare `IDENT`.
+fn struct_field_dotted_type_path_is_a_documented_gap_not_a_panic() {
+    // Before NG-E (#1505), a struct field's type was a bare `path()`
+    // (`.`/`::`-joined segments), so a module-qualified type name like
+    // `geo::Point` parsed cleanly. Widening the field type to `type_expr`
+    // (#1487) trades that away: `type_name_or_generic` accepts a single
+    // `IDENT` only, the same restriction the brink dialect's own TM-2
+    // `type_expr` already has (`brink-syntax/src/parser/types.rs`) — so
+    // every `: type` position in this grammar, not just struct fields,
+    // shares this gap. Only asserting resilience here, same contract as
+    // every other documented gap in this file: no panic, and at least one
+    // recorded error surfacing the unsupported `::` continuation.
     let p = assert_lossless("struct Wrapper {\n  loc: geo::Point\n}\n");
-    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
-    let decl: ast::StructDecl = find_child(&p.syntax()).expect("struct decl");
-    let field = decl.fields().next().expect("field");
-    let segs: Vec<_> = field
-        .type_path()
-        .expect("type path")
-        .segments()
-        .map(|t| t.text().to_string())
-        .collect();
-    assert_eq!(segs, vec!["geo", "Point"]);
+    assert!(
+        !p.errors().is_empty(),
+        "expected the unsupported `::`-qualified type name to surface at least one error"
+    );
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::STRUCT_DECL));
+
+    // `a.b` is the module-qualified spelling `docs/modules-spec.md`
+    // documents, so it's the more likely real-source form of the two — and
+    // the same `type_name_or_generic`-only-accepts-a-single-`IDENT` gap
+    // swallows it too: `struct_field` reports "unexpected token in struct
+    // body" for the dangling `.Point` continuation, and a spurious
+    // `STRUCT_FIELD` named `loc` with `Point` orphaned outside it is what
+    // HIR lowering silently drops. Same contract, same assertions.
+    let p = assert_lossless("struct W {\n  loc: geo.Point\n}\n");
+    assert!(
+        !p.errors().is_empty(),
+        "expected the unsupported `.`-qualified type name to surface at least one error"
+    );
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::STRUCT_DECL));
 }
 
 #[test]
@@ -701,22 +748,68 @@ fn struct_decl_unexpected_token_in_body_recovers() {
 }
 
 #[test]
-fn struct_decl_generic_field_type_is_a_documented_gap_not_a_panic() {
-    // `struct_field`'s own doc comment already scopes this out: "a bare
-    // dotted path in this skeleton grammar (no generics/fn-types)". A
-    // generic field type (`array<int>`, the brink-syntax parity target's
-    // `struct_decl_generic_field_type` shape) is therefore NOT a supported
-    // shape here — this is a documented scope gap, not a bug this
-    // TEST-ONLY issue should paper over. Only asserting the resilience
-    // property: no panic, lossless round-trip, and at least one recorded
-    // error surfacing the gap.
-    let src = "struct Bag {\n  items: array<int>\n}\n";
+fn struct_decl_generic_field_type() {
+    // NG-E (issue #1505): `struct_field` now parses a full `type_expr`,
+    // so a container-typed field (`list<int>`) is a first-class shape —
+    // no longer the documented gap the pre-#1505 test of this name
+    // asserted. `map<K, V>` (multiple type arguments) is covered by
+    // `struct_decl_map_field_type` below.
+    let src = "struct Bag {\n  items: list<int>\n}\n";
     let p = assert_lossless(src);
-    assert!(
-        !p.errors().is_empty(),
-        "expected the unsupported `<...>` shape to surface at least one error"
-    );
-    assert!(has_node_kind(&p.syntax(), SyntaxKind::STRUCT_DECL));
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::StructDecl = find_child(&p.syntax()).expect("struct decl");
+    let field = decl.fields().next().expect("field");
+    let ty = field
+        .type_annotation()
+        .expect("type annotation")
+        .type_expr()
+        .expect("type expr");
+    let g = expect_type_generic(&ty);
+    assert_eq!(g.name().as_deref(), Some("list"));
+    let arg_names: Vec<_> = g.args().map(|a| expect_type_name(&a)).collect();
+    assert_eq!(arg_names, vec!["int".to_string()]);
+}
+
+#[test]
+fn struct_decl_map_field_type() {
+    // `map<K, V>` — a generic field type with more than one type argument
+    // (NG-E, issue #1505).
+    let src = "struct Registry {\n  items: map<string, int>\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::StructDecl = find_child(&p.syntax()).expect("struct decl");
+    let field = decl.fields().next().expect("field");
+    let ty = field
+        .type_annotation()
+        .expect("type annotation")
+        .type_expr()
+        .expect("type expr");
+    let g = expect_type_generic(&ty);
+    assert_eq!(g.name().as_deref(), Some("map"));
+    let arg_names: Vec<_> = g.args().map(|a| expect_type_name(&a)).collect();
+    assert_eq!(arg_names, vec!["string".to_string(), "int".to_string()]);
+}
+
+#[test]
+fn struct_decl_fn_typed_field() {
+    // Function-typed struct field (NG-E, issue #1505) — the only reachable
+    // positive case of #1482's ruled `UfcsVerdict::FieldCall` (D1
+    // field-access-wins needs an fn-typed field to exist at all).
+    let src = "struct Guest {\n  greet: fn(string): string\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::StructDecl = find_child(&p.syntax()).expect("struct decl");
+    let field = decl.fields().next().expect("field");
+    let ty = field
+        .type_annotation()
+        .expect("type annotation")
+        .type_expr()
+        .expect("type expr");
+    let f = expect_type_fn(&ty);
+    let param_names: Vec<_> = f.params().iter().map(expect_type_name).collect();
+    assert_eq!(param_names, vec!["string".to_string()]);
+    let ret = f.return_type().expect("return type");
+    assert_eq!(expect_type_name(&ret), "string");
 }
 
 #[test]
@@ -972,7 +1065,7 @@ fn use_decl_bare_group_with_no_leading_path_is_a_parse_error() {
     // `USE_DECL` — that was explicitly rejected, since a bare group has no
     // module to select from. So this exact top-level shape still never
     // satisfies the `USE_DECL` lookahead (`at_use_decl` only accepts
-    // `IDENT`/`::` after `use`): `use` is bumped bare as leftover prose,
+    // `IDENT` after `use`, issue #1285): `use` is bumped bare as leftover prose,
     // and the `{a, b}` that follows misparses as bare-brace `{expr}`
     // interpolation (`a, b` isn't a valid expression, hence the errors
     // below). This is no longer an open TODO — it's the ruled, intentional
@@ -1013,35 +1106,28 @@ fn use_tree_list_nested_bare_group_with_no_leading_path_errors() {
 }
 
 #[test]
-fn use_tree_malformed_missing_path_recovers() {
-    // `use ::foo;` — `at_use_decl`'s weaker two-token check (Finding #5's
-    // documented residual risk: `nth(1)` is `COLON_COLON`, which passes the
-    // guard) commits to `USE_DECL`, but `use_tree` itself sees no `IDENT`
-    // first and records "a `use` needs a module path" without consuming
-    // anything. `USE_DECL` still closes (with just `use` as its content);
-    // the leftover `::foo;` falls through to the next `item()` call as
-    // ordinary prose on its own line — it is NOT silently absorbed into
-    // the `USE_DECL`.
+fn use_tree_malformed_missing_path_does_not_commit() {
+    // `use ::foo;` — after tightening the lookahead (issue #1285), `at_use_decl`
+    // only commits to `USE_DECL` if `nth(1)` is `IDENT`, not `COLON_COLON`. So
+    // `use ::foo;` does not commit to a (malformed) `USE_DECL` node — but a
+    // typo'd import silently becoming player-facing prose would be its own
+    // bug, so `block::item` emits a targeted diagnostic before falling
+    // through (review finding on #1285's original PR).
     let src = "use ::foo;\n";
     let p = assert_lossless(src);
     assert!(
         p.errors()
             .iter()
-            .any(|e| e.message.contains("needs a module path")),
-        "expected the use-tree error, got: {:?}",
+            .any(|e| e.message.contains("a `use` path cannot start with `::`")),
+        "expected the leading-`::` diagnostic, got: {:?}",
         p.errors()
     );
-    let decl: ast::UseDecl = find_child(&p.syntax()).expect("use decl still recovers");
+    // No USE_DECL node is created at all.
+    let decl: Option<ast::UseDecl> = find_child(&p.syntax());
     assert!(
-        decl.tree().is_some(),
-        "USE_TREE node still exists, just empty"
+        decl.is_none(),
+        "no USE_DECL should be created for `use ::foo;`"
     );
-    assert_eq!(
-        decl.tree().expect("checked above").path_segments().count(),
-        0
-    );
-    // The leftover `::foo;` is not swallowed into USE_DECL's text.
-    assert!(!decl.syntax().text().to_string().contains("foo"));
 }
 
 #[test]
@@ -1192,6 +1278,246 @@ fn module_decl_missing_closing_brace_recovers_via_block_eof() {
     );
 }
 
+// ── NG-A/NG-B/NG-C: the `: type` annotation grammar ──────────────────
+//
+// One spelling in every position (`docs/decision-log.md` 2026-07-26 "NG-C
+// ruled: `: type` returns everywhere", issues #1487/#1488/#1489).
+
+/// The `TYPE_NAME`/`TYPE_GENERIC` head texts of every `TYPE_EXPR` under
+/// `node`, in source order — a compact way to assert an annotation's shape
+/// without spelling the whole tree.
+fn type_heads(node: &SyntaxNode) -> Vec<String> {
+    node.descendants()
+        .filter_map(ast::TypeExpr::cast)
+        .filter_map(|te| match te.kind()? {
+            ast::TypeExprKind::Name(n) => n.name(),
+            ast::TypeExprKind::Generic(g) => g.name(),
+            ast::TypeExprKind::Fn(_) => Some("fn".to_string()),
+        })
+        .collect()
+}
+
+#[test]
+fn fn_param_takes_a_type_annotation() {
+    let p = assert_lossless("fn probability(g: Guest) {\n  return 1;\n}\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::FnDecl = find_child(&p.syntax()).expect("fn decl");
+    let param = decl
+        .param_list()
+        .expect("param list")
+        .params()
+        .next()
+        .expect("one param");
+    assert_eq!(param.name_token().expect("name").text(), "g");
+    let annotation = param.type_annotation().expect("`: Guest` annotation");
+    assert_eq!(type_heads(annotation.syntax()), vec!["Guest".to_string()]);
+}
+
+#[test]
+fn unannotated_param_still_parses_with_no_annotation() {
+    // The annotation is optional everywhere — the pre-NG-A shape is
+    // untouched, which is what keeps every existing fixture parsing.
+    let p = assert_lossless("fn heal(hp) {\n  return hp;\n}\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::FnDecl = find_child(&p.syntax()).expect("fn decl");
+    let param = decl
+        .param_list()
+        .expect("param list")
+        .params()
+        .next()
+        .expect("one param");
+    assert!(param.type_annotation().is_none());
+}
+
+#[test]
+fn ref_param_takes_a_type_annotation_after_the_name() {
+    let p = assert_lossless("flow spend(ref gold: int) {\n  Spent.\n}\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::FlowDecl = find_child(&p.syntax()).expect("flow decl");
+    let param = decl
+        .param_list()
+        .expect("param list")
+        .params()
+        .next()
+        .expect("one param");
+    assert!(param.is_ref());
+    assert_eq!(
+        type_heads(param.type_annotation().expect("annotation").syntax()),
+        vec!["int".to_string()]
+    );
+}
+
+#[test]
+fn extern_params_take_type_annotations_via_the_shared_param_list() {
+    let p = assert_lossless("extern log(msg: string, level: int)\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::ExternDecl = find_child(&p.syntax()).expect("extern decl");
+    let heads: Vec<String> = decl
+        .param_list()
+        .expect("param list")
+        .params()
+        .map(|param| type_heads(param.type_annotation().expect("annotation").syntax()).join(""))
+        .collect();
+    assert_eq!(heads, vec!["string".to_string(), "int".to_string()]);
+}
+
+#[test]
+fn generic_and_nested_generic_type_arguments_parse() {
+    let p = assert_lossless("fn tally(m: map<string, list<int>>) {\n  return 1;\n}\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::FnDecl = find_child(&p.syntax()).expect("fn decl");
+    let annotation = decl
+        .param_list()
+        .expect("param list")
+        .params()
+        .next()
+        .expect("one param")
+        .type_annotation()
+        .expect("annotation");
+    // Outer head first, then its arguments in source order.
+    assert_eq!(
+        type_heads(annotation.syntax()),
+        vec![
+            "map".to_string(),
+            "string".to_string(),
+            "list".to_string(),
+            "int".to_string()
+        ]
+    );
+}
+
+#[test]
+fn fn_type_annotation_parses_with_its_colon_return() {
+    let p = assert_lossless("fn apply(f: fn(int): bool) {\n  return 1;\n}\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::FnDecl = find_child(&p.syntax()).expect("fn decl");
+    let annotation = decl
+        .param_list()
+        .expect("param list")
+        .params()
+        .next()
+        .expect("one param")
+        .type_annotation()
+        .expect("annotation");
+    let te = annotation.type_expr().expect("type expr");
+    let Some(ast::TypeExprKind::Fn(f)) = te.kind() else {
+        unreachable!("expected a fn type, tree: {:#?}", te.syntax())
+    };
+    assert_eq!(f.params().len(), 1);
+    assert_eq!(
+        type_heads(f.return_type().expect("return type").syntax()),
+        vec!["bool".to_string()]
+    );
+}
+
+#[test]
+fn fn_header_takes_a_colon_return_type_after_the_param_list() {
+    // The RULED spelling (2026-07-26, #1489): `: type` after `)`, never an
+    // arrow (`->` is unconditionally a divert).
+    let p = assert_lossless("fn probability(g: Guest): float {\n  return 1;\n}\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::FnDecl = find_child(&p.syntax()).expect("fn decl");
+    assert_eq!(
+        type_heads(decl.return_type().expect("return clause").syntax()),
+        vec!["float".to_string()]
+    );
+    // The return clause must not be confused with a parameter's own.
+    let param = decl
+        .param_list()
+        .expect("param list")
+        .params()
+        .next()
+        .expect("one param");
+    assert_eq!(
+        type_heads(param.type_annotation().expect("annotation").syntax()),
+        vec!["Guest".to_string()]
+    );
+    assert!(
+        decl.body().is_some(),
+        "the body still parses after `: float`"
+    );
+}
+
+#[test]
+fn flow_header_takes_a_colon_return_type_on_an_empty_param_list() {
+    let p = assert_lossless("flow quest(): QuestResult {\n  return;\n}\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::FlowDecl = find_child(&p.syntax()).expect("flow decl");
+    assert_eq!(
+        type_heads(decl.return_type().expect("return clause").syntax()),
+        vec!["QuestResult".to_string()]
+    );
+}
+
+#[test]
+fn plain_flow_header_has_no_return_clause() {
+    let p = assert_lossless("flow greet() {\n  Hi.\n}\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let decl: ast::FlowDecl = find_child(&p.syntax()).expect("flow decl");
+    assert!(decl.return_type().is_none());
+}
+
+#[test]
+fn a_prose_line_starting_with_flow_is_still_prose_not_a_return_typed_decl() {
+    // The declaration-head lookahead is deliberately NOT widened to accept
+    // `flow IDENT :` (see `decl::return_type_clause`'s doc) — doing so
+    // would claim ordinary prose. This is the case that guards it.
+    let src = "flow onwards: the river bends.\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(
+        !has_node_kind(&p.syntax(), SyntaxKind::FLOW_DECL),
+        "tree: {:#?}",
+        p.syntax()
+    );
+}
+
+#[test]
+fn var_and_const_take_type_annotations_before_the_initializer() {
+    let p = assert_lossless("var hp: int = 10\nconst MAX: int = 100\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let var: ast::VarDecl = find_child(&p.syntax()).expect("var decl");
+    assert_eq!(
+        type_heads(var.type_annotation().expect("annotation").syntax()),
+        vec!["int".to_string()]
+    );
+    // The annotation must not be mistaken for the initializer.
+    assert_eq!(
+        var.value().expect("initializer").kind(),
+        SyntaxKind::INTEGER_LIT
+    );
+    let konst: ast::ConstDecl = find_child(&p.syntax()).expect("const decl");
+    assert_eq!(
+        type_heads(konst.type_annotation().expect("annotation").syntax()),
+        vec!["int".to_string()]
+    );
+    assert_eq!(
+        konst.value().expect("initializer").kind(),
+        SyntaxKind::INTEGER_LIT
+    );
+}
+
+#[test]
+fn unannotated_var_initializer_is_unchanged() {
+    let p = assert_lossless("var hp = 10\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let var: ast::VarDecl = find_child(&p.syntax()).expect("var decl");
+    assert!(var.type_annotation().is_none());
+    assert_eq!(
+        var.value().expect("initializer").kind(),
+        SyntaxKind::INTEGER_LIT
+    );
+}
+
+#[test]
+fn a_type_annotation_with_no_type_after_it_records_an_error() {
+    let p = assert_lossless("var hp: = 10\n");
+    assert!(
+        !p.errors().is_empty(),
+        "a bare `:` with no type must be diagnosed"
+    );
+}
+
 // ── Adversarial: property-based coverage scoped to declarations ───────
 //
 // Mirrors `tests/proptest_native.rs`'s generator style (studied from that
@@ -1296,8 +1622,9 @@ mod prop {
     fn arb_use_decl() -> impl Strategy<Value = String> {
         // Always keep a real leading `IDENT` path segment before any
         // nested group — `at_use_decl`'s lookahead only recognizes
-        // `IDENT`/`COLON_COLON` as the second token (never a bare
-        // `L_BRACE`; see `use_decl_bare_group_with_no_leading_path_is_a_parse_error`
+        // `IDENT` as the second token (issue #1285 tightened this to
+        // reject a leading `COLON_COLON` too; never a bare `L_BRACE`; see
+        // `use_decl_bare_group_with_no_leading_path_is_a_parse_error`
         // above), so a bare-group `use { … };` with no leading path is not
         // a reachable `USE_DECL` shape and must not be generated here.
         (arb_ident(), prop::collection::vec(arb_use_tree(), 1..=3)).prop_map(|(prefix, trees)| {

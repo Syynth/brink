@@ -109,7 +109,7 @@ checking.
 cannot be papered over).
 **Entry.** Batch-4 ruling stamped (done, #1134).
 **Exit (tests).** Workspace green; **oracle byte-identical**
-(`CASES 350/14/390`, `EPISODES 5577/1027/0`); IDE + fmt suites green; a
+(`CASES 350/14/390`, `EPISODES` at `RATCHET_EPISODE_COUNT`); IDE + fmt suites green; a
 resolver round-trip test (ink node → `Provenance` → live node) and a
 non-resolving-provenance test (headless compile never resolves ptrs —
 contract §4.3, precisely why native codegen can ship before native IDE
@@ -416,8 +416,8 @@ The principle: **the contract-cleanup spine touches the ink frontend's own
 plumbing and is guarded by the oracle; the parser slices are
 vanilla-unreachable and are guarded by the admission machinery the spine
 built.** The full gate on every slice: `CASES 350/14/390`,
-`EPISODES 5577/1027/0`, byte-identical; ratchet untouched
-(`RATCHET_EPISODE_COUNT = 5577`); wasm-observable changes carry a
+`EPISODES` at `RATCHET_EPISODE_COUNT`, byte-identical; ratchet untouched
+(`RATCHET_EPISODE_COUNT`); wasm-observable changes carry a
 `@brink-lang/web` changeset; branch pushed after every commit (the #1137
 lesson).
 

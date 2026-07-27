@@ -443,6 +443,20 @@ impl Program {
     // `set_variable` and consumers like the RMMZ var↔switch mapping. They were
     // previously `testing`-gated; promoted to public per the State View plan.
 
+    /// Resolve a global cell's `DefinitionId` to its slot index — the
+    /// numbering [`ContextAccess::set_global`](crate::ContextAccess) and
+    /// [`Self::global_index`] use.
+    ///
+    /// Public because effect rows (`brink_format::DirectEffects::reads` /
+    /// `writes`) name global cells by `DefinitionId` while the runtime's
+    /// world writes are keyed by slot: a host consuming rows for scheduling
+    /// (bevy-brink's row-directed wake dirtying, issue #1146) needs exactly
+    /// this bridge. `None` for an id this program declares no global for
+    /// (a stale row, a `VAR` removed by a story patch).
+    pub fn global_slot(&self, id: DefinitionId) -> Option<u32> {
+        self.resolve_global(id)
+    }
+
     /// Resolve a global slot index to its variable name.
     pub fn global_name(&self, idx: u32) -> Option<&str> {
         self.globals

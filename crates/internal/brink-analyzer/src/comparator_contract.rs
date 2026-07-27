@@ -246,7 +246,7 @@ fn collect_stmt(stmt: &Stmt, out: &mut Vec<ComparatorSite>) {
         Stmt::Conditional(c) => collect_conditional(c, out),
         Stmt::Sequence(s) => {
             for branch in &s.branches {
-                collect_block(branch, out);
+                collect_block(&branch.body, out);
             }
         }
         Stmt::Content(content) => collect_content(content, out),
@@ -270,7 +270,7 @@ fn collect_content(content: &Content, out: &mut Vec<ComparatorSite>) {
             ContentPart::InlineConditional(c) => collect_conditional(c, out),
             ContentPart::InlineSequence(s) => {
                 for branch in &s.branches {
-                    collect_block(branch, out);
+                    collect_block(&branch.body, out);
                 }
             }
             ContentPart::Text(_) | ContentPart::Glue | ContentPart::Spring => {}
@@ -367,9 +367,9 @@ fn collect_expr(expr: &Expr, out: &mut Vec<ComparatorSite>) {
             }
         }
         Expr::Prefix(_, inner) | Expr::Postfix(inner, _) => collect_expr(inner, out),
-        Expr::Infix(l, _, r) => {
-            collect_expr(l, out);
-            collect_expr(r, out);
+        Expr::Infix(ie) => {
+            collect_expr(&ie.lhs, out);
+            collect_expr(&ie.rhs, out);
         }
         Expr::Index(idx) => {
             collect_expr(&idx.base, out);

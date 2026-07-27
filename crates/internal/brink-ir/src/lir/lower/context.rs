@@ -31,6 +31,275 @@ impl ResolutionLookup {
     }
 }
 
+// ─── B3a UFCS verdict lookup (issue #1506) ─────────────────────────
+
+/// Mirror of `brink_analyzer::ufcs::UfcsVerdict`, narrowed to what LIR
+/// lowering needs to pick the right call shape
+/// (`lir::lower::expr::lower_ufcs_call`). `brink-ide`'s hover/go-to-def
+/// wiring (issue #1507, `ufcs_hover` module) is a second reader of this same
+/// mirror — it reads verdicts through `brink_db::ProjectDb::ufcs_verdict`
+/// rather than lowering-specific data, so nothing here is LIR-lowering-only
+/// even though lowering is still this type's original consumer.
+///
+/// `brink-ir` sits below `brink-analyzer` in the crate graph
+/// (`brink-analyzer` depends on `brink-ir`, never the reverse — see
+/// [`TypeMode`](super::TypeMode)'s doc for the established precedent), so it
+/// cannot name the analyzer's own `UfcsVerdict` directly.
+/// `brink_analyzer::ufcs_lir_lookup` is the one translation point (it can
+/// see both crates, since `brink-analyzer` already depends on `brink-ir`):
+/// `brink-db`'s `ufcs_resolution_query` (the production path) and
+/// `brink_analyzer::assemble_analyzer_tables` (the salsa-free path used by
+/// `brink-test-harness` and any other caller with no salsa layer of its own)
+/// both call it to build a [`UfcsLookup`] from `brink_analyzer::UfcsTable`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UfcsVerdict {
+    /// The call's final path segment names a function-typed field on the
+    /// receiver's type — lower as a call *through* that field's value
+    /// (`lir::Expr::CallValue`). No further data is needed: the field name
+    /// and the receiver chain are already carried structurally by the HIR
+    /// `Path` this verdict is keyed against.
+    FieldCall,
+    /// The call's final path segment names a free function in ordinary
+    /// lexical scope — lower as `target(receiver, args…)`.
+    FreeFnDesugar { target: DefinitionId },
+    /// **D5 auto-ref** (issue #1462): as [`Self::FreeFnDesugar`], but
+    /// `target`'s first declared parameter is `ref`, so the receiver is
+    /// passed *by reference* — lower as `target(ref receiver, args…)`, the
+    /// projection spelled explicitly through the same T1e ref-argument
+    /// machinery an explicitly written `ref` argument reaches
+    /// (`lir::lower::expr::lower_call_args`). The analyzer has already
+    /// checked that the receiver can be written through (`E143` otherwise),
+    /// so lowering never re-derives that rule.
+    FreeFnAutoRef { target: DefinitionId },
+    /// The call's final path segment names a T1b/NS stdlib prelude verb (or
+    /// a classic ink builtin) with no index symbol of its own — lower as
+    /// `name(receiver, args…)` through the same builtin/stdlib dispatch an
+    /// ordinary bare call of that name already reaches.
+    PreludeDesugar { name: String },
+}
+
+/// Project-wide `(file, range) → verdict` lookup — the `brink-ir`-facing
+/// counterpart of `brink_analyzer::UfcsTable`. Built once (`brink-db`'s
+/// `ufcs_resolution_query`) and shared read-only across every `LowerCtx` in
+/// a `lower_to_program`/incremental-chunk call, exactly like
+/// [`ResolutionLookup`] above — plus, since issue #1507, `brink-ide`'s
+/// hover/go-to-def wiring reads individual verdicts out of the same
+/// memoized table via `brink_db::ProjectDb::ufcs_verdict`, so this is no
+/// longer an LIR-lowering-exclusive structure.
+///
+/// Empty by construction for every caller that never ran the analyzer's
+/// `ufcs` pass (this crate's own tests, `compile_bench`, `golden_i078.rs`) —
+/// see `lower_ufcs_call`'s fallback doc for what an empty table means at a
+/// UFCS-shaped call site reached there.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UfcsLookup {
+    map: LookupMap<(FileId, TextRange), UfcsVerdict>,
+}
+
+impl UfcsLookup {
+    /// The empty table — every lookup misses.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Build from `(file, range, verdict)` rows — `brink-db`'s translation
+    /// of `brink_analyzer::UfcsTable::iter()`.
+    #[must_use]
+    pub fn from_entries(entries: Vec<(FileId, TextRange, UfcsVerdict)>) -> Self {
+        Self {
+            map: entries.into_iter().map(|(f, r, v)| ((f, r), v)).collect(),
+        }
+    }
+
+    /// The verdict recorded for the UFCS call site at `range` in `file`, if
+    /// any.
+    #[must_use]
+    pub fn get(&self, file: FileId, range: TextRange) -> Option<&UfcsVerdict> {
+        self.map.get(&(file, range))
+    }
+
+    /// Whether this table carries any recorded verdict at all — a project
+    /// with no UFCS-shaped call anywhere stays at the empty table
+    /// ([`Self::new`]'s doc). Exists so a caller assembling this table can
+    /// assert it actually got populated instead of silently staying empty
+    /// (issue #1528's coverage test) without needing a specific `(file,
+    /// range)` key to probe with.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
+    /// Every call site whose verdict is a [`UfcsVerdict::FreeFnDesugar`] or
+    /// [`UfcsVerdict::FreeFnAutoRef`] targeting `target` — issue #1539: the
+    /// project-wide enumeration `find_references`/`rename` need to also
+    /// rewrite/report a renamed free function's UFCS-desugared call sites,
+    /// not just its plain `ResolutionMap` references. `FieldCall`/
+    /// `PreludeDesugar` verdicts carry no `DefinitionId` and never match.
+    ///
+    /// Sorted by `(file, range.start(), range.end())` — this crate's
+    /// determinism rule (see `crate::determinism`'s doc): the underlying
+    /// `map` is an audited `HashMap`, so an iteration reaching output (an
+    /// edit list, a reference list) must sort first.
+    #[must_use]
+    pub fn call_sites_for_target(&self, target: DefinitionId) -> Vec<(FileId, TextRange)> {
+        let mut sites: Vec<(FileId, TextRange)> = self
+            .map
+            .iter()
+            .filter_map(|(&(file, range), verdict)| match *verdict {
+                UfcsVerdict::FreeFnDesugar { target: t }
+                | UfcsVerdict::FreeFnAutoRef { target: t }
+                    if t == target =>
+                {
+                    Some((file, range))
+                }
+                _ => None,
+            })
+            .collect();
+        sites.sort_by_key(|&(file, range)| (file, range.start(), range.end()));
+        sites
+    }
+}
+
+// ─── B1 `or`-coalescing shape lookup (issue #1492) ─────────────────
+
+/// Mirror of `brink_analyzer::CoalesceShape`, narrowed to exactly what LIR
+/// lowering needs to pick one `or` step's code shape
+/// (`lir::lower::expr::lower_coalesce_chain`).
+///
+/// RULED (maintainer, 2026-07-26, `docs/decision-log.md` "Lowering consumes
+/// analyzer types"): **typing verdicts belong to the analyzer; lowering
+/// consumes recorded types, never re-derives them.** A syntactic shape-sniff
+/// here cannot see through an `Expr::Call` to its declared return type, nor
+/// through a bare `Path` to a `VAR`/temp declared `Option[T]` — both are type
+/// questions, and the answer already exists in `brink-analyzer::coalesce`.
+///
+/// `brink-ir` sits below `brink-analyzer` in the crate graph
+/// (`brink-analyzer` depends on `brink-ir`, never the reverse — see
+/// [`UfcsVerdict`]'s doc for the established precedent), so it cannot name
+/// the analyzer's own `CoalesceShape` directly.
+/// `brink_analyzer::coalesce_lir_lookup` is the one translation point:
+/// `brink-db`'s `coalesce_types_query` (the production path) and
+/// `brink_analyzer::assemble_analyzer_tables` (the salsa-free path used by
+/// `brink-test-harness` and any other caller with no salsa layer of its own)
+/// both call it to build a [`CoalesceLookup`] from
+/// `brink_analyzer::CoalesceTable`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CoalesceShape {
+    /// `Option[T] or Option[U]` — optionality survives the step, so codegen
+    /// re-wraps the unwrapped `some(v)` branch with a `MakeSome` at the
+    /// join point, keeping both branches the same shape.
+    PreserveOption,
+    /// `Option[T] or U` — the step collapses to the plain value type, so
+    /// the unwrapped `v` stands as-is and no `MakeSome` is emitted.
+    Collapse,
+    /// The left-hand type is not statically pinned (gradual mode, or a
+    /// strict escape already reported by `E065`/`E066`), or the analyzer
+    /// recorded no verdict for this chain at all — absence and this verdict
+    /// mean the same thing, which is why it is also the [`Default`].
+    ///
+    /// **The runtime check is the semantics here** (RULED 2026-07-26, issue
+    /// #1492; documented on `brink_format::Opcode::CoalesceSome`): an
+    /// `Option` value coalesces, a plain value faults, exactly like every
+    /// other gradual runtime check. Codegen emits no `MakeSome` — with `rhs`
+    /// possibly never evaluated there is no value to read a shape off, and
+    /// the unwrapped collapse form is the one shape that stays sound for
+    /// the `(Option[T],T)->T` reading the runtime check admits.
+    #[default]
+    RuntimeCheck,
+}
+
+/// Project-wide `(file, range) → per-step shapes` lookup for `or`-coalescing
+/// chains — the LIR-lowering-facing counterpart of
+/// `brink_analyzer::CoalesceTable`. Built once (`brink-db`'s
+/// `coalesce_types_query`) and shared read-only across every `LowerCtx` in a
+/// `lower_to_program`/incremental-chunk call, exactly like [`UfcsLookup`]
+/// above.
+///
+/// Keyed at the **chain root** by [`crate::hir::expr_span`] — the derivation
+/// both sides share, which since issue #1517 is the root infix node's own
+/// [`crate::Provenance`] range — carrying every step's shape innermost-first.
+/// One chain is one recorded fold, so lowering looks it up exactly once, at
+/// its root; a spine node's key is a *different* key and simply misses.
+///
+/// Empty by construction for every caller that never ran the analyzer's
+/// `coalesce` pass (this crate's own tests, `compile_bench`,
+/// `golden_i078.rs`) — a miss means [`CoalesceShape::RuntimeCheck`], which
+/// is always sound.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CoalesceLookup {
+    map: LookupMap<(FileId, TextRange), Vec<CoalesceShape>>,
+}
+
+impl CoalesceLookup {
+    /// The empty table — every lookup misses.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Build from `(file, range, shapes)` rows — `brink-analyzer`'s
+    /// translation of `brink_analyzer::CoalesceTable::iter()`. `shapes` is
+    /// innermost-step-first, matching `CoalesceChain::steps`.
+    #[must_use]
+    pub fn from_entries(entries: Vec<(FileId, TextRange, Vec<CoalesceShape>)>) -> Self {
+        Self {
+            map: entries.into_iter().map(|(f, r, v)| ((f, r), v)).collect(),
+        }
+    }
+
+    /// The per-step shapes recorded for the coalescing chain rooted at
+    /// `range` in `file`, innermost first, if any.
+    #[must_use]
+    pub fn get(&self, file: FileId, range: TextRange) -> Option<&[CoalesceShape]> {
+        self.map.get(&(file, range)).map(Vec::as_slice)
+    }
+
+    /// Whether this table carries any recorded chain at all —
+    /// [`UfcsLookup::is_empty`]'s sibling, same rationale (issue #1528's
+    /// coverage test).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+}
+
+// ─── Analyzer side-table bundle (issue #1527) ──────────────────────
+
+/// Every analyzer-produced side-table LIR lowering reads to make a
+/// resolution-dependent codegen choice, bundled into one value instead of
+/// one `&Lookup` parameter per table.
+///
+/// Before this bundle, each new side-table ([`UfcsLookup`] for B3a UFCS,
+/// then [`CoalesceLookup`] for B1 `or`-coalescing) added its own parameter
+/// to every lowering signature between
+/// [`super::lower_to_program_with_type_mode`] and [`LowerCtx`] itself —
+/// eight signatures deep, forcing
+/// `lower_root_content_chunks` to carry
+/// `#[expect(clippy::too_many_arguments)]`. Two independent reviewers
+/// (#1471, #1479) hit the same pain point and deliberately deferred the fix
+/// to avoid mid-PR churn — this bundle is that fix. A future table (the
+/// v6/Step work) now means adding one field here, not touching every
+/// signature between the entry points and `LowerCtx` again.
+///
+/// A future table also means adding one field to
+/// `brink_analyzer::AnalyzerTablesOwned` and wiring it into
+/// `brink_analyzer::assemble_analyzer_tables` (issue #1528) — the one place
+/// a caller with no salsa layer of its own (`brink-test-harness`'s
+/// `corpus.rs`) assembles the owned tables this struct then borrows from;
+/// forgetting that step is what let the harness silently lower with an
+/// empty table for a table the production `brink-db` path already had.
+///
+/// `Copy` — it's two references, cheap to pass by value everywhere instead
+/// of threading yet another `&`.
+#[derive(Debug, Clone, Copy)]
+pub struct AnalyzerTables<'a> {
+    /// B3a UFCS (issue #1506) — see [`UfcsLookup`]'s own doc.
+    pub ufcs: &'a UfcsLookup,
+    /// B1 `or`-coalescing (issue #1492) — see [`CoalesceLookup`]'s own doc.
+    pub coalesce: &'a CoalesceLookup,
+}
+
 // ─── Name table ─────────────────────────────────────────────────────
 
 /// Intern strings to `NameId`. Deduplicates identical strings.
@@ -196,6 +465,20 @@ pub struct LowerCtx<'a> {
     pub ids: &'a mut IdAllocator,
     /// Current container path prefix (e.g. `"knot"`, `"knot.stitch"`).
     pub scope_path: String,
+    /// Whether this lowering call is inside a file's root content (as
+    /// opposed to a knot or stitch body). Fixed for the lifetime of one
+    /// `lower_root_content_chunks`/`lower_knot`/`lower_stitch` call — unlike
+    /// `scope_path`, nested conditionals/sequences/choice bodies never
+    /// change it, so it reliably answers "are we at the story's top level"
+    /// regardless of how deeply nested the current statement is.
+    ///
+    /// Used to gate the implicit `-> DONE` a `ChoiceSet`'s empty, unlabeled
+    /// continuation gets (`build_continuation_container`): falling off the
+    /// end of the *root* content is a safe implicit end (ink's own
+    /// behavior), but falling off the end of a knot/stitch without an
+    /// explicit `-> DONE`/`-> END` is a genuine `RanOutOfContent` runtime
+    /// error in real ink — see issue #1503.
+    pub is_root_content_scope: bool,
     /// Child containers created during content lowering (inline sequences).
     /// Drained by the caller after each statement.
     pub pending_children: Vec<super::lir::Container>,
@@ -231,6 +514,20 @@ pub struct LowerCtx<'a> {
     /// name (docs/t1b-surface-spec.md §2) without disturbing the outer
     /// slot's storage.
     pub block_scopes: Vec<Vec<(String, u16)>>,
+    /// Temp slots that hold an `as` binding (B1b, issue #1475). The
+    /// binding is **immutable** by ruling, and this is what makes that
+    /// enforceable: every write path — plain assignment, compound `+=`,
+    /// indexed/field assignment's root, an in-place mutator like
+    /// `pop`/`clear` — resolves its target through
+    /// [`super::stmts::lower_assign_target`], which refuses a slot in this
+    /// set (`E148`). `ref` arguments never route through that choke point
+    /// — they hand the callee a raw pointer to the slot instead — so
+    /// [`super::expr::lower_ref_path_call_arg`] and
+    /// [`super::expr::lower_ref_projection_arg`] separately consult this
+    /// set at their own root. Entries are never removed: a slot is
+    /// allocated fresh per binding and never reused, so membership is a
+    /// permanent property of the slot, not of the scope being open.
+    pub as_binding_slots: crate::determinism::LookupSet<u16>,
     /// Every name ever declared via [`LowerCtx::declare_block_local`] in
     /// this frame — i.e. every T1b block-scoped `temp`/`for`-loop-variable
     /// name, whether or not its `~ { … }` block is still open. Unlike
@@ -279,6 +576,12 @@ pub struct LowerCtx<'a> {
     /// block-scoped shadow of an outer temp of the same name still maps to
     /// its own (correct) shape.
     pub temp_shapes: LookupMap<u16, String>,
+    /// The analyzer-produced side-tables (B3a UFCS, B1 `or`-coalescing,
+    /// issue #1527) — shared, read-only, identical across every `LowerCtx`
+    /// in a single `lower_to_program`/incremental-chunk call, the same
+    /// threading discipline as `structs`. Empty for every caller that never
+    /// ran the corresponding analyzer pass — see [`AnalyzerTables`]'s doc.
+    pub tables: AnalyzerTables<'a>,
 }
 
 impl<'a> LowerCtx<'a> {

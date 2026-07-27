@@ -22,6 +22,7 @@
 //! `brink-environment` — it is `RealFs`/`GitRev` construction, not the
 //! crate link, that stays host-only.)
 
+use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -44,6 +45,15 @@ const NATIVE_EXTENSION: &str = "brink";
 /// enumerated. `read` serves any key lazily off disk — it never eagerly
 /// reads the tree, so one malformed/unreadable file elsewhere under `root`
 /// cannot fail a `read` of an unrelated key (issue #1357).
+///
+/// `list` also reads `root`'s own `brink.toml` (if any) for `[project]
+/// unprune-dirs`, issue #1407's escape hatch for a project that legitimately
+/// keeps `.brink` sources under one of those pruned names — see
+/// [`unprune_dirs`] — and, when a pruned directory shallowly contains a
+/// `.brink` file that `unprune-dirs` didn't name, logs a `tracing::warn!`
+/// naming it (#1407's silent-skip diagnostic) rather than saying nothing.
+/// Neither behavior changes what a *clean* tree with no config or no pruned
+/// sources enumerates.
 ///
 /// `list`'s `.brink`-only scope is fixed — there used to be a second,
 /// `.brink` + `.ink` scope reachable via a `RealFs::project` constructor
@@ -82,7 +92,10 @@ impl RealFs {
 impl SourceTree for RealFs {
     fn list(&self) -> io::Result<Vec<String>> {
         let mut keys = Vec::new();
-        for entry in Walk::new(&self.root) {
+        let mut walk = Walk::new(&self.root)
+            .allow(unprune_dirs(&self.root))
+            .warn_on_pruned_sources([NATIVE_EXTENSION]);
+        for entry in walk.by_ref() {
             let entry = entry?;
             if !entry.is_file() || !is_native(entry.path()) {
                 continue;
@@ -98,12 +111,62 @@ impl SourceTree for RealFs {
         // yields `a/`'s contents first) — and `list`'s contract is the
         // latter, so sort the collected keys.
         keys.sort();
+
+        // Issue #1407's diagnostic half: name every pruned directory that
+        // plausibly held a `.brink` source the author expected discovery to
+        // find, rather than leaving it silently invisible. `warn`, never an
+        // error — this is advisory (the prune itself is still correct
+        // behavior by default), and `list`'s contract is to enumerate keys,
+        // not to fail because a *different* directory looked suspicious.
+        for pruned in walk.pruned_with_sources() {
+            let name = pruned.file_name().unwrap_or_default().to_string_lossy();
+            tracing::warn!(
+                "discovery pruned {} — it contains .{NATIVE_EXTENSION} file(s) that were not \
+                 loaded. If this is intentional source, add `unprune-dirs = [\"{name}\"]` under \
+                 `[project]` in {CONFIG_FILE_NAME}.",
+                pruned.display(),
+            );
+        }
+
         Ok(keys)
     }
 
     fn read(&self, key: &str) -> io::Result<String> {
         fs::read_to_string(self.root.join(key))
     }
+}
+
+/// The `brink.toml` key this looks for. Kept local rather than re-exporting
+/// `brink_project_config::CONFIG_FILE_NAME` under a new name — this module
+/// already spells the literal out in doc comments elsewhere, and importing
+/// the constant here keeps the diagnostic message and the actual read below
+/// from drifting apart.
+const CONFIG_FILE_NAME: &str = brink_project_config::CONFIG_FILE_NAME;
+
+/// Best-effort read of `root`'s own `brink.toml` for `[project]
+/// unprune-dirs` (issue #1407's escape hatch) — never `root`'s ancestors: by
+/// the time a `RealFs` is constructed, `root` already **is** the directory
+/// [`native_source_root`] resolved a discovered config to (or the entry's
+/// own directory, if none exists), so a direct `root`-relative read lands on
+/// the same file `brink_environment::Project::load`'s own ancestor
+/// walk-up will find moments later, without re-implementing that walk here.
+///
+/// Failures are swallowed here (no file, malformed TOML, an out-of-range
+/// `unprune-dirs` value): reporting them is not this function's job — the
+/// canonical parse in `Project::load`'s `resolve_options` runs over the very
+/// same file and raises the real `ConfigError`/warnings to the caller. If
+/// this best-effort read can't get a clean value, `list()` behaves exactly
+/// as if the file never set `unprune-dirs` at all — the standing prune
+/// policy still applies, it just isn't widened.
+fn unprune_dirs(root: &Path) -> Vec<OsString> {
+    let Ok(text) = fs::read_to_string(root.join(CONFIG_FILE_NAME)) else {
+        return Vec::new();
+    };
+    let Ok((config, _warnings)) = brink_project_config::parse_str_at(CONFIG_FILE_NAME, &text)
+    else {
+        return Vec::new();
+    };
+    config.unprune_dirs.into_iter().map(Into::into).collect()
 }
 
 /// Join a relative path's components with `/`, so keys are stable across
@@ -185,7 +248,12 @@ pub fn is_native(path: &Path) -> bool {
 /// anywhere above the repo — even in `$HOME` — could get picked up). A
 /// `brink.toml` sitting outside a repository entirely (as opposed to merely
 /// above `entry_dir` but still inside it) is now treated exactly like no
-/// `brink.toml` at all: this function falls back to `entry_dir`.
+/// `brink.toml` at all: this function falls back to `entry_dir`. And even a
+/// VCS-less tree, which has no `.git` boundary to stop at, no longer climbs
+/// "to the filesystem root for free" as the absolute-path reasoning above
+/// describes: `find_config`'s `MAX_ANCESTOR_DEPTH` cap (#1435) bounds *every*
+/// walk — relative-retry or absolute — regardless of whether a `.git` is
+/// ever found.
 #[must_use]
 pub fn native_source_root(entry: &Path) -> PathBuf {
     let entry_dir = entry
@@ -460,6 +528,99 @@ mod tests {
         fs::remove_dir_all(&root).expect("cleanup temp dir");
     }
 
+    // ── unprune-dirs escape hatch (issue #1407) ─────────────────────────
+
+    /// A `brink.toml` with `[project] unprune-dirs = ["node_modules"]` sat
+    /// beside `root` admits a `.brink` file inside `node_modules/` that
+    /// would otherwise be pruned entirely — while `target/`, not named by
+    /// `unprune-dirs`, stays pruned.
+    #[test]
+    fn real_fs_list_unprune_dirs_admits_a_named_ignored_dir_only() {
+        let root = temp_dir("realfs-unprune-dirs");
+
+        fs::write(
+            root.join("brink.toml"),
+            "[project]\nunprune-dirs = [\"node_modules\"]\n",
+        )
+        .expect("write brink.toml");
+        fs::write(root.join("main.brink"), "flow main() {}").expect("write main.brink");
+        fs::create_dir_all(root.join("node_modules/vendor-ink")).expect("mkdir node_modules");
+        fs::write(
+            root.join("node_modules/vendor-ink/lib.brink"),
+            "flow lib() {}",
+        )
+        .expect("write node_modules/vendor-ink/lib.brink");
+        fs::create_dir_all(root.join("target")).expect("mkdir target");
+        fs::write(root.join("target/stray.brink"), "-- stray --")
+            .expect("write target/stray.brink");
+
+        let tree = RealFs::new(&root);
+        let keys = tree.list().expect("list succeeds");
+
+        assert_eq!(
+            keys,
+            vec!["main.brink", "node_modules/vendor-ink/lib.brink"],
+            "unprune-dirs must admit node_modules/ specifically, target/ must stay pruned"
+        );
+
+        fs::remove_dir_all(&root).expect("cleanup temp dir");
+    }
+
+    /// With no `brink.toml` at all, `RealFs::list` behaves exactly as before
+    /// #1407 — the escape-hatch config read is best-effort and must not
+    /// change behavior (or fail `list`) when there is nothing to read.
+    #[test]
+    fn real_fs_list_with_no_brink_toml_still_prunes_normally() {
+        let root = temp_dir("realfs-unprune-dirs-no-config");
+
+        fs::write(root.join("main.brink"), "flow main() {}").expect("write main.brink");
+        fs::create_dir_all(root.join("node_modules")).expect("mkdir node_modules");
+        fs::write(root.join("node_modules/stray.brink"), "-- stray --")
+            .expect("write node_modules/stray.brink");
+
+        let tree = RealFs::new(&root);
+        let keys = tree.list().expect("list succeeds");
+
+        assert_eq!(keys, vec!["main.brink"]);
+
+        fs::remove_dir_all(&root).expect("cleanup temp dir");
+    }
+
+    /// A malformed `brink.toml` (invalid `dialect` value) must not fail
+    /// `RealFs::list` — the best-effort escape-hatch read swallows the parse
+    /// error and behaves as if `unprune-dirs` were unset; the *real*
+    /// `ConfigError` for this file is still raised later, by
+    /// `brink_environment::Project::load`'s canonical parse, not silently
+    /// dropped by this crate.
+    #[test]
+    fn real_fs_list_tolerates_a_malformed_brink_toml() {
+        let root = temp_dir("realfs-unprune-dirs-malformed-config");
+
+        fs::write(
+            root.join("brink.toml"),
+            "[project]\ndialect = \"sideways\"\n",
+        )
+        .expect("write malformed brink.toml");
+        fs::write(root.join("main.brink"), "flow main() {}").expect("write main.brink");
+        fs::create_dir_all(root.join("node_modules")).expect("mkdir node_modules");
+        fs::write(root.join("node_modules/stray.brink"), "-- stray --")
+            .expect("write node_modules/stray.brink");
+
+        let tree = RealFs::new(&root);
+        let keys = tree
+            .list()
+            .expect("list must succeed despite a malformed brink.toml");
+
+        assert_eq!(
+            keys,
+            vec!["main.brink"],
+            "no unprune-dirs could be read from the malformed file, so node_modules/ \
+             stays pruned, same as no config at all"
+        );
+
+        fs::remove_dir_all(&root).expect("cleanup temp dir");
+    }
+
     /// `RealFs::list` excludes `.ink` and `brink.toml` keys even when they
     /// sit alongside `.brink` files — `discover_native`/`EditOverlay` must
     /// never see them, and `read` still serves them (see below).
@@ -557,6 +718,77 @@ mod tests {
         assert_eq!(source, "Shared content.\n");
 
         fs::remove_dir_all(&wrapper).expect("cleanup temp dir");
+    }
+
+    /// Issue #1387 (2/3): `find_config_in_tree`'s #1370 direct probe (no
+    /// `list()` walk — see its doc comment) works by calling `RealFs::read`
+    /// on each `{ancestor}/brink.toml` candidate and treating anything but
+    /// `NotFound` as "found". `find_config_in_tree_reports_found_when_the_
+    /// candidate_read_errors_non_not_found` (brink-project-config) pins that
+    /// contract against a hand-written mock `SourceTree`; this pins the same
+    /// contract against a *real* `RealFs`, with an actual symlink: a
+    /// `brink.toml` that is a symlink to a real file elsewhere must resolve
+    /// exactly as a plain file would (`fs::read_to_string`, which `RealFs::
+    /// read` wraps, follows symlinks) — both `RealFs::read` and the probe
+    /// that depends on it must see the target's real content, not treat the
+    /// symlink as absent or unreadable.
+    #[cfg(unix)]
+    #[test]
+    fn real_fs_read_and_find_config_in_tree_follow_a_symlinked_brink_toml() {
+        use std::os::unix::fs::symlink;
+
+        let root = temp_dir("realfs-symlink-config");
+        fs::write(
+            root.join("real-brink.toml"),
+            "[project]\ndialect = \"brink\"\n",
+        )
+        .expect("write real-brink.toml");
+        symlink(root.join("real-brink.toml"), root.join("brink.toml"))
+            .expect("symlink brink.toml -> real-brink.toml");
+        fs::write(root.join("main.brink"), "flow main() {}").expect("write main.brink");
+
+        let tree = RealFs::new(&root);
+        assert_eq!(
+            tree.read("brink.toml").expect("read follows the symlink"),
+            "[project]\ndialect = \"brink\"\n"
+        );
+
+        let found = brink_project_config::discover_from_entry_in_tree(&tree, "main.brink")
+            .expect("probe read succeeds")
+            .expect("the symlinked brink.toml is discovered");
+        assert_eq!(found, "brink.toml");
+
+        fs::remove_dir_all(&root).expect("cleanup temp dir");
+    }
+
+    /// Issue #1387 (2/3), the other edge case: a `brink.toml` that is
+    /// actually a *directory* on disk (a plausible authoring mistake — an
+    /// empty `mkdir brink.toml` instead of a file, or a half-finished
+    /// project scaffold). `RealFs::read` must surface this as an `Err`
+    /// (`fs::read_to_string` on a directory never panics — it errors), and
+    /// `find_config_in_tree`'s probe must still treat that error as "found"
+    /// per its documented contract ("any other error kind ... means a
+    /// `brink.toml` *exists* at this candidate but this probe couldn't read
+    /// it — treated as found"): the caller's own subsequent `read` of the
+    /// returned key is what turns this into a path-attributed load error
+    /// (`brink-environment`'s `LoadError::ConfigRead`), not a silent
+    /// "no config" fallback to defaults.
+    #[test]
+    fn real_fs_read_and_find_config_in_tree_report_a_directory_shaped_brink_toml_as_found() {
+        let root = temp_dir("realfs-dir-config");
+        fs::create_dir_all(root.join("brink.toml")).expect("mkdir brink.toml (directory)");
+        fs::write(root.join("main.brink"), "flow main() {}").expect("write main.brink");
+
+        let tree = RealFs::new(&root);
+        tree.read("brink.toml")
+            .expect_err("reading a directory as a config file must error, not panic");
+
+        let found = brink_project_config::discover_from_entry_in_tree(&tree, "main.brink")
+            .expect("the directory's read error is not propagated as an Err")
+            .expect("a directory-shaped brink.toml is still reported as found");
+        assert_eq!(found, "brink.toml");
+
+        fs::remove_dir_all(&root).expect("cleanup temp dir");
     }
 
     /// Build a throwaway git repo with one commit containing `files`

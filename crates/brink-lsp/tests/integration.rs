@@ -1091,6 +1091,21 @@ fn e014_severity(diags: &[Value]) -> Option<u64> {
 /// regardless of version — the client-visible end state — up to the same
 /// settling signal.
 fn diagnostics_for_uri_settled(root: &std::path::Path, source: &str) -> Vec<Value> {
+    diagnostics_for_uri_settled_with_init_options(root, source, Value::Null)
+}
+
+/// Like [`diagnostics_for_uri_settled`], but also sets
+/// `initializationOptions` to `init_options` (`Value::Null` to omit the key
+/// entirely, byte-identical to `diagnostics_for_uri_settled`'s own
+/// behavior) — issue #1417's LSP-side probe for the
+/// `initializationOptions.lints`/`.denyWarnings` CLI/API lint-override
+/// tier, alongside `diagnostics_for_uri_settled`'s existing `brink.toml`
+/// `[lints]` coverage.
+fn diagnostics_for_uri_settled_with_init_options(
+    root: &std::path::Path,
+    source: &str,
+    init_options: Value,
+) -> Vec<Value> {
     const MAX_MESSAGES: u64 = 2000;
 
     let bin = env!("CARGO_BIN_EXE_brink-lsp");
@@ -1104,16 +1119,21 @@ fn diagnostics_for_uri_settled(root: &std::path::Path, source: &str) -> Vec<Valu
     let mut stdin = child.stdin.take().unwrap();
     let mut stdout = BufReader::new(child.stdout.take().unwrap());
 
+    let mut init_params = json!({
+        "capabilities": {},
+        "rootUri": format!("file://{}", root.display()),
+    });
+    if !init_options.is_null() {
+        init_params["initializationOptions"] = init_options;
+    }
+
     send(
         &mut stdin,
         &json!({
             "jsonrpc": "2.0",
             "id": 1,
             "method": "initialize",
-            "params": {
-                "capabilities": {},
-                "rootUri": format!("file://{}", root.display()),
-            }
+            "params": init_params,
         }),
     );
     let (_init_resp, _) = recv_response(&mut stdout, 1);
@@ -1211,6 +1231,188 @@ fn brink_toml_lints_override_promotes_published_severity_to_error() {
         e014_severity(&diags),
         Some(1),
         "[lints] E014 = deny should promote the published severity to Error, got: {diags:?}"
+    );
+}
+
+// ── #1417: initializationOptions.lints/.denyWarnings CLI/API override tier ──
+//
+// Extends #1367's file-only `[lints]` resolution (above) with an explicit
+// client-declared tier — the LSP's counterpart of `brink compile`'s
+// `--deny`/`--warn`/`--allow`/`-D warnings` (#1373) and `BrinkPlugin::
+// with_config` (#1394). `resolve_language_options` applies it last, so it
+// always wins over a conflicting `brink.toml` entry for the same code.
+
+/// `initializationOptions.lints.E014 = "deny"`, no `brink.toml` at all: the
+/// published severity must promote to `Error` — the file-only counterpart
+/// this closes the gap on is
+/// `brink_toml_lints_override_promotes_published_severity_to_error` above.
+#[test]
+fn init_options_lints_deny_promotes_published_severity_to_error() {
+    let root = unique_tmp_dir("init-lints-deny");
+    std::fs::create_dir_all(&root).unwrap();
+
+    let diags = diagnostics_for_uri_settled_with_init_options(
+        &root,
+        E014_PROBE_SOURCE,
+        json!({ "lints": { "E014": "deny" } }),
+    );
+
+    std::fs::remove_dir_all(&root).unwrap();
+
+    assert_eq!(
+        e014_severity(&diags),
+        Some(1),
+        "initializationOptions.lints.E014 = deny should promote the published \
+         severity to Error, got: {diags:?}"
+    );
+}
+
+/// `initializationOptions.denyWarnings = true`: same promotion via the
+/// blanket flag rather than a per-code override, mirroring `-D warnings`.
+#[test]
+fn init_options_deny_warnings_promotes_published_severity_to_error() {
+    let root = unique_tmp_dir("init-deny-warnings");
+    std::fs::create_dir_all(&root).unwrap();
+
+    let diags = diagnostics_for_uri_settled_with_init_options(
+        &root,
+        E014_PROBE_SOURCE,
+        json!({ "denyWarnings": true }),
+    );
+
+    std::fs::remove_dir_all(&root).unwrap();
+
+    assert_eq!(
+        e014_severity(&diags),
+        Some(1),
+        "initializationOptions.denyWarnings = true should promote every Warning \
+         (including E014) to Error, got: {diags:?}"
+    );
+}
+
+/// `initializationOptions.lints.E014 = "deny"` must win over a conflicting
+/// `brink.toml [lints] E014 = "allow"` for the same code (#1005 `CLI/API >
+/// file > default` precedence) — proves the override is applied *after* the
+/// file's own resolution, not merely alongside it.
+#[test]
+fn init_options_lints_deny_wins_over_conflicting_brink_toml_allow() {
+    let root = unique_tmp_dir("init-lints-deny-wins");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("brink.toml"), "[lints]\nE014 = \"allow\"\n").unwrap();
+
+    let diags = diagnostics_for_uri_settled_with_init_options(
+        &root,
+        E014_PROBE_SOURCE,
+        json!({ "lints": { "E014": "deny" } }),
+    );
+
+    std::fs::remove_dir_all(&root).unwrap();
+
+    assert_eq!(
+        e014_severity(&diags),
+        Some(1),
+        "initializationOptions.lints.E014 = deny should win over the file's \
+         [lints] E014 = \"allow\", got: {diags:?}"
+    );
+}
+
+/// #1162: `initializationOptions.lints.E014 = "hint"` must publish
+/// `DiagnosticSeverity::HINT` (LSP wire value `4`) end to end — the same
+/// real-process assertion `init_options_lints_deny_promotes_published_severity_to_error`
+/// makes for `deny`/`Error`, now covering the new advisory tier's LSP entry
+/// point (`explicit_initialization_lints`, not just `brink.toml`'s
+/// `[lints]` table).
+#[test]
+fn init_options_lints_hint_publishes_hint_severity() {
+    let root = unique_tmp_dir("init-lints-hint");
+    std::fs::create_dir_all(&root).unwrap();
+
+    let diags = diagnostics_for_uri_settled_with_init_options(
+        &root,
+        E014_PROBE_SOURCE,
+        json!({ "lints": { "E014": "hint" } }),
+    );
+
+    std::fs::remove_dir_all(&root).unwrap();
+
+    assert_eq!(
+        e014_severity(&diags),
+        Some(4),
+        "initializationOptions.lints.E014 = hint should publish DiagnosticSeverity::HINT \
+         (wire value 4), got: {diags:?}"
+    );
+}
+
+// ── #1618: DiagnosticTag::UNNECESSARY on the LSP publish channel ───────
+//
+// `convert::diagnostic_to_lsp`'s `is_unnecessary` classification (unit-level
+// coverage in `src/convert.rs`) has to actually reach the wire — this proves
+// it through a real `brink-lsp` process and `textDocument/publishDiagnostics`,
+// the same "through the LSP publish channel" bar #1367/#1162's own
+// integration tests hold themselves to.
+
+/// `-> DONE` immediately followed by more content in the same block lowers
+/// to `E033` ("unreachable code after divert"), `Warning` by default — one
+/// of the two codes `is_unnecessary` recognizes.
+const E033_PROBE_SOURCE: &str = "\
+== start ==
+-> DONE
+Unreachable.
+";
+
+fn diag_tags(diags: &[Value], code: &str) -> Option<Vec<u64>> {
+    diags
+        .iter()
+        .find(|d| d["code"].as_str() == Some(code))
+        .map(|d| {
+            d["tags"]
+                .as_array()
+                .map(|arr| arr.iter().filter_map(Value::as_u64).collect())
+                .unwrap_or_default()
+        })
+}
+
+/// `E033` must publish with `tags: [1]` (`DiagnosticTag::UNNECESSARY`'s wire
+/// value) so a client dims the unreachable statement instead of just
+/// underlining it — the actual UX payoff #1162 asked for and #1615 deferred.
+#[test]
+fn e033_unreachable_code_publishes_unnecessary_tag() {
+    let root = unique_tmp_dir("unnecessary-tag-e033");
+    std::fs::create_dir_all(&root).unwrap();
+
+    let diags = diagnostics_for_uri_settled(&root, E033_PROBE_SOURCE);
+
+    std::fs::remove_dir_all(&root).unwrap();
+
+    assert_eq!(
+        diag_tags(&diags, "E033"),
+        Some(vec![1]),
+        "E033 should publish DiagnosticTag::UNNECESSARY (wire value 1), got: {diags:?}"
+    );
+}
+
+/// `E014` (bare `~`, "logic line has no effect") is deliberately excluded
+/// from the unnecessary-tag set (see `is_unnecessary`'s doc comment — some of
+/// its emission sites are malformed logic that needs fixing, not deleting),
+/// so it must publish with no `tags` field at all end to end, mirroring
+/// `convert::diagnostic_to_lsp_does_not_tag_unrelated_codes` at the
+/// unit level.
+#[test]
+fn e014_no_effect_does_not_publish_unnecessary_tag() {
+    let root = unique_tmp_dir("unnecessary-tag-e014-excluded");
+    std::fs::create_dir_all(&root).unwrap();
+
+    let diags = diagnostics_for_uri_settled(&root, E014_PROBE_SOURCE);
+
+    std::fs::remove_dir_all(&root).unwrap();
+
+    let e014 = diags
+        .iter()
+        .find(|d| d["code"].as_str() == Some("E014"))
+        .expect("expected an E014 diagnostic");
+    assert!(
+        e014.get("tags").is_none(),
+        "E014 should publish with no tags field, got: {e014:?}"
     );
 }
 
@@ -1451,8 +1653,9 @@ fn wait_for_next_analysis_pass(
 /// #1055 gap 2 (file-watch path): editing `brink.toml` on disk and sending
 /// the `workspace/didChangeWatchedFiles` notification the server's own
 /// `initialized()`-time watcher registration asks for (`**/brink.toml`, in
-/// addition to `**/*.ink`) re-resolves the dialect and re-analyzes on the
-/// very next pass — no client restart, no re-`initialize`.
+/// addition to `**/*.ink` and `**/*.brink`) re-resolves the dialect and
+/// re-analyzes on the very next pass — no client restart, no
+/// re-`initialize`.
 #[test]
 fn brink_toml_file_watch_reload_applies_without_restart() {
     let root = unique_tmp_dir("file-watch-reload");
@@ -1976,4 +2179,511 @@ fn did_open_admits_file_directly_under_ignored_dir() {
         "did_open must admit a file directly under node_modules/ (explicit path admission, \
          not a directory walk), got: {resp:?}"
     );
+}
+
+// ── Native `.brink` workspaces (#1526 / #1553) ──────────────────────
+
+/// `market/barter.brink` — the definition side of a two-file native project.
+const NATIVE_BARTER: &str = "\
+var gold = 10
+
+/// Trade at the market stall.
+flow haggle() {
+  You haggle over the price.
+}
+";
+
+/// `main.brink` — the reference side.
+const NATIVE_MAIN: &str = "\
+use story::market::barter::haggle;
+
+flow start() {
+  The market is busy.
+  -> haggle
+}
+";
+
+/// LSP-level regression test for #1526 (issue #1553): the background
+/// analysis pass must qualify `DefinitionId`s with the db's `ModuleMap`.
+///
+/// A native file's module is its path (`market/barter.brink` →
+/// `story::market::barter`) and is always *declared*, so it qualifies
+/// identity — unlike the undeclared stem-modules the ink corpus uses, where
+/// module-blind and module-aware hashing agree by construction. The visible
+/// tell is the hover **effects** row: `brink_ide::hover` renders it from
+/// `db.effects(info.id)`, so it appears only when the id the background pass
+/// minted is the id the db's per-def queries are keyed by. Before #1526 the
+/// pass ran module-blind and every native symbol's row silently vanished.
+///
+/// Two files, in different directories, precisely because that is where the
+/// two identity schemes diverge most visibly: the qualifying module differs
+/// per file, so one shared bare-name index cannot stand in for it.
+#[test]
+fn native_two_file_workspace_hover_keeps_the_db_backed_effect_row() {
+    const MAX_MESSAGES: u64 = 2000;
+
+    let root = unique_tmp_dir("native-two-file");
+    std::fs::create_dir_all(root.join("market")).unwrap();
+    std::fs::write(root.join("market/barter.brink"), NATIVE_BARTER).unwrap();
+    std::fs::write(root.join("main.brink"), NATIVE_MAIN).unwrap();
+
+    // No declared dialect: a native mount's *default*
+    // (`AnalysisOptions::default()`), matching `brink-ide`'s own
+    // `native_cross_file_hover_under_default_dialect`.
+    let (mut child, mut stdin, mut stdout) = start_server_at(&root, None);
+
+    // Both files are opened explicitly here — this test is about identity,
+    // not admission. (Since #1562 the workspace scan enumerates `.brink`
+    // too, so a native sibling reaches the db either way; the
+    // `native_two_file_workspace_*_without_opening_the_sibling` test below
+    // covers the scan path on its own.)
+    let barter_uri = format!("file://{}", root.join("market/barter.brink").display());
+    let main_uri = format!("file://{}", root.join("main.brink").display());
+    did_open_native(&mut stdin, &barter_uri, NATIVE_BARTER);
+    did_open_native(&mut stdin, &main_uri, NATIVE_MAIN);
+    // `file_count >= 2` pins the pass that has *both* files — an earlier
+    // single-file pass cannot satisfy it (see `wait_for_analysis_pass_where`).
+    let _ = wait_for_analysis_pass_where(&mut stdout, &main_uri, MAX_MESSAGES, |c| c >= 2);
+
+    // `flow start()` in `main.brink` (module `story::main`) …
+    let start = hover_at(&mut stdin, &mut stdout, 2, &main_uri, 2, 7);
+    // … and `flow haggle()` in `market/barter.brink` (module
+    // `story::market::barter`) — a per-file divergence would show on one and
+    // not the other.
+    let haggle = hover_at(&mut stdin, &mut stdout, 3, &barter_uri, 3, 7);
+
+    // The cross-file divert target `-> haggle` in `main.brink`. Until issue
+    // #1562 this resolved to nothing — the LSP partitioned projects by the
+    // INCLUDE graph and native `.brink` has no INCLUDEs, so each native file
+    // was its own single-file project and the divert target was simply not
+    // in scope. It now crosses the file boundary (the native module tree is
+    // one project), so the hover names the *defining* file.
+    let cross_file = hover_at(&mut stdin, &mut stdout, 4, &main_uri, 4, 6);
+
+    drop(stdin);
+    drop(stdout);
+    let _ = child.wait();
+    std::fs::remove_dir_all(&root).unwrap();
+
+    let start_md = start["result"]["contents"]["value"].as_str().unwrap_or("");
+    assert!(
+        start_md.contains("**knot** `start`") && start_md.contains("**effects**"),
+        "native hover lost the db-backed effect row for `start`: {start}"
+    );
+    assert!(
+        start_md.contains("main.brink"),
+        "hover must name the defining file: {start}"
+    );
+
+    let haggle_md = haggle["result"]["contents"]["value"].as_str().unwrap_or("");
+    assert!(
+        haggle_md.contains("**knot** `haggle`") && haggle_md.contains("**effects**"),
+        "native hover lost the db-backed effect row for `haggle`: {haggle}"
+    );
+    assert!(
+        haggle_md.contains("Trade at the market stall."),
+        "hover must carry the doc comment: {haggle}"
+    );
+
+    let cross_file_md = cross_file["result"]["contents"]["value"]
+        .as_str()
+        .unwrap_or("");
+    assert!(
+        cross_file_md.contains("**knot** `haggle`"),
+        "a cross-file native divert must hover its target (#1562): {cross_file}"
+    );
+    assert!(
+        cross_file_md.contains("barter.brink"),
+        "the cross-file hover must name the defining file: {cross_file}"
+    );
+    assert!(
+        cross_file_md.contains("**effects**"),
+        "the db-backed effect row must survive the identity join across the \
+         file boundary: {cross_file}"
+    );
+}
+
+/// Start a server rooted at `root`, `initialize` + `initialized` it, and
+/// return its pipes. `dialect` is written verbatim into
+/// `initializationOptions.dialect` when given.
+fn start_server_at(
+    root: &std::path::Path,
+    dialect: Option<&str>,
+) -> (Child, ChildStdin, BufReader<ChildStdout>) {
+    let bin = env!("CARGO_BIN_EXE_brink-lsp");
+    let mut child = Command::new(bin)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to start brink-lsp");
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    let mut params = json!({
+        "capabilities": {},
+        "rootUri": format!("file://{}", root.display()),
+    });
+    if let Some(dialect) = dialect {
+        params["initializationOptions"] = json!({ "dialect": dialect });
+    }
+    send(
+        &mut stdin,
+        &json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": params}),
+    );
+    let (_init_resp, _) = recv_response(&mut stdout, 1);
+    send(
+        &mut stdin,
+        &json!({"jsonrpc": "2.0", "method": "initialized", "params": {}}),
+    );
+
+    (child, stdin, stdout)
+}
+
+/// Send a `textDocument/didOpen` for a native document.
+fn did_open_native(stdin: &mut ChildStdin, uri: &str, text: &str) {
+    send(
+        stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {"textDocument": {
+                "uri": uri, "languageId": "brink", "version": 1, "text": text,
+            }},
+        }),
+    );
+}
+
+/// Send the request `build(id)` produces, and keep re-sending it (with a
+/// fresh id, briefly backing off) until `ready` accepts the response or the
+/// attempts run out. Returns the last response either way.
+///
+/// The point is the *failure* mode: a request is always answered, so a
+/// regression surfaces as a response the caller can assert on, whereas
+/// pinning the same expectation to a `$/brink/backgroundAnalysisComplete`
+/// predicate the regression makes unsatisfiable would block the reader
+/// forever. Requests only need retrying at all because a server-side race
+/// (the workspace scan versus the client's own `didOpen`) decides which
+/// analysis pass lands first.
+fn retry_request(
+    stdin: &mut ChildStdin,
+    stdout: &mut BufReader<ChildStdout>,
+    first_id: u64,
+    build: impl Fn(u64) -> Value,
+    ready: impl Fn(&Value) -> bool,
+) -> Value {
+    const ATTEMPTS: u64 = 10;
+
+    let mut last = Value::Null;
+    for attempt in 0..ATTEMPTS {
+        let id = first_id + attempt;
+        send(stdin, &build(id));
+        last = recv_response(stdout, id).0;
+        if ready(&last) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    last
+}
+
+/// Request `textDocument/hover` at a position and return the raw response.
+fn hover_at(
+    stdin: &mut ChildStdin,
+    stdout: &mut BufReader<ChildStdout>,
+    id: u64,
+    uri: &str,
+    line: u32,
+    character: u32,
+) -> Value {
+    send(
+        stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "textDocument/hover",
+            "params": {
+                "textDocument": {"uri": uri},
+                "position": {"line": line, "character": character},
+            },
+        }),
+    );
+    recv_response(stdout, id).0
+}
+
+/// Issue #1562, the headline gap: **cross-file navigation in a native
+/// workspace**, exercised the way a user actually meets it — one file open,
+/// the sibling module merely present on disk.
+///
+/// Two things had to be wrong for this to fail, and both are fixed here:
+/// the workspace scan enumerated `.ink` only, so `market/barter.brink` never
+/// entered the db at all; and `compute_projects` grouped by INCLUDE
+/// reachability, which native has none of, so even once both files *were* in
+/// the db they were two disjoint single-file projects and `haggle` was not
+/// in `main.brink`'s navigation scope.
+#[test]
+fn native_two_file_workspace_goes_to_definition_without_opening_the_sibling() {
+    const MAX_MESSAGES: u64 = 2000;
+
+    let root = unique_tmp_dir("native-cross-file-def");
+    std::fs::create_dir_all(root.join("market")).unwrap();
+    std::fs::write(root.join("market/barter.brink"), NATIVE_BARTER).unwrap();
+    std::fs::write(root.join("main.brink"), NATIVE_MAIN).unwrap();
+
+    let (mut child, mut stdin, mut stdout) = start_server_at(&root, Some("brink"));
+
+    // Only `main.brink` is opened. `market/barter.brink` is on disk and must
+    // reach the db through the `initialized` workspace scan.
+    let main_uri = format!("file://{}", root.join("main.brink").display());
+    let barter_uri = format!("file://{}", root.join("market/barter.brink").display());
+    did_open_native(&mut stdin, &main_uri, NATIVE_MAIN);
+    let _ = wait_for_next_analysis_pass(&mut stdout, &main_uri, MAX_MESSAGES);
+
+    // Both requests are *retried* rather than pinned to a `file_count >= 2`
+    // analysis pass: the scan and the `didOpen` race, so the first pass to
+    // complete may be either one's. A request always gets a response, so a
+    // regression fails these assertions instead of blocking on a completion
+    // notification that will never arrive.
+    let definition = retry_request(
+        &mut stdin,
+        &mut stdout,
+        2,
+        |id| {
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "textDocument/definition",
+                "params": {
+                    // The cross-file divert target `-> haggle` in `main.brink`.
+                    "textDocument": {"uri": &main_uri},
+                    "position": {"line": 4, "character": 6},
+                },
+            })
+        },
+        |resp| resp["result"]["uri"].is_string(),
+    );
+
+    // Find-references from the definition side is the same scope read the
+    // other way: the reference lives in a file the defining module never
+    // mentions.
+    let references = retry_request(
+        &mut stdin,
+        &mut stdout,
+        20,
+        |id| {
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "textDocument/references",
+                "params": {
+                    "textDocument": {"uri": &barter_uri},
+                    "position": {"line": 3, "character": 7},
+                    "context": {"includeDeclaration": false},
+                },
+            })
+        },
+        |resp| {
+            resp["result"]
+                .as_array()
+                .is_some_and(|locs| !locs.is_empty())
+        },
+    );
+
+    drop(stdin);
+    drop(stdout);
+    let _ = child.wait();
+    std::fs::remove_dir_all(&root).unwrap();
+
+    let target = definition["result"]["uri"].as_str().unwrap_or("");
+    assert!(
+        target.ends_with("market/barter.brink"),
+        "go-to-definition must cross into the sibling native module (#1562), \
+         got: {definition}"
+    );
+
+    let ref_uris: Vec<&str> = references["result"]
+        .as_array()
+        .map(|locs| {
+            locs.iter()
+                .filter_map(|loc| loc["uri"].as_str())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    assert!(
+        ref_uris.iter().any(|uri| uri.ends_with("main.brink")),
+        "find-references must see the referring native module (#1562), \
+         got: {references}"
+    );
+}
+
+/// `alpha.brink` and `beta.brink` — two native modules that each declare a
+/// flow named `greet`. Legal: a native file's module is its path and is
+/// always *declared*, so the two are `story::alpha::greet` and
+/// `story::beta::greet` and they coexist (M-2d, issue #790) — but only under
+/// `Dialect::Brink`, which is exactly the input the LSP's own `ProjectDb`
+/// never received.
+const NATIVE_ALPHA: &str = "\
+/// Greeting from alpha.
+flow greet() {
+  Alpha says hello.
+}
+";
+
+const NATIVE_BETA: &str = "\
+/// Greeting from beta.
+flow greet() {
+  Beta says hello.
+}
+";
+
+/// The sibling bug folded into #1562: `Backend`'s `ProjectDb` never received
+/// `set_analysis_options`, so every db-backed request handler — hover's
+/// `db.effects`/`db.signature`/`db.infer_body`, inlay hints, code actions,
+/// rename's UFCS resolution — ran under `AnalysisOptions::default()` while
+/// the published diagnostics used the client's declared options. The #1553
+/// bug class in a second db holder.
+///
+/// `Dialect::StrictInk` (the default) gates off M-2d cross-declared-module
+/// coexistence in `symbol_index_query`, so under the stale default the db's
+/// index kept only *one* of the two `greet`s. The visible tell is hover's
+/// effects row, which `brink_ide::hover` renders from `db.effects(info.id)`:
+/// the analysis (running under the declared `brink` dialect) minted an id
+/// for both, but only one of them keyed anything in the db.
+#[test]
+fn native_homonym_flows_keep_the_db_backed_hover_under_the_declared_dialect() {
+    const MAX_MESSAGES: u64 = 2000;
+
+    let root = unique_tmp_dir("native-homonym-dialect");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("alpha.brink"), NATIVE_ALPHA).unwrap();
+    std::fs::write(root.join("beta.brink"), NATIVE_BETA).unwrap();
+
+    let (mut child, mut stdin, mut stdout) = start_server_at(&root, Some("brink"));
+
+    let alpha_uri = format!("file://{}", root.join("alpha.brink").display());
+    let beta_uri = format!("file://{}", root.join("beta.brink").display());
+    did_open_native(&mut stdin, &alpha_uri, NATIVE_ALPHA);
+    did_open_native(&mut stdin, &beta_uri, NATIVE_BETA);
+    let _ = wait_for_analysis_pass_where(&mut stdout, &alpha_uri, MAX_MESSAGES, |c| c >= 2);
+
+    // `flow greet()` is line 1 in both files (line 0 is the doc comment).
+    let alpha = hover_at(&mut stdin, &mut stdout, 2, &alpha_uri, 1, 7);
+    let beta = hover_at(&mut stdin, &mut stdout, 3, &beta_uri, 1, 7);
+
+    drop(stdin);
+    drop(stdout);
+    let _ = child.wait();
+    std::fs::remove_dir_all(&root).unwrap();
+
+    for (label, resp) in [("alpha", &alpha), ("beta", &beta)] {
+        let md = resp["result"]["contents"]["value"].as_str().unwrap_or("");
+        assert!(
+            md.contains("**knot** `greet`"),
+            "hover over `{label}`'s own `greet` must resolve: {resp}"
+        );
+        assert!(
+            md.contains("**effects**"),
+            "`{label}`'s db-backed effect row is missing — the server's own \
+             ProjectDb is analyzing under stale default options: {resp}"
+        );
+    }
+}
+
+/// Default-dialect counterpart of
+/// `native_homonym_flows_keep_the_db_backed_hover_under_the_declared_dialect`
+/// above (issue #1562 review finding): no `initializationOptions.dialect` at
+/// all — the common case, since a native workspace has no ink dialect to
+/// declare in the first place. `brink-db`'s `symbol_index_query` now widens
+/// M-2d cross-declared-module coexistence with the same `project_is_native`
+/// seam `whole_project_diagnostics_query` already uses for the ink-only
+/// `E064` gate (`crates/internal/brink-db/src/queries/mod.rs`), so this must
+/// hold under the *default* `Dialect::StrictInk` exactly as it holds under a
+/// client-declared `dialect: "brink"`.
+///
+/// Pinned directly against `textDocument/publishDiagnostics` rather than
+/// hover alone: before the fix, the stale default dialect made
+/// `alpha`/`beta`'s second-registered `greet` an ordinary same-name
+/// redefinition, which is a diagnosable `E022` — not just a missing hover
+/// row.
+#[test]
+fn native_homonym_flows_coexist_under_the_default_dialect() {
+    const MAX_MESSAGES: u64 = 2000;
+
+    let root = unique_tmp_dir("native-homonym-default-dialect");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("alpha.brink"), NATIVE_ALPHA).unwrap();
+    std::fs::write(root.join("beta.brink"), NATIVE_BETA).unwrap();
+
+    // No declared dialect — the case the M-2d gate must not depend on.
+    let (mut child, mut stdin, mut stdout) = start_server_at(&root, None);
+
+    let alpha_uri = format!("file://{}", root.join("alpha.brink").display());
+    let beta_uri = format!("file://{}", root.join("beta.brink").display());
+    did_open_native(&mut stdin, &alpha_uri, NATIVE_ALPHA);
+    did_open_native(&mut stdin, &beta_uri, NATIVE_BETA);
+
+    // Collect the version-less background-analysis `publishDiagnostics` set
+    // (the #695 convention every helper in this file relies on) for *both*
+    // files along the way to the pass that has seen both —
+    // `wait_for_analysis_pass_where` only tracks a single `uri`.
+    let mut alpha_diags: Vec<Value> = Vec::new();
+    let mut beta_diags: Vec<Value> = Vec::new();
+    let mut settled = false;
+    for _ in 0..MAX_MESSAGES {
+        let msg = recv(&mut stdout);
+        if msg["method"] == "textDocument/publishDiagnostics" && msg["params"]["version"].is_null()
+        {
+            let diags = msg["params"]["diagnostics"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            if msg["params"]["uri"] == alpha_uri {
+                alpha_diags = diags;
+            } else if msg["params"]["uri"] == beta_uri {
+                beta_diags = diags;
+            }
+        } else if msg["method"] == "$/brink/backgroundAnalysisComplete" {
+            let file_count = msg["params"]["file_count"].as_u64().unwrap_or(0);
+            if file_count >= 2 {
+                settled = true;
+                break;
+            }
+        }
+    }
+    assert!(
+        settled,
+        "background analysis never signaled a matching completion within {MAX_MESSAGES} messages"
+    );
+
+    // `flow greet()` is line 1 in both files (line 0 is the doc comment).
+    let alpha = hover_at(&mut stdin, &mut stdout, 2, &alpha_uri, 1, 7);
+    let beta = hover_at(&mut stdin, &mut stdout, 3, &beta_uri, 1, 7);
+
+    drop(stdin);
+    drop(stdout);
+    let _ = child.wait();
+    std::fs::remove_dir_all(&root).unwrap();
+
+    assert!(
+        alpha_diags.is_empty(),
+        "alpha.brink must not get a duplicate-definition diagnostic for its own \
+         declared-module `greet` under the default dialect (#1562): {alpha_diags:?}"
+    );
+    assert!(
+        beta_diags.is_empty(),
+        "beta.brink must not get a duplicate-definition diagnostic for its own \
+         declared-module `greet` under the default dialect (#1562): {beta_diags:?}"
+    );
+
+    for (label, resp) in [("alpha", &alpha), ("beta", &beta)] {
+        let md = resp["result"]["contents"]["value"].as_str().unwrap_or("");
+        assert!(
+            md.contains("**knot** `greet`"),
+            "hover over `{label}`'s own `greet` must resolve: {resp}"
+        );
+        assert!(
+            md.contains("**effects**"),
+            "`{label}`'s db-backed effect row is missing under the default dialect: {resp}"
+        );
+    }
 }

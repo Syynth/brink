@@ -21,11 +21,19 @@ config every mount reads.
 dialect = "brink"      # "brink" | "strict-ink" (default: "strict-ink")
 types   = "gradual"    # "gradual" | "strict"   (default: dialect-keyed —
                        # strict for "brink", gradual for "strict-ink")
+unprune-dirs = ["node_modules"]  # directory names a native (.brink) compile
+                                 # must not prune from discovery, on top of
+                                 # the default target/.git/node_modules list
+                                 # — see "Directory discovery pruning" below
+                                 # (issue #1407)
 
 [lints]
 deny-warnings = true   # promote every Warning-severity diagnostic to
                        # Error (the `-D warnings` equivalent; issue #1160)
-E014 = "deny"          # per-code severity override: "allow" | "warn" | "deny"
+E014 = "deny"          # per-code severity override:
+                       # "allow" | "warn" | "deny" | "info" | "hint"
+                       # ("info"/"hint" down-level to an advisory tier below
+                       # Warning — issue #1162)
 ```
 
 All keys are optional. An empty or absent `[project]`/`[lints]` table — or
@@ -58,8 +66,30 @@ understand.
 - `allow` — **unlike Rust's `allow`, this does not remove the diagnostic.**
   It only buys immunity from `deny-warnings`; the diagnostic still resolves
   to `Warning` and is still reported. To actually suppress a diagnostic at a
-  specific site, use a `//brink-disable` comment instead — a different,
-  per-site mechanism, not a project-wide policy knob.
+  specific site, use a `//brink-disable` comment, or — in a `.brink` file —
+  an `@[allow(…)]` annotation on the declaration. Both are per-site
+  mechanisms, not project-wide policy knobs.
+- `info` / `hint` (issue #1162) — down-level the diagnostic to the `Info` or
+  `Hint` severity tier respectively, below `Warning`. Like `allow`, both are
+  immune to `deny-warnings` (escalating a deliberate downgrade back up would
+  defeat the point of it). These map to the LSP client's `Information`/`Hint`
+  `DiagnosticSeverity` — the tier IDE conventions use for advisory findings
+  that would be too loud as a `Warning` squiggle (e.g. unused-symbol
+  dimming). No diagnostic code defaults to either tier; a project opts a
+  `Warning`-default code into one explicitly, per code.
+
+### A source-level `@[allow]` wins
+
+In a `.brink` file, `@[allow(E151)]` written above a declaration removes
+that diagnostic for the declaration's whole span, and it **beats this
+table** — including `E151 = "deny"` and `deny-warnings = true`. The
+annotation names one declaration and was written deliberately; `brink.toml`
+cannot be that specific. What the annotation cannot do is widen the
+suppressible set: it accepts only codes whose *default* severity is
+`Warning`, so no `[lints]` entry can make an error-tier code suppressible,
+and none can make a warning-tier code unsuppressible. Naming an unknown code
+(`E153`) or an error-tier one (`E154`) is itself a compile error — a
+suppression that silently does nothing is never allowed.
 
 Only codes whose *default* severity is `Warning` are overridable at all — a
 diagnostic that is a hard error by default (e.g. a parse error) can never be
@@ -73,17 +103,29 @@ A key that isn't a real diagnostic code, or names a non-overridable one, is
 never merged into the resolved policy — it's reported as a warning (the same
 channel unknown top-level/`[project]` keys use), never silently dropped.
 
-`brink compile` has a CLI override tier for `[lints]`/`deny-warnings`, same
-as `dialect`/`types` below: repeatable `--deny`/`--warn`/`--allow <CODE>`
-flags, plus `-D warnings` (mirroring `rustc`'s own flag) for `deny-warnings`.
-See [`brink compile`](./cli/compile.md#options) and
-[Precedence](#precedence-the-file-is-the-default-code-wins) below.
-`bevy-brink`'s dev-mode `InkLoader` has one too, via
-`BrinkPlugin::with_config(ProjectConfig { lints, deny_warnings, .. })`
-(issue #1394; see the Precedence table below). `brink ide`, `brink-lsp`, and
-the wasm editor session still resolve `[lints]`/`deny-warnings` from
-`brink.toml` (or the plain default) alone, with no override source of their
-own.
+Every mount now has a CLI/API override tier for `[lints]`/`deny-warnings`,
+same as `dialect`/`types` below — always winning over the same code in a
+discovered `brink.toml` (see [Precedence](#precedence-the-file-is-the-default-code-wins)
+below):
+
+- **`brink compile`** and **`brink ide`** (issue #1373, extended to
+  `brink ide` by #1417): repeatable `--deny`/`--warn`/`--allow <CODE>`
+  flags, plus `-D warnings` (mirroring `rustc`'s own flag) for
+  `deny-warnings`. See [`brink compile`](./cli/compile.md#options) /
+  [`brink ide`](./cli/ide.md#anatomy-of-a-command).
+- **`bevy-brink`**'s dev-mode `InkLoader`, via
+  `BrinkPlugin::with_config(ProjectConfig { lints, deny_warnings, .. })`
+  (issue #1394) — the same override also reaches
+  `compile_story_inline` (issue #1380), as long as it's called *after*
+  the `BrinkPlugin`/`BrinkAssetsPlugin` that carries the override has
+  been added to the app.
+- **`brink-lsp`** (issue #1417), via
+  `initializationOptions.lints`/`.denyWarnings` — see
+  [Per mount](#per-mount) below.
+- **The wasm editor session** (issue #1417), via
+  `EditorSessionHandle.setLintOverrides(json)`/
+  `.setDenyWarningsOverride(bool)`/`.clearDenyWarningsOverride()` — see
+  [Per mount](#per-mount) below.
 
 ## Discovery
 
@@ -94,13 +136,18 @@ multi-file project with `story.ink` in `src/chapters/` and `brink.toml` at
 the repo root still finds it.
 
 For the real-filesystem mounts — `brink compile`, `brink ide`, and
-`brink-lsp` — the walk is bounded at a workspace/git boundary: it never
-climbs past a directory containing a `.git` entry (an ordinary repository's
-`.git/` directory, or a linked worktree's `.git` pointer file). Inside a
-non-repository tree (no VCS at all), the walk still runs all the way to the
-filesystem root. Either way, a `brink.toml` that lives outside the
-project's own repository is never picked up by these mounts, even by
-accident — the file is treated exactly as if it didn't exist.
+`brink-lsp` — the walk is bounded two ways, either of which stops it. It
+never climbs past a directory containing a `.git` entry (an ordinary
+repository's `.git/` directory, or a linked worktree's `.git` pointer file);
+and, independent of that, it never climbs more than a fixed number of
+ancestor directories, so a non-repository tree (no VCS at all, hence no
+`.git` boundary to stop at) doesn't climb all the way to the filesystem root
+either. Either way, a `brink.toml` that lives outside the bound is never
+picked up by these mounts, even by accident — but it isn't treated as
+silently as if it didn't exist: discovery reports it back as a warning
+(logged by `brink-lsp`; returned alongside the result by
+`brink_project_config::load_from_entry`), naming the skipped file so an
+author can tell why it wasn't applied.
 
 The virtual mounts have no filesystem or `.git` to bound against, so each is
 bounded at its own tree instead: the wasm editor session's
@@ -116,6 +163,55 @@ my-project/
         └── story.ink    ← brink compile src/chapters/story.ink
 ```
 
+## Directory discovery pruning
+
+A native (`.brink`) compile's discovery walk enumerates every `.brink` file
+under the project root — but never descends into a directory named `target`,
+`.git`, or `node_modules`. These are build output and VCS/dependency
+metadata, never a valid source location, and can be enormous; pruning them
+is the default with no opt-in required.
+
+Before issue #1407, that pruning was absolute: a project that legitimately
+kept `.brink` sources under one of those names got no file and no error —
+the source was silently invisible to every compile. Three things changed:
+
+- **An escape hatch.** `[project] unprune-dirs` (the Schema block above)
+  names directories that should **not** be pruned, on top of the default
+  list. Only entries that are actually one of `target`/`.git`/`node_modules`
+  have any effect — a value outside that set is a no-op (nothing was ever
+  pruned there) and is reported as a warning, the same "unknown key" channel
+  described above, on the theory it's more likely a typo than a deliberate
+  no-op.
+- **A diagnostic.** When discovery prunes a directory that, within a bounded
+  scan of itself, contains a `.brink` file — the shape of "an author
+  probably meant for this to be found" — it's reported as a warning naming
+  the directory and the `unprune-dirs` fix, rather than saying nothing. The
+  scan is bounded by depth and by a total-entry budget (not a full recursive
+  descent), deep enough to catch the `node_modules/<package>/lib.brink`
+  shape an npm-style dependency tree actually uses, but never turning a
+  cheap prune into an expensive walk of the very tree being skipped. A
+  directory named by `unprune-dirs` is, naturally, never reported this way —
+  it wasn't pruned in the first place.
+- **`.gitignore` is deliberately not consulted**, and that's a decision, not
+  a gap. Discovery is a deterministic-compilation input: the same tree,
+  compiled by anyone, must discover the same files. `.gitignore` resolution
+  depends on more than a repository's tracked content — a local uncommitted
+  edit, a per-clone `.git/info/exclude`, a user's global `core.excludesFile`
+  — any of which could make two checkouts of byte-identical tracked source
+  compile differently. `unprune-dirs` avoids exactly that: it lives in
+  `brink.toml`, itself tracked, versioned source, so it resolves the same
+  way on every clone.
+
+Both the escape hatch and the diagnostic live once, as opt-in builders
+(`Walk::allow`, `Walk::warn_on_pruned_sources`) on the shared recursive walk
+every native discovery traversal goes through — so a *new* traversal never
+has to reimplement the pruning policy itself. But each builder is still
+opt-in per traversal: today only the `brink compile` / `brink ide` path
+(`brink-driver`'s `RealFs::list`) wires them up. `brink-lsp`'s own
+workspace-scan walk calls the shared `Walk` unadorned, so an LSP-open
+project honors neither `unprune-dirs` nor the silent-skip diagnostic yet —
+tracked as a follow-up to wire both into `brink-lsp`.
+
 ## Precedence: the file is the default, code wins
 
 **An explicit API call or CLI flag always overrides `brink.toml`.** The file
@@ -127,11 +223,13 @@ one-off choice that the file must not silently overrule.
 | Source | Wins over |
 |--------|-----------|
 | `--dialect brink` / `--types strict` (CLI flag actually passed) | `brink.toml`, defaults |
-| `--deny`/`--warn`/`--allow <CODE>` / `-D warnings` (`brink compile` only, CLI flag actually passed) | `brink.toml`, defaults |
+| `--deny`/`--warn`/`--allow <CODE>` / `-D warnings` (`brink compile`/`brink ide`, CLI flag actually passed) | `brink.toml`, defaults |
+| `initializationOptions.lints`/`.denyWarnings` (`brink-lsp`, key actually set at `initialize`) | `brink.toml`, defaults |
 | `setLanguageDialect(...)` / `setTypePolicy(...)` (explicit call) | `brink.toml`, defaults |
-| `BrinkPlugin::with_config(...)` / `BrinkAssetsPlugin::with_config(...)` (`bevy-brink`, field actually set) | `brink.toml`, defaults |
+| `setLintOverrides(...)` / `setDenyWarningsOverride(...)` (wasm editor session, explicit call) | `brink.toml`, defaults |
+| `BrinkPlugin::with_config(...)` / `BrinkAssetsPlugin::with_config(...)` (`bevy-brink`, field actually set — reaches `InkLoader` and `compile_story_inline`) | `brink.toml`, defaults |
 | `brink.toml`'s `[project] dialect`/`types` | defaults only |
-| `brink.toml`'s `[lints]`/`deny-warnings` (for a code without a `brink compile` CLI override) | defaults only |
+| `brink.toml`'s `[lints]`/`deny-warnings` (for a code without a CLI/API override above) | defaults only |
 | Dialect-keyed default (`brink` → `strict`, `strict-ink` → `gradual`) | — |
 
 ## Per mount
@@ -146,15 +244,35 @@ one-off choice that the file must not silently overrule.
   while any other code in the file's `[lints]` table still applies. See
   [`brink compile`](./cli/compile.md).
 - **`brink ide`** has no `--dialect`/`--types` flags of its own — the file
-  (or the plain defaults, absent one) is the only source, and this includes
-  `[lints]`/`deny-warnings`. See [`brink ide`](./cli/ide.md).
+  (or the plain defaults, absent one) is the only source for those two. It
+  does have a `--deny`/`--warn`/`--allow <CODE>` / `-D warnings` tier for
+  `[lints]`/`deny-warnings` (issue #1417), identical to `brink compile`'s and
+  applied the same way — an explicit flag wins over the file for that code,
+  every other code in the file's `[lints]` table still applies. Every
+  subcommand that loads a project honors it. See
+  [`brink ide`](./cli/ide.md#anatomy-of-a-command).
 - **`brink-lsp`** discovers `brink.toml` from the workspace roots the client
   declares at `initialize`, resolving `[project] dialect`/`types` *and*
   `[lints]`/`deny-warnings` into its shared `LanguageOptions`. A later
   `workspace/didChangeConfiguration` notification or a watched edit to
   `brink.toml` re-resolves and re-stores the policy (`reload_brink_toml`),
   so published diagnostic severity picks up a `[lints]` change without a
-  client restart.
+  client restart. `initializationOptions.lints` (issue #1417) is an object
+  `{ "<CODE>": "deny" | "warn" | "allow" | "info" | "hint" }` (the last two
+  added by issue #1162), and
+  `initializationOptions.denyWarnings` a boolean — both resolved once at
+  `initialize` (mirroring `initializationOptions.dialect`/`.types`) and
+  applied last, so they always win over the same code in the discovered
+  `brink.toml`. An unrecognized per-code level string, or an unrecognized/
+  non-overridable code, is reported through the server's usual
+  `tracing::warn!` channel, never silently dropped. A second, independent
+  mechanism also dims text in the client (issue #1618): `E033` (unreachable
+  code after a divert) and `E095` (`#@was` self-alias) publish with LSP's
+  `DiagnosticTag::UNNECESSARY`, which VS Code and similar clients render as
+  faded/dimmed rather than underlined. This tag is orthogonal to
+  severity — it rides alongside whatever severity the code is published at
+  (including the `Warning` default these two carry today), not another tier
+  like `Info`/`Hint` above.
 - **The wasm editor session** (`@brink-lang/web`'s `EditorSessionHandle`) has
   no filesystem of its own — but it is inherently virtual, so it discovers
   `brink.toml` the same way `brink compile`/`brink ide` do: by walking its
@@ -204,6 +322,21 @@ one-off choice that the file must not silently overrule.
   `applyProjectConfig(toml)` instead — the same application/precedence
   rules apply, just without the discovery step.
 
+  An embedder that wants to set `[lints]`/`deny-warnings` policy
+  programmatically — without shipping a `brink.toml` at all, or to override
+  one it doesn't control — calls `setLintOverrides(json)` (issue #1417): a
+  JSON object `{ "<CODE>": "deny" | "warn" | "allow" | "info" | "hint" }`
+  (the last two added by issue #1162) that **replaces**
+  the session's explicit override map (`"{}"` clears it), plus
+  `setDenyWarningsOverride(bool)`/`clearDenyWarningsOverride()` for the
+  blanket flag. Both always win over the same code in an applied
+  `brink.toml`'s `[lints]` table, in either call order — a later
+  `applyProjectConfig`/`discoverProjectConfig` re-applies the explicit
+  overrides on top of whatever it just resolved from the file, so a
+  `brink.toml` reload can never silently drop a previously-set override.
+  Returns the unrecognized-level/unrecognized-code warnings as JSON (a
+  `string[]`), the same channel `applyProjectConfig` uses.
+
 ## Driving the compiler as a library
 
 `AnalysisOptions` itself has no notion of a config file — it's the plain
@@ -219,7 +352,15 @@ use brink_compiler::{AnalysisOptions, compile_path_with_options};
 
 let entry = Path::new("story.ink");
 let mut options = AnalysisOptions::default();
-if let Some(loaded) = brink_project_config::load_from_entry(entry)? {
+let (loaded, discovery_warnings) = brink_project_config::load_from_entry(entry)?;
+// A `brink.toml` the bounded discovery walk stepped over (a workspace/git
+// boundary, or the ancestor-depth cap for a VCS-less tree) is reported here
+// rather than silently ignored — never applied, but worth telling the
+// author about (issue #1435).
+for warning in &discovery_warnings {
+    eprintln!("{warning}");
+}
+if let Some(loaded) = loaded {
     for warning in &loaded.warnings {
         eprintln!("{warning}");
     }

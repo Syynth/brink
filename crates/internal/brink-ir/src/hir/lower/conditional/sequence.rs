@@ -2,7 +2,7 @@ use brink_syntax::ast::{self, AstNode};
 
 use crate::provenance::NodeClass;
 
-use crate::{Block, DiagnosticCode, Sequence, SequenceType, Stmt};
+use crate::{Block, DiagnosticCode, Sequence, SequenceBranch, SequenceType, Stmt};
 
 use super::super::block::{lower_branch_body, wrap_content_as_block};
 use super::super::context::{LowerScope, LowerSink, Lowered};
@@ -17,15 +17,19 @@ impl LowerSequence for ast::SequenceWithAnnotation {
         let branches = if let Some(inline_branches) = self.inline_branches() {
             inline_branches
                 .branches()
-                .map(|b| wrap_content_as_block(b.syntax(), scope, sink))
+                .map(|b| SequenceBranch {
+                    ptr: scope.prov(NodeClass::SequenceBranch, b.syntax()),
+                    body: wrap_content_as_block(b.syntax(), scope, sink),
+                })
                 .collect()
         } else if let Some(ml_branches) = self.multiline_branches() {
             ml_branches
                 .branches()
-                .map(|b| {
-                    b.body().map_or_else(Block::default, |body| {
+                .map(|b| SequenceBranch {
+                    ptr: scope.prov(NodeClass::SequenceBranch, b.syntax()),
+                    body: b.body().map_or_else(Block::default, |body| {
                         lower_branch_body(body.syntax(), scope, sink)
-                    })
+                    }),
                 })
                 .collect()
         } else {
@@ -45,9 +49,12 @@ impl LowerSequence for ast::SequenceWithAnnotation {
 
 impl LowerSequence for ast::ImplicitSequence {
     fn lower_sequence(&self, scope: &LowerScope, sink: &mut impl LowerSink) -> Lowered<Sequence> {
-        let branches: Vec<Block> = self
+        let branches: Vec<SequenceBranch> = self
             .branches()
-            .map(|b| wrap_content_as_block(b.syntax(), scope, sink))
+            .map(|b| SequenceBranch {
+                ptr: scope.prov(NodeClass::SequenceBranch, b.syntax()),
+                body: wrap_content_as_block(b.syntax(), scope, sink),
+            })
             .collect();
         Ok(Sequence {
             ptr: scope.prov(NodeClass::Sequence, self.syntax()),
@@ -71,11 +78,12 @@ pub fn lower_block_sequence(
     let branches = seq.multiline_branches().map_or_else(Vec::new, |ml| {
         ml.branches()
             .map(|b| {
+                let ptr = scope.prov(NodeClass::SequenceBranch, b.syntax());
                 let mut block = b.body().map_or_else(Block::default, |body| {
                     lower_branch_body(body.syntax(), scope, sink)
                 });
                 block.stmts.insert(0, Stmt::EndOfLine);
-                block
+                SequenceBranch { ptr, body: block }
             })
             .collect()
     });

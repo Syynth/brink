@@ -173,7 +173,8 @@ sidebar). Teaches: stdlib-spec §§4–5, 3b. *(Current spelling:
 The doctrine chapter: **a fault says "your program is wrong";
 Option says "the world didn't have one."** `some`/`none`,
 `x or default`, no truthiness (F27 — explicit `== none` /
-`== some(x)`), `find`/`get`/`min`/`max` returning Option,
+`== some(x)` / the `as` binding, B1b #1475),
+`find`/`get`/`min`/`max` returning Option,
 `filter_map`. The display-boundary forgiveness (B4, SHIPPED —
 issue #1463, `docs/stdlib-spec.md` §1.6b) is written up in
 `option.md`'s "How Option prints" section, not as a `Planned`

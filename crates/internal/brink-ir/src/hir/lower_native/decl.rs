@@ -1,12 +1,14 @@
 //! `var`/`const`/`flags`/`struct`/`extern` → their HIR decl nodes
 //! (`docs/b0-sequencing.md` §B0.6).
 //!
-//! Directive/annotation channel population (`is_local`, `effects_assertion`,
-//! `visibility`, `@[was]`) is deliberately **not** wired in this slice — see
-//! the `lower_native` module doc's judgment-call list. Every decl node
-//! below carries those B0.4 additive fields as their empty default
-//! (`None`/`false`), which is honest (no directive syntax was consumed to
-//! produce them) rather than fabricated. `///` docs ARE wired (B0.6b,
+//! The directive channels that *do* have native syntax are wired elsewhere:
+//! the `@[…]` annotation channel in [`super::annotation`] (`@[effects(…)]`
+//! → `effects_assertion` on a `flow`/`fn`, issue #1563) and the file-level
+//! `@[was]` module-rename record in [`super::module`]. Neither has a ruled
+//! meaning on the `var`/`const`/`flags`/`struct`/`extern` declarations this
+//! module owns, so every decl node below carries `is_local`/`visibility`/
+//! `was` as their empty default (`None`/`false`) — honest (no syntax exists
+//! to consume) rather than fabricated. `///` docs ARE wired (B0.6b,
 //! `docs/decision-log.md` 2026-07-20) — see [`super::doc_comment`].
 
 use brink_syntax_native::SyntaxKind as N;
@@ -41,7 +43,17 @@ fn name_from(tok: Option<SyntaxToken>) -> Option<Name> {
     })
 }
 
-/// `var name = expr`.
+/// The `: type` annotation on a `var`/`const` binding or a `struct` field,
+/// lowered to HIR (NG-B, issue #1488; reused for struct fields by NG-E,
+/// issue #1505). `None` when unwritten — the same shape the ink dialect's
+/// TM-2 `VAR x: int = …` produces, so an annotated native global is exempt
+/// from `brink-analyzer::strict`'s `E065` Unknown-escape exactly as an
+/// annotated ink one is.
+fn binding_annotation(annotation: Option<&ast::TypeAnnotation>) -> Option<TypeExpr> {
+    annotation.and_then(super::types::lower_type_annotation)
+}
+
+/// `var name = expr` / `var name: type = expr`.
 pub(super) fn lower_var_decl(
     file_id: FileId,
     node: &ast::VarDecl,
@@ -63,14 +75,14 @@ pub(super) fn lower_var_decl(
         name,
         value,
         is_local: false,
-        annotation: None,
+        annotation: binding_annotation(node.type_annotation().as_ref()),
         doc,
         visibility: None,
         was: None,
     })
 }
 
-/// `const name = expr`.
+/// `const name = expr` / `const name: type = expr`.
 pub(super) fn lower_const_decl(
     file_id: FileId,
     node: &ast::ConstDecl,
@@ -91,7 +103,7 @@ pub(super) fn lower_const_decl(
         ptr: native_provenance(file_id, NodeClass::ConstDecl, node.syntax()),
         name,
         value,
-        annotation: None,
+        annotation: binding_annotation(node.type_annotation().as_ref()),
         doc,
         visibility: None,
         was: None,
@@ -161,17 +173,11 @@ pub(super) fn lower_struct_decl(
         .fields()
         .filter_map(|f| {
             let field_name = name_from(f.name_token());
-            let ty = f.type_path().map(|p| {
-                let joined = p
-                    .segments()
-                    .map(|t| t.text().to_string())
-                    .collect::<Vec<_>>()
-                    .join(".");
-                TypeExpr::Named {
-                    name: joined,
-                    range: p.syntax().text_range(),
-                }
-            });
+            // NG-E (issue #1505): the field's `: type` clause is now a full
+            // `type_expr` (bare name, generic instantiation, or function
+            // type), not just a dotted path — same lowering helper every
+            // other `: type` position in this dialect uses.
+            let ty = binding_annotation(f.type_annotation().as_ref());
             if let (Some(n), Some(ty)) = (field_name, ty) {
                 Some(StructFieldDecl { name: n, ty })
             } else {
@@ -217,6 +223,16 @@ pub(super) fn lower_extern_decl(
             // an existing wart, not one this slice introduces; flagged for
             // #1106 as worth a shared diagnostic in a follow-up rather than
             // diverging the two frontends' `ExternalDecl.params` semantics.
+            //
+            // A `: type` annotation (NG-A, issue #1487) lands in the same
+            // place for the same reason: `ParamInfo` has no annotation slot,
+            // and `brink-analyzer::strict`'s `check_external` already
+            // records that no inline-annotation exemption exists for an
+            // `EXTERNAL` at all. So an annotated native `extern` parameter is
+            // *accepted by the grammar* (it rides the shared `param_list`
+            // rule) and carries no HIR meaning — widening `ParamInfo` is the
+            // same cross-frontend change as the `ref` wart above and belongs
+            // with it, not here.
             p.name_token().map(|t| ParamInfo {
                 name: t.text().to_string(),
                 is_ref: false,
@@ -241,16 +257,18 @@ pub(super) fn lower_extern_decl(
     })
 }
 
-/// Every `IDENT` a native `PATH_SEGMENT` chain visits — reused by the
-/// struct-field type lowering above and left available for `import`/`use`
-/// lowering (`super::import`).
+/// Every `IDENT` a native `PATH_SEGMENT` chain visits, joined into a native
+/// module name — used by `import` lowering (`super::import`). `::`-separated,
+/// the one spelling a real module name has (issue #1581; see
+/// `super::import`'s module doc). Struct-field types now go through
+/// `super::types::lower_type_annotation` instead (NG-E, #1505).
 pub(super) fn joined_path_text(path: &ast::Path) -> String {
     lower_path(path)
         .segments
         .iter()
         .map(|n| n.text.as_str())
         .collect::<Vec<_>>()
-        .join(".")
+        .join("::")
 }
 
 /// `true` if `node` sits directly inside `SOURCE_FILE` or a (possibly

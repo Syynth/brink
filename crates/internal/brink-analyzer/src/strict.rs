@@ -165,9 +165,12 @@ pub fn resolve_type_policy(dialect: crate::Dialect, explicit: Option<TypePolicy>
 ///    a policy for which `Error`-default codes are "safe" to relax, none of
 ///    them are reachable through this table at all.
 /// 3. **`[lints]` per-code override**, for a `Warning`-base code only:
-///    `Deny` → `Error`; `Allow` → `Warning`, immune to step 4;
-///    `Warn`/unset → falls through to step 4 exactly like an unconfigured
-///    code.
+///    `Deny` → `Error`; `Allow` → `Warning`, immune to step 4; `Info`/`Hint`
+///    (issue #1162) → `Severity::Info`/`Severity::Hint`, also immune to step
+///    4 — an author who deliberately down-leveled a code to an advisory tier
+///    does not want `deny-warnings` escalating it back past `Warning`, the
+///    same reasoning `Allow`'s immunity already rests on; `Warn`/unset →
+///    falls through to step 4 exactly like an unconfigured code.
 /// 4. **`deny-warnings`**: a `Warning`-base code with no override (or an
 ///    explicit `Warn`) becomes `Error` if `lints.deny_warnings` is set —
 ///    the `-D warnings` equivalent.
@@ -190,6 +193,8 @@ pub fn effective_severity(
     match lints.overrides.get(code.as_str()) {
         Some(LintLevel::Deny) => brink_ir::Severity::Error,
         Some(LintLevel::Allow) => brink_ir::Severity::Warning,
+        Some(LintLevel::Info) => brink_ir::Severity::Info,
+        Some(LintLevel::Hint) => brink_ir::Severity::Hint,
         Some(LintLevel::Warn) | None => {
             if lints.deny_warnings {
                 brink_ir::Severity::Error
@@ -295,12 +300,28 @@ pub fn check(
 ) -> Vec<brink_ir::Diagnostic> {
     let mut out = check_escapes(files, index, inference, manifest);
     out.extend(annotations::mismatches(files, index, inference, manifest));
-    out.extend(check_void_assignments(files, index, resolutions));
+    out.extend(check_void_assignments(files, index, resolutions, inference));
     // T1c (docs/t1c-spec.md §4/§8): calls through function values are
     // statically checked under strict — the facts inference already
     // recorded map onto the existing TM-3 codes (E065/E066 escapes, E063
     // typed mismatches), never parallel ones.
     out.extend(check_value_calls(files, index, inference));
+    // Issue #1532 (#1501 review, migration-tail finding 1): `remove`'s
+    // pre-#1484 array leg has no compatibility shim — a statically-known
+    // array receiver is caught here instead of only at the `MapRemove`
+    // runtime fault.
+    out.extend(check_array_remove_calls(files, index, inference));
+    // Issue #1540 (second symptom): the UFCS spelling of that same check.
+    // `infer::body::infer_call` types a multi-segment callee `Unknown`
+    // before `infer_intrinsic` runs, so `arr.remove(0)` records no fact for
+    // `check_array_remove_calls` to read — the B3a verdict table is where
+    // the `(receiver type, verb)` pair survives. See `ufcs::check_strict`.
+    out.extend(crate::ufcs::check_strict(
+        files,
+        index,
+        resolutions,
+        inference,
+    ));
     // TM-4b (docs/typed-mode-spec.md §6): missing/extra/mistyped struct
     // construction-literal fields — strict-mode-only, per the crate doc.
     out.extend(crate::structs::check(files, index, inference, resolutions));
@@ -350,7 +371,16 @@ pub fn check(
     // `Mismatch` failures, surfaced at the coalescing expression's own site
     // — strict-mode-only, the compile-time half; gradual is inert with the
     // runtime `TypeError` fault as the (narrower) residual backstop.
-    out.extend(crate::coalesce_mismatch::check(
+    out.extend(crate::coalesce::check(files, index, inference, resolutions));
+    // `contains(m, needle)` static key-domain warning (E152, issue #582,
+    // companion to #580's ruling): a needle statically visible as outside
+    // the int/string/bool key domain, against a receiver statically
+    // visible as a map, always returns `false` at runtime — flagged at
+    // compile time rather than left as a silent always-false membership
+    // test. Strict-mode-only, same inference-substrate-backed domain-check
+    // family as `conversions`/`range_refinement` above (see
+    // `contains_domain`'s own module doc for why).
+    out.extend(crate::contains_domain::check(
         files,
         index,
         inference,
@@ -360,8 +390,16 @@ pub fn check(
 }
 
 /// Unknown-escape (`E065`) + Conflicted-escape (`E066`) over every inferable
-/// def's params, return type (function knots only — an ordinary knot has no
-/// return-value concept), and temps.
+/// def's params, return type, and temps. Return-value semantics — and so
+/// the return-type escape check plus the fall-through check ([`E150`],
+/// issue #1551) — apply to any def that is `is_function` (a `fn`) *or*
+/// carries a declared, non-`void` return-type annotation (a value-returning
+/// flow/stitch, the coroutine side of the ruled toggle,
+/// `docs/decision-log.md` 2026-07-22 implicit-end ruling item 3); an
+/// ordinary knot/stitch with neither has no return-value concept at all and
+/// stays entirely unchecked.
+///
+/// [`E150`]: brink_ir::DiagnosticCode::E150
 #[must_use]
 fn check_escapes(
     files: &[(FileId, &HirFile)],
@@ -375,6 +413,14 @@ fn check_escapes(
         for knot in &hir.knots {
             let kind = knot.symbol_kind();
             if let Some(id) = annotations::def_id_for(index, file, kind, &knot.name.text) {
+                // Issue #1591: "the body" for the return-value checks below
+                // is the knot's own block *plus* every one of its stitches
+                // — a stitch is reachable purely by fall-through when the
+                // knot's own body is empty, so a value-returning `return`
+                // living there counts the same as one in the knot's own
+                // block. See [`has_value_return_over_stitches`].
+                let body_has_value_return =
+                    has_value_return_over_stitches(knot, id, file, index, inference);
                 check_def(
                     id,
                     file,
@@ -386,6 +432,7 @@ fn check_escapes(
                     &knot.body,
                     &names,
                     inference,
+                    body_has_value_return,
                     &mut out,
                 );
             }
@@ -394,17 +441,31 @@ fn check_escapes(
                 if let Some(id) =
                     annotations::def_id_for(index, file, SymbolKind::Stitch, &qualified)
                 {
+                    // `is_function` stays `false` (stitches never carry it,
+                    // per `lower_native::container`'s module doc) — the
+                    // real `return_type` (#1509) is forwarded regardless,
+                    // since #1551 made `check_def`'s return-value checks
+                    // (escape + fall-through) fire off a declared
+                    // `return_type` too, not just `is_function`. A stitch
+                    // has no nested stitches of its own (#1591's merge is
+                    // one level, owned by the knot above), so its own
+                    // `has_value_return` fact needs no merge here.
+                    let body_has_value_return = inference
+                        .bodies
+                        .get(&id)
+                        .is_some_and(|b| b.has_value_return);
                     check_def(
                         id,
                         file,
                         &qualified,
                         stitch.name.range,
                         false,
-                        None,
+                        stitch.return_type.as_ref(),
                         &stitch.params,
                         &stitch.body,
                         &names,
                         inference,
+                        body_has_value_return,
                         &mut out,
                     );
                 }
@@ -479,6 +540,60 @@ pub(crate) fn check_external_escapes(
     out
 }
 
+/// Whether **"the body"** of `knot` — for the `E150` fall-through check and
+/// `E067` inferred-void classification — ever carries a value-returning
+/// `return <expr>` anywhere: its own block **plus every one of its
+/// stitches** (`docs/typed-mode-spec.md` §3 ruling, issue #1591). A stitch
+/// is reachable from its owning knot purely by fall-through when the
+/// knot's own body is empty — no explicit divert required — or by an
+/// explicit divert; either way it is a continuation of the *same
+/// definition's* execution, not a separate callable, so a value-returning
+/// `return` anywhere in a stitch counts exactly like one in the knot's own
+/// block.
+///
+/// This reading does **not** extend to the `E065`/`E066` return-type
+/// escape check in [`check_def`]: that check reads `sig.return_ty`, which
+/// is inferred per-def and is never merged over stitches (only the
+/// has-value-return *fact* is merged here), so the escape branch keeps
+/// reading the def's own body (`body_types.has_value_return`) rather than
+/// this merged value — merging it there would make an inferred `Unknown`
+/// on the knot's own signature look "proven" by a sibling stitch's return,
+/// which is a different def with its own signature.
+///
+/// `Stitch` has no nested stitches in the HIR (`hir::types::Stitch` carries
+/// no `stitches` field), so this is exactly one level of merge, never
+/// recursive.
+///
+/// This is the **one** has-value-return-over-stitches reading shared by
+/// [`check_def`]'s `E150` fall-through check (called once per knot below)
+/// and [`collect_void_defs`]'s (`E067`) inferred-void classification.
+/// Issue #1551 fixed the E065/E066 + E150 checks' `is_function`-only
+/// gating; #1054/PR #1585 fixed `collect_void_defs`'s own copy of this
+/// exact stitch-merge read; #1591 is the E150 path's turn, done here by
+/// sharing instead of adding a fourth copy.
+fn has_value_return_over_stitches(
+    knot: &brink_ir::Knot,
+    own_id: DefinitionId,
+    file: FileId,
+    index: &SymbolIndex,
+    inference: &InferenceResult,
+) -> bool {
+    let own = inference
+        .bodies
+        .get(&own_id)
+        .is_some_and(|b| b.has_value_return);
+    own || knot.stitches.iter().any(|st| {
+        annotations::def_id_for(
+            index,
+            file,
+            SymbolKind::Stitch,
+            &format!("{}.{}", knot.name.text, st.name.text),
+        )
+        .and_then(|sid| inference.bodies.get(&sid))
+        .is_some_and(|b| b.has_value_return)
+    })
+}
+
 #[expect(clippy::too_many_arguments, reason = "internal helper, not public API")]
 fn check_def(
     id: DefinitionId,
@@ -491,6 +606,15 @@ fn check_def(
     body: &Block,
     names: &annotations::TypeNames,
     inference: &InferenceResult,
+    // The has-value-return fact for the `E150` fall-through check below,
+    // read over "the body" as issue #1591 defines it (the caller's job —
+    // see [`has_value_return_over_stitches`] — since only the caller knows
+    // whether `id` is a knot with stitches to merge in or a stitch, which
+    // is always a leaf). The `E065`/`E066` return-type escape check does
+    // *not* use this merged fact — it reads `body_types.has_value_return`
+    // directly, since the signature it's checking is per-def and is never
+    // merged over stitches.
+    body_has_value_return: bool,
     out: &mut Vec<brink_ir::Diagnostic>,
 ) {
     let Some(sig) = inference.signatures.get(&id) else {
@@ -522,28 +646,67 @@ fn check_def(
         );
     }
 
-    // Return type: only function knots carry return-value semantics; a
-    // `void`-annotated function never needs a concrete return type either.
-    if is_function {
-        let has_void_annotation = return_type
-            .is_some_and(|rt| matches!(rt, TypeExpr::Named { name, .. } if name == "void"));
-        // Issue #1028: a function whose body never carries a value-returning
-        // `return <expr>` — it either falls off the end or only ever
-        // bare-`return`s — infers as void exactly like an explicit `: void`
-        // annotation, rather than escaping as Unknown. typed-mode-spec §3
-        // only documents `void` as something the *author* writes for a
-        // no-return function; it is silent on what a same-shaped body
-        // without the annotation should infer as. The conservative reading
-        // (spec gap, flagged in the PR) is that inference shouldn't demand
-        // an annotation to say what the body already proves: nothing ever
-        // flows out of it. `body_types.has_value_return` is exactly that
-        // proof — `sig.return_ty.is_unknown()` alone can't distinguish
-        // "never returns a value" from "returns a value inference couldn't
-        // pin down" (a genuine Unknown-escape, left unaffected below).
-        let is_void = has_void_annotation || !body_types.has_value_return;
-        let annotated =
-            is_void || return_type.is_some_and(|rt| annotations::resolve(rt, names).is_some());
-        if !is_void {
+    // Return type: return-value semantics apply to a `fn` (`is_function`)
+    // *or* to any def carrying a declared, non-`void` return-type
+    // annotation (issue #1551 — a value-returning flow/stitch is the
+    // coroutine side of the ruled toggle, `docs/decision-log.md`
+    // 2026-07-22 implicit-end ruling item 3: "no return type ⇒ ends
+    // implicitly as DONE; has one ⇒ must return"). A `void`-annotated def
+    // never needs a concrete return value either way — `void` reads as "no
+    // return type" for this purpose on both a `fn` and a flow/stitch.
+    let has_void_annotation =
+        return_type.is_some_and(|rt| matches!(rt, TypeExpr::Named { name, .. } if name == "void"));
+    let declares_return_value = return_type.is_some() && !has_void_annotation;
+    if is_function || declares_return_value {
+        // Issue #1028 (originally `is_function`-only) / #1551 (generalized
+        // to any declared-return-value def): a body that never carries a
+        // value-returning `return <expr>` — it either falls off the end or
+        // only ever bare-`return`s — proves nothing ever flows out of it.
+        // `sig.return_ty.is_unknown()` alone can't distinguish "never
+        // returns a value" from "returns a value inference couldn't pin
+        // down" (a genuine Unknown-escape, handled in the `else` below).
+        //
+        // The two branches below read *different* has-value-return facts
+        // on purpose. The `else if` (E150 fall-through) reads
+        // `body_has_value_return`, the merged fact passed in by the caller
+        // (issue #1591: over the def's own block *plus* its stitches — see
+        // [`has_value_return_over_stitches`]) — a value-returning `return`
+        // reached purely by fall-through into a stitch still proves the
+        // *flow* returns a value. The Unknown-escape branch immediately
+        // below reads `body_types.has_value_return` — this def's own body
+        // only — because it's checking `sig.return_ty`, which inference
+        // computes per-def and never merges over stitches; merging the
+        // fact there without merging the signature would let a sibling
+        // stitch's return "prove" this knot's own Unknown return type,
+        // which is a different def with a different (still-Unknown)
+        // signature.
+        //
+        // What "never returns a value" *means* differs by whether a return
+        // value was promised:
+        //   - No declared return type (bare `fn`, typed-mode-spec §3 is
+        //     silent on this shape): inference shouldn't demand an
+        //     annotation to say what the body already proves — reads as
+        //     `void`, same as an explicit `: void` annotation. Nothing to
+        //     report.
+        //   - A declared, non-`void` return type: the author promised a
+        //     value every path must supply. Falling through is the ruled
+        //     **checker error** (`E150`, decision-log 2026-07-22 item 3),
+        //     never a silent implicit `void` — and never satisfied by an
+        //     implicit `-> DONE` synthesized at HIR lowering (`DONE` ends
+        //     the turn, not the value contract). This also fixes a latent
+        //     gap in the *pre-existing* `is_function` case: an annotated
+        //     `fn f(): int { … }` with no `return` anywhere previously
+        //     inferred `is_void = true` via the old blanket
+        //     `!has_value_return` short-circuit and skipped checking
+        //     entirely — silent despite the declared `int`.
+        // `!has_void_annotation` here matters even though `has_value_return`
+        // alone looks sufficient: a `: void`-annotated def whose body does
+        // carry a value-returning `return <expr>` (a body/annotation
+        // mismatch, not an escape) must not run the Unknown-escape check —
+        // `void` reads as "no return type" for escape purposes on both
+        // branches, so it also can't trip `E150` in the `else` below.
+        if body_types.has_value_return && !has_void_annotation {
+            let annotated = return_type.is_some_and(|rt| annotations::resolve(rt, names).is_some());
             emit_escape(
                 file,
                 def_label,
@@ -553,6 +716,15 @@ fn check_def(
                 annotated,
                 out,
             );
+        } else if declares_return_value && !body_has_value_return {
+            out.push(brink_ir::Diagnostic {
+                file,
+                range: name_range,
+                message: format!(
+                    "`{def_label}` declares a return type but its body never returns a value"
+                ),
+                code: brink_ir::DiagnosticCode::E150,
+            });
         }
     }
 
@@ -792,6 +964,54 @@ fn check_value_calls(
     out
 }
 
+// ── `remove`/`remove_at` migration tail (issue #1532, `E149`) ─────────
+
+/// Report every [`crate::infer::body`]-recorded array-typed `remove(a, i)`
+/// call site (`BodyResult::array_remove_calls`, threaded through
+/// [`crate::infer::BodyTypes`]) as `E149`. Same shape as
+/// [`check_value_calls`] — walk every inferable def, read its recorded
+/// facts, map each straight onto one diagnostic — but the fact carries no
+/// per-call detail to interpolate (the message is fixed), so there is no
+/// `match` here.
+fn check_array_remove_calls(
+    files: &[(FileId, &HirFile)],
+    index: &SymbolIndex,
+    inference: &InferenceResult,
+) -> Vec<brink_ir::Diagnostic> {
+    let mut out = Vec::new();
+    for &(file, hir) in files {
+        let mut def_ids: Vec<DefinitionId> = Vec::new();
+        for knot in &hir.knots {
+            let kind = knot.symbol_kind();
+            if let Some(id) = annotations::def_id_for(index, file, kind, &knot.name.text) {
+                def_ids.push(id);
+            }
+            for stitch in &knot.stitches {
+                let qualified = format!("{}.{}", knot.name.text, stitch.name.text);
+                if let Some(id) =
+                    annotations::def_id_for(index, file, SymbolKind::Stitch, &qualified)
+                {
+                    def_ids.push(id);
+                }
+            }
+        }
+        for id in def_ids {
+            let Some(body) = inference.bodies.get(&id) else {
+                continue;
+            };
+            for &range in &body.array_remove_calls {
+                out.push(brink_ir::Diagnostic {
+                    file,
+                    range,
+                    message: brink_ir::DiagnosticCode::E149.title().to_owned(),
+                    code: brink_ir::DiagnosticCode::E149,
+                });
+            }
+        }
+    }
+    out
+}
+
 // ── Void-assignment (E067, docs/typed-mode-spec.md §3) ────────────────
 
 /// `(start, end)` `u32` pair — `TextRange` has no `Ord` impl, so every
@@ -802,18 +1022,23 @@ fn range_key(range: TextRange) -> (u32, u32) {
 }
 
 /// `~ x = f()` / `~ temp x = f()` where `f`'s resolved def is a `void`-
-/// returning function is a compile error under strict (spec §3: "assigning a
-/// `void` call is an error in strict mode"). Only the assignment/temp-decl's
-/// RHS *root* expression is checked — a statement-position call (`~ f()`) or
-/// a call nested inside interpolation is never flagged, since neither
-/// assigns the (nonexistent) result anywhere.
+/// returning function — whether by an explicit `): void ===` annotation or
+/// by inference (issue #1054: a `fn` with no declared return type whose
+/// body never carries a value-returning `return`, the same inferred-void
+/// shape #1046 taught the return-type escape check to recognize) — is a
+/// compile error under strict (spec §3: "assigning a `void` call is an
+/// error in strict mode"). Only the assignment/temp-decl's RHS *root*
+/// expression is checked — a statement-position call (`~ f()`) or a call
+/// nested inside interpolation is never flagged, since neither assigns the
+/// (nonexistent) result anywhere.
 #[must_use]
 fn check_void_assignments(
     files: &[(FileId, &HirFile)],
     index: &SymbolIndex,
     resolutions: &ResolutionMap,
+    inference: &InferenceResult,
 ) -> Vec<brink_ir::Diagnostic> {
-    let void_defs = collect_void_defs(files, index);
+    let void_defs = collect_void_defs(files, index, inference);
     if void_defs.is_empty() {
         return Vec::new();
     }
@@ -836,28 +1061,69 @@ fn check_void_assignments(
     out
 }
 
-/// Every function knot whose `): void ===` return annotation resolves to
-/// `void`, by `DefinitionId`. Stitches never carry `return_type` (only
-/// `Knot` does — see the field's doc comment), so only `hir.knots` entries
-/// with `is_function` set are candidates, mirroring `check_escapes`' own
-/// def-id lookup (`kind` tracks `knot.ptr`, since a top-level stitch
-/// promoted to knot status is indexed under `SymbolKind::Stitch`, #626).
-fn collect_void_defs(files: &[(FileId, &HirFile)], index: &SymbolIndex) -> BTreeSet<DefinitionId> {
+/// Every function knot that is `void`, by `DefinitionId` — either by an
+/// explicit `): void ===` return annotation, or by inference (issue #1054):
+/// a `fn` with *no* declared return type whose body never carries a
+/// value-returning `return <expr>` reads as void the same way `check_def`'s
+/// return-type escape check already treats it (issue #1046's "an
+/// unannotated, never-returning function infers void" ruling — this is that
+/// same fact, read here for the void-*assignment* check rather than the
+/// escape check). A declared, *non*-`void` return type whose body never
+/// returns a value is a different shape entirely — the checker error
+/// `E150` (issue #1551), not void — so it is deliberately excluded here:
+/// `knot.return_type.is_none()` gates the inferred branch, meaning only a
+/// bare `fn` with no annotation at all can infer void.
+///
+/// Only `is_function` knots are function calls in the sense this check
+/// cares about (a value-returning *non-function* flow/stitch is the
+/// coroutine side of the NG-C/#1509 toggle, not a callable void-or-not
+/// function) — so only `hir.knots` entries with `is_function` set are
+/// candidates, mirroring `check_escapes`' own def-id lookup (`kind` tracks
+/// `knot.ptr`, since a top-level stitch promoted to knot status is indexed
+/// under `SymbolKind::Stitch`, #626). A *nested* `Stitch` never carries
+/// `is_function` (no HIR container below `Knot` does), so it is never a
+/// candidate here regardless of its own `return_type` (#1509).
+///
+/// The inferred branch's "never carries a value-returning `return`" check
+/// must also account for the function's own stitches: a fall-through
+/// `-> f.sub` (or a conditional divert into one) reaches a stitch's body,
+/// which is a *separate* `Def` (`infer::collect_defs`, qualified name
+/// `f.sub`, `SymbolKind::Stitch`) with its own `BodyTypes` in
+/// `inference.bodies` — the knot's own `BodyTypes` only covers content
+/// before the first stitch. A knot is only inferred-void when neither its
+/// own body nor any of its stitches carries a value-returning `return` —
+/// [`has_value_return_over_stitches`] is that shared reading (issue #1591).
+fn collect_void_defs(
+    files: &[(FileId, &HirFile)],
+    index: &SymbolIndex,
+    inference: &InferenceResult,
+) -> BTreeSet<DefinitionId> {
     let mut out = BTreeSet::new();
     for &(file, hir) in files {
         for knot in &hir.knots {
             if !knot.is_function {
                 continue;
             }
-            let is_void = knot
+            let kind = knot.symbol_kind();
+            let Some(id) = annotations::def_id_for(index, file, kind, &knot.name.text) else {
+                continue;
+            };
+            let has_void_annotation = knot
                 .return_type
                 .as_ref()
                 .is_some_and(|rt| matches!(rt, TypeExpr::Named { name, .. } if name == "void"));
-            if !is_void {
-                continue;
-            }
-            let kind = knot.symbol_kind();
-            if let Some(id) = annotations::def_id_for(index, file, kind, &knot.name.text) {
+            // `has_value_return_over_stitches` reads `false` for a def with
+            // no `inference.bodies` entry at all, same as it reads `false`
+            // for a body that has one but never returns a value — the two
+            // are different facts ("never inferred" vs. "inferred, no
+            // value return") and only the latter should count as
+            // inferred-void (mirrors the pre-dedupe
+            // `inference.bodies.get(&id).is_some_and(|bt|
+            // !bt.has_value_return)` guard this replaced).
+            let inferred_void = knot.return_type.is_none()
+                && inference.bodies.contains_key(&id)
+                && !has_value_return_over_stitches(knot, id, file, index, inference);
+            if has_void_annotation || inferred_void {
                 out.insert(id);
             }
         }
@@ -930,7 +1196,7 @@ fn check_void_stmt(
         }
         Stmt::Sequence(s) => {
             for branch in &s.branches {
-                check_void_block(file, branch, void_defs, resolution_by_range, out);
+                check_void_block(file, &branch.body, void_defs, resolution_by_range, out);
             }
         }
         Stmt::Content(c) => check_void_content(file, c, void_defs, resolution_by_range, out),
@@ -972,7 +1238,7 @@ fn check_void_content(
             }
             ContentPart::InlineSequence(s) => {
                 for branch in &s.branches {
-                    check_void_block(file, branch, void_defs, resolution_by_range, out);
+                    check_void_block(file, &branch.body, void_defs, resolution_by_range, out);
                 }
             }
             ContentPart::Interpolation(_)
@@ -1061,6 +1327,11 @@ fn check_void_root(
     let Expr::Call(path, _) = expr else {
         return;
     };
+    // `path.range` — the callee `Path`'s own whole span — is the exact key
+    // the analyzer's `ResolvedRef::range` produced for this call site
+    // (issue #1561; see that field's doc for the other three consumers
+    // keying on the same contract). A narrowed range here would silently
+    // stop finding a resolution and E067 would never fire.
     let Some(&def_id) = resolution_by_range.get(&range_key(path.range)) else {
         return;
     };
@@ -1160,7 +1431,7 @@ fn collect_temps_stmt(
         }
         Stmt::Sequence(s) => {
             for branch in &s.branches {
-                collect_temps_block(branch, names, out);
+                collect_temps_block(&branch.body, names, out);
             }
         }
         Stmt::Content(c) => collect_temps_content(c, names, out),
@@ -1196,7 +1467,7 @@ fn collect_temps_content(
             }
             ContentPart::InlineSequence(s) => {
                 for branch in &s.branches {
-                    collect_temps_block(branch, names, out);
+                    collect_temps_block(&branch.body, names, out);
                 }
             }
             ContentPart::Interpolation(_)
@@ -1508,6 +1779,235 @@ mod tests {
             Some(&manifest),
         );
         assert!(diags.is_empty(), "annotation supplies the type: {diags:?}");
+    }
+
+    // ── NG-A/NG-B: the annotation firewall reaches the NATIVE frontend ──
+    //
+    // Issues #1487/#1488. Native is strict-only (E137, #1342), so before
+    // the `: type` grammar existed every escaping native param/binding was
+    // structurally condemned to `E065` — this module's annotation firewall
+    // (`check_def`'s `p.annotation` / `collect_temps`' `annotation_ty`
+    // exemption, which exempts an `Unknown` escape but never a
+    // `Conflicted` one) was unreachable from a `.brink` file. These prove
+    // it now fires, through the same `check` entry point the ink fixtures
+    // above use — the annotations land in the same `hir::TypeExpr` slots.
+
+    /// Native-lowered `(HirFile, SymbolIndex, ResolutionMap)`, the native
+    /// counterpart of [`build`] (which parses through `brink_syntax`, the
+    /// ink/brink-extension frontend). Mirrors `coalesce`'s own
+    /// `build_native`.
+    fn build_native(src: &str) -> (HirFile, SymbolIndex, ResolutionMap) {
+        let parsed = brink_syntax_native::parse(src);
+        assert!(
+            parsed.errors().is_empty(),
+            "fixture must parse cleanly: {:?}",
+            parsed.errors()
+        );
+        let tree = parsed.tree();
+        let (hir, manifest, _diag) = brink_ir::hir::lower_native::lower(FileId(0), &tree);
+        let (index, _diag) = crate::symbol_index(&[(FileId(0), &manifest)]);
+        let (resolutions, _diag) =
+            crate::resolve(FileId(0), &manifest, &index, &crate::ImportScope::default());
+        (hir, (*index).clone(), (*resolutions).clone())
+    }
+
+    fn native_strict_diags(src: &str) -> Vec<Diagnostic> {
+        let (hir, index, res) = build_native(src);
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        check(&[(FileId(0), &hir)], &index, &inference, &res, None)
+    }
+
+    #[test]
+    fn native_unannotated_param_escapes_as_unknown() {
+        // The baseline the exemption is measured against — without it the
+        // next test would pass with the firewall deleted.
+        let diags = native_strict_diags("flow noop(x) {\n  Hello.\n}\n");
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E065);
+    }
+
+    #[test]
+    fn native_annotated_param_is_exempt_from_unknown_escape() {
+        let diags = native_strict_diags("flow noop(x: int) {\n  Hello.\n}\n");
+        assert!(
+            diags.is_empty(),
+            "the `: int` annotation supplies the type: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn native_unresolvable_param_annotation_still_escapes() {
+        // The firewall exempts a *resolvable* annotation only
+        // (`annotations::resolve`) — an unrecognized name supplies nothing.
+        let diags = native_strict_diags("flow noop(x: Nonesuch) {\n  Hello.\n}\n");
+        assert!(
+            diags.iter().any(|d| d.code == DiagnosticCode::E065),
+            "an unresolvable annotation must not exempt the slot: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn native_annotated_let_is_exempt_from_unknown_escape() {
+        // NG-B's binding half: an ascribed `let` inside a code-ground `fn`
+        // body reaches `collect_temps`' `annotation_ty` exemption.
+        let bare = native_strict_diags("fn f(n: int): int {\n  let t;\n  return n;\n}\n");
+        assert!(
+            bare.iter().any(|d| d.code == DiagnosticCode::E065),
+            "an unannotated, uninferable `let` escapes: {bare:?}"
+        );
+        let annotated =
+            native_strict_diags("fn f(n: int): int {\n  let t: string;\n  return n;\n}\n");
+        assert!(
+            annotated.is_empty(),
+            "the `: string` ascription supplies the type: {annotated:?}"
+        );
+    }
+
+    // ── issue #1551: return-escape check extended past `is_function` ──
+    //
+    // `docs/decision-log.md` 2026-07-22 implicit-end ruling item 3: "a flow
+    // that declares a return type must produce a value... falling through
+    // without a value is a checker error" — these prove the checker
+    // diagnostic that ruling promised (deferred at the time, per
+    // `hir::lower_native::container`'s "not built by this slice" comment)
+    // now fires, for both a top-level flow (knot) and a nested flow
+    // (stitch), and that it is a distinct code (`E150`) from Unknown-escape
+    // (`E065`) — the annotation-fallback in `infer::body::infer_def_body`
+    // backfills a no-return body's inferred type from the declared
+    // annotation, so E065's `Ty`-based classification structurally cannot
+    // see a missing return (it comes out `Clean`).
+
+    #[test]
+    fn native_value_returning_knot_falling_through_is_e150() {
+        // Mirrors `a_return_typed_flow_does_not_get_the_implicit_done` in
+        // `brink-ir`'s own lowering tests — same fixture, now checked.
+        let diags = native_strict_diags("flow quest(): int {\n  Onward.\n}\n");
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E150);
+        assert!(
+            diags[0].message.contains("never returns a value"),
+            "{:?}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn native_value_returning_nested_stitch_falling_through_is_e150() {
+        // Mirrors `a_return_typed_stitch_does_not_get_the_implicit_done`.
+        let diags =
+            native_strict_diags("flow garden() {\n  flow gate(): int {\n    Creak.\n  }\n}\n");
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E150);
+    }
+
+    #[test]
+    fn native_value_returning_knot_that_always_returns_is_clean() {
+        // The flip side of the falling-through cases above: a value-typed
+        // flow whose body actually returns a concrete, resolvable value
+        // gets no E150 (has_value_return is true) and is checked as an
+        // ordinary Unknown/Conflicted escape instead — clean here since
+        // `int` is concrete.
+        let diags = native_strict_diags("flow quest(): int ~{\n  return 5;\n}\n");
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn native_value_returning_nested_stitch_that_always_returns_is_clean() {
+        let diags =
+            native_strict_diags("flow garden() {\n  flow gate(): int ~{\n    return 5;\n  }\n}\n");
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn native_value_returning_knot_with_unresolvable_return_still_escapes_as_unknown() {
+        // A value is returned (has_value_return = true), so this goes
+        // through the ordinary escape check, not E150 — an unconstrained
+        // param's value flowing straight out is a genuine Unknown-escape.
+        let diags = native_strict_diags("flow quest(x): int ~{\n  return x;\n}\n");
+        assert!(
+            diags.iter().any(|d| d.code == DiagnosticCode::E065),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn native_void_annotated_knot_falling_through_is_exempt_from_e150() {
+        // `: void` reads as "no return type" for the fall-through check on
+        // a flow, same as it does for a `fn` — never E150.
+        let diags = native_strict_diags("flow quest(): void {\n  Onward.\n}\n");
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn native_plain_knot_and_stitch_with_no_return_type_stay_unchecked() {
+        // Baseline: no declared return type at all (and not `is_function`)
+        // — no return-value concept, exactly as before #1551.
+        let diags = native_strict_diags("flow quest() {\n  Onward.\n}\n");
+        assert!(diags.is_empty(), "{diags:?}");
+        let nested_diags =
+            native_strict_diags("flow garden() {\n  flow gate() {\n    Creak.\n  }\n}\n");
+        assert!(nested_diags.is_empty(), "{nested_diags:?}");
+    }
+
+    #[test]
+    fn native_annotated_function_falling_through_is_e150_latent_bug_fix() {
+        // A pre-existing gap in the `is_function` case itself (found while
+        // fixing #1551): before this fix, `fn f(): int { … no return … }`
+        // inferred `is_void = true` via the old blanket
+        // `!has_value_return` short-circuit and skipped checking
+        // entirely — silently accepting a declared `int` that the body
+        // never produces. Now a declared, non-void return type on a
+        // no-return function is E150 too, the same as a flow/stitch.
+        let diags = native_strict_diags("fn noop(): int {\n  let x = 1;\n}\n");
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E150);
+    }
+
+    #[test]
+    fn native_void_annotated_def_that_actually_returns_a_value_is_exempt() {
+        // Regression guard (review finding on #1556): a `: void`-annotated
+        // def whose body *does* carry a value-returning `return <expr>` —
+        // a body/annotation mismatch, not covered by this checker — must
+        // not fall into the Unknown-escape branch just because
+        // `has_value_return` is true. `void` reads as "no return type" for
+        // escape purposes on both a `fn` and a flow/stitch, so the two
+        // must agree: neither emits anything here (in particular, no
+        // spurious second `E065` alongside whatever caught the param).
+        // The param is annotated (exempt from its own Unknown-escape) so
+        // any diagnostic here can only be the spurious return-type check.
+        let function_diags = native_strict_diags("fn f(x: int): void {\n  return x;\n}\n");
+        assert!(
+            function_diags.is_empty(),
+            "a void-annotated fn's own return value must not escape-check: {function_diags:?}"
+        );
+        let flow_diags = native_strict_diags("flow gate(x: int): void ~{\n  return x;\n}\n");
+        assert!(
+            flow_diags.is_empty(),
+            "the flow/stitch twin must agree with the fn case: {flow_diags:?}"
+        );
+    }
+
+    #[test]
+    fn native_value_returning_knot_with_a_partial_return_path_is_undocumented_gap() {
+        // Pins the currently-undecided partial-path behavior the E150
+        // message reword (review finding on #1556) made explicit: E150 only
+        // fires when the body carries *no* value-returning `return`
+        // anywhere (`has_value_return == false`). A body that returns a
+        // value on *some* paths but can also fall through another (the
+        // `else`-less `if` here) has `has_value_return == true`, so it
+        // takes the ordinary escape-check branch instead — no E150, no
+        // fall-through diagnostic of any kind, even though the `else` path
+        // still falls through without a value. This is a known, documented
+        // gap (#1551 asked to "decide (and document)" this shape; the
+        // decision is deferred), not a fixed contract — this test exists
+        // so a future change to that decision has to touch it deliberately.
+        let diags =
+            native_strict_diags("flow quest(): int ~{\n  if true {\n    return 1;\n  }\n}\n");
+        assert!(
+            diags.is_empty(),
+            "partial-path fall-through is not currently detected: {diags:?}"
+        );
     }
 
     #[test]
@@ -2112,6 +2612,41 @@ mod tests {
         );
     }
 
+    // ─── Issue #1168: Option-returning functions no longer E065-escape ──
+
+    /// The issue's tightest repro, at the diagnostic level: `some(x)`
+    /// where `x: int` is never evidenced anywhere else in the body used to
+    /// infer `Option[Unknown]` and trip `E065` with no annotation escape
+    /// hatch. Fixed at the inference layer (`infer::body::InferPass::
+    /// or_own_annotation`) — `strict::check` needs no changes, this pins
+    /// the diagnostic-level outcome.
+    #[test]
+    fn some_of_an_unevidenced_annotated_param_no_longer_escapes() {
+        let (hir, index, res) = build("=== function f(x: int) ===\n~ return some(x)\n");
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    /// `docs/book/src/toolchain/dialect/iteration.md`'s `first_over` fence
+    /// (unmarked from `ink,proposed` in this same PR): a `for` loop over
+    /// an annotated `array<int>` param, `return some(<loop var>)` on one
+    /// path and `return none` on the other — both the return type and the
+    /// loop-var temp used to escape as `Unknown`.
+    #[test]
+    fn first_over_style_option_return_no_longer_escapes() {
+        let (hir, index, res) = build(
+            "=== function first_over(tab: array<int>, floor: int) ===\n\
+             ~ {\n    for coins in tab {\n        if coins > floor {\n            return some(coins)\n        }\n    }\n}\n\
+             ~ return none\n",
+        );
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
     #[test]
     fn void_annotated_function_return_is_exempt() {
         let (hir, index, res) = build("=== function noop(): void ===\n~ return\n");
@@ -2424,6 +2959,70 @@ mod tests {
         );
     }
 
+    // ── effective_severity: [lints] info/hint tier (issue #1162) ────
+
+    #[test]
+    fn lint_override_info_relevels_a_warning_code_to_info() {
+        let lints = LintPolicy {
+            overrides: BTreeMap::from([("E014".to_owned(), LintLevel::Info)]),
+            deny_warnings: false,
+        };
+        assert_eq!(
+            effective_severity(DiagnosticCode::E014, TypePolicy::Gradual, &lints),
+            brink_ir::Severity::Info
+        );
+    }
+
+    #[test]
+    fn lint_override_hint_relevels_a_warning_code_to_hint() {
+        let lints = LintPolicy {
+            overrides: BTreeMap::from([("E014".to_owned(), LintLevel::Hint)]),
+            deny_warnings: false,
+        };
+        assert_eq!(
+            effective_severity(DiagnosticCode::E014, TypePolicy::Gradual, &lints),
+            brink_ir::Severity::Hint
+        );
+    }
+
+    #[test]
+    fn deny_warnings_does_not_touch_an_info_or_hint_override() {
+        // Like `Allow`, `Info`/`Hint` are deliberate downgrades and must stay
+        // immune to `deny-warnings` — escalating them back up would defeat
+        // the point of setting them.
+        let lints_info = LintPolicy {
+            overrides: BTreeMap::from([("E014".to_owned(), LintLevel::Info)]),
+            deny_warnings: true,
+        };
+        assert_eq!(
+            effective_severity(DiagnosticCode::E014, TypePolicy::Gradual, &lints_info),
+            brink_ir::Severity::Info
+        );
+        let lints_hint = LintPolicy {
+            overrides: BTreeMap::from([("E014".to_owned(), LintLevel::Hint)]),
+            deny_warnings: true,
+        };
+        assert_eq!(
+            effective_severity(DiagnosticCode::E014, TypePolicy::Gradual, &lints_hint),
+            brink_ir::Severity::Hint
+        );
+    }
+
+    #[test]
+    fn hard_error_code_is_never_downgraded_to_info_or_hint() {
+        // Same hard-error exemption as `Allow`/`Deny` — a code that is Error
+        // by default is never even looked up in `[lints]`.
+        assert_eq!(DiagnosticCode::E025.severity(), brink_ir::Severity::Error);
+        let lints = LintPolicy {
+            overrides: BTreeMap::from([("E025".to_owned(), LintLevel::Hint)]),
+            deny_warnings: false,
+        };
+        assert_eq!(
+            effective_severity(DiagnosticCode::E025, TypePolicy::Gradual, &lints),
+            brink_ir::Severity::Error
+        );
+    }
+
     #[test]
     fn deny_warnings_promotes_unconfigured_warning_codes_to_error() {
         let lints = LintPolicy {
@@ -2541,6 +3140,178 @@ mod tests {
             !diags.iter().any(|d| d.code == DiagnosticCode::E067),
             "{diags:?}"
         );
+    }
+
+    #[test]
+    fn inferred_void_assigned_to_temp_is_e067() {
+        // Issue #1054: `noop` carries no `): void ===` annotation at all —
+        // its void-ness is purely inferred (#1046: no value-returning
+        // `return` anywhere in the body). Before this fix `collect_void_defs`
+        // only ever consulted `knot.return_type`, so this assignment was
+        // silently accepted; it must now `E067` exactly like the
+        // explicitly-annotated case does.
+        let (hir, index, res) = build(
+            "=== function noop() ===\nHello.\n\
+             === main ===\n~ temp x = noop()\n-> DONE\n",
+        );
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
+        assert!(
+            diags.iter().any(|d| d.code == DiagnosticCode::E067),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn inferred_void_assigned_to_var_is_e067() {
+        let (hir, index, res) = build(
+            "VAR gold = 0\n=== function noop() ===\nHello.\n\
+             === main ===\n~ gold = noop()\n-> DONE\n",
+        );
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
+        assert!(
+            diags.iter().any(|d| d.code == DiagnosticCode::E067),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn inferred_void_call_in_statement_position_is_clean() {
+        // Same firewall as the explicitly-annotated case: a statement-
+        // position call never assigns the (nonexistent) result anywhere, so
+        // it must stay clean regardless of whether void-ness is annotated or
+        // inferred.
+        let (hir, index, res) = build(
+            "=== function noop() ===\nHello.\n\
+             === main ===\n~ noop()\n-> DONE\n",
+        );
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
+        assert!(
+            !diags.iter().any(|d| d.code == DiagnosticCode::E067),
+            "statement-position inferred-void call must never be flagged: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn function_with_real_return_path_is_not_inferred_void_and_stays_clean_of_e067() {
+        // Flip side of #1046's own inference rule: an unannotated function
+        // that *does* return a value is not void — assigning its result must
+        // not `E067`.
+        let (hir, index, res) = build(
+            "=== function give() ===\n~ return 5\n\
+             === main ===\n~ temp x = give()\n-> DONE\n",
+        );
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
+        assert!(
+            !diags.iter().any(|d| d.code == DiagnosticCode::E067),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn stitch_return_value_reached_by_fallthrough_is_not_inferred_void_and_stays_clean_of_e067() {
+        // Regression for the reviewer-caught gap in `collect_void_defs`: the
+        // value-returning `return` lives in a *stitch* (`compute`), reached
+        // by falling straight through the knot's own (empty) body — not by
+        // an explicit divert. A stitch under a function knot is a separate
+        // `Def` (`infer::collect_defs`, qualified name `f.compute`,
+        // `SymbolKind::Stitch`) with its own `BodyTypes`, so the knot's own
+        // `BodyTypes.has_value_return` is `false` even though the function
+        // as a whole always returns a value. Before the fix this silently
+        // inferred `f` as void and flagged `E067` on the assignment below.
+        let (hir, index, res) = build(
+            "=== function f() ===\n= compute\n~ return 5\n\
+             === main ===\n~ temp x: int = f()\nx={x}\n-> DONE\n",
+        );
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
+        assert!(
+            !diags.iter().any(|d| d.code == DiagnosticCode::E067),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn declared_non_void_return_falling_through_is_e150_not_e067() {
+        // Issue #1054's own excluded shape (see `collect_void_defs`'s doc
+        // comment): a *declared*, non-`void` return type whose body never
+        // returns a value is the #1551 checker error (`E150`, "declares a
+        // return type but its body never returns a value") — not an
+        // inferred-void function. It must never also `E067`-flag its own
+        // assignment: the function is broken, not void, and reporting E067
+        // on top would be misleading (asking to remove an assignment that
+        // isn't actually the bug).
+        let (hir, index, res) = build(
+            "=== function broken(): int ===\nHello.\n\
+             === main ===\n~ temp x = broken()\n-> DONE\n",
+        );
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
+        assert!(
+            diags.iter().any(|d| d.code == DiagnosticCode::E150),
+            "{diags:?}"
+        );
+        assert!(
+            !diags.iter().any(|d| d.code == DiagnosticCode::E067),
+            "a declared-return-type fall-through must be E150, not also E067: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn stitch_return_value_reached_by_fallthrough_is_not_e150() {
+        // Issue #1591: the exact false positive from the issue body — the
+        // value-returning `return` lives in the stitch (`compute`), reached
+        // by falling straight through the knot's own (empty) body, not by
+        // an explicit divert. `check_def`'s E150 path previously only read
+        // the knot's own `BodyTypes.has_value_return` (`false`, since the
+        // knot's own body before the first stitch never returns), so it
+        // fired E150 even though the function as a whole always returns a
+        // value. Twin of `stitch_return_value_reached_by_fallthrough_is_not_
+        // inferred_void_and_stays_clean_of_e067` above, but for the E150
+        // consumer instead of E067 — both now read the same shared
+        // has-value-return-over-stitches fact.
+        let (hir, index, res) = build("=== function f(): int ===\n= compute\n~ return 5\n");
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
+        assert!(
+            !diags.iter().any(|d| d.code == DiagnosticCode::E150),
+            "{diags:?}"
+        );
+    }
+
+    #[test]
+    fn unannotated_function_return_value_reached_by_fallthrough_stitch_is_not_e065() {
+        // Regression for a reviewer-caught escape-check false positive:
+        // an unannotated `fn` whose only value-returning `return` lives in
+        // a fall-through stitch must stay clean under strict, exactly like
+        // the identically-shaped own-body spelling (`=== function g() ===
+        // \n~ return 5\n`, clean on both this fix and main). Before the
+        // fix, `check_def`'s E065/E066 escape branch read the *merged*
+        // has-value-return fact (the def's own body plus its stitches, per
+        // `has_value_return_over_stitches`) instead of the def's own body
+        // alone — so it treated the stitch's `return 5` as proof the
+        // *knot's own* inferred return type was resolved, when
+        // `sig.return_ty` (the thing actually being escape-checked) is
+        // still `Unknown`: inference never merges a stitch's return type
+        // into its owning knot's signature, only the has-value-return
+        // *fact* is merged, and only for the E150/E067 consumers. That
+        // made this fall-through spelling a hard compile error while the
+        // own-body spelling compiled clean.
+        let (hir, index, res) = build("=== function f() ===\n= compute\n~ return 5\n");
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
+        assert!(diags.is_empty(), "{diags:?}");
     }
 
     #[test]

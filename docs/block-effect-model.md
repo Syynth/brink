@@ -103,8 +103,9 @@ a cycle the codebase already rejected (`lower_native/mod.rs` judgment call
 #1); instead the ink-shaped `Stmt` variants become a `brink-ir`-private
 module that stops being the cross-frontend interface. **Oracle firewall:**
 codegen has zero `hir::` references, so freezing LIR `ContainerKind` output
-and proving byte-identity at 5,577 after every slice keeps the migration
-safe. B0.6/B0.7 lowering is reshaped; their **behavioral tests survive**.
+and proving byte-identity at `RATCHET_EPISODE_COUNT` after every slice
+keeps the migration safe. B0.6/B0.7 lowering is reshaped; their
+**behavioral tests survive**.
 
 **[SUBSTRATE]** The **tail** taxonomy already has its pieces: a tail is
 `Value(expr)` | `Diverge(terminator)` | `Unit`. `Diverge` is the
@@ -483,5 +484,5 @@ designed. This is a *representation* unification (block substrate + effect
 signature) plus **one** new capability (value-returning flows) and **one**
 new surface affordance (mid-expression suspension, ANF-lowered). Correctness
 above all: the coroutine machine is reused, not reinvented; the oracle bar
-(`flow-suspension-spec` §10.4: byte-identical at 5,577, vanilla-unreachable
-opcodes) is inherited unchanged.
+(`flow-suspension-spec` §10.4: byte-identical at `RATCHET_EPISODE_COUNT`,
+vanilla-unreachable opcodes) is inherited unchanged.

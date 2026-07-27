@@ -11,3 +11,7 @@ hp some(10), armor .
 has ten: true, has seven: false.
 cleared to 0 entries.
 f2 holds zero now.
+room Mira is some(3).
+room Edda is none.
+first over 5 is some(7).
+first over 10 is none.

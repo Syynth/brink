@@ -89,9 +89,10 @@ fn lower_infix_expression() {
             assert!(
                 matches!(
                     &td.value,
-                    Some(Expr::Infix(lhs, InfixOp::Add, rhs))
-                    if matches!(lhs.as_ref(), Expr::Int(3))
-                    && matches!(rhs.as_ref(), Expr::Int(4))
+                    Some(Expr::Infix(ie))
+                    if ie.op == InfixOp::Add
+                    && matches!(ie.lhs.as_ref(), Expr::Int(3))
+                    && matches!(ie.rhs.as_ref(), Expr::Int(4))
                 ),
                 "expected 3 + 4, got {:?}",
                 td.value
@@ -977,15 +978,40 @@ fn void_return_type_lowers_to_named_void_not_none() {
 }
 
 #[test]
-fn stitch_header_never_carries_a_return_type() {
-    // `= stitch` headers have no return-type grammar position (TM-2 §3
-    // scopes `): type ===` to `== knot ==` headers) — a promoted top-level
-    // stitch's `Knot.return_type` is always `None`.
+fn unannotated_stitch_header_has_no_return_type() {
     let (hir, diags) = lower_hir("=== camp ===\nText.\n= fire\nMore.\n-> DONE\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     let camp = hir.knots.iter().find(|k| k.name.text == "camp").unwrap();
     assert_eq!(camp.return_type, None);
     assert_eq!(camp.stitches[0].name.text, "fire");
+    assert_eq!(camp.stitches[0].return_type, None);
+}
+
+#[test]
+fn return_type_annotation_lowers_onto_nested_stitch() {
+    // #1509: `= name(params): type` on a *nested* stitch header (widening
+    // NG-C's `Knot.return_type` grammar to `Stitch`).
+    let (hir, diags) = lower_hir("=== camp ===\nText.\n= fire(logs): int\n~ return logs\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let camp = hir.knots.iter().find(|k| k.name.text == "camp").unwrap();
+    match &camp.stitches[0].return_type {
+        Some(TypeExpr::Named { name, .. }) => assert_eq!(name, "int"),
+        other => panic!("expected Named(\"int\"), got {other:?}"),
+    }
+}
+
+#[test]
+fn return_type_annotation_lowers_onto_promoted_top_level_stitch() {
+    // A top-level `= stitch` is promoted to `Knot` status during lowering
+    // (`lower_top_level_stitch`), so its return type rides the same
+    // `Knot::return_type` field a real `== knot ==` header's does.
+    let (hir, diags) = lower_hir("= fire(logs): int\n~ return logs\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let fire = hir.knots.iter().find(|k| k.name.text == "fire").unwrap();
+    match &fire.return_type {
+        Some(TypeExpr::Named { name, .. }) => assert_eq!(name, "int"),
+        other => panic!("expected Named(\"int\"), got {other:?}"),
+    }
 }
 
 #[test]

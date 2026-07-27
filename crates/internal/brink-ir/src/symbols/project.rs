@@ -254,6 +254,11 @@ impl Projector {
         });
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "mirrors declare's shape (issue #530: annotation is a plain \
+                  positional passthrough, not a new structural concern)"
+    )]
     fn push_local(
         &mut self,
         name: String,
@@ -262,6 +267,7 @@ impl Projector {
         knot: Option<&str>,
         stitch: Option<&str>,
         param_detail: Option<ParamInfo>,
+        annotation: Option<crate::TypeExpr>,
     ) {
         self.manifest.locals.push(LocalSymbol {
             name,
@@ -269,6 +275,7 @@ impl Projector {
             scope: Self::scope_of(knot, stitch),
             kind,
             param_detail,
+            annotation,
         });
     }
 
@@ -316,6 +323,7 @@ impl Projector {
                 Some(knot.name.text.as_str()),
                 None,
                 Some(param_info(param)),
+                param.annotation.clone(),
             );
         }
 
@@ -341,6 +349,7 @@ impl Projector {
                     Some(knot.name.text.as_str()),
                     Some(st.name.text.as_str()),
                     Some(param_info(param)),
+                    param.annotation.clone(),
                 );
             }
             self.walk_block(&st.body, Some(&knot.name.text), Some(&st.name.text));
@@ -381,6 +390,7 @@ impl Projector {
                     knot,
                     stitch,
                     None,
+                    t.annotation.clone(),
                 );
             }
             Stmt::Assignment(a) => {
@@ -489,13 +499,37 @@ impl Projector {
             if let Some(e) = &branch.condition {
                 self.walk_expr(e, knot, stitch);
             }
+            self.push_as_binding(branch.binding.as_ref(), knot, stitch);
             self.walk_block(&branch.body, knot, stitch);
+        }
+    }
+
+    /// Index an `as` binding (B1b, issue #1475) as an ordinary local, so
+    /// reads of the bound name inside the success arm resolve — and so
+    /// hover/go-to-def/rename see it exactly as they see a `for`-loop
+    /// variable or a block `let` (`walk_for_stmt`'s precedent).
+    fn push_as_binding(
+        &mut self,
+        binding: Option<&crate::Name>,
+        knot: Option<&str>,
+        stitch: Option<&str>,
+    ) {
+        if let Some(name) = binding {
+            self.push_local(
+                name.text.clone(),
+                name.range,
+                SymbolKind::Temp,
+                knot,
+                stitch,
+                None,
+                None,
+            );
         }
     }
 
     fn walk_sequence(&mut self, seq: &Sequence, knot: Option<&str>, stitch: Option<&str>) {
         for branch in &seq.branches {
-            self.walk_block(branch, knot, stitch);
+            self.walk_block(&branch.body, knot, stitch);
         }
     }
 
@@ -518,6 +552,7 @@ impl Projector {
                     knot,
                     stitch,
                     None,
+                    t.annotation.clone(),
                 );
             }
             BlockStmt::Assignment(a) => {
@@ -547,6 +582,7 @@ impl Projector {
 
     fn walk_if_stmt(&mut self, i: &IfStmt, knot: Option<&str>, stitch: Option<&str>) {
         self.walk_expr(&i.condition, knot, stitch);
+        self.push_as_binding(i.binding.as_ref(), knot, stitch);
         for s in &i.body {
             self.walk_block_stmt(s, knot, stitch);
         }
@@ -563,6 +599,7 @@ impl Projector {
 
     fn walk_while_stmt(&mut self, w: &WhileStmt, knot: Option<&str>, stitch: Option<&str>) {
         self.walk_expr(&w.condition, knot, stitch);
+        self.push_as_binding(w.binding.as_ref(), knot, stitch);
         for s in &w.body {
             self.walk_block_stmt(s, knot, stitch);
         }
@@ -577,6 +614,7 @@ impl Projector {
             knot,
             stitch,
             None,
+            None,
         );
         // Two-binding map iteration (`for k, v in m`, B2 issue #1461): the
         // second binding is a local too, for hover/goto-def/rename parity
@@ -588,6 +626,7 @@ impl Projector {
                 SymbolKind::Temp,
                 knot,
                 stitch,
+                None,
                 None,
             );
         }
@@ -622,11 +661,16 @@ impl Projector {
             Expr::Prefix(_, inner) | Expr::Postfix(inner, _) => {
                 self.walk_expr(inner, knot, stitch);
             }
-            Expr::Infix(l, _, r) => {
-                self.walk_expr(l, knot, stitch);
-                self.walk_expr(r, knot, stitch);
+            Expr::Infix(ie) => {
+                self.walk_expr(&ie.lhs, knot, stitch);
+                self.walk_expr(&ie.rhs, knot, stitch);
             }
             Expr::Call(path, args) => {
+                // `path.range` here — the callee `Path`'s own *whole* span —
+                // is the origin of the call-path `ResolvedRef::range`
+                // contract four downstream consumers key lookups on
+                // unchanged; see that field's doc (issue #1561). Never
+                // narrow this to a sub-segment.
                 self.push_ref(
                     path_text(path),
                     path.range,

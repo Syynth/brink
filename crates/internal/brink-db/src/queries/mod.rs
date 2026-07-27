@@ -106,11 +106,11 @@ mod heap_size;
 pub use analysis::ResolvedProject;
 pub(crate) use analysis::{
     analysis_diagnostics_query, analysis_query, await_purity_diagnostics_query,
-    call_site_diagnostics_query, call_site_metas_query, comparator_contract_diagnostics_query,
-    contributor_diagnostics_query, diagnostics_query, effects_assertion_diagnostics_query,
-    external_meta_query, has_errors_in_closure_query, has_errors_query, inline_docs_query,
-    per_file_diagnostics_query, resolutions_index_query, value_meta_query,
-    whole_project_diagnostics_query,
+    call_site_diagnostics_query, call_site_metas_query, coalesce_types_query,
+    comparator_contract_diagnostics_query, contributor_diagnostics_query, diagnostics_query,
+    effects_assertion_diagnostics_query, external_meta_query, has_errors_in_closure_query,
+    has_errors_query, inline_docs_query, per_file_diagnostics_query, resolutions_index_query,
+    ufcs_resolution_query, value_meta_query, whole_project_diagnostics_query,
 };
 
 // ─── Database ────────────────────────────────────────────────────────
@@ -153,6 +153,9 @@ impl Default for BrinkDatabase {
                 .ingredient::<resolution_index_query>()
                 .ingredient::<resolve_query>()
                 .ingredient::<signature_query>()
+                // Issue #530: the per-file locals path signature_query
+                // itself can't take — see local_signature_query's doc.
+                .ingredient::<local_signature_query>()
                 // FG-3 (issue #632): analysis_query decomposed into narrow
                 // cutoff-friendly projections. resolutions_index_query
                 // (index+resolutions, no diagnostics) and
@@ -186,6 +189,14 @@ impl Default for BrinkDatabase {
                 .ingredient::<value_meta_query>()
                 .ingredient::<call_site_diagnostics_query>()
                 .ingredient::<whole_project_diagnostics_query>()
+                // B3a UFCS (issue #1506): the verdict table, shared by
+                // `whole_project_diagnostics_query` (diagnostics half) and
+                // LIR lowering (`lir_knot_chunk_query`/`lir_lowering_query`).
+                .ingredient::<ufcs_resolution_query>()
+                // B1 `or`-coalescing (issue #1471/#1492): the recorded
+                // per-step chain shapes LIR lowering consumes
+                // (`lir_knot_chunk_query`/`lir_lowering_query`).
+                .ingredient::<coalesce_types_query>()
                 .ingredient::<analysis_diagnostics_query>()
                 .ingredient::<analysis_query>()
                 .ingredient::<diagnostics_query>()
@@ -217,6 +228,10 @@ impl Default for BrinkDatabase {
                 .ingredient::<decl_hir_query>()
                 .ingredient::<lir_prelude_decls_query>()
                 .ingredient::<KnotChunkKey<'_>>()
+                // Issue #460: the knot-invariant half of a chunk's lowering
+                // environment, hoisted out of the per-knot memo so it is
+                // built once per revision instead of once per knot.
+                .ingredient::<chunk_lowering_ctx_query>()
                 .ingredient::<lir_knot_chunk_query>()
                 .ingredient::<lir_lowering_query>()
                 // Layer 2/3: type inference (TM-1, advisory-only).
@@ -284,8 +299,8 @@ pub(crate) struct SourceFile {
 }
 
 /// The project-level input: the file set (sorted by [`FileId`]), the compile
-/// entry point, and the analysis options (host manifest + external-check
-/// severity).
+/// entry point, the analysis options (host manifest + external-check
+/// severity), and the native source root.
 #[salsa::input]
 pub(crate) struct ProjectInput {
     #[returns(ref)]
@@ -293,6 +308,14 @@ pub(crate) struct ProjectInput {
     pub entry: Option<FileId>,
     #[returns(ref)]
     pub analysis_options: AnalysisOptions,
+    /// The directory native `.brink` keys are root-relative *to*, for a
+    /// consumer that registers files under some other prefix (issue #1572:
+    /// the LSP keys by absolute OS path). `None` — every compile path, where
+    /// `discover_native` already keys root-relative — means "the keys are
+    /// already root-relative", and is byte-identical to the pre-#1572 world.
+    /// Only [`crate::modules::native_root_relative_key`] reads it.
+    #[returns(ref)]
+    pub native_root: Option<String>,
 }
 
 // ─── Layer 1: per-file queries ───────────────────────────────────────
@@ -371,7 +394,7 @@ pub(crate) fn lowered_query(db: &dyn salsa::Database, file: SourceFile) -> Lower
 /// It is a different axis from `brink_analyzer::Dialect` (an ink-extension
 /// gate) — do not conflate the two.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Language {
+pub(crate) enum Language {
     Ink,
     Native,
 }
@@ -381,7 +404,7 @@ enum Language {
 /// change, no `HashMap` iteration. Uses `Path::extension` to match the
 /// codebase's existing extension convention (e.g. `brink-lsp`'s `ext ==
 /// "ink"`).
-fn file_language(path: &str) -> Language {
+pub(crate) fn file_language(path: &str) -> Language {
     if std::path::Path::new(path)
         .extension()
         .is_some_and(|ext| ext == "brink")
@@ -392,12 +415,25 @@ fn file_language(path: &str) -> Language {
     }
 }
 
-/// Parsed suppression/expectation directives for one file.
+/// Parsed suppression/expectation directives for one file — both channels
+/// merged into the one value every [`apply_suppressions`] call site reads.
+///
+/// The `//brink-disable`/`//brink-expect` comment channel is a pure text
+/// scan ([`parse_suppressions`]). The `@[allow(Exxx, …)]` annotation channel
+/// (issue #1161) rides the real `@[…]` grammar, so its declaration-scoped
+/// records are produced by lowering and picked up here off
+/// [`brink_ir::HirFile::allow_scopes`] — always empty for an ink file, whose
+/// annotation channel has no `allow` tenant. Reading [`lowered_query`] costs
+/// nothing extra in practice: every consumer of this query already reads the
+/// same file's lowering diagnostics alongside it.
 ///
 /// `lru = 4096`: per-file runaway-guard ceiling (issue #647).
 #[salsa::tracked(returns(ref), lru = 4096)]
 pub(crate) fn suppressions_query(db: &dyn salsa::Database, file: SourceFile) -> Suppressions {
-    parse_suppressions(file.text(db))
+    let mut out = parse_suppressions(file.text(db));
+    out.allow_scopes
+        .clone_from(&lowered_query(db, file).hir.allow_scopes);
+    out
 }
 
 /// The `INCLUDE` graph over the whole project. Always complete — edges are
@@ -511,6 +547,29 @@ pub(crate) fn project_is_native(db: &dyn salsa::Database, project: ProjectInput)
         .is_some_and(|f| file_language(f.path(db)) == Language::Native)
 }
 
+/// Whether every file currently tracked in `project` is a native `.brink`
+/// module — `false` for an empty project or one holding even a single ink
+/// file.
+///
+/// [`project_is_native`]'s "entry file decides the frontend" rule is right
+/// for a codegen-shaped question ("which frontend am I compiling"), which
+/// always has an explicit entry (the CLI's compile target). `symbol_index_query`
+/// asks a different question — "does this project have any ink file whose
+/// `dialect` could actually be wrong" — for `ProjectDb`'s single
+/// whole-workspace `ProjectInput`, which a long-lived LSP session never
+/// anchors to an entry at all (`Backend` never calls `ProjectDb::set_entry`;
+/// issue #1562 review finding). A project every one of whose files is native
+/// has no such file, by the same "native has no dialect to be wrong about"
+/// reasoning [`project_is_native`]'s own doc gives — regardless of whether
+/// anything ever called `set_entry`.
+pub(crate) fn project_is_all_native(db: &dyn salsa::Database, project: ProjectInput) -> bool {
+    let files = project.files(db);
+    !files.is_empty()
+        && files
+            .iter()
+            .all(|f| file_language(f.path(db)) == Language::Native)
+}
+
 // ─── Layer 2: project-wide names ─────────────────────────────────────
 
 /// Every file's resolved module (M-1, docs/modules-spec.md §1/§5) plus the
@@ -562,6 +621,13 @@ pub(crate) fn module_map_query(
     // exactly as the ink path reads `#@was` — never hard-dropped (issue #1286
     // wired the native parse/lower; `lower_native::module`). `None` when the
     // file authored no `@[was]`.
+    // The key handed to `native_module_path` is the file's path made
+    // root-relative to the project's registered `native_root` (issue #1572) —
+    // a no-op for every compile path (`discover_native` already keys
+    // root-relative, so `native_root` is `None`), and the normalization that
+    // makes a long-lived editor session's absolute-path keys mint the *same*
+    // module identity a real compile of the same tree does.
+    let native_root = project.native_root(db).as_deref();
     for f in files {
         if file_language(f.path(db)) == Language::Native {
             let was = lowered_query(db, *f)
@@ -569,10 +635,11 @@ pub(crate) fn module_map_query(
                 .module
                 .as_ref()
                 .and_then(|m| m.was.as_ref().map(|(old, _)| old.clone()));
+            let key = crate::modules::native_root_relative_key(native_root, f.path(db));
             map.insert(
                 f.file_id(db),
                 brink_analyzer::ResolvedModule {
-                    name: crate::modules::native_module_path(f.path(db)),
+                    name: crate::modules::native_module_path(&key),
                     declared: true,
                     was,
                 },
@@ -604,8 +671,24 @@ pub(crate) fn symbol_index_query(
     // inside `symbol_index_with_modules` itself, so the project's configured
     // dialect must reach it here.
     let dialect = project.analysis_options(db).dialect;
+    // `is_native` (issue #1562 review finding): a native project has no
+    // dialect to be wrong about — the same reasoning `project_is_native`
+    // gives `whole_project_diagnostics_query` for skipping the ink-only
+    // `E064` config error — so M-2d cross-declared-module coexistence must
+    // not depend on a client having declared `dialect: "brink"`. Every
+    // `.brink` file's module is its path and always *declared*, so without
+    // this a native workspace under the (default) `StrictInk` dialect would
+    // drop one of two same-name definitions from the index instead of
+    // letting them coexist.
+    //
+    // `project_is_all_native`, not `project_is_native`: this `project` is
+    // `ProjectDb`'s single whole-workspace `ProjectInput`, which a
+    // long-lived LSP session never anchors to a compile `entry`
+    // (`project_is_native` always answers `false` without one) — see
+    // `project_is_all_native`'s own doc.
+    let is_native = project_is_all_native(db, project);
     let (index, mut diagnostics) =
-        brink_analyzer::symbol_index_with_modules(&manifest_refs, module_map, dialect);
+        brink_analyzer::symbol_index_with_modules(&manifest_refs, module_map, dialect, is_native);
     diagnostics.extend(module_diags.clone());
     (index, diagnostics)
 }
@@ -681,13 +764,18 @@ pub(crate) fn resolve_query(
     brink_analyzer::resolve(file.file_id(db), &lowered.manifest, index, &scope)
 }
 
-/// Interned key for [`signature_query`]. Keyed on the content-addressed
-/// [`DefinitionId`] alone: colliding ids among non-local declarations
-/// (duplicate names across files) map to a *single* index entry chosen
-/// deterministically by the merge, so the memo cannot diverge from what a
-/// non-memoized `signature(def)` call would return for the same id. Local
-/// (`Param`/`Temp`) ids no longer collide across files in a way that matters
-/// here — [`resolution_index_query`] drops locals entirely (issue #517).
+/// Interned key for [`signature_query`] and [`local_signature_query`].
+/// Keyed on the content-addressed [`DefinitionId`] alone: colliding ids
+/// among non-local declarations (duplicate names across files) map to a
+/// *single* index entry chosen deterministically by the merge, so the memo
+/// cannot diverge from what a non-memoized `signature(def)` call would
+/// return for the same id. For `signature_query`, local (`Param`/`Temp`)
+/// ids no longer collide across files in a way that matters here —
+/// [`resolution_index_query`] drops locals entirely (issue #517). A local's
+/// `DefinitionId` itself carries no file component, so a colliding id
+/// *would* matter for [`local_signature_query`] — that query disambiguates
+/// by taking its own explicit `file` parameter alongside this same `DefKey`
+/// (issue #530), rather than relying on uniqueness of the id alone.
 #[salsa::interned]
 pub(crate) struct DefKey<'db> {
     pub def: DefinitionId,
@@ -700,8 +788,9 @@ pub(crate) struct DefKey<'db> {
 /// (returns `None` for a `Param`/`Temp` [`DefinitionId`], issue #517):
 /// resolving one would require scanning every file's `manifest.locals` to
 /// find the declaring file, reintroducing the project-wide invalidation this
-/// projection exists to avoid. No consumer calls `signature` with a local id
-/// today (phase-0 stub, not yet wired to hover).
+/// projection exists to avoid. Locals stay permanently non-addressable via
+/// this query — see [`local_signature_query`] for the per-file path hover
+/// now uses instead (issue #530).
 ///
 /// **Declaring-file dependency only (issue #630 / FG-1 §2.1).**
 /// `brink_analyzer::signature` reads only the declaring file's HIR (looked
@@ -744,6 +833,47 @@ pub(crate) fn signature_query<'db>(
         .collect();
     let opts = project.analysis_options(db);
     brink_analyzer::signature(def_id, index, &hir_refs, opts.host_manifest.as_ref())
+}
+
+/// The per-file locals path [`signature_query`] itself cannot take (issue
+/// #530): [`resolution_index_query`] drops `Param`/`Temp` locals entirely
+/// (issue #517), so `signature_query(def)` short-circuits to `None` for
+/// any local `DefinitionId` — a silent "hover shows nothing" trap for
+/// whoever wires hover/signature to a local next. A local's `DefinitionId`
+/// carries no file component (content hash of `(scope, name, kind)` alone —
+/// `brink_analyzer::local_signature`'s doc), so unlike [`signature_query`]
+/// it cannot recover its declaring file from the project-wide index without
+/// either a whole-project scan (reintroducing exactly the invalidation
+/// #517's cutoff exists to kill) or a caller-supplied file. This query
+/// takes `file` explicitly instead — the same per-file-only shape
+/// [`resolve_query`] already uses for local lookups (a local's body lives
+/// in exactly one file, issue #517) — so a body edit in a *different* file
+/// leaves this memo untouched.
+///
+/// Per #531 (converge `symbol_index_query` to decls-only): this is
+/// deliberately a *separate* query, not a widening of `signature_query`'s
+/// own index read — it serves locals without merging the decls-only and
+/// full indexes back together.
+///
+/// `lru = 4096`: per-(file, def) runaway-guard ceiling (issue #647,
+/// decision log "FG-5 memory bounding"), matching the other per-file
+/// families' ceiling — a `Sig` is small and this query reads only its own
+/// file's `manifest.locals`, so it carries none of `signature_query`'s
+/// wider per-def fanout. `heap_size = heap_size::signature_heap_size`
+/// (issue #538/#530): the output is the identical `Option<Arc<Sig>>` shape
+/// `signature_query` already estimates, so the same walk is reused rather
+/// than duplicated — see `heap_size.rs`'s module doc.
+#[salsa::tracked(lru = 4096, heap_size = heap_size::signature_heap_size)]
+pub(crate) fn local_signature_query<'db>(
+    db: &'db dyn salsa::Database,
+    project: ProjectInput,
+    file: SourceFile,
+    def: DefKey<'db>,
+) -> Option<Arc<Sig>> {
+    let index = resolution_index_query(db, project);
+    let manifest = &lowered_query(db, file).manifest;
+    let opts = project.analysis_options(db);
+    brink_analyzer::local_signature(def.def(db), manifest, index, opts.host_manifest.as_ref())
 }
 
 // ─── Layer 2/3: type inference (TM-1, advisory-only) ──────────────────
@@ -1113,20 +1243,18 @@ pub(crate) fn solve_scc_query<'db>(
     for &member in batch {
         global_ids.extend(referenced_globals_query(db, project, DefKey::new(db, member)).iter());
     }
-    // `value_type` covers the scalar/list/divert domain; `fn_type` (T1c
-    // follow-up, issue #712) covers `Ty::Fn` separately, since
-    // `InferredType` has no `Fn` form (`brink_analyzer::Sig::fn_type`'s
-    // doc) — mirrors `brink_analyzer::infer::collect_globals`'s own
-    // fallback exactly, so this narrowed path stays composed-equals-
-    // monolithic with it.
+    // `value_ty` carries the declaration's type at full `Ty` fidelity —
+    // scalars, `list<L>`, and (since issue #1540) `Array`/`Map`/`Struct`/
+    // `Fn`/`Handle` alike (`Option`/`Range` have no annotation grammar yet,
+    // so they never reach here). Mirrors `brink_analyzer::infer::
+    // collect_globals`'s own single read exactly, so this narrowed path
+    // stays composed-equals-monolithic with it.
     let mut globals: BTreeMap<DefinitionId, brink_analyzer::Ty> = BTreeMap::new();
     for gid in global_ids {
-        if let Some(sig) = signature_query(db, project, DefKey::new(db, gid)) {
-            if let Some(vt) = sig.value_type.clone() {
-                globals.insert(gid, brink_analyzer::Ty::from(vt));
-            } else if let Some(ft) = sig.fn_type.clone() {
-                globals.insert(gid, ft);
-            }
+        if let Some(sig) = signature_query(db, project, DefKey::new(db, gid))
+            && let Some(ty) = sig.value_ty.clone()
+        {
+            globals.insert(gid, ty);
         }
     }
 
@@ -1660,6 +1788,68 @@ impl PartialEq for LoweredChunk {
     }
 }
 
+/// [`brink_ir::lir::ChunkLoweringCtx`] wrapped so
+/// [`chunk_lowering_ctx_query`] (`no_eq`: it holds the same
+/// `ShapeTable`/`GlobalShapeMap` `PreludeDeclsResult` cannot make `Eq`) can
+/// satisfy salsa's `Update` bound. `Arc`-wrapped so a validated memo hands
+/// back the same allocation — same pattern as [`PreludeDeclsResult`].
+#[derive(Clone)]
+pub(crate) struct ChunkLoweringCtxResult {
+    pub ctx: Arc<brink_ir::lir::ChunkLoweringCtx>,
+}
+
+impl PartialEq for ChunkLoweringCtxResult {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.ctx, &other.ctx)
+    }
+}
+
+/// The knot-invariant half of [`lir_knot_chunk_query`]'s lowering
+/// environment, built once per project revision instead of once per knot
+/// (issue #460).
+///
+/// Every input here is whole-project — the flattened resolution lookup, the
+/// reconstructed struct-shape tables, the `FileId`→path map, the type mode —
+/// so each of the project's K per-knot memos used to rebuild all of it,
+/// making the per-knot LIR layer `O(K × project size)`. The measured cost on
+/// `compile_bench`'s 50-file × 20-knot synthetic project was the dominant
+/// share of cold LIR lowering; hoisting it here makes that share `O(1)` in K.
+///
+/// This query's dependency set is exactly the subset of
+/// [`lir_knot_chunk_query`]'s dependencies it took over
+/// ([`resolutions_index_query`], [`struct_shape_data_query`],
+/// [`type_policy_query`], and the files' `path` fields), so no chunk memo
+/// gains or loses an invalidation edge: anything that re-executes this
+/// re-executed every chunk before.
+#[salsa::tracked(no_eq)]
+pub(crate) fn chunk_lowering_ctx_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+) -> ChunkLoweringCtxResult {
+    let resolved = resolutions_index_query(db, project);
+    let shape_data = struct_shape_data_query(db, project);
+    // Narrow `.types` projection (issue #806/#809) — not the raw
+    // `AnalysisOptions` field — so an unrelated options edit doesn't
+    // re-execute this memo (and through it, every knot chunk).
+    let type_mode = match type_policy_query(db, project) {
+        TypePolicy::Strict => brink_ir::lir::TypeMode::Strict,
+        TypePolicy::Gradual => brink_ir::lir::TypeMode::Gradual,
+    };
+    let file_paths: LookupMap<FileId, String> = project
+        .files(db)
+        .iter()
+        .map(|f| (f.file_id(db), f.path(db).clone()))
+        .collect();
+    ChunkLoweringCtxResult {
+        ctx: Arc::new(brink_ir::lir::ChunkLoweringCtx::new(
+            &resolved.resolutions,
+            shape_data,
+            file_paths,
+            type_mode,
+        )),
+    }
+}
+
 /// Lower one knot into a self-contained LIR chunk — the per-`DefinitionId`
 /// unit of FG-4d. Reads only the declaring file's `lowered_query` HIR
 /// (per-file edge), the whole-project `resolutions_index_query`
@@ -1687,19 +1877,10 @@ pub(crate) fn lir_knot_chunk_query(
     };
 
     let resolved = resolutions_index_query(db, project);
-    let shape_data = struct_shape_data_query(db, project);
-    // Narrow `.types` projection (issue #806/#809) — not the raw
-    // `AnalysisOptions` field — so an unrelated options edit doesn't
-    // re-execute this chunk memo.
-    let type_mode = match type_policy_query(db, project) {
-        TypePolicy::Strict => brink_ir::lir::TypeMode::Strict,
-        TypePolicy::Gradual => brink_ir::lir::TypeMode::Gradual,
-    };
-    let file_paths: LookupMap<FileId, String> = project
-        .files(db)
-        .iter()
-        .map(|f| (f.file_id(db), f.path(db).clone()))
-        .collect();
+    // The knot-invariant half of the lowering environment (resolution
+    // lookup, struct-shape tables, file paths, type mode), built once per
+    // project revision rather than once per knot — issue #460.
+    let ctx = &chunk_lowering_ctx_query(db, project).ctx;
 
     // The file's normalized+stamped HIR, shared across all its knots'
     // memos (so a K-knot file normalizes once, not K times).
@@ -1708,15 +1889,16 @@ pub(crate) fn lir_knot_chunk_query(
         return LoweredChunk::default();
     };
 
+    let ufcs = &ufcs_resolution_query(db, project).table;
+    let coalesce = coalesce_types_query(db, project);
+    let tables = brink_ir::lir::AnalyzerTables { ufcs, coalesce };
     let (chunk, diagnostics) = brink_ir::lir::lower_knot_chunk_incremental(
         hir_file,
         knot,
         &resolved.index,
-        &resolved.resolutions,
-        &file_paths,
-        shape_data,
-        type_mode,
+        ctx,
         file_id,
+        tables,
     );
     LoweredChunk {
         chunk: Arc::new(chunk),
@@ -1844,11 +2026,15 @@ pub(crate) fn lir_lowering_query(db: &dyn salsa::Database, project: ProjectInput
         })
         .collect();
     let prelude = brink_ir::lir::assemble_prelude((*prelude_decls.decls).clone(), normalized);
+    let ufcs = &ufcs_resolution_query(db, project).table;
+    let coalesce = coalesce_types_query(db, project);
+    let tables = brink_ir::lir::AnalyzerTables { ufcs, coalesce };
     let (root_chunks, root_temp_slots) = brink_ir::lir::lower_root_content_for_prelude(
         &prelude,
         &resolved.index,
         &resolved.resolutions,
         &paths,
+        tables,
     );
 
     // Interleave in walk order (per file: root content, then that file's
@@ -2242,6 +2428,7 @@ static NO_SUPPRESSIONS: Suppressions = Suppressions {
     disable_all: false,
     disable_file: false,
     line_directives: std::collections::BTreeMap::new(),
+    allow_scopes: Vec::new(),
 };
 
 /// Collect all diagnostics (lowering + analysis), apply suppressions, and
@@ -2266,7 +2453,8 @@ static NO_SUPPRESSIONS: Suppressions = Suppressions {
 ///
 /// `lints`: the project's resolved `[lints]` policy (issue #1160), the other
 /// input [`brink_analyzer::effective_severity`] partitions by — per-code
-/// `deny`/`warn`/`allow` overrides plus `deny-warnings`.
+/// `deny`/`warn`/`allow`/`info`/`hint` overrides (issue #1162 added the
+/// latter two) plus `deny-warnings`.
 #[must_use]
 pub fn partition_diagnostics(
     files: &[FileDiagnostics<'_>],
@@ -2426,6 +2614,18 @@ fn lower_native_file(file_id: FileId, parse: &NativeParse) -> LoweredFile {
             brink_syntax_native::ParseSeverity::Warning => DiagnosticCode::E131,
         },
     }));
+
+    // Native lint: asymmetric choice-branch dead-end (`E151`, issue #1219,
+    // decision-log 2026-07-22 "Flows end implicitly (native)" item 4) — the
+    // relocated residual value of ink's retired "ran out of content" error.
+    // Deliberately folded into `diagnostics`, never `admission`: unlike the
+    // B0.9 accept-list below, this is `Severity::Warning`-base, on by
+    // default (not opt-in — see the lint module's own doc), and
+    // configurable/suppressible through `[lints]`/`//brink-disable` like
+    // any other tier-able diagnostic — it must flow through
+    // `apply_suppressions`/`effective_severity` in `partition_diagnostics`,
+    // which only `diagnostics` does.
+    diagnostics.extend(brink_analyzer::check_native_choice_dead_end(file_id, &hir));
 
     // B0.3 admission validator (docs/hir-admission-contract.md §4.2, issue
     // #1172): the same loud, non-suppressible pass `lower_file` runs, kept in

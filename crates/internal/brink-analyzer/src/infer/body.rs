@@ -25,8 +25,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use brink_format::DefinitionId;
 use brink_ir::{
     Block, BlockStmt, Choice, ChoiceSet, CondKind, Conditional, Content, ContentPart, DivertPath,
-    DivertTarget, ElseBranch, Expr, IfStmt, InfixOp, LogicBlock, Path as HirPath, PrefixOp, Stmt,
-    StringPart, SymbolIndex, SymbolKind,
+    DivertTarget, ElseBranch, Expr, IfStmt, InfixOp, LogicBlock, Name, Path as HirPath, PrefixOp,
+    Stmt, StringPart, SymbolIndex, SymbolKind,
 };
 use rowan::TextRange;
 
@@ -165,6 +165,15 @@ pub(super) struct BodyResult {
     /// only place argument expressions have types; reported by strict mode
     /// only.
     pub value_calls: Vec<ValueCallFact>,
+    /// Issue #1532 (the #1501 review's `remove`/`remove_at` migration-tail
+    /// finding): every `remove(a, i)` call site in this body whose first
+    /// argument is statically known to be `Ty::Array` — the pre-#1484 array
+    /// leg `remove` no longer serves (`remove_at` does). Each entry is the
+    /// call's own `remove` token range (matching `ValueCallFact::range`'s
+    /// convention). Recorded unconditionally, like `value_calls`; reported
+    /// only by strict mode (`strict::check_array_remove_calls`, `E149`) —
+    /// gradual mode keeps the `MapRemove` runtime fault as its backstop.
+    pub array_remove_calls: Vec<TextRange>,
 }
 
 /// Infer one definition's body against `ctx`. `def.params` are the declared
@@ -211,6 +220,7 @@ pub(super) fn infer_def_body(def: &super::Def<'_>, ctx: &BodyCtx<'_>) -> BodyRes
         effect_faults_refined: false,
         annotated,
         value_calls: Vec::new(),
+        array_remove_calls: Vec::new(),
         local_write_counts: BTreeMap::new(),
         local_fn_origin: BTreeMap::new(),
         pending_value_calls: Vec::new(),
@@ -275,6 +285,7 @@ pub(super) fn infer_def_body(def: &super::Def<'_>, ctx: &BodyCtx<'_>) -> BodyRes
         effect_faults: pass.effect_faults,
         effect_faults_refined: pass.effect_faults_refined,
         value_calls: pass.value_calls,
+        array_remove_calls: pass.array_remove_calls,
     }
 }
 
@@ -350,6 +361,9 @@ struct InferPass<'a, 'b> {
     /// two-independent-derivations comparison stays intact.
     annotated: BTreeMap<String, Ty>,
     value_calls: Vec<ValueCallFact>,
+    /// See [`BodyResult::array_remove_calls`] — accumulated the same way
+    /// `value_calls` is, during the one body walk.
+    array_remove_calls: Vec<TextRange>,
     /// T2 §8 precision rung (docs/effects-spec.md §6 item 3/§8, issue #872): every
     /// write (`TempDecl` initializer or bare-`Path` `Assignment`) to a
     /// Temp local, by name, counted regardless of whether the write's
@@ -782,7 +796,7 @@ impl InferPass<'_, '_> {
                 self.infer_expr(inner); // condition position — no forcing.
                 Ty::Bool
             }
-            Expr::Infix(lhs, op, rhs) => self.infer_infix(lhs, *op, rhs),
+            Expr::Infix(ie) => self.infer_infix(&ie.lhs, ie.op, &ie.rhs),
             Expr::Call(path, args) => self.infer_call(path, args),
             Expr::ArrayLiteral(a) => {
                 let elems: Vec<Ty> = a.elements.iter().map(|e| self.infer_expr(e)).collect();
@@ -989,7 +1003,7 @@ impl InferPass<'_, '_> {
             // mismatch collapses to `Ty::Conflicted` (the same
             // infallible-absorption idiom `unify` uses elsewhere) — this
             // pass only ever *computes* the type, it never diagnoses.
-            // `coalesce_mismatch::check` is the strict-mode-only pass that
+            // `coalesce::check` is the strict-mode-only pass that
             // re-runs `coalesce` at this same expression's own site and
             // pushes `E066` directly when it disagrees (review finding on
             // PR #1469/#1460): the generic Conflicted-escape check
@@ -999,7 +1013,8 @@ impl InferPass<'_, '_> {
             // coalescing expression used directly in content/argument
             // position never does. Under `types = gradual` neither compile-
             // time check runs; the runtime `TypeError` fault
-            // (`value_ops::coalesce`) is the sole backstop there, and only
+            // (`value_ops::coalesce_unwrap_some`, backing
+            // `Opcode::CoalesceSome`) is the sole backstop there, and only
             // for a non-Option `lhs` (see that function's own doc for the
             // `Mismatch` case's narrower coverage).
             InfixOp::Coalesce => {
@@ -1016,6 +1031,11 @@ impl InferPass<'_, '_> {
 
     fn infer_call(&mut self, path: &HirPath, args: &[Expr]) -> Ty {
         let arg_tys: Vec<Ty> = args.iter().map(|a| self.infer_expr(a)).collect();
+        // `path.range` here is the callee `Path`'s whole span — this
+        // `resolve` lookup is one of the four consumers keyed on the
+        // call-path `ResolvedRef::range` contract (issue #1561); see that
+        // field's doc. Below, the B3a branch handles a multi-segment
+        // (dotted UFCS) path explicitly.
         if let Some(def) = self.resolve(path.range) {
             // T1c: a callee resolving to a *value* (param/temp/VAR/CONST)
             // is a call through a function value, not a direct call — its
@@ -1034,6 +1054,21 @@ impl InferPass<'_, '_> {
                 None => def.tag() == brink_format::DefinitionTag::LocalVar,
             };
             if is_value_callee {
+                // B3a (issue #1482): a *multi-segment* callee path whose
+                // resolution landed on a value is a UFCS-shaped call
+                // (`g.greet(3)`) — the resolver records the receiver as the
+                // target, the trailing segment being a field name or a free
+                // function's name. The receiver is not itself the thing
+                // being called, so classifying it as a T1c call-through-a-
+                // value would report the receiver's own (non-`Fn`) type as
+                // "not callable" — a false `E066` on every legal method
+                // call. `brink-analyzer::ufcs` owns this site's checking;
+                // the call's own type stays `Unknown` here, the same
+                // posture `Expr::FieldAccess` already takes (no static
+                // field-type table is threaded through inference).
+                if path.segments.len() > 1 {
+                    return Ty::Unknown;
+                }
                 return self.infer_value_call(path, def, args, &arg_tys);
             }
             self.record_call_edge(def);
@@ -1051,9 +1086,83 @@ impl InferPass<'_, '_> {
         // (shadow-fallback, matching `brink_analyzer::resolve::
         // is_t1b_stdlib_name` — a real def always wins the resolve() above).
         if let [seg] = path.segments.as_slice() {
-            return self.infer_intrinsic(&seg.text, path.range, args, &arg_tys);
+            // Issue #1168 (review correction, w65): NOT every intrinsic arm
+            // only inspects `arg_tys` to shape its own result — `contains`,
+            // `push`/`heap_push`, `insert`, `remove`, `index_of`, `get`, and
+            // `contains_value` all call `self.observe(<sibling arg>, <type
+            // derived from arg_tys[0]>)`, writing evidence into
+            // `self.locals` for a *second* argument. Passing an
+            // annotation-shadowed `arg_tys` into `infer_intrinsic`
+            // uniformly would make one param's annotation become body
+            // *evidence* for a sibling param — exactly the seeding
+            // `infer_def_body`'s "overlay, never replace" design exists to
+            // avoid, and would silently discard the sibling's own
+            // annotation or manufacture a spurious `E066` if the sibling is
+            // later compared against something else.
+            //
+            // So `arg_tys` (below) stays the original, evidence-only
+            // vector — every observe-bearing arm keeps matching on it
+            // unchanged. `read_tys` is a *separate* fallback-shadowed copy,
+            // threaded through only for arms that shape their own return
+            // type from a value that is purely read, never joined against a
+            // second operand (`some(x)` → `Option[typeof x]`; `get(m, k)`'s
+            // *return type* — its `observe(key_arg, k)` call still matches
+            // on the unshadowed `arg_tys`, so `m`'s annotation alone can
+            // never seed `k`'s inference). See `own_annotation`'s doc for
+            // why `infer_infix` deliberately gets neither slice.
+            let read_tys: Vec<Ty> = args
+                .iter()
+                .zip(arg_tys.iter())
+                .map(|(a, ty)| self.or_own_annotation(a, ty.clone()))
+                .collect();
+            return self.infer_intrinsic(&seg.text, path.range, args, &arg_tys, &read_tys);
         }
         Ty::Unknown
+    }
+
+    /// Annotation fallback for a *value-position* read whose observed type
+    /// came back `Unknown` purely because nothing in the body compared or
+    /// combined it with anything else yet — the "pass a param straight
+    /// through" case (issue #1168: `some(x)`, `get(m, k)`, a `for` loop's
+    /// iterable). Mirrors [`Self::annotated_callee_ty`]'s exact resolution
+    /// shape (a real def's name, or the bare single-segment fallback for a
+    /// locals-stripped index) but for the *value*, not the *callee*.
+    ///
+    /// `infer_infix`'s comparison/arithmetic arms deliberately never call
+    /// this: TM-2's "a body use that disagrees with the annotation still
+    /// infers its own concrete type" guarantee (`E063` needs two
+    /// independent derivations, `overlay_never_replaces_a_concrete_
+    /// body_derivation`) depends on those operands seeing `Unknown`, not
+    /// the annotation, on their very first read — this fallback is only
+    /// safe at read sites that don't themselves produce counter-evidence.
+    fn own_annotation(&self, expr: &Expr) -> Option<Ty> {
+        let Expr::Path(p) = expr else {
+            return None;
+        };
+        if let Some(def) = self.resolve(p.range)
+            && let Some(name) = self.ctx.index.symbols.get(&def).map(|i| i.name.clone())
+            && let Some(ann) = self.annotated.get(&name)
+        {
+            return Some(ann.clone());
+        }
+        if let [seg] = p.segments.as_slice()
+            && let Some(ann) = self.annotated.get(&seg.text)
+        {
+            return Some(ann.clone());
+        }
+        None
+    }
+
+    /// Apply [`Self::own_annotation`]'s fallback to an already-computed
+    /// `ty` only when it's `Unknown` — a concrete or `Conflicted` body
+    /// derivation always wins outright (same "overlay, never replace"
+    /// posture as every other annotation fallback in this module).
+    fn or_own_annotation(&self, expr: &Expr, ty: Ty) -> Ty {
+        if ty.is_unknown() {
+            self.own_annotation(expr).unwrap_or(ty)
+        } else {
+            ty
+        }
     }
 
     /// `#fn(target, args…)` — docs/t1c-spec.md §4: consume the bound prefix
@@ -1357,6 +1466,7 @@ impl InferPass<'_, '_> {
         range: TextRange,
         args: &[Expr],
         arg_tys: &[Ty],
+        read_tys: &[Ty],
     ) -> Ty {
         // NS-A2 fault dimension (issue #1108, from #1097) + NS-A6 RNG-cell
         // writes (issue #1112, "every draw is an ordinary write"): both
@@ -1466,13 +1576,26 @@ impl InferPass<'_, '_> {
                 }
                 Ty::Unknown
             }
+            // `remove` (issue #1484, decision log "Quick-docket closures"
+            // 2026-07-26): map-only now — identity-based, idempotent-total
+            // removal (map keys; flags values once flags land). The
+            // array-index leg this used to also narrow (observing the
+            // second argument against the *element* type, which was wrong
+            // for an index argument anyway — a latent bug this split
+            // fixes) moved to `remove_at` below.
             "remove" => {
-                if let Some(item) = args.get(1) {
-                    match arg_tys.first() {
-                        Some(Ty::Array(elem)) => self.observe(item, elem),
-                        Some(Ty::Map(k, _)) => self.observe(item, k),
-                        _ => {}
-                    }
+                if let (Some(Ty::Map(k, _)), Some(item)) = (arg_tys.first(), args.get(1)) {
+                    self.observe(item, k);
+                }
+                // Issue #1532: the pre-#1484 array-index leg has no
+                // compatibility shim — a statically-known `Ty::Array`
+                // receiver here is an un-migrated `remove(a, i)` call site
+                // that means `remove_at(a, i)`. Recorded as a fact (see
+                // `BodyResult::array_remove_calls`'s doc), not raised
+                // directly: this pass is advisory-only, reported by strict
+                // mode (`strict::check_array_remove_calls`, `E149`).
+                if matches!(arg_tys.first(), Some(Ty::Array(_))) {
+                    self.array_remove_calls.push(range);
                 }
                 if let Some(container) = args.first() {
                     self.record_write(container);
@@ -1573,16 +1696,21 @@ impl InferPass<'_, '_> {
                 ret
             }
             // `get(m, k)` → `Option[V]` (§5, martyr #3); the key narrows
-            // against the map's key type.
-            "get" => match arg_tys.first() {
-                Some(Ty::Map(k, v)) => {
-                    if let Some(key_arg) = args.get(1) {
-                        self.observe(key_arg, k);
-                    }
-                    Ty::Option(v.clone())
+            // against the map's key type — from `arg_tys` (evidence-only:
+            // issue #1168's review correction, see `infer_call`'s comment
+            // — `m`'s annotation must never become `k`'s evidence). The
+            // return type's own map shape comes from `read_tys`, so `m`'s
+            // own annotation still resolves `get(m, k)`'s result when `m`
+            // is otherwise unevidenced (the confirmed #1168 repro).
+            "get" => {
+                if let (Some(Ty::Map(k, _)), Some(key_arg)) = (arg_tys.first(), args.get(1)) {
+                    self.observe(key_arg, k);
                 }
-                _ => Ty::Option(Box::new(Ty::Unknown)),
-            },
+                match read_tys.first() {
+                    Some(Ty::Map(_, v)) => Ty::Option(v.clone()),
+                    _ => Ty::Option(Box::new(Ty::Unknown)),
+                }
+            }
             // `contains_value(m, v)` → bool (§5); the needle narrows
             // against the map's value type.
             "contains_value" => {
@@ -1591,24 +1719,33 @@ impl InferPass<'_, '_> {
                 }
                 Ty::Bool
             }
-            // `clear(ref m)` (§5), `shuffle(ref a)` (§7, NS-A6), and
-            // `sort(ref a)` (§4b, NS-A4 — the F0 imperative twin of
-            // `sorted`): statement-only in-place mutators — a receiver
-            // write, no value (the `push` shape, #880: the intrinsics'
-            // effect behavior is declared at introduction). Arms merged
-            // per clippy match_same_arms (the #694 `len | int` precedent);
+            // `clear(ref m)` (§5), `shuffle(ref a)` (§7, NS-A6), `sort(ref
+            // a)` (§4b, NS-A4 — the F0 imperative twin of `sorted`), and
+            // `remove_at(a, i)` (issue #1484, joining the `_at`
+            // faulting-index family with `char_at`): statement-only
+            // in-place mutators — a receiver write, no value (the `push`
+            // shape, #880: the intrinsics' effect behavior is declared at
+            // introduction). `remove_at`'s `i` is an index, not an element
+            // — like `insert`'s array leg (also index-typed), it isn't
+            // narrowed against the array's element type; the runtime op's
+            // own domain check (`i` must be an `Int`) is the wrong-type
+            // backstop, matching `char_at`'s posture. Arms merged per
+            // clippy match_same_arms (the #694 `len | int` precedent);
             // `sort`'s mode-dependent NaN behavior is entirely the runtime
             // op's (rows stay mode-independent — the conservative faults
             // bit rides the intrinsic table).
-            "clear" | "shuffle" | "sort" => {
+            "clear" | "shuffle" | "sort" | "remove_at" => {
                 if let Some(container) = args.first() {
                     self.record_write(container);
                 }
                 Ty::Unknown
             }
             // `some(x)` → `Option[typeof x]` (§1.4) — the constructor is
-            // where a bare element type becomes optional.
-            "some" => Ty::Option(Box::new(arg_tys.first().cloned().unwrap_or(Ty::Unknown))),
+            // where a bare element type becomes optional. `x` is read here,
+            // never joined against a second operand, so this is the one
+            // arm where `read_tys` (issue #1168's annotation fallback) is
+            // safe unconditionally: there is no sibling to seed.
+            "some" => Ty::Option(Box::new(read_tys.first().cloned().unwrap_or(Ty::Unknown))),
             // ── NS-A8 numeric tower (issue #1114,
             // `docs/tower-mini-spec.md`). Constructors return their kind;
             // numeric lanes observe `float` (int lanes coerce through the
@@ -1894,7 +2031,7 @@ impl InferPass<'_, '_> {
             Stmt::Conditional(c) => self.infer_conditional(c),
             Stmt::Sequence(s) => {
                 for branch in &s.branches {
-                    self.infer_block(branch);
+                    self.infer_block(&branch.body);
                 }
             }
             Stmt::ExprStmt(e) => {
@@ -1947,7 +2084,7 @@ impl InferPass<'_, '_> {
                 ContentPart::InlineConditional(c) => self.infer_conditional(c),
                 ContentPart::InlineSequence(s) => {
                     for branch in &s.branches {
-                        self.infer_block(branch);
+                        self.infer_block(&branch.body);
                     }
                 }
                 ContentPart::Text(_) | ContentPart::Glue | ContentPart::Spring => {}
@@ -1991,9 +2128,27 @@ impl InferPass<'_, '_> {
         }
         for branch in &cond.branches {
             if let Some(e) = &branch.condition {
-                self.infer_expr(e); // condition position — no forcing.
+                let cond_ty = self.infer_expr(e); // condition position — no forcing.
+                self.bind_as_binding(branch.binding.as_ref(), &cond_ty);
             }
             self.infer_block(&branch.body);
+        }
+    }
+
+    /// Type an `as` binding (B1b, issue #1475): `Option[T]` unwraps to `T`.
+    ///
+    /// A condition that isn't a statically known `Option` leaves the
+    /// binding `Unknown` rather than guessing — `option_conditions::check`
+    /// owns that judgment (`E147` for a classifiable non-Option, silence for
+    /// `Unknown`/`Conflicted`, the "Unknown never disagrees" rule this
+    /// module applies everywhere else).
+    fn bind_as_binding(&mut self, binding: Option<&Name>, cond_ty: &Ty) {
+        if let Some(name) = binding {
+            let bound = match cond_ty {
+                Ty::Option(inner) => (**inner).clone(),
+                _ => Ty::Unknown,
+            };
+            self.bind_local(&name.text, &bound);
         }
     }
 
@@ -2030,7 +2185,10 @@ impl InferPass<'_, '_> {
             BlockStmt::Return(r) => self.infer_return(r.value.as_ref(), &r.onwards_args),
             BlockStmt::If(i) => self.infer_if(i),
             BlockStmt::While(w) => {
-                self.infer_expr(&w.condition); // condition position — no forcing.
+                let cond_ty = self.infer_expr(&w.condition); // condition position — no forcing.
+                // `while EXPR as n` rebinds each iteration, but every pass
+                // binds the SAME static type, so one binding here is exact.
+                self.bind_as_binding(w.binding.as_ref(), &cond_ty);
                 for s in &w.body {
                     self.infer_block_stmt(s);
                 }
@@ -2042,6 +2200,15 @@ impl InferPass<'_, '_> {
                 // faults (bool v1).
                 self.effect_faults = true;
                 let iter_ty = self.infer_expr(&f.iterable);
+                // Issue #1168: same "pass a param straight through" read as
+                // a stdlib verb's arg (`infer_call`'s intrinsic dispatch) —
+                // the iterable is only ever inspected, never joined against
+                // a second operand, so an annotated-but-otherwise-
+                // unevidenced param/temp iterable should still carry its
+                // own declared type here (`iteration.md`'s `first_over`
+                // fence: `for coins in tab` where `tab: array<int>` is
+                // never touched anywhere else in the body).
+                let iter_ty = self.or_own_annotation(&f.iterable, iter_ty);
                 // F29 discharge: a provably-iterable type (the closed
                 // builtin roster) makes the loop's own iteration total.
                 if crate::protocols::iterate_element_ty(&iter_ty).is_none() {
@@ -2086,7 +2253,8 @@ impl InferPass<'_, '_> {
     }
 
     fn infer_if(&mut self, i: &IfStmt) {
-        self.infer_expr(&i.condition); // condition position — no forcing.
+        let cond_ty = self.infer_expr(&i.condition); // condition position — no forcing.
+        self.bind_as_binding(i.binding.as_ref(), &cond_ty);
         for s in &i.body {
             self.infer_block_stmt(s);
         }

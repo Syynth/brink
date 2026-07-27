@@ -6,8 +6,9 @@
 //! branch, a choice guard, an `await` condition) is a compile error under
 //! `types = strict` and a runtime fault under gradual
 //! (`RuntimeError::OptionTruthiness`). Authors write `== none` /
-//! `== some(x)` (or, post-B1, the `as`-binding). This supersedes NS-A1's
-//! shipped falsy-none truthiness.
+//! `== some(x)`, or the `as`-binding (B1b, issue #1475 — see
+//! `check_binding_condition` below, which owns its inverse check). This
+//! supersedes NS-A1's shipped falsy-none truthiness.
 //!
 //! Strict-mode-only, mirroring `conversions::check`'s gating and
 //! classification posture exactly: wired into `strict::check`, judging only
@@ -107,7 +108,7 @@ fn check_stmt(stmt: &Stmt, file: FileId, ctx: &MistypeCtx<'_>, out: &mut Vec<Dia
         Stmt::LabeledBlock(b) => check_block(b, file, ctx, out),
         Stmt::Sequence(s) => {
             for branch in &s.branches {
-                check_block(branch, file, ctx, out);
+                check_block(&branch.body, file, ctx, out);
             }
         }
         Stmt::LogicBlock(lb) => {
@@ -139,7 +140,7 @@ fn check_content(c: &Content, file: FileId, ctx: &MistypeCtx<'_>, out: &mut Vec<
             ContentPart::InlineConditional(cond) => check_conditional(cond, file, ctx, out),
             ContentPart::InlineSequence(s) => {
                 for branch in &s.branches {
-                    check_block(branch, file, ctx, out);
+                    check_block(&branch.body, file, ctx, out);
                 }
             }
             ContentPart::Interpolation(_)
@@ -162,7 +163,14 @@ fn check_conditional(
     let conditions_are_truthiness = !matches!(c.kind, CondKind::Switch(_));
     for branch in &c.branches {
         if conditions_are_truthiness && let Some(cond) = &branch.condition {
-            check_condition(cond, c.ptr.text_range(), file, ctx, out);
+            check_condition_or_binding(
+                cond,
+                branch.binding.as_ref(),
+                c.ptr.text_range(),
+                file,
+                ctx,
+                out,
+            );
         }
         check_block(&branch.body, file, ctx, out);
     }
@@ -197,7 +205,14 @@ fn check_block_stmt(bs: &BlockStmt, file: FileId, ctx: &MistypeCtx<'_>, out: &mu
         BlockStmt::While(w) => {
             // A plain `while` and a `while await` both truthiness-evaluate
             // their condition (the wake contract: waking IS condition-true).
-            check_condition(&w.condition, w.ptr.text_range(), file, ctx, out);
+            check_condition_or_binding(
+                &w.condition,
+                w.binding.as_ref(),
+                w.ptr.text_range(),
+                file,
+                ctx,
+                out,
+            );
             for s in &w.body {
                 check_block_stmt(s, file, ctx, out);
             }
@@ -222,7 +237,14 @@ fn check_block_stmt(bs: &BlockStmt, file: FileId, ctx: &MistypeCtx<'_>, out: &mu
 }
 
 fn check_if(i: &IfStmt, file: FileId, ctx: &MistypeCtx<'_>, out: &mut Vec<Diagnostic>) {
-    check_condition(&i.condition, i.ptr.text_range(), file, ctx, out);
+    check_condition_or_binding(
+        &i.condition,
+        i.binding.as_ref(),
+        i.ptr.text_range(),
+        file,
+        ctx,
+        out,
+    );
     for s in &i.body {
         check_block_stmt(s, file, ctx, out);
     }
@@ -235,6 +257,61 @@ fn check_if(i: &IfStmt, file: FileId, ctx: &MistypeCtx<'_>, out: &mut Vec<Diagno
         }
         None => {}
     }
+}
+
+/// Route a condition to the right check: with an `as` binding (B1b, issue
+/// #1475) an `Option[T]` condition is exactly what the author is *supposed*
+/// to write, so F27's `E116` must not fire — the binding is the third
+/// explicit spelling the F27 ruling named, next to `== none`/`== some(x)`.
+/// The inverse check takes its place: an `as` over a statically known
+/// **non**-Option has nothing to unwrap (`E147`).
+fn check_condition_or_binding(
+    cond: &Expr,
+    binding: Option<&brink_ir::Name>,
+    fallback_range: TextRange,
+    file: FileId,
+    ctx: &MistypeCtx<'_>,
+    out: &mut Vec<Diagnostic>,
+) {
+    match binding {
+        Some(_) => check_binding_condition(cond, fallback_range, file, ctx, out),
+        None => check_condition(cond, fallback_range, file, ctx, out),
+    }
+}
+
+/// `E147`: an `as` binding whose condition is statically classifiable and
+/// is not an `Option[T]`.
+///
+/// Gated exactly like `check_condition`'s `E116`: only a *classifiable*
+/// type is judged. `Unknown`/`Conflicted` — and any shape the
+/// classification substrate can't see — stay silent ("Unknown never
+/// disagrees"), with `RuntimeError::AsBindingNotOption` as the backstop.
+fn check_binding_condition(
+    cond: &Expr,
+    fallback_range: TextRange,
+    file: FileId,
+    ctx: &MistypeCtx<'_>,
+    out: &mut Vec<Diagnostic>,
+) {
+    if condition_is_option(cond, ctx) {
+        return;
+    }
+    let Some(ty) = structs::classify_expr_ty(cond, ctx) else {
+        return;
+    };
+    if matches!(ty, Ty::Unknown | Ty::Conflicted) {
+        return;
+    }
+    out.push(Diagnostic {
+        file,
+        range: expr_anchor(cond).unwrap_or(fallback_range),
+        message: format!(
+            "{}: the `as` binding unwraps an `Option[T]`, but this condition is `{}`",
+            DiagnosticCode::E147.title(),
+            ty.display(),
+        ),
+        code: DiagnosticCode::E147,
+    });
 }
 
 /// Check one truthiness condition. `fallback_range` anchors the diagnostic

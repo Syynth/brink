@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use brink_format::DefinitionId;
 use brink_ir::{
@@ -63,8 +63,24 @@ pub struct ImportScope {
     /// (`IMPORT { name } FROM mod`) — name-precise, matching
     /// `modules::import_covers` exactly so resolution and the E025
     /// import-required diagnostic can never diverge. `BTreeSet` for
-    /// determinism.
+    /// determinism. Keyed by the imported item's own (source-module) name
+    /// regardless of any local alias — an aliased import still *covers* its
+    /// source name for cross-module licensing purposes (§2: the file did
+    /// import it), it just isn't the name resolution binds bare (see
+    /// `aliases`).
     pub bare_imports: BTreeSet<(String, String)>,
+    /// Local alias → `(module, source_name)` for every bare import item that
+    /// named one (`IMPORT { name AS alias } FROM mod` / `use mod::name as
+    /// alias;`, issue #1590). `index.by_name` is keyed by definitions' own
+    /// spellings only, so a plain [`lookup_by_name`] lookup can never find an
+    /// alias — this table is the indirection [`lookup_by_name`] falls back to
+    /// once the direct-name lookup comes up empty. Additive, not
+    /// shadowing: aliasing doesn't revoke the source name's own bare
+    /// visibility (still governed by `bare_imports`/`classify` exactly as
+    /// before) — it only adds a second local spelling for the same import.
+    /// See the doc comment on [`lookup_by_name`] for the alias-vs-original
+    /// licensing ruling. `BTreeMap` for determinism.
+    pub aliases: BTreeMap<String, (String, String)>,
 }
 
 impl ImportScope {
@@ -73,6 +89,17 @@ impl ImportScope {
     #[must_use]
     pub fn new(file_module: Option<String>, imports: &[Import]) -> Self {
         let (qualified, bare) = import_coverage_for_file(imports);
+        let mut aliases = BTreeMap::new();
+        for import in imports {
+            if !import.bare {
+                continue;
+            }
+            for item in &import.items {
+                if let Some(alias) = &item.alias {
+                    aliases.insert(alias.clone(), (import.module.clone(), item.name.clone()));
+                }
+            }
+        }
         Self {
             file_module,
             qualified_modules: qualified.into_iter().map(str::to_string).collect(),
@@ -80,6 +107,7 @@ impl ImportScope {
                 .into_iter()
                 .map(|(module, name)| (module.to_string(), name.to_string()))
                 .collect(),
+            aliases,
         }
     }
 }
@@ -502,6 +530,24 @@ fn lookup_variable(
     VarResult::NotFound
 }
 
+/// Resolve a call-path reference (`RefKind::Function`).
+///
+/// **Range contract (issue #1561):** every `ResolvedRef` pushed below
+/// carries `range: uref.range` unchanged — never narrowed to a sub-segment
+/// (receiver-only, method-only). By construction (`brink_ir::symbols::
+/// project::Projector::walk_expr`'s `Expr::Call` arm) `uref.range` is
+/// already the callee `Path`'s own whole span, so this function's only
+/// obligation is to *not disturb it*. That whole-path range is the exact
+/// `(FileId, TextRange)` lookup key `lir::lower::expr::lower_call` and
+/// `ufcs_receiver_path`, `strict::check_void_root`, `coalesce`'s
+/// operand classifier, `ufcs::value_receiver_def`, and
+/// `infer::body::infer_call` all independently key on — see
+/// [`brink_ir::ResolvedRef::range`]'s doc for the full consumer list and
+/// the cross-layer regression test. A narrower range here (e.g. to support
+/// a rename edit) is a silent miscompile for all four; narrowing for a
+/// rename belongs at `brink-ide`'s own consumption layer instead
+/// (`ufcs_hover`'s segment-narrowing helpers are the established pattern —
+/// see #1550/#1554).
 fn resolve_function(
     index: &SymbolIndex,
     scope: &ImportScope,
@@ -571,8 +617,9 @@ fn resolve_function(
     }
 
     // T1b stdlib slice 1 (docs/t1b-surface-spec.md §5): `len`/`keys`/
-    // `values`/`contains`/`push`/`insert`/`remove` with no matching user
-    // symbol are the brink-dialect builtins, handled at LIR lowering —
+    // `values`/`contains`/`push`/`insert`/`remove`/`remove_at` with no
+    // matching user symbol are the brink-dialect builtins, handled at LIR
+    // lowering —
     // same "skip resolution, no diagnostic here" treatment as
     // `is_builtin_function` above. Dialect-agnostic at this layer (an
     // author-defined symbol of the same name always wins regardless of
@@ -581,6 +628,54 @@ fn resolve_function(
     // (`brink-analyzer::dialect_gate`, which — unlike this resolution pass —
     // does know the dialect).
     if is_t1b_stdlib_name(path) {
+        return;
+    }
+
+    // B3a UFCS-shaped callee (issue #1482, D1–D5 RULED 2026-07-26): every
+    // static dotted-path interpretation above has failed, but the path's
+    // *head* segment alone names a value in scope — this is method-call
+    // syntax on that value (`g.greet(3)`), not an unresolved static path.
+    // Exactly the TM-4b fallback `lookup_variable`'s step 11 already applies
+    // to a dotted *value* reference (`p.x.y`), applied to the callee
+    // position: the resolved target is the head value itself, and the
+    // trailing segment is carried structurally by the HIR `Path`.
+    //
+    // Which of the two meanings that trailing segment has (a callable field
+    // of the receiver's type, or a free function to desugar onto) is a
+    // *type-directed* question this resolution pass cannot answer — so it
+    // resolves the receiver and stays silent, and `brink-analyzer::ufcs`
+    // owns the verdict and every diagnostic for the site (`E140`–`E143`).
+    // Suppressing `E025` here is what keeps a legal method call
+    // diagnostic-free and an illegal one from being reported twice.
+    //
+    // Inert for the ink corpus by construction: ink's own `FunctionCall`
+    // lowering always builds a single-segment callee path, so no ink source
+    // can reach this branch (see `ufcs`' module doc).
+    //
+    // `arg_count.is_some()` narrows this to a real **call site**. A
+    // `RefKind::Function` reference is also recorded for a `#fn(target)`
+    // literal's target, and that one always carries `arg_count: None`
+    // (`project_manifest`'s own documented distinction — `#fn` binds a
+    // *prefix* of the param row, so it has no call arity). A dotted `#fn`
+    // target is not method-call syntax and has no UFCS verdict; it must
+    // keep failing as an unresolved reference here rather than silently
+    // resolving to its head value.
+    if uref.arg_count.is_some()
+        && let Some((head, _rest)) = path.split_once('.')
+        && let Some(id) = lookup_local_in_scope(locals, head, &uref.scope).or_else(|| {
+            lookup_by_name(
+                index,
+                scope,
+                head,
+                &[SymbolKind::Variable, SymbolKind::Constant],
+            )
+        })
+    {
+        map.push(ResolvedRef {
+            file: file_id,
+            range: uref.range,
+            target: id,
+        });
         return;
     }
 
@@ -813,6 +908,11 @@ pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
             | "push"
             | "insert"
             | "remove"
+            // `remove_at(a, i)` (issue #1484, `docs/stdlib-spec.md` §4/§10):
+            // faulting array-index removal, split off `remove` (now
+            // map-only — identity-based, idempotent-total, matching flags
+            // `remove`) so one name no longer spans two removal postures.
+            | "remove_at"
             | "int"
             | "float"
             | "string"
@@ -926,7 +1026,58 @@ pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
 /// by bare name" lookup [`resolve_function`] itself does first, without
 /// needing this pass's locals/scope machinery (a `#fn` target at global-
 /// initializer position has no enclosing body to scope against).
+///
+/// Alias ruling (issue #1590): `use mod::name as alias;` / `IMPORT { name AS
+/// alias } FROM mod` binds `alias` to `name`'s target *in addition to* `name`
+/// itself — not instead of it. The alias never shadows or revokes the source
+/// spelling's own bare visibility (still decided by [`classify`] against
+/// `scope.bare_imports`, unchanged by this fallback). This is a deliberate
+/// departure from Rust's `use … as` (which drops the original binding):
+/// [`lookup_by_name`]'s "byte-identity guarantee" fast path already returns
+/// a **globally unique** name unconditionally, ignoring `ImportScope`
+/// entirely — so a strict revoke-on-alias rule would only ever bite in the
+/// rarer ambiguous-candidate case, silently keeping the source name resolvable
+/// everywhere else. Rather than ship a rule that only sometimes holds, `AS`
+/// stays purely additive: predictable in every case, in both dialects.
+///
+/// **Precedence when an alias collides with an in-scope direct name**:
+/// [`lookup_by_name_direct`] always runs first, and this function only
+/// consults `scope.aliases` when that direct lookup comes up empty. So if
+/// `IMPORT { haggle AS start } FROM quest` is written in a file that also
+/// defines a knot named `start`, every bare reference to `start` resolves to
+/// the *local* `start` knot — the direct match wins silently, and the alias
+/// is unreachable under that name. Nothing currently diagnoses this
+/// collision (`E089` only dedupes among import items; it never checks
+/// against file-local definitions); a shadowing diagnostic is tracked as a
+/// follow-up rather than blocking this fix.
 pub(crate) fn lookup_by_name(
+    index: &SymbolIndex,
+    scope: &ImportScope,
+    name: &str,
+    kinds: &[SymbolKind],
+) -> Option<DefinitionId> {
+    if let Some(id) = lookup_by_name_direct(index, scope, name, kinds) {
+        return Some(id);
+    }
+
+    // Alias fallback: `index.by_name` is keyed by definitions' own spellings
+    // only, so a bare import's local alias — bound nowhere else — is never
+    // found by the direct lookup above. Resolve it explicitly against the
+    // specific `(module, source_name)` the import named; `kinds` and the
+    // module still gate the match so an alias can never reach into the wrong
+    // module or the wrong symbol kind.
+    let (module, source_name) = scope.aliases.get(name)?;
+    let ids = index.by_name.get(source_name.as_str())?;
+    ids.iter().find_map(|id| {
+        let info = index.symbols.get(id)?;
+        (kinds.contains(&info.kind) && info.module.as_deref() == Some(module.as_str()))
+            .then_some(*id)
+    })
+}
+
+/// The direct (non-alias) name lookup — everything [`lookup_by_name`] did
+/// before issue #1590's alias fallback, byte-identical.
+fn lookup_by_name_direct(
     index: &SymbolIndex,
     scope: &ImportScope,
     name: &str,
@@ -1345,6 +1496,7 @@ mod tests {
             },
             kind: SymbolKind::Temp,
             param_detail: None,
+            annotation: None,
         });
 
         let mut b = SymbolManifest::default();
@@ -1842,6 +1994,7 @@ mod tests {
             file_module: None,
             qualified_modules: ["quest_a".to_string()].into_iter().collect(),
             bare_imports: BTreeSet::new(),
+            aliases: BTreeMap::new(),
         };
         assert_eq!(
             lookup_by_name(&index, &scope_a, "ambush", &[SymbolKind::Knot]),
@@ -1853,6 +2006,7 @@ mod tests {
             file_module: None,
             qualified_modules: ["quest_b".to_string()].into_iter().collect(),
             bare_imports: BTreeSet::new(),
+            aliases: BTreeMap::new(),
         };
         assert_eq!(
             lookup_by_name(&index, &scope_b, "ambush", &[SymbolKind::Knot]),
@@ -1870,6 +2024,7 @@ mod tests {
             file_module: Some("quest_b".to_string()),
             qualified_modules: ["quest_a".to_string()].into_iter().collect(),
             bare_imports: BTreeSet::new(),
+            aliases: BTreeMap::new(),
         };
         assert_eq!(
             lookup_by_name(&index, &scope, "ambush", &[SymbolKind::Knot]),
@@ -1961,6 +2116,174 @@ mod tests {
             lookup_by_name(&index, &scope, "ambush", &[SymbolKind::Knot]),
             Some(a),
             "a qualified `IMPORT quest_a` still licenses quest_a's `ambush`"
+        );
+    }
+
+    // ── Import aliasing (issue #1590) ───────────────────────────────
+
+    /// The headline bug: `IMPORT { ambush AS b } FROM quest_a` must make `b`
+    /// resolve — before the fix, `ImportItem.alias` was read only by the
+    /// E089 duplicate check, so a reference to the alias found nothing in
+    /// `index.by_name` (keyed by definitions' own spellings only) and
+    /// resolution silently failed.
+    #[test]
+    fn aliased_bare_import_resolves_via_its_local_alias() {
+        let (index, a, _b) = two_module_ambush_index();
+        let scope = ImportScope::new(
+            None,
+            &[Import {
+                module: "quest_a".to_string(),
+                module_range: TextRange::default(),
+                items: vec![ImportItem {
+                    name: "ambush".to_string(),
+                    alias: Some("b".to_string()),
+                    range: TextRange::default(),
+                }],
+                bare: true,
+                range: TextRange::default(),
+            }],
+        );
+        assert_eq!(
+            lookup_by_name(&index, &scope, "b", &[SymbolKind::Knot]),
+            Some(a),
+            "`ambush AS b` must make `b` resolve to quest_a's `ambush`"
+        );
+    }
+
+    /// Additive ruling (issue #1590 — "is the original name still
+    /// licensed?"): brink's alias is additive, not Rust's shadow-and-revoke.
+    /// The source spelling stays resolvable through the very same import —
+    /// see the doc comment on [`lookup_by_name`] for the full justification
+    /// (the fast path's byte-identity guarantee already ignores `ImportScope`
+    /// for a globally-unique name, so a strict revoke would only sometimes
+    /// hold).
+    #[test]
+    fn aliased_bare_import_also_still_resolves_via_its_original_name() {
+        let (index, a, _b) = two_module_ambush_index();
+        let scope = ImportScope::new(
+            None,
+            &[Import {
+                module: "quest_a".to_string(),
+                module_range: TextRange::default(),
+                items: vec![ImportItem {
+                    name: "ambush".to_string(),
+                    alias: Some("b".to_string()),
+                    range: TextRange::default(),
+                }],
+                bare: true,
+                range: TextRange::default(),
+            }],
+        );
+        assert_eq!(
+            lookup_by_name(&index, &scope, "ambush", &[SymbolKind::Knot]),
+            Some(a),
+            "the source name `ambush` must still resolve alongside its alias `b`"
+        );
+    }
+
+    /// Negative case: an alias is scoped to the exact `(module, kind)` its
+    /// import named — it must never resolve against a same-named symbol of a
+    /// different kind, nor leak into a file that never declared it.
+    #[test]
+    fn alias_does_not_resolve_the_wrong_kind() {
+        let (index, _a, _b) = two_module_ambush_index();
+        let scope = ImportScope::new(
+            None,
+            &[Import {
+                module: "quest_a".to_string(),
+                module_range: TextRange::default(),
+                items: vec![ImportItem {
+                    name: "ambush".to_string(),
+                    alias: Some("b".to_string()),
+                    range: TextRange::default(),
+                }],
+                bare: true,
+                range: TextRange::default(),
+            }],
+        );
+        assert_eq!(
+            lookup_by_name(&index, &scope, "b", &[SymbolKind::Variable]),
+            None,
+            "`b` aliases a Knot; it must not resolve when a Variable is requested"
+        );
+    }
+
+    /// Negative case: a name that is neither imported nor aliased in this
+    /// file's scope must not resolve just because *some* file's `ImportScope`
+    /// carries an alias for it — `lookup_by_name` is per-file.
+    #[test]
+    fn unrelated_scope_has_no_alias_and_does_not_resolve() {
+        let (index, _a, _b) = two_module_ambush_index();
+        assert_eq!(
+            lookup_by_name(&index, &ImportScope::default(), "b", &[SymbolKind::Knot]),
+            None,
+            "a file with no import scope must never resolve an alias it never declared"
+        );
+    }
+
+    /// Precedence when an alias collides with an in-scope direct name (see
+    /// the doc comment on [`lookup_by_name`]): `lookup_by_name_direct` always
+    /// runs first, so a local knot named `start` wins over an alias `start`
+    /// that a bare import bound to a *different* knot — the alias fallback
+    /// only ever fires once the direct lookup comes up empty. `IMPORT {
+    /// haggle AS start } FROM quest_a` in a file that also defines `start`
+    /// silently loses the alias to the local definition.
+    #[test]
+    fn alias_colliding_with_an_in_scope_direct_name_resolves_to_the_direct_name() {
+        use brink_format::DefinitionTag;
+        let mut index = SymbolIndex::default();
+        let local_start = DefinitionId::new(DefinitionTag::Address, 0x51A47);
+        index.symbols.insert(
+            local_start,
+            SymbolInfo {
+                kind: SymbolKind::Knot,
+                file: FileId(0),
+                range: TextRange::default(),
+                id: local_start,
+                name: "start".to_string(),
+                params: Vec::new(),
+                detail: None,
+                scope: None,
+                param_detail: None,
+                module: None,
+                visibility: Visibility::Public,
+            },
+        );
+        index
+            .by_name
+            .entry("start".to_string())
+            .or_default()
+            .push(local_start);
+
+        let (ambush_index, aliased_target, _b) = two_module_ambush_index();
+        for (name, ids) in ambush_index.by_name {
+            index.by_name.entry(name).or_default().extend(ids);
+        }
+        for (id, info) in ambush_index.symbols {
+            index.symbols.insert(id, info);
+        }
+
+        let scope = ImportScope::new(
+            None,
+            &[Import {
+                module: "quest_a".to_string(),
+                module_range: TextRange::default(),
+                items: vec![ImportItem {
+                    name: "ambush".to_string(),
+                    alias: Some("start".to_string()),
+                    range: TextRange::default(),
+                }],
+                bare: true,
+                range: TextRange::default(),
+            }],
+        );
+
+        assert_eq!(
+            lookup_by_name(&index, &scope, "start", &[SymbolKind::Knot]),
+            Some(local_start),
+            "a direct in-scope `start` must win over the colliding alias — \
+             `ambush AS start` never reaches quest_a's ambush ({aliased_target:?}) \
+             under that name"
         );
     }
 }

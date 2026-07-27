@@ -119,7 +119,14 @@ to the VERSION 4 literal pool + the reserved collection opcode block
 
 Pure: `len(x)`, `keys(m)`, `values(m)`, `contains(x, v)` (arrays:
 element; maps: key), `char_at(s, i)` (issue #857 — see below). Mutating:
-`push(a, v)`, `insert(x, k_or_i, v)`, `remove(x, k_or_i)`.
+`push(a, v)`, `insert(x, k_or_i, v)`, `remove(m, k)`.
+
+**`remove` is map-only as of issue #1484** (decision log "Quick-docket
+closures" 2026-07-26): the array-index leg this signature originally
+documented moved to its own verb, `remove_at(a, i)`, joining the `_at`
+faulting-index family with `char_at` — `remove` now uniformly names
+identity-based, idempotent-total removal (map keys; flags values once
+flags land), never OOB-faulting. See `docs/stdlib-spec.md` §4/§10.
 
 - Names live in the brink dialect only; strict-ink projects never see
   them (no collision surface for vanilla ink).
@@ -155,8 +162,9 @@ explicit" completion, `docs/typed-mode-spec.md` §4).
 Per the roadmap's divergence discipline:
 
 - **Strict-mode gate**: the entire oracle corpus compiles under
-  `strict-ink` in CI; ratchet unchanged at 5,577 byte-identical.
-  Extension syntax appearing anywhere in the corpus is a hard failure.
+  `strict-ink` in CI; ratchet unchanged at `RATCHET_EPISODE_COUNT`
+  byte-identical. Extension syntax appearing anywhere in the corpus is
+  a hard failure.
 - **Tier-1 corpus wing**: `tests/tier1-brink/` — brink-dialect cases
   with hand-written expected transcripts (spec-derived, not
   oracle-derived), exercised by the existing episode harness.

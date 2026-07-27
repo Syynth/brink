@@ -16,9 +16,50 @@
 //!   u32 LE            content CRC-32 (4)
 //!
 //! Body:
-//!   u32 LE            part count
-//!   [Part]*           encoded parts
+//!   u32 LE            top-level part count
+//!   [Part]*           encoded top-level parts
+//!
+//!   u32 LE            fragment count
+//!   ( u32 LE          this fragment's part count
+//!     [Part]*          encoded fragment parts
+//!   )*
+//!
+//!   ( u32 LE          this fragment's tag count      -- #953, trailing section
+//!     [str]*           tags, in fragment order        (see below)
+//!   )*
 //! ```
+//!
+//! Both "part count" fields above count only **persisted** parts —
+//! `OutputPart::Checkpoint` is a transient capture marker that is filtered
+//! out before encoding (see [`is_persisted`]) and contributes zero bytes to
+//! `[Part]*`, so the count must exclude it too or a reader following this
+//! doc to extend the format would write `parts.len()` and produce a byte
+//! stream whose declared count disagrees with what it actually encoded.
+//!
+//! The fragment section and the trailing fragment-tags section are both
+//! **backward-compat optional**: `read_transcript` treats "no bytes left"
+//! at either boundary as "this section is absent", not as truncated input,
+//! and falls back to an empty `Vec` (zero fragments, or every fragment's
+//! `tags: Vec::new()`) rather than erroring. This lets a `.brkt` written
+//! before a section existed keep decoding under a newer reader.
+//!
+//! The fragment-tags section is written as a distinct trailing section
+//! *after* every fragment's parts — one `(tag count, [str]*)` block per
+//! fragment, in the same order the fragments themselves were written —
+//! rather than inlined into each fragment's own record. An inline layout
+//! could not tell "this fragment has a tags section" apart from "the next
+//! fragment's part bytes happen to start here" once a `.brkt` written
+//! before tags existed was read by tags-aware code; the trailing-section
+//! layout sidesteps that ambiguity by using the same "any bytes left?"
+//! probe already used for the fragment section itself. Fixes #953:
+//! `Fragment::tags` was silently dropped by this codec. See
+//! `write_transcript`/`read_transcript` below for the code-level version of
+//! this note.
+//!
+//! A third trailing section (as the `.inkb` v6 bump is expected to add) is
+//! **not yet safe** to bolt on the same way: see
+//! `docs/brkt-trailing-section-findings.md` for a traced report of exactly
+//! what breaks and why, written as input to #1519's design pass.
 
 use alloc::string::String;
 use alloc::sync::Arc;
@@ -168,91 +209,20 @@ pub fn write_transcript(
     let mut body = Vec::new();
 
     // Count non-Checkpoint parts
-    let count = parts
-        .iter()
-        .filter(|p| !matches!(p, OutputPart::Checkpoint))
-        .count() as u32;
+    let count = parts.iter().filter(|p| is_persisted(p)).count() as u32;
     write_u32(&mut body, count);
 
     for part in parts {
-        match part {
-            OutputPart::Text(s) => {
-                write_u8(&mut body, TAG_TEXT);
-                write_str(&mut body, s);
-            }
-            OutputPart::LineRef {
-                container_idx,
-                line_idx,
-                slots,
-                flags,
-            } => {
-                write_u8(&mut body, TAG_LINE_REF);
-                write_u32(&mut body, *container_idx);
-                write_u16(&mut body, *line_idx);
-                write_u8(&mut body, flags.bits());
-                write_u16(&mut body, slots.len() as u16);
-                for val in slots {
-                    encode_value(val, &mut body);
-                }
-            }
-            OutputPart::ValueRef(val) => {
-                write_u8(&mut body, TAG_VALUE_REF);
-                encode_value(val, &mut body);
-            }
-            OutputPart::Newline => write_u8(&mut body, TAG_NEWLINE),
-            OutputPart::Spring => write_u8(&mut body, TAG_SPRING),
-            OutputPart::Glue => write_u8(&mut body, TAG_GLUE),
-            OutputPart::Tag(s) => {
-                write_u8(&mut body, TAG_TAG);
-                write_str(&mut body, s);
-            }
-            OutputPart::Checkpoint => {} // filtered out
-        }
+        encode_part(part, &mut body);
     }
 
     // Serialize fragments
     write_u32(&mut body, fragments.len() as u32);
     for fragment in fragments {
-        let filtered_count = fragment
-            .parts
-            .iter()
-            .filter(|p| !matches!(p, OutputPart::Checkpoint))
-            .count() as u32;
+        let filtered_count = fragment.parts.iter().filter(|p| is_persisted(p)).count() as u32;
         write_u32(&mut body, filtered_count);
         for part in &fragment.parts {
-            match part {
-                OutputPart::Text(s) => {
-                    write_u8(&mut body, TAG_TEXT);
-                    write_str(&mut body, s);
-                }
-                OutputPart::LineRef {
-                    container_idx,
-                    line_idx,
-                    slots,
-                    flags,
-                } => {
-                    write_u8(&mut body, TAG_LINE_REF);
-                    write_u32(&mut body, *container_idx);
-                    write_u16(&mut body, *line_idx);
-                    write_u8(&mut body, flags.bits());
-                    write_u16(&mut body, slots.len() as u16);
-                    for val in slots {
-                        encode_value(val, &mut body);
-                    }
-                }
-                OutputPart::ValueRef(val) => {
-                    write_u8(&mut body, TAG_VALUE_REF);
-                    encode_value(val, &mut body);
-                }
-                OutputPart::Newline => write_u8(&mut body, TAG_NEWLINE),
-                OutputPart::Spring => write_u8(&mut body, TAG_SPRING),
-                OutputPart::Glue => write_u8(&mut body, TAG_GLUE),
-                OutputPart::Tag(s) => {
-                    write_u8(&mut body, TAG_TAG);
-                    write_str(&mut body, s);
-                }
-                OutputPart::Checkpoint => {}
-            }
+            encode_part(part, &mut body);
         }
     }
 
@@ -301,11 +271,6 @@ pub struct TranscriptData {
 }
 
 /// Deserialize a transcript from the `.brkt` binary format.
-#[expect(
-    clippy::too_many_lines,
-    reason = "one match arm per part tag, duplicated for the top-level parts \
-              and the per-fragment parts, plus the #953 trailing tag section"
-)]
 pub fn read_transcript(bytes: &[u8]) -> Result<TranscriptData, TranscriptError> {
     if bytes.len() < HEADER_SIZE {
         return Err(TranscriptError::UnexpectedEof);
@@ -336,34 +301,7 @@ pub fn read_transcript(bytes: &[u8]) -> Result<TranscriptData, TranscriptError> 
     let mut parts = Vec::with_capacity(count);
 
     for _ in 0..count {
-        let tag = read_u8(bytes, &mut off)?;
-        let part = match tag {
-            TAG_TEXT => OutputPart::Text(read_str(bytes, &mut off)?),
-            TAG_LINE_REF => {
-                let container_idx = read_u32(bytes, &mut off)?;
-                let line_idx = read_u16(bytes, &mut off)?;
-                let flags_bits = read_u8(bytes, &mut off)?;
-                let flags = LineFlags::from_bits_truncate(flags_bits);
-                let slot_count = read_u16(bytes, &mut off)? as usize;
-                let mut slots = Vec::with_capacity(slot_count);
-                for _ in 0..slot_count {
-                    slots.push(decode_value(bytes, &mut off, 0)?);
-                }
-                OutputPart::LineRef {
-                    container_idx,
-                    line_idx,
-                    slots,
-                    flags,
-                }
-            }
-            TAG_VALUE_REF => OutputPart::ValueRef(decode_value(bytes, &mut off, 0)?),
-            TAG_NEWLINE => OutputPart::Newline,
-            TAG_SPRING => OutputPart::Spring,
-            TAG_GLUE => OutputPart::Glue,
-            TAG_TAG => OutputPart::Tag(read_str(bytes, &mut off)?),
-            _ => return Err(TranscriptError::InvalidPartTag(tag)),
-        };
-        parts.push(part);
+        parts.push(decode_part(bytes, &mut off)?);
     }
 
     // Deserialize fragments
@@ -377,34 +315,7 @@ pub fn read_transcript(bytes: &[u8]) -> Result<TranscriptData, TranscriptError> 
         let frag_part_count = read_u32(bytes, &mut off)? as usize;
         let mut frag_parts = Vec::with_capacity(frag_part_count);
         for _ in 0..frag_part_count {
-            let tag = read_u8(bytes, &mut off)?;
-            let part = match tag {
-                TAG_TEXT => OutputPart::Text(read_str(bytes, &mut off)?),
-                TAG_LINE_REF => {
-                    let container_idx = read_u32(bytes, &mut off)?;
-                    let line_idx = read_u16(bytes, &mut off)?;
-                    let flags_bits = read_u8(bytes, &mut off)?;
-                    let flags = LineFlags::from_bits_truncate(flags_bits);
-                    let slot_count = read_u16(bytes, &mut off)? as usize;
-                    let mut slots = Vec::with_capacity(slot_count);
-                    for _ in 0..slot_count {
-                        slots.push(decode_value(bytes, &mut off, 0)?);
-                    }
-                    OutputPart::LineRef {
-                        container_idx,
-                        line_idx,
-                        slots,
-                        flags,
-                    }
-                }
-                TAG_VALUE_REF => OutputPart::ValueRef(decode_value(bytes, &mut off, 0)?),
-                TAG_NEWLINE => OutputPart::Newline,
-                TAG_SPRING => OutputPart::Spring,
-                TAG_GLUE => OutputPart::Glue,
-                TAG_TAG => OutputPart::Tag(read_str(bytes, &mut off)?),
-                _ => return Err(TranscriptError::InvalidPartTag(tag)),
-            };
-            frag_parts.push(part);
+            frag_parts.push(decode_part(bytes, &mut off)?);
         }
         fragments.push(crate::output::Fragment {
             parts: frag_parts,
@@ -451,6 +362,107 @@ pub fn render_transcript(
     fragments: &[crate::output::Fragment],
 ) -> Vec<(String, Vec<String>)> {
     resolve_lines(parts, program, line_tables, resolver, fragments)
+}
+
+// ── Part codec ────────────────────────────────────────────────────────────
+//
+// One shared encode/decode pair for `OutputPart`, used by both the
+// top-level part list and each fragment's part list in `write_transcript`/
+// `read_transcript`. Before this, the two call sites hand-duplicated the
+// same match arms; #953 was exactly that duplication silently dropping
+// `Fragment::tags` because the two loops drifted. Any new `OutputPart`
+// variant that always writes bytes needs exactly one new arm here, reached
+// from both loops. A new *transient* (zero-byte) variant — like
+// `OutputPart::Checkpoint` — additionally needs its own arm added to
+// `is_persisted` below, which both part-count filters share; see that
+// function's doc comment.
+
+/// Returns whether `part` is written to the persisted `.brkt` format.
+///
+/// `OutputPart::Checkpoint` is the one transient capture marker that is
+/// filtered out (it writes zero bytes in [`encode_part`]). This predicate is
+/// shared by both of `write_transcript`'s part-count computations (the
+/// top-level count and each fragment's `filtered_count`) so they cannot
+/// drift from each other or from `encode_part`'s zero-byte arm. Any future
+/// transient variant must be added here *and* to `encode_part`'s zero-byte
+/// arm in lockstep — otherwise the written count disagrees with the emitted
+/// bytes and `read_transcript` misreads the part list.
+fn is_persisted(part: &OutputPart) -> bool {
+    !matches!(part, OutputPart::Checkpoint)
+}
+
+/// Encode a single [`OutputPart`] (its tag byte plus payload) onto `buf`.
+/// `OutputPart::Checkpoint` writes nothing — it is a transient capture
+/// marker filtered out of the persisted `.brkt` format by the caller's part
+/// count (see `write_transcript` and [`is_persisted`]).
+#[expect(clippy::cast_possible_truncation)]
+fn encode_part(part: &OutputPart, buf: &mut Vec<u8>) {
+    match part {
+        OutputPart::Text(s) => {
+            write_u8(buf, TAG_TEXT);
+            write_str(buf, s);
+        }
+        OutputPart::LineRef {
+            container_idx,
+            line_idx,
+            slots,
+            flags,
+        } => {
+            write_u8(buf, TAG_LINE_REF);
+            write_u32(buf, *container_idx);
+            write_u16(buf, *line_idx);
+            write_u8(buf, flags.bits());
+            write_u16(buf, slots.len() as u16);
+            for val in slots {
+                encode_value(val, buf);
+            }
+        }
+        OutputPart::ValueRef(val) => {
+            write_u8(buf, TAG_VALUE_REF);
+            encode_value(val, buf);
+        }
+        OutputPart::Newline => write_u8(buf, TAG_NEWLINE),
+        OutputPart::Spring => write_u8(buf, TAG_SPRING),
+        OutputPart::Glue => write_u8(buf, TAG_GLUE),
+        OutputPart::Tag(s) => {
+            write_u8(buf, TAG_TAG);
+            write_str(buf, s);
+        }
+        OutputPart::Checkpoint => {} // filtered out
+    }
+}
+
+/// Decode a single [`OutputPart`] (its tag byte plus payload) from `bytes`
+/// at `*off`, advancing `*off` past it. The counterpart of [`encode_part`].
+fn decode_part(bytes: &[u8], off: &mut usize) -> Result<OutputPart, TranscriptError> {
+    let tag = read_u8(bytes, off)?;
+    let part = match tag {
+        TAG_TEXT => OutputPart::Text(read_str(bytes, off)?),
+        TAG_LINE_REF => {
+            let container_idx = read_u32(bytes, off)?;
+            let line_idx = read_u16(bytes, off)?;
+            let flags_bits = read_u8(bytes, off)?;
+            let flags = LineFlags::from_bits_truncate(flags_bits);
+            let slot_count = read_u16(bytes, off)? as usize;
+            let mut slots = Vec::with_capacity(slot_count);
+            for _ in 0..slot_count {
+                slots.push(decode_value(bytes, off, 0)?);
+            }
+            OutputPart::LineRef {
+                container_idx,
+                line_idx,
+                slots,
+                flags,
+            }
+        }
+        TAG_VALUE_REF => OutputPart::ValueRef(decode_value(bytes, off, 0)?),
+        TAG_NEWLINE => OutputPart::Newline,
+        TAG_SPRING => OutputPart::Spring,
+        TAG_GLUE => OutputPart::Glue,
+        TAG_TAG => OutputPart::Tag(read_str(bytes, off)?),
+        _ => return Err(TranscriptError::InvalidPartTag(tag)),
+    };
+    Ok(part)
 }
 
 // ── Codec helpers (self-contained, no dependency on brink-format internals) ──
@@ -1060,6 +1072,102 @@ mod tests {
         assert!(matches!(&data.parts[4], OutputPart::Glue));
     }
 
+    // #1443 review finding: `write_transcript`'s top-level `count` and each
+    // fragment's `filtered_count` used to hand-duplicate the same
+    // `!matches!(p, OutputPart::Checkpoint)` predicate. They now both call
+    // the single shared `is_persisted` helper, which must stay in lockstep
+    // with `encode_part`'s zero-byte `OutputPart::Checkpoint` arm: only
+    // `Checkpoint` is transient (zero bytes), every other variant persists.
+    #[test]
+    fn is_persisted_filters_only_checkpoint() {
+        assert!(!is_persisted(&OutputPart::Checkpoint));
+        assert!(is_persisted(&OutputPart::Text("hi".to_string())));
+        assert!(is_persisted(&OutputPart::LineRef {
+            container_idx: 0,
+            line_idx: 0,
+            slots: Vec::new(),
+            flags: LineFlags::empty(),
+        }));
+        assert!(is_persisted(&OutputPart::ValueRef(Value::Bool(true))));
+        assert!(is_persisted(&OutputPart::Newline));
+        assert!(is_persisted(&OutputPart::Spring));
+        assert!(is_persisted(&OutputPart::Glue));
+        assert!(is_persisted(&OutputPart::Tag("t".to_string())));
+    }
+
+    // #1443: `write_transcript`/`read_transcript` used to hand-duplicate one
+    // match arm per `OutputPart` tag for the top-level part list and again
+    // for each fragment's part list (plus the #953 fix for `Fragment::tags`
+    // landing in only one of the two copies, which is exactly how that tags
+    // regression happened). Both loops now call the single shared
+    // `encode_part`/`decode_part` pair. This pins that: encoding the same
+    // `OutputPart` sequence through the top-level path and through a
+    // fragment's path produces byte-identical part payloads, and both paths
+    // decode back to equal parts — proving one shared codec, not two copies
+    // that happen to still agree.
+    #[test]
+    fn top_level_and_fragment_part_codec_are_byte_identical() {
+        let parts = vec![
+            OutputPart::Text("Hello".to_string()),
+            OutputPart::LineRef {
+                container_idx: 3,
+                line_idx: 9,
+                slots: vec![Value::Int(1), Value::String(Arc::from("hi"))],
+                flags: LineFlags::ALL_WS,
+            },
+            OutputPart::ValueRef(Value::Bool(true)),
+            OutputPart::Spring,
+            OutputPart::Newline,
+            OutputPart::Glue,
+            OutputPart::Tag("tag1".to_string()),
+            OutputPart::Checkpoint, // filtered identically by both paths
+        ];
+
+        // Independently reconstruct the expected encoded bytes by calling
+        // the shared `encode_part` codec directly, one call per non-Checkpoint
+        // part — this is what both `write_transcript` loops should be
+        // producing under the hood.
+        let mut expected = Vec::new();
+        for part in &parts {
+            if !matches!(part, OutputPart::Checkpoint) {
+                encode_part(part, &mut expected);
+            }
+        }
+
+        // Top-level loop: header, then a u32 part count, then the parts.
+        let top_level_bytes = write_transcript(&parts, 0, &[]);
+        let top_level_part_bytes =
+            &top_level_bytes[HEADER_SIZE + 4..HEADER_SIZE + 4 + expected.len()];
+        assert_eq!(
+            top_level_part_bytes,
+            expected.as_slice(),
+            "top-level part encoding must match the shared codec exactly"
+        );
+
+        // Fragment loop: header, u32 top-level count (0), u32 fragment count
+        // (1), u32 this-fragment's part count, then the same parts.
+        let fragment = crate::output::Fragment {
+            parts: parts.clone(),
+            tags: Vec::new(),
+        };
+        let fragment_bytes = write_transcript(&[], 0, &[fragment]);
+        let frag_start = HEADER_SIZE + 4 + 4 + 4;
+        let fragment_part_bytes = &fragment_bytes[frag_start..frag_start + expected.len()];
+        assert_eq!(
+            fragment_part_bytes,
+            expected.as_slice(),
+            "fragment part encoding must match the shared codec exactly"
+        );
+
+        // And decoding both paths yields the same, correct parts.
+        let top_level_data = read_transcript(&top_level_bytes).unwrap();
+        let fragment_data = read_transcript(&fragment_bytes).unwrap();
+        assert_eq!(top_level_data.parts.len(), 7); // Checkpoint filtered
+        assert_eq!(fragment_data.fragments.len(), 1);
+        assert_eq!(fragment_data.fragments[0].parts.len(), 7);
+        assert_eq!(top_level_data.parts, fragment_data.fragments[0].parts);
+    }
+
     /// NS-A8 (`docs/tower-mini-spec.md` T5): a tower value in an
     /// `OutputPart::ValueRef` crosses the `.brkt` round-trip as explicit
     /// little-endian lanes — including a NaN lane, compared here by lane
@@ -1258,7 +1366,7 @@ mod tests {
             container_idx: 42,
             line_idx: 7,
             slots: vec![Value::Int(123), Value::String(Arc::from("hello"))],
-            flags: LineFlags::STARTS_WITH_WS | LineFlags::ENDS_WITH_WS,
+            flags: LineFlags::ALL_WS | LineFlags::EMPTY,
         }];
         let bytes = write_transcript(&parts, 1234, &[]);
         let data = read_transcript(&bytes).unwrap();
@@ -1274,8 +1382,8 @@ mod tests {
                 assert_eq!(*line_idx, 7);
                 assert_eq!(slots.len(), 2);
                 assert!(matches!(&slots[0], Value::Int(123)));
-                assert!(flags.contains(LineFlags::STARTS_WITH_WS));
-                assert!(flags.contains(LineFlags::ENDS_WITH_WS));
+                assert!(flags.contains(LineFlags::ALL_WS));
+                assert!(flags.contains(LineFlags::EMPTY));
             }
             other => unreachable!("expected LineRef, got {other:?}"),
         }
@@ -1356,6 +1464,47 @@ mod tests {
         assert_eq!(data.fragments.len(), 1);
         assert!(matches!(&data.fragments[0].parts[0], OutputPart::Text(s) if s == "legacy"));
         assert!(data.fragments[0].tags.is_empty());
+    }
+
+    // The *other* backward-compat boundary this module's doc claims but only
+    // `legacy_transcript_without_tag_section_reads_as_empty_tags` above pins:
+    // a `.brkt` written before the fragment section existed at all (pre-
+    // fragments feature), where the body ends right after the top-level part
+    // list — no `fragment_count` `u32`, not even a zero one. `write_transcript`
+    // has *always* written `fragments.len()` unconditionally (even `0` for an
+    // empty slice — see the call site right after the part loop), so no call
+    // through the real writer can ever produce this exact shape; it has to be
+    // hand-built, same rationale as the tag-section test above. The read-side
+    // `if off < bytes.len()` probe at the fragment-count read (this module's
+    // `read_transcript`) is what is actually under test here: with zero bytes
+    // left after the parts, it must fall back to "no fragments" rather than
+    // erroring as truncated input.
+    #[test]
+    fn legacy_transcript_without_fragment_section_reads_as_no_fragments() {
+        let mut body = Vec::new();
+        write_u32(&mut body, 1); // part count
+        write_u8(&mut body, TAG_TEXT);
+        write_str(&mut body, "legacy");
+        // (body ends here — no fragment section, no tag section, matches a
+        // `.brkt` written before fragments existed at all)
+
+        let content_crc = crc32(&body);
+        let mut bytes = Vec::with_capacity(HEADER_SIZE + body.len());
+        bytes.extend_from_slice(MAGIC);
+        write_u16(&mut bytes, VERSION);
+        write_u16(&mut bytes, 0);
+        write_u32(&mut bytes, 0xCAFE_BABE);
+        write_u32(&mut bytes, content_crc);
+        bytes.extend(body);
+
+        let data = read_transcript(&bytes).expect("legacy transcript must still decode");
+        assert_eq!(data.parts.len(), 1);
+        assert!(matches!(&data.parts[0], OutputPart::Text(s) if s == "legacy"));
+        assert!(
+            data.fragments.is_empty(),
+            "a pre-fragments `.brkt` must decode with zero fragments, not error: {:?}",
+            data.fragments
+        );
     }
 
     #[test]

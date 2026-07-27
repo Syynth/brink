@@ -471,6 +471,14 @@ impl OutputBuffer {
     /// Returns true if the last part is text ending with whitespace.
     /// Only checks the immediately preceding part — intervening Glue or
     /// Newline parts mean the glue system handles the join instead.
+    ///
+    /// `LineRef` is not inspected: `LineFlags` no longer carries an
+    /// edge-whitespace bit (`STARTS_WITH_WS`/`ENDS_WITH_WS` were removed —
+    /// they had no production consumer, and the C# reference runtime never
+    /// does sub-token leading/trailing whitespace detection either, so there
+    /// was no conformance gap to preserve). A resolved `LineRef` is treated
+    /// as not ending in whitespace, same as before this helper had any
+    /// `LineRef` case.
     #[cfg(test)]
     fn ends_in_whitespace(&self) -> bool {
         let target = if self.capture_depth > 0 {
@@ -478,13 +486,7 @@ impl OutputBuffer {
         } else {
             &self.transcript
         };
-        match target.last() {
-            Some(OutputPart::Text(s)) => s.ends_with(char::is_whitespace),
-            Some(OutputPart::LineRef { flags, .. }) => {
-                flags.contains(brink_format::LineFlags::ENDS_WITH_WS)
-            }
-            _ => false,
-        }
+        matches!(target.last(), Some(OutputPart::Text(s)) if s.ends_with(char::is_whitespace))
     }
 
     pub fn push_glue(&mut self) {

@@ -82,6 +82,29 @@ pub struct EditorSession {
     dialect_explicit: bool,
     /// Same as `dialect_explicit`, for `set_type_policy` (#1005).
     types_explicit: bool,
+    /// The `[lints]` policy last resolved from an applied `brink.toml`
+    /// (issue #1417) — the baseline `set_lint_overrides`/
+    /// `set_deny_warnings_override` layer their explicit overrides on top
+    /// of, via `reapply_lint_overrides`. Tracked separately from
+    /// `self.session.lint_policy()` (the *combined*, already-overridden
+    /// result actually in effect) so an override can be **cleared** and
+    /// correctly revert to the file's policy — recomputing on top of the
+    /// already-combined policy would make a cleared override "stick"
+    /// (the same accumulation bug #1397 fixed for the file tier itself).
+    /// Defaults to `LintPolicy::default()` (no file ever applied).
+    file_lint_policy: brink_analyzer::LintPolicy,
+    /// Explicit CLI/API-tier per-code lint-level overrides (issue #1417),
+    /// set via `set_lint_overrides`. The wasm counterpart of the
+    /// compiler CLI's repeatable `--deny`/`--warn`/`--allow` flags (#1373)
+    /// and `brink-lsp`'s `initializationOptions.lints`. Always wins over
+    /// the same code in `file_lint_policy` — applied via
+    /// `reapply_lint_overrides` under the #1005 explicit-over-file-over-default
+    /// precedence rule.
+    lint_overrides: BTreeMap<String, brink_analyzer::LintLevel>,
+    /// Explicit `deny-warnings` override (issue #1417), parallel to
+    /// `lint_overrides`. `None` means unset — `file_lint_policy.deny_warnings`
+    /// (or `false`, absent a file) applies.
+    deny_warnings_override: Option<bool>,
 }
 
 impl Default for EditorSession {
@@ -104,6 +127,9 @@ impl EditorSession {
             dialect: brink_analyzer::Dialect::StrictInk,
             dialect_explicit: false,
             types_explicit: false,
+            file_lint_policy: brink_analyzer::LintPolicy::default(),
+            lint_overrides: BTreeMap::new(),
+            deny_warnings_override: None,
         }
     }
 
@@ -243,6 +269,83 @@ impl EditorSession {
         self.session.set_type_policy(types);
     }
 
+    /// Set explicit CLI/API-tier per-code lint-level overrides from a JSON
+    /// object `{ "<CODE>": "deny" | "warn" | "allow" | "info" | "hint" }`
+    /// (issue #1417; `"info"`/`"hint"` added by issue #1162) — the
+    /// wasm/editor counterpart of `brink compile`'s repeatable
+    /// `--deny`/`--warn`/`--allow <CODE>` flags (#1373) and `brink-lsp`'s
+    /// `initializationOptions.lints`, extending the same
+    /// `AnalysisOptions::apply_lint_overrides` seam those two established
+    /// to the embedded editor surface. Wholesale **replaces** this
+    /// session's explicit override map (mirrors `apply_parsed_config`'s
+    /// own `[lints]`-replace-not-merge semantics, #1397) — call with
+    /// `"{}"` to clear every override.
+    ///
+    /// Always wins over the same code in an applied `brink.toml`'s
+    /// `[lints]` table, in either call order: this reapplies on top of
+    /// whatever `apply_project_config`/`discover_project_config` last
+    /// resolved from the file, and the file tier itself reapplies these
+    /// overrides on its own next call (`Self::reapply_lint_overrides` is
+    /// the shared tail both funnel through) — so a `brink.toml` reload can
+    /// never silently drop a previously-set explicit override.
+    ///
+    /// Errors only on malformed JSON. An unrecognized per-code level
+    /// string (anything but `"deny"`/`"warn"`/`"allow"`/`"info"`/`"hint"`)
+    /// and an unrecognized/non-overridable diagnostic code are never hard
+    /// errors — both are reported as warning strings in the returned JSON
+    /// array (a `string[]`), the same "warn, never silently drop" channel
+    /// `apply_project_config` already uses. Re-analyzes immediately.
+    pub fn set_lint_overrides(&mut self, json: &str) -> Result<String, JsError> {
+        let raw: BTreeMap<String, String> = serde_json::from_str(json)
+            .map_err(|e| JsError::new(&format!("invalid lint overrides: {e}")))?;
+        let mut overrides = BTreeMap::new();
+        let mut warnings = Vec::new();
+        for (code, level) in raw {
+            match level.as_str() {
+                "deny" => {
+                    overrides.insert(code, brink_analyzer::LintLevel::Deny);
+                }
+                "warn" => {
+                    overrides.insert(code, brink_analyzer::LintLevel::Warn);
+                }
+                "allow" => {
+                    overrides.insert(code, brink_analyzer::LintLevel::Allow);
+                }
+                "info" => {
+                    overrides.insert(code, brink_analyzer::LintLevel::Info);
+                }
+                "hint" => {
+                    overrides.insert(code, brink_analyzer::LintLevel::Hint);
+                }
+                other => warnings.push(format!(
+                    "[lints] `{code}` has unrecognized level `{other}` (expected \"allow\" | \"warn\" | \"deny\" | \"info\" | \"hint\"); ignored"
+                )),
+            }
+        }
+        self.lint_overrides = overrides;
+        warnings.extend(self.reapply_lint_overrides());
+        Ok(serde_json::to_string(&warnings).unwrap_or_default())
+    }
+
+    /// Set an explicit `deny-warnings` override (issue #1417), parallel to
+    /// [`Self::set_lint_overrides`] — the wasm/editor counterpart of
+    /// `brink compile`'s `-D warnings` and `brink-lsp`'s
+    /// `initializationOptions.denyWarnings`. Always wins over an applied
+    /// `brink.toml`'s `deny-warnings` key. Re-analyzes immediately.
+    pub fn set_deny_warnings_override(&mut self, deny: bool) {
+        self.deny_warnings_override = Some(deny);
+        self.reapply_lint_overrides();
+    }
+
+    /// Clear the explicit `deny-warnings` override set by
+    /// [`Self::set_deny_warnings_override`] — reverts to the applied
+    /// `brink.toml`'s `deny-warnings` value (or `false`, absent a file).
+    /// Re-analyzes immediately.
+    pub fn clear_deny_warnings_override(&mut self) {
+        self.deny_warnings_override = None;
+        self.reapply_lint_overrides();
+    }
+
     /// Parse a `brink.toml` project-settings file (#1005) and apply its
     /// `[project] dialect`/`types` to this session — the wasm/editor-mount
     /// wiring for the config file every compiler mount reads. Prefer
@@ -344,8 +447,8 @@ impl EditorSession {
         let text = brink_source_tree::SourceTree::read(&tree, &config_key).map_err(|e| {
             JsError::new(&format!("failed to read project config {config_key}: {e}"))
         })?;
-        let (config, warnings) = brink_project_config::parse_str(&text)
-            .map_err(|e| JsError::new(&format!("invalid brink.toml at {config_key}: {e}")))?;
+        let (config, warnings) = brink_project_config::parse_str_at(config_key.clone(), &text)
+            .map_err(|e| JsError::new(&e.to_string()))?;
 
         let mut all_warnings: Vec<String> = warnings.into_iter().map(|w| w.0).collect();
         all_warnings.extend(self.apply_parsed_config(&config));
@@ -593,10 +696,46 @@ impl EditorSession {
         // already applied above), so this call touches nothing but `.lints`.
         let mut lint_options = brink_analyzer::AnalysisOptions::default();
         let lint_warnings = lint_options.apply_project_config(config, true, true);
-        if lint_options.lints != *self.session.lint_policy() {
-            self.session.set_lint_policy(lint_options.lints);
+        self.file_lint_policy = lint_options.lints;
+        // #1417: the CLI/API tier (`set_lint_overrides`/
+        // `set_deny_warnings_override`) always wins over what the file
+        // above just resolved — reapplied here so a `brink.toml` reload
+        // can never silently drop a previously-set explicit override
+        // (`reapply_lint_overrides` is the one place that actually pushes
+        // into `self.session`).
+        let override_warnings = self.reapply_lint_overrides();
+        lint_warnings
+            .into_iter()
+            .map(|w| w.0)
+            .chain(override_warnings)
+            .collect()
+    }
+
+    /// Resolve this session's effective `[lints]` policy by layering the
+    /// explicit CLI/API-tier overrides (`self.lint_overrides`/
+    /// `.deny_warnings_override`, issue #1417) on top of
+    /// `self.file_lint_policy` — via the same
+    /// `AnalysisOptions::apply_lint_overrides` seam `brink compile`'s
+    /// `--deny`/`--warn`/`--allow` (#1373) and `brink-lsp`'s
+    /// `initializationOptions.lints` (#1417) already use, reused rather
+    /// than reimplemented. Recomputes from `self.file_lint_policy` (not
+    /// `self.session.lint_policy()`, the already-combined result) every
+    /// call, so a cleared override actually reverts instead of "sticking"
+    /// on top of its own prior application (the same accumulation bug
+    /// #1397 fixed for the file tier). Pushes into the session only if the
+    /// resolved policy actually changed (mirrors `apply_parsed_config`'s
+    /// own no-redundant-reanalyze guard). Returns the override warnings.
+    fn reapply_lint_overrides(&mut self) -> Vec<String> {
+        let mut options = brink_analyzer::AnalysisOptions {
+            lints: self.file_lint_policy.clone(),
+            ..brink_analyzer::AnalysisOptions::default()
+        };
+        let warnings =
+            options.apply_lint_overrides(&self.lint_overrides, self.deny_warnings_override);
+        if options.lints != *self.session.lint_policy() {
+            self.session.set_lint_policy(options.lints);
         }
-        lint_warnings.into_iter().map(|w| w.0).collect()
+        warnings.into_iter().map(|w| w.0).collect()
     }
 
     /// Allocate the next handle id and insert `state`. Ids are monotonically
@@ -3346,6 +3485,197 @@ mod tests {
         );
     }
 
+    // ── Issue #1417: set_lint_overrides/set_deny_warnings_override ────────
+    //
+    // Extends #1160/#1397's file-only `[lints]` resolution (above) with an
+    // explicit CLI/API-tier override — the wasm/editor counterpart of
+    // `brink compile`'s `--deny`/`--warn`/`--allow`/`-D warnings` (#1373)
+    // and `brink-lsp`'s `initializationOptions.lints`/`.denyWarnings`
+    // (#1417's other two surfaces). All three now go through the same
+    // `AnalysisOptions::apply_lint_overrides` seam.
+
+    #[test]
+    fn set_lint_overrides_deny_promotes_e014_to_error_and_fails_compile() {
+        let source = "~\nHello.\n-> DONE\n";
+
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", source);
+        let before = json(&s.compile_project("main.ink"));
+        assert_eq!(
+            before["ok"],
+            serde_json::json!(true),
+            "precondition: E014's raw default is Warning, so compilation \
+             succeeds with no override: {before}"
+        );
+
+        let warnings = s
+            .set_lint_overrides(r#"{"E014":"deny"}"#)
+            .expect("valid lint overrides");
+        assert_eq!(warnings, "[]", "a valid overridable code earns no warning");
+
+        let after = json(&s.compile_project("main.ink"));
+        assert_eq!(
+            after["ok"],
+            serde_json::json!(false),
+            "set_lint_overrides({{\"E014\":\"deny\"}}) promotes E014 to \
+             Error, so compilation must now fail: {after}"
+        );
+        assert_eq!(after["story_bytes"], serde_json::json!(null));
+        let severity = after["warnings"]
+            .as_array()
+            .and_then(|w| w.iter().find(|d| d["code"] == "E014"))
+            .map(|d| d["severity"].clone());
+        assert_eq!(severity, Some(serde_json::json!("Error")));
+    }
+
+    /// #1162: `set_lint_overrides({"E014":"hint"})` must down-level E014 to
+    /// `Hint` — unlike `deny`, this must NOT fail the compile (`Info`/`Hint`
+    /// stay non-blocking exactly like the `Warning` they're demoted from).
+    #[test]
+    fn set_lint_overrides_hint_relevels_e014_and_still_compiles() {
+        let source = "~\nHello.\n-> DONE\n";
+
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", source);
+
+        let warnings = s
+            .set_lint_overrides(r#"{"E014":"hint"}"#)
+            .expect("valid lint overrides");
+        assert_eq!(warnings, "[]", "a valid overridable code earns no warning");
+
+        let after = json(&s.compile_project("main.ink"));
+        assert_eq!(
+            after["ok"],
+            serde_json::json!(true),
+            "set_lint_overrides({{\"E014\":\"hint\"}}) must stay non-blocking: {after}"
+        );
+        let severity = after["warnings"]
+            .as_array()
+            .and_then(|w| w.iter().find(|d| d["code"] == "E014"))
+            .map(|d| d["severity"].clone());
+        assert_eq!(severity, Some(serde_json::json!("Hint")));
+    }
+
+    /// #1162: an unrecognized per-code level string must still be reported
+    /// through the same warning channel now that there are five valid
+    /// strings instead of three.
+    #[test]
+    fn set_lint_overrides_unrecognized_level_is_reported_and_ignored() {
+        let mut s = EditorSession::new();
+        let warnings = s
+            .set_lint_overrides(r#"{"E014":"sideways"}"#)
+            .expect("malformed-level JSON is still well-formed JSON");
+        assert!(
+            warnings.contains("sideways") && warnings.contains("E014"),
+            "unrecognized level must be named in the returned warning: {warnings}"
+        );
+    }
+
+    #[test]
+    fn set_deny_warnings_override_promotes_e014_to_error_and_fails_compile() {
+        let source = "~\nHello.\n-> DONE\n";
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", source);
+
+        s.set_deny_warnings_override(true);
+        let after = json(&s.compile_project("main.ink"));
+        assert_eq!(
+            after["ok"],
+            serde_json::json!(false),
+            "set_deny_warnings_override(true) promotes every Warning \
+             (including E014) to Error, so compilation must now fail: {after}"
+        );
+        let severity = after["warnings"]
+            .as_array()
+            .and_then(|w| w.iter().find(|d| d["code"] == "E014"))
+            .map(|d| d["severity"].clone());
+        assert_eq!(severity, Some(serde_json::json!("Error")));
+    }
+
+    /// `set_lint_overrides` must win over a conflicting applied
+    /// `brink.toml`'s `[lints] E014 = "allow"` for the same code (#1005
+    /// `CLI/API > file > default` precedence) — proves the override is
+    /// applied *after* the file's own resolution, regardless of call
+    /// order.
+    #[test]
+    fn set_lint_overrides_wins_over_a_conflicting_applied_brink_toml_allow() {
+        let source = "~\nHello.\n-> DONE\n";
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", source);
+        s.apply_project_config("[lints]\nE014 = \"allow\"\n")
+            .expect("valid brink.toml");
+        let allowed = json(&s.compile_project("main.ink"));
+        assert_eq!(
+            allowed["ok"],
+            serde_json::json!(true),
+            "precondition: the file allows E014, so compilation succeeds: {allowed}"
+        );
+
+        s.set_lint_overrides(r#"{"E014":"deny"}"#)
+            .expect("valid lint overrides");
+        let after = json(&s.compile_project("main.ink"));
+        assert_eq!(
+            after["ok"],
+            serde_json::json!(false),
+            "set_lint_overrides({{\"E014\":\"deny\"}}) must win over the \
+             file's [lints] E014 = \"allow\": {after}"
+        );
+    }
+
+    /// A `brink.toml` re-applied after `set_lint_overrides` must not
+    /// silently drop the explicit override — the CLI/API tier is
+    /// re-layered on top of every fresh file resolution, not just the one
+    /// in effect when it was first set (mirrors #1397's own "a file
+    /// re-apply must not lose state" concern, one tier up).
+    #[test]
+    fn brink_toml_reapply_after_set_lint_overrides_keeps_the_override_in_effect() {
+        let source = "~\nHello.\n-> DONE\n";
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", source);
+        s.set_lint_overrides(r#"{"E014":"deny"}"#)
+            .expect("valid lint overrides");
+
+        // A brink.toml with no opinion on E014 at all — the file must not
+        // clear the still-active explicit override.
+        s.apply_project_config("[project]\ndialect = \"strict-ink\"\n")
+            .expect("valid brink.toml");
+        let after = json(&s.compile_project("main.ink"));
+        assert_eq!(
+            after["ok"],
+            serde_json::json!(false),
+            "a brink.toml re-apply with no [lints] table must not drop the \
+             explicit set_lint_overrides({{\"E014\":\"deny\"}}) override: {after}"
+        );
+    }
+
+    /// `clear_deny_warnings_override` must actually revert to the file's
+    /// (or default) `deny-warnings`, not leave the explicit `true` stuck —
+    /// the same accumulation hazard #1397 guards against for the file
+    /// tier.
+    #[test]
+    fn clear_deny_warnings_override_reverts_to_the_unset_default() {
+        let source = "~\nHello.\n-> DONE\n";
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", source);
+
+        s.set_deny_warnings_override(true);
+        let denied = json(&s.compile_project("main.ink"));
+        assert_eq!(
+            denied["ok"],
+            serde_json::json!(false),
+            "precondition: set_deny_warnings_override(true) fails compilation: {denied}"
+        );
+
+        s.clear_deny_warnings_override();
+        let reverted = json(&s.compile_project("main.ink"));
+        assert_eq!(
+            reverted["ok"],
+            serde_json::json!(true),
+            "clear_deny_warnings_override must restore E014's base Warning \
+             severity, letting compilation succeed again: {reverted}"
+        );
+    }
+
     // ── Issue #1004: manifest-typed external params under strict ──────────
     //
     // The maintainer's exact repro (issue #1004 final comment): a host
@@ -3867,9 +4197,10 @@ mod dialect_wasm_tests {
     /// The discovery-path (#1414) companion to
     /// `apply_project_config_rejects_malformed_toml`: malformed TOML
     /// discovered from the session's own in-memory document tree hits
-    /// `discover_project_config`'s own `parse_str` arm (the distinct
-    /// "invalid brink.toml at {config_key}" message) — still a rejected
-    /// `Result`, never a panic.
+    /// `discover_project_config`'s own `parse_str_at` call (#1384; the
+    /// discovered `config_key` is threaded straight into the `ConfigError`,
+    /// so its own `Display` names the file) — still a rejected `Result`,
+    /// never a panic.
     #[wasm_bindgen_test]
     fn discover_project_config_rejects_malformed_toml() {
         let mut s = EditorSession::new();

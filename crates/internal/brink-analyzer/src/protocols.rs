@@ -247,12 +247,15 @@ fn walk_stmts(stmts: &[Stmt], push: &mut impl FnMut(&Name, &str)) {
             Stmt::LabeledBlock(b) => walk_stmts(&b.stmts, push),
             Stmt::Conditional(c) => {
                 for branch in &c.branches {
+                    if let Some(binding) = &branch.binding {
+                        push(binding, "binding");
+                    }
                     walk_stmts(&branch.body.stmts, push);
                 }
             }
             Stmt::Sequence(s) => {
                 for branch in &s.branches {
-                    walk_stmts(&branch.stmts, push);
+                    walk_stmts(&branch.body.stmts, push);
                 }
             }
             Stmt::LogicBlock(lb) => walk_block_stmts(&lb.stmts, push),
@@ -278,7 +281,7 @@ fn walk_content(content: &Content, push: &mut impl FnMut(&Name, &str)) {
             }
             ContentPart::InlineSequence(s) => {
                 for branch in &s.branches {
-                    walk_stmts(&branch.stmts, push);
+                    walk_stmts(&branch.body.stmts, push);
                 }
             }
             ContentPart::Interpolation(_)
@@ -296,7 +299,12 @@ fn walk_block_stmts(stmts: &[BlockStmt], push: &mut impl FnMut(&Name, &str)) {
         match stmt {
             BlockStmt::TempDecl(t) => push(&t.name, "temp"),
             BlockStmt::If(i) => walk_if(i, push),
-            BlockStmt::While(w) => walk_block_stmts(&w.body, push),
+            BlockStmt::While(w) => {
+                if let Some(binding) = &w.binding {
+                    push(binding, "binding");
+                }
+                walk_block_stmts(&w.body, push);
+            }
             BlockStmt::For(f) => {
                 push(&f.var_name, "for-loop variable");
                 if let Some(val_name) = &f.val_name {
@@ -315,6 +323,11 @@ fn walk_block_stmts(stmts: &[BlockStmt], push: &mut impl FnMut(&Name, &str)) {
 }
 
 fn walk_if(i: &IfStmt, push: &mut impl FnMut(&Name, &str)) {
+    // B1b (issue #1475): the `as` binding declares a name, so it is a
+    // reserved-protocol-name site exactly like a `temp` or a `for` variable.
+    if let Some(binding) = &i.binding {
+        push(binding, "binding");
+    }
     walk_block_stmts(&i.body, push);
     match &i.else_branch {
         Some(ElseBranch::ElseIf(inner)) => walk_if(inner, push),

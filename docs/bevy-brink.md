@@ -147,13 +147,32 @@ transcript untouched, visit counts not bumped):
 
 - `call_ink_function::<M>(&mut World, entity, name, args) -> Result<Value, BrinkCallError>`
   — synchronous, from an exclusive system. Resolves world-access query
-  bindings inline (it has `&mut World`).
+  bindings inline (it has `&mut World`); a `bind_brink_command`-bound
+  external reached this way buffers its trigger like normal playback does,
+  then fires the event against the World once the call completes (#1096) —
+  it does not fall through to the in-story fallback the way an unbound
+  external would.
 - `commands.brink_call::<M>(flow, name, args).observe(|on: On<BrinkCallResolved>| …)`
   — deferred, from a normal (non-exclusive) system. Spawns a per-call
   entity; the plugin's resolver evaluates and fires `BrinkCallResolved` /
   `BrinkCallFailed` **scoped to that entity**, so a result can never be
   mis-correlated with another call. `IntoBrinkArgs` accepts `()`, tuples of
   `Into<Value>`, `Vec<Value>`, or `&[Value]`.
+- `commands.brink_call_batch::<M>(flow, calls).observe(|on: On<BrinkCallBatchResolved>| …)`
+  — deferred **batch** counterpart of `call_ink_functions` (#1076): a
+  normal system queues a whole ordered call list at once. The plugin's
+  `resolve_brink_call_batches` resolves the whole batch through one
+  `call_ink_functions` call, so the front-to-back ordering and per-call
+  isolation `call_ink_functions` guarantees hold for the deferred path
+  too — not just "these calls happen to land in the same frame."
+  (`call_ink_functions` also amortizes one VM-eval setup across the
+  batch, but that's a cost saving, not what pins the ordering.) Delivers
+  one `BrinkCallBatchResolved` (one `Result`
+  per call, in call order, no short-circuit on a failing call) scoped to
+  the batch's call entity. Ordering *across* separate deferred requests
+  targeting the same flow in the same frame (whether `brink_call` or
+  `brink_call_batch`) is **not** pinned — fold everything that needs a
+  guaranteed order into one `brink_call_batch`.
 
 **playback with inline world queries** — for a story line like
 `Enemies near: {enemy_count()}.`:
@@ -222,9 +241,11 @@ an interactive window.
   window with text + choices, SPACE to advance, digit keys to choose.
 - ✅ **External-function binding facility** (above): `bind_brink_fn` /
   `bind_brink_command` (+ `#[derive(BrinkCommand)]`) / `bind_brink_query`,
-  `call_ink_function`, `commands.brink_call(...).observe(...)`,
-  `advance_flow`, and the non-exclusive `step_one` → `Advance` pause/resume
-  with the `resolve_pending_externals` plugin system.
+  `call_ink_function` (+ its batch counterpart `call_ink_functions`),
+  `commands.brink_call(...).observe(...)` (+ its deferred batch
+  counterpart `commands.brink_call_batch(...)`, #1076), `advance_flow`,
+  and the non-exclusive `step_one` → `Advance` pause/resume with the
+  `resolve_pending_externals` plugin system.
 - ✅ **Async (defer-across-frames) bindings**: `bind_brink_async` (the
   `BrinkExternalAwaited` + `resolve_brink_external` event primitive) and
   `bind_brink_task` (`AsyncComputeTaskPool` task lifecycle via

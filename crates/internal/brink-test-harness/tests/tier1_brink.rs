@@ -196,6 +196,20 @@ fn struct_through_function_call_marshals_and_stays_a_value_copy() {
     assert_case("struct-through-function-call");
 }
 
+// ── #1476: COW no-aliasing invariant sweep ────────────────────────────────
+//
+// `struct-through-function-call` proves value semantics across a call
+// boundary; this proves it for the plain assignment case (`let y = x`,
+// docs/value-model-spec.md §2/§3) on a `Value::Record` — mutating a field
+// through `a` after `b = a` must never be observable through `b`. Arrays
+// already have this exact shape of regression (`rmw-mutator-shared-nested-
+// lvalue`); structs didn't until this sweep.
+
+#[test]
+fn struct_copy_is_isolated_from_later_field_mutation() {
+    assert_case("struct-copy-isolation");
+}
+
 // ── TM-5 (#621) corpus wing growth: TM-2 inline annotations end-to-end ────
 //
 // TM-2 landed annotation grammar/HIR/fmt/IDE feeding `signature()`; this
@@ -253,8 +267,8 @@ fn stdlib_insert_array_and_map() {
 }
 
 #[test]
-fn stdlib_remove_array_and_map() {
-    assert_case("stdlib-remove");
+fn stdlib_remove_and_remove_at() {
+    assert_case("stdlib-remove-and-remove-at");
 }
 
 #[test]
@@ -399,7 +413,7 @@ fn every_case_directory_has_a_test() {
         "stdlib-keys-and-values",
         "stdlib-push",
         "stdlib-insert",
-        "stdlib-remove",
+        "stdlib-remove-and-remove-at",
         "stdlib-mutator-nested-lvalue",
         "stdlib-shadowing",
         "stdlib-char-at",
@@ -419,6 +433,7 @@ fn every_case_directory_has_a_test() {
         "struct-construct-read-write",
         "struct-display-default",
         "struct-through-function-call",
+        "struct-copy-isolation",
         "annotations-mixed",
         "fn-value-call-forms",
         "fn-value-ref-mutation",
@@ -616,19 +631,66 @@ fn insert_with_an_rvalue_first_argument_is_a_compile_error() {
     );
 }
 
-// ── #673: struct literal as a VAR/CONST declaration default ─────────────
+// ── #673/#1530: struct literal as a VAR/CONST declaration default ───────
 //
-// `eval_const_expr` has no `ConstValue` representation for a record (that's
-// a format question outside this fix's fence) — a struct construction
-// literal used directly as a declaration default is a real, non-suppressible
-// compile error (E075) through the full `compile_with_options` entry point,
-// never a silently-compiled `Null`.
+// #673 refused every struct construction literal in declaration-default
+// position (E075) because `lir::ConstValue` had no record-carrying variant.
+// #1530 added one: a *well-formed* literal folds into
+// `ConstValue::Record` and compiles, and E075 now covers only the
+// shape-mismatch cases — which stay real, non-suppressible compile errors
+// through the full `compile_with_options` entry point, because a
+// declaration default has no `RecordNew` runtime step left to fault at.
 
 #[test]
-fn struct_literal_declaration_default_is_a_real_compile_error() {
-    let source = "STRUCT Point = #{\n    x: float,\n    y: float,\n}\n\nVAR p = Point#{x: 1.0, y: 2.0}\nHello.\n-> END\n";
+fn struct_literal_declaration_default_compiles_and_bakes_the_record() {
+    // Read straight out of the declaration default — nothing assigns to `p`
+    // first, so a passing read proves the record was baked into
+    // `StoryData`, not merely accepted by the analyzer.
+    let source = "STRUCT Point = #{\n    x: float,\n    y: float,\n}\n\nVAR p = Point#{x: 1.0, y: 2.0}\n{p.y}\n-> END\n";
+    let (program, tables) = compile_and_link(source);
+    let mut story = Story::<DotNetRng>::new(program, tables);
+    assert_eq!(run_to_end(&mut story), "2\n");
+}
+
+#[test]
+fn struct_literal_declaration_default_missing_a_field_is_e069_under_strict() {
+    // The Brink dialect's unset-`types` default is strict (NS-A9), so
+    // `brink-analyzer`'s `structs::check` gets there first with the more
+    // precise, field-naming E069 and the compile is blocked before LIR
+    // lowering ever folds the default.
+    let source = "STRUCT Point = #{\n    x: float,\n    y: float,\n}\n\nVAR p = Point#{x: 1.0}\nHello.\n-> END\n";
     let err = compile_brink(source)
-        .expect_err("struct literal declaration default must be a compile error");
+        .expect_err("a mismatched struct literal default must be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E069),
+        "expected E069, got {diags:?}"
+    );
+}
+
+#[test]
+fn struct_literal_declaration_default_missing_a_field_is_e075_under_gradual() {
+    // Under `types = gradual` `structs::check` never runs — a mismatched
+    // construction is a *runtime* construction fault there. A declaration
+    // default has no `RecordNew` step left to fault at (the value is baked
+    // into `StoryData`), so #1530's narrowed E075 is the policy-independent
+    // backstop that keeps a half-built record out of the story.
+    let source = "STRUCT Point = #{\n    x: float,\n    y: float,\n}\n\nVAR p = Point#{x: 1.0}\nHello.\n-> END\n";
+    let files: std::collections::HashMap<&str, &str> =
+        std::collections::HashMap::from([("main.ink", source)]);
+    let err = brink_compiler::compile_with_options(
+        "main.ink",
+        |path| {
+            files
+                .get(path)
+                .map(|s| (*s).to_string())
+                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, path))
+        },
+        gradual_opts(),
+    )
+    .expect_err("a mismatched struct literal default must be a compile error under gradual too");
     let diags = errors_of(&err);
     assert!(
         diags
@@ -814,13 +876,13 @@ fn var_reference_nested_inside_a_map_value_default_is_a_real_compile_error() {
 }
 
 #[test]
-fn var_reference_nested_inside_a_struct_field_default_is_still_e075() {
-    // A struct construction literal used as a declaration default is
-    // unconditionally E075 regardless of field content (`ConstValue` has no
-    // record variant at all — #673) — a bare `VAR` field reference never
-    // reaches the `E077` arm because the whole literal is already rejected.
-    // Direct fixture proving the "struct field" position #743 names is
-    // covered, not silently folded.
+fn var_reference_nested_inside_a_struct_field_default_is_e077() {
+    // The "struct field" position #743 names. Under #673 this was
+    // unconditionally E075 (the whole literal was rejected before any field
+    // was looked at); since #1530 the literal folds for real, so a bare
+    // `VAR` field reference now reaches the same `E077` arm an array
+    // element or map value in that position does — covered, never silently
+    // folded to `Null`.
     let source = "STRUCT Point = #{\n    x: float,\n}\n\nVAR a = 1.0\nVAR p = Point#{x: a}\nHello.\n-> END\n";
     let err = compile_brink(source)
         .expect_err("a VAR reference nested inside a struct field default must be a compile error");
@@ -828,8 +890,8 @@ fn var_reference_nested_inside_a_struct_field_default_is_still_e075() {
     assert!(
         diags
             .iter()
-            .any(|d| d.code == brink_compiler::DiagnosticCode::E075),
-        "expected E075, got {diags:?}"
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E077),
+        "expected E077, got {diags:?}"
     );
 }
 
@@ -948,8 +1010,8 @@ fn run_to_error(source: &str) -> brink_runtime::RuntimeError {
 }
 
 #[test]
-fn remove_array_index_out_of_bounds_faults() {
-    let source = "VAR arr = 0\n~ {\n    arr = #[1, 2]\n    remove(arr, 5)\n}\nDone.\n-> END\n";
+fn remove_at_array_index_out_of_bounds_faults() {
+    let source = "VAR arr = 0\n~ {\n    arr = #[1, 2]\n    remove_at(arr, 5)\n}\nDone.\n-> END\n";
     let err = run_to_error(source);
     assert!(
         matches!(
@@ -957,6 +1019,29 @@ fn remove_array_index_out_of_bounds_faults() {
             brink_runtime::RuntimeError::IndexOutOfBounds { index: 5, len: 2 }
         ),
         "expected IndexOutOfBounds, got {err:?}"
+    );
+}
+
+#[test]
+fn remove_on_an_array_faults() {
+    // Issue #1484: `remove` is map-only now — an array root is
+    // `NotIndexable`, not index-based removal (that's `remove_at`'s job).
+    let source = "VAR arr = 0\n~ {\n    arr = #[1, 2]\n    remove(arr, 0)\n}\nDone.\n-> END\n";
+    let err = run_to_error(source);
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::NotIndexable("array")),
+        "expected NotIndexable(\"array\"), got {err:?}"
+    );
+}
+
+#[test]
+fn remove_at_on_a_map_faults() {
+    // The split's other half: `remove_at` no longer accepts a map.
+    let source = "VAR m = 0\n~ {\n    m = #{\"a\": 1}\n    remove_at(m, 0)\n}\nDone.\n-> END\n";
+    let err = run_to_error(source);
+    assert!(
+        matches!(err, brink_runtime::RuntimeError::NotIndexable("map")),
+        "expected NotIndexable(\"map\"), got {err:?}"
     );
 }
 
@@ -985,8 +1070,8 @@ fn contains_on_a_non_collection_faults() {
 
 // ── #587 breadth pass: every stdlib function x faults (§5, value-model §11c) ─
 //
-// `contains`/`push`/`insert`/`remove` on non-collection/out-of-bounds roots
-// are covered above and in `take_rmw.rs`. This section rounds out `len`,
+// `contains`/`push`/`insert`/`remove`/`remove_at` on non-collection/
+// out-of-bounds roots are covered above and in `take_rmw.rs`. This section rounds out `len`,
 // `keys`, `values` (including the `values(array)` edge, which faults —
 // `collection_values` is Map-only, unlike `collection_keys`'s deliberate
 // array-identity pass-through documented on `collection_ops::collection_keys`).
@@ -1378,7 +1463,7 @@ fn every_stdlib_name_is_rejected_under_strict_ink_and_compiles_under_brink() {
     // resolution status, so an unresolved `push(arr)` call is flagged
     // exactly like `len(arr)` regardless of arity/lvalue-ness (those checks
     // are downstream, brink-dialect-only concerns E055/E058).
-    let strict_ink_call_sites: [(&str, &str); 7] = [
+    let strict_ink_call_sites: [(&str, &str); 8] = [
         ("len", "len(arr)"),
         ("keys", "keys(arr)"),
         ("values", "values(arr)"),
@@ -1386,6 +1471,7 @@ fn every_stdlib_name_is_rejected_under_strict_ink_and_compiles_under_brink() {
         ("push", "push(arr)"),
         ("insert", "insert(arr)"),
         ("remove", "remove(arr)"),
+        ("remove_at", "remove_at(arr)"),
     ];
     for (name, call) in strict_ink_call_sites {
         let source = format!("VAR arr = 0\n~ x = {call}\nDone.\n-> END\n");
@@ -1416,14 +1502,15 @@ fn every_stdlib_name_is_rejected_under_strict_ink_and_compiles_under_brink() {
     // Under `Dialect::Brink`, each name resolves and lowers cleanly with a
     // signature-correct call: pure functions as an expression, mutators as
     // an lvalue-first statement (§5).
-    let brink_call_sites: [(&str, &str); 7] = [
+    let brink_call_sites: [(&str, &str); 8] = [
         ("len", "temp x = len(arr)"),
         ("keys", "temp x = keys(arr)"),
         ("values", "temp x = values(m)"),
         ("contains", "temp x = contains(arr, 1)"),
         ("push", "push(arr, 3)"),
         ("insert", "insert(arr, 0, 9)"),
-        ("remove", "remove(arr, 0)"),
+        ("remove", "remove(m, \"a\")"),
+        ("remove_at", "remove_at(arr, 0)"),
     ];
     for (name, stmt) in brink_call_sites {
         let brink_source = format!(

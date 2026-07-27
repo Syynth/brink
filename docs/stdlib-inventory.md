@@ -260,7 +260,7 @@ scalar-element verbs.
 | `push` | `fn push(ref a: [T], x: T): void` | seq | ✓ | lval | P | — | — | ✅ |
 | `pop` | `fn pop(ref a: [T]): Option[T]` | seq | · | lval | P | **Option[T]** (empty→none) | — | ✅ (0xE8) |
 | `insert` | `fn insert(ref a: [T], i: int, x: T): void` | seq | · | lval | `F:oob` | — | — | ✅ |
-| `remove` | `fn remove(ref a: [T], i: int): ???` **⚠F5b** | seq | · | lval | `F:oob` | — | — | ✅ |
+| `remove_at` | `fn remove_at(ref a: [T], i: int): void` (issue #1484, 2026-07-26 ruling: renamed off `remove` — one name spanning a faulting index-claim and a total identity-removal was accidental; F5b's open return-type question is resolved by the shipped shape: `void`, matching the other `remove`s, not the element) | seq | · | lval | `F:oob` | — | — | ✅ (0xFD) |
 | `each` | `fn each(a: [T], f: fn(T): void): void` | seq | · | val | `⊕f` (writes/emits/tags/faults all compose) | — | — | 🔜 |
 | `map` | `fn map(a: [T], f: fn(T): U): [U]` | seq | · | val | `⊕f` (reads+faults only; f pure-required) | — | — | 🔜 |
 | `filter` | `fn filter(a: [T], pred: fn(T): bool): [T]` | seq | · | val | `⊕pred` (pure-required) | — | — | 🔜 |
@@ -319,6 +319,16 @@ main, and the domain is not pinned to a Track A wave (unsequenced;
 operator forms `?`/`^`/`+=`/`-=` are code-dialect ⏳). The frozen ink
 LIST ops (right column) remain the only shipped surface — plus
 `rand::pick` over a flags subset, which A6 did ship (§7).
+
+**`remove`'s flags-subtract row above stays unshipped as of issue
+#1532** (the #1501 review's "one name, one posture" follow-up): this
+whole domain — the *first* native flags verb dispatch, `Ty::List`
+narrowing at the call site, an idempotent LIST-subtract op reachable
+from a `remove(ref s: Mood, m: Mood)` mutator call, plus every sibling
+verb in this table — is unsequenced work, not a small addition
+alongside a targeted diagnostic fix. Shipping it needs its own design
+pass (docs/decision-log.md-style ruling on dispatch shape, at minimum),
+not a unilateral call inside an unrelated issue.
 
 | Verb | Signature | NS | Pre | Recv | Row | Option/refine | ink frozen sibling |
 |---|---|---|---|---|---|---|---|

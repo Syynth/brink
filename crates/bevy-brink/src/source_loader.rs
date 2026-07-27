@@ -28,6 +28,7 @@ use std::collections::BTreeMap;
 
 use bevy_app::App;
 use bevy_asset::{AssetLoader, Assets, Handle, LoadContext, io::Reader};
+use bevy_ecs::resource::Resource;
 use bevy_reflect::TypePath;
 use brink_environment::{OptionOverrides, Project};
 use brink_project_config::ProjectConfig;
@@ -36,6 +37,47 @@ use brink_source_tree::InMemory;
 use crate::asset::{
     BrinkStoryAsset, LineTablesAsset, ProgramAsset, emit_story_assets, fresh_context,
 };
+
+/// The `with_config` override [`BrinkAssetsPlugin::build`](crate::BrinkAssetsPlugin)
+/// resolved [`InkLoader::override_config`](InkLoader) from, mirrored into a
+/// resource so [`compile_story_inline`] — a freestanding function with only
+/// `&mut App`, no `AssetLoader` instance to read a field off of — can see the
+/// same value (#1380).
+///
+/// Inserted once, unconditionally, whenever `BrinkAssetsPlugin` builds, from
+/// the exact `self.config` that also seeds `InkLoader` — so the two entry
+/// points read the identical override and can never diverge on it. Both
+/// entry points build their `OptionOverrides` through the one shared
+/// [`overrides_from_config`] mapping fed into `Project::load`'s existing
+/// seam, the same "reuse the resolution path, don't add a second one" fix
+/// applied here that wired `InkLoader` itself.
+/// `None` (the default, or no `BrinkAssetsPlugin` in the app at all) means
+/// [`overrides_from_config`] falls through to [`OptionOverrides::default()`],
+/// byte-identical to pre-#1380 behavior for a host that never calls
+/// `with_config`.
+#[derive(Resource, Debug, Clone, Default)]
+pub(crate) struct BrinkOverrideConfig(pub(crate) Option<ProjectConfig>);
+
+/// Build the [`OptionOverrides`] [`Project::load`] expects from a
+/// `with_config` override — the exact `ProjectConfig` -> `OptionOverrides`
+/// mapping both [`InkLoader::load`] and [`compile_story_inline`] need.
+/// Extracted so the two entry points share one mapping rather than each
+/// hand-rolling their own copy that could silently drift apart (#1380,
+/// following the resolution shape #1553/#1559/#1417 used for the
+/// IDE/LSP/wasm option-propagation gaps).
+///
+/// `config: None` (no override at all) yields
+/// [`OptionOverrides::default()`] — every field unset, so `Project::load`
+/// falls through entirely to the discovered `brink.toml` (or the built-in
+/// default).
+fn overrides_from_config(config: Option<&ProjectConfig>) -> OptionOverrides {
+    OptionOverrides {
+        dialect: config.and_then(|c| c.dialect),
+        types: config.and_then(|c| c.types),
+        lints: config.map(|c| c.lints.clone()).unwrap_or_default(),
+        deny_warnings: config.and_then(|c| c.deny_warnings),
+    }
+}
 
 /// Asset loader for `.ink` (source) files.
 ///
@@ -48,7 +90,7 @@ use crate::asset::{
 /// [`brink_runtime::link`] and emits labeled subassets (`#program`,
 /// `#line_tables`) just like [`InkbLoader`](crate::InkbLoader).
 ///
-/// ## `brink.toml` discovery (#1029, #1360, #1406)
+/// ## `brink.toml` discovery (#1029, #1360, #1406, #1439)
 ///
 /// A `brink.toml` beside (or above) the entry asset supplies the
 /// [`ProjectConfig`] (`dialect`/`types`) that gates T1b brink-extension
@@ -56,22 +98,31 @@ use crate::asset::{
 /// filesystem (`brink-project-config::load_from_entry`). Bevy's
 /// `AssetReader` may be virtual or packed, so [`load`](AssetLoader::load)
 /// probes for it over the async reader itself: `brink.toml` beside the
-/// entry, then each ancestor directory in turn, via
+/// entry, then each ancestor directory in turn (nearest first), via
 /// [`LoadContext::read_asset_bytes`] — bounded at the asset source root
 /// (never above it) and naturally finite (the entry path has finitely many
-/// `/`-separated ancestors). Every candidate found (not just the nearest)
-/// is registered as a load dependency exactly like an `INCLUDE`, so editing
-/// any of them in dev mode hot-reloads the story, and its text is landed at
-/// its own key in the drained source map. Discovering *which* key governs,
-/// parsing it, and applying `CLI/API > file > default` precedence is then
-/// entirely [`Project::load`]'s job
+/// `/`-separated ancestors). As of #1439, [`probe_brink_toml`] stops at the
+/// first candidate it finds — the nearest one, since the walk is
+/// nearest-first — so only that candidate is ever read or registered as a
+/// load dependency; a farther, shadowed `brink.toml` is never fetched, so
+/// editing one in dev mode no longer triggers a hot-reload. The candidate's
+/// text is landed at its own key in the drained source map; parsing it and
+/// applying `CLI/API > file > default` precedence is [`Project::load`]'s job
 /// (`brink_project_config::discover_from_entry_in_tree` over the same map,
-/// walking the same bounded ancestor chain once more — but now as the
-/// *only* place that walk makes a governing-candidate decision, see
-/// [`probe_brink_toml`]'s doc) — this loader only supplies candidate bytes,
-/// it does not re-implement the resolution policy. A miss at every level
-/// leaves `AnalysisOptions` at its default — byte-identical to pre-#1029
-/// behavior.
+/// walking the same bounded ancestor chain again over whatever the map
+/// contains) — this loader only supplies candidate bytes, it does not
+/// re-implement the resolution policy. Because the probe already stops at
+/// the nearest hit, `Project::load`'s walk finds at most one candidate in
+/// practice, but it is still the one place that applies the precedence
+/// rule; the probe is, deliberately, back to being a second "which
+/// candidate is nearest" decider (the duplication #1406 removed and #1439
+/// reintroduced on purpose, for the perf win — see [`probe_brink_toml`]'s
+/// doc). The two decisions agree by construction today because both walk
+/// [`ancestor_dirs`]-equivalent nearest-first order over the same bounded
+/// chain, but they are two independent implementations: a future change to
+/// `brink-project-config`'s bound/precedence shape would need to be mirrored
+/// here to stay honored on this path. A miss at every level leaves
+/// `AnalysisOptions` at its default — byte-identical to pre-#1029 behavior.
 ///
 /// [`override_config`](Self::override_config), set via
 /// [`BrinkPlugin::with_config`](crate::BrinkPlugin::with_config) /
@@ -163,17 +214,35 @@ pub enum CompileStoryInlineError {
 /// change to *that* resolution logic can't silently diverge between them
 /// again.
 ///
-/// **One override channel is still divergent.** This call always passes
-/// [`OptionOverrides::default()`] — it has no way to see
-/// [`InkLoader::override_config`], the value [`BrinkPlugin::with_config`](crate::BrinkPlugin::with_config)
-/// / [`BrinkAssetsPlugin::with_config`](crate::BrinkAssetsPlugin::with_config)
-/// installs. So an app built with `BrinkPlugin::with_config(dialect = Brink)`
-/// still compiles inline sources here under the default `StrictInk` dialect,
-/// while the same app's `InkLoader`-loaded assets compile under `Brink` —
-/// the exact class of divergence #1372 was opened to close, just narrowed
-/// from "two independent precedence implementations" down to "one missing
-/// override wire". See #1380 for wiring the plugin's override config through
-/// this entry point.
+/// ## Picks up `with_config` too (#1380)
+///
+/// [`BrinkAssetsPlugin::build`](crate::BrinkAssetsPlugin) mirrors whatever
+/// `with_config` override it resolved for [`InkLoader::override_config`]
+/// into a [`BrinkOverrideConfig`] resource. This function reads that
+/// resource back out of `app`'s `World` (absent — no `BrinkAssetsPlugin` in
+/// the app at all — is treated the same as `None`) and runs it through the
+/// same [`overrides_from_config`] mapping `InkLoader::load` uses, so an app
+/// built with `BrinkPlugin::with_config(dialect = Brink)` now compiles
+/// inline sources under `Brink` too, matching its `InkLoader`-loaded
+/// assets — closing the divergence #1372 narrowed down to "one missing
+/// override wire".
+///
+/// **Call this *after* `app.add_plugins(BrinkPlugin::<M>::with_config(...))`
+/// / `BrinkAssetsPlugin::with_config(...)`, not before.** `BrinkOverrideConfig`
+/// only exists in `app`'s `World` once `BrinkAssetsPlugin::build` has run,
+/// and Bevy runs `Plugin::build` at `add_plugins` time, not at struct
+/// construction. Calling `compile_story_inline` *before* that `add_plugins`
+/// call finds no `BrinkOverrideConfig` resource yet — the same "absent"
+/// case as no plugin at all — and silently compiles under
+/// `OptionOverrides::default()` with no diagnostic, even though a
+/// `with_config` override is sitting right there waiting to be installed.
+/// This is the exact kind of silent divergence #1380 set out to kill,
+/// relocated into a call-ordering footgun rather than eliminated; there is
+/// no runtime check for it (a freestanding `fn(&mut App, ...)` can't tell
+/// "no override was ever configured" apart from "the override exists but
+/// its plugin hasn't built yet"). See
+/// `compile_story_inline_before_plugin_add_silently_falls_back_to_default`
+/// for the regression pinning this fallback.
 ///
 /// `name` is the compiler's synthetic entry file name (also its `INCLUDE`
 /// resolution root). Because the tree has exactly one key (`name`), `INCLUDE`
@@ -197,7 +266,12 @@ pub fn compile_story_inline(
     let mut sources = BTreeMap::new();
     sources.insert(name.to_string(), source.to_string());
     let tree = InMemory::new(sources);
-    let env = Project::load(&tree, name, &OptionOverrides::default())?;
+    let override_config = app
+        .world()
+        .get_resource::<BrinkOverrideConfig>()
+        .and_then(|r| r.0.as_ref());
+    let overrides = overrides_from_config(override_config);
+    let env = Project::load(&tree, name, &overrides)?;
     let output = brink_environment::compile(&env)?;
     let (program, tables) = brink_runtime::link(&output.data)?;
     let initial_context = fresh_context(&program);
@@ -285,45 +359,45 @@ fn ancestor_dirs(entry_path: &str) -> Vec<String> {
 /// to the asset source root — mirroring the CLI's `brink.toml` walk-up
 /// (`brink_project_config::find_config`), but over the async `AssetReader`
 /// since a bevy source tree may be virtual or packed rather than a real
-/// filesystem. Every candidate found is read via
-/// [`LoadContext::read_asset_bytes`], which registers it as a load
-/// dependency, so hot-reload "just works" exactly like an `INCLUDE`.
+/// filesystem.
 ///
-/// Returns every candidate this probe found along the way — key + raw
-/// text, **not** parsed, and no precedence applied. This loader's job
-/// stops at supplying bytes; the caller lands every pair at its own key in
-/// the drained source map, and [`Project::load`] (over the resulting
-/// `SourceTree`) then runs its own discovery walk
-/// (`brink_project_config::discover_from_entry_in_tree`) to decide which
-/// candidate governs, parses it, and applies the `CLI/API > file >
-/// default` precedence (#1360).
+/// Returns at most one candidate — the nearest `brink.toml` found, or
+/// `None` if no `brink.toml` exists at any ancestor level. The returned
+/// candidate is read via [`LoadContext::read_asset_bytes`], which
+/// registers it as a load dependency, so hot-reload "just works" exactly
+/// like an `INCLUDE`. Returns key + raw text, **not** parsed, and no
+/// precedence applied — this loader's job stops at supplying bytes; the
+/// caller lands it in the drained source map, and [`Project::load`]
+/// (over the resulting `SourceTree`) then parses it and applies the
+/// `CLI/API > file > default` precedence (#1360).
 ///
-/// ## One walk, not two (#1406)
+/// ## Single pass (#1439)
 ///
-/// This probe deliberately does **not** stop at the first hit. #1360 left
-/// the bounded ancestor walk-up performed twice — once here (fetching
-/// bytes through the async `AssetReader`, stopping as soon as a candidate
-/// was found) and again inside `Project::load` (`discover_from_entry_in_tree`,
-/// walking the same ancestor chain over the resulting tree to decide which
-/// candidate governs) — so this loader was quietly re-implementing the
-/// same nearest-wins decision `discover_from_entry_in_tree` already makes,
-/// with the two walks only ever agreeing because at most one candidate was
-/// ever landed in the tree to find. Walking every ancestor to the asset
-/// source root instead — landing every candidate that exists, not just
-/// the nearest — means `Project::load`'s own walk is the **only** place
-/// that decision is made; this probe just gathers raw bytes. Only the
-/// nearest candidate is ever actually read as config (farther ones are
-/// shadowed exactly as before — [`Project::load`]'s walk still stops at
-/// the first hit it finds), so the extra reads never change which
-/// candidate governs, just who decides.
+/// This probe stops at the first match found, collapsing the *async* side
+/// of the ancestor walk to a single pass. Before #1439, this probe fetched
+/// bytes for **every** candidate ancestor through the async `AssetReader`
+/// and landed all of them in the tree; `Project::load`'s own walk
+/// (`discover_from_entry_in_tree`) then re-walked the same bounded ancestor
+/// chain, synchronously, over that tree to pick the nearest one. Stopping
+/// here at the first match (guaranteed to be nearest, since
+/// [`ancestor_dirs`] returns nearest-first) means at most one candidate is
+/// ever landed, so `Project::load`'s subsequent sync walk finds it (or
+/// nothing) on its very first probe. That sync walk was already
+/// stopping at its first hit before this change (`find_config_in_tree`
+/// returns as soon as it finds a candidate), so its own probe count —
+/// the entry-to-nearest-config distance — is unchanged and still
+/// `O(depth)` when no config exists anywhere; what #1439 saves is strictly
+/// the number of async `read_asset_bytes` calls this probe makes (at most
+/// one hit instead of one per ancestor with a `brink.toml`), not the shape
+/// of either walk. Behavior is identical — only the nearest candidate was
+/// ever read as config before this change either.
 ///
-/// A miss at every ancestor returns `Ok(vec![])` — not an error, matching
+/// A miss at every ancestor returns `Ok(None)` — not an error, matching
 /// `brink-project-config`'s "missing config changes nothing" contract.
 async fn probe_brink_toml(
     load_context: &mut LoadContext<'_>,
     entry_path: &str,
-) -> Result<Vec<(String, String)>, InkLoaderError> {
-    let mut found = Vec::new();
+) -> Result<Option<(String, String)>, InkLoaderError> {
     for dir in ancestor_dirs(entry_path) {
         let candidate = if dir.is_empty() {
             brink_project_config::CONFIG_FILE_NAME.to_string()
@@ -332,17 +406,22 @@ async fn probe_brink_toml(
         };
         if let Ok(bytes) = load_context.read_asset_bytes(candidate.clone()).await {
             match String::from_utf8(bytes) {
-                Ok(text) => found.push((candidate, text)),
-                // Only the nearest candidate is load-relevant (it's the only
-                // one `discover_from_entry_in_tree` can ever pick); an
-                // undecodable *farther* ancestor is shadowed and must not
-                // fail a load that would otherwise succeed.
-                Err(err) if found.is_empty() => return Err(err.into()),
-                Err(_) => {}
+                Ok(text) => {
+                    // Found the nearest candidate; return immediately (single
+                    // pass, no need to continue walking).
+                    return Ok(Some((candidate, text)));
+                }
+                // An undecodable nearest candidate fails the load — this
+                // candidate governs, and we can't read it, so this is a
+                // genuine failure (not a case for `discover_from_entry_in_tree`
+                // to potentially shadow with a farther ancestor). Farther
+                // ancestors are never consulted.
+                Err(err) => return Err(err.into()),
             }
         }
     }
-    Ok(found)
+    // No `brink.toml` found at any ancestor level.
+    Ok(None)
 }
 
 impl AssetLoader for InkLoader {
@@ -397,15 +476,16 @@ impl AssetLoader for InkLoader {
             sources.insert(path, source);
         }
 
-        // #1029/#1360/#1406: bounded ancestor walk-up for `brink.toml`
-        // through the async AssetReader (see the module/struct docs). Only
-        // the bytes are fetched here — every candidate found along the way,
-        // not just the nearest — landing each pair at its own key in
-        // `sources` lets `Project::load` below run the *sole* discovery
-        // walk (over the resulting tree) that decides which candidate
-        // governs, parses it, and applies precedence; this loader no longer
-        // duplicates that decision.
-        for (config_path, text) in probe_brink_toml(load_context, &entry_path).await? {
+        // #1029/#1360/#1439: bounded ancestor walk-up for `brink.toml`
+        // through the async AssetReader (see [`probe_brink_toml`]'s doc).
+        // Single-pass discovery (#1439): the probe stops at the first match
+        // (guaranteed nearest), so only one candidate (or none) is added to
+        // the tree — saving async `read_asset_bytes` calls for shadowed
+        // farther candidates. [`Project::load`] below still performs its own
+        // bounded sync walk over the tree to apply precedence; that walk's
+        // shape (and its O(depth) cost when nothing is found) is unchanged
+        // by this optimization.
+        if let Some((config_path, text)) = probe_brink_toml(load_context, &entry_path).await? {
             sources.insert(config_path, text);
         }
 
@@ -413,25 +493,10 @@ impl AssetLoader for InkLoader {
         // side (#1005): `override_config` — set via
         // `BrinkPlugin::with_config` — wins over whatever `brink.toml` (just
         // landed above) supplies. `brink.toml` itself, and applying that
-        // precedence, is entirely `Project::load`'s job.
-        let overrides = OptionOverrides {
-            dialect: self.override_config.as_ref().and_then(|c| c.dialect),
-            types: self.override_config.as_ref().and_then(|c| c.types),
-            // #1394: forward the plugin override's lint tier the same way
-            // as dialect/types — `BrinkPlugin::with_config`'s
-            // `ProjectConfig.lints`/`.deny_warnings` (landed with #1160)
-            // always win over a served `brink.toml`'s `[lints]` table, via
-            // the same `OptionOverrides` seam #1373 gave the CLI. No new
-            // resolution path: `Project::load` below folds these in at the
-            // one point (`AnalysisOptions::apply_lint_overrides`) that
-            // already validates codes for the CLI.
-            lints: self
-                .override_config
-                .as_ref()
-                .map(|c| c.lints.clone())
-                .unwrap_or_default(),
-            deny_warnings: self.override_config.as_ref().and_then(|c| c.deny_warnings),
-        };
+        // precedence, is entirely `Project::load`'s job. #1394's lint tier
+        // and #1380's `compile_story_inline` wiring both go through this
+        // same `overrides_from_config` mapping — no second implementation.
+        let overrides = overrides_from_config(self.override_config.as_ref());
 
         // Land the drained map in a `SourceTree` and go through the
         // producer: `Project::load` resolves `brink.toml` + precedence and
@@ -573,6 +638,203 @@ mod tests {
             ),
             "error message should carry authoring guidance, got: {err}"
         );
+    }
+
+    // ── `with_config` reaches `compile_story_inline` too (#1380) ───────
+    //
+    // `compile_story_inline_has_no_brink_toml_and_uses_default_dialect`
+    // above pins the no-override baseline: `#@private` is rejected under
+    // the default `StrictInk` dialect. These two tests prove a
+    // `BrinkPlugin::with_config` override actually reaches this entry
+    // point too (it didn't, pre-#1380 — see the removed "one override
+    // channel is still divergent" doc note this PR replaces), each picking
+    // a fixture whose outcome only the override — not the default policy
+    // — can flip (house rule 19q).
+
+    /// `dialect = Brink`, set via `BrinkPlugin::with_config`, must reach
+    /// `compile_story_inline`'s `Project::load` call the same way it
+    /// already reaches `InkLoader::load` — proven by compiling the same
+    /// `#@private` brink-extension source the no-override baseline test
+    /// rejects.
+    #[test]
+    fn compile_story_inline_reaches_plugin_with_config_dialect_override() {
+        use brink_project_config::Dialect;
+
+        let mut app = bevy_app::App::new();
+        app.add_plugins(bevy_asset::AssetPlugin::default());
+        app.add_plugins(
+            crate::BrinkPlugin::<()>::default().with_config(ProjectConfig {
+                dialect: Some(Dialect::Brink),
+                ..ProjectConfig::default()
+            }),
+        );
+
+        compile_story_inline(
+            &mut app,
+            "inline.ink",
+            "#@private\nVAR secret = 0\n-> END\n",
+        )
+        .expect(
+            "dialect = Brink override should reach compile_story_inline and permit \
+                 brink-extension syntax the default dialect rejects",
+        );
+    }
+
+    /// The `[lints] deny-warnings` tier (#1394's addition to the same
+    /// `OptionOverrides` seam) reaches `compile_story_inline` too, not just
+    /// `dialect`/`types` — a logic line with no effect (`~` alone,
+    /// `DiagnosticCode::E014`, `Warning` by default) compiles cleanly with
+    /// no override, but a `deny_warnings = true` override relevels it to a
+    /// blocking `Error`.
+    #[test]
+    fn compile_story_inline_reaches_plugin_with_config_deny_warnings_override() {
+        let mut app = bevy_app::App::new();
+        app.add_plugins(bevy_asset::AssetPlugin::default());
+        app.add_plugins(
+            crate::BrinkPlugin::<()>::default().with_config(ProjectConfig {
+                deny_warnings: Some(true),
+                ..ProjectConfig::default()
+            }),
+        );
+
+        let err = compile_story_inline(&mut app, "inline.ink", "Hello.\n~\n-> END\n")
+            .expect_err("deny_warnings override should relevel E014 to a blocking error");
+        assert!(
+            matches!(err, CompileStoryInlineError::Compile(_)),
+            "got {err:?}"
+        );
+    }
+
+    /// Negative control for the two tests above (house rule 19q): the same
+    /// `deny_warnings`-sensitive source compiles cleanly with no
+    /// `with_config` override at all, so the override above is what
+    /// actually flips the outcome, not something else about the fixture.
+    #[test]
+    fn compile_story_inline_without_config_leaves_e014_a_warning() {
+        let mut app = crate::test_support::make_test_app();
+
+        compile_story_inline(&mut app, "inline.ink", "Hello.\n~\n-> END\n")
+            .expect("E014 is a Warning, never blocking, with no deny_warnings override");
+    }
+
+    /// An untyped function parameter, called with an argument — same fixture
+    /// (and same reasoning) as `config_discovery_tests`'
+    /// `UNTYPED_PARAM_SOURCE`: `dialect = Brink`'s own resolved-policy
+    /// default is `Strict`, which rejects it with 2 diagnostics; only an
+    /// explicit `types = Gradual` override compiles it.
+    const UNTYPED_PARAM_SOURCE: &str =
+        "=== function f(x) ===\n~ return x\n\n=== start ===\n{f(1)}\n-> END\n";
+
+    /// `types = Gradual`, set via `BrinkPlugin::with_config` alongside
+    /// `dialect = Brink`, must reach `compile_story_inline`'s `Project::load`
+    /// call the same way it already reaches `InkLoader::load`
+    /// (`plugin_with_config_types_reaches_ink_loader` in
+    /// `config_discovery_tests`) — mirrored here since #1380's fix covers
+    /// `compile_story_inline` too, not just `InkLoader` (house rule 19q: the
+    /// dialect-keyed default alone, `Strict`, still rejects
+    /// `UNTYPED_PARAM_SOURCE`, so only the `types` override can flip this
+    /// outcome).
+    #[test]
+    fn compile_story_inline_reaches_plugin_with_config_types_override() {
+        use brink_project_config::{Dialect, TypePolicy};
+
+        let mut app = bevy_app::App::new();
+        app.add_plugins(bevy_asset::AssetPlugin::default());
+        app.add_plugins(
+            crate::BrinkPlugin::<()>::default().with_config(ProjectConfig {
+                dialect: Some(Dialect::Brink),
+                types: Some(TypePolicy::Gradual),
+                ..ProjectConfig::default()
+            }),
+        );
+
+        compile_story_inline(&mut app, "inline.ink", UNTYPED_PARAM_SOURCE).expect(
+            "types = Gradual override should reach compile_story_inline and permit the \
+             untyped parameter the dialect-keyed Strict default rejects",
+        );
+    }
+
+    /// A per-code `[lints]` override (not just the blanket `deny_warnings`
+    /// knob already covered above) must reach `compile_story_inline` too —
+    /// mirrors `plugin_override_lints_wins_over_conflicting_asset` /
+    /// `plugin_with_config_dialect_reaches_ink_loader`'s `[lints]` coverage
+    /// for `InkLoader`, but through `compile_story_inline`'s
+    /// `BrinkOverrideConfig` channel.
+    #[test]
+    fn compile_story_inline_reaches_plugin_with_config_per_code_lint_override() {
+        let mut app = bevy_app::App::new();
+        app.add_plugins(bevy_asset::AssetPlugin::default());
+
+        let mut lints = std::collections::BTreeMap::new();
+        lints.insert("E014".to_owned(), brink_project_config::LintLevel::Deny);
+        app.add_plugins(
+            crate::BrinkPlugin::<()>::default().with_config(ProjectConfig {
+                lints,
+                ..ProjectConfig::default()
+            }),
+        );
+
+        let err = compile_story_inline(&mut app, "inline.ink", "Hello.\n~\n-> END\n").expect_err(
+            "a per-code `[lints] E014 = deny` override should relevel E014 \
+                to a blocking error",
+        );
+        assert!(
+            matches!(err, CompileStoryInlineError::Compile(_)),
+            "got {err:?}"
+        );
+    }
+
+    /// #1380 review finding: `compile_story_inline` reads
+    /// `BrinkOverrideConfig` out of `app.world()` at call time, but that
+    /// resource is only inserted once `BrinkAssetsPlugin::build` actually
+    /// runs — which happens at `app.add_plugins(...)` time, not at
+    /// `BrinkPlugin::with_config(...)` construction time. Calling
+    /// `compile_story_inline` *before* `add_plugins` finds no
+    /// `BrinkOverrideConfig` in the world at all — indistinguishable from
+    /// "no `BrinkAssetsPlugin` ever added" — and silently falls back to
+    /// `OptionOverrides::default()`, dropping the override with no
+    /// diagnostic. This pins that fallback so it can't drift into something
+    /// else (e.g. a panic) unnoticed; see `compile_story_inline`'s doc
+    /// comment for the full hazard.
+    #[test]
+    fn compile_story_inline_before_plugin_add_silently_falls_back_to_default() {
+        use brink_project_config::Dialect;
+
+        let mut app = bevy_app::App::new();
+        app.add_plugins(bevy_asset::AssetPlugin::default());
+
+        // Deliberately NOT added yet -- `compile_story_inline` runs first.
+        let pending_plugin = crate::BrinkPlugin::<()>::default().with_config(ProjectConfig {
+            dialect: Some(Dialect::Brink),
+            ..ProjectConfig::default()
+        });
+
+        let err = compile_story_inline(
+            &mut app,
+            "inline.ink",
+            "#@private\nVAR secret = 0\n-> END\n",
+        )
+        .expect_err(
+            "with no BrinkOverrideConfig resource yet inserted, the default StrictInk \
+             dialect must still reject brink-extension syntax -- the override cannot \
+             reach a call made before its plugin builds",
+        );
+        assert!(
+            matches!(err, CompileStoryInlineError::Compile(_)),
+            "got {err:?}"
+        );
+
+        // Adding the plugin after the fact doesn't retroactively help the
+        // already-failed call above -- but confirms the override itself is
+        // wired correctly (would reach a *subsequent* call), isolating the
+        // failure above to ordering, not a broken override.
+        app.add_plugins(pending_plugin);
+        compile_story_inline(
+            &mut app,
+            "inline.ink",
+            "#@private\nVAR secret = 0\n-> END\n",
+        )
+        .expect("once the plugin has built, the same override now reaches the same call");
     }
 
     // ── ancestor_dirs (#1029 bounded walk-up) ───────────────────────────
@@ -850,16 +1112,24 @@ mod config_discovery_tests {
         wait_for_loaded(&mut app, &handle);
     }
 
-    /// #1406 regression: with a `brink.toml` at *two* ancestor levels
-    /// (conflicting settings), the nearest one must still govern even
-    /// though [`super::probe_brink_toml`] now lands **both** candidates in
-    /// the drained tree (it no longer stops at the first hit — see its doc
-    /// comment). The farther, root-level `brink.toml` sets
+    /// #1406/#1439 regression: with a `brink.toml` at *two* ancestor levels
+    /// (conflicting settings), the nearest one must still govern.
+    /// [`super::probe_brink_toml`] stops at the first (nearest) hit as of
+    /// #1439, so the farther, root-level `brink.toml` is never even fetched
+    /// — it does not land in the drained tree at all, and `Project::load`'s
+    /// own walk sees only the nearer candidate. The farther file sets
     /// `dialect = "strict-ink"`, which alone would reject `BRINK_ONLY_SOURCE`
     /// (`#@private`) — only the nearer `stories/ch1/brink.toml`'s
     /// `dialect = "brink"` makes it compile, so a `Loaded` outcome here
-    /// proves `Project::load`'s own walk (`discover_from_entry_in_tree`),
-    /// not this probe, is still the sole "which candidate governs" decider.
+    /// pins that the nearer candidate is the one actually used, both by the
+    /// probe (which never reads the farther file) and by `Project::load`'s
+    /// precedence resolution.
+    ///
+    /// `single_pass_discovery_finds_nearest_config_for_nested_entry` below
+    /// covers a distinct case: here, the nearest config sits *beside* the
+    /// entry's own directory (`stories/ch1/`); there, it sits one level
+    /// *above* the entry's own directory, pinning that the walk-up still
+    /// finds a nearest config that isn't a same-directory sibling.
     #[test]
     fn nearest_ancestor_brink_toml_shadows_a_farther_conflicting_one() {
         let (mut app, dir) = make_memory_asset_app();
@@ -880,16 +1150,49 @@ mod config_discovery_tests {
         wait_for_loaded(&mut app, &handle);
     }
 
-    /// w-review regression: an *undecodable* farther ancestor `brink.toml`
-    /// must not fail a load whose nearest, decodable candidate is the one
-    /// that actually governs. On `main` (pre-guard), `probe_brink_toml`
-    /// propagates `String::from_utf8`'s error for *every* candidate it
-    /// reads, including shadowed ones — a non-UTF-8 root-level
-    /// `brink.toml` that `discover_from_entry_in_tree` would never even
-    /// look at (the nearer `stories/ch1/brink.toml` shadows it) turns a
-    /// load that used to succeed into a `Failed` one. This fails on that
-    /// code path and only passes once the probe skips a decode error on a
-    /// candidate found *after* a decodable one already landed.
+    /// #1439 regression: verify the discovered config path for a nested
+    /// project is the nearest one, not a farther sibling. The single-pass
+    /// optimization (_this_ PR) stops at the first match found, which is
+    /// guaranteed to be nearest since [`ancestor_dirs`] returns nearest
+    /// first; this test pins that discovered path stays correct after the
+    /// optimization.
+    #[test]
+    fn single_pass_discovery_finds_nearest_config_for_nested_entry() {
+        let (mut app, dir) = make_memory_asset_app();
+        // Entry deep in a nested tree.
+        dir.insert_asset_text(
+            Path::new("project/nested/deep/story.ink"),
+            BRINK_ONLY_SOURCE,
+        );
+        // Nearer config (should win).
+        dir.insert_asset_text(
+            Path::new("project/nested/brink.toml"),
+            "[project]\ndialect = \"brink\"\n",
+        );
+        // Farther config (should be ignored).
+        dir.insert_asset_text(
+            Path::new("project/brink.toml"),
+            "[project]\ndialect = \"strict-ink\"\n",
+        );
+
+        let handle = app
+            .world()
+            .resource::<AssetServer>()
+            .load::<BrinkStoryAsset>("project/nested/deep/story.ink");
+        wait_for_loaded(&mut app, &handle);
+    }
+
+    /// w-review regression, retained post-#1439: an *undecodable* farther
+    /// ancestor `brink.toml` must not fail a load whose nearest, decodable
+    /// candidate is the one that actually governs. As of #1439,
+    /// `probe_brink_toml` stops at the first (nearest) candidate it finds,
+    /// so the farther, non-UTF-8 root-level `brink.toml` here is never even
+    /// fetched — the load succeeds simply because that file is never read,
+    /// not because of a decode-error-skipping branch (that guard was
+    /// removed by #1439; see `probe_brink_toml`'s doc). This test is kept
+    /// as a regression guard for the outcome — a farther, shadowed,
+    /// undecodable candidate must never be able to fail a load — even
+    /// though the mechanism that guarantees it changed.
     #[test]
     fn undecodable_farther_ancestor_brink_toml_does_not_fail_the_load() {
         let (mut app, dir) = make_memory_asset_app();
@@ -907,6 +1210,28 @@ mod config_discovery_tests {
             .resource::<AssetServer>()
             .load::<BrinkStoryAsset>("stories/ch1/intro.ink");
         wait_for_loaded(&mut app, &handle);
+    }
+
+    /// w-review regression: the mirror of
+    /// `undecodable_farther_ancestor_brink_toml_does_not_fail_the_load`
+    /// above — an *undecodable nearest* `brink.toml` must fail the load,
+    /// since it is the candidate that governs and `probe_brink_toml`
+    /// propagates its `String::from_utf8` error rather than silently
+    /// treating it as "no config" or falling through to a farther ancestor.
+    #[test]
+    fn undecodable_nearest_brink_toml_fails_the_load() {
+        let (mut app, dir) = make_memory_asset_app();
+        dir.insert_asset_text(Path::new("stories/ch1/intro.ink"), BRINK_ONLY_SOURCE);
+        // Invalid UTF-8 (a lone continuation byte) at the *nearest* level --
+        // this candidate governs, so an undecodable read here must fail the
+        // load rather than being skipped.
+        dir.insert_asset(Path::new("stories/ch1/brink.toml"), vec![0x80_u8]);
+
+        let handle = app
+            .world()
+            .resource::<AssetServer>()
+            .load::<BrinkStoryAsset>("stories/ch1/intro.ink");
+        wait_for_failed(&mut app, &handle);
     }
 
     #[test]
@@ -1342,6 +1667,178 @@ mod config_discovery_tests {
         );
     }
 
+    /// Additional coverage found while investigating #1436 — not one of the
+    /// two gaps #1430's review thread actually named (a *served*
+    /// `brink.toml`'s `[lints]` rejections and unknown-key warnings on the
+    /// bevy loader path; see #1625, filed as the follow-up, for those).
+    /// This closes a different, narrower gap: the sibling of
+    /// [`plugin_with_config_invalid_lint_code_reaches_brink_config_warnings_resource`]
+    /// above only ever exercised the *unknown-code* rejection class
+    /// (`E9999_TYPO`, "not a recognized diagnostic code") against
+    /// [`BrinkConfigWarnings`](crate::BrinkConfigWarnings) — the
+    /// *non-overridable-code* class ("not overridable", e.g. `E001`, a
+    /// real code whose default severity isn't `Warning`) had this exact
+    /// resource-channel reachability covered only by
+    /// `config_warnings::tests::non_overridable_code_surfaces_a_message_naming_it`,
+    /// which calls `BrinkConfigWarnings::from_config` directly and so
+    /// proves nothing about `with_config`'s own plugin-build wiring — the
+    /// same gap class `plugin_with_config_invalid_lint_code_reaches_brink_config_warnings_resource`
+    /// closed for the unknown-code class. `validate_lint_code`
+    /// (`brink-analyzer`) returns a structurally different `ConfigWarning`
+    /// per rejection class, so covering one does not prove the other is
+    /// wired the same way.
+    #[test]
+    fn plugin_with_config_non_overridable_lint_code_reaches_brink_config_warnings_resource() {
+        let mut lints = std::collections::BTreeMap::new();
+        // A real `DiagnosticCode`, but its base severity is `Error`, not
+        // `Warning` -- never overridable (mirrors
+        // `apply_lint_overrides_rejects_non_overridable_code` in
+        // `brink-analyzer`, and this file's own
+        // `plugin_override_unknown_and_non_overridable_lint_codes_warn_but_valid_entry_still_applies`,
+        // which proves the same code on the `tracing::warn!` channel, not
+        // this resource).
+        lints.insert("E001".to_owned(), brink_project_config::LintLevel::Deny);
+        let (app, _dir) = make_memory_asset_app_with_config(ProjectConfig {
+            lints,
+            ..ProjectConfig::default()
+        });
+
+        let warnings = app.world().resource::<crate::BrinkConfigWarnings>();
+        assert_eq!(warnings.0.len(), 1);
+        assert!(
+            warnings.0[0].contains("E001") && warnings.0[0].contains("not overridable"),
+            "unexpected resource contents: {warnings:?}"
+        );
+    }
+
+    /// Additional coverage found while investigating #1436 — not one of the
+    /// two gaps #1430's review thread actually named (see the doc comment
+    /// on `plugin_with_config_non_overridable_lint_code_reaches_brink_config_warnings_resource`
+    /// above for those, and #1625, filed as the follow-up). This closes a
+    /// different gap: `compile_story_inline` shares the exact same
+    /// `Project::load` seam `InkLoader::load` uses (#1380's own doc
+    /// comment: "the exact same two-call seam `InkLoader::load` uses") —
+    /// so a `with_config` lint-code rejection must warn through
+    /// `compile_story_inline`'s call too, not just the asset-loader path
+    /// `plugin_override_unknown_and_non_overridable_lint_codes_warn_but_valid_entry_still_applies`
+    /// already covers. That test (and the `BrinkConfigWarnings`-resource
+    /// tests above) only ever drove the rejection through
+    /// `AssetServer::load` -> `InkLoader::load` -> `Project::load`;
+    /// `compile_story_inline`'s own `Project::load` call
+    /// (`source_loader.rs`, `compile_story_inline`) had no coverage proving
+    /// it reaches the same `tracing::warn!` channel.
+    #[test]
+    fn compile_story_inline_invalid_lint_code_warns_via_tracing() {
+        let captured = captured_warnings();
+
+        let mut lints = std::collections::BTreeMap::new();
+        lints.insert(
+            "E9998_INLINE_TYPO".to_owned(),
+            brink_project_config::LintLevel::Deny,
+        );
+        let (mut app, _dir) = make_memory_asset_app_with_config(ProjectConfig {
+            lints,
+            ..ProjectConfig::default()
+        });
+
+        // The rejected code is never applied (it's invalid, not merged),
+        // so this trivial, diagnostic-free source still compiles cleanly --
+        // the point is to observe the warning, not a failed compile.
+        crate::compile_story_inline(&mut app, "intro.ink", "-> END\n")
+            .expect("E9998_INLINE_TYPO is rejected, not applied, so nothing blocks the compile");
+
+        let joined = captured.lock().unwrap().join("\n");
+        assert!(
+            joined.contains("[lints] `E9998_INLINE_TYPO` is not a recognized diagnostic code"),
+            "an invalid with_config lint code must warn through \
+             compile_story_inline's own Project::load call too, not just \
+             InkLoader's; captured: {joined}"
+        );
+    }
+
+    /// Issue #1382 sweep finding: a *second* `BrinkPlugin<M>` registration's
+    /// `with_config` override used to vanish with no trace at all once
+    /// `BrinkAssetsPlugin` already existed (added by an earlier marker's
+    /// plugin) — `BrinkPlugin::with_config`'s own doc comment already
+    /// documented the precedence rule ("only the plugin that ends up adding
+    /// `BrinkAssetsPlugin` applies its config"), but neither the
+    /// `tracing::warn!` channel nor [`BrinkConfigWarnings`] ever recorded
+    /// that a *later* marker's whole `ProjectConfig` was the one that lost —
+    /// exactly the silent-drop pattern this issue swept for, just under a
+    /// different name than `resolve_*_options`. Two distinct marker types
+    /// reproduce a real multi-story app rather than a synthetic double
+    /// registration: `MarkerA`'s plugin (no override) is the one that adds
+    /// `BrinkAssetsPlugin`, so `MarkerB`'s `with_config` has nothing left to
+    /// land in.
+    #[test]
+    fn second_marker_with_config_drop_is_diagnosed_not_silent() {
+        struct MarkerA;
+        struct MarkerB;
+
+        let captured = captured_warnings();
+
+        let mut app = bevy_app::App::new();
+        let dir = Dir::default();
+        let dir_clone = dir.clone();
+        app.register_asset_source(
+            AssetSourceId::Default,
+            AssetSourceBuilder::new(move || {
+                Box::new(MemoryAssetReader {
+                    root: dir_clone.clone(),
+                })
+            }),
+        )
+        .add_plugins((
+            TaskPoolPlugin::default(),
+            AssetPlugin {
+                watch_for_changes_override: Some(false),
+                use_asset_processor_override: Some(false),
+                ..Default::default()
+            },
+            // `MarkerA`'s plugin has no override and is the one that ends up
+            // adding `BrinkAssetsPlugin` (first in registration order).
+            crate::BrinkPlugin::<MarkerA>::default(),
+            // `MarkerB`'s override arrives after `BrinkAssetsPlugin` already
+            // exists, so it must be diagnosed rather than silently dropped.
+            crate::BrinkPlugin::<MarkerB>::default().with_config(ProjectConfig {
+                dialect: Some(Dialect::Brink),
+                ..ProjectConfig::default()
+            }),
+        ));
+
+        let warnings = app.world().resource::<crate::BrinkConfigWarnings>();
+        assert!(
+            warnings
+                .0
+                .iter()
+                .any(|w| w.contains("MarkerB") && w.contains("ignored")),
+            "a second marker's dropped `with_config` override must be recorded \
+             in `BrinkConfigWarnings`, not silently discarded; got: {warnings:?}"
+        );
+
+        let joined = captured.lock().unwrap().join("\n");
+        assert!(
+            joined.contains("MarkerB") && joined.contains("ignored"),
+            "the same drop must also reach the tracing::warn! channel (the \
+             'warn, never silently drop' rule every other mount's config \
+             resolution already follows); captured: {joined}"
+        );
+
+        // Prove the drop, not just its announcement (house rule 19t): the
+        // shared `InkLoader` this app ends up with must still be running
+        // under the strict-ink default, not `MarkerB`'s `dialect = brink`
+        // override -- if a future change ever let a later marker's config
+        // reach `InkLoader` after all, this would start failing (green,
+        // while the warning above kept firing as a lie) unless it's pinned
+        // down here too.
+        dir.insert_asset_text(Path::new("intro.ink"), BRINK_ONLY_SOURCE);
+        let handle = app
+            .world()
+            .resource::<AssetServer>()
+            .load::<BrinkStoryAsset>("intro.ink");
+        wait_for_failed(&mut app, &handle);
+    }
+
     #[test]
     fn hot_reload_picks_up_edited_brink_toml() {
         let (mut app, dir) = make_memory_asset_app();
@@ -1395,5 +1892,120 @@ mod config_discovery_tests {
             .resource::<AssetServer>()
             .load::<BrinkStoryAsset>("stories/ch1/intro.ink");
         wait_for_loaded(&mut app, &handle);
+    }
+
+    // ── served `brink.toml`'s own warnings reach the loader path (#1625) ──
+    //
+    // #1430's review thread named two gaps neither #1436's tests
+    // (`plugin_with_config_non_overridable_lint_code_reaches_brink_config_warnings_resource`,
+    // `compile_story_inline_invalid_lint_code_warns_via_tracing`, both above)
+    // nor any other existing test actually closed: a *served* `brink.toml`
+    // -- one discovered next to the story asset through the real
+    // `AssetServer::load` -> `InkLoader::load` -> `Project::load` ->
+    // `resolve_options` seam, not a `with_config`/`InkLoader::override_config`
+    // override -- whose `[lints]` table rejects an entry, or whose top-level
+    // keys include an unknown one, must still warn via `tracing::warn!`.
+    // `resolve_options` (`brink-environment/src/lib.rs`) already does this
+    // unconditionally for a discovered file (`tracing::warn!("[{config_key}]
+    // {warning}")`, both for `parse_str_at`'s own unknown-key warnings and
+    // for `apply_project_config`'s rejected-`[lints]`-entry warnings) -- the
+    // two tests below are the first to actually observe that through the
+    // bevy loader path a real host uses, asserting the full `resolve_options`
+    // -produced message text (not just a code substring) so the two
+    // rejection classes stay distinguishable from each other, per the issue.
+    #[test]
+    fn served_brink_toml_invalid_lint_code_warns_via_tracing() {
+        let captured = captured_warnings();
+
+        let (mut app, dir) = make_memory_asset_app();
+        dir.insert_asset_text(Path::new("intro.ink"), E014_SOURCE);
+        // Uniquely-spelled code (the capture buffer is process-global across
+        // this file's tests) -- a real `DiagnosticCode` whose base severity
+        // isn't `Warning`, so it's rejected as "not overridable" rather than
+        // "not a recognized diagnostic code". `E001` is deliberately avoided
+        // here: it's also used by
+        // `plugin_override_unknown_and_non_overridable_lint_codes_warn_but_valid_entry_still_applies`'s
+        // `with_config` case, and that test's `joined.contains("[lints]
+        // `E001` is not overridable")` assertion would be satisfied by this
+        // served-file warning too (the capture buffer is shared process-wide)
+        // whenever this test runs first, making that other test's own
+        // `with_config` path go unverified without either test failing.
+        // `E002` is a real, non-overridable `DiagnosticCode`
+        // (`DiagnosticCode::severity`, `brink-ir/src/hir/types.rs`) used
+        // nowhere else in this file, so it stays independent of both.
+        //
+        // A second entry, `E8888_SERVED_TYPO`, covers the sibling rejection
+        // class ("not a recognized diagnostic code") on this same served-file
+        // path -- the precedent test above deliberately covers both classes
+        // because a bare code substring can't distinguish them, so this test
+        // does too.
+        dir.insert_asset_text(
+            Path::new("brink.toml"),
+            "[lints]\nE002 = \"deny\"\nE8888_SERVED_TYPO = \"deny\"\n",
+        );
+
+        let handle = app
+            .world()
+            .resource::<AssetServer>()
+            .load::<BrinkStoryAsset>("intro.ink");
+        // The rejected entries are never applied, so E014 stays a
+        // non-blocking Warning and the load still succeeds -- the point is
+        // to observe the warnings, not a failed compile.
+        wait_for_loaded(&mut app, &handle);
+
+        let joined = captured.lock().unwrap().join("\n");
+        assert!(
+            joined.contains("[brink.toml] [lints] `E002` is not overridable"),
+            "a served brink.toml's rejected [lints] entry must warn with the \
+             full resolve_options-produced message (config-key-prefixed, not \
+             just the code substring) through the real AssetServer -> \
+             InkLoader -> Project::load path; captured: {joined}"
+        );
+        assert!(
+            joined.contains(
+                "[brink.toml] [lints] `E8888_SERVED_TYPO` is not a recognized diagnostic code"
+            ),
+            "a served brink.toml's unrecognized [lints] code must also warn, \
+             distinguishable from the not-overridable class above; \
+             captured: {joined}"
+        );
+    }
+
+    #[test]
+    fn served_brink_toml_unknown_top_level_key_warns_via_tracing() {
+        let captured = captured_warnings();
+
+        let (mut app, dir) = make_memory_asset_app();
+        dir.insert_asset_text(Path::new("intro.ink"), BRINK_ONLY_SOURCE);
+        // `[project] dialect = "brink"` so the load still succeeds
+        // (BRINK_ONLY_SOURCE needs it) -- the unknown top-level key alongside
+        // it (not nested under `[project]`, which would instead warn as
+        // "unknown key `project.suprise_typo_key`") is what this test is
+        // actually about, distinguished from the `[lints]`-rejection class
+        // above by asserting the "unknown top-level key" wording
+        // specifically. The bare key must precede the `[project]` table
+        // header -- TOML requires top-level key/value pairs before the
+        // first table.
+        dir.insert_asset_text(
+            Path::new("brink.toml"),
+            "suprise_typo_key = true\n\n[project]\ndialect = \"brink\"\n",
+        );
+
+        let handle = app
+            .world()
+            .resource::<AssetServer>()
+            .load::<BrinkStoryAsset>("intro.ink");
+        wait_for_loaded(&mut app, &handle);
+
+        let joined = captured.lock().unwrap().join("\n");
+        assert!(
+            joined.contains(
+                "[brink.toml] unknown top-level key `suprise_typo_key` in brink.toml (ignored)"
+            ),
+            "a served brink.toml's unknown top-level key must warn with the \
+             full resolve_options-produced message through the real \
+             AssetServer -> InkLoader -> Project::load path, distinguishable \
+             from the [lints]-rejection class; captured: {joined}"
+        );
     }
 }

@@ -44,6 +44,12 @@ fn db_with(files: &[(&str, &str)]) -> ProjectDb {
     db
 }
 
+/// `SymbolIndex::symbols` is a `HashMap`, so compare id *sets*, never
+/// iteration order (determinism rule).
+fn ids(index: &brink_ir::SymbolIndex) -> std::collections::BTreeSet<brink_format::DefinitionId> {
+    index.symbols.keys().copied().collect()
+}
+
 /// Run the monolithic analyzer (full-range index throughout) over the db's
 /// analysis inputs — the exact pre-salsa `Driver::analyze` path.
 fn monolithic_analysis(db: &ProjectDb) -> brink_analyzer::AnalysisResult {
@@ -273,9 +279,12 @@ fn signature_matches_direct_analyzer_call() {
 #[test]
 fn signature_is_none_for_locals() {
     // #517: `resolution_index` (which `signature_query` reads) drops locals
-    // entirely, so `signature(def)` for a `Param`/`Temp` id is always `None`
-    // — not yet a regression, since no consumer calls `signature` with a
-    // local id today (see `resolve_query`'s own per-file locals lookup).
+    // entirely, so `signature(def)` for a `Param`/`Temp` id is always
+    // `None` — by design, not a regression: `signature`/`db.signature`
+    // stays the decls-only query (per #531, deliberately not merged with
+    // the full index), and a caller that already knows the local's own
+    // declaring file gets it instead through `db.local_signature` (issue
+    // #530's per-file locals path — see `local_signature.rs`'s tests).
     let db = db_with(&[(
         "main.ink",
         "=== quest(hero) ===\n~ temp step = 1\nOnward.\n-> END\n",
@@ -346,5 +355,107 @@ fn diagnostics_query_covers_lowering_and_analysis() {
     assert!(
         !diags.is_empty(),
         "unresolved divert should surface in diagnostics(FileId)"
+    );
+}
+
+/// **Native `.brink` identity is module-qualified** (issue #1526), so the
+/// module-*blind* `brink_analyzer::analyze_with_options` cannot stand in for
+/// the db here the way it does for the undeclared-stem-module ink corpus
+/// above: a native file's module is its path (`market/barter.brink` →
+/// `story::market::barter`) and is always declared, so it folds into every
+/// `DefinitionId` the db mints.
+///
+/// `analyze_with_modules`, fed `ProjectDb::module_map()`, is the entry point
+/// that agrees — which is what lets an out-of-db analysis pass (the LSP's,
+/// `IdeSession`'s) hand ids to `db.effects`/`db.signature`/`db.infer_body`.
+/// The module-blind path is asserted to *disagree* in the same test, so this
+/// is not vacuous: it would pass with `analyze_with_modules` aliased back to
+/// `analyze_with_options` only if native identity stopped being qualified at
+/// all.
+#[test]
+fn native_module_aware_analysis_matches_db_identity() {
+    let files: &[(&str, &str)] = &[
+        ("main.brink", "flow start() {\n  The market is busy.\n}\n"),
+        (
+            "market/barter.brink",
+            "flow haggle() {\n  You haggle over the price.\n}\n",
+        ),
+    ];
+    let mut db = db_with(files);
+    db.set_analysis_options(AnalysisOptions {
+        dialect: brink_analyzer::Dialect::Brink,
+        ..AnalysisOptions::default()
+    });
+    let opts = db.analysis_options().clone();
+
+    let inputs = db.analysis_inputs();
+    let refs: Vec<(FileId, &HirFile, &SymbolManifest)> = inputs
+        .iter()
+        .map(|(id, hir, manifest)| (*id, hir, manifest))
+        .collect();
+
+    let db_ids = ids(&db.symbol_index());
+    assert_eq!(db_ids.len(), 2, "two flows, two ids: {db_ids:?}");
+
+    let module_aware = brink_analyzer::analyze_with_modules(&refs, db.module_map(), &opts, false);
+    assert_eq!(
+        ids(&module_aware.index),
+        db_ids,
+        "module-aware analysis must mint the db's `DefinitionId`s for native files"
+    );
+
+    let module_blind = brink_analyzer::analyze_with_options(&refs, &opts);
+    assert_ne!(
+        ids(&module_blind.index),
+        db_ids,
+        "non-vacuity: the module-blind path must NOT match — if it does, \
+         native identity stopped being path-qualified"
+    );
+}
+
+/// **A declared `#@module` on an ink file is module-qualified identity too**
+/// (issue #1526 changeset correction): it isn't only native `.brink` files
+/// that diverge between the module-blind convenience path and the db — an
+/// ink file's *undeclared* stem-module never qualifies identity (see the
+/// multi-file fixtures above, which stay equivalent), but a *declared*
+/// `#@module(...)` does, exactly like a native file's path-derived module.
+#[test]
+fn ink_declared_module_aware_analysis_matches_db_identity() {
+    let files: &[(&str, &str)] = &[
+        (
+            "quest.ink",
+            "#@module(quest)\n=== start ===\nThe quest begins.\n-> END\n",
+        ),
+        (
+            "town/market.ink",
+            "#@module(town_market)\n=== haggle ===\nYou haggle over the price.\n-> END\n",
+        ),
+    ];
+    let db = db_with(files);
+    let opts = db.analysis_options().clone();
+
+    let inputs = db.analysis_inputs();
+    let refs: Vec<(FileId, &HirFile, &SymbolManifest)> = inputs
+        .iter()
+        .map(|(id, hir, manifest)| (*id, hir, manifest))
+        .collect();
+
+    let db_ids = ids(&db.symbol_index());
+    assert_eq!(db_ids.len(), 2, "two knots, two ids: {db_ids:?}");
+
+    let module_aware = brink_analyzer::analyze_with_modules(&refs, db.module_map(), &opts, false);
+    assert_eq!(
+        ids(&module_aware.index),
+        db_ids,
+        "module-aware analysis must mint the db's `DefinitionId`s for a \
+         declared `#@module` ink file"
+    );
+
+    let module_blind = brink_analyzer::analyze_with_options(&refs, &opts);
+    assert_ne!(
+        ids(&module_blind.index),
+        db_ids,
+        "non-vacuity: the module-blind path must NOT match — if it does, \
+         declared `#@module` identity stopped being qualified"
     );
 }

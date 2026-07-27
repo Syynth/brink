@@ -32,7 +32,7 @@ INCLUDE ../pcg-rng/pcg.ink
 // - THE two-worklist construction the catalog predicted would be
 //   "fussy to get exactly right" held up exactly that way: `small`/
 //   `large` are both plain arrays used as stacks (`temp x =
-//   arr[len(arr)-1]` + `remove(arr, len(arr)-1)` to pop — the same
+//   arr[len(arr)-1]` + `remove_at(arr, len(arr)-1)` to pop — the same
 //   pattern `dfs-grid-path`'s explicit backtracking stack already uses
 //   in this corpus, reused here for a completely different algorithm,
 //   which is exactly the "same friction shape recurring" signal this
@@ -157,9 +157,9 @@ Tally: {tally}.
 
     while len(small) > 0 and len(large) > 0 {
         temp g = small[len(small) - 1]
-        remove(small, len(small) - 1)
+        remove_at(small, len(small) - 1)
         temp l = large[len(large) - 1]
-        remove(large, len(large) - 1)
+        remove_at(large, len(large) - 1)
 
         prob_table[g] = scaled[g]
         alias_table[g] = l
@@ -177,12 +177,12 @@ Tally: {tally}.
     // empty — see the header's construction-friction finding).
     while len(large) > 0 {
         temp l = large[len(large) - 1]
-        remove(large, len(large) - 1)
+        remove_at(large, len(large) - 1)
         prob_table[l] = 1.0
     }
     while len(small) > 0 {
         temp g = small[len(small) - 1]
-        remove(small, len(small) - 1)
+        remove_at(small, len(small) - 1)
         prob_table[g] = 1.0
     }
 

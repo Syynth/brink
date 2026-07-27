@@ -57,6 +57,7 @@ mod source_loader;
 #[cfg(test)]
 mod test_support;
 mod transcript;
+mod wake_delta;
 
 pub use asset::{
     BrinkProgram, BrinkStory, BrinkStoryAsset, InkbLoader, InkbLoaderError, LineTablesAsset,
@@ -122,7 +123,8 @@ pub use brkt::{
     BrktLoader, BrktLoaderError, TranscriptAsset, capture_transcript, render_transcript_asset,
 };
 pub use call::{
-    BrinkCallCommandsExt, BrinkCallFailed, BrinkCallRequest, BrinkCallResolved, IntoBrinkArgs,
+    BrinkCallBatchRequest, BrinkCallBatchResolved, BrinkCallCommandsExt, BrinkCallFailed,
+    BrinkCallRequest, BrinkCallResolved, IntoBrinkArgs, resolve_brink_call_batches,
     resolve_brink_calls,
 };
 pub use capability::{
@@ -167,3 +169,4 @@ pub use sleep::{
 #[cfg(feature = "dev")]
 pub use source_loader::{CompileStoryInlineError, InkLoader, InkLoaderError, compile_story_inline};
 pub use transcript::{BrinkTranscript, refresh_transcripts};
+pub use wake_delta::{BrinkWorldDelta, WorldDelta};

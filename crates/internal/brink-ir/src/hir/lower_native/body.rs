@@ -288,9 +288,15 @@ fn lower_one_item(file_id: FileId, node: &SyntaxNode, diags: &mut Vec<Diagnostic
         // not a body statement, not an error, just skipped here so it
         // doesn't fall into the loud-E129 default arm below.
         | N::DOC_COMMENT => Vec::new(),
-        // `@[…]` annotations at body position: no directive channel is
-        // wired yet (B0.6's judgment call #5, still open) — loud, not
-        // dropped.
+        // `@[…]` annotations at body position (issue #1563): an
+        // `@[effects(…)]` above a nested `flow` is consumed by
+        // `container::lower_stitch`; anything else is diagnosed by the
+        // channel's own chokepoint. Either way an annotation line never
+        // lowers to content.
+        N::ANNOTATION_LINE => {
+            super::annotation::handle_line(file_id, node, diags);
+            Vec::new()
+        }
         _ => {
             diags.push(diag(file_id, node.text_range(), DiagnosticCode::E129));
             Vec::new()
@@ -352,7 +358,7 @@ pub(super) fn fixup_return_kind(is_function: bool, block: &mut Block) {
             }
             Stmt::Sequence(s) => {
                 for branch in &mut s.branches {
-                    fixup_return_kind(is_function, branch);
+                    fixup_return_kind(is_function, &mut branch.body);
                 }
             }
             Stmt::LogicBlock(lb) => fixup_return_kind_in_block_stmts(is_function, &mut lb.stmts),

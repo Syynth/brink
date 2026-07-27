@@ -1,4 +1,5 @@
 mod annotation;
+mod binding;
 mod block;
 mod choice;
 mod content;
@@ -12,6 +13,7 @@ mod source_file;
 mod stmt;
 #[cfg(test)]
 mod tests;
+mod types;
 
 use crate::SyntaxKind::{self, ERROR};
 use crate::lexer;

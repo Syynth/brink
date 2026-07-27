@@ -10,6 +10,8 @@
 //! `cargo test` never runs its `main()` — see that file's module docs).
 
 use std::io;
+#[cfg(feature = "bench-counters")]
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use bevy::MinimalPlugins;
@@ -68,9 +70,24 @@ pub struct ScenarioConfig {
     /// every frame); the rest are spawned `ScenarioParked` and never
     /// touched — see the module-level Collect honesty note.
     pub active_fraction: f64,
-    /// Inert background entities sharing the `World` — see the
-    /// module-level `world_size` honesty note.
+    /// Inert background entities sharing the **Bevy** `World` — see the
+    /// module-level `world_size` honesty note. This is an ECS-storage axis;
+    /// it says nothing about the size of the *story* world (see
+    /// [`story_globals`](Self::story_globals)).
     pub world_size: usize,
+    /// Extra declared-but-unused `VAR`s padding the **brink**
+    /// [`World`](brink_runtime::World) — the story-state axis, distinct from
+    /// [`world_size`](Self::world_size)'s Bevy-entity axis.
+    ///
+    /// This is the axis batch mode's frame-start handling scales on: the
+    /// pre-#937 implementation gave every collected flow a private
+    /// `frame_start.clone()`, whose cost is `O(globals + visit/turn-count
+    /// entries)` **per flow, per turn**, so a story with one `VAR` hides the
+    /// cost entirely and a real game's does not. The checked-in baselines all
+    /// hold this at `0` (a 1–3 global story); `--story-globals N` is a
+    /// print-only exploration run that raises it, exactly as
+    /// `--compute-threads` does for the pool size.
+    pub story_globals: usize,
     /// Per-turn ink workload — see [`TurnWeight`].
     pub turn_weight: TurnWeight,
     /// Number of `App::update()` frames to drive.
@@ -156,13 +173,29 @@ fn sentence(rng: &mut Lcg, min_words: usize, max_words: usize) -> String {
 /// `collection_global` (#911, deliverable 3) layers in a `live`/`history`
 /// array pair — see [`ScenarioConfig::collection_global`]'s doc for the
 /// share-then-mutate mechanism this exercises.
-pub fn generate_story(turn_weight: TurnWeight, seed: u64, collection_global: bool) -> String {
+///
+/// `story_globals` (#937) pads the story with that many extra declared,
+/// never-read `VAR`s, growing the brink `World` the batch drivers pin their
+/// frame-start reads against — see [`ScenarioConfig::story_globals`].
+pub fn generate_story(
+    turn_weight: TurnWeight,
+    seed: u64,
+    collection_global: bool,
+    story_globals: usize,
+) -> String {
     let mut rng = Lcg::new(seed);
     let mut s = String::from("// Synthetic scenario story — generated, deterministic (#900).\n");
 
     let needs_counter = matches!(turn_weight, TurnWeight::Medium | TurnWeight::Heavy);
     if needs_counter {
         s.push_str("VAR turn_count = 0\n");
+    }
+    // Padding globals (#937): declared, never read or written, so they add
+    // nothing to per-turn VM work — only to the size of the story world.
+    for i in 0..story_globals {
+        s.push_str("VAR pad_");
+        s.push_str(&i.to_string());
+        s.push_str(" = 0\n");
     }
     if collection_global {
         s.push_str("VAR live = 0\nVAR history = 0\n");
@@ -406,12 +439,23 @@ pub fn active_count(flow_count: usize, active_fraction: f64) -> usize {
 }
 
 /// A linked `(Program, line tables)` pair, ready to drive.
-type CompiledStory = (Program, Vec<Vec<brink_format::LineEntry>>);
+///
+/// `pub(crate)` (not private): `tests/scenario_bench_model.rs` includes this
+/// module verbatim via `#[path]` and needs to name this type to call
+/// [`compile_scenario_story`] directly — see that function's doc comment.
+pub(crate) type CompiledStory = (Program, Vec<Vec<brink_format::LineEntry>>);
 
 /// Compile the generated scenario story into a linked [`CompiledStory`]
 /// pair — shared by the serial ([`run_scenario`]) and batch
 /// ([`run_batch_scenario`]) drivers so both time the exact same compiled
 /// story for a given config.
+///
+/// `pub(crate)` (not private): `tests/scenario_bench_model.rs` calls this
+/// directly to get at the linked [`Program`] itself (`global_defaults()`),
+/// which the [`ScenarioResult`] returned by [`run_scenario`] /
+/// [`run_batch_scenario`] does not expose — needed to prove the
+/// `--story-globals` axis (#937) actually pads the runtime `World`, not
+/// just the generated source text.
 ///
 /// Brink dialect (docs/t1b-surface-spec.md §1): the `collection_global`
 /// axis's `~ { … }` blocks, `#[…]` array literals, `push`/`len`, and
@@ -421,10 +465,15 @@ type CompiledStory = (Program, Vec<Vec<brink_format::LineEntry>>);
 /// dialect at all") — it never changes codegen for a story that uses
 /// none of that syntax, so enabling it unconditionally here doesn't
 /// affect the scalar-only baseline configs' compiled output or timings.
-fn compile_scenario_story(
+pub(crate) fn compile_scenario_story(
     config: &ScenarioConfig,
 ) -> Result<CompiledStory, Box<dyn std::error::Error>> {
-    let source = generate_story(config.turn_weight, config.seed, config.collection_global);
+    let source = generate_story(
+        config.turn_weight,
+        config.seed,
+        config.collection_global,
+        config.story_globals,
+    );
     // NS-A9: explicit gradual — `collection_global` generated stories use
     // the placeholder-then-reassign idiom the strict default rejects; the
     // scenario harness measures runtime behavior, not typing regime.
@@ -450,6 +499,28 @@ fn compile_scenario_story(
     Ok(brink_runtime::link(&output.data)?)
 }
 
+/// Serializes the `bench-counters` reset→drive→snapshot critical section in
+/// [`measure_app`] across concurrently-running threads in the same process
+/// (#1167).
+///
+/// `brink_runtime::bench_counters` is process-global mutable state — two
+/// bare `AtomicU64`s with no per-caller isolation (see that module's docs).
+/// `cargo test`'s default harness runs every `#[test]` fn on its own OS
+/// thread, and several tests in this crate's `tests/scenario_bench_model.rs`
+/// call into `measure_app` (directly, or via [`run_scenario`]/
+/// [`run_batch_scenario`]/[`run_parallel_scenario`]), each doing its own
+/// `reset()` → drive frames → `snapshot()`. Without serialization, one
+/// thread's `reset()` can zero counters a *different*, concurrently-running
+/// thread already accumulated but hasn't `snapshot()`-ed yet — that thread
+/// then reads a spurious `0` even though its own scenario genuinely
+/// performed COW copies / Arc-clones. That is the exact "COW-copy counter
+/// reads 0" flake root-caused in #1167 (a test-isolation race over shared
+/// global state, not a bug in the COW mechanism or the assertion). The lock
+/// only exists when the counters exist (`bench-counters` feature) — without
+/// the feature there is no global state to race over.
+#[cfg(feature = "bench-counters")]
+static BENCH_COUNTERS_LOCK: Mutex<()> = Mutex::new(());
+
 /// Shared measurement tail for both scenario drivers: drive `config.frames`
 /// frames of a fully set-up `app`, sampling the per-frame wall clock and the
 /// driver's [`PhaseClock`], then fold counters/RSS/percentiles into a
@@ -458,6 +529,15 @@ fn compile_scenario_story(
 /// writes (batch mode's `collect`, folded inside `advance_batch`) samples as
 /// zero, reported as such rather than silently omitted.
 fn measure_app(mut app: App, config: &ScenarioConfig) -> ScenarioResult {
+    // Held for the whole function — see `BENCH_COUNTERS_LOCK`'s docs. A
+    // poisoned lock (a sibling thread panicked mid-section) still yields a
+    // usable guard: the counters themselves can't be poisoned, only the
+    // mutex's bookkeeping, and continuing to serialize is strictly better
+    // than abandoning isolation.
+    #[cfg(feature = "bench-counters")]
+    let _bench_counters_guard = BENCH_COUNTERS_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     #[cfg(feature = "bench-counters")]
     brink_runtime::bench_counters::reset();
 
@@ -723,10 +803,12 @@ fn minimal_plugins_with_compute_threads(
 /// - **Phase columns.** Collect/Step/Apply are fused inside `advance_batch`;
 ///   the whole batch turn (including its command flush) lands in the `step`
 ///   column, the host auto-pick pass lands in `apply`, and `collect` reads 0.
-/// - **Per-flow snapshot clone.** Each stepped flow clones the frame-start
-///   world (BH-2's documented serial cost; §12.2 "borrow, don't copy" is the
-///   BH-3 optimization) — expect batch `step` to sit above serial `step` at
-///   every flow count until BH-3 lands.
+/// - **Borrowed frame-start reads.** Each stepped flow *borrows* the
+///   frame-start world and overlays its own writes (§12.2 "borrow, don't
+///   copy", #937) rather than cloning it, so batch `step` no longer carries a
+///   per-flow cost proportional to story-world size. The
+///   [`story_globals`](ScenarioConfig::story_globals) axis is what makes that
+///   difference visible; the checked-in baselines hold it at 0.
 pub fn run_batch_scenario(
     config: &ScenarioConfig,
 ) -> Result<ScenarioResult, Box<dyn std::error::Error>> {

@@ -11,7 +11,7 @@ export interface Diagnostic {
   start: number;
   end: number;
   message: string;
-  severity: "Error" | "Warning";
+  severity: "Error" | "Warning" | "Info" | "Hint";
   /**
    * Structured diagnostic code, e.g. `"E065"` (issue #1004). Lets consumers
    * filter or group diagnostics programmatically instead of string-matching
@@ -631,7 +631,7 @@ export interface CrossFileEdit {
 /** One entry in a structural op's breakage report — a diagnostic the op would
  * introduce. Locations are 1-based, matching the editor's status surfaces. */
 export interface RenameDiagnostic {
-  severity: "error" | "warning";
+  severity: "error" | "warning" | "info" | "hint";
   /** Stable diagnostic code, e.g. `E022`. */
   code: string;
   message: string;
@@ -1409,6 +1409,21 @@ export interface ProjectSource {
    * recompiling; every other file is served verbatim. */
   entry: string;
   /** Every source file in the project, keyed by path exactly as its
-   * `INCLUDE` directives name it. */
+   * `INCLUDE` directives name it.
+   *
+   * `brink.toml` is **not** implicitly included — this map becomes the
+   * literal file set `compile_fragment` compiles over, and its `brink.toml`
+   * discovery is a direct read probe of each `{ancestor}/brink.toml`
+   * candidate walking up from `entry`'s directory (an O(depth) ancestor
+   * probe — it never lists/enumerates this map). That means the key must
+   * sit at `entry`'s own directory or one of its ancestors within this map
+   * (e.g. entry `"src/main.ink"` with a key at `"src/chapters/brink.toml"`
+   * is never on that ancestor chain and is silently ignored); a bare root
+   * `"brink.toml"` key is always on the chain and always safe. Include the
+   * right `"brink.toml"` key (with the project's real config text) if the
+   * fragment compile should honor the project's `dialect`/`types`/`[lints]`
+   * policy; omit it and the fragment compiles under
+   * `AnalysisOptions::default()` instead — never an error, just the
+   * unconfigured defaults, exactly as if no `brink.toml` existed. */
   files: Record<string, string>;
 }

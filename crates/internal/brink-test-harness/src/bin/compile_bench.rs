@@ -69,6 +69,17 @@
 //!    real `E061`s (an error), which would otherwise break that project's
 //!    "compiles clean" invariant.
 //!
+//! 8. **`ProjectDb` stage profile** (issue #460): (6) reports the warm
+//!    `story_data()` re-pull as one opaque number, so it cannot say *where*
+//!    a recompile's time goes. [`bench_projectdb_stage_profile`] splits both
+//!    the cold and the warm pull along the query graph's own layer
+//!    boundaries — resolutions / prelude / per-knot chunks / diagnostics /
+//!    link / T2-3 effect inference / codegen — using public `ProjectDb`
+//!    accessors and salsa's memoization, so each row is that layer's
+//!    marginal cost. This is the profile #460 is gated on ("invest only if
+//!    measured"); its conclusions are written up in
+//!    `docs/compile-time-profile-findings.md`.
+//!
 //! Stability over rigor: medians of N runs (default 5), fixed deterministic
 //! inputs, one stable greppable row per metric. Run with:
 //!
@@ -133,6 +144,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     bench_synthetic_warm(&project, runs)?;
     bench_synthetic_warm_strict(&project, runs)?;
     bench_synthetic_warm_projectdb(&project)?;
+    bench_projectdb_stage_profile(&project)?;
 
     let diag_project = generate_diag_project();
     verify_diag_compiles(&diag_project)?;
@@ -646,9 +658,9 @@ fn bench_synthetic_stages_cold(project: &BTreeMap<String, String>, runs: usize) 
 ///
 /// `update_file` is today's entire incremental layer: it re-parses the edited
 /// file and re-lowers only its changed knots (green-node identity diff).
-/// Everything downstream — analysis, LIR, codegen — recomputes from scratch,
-/// which is precisely the situation #498 exists to document and slice C
-/// (#460) exists to fix.
+/// Everything downstream — analysis, LIR, codegen — recomputes from scratch;
+/// see `docs/compile-time-profile-findings.md` for what that costs and why
+/// the per-container/symbolic-ref split (slice C / #460) stays deferred.
 ///
 /// Reported rows:
 /// - `update_file` — the per-knot-cached re-parse/re-lower of one file
@@ -936,6 +948,254 @@ fn bench_synthetic_warm_projectdb(project: &BTreeMap<String, String>) -> Result<
         &full,
     );
     Ok(())
+}
+
+// ── 8. ProjectDb stage profile (issue #460) ──────────────────────────
+
+/// Where the `ProjectDb` compile path's time actually goes, cold and warm —
+/// the measurement issue #460 asks for before any further incremental
+/// investment ("invest only if measured"). (6) reports `story_data()` as one
+/// opaque number; this row set splits it along the query graph's own layer
+/// boundaries, using only public `ProjectDb` accessors and salsa's own
+/// memoization to attribute cost: each pull below is timed *after* its
+/// dependencies are already memoized, so its time is that layer's marginal
+/// cost, not a cumulative total.
+///
+/// Pull order (dependency order through `story_data_query`):
+/// 1. `resolutions_index()` — layer 0-2: parse + HIR lowering of every file,
+///    symbol index, resolutions.
+/// 2. `lir_prelude_decls()` — FG-4e's whole-project prelude (globals, lists,
+///    externals, struct shapes).
+/// 3. every `knot_chunk(file, k)` — FG-4d's per-knot LIR chunk memos, the
+///    unit a per-def incremental path reuses. Reported with the knot count so
+///    the per-knot marginal cost is readable off the row.
+/// 4. `story_data()` — the remainder: the diagnostics gate, the link phase
+///    that assembles chunks into one `lir::Program`, codegen, effect rows.
+///
+/// Warm rows repeat the same pulls after a one-line body edit to a single
+/// knot of a single file, on the same long-lived db — so a row that stays
+/// large warm is work the incremental layer is *not* saving.
+fn bench_projectdb_stage_profile(project: &BTreeMap<String, String>) -> Result<(), String> {
+    let mut db = ProjectDb::new();
+    for (path, source) in project {
+        db.set_file(path, source.clone());
+    }
+    db.set_entry("main.ink")
+        .ok_or_else(|| "stage profile setup: set_entry(main.ink) failed".to_string())?;
+
+    report_cold_stage_rows(&profile_pulls(&db, &[]));
+
+    // Warm: one-line body edit to a single knot, then the same pulls.
+    let edit_path = format!("file_{EDIT_FILE:02}.ink");
+    let mut resolutions = Vec::with_capacity(PROJECTDB_WARM_RUNS);
+    let mut prelude = Vec::with_capacity(PROJECTDB_WARM_RUNS);
+    let mut chunks = Vec::with_capacity(PROJECTDB_WARM_RUNS);
+    let mut diagnostics = Vec::with_capacity(PROJECTDB_WARM_RUNS);
+    let mut link = Vec::with_capacity(PROJECTDB_WARM_RUNS);
+    let mut effects = Vec::with_capacity(PROJECTDB_WARM_RUNS);
+    let mut story_data = Vec::with_capacity(PROJECTDB_WARM_RUNS);
+    let mut totals = Vec::with_capacity(PROJECTDB_WARM_RUNS);
+
+    // Offset from every other bench's revision counter.
+    let mut revision: u64 = 5000;
+    let mut dirty: Vec<FileId> = Vec::new();
+    for _ in 0..PROJECTDB_WARM_RUNS {
+        revision += 1;
+        db.update_file(&edit_path, generate_file(EDIT_FILE, revision));
+        if dirty.is_empty() {
+            dirty = db
+                .file_id(&edit_path)
+                .map(|id| vec![id])
+                .ok_or_else(|| format!("stage profile: {edit_path} missing after edit"))?;
+        }
+        let warm = profile_pulls(&db, &dirty);
+        resolutions.push(warm.resolutions);
+        prelude.push(warm.prelude);
+        chunks.push(warm.chunks);
+        diagnostics.push(warm.diagnostics);
+        link.push(warm.link);
+        effects.push(warm.effects);
+        story_data.push(warm.story_data);
+        totals.push(warm.total());
+    }
+
+    row(
+        "projectdb_warm.resolutions_index",
+        "re-parse edited file + symbol index + resolve",
+        &resolutions,
+    );
+    row(
+        "projectdb_warm.prelude_decls",
+        "FG-4e prelude (decl-HIR cutoff should hold)",
+        &prelude,
+    );
+    row(
+        "projectdb_warm.edited_file_knot_chunks",
+        &format!("chunks of the edited file only (knots={SYN_KNOTS})"),
+        &chunks,
+    );
+    row(
+        "projectdb_warm.diagnostics",
+        "analysis diagnostics + suppression partition",
+        &diagnostics,
+    );
+    row(
+        "projectdb_warm.link",
+        "lir_lowering link: chunks -> one lir::Program",
+        &link,
+    );
+    row(
+        "projectdb_warm.effect_inference",
+        "T2-3 effects(def) fixpoint over every inferable def",
+        &effects,
+    );
+    row(
+        "projectdb_warm.story_data_rest",
+        "codegen emit + effect-row assembly",
+        &story_data,
+    );
+    row("projectdb_warm.total", "sum of stages", &totals);
+    Ok(())
+}
+
+/// The cold half of [`bench_projectdb_stage_profile`]'s table. Cold rows are
+/// single-sample by construction: a db is cold exactly once, so there is no
+/// second run to take a median over.
+fn report_cold_stage_rows(cold: &PullMs) {
+    let knots = cold.knot_count;
+    row(
+        "projectdb_cold.resolutions_index",
+        "parse + HIR + symbol index + resolve",
+        &[cold.resolutions],
+    );
+    row(
+        "projectdb_cold.prelude_decls",
+        "FG-4e prelude: globals/lists/externals/shapes",
+        &[cold.prelude],
+    );
+    row(
+        "projectdb_cold.knot_chunks",
+        &format!("FG-4d per-knot LIR chunk memos (knots={knots})"),
+        &[cold.chunks],
+    );
+    row(
+        "projectdb_cold.diagnostics",
+        "analysis diagnostics + suppression partition",
+        &[cold.diagnostics],
+    );
+    row(
+        "projectdb_cold.link",
+        "lir_lowering link: chunks -> one lir::Program",
+        &[cold.link],
+    );
+    row(
+        "projectdb_cold.effect_inference",
+        "T2-3 effects(def) fixpoint over every inferable def",
+        &[cold.effects],
+    );
+    row(
+        "projectdb_cold.story_data_rest",
+        "codegen emit + effect-row assembly",
+        &[cold.story_data],
+    );
+    row("projectdb_cold.total", "sum of stages", &[cold.total()]);
+}
+
+/// One pass of the [`bench_projectdb_stage_profile`] pull sequence.
+struct PullMs {
+    resolutions: f64,
+    prelude: f64,
+    chunks: f64,
+    diagnostics: f64,
+    link: f64,
+    effects: f64,
+    story_data: f64,
+    knot_count: usize,
+}
+
+impl PullMs {
+    fn total(&self) -> f64 {
+        self.resolutions
+            + self.prelude
+            + self.chunks
+            + self.diagnostics
+            + self.link
+            + self.effects
+            + self.story_data
+    }
+}
+
+/// Time the four pulls in dependency order. `chunk_files` restricts the
+/// per-knot chunk pulls to those files (the warm case pulls only the edited
+/// file's chunks — the untouched files' memos are what the incremental layer
+/// is supposed to be keeping); an empty slice means every file.
+fn profile_pulls(db: &ProjectDb, chunk_files: &[FileId]) -> PullMs {
+    let start = Instant::now();
+    let resolved = db.resolutions_index();
+    let resolutions = ms(start);
+    std::hint::black_box(&resolved);
+
+    let start = Instant::now();
+    let decls = db.lir_prelude_decls();
+    let prelude = ms(start);
+    std::hint::black_box(&decls);
+
+    let files: Vec<FileId> = if chunk_files.is_empty() {
+        db.file_ids().collect()
+    } else {
+        chunk_files.to_vec()
+    };
+    let knot_counts: Vec<(FileId, usize)> = files
+        .iter()
+        .map(|&id| (id, db.hir(id).map_or(0, |h| h.knots.len())))
+        .collect();
+    let knot_count = knot_counts.iter().map(|&(_, n)| n).sum();
+
+    let start = Instant::now();
+    for &(id, n) in &knot_counts {
+        for k in 0..n {
+            let chunk = db.knot_chunk(id, u32::try_from(k).unwrap_or(u32::MAX));
+            std::hint::black_box(&chunk);
+        }
+    }
+    let chunks = ms(start);
+
+    let start = Instant::now();
+    let errors = db.has_errors();
+    let diagnostics = ms(start);
+    std::hint::black_box(errors);
+
+    let start = Instant::now();
+    let lir = db.lir_product();
+    let link = ms(start);
+    std::hint::black_box(&lir);
+
+    // T2-3 effect inference (#862): `story_data_query` populates the
+    // `EffectRows` section by pulling `effects(def)` for every inferable def,
+    // so pull them here first — what stays in `story_data` afterwards is
+    // codegen emit plus the row assembly itself, not the fixpoint.
+    let defs = brink_analyzer::inferable_defs_from_index(&db.symbol_index());
+    let start = Instant::now();
+    for &def in &defs {
+        std::hint::black_box(db.effects(def));
+    }
+    let effects = ms(start);
+
+    let start = Instant::now();
+    let product = db.story_data();
+    let story_data = ms(start);
+    std::hint::black_box(&product);
+
+    PullMs {
+        resolutions,
+        prelude,
+        chunks,
+        diagnostics,
+        link,
+        effects,
+        story_data,
+        knot_count,
+    }
 }
 
 // ── 7. Diagnostic-heavy synthetic project (issue #663) ───────────────

@@ -63,7 +63,7 @@ pub type ModuleMap = BTreeMap<FileId, ResolvedModule>;
 /// behavior. Use [`merge_manifests_with_modules`] to qualify identity by
 /// declared module.
 pub fn merge_manifests(files: &[(FileId, &SymbolManifest)]) -> (SymbolIndex, Vec<Diagnostic>) {
-    merge_manifests_with_modules(files, &ModuleMap::new(), crate::Dialect::default())
+    merge_manifests_with_modules(files, &ModuleMap::new(), crate::Dialect::default(), false)
 }
 
 /// Merge per-file symbol manifests, qualifying `DefinitionId`s by each
@@ -85,10 +85,18 @@ pub fn merge_manifests(files: &[(FileId, &SymbolManifest)]) -> (SymbolIndex, Vec
 /// undeclared/legacy file, still warns (`E022`/`E023`/`E026`) and drops the
 /// later definition. `merge_manifests`'s empty `ModuleMap` can never produce
 /// a declared-module pair, so its `Dialect::default()` is inert.
+///
+/// `is_native` (issue #1562 review finding) is the same widening
+/// [`is_cross_declared_module_collision`]'s own doc describes: `true` lets
+/// M-2d coexistence apply regardless of `dialect`, for callers with a real
+/// `Language` classification of the project (`brink-db`'s `symbol_index_query`,
+/// via `project_is_native`). `merge_manifests`'s `false` is byte-identical to
+/// before this parameter existed.
 pub fn merge_manifests_with_modules(
     files: &[(FileId, &SymbolManifest)],
     modules: &ModuleMap,
     dialect: crate::Dialect,
+    is_native: bool,
 ) -> (SymbolIndex, Vec<Diagnostic>) {
     let mut index = SymbolIndex::default();
     let mut diagnostics = Vec::new();
@@ -114,6 +122,7 @@ pub fn merge_manifests_with_modules(
             module,
             manifest,
             dialect,
+            is_native,
         );
     }
 
@@ -143,6 +152,7 @@ fn insert_file_symbols(
     module: ModuleCtx<'_>,
     manifest: &SymbolManifest,
     dialect: crate::Dialect,
+    is_native: bool,
 ) {
     use DiagnosticCode::{E022, E023, E026};
     use SymbolKind::{Constant, External, Knot, Label, List, ListItem, Stitch, Struct, Variable};
@@ -169,6 +179,7 @@ fn insert_file_symbols(
                 kind,
                 dup_code,
                 dialect,
+                is_native,
             );
         }
     }
@@ -195,12 +206,24 @@ fn insert_file_symbols(
 /// `strict-ink` byte-for-byte: `#@module` is brink-only syntax, so a
 /// strict-ink story never has a declared module, and this always returns
 /// `false` there — the whole compat corpus keeps its existing behavior.
+///
+/// `is_native` (issue #1562 review finding) widens the gate exactly as
+/// [`crate::strict_diagnostics`]'s own `is_native` widens `E064`'s dialect
+/// check: `dialect` is an ink-only axis — a native `.brink` project has no
+/// dialect to be wrong about (every `.brink` module is always *declared*,
+/// see `brink_db::modules::native_module_path`), so M-2d coexistence must
+/// not depend on a client having declared `dialect: "brink"` in
+/// `initializationOptions`. `true` lets cross-declared-module homonyms
+/// coexist regardless of `dialect`'s value; `false` (every pure-API caller
+/// with no `Language` classification of its own) is byte-identical to
+/// before this parameter existed.
 fn is_cross_declared_module_collision(
     dialect: crate::Dialect,
+    is_native: bool,
     existing_module: Option<&str>,
     new_module: Option<&str>,
 ) -> bool {
-    if dialect != crate::Dialect::Brink {
+    if dialect != crate::Dialect::Brink && !is_native {
         return false;
     }
     matches!(
@@ -222,6 +245,7 @@ fn insert_symbol(
     kind: SymbolKind,
     dup_code: DiagnosticCode,
     dialect: crate::Dialect,
+    is_native: bool,
 ) {
     // Duplicate handling. A same-name/same-kind definition already in the
     // index is normally an inklecate-compat redefinition: we warn and drop
@@ -239,6 +263,7 @@ fn insert_symbol(
             .find(|existing| {
                 !is_cross_declared_module_collision(
                     dialect,
+                    is_native,
                     existing.module.as_deref(),
                     module.name,
                 )
@@ -550,7 +575,8 @@ mod tests {
             },
         );
 
-        let (index, diags) = merge_manifests_with_modules(&files, &modules, crate::Dialect::Brink);
+        let (index, diags) =
+            merge_manifests_with_modules(&files, &modules, crate::Dialect::Brink, false);
 
         assert!(
             diags.is_empty(),
@@ -601,7 +627,8 @@ mod tests {
             );
         }
 
-        let (_index, diags) = merge_manifests_with_modules(&files, &modules, crate::Dialect::Brink);
+        let (_index, diags) =
+            merge_manifests_with_modules(&files, &modules, crate::Dialect::Brink, false);
 
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].code, DiagnosticCode::E022);
@@ -629,15 +656,19 @@ mod tests {
         );
         // FileId(1) absent from `modules` -> undeclared, hashes bare.
 
-        let (_index, diags) = merge_manifests_with_modules(&files, &modules, crate::Dialect::Brink);
+        let (_index, diags) =
+            merge_manifests_with_modules(&files, &modules, crate::Dialect::Brink, false);
 
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].code, DiagnosticCode::E022);
     }
 
-    /// Under `Dialect::StrictInk` (the default), a cross-declared-module
-    /// duplicate never escalates — `merge_manifests`'s inert default keeps
-    /// the compat corpus untouched.
+    /// Under `Dialect::StrictInk` (the default) with `is_native = false`, a
+    /// cross-declared-module duplicate never escalates — `merge_manifests`'s
+    /// inert default keeps the compat corpus untouched. See
+    /// `cross_declared_module_duplicate_coexists_under_strict_ink_when_native`
+    /// below for the native counterpart (issue #1562 review finding), where
+    /// the same dialect instead coexists.
     #[test]
     fn cross_declared_module_duplicate_stays_e022_under_strict_ink() {
         let mut m1 = SymbolManifest::default();
@@ -665,10 +696,53 @@ mod tests {
         );
 
         let (_index, diags) =
-            merge_manifests_with_modules(&files, &modules, crate::Dialect::StrictInk);
+            merge_manifests_with_modules(&files, &modules, crate::Dialect::StrictInk, false);
 
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].code, DiagnosticCode::E022);
+    }
+
+    /// Native counterpart of `cross_declared_module_duplicate_stays_e022_under_strict_ink`
+    /// above (issue #1562 review finding): under the exact same
+    /// `Dialect::StrictInk` (the default a client that never declares
+    /// `initializationOptions.dialect` gets), `is_native = true` still lets
+    /// the two declared-module `start`s coexist — a native `.brink` project
+    /// has no dialect to be wrong about, so M-2d coexistence must not depend
+    /// on a client having declared `dialect: "brink"`.
+    #[test]
+    fn cross_declared_module_duplicate_coexists_under_strict_ink_when_native() {
+        let mut m1 = SymbolManifest::default();
+        m1.knots.push(sym("start", 0));
+        let mut m2 = SymbolManifest::default();
+        m2.knots.push(sym("start", 100));
+
+        let files = vec![(FileId(0), &m1), (FileId(1), &m2)];
+        let mut modules = ModuleMap::new();
+        modules.insert(
+            FileId(0),
+            ResolvedModule {
+                name: "quest".to_string(),
+                declared: true,
+                was: None,
+            },
+        );
+        modules.insert(
+            FileId(1),
+            ResolvedModule {
+                name: "town".to_string(),
+                declared: true,
+                was: None,
+            },
+        );
+
+        let (index, diags) =
+            merge_manifests_with_modules(&files, &modules, crate::Dialect::StrictInk, true);
+
+        assert!(
+            diags.is_empty(),
+            "native cross-declared-module homonyms coexist regardless of dialect, got {diags:?}"
+        );
+        assert_eq!(index.by_name.get("start").map(Vec::len), Some(2));
     }
 
     // ── M-1 identity gate (docs/modules-spec.md §5) ──────────────────
@@ -707,11 +781,15 @@ mod tests {
             },
         );
         let (with_undeclared, _) =
-            merge_manifests_with_modules(&files, &modules, crate::Dialect::default());
+            merge_manifests_with_modules(&files, &modules, crate::Dialect::default(), false);
 
         // (3) A file absent from the map must also stay bare.
-        let (with_empty, _) =
-            merge_manifests_with_modules(&files, &ModuleMap::new(), crate::Dialect::default());
+        let (with_empty, _) = merge_manifests_with_modules(
+            &files,
+            &ModuleMap::new(),
+            crate::Dialect::default(),
+            false,
+        );
 
         let mut base_ids: Vec<_> = baseline.symbols.keys().map(|id| id.to_raw()).collect();
         base_ids.sort_unstable();
@@ -771,7 +849,7 @@ mod tests {
             },
         );
         let (qualified, _) =
-            merge_manifests_with_modules(&files, &modules, crate::Dialect::default());
+            merge_manifests_with_modules(&files, &modules, crate::Dialect::default(), false);
 
         let bare_start = bare.by_name.get("start").and_then(|v| v.first()).copied();
         let q_start = qualified

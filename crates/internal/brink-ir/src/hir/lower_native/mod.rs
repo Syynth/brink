@@ -60,8 +60,7 @@
 //!    a `module { … }` block (no HIR "module container" node exists —
 //!    `HirFile.module` is a single file-identity fact, not a recursive
 //!    container; contents are flattened into the enclosing scope and the
-//!    diagnostic says so); an `@[…]` annotation line at declaration
-//!    position (no directive channel is wired yet — see #5); a lambda
+//!    diagnostic says so); a lambda
 //!    expression in value position (`FnLiteral` is partial application
 //!    over a named target, not an anonymous body — charter §8, no lambda
 //!    node exists); any other body-line construct reaching top-level
@@ -77,16 +76,19 @@
 //!    top-level-only (D6), and the native grammar's shared `item()`
 //!    dispatch means the parser *can* produce them at body position even
 //!    though nothing downstream can use them there yet.
-//! 5. **Decl-level directive/annotation channel left unwired.** `is_local`,
-//!    `effects_assertion`, and per-declaration `visibility` are still
-//!    `None`/`false` on every decl node this slice produces — B0.5's grammar
-//!    gives `@[name(args)]` a fully generic shape but no keyword syntax
-//!    exists yet for those channels ink's `directive.rs` populates (no
-//!    `KW_PUB`/`KW_PRIVATE`/`KW_LOCAL` tokens). Wiring these is real, scoped
-//!    work (mirroring `hir/lower/directive.rs`'s sibling-walk-before-a-
-//!    declaration pattern) that B0.6 did not need to do to meet its own exit
-//!    criterion (admission-clean declaration HIR) — flagged for a
-//!    follow-up slice rather than half-built here. `///`/`//!` docs ARE
+//! 5. **Decl-level directive/annotation channel — the annotation half is
+//!    now wired.** `@[effects(…)]` above a `flow`/`fn` populates
+//!    `effects_assertion` on the resulting `Knot`/`Stitch` (issue #1563,
+//!    [`annotation`]), and `@[allow(Exxx, …)]` above any declaration
+//!    populates `HirFile::allow_scopes` (issue #1161) — the source-level
+//!    diagnostic-suppression channel. [`annotation`] also owns the
+//!    channel's erasure/diagnosis
+//!    chokepoint so an unknown (`E111`) or misplaced (`E112`) annotation is
+//!    loud instead of blanket-`E129`. Still `None`/`false` on every decl
+//!    node: `is_local` and per-declaration `visibility` — those are
+//!    *keyword* channels on the native surface and no keyword syntax exists
+//!    yet (no `KW_PUB`/`KW_PRIVATE`/`KW_LOCAL` tokens), so there is nothing
+//!    to read. `///`/`//!` docs ARE
 //!    wired (B0.6b, `docs/decision-log.md` 2026-07-20, `doc_comment`) —
 //!    they were judgment call 5 in the B0.6 report but shipped as their
 //!    own ruled slice rather than staying deferred alongside the rest. The
@@ -94,11 +96,13 @@
 //!    too (issue #1286, [`module`]) — see judgment call #7.
 //! 6. **`import name;`'s semantics** (B0.5's own Finding #3 explicitly left
 //!    this to B0.6): lowered as the *qualified* form of ink's `Import`
-//!    (`module` = the joined path, `items` empty, `bare: false` — "brings
-//!    only the module name into scope"), matching `use path;` with no
-//!    `{ … }` list. `use`'s two shapes with no `Import` equivalent
-//!    (module-level `as` aliasing; recursive nested groups) get E129
-//!    rather than a lossy guess — see [`import`]'s module doc.
+//!    (`module` = the whole `::`-joined path, `items` empty, `bare: false`
+//!    — "brings only the module name into scope"), matching a
+//!    single-segment `use module;`. A multi-segment `use path::item;`
+//!    instead names an *item* of `path` (issue #1581), so its leaf lands in
+//!    `items`. `use`'s one shape with no `Import` equivalent (recursive
+//!    nested groups — plus aliasing a single-segment *module* name) gets
+//!    E129 rather than a lossy guess — see [`import`]'s module doc.
 //! 7. **Native module *identity* is filesystem-derived, not stamped here.**
 //!    `HirFile.module.name` stays empty for every native file: unlike ink's
 //!    `#@module(name)` tag (a per-file directive), native module identity is
@@ -114,6 +118,7 @@
 //!    a different concept (charter §13.2's declared sub-modules) — see
 //!    judgment call #4.
 
+mod annotation;
 mod body;
 mod choice;
 mod cond;
@@ -124,6 +129,7 @@ mod doc_comment;
 mod expr;
 mod module;
 pub mod provenance;
+mod types;
 
 use brink_syntax_native::SyntaxKind as N;
 use brink_syntax_native::ast::{self, AstNode as _};
@@ -214,6 +220,11 @@ pub fn lower(
     // [`module`]. `None` when the file declares no `@[was]`.
     let module = module::lower_file_module(file_id, file.syntax(), &mut diags);
 
+    // `@[allow(Exxx, …)]` suppression scopes (issue #1161) — a whole-tree
+    // walk, since a scope is a `(declaration span, codes)` fact rather than
+    // a property of any one HIR node. See [`annotation::allow_scopes`].
+    let allow_scopes = annotation::allow_scopes(file_id, file.syntax(), &mut diags);
+
     let hir = HirFile {
         root_content,
         knots: top.knots,
@@ -234,6 +245,7 @@ pub fn lower(
         // now flows through `module.was` above.
         visibility: Vec::new(),
         was_directives: Vec::new(),
+        allow_scopes,
     };
     let manifest = project_manifest(&hir);
     (hir, manifest, diags)
@@ -379,12 +391,14 @@ fn walk_top_level(
             // it, judgment calls #4/#7). Not an error; just has nowhere to
             // go yet, same non-diagnosis as the other kinds in this arm.
             N::VAR_DECL | N::CONST_DECL | N::FLAGS_DECL | N::ERROR | N::DOC_COMMENT => {}
-            // A file-level `@[was("old::path")]` rename record (issue #1286)
-            // is consumed by `module::lower_file_module`, not here — recognize
-            // it so it is not re-diagnosed `E129` as "unlowered". Every *other*
-            // annotation at declaration position still has no HIR channel and
-            // falls through to the loud `E129` below.
-            N::ANNOTATION_LINE if module::is_was_annotation(&child) => {}
+            // The `@[…]` annotation channel (issue #1563, [`annotation`]): a
+            // file-level `@[was("old::path")]` is consumed by
+            // `module::lower_file_module` and an `@[effects(…)]` above a
+            // `flow`/`fn` by [`container`], so neither is diagnosed here; an
+            // unknown name (`E111`) or a recognized one out of placement
+            // (`E112`) is. Loud either way, never a silent drop, and never
+            // the blanket `E129` this arm used to hand every annotation.
+            N::ANNOTATION_LINE => annotation::handle_line(file_id, &child, diags),
             // Every other body-line construct (content, tags, choices,
             // diverts, conditionals, alternations, annotations, …) reaching
             // declaration position: real data with no home in this slice
@@ -437,6 +451,14 @@ impl FlowOrFn {
         match self {
             Self::Flow(f) => f.body(),
             Self::Fn(f) => f.body(),
+        }
+    }
+
+    /// The header's `: type` return clause, if written (NG-C, issue #1489).
+    fn return_type(&self) -> Option<ast::TypeAnnotation> {
+        match self {
+            Self::Flow(f) => f.return_type(),
+            Self::Fn(f) => f.return_type(),
         }
     }
 

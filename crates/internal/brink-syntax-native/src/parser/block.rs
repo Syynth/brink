@@ -1,6 +1,6 @@
 use crate::SyntaxKind::{
-    self, AT_L_BRACKET, BLOCK, DIVERT, EOF, HASH, KW_CONST, KW_IMPORT, KW_RETURN, KW_USE, KW_VAR,
-    L_BRACE, NEWLINE, R_BRACE, THREAD,
+    self, AT_L_BRACKET, BLOCK, COLON_COLON, DIVERT, EOF, HASH, KW_CONST, KW_IMPORT, KW_RETURN,
+    KW_USE, KW_VAR, L_BRACE, NEWLINE, R_BRACE, THREAD,
 };
 
 use super::Parser;
@@ -142,6 +142,15 @@ pub(crate) fn item(p: &mut Parser<'_, '_>) {
     if p.at(KW_USE) && super::decl::at_use_decl(p) {
         super::decl::use_decl(p, doc);
         return;
+    }
+    // issue #1285 review: `at_use_decl` no longer commits on a leading
+    // `::` (Finding #5's weaker two-token guard), so a typo'd
+    // `use ::foo;` now falls through to prose instead of partially
+    // parsing as a malformed USE_DECL. Falling through silently would
+    // turn the typo into player-facing prose with no signal, so emit a
+    // targeted diagnostic here before falling through.
+    if p.at(KW_USE) && p.nth(1) == COLON_COLON {
+        p.error("a `use` path cannot start with `::`".into());
     }
     if super::decl::at_module_decl(p) {
         super::decl::module_decl(p, doc);

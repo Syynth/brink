@@ -21,7 +21,7 @@ brink ide <COMMAND> --help    # per-command help with examples
 ## Anatomy of a command
 
 ```sh
-brink ide <command> [TARGET] --entry <FILE> [--format text|json] [options]
+brink ide <command> [TARGET] --entry <FILE> [--format text|json] [--deny/--warn/--allow CODE] [options]
 ```
 
 - **`--entry <FILE>` / `-e`** — required on every command. The project's entry
@@ -37,6 +37,14 @@ brink ide <command> [TARGET] --entry <FILE> [--format text|json] [options]
   (`signature`, `actions`, `refactor convert-line`) take `--at`.
 - **`--format text|json`** — output mode (default `text`). See
   [Output & exit codes](#output--exit-codes).
+- **`-D`/`--deny`, `--warn`, `--allow <CODE>`** (repeatable; issue #1417,
+  mirroring [`brink compile`](./compile.md#options)) — CLI overrides for a
+  diagnostic code's severity, on every command. The special code `warnings`
+  (`-D warnings`) promotes every `Warning`-severity diagnostic to `Error`
+  (the `brink.toml` `deny-warnings = true` equivalent). Always wins over the
+  same code in a discovered `brink.toml`'s `[lints]` table — see
+  [Lint severity](../project-config.md#lint-severity) and
+  [Precedence](../project-config.md#precedence-the-file-is-the-default-code-wins).
 
 ## Addressing
 
@@ -162,9 +170,18 @@ if there is any *error* (warnings alone still exit `0`).
 ```sh
 brink ide check -e main.ink
 brink ide check -e main.ink --format json
+
+# Promote an ordinarily-Warning code to a hard error (issue #1417)
+brink ide check -e main.ink --deny E014
+
+# Fail on ANY diagnostic that would otherwise be a warning
+brink ide check -e main.ink -D warnings
 ```
 
-JSON: an array of `{ "severity", "code", "message", "location" }`.
+JSON: an array of `{ "severity", "code", "message", "location" }`. `severity`
+is one of `error` | `warning` | `info` | `hint` — a `[lints]` code
+down-leveled per [project-config.md#lint-severity](../project-config.md#lint-severity)
+renders at its advisory tier at this surface.
 
 ### `hover` — kind, signature, and docs
 
@@ -380,7 +397,10 @@ Locations are always `{ "path", "line" (1-based), "col" (1-based), "byte_start",
 | `move-file` / `refactor` (preview) | `{ diff, files: [path], introducedDiagnostics, safe }` |
 
 `introducedDiagnostics` is an array of `{ severity, code, message, location }`;
-`safe` is `true` when it is empty.
+`safe` is `true` when it is empty. `severity` is one of `error` | `warning` |
+`info` | `hint` — a `[lints]` code down-leveled per
+[project-config.md#lint-severity](../project-config.md#lint-severity) renders
+at its advisory tier at this surface.
 
 ---
 

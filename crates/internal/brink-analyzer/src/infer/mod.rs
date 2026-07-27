@@ -122,6 +122,13 @@ pub struct BodyTypes {
     /// strict mode** (`strict::check` — gradual stays advisory, the runtime
     /// fault is its backstop, spec §3/§4).
     pub value_calls: Vec<ValueCallFact>,
+    /// Issue #1532: every `remove(a, i)` call site in this body whose first
+    /// argument is statically known to be `Ty::Array` — see
+    /// `body::BodyResult::array_remove_calls`'s doc for why this is
+    /// captured (the pre-#1484 array leg `remove` no longer serves).
+    /// Reported only by strict mode (`strict::check_array_remove_calls`,
+    /// `E149`), the same split as `value_calls`.
+    pub array_remove_calls: Vec<TextRange>,
 }
 
 /// One statically-checkable fact about a call through a function value
@@ -240,11 +247,17 @@ fn index_resolutions_by_file(
 /// Declaration-derived global (VAR/CONST) types — read via `signature()`,
 /// the firewall boundary for every non-callable reference in a body.
 ///
-/// `value_type` covers the scalar/list/divert domain; `fn_type` (T1c
-/// follow-up, issue #712) covers `Ty::Fn` separately since `InferredType`
-/// has no `Fn` form (`Sig::fn_type`'s doc) — the two are mutually exclusive
-/// per declaration, so trying `value_type` first and falling back to
-/// `fn_type` never masks either.
+/// Reads [`Sig::value_ty`](crate::Sig::value_ty) — the declaration's type at
+/// full [`Ty`] fidelity. Before issue #1540 this read the narrow
+/// `Sig::value_type` (with a `Sig::fn_type` fallback), which had no
+/// representation for `Array`/`Map`/`Struct`/`Fn`/`Handle`, so a
+/// collection-typed global was invisible to every typed check keyed on this
+/// map — E149 and the TM-3/T1e family all missed `VAR arr = #[…]` entirely.
+/// One field now carries that whole domain, so nothing in it can fall out
+/// again. `option<T>`/`range` are not part of that domain yet: neither has
+/// annotation grammar at all (`crate::annotations::resolve` has no arm for
+/// either), so a `VAR`/`CONST` can't be declared with one in the first
+/// place.
 ///
 /// `pub(crate)` (issue #670) so `structs::check`'s non-literal struct-field
 /// classification can resolve a variable-valued initializer that names a
@@ -259,12 +272,9 @@ pub(crate) fn collect_globals(
     for (&id, info) in &index.symbols {
         if matches!(info.kind, SymbolKind::Variable | SymbolKind::Constant)
             && let Some(sig) = crate::signature::signature(id, index, files, manifest)
+            && let Some(ty) = sig.value_ty.clone()
         {
-            if let Some(vt) = sig.value_type.clone() {
-                globals.insert(id, Ty::from(vt));
-            } else if let Some(ft) = sig.fn_type.clone() {
-                globals.insert(id, ft);
-            }
+            globals.insert(id, ty);
         }
     }
     globals
@@ -463,7 +473,9 @@ fn collect_defs<'a>(files: &[(FileId, &'a HirFile)], index: &SymbolIndex) -> Vec
                         file: file_id,
                         params: &stitch.params,
                         body: &stitch.body,
-                        return_annotation: None,
+                        // #1509 widened `Stitch` with the same `return_type`
+                        // grammar position `Knot` carries.
+                        return_annotation: stitch.return_type.as_ref(),
                     });
                 }
             }
@@ -612,6 +624,7 @@ fn solve_one_batch(
                     return_ty: result.return_ty,
                     has_value_return: result.has_value_return,
                     value_calls: result.value_calls,
+                    array_remove_calls: result.array_remove_calls,
                 },
             )
         })
@@ -1150,6 +1163,48 @@ mod tests {
         let result = infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
         let sig = sig_of(&result, &index, "noop");
         assert_eq!(sig.params, vec![Ty::Unknown]);
+    }
+
+    /// Issue #1532 (#1501 review finding 3): the #1484 `remove`/`remove_at`
+    /// split's advertised latent fix — the array leg no longer narrows its
+    /// *index* argument against the array's *element* type (wrong for an
+    /// index; the pre-split shared `remove` code did this) — shipped with
+    /// no regression test. `arr` is a `temp` — a `VAR` would work equally
+    /// well since issue #1540 gave globals a full-fidelity `Sig::value_ty`,
+    /// but the `temp` spelling is what this test was written against — so
+    /// its `Ty::Array(String)`
+    /// element type is genuinely in hand at the call site. If `remove_at`'s
+    /// index arm regressed to narrowing against it, `i` would come out
+    /// `Ty::String` here instead of staying `Unknown` (`i` is otherwise
+    /// unused — `unused_param_is_unknown_and_legal`'s baseline). Mirrors
+    /// `insert`'s array leg, which is also index-typed and was never
+    /// narrowed (`infer::body`'s `"insert"` arm only narrows the map k/v
+    /// pair).
+    #[test]
+    fn remove_at_index_arg_does_not_narrow_against_the_array_element_type() {
+        let (hir, index, res) = build(
+            "=== function drop_at(i) ===\n~ {\n    temp arr = #[\"a\", \"b\", \"c\"]\n    remove_at(arr, i)\n}\n~ return 0\n",
+        );
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let drop_at_id = index
+            .by_name
+            .get("drop_at")
+            .and_then(|ids| ids.first())
+            .copied()
+            .expect("drop_at");
+        let body = result.bodies.get(&drop_at_id).expect("drop_at body");
+        assert_eq!(
+            body.locals.get("arr"),
+            Some(&Ty::Array(Box::new(Ty::String))),
+            "fixture sanity: arr must actually be known as an array of strings, or this test \
+             can't distinguish the fix from the bug it guards"
+        );
+        let sig = sig_of(&result, &index, "drop_at");
+        assert_eq!(
+            sig.params,
+            vec![Ty::Unknown],
+            "remove_at's index argument must not narrow against the array's element type"
+        );
     }
 
     #[test]
@@ -1936,6 +1991,106 @@ mod tests {
         let result = infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
         let sig = sig_of(&result, &index, "heal");
         assert_eq!(sig.params, vec![Ty::Int], "body derivation wins");
+    }
+
+    // ─── Issue #1168: Option-returning functions escape as `Option[Unknown]` ─
+
+    /// The issue's tightest repro: `some(x)` where `x` is an annotated
+    /// param used *only* as `some`'s argument — no comparison/arithmetic
+    /// anywhere else in the body ever gives `x` evidence the old code path
+    /// could pick up. `some`'s arg type is a pure read (never joined
+    /// against a second operand), so it should still see `x`'s own
+    /// declared type, settling the return as `Option[int]`, not
+    /// `Option[Unknown]`.
+    #[test]
+    fn some_of_an_unevidenced_annotated_param_infers_option_of_its_annotation() {
+        let (hir, index, res) = build("=== function f(x: int) ===\n~ return some(x)\n");
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let sig = sig_of(&result, &index, "f");
+        assert_eq!(sig.return_ty, Ty::Option(Box::new(Ty::Int)));
+    }
+
+    /// `get(m, k)` where `m` is an annotated `map<...>` param, likewise
+    /// never evidenced elsewhere — the confirmation comment's second
+    /// repro ("`get(<any map>)` … infer `Option[Unknown]`").
+    #[test]
+    fn get_of_an_unevidenced_annotated_map_param_infers_option_of_the_value_type() {
+        let (hir, index, res) =
+            build("=== function f(m: map<string, int>, k: string) ===\n~ return get(m, k)\n");
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let sig = sig_of(&result, &index, "f");
+        assert_eq!(sig.return_ty, Ty::Option(Box::new(Ty::Int)));
+    }
+
+    /// `iteration.md`'s `first_over` fence: a `for` loop over an annotated
+    /// `array<int>` param used nowhere else, `return some(<the loop var>)`
+    /// on one path and `return none` on the other. Regression for the
+    /// iterable-position half of #1168 (the loop var itself escaped too,
+    /// since its type comes from the iterable's element type).
+    #[test]
+    fn some_of_a_for_loop_var_over_an_unevidenced_annotated_array_param() {
+        let (hir, index, res) = build(
+            "=== function first_over(tab: array<int>, floor: int) ===\n\
+             ~ {\n    for coins in tab {\n        if coins > floor {\n            return some(coins)\n        }\n    }\n}\n\
+             ~ return none\n",
+        );
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let sig = sig_of(&result, &index, "first_over");
+        assert_eq!(sig.return_ty, Ty::Option(Box::new(Ty::Int)));
+    }
+
+    /// `infer_infix`'s comparison/arithmetic arms must NOT get the new
+    /// read-site annotation fallback — this is the same fixture as
+    /// `overlay_never_replaces_a_concrete_body_derivation` above, repeated
+    /// here to pin it as the #1168 fix's own regression guard: `hp` is
+    /// annotated `string` but the body's only use compares it against an
+    /// int literal, so body evidence (`int`) must still win outright, not
+    /// `unify(string, int) = Conflicted`.
+    #[test]
+    fn comparison_evidence_still_overrides_the_annotation_after_the_1168_fix() {
+        let (hir, index, res) = build("=== heal(hp: string) ===\n{hp > 1:\n  ok\n}\n-> DONE\n");
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let sig = sig_of(&result, &index, "heal");
+        assert_eq!(sig.params, vec![Ty::Int]);
+    }
+
+    /// Review correction (w65, changeset wording): only an ANNOTATED param
+    /// or an ASCRIBED temp reaches `self.annotated` (`infer_def_body`'s
+    /// `annotated` map + `register_ascription`) — an unascribed temp
+    /// merely *copying* an annotated param's value does not inherit that
+    /// annotation transitively. `v` here has no `: T` ascription of its
+    /// own, so `some(v)` still infers `Option[Unknown]`, pinning the
+    /// boundary the `.changeset/issue-1168-option-return-inference.md`
+    /// wording now names explicitly ("annotated param / ascribed temp",
+    /// not any "param/temp passed straight through").
+    #[test]
+    fn unascribed_temp_copy_of_an_annotated_param_does_not_inherit_the_annotation() {
+        let (hir, index, res) =
+            build("=== function f(x: int) ===\n~ temp v = x\n~ return some(v)\n");
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let sig = sig_of(&result, &index, "f");
+        assert_eq!(sig.return_ty, Ty::Option(Box::new(Ty::Unknown)));
+    }
+
+    /// Review correction (w65): `contains`'s `self.observe(needle, elem)`
+    /// call derives `elem` from `arg_tys[0]` (the container's shape) — if
+    /// that shape were read from `tab`'s own annotation-fallback type
+    /// (`read_tys`) instead of its evidence-only type (`arg_tys`), `tab`'s
+    /// `array<int>` annotation would become body *evidence* for `needle`
+    /// (the sibling arg), silently discarding `needle`'s own `string`
+    /// annotation. `tab` has no other evidence anywhere in the body, so
+    /// this pins that `contains`'s observe call never reads the
+    /// annotation-shadowed slice: `needle` must still export its own
+    /// declared `string`, not `tab`'s element type `int`.
+    #[test]
+    fn intrinsic_sibling_arg_never_seeds_from_a_containers_own_annotation() {
+        let (hir, index, res) = build(
+            "=== function f(tab: array<int>, needle: string) ===\n\
+             ~ return contains(tab, needle)\n",
+        );
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let sig = sig_of(&result, &index, "f");
+        assert_eq!(sig.params, vec![Ty::Array(Box::new(Ty::Int)), Ty::String]);
     }
 
     #[test]

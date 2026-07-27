@@ -4,7 +4,7 @@
 
 If you don't ask for anything, `brink compile` compiles **plain ink**. Every
 construct this chapter describes — `~ { … }` blocks, `#[…]`/`#{…}` literals,
-postfix indexing, `push`/`insert`/`remove` — is a **compile error** under the
+postfix indexing, `push`/`insert`/`remove`/`remove_at` — is a **compile error** under the
 default dialect, `strict-ink`:
 
 ```sh
@@ -60,7 +60,7 @@ The compiler's own test suite follows the same rule: the entire oracle
 corpus — every `.ink` file with a golden C# transcript — compiles under
 `strict-ink`. If a dialect extension ever leaked into that corpus, or if
 `strict-ink` ever started accepting extension syntax, the CI gate that pins
-5,577 passing oracle episodes would fail immediately.
+5,598 passing oracle episodes would fail immediately.
 
 ## What doesn't change
 

@@ -4,7 +4,8 @@ use std::collections::HashMap;
 
 use brink_format::{
     DefinitionId, LineContent, LinePart, LocaleData, LocaleLineEntry, LocaleScopeTable,
-    PluralCategory, SelectKey, read_inkb_index, read_section_line_tables, write_inkl,
+    PluralCategory, ScopeLineTable, SelectKey, read_inkb_index, read_section_line_tables,
+    write_inkl,
 };
 
 use crate::error::IntlError;
@@ -26,21 +27,21 @@ pub fn compile_locale(
     let index = read_inkb_index(base_inkb)?;
     let base_tables = read_section_line_tables(base_inkb, &index)?;
 
-    // Build lookup from scope_id → base line count.
-    let base_scope_map: HashMap<DefinitionId, usize> = base_tables
-        .iter()
-        .map(|lt| (lt.scope_id, lt.lines.len()))
-        .collect();
+    // Build lookup from scope_id → base scope line table (line count +
+    // per-line slot metadata).
+    let base_scope_map: HashMap<DefinitionId, &ScopeLineTable> =
+        base_tables.iter().map(|lt| (lt.scope_id, lt)).collect();
 
     let mut locale_tables = Vec::with_capacity(lines_json.scopes.len());
 
     for scope in &lines_json.scopes {
         let scope_id = parse_scope_id(&scope.id)?;
 
-        let base_line_count = base_scope_map
+        let base_table = base_scope_map
             .get(&scope_id)
             .copied()
             .ok_or_else(|| IntlError::ScopeNotInBase(scope.id.clone()))?;
+        let base_line_count = base_table.lines.len();
 
         if scope.lines.len() != base_line_count {
             return Err(IntlError::LineCountMismatch {
@@ -51,7 +52,7 @@ pub fn compile_locale(
         }
 
         let mut lines = Vec::with_capacity(scope.lines.len());
-        for line in &scope.lines {
+        for (pos, line) in scope.lines.iter().enumerate() {
             let content_json =
                 line.content
                     .as_ref()
@@ -59,6 +60,19 @@ pub fn compile_locale(
                         scope_id: scope.id.clone(),
                         line_index: line.index,
                     })?;
+
+            // Structural re-import validation (#1445): a translated line's
+            // template must only reference slot indices that exist in the
+            // *base* line at this position — the base `.inkb` is the sole
+            // source of truth for how many values `EmitLine` pushes at
+            // runtime. An out-of-range index would otherwise compile
+            // silently and resolve to empty/default text at playback
+            // (`resolve_line_ref` / `resolve_select` both fall back
+            // silently on a missing slot) instead of failing at
+            // compile-locale time.
+            let base_slot_count = base_table.lines[pos].slot_info.len();
+            validate_slot_indices(content_json, base_slot_count, &scope.id, line.index)?;
+
             let content = convert_content_json(content_json)?;
             lines.push(LocaleLineEntry {
                 content,
@@ -78,6 +92,41 @@ pub fn compile_locale(
     let mut buf = Vec::new();
     write_inkl(&locale_data, &mut buf);
     Ok(buf)
+}
+
+/// Validate that every slot index referenced by a translated line's
+/// template — both plain `{slot n}` interpolations and `Select` branches —
+/// exists in the base line at this position.
+///
+/// Plain (non-template) content has no slots and trivially passes. Literal
+/// parts carry no index and are skipped.
+fn validate_slot_indices(
+    content: &ContentJson,
+    base_slot_count: usize,
+    scope_id: &str,
+    line_index: u16,
+) -> Result<(), IntlError> {
+    let ContentJson::Template { template } = content else {
+        return Ok(());
+    };
+
+    for part in template {
+        let slot = match part {
+            PartJson::Slot { slot } => *slot,
+            PartJson::Select { select } => select.slot,
+            PartJson::Literal(_) => continue,
+        };
+        if slot as usize >= base_slot_count {
+            return Err(IntlError::SlotIndexOutOfRange {
+                scope_id: scope_id.to_string(),
+                line_index,
+                slot,
+                slot_count: base_slot_count,
+            });
+        }
+    }
+
+    Ok(())
 }
 
 fn parse_scope_id(id_str: &str) -> Result<DefinitionId, IntlError> {

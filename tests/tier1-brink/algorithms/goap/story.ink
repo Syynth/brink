@@ -226,7 +226,7 @@ VAR exec_lines = #[]
 
     while len(pq) > 0 {
         temp top = pq[0]
-        remove(pq, 0)
+        remove_at(pq, 0)
         temp node = nodes[top.node_index]
 
         if contains(closed, node.state) == false {

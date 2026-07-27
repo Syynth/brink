@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use brink_analyzer::{
-    AnalysisOptions, AnalysisResult, Dialect, ExternalCheckSeverity, LintPolicy,
+    AnalysisOptions, AnalysisResult, Dialect, ExternalCheckSeverity, LintPolicy, ModuleMap,
     SemanticTypeDiagnosticSeverity, TypePolicy,
 };
 use brink_db::{CompileProduct, ProjectDb};
@@ -20,6 +20,27 @@ use crate::hir_projection::{Projection, project_hir, project_hir_structural};
 /// A snapshot of analysis inputs, cloned out of the db for background analysis.
 pub struct IdeSnapshot {
     inputs: Vec<(FileId, HirFile, SymbolManifest)>,
+    /// The project's resolved modules, cloned out of the db alongside the
+    /// inputs (issue #1526). Module identity is a db-layer fact (it needs
+    /// file *paths*, which analysis inputs don't carry), and it qualifies
+    /// `DefinitionId`s — so without it this snapshot's ids would not match
+    /// the ones the db's per-def queries are keyed by, and every native
+    /// `.brink` symbol would miss.
+    modules: ModuleMap,
+    /// The stem-collision diagnostics (`E085`) the db computed alongside
+    /// `modules` (issue #1553). `analyze_with_modules` is handed the
+    /// finished map, so it cannot re-derive them; without folding them back
+    /// in here a collision a db-driven compile catches never reaches the
+    /// editor.
+    module_diagnostics: Vec<brink_ir::Diagnostic>,
+    /// Whether every file in this snapshot is native (`.brink`) source
+    /// (issue #1358), read off the db in [`IdeSession::snapshot`]. The
+    /// analyzer has no file paths, so this classification has to travel with
+    /// the inputs — without it the editor's off-db analysis runs the *ink*
+    /// arm over native source: the ink-only T1b dialect gate (`E051`) and
+    /// `types = strict` config error (`E064`) fire spuriously, and the B0.9
+    /// strict-only gate (`E137`) never fires at all.
+    is_native: bool,
     host_manifest: Option<HostManifest>,
     external_check: ExternalCheckSeverity,
     semantic_type_check: SemanticTypeDiagnosticSeverity,
@@ -54,7 +75,21 @@ impl IdeSnapshot {
             // this policy" failure mode #1160's scope note flagged.
             lints: self.lints.clone(),
         };
-        brink_analyzer::analyze_with_options(&refs, &opts)
+        // The snapshot's own native classification (issue #1358) — see
+        // `is_native`'s field doc. `brink-lsp`'s `analysis_loop` passes the
+        // same thing per project root; this is the editor's equivalent.
+        let mut result =
+            brink_analyzer::analyze_with_modules(&refs, &self.modules, &opts, self.is_native);
+        // The db-only half of the module map (issue #1553) — see
+        // `module_diagnostics`. Scoped to this snapshot's own files so a
+        // partial snapshot never reports a collision it doesn't contain.
+        result.diagnostics.extend(
+            self.module_diagnostics
+                .iter()
+                .filter(|d| self.inputs.iter().any(|(id, _, _)| *id == d.file))
+                .cloned(),
+        );
+        result
     }
 }
 
@@ -289,9 +324,44 @@ impl IdeSession {
     }
 
     /// Re-run analysis on the current inputs (e.g. after a manifest change).
+    ///
+    /// Pushes the session's options into the db first (see
+    /// [`sync_db_options`](Self::sync_db_options)) — every option setter
+    /// funnels through here, so that one call keeps the db's
+    /// `AnalysisOptions` input in step with the session's own state.
     fn reanalyze(&mut self) {
+        self.sync_db_options();
         let result = self.snapshot().analyze();
         self.apply_analysis(result);
+    }
+
+    /// Write the session's current [`analysis_options`](Self::analysis_options)
+    /// into its own [`ProjectDb`] as a salsa input (issue #1553).
+    ///
+    /// The editor-facing analysis runs *off* the db
+    /// ([`snapshot`](Self::snapshot) → [`IdeSnapshot::analyze`]), but many IDE
+    /// features read db queries directly — `per_file_diagnostics`,
+    /// `symbol_index`, `diagnostics`, `effects`, `infer_body` — and those are
+    /// gated on this input. Before #1553 only [`compile`](Self::compile) ever
+    /// wrote it, so a session that never compiled read every one of those
+    /// queries under `AnalysisOptions::default()`: M-2d cross-module
+    /// duplicate coexistence (`brink`-only in `symbol_index_query`) and the
+    /// B0.9 native strict-only check (`E137`, which needs an explicit
+    /// `types = gradual`) were silently gated off, among others.
+    ///
+    /// Guarded against unchanged values: salsa's `set_analysis_options`
+    /// stamps the current revision unconditionally on every write, so an
+    /// unguarded call would invalidate every direct reader
+    /// (`per_file_diagnostics_query`, `symbol_index_query`, `resolve_query`,
+    /// `lir_query`/`story_data`) even when the value didn't actually change.
+    /// [`compile`](Self::compile) still writes its own (possibly overriding)
+    /// options unconditionally — the next option change re-establishes the
+    /// session's.
+    fn sync_db_options(&mut self) {
+        let options = self.analysis_options();
+        if self.db.analysis_options() != &options {
+            self.db.set_analysis_options(options);
+        }
     }
 
     /// Add or update a source file in the database.
@@ -312,6 +382,9 @@ impl IdeSession {
     pub fn snapshot(&self) -> IdeSnapshot {
         IdeSnapshot {
             inputs: self.db.analysis_inputs(),
+            modules: self.db.module_map().clone(),
+            module_diagnostics: self.db.module_map_diagnostics().to_vec(),
+            is_native: self.db.is_all_native(),
             host_manifest: self.host_manifest.clone(),
             external_check: self.external_check,
             semantic_type_check: self.semantic_type_check,
@@ -401,13 +474,38 @@ impl IdeSession {
                 .unwrap_or_default();
             db.update_file(path, source);
         }
+        // The gate db's own options input (#1553), so any query a caller
+        // reads back off the returned db is judged under the same policy as
+        // the session's — not `AnalysisOptions::default()`.
+        db.set_analysis_options(self.analysis_options());
         let result = {
             let inputs = db.analysis_inputs();
             let refs: Vec<(FileId, &HirFile, &SymbolManifest)> = inputs
                 .iter()
                 .map(|(id, hir, manifest)| (*id, hir, manifest))
                 .collect();
-            brink_analyzer::analyze_with_options(&refs, &self.analysis_options())
+            // The throwaway db's own module map (#1526) — the overlay keeps
+            // every file at its current path, but a native file's identity
+            // is path-derived, so analyzing module-blind here would make the
+            // gate's ids disagree with the returned db's.
+            let modules = db.module_map().clone();
+            // The gate db's own native classification (issue #1358): the
+            // overlay keeps every file at its current path, so this matches
+            // the session — but reading it off the gate db keeps the flag
+            // and the file set that it describes from ever disagreeing.
+            let mut result = brink_analyzer::analyze_with_modules(
+                &refs,
+                &modules,
+                &self.analysis_options(),
+                db.is_all_native(),
+            );
+            // The map's db-only diagnostics half (#1553) — the whole point of
+            // the gate is to report the diagnostics an edit *would* introduce,
+            // and a stem collision is one of them.
+            result
+                .diagnostics
+                .extend(db.module_map_diagnostics().iter().cloned());
+            result
         };
         (result, db)
     }
@@ -432,13 +530,38 @@ impl IdeSession {
         for (path, source) in projection {
             db.update_file(path, source.clone());
         }
+        // Same as `analyze_overlay` (#1553): the gate db is judged under the
+        // session's options, not the defaults.
+        db.set_analysis_options(self.analysis_options());
         let result = {
             let inputs = db.analysis_inputs();
             let refs: Vec<(FileId, &HirFile, &SymbolManifest)> = inputs
                 .iter()
                 .map(|(id, hir, manifest)| (*id, hir, manifest))
                 .collect();
-            brink_analyzer::analyze_with_options(&refs, &self.analysis_options())
+            // The projected db's own module map (#1526). This path *moves*
+            // files to new keys, and a native file's module is its path, so
+            // the map has to come from the projected db — the whole point of
+            // the gate is to model identity after the move.
+            let modules = db.module_map().clone();
+            // The projected db's own native classification (issue #1358).
+            // This path *moves* files to new keys, and `Language` is
+            // extension-derived, so — exactly as for the module map above —
+            // the flag has to come from the projected db to model the file
+            // set after the move.
+            let mut result = brink_analyzer::analyze_with_modules(
+                &refs,
+                &modules,
+                &self.analysis_options(),
+                db.is_all_native(),
+            );
+            // A move is exactly the edit that can *introduce* a stem
+            // collision, so the gate has to see the map's diagnostics half
+            // (#1553).
+            result
+                .diagnostics
+                .extend(db.module_map_diagnostics().iter().cloned());
+            result
         };
         (result, db)
     }
@@ -554,7 +677,10 @@ impl IdeSession {
     ///   diagnostics should route through `ProjectDb`'s own salsa-level
     ///   `analysis_query`/`per_file_diagnostics_query` surface at all. Forcing
     ///   `compile_project` onto a *different* producer now would prejudge that
-    ///   still-open call rather than wait for it.
+    ///   still-open call rather than wait for it. Still unresolved, but now
+    ///   measured: `docs/live-typing-diagnostics-divergence.md` inventories
+    ///   what the two surfaces actually disagree on (native files only, in
+    ///   both directions), pinned by `tests/live_typing_db_divergence.rs`.
     ///
     /// **Relationship to the #1306 decision-log entry**
     /// (`docs/decision-log.md`, "Compilation environment as a deterministic,

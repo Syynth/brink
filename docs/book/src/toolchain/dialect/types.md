@@ -473,10 +473,18 @@ the malformed construction is a runtime fault that ends the story turn
 instead of producing a half-built value. Neither policy silently accepts a
 malformed construction — only *when* the mismatch is caught differs.
 
-Two current limits worth knowing: a construction literal can't be a
-`VAR`/`CONST` declaration default (`E075` — construct in a logic block
-instead, as above), and initializers in a construction literal always
-evaluate in the order *you wrote them*, never the shape's declared order.
+A construction literal *is* a legal `VAR`/`CONST` declaration default, so a
+struct-typed global can be given its real starting value where it is
+declared. The literal has to be well-formed there: a declaration default is
+baked into the compiled story, with no runtime construction step left to
+fault at, so a mismatched one is a compile error under either policy rather
+than a gradual-mode runtime fault — `E075` under gradual, or the same
+missing/extra-field `E069`/`E070` the analyzer already reports for a
+mismatched construction under strict (`structs::check` blocks the compile
+before LIR lowering, so `E075`'s declaration-default path is never
+reached). One thing to keep in mind either way: initializers in a
+construction literal always evaluate in the order *you wrote them*, never
+the shape's declared order.
 
 A struct passed to or returned from a function behaves like any other
 value: the callee gets its own independent copy, and mutating it never
@@ -514,7 +522,7 @@ can't, and each edge has its own answer:
 | `E066` | a type is `Conflicted` — its uses disagree | strict |
 | `E067` | assigning the result of a `void` function | strict |
 | `E069`/`E070`/`E071` | struct construction missing / extra / mistyped field | strict (runtime fault under gradual) |
-| `E075` | struct construction literal as a `VAR`/`CONST` default | both |
+| `E075` | struct construction literal in a `VAR`/`CONST` default doesn't match its declared shape | gradual (strict reports `E069`/`E070` first) |
 | `E078` | `int()`/`float()` argument outside the numeric+bool+string domain | strict (runtime fault under gradual) |
 | `E084` | duplicate field in a struct construction literal | both |
 | `E107` | bare `none` with no type from context | both |

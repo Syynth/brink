@@ -183,11 +183,12 @@ pub fn program_checksum(story_bytes: &[u8]) -> Result<String, JsError> {
 /// — the only difference is the file set is caller-supplied JSON instead of a
 /// stateful session, since a `StoryRunner` keeps no reference to the project
 /// that produced it). `entry` must be one of `sources_json`'s keys.
-/// `synthetic_source` — already wrapped by the caller as
-/// `=== function NAME() ===\n~ return (...)\n` or `=== NAME ===\n...\n` — is
-/// appended to the entry file's served content before compiling; nothing
-/// else about `entry`'s real content changes, and every other file is served
-/// verbatim.
+/// `synthetic_source` — already wrapped by the caller as ink
+/// `=== function NAME() ===\n~ return (...)\n` / `=== NAME ===\n...\n`, or as
+/// native `fn NAME() { return (...); }` / `flow NAME() { ... }`, matching
+/// `entry`'s dialect — is appended to the entry file's served content before
+/// compiling; nothing else about `entry`'s real content changes, and every
+/// other file is served verbatim.
 ///
 /// Returns the same JSON `CompileResult` shape as `compile()`/
 /// `compile_project()`: `story_bytes` on success, `warnings`/`error` on
@@ -369,6 +370,15 @@ mod compile_fragment_tests {
         // `compile_project` would discover it — `[lints] E014 = "deny"`
         // must re-level a bare `~` line's E014 to Error and block the
         // fragment compile, not just the editor's project compile.
+        //
+        // Issue #1383: the diagnostic's *rendered* `severity` field — what
+        // `diagnostic_to_js` (this file's real wasm boundary, not
+        // `compile_project`'s own duplicate `to_js` closure in
+        // `editor/mod.rs`) actually hands a consumer through this JSON — must
+        // itself read `"Error"`, not just have `ok: false` and E014 present
+        // among the diagnostics (the wrong-layer assertion #1383 calls out:
+        // presence proves the compile failed, not that the *severity* a
+        // consumer renders was promoted).
         let src = sources_json(&[
             ("brink.toml", "[lints]\nE014 = \"deny\"\n"),
             (
@@ -380,12 +390,95 @@ mod compile_fragment_tests {
         let json = compile_fragment("main.ink", &src, synthetic);
         let v: serde_json::Value = serde_json::from_str(&json).expect("valid json");
         assert_eq!(v["ok"], false, "{json}");
+        let warnings = v["warnings"].as_array();
+        let e014 = warnings.and_then(|w| w.iter().find(|d| d["code"] == "E014"));
         assert!(
-            v["warnings"]
-                .as_array()
-                .is_some_and(|w| w.iter().any(|d| d["code"] == "E014")),
+            e014.is_some(),
             "expected E014 among the surfaced diagnostics: {json}"
         );
+        let e014 = e014.expect("checked above");
+        assert_eq!(
+            e014["severity"], "Error",
+            "[lints] E014 = \"deny\" must promote diagnostic_to_js's rendered severity, not \
+             just fail the compile: {json}"
+        );
+    }
+
+    #[test]
+    fn served_brink_toml_deny_warnings_promotes_e014_severity_through_fragment_compile() {
+        // Sibling of the per-code test above, covering the other override
+        // flavor named in issue #1383's title: `deny-warnings = true`
+        // (rather than a specific code) must promote every ordinarily-
+        // `Warning` diagnostic — again asserted on the actual `severity`
+        // string `diagnostic_to_js` renders into the JSON a consumer reads,
+        // not merely that the fragment compile failed.
+        let src = sources_json(&[
+            ("brink.toml", "[lints]\ndeny-warnings = true\n"),
+            (
+                "main.ink",
+                "Hello.\n~\n-> start\n\n=== start ===\nHi.\n-> END\n",
+            ),
+        ]);
+        let synthetic = "=== function __eval_test() ===\n~ return 1\n";
+        let json = compile_fragment("main.ink", &src, synthetic);
+        let v: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        assert_eq!(v["ok"], false, "{json}");
+        let warnings = v["warnings"].as_array();
+        let e014 = warnings.and_then(|w| w.iter().find(|d| d["code"] == "E014"));
+        assert!(
+            e014.is_some(),
+            "expected E014 among the surfaced diagnostics: {json}"
+        );
+        let e014 = e014.expect("checked above");
+        assert_eq!(
+            e014["severity"], "Error",
+            "[lints] deny-warnings = true must promote diagnostic_to_js's rendered severity \
+             for E014: {json}"
+        );
+    }
+
+    // Issue #1387 (1/3): `compile_over_tree`/`Project::load` dispatches on
+    // `entry`'s extension (`brink_environment`'s `collect_sources` doc) —
+    // every test above exercises the `.ink` branch only. `compile_fragment`
+    // itself is dialect-agnostic (it just appends `synthetic_source` to
+    // `entry`'s served content and recompiles), so a `.brink` native entry
+    // should work identically; these two pin that it actually does, using
+    // native `fn`/`flow` syntax rather than ink's `=== ===` knot syntax.
+    //
+    // Issue #1598 closed the reachability gap noted here previously:
+    // `packages/wasm/src/index.ts`'s `StoryRunnerHandle.compileFragment`
+    // (the only caller of `compile_fragment`, `evaluate()`'s Tier-1
+    // fragment-compile step) now picks native (`fn`/`flow`) vs ink
+    // (`=== ===`) wrap syntax from `project.entry`'s extension
+    // (`evaluate-dispatch.ts`'s `isNativeEntry`/`expressionWrapSource`/
+    // `contentWrapSource`), so a native-project embedder's Tier-1 fragment
+    // eval actually reaches this primitive now — see
+    // `packages/wasm/src/evaluate-fragment-native.test.ts`.
+
+    #[test]
+    fn native_entry_expression_wrap_resolves_against_project_globals() {
+        let src = sources_json(&[(
+            "main.brink",
+            "var gold = 5\n\nflow main() {\n  Hi. -> END\n}\n",
+        )]);
+        let synthetic = "fn __eval_test() {\n  return (gold + 1);\n}\n";
+        let json = compile_fragment("main.brink", &src, synthetic);
+        let v: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        assert_eq!(v["ok"], true, "{json}");
+        assert!(v["story_bytes"].is_array(), "{json}");
+    }
+
+    #[test]
+    fn native_entry_content_wrap_interpolates_a_live_global() {
+        let src = sources_json(&[(
+            "main.brink",
+            "var gold = 5\n\nflow main() {\n  Hi. -> END\n}\n",
+        )]);
+        let synthetic = "flow __eval_test() {\nYou have {gold} gold.\n}\n";
+        let json = compile_fragment("main.brink", &src, synthetic);
+        let v: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        assert_eq!(v["ok"], true, "{json}");
+        assert!(v["story_bytes"].is_array(), "{json}");
     }
 
     #[test]

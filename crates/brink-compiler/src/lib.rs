@@ -8,7 +8,7 @@
 mod driver;
 
 pub use brink_driver::{AnalysisOptions, Dialect, TypePolicy};
-pub use brink_ir::{DiagnosticCode, FileId};
+pub use brink_ir::{DiagnosticCode, FileId, Severity};
 
 use brink_format::StoryData;
 use std::io;
@@ -40,6 +40,14 @@ pub struct ResolvedDiagnostic {
     pub message: String,
     /// Structured error code for documentation and tooling.
     pub code: DiagnosticCode,
+    /// The severity this diagnostic was actually resolved at
+    /// (`brink_analyzer::effective_severity`, not the raw
+    /// [`DiagnosticCode::severity`] default) — a `[lints]` re-leveled code
+    /// (including a down-level to `Info`/`Hint`, issue #1162) carries its
+    /// overridden severity here, so a renderer never has to re-derive it
+    /// (and never has to assume every `CompileOutput::warnings` entry is
+    /// actually `Severity::Warning`).
+    pub severity: Severity,
 }
 
 /// Successful compilation output, including any non-fatal warnings.

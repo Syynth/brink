@@ -118,6 +118,76 @@ pub fn load_golden_transcript(path: &Path, case_label: &str) -> Result<String, S
     Ok(content)
 }
 
+/// Compile a native `.brink` file from disk with the brink compiler, link,
+/// and run it to completion, returning the concatenated output text.
+///
+/// Used by the `tests/tier1-native/` self-referential golden corpus
+/// (issue #1529 — see `tier1_native.rs`'s module doc for why this corpus
+/// has no oracle to diff against) and by `corpus_report`'s native section,
+/// so the two never drift on how a case is run. Every case in that corpus
+/// is a straight-line, choice-free program by convention (mirroring
+/// `tests/tier1-brink/`'s own convention) — a case that presents choices
+/// is a fixture-authoring bug, so this surfaces it as an `Err` rather than
+/// guessing which choice to take.
+///
+/// Returns `Err` on any compile error, link error, or runtime fault, if
+/// the program ever reaches [`brink_runtime::Line::Choices`], or if it
+/// produces more than [`brink_runtime::FlowInstance::LINE_LIMIT`] lines
+/// without reaching a terminal one.
+///
+/// The line count is capped so a fixture that diverts back to itself while
+/// emitting text (e.g. `flow main() { Hi -> main }`) fails loudly instead
+/// of hanging `cargo test --workspace` or `corpus_report` — see the repo's
+/// "VM tests must not hang" / "guard against unbounded growth" rules. This
+/// mirrors [`brink_runtime::FlowInstance::drive_to_terminal`]'s own
+/// `LINE_LIMIT` cap; `continue_single` alone only enforces the per-line
+/// step limit, not a cap on the number of lines produced.
+pub fn run_native_transcript(brink_path: &Path) -> Result<String, String> {
+    let output = brink_compiler::compile_path(brink_path)
+        .map_err(|e| format!("compile {}: {e}", brink_path.display()))?;
+    let (program, line_tables) = brink_runtime::link(&output.data)
+        .map_err(|e| format!("link {}: {e}", brink_path.display()))?;
+    let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(
+        std::sync::Arc::new(program),
+        line_tables,
+    );
+
+    let mut out = String::new();
+    let mut line_count = 0usize;
+    loop {
+        match story
+            .continue_single()
+            .map_err(|e| format!("runtime error in {}: {e}", brink_path.display()))?
+        {
+            brink_runtime::Line::Text { text, .. } => out.push_str(&text),
+            brink_runtime::Line::Done { text, .. }
+            | brink_runtime::Line::End { text, .. }
+            | brink_runtime::Line::Suspended { text, .. } => {
+                out.push_str(&text);
+                break;
+            }
+            brink_runtime::Line::Choices { .. } => {
+                return Err(format!(
+                    "{} presented choices — tier1-native cases must be choice-free \
+                     straight-line programs",
+                    brink_path.display()
+                ));
+            }
+        }
+        line_count += 1;
+        if line_count >= brink_runtime::FlowInstance::LINE_LIMIT {
+            return Err(format!(
+                "{} produced {} lines without reaching a terminal Line — exceeded \
+                 FlowInstance::LINE_LIMIT ({})",
+                brink_path.display(),
+                line_count,
+                brink_runtime::FlowInstance::LINE_LIMIT
+            ));
+        }
+    }
+    Ok(out)
+}
+
 /// Compile a `.ink` file with the brink compiler, link, and explore.
 ///
 /// Returns `Err` if compilation or linking fails.
@@ -170,19 +240,23 @@ pub fn compile_and_explore_from_ink(
 /// (the flag that actually selects the native-only analyzer arm: it skips
 /// the ink-only T1b dialect gate entirely, regardless of `dialect`, and
 /// widens the construction-literal checks — E084/E106/E138 — to run outside
-/// the brink-only block). `brink_analyzer::analyze_with_options` /
-/// `finish_analysis` cannot express this combination: that pure,
-/// non-salsa path has no `Language` classification of its own and always
-/// passes `is_native = false` to `per_file_diagnostics` internally (see
-/// `finish_analysis`'s own doc comment) — so this function composes the
-/// same three passes `finish_analysis` does
-/// (`symbol_index` → per-file `resolve` → `per_file_diagnostics` →
-/// `whole_project_diagnostics`) by hand, threading `is_native = true`
-/// through where `finish_analysis` hardcodes it. Using
-/// `analyze_with_options` here previously ran every native e2e fixture
-/// through the *ink* brink-dialect diagnostics arm instead (hardcoded
-/// `Dialect::Brink` + `is_native = false`) — a combination no real
-/// compilation path ever produces.
+/// the brink-only block). `brink_analyzer::analyze_with_modules` expresses
+/// exactly this combination since issue #1358 threaded `is_native` through
+/// `finish_analysis` into the per-file and whole-project arms — and made the
+/// B0.9 strict-only gate (`E137`) reachable from the pure path at all — so
+/// this function just calls it with `is_native = true`. It previously
+/// composed those passes by hand (`symbol_index` → per-file `resolve` →
+/// `per_file_diagnostics` → `native_strict_only_error` →
+/// `whole_project_diagnostics`), because the pure path had no way to say
+/// "native"; before *that* it used `analyze_with_options` and ran every
+/// native e2e fixture through the *ink* brink-dialect diagnostics arm
+/// (hardcoded `Dialect::Brink` + `is_native = false`) — a combination no
+/// real compilation path ever produces.
+///
+/// The module-blind `ModuleMap::new()` it passes is right for this harness
+/// specifically: it compiles one in-memory source string that has no path,
+/// so there is no path-derived `story::…` identity to qualify by (unlike a
+/// `ProjectDb`-backed compile, which must pass `db.module_map()`).
 ///
 /// Returns `Err` naming the exact stage (parse/lowering/analysis/LIR/
 /// codegen/link) on the first diagnostic or error encountered — a fixture
@@ -236,54 +310,57 @@ pub fn compile_and_explore_from_brink_native(
     // above).
     let analysis_opts = brink_analyzer::AnalysisOptions::default();
 
-    let (index, mut diagnostics) = brink_analyzer::symbol_index(&[(file_id, &manifest)]);
-    let scope =
-        brink_analyzer::ImportScope::new(hir.module.as_ref().map(|m| m.name.clone()), &hir.imports);
-    let (file_resolutions, resolve_diags) =
-        brink_analyzer::resolve(file_id, &manifest, &index, &scope);
-    diagnostics.extend(resolve_diags);
-    let mut resolutions = brink_analyzer::ResolutionMap::new();
-    resolutions.extend(std::sync::Arc::unwrap_or_clone(file_resolutions));
-
-    // `is_native = true` — the fix (issue #1472): this is the flag real
-    // native compiles pass and `analyze_with_options` never can.
-    diagnostics.extend(brink_analyzer::per_file_diagnostics(
-        file_id,
-        &hir,
-        &resolutions,
-        &index,
-        analysis_opts.dialect,
-        true,
-        analysis_opts.host_manifest.as_ref(),
-    ));
-    // The B0.9 native strict-only gate (`native_strict_only_error`) —
-    // `brink-db`'s `per_file_diagnostics_query` runs this alongside
-    // `per_file_diagnostics` for every native file; included here for the
-    // same reason (a no-op given `analysis_opts.types` is unset).
-    diagnostics.extend(brink_analyzer::native_strict_only_error(
-        file_id,
-        analysis_opts.types,
-    ));
-
-    let (whole_diagnostics, _symbol_meta) = brink_analyzer::whole_project_diagnostics(
+    // `is_native = true` — the flag real native compiles pass, and which
+    // (issue #1358) the pure path now threads through every arm: the ink-only
+    // T1b dialect gate is skipped, the construction-literal checks widen, the
+    // B0.9 strict-only gate (`E137`) runs, and the ink-only `E064` config
+    // error is skipped. An empty `ModuleMap` keeps identity module-blind,
+    // matching this single-file, path-less harness.
+    let brink_analyzer::AnalysisResult {
+        index,
+        resolutions,
+        diagnostics,
+        ..
+    } = brink_analyzer::analyze_with_modules(
         &files_for_analysis,
-        &index,
-        &resolutions,
+        &brink_analyzer::ModuleMap::new(),
         &analysis_opts,
-        None,
+        true,
     );
-    diagnostics.extend(whole_diagnostics);
 
     if !diagnostics.is_empty() {
         return Err(format!("analysis diagnostics: {diagnostics:?}"));
     }
 
     let files_for_lir: Vec<(brink_ir::FileId, &brink_ir::HirFile)> = vec![(file_id, &hir)];
-    let (program, lir_diags) = brink_ir::lir::lower_to_program(
+
+    // Every analyzer side-table LIR lowering needs (B3a UFCS, issue #1506;
+    // B1 `or`-coalescing, issue #1471/#1492; and whatever future table
+    // joins them), assembled through the one path a caller with no salsa
+    // layer of its own must use — `brink_analyzer::assemble_analyzer_tables`
+    // (issue #1528). Before this call, this pipeline hand-rolled the same
+    // gate-then-translate pattern per table, independently re-running
+    // `infer_project` for each one; a future table added to the analyzer
+    // side but not remembered here would have silently lowered with an
+    // empty table, passing tests with the wrong coverage. See that
+    // function's own doc for the full rationale — extending it, not this
+    // call site, is where a future table belongs.
+    let inline_docs = brink_analyzer::project_inline_docs(&[(file_id, &manifest)]);
+    let analyzer_tables = brink_analyzer::assemble_analyzer_tables(
+        &files_for_lir,
+        &index,
+        &resolutions,
+        analysis_opts.host_manifest.as_ref(),
+        &inline_docs,
+    );
+
+    let (program, lir_diags) = brink_ir::lir::lower_to_program_with_type_mode(
         &files_for_lir,
         &index,
         &resolutions,
         &std::collections::HashMap::new(),
+        brink_ir::lir::TypeMode::Gradual,
+        analyzer_tables.as_tables(),
     );
     if !lir_diags.is_empty() {
         return Err(format!("LIR lowering diagnostics: {lir_diags:?}"));

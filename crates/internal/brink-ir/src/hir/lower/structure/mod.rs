@@ -220,5 +220,10 @@ fn lower_source_file(
         imports,
         visibility,
         was_directives,
+        // The `@[allow(…)]` suppression channel (issue #1161) is native-only
+        // — ink's `@[…]` placement is the top of a knot/stitch *body*, which
+        // has no ruled `allow` tenant. Ink authors keep the line-scoped
+        // `//brink-disable` comment channel and the project `[lints]` table.
+        allow_scopes: Vec::new(),
     }
 }

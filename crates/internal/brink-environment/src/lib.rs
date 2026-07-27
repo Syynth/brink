@@ -46,7 +46,7 @@ use std::sync::Arc;
 use brink_compiler::{CompileError, CompileOutput, ResolvedDiagnostic};
 use brink_driver::{AnalysisOptions, Dialect, Driver, LintLevel, TypePolicy};
 use brink_ir::Diagnostic;
-use brink_project_config::{ConfigError, discover_from_entry_in_tree, parse_str};
+use brink_project_config::{ConfigError, discover_from_entry_in_tree, parse_str_at};
 use brink_source_tree::SourceTree;
 
 // ── Content addressing ───────────────────────────────────────────────
@@ -285,6 +285,23 @@ impl Project {
     /// whole native source tree (enumerate every `.brink` key); a `.ink` entry
     /// follows its `INCLUDE` graph from the entry (a BFS over the tree's
     /// reads).
+    ///
+    /// ## Repeat compiles are deterministic
+    ///
+    /// Each call resolves `AnalysisOptions` from a brand-new
+    /// `AnalysisOptions::default()` (see `resolve_options` below) — never one
+    /// left over from a previous call — so two sequential `load` calls for
+    /// unrelated projects never leak `dialect`/`types` between them, even
+    /// though [`AnalysisOptions::apply_project_config`]'s "unset means
+    /// untouched" rule for those two fields would otherwise let a stale
+    /// value silently survive (see that method's own "must be fresh"
+    /// invariant doc). This matters for any caller that calls `load`
+    /// repeatedly against different mounts in the same process — notably
+    /// `bevy-brink`'s `InkLoader`, invoked once per `.ink` asset (re)load —
+    /// where a leaked `dialect` would make the *n*-th load's outcome depend
+    /// on what the (*n*-1)-th load happened to resolve. Pinned by
+    /// `repeat_compiles_do_not_leak_options_across_project_load_calls`
+    /// below.
     pub fn load(
         tree: &dyn SourceTree,
         entry: &str,
@@ -376,6 +393,13 @@ fn resolve_options(
     entry: &str,
     overrides: &OptionOverrides,
 ) -> Result<AnalysisOptions, LoadError> {
+    // Fresh on every call (issue #1436) — never hoisted out of this
+    // function or reused across calls. `apply_project_config`'s
+    // `dialect`/`types` fields are "unset means untouched"; starting from
+    // `default()` every time is what stops one `Project::load` call's
+    // resolved dialect/types from silently surviving into the next,
+    // unrelated one. See `Project::load`'s doc comment and
+    // `AnalysisOptions::apply_project_config`'s "must be fresh" invariant.
     let mut options = AnalysisOptions::default();
 
     if let Some(config_key) = discover_from_entry_in_tree(tree, entry)? {
@@ -385,10 +409,11 @@ fn resolve_options(
                 path: config_key.clone(),
                 source,
             })?;
-        let (config, warnings) = parse_str(&text).map_err(|source| LoadError::Config {
-            path: config_key.clone(),
-            source,
-        })?;
+        let (config, warnings) =
+            parse_str_at(config_key.clone(), &text).map_err(|source| LoadError::Config {
+                path: config_key.clone(),
+                source: Box::new(source),
+            })?;
         for warning in &warnings {
             // The producer is the effectful side; surfacing unknown-key
             // warnings here (rather than dropping them) preserves the CLI's
@@ -476,11 +501,17 @@ pub fn compile(env: &Environment) -> Result<CompileOutput, CompileError> {
 
 /// Resolve `FileId`-keyed diagnostics to path-carrying [`ResolvedDiagnostic`]s
 /// while the db is still alive (it owns the `FileId`→path map). Mirrors
-/// `brink-compiler`'s own resolution, using only the public `ProjectDb` API.
+/// `brink-compiler`'s own resolution, using only the public `ProjectDb` API —
+/// including resolving `severity` through `brink_driver::effective_severity`
+/// against the db's own `AnalysisOptions`, same as the mirrored function
+/// (issue #1162), so the two never drift on which severity a diagnostic
+/// carries.
 fn resolve_diagnostics(
     db: &brink_driver::ProjectDb,
     diags: Vec<Diagnostic>,
 ) -> Vec<ResolvedDiagnostic> {
+    let opts = db.analysis_options();
+    let types = opts.type_policy();
     diags
         .into_iter()
         .map(|d| ResolvedDiagnostic {
@@ -488,6 +519,7 @@ fn resolve_diagnostics(
             file: d.file,
             range: d.range,
             message: d.message,
+            severity: brink_driver::effective_severity(d.code, types, &opts.lints),
             code: d.code,
         })
         .collect()
@@ -508,13 +540,22 @@ pub enum LoadError {
     /// recognized key with an out-of-range value). Unknown keys are warnings,
     /// never this error. Carries the discovered `path` so the message names
     /// which file failed — lost when this variant went through a bare
-    /// `#[from] ConfigError` in #1306 (#1369 restores it).
-    #[error("project config error in {path}: {source}")]
+    /// `#[from] ConfigError` in #1306 (#1369 restores it). `source` is
+    /// itself now path-carrying too (#1384: `parse_str_at` threads `path`
+    /// into every `ConfigError` it raises), so this field is kept for
+    /// structural/pattern-matching access (existing callers destructure
+    /// `LoadError::Config { path, .. }`) rather than duplicated into the
+    /// rendered message — `source`'s own `Display` already names the file.
+    /// `source` is boxed: `ConfigError` grew past `clippy::result_large_err`'s
+    /// threshold once #1384 threaded `path` into its own variants, and this
+    /// is the one `LoadError` variant that stacks a second `path` field on
+    /// top of it.
+    #[error("{source}")]
     Config {
         /// The root-relative key of the `brink.toml` that failed to parse.
         path: String,
         #[source]
-        source: ConfigError,
+        source: Box<ConfigError>,
     },
     /// A discovered `brink.toml` could not be *read* (permission error,
     /// non-UTF-8 bytes, or any other I/O failure) — the other half of
@@ -688,6 +729,45 @@ mod tests {
         let t = tree(&[("main.brink", "flow main() {}")]);
         let env = Project::load(&t, "main.brink", &OptionOverrides::default()).expect("loads");
         assert_eq!(env.options, AnalysisOptions::default());
+    }
+
+    /// #1436: pins the "repeat compiles are deterministic" invariant
+    /// `Project::load`'s doc comment now names explicitly —
+    /// `resolve_options` must resolve every call from a fresh
+    /// `AnalysisOptions::default()`, never one mutated by a prior call.
+    ///
+    /// First compile resolves `dialect = Brink` from its own `brink.toml`.
+    /// The second, completely unrelated compile has no `brink.toml` at
+    /// all — if `resolve_options` ever stopped constructing `default()`
+    /// fresh (e.g. a future change hoisted/cached `AnalysisOptions` across
+    /// `load` calls "for efficiency"), `apply_project_config`'s "unset
+    /// means untouched" rule for `dialect`/`types` would let the first
+    /// call's `Brink` silently survive into the second call's result
+    /// instead of resolving to the dialect-less default — exactly the
+    /// leak `AnalysisOptions::apply_project_config`'s own "must be fresh"
+    /// doc warns every non-editor-session caller against.
+    #[test]
+    fn repeat_compiles_do_not_leak_options_across_project_load_calls() {
+        let brink_tree = tree(&[
+            ("brink.toml", "[project]\ndialect = \"brink\"\n"),
+            ("main.brink", "flow main() {}"),
+        ]);
+        let first =
+            Project::load(&brink_tree, "main.brink", &OptionOverrides::default()).expect("loads");
+        assert_eq!(first.options.dialect, Dialect::Brink);
+
+        let default_tree = tree(&[("main2.brink", "flow main() {}")]);
+        let second = Project::load(&default_tree, "main2.brink", &OptionOverrides::default())
+            .expect("loads");
+        assert_eq!(
+            second.options,
+            AnalysisOptions::default(),
+            "a later, unrelated Project::load call must never observe an \
+             earlier call's resolved AnalysisOptions -- each call must \
+             resolve from a fresh AnalysisOptions::default(), not a \
+             reused/mutated one; got {:?}",
+            second.options
+        );
     }
 
     #[test]

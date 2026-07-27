@@ -1219,6 +1219,107 @@ fn roundtrip_line_entry_with_audio_ref() {
     );
 }
 
+// `LineFlags` is derived, not stored — `.inkb` decoding recomputes it from
+// the decoded `LineContent` via `LineFlags::from_content` (see
+// `decode_line_entry`). Round-trip templates whose first/last part is an
+// interpolation slot (conservative — `ALL_WS` must stay unset) and an
+// all-whitespace-literal template (`ALL_WS` must be set) through
+// encode+decode and confirm the recomputed flags match what a fresh
+// `LineFlags::from_content` call gives, i.e. flags survive the wire format,
+// not just in-memory computation.
+//
+// `STARTS_WITH_WS`/`ENDS_WITH_WS` (previously exercised here as a #1444
+// regression) were removed: they had no production consumer in
+// `brink-runtime` (grep-confirmed — the only reader was `#[cfg(test)]`-only
+// `OutputBuffer::ends_in_whitespace`), and the C# reference runtime's
+// whitespace handling never operates at the sub-token leading/trailing
+// granularity those flags encoded either, so there was no conformance gap
+// behind the missing consumer.
+#[test]
+fn roundtrip_line_flags_for_template_content() {
+    use brink_format::{
+        ContainerDef, CountingFlags, DefinitionId, DefinitionTag, LineContent, LineEntry,
+        LineFlags, LinePart, NameId, ScopeLineTable, StoryData,
+    };
+
+    let scope_id = DefinitionId::new(DefinitionTag::Address, 1);
+
+    // Leading Slot alongside a whitespace-only literal — conservative:
+    // the Slot's resolved content is unknown at compile time, so ALL_WS
+    // must stay unset even though the only inspectable literal is
+    // whitespace-only.
+    let leading_slot =
+        LineContent::Template(vec![LinePart::Slot(0), LinePart::Literal("  ".to_string())]);
+    // Every part is a whitespace-only literal — ALL_WS must be set.
+    let all_whitespace_template = LineContent::Template(vec![
+        LinePart::Literal("  ".to_string()),
+        LinePart::Literal("\t".to_string()),
+    ]);
+
+    let data = StoryData {
+        containers: vec![ContainerDef {
+            id: scope_id,
+            scope_id,
+            name: Some(NameId(0)),
+            bytecode: vec![],
+            counting_flags: CountingFlags::empty(),
+            path_hash: 0,
+            param_count: 0,
+            params: vec![],
+            local: false,
+        }],
+        line_tables: vec![ScopeLineTable {
+            scope_id,
+            lines: vec![
+                LineEntry {
+                    content: leading_slot.clone(),
+                    flags: LineFlags::from_content(&leading_slot),
+                    source_hash: 1,
+                    audio_ref: None,
+                    slot_info: Vec::new(),
+                    source_location: None,
+                },
+                LineEntry {
+                    content: all_whitespace_template.clone(),
+                    flags: LineFlags::from_content(&all_whitespace_template),
+                    source_hash: 2,
+                    audio_ref: None,
+                    slot_info: Vec::new(),
+                    source_location: None,
+                },
+            ],
+        }],
+        variables: vec![],
+        list_defs: vec![],
+        list_items: vec![],
+        externals: vec![],
+        addresses: vec![],
+        address_paths: vec![],
+        name_table: vec!["root".to_string()],
+        list_literals: vec![],
+        literal_pool: vec![],
+        struct_shapes: vec![],
+        private_defs: vec![],
+        alias_table: vec![],
+        effect_rows: vec![],
+        frame_shapes: Vec::new(),
+        source_checksum: 0,
+    };
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+    let mut recovered = read_inkb(&buf).unwrap();
+    recovered.source_checksum = data.source_checksum;
+
+    assert_eq!(data, recovered);
+
+    let recovered_leading_slot = &recovered.line_tables[0].lines[0];
+    assert!(!recovered_leading_slot.flags.contains(LineFlags::ALL_WS));
+
+    let recovered_all_whitespace = &recovered.line_tables[0].lines[1];
+    assert!(recovered_all_whitespace.flags.contains(LineFlags::ALL_WS));
+}
+
 // Regression for #954, sibling of the `.inkt` reader's guard (#745): a
 // mutated `.inkb` can declare a `param_count` that disagrees with the number
 // of per-param name/mode metadata entries that actually follow it. Before

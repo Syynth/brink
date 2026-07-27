@@ -1021,3 +1021,563 @@ fn effects_diff_requires_a_baseline_selector() {
     );
     fs::remove_file(&head).ok();
 }
+
+// ── Issue #1539 review finding: `def --at` on a UFCS call site ─────────
+
+/// 1-based `(line, col)` of `byte_offset` within `src` (matches `--at`'s own
+/// 1-based convention).
+fn line_col(src: &str, byte_offset: usize) -> (usize, usize) {
+    let mut line = 1;
+    let mut col = 1;
+    for (i, ch) in src.char_indices() {
+        if i == byte_offset {
+            break;
+        }
+        if ch == '\n' {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
+    }
+    (line, col)
+}
+
+/// Regression for a review finding on #1539/PR #1543: no test covered the
+/// `brink ide def --at` surface, which the issue names as bug #1 and where
+/// the fix actually lives (`Project::resolve`,
+/// `crates/brink-cli/src/ide/project.rs`). Every other new test added for
+/// #1539 exercises `brink-ide`'s `navigation::find_references`/`rename::*`
+/// directly; none touch `Project::resolve`, so the new CLI UFCS block was
+/// unproven. Uses the existing `nested_native_project` native-project
+/// fixture, per the finding's own suggestion.
+#[test]
+fn at_addressing_on_a_ufcs_call_site_resolves_to_the_free_function() {
+    const SRC: &str = "\
+struct Guest {
+  name: string
+}
+
+fn greet(g, loudness) {
+  return loudness;
+}
+
+fn main() {
+  let g = Guest { name: \"ada\" };
+  let n = g.greet(3);
+}
+";
+    let dir = nested_native_project("def-at-ufcs", &[("story/main.brink", SRC)]);
+
+    let call_byte = SRC.find("greet(3)").expect("call site");
+    let (line, col) = line_col(SRC, call_byte);
+    // Native discovery keys files root-relative to `native_source_root`
+    // (here, `dir/story`), not by absolute filesystem path — `--at`'s FILE
+    // component must match that key (`"main.brink"`), same as
+    // `db.file_id` expects (issue #1295's root-relative convention).
+    let at = format!("main.brink:{line}:{col}");
+
+    let out = brink()
+        .current_dir(&dir)
+        .args(["ide", "def", "--at", &at, "-e"])
+        .arg("story/main.brink")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8(out.stdout).unwrap();
+
+    let decl_byte = SRC.find("greet(g").expect("decl");
+    let (decl_line, _) = line_col(SRC, decl_byte);
+    let receiver_byte = SRC.find("g = Guest").expect("receiver decl");
+    let (receiver_line, _) = line_col(SRC, receiver_byte);
+
+    assert!(
+        stdout.contains(&format!(":{decl_line}:")),
+        "must jump to the `fn greet` declaration on line {decl_line}, got: {stdout}"
+    );
+    assert!(
+        !stdout.contains(&format!(":{receiver_line}:")),
+        "must NOT jump to the receiver `g`'s own declaration on line {receiver_line} — the \
+         #1539 bug this guards against: {stdout}"
+    );
+    fs::remove_dir_all(&dir).ok();
+}
+
+// ── brink ide: --deny/--warn/--allow (issue #1417) ────────────────────
+//
+// Extends the CLI/API lint-override tier `brink compile` gained in #1373
+// (`crates/brink-cli/tests/project_config_cli.rs`) to `brink ide`. Reuses
+// the identical `E014_FIXTURE` (a no-op `~` logic line, `Warning` by
+// default) so a passing/failing `check` is a direct black-box signal of
+// whether the override actually reached this surface's `AnalysisOptions`.
+
+/// A logic line with no effect (`~` alone) — `DiagnosticCode::E014`,
+/// `Warning` by default. Plain `strict-ink` source, no extension syntax, so
+/// only the lint-override tier can make `check` fail on it.
+const E014_FIXTURE: &str = "Hello.\n~\n-> END\n";
+
+#[test]
+fn ide_check_no_lint_flags_e014_stays_a_warning() {
+    let f = write("ide-check-e014-default", E014_FIXTURE);
+    let out = brink()
+        .args(["ide", "check", "-e"])
+        .arg(&f)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "with no --deny/-D warnings flag, E014 must stay a Warning and `check` must exit 0: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    fs::remove_file(&f).ok();
+}
+
+#[test]
+fn ide_check_deny_e014_flag_promotes_the_warning_to_an_error() {
+    let f = write("ide-check-e014-deny", E014_FIXTURE);
+    let out = brink()
+        .args(["ide", "check", "--format", "json", "-e"])
+        .arg(&f)
+        .args(["--deny", "E014"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "--deny E014 must make an ordinarily-Warning diagnostic fail `ide check`: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v[0]["severity"], "error");
+    assert_eq!(v[0]["code"], "E014");
+    fs::remove_file(&f).ok();
+}
+
+#[test]
+fn ide_check_short_deny_warnings_flag_promotes_e014_to_an_error() {
+    let f = write("ide-check-e014-dw", E014_FIXTURE);
+    let out = brink()
+        .args(["ide", "check", "--format", "json", "-e"])
+        .arg(&f)
+        .args(["-D", "warnings"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "-D warnings must promote every Warning (including E014) to an error: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v[0]["severity"], "error");
+    fs::remove_file(&f).ok();
+}
+
+/// `--deny` must win over a conflicting `brink.toml` `[lints] E014 =
+/// "allow"` for the same code (#1005 `CLI/API > file > default`
+/// precedence) — proves the override is applied *after* the file, not
+/// merely alongside it.
+#[test]
+fn ide_check_deny_flag_wins_over_a_conflicting_brink_toml_allow() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-ide-cli-deny-wins-over-file-{}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("brink.toml"), "[lints]\nE014 = \"allow\"\n").unwrap();
+    fs::write(dir.join("story.ink"), E014_FIXTURE).unwrap();
+
+    let out = brink()
+        .args(["ide", "check", "--format", "json", "-e"])
+        .arg(dir.join("story.ink"))
+        .args(["--deny", "E014"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "--deny E014 must win over the file's `[lints] E014 = \"allow\"`: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v[0]["severity"], "error");
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// `--allow` must win over a conflicting `brink.toml` `[lints] E014 =
+/// "deny"` entry, the reverse direction of the above — the precedent this
+/// PR mirrors (`crates/brink-cli/tests/project_config_cli.rs`'s
+/// `compile_allow_flag_overrides_a_conflicting_brink_toml_deny`) covers this
+/// direction for `brink compile`; `brink ide check` had none. Also passes
+/// `-D warnings` alongside `--allow E014`: `Allow` is a distinct branch of
+/// `effective_severity` (step 3) that short-circuits before `deny_warnings`
+/// (step 4) is ever consulted, so `--allow` must win even when
+/// `deny-warnings` is also in effect for this code.
+#[test]
+fn ide_check_allow_flag_wins_over_a_conflicting_brink_toml_deny() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-ide-cli-allow-wins-over-file-{}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("brink.toml"), "[lints]\nE014 = \"deny\"\n").unwrap();
+    fs::write(dir.join("story.ink"), E014_FIXTURE).unwrap();
+
+    // Sanity check: the file alone denies E014 and fails `check`.
+    let baseline = brink()
+        .args(["ide", "check", "-e"])
+        .arg(dir.join("story.ink"))
+        .output()
+        .unwrap();
+    assert_eq!(
+        baseline.status.code(),
+        Some(1),
+        "sanity check: brink.toml's E014 = \"deny\" alone must fail `ide check`: {}",
+        String::from_utf8_lossy(&baseline.stderr)
+    );
+
+    let out = brink()
+        .args(["ide", "check", "--format", "json", "-e"])
+        .arg(dir.join("story.ink"))
+        .args(["--allow", "E014"])
+        .args(["-D", "warnings"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "--allow E014 must win over the file's `[lints] E014 = \"deny\"`, and stay immune to \
+         -D warnings: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    fs::remove_dir_all(&dir).ok();
+}
+
+// ── #1616: `ide check` renders the full four-tier `Severity` ──────────
+//
+// #1162/#1615 added `Severity::Info`/`Severity::Hint` (a `[lints]` code can
+// be down-leveled below `Warning`) through `DiagnosticCode`/the `[lints]`
+// control plane, LSP `publishDiagnostics`, and `diagnostic_to_js` — but
+// `brink ide check` still built its `DiagEntry`s from `DiagnosticReport`'s
+// binary `errors`/`warnings` partition and stamped a literal `"error"`/
+// `"warning"` string onto every entry regardless of the code's actual
+// resolved severity. These assert what a CONSUMER of the CLI observes (the
+// `--format json` payload and the rendered text line), not an internal enum.
+
+/// `[lints] E014 = "info"` must render as `"info"` in the JSON payload, not
+/// `"warning"` — the exact bug #1616 reports.
+#[test]
+fn ide_check_lints_info_level_renders_as_info_in_json() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-ide-cli-check-info-level-{}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("brink.toml"), "[lints]\nE014 = \"info\"\n").unwrap();
+    fs::write(dir.join("story.ink"), E014_FIXTURE).unwrap();
+
+    let out = brink()
+        .args(["ide", "check", "--format", "json", "-e"])
+        .arg(dir.join("story.ink"))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "an Info-leveled diagnostic must not fail `check` (only Error does): {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let diags = v.as_array().unwrap();
+    assert_eq!(diags.len(), 1, "expected exactly one diagnostic: {v}");
+    assert_eq!(diags[0]["code"], "E014");
+    assert_eq!(
+        diags[0]["severity"], "info",
+        "`[lints] E014 = \"info\"` must render as `\"info\"`, not the pre-#1616 \
+         hardcoded `\"warning\"`: {v}"
+    );
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// Same as above for `[lints] E014 = "hint"`, and also asserts the rendered
+/// `--format text` line (`ide check`'s other consumer-facing surface) starts
+/// with the resolved tier rather than `"warning"`.
+#[test]
+fn ide_check_lints_hint_level_renders_as_hint_in_json_and_text() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-ide-cli-check-hint-level-{}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("brink.toml"), "[lints]\nE014 = \"hint\"\n").unwrap();
+    fs::write(dir.join("story.ink"), E014_FIXTURE).unwrap();
+
+    let json_out = brink()
+        .args(["ide", "check", "--format", "json", "-e"])
+        .arg(dir.join("story.ink"))
+        .output()
+        .unwrap();
+    assert!(json_out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&json_out.stdout).unwrap();
+    let diags = v.as_array().unwrap();
+    assert_eq!(diags.len(), 1, "expected exactly one diagnostic: {v}");
+    assert_eq!(
+        diags[0]["severity"], "hint",
+        "`[lints] E014 = \"hint\"` must render as `\"hint\"`: {v}"
+    );
+
+    let text_out = brink()
+        .args(["ide", "check", "-e"])
+        .arg(dir.join("story.ink"))
+        .output()
+        .unwrap();
+    assert!(text_out.status.success());
+    let stdout = String::from_utf8(text_out.stdout).unwrap();
+    assert!(
+        stdout.starts_with("hint[E014]"),
+        "the rendered text line must start with `hint[E014]`, not `warning[E014]`: {stdout}"
+    );
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// `[lints]` `info`/`hint` reach `rename`'s `introducedDiagnostics` too —
+/// the sibling surface `Project::introduced_diagnostics` shared the same
+/// hardcoded-string bug (#1616). Reuses the `intro`/`shop` collision fixture
+/// `rename_no_lint_flags_introduced_collision_stays_a_warning` established
+/// (E022, `Warning` by default), now down-leveled to `Info` via `brink.toml`.
+#[test]
+fn rename_introduced_diagnostics_respects_lints_info_level() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-ide-cli-rename-introduced-info-{}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("brink.toml"), "[lints]\nE022 = \"info\"\n").unwrap();
+    fs::write(dir.join("story.ink"), FIXTURE).unwrap();
+
+    let out = brink()
+        .args(["ide", "rename", "intro", "--to", "shop", "--format", "json"])
+        .args(["-e"])
+        .arg(dir.join("story.ink"))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "preview mode always exits 0: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let diags = v["introducedDiagnostics"].as_array().unwrap();
+    assert_eq!(
+        diags.len(),
+        1,
+        "expected exactly one introduced diagnostic: {v}"
+    );
+    assert_eq!(diags[0]["code"], "E022");
+    assert_eq!(
+        diags[0]["severity"], "info",
+        "`[lints] E022 = \"info\"` must reach `introducedDiagnostics` as `\"info\"`, not \
+         the pre-#1616 hardcoded `\"warning\"`: {v}"
+    );
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// Same as above for `[lints] E022 = "hint"` — the `hint` tier twin, so both
+/// new severity tiers are pinned on both the `check` and `introducedDiagnostics`
+/// surfaces this PR fixes.
+#[test]
+fn rename_introduced_diagnostics_respects_lints_hint_level() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-ide-cli-rename-introduced-hint-{}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("brink.toml"), "[lints]\nE022 = \"hint\"\n").unwrap();
+    fs::write(dir.join("story.ink"), FIXTURE).unwrap();
+
+    let out = brink()
+        .args(["ide", "rename", "intro", "--to", "shop", "--format", "json"])
+        .args(["-e"])
+        .arg(dir.join("story.ink"))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "preview mode always exits 0: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let diags = v["introducedDiagnostics"].as_array().unwrap();
+    assert_eq!(
+        diags.len(),
+        1,
+        "expected exactly one introduced diagnostic: {v}"
+    );
+    assert_eq!(diags[0]["code"], "E022");
+    assert_eq!(
+        diags[0]["severity"], "hint",
+        "`[lints] E022 = \"hint\"` must reach `introducedDiagnostics` as `\"hint\"`, not \
+         the pre-#1616 hardcoded `\"warning\"`: {v}"
+    );
+    fs::remove_dir_all(&dir).ok();
+}
+
+// ── #1383: --deny/-D warnings through `introduced_diagnostics` ────────
+//
+// The five tests above prove the override tier reaches `ide check`, which
+// reads `Project::load`'s baseline `AnalysisOptions` directly. `rename`/
+// `move-file`/`refactor *` instead gate on `Project::introduced_diagnostics`
+// — a *separate* re-analysis driver (`project.rs`'s own `Driver::new()` +
+// `resolve_analysis_options`) that #1417 wired to the same
+// `self.lint_overrides`, but nothing proved that wiring end to end: a `check`
+// pass tells us nothing about whether the safety-gate re-analysis honors the
+// override. Reuses `FIXTURE`'s existing `intro`/`shop` knots: renaming
+// `intro` to `shop` collides with the real `shop` knot, introducing
+// `E022` ("duplicate knot definition"), `Warning` by default (see
+// `brink-analyzer::resolve::duplicate_knot_emits_warning`) — so the
+// promotion from `"warning"` to `"error"` in `introducedDiagnostics[0]`
+// is a genuine severity flip, not just presence, per the #1383 house rule
+// (assert the observable severity a consumer receives).
+
+#[test]
+fn rename_no_lint_flags_introduced_collision_stays_a_warning() {
+    let f = fixture("rn-collide-severity-default");
+    let out = brink()
+        .args(["ide", "rename", "intro", "--to", "shop", "--format", "json"])
+        .args(["-e"])
+        .arg(&f)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "preview mode always exits 0 regardless of introduced diagnostics: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let diags = v["introducedDiagnostics"].as_array().unwrap();
+    assert_eq!(
+        diags.len(),
+        1,
+        "expected exactly one introduced diagnostic: {v}"
+    );
+    assert_eq!(diags[0]["code"], "E022");
+    assert_eq!(
+        diags[0]["severity"], "warning",
+        "with no --deny/-D warnings flag, the introduced E022 collision must stay a \
+         Warning: {v}"
+    );
+    fs::remove_file(&f).ok();
+}
+
+#[test]
+fn rename_deny_e022_flag_promotes_the_introduced_collision_to_an_error() {
+    let f = fixture("rn-collide-severity-deny");
+    let out = brink()
+        .args(["ide", "rename", "intro", "--to", "shop", "--format", "json"])
+        .args(["--deny", "E022"])
+        .args(["-e"])
+        .arg(&f)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "preview mode always exits 0: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let diags = v["introducedDiagnostics"].as_array().unwrap();
+    assert_eq!(
+        diags.len(),
+        1,
+        "expected exactly one introduced diagnostic: {v}"
+    );
+    assert_eq!(
+        diags[0]["severity"], "error",
+        "--deny E022 must promote the diagnostic `introduced_diagnostics` reports for this \
+         rename to Error: {v}"
+    );
+    fs::remove_file(&f).ok();
+}
+
+#[test]
+fn rename_short_deny_warnings_flag_promotes_the_introduced_collision_to_an_error() {
+    let f = fixture("rn-collide-severity-dw");
+    let out = brink()
+        .args(["ide", "rename", "intro", "--to", "shop", "--format", "json"])
+        .args(["-D", "warnings"])
+        .args(["-e"])
+        .arg(&f)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "preview mode always exits 0: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let diags = v["introducedDiagnostics"].as_array().unwrap();
+    assert_eq!(
+        diags.len(),
+        1,
+        "expected exactly one introduced diagnostic: {v}"
+    );
+    assert_eq!(
+        diags[0]["severity"], "error",
+        "-D warnings must promote every Warning `introduced_diagnostics` reports (including \
+         the E022 collision) to Error: {v}"
+    );
+    fs::remove_file(&f).ok();
+}
+
+/// The three tests above only prove the CLI-flag tier
+/// (`--deny`/`-D warnings` -> `AnalysisOptions::apply_lint_overrides`)
+/// reaches `introduced_diagnostics`. The *file-sourced* `[lints]
+/// deny-warnings = true` tier goes through a different branch —
+/// `resolve_analysis_options`'s `apply_project_config` call
+/// (`crates/brink-cli/src/ide/project.rs:105-109`) — and #1383 asks for the
+/// file tier specifically. Mirrors
+/// `ide_check_deny_flag_wins_over_a_conflicting_brink_toml_allow`'s
+/// real-project-dir setup (a served `brink.toml` next to `story.ink`,
+/// discovered via `-e`), the same shape `project_config_cli.rs`'s
+/// `ide_rename_write_succeeds_under_brink_dialect_extension_syntax` needed
+/// after `resolve_analysis_options` was once found to ignore `brink.toml`
+/// entirely.
+#[test]
+fn rename_brink_toml_deny_warnings_promotes_the_introduced_collision_to_an_error() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-ide-cli-rename-deny-warnings-file-{}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("brink.toml"), "[lints]\ndeny-warnings = true\n").unwrap();
+    fs::write(dir.join("story.ink"), FIXTURE).unwrap();
+
+    let out = brink()
+        .args(["ide", "rename", "intro", "--to", "shop", "--format", "json"])
+        .args(["-e"])
+        .arg(dir.join("story.ink"))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "preview mode always exits 0 regardless of introduced diagnostics: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let diags = v["introducedDiagnostics"].as_array().unwrap();
+    assert_eq!(
+        diags.len(),
+        1,
+        "expected exactly one introduced diagnostic: {v}"
+    );
+    assert_eq!(diags[0]["code"], "E022");
+    assert_eq!(
+        diags[0]["severity"], "error",
+        "brink.toml's `[lints] deny-warnings = true` must reach `introduced_diagnostics`'s \
+         re-analysis Driver via resolve_analysis_options' apply_project_config branch, \
+         promoting the introduced E022 collision to Error: {v}"
+    );
+    fs::remove_dir_all(&dir).ok();
+}

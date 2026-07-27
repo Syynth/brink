@@ -235,13 +235,16 @@ fn struct_nested_in_a_flow_body_is_not_silently_dropped() {
     );
 }
 
+// ─── `use` / `import` → `Import` (issue #1581: `Import.module` must be a
+// real, `::`-joined module name, with the leaf item kept out of it) ─────────
+
 #[test]
 fn use_decl_lowers_to_import() {
     let (hir, _manifest, diags) = lower_src("use story::market::{barter, haggle as h};\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     assert_eq!(hir.imports.len(), 1);
     let imp = &hir.imports[0];
-    assert_eq!(imp.module, "story.market");
+    assert_eq!(imp.module, "story::market");
     assert!(imp.bare);
     assert_eq!(imp.items.len(), 2);
     assert_eq!(imp.items[0].name, "barter");
@@ -250,13 +253,68 @@ fn use_decl_lowers_to_import() {
     assert_eq!(imp.items[1].alias.as_deref(), Some("h"));
 }
 
+/// The plain `use path::item;` shape: the leaf is the imported *item*, and
+/// the module is the `::`-joined prefix — exactly the module name
+/// `brink_db::modules::native_module_path` mints for `market/barter.brink`.
+/// Before #1581 this produced `module: "story.market.barter.haggle"`, which
+/// no module could ever equal.
 #[test]
-fn qualified_use_decl_lowers_to_bare_false_import() {
-    let (hir, _manifest, diags) = lower_src("use story::market;\n");
+fn use_decl_leaf_is_the_item_not_part_of_the_module() {
+    let src = "use story::market::barter::haggle;\n";
+    let (hir, _manifest, diags) = lower_src(src);
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     assert_eq!(hir.imports.len(), 1);
+    let imp = &hir.imports[0];
+    assert_eq!(imp.module, "story::market::barter");
+    assert!(imp.bare, "a named item is a name-precise (bare) import");
+    assert_eq!(imp.items.len(), 1);
+    assert_eq!(imp.items[0].name, "haggle");
+    assert_eq!(imp.items[0].alias, None);
+    assert_eq!(&src[imp.items[0].range], "haggle");
+    assert_eq!(&src[imp.module_range], "story::market::barter");
+}
+
+/// `use path::item as alias;` — previously rejected outright as an
+/// unrepresentable "module-level alias" (E129). With the leaf read as an
+/// item it is ink's `IMPORT { item AS alias } FROM path`, which `Import`
+/// represents exactly.
+#[test]
+fn aliased_use_decl_lowers_to_an_aliased_item() {
+    let src = "use story::market::barter as b;\n";
+    let (hir, _manifest, diags) = lower_src(src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(hir.imports.len(), 1);
+    let imp = &hir.imports[0];
+    assert_eq!(imp.module, "story::market");
+    assert!(imp.bare);
+    assert_eq!(imp.items.len(), 1);
+    assert_eq!(imp.items[0].name, "barter");
+    assert_eq!(imp.items[0].alias.as_deref(), Some("b"));
+    assert_eq!(&src[imp.items[0].range], "barter as b");
+}
+
+/// A single segment has no prefix to be the module, so it can only name the
+/// module itself — the qualified form, same as `import story;`.
+#[test]
+fn single_segment_use_decl_lowers_to_bare_false_import() {
+    let (hir, _manifest, diags) = lower_src("use story;\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(hir.imports.len(), 1);
+    assert_eq!(hir.imports[0].module, "story");
     assert!(!hir.imports[0].bare);
     assert!(hir.imports[0].items.is_empty());
+}
+
+/// …and aliasing *that* is a module-level alias, which ink's `Import` has no
+/// field for — still loud, never silently dropped.
+#[test]
+fn single_segment_aliased_use_decl_is_flagged() {
+    let (hir, _manifest, diags) = lower_src("use story as s;\n");
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E129),
+        "a module-level alias must be flagged: {diags:?}"
+    );
+    assert!(hir.imports.is_empty());
 }
 
 #[test]
@@ -264,7 +322,7 @@ fn import_decl_lowers_to_qualified_import() {
     let (hir, _manifest, diags) = lower_src("import story::market\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     assert_eq!(hir.imports.len(), 1);
-    assert_eq!(hir.imports[0].module, "story.market");
+    assert_eq!(hir.imports[0].module, "story::market");
     assert!(!hir.imports[0].bare);
 }
 
@@ -521,7 +579,7 @@ fn block_level_alternation_gets_leading_end_of_line_per_branch() {
     assert_eq!(seq.branches.len(), 3);
     for branch in &seq.branches {
         assert!(
-            matches!(branch.stmts[0], Stmt::EndOfLine),
+            matches!(branch.body.stmts[0], Stmt::EndOfLine),
             "block-level sequence branch must lead with EndOfLine: {branch:?}"
         );
     }
@@ -546,6 +604,7 @@ fn inline_alternation_inside_content_does_not_get_leading_eol() {
     assert_eq!(inline.branches.len(), 2);
     assert!(
         inline.branches[0]
+            .body
             .stmts
             .iter()
             .all(|s| !matches!(s, Stmt::EndOfLine))
@@ -957,9 +1016,9 @@ fn return_redirect_to_done_lowers_as_plain_divert() {
 }
 
 #[test]
-fn unrecognized_body_construct_is_diagnosed_not_dropped() {
+fn misplaced_body_annotation_is_diagnosed_not_dropped() {
     let (hir, _m, diags) = lower_src("flow a() {\n  @[effects(pure)]\n}\n");
-    // The unrecognized construct itself produces no statement — the only
+    // The misplaced annotation itself produces no statement — the only
     // statement is the flow's synthesized implicit `-> DONE` (charter §15).
     let body = &hir.knots[0].body;
     assert_eq!(body.stmts.len(), 1, "only the implicit `-> DONE`: {body:?}");
@@ -967,9 +1026,50 @@ fn unrecognized_body_construct_is_diagnosed_not_dropped() {
         &body.stmts[0],
         Stmt::Divert(d) if d.target.path == DivertPath::Done
     ));
+    // A recognized name (`effects`) with nothing following it inside a body
+    // is not the placement `annotation::is_consumed_position` accepts (a
+    // `flow`/`fn` head immediately after) — E112, not the blanket E129 —
+    // but it is still diagnosed, never silently dropped.
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E112),
+        "a misplaced body-position annotation must be diagnosed, not silently dropped: {diags:?}"
+    );
+}
+
+#[test]
+fn effects_annotation_on_a_nested_fn_is_diagnosed_not_silently_dropped() {
+    // A nested `fn` never lowers to anything (no HIR container below `Knot`
+    // carries `is_function`, `container.rs`'s E129 fence) — its attached
+    // `@[effects(…)]` must not be waved through as "consumed" only to be
+    // read by nothing. `attached_declaration` sees an `FN_DECL` immediately
+    // after, so this pins the depth check, not just the declaration kind.
+    let (_hir, _m, diags) =
+        lower_src("flow a() {\n  @[effects(pure)]\n  fn b() {\n    x\n  }\n}\n");
     assert!(
         diags.iter().any(|d| d.code == DiagnosticCode::E129),
-        "an unwired body-position construct must be diagnosed, not silently dropped: {diags:?}"
+        "the nested fn itself is still the E129 fence: {diags:?}"
+    );
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E112),
+        "the annotation attached to it must be separately diagnosed, not silently dropped: {diags:?}"
+    );
+}
+
+#[test]
+fn effects_annotation_on_a_depth_three_flow_is_diagnosed_not_silently_dropped() {
+    // A `flow` nested three levels deep never lowers (the E130 depth fence)
+    // — its attached `@[effects(…)]` must not be waved through as
+    // "consumed" only to be read by nothing.
+    let (_hir, _m, diags) = lower_src(
+        "flow a() {\n  flow b() {\n    @[effects(pure)]\n    flow c() {\n      Too deep.\n    }\n  }\n}\n",
+    );
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E130),
+        "the depth-3 flow itself is still the E130 fence: {diags:?}"
+    );
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E112),
+        "the annotation attached to it must be separately diagnosed, not silently dropped: {diags:?}"
     );
 }
 
@@ -1152,4 +1252,193 @@ fn first_was_wins_when_several_are_present() {
         Some("story::first"),
         "first `@[was]` wins"
     );
+}
+
+// ── NG-A/NG-B/NG-C: `: type` annotations reach HIR ───────────────────
+//
+// Issues #1487/#1488/#1489. Every annotation position lowers to the SAME
+// `hir::TypeExpr` the ink dialect's TM-2 grammar produces, so downstream
+// consumers (`brink-analyzer::strict`'s annotation firewall above all)
+// need no native-specific branch.
+
+/// The nominal name of a `TypeExpr::Named`, for compact assertions.
+fn named(ty: Option<&crate::TypeExpr>) -> Option<&str> {
+    match ty? {
+        crate::TypeExpr::Named { name, .. } => Some(name.as_str()),
+        _ => None,
+    }
+}
+
+#[test]
+fn annotated_params_lower_to_type_exprs() {
+    let (hir, _m, diags) = lower_src("fn probability(g: Guest, ref n: int) {\n  return 1;\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let params = &hir.knots[0].params;
+    assert_eq!(params.len(), 2);
+    assert_eq!(named(params[0].annotation.as_ref()), Some("Guest"));
+    assert!(!params[0].is_ref);
+    assert_eq!(named(params[1].annotation.as_ref()), Some("int"));
+    assert!(params[1].is_ref, "`ref` survives alongside the annotation");
+}
+
+#[test]
+fn unannotated_param_still_lowers_with_none() {
+    let (hir, _m, diags) = lower_src("fn heal(hp) {\n  return hp;\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert!(hir.knots[0].params[0].annotation.is_none());
+}
+
+#[test]
+fn generic_param_annotation_lowers_with_its_arguments() {
+    let (hir, _m, diags) = lower_src("fn tally(m: map<string, int>) {\n  return 1;\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let Some(crate::TypeExpr::Generic { name, args, .. }) =
+        hir.knots[0].params[0].annotation.as_ref()
+    else {
+        unreachable!("expected a generic annotation: {:?}", hir.knots[0].params);
+    };
+    assert_eq!(name, "map");
+    let arg_names: Vec<Option<&str>> = args.iter().map(|a| named(Some(a))).collect();
+    assert_eq!(arg_names, vec![Some("string"), Some("int")]);
+}
+
+#[test]
+fn stitch_params_take_annotations_too() {
+    let (hir, _m, diags) =
+        lower_src("flow garden() {\n  flow gate(hp: int) {\n    Creak.\n  }\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let stitch = &hir.knots[0].stitches[0];
+    assert_eq!(named(stitch.params[0].annotation.as_ref()), Some("int"));
+}
+
+#[test]
+fn fn_return_type_lowers_to_knot_return_type() {
+    let (hir, _m, diags) = lower_src("fn probability(g: Guest): float {\n  return 1;\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(named(hir.knots[0].return_type.as_ref()), Some("float"));
+}
+
+#[test]
+fn plain_flow_has_no_return_type() {
+    let (hir, _m, diags) = lower_src("flow greet() {\n  Hi.\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert!(hir.knots[0].return_type.is_none());
+}
+
+#[test]
+fn a_return_typed_flow_does_not_get_the_implicit_done() {
+    // The ruled coroutine-vs-state toggle (`docs/decision-log.md`
+    // 2026-07-22 implicit-end ruling, item 3): "no return type ⇒ ends
+    // implicitly as DONE; has one ⇒ must return". A plain flow's
+    // fall-through still picks up the synthesized `-> DONE`; a
+    // value-returning one must not, or an author's missing return would be
+    // silently rewritten into a quiet ending.
+    let (plain, _m, diags) = lower_src("flow quest() {\n  Onward.\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert!(
+        matches!(plain.knots[0].body.stmts.last(), Some(Stmt::Divert(d))
+            if d.target.path == crate::DivertPath::Done),
+        "a plain flow still ends implicitly: {:?}",
+        plain.knots[0].body.stmts
+    );
+
+    let (typed, _m, diags) = lower_src("flow quest(): int {\n  Onward.\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert!(
+        !matches!(typed.knots[0].body.stmts.last(), Some(Stmt::Divert(d))
+            if d.target.path == crate::DivertPath::Done),
+        "a value-returning flow must not be given an implicit DONE: {:?}",
+        typed.knots[0].body.stmts
+    );
+}
+
+#[test]
+fn a_return_typed_stitch_lowers_to_stitch_return_type() {
+    // #1509: `hir::Stitch` now carries the same `return_type` field
+    // `Knot` does, so a nested flow's `: type` clause is honored one level
+    // down instead of being E129-fenced away.
+    let (hir, _m, diags) = lower_src("flow garden() {\n  flow gate(): int {\n    Creak.\n  }\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let stitch = &hir.knots[0].stitches[0];
+    assert_eq!(named(stitch.return_type.as_ref()), Some("int"));
+}
+
+#[test]
+fn plain_stitch_has_no_return_type() {
+    let (hir, _m, diags) = lower_src("flow garden() {\n  flow gate() {\n    Creak.\n  }\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert!(hir.knots[0].stitches[0].return_type.is_none());
+}
+
+#[test]
+fn a_return_typed_stitch_does_not_get_the_implicit_done() {
+    // Same coroutine-vs-state toggle as a top-level flow/fn (see
+    // `a_return_typed_flow_does_not_get_the_implicit_done`), now honored
+    // one level down (#1509).
+    let (plain, _m, diags) = lower_src("flow garden() {\n  flow gate() {\n    Creak.\n  }\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert!(
+        matches!(plain.knots[0].stitches[0].body.stmts.last(), Some(Stmt::Divert(d))
+            if d.target.path == crate::DivertPath::Done),
+        "a plain stitch still ends implicitly: {:?}",
+        plain.knots[0].stitches[0].body.stmts
+    );
+
+    let (typed, _m, diags) =
+        lower_src("flow garden() {\n  flow gate(): int {\n    Creak.\n  }\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert!(
+        !matches!(typed.knots[0].stitches[0].body.stmts.last(), Some(Stmt::Divert(d))
+            if d.target.path == crate::DivertPath::Done),
+        "a value-returning stitch must not be given an implicit DONE: {:?}",
+        typed.knots[0].stitches[0].body.stmts
+    );
+}
+
+#[test]
+fn annotated_var_and_const_lower_their_annotations() {
+    let (hir, _m, diags) = lower_src("var hp: int = 10\nconst MAX: int = 100\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(named(hir.variables[0].annotation.as_ref()), Some("int"));
+    assert_eq!(named(hir.constants[0].annotation.as_ref()), Some("int"));
+    // The annotation is not mistaken for the initializer.
+    assert!(matches!(hir.variables[0].value, Expr::Int(_)));
+    assert!(matches!(hir.constants[0].value, Expr::Int(_)));
+}
+
+#[test]
+fn unannotated_var_lowers_with_none() {
+    let (hir, _m, diags) = lower_src("var hp = 10\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert!(hir.variables[0].annotation.is_none());
+}
+
+#[test]
+fn annotated_let_lowers_to_temp_decl_annotation() {
+    let (hir, _m, diags) =
+        lower_src("fn heal(hp: int): int {\n  let boost: int = 2;\n  return hp + boost;\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let temp = first_temp_decl(&hir.knots[0].body);
+    assert_eq!(temp.name.text, "boost");
+    assert_eq!(named(temp.annotation.as_ref()), Some("int"));
+}
+
+#[test]
+fn unannotated_let_lowers_with_none() {
+    let (hir, _m, diags) = lower_src("fn heal(hp) {\n  let boost = 2;\n  return hp + boost;\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert!(first_temp_decl(&hir.knots[0].body).annotation.is_none());
+}
+
+/// The first `let` binding in a code-ground `fn` body — the `STMT_BLOCK`
+/// lowers to a single `Stmt::LogicBlock` whose `BlockStmt`s are the
+/// statements.
+fn first_temp_decl(body: &crate::Block) -> &crate::TempDecl {
+    let Some(Stmt::LogicBlock(lb)) = body.stmts.first() else {
+        unreachable!("expected a code-ground body: {:?}", body.stmts);
+    };
+    let Some(BlockStmt::TempDecl(temp)) = lb.stmts.first() else {
+        unreachable!("expected a temp decl: {:?}", lb.stmts);
+    };
+    temp
 }

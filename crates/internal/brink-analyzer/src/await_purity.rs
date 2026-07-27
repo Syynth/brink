@@ -164,9 +164,9 @@ fn collect_call_callees(
         Expr::Prefix(_, inner) | Expr::Postfix(inner, _) => {
             collect_call_callees(inner, by_range, out);
         }
-        Expr::Infix(l, _, r) => {
-            collect_call_callees(l, by_range, out);
-            collect_call_callees(r, by_range, out);
+        Expr::Infix(ie) => {
+            collect_call_callees(&ie.lhs, by_range, out);
+            collect_call_callees(&ie.rhs, by_range, out);
         }
         Expr::Index(idx) => {
             collect_call_callees(&idx.base, by_range, out);
@@ -249,9 +249,9 @@ impl Ctx<'_> {
                 }
             }
             Expr::Prefix(_, inner) | Expr::Postfix(inner, _) => self.walk_expr(inner, effectful),
-            Expr::Infix(l, _, r) => {
-                self.walk_expr(l, effectful);
-                self.walk_expr(r, effectful);
+            Expr::Infix(ie) => {
+                self.walk_expr(&ie.lhs, effectful);
+                self.walk_expr(&ie.rhs, effectful);
             }
             Expr::Index(idx) => {
                 self.walk_expr(&idx.base, effectful);
@@ -377,7 +377,7 @@ fn collect_stmt<'a>(stmt: &'a Stmt, out: &mut Vec<AwaitSite<'a>>) {
         }
         Stmt::Sequence(s) => {
             for branch in &s.branches {
-                collect_block(branch, out);
+                collect_block(&branch.body, out);
             }
         }
         Stmt::Content(_)

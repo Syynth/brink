@@ -178,8 +178,8 @@ change.
 ## 5. Conformance and testing
 
 - Plain ink (no directives) must compile bit-identically (modulo the
-  format version byte) — the oracle ratchet (5,577) and corpus report are
-  the gate, unchanged.
+  format version byte) — the oracle ratchet (`RATCHET_EPISODE_COUNT`) and
+  corpus report are the gate, unchanged.
 - New-syntax stories cannot have `.ink.json`/oracle files (inklecate treats
   directives as inert tags); coverage is brink-native:
   - parser/HIR tests: recognition, consumption (no tag leaks into content),
@@ -196,11 +196,13 @@ change.
 NS-A2 (#1108; stdlib-spec §9.2, ruled 2026-07-18) added a **second,
 line-level spelling** for compiler annotations: the annotation line
 `@[name(args)]` on a line of its own. It is the assertion final form's
-carrier — v1 recognizes exactly one name, `effects`
-(`@[effects(pure, silent, total, reads(gold), …)]` — paren clause
-grammar since the 2026-07-19 amendment, issue #1120), in exactly one
-placement (the leading run at the top of a knot/stitch body, shared
-with directive tag lines in either order). Rules mirror the tag
+carrier — on the **ink surface**, v1 recognizes exactly one name,
+`effects` (`@[effects(pure, silent, total, reads(gold), …)]` — paren
+clause grammar since the 2026-07-19 amendment, issue #1120), in exactly
+one placement (the leading run at the top of a knot/stitch body, shared
+with directive tag lines in either order). (§5c below extends both the
+name set and the placement rule for the native `.brink` surface, which
+has no tag-line spelling to share a run with.) Rules mirror the tag
 channel's:
 
 - superset-parsed under every dialect (`AT_L_BRACKET` token +
@@ -214,6 +216,86 @@ channel's:
 - the old `#@effects(…)` tag-directive spelling remains a deprecation
   alias (shipped surface) and warns `E110`.
 
+### 5c. The channel on the native `.brink` surface (issue #1563)
+
+The `@[…]` line is the native surface's *only* annotation channel (there
+is no tag-directive spelling to alias — `#` is the tag sigil there too,
+but `#@name` has no native recognizer). Two differences from §5b, both
+following from native having real declaration nodes:
+
+- **Placement is Rust's**, not ink's: an annotation attaches to the
+  declaration it immediately precedes (`@[effects(pure)]` on the line
+  above `fn heal(…)`), with only trivia, doc comments, and further
+  annotation lines allowed to intervene. Ink's top-of-body placement
+  exists because a tag line above a knot header structurally belongs to
+  the previous scope; native has no such problem.
+- **The recognized name set is `effects`, `was`, and `allow`.**
+  `@[effects(…)]`
+  attaches to a `flow`/`fn` head at either container level (top-level →
+  `Knot.effects_assertion`, nested → `Stitch.effects_assertion`) and is
+  checked by the same frontend-agnostic exceedance pass (`E103`/`E108`/
+  `E109`) that judges ink assertions. `@[was("old::module::path")]` is
+  the **file-level** module-rename record (§5 of `modules-spec`, issues
+  #1286/#1355) and is recognized only as a direct child of the file.
+  `@[allow(…)]` is source-level diagnostic suppression — §5d.
+
+Everything else is the reserved-namespace rule (§1.1) doing its job: an
+unknown name is `E111`, a recognized name out of placement is `E112`, and
+the grammar codes are shared with the ink recognizer (`E100` empty
+assertion, `E101` malformed argument, `E048` duplicate). In particular
+`@[element(…)]`/`@[style(…)]` (the prose sitting-4 addenda) and a
+per-*declaration* `@[was(old_name)]` rename are **not** wired: they are
+ruled features awaiting their own slices, not annotation names this
+channel may guess at.
+
+### 5d. `@[allow(Exxx, …)]` — source-level suppression (issue #1161)
+
+`@[allow(E151, E014)]` above a declaration or statement silences those
+diagnostic codes for the whole span of whatever follows it — head and body
+for a declaration, the single statement for a statement. Native surface
+only: ink's `@[…]` placement is the top of a knot/stitch *body* and has no
+ruled `allow` tenant, so ink authors keep the line-scoped `//brink-disable`
+comment channel and the project `[lints]` table.
+
+It attaches to *any* declaration or statement, not only the `flow`/`fn`
+heads `@[effects]` requires: the scope is a `(span, codes)` fact recorded on
+`HirFile::allow_scopes`, consumed by `brink_ir::suppressions::
+apply_suppressions` — the same filter the comment channel already flows
+through, so every consumer (CLI, LSP, wasm) applies it identically. The
+attachment rule itself is generic — the next non-trivia sibling after the
+annotation run, whatever node kind that is — so a content line, a divert, or
+a conditional block is as valid a target as a `var`/`flow`/`fn` declaration.
+The annotation line itself sits *outside* the scope it creates, so a
+directive can never silence a diagnostic reported on itself.
+
+Three rulings, each with tests:
+
+1. **Only warnings are suppressible.** A code whose default severity is
+   `Error` is rejected with **`E154`**. An error means no correct artifact
+   can be produced, so silencing one would be a way to ship broken code.
+   This matches the `[lints]` table's own hard-error exemption (#1160)
+   rather than inventing a second, differently-shaped "which errors are
+   safe to relax" policy. The B0.3 admission-validator diagnostics
+   (`E121`–`E128`) are exempt as the issue requires, twice over: all are
+   `Error`-severity, *and* admission output never routes through
+   `apply_suppressions` at all.
+2. **A source `allow` beats a project-level `deny`.** Suppression runs
+   before `effective_severity` at every call site, so `@[allow(E151)]`
+   removes the diagnostic even under `[lints] E151 = "deny"` or
+   `deny-warnings = true`. The annotation is the more specific,
+   deliberately-authored, reviewable statement, and `brink.toml` has no way
+   to name a single declaration. Suppressibility is still judged on the
+   code's *default* severity, which no `[lints]` entry can change — `deny`
+   cannot make a warning-tier code unsuppressible, and `allow` cannot make
+   an error-tier one suppressible.
+3. **A suppression that does nothing is always loud.** An argument that is
+   not a known diagnostic code is **`E153`** (the reserved-namespace rule,
+   §1.1, applied to arguments — a typo'd suppression that silently no-ops
+   is the exact failure the `@` namespace exists to prevent); a missing,
+   empty, or non-identifier argument list is **`E155`**. One bad argument
+   discards the whole directive: a partially-applied suppression would
+   silence some codes while the author believes all of them are handled.
+
 ## 6. Future tenants (non-normative)
 
 The channel is designed for (not implemented): `@world` (stitch-level
@@ -221,7 +303,8 @@ opt-out), type signatures (`@returns(int)`, typed params/VARs — the
 `signature(def)` query carrier for the #397 pipeline), intl
 (`@notranslate`, `@note(…)`, `@maxlen(n)`, stable line ids `@id(…)` — these
 need the line-target placement, deliberately excluded from v1),
-save-migration (`@renamed-from(old)`), `@deprecated`, lint control
-(`@allow(…)`). Each lands as new recognizer cases + its own consumption
+save-migration (`@renamed-from(old)`), `@deprecated`. (Lint control,
+`@allow(…)`, has since shipped on the native surface — §5d.) Each lands as
+new recognizer cases + its own consumption
 logic; the reserved-namespace rule (§1.1) means adding them is never a
 breaking change for existing valid stories.

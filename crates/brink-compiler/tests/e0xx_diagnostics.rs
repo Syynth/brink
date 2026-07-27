@@ -49,8 +49,9 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
+use brink_analyzer::{LintLevel, LintPolicy};
 use brink_compiler::{AnalysisOptions, DiagnosticCode, Dialect, TypePolicy};
 use brink_ir::host_manifest::{
     BaseType, Constraint, HostManifest, ManifestExternal, ManifestParam, SemanticTypeDef, TypeRef,
@@ -300,6 +301,35 @@ fn e010_external_missing_name() {
 #[test]
 fn e014_bare_tilde_logic_line_warns() {
     assert_warning_at("~\nHi\n", default_options(), DiagnosticCode::E014, "~");
+}
+
+/// #1162: a `[lints] E014 = "hint"` policy must reach `CompileOutput::
+/// warnings` with `ResolvedDiagnostic::severity == Severity::Hint` — the CLI
+/// renderer's actual input, not just `brink_analyzer::effective_severity`
+/// called in isolation. Must stay non-blocking exactly like the `Warning`
+/// it's demoted from (`compile` still returns `Ok`).
+#[test]
+fn e014_lints_hint_override_reaches_resolved_diagnostic_severity() {
+    let mut options = default_options();
+    options
+        .lints
+        .overrides
+        .insert("E014".to_owned(), LintLevel::Hint);
+
+    let out = compile("~\nHi\n", options).unwrap_or_else(|e| {
+        panic!("[lints] E014 = \"hint\" must stay non-blocking, compile failed: {e:?}")
+    });
+    let e014 = out
+        .warnings
+        .iter()
+        .find(|d| d.code == DiagnosticCode::E014)
+        .unwrap_or_else(|| panic!("expected an E014 diagnostic, got: {:?}", out.warnings));
+    assert_eq!(
+        e014.severity,
+        brink_ir::Severity::Hint,
+        "ResolvedDiagnostic::severity must carry the [lints]-resolved Hint tier, not E014's raw \
+         Warning default"
+    );
 }
 
 // ─── Expressions (E015–E017, E020, E021) ─────────────────────────────
@@ -1116,5 +1146,824 @@ fn e066_coalesce_mismatched_fallback_type() {
     assert!(
         diags.iter().any(|d| d.code == DiagnosticCode::E066),
         "expected E066, got: {diags:?}"
+    );
+}
+
+/// Issue #1492: the chain fold reaches every step, not just the innermost.
+///
+/// Before the analyzer recorded each step's result type, this compiled
+/// silently — `structs::classify_expr_ty` returns `None` for an
+/// `Expr::Infix` left-hand operand, so the outer `… or "text"` step had no
+/// left-hand type to judge and was skipped. Now the inner step's recorded
+/// `Option[int]` is fed in, and the mismatch is caught where it always was.
+#[test]
+fn e066_coalesce_mismatch_at_a_later_chain_step() {
+    let source = "flow main() {\n  {some(1) or none or \"text\"}\n  -> END\n}\n";
+    let err = compile_native("chain-mismatch", source, native_strict_options())
+        .map(|_| ())
+        .expect_err("a string fallback on an int-element Option chain must fail");
+    let diags = errors_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E066),
+        "expected E066, got: {diags:?}"
+    );
+}
+
+/// The other half of the same fold: a chain whose every step *does* type
+/// still compiles. A fold that rejected too eagerly would break this.
+#[test]
+fn a_well_typed_coalescing_chain_still_compiles_under_strict() {
+    let source = concat!(
+        "fn maybe() {\n  return some(7);\n}\n",
+        "flow main() {\n  {some(1) or maybe() or 99}\n  -> END\n}\n",
+    );
+    let result = compile_native("chain-ok", source, native_strict_options());
+    assert!(
+        result.is_ok(),
+        "a well-typed chain must compile: {:?}",
+        result.map(|_| ()).err()
+    );
+}
+
+// ─── B1b the `as` binding (issue #1475): E145/E146/E147 ────────────────
+//
+// Native-only, same reasoning as the E066 block above — an `AS_BINDING`
+// node exists only in the native grammar, so these reuse `compile_native`.
+
+/// E145 — the v1 whole-condition restriction, caught at HIR lowering when
+/// the binding sits on top of a `&&` composition. (The mirror spelling, an
+/// operator *after* the binding, is a parse error instead; see
+/// `brink-syntax-native`'s `parser::tests::statement`.)
+#[test]
+fn e140_as_binding_over_a_boolean_composition() {
+    // Both boolean operators, not just `&&`: the native lowering maps `&&`
+    // to `InfixOp::And` and `||` to `InfixOp::Or`, and the whole-condition
+    // rule refuses either as the bound expression.
+    for (suffix, op) in [("as-composed-and", "&&"), ("as-composed-or", "||")] {
+        let source =
+            format!("flow main() ~{{\n  if true {op} some(1) as n {{\n    return n;\n  }}\n}}\n");
+        let Err(err) = compile_native(suffix, &source, native_strict_options()).map(|_| ()) else {
+            panic!("`as` over a `{op}` composition must fail");
+        };
+        let diags = errors_of(err);
+        assert!(
+            diags.iter().any(|d| d.code == DiagnosticCode::E145),
+            "expected E145 for `{op}`, got: {diags:?}"
+        );
+    }
+}
+
+/// E146 — guard-`as` is ruled but rides the `.inkb` v6 Choice record, so it
+/// is diagnosed as *not yet supported* rather than half-lowered.
+#[test]
+fn e141_as_binding_in_a_choice_guard_is_not_yet_supported() {
+    let source = "flow main() {
+  {?
+    * {if some(1) as n} take it
+  }
+  -> END
+}
+";
+    let err = compile_native("as-guard", source, native_strict_options())
+        .map(|_| ())
+        .expect_err("guard-`as` must be refused until the v6 Choice record lands");
+    let diags = errors_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E146),
+        "expected E146, got: {diags:?}"
+    );
+}
+
+/// E147 — the binding unwraps `Option[T]`; a statically classifiable
+/// non-Option condition has nothing to unwrap. The strict-mode twin of the
+/// runtime's `AsBindingNotOption` fault.
+#[test]
+fn e142_as_binding_on_a_non_option_condition() {
+    let source = "flow main() {
+  {if 5 as n: got {n} else: nope}
+  -> END
+}
+";
+    let err = compile_native("as-not-option", source, native_strict_options())
+        .map(|_| ())
+        .expect_err("`as` over an int condition must fail under types = strict");
+    let diags = errors_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E147),
+        "expected E147, got: {diags:?}"
+    );
+}
+
+/// E148 — the binding is immutable by ruling. Every write shape resolves
+/// its target through the same LIR choke point, so all four are refused:
+/// plain assignment, compound assignment, an in-place mutator, and passing
+/// the binding by `ref` to a function that writes through it (the review
+/// finding this last case guards: `ref` bypasses `lower_assign_target`
+/// entirely — it hands the callee a raw pointer to the slot — so it needs
+/// its own refusal at `lower_ref_path_call_arg`/`lower_ref_projection_arg`).
+#[test]
+fn e143_as_binding_is_immutable() {
+    for (suffix, write) in [
+        ("as-imm-assign", "n = 1;"),
+        ("as-imm-compound", "n += 1;"),
+        ("as-imm-mutator", "pop(n);"),
+        // Native `ref` is a parameter-position marker (`fn bump(ref x)`),
+        // not a call-site keyword: an argument at a `ref` parameter's
+        // position is auto-ref'd from its bare path, so this reaches the
+        // same `lower_ref_path_call_arg` choke point as the ink-dialect's
+        // explicit `heal(ref t, 5)` spelling would.
+        ("as-imm-ref", "bump(n);"),
+    ] {
+        let source = format!(
+            "fn bump(ref x) {{\n  x = x + 1;\n}}\n\nflow main() ~{{\n  if some(1) as n {{\n    \
+             {write}\n  }}\n}}\n"
+        );
+        let err = compile_native(suffix, &source, native_strict_options())
+            .map(|_| ())
+            .unwrap_err();
+        let diags = errors_of(err);
+        assert!(
+            diags.iter().any(|d| d.code == DiagnosticCode::E148),
+            "expected E148 for `{write}`, got: {diags:?}"
+        );
+    }
+}
+
+// ─── `remove`/`remove_at` migration tail (E149, issue #1532) ────────────
+//
+// The #1501 review's follow-up on #1484's `remove`/`remove_at` split:
+// `remove` went map-only with no compatibility shim, so an un-migrated
+// `remove(array, i)` call site used to compile clean and only fault at
+// runtime (`RuntimeError::NotIndexable`, `remove_on_an_array_faults` in
+// `brink-test-harness/tests/tier1_brink.rs`). `infer::body`'s `remove` arm
+// already has `Ty::Array` in hand at the call site, so this is now a
+// compile error — strict-mode-only, matching every other TM-3 typed check
+// in this file (`brink_options()` leaves `types` unset, which resolves to
+// the brink dialect's own implicit-strict default, issue #1127).
+//
+// Issue #1540 closed the global-scope half of this: a `VAR`'s static type
+// is still purely declaration-derived, but it is now derived at full `Ty`
+// fidelity (`signature.rs::Sig::value_ty`) instead of through the
+// `InferredType` downcast that had no `Array`/`Map` representation, so
+// `VAR arr = #[…]` reaches `E149`'s `Ty::Array` guard exactly like a
+// `temp` does — see `e149_remove_on_a_statically_known_global_array`.
+// What is still out of reach is `VAR arr = 0` *reassigned* to an array
+// literal (the idiom `remove_on_an_array_faults` uses for the
+// runtime-fault twin of this call shape): a declaration-derived type
+// cannot see a later assignment, so that global is statically `Int`.
+
+/// E149 — a statically-known array first argument to `remove`.
+#[test]
+fn e149_remove_on_a_statically_known_array() {
+    let source = "=== main ===\n~ {\n    temp arr = #[1, 2, 3]\n    remove(arr, 0)\n}\n-> DONE\n";
+    assert_error_at(
+        source,
+        brink_options(),
+        DiagnosticCode::E149,
+        "remove(arr, 0)",
+    );
+}
+
+/// E149 — issue #1540: the same statically-known array, spelled as a global
+/// `VAR` with an array-literal default. This is the authoring idiom the
+/// issue names, and before the `Sig::value_ty` fix it compiled clean here
+/// (the global typed as nothing at all) while the `temp` twin above
+/// reported.
+#[test]
+fn e149_remove_on_a_statically_known_global_array() {
+    let source = "VAR arr = #[1, 2, 3]\n=== main ===\n~ remove(arr, 0)\n-> DONE\n";
+    assert_error_at(
+        source,
+        brink_options(),
+        DiagnosticCode::E149,
+        "remove(arr, 0)",
+    );
+}
+
+/// E149 — the annotated spelling of the same global (`ty_to_inferred_type`'s
+/// gap proper: an `array<T>` annotation had no `InferredType` form, so it
+/// was dropped and the *initializer* decided the global's static type).
+#[test]
+fn e149_remove_on_an_array_annotated_global() {
+    let source = "VAR arr: array<int> = #[1, 2, 3]\n=== main ===\n~ remove(arr, 0)\n-> DONE\n";
+    assert_error_at(
+        source,
+        brink_options(),
+        DiagnosticCode::E149,
+        "remove(arr, 0)",
+    );
+}
+
+/// A map-typed *global* is untouched by the widening — the same map leg the
+/// `temp` fixture below guards, proven at global scope too so #1540's wider
+/// `value_ty` cannot start reporting the verb's legal receiver.
+#[test]
+fn remove_on_a_global_map_unaffected_by_e149() {
+    let source = "VAR m = #{\"a\": 1}\n=== main ===\n~ remove(m, \"a\")\n-> DONE\n";
+    let out = compile(source, brink_options())
+        .unwrap_or_else(|e| panic!("remove(m, k) on a global map must compile clean: {e:?}"));
+    assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+}
+
+/// `remove` on a map is untouched — the map leg this code guards is the
+/// verb's actual, unaffected posture.
+#[test]
+fn remove_on_a_map_unaffected_by_e149() {
+    let source = "=== main ===\n~ {\n    temp m = #{\"a\": 1}\n    remove(m, \"a\")\n}\n-> DONE\n";
+    let out = compile(source, brink_options())
+        .unwrap_or_else(|e| panic!("remove(m, k) on a map must compile clean: {e:?}"));
+    assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+}
+
+// ─── E149 through the UFCS spelling (issue #1540, second symptom) ──────
+//
+// `infer::body::infer_call` types a multi-segment callee `Ty::Unknown`
+// *before* `infer_intrinsic` runs (a UFCS receiver isn't the thing being
+// called), so `arr.remove(0)` recorded none of the facts `remove(arr, 0)`
+// records and every intrinsic-receiver diagnostic silently stopped at the
+// free-call spelling. `ufcs::check_strict` reads the B3a verdict table
+// instead, which already carries the receiver's resolved `Ty` beside the
+// verb's name.
+//
+// These are native (`.brink`) fixtures because UFCS is native-only by
+// construction (ink's own lowering never builds a multi-segment callee
+// path — see `brink-analyzer::ufcs`'s module doc). The receiver comes from
+// `keys(m)` rather than an array literal: the native surface has no array
+// literal at all today (`construct::ConstructTarget` registers `Map`,
+// `Flags` and `Weighted` only), so an array-returning intrinsic is how a
+// native author actually gets one.
+
+/// E149 fires on the UFCS spelling of an array `remove`.
+#[test]
+fn e149_ufcs_remove_on_a_statically_known_array() {
+    let source = "fn main() {\n  let m = Map { \"a\": 1 };\n  let ks = keys(m);\n  ks.remove(0);\n  \
+                  return 1;\n}\n";
+    let err = compile_native("ufcs-remove", source, native_strict_options())
+        .map(|_| ())
+        .unwrap_err();
+    let diags = errors_of(err);
+    assert_code_at_nth(&diags, DiagnosticCode::E149, source, "ks.remove(0)", 0);
+}
+
+/// The verb's legal receiver is untouched by the UFCS leg: a *map* receiver
+/// must stay clean, or the check would refuse `remove`'s actual posture.
+#[test]
+fn ufcs_remove_on_a_map_unaffected_by_e149() {
+    let source = "fn main() {\n  let m = Map { \"a\": 1 };\n  m.remove(\"a\");\n  return 1;\n}\n";
+    let out = compile_native("ufcs-remove-map", source, native_strict_options())
+        .unwrap_or_else(|e| panic!("`m.remove(k)` on a map must compile clean: {e:?}"));
+    assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+}
+
+/// The migration target itself: `remove_at` on the same array receiver is
+/// what the author is being pointed at, so it must compile clean.
+#[test]
+fn ufcs_remove_at_on_an_array_is_the_clean_migration_target() {
+    let source = "fn main() {\n  let m = Map { \"a\": 1 };\n  let ks = keys(m);\n  \
+                  ks.remove_at(0);\n  return 1;\n}\n";
+    let out = compile_native("ufcs-remove-at", source, native_strict_options())
+        .unwrap_or_else(|e| panic!("`ks.remove_at(i)` must compile clean: {e:?}"));
+    assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+}
+
+/// Under `types = gradual` the check is inert (T1c/TM-3's universal split
+/// — the runtime `NotIndexable` fault is the residual backstop, proven at
+/// the runtime layer by `tier1_brink.rs`'s `remove_on_an_array_faults`).
+#[test]
+fn e149_inert_under_gradual_types() {
+    let source = "=== main ===\n~ {\n    temp arr = #[1, 2, 3]\n    remove(arr, 0)\n}\n-> DONE\n";
+    let out = compile(source, gradual_options())
+        .unwrap_or_else(|e| panic!("remove(array, i) must still compile under gradual: {e:?}"));
+    assert!(
+        out.warnings.iter().all(|d| d.code != DiagnosticCode::E149),
+        "E149 must not fire under types = gradual: {:?}",
+        out.warnings
+    );
+}
+
+// ─── E150 (issue #1551): declared-return-value def falls through ───────
+//
+// Native-only, same reasoning as the E066/`as`-binding blocks above — a
+// declared, non-`void` return-type annotation on a flow/stitch only exists
+// in the native grammar, so this reuses `compile_native`. `gate` is the
+// return-value producer whose fall-through is under test; `main` just gives
+// the file a valid entry point.
+
+/// E150 fires through the real pipeline (parse → HIR lower → analyze) when
+/// a `flow` declares a non-`void` return type and its body never reaches a
+/// value-returning `return <expr>`.
+#[test]
+fn e150_value_returning_flow_falling_through() {
+    let source = "flow main() {\n  Hi.\n}\n\nflow gate(): int {\n  Onward.\n}\n";
+    let err = compile_native("e150", source, native_strict_options())
+        .map(|_| ())
+        .expect_err("a declared-return-value flow that falls through must fail");
+    let diags = errors_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E150),
+        "expected E150, got: {diags:?}"
+    );
+}
+
+/// Negative sibling of [`e150_value_returning_flow_falling_through`], driven
+/// through the same real pipeline (issue #1591): `gate`'s own body is empty,
+/// so it falls straight through into its nested stitch `compute` — no
+/// explicit divert — and the value-returning `return` lives entirely in
+/// that stitch. `check_def`'s `E150` fall-through check must read the
+/// has-value-return fact merged over `gate`'s stitches
+/// (`has_value_return_over_stitches`), not just `gate`'s own (empty) body,
+/// or this compiles-clean shape would wrongly fail exactly like the
+/// falling-through-with-no-value case above.
+///
+/// `compute` uses code ground (`~{ }`) for its own body — same posture as
+/// `native_value_returning_knot_that_always_returns_is_clean` in
+/// `strict.rs` — since a value-carrying `return <expr>;` is a code-ground
+/// statement; `gate`'s own body stays prose ground (`{ }`) since it holds
+/// only the nested `flow` declaration.
+#[test]
+fn e150_value_returning_flow_reached_only_through_a_fallthrough_stitch_compiles_clean() {
+    let source = "flow main() {\n  Hi.\n}\n\nflow gate(): int {\n  flow compute() ~{\n    return 5;\n  }\n}\n";
+    let out = compile_native("e150-stitch-fallthrough", source, native_strict_options())
+        .unwrap_or_else(|e| {
+            panic!(
+                "a value return reached only via a fall-through stitch must compile clean: {e:?}"
+            )
+        });
+    assert!(
+        out.warnings.iter().all(|d| d.code != DiagnosticCode::E150),
+        "expected no E150, got: {:?}",
+        out.warnings
+    );
+}
+
+// ─── E151 (issue #1219): asymmetric choice-branch dead-end lint ────────
+//
+// Native-only, same `compile_native` posture as E150/E066 above — the `{?
+// … }` choice-point grammar this lint reads only exists on the native
+// surface. `AnalysisOptions::default()` suffices throughout: the lint is
+// independent of the `types` policy.
+
+/// The issue's own worked example: one choice diverts (`-> riposte`), its
+/// sibling falls through with narration and nothing else follows the choice
+/// point — a genuine dead end. Warning-severity, so the compile still
+/// succeeds; `E151` shows up in `out.warnings`, never `out` (errors).
+#[test]
+fn e151_mixed_tail_at_a_dead_end_is_flagged() {
+    let source = "flow main() {\n  {?\n    * Parry -> riposte\n    * [Dodge] {\n      \
+                  You sidestep the blade.\n    }\n  }\n}\n\nflow riposte() {\n}\n";
+    let out = compile_native("e151-dead-end", source, AnalysisOptions::default())
+        .unwrap_or_else(|e| panic!("a Warning-severity lint must not fail the compile: {e:?}"));
+    assert!(
+        out.warnings.iter().any(|d| d.code == DiagnosticCode::E151),
+        "expected E151, got: {:?}",
+        out.warnings
+    );
+}
+
+/// The precision-critical exclusion: content follows the choice point (the
+/// dissolved gather, `docs/native-surface-charter.md` §5), so the
+/// undiverted `[Dodge]` branch converges there by design — ordinary
+/// asymmetric-weave reconvergence, not a dead end. Must never fire.
+#[test]
+fn e151_reconverging_into_the_dissolved_gather_is_not_flagged() {
+    let source = "flow main() {\n  {?\n    * Parry -> riposte\n    * Dodge\n  }\n  \
+                  You catch your breath.\n}\n\nflow riposte() {\n}\n";
+    let out = compile_native("e151-gather", source, AnalysisOptions::default())
+        .unwrap_or_else(|e| panic!("must compile clean: {e:?}"));
+    assert!(
+        out.warnings.iter().all(|d| d.code != DiagnosticCode::E151),
+        "reconvergence into the dissolved gather must not fire E151, got: {:?}",
+        out.warnings
+    );
+}
+
+/// Every branch diverts — fully symmetric, no fingerprint of a forgotten
+/// `->`. Must never fire.
+#[test]
+fn e151_all_branches_diverging_is_not_flagged() {
+    let source = "flow main() {\n  {?\n    * Parry -> riposte\n    * Dodge -> riposte\n  }\n}\n\n\
+                  flow riposte() {\n}\n";
+    let out = compile_native("e151-all-diverge", source, AnalysisOptions::default())
+        .unwrap_or_else(|e| panic!("must compile clean: {e:?}"));
+    assert!(
+        out.warnings.iter().all(|d| d.code != DiagnosticCode::E151),
+        "a fully symmetric diverging choice set must not fire E151, got: {:?}",
+        out.warnings
+    );
+}
+
+/// No branch diverts — "a menu that ends" (decision-log 2026-07-22 item 4's
+/// own wording), the ordinary implicit-DONE shape this whole ruling exists
+/// to make silent. Must never fire.
+#[test]
+fn e151_all_branches_falling_through_is_not_flagged() {
+    let source = "flow main() {\n  {?\n    * Wait\n    * Look\n  }\n}\n";
+    let out = compile_native("e151-all-unit", source, AnalysisOptions::default())
+        .unwrap_or_else(|e| panic!("must compile clean: {e:?}"));
+    assert!(
+        out.warnings.iter().all(|d| d.code != DiagnosticCode::E151),
+        "a symmetric menu-that-ends choice set must not fire E151, got: {:?}",
+        out.warnings
+    );
+}
+
+// ─── E151 review follow-up: the four false-positive/false-negative shapes
+// a literal-last-statement `diverges()` missed (PR #1575 review finding 1),
+// each proven end to end through the real pipeline, not just the unit-level
+// `terminates()` coverage in `native_choice_dead_end.rs` itself.
+
+/// (a) G-1 label absorption: the diverting branch's `-> combat` ends up one
+/// level down inside a trailing `Stmt::LabeledBlock` once `(again)` labels
+/// the content line that precedes it. Must not be told to add `->` — it
+/// already has one.
+#[test]
+fn e151_label_absorbed_divert_is_not_flagged() {
+    let source = "flow main() {\n  {?\n    * [Talk] {\n      (again) You talk.\n      \
+                  -> combat\n    }\n    * Fight -> combat\n  }\n}\n\nflow combat() {\n}\n";
+    let out = compile_native("e151-label-absorbed", source, AnalysisOptions::default())
+        .unwrap_or_else(|e| panic!("must compile clean: {e:?}"));
+    assert!(
+        out.warnings.iter().all(|d| d.code != DiagnosticCode::E151),
+        "a divert wrapped in a trailing label-absorbed block must not be flagged, got: {:?}",
+        out.warnings
+    );
+}
+
+/// (b) An inline divert before a braced body (`* [Talk] -> combat { … }`)
+/// lowers the divert *first*, not last. Must not be flagged (and must not
+/// contradict the E033 "unreachable code after divert" this shape
+/// independently earns).
+#[test]
+fn e151_leading_divert_before_a_braced_body_is_not_flagged() {
+    let source = "flow main() {\n  {?\n    * [Talk] -> combat {\n      You talk.\n    }\n    \
+                  * Fight -> combat\n  }\n}\n\nflow combat() {\n}\n";
+    let out = compile_native("e151-leading-divert", source, AnalysisOptions::default())
+        .unwrap_or_else(|e| panic!("must compile clean: {e:?}"));
+    assert!(
+        out.warnings.iter().all(|d| d.code != DiagnosticCode::E151),
+        "a divert preceding a braced body must not be flagged, got: {:?}",
+        out.warnings
+    );
+}
+
+/// (c) Every arm of a trailing conditional diverges (with an explicit
+/// `else`) — a terminator in substance, even though it's not itself a
+/// `Divert`/`Return` statement. Must not be flagged.
+#[test]
+fn e151_all_arms_diverging_conditional_is_not_flagged() {
+    let source = "flow main() {\n  {?\n    * [Talk] {\n      {if true {\n        \
+                  -> combat\n      } else {\n        -> combat\n      }}\n    }\n    \
+                  * Fight -> combat\n  }\n}\n\nflow combat() {\n}\n";
+    let out = compile_native(
+        "e151-all-arms-conditional",
+        source,
+        AnalysisOptions::default(),
+    )
+    .unwrap_or_else(|e| panic!("must compile clean: {e:?}"));
+    assert!(
+        out.warnings.iter().all(|d| d.code != DiagnosticCode::E151),
+        "a conditional whose every arm diverges must not be flagged, got: {:?}",
+        out.warnings
+    );
+}
+
+/// (d) The canonical nested-menu shape: a choice's own body ends in a
+/// further `{? … }` choice point. That inner point is checked entirely on
+/// its own (both its choices divert, so it's clean) — it must not make the
+/// *outer* choice look like a dead end just because it isn't a `Divert`.
+#[test]
+fn e151_trailing_nested_choice_point_is_not_a_dead_end() {
+    let source = "flow main() {\n  {?\n    * [Talk] {\n      Hello.\n      {?\n        \
+                  * Ask -> combat\n        * Leave -> combat\n      }\n    }\n    \
+                  * Fight -> combat\n  }\n}\n\nflow combat() {\n}\n";
+    let out = compile_native("e151-nested-menu", source, AnalysisOptions::default())
+        .unwrap_or_else(|e| panic!("must compile clean: {e:?}"));
+    assert!(
+        out.warnings.iter().all(|d| d.code != DiagnosticCode::E151),
+        "a trailing nested choice point must not make the outer choice a dead end, got: {:?}",
+        out.warnings
+    );
+}
+
+/// The `[lints]` control plane, end to end (not just the unit-level
+/// `effective_severity` mechanism `brink-analyzer::strict`'s own tests
+/// already exercise generically over E014/E022): `E151 = "deny"` must
+/// promote this specific lint from `Warning` to a real compile `Error`
+/// through the actual pipeline.
+#[test]
+fn e151_denied_through_the_lints_control_plane_becomes_an_error() {
+    let source = "flow main() {\n  {?\n    * Parry -> riposte\n    * [Dodge] {\n      \
+                  You sidestep the blade.\n    }\n  }\n}\n\nflow riposte() {\n}\n";
+    let options = AnalysisOptions {
+        lints: LintPolicy {
+            overrides: BTreeMap::from([("E151".to_owned(), LintLevel::Deny)]),
+            deny_warnings: false,
+        },
+        ..AnalysisOptions::default()
+    };
+    let err = compile_native("e151-denied", source, options)
+        .map(|_| ())
+        .expect_err("`[lints] E151 = deny` must promote the lint to a compile error");
+    let diags = errors_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E151),
+        "expected E151 among errors, got: {diags:?}"
+    );
+}
+
+// ─── E152 (issue #582, companion to #580): `contains(m, needle)` static
+// key-domain warning ──────────────────────────────────────────────────────
+//
+// Strict-mode-only (`brink_analyzer::contains_domain`'s own module doc) —
+// every fixture here uses `strict_options()` explicitly. Warning-severity,
+// so the compile still succeeds; `E152` shows up in `out.warnings`, never
+// `out` (errors), unless promoted through `[lints]`.
+
+/// The issue's own worked shape: a float needle against a statically
+/// map-typed receiver can never match — always `false` at runtime.
+#[test]
+fn e152_float_needle_against_a_map_literal_is_flagged() {
+    let source = "=== main ===\n~ temp x = contains(#{1: \"a\"}, 3.5)\n-> DONE\n";
+    let out = compile(source, strict_options())
+        .unwrap_or_else(|e| panic!("a Warning-severity lint must not fail the compile: {e:?}"));
+    assert!(
+        out.warnings.iter().any(|d| d.code == DiagnosticCode::E152),
+        "expected E152, got: {:?}",
+        out.warnings
+    );
+}
+
+/// A global `VAR`'s declaration-derived static type (issue #1540's
+/// full-fidelity `Sig::value_ty`) makes the receiver provably a map and the
+/// needle provably out of domain — the exact "far more cases" reach this
+/// issue's re-scoping note called out.
+#[test]
+fn e152_global_map_var_with_out_of_domain_needle_is_flagged() {
+    let source =
+        "VAR scores = #{1: \"a\"}\n=== main ===\n~ temp x = contains(scores, #[1, 2])\n-> DONE\n";
+    let out = compile(source, strict_options())
+        .unwrap_or_else(|e| panic!("a Warning-severity lint must not fail the compile: {e:?}"));
+    assert!(
+        out.warnings.iter().any(|d| d.code == DiagnosticCode::E152),
+        "expected E152, got: {:?}",
+        out.warnings
+    );
+}
+
+/// An in-domain needle (`int`) is never flagged.
+#[test]
+fn e152_in_domain_needle_is_not_flagged() {
+    let source = "=== main ===\n~ temp x = contains(#{1: \"a\"}, 2)\n-> DONE\n";
+    let out = compile(source, strict_options()).unwrap_or_else(|e| panic!("must compile: {e:?}"));
+    assert!(
+        out.warnings.iter().all(|d| d.code != DiagnosticCode::E152),
+        "an in-domain needle must never fire E152, got: {:?}",
+        out.warnings
+    );
+}
+
+/// The precision-critical exclusion this pass' own module doc leads with:
+/// an `Array` receiver has no key-domain restriction at all (structural
+/// element containment against any type), so a float needle against one
+/// must never be flagged.
+#[test]
+fn e152_array_receiver_is_never_flagged() {
+    let source = "=== main ===\n~ temp x = contains(#[1, 2], 3.5)\n-> DONE\n";
+    let out = compile(source, strict_options()).unwrap_or_else(|e| panic!("must compile: {e:?}"));
+    assert!(
+        out.warnings.iter().all(|d| d.code != DiagnosticCode::E152),
+        "an array receiver must never fire E152, got: {:?}",
+        out.warnings
+    );
+}
+
+/// An author-defined `contains` knot shadows the builtin (T1b-surface-spec
+/// §5's shadowing ruling) — a resolved call is ordinary and never checked.
+#[test]
+fn e152_author_defined_contains_shadowing_the_builtin_is_not_flagged() {
+    let source = "=== function contains(a: int, b: int) ===\n~ return true\n\
+                  === main ===\n~ temp x = contains(#{1: \"a\"}, 3.5)\n-> DONE\n";
+    let out = compile(source, strict_options()).unwrap_or_else(|e| panic!("must compile: {e:?}"));
+    assert!(
+        out.warnings.iter().all(|d| d.code != DiagnosticCode::E152),
+        "a shadowed `contains` must never fire E152, got: {:?}",
+        out.warnings
+    );
+}
+
+/// Gradual mode gets no static signal at all (the module doc's
+/// inference-substrate note): the whole-project `InferenceResult` this pass
+/// needs is only ever computed under `types = strict`. The runtime's own
+/// total `false` return (#580) is the sole, correct residual.
+#[test]
+fn e152_gradual_mode_never_fires_the_static_warning() {
+    let source = "=== main ===\n~ temp x = contains(#{1: \"a\"}, 3.5)\n-> DONE\n";
+    let out = compile(source, gradual_options()).unwrap_or_else(|e| panic!("must compile: {e:?}"));
+    assert!(
+        out.warnings.iter().all(|d| d.code != DiagnosticCode::E152),
+        "gradual mode must never fire E152, got: {:?}",
+        out.warnings
+    );
+}
+
+/// The `[lints]` control plane, end to end: `E152 = "deny"` must promote
+/// this specific warning from `Warning` to a real compile `Error` through
+/// the actual pipeline — mirrors `e151_denied_through_the_lints_control_plane_becomes_an_error`.
+#[test]
+fn e152_denied_through_the_lints_control_plane_becomes_an_error() {
+    let source = "=== main ===\n~ temp x = contains(#{1: \"a\"}, 3.5)\n-> DONE\n";
+    let options = AnalysisOptions {
+        lints: LintPolicy {
+            overrides: BTreeMap::from([("E152".to_owned(), LintLevel::Deny)]),
+            deny_warnings: false,
+        },
+        ..strict_options()
+    };
+    let err = compile(source, options)
+        .map(|_| ())
+        .expect_err("`[lints] E152 = deny` must promote the warning to a compile error");
+    let diags = errors_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E152),
+        "expected E152 among errors, got: {diags:?}"
+    );
+}
+
+// ─── E153 / E154 / E155 (issue #1161): the `@[allow(Exxx, …)]` source-level
+// suppression annotation ─────────────────────────────────────────────────
+//
+// Native-only (the `@[…]` channel's `allow` tenant lowers in
+// `brink_ir::hir::lower_native::annotation`), so every fixture here uses the
+// disk-based `compile_native` helper, like the `or`-coalescing pair above.
+//
+// The E151 dead-end lint is the workhorse warning: it is native, it fires
+// from a compact fixture, and `e151_denied_through_the_lints_control_plane_
+// becomes_an_error` above already pins its `[lints]` behaviour, so these
+// tests can state the *interaction* ruling against a known baseline.
+
+/// The E151 fixture from `e151_denied_…` above, parameterised on what sits
+/// above `flow main()`. Without an annotation it warns; with the right
+/// `@[allow]` it does not.
+fn e151_source(annotation: &str) -> String {
+    format!(
+        "{annotation}flow main() {{\n  {{?\n    * Parry -> riposte\n    * [Dodge] {{\n      \
+         You sidestep the blade.\n    }}\n  }}\n}}\n\nflow riposte() {{\n}}\n"
+    )
+}
+
+/// Baseline, so the suppression tests below cannot pass vacuously: with no
+/// annotation this exact fixture *does* warn.
+#[test]
+fn allow_baseline_the_unannotated_fixture_warns() {
+    let out = compile_native(
+        "allow-baseline",
+        &e151_source(""),
+        AnalysisOptions::default(),
+    )
+    .unwrap_or_else(|e| panic!("must compile: {e:?}"));
+    assert!(
+        out.warnings.iter().any(|d| d.code == DiagnosticCode::E151),
+        "the unannotated fixture must warn, got: {:?}",
+        out.warnings
+    );
+}
+
+/// The headline behaviour: `@[allow(E151)]` above the declaration removes
+/// the warning from the compile output entirely.
+#[test]
+fn allow_annotation_suppresses_the_warning_in_its_scope() {
+    let out = compile_native(
+        "allow-suppresses",
+        &e151_source("@[allow(E151)]\n"),
+        AnalysisOptions::default(),
+    )
+    .unwrap_or_else(|e| panic!("must compile: {e:?}"));
+    assert!(
+        out.warnings.iter().all(|d| d.code != DiagnosticCode::E151),
+        "`@[allow(E151)]` must suppress the lint, got: {:?}",
+        out.warnings
+    );
+}
+
+/// Scoping is real, not a file-wide switch: the same annotation on the
+/// *sibling* declaration leaves `main`'s warning standing.
+#[test]
+fn allow_on_a_sibling_declaration_does_not_suppress() {
+    let source = "flow main() {\n  {?\n    * Parry -> riposte\n    * [Dodge] {\n      \
+                  You sidestep the blade.\n    }\n  }\n}\n\n@[allow(E151)]\nflow riposte() {\n}\n";
+    let out = compile_native("allow-sibling", source, AnalysisOptions::default())
+        .unwrap_or_else(|e| panic!("must compile: {e:?}"));
+    assert!(
+        out.warnings.iter().any(|d| d.code == DiagnosticCode::E151),
+        "an `@[allow]` on another declaration must not reach this one, got: {:?}",
+        out.warnings
+    );
+}
+
+/// **The ruling (issue #1161's open question (b)): a source-level `allow`
+/// beats a project-level `deny`.**
+/// `e151_denied_through_the_lints_control_plane_becomes_an_error` above
+/// proves this exact fixture fails to compile under `[lints] E151 = "deny"`;
+/// adding `@[allow(E151)]` makes it compile again. The annotation is the
+/// more specific, deliberately-authored, reviewable statement, and
+/// `brink.toml` has no way to name one declaration.
+#[test]
+fn a_source_allow_beats_a_project_lints_deny() {
+    let options = AnalysisOptions {
+        lints: LintPolicy {
+            overrides: BTreeMap::from([("E151".to_owned(), LintLevel::Deny)]),
+            deny_warnings: false,
+        },
+        ..AnalysisOptions::default()
+    };
+    let out = compile_native(
+        "allow-beats-deny",
+        &e151_source("@[allow(E151)]\n"),
+        options,
+    )
+    .unwrap_or_else(|e| panic!("`@[allow(E151)]` must survive `[lints] E151 = deny`, got: {e:?}"));
+    // A successful compile already proves no `Error` survived (the pipeline
+    // returns `CompileError::Diagnostics` otherwise); this pins that the
+    // lint is not merely demoted back to a warning either.
+    assert!(
+        out.warnings.iter().all(|d| d.code != DiagnosticCode::E151),
+        "the suppressed lint must appear nowhere, got: {:?}",
+        out.warnings
+    );
+}
+
+/// The same ruling against the blanket knob: `deny-warnings = true` is the
+/// `-D warnings` equivalent, and a source `allow` still wins.
+#[test]
+fn a_source_allow_beats_deny_warnings() {
+    let options = AnalysisOptions {
+        lints: LintPolicy {
+            overrides: BTreeMap::new(),
+            deny_warnings: true,
+        },
+        ..AnalysisOptions::default()
+    };
+    compile_native(
+        "allow-beats-deny-warnings",
+        &e151_source("@[allow(E151)]\n"),
+        options,
+    )
+    .unwrap_or_else(|e| {
+        panic!("`@[allow(E151)]` must survive `[lints] deny-warnings = true`, got: {e:?}")
+    });
+}
+
+/// A misspelled code is `E153` and fails the compile — issue #1161's open
+/// question (c). A typo'd suppression that silently did nothing would be the
+/// worst outcome the directive could have.
+#[test]
+fn e153_unknown_code_in_an_allow_annotation() {
+    let err = compile_native(
+        "e153-unknown-code",
+        &e151_source("@[allow(E1511)]\n"),
+        AnalysisOptions::default(),
+    )
+    .map(|_| ())
+    .expect_err("a misspelled code in `@[allow(…)]` must be a hard error");
+    let diags = errors_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E153),
+        "expected E153 among errors, got: {diags:?}"
+    );
+}
+
+/// `E154`: errors are not suppressible — issue #1161's open question (a).
+/// `E103` (effects exceedance) is a real `Error`-severity code, so naming it
+/// is rejected rather than silently granting a way to ship broken code.
+#[test]
+fn e154_non_suppressible_code_in_an_allow_annotation() {
+    let err = compile_native(
+        "e154-error-code",
+        &e151_source("@[allow(E103)]\n"),
+        AnalysisOptions::default(),
+    )
+    .map(|_| ())
+    .expect_err("an error-severity code in `@[allow(…)]` must be a hard error");
+    let diags = errors_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E154),
+        "expected E154 among errors, got: {diags:?}"
+    );
+}
+
+/// `E155`: the annotation parses but names no code at all.
+#[test]
+fn e155_allow_annotation_with_no_codes() {
+    let err = compile_native(
+        "e155-empty-allow",
+        &e151_source("@[allow()]\n"),
+        AnalysisOptions::default(),
+    )
+    .map(|_| ())
+    .expect_err("`@[allow()]` must be a hard error");
+    let diags = errors_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E155),
+        "expected E155 among errors, got: {diags:?}"
     );
 }

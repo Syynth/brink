@@ -1,0 +1,31 @@
+var hp: int = 10
+
+fn bump(ref n, amount) {
+  n = n + amount;
+}
+
+fn heal(amount) {
+  hp.bump(amount);
+  return hp;
+}
+
+fn double(x) {
+  return x * 2;
+}
+
+fn describe_double() {
+  let n = 21;
+  return n.double();
+}
+
+fn tally() {
+  let m = Map { "a": 1, "b": 2, "c": 3 };
+  return m.len();
+}
+
+flow main() {
+  HP before: {hp}
+  HP after heal: {heal(5)}
+  Doubled: {describe_double()}
+  Tally: {tally()} -> END
+}

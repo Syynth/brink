@@ -29,9 +29,11 @@
 //   diagnostics-laden bundle.
 // - [`analysis_diagnostics_query`] — the DIAGNOSTICS half: every diagnostic
 //   source merged, in the same order `finish_analysis` produces them, so
-//   `db.analysis()` stays output-identical to the monolithic
-//   `brink_analyzer::analyze_with_options` path (pinned by
-//   `query_equivalence.rs`).
+//   `db.analysis()` stays output-identical to the monolithic, module-aware
+//   `brink_analyzer::analyze_with_modules` path (pinned by
+//   `query_equivalence.rs`) — only equal to the module-*blind*
+//   `analyze_with_options` for ink projects without a declared `#@module`,
+//   see `ProjectDb::module_map`'s doc (issue #1526).
 // - [`analysis_query`] — kept as a thin assembler over the above three for
 //   `db.analysis()`'s existing LSP/IDE/CLI-facing `AnalysisResult` shape.
 //   [`diagnostics_query`] and [`lir_query`] read
@@ -566,10 +568,151 @@ pub(crate) fn whole_project_diagnostics_query(
         );
     }
 
+    // B3a UFCS resolution (issue #1482, D1–D5 RULED 2026-07-26) — last,
+    // matching `brink_analyzer::whole_project_diagnostics`' own composition
+    // order. The verdict table itself (issue #1506) is [`ufcs_resolution_
+    // query`]'s own memo, shared with LIR lowering — this just takes the
+    // diagnostics half.
+    diagnostics.extend(
+        ufcs_resolution_query(db, project)
+            .diagnostics
+            .iter()
+            .cloned(),
+    );
+
     WholeProjectDiagnostics {
         diagnostics,
         symbol_meta,
     }
+}
+
+/// B3a UFCS resolution (issue #1482/#1506): the project's verdict table,
+/// translated to `brink-ir`'s own lowering-facing mirror type
+/// (`brink_ir::lir::UfcsLookup`), plus the diagnostics the analyzer's `ufcs`
+/// pass produced alongside it.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct UfcsResolution {
+    pub table: brink_ir::lir::UfcsLookup,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Compute [`UfcsResolution`], translating the analyzer's verdict table to
+/// `brink-ir`'s own lowering-facing mirror type at this one seam — see that
+/// type's doc for why `brink-ir` can't name `brink_analyzer::UfcsVerdict`
+/// directly (it sits below `brink-analyzer` in the crate graph).
+///
+/// Memoized once per project and read by four call sites —
+/// [`whole_project_diagnostics_query`] (the diagnostics half), (issue #1506)
+/// `lir_knot_chunk_query`'s per-knot LIR lowering plus `lir_lowering_query`'s
+/// own root-content step, and (issue #1507) `ProjectDb::ufcs_verdict`, which
+/// `brink-ide`'s hover/go-to-def wiring reads through — so all four see the
+/// same table rather than each re-running whole-project inference.
+///
+/// Lazy on the same argument [`whole_project_diagnostics_query`]'s old
+/// inline check used: a project with no dotted-callee call anywhere never
+/// triggers inference here (every ink project is in that set by
+/// construction — ink's own lowering cannot produce a multi-segment callee
+/// path; see `brink-analyzer`'s `ufcs` module doc), and builds (and stays
+/// pointer-stable at) the empty table.
+#[salsa::tracked(returns(ref))]
+pub(crate) fn ufcs_resolution_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+) -> UfcsResolution {
+    let resolved = resolutions_index_query(db, project);
+    let hir_refs: Vec<(FileId, &HirFile)> = project
+        .files(db)
+        .iter()
+        .map(|f| (f.file_id(db), &lowered_query(db, *f).hir))
+        .collect();
+
+    if !hir_refs
+        .iter()
+        .any(|&(_, hir)| brink_analyzer::project_has_ufcs_call(hir))
+    {
+        return UfcsResolution {
+            table: brink_ir::lir::UfcsLookup::new(),
+            diagnostics: Vec::new(),
+        };
+    }
+
+    // Reuses the FG-narrowed, per-SCC-memoized `type_inference_query`
+    // rather than letting the analyzer recompute inference from scratch —
+    // the same seam `whole_project_diagnostics_query`'s strict block above
+    // reuses.
+    let inference = type_inference_query(db, project);
+    let (table, diagnostics) = brink_analyzer::ufcs_resolution(
+        &hir_refs,
+        &resolved.index,
+        &resolved.resolutions,
+        inference.as_ref(),
+    );
+
+    UfcsResolution {
+        // The one shared translation point (issue #1506) — see
+        // `brink_analyzer::ufcs_lir_lookup`'s own doc.
+        table: brink_analyzer::ufcs_lir_lookup(&table),
+        diagnostics,
+    }
+}
+
+/// B1 `or`-coalescing typing (issue #1492/#1471): the project's recorded
+/// per-step chain shapes, translated to `brink-ir`'s own lowering-facing
+/// mirror type (`brink_ir::lir::CoalesceLookup`).
+///
+/// Only the **table** half of `brink_analyzer::coalesce_types` is kept: its
+/// `E066` diagnostics are strict-mode-only and already reach
+/// [`whole_project_diagnostics_query`] through `strict::check`'s own wiring
+/// (see `brink_analyzer::coalesce_types`' doc — surfacing them from here
+/// too would emit strict-only diagnostics under `types = gradual`, and
+/// duplicate them under strict).
+///
+/// Deliberately **not** gated on the `types` policy: the recorded shapes are
+/// a typing *record*, not a strict-mode check. Native's un-overridden
+/// default is gradual (`brink-analyzer::strict::native_strict_only_error`'s
+/// own doc), and a gradual chain whose operands *are* statically pinned
+/// still deserves the right code shape; only genuinely unpinned steps come
+/// back as `CoalesceShape::RuntimeCheck`.
+///
+/// Memoized once per project and read by the two LIR-lowering call sites
+/// (`lir_knot_chunk_query`, `lir_lowering_query`'s root-content step), so
+/// both see the same table. Lazy the same way [`ufcs_resolution_query`] is:
+/// a project with no `or`-coalescing anywhere (every ink-dialect project,
+/// by construction — `InfixOp::Coalesce` is native-lowering-only) never
+/// triggers whole-project inference here and stays pointer-stable at the
+/// empty table.
+#[salsa::tracked(returns(ref))]
+pub(crate) fn coalesce_types_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+) -> brink_ir::lir::CoalesceLookup {
+    let resolved = resolutions_index_query(db, project);
+    let hir_refs: Vec<(FileId, &HirFile)> = project
+        .files(db)
+        .iter()
+        .map(|f| (f.file_id(db), &lowered_query(db, *f).hir))
+        .collect();
+
+    if !hir_refs
+        .iter()
+        .any(|&(_, hir)| brink_analyzer::project_has_coalesce(hir))
+    {
+        return brink_ir::lir::CoalesceLookup::new();
+    }
+
+    // Reuses the FG-narrowed, per-SCC-memoized `type_inference_query`
+    // rather than letting the analyzer recompute inference from scratch —
+    // the same seam `ufcs_resolution_query` above reuses.
+    let inference = type_inference_query(db, project);
+    let (table, _strict_only_diagnostics) = brink_analyzer::coalesce_types(
+        &hir_refs,
+        &resolved.index,
+        inference.as_ref(),
+        &resolved.resolutions,
+    );
+    // The one shared translation point (issue #1471) — see
+    // `brink_analyzer::coalesce_lir_lookup`'s own doc.
+    brink_analyzer::coalesce_lir_lookup(&table)
 }
 
 /// All analysis diagnostics, assembled in the exact order
@@ -605,9 +748,12 @@ pub(crate) fn analysis_diagnostics_query(
 /// [`whole_project_diagnostics_query`] rather than calling
 /// [`brink_analyzer::finish_analysis`] directly) — `db.analysis()`'s public
 /// shape, kept for LSP/IDE/CLI consumers that want the whole bundled
-/// result. Output-identical to the pre-FG-3 query and to the monolithic
-/// `analyze_with_options` path (pinned by `query_equivalence.rs`); the
-/// decomposition changes *dependency edges*, not values. Narrower consumers
+/// result. Output-identical to the pre-FG-3 query and to the monolithic,
+/// module-aware `analyze_with_modules` path (pinned by
+/// `query_equivalence.rs`) — only equal to the module-*blind*
+/// `analyze_with_options` for ink projects without a declared `#@module`,
+/// see `ProjectDb::module_map`'s doc (issue #1526); the decomposition
+/// changes *dependency edges*, not values. Narrower consumers
 /// ([`diagnostics_query`], [`lir_query`]) read the three sub-queries
 /// directly instead of through this bundle.
 #[salsa::tracked(returns(ref))]
