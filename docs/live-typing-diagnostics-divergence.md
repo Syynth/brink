@@ -106,13 +106,23 @@ Arguments for, given what has landed since #1347 was filed:
   #1526 already treats the db as the authority for module identity. There is
   no longer a fact the pure path holds that the db lacks; the reverse is not
   true.
-- **It is the incremental path.** `db.analysis()` is salsa-memoized per file;
-  `analyze_with_modules` re-runs whole-project work on every keystroke. This
-  is a performance argument *for* the db, which inverts the assumption in
-  #1347's framing that live typing wants "a cheap pure-analysis path".
 - **It closes the class, not the instance.** #1526, #1553, #1562 and this
   issue are four separate repairs of the same seam. Every future check wired
   at a db query inherits the fix.
+
+Performance is **not** a settled argument for A. `db.analysis()`
+(`analysis_query`, `crates/internal/brink-db/src/queries/analysis.rs:760`)
+composes `resolutions_index_query` + `analysis_diagnostics_query` +
+`whole_project_diagnostics_query` — all three keyed on the whole
+`ProjectInput`, not per file. A keystroke invalidates the edited file's
+`SourceFile` input, so all three re-run, the same as `analyze_with_modules`
+does today. What salsa's `lru = 4096` per-file memo on
+`per_file_diagnostics_query` preserves inside that recomputation is the
+*other* files' per-file contributors — not the whole-project half
+(`module_diagnostics`, `strict_diagnostics`, `ufcs_resolution_query`, …)
+either path also runs on every keystroke. Whether that partial memoization
+nets out cheaper than `analyze_with_modules`'s whole-project walk is not
+measured here.
 
 Costs: `IdeSnapshot` becomes vestigial (it is `pub` in `brink-ide` but has no
 consumer outside `IdeSession` — `brink-web`'s `session.snapshot()` is an
@@ -127,9 +137,9 @@ snapshot, thread it through `analyze_with_modules` → `finish_analysis` →
 `per_file_diagnostics`, and add an `E137` call site to `finish_analysis`.
 
 Smaller and lower-risk, and it fixes `brink-lsp` in the same stroke (which
-option A does not — the LSP has its own pure-path call site). But it is the
-"parallel check path" #1347 names as the thing to avoid, and it leaves the
-next db-side check to be discovered the same way this one was.
+option A does not — the LSP has its own pure-path call site). But it
+institutionalizes a second check path running parallel to the db's, and it
+leaves the next db-side check to be discovered the same way this one was.
 
 ### C — rule that compile-time-only is correct for these
 
@@ -141,9 +151,11 @@ positive, which no ruling makes correct.
 
 The `E051` false positive is a bug on any reading, so #1347 cannot be closed
 as "compile-time-only is correct" without separately fixing the gate. Between
-A and B, the evidence in §4 favours **A**, and the specific premise #1347
-raised as the tension — that live typing needs the cheap pure path — does not
-survive contact with salsa's memoization.
+A and B, the evidence in §4 favours **A** on correctness grounds — the db
+already holds every fact the pure path does, plus one the pure path
+structurally cannot reach (a file's `Language`) — not on performance: whether
+A is cheaper or more expensive than `analyze_with_modules` per keystroke is
+not measured here (see §4A).
 
 But A removes a public type's reason to exist and changes the session's
 threading posture, and `IdeSession::compile`'s own doc

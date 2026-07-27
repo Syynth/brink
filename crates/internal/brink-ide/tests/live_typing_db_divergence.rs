@@ -53,6 +53,21 @@ flow main() {
 /// is what proves it.
 const INK_PLAIN: &str = "=== start ===\nHello.\n-> END\n";
 
+/// A native file with a map literal that trips both of the other two checks
+/// wired at the same `dialect == Brink || is_native` gate as `E084`
+/// (`crates/internal/brink-analyzer/src/lib.rs:634-651`): `3.5` is outside
+/// the int/string/bool key domain (`E106`), and `"a"` repeats (`E138`).
+const NATIVE_MAP_KEY_ISSUES: &str = "\
+fn f() {
+  let m = Map { \"a\": 1, \"a\": 2, 3.5: 4 };
+  return m;
+}
+
+flow main() {
+  Sum: {f()} -> END
+}
+";
+
 /// Load `source` into a session under `dialect` with an explicit
 /// `types = gradual`, and return `(live typing diagnostics, db diagnostics)`.
 ///
@@ -186,6 +201,37 @@ fn live_typing_invents_e051_on_native_syntax_the_db_accepts() {
          ruled it must not; db saw {:?}",
         codes(&db)
     );
+}
+
+/// **False negatives, not previously pinned by this suite.** `E106`
+/// (map-literal key domain) and `E138` (map-literal duplicate key) are gated
+/// at the same `dialect == Brink || is_native` block as `E084`
+/// (`crates/internal/brink-analyzer/src/lib.rs:634-651`), so both are also
+/// missing from live typing on a native file under the default `strict-ink`
+/// dialect — the same pure-path `is_native = false` blind spot
+/// `e084_on_a_native_file_needs_is_native_under_the_default_dialect` pins for
+/// `E084`.
+///
+/// Under #1347's resolution these assertions invert: live typing gains
+/// `E106` and `E138`.
+#[test]
+fn e106_and_e138_map_literal_checks_missing_from_live_typing_under_default_dialect() {
+    let (live, db) = both_surfaces("main.brink", NATIVE_MAP_KEY_ISSUES, Dialect::StrictInk)
+        .expect("session produced an analysis");
+    for code in [DiagnosticCode::E106, DiagnosticCode::E138] {
+        assert!(
+            has(&db, code),
+            "#1347 inventory drift: the db lost {code:?} under strict-ink; db saw {:?}",
+            codes(&db)
+        );
+        assert!(
+            !has(&live, code),
+            "#1347 appears resolved for {code:?} — live typing now sees it under \
+             strict-ink. Update docs/live-typing-diagnostics-divergence.md and this \
+             test; live saw {:?}",
+            codes(&live)
+        );
+    }
 }
 
 /// The control: on an ink file the two surfaces agree exactly, under both
