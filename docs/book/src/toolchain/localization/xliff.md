@@ -4,7 +4,7 @@ Localization source files use **XLIFF 2.0** — one file per locale. Lexical sco
 
 The workflow is shipped end-to-end: the `brink` CLI exposes `export-xliff`, `compile-locale`, `regenerate-xliff`, and `migrate-xliff`, and `brink-intl` exposes the same operations as a library (`generate_locale`, `compile_locale_xliff`, `regenerate_locale`, `migrate_unit_ids`).
 
-`<unit id>` is keyed on the scope's `DefinitionId` (e.g. `0x0100000000000001:0`), not its display name — DefinitionIds are stable across knot/stitch renames, so a TMS that keys translation memory on unit id survives a pure rename. The human-readable scope name still rides along as the `name` attribute on `<unit>` and as the `id` attribute on the containing `<file>`, for translator context.
+`<unit id>` is keyed on the scope's `DefinitionId` (e.g. `0x0100000000000001:0`), not its display name — this is a canonical, NMTOKEN-safe identifier decoupled from the mutable, non-unique-across-scopes display name, matching the format `brink:scope-id` and `IntlError::InvalidUnitId` already documented. **This does not make unit ids stable across renames**: a `DefinitionId` is itself a hash of the scope's (qualified) name/path, so renaming or moving a knot/stitch still assigns it a new `DefinitionId`, and its translations are still orphaned (see the scope-matching rules in `docs/intl-spec.md`). The human-readable scope name still rides along as the `name` attribute on `<unit>` (`{scope_name}:{line_index}`, the pre-#1442 id verbatim) and as the `id` attribute on the containing `<file>`, for translator context.
 
 ## Why XLIFF
 

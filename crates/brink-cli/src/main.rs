@@ -651,7 +651,26 @@ fn run_migrate_xliff(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let text = std::fs::read_to_string(input)?;
     let mut doc = xliff2::read::read_xliff(&text)?;
-    brink_intl::migrate_unit_ids(&mut doc)?;
+
+    for file in &doc.files {
+        let has_scope_id = file
+            .extensions
+            .attributes
+            .iter()
+            .any(|a| a.namespace == "brink" && a.local_name == "scope-id");
+        if !has_scope_id {
+            tracing::warn!(
+                "file {:?} has no brink:scope-id extension; migration falls back to \
+                 file.id ({:?}) as the scope id, which will not match a freshly \
+                 exported .xlf for the same scope",
+                file.id,
+                file.id
+            );
+        }
+    }
+
+    let changed = brink_intl::migrate_unit_ids(&mut doc)?;
+    tracing::info!("migrated {changed} unit id(s)");
     let xml = xliff2::write::to_string(&doc)?;
 
     if let Some(path) = output {

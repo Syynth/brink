@@ -168,14 +168,24 @@ fn is_whitespace_only(line: &LineJson) -> bool {
 
 fn line_to_unit(scope_id: &str, scope_name: Option<&str>, line: &LineJson) -> Unit {
     // The unit id is keyed on the scope's `DefinitionId` (`scope_id`, e.g.
-    // "0x0100000000000001"), never on its display name. DefinitionIds are
-    // assigned at compile time and are stable across knot/stitch renames, so
-    // a TMS that keys translation memory on unit id survives a pure rename
-    // (#1442) — renaming used to change every unit id in the file (and could
-    // even collide, since display names aren't guaranteed unique across
-    // scopes). The human-readable name, when present, rides the `name`
-    // attribute instead: free to change on rename with zero compatibility
-    // impact, since nothing keys off it.
+    // "0x0100000000000001"), never on its display name. This does NOT make
+    // unit ids rename-stable: a `DefinitionId` is itself a hash of the
+    // scope's (qualified) name/path (see `manifest.rs::hash_name`,
+    // `hir/stamp.rs::alloc_address`), so renaming a knot or stitch still
+    // produces a new `DefinitionId` and still orphans its translations —
+    // `docs/intl-spec.md`'s scope-matching section says so explicitly. Real
+    // rename stability would require a DefinitionId-level change, which is
+    // out of scope here and needs maintainer sign-off on #1442.
+    //
+    // What this DOES fix relative to the display-name scheme it replaces:
+    // the id is now a canonical, NMTOKEN-safe hex string (display names can
+    // contain characters that aren't valid in an XML `id`), it matches the
+    // format `brink:scope-id` and `IntlError::InvalidUnitId` already
+    // documented (`scope_id:line_index`), and it's decoupled from
+    // `scope.name`, a mutable, non-unique-across-scopes display field —
+    // collisions between two same-named scopes are no longer possible. The
+    // human-readable name, when present, rides the `name` attribute instead,
+    // for translator context.
     let unit_id = format!("{scope_id}:{}", line.index);
     let translate = if is_whitespace_only(line) {
         Some(false)
@@ -212,9 +222,16 @@ fn line_to_unit(scope_id: &str, scope_name: Option<&str>, line: &LineJson) -> Un
         target: None,
     };
 
+    // `name` carries the legacy readable id verbatim (`{scope_name}:{index}`,
+    // what `id` used to be pre-#1442), not the bare scope name — a bare name
+    // is identical across every unit in a file and adds nothing over the
+    // containing `<file id>`. This is what genuinely preserves the
+    // 2026-03-14 decision's readability rationale.
+    let name = scope_name.map(|n| format!("{n}:{}", line.index));
+
     Unit {
         id: unit_id,
-        name: scope_name.map(str::to_string),
+        name,
         translate,
         notes: Vec::new(),
         sub_units: vec![SubUnit::Segment(segment)],
@@ -640,7 +657,13 @@ mod tests {
         assert!(seg.source.elements.is_empty());
     }
 
-    // ── #1442: unit ids must be rename-stable ──────────────────────────
+    // ── #1442: unit ids are keyed on scope-id, not display name ─────────
+    //
+    // NOTE: this does not make unit ids rename-stable — a `DefinitionId` is
+    // itself a hash of the scope's (qualified) name/path, so renaming a
+    // knot/stitch still produces a new `DefinitionId` and still orphans its
+    // translations (`docs/intl-spec.md:415`). Real rename stability needs a
+    // `DefinitionId`-level change, out of scope for this PR (see #1442).
 
     #[test]
     fn unit_id_is_scope_id_based_not_display_name() {
@@ -656,15 +679,20 @@ mod tests {
         )]);
         let doc = lines_json_to_xliff(&lines, "en", None);
         assert_eq!(doc.files[0].units[0].id, "0x0100000000000001:0");
-        // The display name still rides along as metadata, not as part of
-        // the id, so translators still get readable labels in tooling that
-        // shows `name`.
-        assert_eq!(doc.files[0].units[0].name, Some("intro".to_string()));
+        // The legacy readable id (`{scope_name}:{index}`) still rides along
+        // as the `name` attribute, not as part of `id`, so translators
+        // still get readable labels in tooling that shows `name`.
+        assert_eq!(doc.files[0].units[0].name, Some("intro:0".to_string()));
     }
 
     #[test]
-    fn unit_id_unchanged_when_scope_is_renamed() {
-        let before = make_lines_json(vec![make_scope(
+    fn unit_id_ignores_scope_display_name() {
+        // Same `scope.id`, different `scope.name`. This is NOT a rename
+        // simulation — a real rename changes `scope.id` too, since the id
+        // is a hash of the scope's name/path (see the module note above).
+        // This only proves `line_to_unit` keys `id` off `scope_id`, not off
+        // `scope.name`.
+        let a = make_lines_json(vec![make_scope(
             "0x0100000000000001",
             Some("intro"),
             vec![make_line(
@@ -674,8 +702,7 @@ mod tests {
                 None,
             )],
         )]);
-        // Same DefinitionId, different display name — simulates a rename.
-        let after = make_lines_json(vec![make_scope(
+        let b = make_lines_json(vec![make_scope(
             "0x0100000000000001",
             Some("prologue"),
             vec![make_line(
@@ -686,16 +713,13 @@ mod tests {
             )],
         )]);
 
-        let doc_before = lines_json_to_xliff(&before, "en", None);
-        let doc_after = lines_json_to_xliff(&after, "en", None);
+        let doc_a = lines_json_to_xliff(&a, "en", None);
+        let doc_b = lines_json_to_xliff(&b, "en", None);
 
-        assert_eq!(
-            doc_before.files[0].units[0].id,
-            doc_after.files[0].units[0].id
-        );
-        // The display name (still carried on `File.id`) did change, proving
-        // this isn't a no-op rename.
-        assert_ne!(doc_before.files[0].id, doc_after.files[0].id);
+        assert_eq!(doc_a.files[0].units[0].id, doc_b.files[0].units[0].id);
+        // The display name (carried on `File.id` and `Unit.name`) did
+        // change, proving this isn't a no-op.
+        assert_ne!(doc_a.files[0].id, doc_b.files[0].id);
     }
 
     #[test]
