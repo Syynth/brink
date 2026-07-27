@@ -1,0 +1,14 @@
+flow narrate2(ref x, y) {
+  Coalesce: {x or 1}
+  Compare: {x == y}
+  NotEqual: {x != y}
+  Less: {x < y}
+  LessEq: {x <= y}
+  GreaterEq: {x >= y}
+  And: {x && y}
+  Div: {x / y}
+  Mod: {x % y}
+  Built: {Point { x: 1, y: 2 }}
+}
+
+var add = |a, b| a + b
