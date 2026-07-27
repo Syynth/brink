@@ -414,6 +414,8 @@ Matching operates in two tiers: **scope matching** then **line matching within e
 
 **Scope matching** uses `DefinitionId` — the lexical scope's identity, stable across recompiles (hash of fully qualified path). A knot renamed or moved gets a new `DefinitionId` and its translations are orphaned. Scopes present in the old translation but absent from the new `.inkb` are orphaned. Scopes in the new `.inkb` with no old translation are new.
 
+This orphaning holds even when the rename is *declared* with `#@was`: scope matching compares id strings and never consults the compiled alias table that the save path already uses. Closing that gap is issue #1442 (`needs-design`) — see `docs/design/definition-identity-proposals.md` for the analysis, the options, and the ruling it waits on.
+
 **Line matching** within a scope uses `source_hash` alignment, not line index. Line indices are unstable — inserting or deleting a line shifts all subsequent indices within the scope. Matching by index would incorrectly mark every shifted line as changed.
 
 Instead, the regeneration tool aligns the old and new hash sequences within each scope using longest common subsequence (LCS). The hash sequence is the ordered list of `source_hash` values from the line table. LCS finds the largest set of lines that appear in the same relative order in both old and new, identifying which lines are unchanged, which are inserted, and which are deleted.
@@ -489,7 +491,8 @@ Built on `quick-xml`. No brink-specific types or logic.
 | brink concept | XLIFF element |
 |---------------|---------------|
 | Lexical scope | `<file>` |
-| Scope `DefinitionId` | `<file id="...">` |
+| Scope display name, else the scope id (`knot.stitch`, or empty string for root) | `<file id="...">` |
+| Scope `DefinitionId` | `brink:scope-id` extension attribute on `<file>` |
 | Line | `<unit>` |
 | `LineId` | `<unit id="scope_id:line_idx">` |
 | `LineContent::Plain` | `<source>` with text content |
