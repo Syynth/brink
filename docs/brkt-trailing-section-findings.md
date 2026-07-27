@@ -2,14 +2,23 @@
 
 ## Scope
 
-#1519 ("v6 prep: needs a versioned/self-describing layout before the next
-trailing section", `needs-design`) flagged the `.brkt` transcript codec's
-hand-rolled "any bytes left?" backward-compat probe
+#1519 ("v6 prep: `.inkb` body needs a versioned/self-describing layout
+before the next trailing section", `needs-design`) flagged the `.brkt`
+transcript codec's hand-rolled "any bytes left?" backward-compat probe
 (`crates/brink-runtime/src/transcript.rs`, `read_transcript`) as unextendable
-for the trailing sections the v6 bump is expected to add (spans, element
-data, block id, Choice captured environment — `docs/decision-log.md`,
-"Choice captured environment... sequenced with the `.inkb` v6 bump...
-transcript/wire codec territory, #1443 adjacency").
+for the trailing sections the v6 bump is expected to add. The issue title
+scopes this to the `.inkb` body, but the issue's own body describes the
+`.brkt` transcript probe surfaced by #1443/PR #1512 — this document follows
+the body's scope, since that is the probe this report traces. Per the issue
+body, "the roadmap's v6 bump grows several (spans, element data, block id,
+Choice captured environment)" trailing sections. Separately,
+`docs/decision-log.md` records the Choice-captured-environment item on its
+own: implementation "is **sequenced with the `.inkb` v6 bump** (the Choice
+record grows a captured environment — transcript/wire codec territory,
+#1443 adjacency)" (`docs/decision-log.md:2189`); the "spans in the line
+table" item is recorded separately at `docs/decision-log.md:2053`, "open-map
+element data" at `docs/decision-log.md:2117`, and "Block id is a dedicated
+`OutputLine` field" at `docs/decision-log.md:2128`.
 
 This document answers one question concretely: **what would a new trailing
 section actually break, mechanically, in the current codec?** It does not
@@ -100,7 +109,16 @@ absence of an *earlier* section while a *later* one is present has no
 encoding. `docs/format-spec.md`'s own precedent for `.inkb` shows this
 exact shape already occurring in this codebase: the `Visibility` section
 "is omitted entirely when empty" — an *optional-by-content*, not
-optional-by-version, section. If any v6 trailing section follows that same
+optional-by-version, section. **This precedent is only safe because of a
+mechanism `.brkt` lacks:** `.inkb` sections are not read positionally at
+all — every section is an entry in a `SectionKind: u8` + `u32 LE` offset
+table (`docs/format-spec.md:511-519`), so a reader locates a section (or
+observes its absence) by tag lookup, never by "have I consumed everything
+before it." Visibility can be optional-by-content *by construction* of that
+table; see "Prior art in this repo" below for the mechanism itself. `.brkt`
+has no such table — its sections are read purely positionally — so the same
+optional-by-content convenience is not safe here without first adding an
+equivalent. If any v6 trailing section on the `.brkt` side follows that same
 convenience (e.g. a Choice-captured-environment section that is omitted
 entirely when no choice in the transcript ever captured a guard binding,
 while a block-id section — present whenever fragments exist at all — comes
@@ -129,13 +147,32 @@ composition. Two outcomes are both live, and only one is safe:
 
 ### 3. There is no diagnostic for unconsumed trailing bytes today — this is a present-day gap, not a hypothetical one
 
-`read_transcript` never checks, after decoding everything it knows about,
-whether `off == bytes.len()`. It just returns `Ok(TranscriptData { .. })`
-once its two hardcoded probes are exhausted. This means: **right now,
-today, before any v6 section exists**, a `.brkt` file carrying *any*
-trailing bytes this reader doesn't recognize — a genuinely new section from
-a newer writer, or truncated/corrupted data that happens to survive the
-CRC-32 check some other way — is silently, permanently dropped with zero
+**This claim needs a version-gate qualification.** The `.brkt` header
+carries its own `version: u16` field (`crates/brink-runtime/src/transcript.rs`,
+`const VERSION: u16 = 1`), and `read_transcript` hard-rejects any mismatch
+*before* the body is ever read: `if version != VERSION { return
+Err(TranscriptError::UnsupportedVersion(version)); }`. A v6 writer that
+bumps `.brkt`'s `VERSION` produces a loud, immediate `UnsupportedVersion`
+error on an old reader — not a silent drop. The silent-drop failure mode
+below applies specifically to **a writer that appends a new trailing
+section while leaving `VERSION` unchanged** — which is exactly what the
+existing #953 fragment-tags section did (it added a trailing section
+without a version bump, relying entirely on the "any bytes left?" probe),
+and that precedent is what makes the silent path a live risk for a v6
+section rather than a hypothetical one. The 16-byte header also has an
+unused `u16 reserved` field sitting next to `version`
+(`crates/brink-runtime/src/transcript.rs:14`, written as `0` today) — direct
+headroom for a section-table/flags mechanism, discussed under "Prior art in
+this repo" below.
+
+With that qualification: `read_transcript` never checks, after decoding
+everything it knows about, whether `off == bytes.len()`. It just returns
+`Ok(TranscriptData { .. })` once its two hardcoded probes are exhausted.
+This means: **right now, today, before any v6 section exists**, a `.brkt`
+file carrying *any* trailing bytes this reader doesn't recognize — a
+genuinely new section from a newer writer that (like #953) didn't bump
+`VERSION`, or truncated/corrupted data that happens to survive the CRC-32
+check some other way — is silently, permanently dropped with zero
 diagnostic. (The CRC-32 check does not help here: it is computed over the
 *whole body* including the unrecognized trailing bytes, so a well-formed
 newer file with a real v6 section passes the CRC check and then has that
@@ -143,10 +180,11 @@ section discarded anyway once the two known probes are exhausted.) This is
 exactly the "flag silent data drops" pattern the project's rules call out
 as a bug until proven otherwise (`CLAUDE.md` "Rules"): an older reader
 (e.g. `bevy-brink` or a translation tool pinned to a pre-v6
-`brink-runtime`) ingesting a v6-written transcript would silently discard
-the new section — which, if that section is the Choice captured
-environment, means silently dropping the guard-`as` binding data the
-`.inkb` v6 bump exists to carry, with the reader reporting success.
+`brink-runtime`) ingesting a v6-written transcript whose writer followed
+the #953 precedent of not bumping `VERSION` would silently discard the new
+section — which, if that section is the Choice captured environment, means
+silently dropping the guard-`as` binding data the `.inkb` v6 bump exists to
+carry, with the reader reporting success.
 
 ### 4. No section is self-identifying, so a reader cannot skip what it does not need
 
@@ -157,7 +195,42 @@ only recognize "I am at the end of what I understand" (case 3, silently
 drop everything after) or "I am mid-section, misaligned" (case 1/2 above).
 A length-prefixed or tagged section layout would fix this by construction;
 the current probe cannot approximate it without becoming exactly that
-layout.
+layout. **This layout is not a hypothetical fix — it already exists
+elsewhere in this repo**, for `.inkb`; see "Prior art in this repo" below.
+That is also why the section-1 finding above frames `.inkb` as the format
+that is *already* self-describing and `.brkt` as the one that is not: the
+gap this document identifies is specific to `.brkt`.
+
+## Prior art in this repo
+
+None of the mechanisms below are proposed here as *the* fix — picking one
+is #1519's design question. They are cited only to establish that
+`.brkt`'s "any bytes left?" probe is not this codebase's only way of
+solving self-describing extensibility; three related mechanisms already
+ship on the `.inkb`/save-format side:
+
+- **Section offset table.** `.inkb`'s header carries a `SectionKind: u8`
+  tag + `u32 LE` byte offset per section, in an N-entry table right after
+  the header (`docs/format-spec.md:511-519`, section table at
+  `docs/format-spec.md:524-538`). A reader locates any section — or
+  observes its absence — by tag lookup, never by positional accumulation.
+  This is the mechanism that lets `Visibility` (`0x0E`) be
+  optional-by-content "omitted entirely when empty" (`docs/format-spec.md:559`)
+  without breaking any other section's addressability, and it is the
+  direct precedent for solving `.brkt`'s finding 1 above.
+- **Section-local version bytes.** Two `.inkb` sections carry their own
+  version byte ahead of their payload, independent of the file-level
+  `VERSION`: `AliasTable` (`0x0F`) and `Frame shapes` (`0x10`)
+  (`docs/format-spec.md:537-538`). This lets a section's internal encoding
+  evolve without forcing a whole-file version bump — the file-level
+  `VERSION` stays the coarse gate (this document's finding 3), and a
+  section-local version is the fine-grained one.
+- **`SUSPENDED_FLOW_SECTION_VERSION`.** The save format
+  (`crates/internal/brink-format/src/save.rs`) applies the same
+  section-local-version idea to `SuspendedFlow`
+  (`pub const SUSPENDED_FLOW_SECTION_VERSION: u16 = 1`), independent of
+  `SAVE_FORMAT_VERSION`, showing the pattern is not `.inkb`-specific
+  in this codebase.
 
 ## Net assessment
 
