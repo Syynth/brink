@@ -57,13 +57,14 @@ minted through `DefinitionId::new` at `id.rs:81`). The hash is always
 derived from a **name or a path string** — there is no allocator, no
 counter, and nothing persisted between compiles.
 
-There are two distinct minting schemes, both landing in the same tag
-space:
+There are three distinct minting schemes in production, all landing in
+the same tag space:
 
 | Scheme | Where | Hashed input | Used for |
 |--------|-------|--------------|----------|
 | Qualified-name hash | `brink-analyzer/src/manifest.rs:284-286`, fn at `:416-424` | `tag`, then optional declared module, then the symbol name | every **declared** symbol — knots, stitches, labels, VAR/CONST, lists, externals, structs (`SymbolKind::definition_tag`, `brink-ir/src/symbols/index.rs:123-133`) |
 | Path hash | `brink-ir/src/hir/stamp.rs:286-290` and `brink-ir/src/lir/lower/context.rs:392-400` (hash fn at `:424-428`) | the scope path string alone (`""`, `"knot.c0"`, `"knot.g-0"`) | **synthetic** containers — choice targets, gathers, conditional/sequence wrappers, the root |
+| Scope-prefixed local hash | `brink-analyzer/src/manifest.rs:441`, minting at `:450` | `tag`, then a `knot.stitch.`-style scope prefix, then the local's bare name | scoped locals — params/temps (`SymbolKind::LocalVar`); non-durable, not file-qualified, so it does not disturb R1, but is a third scheme a maintainer must know about |
 
 Two consequences worth naming, because they surface again in §5 (Options):
 
@@ -77,6 +78,15 @@ Two consequences worth naming, because they surface again in §5 (Options):
   history-independence). #1504(b) is the one violation:
   `#root-terminus.{file_id}` keys an address by `FileId`
   (`brink-ir/src/lir/lower/mod.rs:1957`).
+- The scope-prefixed local scheme is *not* file-qualified: its own doc
+  comment (`manifest.rs:435-440`) records that two files which
+  (pathologically) declare the same scope-qualified local name still
+  collide on one `DefinitionId` in the merged index. That is an
+  in-tree, already-documented instance of the same **same name,
+  different definitions → collision** direction §1 frames for #1504 —
+  scoped down to a merged-index-only blast radius (per-file resolution
+  does not go through the merged index for locals, so the collision
+  cannot leak into resolution correctness).
 
 ### Who keys on it durably
 

@@ -491,7 +491,7 @@ Built on `quick-xml`. No brink-specific types or logic.
 | brink concept | XLIFF element |
 |---------------|---------------|
 | Lexical scope | `<file>` |
-| Scope display name (`knot.stitch`) | `<file id="...">` |
+| Scope display name, else the scope id (`knot.stitch`, or empty string for root) | `<file id="...">` |
 | Scope `DefinitionId` | `brink:scope-id` extension attribute on `<file>` |
 | Line | `<unit>` |
 | `LineId` | `<unit id="scope_id:line_idx">` |
