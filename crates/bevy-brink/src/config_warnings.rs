@@ -40,14 +40,20 @@ use brink_project_config::ProjectConfig;
 /// added (even with no `with_config` override, or one with no rejected
 /// codes) — an empty `Vec` means "nothing was rejected by this plugin
 /// instance's own `with_config`," not necessarily "no `[lints]` override was
-/// ever rejected." In particular, a later `BrinkPlugin<M>::with_config`
-/// whose config is ignored because `BrinkAssetsPlugin` was already added
-/// (see [`BrinkPlugin::with_config`](crate::BrinkPlugin::with_config)) never
-/// reaches this resource at all — its whole `ProjectConfig`, rejected codes
-/// included, is silently dropped, with no `tracing::warn!` either. Message
-/// text is byte-identical to what `AnalysisOptions::apply_lint_overrides`
-/// (`brink-analyzer`) produces, the same wording the `tracing::warn!`
-/// channel logs.
+/// ever rejected." Message text is byte-identical to what
+/// `AnalysisOptions::apply_lint_overrides` (`brink-analyzer`) produces, the
+/// same wording the `tracing::warn!` channel logs.
+///
+/// A later `BrinkPlugin<M>::with_config` whose *entire* `ProjectConfig` is
+/// ignored because `BrinkAssetsPlugin` was already added (see
+/// [`BrinkPlugin::with_config`](crate::BrinkPlugin::with_config)) also
+/// appends here — a distinct, single-sentence message (not the
+/// per-lint-code shape above, since none of that config's fields were even
+/// evaluated) pushed by `BrinkPlugin::<M>`'s own
+/// [`build`](bevy_app::Plugin::build) rather than `Self::from_config`
+/// below. Previously this whole class of drop reached neither this
+/// resource nor `tracing::warn!` at all (the issue #1382 sweep's finding);
+/// both channels now carry it.
 #[derive(Resource, Debug, Clone, Default, PartialEq, Eq)]
 pub struct BrinkConfigWarnings(pub Vec<String>);
 

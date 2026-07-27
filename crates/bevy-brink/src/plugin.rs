@@ -5,6 +5,8 @@ use std::marker::PhantomData;
 use bevy_app::{App, Plugin, Update};
 use bevy_asset::AssetApp;
 use bevy_ecs::schedule::IntoScheduleConfigs as _;
+#[cfg(feature = "dev")]
+use bevy_log::warn;
 use brink_runtime::{ExecMode, WorldPolicy};
 
 use crate::asset::{BrinkStoryAsset, InkbLoader, LineTablesAsset, ProgramAsset};
@@ -121,7 +123,14 @@ impl<M: Send + Sync + 'static> BrinkPlugin<M> {
     /// `BrinkAssetsPlugin` already exists in the app, same as every other
     /// `BrinkAssetsPlugin`-owned setting. Call
     /// [`BrinkAssetsPlugin::with_config`] directly instead if you're adding
-    /// it standalone.
+    /// it standalone. A dropped later-marker override is not silent (issue
+    /// #1382 sweep): [`Plugin::build`](Plugin) surfaces it through the same
+    /// two channels an unrecognized `[lints]` code uses two paragraphs
+    /// down — a `tracing::warn!` naming the marker type, and an entry
+    /// appended to [`BrinkConfigWarnings`](crate::BrinkConfigWarnings) — so
+    /// a host that adds two `BrinkPlugin<M>`s with conflicting `with_config`
+    /// calls finds out, rather than silently getting the first one's policy
+    /// for every marker.
     ///
     /// This override also reaches
     /// [`compile_story_inline`](crate::compile_story_inline) (#1380) — but
@@ -168,13 +177,47 @@ impl<M: Send + Sync + 'static> BrinkPlugin<M> {
 
 impl<M: Send + Sync + 'static> Plugin for BrinkPlugin<M> {
     fn build(&self, app: &mut App) {
-        if !app.is_plugin_added::<BrinkAssetsPlugin>() {
+        let assets_already_present = app.is_plugin_added::<BrinkAssetsPlugin>();
+        if !assets_already_present {
             #[cfg(feature = "dev")]
             let assets_plugin =
                 BrinkAssetsPlugin::default().with_config_option(self.config.clone());
             #[cfg(not(feature = "dev"))]
             let assets_plugin = BrinkAssetsPlugin::default();
             app.add_plugins(assets_plugin);
+        }
+        // Issue #1382 sweep: `Self::with_config`'s own doc comment already
+        // documented that a *second* `BrinkPlugin<M>` registration's
+        // override is ignored once `BrinkAssetsPlugin` already exists (only
+        // the marker whose plugin actually adds it gets to set the shared
+        // `InkLoader`'s config) — but until now that drop reached neither
+        // the `tracing::warn!` channel every other mount's "warn, never
+        // silently drop" precedent uses, nor `BrinkConfigWarnings` (#1426's
+        // headless-host escape hatch for hosts with no `tracing`
+        // subscriber installed) — exactly the gap `BrinkConfigWarnings`'s
+        // own doc comment used to call out as unresolved. Diagnosed on
+        // both channels now, matching every other silent-drop fix in this
+        // sweep (#1394/#1416/#1417).
+        #[cfg(feature = "dev")]
+        if assets_already_present && self.config.is_some() {
+            let message = format!(
+                "BrinkPlugin::<{}>::with_config's ProjectConfig override was \
+                 ignored: BrinkAssetsPlugin was already added to this app (by \
+                 an earlier BrinkPlugin<M> registration, or added directly) — \
+                 only the BrinkPlugin<M>/BrinkAssetsPlugin instance that \
+                 actually adds BrinkAssetsPlugin can set the shared \
+                 InkLoader's config override. Call BrinkAssetsPlugin::with_config \
+                 directly before adding any BrinkPlugin<M>, or set the override \
+                 on whichever BrinkPlugin<M> is added to the app first.",
+                std::any::type_name::<M>()
+            );
+            warn!("{message}");
+            if let Some(mut warnings) = app
+                .world_mut()
+                .get_resource_mut::<crate::config_warnings::BrinkConfigWarnings>()
+            {
+                warnings.0.push(message);
+            }
         }
         app.insert_resource(BrinkWorldPolicy::<M>::new(self.policy.clone()));
         // F35 (ruled 2026-07-19): the host-selected (or profile-defaulted)

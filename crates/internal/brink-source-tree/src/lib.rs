@@ -92,6 +92,15 @@ use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::io;
 
+/// The directory-entry name that marks a git repository root — either an
+/// ordinary clone's `.git/` directory, or a linked worktree's `.git`
+/// *file* (a `gitdir:` pointer, e.g. how this repository's own
+/// `.claude/worktrees/*` are laid out). A single source of truth for that
+/// name (issue #1435): before this constant existed, [`IGNORED_DIR_NAMES`]
+/// below and `brink-project-config`'s `find_config` walk-up bound each
+/// hardcoded their own `".git"` literal, free to drift apart.
+pub const GIT_DIR_NAME: &str = ".git";
+
 /// Directory names a recursive filesystem walk should never descend into —
 /// build output and VCS/dependency metadata that is never a valid source
 /// location and can be enormous. Originally added to `brink-driver`'s
@@ -107,7 +116,7 @@ use std::io;
 /// Sharing the *list* was only half the problem: each walk still had to
 /// remember to consult it. [`Walk`] (issue #1433) applies this list by
 /// construction, and is where every recursive traversal enforces it now.
-pub const IGNORED_DIR_NAMES: &[&str] = &["target", ".git", "node_modules"];
+pub const IGNORED_DIR_NAMES: &[&str] = &["target", GIT_DIR_NAME, "node_modules"];
 
 /// Whether `name` (a single directory-entry file name, not a path) is a
 /// conventionally-ignored directory a recursive walk must not descend into.

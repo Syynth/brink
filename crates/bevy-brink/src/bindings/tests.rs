@@ -608,6 +608,153 @@ fn call_ink_function_pure_and_errors() {
     );
 }
 
+/// Regression for issue #1096: a `bind_brink_command`-bound `EXTERNAL`
+/// reached through `call_ink_function` (the exclusive engine→ink eval
+/// driver) must fire its Bevy event, not silently run the in-story
+/// fallback the way an *unbound* external would.
+///
+/// The fixture gives `ping` an in-story fallback (`~ return -1`) so the
+/// pre-fix bug is genuinely *silent*: `EvalHandler::call` used to fall
+/// through to `ExternalResult::Fallback` for a command binding exactly as
+/// it does for an unbound name, so the call would resolve `Ok(-1)` with no
+/// error and no event — indistinguishable from a legitimate call unless
+/// something asserts the event actually fired. Asserting only that the
+/// call returns `Ok` (as `call_ink_function_pure_and_errors` does for pure
+/// bindings) would therefore pass on both the broken and fixed code; this
+/// test asserts both the command's real reply (not the fallback's `-1`)
+/// *and* the observer log, so it fails loudly against the silent-fallback
+/// bug.
+#[test]
+fn call_ink_function_fires_command_event_not_silent_fallback() {
+    use crate::BrinkFlowRequest;
+    use crate::test_support::{add_story_assets, make_test_app};
+
+    #[derive(Resource, Default)]
+    struct PingLog(Vec<String>);
+
+    let mut app = make_test_app();
+    app.bind_brink_command::<(), Ping>("ping");
+    app.init_resource::<PingLog>();
+    app.add_observer(|on: On<Ping>, mut log: ResMut<PingLog>| {
+        log.0.push(on.event().label.clone());
+    });
+
+    let (program, tables, ctx) = compile_test_story(
+        "EXTERNAL ping(label)\n\
+         -> END\n\
+         === function ping(label) ===\n\
+         ~ return -1\n\
+         === function sound_alarm() ===\n\
+         ~ return ping(\"intruder\")\n",
+    );
+    let story = add_story_assets(&mut app, program, tables, ctx);
+    let entity = app
+        .world_mut()
+        .spawn(BrinkFlowRequest::<()>::builder().story(story).build())
+        .id();
+    app.update();
+
+    let result = call_ink_function::<()>(app.world_mut(), entity, "sound_alarm", &[]).unwrap();
+
+    // `Ping::reply` returns the label's length (`"intruder".len() == 8`);
+    // the in-story fallback would have returned `-1`. A `-1` here would
+    // mean the call quietly ran the fallback instead of the binding.
+    assert_eq!(
+        result,
+        Value::Int(8),
+        "expected the command binding's reply (label length 8), not the \
+             in-story fallback's -1 — the command binding must resolve the call"
+    );
+
+    // The actual regression: the event must have fired, not merely have
+    // the call return a plausible value.
+    let log = app.world().resource::<PingLog>();
+    assert_eq!(
+        log.0,
+        vec!["intruder".to_string()],
+        "call_ink_function must fire the bind_brink_command event, not \
+             silently fall back to the in-story body; observer log: {:?}",
+        log.0
+    );
+}
+
+/// Regression for issue #1096, the [`call_ink_function_value`] sibling of
+/// [`call_ink_function_fires_command_event_not_silent_fallback`]: a
+/// `bind_brink_command`-bound `EXTERNAL` reached through the **function
+/// value** re-entry path (its own `EvalHandler`/`flush_eval_triggers` wiring
+/// in `drive_function_eval_to_done`/`call_ink_function_value`, separate from
+/// `call_ink_function`'s) must also fire its Bevy event, not silently run
+/// the in-story fallback.
+///
+/// The obtained token points at `sound_alarm`, which itself calls the
+/// `ping` external — so invoking the token re-enters the VM and hits
+/// `EvalHandler::call` on the command binding exactly as a by-name call
+/// would, but through `call_ink_function_value`'s independent driver code.
+/// As with the by-name regression test, asserting only that the call
+/// returns `Ok` would pass on both the broken and fixed code (the command
+/// binding's `Resolved` reply doesn't depend on whether its trigger is ever
+/// flushed against the World) — the observer log is what actually catches a
+/// missing `flush_eval_triggers` call on this path.
+#[test]
+fn call_ink_function_value_fires_command_event_not_silent_fallback() {
+    use crate::BrinkFlowRequest;
+    use crate::test_support::{add_story_assets, make_test_app};
+
+    #[derive(Resource, Default)]
+    struct PingLog(Vec<String>);
+
+    let mut app = make_test_app();
+    app.bind_brink_command::<(), Ping>("ping");
+    app.init_resource::<PingLog>();
+    app.add_observer(|on: On<Ping>, mut log: ResMut<PingLog>| {
+        log.0.push(on.event().label.clone());
+    });
+
+    // Needs the brink dialect for `#fn(…)` (function values); `_gradual`
+    // opts out of NS-A9's strict-by-default typing since the subject here
+    // (command bindings reached via a function-value token) is
+    // regime-independent — see `compile_test_story_brink_gradual`'s doc.
+    let (program, tables, ctx) = crate::test_support::compile_test_story_brink_gradual(
+        "EXTERNAL ping(label)\n\
+         -> END\n\
+         === function ping(label) ===\n\
+         ~ return -1\n\
+         === function sound_alarm() ===\n\
+         ~ return ping(\"intruder\")\n\
+         === function make_alarm_caller() ===\n\
+         ~ return #fn(sound_alarm)\n",
+    );
+    let story = add_story_assets(&mut app, program, tables, ctx);
+    let entity = app
+        .world_mut()
+        .spawn(BrinkFlowRequest::<()>::builder().story(story).build())
+        .id();
+    app.update();
+
+    let token = call_ink_function::<()>(app.world_mut(), entity, "make_alarm_caller", &[]).unwrap();
+    let result = call_ink_function_value::<()>(app.world_mut(), entity, &token, &[]).unwrap();
+
+    // `Ping::reply` returns the label's length (8); the in-story fallback
+    // would have returned -1.
+    assert_eq!(
+        result,
+        Value::Int(8),
+        "expected the command binding's reply (label length 8) via the function-value \
+             re-entry path, not the in-story fallback's -1"
+    );
+
+    // The actual regression: the event must have fired through this path's
+    // own EvalHandler/flush_eval_triggers wiring.
+    let log = app.world().resource::<PingLog>();
+    assert_eq!(
+        log.0,
+        vec!["intruder".to_string()],
+        "call_ink_function_value must fire the bind_brink_command event, not \
+             silently fall back to the in-story body; observer log: {:?}",
+        log.0
+    );
+}
+
 /// A story line that calls a world-access query binding inline
 /// (`{enemy_count()}`) resolves transparently when driven by
 /// `advance_flow`.
@@ -879,5 +1026,80 @@ fn batch_drives_world_queries_across_calls() {
         results,
         vec![Value::Int(2), Value::Int(2), Value::Int(2)],
         "each batched query resolves against the World"
+    );
+}
+
+/// Regression proving `call_ink_functions`' documented **per-call** flush
+/// contract (`drive.rs`'s `flush_eval_triggers` call sitting inside the
+/// batch's per-call loop, not once after the whole batch): call 1 fires a
+/// `bind_brink_command` whose observer writes a resource; call 2 is a
+/// `bind_brink_query` that reads it. Only per-call flush lets call 2 observe
+/// call 1's World effect — an implementation that buffered every call's
+/// triggers and flushed once at the end of the batch would still resolve
+/// both calls (`Resolved` doesn't depend on flush timing), so this can
+/// *only* pass under the isolated-per-call semantics the batch's own doc
+/// comment states ("isolated outputs, identical to a standalone
+/// `call_ink_function`").
+#[test]
+fn call_ink_functions_flushes_each_calls_command_before_the_next_call_runs() {
+    use crate::BrinkFlowRequest;
+    use crate::test_support::{add_story_assets, make_test_app};
+
+    #[derive(Event, Clone, Debug)]
+    struct Bump;
+
+    impl BrinkCommand for Bump {
+        fn from_ink_args(_args: &[Value]) -> Result<Self, BrinkArgError> {
+            Ok(Self)
+        }
+    }
+
+    #[derive(Resource, Default)]
+    struct Counter(i32);
+
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "bind_brink_query system param, not a plain function argument"
+    )]
+    fn read_counter(In((_entity, _args)): In<BrinkQueryInput>, counter: Res<Counter>) -> Value {
+        Value::Int(counter.0)
+    }
+
+    let mut app = make_test_app();
+    app.bind_brink_command::<(), Bump>("bump");
+    app.bind_brink_query::<(), _, _>("read_counter", read_counter);
+    app.init_resource::<Counter>();
+    app.add_observer(|_on: On<Bump>, mut counter: ResMut<Counter>| {
+        counter.0 += 1;
+    });
+
+    let (program, tables, ctx) = compile_test_story(
+        "EXTERNAL bump()\n\
+         EXTERNAL read_counter()\n\
+         -> END\n\
+         === function do_bump() ===\n\
+         ~ return bump()\n\
+         === function do_read() ===\n\
+         ~ return read_counter()\n",
+    );
+    let story = add_story_assets(&mut app, program, tables, ctx);
+    let entity = app
+        .world_mut()
+        .spawn(BrinkFlowRequest::<()>::builder().story(story).build())
+        .id();
+    app.update();
+
+    let calls: Vec<(&str, Vec<Value>)> = vec![("do_bump", vec![]), ("do_read", vec![])];
+    let results: Vec<Value> = call_ink_functions::<(), _, _>(app.world_mut(), entity, calls)
+        .into_iter()
+        .map(|r| r.unwrap())
+        .collect();
+
+    assert_eq!(
+        results[1],
+        Value::Int(1),
+        "do_read (call 2) must observe do_bump's (call 1) World effect — proving \
+             call_ink_functions flushes each call's command triggers before the next \
+             call runs, not once at the end of the batch; got {results:?}"
     );
 }
