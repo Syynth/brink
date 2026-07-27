@@ -177,6 +177,47 @@ fn pruned_dir_holding_a_brink_file_warns_naming_it_and_the_fix() {
     fs::remove_dir_all(&dir).ok();
 }
 
+/// The diagnostic must also fire for the `node_modules/<package>/lib.brink`
+/// shape — one level below the pruned directory's immediate children —
+/// which is how an npm-style dependency tree actually lays out vendored
+/// source (issue #1407's review finding: the original shallow,
+/// immediate-children-only scan missed exactly this shape, even though this
+/// file's own `node_modules/vendor-ink/bad.brink` escape-hatch fixtures
+/// above already use it).
+#[test]
+fn pruned_dir_holding_a_nested_brink_file_warns_naming_the_pruned_directory() {
+    let dir = project_dir("diagnostic-warns-nested");
+    write(&dir, "brink.toml", "[project]\n");
+    let entry = write(&dir, "main.brink", VALID_ENTRY);
+    write(&dir, "node_modules/vendor-ink/lib.brink", VALID_ENTRY);
+
+    let out = brink()
+        .arg("compile")
+        .arg(&entry)
+        .env("RUST_LOG", "warn")
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "a pruned directory holding a nested source file must still compile \
+         successfully by default, just warn: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("node_modules"),
+        "warning must name the pruned directory even though the file is nested \
+         one level deeper, got stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("unprune-dirs"),
+        "warning must point at the unprune-dirs fix, got stdout: {stdout}"
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
 /// Once `unprune-dirs` names the directory, the same tree no longer warns —
 /// the diagnostic is for an *unaddressed* prune, not a standing nag about a
 /// directory the author already made a deliberate decision about.
