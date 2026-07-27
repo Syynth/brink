@@ -212,16 +212,16 @@ pub(super) fn run_check(opts: &CommonOpts) -> Result<ExitCode, String> {
         .driver
         .collect_diagnostics(&project.analysis, Some(project.entry_id));
 
+    // `diag_entry` resolves each diagnostic's actual severity via
+    // `effective_severity` rather than trusting which of `report`'s two
+    // buckets it came from (issue #1616) — `report.errors`/`report.warnings`
+    // is a binary partition, so a `[lints]` code down-leveled to `Info`/
+    // `Hint` still lands in `warnings` and must not render as `"warning"`.
     let mut diags: Vec<DiagEntry> = report
         .errors
         .iter()
-        .map(|d| project.diag_entry(d, "error"))
-        .chain(
-            report
-                .warnings
-                .iter()
-                .map(|d| project.diag_entry(d, "warning")),
-        )
+        .chain(report.warnings.iter())
+        .map(|d| project.diag_entry(d))
         .collect();
     diags.sort_by(|a, b| {
         (&a.location.path, a.location.byte_start).cmp(&(&b.location.path, b.location.byte_start))
