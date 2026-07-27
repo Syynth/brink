@@ -40,6 +40,38 @@ pub fn compile_test_story(source: &str) -> (Program, Vec<Vec<brink_format::LineE
     (program, tables, initial_context)
 }
 
+/// [`compile_test_story`] plus the compiler's **real** inferred effect rows
+/// (`docs/effects-spec.md` §11), which `compile_test_story` discards.
+///
+/// Use when the behavior under test consumes a row — the wake-condition
+/// purity gate, or the row-directed wake dirtying of issue #1146 — and a
+/// hand-built `EffectRowEntry` would prove only that the fixture matches
+/// itself. The rows come straight off `brink_compiler::compile`'s
+/// `StoryData`, i.e. exactly what a `.inkb` on disk carries.
+pub fn compile_test_story_with_effect_rows(
+    source: &str,
+) -> (
+    Program,
+    Vec<Vec<brink_format::LineEntry>>,
+    World,
+    Vec<brink_format::EffectRowEntry>,
+) {
+    let output = brink_compiler::compile("test.ink", |path| {
+        if path == "test.ink" {
+            Ok(source.to_string())
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("unexpected include: {path}"),
+            ))
+        }
+    })
+    .expect("test fixture should compile");
+    let (program, tables) = brink_runtime::link(&output.data).expect("test fixture should link");
+    let initial_context = fresh_context(&program);
+    (program, tables, initial_context, output.data.effect_rows)
+}
+
 /// [`compile_test_story`] but under the **brink dialect**, so a fixture can
 /// use brink-extension syntax (`#fn(…)` function values, `~ { }` blocks,
 /// sigil collection literals). Same `(Program, line tables, World)` return.

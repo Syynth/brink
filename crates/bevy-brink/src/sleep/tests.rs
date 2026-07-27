@@ -1601,8 +1601,17 @@ fn pure_condition_wakes_normally_through_run_flow_sleep() {
 /// real `set_gate` write) has run its turn and re-parked, the policy must
 /// stay `Parked` — and the story must never advance past its first turn —
 /// no matter how many additional frames pass with nothing left to collect.
+///
+/// **Issue #1146** (this test's quarantine, 2026-07-19 → lifted here): #1082's
+/// empty-turn guard was only half the story. The *non*-empty turn — the one
+/// legitimate wake's own turn — writes bookkeeping (a visit count, the turn
+/// index), which tripped exactly the same coarse `BrinkGlobals` change signal
+/// and re-woke the flow whenever the unconstrained system order let the dirty
+/// pass land after the re-park (~1-in-12 runs locally). Row-directed dirtying
+/// closes it at the root: `should_wake`'s row reads `gate`, the turn wrote no
+/// `gate`, so nothing dirties the policy — deterministically, independent of
+/// system order.
 #[test]
-#[ignore = "flaky: #1146 — spurious wake ~1/12; quarantined 2026-07-19, un-ignore with the fix"]
 fn idle_turns_never_manufacture_a_spurious_wake_signal() {
     let mut app = build_app();
     let (program, tables, ctx) = compile_test_story(GATED_STORY);
@@ -1816,5 +1825,308 @@ fn flow_sleep_reflects_as_component() {
             .is_some(),
         "FlowSleep<()> is missing ReflectComponent type data — inspectors cannot see it as a \
          component on the flow entity; add `#[reflect(Component)]` alongside `#[derive(Component, Reflect)]`"
+    );
+}
+
+// ── Row-directed wake dirtying (issue #1146, the #1101 fix) ─────────────────
+
+/// Two entry points sharing one `World`: a **waker** flow whose ordinary turn
+/// writes `gate` (through batch Apply, so the changed-cell ledger attributes
+/// it) and a **sleeper** knot a parked policy wakes into. The realistic
+/// row-directed shape — one flow's write is another flow's dependency — and
+/// the case precision must never suppress.
+/// The waker deliberately idles for two turns before writing: the very first
+/// batch turn after fulfillment sees `BrinkGlobals` freshly *inserted*, which
+/// counts as a write the ledger cannot attribute, so a fixture that wrote on
+/// turn one would be woken by the conservative fallback and prove nothing
+/// about the row-directed path.
+const PEER_WAKE_STORY: &str = "VAR gate = 0\n\
+     -> waker\n\
+     === waker ===\n\
+     Tick.\n-> DONE\n\
+     Tick.\n-> DONE\n\
+     Ping.\n\
+     ~ gate = 1\n\
+     -> DONE\n\
+     === sleeper ===\n\
+     Woke up!\n-> END\n\
+     === function should_wake() ===\n~ return gate\n";
+
+/// Like [`PEER_WAKE_STORY`] but the peer **never writes a global**: it just
+/// takes a "Tick." turn forever, so every frame carries a real, non-empty
+/// batch Apply whose changeset is *pure bookkeeping* (visit counts, turn
+/// index). That is the #1101 signal, on every single frame — which makes the
+/// spurious re-wake deterministic instead of a ~1-in-12 scheduling race.
+const IDLE_PEER_STORY: &str = "VAR gate = 0\n\
+     -> waker\n\
+     === waker ===\n\
+     Tick.\n-> DONE\n-> waker\n\
+     === sleeper ===\n\
+     Woke up!\n-> DONE\n\
+     Second turn.\n-> END\n\
+     === function should_wake() ===\n~ return gate\n";
+
+/// Build a bare [`ProgramAsset`] for the row-level unit tests below (no
+/// `App`, no fulfillment — [`condition_reads`] only ever looks at the
+/// program + its rows).
+fn program_asset(program: Program, effect_rows: Vec<EffectRowEntry>) -> ProgramAsset {
+    let initial_context = crate::asset::fresh_context(&program);
+    ProgramAsset {
+        program,
+        initial_context,
+        effect_rows,
+    }
+}
+
+/// The read row [`condition_reads`] resolves for `should_wake` in
+/// [`GATED_STORY`] must actually name `gate` — every assertion below is
+/// meaningless if the fixture silently lands on the conservative `Unknown`
+/// path instead (which a hand-built row with empty `reads` would).
+#[test]
+fn a_compiled_conditions_read_row_names_the_global_it_reads() {
+    let (program, _tables, _ctx, effect_rows) =
+        crate::test_support::compile_test_story_with_effect_rows(GATED_STORY);
+    let gate_idx = program.global_index("gate").expect("gate global exists");
+    let asset = program_asset(program, effect_rows);
+    let sleep = FlowSleep::<()>::persistent("should_wake");
+
+    assert_eq!(
+        condition_reads(Some(&asset), &sleep),
+        ConditionReads::Globals([gate_idx].into_iter().collect()),
+        "the compiler's own inferred row for `should_wake` must resolve to exactly the `gate` \
+         slot — otherwise the row-directed path never engages and #1146's fix is inert"
+    );
+}
+
+/// The core of the fix, at the decision level: a turn that wrote only
+/// bookkeeping (visit counts / turn index — what *every* real turn writes)
+/// must not dirty a condition whose row reads a global, while a write to
+/// that global must.
+#[test]
+fn only_a_write_the_condition_reads_dirties_it() {
+    let (program, _tables, _ctx, effect_rows) =
+        crate::test_support::compile_test_story_with_effect_rows(GATED_STORY);
+    let gate_idx = program.global_index("gate").expect("gate global exists");
+    let asset = program_asset(program, effect_rows);
+    let sleep = FlowSleep::<()>::persistent("should_wake");
+    let reads = condition_reads(Some(&asset), &sleep);
+
+    let mut bookkeeping_only = WorldDelta::default();
+    bookkeeping_only.note_bookkeeping();
+    assert!(
+        !delta_touches_condition(&bookkeeping_only, &reads, &sleep),
+        "a visit-count/turn-index write must be inert for a `gate`-reading condition — that \
+         signal is what manufactured #1101's spurious re-wake"
+    );
+
+    let mut wrote_gate = WorldDelta::default();
+    wrote_gate.note_global(gate_idx);
+    assert!(
+        delta_touches_condition(&wrote_gate, &reads, &sleep),
+        "a write to a cell the condition reads must still dirty it"
+    );
+
+    let mut wrote_another_cell = WorldDelta::default();
+    wrote_another_cell.note_global(gate_idx + 7);
+    assert!(
+        !delta_touches_condition(&wrote_another_cell, &reads, &sleep),
+        "a write to an unrelated global must be inert — per-cell, not per-resource"
+    );
+}
+
+/// The host escape hatch: effect rows model global cells only, so a condition
+/// that reads bookkeeping declares it with [`FlowSleep::reads_bookkeeping`]
+/// and is dirtied by the writes the row cannot see.
+#[test]
+fn a_declared_bookkeeping_reader_is_dirtied_by_bookkeeping_writes() {
+    let (program, _tables, _ctx, effect_rows) =
+        crate::test_support::compile_test_story_with_effect_rows(GATED_STORY);
+    let asset = program_asset(program, effect_rows);
+    let sleep = FlowSleep::<()>::persistent("should_wake").reads_bookkeeping();
+    let reads = condition_reads(Some(&asset), &sleep);
+
+    let mut bookkeeping_only = WorldDelta::default();
+    bookkeeping_only.note_bookkeeping();
+    assert!(
+        delta_touches_condition(&bookkeeping_only, &reads, &sleep),
+        "a condition the host declared a bookkeeping reader must re-evaluate when a visit \
+         count / turn index moved — the row cannot express that read"
+    );
+}
+
+/// An **opaque** row (effects inference couldn't summarize a call it makes —
+/// §3's pessimal top) degrades to the pre-#1146 behavior: any change at all
+/// re-evaluates. Same for no loaded program at all.
+#[test]
+fn an_opaque_or_absent_row_degrades_to_the_conservative_path() {
+    let (program, _tables, _ctx) = compile_test_story(GATED_STORY);
+    let def = program
+        .definition_id_for_path("should_wake")
+        .expect("should_wake resolves");
+    let sleep = FlowSleep::<()>::persistent("should_wake");
+
+    let mut bookkeeping_only = WorldDelta::default();
+    bookkeeping_only.note_bookkeeping();
+
+    let opaque = program_asset(program, vec![opaque_row(def)]);
+    let reads = condition_reads(Some(&opaque), &sleep);
+    assert_eq!(reads, ConditionReads::Unknown);
+    assert!(
+        delta_touches_condition(&bookkeeping_only, &reads, &sleep),
+        "an opaque row cannot bound the condition's reads — it must re-evaluate on any change"
+    );
+    assert!(
+        !delta_touches_condition(&WorldDelta::default(), &reads, &sleep),
+        "…but a window in which nothing was written is still no reason to re-evaluate"
+    );
+
+    assert_eq!(
+        condition_reads(None, &sleep),
+        ConditionReads::Unknown,
+        "no loaded program → conservative"
+    );
+}
+
+/// The over-suppression guard, end-to-end through the plugin's own systems +
+/// `advance_batch` on a story compiled with **real** effect rows: a peer
+/// flow's ordinary turn writes `gate`, and the parked policy whose condition
+/// reads `gate` must wake on it.
+///
+/// This is the half of #1146 that a precision fix breaks if it goes too far:
+/// the same bookkeeping-carrying Apply that must *not* dirty the sleeper also
+/// carries the one global write that must. Note the waker's turn writes
+/// `gate` **and** bumps visit counts / the turn index in the same changeset,
+/// so a delta implementation that collapsed the two would pass the sibling
+/// spurious-wake test and fail this one.
+#[test]
+fn a_peer_flows_attributed_write_still_wakes_a_sleeper() {
+    let mut app = build_app();
+    let (program, tables, ctx, effect_rows) =
+        crate::test_support::compile_test_story_with_effect_rows(PEER_WAKE_STORY);
+    let gate_idx = program.global_index("gate").expect("gate global exists");
+    let story = add_story_assets_with_effect_rows(&mut app, program, tables, ctx, effect_rows);
+
+    // The sleeper: dormant at `sleeper`, waiting on `gate`.
+    app.world_mut().spawn((
+        BrinkFlowRequest::<()>::builder()
+            .story(story.clone())
+            .start(crate::FlowStart::Address("sleeper".to_string()))
+            .build(),
+        FlowSleep::<()>::persistent("should_wake").dormant(),
+    ));
+    // The waker: an ordinary flow, no policy — its turn writes `gate` through
+    // batch Apply, which is what the ledger attributes.
+    app.world_mut()
+        .spawn(BrinkFlowRequest::<()>::builder().story(story).build());
+    app.update(); // fulfill both
+
+    pump(&mut app, 10);
+
+    assert_eq!(
+        app.world()
+            .resource::<BrinkGlobals<()>>()
+            .inner
+            .global(gate_idx),
+        &Value::Int(1),
+        "fixture sanity: the waker's turn wrote the cell the sleeper's condition reads"
+    );
+    assert!(
+        app.world().resource::<TextLog>().0.contains("Woke up!"),
+        "row-directed dirtying must still wake a policy whose read row intersects the turn's \
+         writes: got {:?}",
+        app.world().resource::<TextLog>().0
+    );
+}
+
+/// #1101/#1146 made **deterministic**: a peer flow takes a real turn every
+/// single frame, so every frame's Apply carries a bookkeeping-only changeset
+/// — the exact signal that used to re-check every parked policy. The
+/// sleeper's condition (`gate`, still true from the one host write that woke
+/// it) must nevertheless never be re-evaluated again, so its story must never
+/// advance past its one woken turn.
+///
+/// Where [`idle_turns_never_manufacture_a_spurious_wake_signal`] needs the
+/// scheduler to cooperate to expose the bug (hence its 2026-07-19
+/// quarantine), this one exposes it on every run: on the pre-#1146 coarse
+/// signal the sleeper re-wakes, prints "Second turn.", hits `-> END`, and has
+/// its policy retired.
+#[test]
+fn a_bookkeeping_only_peer_turn_never_re_wakes_a_global_reading_policy() {
+    let mut app = build_app();
+    let (program, tables, ctx, effect_rows) =
+        crate::test_support::compile_test_story_with_effect_rows(IDLE_PEER_STORY);
+    let gate_idx = program.global_index("gate").expect("gate global exists");
+    let story = add_story_assets_with_effect_rows(&mut app, program, tables, ctx, effect_rows);
+
+    app.world_mut().spawn((
+        BrinkFlowRequest::<()>::builder()
+            .story(story.clone())
+            .start(crate::FlowStart::Address("sleeper".to_string()))
+            .build(),
+        FlowSleep::<()>::persistent("should_wake").dormant(),
+    ));
+    // The peer: no policy, so it takes a "Tick." turn every frame forever.
+    app.world_mut()
+        .spawn(BrinkFlowRequest::<()>::builder().story(story).build());
+    app.update(); // fulfill both
+
+    // The one and only dependency change this test ever makes.
+    set_gate(&mut app, gate_idx, 1);
+    pump(&mut app, 20);
+
+    let log = &app.world().resource::<TextLog>().0;
+    assert!(
+        log.contains("Woke up!"),
+        "the one real dependency change must still wake the flow: got {log:?}"
+    );
+    assert!(
+        log.contains("Tick."),
+        "fixture sanity: the peer must actually be taking turns, so every frame carries a \
+         non-empty (bookkeeping-only) Apply: got {log:?}"
+    );
+    assert!(
+        !log.contains("Second turn."),
+        "a peer turn that wrote only visit counts / the turn index must not re-wake a policy \
+         whose condition reads `gate` — that is #1101's spurious wake: got {log:?}"
+    );
+    assert_eq!(
+        single_sleep(&mut app),
+        SleepState::Parked,
+        "the policy must still be attached and parked, not retired by a second turn's `-> END`"
+    );
+}
+
+/// A direct host write into `BrinkGlobals::inner` — the seam the changed-cell
+/// ledger cannot see — must still wake a sleeping flow, even for a policy
+/// whose row is precise. The attribution fallback (`crate::wake_delta`)
+/// exists exactly so precision never costs a wake.
+#[test]
+fn a_direct_host_write_still_wakes_a_flow_with_a_precise_row() {
+    let mut app = build_app();
+    let (program, tables, ctx, effect_rows) =
+        crate::test_support::compile_test_story_with_effect_rows(GATED_STORY);
+    let gate_idx = program.global_index("gate").expect("gate global exists");
+    let story = add_story_assets_with_effect_rows(&mut app, program, tables, ctx, effect_rows);
+
+    app.world_mut().spawn((
+        BrinkFlowRequest::<()>::builder().story(story).build(),
+        FlowSleep::<()>::persistent("should_wake").dormant(),
+    ));
+    app.update(); // fulfill
+    pump(&mut app, 4);
+    assert!(
+        app.world().resource::<TextLog>().0.is_empty(),
+        "parked while gate == 0"
+    );
+
+    // Not routed through batch Apply: nothing records it in the ledger.
+    set_gate(&mut app, gate_idx, 1);
+    pump(&mut app, 6);
+
+    assert!(
+        app.world().resource::<TextLog>().0.contains("Woke up!"),
+        "a host write the changed-cell ledger cannot attribute must fall back to the coarse \
+         signal and wake the flow: got {:?}",
+        app.world().resource::<TextLog>().0
     );
 }

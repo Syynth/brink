@@ -57,6 +57,7 @@ mod source_loader;
 #[cfg(test)]
 mod test_support;
 mod transcript;
+mod wake_delta;
 
 pub use asset::{
     BrinkProgram, BrinkStory, BrinkStoryAsset, InkbLoader, InkbLoaderError, LineTablesAsset,
@@ -167,3 +168,4 @@ pub use sleep::{
 #[cfg(feature = "dev")]
 pub use source_loader::{CompileStoryInlineError, InkLoader, InkLoaderError, compile_story_inline};
 pub use transcript::{BrinkTranscript, refresh_transcripts};
+pub use wake_delta::{BrinkWorldDelta, WorldDelta};
