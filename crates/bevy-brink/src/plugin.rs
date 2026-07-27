@@ -123,6 +123,15 @@ impl<M: Send + Sync + 'static> BrinkPlugin<M> {
     /// [`BrinkAssetsPlugin::with_config`] directly instead if you're adding
     /// it standalone.
     ///
+    /// This override also reaches
+    /// [`compile_story_inline`](crate::compile_story_inline) (#1380) — but
+    /// only once `Plugin::build` has actually run, i.e. only *after*
+    /// `app.add_plugins(BrinkPlugin::<M>::default().with_config(...))`
+    /// returns. Calling `compile_story_inline` before that `add_plugins`
+    /// call silently compiles under `OptionOverrides::default()` instead —
+    /// see `compile_story_inline`'s doc comment for the ordering hazard in
+    /// full.
+    ///
     /// Also covers the `[lints]` tier (issue #1394): a `[lints]` table or
     /// `deny-warnings` value set on the passed `ProjectConfig` wins over the
     /// same table in a discovered `brink.toml`, mirroring the CLI's

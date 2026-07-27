@@ -46,9 +46,11 @@ use crate::asset::{
 ///
 /// Inserted once, unconditionally, whenever `BrinkAssetsPlugin` builds, from
 /// the exact `self.config` that also seeds `InkLoader` — so the two entry
-/// points read the identical override and can never diverge on it, the same
-/// "reuse the resolution path, don't add a second one" fix `InkLoader` itself
-/// got wired the same way `Project::load`'s `OptionOverrides` seam did.
+/// points read the identical override and can never diverge on it. Both
+/// entry points build their `OptionOverrides` through the one shared
+/// [`overrides_from_config`] mapping fed into `Project::load`'s existing
+/// seam, the same "reuse the resolution path, don't add a second one" fix
+/// applied here that wired `InkLoader` itself.
 /// `None` (the default, or no `BrinkAssetsPlugin` in the app at all) means
 /// [`overrides_from_config`] falls through to [`OptionOverrides::default()`],
 /// byte-identical to pre-#1380 behavior for a host that never calls
@@ -215,6 +217,23 @@ pub enum CompileStoryInlineError {
 /// inline sources under `Brink` too, matching its `InkLoader`-loaded
 /// assets — closing the divergence #1372 narrowed down to "one missing
 /// override wire".
+///
+/// **Call this *after* `app.add_plugins(BrinkPlugin::<M>::with_config(...))`
+/// / `BrinkAssetsPlugin::with_config(...)`, not before.** `BrinkOverrideConfig`
+/// only exists in `app`'s `World` once `BrinkAssetsPlugin::build` has run,
+/// and Bevy runs `Plugin::build` at `add_plugins` time, not at struct
+/// construction. Calling `compile_story_inline` *before* that `add_plugins`
+/// call finds no `BrinkOverrideConfig` resource yet — the same "absent"
+/// case as no plugin at all — and silently compiles under
+/// `OptionOverrides::default()` with no diagnostic, even though a
+/// `with_config` override is sitting right there waiting to be installed.
+/// This is the exact kind of silent divergence #1380 set out to kill,
+/// relocated into a call-ordering footgun rather than eliminated; there is
+/// no runtime check for it (a freestanding `fn(&mut App, ...)` can't tell
+/// "no override was ever configured" apart from "the override exists but
+/// its plugin hasn't built yet"). See
+/// `compile_story_inline_before_plugin_add_silently_falls_back_to_default`
+/// for the regression pinning this fallback.
 ///
 /// `name` is the compiler's synthetic entry file name (also its `INCLUDE`
 /// resolution root). Because the tree has exactly one key (`name`), `INCLUDE`
@@ -681,6 +700,126 @@ mod tests {
 
         compile_story_inline(&mut app, "inline.ink", "Hello.\n~\n-> END\n")
             .expect("E014 is a Warning, never blocking, with no deny_warnings override");
+    }
+
+    /// An untyped function parameter, called with an argument — same fixture
+    /// (and same reasoning) as `config_discovery_tests`'
+    /// `UNTYPED_PARAM_SOURCE`: `dialect = Brink`'s own resolved-policy
+    /// default is `Strict`, which rejects it with 2 diagnostics; only an
+    /// explicit `types = Gradual` override compiles it.
+    const UNTYPED_PARAM_SOURCE: &str =
+        "=== function f(x) ===\n~ return x\n\n=== start ===\n{f(1)}\n-> END\n";
+
+    /// `types = Gradual`, set via `BrinkPlugin::with_config` alongside
+    /// `dialect = Brink`, must reach `compile_story_inline`'s `Project::load`
+    /// call the same way it already reaches `InkLoader::load`
+    /// (`plugin_with_config_types_reaches_ink_loader` in
+    /// `config_discovery_tests`) — mirrored here since #1380's fix covers
+    /// `compile_story_inline` too, not just `InkLoader` (house rule 19q: the
+    /// dialect-keyed default alone, `Strict`, still rejects
+    /// `UNTYPED_PARAM_SOURCE`, so only the `types` override can flip this
+    /// outcome).
+    #[test]
+    fn compile_story_inline_reaches_plugin_with_config_types_override() {
+        use brink_project_config::{Dialect, TypePolicy};
+
+        let mut app = bevy_app::App::new();
+        app.add_plugins(bevy_asset::AssetPlugin::default());
+        app.add_plugins(
+            crate::BrinkPlugin::<()>::default().with_config(ProjectConfig {
+                dialect: Some(Dialect::Brink),
+                types: Some(TypePolicy::Gradual),
+                ..ProjectConfig::default()
+            }),
+        );
+
+        compile_story_inline(&mut app, "inline.ink", UNTYPED_PARAM_SOURCE).expect(
+            "types = Gradual override should reach compile_story_inline and permit the \
+             untyped parameter the dialect-keyed Strict default rejects",
+        );
+    }
+
+    /// A per-code `[lints]` override (not just the blanket `deny_warnings`
+    /// knob already covered above) must reach `compile_story_inline` too —
+    /// mirrors `plugin_override_lints_wins_over_conflicting_asset` /
+    /// `plugin_with_config_dialect_reaches_ink_loader`'s `[lints]` coverage
+    /// for `InkLoader`, but through `compile_story_inline`'s
+    /// `BrinkOverrideConfig` channel.
+    #[test]
+    fn compile_story_inline_reaches_plugin_with_config_per_code_lint_override() {
+        let mut app = bevy_app::App::new();
+        app.add_plugins(bevy_asset::AssetPlugin::default());
+
+        let mut lints = std::collections::BTreeMap::new();
+        lints.insert("E014".to_owned(), brink_project_config::LintLevel::Deny);
+        app.add_plugins(
+            crate::BrinkPlugin::<()>::default().with_config(ProjectConfig {
+                lints,
+                ..ProjectConfig::default()
+            }),
+        );
+
+        let err = compile_story_inline(&mut app, "inline.ink", "Hello.\n~\n-> END\n").expect_err(
+            "a per-code `[lints] E014 = deny` override should relevel E014 \
+                to a blocking error",
+        );
+        assert!(
+            matches!(err, CompileStoryInlineError::Compile(_)),
+            "got {err:?}"
+        );
+    }
+
+    /// #1380 review finding: `compile_story_inline` reads
+    /// `BrinkOverrideConfig` out of `app.world()` at call time, but that
+    /// resource is only inserted once `BrinkAssetsPlugin::build` actually
+    /// runs — which happens at `app.add_plugins(...)` time, not at
+    /// `BrinkPlugin::with_config(...)` construction time. Calling
+    /// `compile_story_inline` *before* `add_plugins` finds no
+    /// `BrinkOverrideConfig` in the world at all — indistinguishable from
+    /// "no `BrinkAssetsPlugin` ever added" — and silently falls back to
+    /// `OptionOverrides::default()`, dropping the override with no
+    /// diagnostic. This pins that fallback so it can't drift into something
+    /// else (e.g. a panic) unnoticed; see `compile_story_inline`'s doc
+    /// comment for the full hazard.
+    #[test]
+    fn compile_story_inline_before_plugin_add_silently_falls_back_to_default() {
+        use brink_project_config::Dialect;
+
+        let mut app = bevy_app::App::new();
+        app.add_plugins(bevy_asset::AssetPlugin::default());
+
+        // Deliberately NOT added yet -- `compile_story_inline` runs first.
+        let pending_plugin = crate::BrinkPlugin::<()>::default().with_config(ProjectConfig {
+            dialect: Some(Dialect::Brink),
+            ..ProjectConfig::default()
+        });
+
+        let err = compile_story_inline(
+            &mut app,
+            "inline.ink",
+            "#@private\nVAR secret = 0\n-> END\n",
+        )
+        .expect_err(
+            "with no BrinkOverrideConfig resource yet inserted, the default StrictInk \
+             dialect must still reject brink-extension syntax -- the override cannot \
+             reach a call made before its plugin builds",
+        );
+        assert!(
+            matches!(err, CompileStoryInlineError::Compile(_)),
+            "got {err:?}"
+        );
+
+        // Adding the plugin after the fact doesn't retroactively help the
+        // already-failed call above -- but confirms the override itself is
+        // wired correctly (would reach a *subsequent* call), isolating the
+        // failure above to ordering, not a broken override.
+        app.add_plugins(pending_plugin);
+        compile_story_inline(
+            &mut app,
+            "inline.ink",
+            "#@private\nVAR secret = 0\n-> END\n",
+        )
+        .expect("once the plugin has built, the same override now reaches the same call");
     }
 
     // ── ancestor_dirs (#1029 bounded walk-up) ───────────────────────────
