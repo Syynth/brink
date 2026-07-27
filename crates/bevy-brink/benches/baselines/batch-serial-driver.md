@@ -26,20 +26,56 @@ stable at every flow count.
 Reading this honestly: BH-2's batch driver is at **rough parity with the
 serial driver (0.85×–1.11×)** on this scenario, *not* meaningfully slower —
 because the template's shared world is tiny (one scalar `Int` global plus
-one knot's visit/turn counts), so the per-flow frame-start snapshot clone
-that §12.2 warns about costs almost nothing here. The clone cost scales
-with **world size** (globals + visit-count tables), not flow count; a story
-with large collection-typed globals would show the expected batch-above-
-serial gap much more clearly. The visible drift that does exist points the
-expected direction: batch trails serial at 10k flows (1.08×, ≈3.06 µs/flow
-in the batch turn vs ≈2.84 µs/flow in serial Step) and carries a slightly
-higher RSS delta (per-flow `WriteBuffer`/`Vec<Line>` allocations surviving
-to Apply). The batch-100 win (0.85×) is within the noise band of two
-separate quiet-window captures plus real accounting differences
-(batch moves the auto-choose out of the measured `step` phase into `apply`);
-treat parity — not "batch is faster" — as the takeaway. These numbers are
-the BH-3 denominators: the parallel Step must beat this batch-serial turn,
-and the §12.2 borrow-don't-copy change should flatten the 10k gap.
+one knot's visit/turn counts), so the per-flow frame-start clone this
+capture predates (§12.2, since replaced by a borrow-and-overlay, #937) cost
+almost nothing here — the clone was already nearly free at this world size,
+which is exactly why the change measures as parity on this matrix (see
+"#937 measured effect" below). The clone/borrow cost scales with **world
+size** (globals + visit-count tables), not flow count; a story with large
+collection-typed globals shows the batch-above-serial gap much more
+clearly. The visible drift that does exist points the expected direction:
+batch trails serial at 10k flows (1.08×, ≈3.06 µs/flow in the batch turn
+vs ≈2.84 µs/flow in serial Step) and carries a slightly higher RSS delta
+(per-flow `WriteBuffer`/`Vec<Line>` allocations surviving to Apply). The
+batch-100 win (0.85×) is within the noise band of two separate
+quiet-window captures plus real accounting differences (batch moves the
+auto-choose out of the measured `step` phase into `apply`); treat parity
+— not "batch is faster" — as the takeaway. These numbers are the BH-3
+denominators: the parallel Step must beat this batch-serial turn, and the
+§12.2 borrow-don't-copy change was measured against exactly this gap —
+see below.
+
+## #937 "borrow, don't copy" — measured effect (PR for issue #937)
+
+The clone this table's commentary blames is gone: Step now borrows the
+frame-start world and overlays each flow's own writes.
+
+1. **On this matrix (`story_globals = 0`) the change is parity.** The
+   scenario story declares one to three `VAR`s, so the clone it removes was
+   already nearly free — exactly the caveat #937's issue body opens with.
+   A paired A/B (same binary pair, alternating runs) measured batch-serial
+   median `frame p50` at 0.289 → 0.288 ms (100 flows), 2.440 → 2.402 ms
+   (1k), 25.736 → 25.018 ms (10k), 0.163 → 0.158 ms (100-light). **The
+   canonical captures above therefore still stand as the numbers for this
+   matrix**; they have deliberately not been regenerated, both because a
+   re-capture needs the ruled quiet-window solo run and because a parity
+   change is not a reason to churn a hand-maintained baseline.
+2. **On a real-sized story world the change is large.** `--story-globals
+   1000` (#937's brink-`World` axis, added with that PR) at 20 frames,
+   batch-serial, median of 3 alternating pairs:
+
+   | flows | before p50 (ms) | after p50 (ms) | speedup |
+   |---:|---:|---:|---:|
+   | 100 | 0.666 | 0.334 | 1.99× |
+   | 1,000 | 6.175 | 2.705 | 2.28× |
+   | 10,000 | 64.257 | 28.055 | 2.29× |
+   | 100 (light) | 0.531 | 0.191 | 2.78× |
+
+   Treat every number in this subsection as a **relative, same-session
+   A/B**, not a canonical capture — it was taken on a loaded machine (load
+   average ~16, sibling builds running) and only the pairing is
+   trustworthy. See `parallel-driver.md`'s "#937 measured effect" section
+   for the same change on the parallel driver.
 
 ## Generated matrix (raw run output)
 

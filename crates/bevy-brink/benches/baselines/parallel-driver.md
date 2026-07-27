@@ -55,37 +55,36 @@ pass) bound it, exactly the §12.2 prediction. These are the numbers the
 ### #937 "borrow, don't copy" — measured effect (PR for issue #937)
 
 The clone this table's commentary blames is gone: Step now borrows the
-frame-start world and overlays each flow's own writes. Two things follow,
-and the second is why **this table's numbers are not restated here**.
+frame-start world and overlays each flow's own writes. Two things follow.
 
 1. **On this matrix (`story_globals = 0`) the change is parity.** The
    scenario story declares one to three `VAR`s, so the clone it removes was
    already nearly free — exactly the caveat #937's issue body opens with.
-   A paired A/B (same binary pair, alternating runs) measured batch-serial
-   median `frame p50` at 0.289 → 0.288 ms (100 flows), 2.440 → 2.402 ms
-   (1k), 25.736 → 25.018 ms (10k), 0.163 → 0.158 ms (100-light). **The
-   canonical captures above therefore still stand as the numbers for this
-   matrix**; they have deliberately not been regenerated, both because a
-   re-capture needs the ruled quiet-window solo run and because a parity
-   change is not a reason to churn a hand-maintained baseline.
+   The canonical captures above therefore still stand as the numbers for
+   this matrix; they have deliberately not been regenerated, both because
+   a re-capture needs the ruled quiet-window solo run and because a parity
+   change is not a reason to churn a hand-maintained baseline. See
+   `batch-serial-driver.md`'s "#937 measured effect" section for the
+   batch-serial A/B this predicts (0.289 → 0.288 ms at 100 flows,
+   2.440 → 2.402 ms at 1k, 25.736 → 25.018 ms at 10k, 0.163 → 0.158 ms at
+   100-light) — the batch-serial driver is the primary home for that data
+   since it is the driver `--story-globals N` axis was added against; this
+   file only reports the parallel driver's own numbers below.
 2. **On a real-sized story world the change is large.** `--story-globals
    1000` (#937's brink-`World` axis, added with that PR) at 20 frames,
-   batch-serial, median of 3 alternating pairs:
+   parallel, median of 3 alternating pairs:
 
    | flows | before p50 (ms) | after p50 (ms) | speedup |
    |---:|---:|---:|---:|
-   | 100 | 0.666 | 0.334 | 1.99× |
-   | 1,000 | 6.175 | 2.705 | 2.28× |
-   | 10,000 | 64.257 | 28.055 | 2.29× |
-   | 100 (light) | 0.531 | 0.191 | 2.78× |
+   | 1,000 | 2.899 | 2.106 | 1.38× |
+   | 100 (light) | 0.327 | 0.223 | 1.47× |
 
-   The parallel driver moves the same way (1k: 2.899 → 2.106 ms, 1.38×;
-   100-light: 0.327 → 0.223 ms, 1.47×). Its 10k row was **not** resolvable:
-   that capture ran at load average ~16 with other builds on the machine,
-   and the 10k row's run-to-run spread (21.4–43.1 ms after, 29.5–31.6 ms
-   before) swamps the effect. Treat every number in this subsection as a
-   **relative, same-session A/B**, not a canonical capture — it was taken
-   on a loaded machine and only the pairing is trustworthy.
+   Its 10k row was **not** resolvable: that capture ran at load average
+   ~16 with other builds on the machine, and the 10k row's run-to-run
+   spread (21.4–43.1 ms after, 29.5–31.6 ms before) swamps the effect.
+   Treat every number in this subsection as a **relative, same-session
+   A/B**, not a canonical capture — it was taken on a loaded machine and
+   only the pairing is trustworthy.
 
 ### Thread curve (`--compute-threads N`, exploration runs — print-only, same matrix)
 

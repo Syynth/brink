@@ -52,9 +52,11 @@
 //!
 //! - **World-scoped state only.** Frame-start consistency is a property of the
 //!   *shared* [`BrinkWorld`](crate::BrinkWorld) — the only state visible
-//!   across flows. Batch mode steps each flow against a private frame-start
-//!   snapshot of that shared world and buffers its writes; it does **not**
-//!   route through a flow's private [`BrinkContext`](crate::BrinkContext)
+//!   across flows. Batch mode steps each flow through a borrowed,
+//!   read-only view pinned to that shared world's frame-start state (a
+//!   private per-flow write overlay on top — see "Borrowed frame-start reads"
+//!   below) and buffers its writes; it does **not** route through a flow's
+//!   private [`BrinkContext`](crate::BrinkContext)
 //!   (`FlowLocal`) layer, which is flow-private by construction and so can
 //!   never participate in a cross-flow race. Under the default all-`World`
 //!   policy (every unit World-scoped — the common case, and what the property

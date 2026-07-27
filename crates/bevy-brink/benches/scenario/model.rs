@@ -439,12 +439,23 @@ pub fn active_count(flow_count: usize, active_fraction: f64) -> usize {
 }
 
 /// A linked `(Program, line tables)` pair, ready to drive.
-type CompiledStory = (Program, Vec<Vec<brink_format::LineEntry>>);
+///
+/// `pub(crate)` (not private): `tests/scenario_bench_model.rs` includes this
+/// module verbatim via `#[path]` and needs to name this type to call
+/// [`compile_scenario_story`] directly — see that function's doc comment.
+pub(crate) type CompiledStory = (Program, Vec<Vec<brink_format::LineEntry>>);
 
 /// Compile the generated scenario story into a linked [`CompiledStory`]
 /// pair — shared by the serial ([`run_scenario`]) and batch
 /// ([`run_batch_scenario`]) drivers so both time the exact same compiled
 /// story for a given config.
+///
+/// `pub(crate)` (not private): `tests/scenario_bench_model.rs` calls this
+/// directly to get at the linked [`Program`] itself (`global_defaults()`),
+/// which the [`ScenarioResult`] returned by [`run_scenario`] /
+/// [`run_batch_scenario`] does not expose — needed to prove the
+/// `--story-globals` axis (#937) actually pads the runtime `World`, not
+/// just the generated source text.
 ///
 /// Brink dialect (docs/t1b-surface-spec.md §1): the `collection_global`
 /// axis's `~ { … }` blocks, `#[…]` array literals, `push`/`len`, and
@@ -454,7 +465,7 @@ type CompiledStory = (Program, Vec<Vec<brink_format::LineEntry>>);
 /// dialect at all") — it never changes codegen for a story that uses
 /// none of that syntax, so enabling it unconditionally here doesn't
 /// affect the scalar-only baseline configs' compiled output or timings.
-fn compile_scenario_story(
+pub(crate) fn compile_scenario_story(
     config: &ScenarioConfig,
 ) -> Result<CompiledStory, Box<dyn std::error::Error>> {
     let source = generate_story(

@@ -15,8 +15,8 @@
 mod model;
 
 use model::{
-    ScenarioConfig, ScenarioResult, TurnWeight, active_count, compute_pool_threads, generate_story,
-    run_batch_scenario, run_parallel_scenario, run_scenario,
+    ScenarioConfig, ScenarioResult, TurnWeight, active_count, compile_scenario_story,
+    compute_pool_threads, generate_story, run_batch_scenario, run_parallel_scenario, run_scenario,
 };
 
 fn tiny_config(name: &str, turn_weight: TurnWeight) -> ScenarioConfig {
@@ -121,7 +121,12 @@ fn story_generation_is_deterministic_with_collection_global() {
 /// baselines' `story_globals: 0` could never produce), the padded story
 /// still compiles and drives real turns, and — the point of the axis — the
 /// padding lands in the runtime `World` the batch drivers pin their
-/// frame-start reads against, not just in the source text.
+/// frame-start reads against, not just in the source text. That last claim
+/// is proven directly on the linked [`Program`](brink_runtime::Program)'s
+/// `global_defaults()`, not merely inferred from the source text or from
+/// the scenario running without error — a dead-stripping pass that dropped
+/// never-read globals before linking would still leave every assertion
+/// above green while silently making the `--story-globals` axis a no-op.
 #[test]
 fn story_globals_axis_pads_the_runtime_world() {
     let padded = generate_story(TurnWeight::Medium, 7, false, 64);
@@ -139,6 +144,21 @@ fn story_globals_axis_pads_the_runtime_world() {
         story_globals: 64,
         ..tiny_config("story-globals", TurnWeight::Medium)
     };
+
+    let unpadded_config = ScenarioConfig {
+        story_globals: 0,
+        ..tiny_config("story-globals-unpadded", TurnWeight::Medium)
+    };
+    let (padded_program, _) =
+        compile_scenario_story(&config).expect("padded story should compile and link");
+    let (unpadded_program, _) =
+        compile_scenario_story(&unpadded_config).expect("unpadded story should compile and link");
+    assert_eq!(
+        padded_program.global_defaults().len(),
+        unpadded_program.global_defaults().len() + 64,
+        "the padding VARs must land in the linked Program's global slots, not just the source text"
+    );
+
     let result = run_batch_scenario(&config).expect("padded story should compile and drive");
     assert_result_is_sane(&config, &result);
     assert!(
