@@ -1589,7 +1589,11 @@ mod config_discovery_tests {
         );
     }
 
-    /// #1436 (identified from #1430's review thread): the sibling of
+    /// Additional coverage found while investigating #1436 — not one of the
+    /// two gaps #1430's review thread actually named (a *served*
+    /// `brink.toml`'s `[lints]` rejections and unknown-key warnings on the
+    /// bevy loader path; see #1625, filed as the follow-up, for those).
+    /// This closes a different, narrower gap: the sibling of
     /// [`plugin_with_config_invalid_lint_code_reaches_brink_config_warnings_resource`]
     /// above only ever exercised the *unknown-code* rejection class
     /// (`E9999_TYPO`, "not a recognized diagnostic code") against
@@ -1629,12 +1633,15 @@ mod config_discovery_tests {
         );
     }
 
-    /// #1436 (identified from #1430's review thread): `compile_story_inline`
-    /// shares the exact same `Project::load` seam `InkLoader::load` uses
-    /// (#1380's own doc comment: "the exact same two-call seam
-    /// `InkLoader::load` uses") — so a `with_config` lint-code rejection
-    /// must warn through `compile_story_inline`'s call too, not just the
-    /// asset-loader path
+    /// Additional coverage found while investigating #1436 — not one of the
+    /// two gaps #1430's review thread actually named (see the doc comment
+    /// on `plugin_with_config_non_overridable_lint_code_reaches_brink_config_warnings_resource`
+    /// above for those, and #1625, filed as the follow-up). This closes a
+    /// different gap: `compile_story_inline` shares the exact same
+    /// `Project::load` seam `InkLoader::load` uses (#1380's own doc
+    /// comment: "the exact same two-call seam `InkLoader::load` uses") —
+    /// so a `with_config` lint-code rejection must warn through
+    /// `compile_story_inline`'s call too, not just the asset-loader path
     /// `plugin_override_unknown_and_non_overridable_lint_codes_warn_but_valid_entry_still_applies`
     /// already covers. That test (and the `BrinkConfigWarnings`-resource
     /// tests above) only ever drove the rejection through
