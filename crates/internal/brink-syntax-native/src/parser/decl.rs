@@ -68,7 +68,7 @@ pub(crate) fn at_import_decl(p: &Parser<'_, '_>) -> bool {
 /// same residual risk as `import`. Only commits to `USE_DECL` if the next
 /// token is an identifier (issue #1285: a leading `::` with no first segment
 /// should not commit — `use ::foo;` falls through to prose instead of
-/// partially parsing as a malformed USE_DECL).
+/// partially parsing as a malformed `USE_DECL`).
 pub(crate) fn at_use_decl(p: &Parser<'_, '_>) -> bool {
     p.nth(1) == IDENT
 }
