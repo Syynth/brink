@@ -47,6 +47,21 @@ pub(super) struct LintOverrides {
     pub(super) deny_warnings: Option<bool>,
 }
 
+/// Render a [`brink_ir::Severity`] as the lowercase string `brink ide`'s
+/// `DiagEntry` JSON/text output uses (issue #1616: extends the CLI
+/// renderer's `"error"`/`"warning"` two-tier rendering to the full
+/// four-tier `Severity` — `Info`/`Hint` included — that #1162/#1615 added
+/// to `DiagnosticCode`/the `[lints]` control plane, so a down-leveled code
+/// is no longer misreported as `"warning"`).
+fn severity_str(severity: brink_ir::Severity) -> &'static str {
+    match severity {
+        brink_ir::Severity::Error => "error",
+        brink_ir::Severity::Warning => "warning",
+        brink_ir::Severity::Info => "info",
+        brink_ir::Severity::Hint => "hint",
+    }
+}
+
 /// Discover + apply `brink.toml` (#1005) to a fresh `AnalysisOptions`,
 /// honoring the "explicit flag always wins over the file" precedence rule.
 /// This is the single source every `brink ide` code path that builds its own
@@ -375,9 +390,20 @@ impl Project {
         }
     }
 
-    pub(super) fn diag_entry(&self, d: &Diagnostic, severity: &str) -> DiagEntry {
+    /// Build a [`DiagEntry`], resolving `d`'s actual severity through
+    /// [`brink_driver::effective_severity`] rather than trusting which of
+    /// `DiagnosticReport`'s two buckets (`errors`/`warnings`) the caller
+    /// pulled `d` from (issue #1616: that partition is binary —
+    /// `effective_severity(...) == Error` or not — so a `[lints]` code
+    /// down-leveled to `Info`/`Hint` still lands in `warnings`, and a
+    /// caller-supplied `"warning"` literal would misreport it here exactly
+    /// as `brink compile`'s CLI renderer did before `ResolvedDiagnostic::
+    /// severity` landed in #1615).
+    pub(super) fn diag_entry(&self, d: &Diagnostic) -> DiagEntry {
+        let opts = self.driver.db().analysis_options();
+        let severity = brink_driver::effective_severity(d.code, opts.type_policy(), &opts.lints);
         DiagEntry {
-            severity: severity.to_string(),
+            severity: severity_str(severity).to_string(),
             code: d.code.as_str().to_string(),
             message: d.message.clone(),
             location: self.location_of(d.file, d.range),
@@ -484,14 +510,16 @@ impl Project {
                 .or_default() += 1;
         }
 
-        let new_diags = new_report
-            .errors
-            .iter()
-            .map(|d| ("error", d))
-            .chain(new_report.warnings.iter().map(|d| ("warning", d)));
+        let new_diags = new_report.errors.iter().chain(new_report.warnings.iter());
+        // Resolved the same way `diag_entry` does (issue #1616): the
+        // partition above is binary, so a `[lints]` code down-leveled to
+        // `Info`/`Hint` still lands in `new_report.warnings` and must not
+        // be rendered as a literal `"warning"`.
+        let new_opts = driver.db().analysis_options();
+        let new_types = new_opts.type_policy();
 
         let mut introduced = Vec::new();
-        for (severity, d) in new_diags {
+        for d in new_diags {
             let key = (d.code.as_str().to_string(), d.message.clone());
             let count = baseline.entry(key).or_default();
             if *count > 0 {
@@ -505,8 +533,9 @@ impl Project {
                     .to_string();
                 let src = driver.db().source(d.file).unwrap_or_default();
                 let (line, col) = LineIndex::new(src).line_col(d.range.start());
+                let severity = brink_driver::effective_severity(d.code, new_types, &new_opts.lints);
                 introduced.push(DiagEntry {
-                    severity: severity.into(),
+                    severity: severity_str(severity).to_string(),
                     code: d.code.as_str().into(),
                     message: d.message.clone(),
                     location: Loc {
