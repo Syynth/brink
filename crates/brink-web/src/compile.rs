@@ -183,11 +183,12 @@ pub fn program_checksum(story_bytes: &[u8]) -> Result<String, JsError> {
 /// — the only difference is the file set is caller-supplied JSON instead of a
 /// stateful session, since a `StoryRunner` keeps no reference to the project
 /// that produced it). `entry` must be one of `sources_json`'s keys.
-/// `synthetic_source` — already wrapped by the caller as
-/// `=== function NAME() ===\n~ return (...)\n` or `=== NAME ===\n...\n` — is
-/// appended to the entry file's served content before compiling; nothing
-/// else about `entry`'s real content changes, and every other file is served
-/// verbatim.
+/// `synthetic_source` — already wrapped by the caller as ink
+/// `=== function NAME() ===\n~ return (...)\n` / `=== NAME ===\n...\n`, or as
+/// native `fn NAME() { return (...); }` / `flow NAME() { ... }`, matching
+/// `entry`'s dialect — is appended to the entry file's served content before
+/// compiling; nothing else about `entry`'s real content changes, and every
+/// other file is served verbatim.
 ///
 /// Returns the same JSON `CompileResult` shape as `compile()`/
 /// `compile_project()`: `story_bytes` on success, `warnings`/`error` on
@@ -460,7 +461,7 @@ mod compile_fragment_tests {
             "main.brink",
             "var gold = 5\n\nflow main() {\n  Hi. -> END\n}\n",
         )]);
-        let synthetic = "fn __eval_test() {\n  return gold + 1;\n}\n";
+        let synthetic = "fn __eval_test() {\n  return (gold + 1);\n}\n";
         let json = compile_fragment("main.brink", &src, synthetic);
         let v: serde_json::Value = serde_json::from_str(&json).expect("valid json");
         assert_eq!(v["ok"], true, "{json}");
@@ -473,7 +474,7 @@ mod compile_fragment_tests {
             "main.brink",
             "var gold = 5\n\nflow main() {\n  Hi. -> END\n}\n",
         )]);
-        let synthetic = "flow __eval_test() {\n  You have {gold} gold.\n}\n";
+        let synthetic = "flow __eval_test() {\nYou have {gold} gold.\n}\n";
         let json = compile_fragment("main.brink", &src, synthetic);
         let v: serde_json::Value = serde_json::from_str(&json).expect("valid json");
         assert_eq!(v["ok"], true, "{json}");

@@ -3,8 +3,8 @@
 ---
 
 `StoryRunnerHandle.compileFragment` (`evaluate()`'s Tier-1 fragment-compile
-step, house rule 2) now picks its synthetic-symbol wrap syntax from the
-project entry's dialect instead of hardcoding ink's `=== ===` knot syntax:
+step) now picks its synthetic-symbol wrap syntax from the project entry's
+dialect instead of hardcoding ink's `=== ===` knot syntax:
 
 - A `.brink` native entry gets native wrap syntax — `fn NAME() { return
   (EXPR); }` for the expression attempt, `flow NAME() { CONTENT }` for the

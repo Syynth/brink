@@ -18,6 +18,11 @@ import { describe, it, expect, vi } from "vitest";
 
 const hoisted = vi.hoisted(() => {
   const compileFragmentCalls: Array<{ entry: string; synthetic: string }> = [];
+  // Queue of canned `compile_fragment` responses, consumed one per call —
+  // lets a test force the expression-wrap attempt to fail so `compileFragment`
+  // falls through to the content-wrap attempt. Empty means "always succeed"
+  // (the default single-call behavior the other tests rely on).
+  const compileFragmentResponses: Array<{ ok: boolean; warnings?: string[] }> = [];
 
   class StoryRunnerStub {
     constructor(_bytes: unknown) {}
@@ -55,7 +60,7 @@ const hoisted = vi.hoisted(() => {
     free(): void {}
   }
 
-  return { compileFragmentCalls, StoryRunnerStub };
+  return { compileFragmentCalls, compileFragmentResponses, StoryRunnerStub };
 });
 
 vi.mock("brink-web", () => ({
@@ -63,6 +68,10 @@ vi.mock("brink-web", () => ({
   compile: () => "",
   compile_fragment: (entry: string, _sourcesJson: string, synthetic: string): string => {
     hoisted.compileFragmentCalls.push({ entry, synthetic });
+    const queued = hoisted.compileFragmentResponses.shift();
+    if (queued && !queued.ok) {
+      return JSON.stringify({ ok: false, story_bytes: null, warnings: queued.warnings ?? [] });
+    }
     return JSON.stringify({ ok: true, story_bytes: [1, 2, 3] });
   },
   program_checksum: () => "",
@@ -115,5 +124,36 @@ describe("evaluate() Tier-1 fragment path uses native wrap syntax for a .brink e
     expect(hoisted.compileFragmentCalls).toHaveLength(1);
     const call = hoisted.compileFragmentCalls[0];
     expect(call?.synthetic).toMatch(/^=== function __eval_[0-9a-f]{8}\(\) ===\n~ return \(gold \+ 1\)\n$/);
+  });
+
+  it("falls back to a native content wrap when the expression wrap fails to compile", async () => {
+    hoisted.compileFragmentCalls.length = 0;
+    // First (expression) attempt fails; second (content) attempt succeeds —
+    // exercises the `kind === "content"` -> `goToPath` branch of
+    // `evaluateFragment`, which the other tests never reach because their
+    // stub always succeeds on the first call.
+    hoisted.compileFragmentResponses.length = 0;
+    hoisted.compileFragmentResponses.push({ ok: false, warnings: [] }, { ok: true });
+    const runner = new StoryRunnerHandle(new Uint8Array());
+
+    const result = await runner.evaluate("You have {gold} gold.", {
+      projectSource: {
+        entry: "main.brink",
+        files: { "main.brink": "var gold = 5\n\nflow main() {\n  Hi. -> END\n}\n" },
+      },
+    });
+
+    expect(hoisted.compileFragmentCalls).toHaveLength(2);
+    const [exprCall, contentCall] = hoisted.compileFragmentCalls;
+    expect(exprCall?.synthetic).toMatch(/^fn __eval_[0-9a-f]{8}\(\) \{\n {2}return \(You have \{gold\} gold\.\);\n\}\n$/);
+    // Native content wrap, not ink's `=== NAME ===`.
+    expect(contentCall?.synthetic).toMatch(/^flow __eval_[0-9a-f]{8}\(\) \{\nYou have \{gold\} gold\.\n\}\n$/);
+    expect(contentCall?.synthetic).not.toContain("===");
+
+    // Reaches evaluate() end-to-end via the content path: a transcript, not
+    // a diagnostic.
+    expect(result.diagnostics).toEqual([]);
+    expect(result.value).toBeUndefined();
+    expect(result.transcript).toEqual([]);
   });
 });
