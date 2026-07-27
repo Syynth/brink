@@ -80,6 +80,9 @@ import {
   parseEvaluateSource,
   fragmentContentHash,
   cacheFragmentInto,
+  isNativeEntry,
+  expressionWrapSource,
+  contentWrapSource,
   FRAGMENT_CACHE_LIMIT,
 } from "./evaluate-dispatch";
 import type { FragmentCompileEntry, ExternalValue } from "./evaluate-dispatch";
@@ -1544,10 +1547,15 @@ export class StoryRunnerHandle {
    * `(this program's checksum, fragmentSource)` — a fragment compiles once
    * per program version; every re-eval (e.g. a watch panel re-running on
    * every step) is a cache hit. Robust classification: try the fragment as
-   * an expression (`=== function NAME() === \n ~ return (FRAG)`); if that
-   * fails to compile, fall back to content (`=== NAME === \n FRAG`); if
-   * neither compiles, the content attempt's diagnostics are returned (the
-   * more permissive grammar, so its failure is the more informative one).
+   * an expression (native `fn NAME() { return (FRAG); }`, ink
+   * `=== function NAME() === \n ~ return (FRAG)`); if that fails to compile,
+   * fall back to content (native `flow NAME() { FRAG }`, ink
+   * `=== NAME === \n FRAG`); if neither compiles, the content attempt's
+   * diagnostics are returned (the more permissive grammar, so its failure is
+   * the more informative one). Which spelling is tried is decided once from
+   * `project.entry`'s extension ({@link isNativeEntry}, #1598) — `.brink`
+   * gets native wrap syntax, everything else gets ink's, so a synthetic
+   * symbol never lands as a parse error in the entry's own dialect.
    */
   private compileFragment(
     fragmentSource: string,
@@ -1561,8 +1569,9 @@ export class StoryRunnerHandle {
 
     const symbolName = `__eval_${fragmentContentHash(fragmentSource)}`;
     const sourcesJson = JSON.stringify(project.files);
+    const native = isNativeEntry(project.entry);
 
-    const exprSynthetic = `=== function ${symbolName}() ===\n~ return (${fragmentSource})\n`;
+    const exprSynthetic = expressionWrapSource(symbolName, fragmentSource, native);
     const exprResult = JSON.parse(
       wasmCompileFragment(project.entry, sourcesJson, exprSynthetic),
     ) as CompileResult;
@@ -1575,7 +1584,7 @@ export class StoryRunnerHandle {
       });
     }
 
-    const contentSynthetic = `=== ${symbolName} ===\n${fragmentSource}\n`;
+    const contentSynthetic = contentWrapSource(symbolName, fragmentSource, native);
     const contentResult = JSON.parse(
       wasmCompileFragment(project.entry, sourcesJson, contentSynthetic),
     ) as CompileResult;
