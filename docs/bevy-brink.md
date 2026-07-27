@@ -147,7 +147,11 @@ transcript untouched, visit counts not bumped):
 
 - `call_ink_function::<M>(&mut World, entity, name, args) -> Result<Value, BrinkCallError>`
   — synchronous, from an exclusive system. Resolves world-access query
-  bindings inline (it has `&mut World`).
+  bindings inline (it has `&mut World`); a `bind_brink_command`-bound
+  external reached this way buffers its trigger like normal playback does,
+  then fires the event against the World once the call completes (#1096) —
+  it does not fall through to the in-story fallback the way an unbound
+  external would.
 - `commands.brink_call::<M>(flow, name, args).observe(|on: On<BrinkCallResolved>| …)`
   — deferred, from a normal (non-exclusive) system. Spawns a per-call
   entity; the plugin's resolver evaluates and fires `BrinkCallResolved` /

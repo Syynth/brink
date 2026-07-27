@@ -164,7 +164,9 @@ async, use `bind_brink_async`. Runnable demo:
 
 Evaluate an ink function from engine code, out-of-band (output isolated,
 transcript untouched, visit counts not bumped). The function may itself call
-world-access query bindings — they resolve as part of the call.
+world-access query bindings — they resolve as part of the call — or
+`bind_brink_command` bindings, which fire their event once the call
+completes.
 
 ### From an exclusive system — `call_ink_function`
 
@@ -181,7 +183,10 @@ let can_advance = call_ink_function::<()>(world, flow_entity, "can_advance", &[]
 ```
 
 Synchronous; resolves world-access query bindings inline because it holds
-`&mut World`.
+`&mut World`. A `bind_brink_command`-bound external reached this way buffers
+its trigger the same way normal playback does, then fires the event against
+the World once the call completes — it does not fall through to the
+in-story fallback the way an unbound external would.
 
 ### From a normal system — `commands.brink_call(...).observe(...)`
 
