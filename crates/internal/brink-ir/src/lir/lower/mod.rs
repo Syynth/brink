@@ -551,47 +551,80 @@ fn lower_knot_chunk(
     )
 }
 
+/// The part of a knot chunk's lowering environment that is the *same* for
+/// every knot in the project: the flattened resolution lookup, the
+/// reconstructed throwaway `ShapeTable`/`GlobalShapeMap`, the `FileId`→path
+/// map, and the type mode.
+///
+/// Built once per project revision and shared by every
+/// [`lower_knot_chunk_incremental`] call (issue #460 — `brink-db` memoizes it
+/// in `chunk_lowering_ctx_query`). Before this existed, each per-knot memo
+/// rebuilt all of it from scratch, so a K-knot project paid
+/// `K × O(project resolutions + struct shapes + files)` on every cold compile
+/// and on every recompile that invalidated the chunk memos — the measured
+/// dominant cost of the per-knot LIR layer.
+///
+/// Contents are byte-identical to what the per-knot build produced: same
+/// inputs, same constructors, and the throwaway `NameTable` the shape table
+/// is interned into is never read (every name is re-interned into the
+/// chunk's own local table), so sharing one instance across knots cannot
+/// change a chunk's bytes.
+pub struct ChunkLoweringCtx {
+    resolutions: ResolutionLookup,
+    shapes: structs::ShapeTable,
+    global_shapes: structs::GlobalShapeMap,
+    file_paths: LookupMap<FileId, String>,
+    type_mode: context::TypeMode,
+}
+
+impl ChunkLoweringCtx {
+    /// Build the shared context from the same cutoff-friendly inputs the
+    /// per-knot memo already depends on.
+    #[must_use]
+    pub fn new(
+        resolutions: &ResolutionMap,
+        shape_data: &StructShapeData,
+        file_paths: LookupMap<FileId, String>,
+        type_mode: context::TypeMode,
+    ) -> Self {
+        let mut throwaway = NameTable::new();
+        let shapes = structs::rebuild_shape_table(shape_data, &mut throwaway);
+        let global_shapes = structs::rebuild_global_shape_map(shape_data);
+        Self {
+            resolutions: ResolutionLookup::build(resolutions),
+            shapes,
+            global_shapes,
+            file_paths,
+            type_mode,
+        }
+    }
+}
+
 /// Incremental entry point (`brink-db`'s per-knot salsa memo): lower a single
 /// knot from cutoff-friendly inputs — the declaring file's already
-/// normalized+stamped HIR, the whole-project resolutions/index, and the
-/// [`StructShapeData`] projection (which the memo reads through an
-/// `Eq`-backdating query, so an unrelated edit leaves this chunk
-/// pointer-identical). Reconstructs the throwaway `NameTable`/`ShapeTable` the
-/// core lowering needs internally (their `NameId`s are never read — every
-/// name is re-interned into the chunk's own local table — so throwaway
-/// numbering is byte-identical after assembly relocation).
-#[expect(
-    clippy::implicit_hasher,
-    reason = "internal API called only by brink-db"
-)]
-#[expect(clippy::too_many_arguments)]
+/// normalized+stamped HIR, the whole-project symbol index, and the
+/// project-wide [`ChunkLoweringCtx`] (which the memo reads through its own
+/// query, so every knot shares one build of it).
 #[must_use]
 pub fn lower_knot_chunk_incremental(
     hir_file: &hir::HirFile,
     knot: &hir::Knot,
     index: &SymbolIndex,
-    resolutions: &ResolutionMap,
-    file_paths: &LookupMap<FileId, String>,
-    shape_data: &StructShapeData,
-    type_mode: context::TypeMode,
+    ctx: &ChunkLoweringCtx,
     file_id: FileId,
     tables: context::AnalyzerTables<'_>,
 ) -> (chunk::ScopeChunk, Vec<crate::Diagnostic>) {
-    let resolutions = ResolutionLookup::build(resolutions);
-    let mut throwaway = NameTable::new();
-    let shapes = structs::rebuild_shape_table(shape_data, &mut throwaway);
-    let global_shapes = structs::rebuild_global_shape_map(shape_data);
     let struct_ctx = context::StructCtx {
-        shapes: &shapes,
-        global_shapes: &global_shapes,
-        type_mode,
+        shapes: &ctx.shapes,
+        global_shapes: &ctx.global_shapes,
+        type_mode: ctx.type_mode,
     };
     lower_knot_chunk(
         hir_file,
         knot,
         index,
-        &resolutions,
-        file_paths,
+        &ctx.resolutions,
+        &ctx.file_paths,
         &struct_ctx,
         context::root_definition_id(),
         file_id,

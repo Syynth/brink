@@ -228,6 +228,10 @@ impl Default for BrinkDatabase {
                 .ingredient::<decl_hir_query>()
                 .ingredient::<lir_prelude_decls_query>()
                 .ingredient::<KnotChunkKey<'_>>()
+                // Issue #460: the knot-invariant half of a chunk's lowering
+                // environment, hoisted out of the per-knot memo so it is
+                // built once per revision instead of once per knot.
+                .ingredient::<chunk_lowering_ctx_query>()
                 .ingredient::<lir_knot_chunk_query>()
                 .ingredient::<lir_lowering_query>()
                 // Layer 2/3: type inference (TM-1, advisory-only).
@@ -1784,6 +1788,68 @@ impl PartialEq for LoweredChunk {
     }
 }
 
+/// [`brink_ir::lir::ChunkLoweringCtx`] wrapped so
+/// [`chunk_lowering_ctx_query`] (`no_eq`: it holds the same
+/// `ShapeTable`/`GlobalShapeMap` `PreludeDeclsResult` cannot make `Eq`) can
+/// satisfy salsa's `Update` bound. `Arc`-wrapped so a validated memo hands
+/// back the same allocation — same pattern as [`PreludeDeclsResult`].
+#[derive(Clone)]
+pub(crate) struct ChunkLoweringCtxResult {
+    pub ctx: Arc<brink_ir::lir::ChunkLoweringCtx>,
+}
+
+impl PartialEq for ChunkLoweringCtxResult {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.ctx, &other.ctx)
+    }
+}
+
+/// The knot-invariant half of [`lir_knot_chunk_query`]'s lowering
+/// environment, built once per project revision instead of once per knot
+/// (issue #460).
+///
+/// Every input here is whole-project — the flattened resolution lookup, the
+/// reconstructed struct-shape tables, the `FileId`→path map, the type mode —
+/// so each of the project's K per-knot memos used to rebuild all of it,
+/// making the per-knot LIR layer `O(K × project size)`. The measured cost on
+/// `compile_bench`'s 50-file × 20-knot synthetic project was the dominant
+/// share of cold LIR lowering; hoisting it here makes that share `O(1)` in K.
+///
+/// This query's dependency set is exactly the subset of
+/// [`lir_knot_chunk_query`]'s dependencies it took over
+/// ([`resolutions_index_query`], [`struct_shape_data_query`],
+/// [`type_policy_query`], and the files' `path` fields), so no chunk memo
+/// gains or loses an invalidation edge: anything that re-executes this
+/// re-executed every chunk before.
+#[salsa::tracked(no_eq)]
+pub(crate) fn chunk_lowering_ctx_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+) -> ChunkLoweringCtxResult {
+    let resolved = resolutions_index_query(db, project);
+    let shape_data = struct_shape_data_query(db, project);
+    // Narrow `.types` projection (issue #806/#809) — not the raw
+    // `AnalysisOptions` field — so an unrelated options edit doesn't
+    // re-execute this memo (and through it, every knot chunk).
+    let type_mode = match type_policy_query(db, project) {
+        TypePolicy::Strict => brink_ir::lir::TypeMode::Strict,
+        TypePolicy::Gradual => brink_ir::lir::TypeMode::Gradual,
+    };
+    let file_paths: LookupMap<FileId, String> = project
+        .files(db)
+        .iter()
+        .map(|f| (f.file_id(db), f.path(db).clone()))
+        .collect();
+    ChunkLoweringCtxResult {
+        ctx: Arc::new(brink_ir::lir::ChunkLoweringCtx::new(
+            &resolved.resolutions,
+            shape_data,
+            file_paths,
+            type_mode,
+        )),
+    }
+}
+
 /// Lower one knot into a self-contained LIR chunk — the per-`DefinitionId`
 /// unit of FG-4d. Reads only the declaring file's `lowered_query` HIR
 /// (per-file edge), the whole-project `resolutions_index_query`
@@ -1811,19 +1877,10 @@ pub(crate) fn lir_knot_chunk_query(
     };
 
     let resolved = resolutions_index_query(db, project);
-    let shape_data = struct_shape_data_query(db, project);
-    // Narrow `.types` projection (issue #806/#809) — not the raw
-    // `AnalysisOptions` field — so an unrelated options edit doesn't
-    // re-execute this chunk memo.
-    let type_mode = match type_policy_query(db, project) {
-        TypePolicy::Strict => brink_ir::lir::TypeMode::Strict,
-        TypePolicy::Gradual => brink_ir::lir::TypeMode::Gradual,
-    };
-    let file_paths: LookupMap<FileId, String> = project
-        .files(db)
-        .iter()
-        .map(|f| (f.file_id(db), f.path(db).clone()))
-        .collect();
+    // The knot-invariant half of the lowering environment (resolution
+    // lookup, struct-shape tables, file paths, type mode), built once per
+    // project revision rather than once per knot — issue #460.
+    let ctx = &chunk_lowering_ctx_query(db, project).ctx;
 
     // The file's normalized+stamped HIR, shared across all its knots'
     // memos (so a K-knot file normalizes once, not K times).
@@ -1839,10 +1896,7 @@ pub(crate) fn lir_knot_chunk_query(
         hir_file,
         knot,
         &resolved.index,
-        &resolved.resolutions,
-        &file_paths,
-        shape_data,
-        type_mode,
+        ctx,
         file_id,
         tables,
     );
