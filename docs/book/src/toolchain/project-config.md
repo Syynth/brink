@@ -106,13 +106,18 @@ multi-file project with `story.ink` in `src/chapters/` and `brink.toml` at
 the repo root still finds it.
 
 For the real-filesystem mounts — `brink compile`, `brink ide`, and
-`brink-lsp` — the walk is bounded at a workspace/git boundary: it never
-climbs past a directory containing a `.git` entry (an ordinary repository's
-`.git/` directory, or a linked worktree's `.git` pointer file). Inside a
-non-repository tree (no VCS at all), the walk still runs all the way to the
-filesystem root. Either way, a `brink.toml` that lives outside the
-project's own repository is never picked up by these mounts, even by
-accident — the file is treated exactly as if it didn't exist.
+`brink-lsp` — the walk is bounded two ways, either of which stops it. It
+never climbs past a directory containing a `.git` entry (an ordinary
+repository's `.git/` directory, or a linked worktree's `.git` pointer file);
+and, independent of that, it never climbs more than a fixed number of
+ancestor directories, so a non-repository tree (no VCS at all, hence no
+`.git` boundary to stop at) doesn't climb all the way to the filesystem root
+either. Either way, a `brink.toml` that lives outside the bound is never
+picked up by these mounts, even by accident — but it isn't treated as
+silently as if it didn't exist: discovery reports it back as a warning
+(logged by `brink-lsp`; returned alongside the result by
+`brink_project_config::load_from_entry`), naming the skipped file so an
+author can tell why it wasn't applied.
 
 The virtual mounts have no filesystem or `.git` to bound against, so each is
 bounded at its own tree instead: the wasm editor session's
@@ -259,7 +264,15 @@ use brink_compiler::{AnalysisOptions, compile_path_with_options};
 
 let entry = Path::new("story.ink");
 let mut options = AnalysisOptions::default();
-if let Some(loaded) = brink_project_config::load_from_entry(entry)? {
+let (loaded, discovery_warnings) = brink_project_config::load_from_entry(entry)?;
+// A `brink.toml` the bounded discovery walk stepped over (a workspace/git
+// boundary, or the ancestor-depth cap for a VCS-less tree) is reported here
+// rather than silently ignored — never applied, but worth telling the
+// author about (issue #1435).
+for warning in &discovery_warnings {
+    eprintln!("{warning}");
+}
+if let Some(loaded) = loaded {
     for warning in &loaded.warnings {
         eprintln!("{warning}");
     }

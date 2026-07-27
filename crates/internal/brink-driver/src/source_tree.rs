@@ -185,7 +185,12 @@ pub fn is_native(path: &Path) -> bool {
 /// anywhere above the repo — even in `$HOME` — could get picked up). A
 /// `brink.toml` sitting outside a repository entirely (as opposed to merely
 /// above `entry_dir` but still inside it) is now treated exactly like no
-/// `brink.toml` at all: this function falls back to `entry_dir`.
+/// `brink.toml` at all: this function falls back to `entry_dir`. And even a
+/// VCS-less tree, which has no `.git` boundary to stop at, no longer climbs
+/// "to the filesystem root for free" as the absolute-path reasoning above
+/// describes: `find_config`'s `MAX_ANCESTOR_DEPTH` cap (#1435) bounds *every*
+/// walk — relative-retry or absolute — regardless of whether a `.git` is
+/// ever found.
 #[must_use]
 pub fn native_source_root(entry: &Path) -> PathBuf {
     let entry_dir = entry

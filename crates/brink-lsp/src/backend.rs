@@ -1012,8 +1012,8 @@ fn config_error_diagnostic(
 /// Discovery is relative to the **workspace root**, not any single open
 /// file: at `initialize` time the LSP has no "entry file" the way the CLI's
 /// `brink compile <entry>` does, only workspace folders. This reuses
-/// `brink-project-config`'s [`brink_project_config::find_config`] walk
-/// directly (rather than [`brink_project_config::discover_from_entry`],
+/// `brink-project-config`'s [`brink_project_config::find_config_with_warnings`]
+/// walk directly (rather than [`brink_project_config::discover_from_entry`],
 /// which expects a file path to take the parent of) — the walking logic
 /// itself is not duplicated. With multiple workspace folders, only the
 /// first is consulted, mirroring the single-session, single-project-root
@@ -1026,7 +1026,11 @@ fn config_error_diagnostic(
 /// rather than refuse to initialize/reload — but also earns a client-visible
 /// diagnostic via the returned [`ConfigLoadOutcome`] (#1055 gap 1): callers
 /// publish it (see [`Backend::publish_config_outcome`]), they don't fail on
-/// it.
+/// it. A `brink.toml` the bounded walk stepped over (a workspace/git
+/// boundary, or the ancestor-depth cap for a VCS-less workspace, #1435) gets
+/// the same `tracing::warn!` treatment — logged, not silently dropped,
+/// though (like the unknown-key case) it never earns its own
+/// `ConfigLoadOutcome::diagnostic`.
 ///
 /// Called once from `initialize` (via `initialized`, which defers the
 /// publish) and again by [`Backend::reload_brink_toml`] on
@@ -1040,42 +1044,50 @@ fn resolve_language_options(
     let mut options = AnalysisOptions::default();
     let mut outcome = ConfigLoadOutcome::default();
 
-    if let Some(root) = roots.first()
-        && let Some(path) = brink_project_config::find_config(root)
-    {
-        outcome.path = Some(path.clone());
-        match std::fs::read_to_string(&path) {
-            Ok(text) => match brink_project_config::parse_str_at(path.display().to_string(), &text)
-            {
-                Ok((config, warnings)) => {
-                    for warning in &warnings {
-                        tracing::warn!("[{}] {warning}", path.display());
-                    }
-                    let lint_warnings = options.apply_project_config(
-                        &config,
-                        overrides.dialect.is_some(),
-                        overrides.types.is_some(),
-                    );
-                    for warning in &lint_warnings {
-                        tracing::warn!("[{}] {warning}", path.display());
+    if let Some(root) = roots.first() {
+        let (path, discovery_warnings) = brink_project_config::find_config_with_warnings(root);
+        // A config the bounded walk stepped over (#1435) — never used below,
+        // only logged, on the same "warn, never silently drop" channel every
+        // other warning in this function uses.
+        for warning in &discovery_warnings {
+            tracing::warn!("{warning}");
+        }
+        if let Some(path) = path {
+            outcome.path = Some(path.clone());
+            match std::fs::read_to_string(&path) {
+                Ok(text) => {
+                    match brink_project_config::parse_str_at(path.display().to_string(), &text) {
+                        Ok((config, warnings)) => {
+                            for warning in &warnings {
+                                tracing::warn!("[{}] {warning}", path.display());
+                            }
+                            let lint_warnings = options.apply_project_config(
+                                &config,
+                                overrides.dialect.is_some(),
+                                overrides.types.is_some(),
+                            );
+                            for warning in &lint_warnings {
+                                tracing::warn!("[{}] {warning}", path.display());
+                            }
+                        }
+                        Err(e) => {
+                            // `e`'s own `Display` already names `path` (#1384:
+                            // `parse_str_at` threads it into every `ConfigError`),
+                            // so this no longer needs its own `path.display()`
+                            // prefix the way the pre-#1384 bare `parse_str` did.
+                            tracing::warn!("failed to parse: {e}");
+                            outcome.diagnostic = Some(config_error_diagnostic(&e, Some(&text)));
+                        }
                     }
                 }
                 Err(e) => {
-                    // `e`'s own `Display` already names `path` (#1384:
-                    // `parse_str_at` threads it into every `ConfigError`),
-                    // so this no longer needs its own `path.display()`
-                    // prefix the way the pre-#1384 bare `parse_str` did.
-                    tracing::warn!("failed to parse: {e}");
-                    outcome.diagnostic = Some(config_error_diagnostic(&e, Some(&text)));
+                    tracing::warn!("failed to read {}: {e}", path.display());
+                    let err = brink_project_config::ConfigError::Io {
+                        path: path.clone(),
+                        source: e,
+                    };
+                    outcome.diagnostic = Some(config_error_diagnostic(&err, None));
                 }
-            },
-            Err(e) => {
-                tracing::warn!("failed to read {}: {e}", path.display());
-                let err = brink_project_config::ConfigError::Io {
-                    path: path.clone(),
-                    source: e,
-                };
-                outcome.diagnostic = Some(config_error_diagnostic(&err, None));
             }
         }
     }
