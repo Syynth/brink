@@ -27,13 +27,24 @@
 //! this file still knows nothing about `Map`/`Flags`/`Weighted`/structs.
 //! The one place the grammar has to care is ambiguity — see
 //! `Parser::no_construct_literal`.
+//!
+//! NG-D (issue #1490, RULED 2026-07-27) adds the **array/sequence
+//! literal** `[1, 2, 3]` as its own atom (`array_literal` below) —
+//! `L_BRACKET` was lexed but idle in expression position before this. The
+//! B5-symmetric `Array { … }` construction-registry entry was weighed and
+//! rejected in the same ruling: the everyday collection literal deserves
+//! the lightest spelling, not a trip through the `TypeName { … }` registry
+//! dispatch. Distinct from the sibling NG-D ruling on type-argument syntax
+//! (issue #1552, `< >` for type arguments): `parser/types.rs` never touches
+//! `L_BRACKET`, so the two grammars cannot collide.
 
 use crate::SyntaxKind::{
-    AMP_AMP, ARG_LIST, BANG, BANG_EQ, BOOLEAN_LIT, CALL_EXPR, COLON, COLON_COLON, COMMA,
-    CONSTRUCT_ENTRY, CONSTRUCT_LITERAL, DOT, EQ_EQ, FLOAT, FLOAT_LIT, GT, GT_EQ, IDENT, INFIX_EXPR,
-    INTEGER, INTEGER_LIT, KW_FALSE, KW_OR, KW_TRUE, L_BRACE, L_PAREN, LAMBDA_EXPR, LAMBDA_PARAMS,
-    LT, LT_EQ, MINUS, PARAM, PAREN_EXPR, PATH, PATH_EXPR, PATH_SEGMENT, PERCENT, PIPE, PLUS,
-    PREFIX_EXPR, QUOTE, R_BRACE, R_PAREN, SLASH, STAR, STRING_ESCAPE, STRING_LIT, STRING_TEXT,
+    AMP_AMP, ARG_LIST, ARRAY_LITERAL, BANG, BANG_EQ, BOOLEAN_LIT, CALL_EXPR, COLON, COLON_COLON,
+    COMMA, CONSTRUCT_ENTRY, CONSTRUCT_LITERAL, DOT, EQ_EQ, FLOAT, FLOAT_LIT, GT, GT_EQ, IDENT,
+    INFIX_EXPR, INTEGER, INTEGER_LIT, KW_FALSE, KW_OR, KW_TRUE, L_BRACE, L_BRACKET, L_PAREN,
+    LAMBDA_EXPR, LAMBDA_PARAMS, LT, LT_EQ, MINUS, PARAM, PAREN_EXPR, PATH, PATH_EXPR, PATH_SEGMENT,
+    PERCENT, PIPE, PLUS, PREFIX_EXPR, QUOTE, R_BRACE, R_BRACKET, R_PAREN, SLASH, STAR,
+    STRING_ESCAPE, STRING_LIT, STRING_TEXT,
 };
 
 use super::Parser;
@@ -211,6 +222,16 @@ fn atom(p: &mut Parser<'_, '_>) -> bool {
             path_or_call(p);
             true
         }
+        // `[expr, expr, …]` — the array/sequence literal (NG-D, issue
+        // #1490, RULED 2026-07-27). Unconditional: unlike the construction
+        // initializer's `no_construct_literal` ambiguity guard, a leading
+        // `[` never starts anything else in this expression grammar (no
+        // postfix indexing exists on the native surface yet), so there is
+        // no restriction to consult here.
+        L_BRACKET => {
+            array_literal(p);
+            true
+        }
         // A statement-block used as a value (blocks-as-values ruled,
         // B0.8 Wave A, `docs/decision-log.md` 2026-07-23 "Code-ground
         // sitting"): `let x = { let y = 1; y + 1 };` — the block-expr
@@ -371,6 +392,46 @@ fn construct_entry(p: &mut Parser<'_, '_>) {
         p.skip_ws_and_newlines();
         expression(p);
     }
+    p.finish_node();
+}
+
+/// `[expr, expr, …]` — the array/sequence literal (NG-D, issue #1490,
+/// RULED 2026-07-27 "`[1, 2, 3]`. Bracket literal on the native surface").
+/// Trailing comma and the empty form `[]` are both accepted, mirroring the
+/// construction initializer's own entry-list shape
+/// (`construct_entry_list` above) and the brink-dialect sigil literals'
+/// established shape. Elements are bare expression children directly under
+/// `ARRAY_LITERAL` — no per-element wrapper node, unlike `CONSTRUCT_ENTRY`,
+/// since an array element is never a key/value pair.
+fn array_literal(p: &mut Parser<'_, '_>) {
+    p.start_node(ARRAY_LITERAL);
+    p.expect(L_BRACKET);
+    // The construction-literal restriction lifts inside `[…]`, same
+    // reasoning as `paren_expr`/`arg_list`: the brackets already
+    // disambiguate, so `if [Point { x: 1 }].len() > 0 { … }` still parses.
+    let saved = p.set_no_construct_literal(false);
+    if p.enter_depth() {
+        loop {
+            p.skip_ws_and_newlines();
+            if p.at(R_BRACKET) || p.at_eof() {
+                break;
+            }
+            let before = p.pos();
+            expression(p);
+            if p.pos() == before {
+                p.error_recover("unexpected token in array literal");
+                continue;
+            }
+            p.skip_ws_and_newlines();
+            if !p.eat(COMMA) {
+                break;
+            }
+        }
+        p.exit_depth();
+    }
+    p.skip_ws_and_newlines();
+    p.set_no_construct_literal(saved);
+    p.expect(R_BRACKET);
     p.finish_node();
 }
 
