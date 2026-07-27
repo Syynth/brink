@@ -1,28 +1,24 @@
 //! Characterization of the live-typing vs. db diagnostic divergence
-//! (issue #1347, `needs-design`).
+//! (issue #1347, `needs-design`) — **resolved by #1358.**
 //!
-//! `IdeSession`'s editor-facing analysis runs *off* the db —
-//! `snapshot().analyze()` → `brink_analyzer::analyze_with_modules(…, false)` —
-//! while a compile and every direct db query run
-//! `per_file_diagnostics_query`, which knows each file's *path* and therefore
-//! its `Language`. The two disagree on native `.brink` files, in both
-//! directions.
+//! `IdeSession`'s editor-facing analysis runs off the db —
+//! `snapshot().analyze()` → `brink_analyzer::analyze_with_modules(…,
+//! is_native)` — while a compile and every direct db query run
+//! `per_file_diagnostics_query`, which knows each file's *path* and
+//! therefore its `Language`. Before #1358, the pure path always hardcoded
+//! `is_native = false`, so the two disagreed on native `.brink` files in
+//! both directions (missing `E084`/`E106`/`E137`/`E138`, and a false-positive
+//! `E051`). #1358 threads the db's real `is_native` answer through
+//! `IdeSnapshot`/`analyze_with_modules` (design doc §4 option B), which
+//! closes every divergence this suite measured — see
+//! `docs/live-typing-diagnostics-divergence.md` for the resolution note and
+//! the original measurement.
 //!
-//! **These tests deliberately pin behavior that is wrong.** They are not a
-//! statement that the current split is correct; they exist so #1347 can be
-//! ruled on against a measured inventory rather than assumptions, and so the
-//! inventory cannot silently rot. Every assertion below carries the direction
-//! it will move in once the ruling lands:
-//!
-//! - a *false negative* assertion (`db` has a code, live typing does not)
-//!   flips when live typing gains the check;
-//! - the *false positive* assertion (live typing invents `E051` on native
-//!   syntax) flips when the T1b dialect gate stops running on native files
-//!   off-db.
-//!
-//! Either way the failure message names #1347, so whoever moves the seam is
-//! told which side of it they moved. See
-//! `docs/live-typing-diagnostics-divergence.md` for the full analysis.
+//! These tests now pin *agreement*: for every fixture below, live typing and
+//! the db must report the same diagnostic codes. Keeping the original
+//! fixtures (rather than deleting the file) keeps the regression coverage —
+//! if a future change reintroduces the divergence, one of these fails with a
+//! code-set mismatch naming #1347.
 
 use brink_analyzer::{Dialect, TypePolicy};
 use brink_ide::session::IdeSession;
@@ -49,8 +45,8 @@ flow main() {
 }
 ";
 
-/// A plain ink file — the control. The divergence is native-only, and this
-/// is what proves it.
+/// A plain ink file — the control. The divergence #1347 measured was
+/// native-only, and this is what proves it.
 const INK_PLAIN: &str = "=== start ===\nHello.\n-> END\n";
 
 /// A native file with a map literal that trips both of the other two checks
@@ -97,10 +93,6 @@ fn both_surfaces(
     Some((live, db))
 }
 
-fn has(diags: &[Diagnostic], code: DiagnosticCode) -> bool {
-    diags.iter().any(|d| d.code == code)
-}
-
 fn codes(diags: &[Diagnostic]) -> Vec<DiagnosticCode> {
     let mut v: Vec<DiagnosticCode> = diags.iter().map(|d| d.code).collect();
     v.sort_by_key(|c| format!("{c:?}"));
@@ -108,145 +100,119 @@ fn codes(diags: &[Diagnostic]) -> Vec<DiagnosticCode> {
     v
 }
 
-/// **False negative.** `E137` (B0.9 native strict-only, issue #1342) has no
-/// pure-path call site at all: `brink_analyzer::finish_analysis` never calls
-/// `native_strict_only_error`, only `per_file_diagnostics_query` does. So an
+fn assert_surfaces_agree(live: &[Diagnostic], db: &[Diagnostic], context: &str) {
+    assert_eq!(
+        codes(live),
+        codes(db),
+        "#1347 regression: live typing and the db must agree on {context} \
+         (resolved by #1358); live {:?}, db {:?}",
+        codes(live),
+        codes(db)
+    );
+}
+
+/// `E137` (B0.9 native strict-only, issue #1342) used to have no pure-path
+/// call site: `brink_analyzer::finish_analysis` never called
+/// `native_strict_only_error`, only `per_file_diagnostics_query` did, so an
 /// author typing in a native file under an explicit `types = gradual` never
-/// sees it until they compile — the exact symptom #1347 was filed for.
-///
-/// Under #1347's resolution this assertion inverts: live typing gains `E137`.
+/// saw it until they compiled. #1358 wired `is_native` through, and
+/// `finish_analysis` now reaches the same check live typing's db does.
 #[test]
-fn e137_reaches_the_db_but_not_live_typing() {
+fn e137_reaches_both_the_db_and_live_typing() {
     for dialect in [Dialect::StrictInk, Dialect::Brink] {
         let (live, db) = both_surfaces("main.brink", NATIVE_DUP_FIELD, dialect)
             .expect("session produced an analysis");
         assert!(
             has(&db, DiagnosticCode::E137),
-            "#1347 inventory drift: the db lost E137 under {dialect:?}; db saw {:?}",
+            "fixture must provoke E137 under {dialect:?}; db saw {:?}",
             codes(&db)
         );
-        assert!(
-            !has(&live, DiagnosticCode::E137),
-            "#1347 appears resolved for E137 under {dialect:?} — live typing now sees it. \
-             Update docs/live-typing-diagnostics-divergence.md and this test; live saw {:?}",
-            codes(&live)
-        );
+        assert_surfaces_agree(&live, &db, &format!("E137 under {dialect:?}"));
     }
 }
 
-/// **False negative.** `E084` (struct construction-literal duplicate field) is
-/// gated on `dialect == Brink || is_native` inside
-/// `brink_analyzer::per_file_diagnostics`. The pure path always supplies
-/// `is_native = false`, so under the *default* `strict-ink` dialect — which is
-/// what `EditorSession` starts at — a native file's duplicate field is a real
-/// compile error that live typing never reports.
-///
-/// Declaring `dialect = brink` masks it (the `|| is_native` arm stops
-/// mattering), which is why the `Brink` half of this test asserts agreement:
-/// it isolates `is_native` as the variable, not the dialect.
+/// `E084` (struct construction-literal duplicate field) is gated on
+/// `dialect == Brink || is_native` inside `brink_analyzer::per_file_diagnostics`.
+/// Before #1358 the pure path always supplied `is_native = false`, so under
+/// the *default* `strict-ink` dialect — what `EditorSession` starts at — a
+/// native file's duplicate field was a real compile error live typing never
+/// reported. #1358 supplies the db's real `is_native`, so both surfaces now
+/// agree under both dialects.
 #[test]
-fn e084_on_a_native_file_needs_is_native_under_the_default_dialect() {
-    let (live, db) = both_surfaces("main.brink", NATIVE_DUP_FIELD, Dialect::StrictInk)
-        .expect("session produced an analysis");
-    assert!(
-        has(&db, DiagnosticCode::E084),
-        "#1347 inventory drift: the db lost E084; db saw {:?}",
-        codes(&db)
-    );
-    assert!(
-        !has(&live, DiagnosticCode::E084),
-        "#1347 appears resolved for E084 — live typing now sees it under strict-ink. \
-         Update docs/live-typing-diagnostics-divergence.md and this test; live saw {:?}",
-        codes(&live)
-    );
-
-    // Same file under `brink`: both surfaces agree, because the dialect arm
-    // of the gate is satisfied without `is_native`.
-    let (live, db) = both_surfaces("main.brink", NATIVE_DUP_FIELD, Dialect::Brink)
-        .expect("session produced an analysis");
-    assert!(
-        has(&live, DiagnosticCode::E084) && has(&db, DiagnosticCode::E084),
-        "under the brink dialect E084 must reach both surfaces; live {:?}, db {:?}",
-        codes(&live),
-        codes(&db)
-    );
+fn e084_reaches_both_surfaces_under_every_dialect() {
+    for dialect in [Dialect::StrictInk, Dialect::Brink] {
+        let (live, db) = both_surfaces("main.brink", NATIVE_DUP_FIELD, dialect)
+            .expect("session produced an analysis");
+        assert!(
+            has(&db, DiagnosticCode::E084),
+            "fixture must provoke E084 under {dialect:?}; db saw {:?}",
+            codes(&db)
+        );
+        assert_surfaces_agree(&live, &db, &format!("E084 under {dialect:?}"));
+    }
 }
 
-/// **False positive — the sharper half of #1347, and the one the issue did
-/// not know about.** The T1b dialect gate is an ink-only axis: a native
-/// `.brink` file's own grammar *is* the superset grammar the gate polices, so
-/// `per_file_diagnostics_query` skips it via `is_native` (#1348). The pure
-/// path cannot, so ordinary native syntax draws an `E051` squiggle in the
-/// editor that vanishes on compile.
+/// **The sharper half of #1347, and the one the issue did not know about.**
+/// The T1b dialect gate is an ink-only axis: a native `.brink` file's own
+/// grammar *is* the superset grammar the gate polices, so
+/// `per_file_diagnostics_query` skips it via `is_native` (#1348). Before
+/// #1358 the pure path could not skip it, so ordinary native syntax drew an
+/// `E051` squiggle in the editor that vanished on compile.
 ///
-/// `EditorSession` defaults to `strict-ink`, so this is the default
-/// experience for a `.brink` file with no declared dialect — not an edge case.
-///
-/// Under #1347's resolution this assertion inverts: live typing stops
-/// emitting `E051` here.
+/// `EditorSession` defaults to `strict-ink`, so this was the default
+/// experience for a `.brink` file with no declared dialect — not an edge
+/// case. #1358 closes it: live typing no longer emits `E051` here.
 #[test]
-fn live_typing_invents_e051_on_native_syntax_the_db_accepts() {
+fn live_typing_no_longer_invents_e051_on_native_syntax() {
     let (live, db) = both_surfaces("main.brink", NATIVE_DUP_FIELD, Dialect::StrictInk)
         .expect("session produced an analysis");
     assert!(
-        has(&live, DiagnosticCode::E051),
-        "#1347 appears resolved for the E051 false positive — live typing no longer \
-         rejects native syntax under strict-ink. Update \
-         docs/live-typing-diagnostics-divergence.md and this test; live saw {:?}",
+        !has(&live, DiagnosticCode::E051),
+        "#1347 regression: live typing invented E051 on native syntax under \
+         strict-ink again; live saw {:?}",
         codes(&live)
     );
     assert!(
         !has(&db, DiagnosticCode::E051),
-        "#1347 inventory drift: the db now emits E051 on a native file, which #1348 \
-         ruled it must not; db saw {:?}",
+        "#1348 regression: the db must never emit E051 on a native file; db saw {:?}",
         codes(&db)
     );
 }
 
-/// **False negatives, not previously pinned by this suite.** `E106`
-/// (map-literal key domain) and `E138` (map-literal duplicate key) are gated
-/// at the same `dialect == Brink || is_native` block as `E084`
-/// (`crates/internal/brink-analyzer/src/lib.rs:634-651`), so both are also
-/// missing from live typing on a native file under the default `strict-ink`
-/// dialect — the same pure-path `is_native = false` blind spot
-/// `e084_on_a_native_file_needs_is_native_under_the_default_dialect` pins for
+/// `E106` (map-literal key domain) and `E138` (map-literal duplicate key)
+/// are gated at the same `dialect == Brink || is_native` block as `E084`
+/// (`crates/internal/brink-analyzer/src/lib.rs:634-651`), so before #1358
+/// both were also missing from live typing on a native file under the
+/// default `strict-ink` dialect — the same pure-path `is_native = false`
+/// blind spot `e084_reaches_both_surfaces_under_every_dialect` pins for
 /// `E084`.
-///
-/// Under #1347's resolution these assertions invert: live typing gains
-/// `E106` and `E138`.
 #[test]
-fn e106_and_e138_map_literal_checks_missing_from_live_typing_under_default_dialect() {
+fn e106_and_e138_reach_both_surfaces_under_default_dialect() {
     let (live, db) = both_surfaces("main.brink", NATIVE_MAP_KEY_ISSUES, Dialect::StrictInk)
         .expect("session produced an analysis");
     for code in [DiagnosticCode::E106, DiagnosticCode::E138] {
         assert!(
             has(&db, code),
-            "#1347 inventory drift: the db lost {code:?} under strict-ink; db saw {:?}",
+            "fixture must provoke {code:?} under strict-ink; db saw {:?}",
             codes(&db)
         );
-        assert!(
-            !has(&live, code),
-            "#1347 appears resolved for {code:?} — live typing now sees it under \
-             strict-ink. Update docs/live-typing-diagnostics-divergence.md and this \
-             test; live saw {:?}",
-            codes(&live)
-        );
     }
+    assert_surfaces_agree(&live, &db, "the map-literal key checks under strict-ink");
 }
 
 /// The control: on an ink file the two surfaces agree exactly, under both
-/// dialects. This is what scopes #1347 to native files — and what says the
-/// ink corpus (and therefore the oracle) is untouched by whichever way the
-/// issue is resolved.
+/// dialects — unaffected by #1358, since native-only classification cannot
+/// change an ink file's diagnostics. This is what scoped #1347 to native
+/// files, and it stays green throughout.
 #[test]
 fn ink_files_agree_on_both_surfaces() {
     for dialect in [Dialect::StrictInk, Dialect::Brink] {
         let (live, db) =
             both_surfaces("main.ink", INK_PLAIN, dialect).expect("session produced an analysis");
-        assert_eq!(
-            codes(&live),
-            codes(&db),
-            "an ink file must analyze identically on both surfaces under {dialect:?}"
-        );
+        assert_surfaces_agree(&live, &db, &format!("an ink file under {dialect:?}"));
     }
+}
+
+fn has(diags: &[Diagnostic], code: DiagnosticCode) -> bool {
+    diags.iter().any(|d| d.code == code)
 }

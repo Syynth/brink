@@ -1,12 +1,18 @@
 # Live-typing vs. db diagnostics divergence (issue #1347)
 
-**Status: design input. No ruling made here.** Issue #1347 is `needs-design`;
-this document supplies the measurement the ruling needs and stops short of
-picking a resolution. Every code coordinate and diagnostic code below was read
-or reproduced at `auto/issue-1347` (branched from `origin/main` at
-`999581354`); the reproduction is pinned by
-`crates/internal/brink-ide/tests/live_typing_db_divergence.rs`, which fails the
-moment either side of the divergence moves.
+**Status: resolved by #1358.** #1358 ("thread native-awareness through the
+pure `analyze_with_modules` path") implemented §4's **option B** below:
+`IdeSnapshot` now carries the db's real `is_native` and threads it through
+`analyze_with_modules` → `finish_analysis` → `per_file_diagnostics` (and adds
+the missing `E137` call site). That closes every divergence measured in §3 —
+`crates/internal/brink-ide/tests/live_typing_db_divergence.rs` now pins
+*agreement* between the two surfaces on the same fixtures that used to pin
+the mismatch.
+
+The rest of this document is kept as the original measurement that grounded
+the ruling — it is what #1358 fixed, not a live description of current
+behavior. Every code coordinate and diagnostic code below was read or
+reproduced at `auto/issue-1347` (branched from `origin/main` at `999581354`).
 
 ## 1. What #1347 asked
 
