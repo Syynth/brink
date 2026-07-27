@@ -87,6 +87,8 @@ fn diag_js(d: &brink_ide::structural_result::IntroducedDiagnostic) -> RenameDiag
         severity: match d.severity {
             brink_ir::Severity::Error => "error",
             brink_ir::Severity::Warning => "warning",
+            brink_ir::Severity::Info => "info",
+            brink_ir::Severity::Hint => "hint",
         }
         .to_owned(),
         code: d.code.as_str().to_owned(),

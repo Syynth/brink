@@ -33,10 +33,16 @@ pub fn symbol_kind_to_lsp(kind: brink_ir::SymbolKind) -> lsp_types::SymbolKind {
     }
 }
 
+/// `brink_ir::Severity::Info`/`Hint` map to LSP's `INFORMATION`/`HINT`
+/// respectively (issue #1162) — the LSP spec keeps these as two distinct
+/// severities (`textDocument/publishDiagnostics`'s `DiagnosticSeverity`), so
+/// this maps both explicitly rather than collapsing them onto one.
 pub fn severity_to_lsp(sev: brink_ir::Severity) -> lsp_types::DiagnosticSeverity {
     match sev {
         brink_ir::Severity::Error => lsp_types::DiagnosticSeverity::ERROR,
         brink_ir::Severity::Warning => lsp_types::DiagnosticSeverity::WARNING,
+        brink_ir::Severity::Info => lsp_types::DiagnosticSeverity::INFORMATION,
+        brink_ir::Severity::Hint => lsp_types::DiagnosticSeverity::HINT,
     }
 }
 
@@ -112,6 +118,20 @@ mod tests {
         );
     }
 
+    /// #1162: `Info`/`Hint` must map to LSP's `INFORMATION`/`HINT`
+    /// respectively, not collapse onto `WARNING` or onto each other.
+    #[test]
+    fn severity_mapping_info_and_hint_are_distinct() {
+        assert_eq!(
+            severity_to_lsp(brink_ir::Severity::Info),
+            lsp_types::DiagnosticSeverity::INFORMATION,
+        );
+        assert_eq!(
+            severity_to_lsp(brink_ir::Severity::Hint),
+            lsp_types::DiagnosticSeverity::HINT,
+        );
+    }
+
     /// #1163 regression: a `DiagnosticCode` whose default severity is
     /// `Warning` (E014 is one of the 17 warning-default codes) must surface
     /// as `DiagnosticSeverity::WARNING`, not `ERROR`, once routed through
@@ -158,5 +178,25 @@ mod tests {
             .insert("E014".to_owned(), brink_analyzer::LintLevel::Deny);
         let lsp = diagnostic_to_lsp(&diag, &idx, brink_analyzer::TypePolicy::Gradual, &lints);
         assert_eq!(lsp.severity, Some(lsp_types::DiagnosticSeverity::ERROR));
+    }
+
+    /// #1162: a `[lints] E014 = "hint"` override must publish `HINT` through
+    /// the same `effective_severity` seam `diagnostic_to_lsp_respects_lints_override`
+    /// exercises for `deny`.
+    #[test]
+    fn diagnostic_to_lsp_respects_lints_hint_override() {
+        let diag = brink_ir::Diagnostic {
+            file: brink_ir::FileId(0),
+            range: TextRange::new(TextSize::from(0), TextSize::from(1)),
+            message: "test".to_owned(),
+            code: brink_ir::DiagnosticCode::E014,
+        };
+        let idx = LineIndex::new("x");
+        let mut lints = brink_analyzer::LintPolicy::default();
+        lints
+            .overrides
+            .insert("E014".to_owned(), brink_analyzer::LintLevel::Hint);
+        let lsp = diagnostic_to_lsp(&diag, &idx, brink_analyzer::TypePolicy::Gradual, &lints);
+        assert_eq!(lsp.severity, Some(lsp_types::DiagnosticSeverity::HINT));
     }
 }

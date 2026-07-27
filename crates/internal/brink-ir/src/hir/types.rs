@@ -1435,10 +1435,31 @@ pub struct Diagnostic {
     pub code: DiagnosticCode,
 }
 
+/// How seriously a diagnostic should be treated by a consumer (CLI renderer,
+/// LSP client, editor diagnostics panel).
+///
+/// No `DiagnosticCode`'s *default* severity ([`DiagnosticCode::severity`])
+/// is `Info` or `Hint` today — the two advisory tiers exist so a project's
+/// `[lints]` table (`brink-project-config`'s `LintLevel::Info`/`LintLevel::Hint`,
+/// resolved through `brink_analyzer::effective_severity`) can opt a
+/// `Warning`-default code down to one when a squiggle is too loud (issue
+/// #1162). Moving any *existing* code's default into one of these tiers is a
+/// separate decision, deliberately not made by the issue that introduced the
+/// tiers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Severity {
+    /// Blocks compilation / is surfaced as a hard failure.
     Error,
+    /// Non-fatal; the default tier for advisory diagnostics until a
+    /// `[lints]` override says otherwise.
     Warning,
+    /// Advisory, LSP `DiagnosticSeverity::INFORMATION` — worth telling the
+    /// author about, but not something they need to act on.
+    Info,
+    /// Advisory and quiet, LSP `DiagnosticSeverity::HINT` — the tier IDEs use
+    /// for things like unused-symbol dimming, where even an info-level
+    /// squiggle is too loud.
+    Hint,
 }
 
 /// Stable error codes for brink diagnostics.

@@ -25,7 +25,10 @@ types   = "gradual"    # "gradual" | "strict"   (default: dialect-keyed —
 [lints]
 deny-warnings = true   # promote every Warning-severity diagnostic to
                        # Error (the `-D warnings` equivalent; issue #1160)
-E014 = "deny"          # per-code severity override: "allow" | "warn" | "deny"
+E014 = "deny"          # per-code severity override:
+                       # "allow" | "warn" | "deny" | "info" | "hint"
+                       # ("info"/"hint" down-level to an advisory tier below
+                       # Warning — issue #1162)
 ```
 
 All keys are optional. An empty or absent `[project]`/`[lints]` table — or
@@ -60,6 +63,14 @@ understand.
   to `Warning` and is still reported. To actually suppress a diagnostic at a
   specific site, use a `//brink-disable` comment instead — a different,
   per-site mechanism, not a project-wide policy knob.
+- `info` / `hint` (issue #1162) — down-level the diagnostic to the `Info` or
+  `Hint` severity tier respectively, below `Warning`. Like `allow`, both are
+  immune to `deny-warnings` (escalating a deliberate downgrade back up would
+  defeat the point of it). These map to the LSP client's `Information`/`Hint`
+  `DiagnosticSeverity` — the tier IDE conventions use for advisory findings
+  that would be too loud as a `Warning` squiggle (e.g. unused-symbol
+  dimming). No diagnostic code defaults to either tier; a project opts a
+  `Warning`-default code into one explicitly, per code.
 
 Only codes whose *default* severity is `Warning` are overridable at all — a
 diagnostic that is a hard error by default (e.g. a parse error) can never be
@@ -179,7 +190,8 @@ one-off choice that the file must not silently overrule.
   `brink.toml` re-resolves and re-stores the policy (`reload_brink_toml`),
   so published diagnostic severity picks up a `[lints]` change without a
   client restart. `initializationOptions.lints` (issue #1417) is an object
-  `{ "<CODE>": "deny" | "warn" | "allow" }`, and
+  `{ "<CODE>": "deny" | "warn" | "allow" | "info" | "hint" }` (the last two
+  added by issue #1162), and
   `initializationOptions.denyWarnings` a boolean — both resolved once at
   `initialize` (mirroring `initializationOptions.dialect`/`.types`) and
   applied last, so they always win over the same code in the discovered
@@ -238,7 +250,8 @@ one-off choice that the file must not silently overrule.
   An embedder that wants to set `[lints]`/`deny-warnings` policy
   programmatically — without shipping a `brink.toml` at all, or to override
   one it doesn't control — calls `setLintOverrides(json)` (issue #1417): a
-  JSON object `{ "<CODE>": "deny" | "warn" | "allow" }` that **replaces**
+  JSON object `{ "<CODE>": "deny" | "warn" | "allow" | "info" | "hint" }`
+  (the last two added by issue #1162) that **replaces**
   the session's explicit override map (`"{}"` clears it), plus
   `setDenyWarningsOverride(bool)`/`clearDenyWarningsOverride()` for the
   blanket flag. Both always win over the same code in an applied

@@ -50,7 +50,10 @@
 //! [lints]
 //! deny-warnings = true   # promote every Warning-severity diagnostic to
 //!                        # Error (the `-D warnings` equivalent; issue #1160)
-//! E014 = "deny"          # per-code severity override: "allow" | "warn" | "deny"
+//! E014 = "deny"          # per-code severity override:
+//!                        # "allow" | "warn" | "deny" | "info" | "hint"
+//!                        # ("info"/"hint" down-level to the advisory tiers
+//!                        # below Warning, issue #1162)
 //! ```
 //!
 //! (`E014` — a plainly `Warning`-by-default code — is used here rather than
@@ -145,6 +148,15 @@ pub enum LintLevel {
     Warn,
     /// Always `Error`, regardless of `deny-warnings`.
     Deny,
+    /// Down-level to `Severity::Info` (issue #1162) — an advisory tier below
+    /// `Warning`, immune to `deny-warnings` like `Allow` (escalating an
+    /// author's deliberate downgrade back up would defeat the point of it).
+    Info,
+    /// Down-level to `Severity::Hint` (issue #1162) — the quietest tier,
+    /// immune to `deny-warnings` for the same reason as `Info`. The IDE-
+    /// convention use case this exists for (e.g. unused-symbol dimming) is
+    /// exactly the case where even an `Info` squiggle is too loud.
+    Hint,
 }
 use thiserror::Error;
 use toml::Value;
@@ -476,10 +488,12 @@ fn parse_lint_level(path: &str, key: &str, value: &Value) -> Result<LintLevel, C
         "allow" => Ok(LintLevel::Allow),
         "warn" => Ok(LintLevel::Warn),
         "deny" => Ok(LintLevel::Deny),
+        "info" => Ok(LintLevel::Info),
+        "hint" => Ok(LintLevel::Hint),
         other => Err(ConfigError::InvalidValue {
             path: path.to_owned(),
             key: format!("lints.{key}"),
-            expected: &["allow", "warn", "deny"],
+            expected: &["allow", "warn", "deny", "info", "hint"],
             found: other.to_owned(),
         }),
     }
@@ -1029,6 +1043,23 @@ mod tests {
         assert_eq!(config.lints.get("E063"), Some(&LintLevel::Deny));
         assert_eq!(config.lints.get("E014"), Some(&LintLevel::Allow));
         assert_eq!(config.lints.get("E022"), Some(&LintLevel::Warn));
+        assert!(warnings.is_empty());
+    }
+
+    /// #1162: `[lints]` must be able to down-level a code to either advisory
+    /// tier below `Warning`, not just `allow`/`warn`/`deny`.
+    #[test]
+    fn parses_info_and_hint_lint_levels() {
+        let (config, warnings) = parse_str(
+            r#"
+            [lints]
+            E014 = "info"
+            E022 = "hint"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.lints.get("E014"), Some(&LintLevel::Info));
+        assert_eq!(config.lints.get("E022"), Some(&LintLevel::Hint));
         assert!(warnings.is_empty());
     }
 

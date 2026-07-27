@@ -15,8 +15,17 @@ use crate::{CompileError, CompileOutput, ResolvedDiagnostic};
 /// owns the `FileId`→path map. An id with no known path (which should not
 /// happen for a diagnostic produced from a discovered file) resolves to an
 /// empty path rather than dropping the diagnostic.
+///
+/// `severity` is resolved through `brink_driver::effective_severity` — the
+/// project's actual `types`/`[lints]` policy, read off `driver`'s own
+/// `AnalysisOptions` — not the code's raw default (issue #1162: a `[lints]`
+/// code down-leveled to `Info`/`Hint` must carry that severity here, not
+/// `Warning`, since this is what `CompileOutput::warnings`/`CompileError::
+/// Diagnostics` — and in turn the CLI renderer — reads).
 fn resolve_diagnostics(driver: &Driver, diags: Vec<Diagnostic>) -> Vec<ResolvedDiagnostic> {
     let db = driver.db();
+    let opts = db.analysis_options();
+    let types = opts.type_policy();
     diags
         .into_iter()
         .map(|d| ResolvedDiagnostic {
@@ -24,6 +33,7 @@ fn resolve_diagnostics(driver: &Driver, diags: Vec<Diagnostic>) -> Vec<ResolvedD
             file: d.file,
             range: d.range,
             message: d.message,
+            severity: brink_driver::effective_severity(d.code, types, &opts.lints),
             code: d.code,
         })
         .collect()

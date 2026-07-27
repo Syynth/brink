@@ -165,9 +165,12 @@ pub fn resolve_type_policy(dialect: crate::Dialect, explicit: Option<TypePolicy>
 ///    a policy for which `Error`-default codes are "safe" to relax, none of
 ///    them are reachable through this table at all.
 /// 3. **`[lints]` per-code override**, for a `Warning`-base code only:
-///    `Deny` → `Error`; `Allow` → `Warning`, immune to step 4;
-///    `Warn`/unset → falls through to step 4 exactly like an unconfigured
-///    code.
+///    `Deny` → `Error`; `Allow` → `Warning`, immune to step 4; `Info`/`Hint`
+///    (issue #1162) → `Severity::Info`/`Severity::Hint`, also immune to step
+///    4 — an author who deliberately down-leveled a code to an advisory tier
+///    does not want `deny-warnings` escalating it back past `Warning`, the
+///    same reasoning `Allow`'s immunity already rests on; `Warn`/unset →
+///    falls through to step 4 exactly like an unconfigured code.
 /// 4. **`deny-warnings`**: a `Warning`-base code with no override (or an
 ///    explicit `Warn`) becomes `Error` if `lints.deny_warnings` is set —
 ///    the `-D warnings` equivalent.
@@ -190,6 +193,8 @@ pub fn effective_severity(
     match lints.overrides.get(code.as_str()) {
         Some(LintLevel::Deny) => brink_ir::Severity::Error,
         Some(LintLevel::Allow) => brink_ir::Severity::Warning,
+        Some(LintLevel::Info) => brink_ir::Severity::Info,
+        Some(LintLevel::Hint) => brink_ir::Severity::Hint,
         Some(LintLevel::Warn) | None => {
             if lints.deny_warnings {
                 brink_ir::Severity::Error
@@ -2951,6 +2956,70 @@ mod tests {
         assert_eq!(
             effective_severity(DiagnosticCode::E014, TypePolicy::Gradual, &lints),
             brink_ir::Severity::Warning
+        );
+    }
+
+    // ── effective_severity: [lints] info/hint tier (issue #1162) ────
+
+    #[test]
+    fn lint_override_info_relevels_a_warning_code_to_info() {
+        let lints = LintPolicy {
+            overrides: BTreeMap::from([("E014".to_owned(), LintLevel::Info)]),
+            deny_warnings: false,
+        };
+        assert_eq!(
+            effective_severity(DiagnosticCode::E014, TypePolicy::Gradual, &lints),
+            brink_ir::Severity::Info
+        );
+    }
+
+    #[test]
+    fn lint_override_hint_relevels_a_warning_code_to_hint() {
+        let lints = LintPolicy {
+            overrides: BTreeMap::from([("E014".to_owned(), LintLevel::Hint)]),
+            deny_warnings: false,
+        };
+        assert_eq!(
+            effective_severity(DiagnosticCode::E014, TypePolicy::Gradual, &lints),
+            brink_ir::Severity::Hint
+        );
+    }
+
+    #[test]
+    fn deny_warnings_does_not_touch_an_info_or_hint_override() {
+        // Like `Allow`, `Info`/`Hint` are deliberate downgrades and must stay
+        // immune to `deny-warnings` — escalating them back up would defeat
+        // the point of setting them.
+        let lints_info = LintPolicy {
+            overrides: BTreeMap::from([("E014".to_owned(), LintLevel::Info)]),
+            deny_warnings: true,
+        };
+        assert_eq!(
+            effective_severity(DiagnosticCode::E014, TypePolicy::Gradual, &lints_info),
+            brink_ir::Severity::Info
+        );
+        let lints_hint = LintPolicy {
+            overrides: BTreeMap::from([("E014".to_owned(), LintLevel::Hint)]),
+            deny_warnings: true,
+        };
+        assert_eq!(
+            effective_severity(DiagnosticCode::E014, TypePolicy::Gradual, &lints_hint),
+            brink_ir::Severity::Hint
+        );
+    }
+
+    #[test]
+    fn hard_error_code_is_never_downgraded_to_info_or_hint() {
+        // Same hard-error exemption as `Allow`/`Deny` — a code that is Error
+        // by default is never even looked up in `[lints]`.
+        assert_eq!(DiagnosticCode::E025.severity(), brink_ir::Severity::Error);
+        let lints = LintPolicy {
+            overrides: BTreeMap::from([("E025".to_owned(), LintLevel::Hint)]),
+            deny_warnings: false,
+        };
+        assert_eq!(
+            effective_severity(DiagnosticCode::E025, TypePolicy::Gradual, &lints),
+            brink_ir::Severity::Error
         );
     }
 
