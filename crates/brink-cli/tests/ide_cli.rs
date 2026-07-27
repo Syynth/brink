@@ -1258,7 +1258,7 @@ fn ide_check_allow_flag_wins_over_a_conflicting_brink_toml_deny() {
 
 // ── #1383: --deny/-D warnings through `introduced_diagnostics` ────────
 //
-// The four tests above prove the override tier reaches `ide check`, which
+// The five tests above prove the override tier reaches `ide check`, which
 // reads `Project::load`'s baseline `AnalysisOptions` directly. `rename`/
 // `move-file`/`refactor *` instead gate on `Project::introduced_diagnostics`
 // — a *separate* re-analysis driver (`project.rs`'s own `Driver::new()` +
@@ -1361,4 +1361,55 @@ fn rename_short_deny_warnings_flag_promotes_the_introduced_collision_to_an_error
          the E022 collision) to Error: {v}"
     );
     fs::remove_file(&f).ok();
+}
+
+/// The three tests above only prove the CLI-flag tier
+/// (`--deny`/`-D warnings` -> `AnalysisOptions::apply_lint_overrides`)
+/// reaches `introduced_diagnostics`. The *file-sourced* `[lints]
+/// deny-warnings = true` tier goes through a different branch —
+/// `resolve_analysis_options`'s `apply_project_config` call
+/// (`crates/brink-cli/src/ide/project.rs:105-109`) — and #1383 asks for the
+/// file tier specifically. Mirrors
+/// `ide_check_deny_flag_wins_over_a_conflicting_brink_toml_allow`'s
+/// real-project-dir setup (a served `brink.toml` next to `story.ink`,
+/// discovered via `-e`), the same shape `project_config_cli.rs`'s
+/// `ide_rename_write_succeeds_under_brink_dialect_extension_syntax` needed
+/// after `resolve_analysis_options` was once found to ignore `brink.toml`
+/// entirely.
+#[test]
+fn rename_brink_toml_deny_warnings_promotes_the_introduced_collision_to_an_error() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-ide-cli-rename-deny-warnings-file-{}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("brink.toml"), "[lints]\ndeny-warnings = true\n").unwrap();
+    fs::write(dir.join("story.ink"), FIXTURE).unwrap();
+
+    let out = brink()
+        .args(["ide", "rename", "intro", "--to", "shop", "--format", "json"])
+        .args(["-e"])
+        .arg(dir.join("story.ink"))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "preview mode always exits 0 regardless of introduced diagnostics: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let diags = v["introducedDiagnostics"].as_array().unwrap();
+    assert_eq!(
+        diags.len(),
+        1,
+        "expected exactly one introduced diagnostic: {v}"
+    );
+    assert_eq!(diags[0]["code"], "E022");
+    assert_eq!(
+        diags[0]["severity"], "error",
+        "brink.toml's `[lints] deny-warnings = true` must reach `introduced_diagnostics`'s \
+         re-analysis Driver via resolve_analysis_options' apply_project_config branch, \
+         promoting the introduced E022 collision to Error: {v}"
+    );
+    fs::remove_dir_all(&dir).ok();
 }

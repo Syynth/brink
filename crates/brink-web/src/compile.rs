@@ -389,10 +389,13 @@ mod compile_fragment_tests {
         let json = compile_fragment("main.ink", &src, synthetic);
         let v: serde_json::Value = serde_json::from_str(&json).expect("valid json");
         assert_eq!(v["ok"], false, "{json}");
-        let e014 = v["warnings"]
-            .as_array()
-            .and_then(|w| w.iter().find(|d| d["code"] == "E014"))
-            .unwrap_or_else(|| panic!("expected E014 among the surfaced diagnostics: {json}"));
+        let warnings = v["warnings"].as_array();
+        let e014 = warnings.and_then(|w| w.iter().find(|d| d["code"] == "E014"));
+        assert!(
+            e014.is_some(),
+            "expected E014 among the surfaced diagnostics: {json}"
+        );
+        let e014 = e014.expect("checked above");
         assert_eq!(
             e014["severity"], "Error",
             "[lints] E014 = \"deny\" must promote diagnostic_to_js's rendered severity, not \
@@ -419,10 +422,13 @@ mod compile_fragment_tests {
         let json = compile_fragment("main.ink", &src, synthetic);
         let v: serde_json::Value = serde_json::from_str(&json).expect("valid json");
         assert_eq!(v["ok"], false, "{json}");
-        let e014 = v["warnings"]
-            .as_array()
-            .and_then(|w| w.iter().find(|d| d["code"] == "E014"))
-            .unwrap_or_else(|| panic!("expected E014 among the surfaced diagnostics: {json}"));
+        let warnings = v["warnings"].as_array();
+        let e014 = warnings.and_then(|w| w.iter().find(|d| d["code"] == "E014"));
+        assert!(
+            e014.is_some(),
+            "expected E014 among the surfaced diagnostics: {json}"
+        );
+        let e014 = e014.expect("checked above");
         assert_eq!(
             e014["severity"], "Error",
             "[lints] deny-warnings = true must promote diagnostic_to_js's rendered severity \
