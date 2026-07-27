@@ -175,7 +175,16 @@ anchors (F-I#1, F-J).
 - **Names / paths.** `Name.text` and `Path.segments` must be well-formed and
   stamped in the exact qualification convention the index is queried against:
   stitches `knot.stitch`, labels `knot[.stitch].label`, list items `List.item`
-  (F-I#3). Malformed → silent non-resolution.
+  (F-I#3). Malformed → silent non-resolution. **Carve-out (B0.3, issue
+  #1188):** this is the shape for a *nested* stitch/label. Two real,
+  corpus-legitimate shapes are bare (0 dots) instead — a promoted top-level
+  stitch (`= stitch` with no enclosing `==knot==`,
+  `hir::lower::structure::stitch::lower_top_level_stitch`) and a label
+  declared before the first knot (`hir.root_content`,
+  `LowerScope::qualify_label` with no enclosing knot). `E126`
+  (`brink_analyzer::admission::conforms_to_convention`) accepts both the
+  nested and the bare shape for stitches/labels; this is not a bug, and a
+  frontend must be prepared to see either.
 - **Dialect tags.** There is **no dialect tag on any HIR node** (F-B, F-I#10).
   Dialect and type-policy arrive as `AnalysisOptions`. A frontend must not try to
   embed them. (§4 proposes the native frontend declares its dialect to the

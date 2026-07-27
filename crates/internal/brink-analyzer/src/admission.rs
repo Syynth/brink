@@ -48,8 +48,9 @@
 //!   bare too (`LowerScope::qualify_label` with no enclosing knot). Both are
 //!   legitimate, corpus-real shapes, not bugs — [`conforms_to_convention`]
 //!   accepts the wider shape rather than flagging real corpus code (per the
-//!   "if a check trips on real code, the check is wrong" rule). Flagged for
-//!   a contract wording fix.
+//!   "if a check trips on real code, the check is wrong" rule). Contract
+//!   wording stamped with this carve-out in `docs/hir-admission-contract.md`
+//!   §1.3 (issue #1188).
 //! - **`Param`/`Temp` locals are out of scope for check 1** — the contract's
 //!   "every declared symbol has a corresponding HIR declaration node" reads
 //!   most naturally against [`brink_ir::symbols::DeclaredSymbol`] (the
@@ -57,6 +58,12 @@
 //!   names"), a distinct type from `LocalSymbol` (params/temps) with no
 //!   `detail`/`visibility`/`was` fields to agree on. Locals are exercised by
 //!   the existing `E054`/`E082` shadowing checks elsewhere in the pipeline.
+//!   Check 2 (E124 range well-formedness) draws the line differently: a
+//!   `Param.name.range` becomes `LocalSymbol.range`
+//!   (`symbols::project_manifest`), which is a load-bearing shadowing-order
+//!   join key (§1.3 "local shadowing order keys"), so `Knot`/`Stitch`
+//!   params ARE walked for well-formedness even though they're skipped by
+//!   check 1 (issue #1188).
 //! - This pass extends (not replaces) `hir::visit`'s traversal shape but is
 //!   a **purpose-built walker**, not a `HirVisitor` impl: `hir::visit`'s own
 //!   doc comment lists two deliberate gaps — it does not descend into tag
@@ -142,10 +149,16 @@ pub fn validate_admission(
     for knot in &hir.knots {
         c.check_range(knot.ptr.text_range());
         c.check_range(knot.name.range);
+        for param in &knot.params {
+            c.check_range(param.name.range);
+        }
         c.walk_block(&knot.body, &knot.name.text);
         for stitch in &knot.stitches {
             c.check_range(stitch.ptr.text_range());
             c.check_range(stitch.name.range);
+            for param in &stitch.params {
+                c.check_range(param.name.range);
+            }
             let prefix = format!("{}.{}", knot.name.text, stitch.name.text);
             c.walk_block(&stitch.body, &prefix);
         }
@@ -985,6 +998,39 @@ mod tests {
         let (mut hir, manifest, len) = lower_src("== knot ==\n-> END\n");
         let past_eof = len + TextSize::from(1000);
         hir.knots[0].name.range = TextRange::new(len, past_eof);
+        let diags = validate_admission(FileId(0), &hir, &manifest, len);
+        assert!(codes(&diags).contains(&DiagnosticCode::E124), "{diags:?}");
+    }
+
+    /// Issue #1188 debt 2: `Param` name ranges are load-bearing shadowing-
+    /// order join keys (`LocalSymbol.range`, §1.3), so E124 must walk into
+    /// `Knot.params` even though check 1 (E122) skips locals.
+    #[test]
+    fn e124_knot_param_range_malformed() {
+        let (mut hir, manifest, len) = lower_src("== function foo(x) ==\n~ return x\n");
+        hir.knots[0].params[0].name.range = TextRange::new(len, len);
+        let diags = validate_admission(FileId(0), &hir, &manifest, len);
+        assert!(codes(&diags).contains(&DiagnosticCode::E124), "{diags:?}");
+    }
+
+    /// Sibling of `e124_knot_param_range_malformed` for `Stitch.params`.
+    /// Stitch-level params have no real ink-dialect surface to lower from
+    /// (same "native-only shape" situation as
+    /// `e124_template_as_binding_out_of_bounds_is_malformed`), so the param
+    /// is appended directly onto real lowered HIR.
+    #[test]
+    fn e124_stitch_param_range_malformed() {
+        let (mut hir, manifest, len) = lower_src("== knot ==\n= stitch\n-> END\n");
+        let past_eof = len + TextSize::from(1000);
+        hir.knots[0].stitches[0].params.push(brink_ir::hir::Param {
+            name: brink_ir::hir::Name {
+                text: "x".to_string(),
+                range: TextRange::new(len, past_eof),
+            },
+            is_ref: false,
+            is_divert: false,
+            annotation: None,
+        });
         let diags = validate_admission(FileId(0), &hir, &manifest, len);
         assert!(codes(&diags).contains(&DiagnosticCode::E124), "{diags:?}");
     }
