@@ -16,6 +16,8 @@ This is distinct from the **save format** (`SAVE_FORMAT_VERSION`, `save.rs`), wh
 
 **When to revisit:** the single-version policy holds until a compiled artifact is first **shipped or cached decoupled from its compiler** — e.g. a game bundles a prebuilt `.inkb` against an independently-updating runtime, or the studio persists compiled bytes across versions. At that point, prefer making sections **length-framed and append-only (TLV-style)** — new fields always appended, sections self-describing — so an older reader can skip what it doesn't recognize, rather than maintaining N full parsers. (The container section's length-prefixed bytecode is already partway there.) Make that call when the first durable consumer appears, not before.
 
+`.brkt` (the runtime transcript format, `crates/brink-runtime/src/transcript.rs`) is such a durable consumer already — it tolerates old files by design, unlike `.inkb`'s hard-reject-and-regenerate policy above. `docs/brkt-trailing-section-findings.md` traces exactly what `.brkt`'s current positional trailing-section probe would break for the `.inkb` v6 bump's new sections, and catalogs this repo's existing self-describing-layout precedents (the section offset table above, section-local version bytes) as prior art for that gap.
+
 ## Definitions and DefinitionId
 
 All named things in the format — addresses (containers + intra-container labels), global variables, list definitions, list items, external functions, and local variables — use a single `DefinitionId(u64)` type. The high 8 bits are a type tag identifying which table the definition belongs to; the low 56 bits are a hash of the fully qualified name/path.

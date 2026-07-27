@@ -55,6 +55,11 @@
 //! `Fragment::tags` was silently dropped by this codec. See
 //! `write_transcript`/`read_transcript` below for the code-level version of
 //! this note.
+//!
+//! A third trailing section (as the `.inkb` v6 bump is expected to add) is
+//! **not yet safe** to bolt on the same way: see
+//! `docs/brkt-trailing-section-findings.md` for a traced report of exactly
+//! what breaks and why, written as input to #1519's design pass.
 
 use alloc::string::String;
 use alloc::sync::Arc;
