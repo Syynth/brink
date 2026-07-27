@@ -1,5 +1,6 @@
 mod batch;
 mod ide;
+mod lint_overrides;
 mod tui;
 
 use std::io::{BufRead, IsTerminal, Write as _};
@@ -387,46 +388,6 @@ fn compile_entry(
     Ok(brink_environment::compile(&env)?)
 }
 
-/// Resolve `brink compile`'s repeatable `--deny`/`--warn`/`--allow <CODE>`
-/// flags into the per-code override map [`compile_entry`] threads through to
-/// [`brink_environment::OptionOverrides::lints`] (issue #1373). `--deny
-/// warnings` (short form `-D warnings`, mirroring rustc's own `-D warnings`)
-/// is special-cased as `deny-warnings` rather than a per-code override,
-/// since `"warnings"` is never a real `DiagnosticCode` — every other value
-/// is validated downstream, at the one resolution point
-/// (`AnalysisOptions::apply_lint_overrides`), not here.
-///
-/// A code repeated across more than one of `--deny`/`--warn`/`--allow`
-/// resolves to whichever flag is applied last, in `deny`, `warn`, `allow`
-/// order below — a user passing the same code to more than one flag has
-/// already made a contradictory request; this is deliberately simple rather
-/// than rejecting it outright.
-fn resolve_lint_overrides(
-    deny: &[String],
-    warn: &[String],
-    allow: &[String],
-) -> (
-    std::collections::BTreeMap<String, brink_driver::LintLevel>,
-    Option<bool>,
-) {
-    let mut lints = std::collections::BTreeMap::new();
-    let mut deny_warnings = None;
-    for code in deny {
-        if code == "warnings" {
-            deny_warnings = Some(true);
-        } else {
-            lints.insert(code.clone(), brink_driver::LintLevel::Deny);
-        }
-    }
-    for code in warn {
-        lints.insert(code.clone(), brink_driver::LintLevel::Warn);
-    }
-    for code in allow {
-        lints.insert(code.clone(), brink_driver::LintLevel::Allow);
-    }
-    (lints, deny_warnings)
-}
-
 /// `Commands::Compile`'s dispatch, factored out of [`run_command`] (matching
 /// the `Commands::Ide => return ide::run(&command)` shape already used
 /// there) — [`run_command`]'s `match` arms stay one-liners, keeping the
@@ -456,7 +417,7 @@ fn run_compile(
     warn: &[String],
     allow: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (lints, deny_warnings) = resolve_lint_overrides(deny, warn, allow);
+    let (lints, deny_warnings) = lint_overrides::resolve_lint_overrides(deny, warn, allow);
     let output_result = compile_entry(input, dialect, types, lints, deny_warnings)?;
     for w in &output_result.warnings {
         tracing::warn!("[{}] {}", w.code.as_str(), w.message);

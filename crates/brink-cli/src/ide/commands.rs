@@ -253,6 +253,8 @@ pub struct EffectsDiffOpts {
     /// Output format.
     #[arg(long, value_enum, default_value_t = Format::Text)]
     pub(super) format: Format,
+    #[command(flatten)]
+    pub(super) lints: LintOverrideArgs,
 }
 
 /// A structural refactor operation. Each addresses a knot/stitch by its
@@ -378,6 +380,61 @@ pub struct CommonOpts {
     /// Output format.
     #[arg(long, value_enum, default_value_t = Format::Text)]
     pub(super) format: Format,
+    #[command(flatten)]
+    pub(super) lints: LintOverrideArgs,
+}
+
+/// `--deny`/`--warn`/`--allow <CODE>` (`-D warnings`) — `brink ide`'s
+/// counterpart of `brink compile`'s CLI/API lint-override tier (issue
+/// #1373), extended here to `brink ide` (issue #1417) so an embedder that
+/// scripts `brink ide` sees the same denied-warning-as-error policy a real
+/// `brink compile` of the same project would enforce. Flattened into every
+/// query/mutation options struct (`CommonOpts`, `MutOpts`,
+/// `EffectsDiffOpts`) so every `brink ide` subcommand carries the flags —
+/// [`super::project::resolve_analysis_options`] is the one place they're
+/// applied, via [`Self::resolve`] and
+/// `AnalysisOptions::apply_lint_overrides`, always winning over a
+/// discovered `brink.toml`'s `[lints]` table for the same code (#1005
+/// `CLI/API > file > default` precedence).
+#[derive(Args, Clone, Default)]
+pub struct LintOverrideArgs {
+    /// Deny a diagnostic code, promoting it to a hard error in this
+    /// session's diagnostics (issue #1373/#1417). Repeatable. Only codes
+    /// whose *default* severity is `Warning` are overridable (#1160) — an
+    /// unrecognized or non-overridable code is ignored with a warning
+    /// through the usual channel, never silently. The special code
+    /// `warnings` (`-D warnings`, mirroring rustc) is `deny-warnings`:
+    /// promote every diagnostic that would otherwise resolve to `Warning`
+    /// up to `Error`, the CLI equivalent of `[lints] deny-warnings = true`.
+    #[arg(short = 'D', long = "deny", value_name = "CODE")]
+    pub(super) deny: Vec<String>,
+    /// Force a diagnostic code to `Warning`, promotable back to `Error` by
+    /// `-D warnings`/`deny-warnings` like any unconfigured warning (issue
+    /// #1373/#1417). Repeatable; same overridability rules and precedence
+    /// as `--deny`.
+    #[arg(long = "warn", value_name = "CODE")]
+    pub(super) warn: Vec<String>,
+    /// Never escalate a diagnostic code past `Warning`, even under `-D
+    /// warnings`/`deny-warnings` (issue #1373/#1417). Repeatable; same
+    /// overridability rules and precedence as `--deny`.
+    #[arg(long = "allow", value_name = "CODE")]
+    pub(super) allow: Vec<String>,
+}
+
+impl LintOverrideArgs {
+    /// Resolve into the `(lints, deny_warnings)` pair
+    /// [`super::project::LintOverrides`] carries, sharing
+    /// [`crate::lint_overrides::resolve_lint_overrides`] with `brink
+    /// compile` so the two CLI surfaces can never silently drift on flag
+    /// semantics (issue #1417).
+    pub(super) fn resolve(&self) -> super::project::LintOverrides {
+        let (lints, deny_warnings) =
+            crate::lint_overrides::resolve_lint_overrides(&self.deny, &self.warn, &self.allow);
+        super::project::LintOverrides {
+            lints,
+            deny_warnings,
+        }
+    }
 }
 
 /// How a query addresses its target — by qualified name or by cursor position.
@@ -409,6 +466,8 @@ pub struct MutOpts {
     pub(super) format: Format,
     #[command(flatten)]
     pub(super) flags: ModeFlags,
+    #[command(flatten)]
+    pub(super) lints: LintOverrideArgs,
 }
 
 /// The mutually-exclusive mutation output mode (default: preview).

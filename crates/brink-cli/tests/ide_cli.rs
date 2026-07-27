@@ -1106,3 +1106,104 @@ fn main() {
     );
     fs::remove_dir_all(&dir).ok();
 }
+
+// ── brink ide: --deny/--warn/--allow (issue #1417) ────────────────────
+//
+// Extends the CLI/API lint-override tier `brink compile` gained in #1373
+// (`crates/brink-cli/tests/project_config_cli.rs`) to `brink ide`. Reuses
+// the identical `E014_FIXTURE` (a no-op `~` logic line, `Warning` by
+// default) so a passing/failing `check` is a direct black-box signal of
+// whether the override actually reached this surface's `AnalysisOptions`.
+
+/// A logic line with no effect (`~` alone) — `DiagnosticCode::E014`,
+/// `Warning` by default. Plain `strict-ink` source, no extension syntax, so
+/// only the lint-override tier can make `check` fail on it.
+const E014_FIXTURE: &str = "Hello.\n~\n-> END\n";
+
+#[test]
+fn ide_check_no_lint_flags_e014_stays_a_warning() {
+    let f = write("ide-check-e014-default", E014_FIXTURE);
+    let out = brink()
+        .args(["ide", "check", "-e"])
+        .arg(&f)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "with no --deny/-D warnings flag, E014 must stay a Warning and `check` must exit 0: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    fs::remove_file(&f).ok();
+}
+
+#[test]
+fn ide_check_deny_e014_flag_promotes_the_warning_to_an_error() {
+    let f = write("ide-check-e014-deny", E014_FIXTURE);
+    let out = brink()
+        .args(["ide", "check", "--format", "json", "-e"])
+        .arg(&f)
+        .args(["--deny", "E014"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "--deny E014 must make an ordinarily-Warning diagnostic fail `ide check`: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v[0]["severity"], "error");
+    assert_eq!(v[0]["code"], "E014");
+    fs::remove_file(&f).ok();
+}
+
+#[test]
+fn ide_check_short_deny_warnings_flag_promotes_e014_to_an_error() {
+    let f = write("ide-check-e014-dw", E014_FIXTURE);
+    let out = brink()
+        .args(["ide", "check", "--format", "json", "-e"])
+        .arg(&f)
+        .args(["-D", "warnings"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "-D warnings must promote every Warning (including E014) to an error: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v[0]["severity"], "error");
+    fs::remove_file(&f).ok();
+}
+
+/// `--deny` must win over a conflicting `brink.toml` `[lints] E014 =
+/// "allow"` for the same code (#1005 `CLI/API > file > default`
+/// precedence) — proves the override is applied *after* the file, not
+/// merely alongside it.
+#[test]
+fn ide_check_deny_flag_wins_over_a_conflicting_brink_toml_allow() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-ide-cli-deny-wins-over-file-{}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("brink.toml"), "[lints]\nE014 = \"allow\"\n").unwrap();
+    fs::write(dir.join("story.ink"), E014_FIXTURE).unwrap();
+
+    let out = brink()
+        .args(["ide", "check", "--format", "json", "-e"])
+        .arg(dir.join("story.ink"))
+        .args(["--deny", "E014"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "--deny E014 must win over the file's `[lints] E014 = \"allow\"`: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v[0]["severity"], "error");
+    fs::remove_dir_all(&dir).ok();
+}

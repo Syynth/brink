@@ -73,17 +73,26 @@ A key that isn't a real diagnostic code, or names a non-overridable one, is
 never merged into the resolved policy — it's reported as a warning (the same
 channel unknown top-level/`[project]` keys use), never silently dropped.
 
-`brink compile` has a CLI override tier for `[lints]`/`deny-warnings`, same
-as `dialect`/`types` below: repeatable `--deny`/`--warn`/`--allow <CODE>`
-flags, plus `-D warnings` (mirroring `rustc`'s own flag) for `deny-warnings`.
-See [`brink compile`](./cli/compile.md#options) and
-[Precedence](#precedence-the-file-is-the-default-code-wins) below.
-`bevy-brink`'s dev-mode `InkLoader` has one too, via
-`BrinkPlugin::with_config(ProjectConfig { lints, deny_warnings, .. })`
-(issue #1394; see the Precedence table below). `brink ide`, `brink-lsp`, and
-the wasm editor session still resolve `[lints]`/`deny-warnings` from
-`brink.toml` (or the plain default) alone, with no override source of their
-own.
+Every mount now has a CLI/API override tier for `[lints]`/`deny-warnings`,
+same as `dialect`/`types` below — always winning over the same code in a
+discovered `brink.toml` (see [Precedence](#precedence-the-file-is-the-default-code-wins)
+below):
+
+- **`brink compile`** and **`brink ide`** (issue #1373, extended to
+  `brink ide` by #1417): repeatable `--deny`/`--warn`/`--allow <CODE>`
+  flags, plus `-D warnings` (mirroring `rustc`'s own flag) for
+  `deny-warnings`. See [`brink compile`](./cli/compile.md#options) /
+  [`brink ide`](./cli/ide.md#anatomy-of-a-command).
+- **`bevy-brink`**'s dev-mode `InkLoader`, via
+  `BrinkPlugin::with_config(ProjectConfig { lints, deny_warnings, .. })`
+  (issue #1394).
+- **`brink-lsp`** (issue #1417), via
+  `initializationOptions.lints`/`.denyWarnings` — see
+  [Per mount](#per-mount) below.
+- **The wasm editor session** (issue #1417), via
+  `EditorSessionHandle.setLintOverrides(json)`/
+  `.setDenyWarningsOverride(bool)`/`.clearDenyWarningsOverride()` — see
+  [Per mount](#per-mount) below.
 
 ## Discovery
 
@@ -127,11 +136,13 @@ one-off choice that the file must not silently overrule.
 | Source | Wins over |
 |--------|-----------|
 | `--dialect brink` / `--types strict` (CLI flag actually passed) | `brink.toml`, defaults |
-| `--deny`/`--warn`/`--allow <CODE>` / `-D warnings` (`brink compile` only, CLI flag actually passed) | `brink.toml`, defaults |
+| `--deny`/`--warn`/`--allow <CODE>` / `-D warnings` (`brink compile`/`brink ide`, CLI flag actually passed) | `brink.toml`, defaults |
+| `initializationOptions.lints`/`.denyWarnings` (`brink-lsp`, key actually set at `initialize`) | `brink.toml`, defaults |
 | `setLanguageDialect(...)` / `setTypePolicy(...)` (explicit call) | `brink.toml`, defaults |
+| `setLintOverrides(...)` / `setDenyWarningsOverride(...)` (wasm editor session, explicit call) | `brink.toml`, defaults |
 | `BrinkPlugin::with_config(...)` / `BrinkAssetsPlugin::with_config(...)` (`bevy-brink`, field actually set) | `brink.toml`, defaults |
 | `brink.toml`'s `[project] dialect`/`types` | defaults only |
-| `brink.toml`'s `[lints]`/`deny-warnings` (for a code without a `brink compile` CLI override) | defaults only |
+| `brink.toml`'s `[lints]`/`deny-warnings` (for a code without a CLI/API override above) | defaults only |
 | Dialect-keyed default (`brink` → `strict`, `strict-ink` → `gradual`) | — |
 
 ## Per mount
@@ -146,15 +157,27 @@ one-off choice that the file must not silently overrule.
   while any other code in the file's `[lints]` table still applies. See
   [`brink compile`](./cli/compile.md).
 - **`brink ide`** has no `--dialect`/`--types` flags of its own — the file
-  (or the plain defaults, absent one) is the only source, and this includes
-  `[lints]`/`deny-warnings`. See [`brink ide`](./cli/ide.md).
+  (or the plain defaults, absent one) is the only source for those two. It
+  does have a `--deny`/`--warn`/`--allow <CODE>` / `-D warnings` tier for
+  `[lints]`/`deny-warnings` (issue #1417), identical to `brink compile`'s and
+  applied the same way — an explicit flag wins over the file for that code,
+  every other code in the file's `[lints]` table still applies. Every
+  subcommand that loads a project honors it. See
+  [`brink ide`](./cli/ide.md#anatomy-of-a-command).
 - **`brink-lsp`** discovers `brink.toml` from the workspace roots the client
   declares at `initialize`, resolving `[project] dialect`/`types` *and*
   `[lints]`/`deny-warnings` into its shared `LanguageOptions`. A later
   `workspace/didChangeConfiguration` notification or a watched edit to
   `brink.toml` re-resolves and re-stores the policy (`reload_brink_toml`),
   so published diagnostic severity picks up a `[lints]` change without a
-  client restart.
+  client restart. `initializationOptions.lints` (issue #1417) is an object
+  `{ "<CODE>": "deny" | "warn" | "allow" }`, and
+  `initializationOptions.denyWarnings` a boolean — both resolved once at
+  `initialize` (mirroring `initializationOptions.dialect`/`.types`) and
+  applied last, so they always win over the same code in the discovered
+  `brink.toml`. An unrecognized per-code level string, or an unrecognized/
+  non-overridable code, is reported through the server's usual
+  `tracing::warn!` channel, never silently dropped.
 - **The wasm editor session** (`@brink-lang/web`'s `EditorSessionHandle`) has
   no filesystem of its own — but it is inherently virtual, so it discovers
   `brink.toml` the same way `brink compile`/`brink ide` do: by walking its
@@ -203,6 +226,20 @@ one-off choice that the file must not silently overrule.
   would rather hand that text in directly than load it as a document, use
   `applyProjectConfig(toml)` instead — the same application/precedence
   rules apply, just without the discovery step.
+
+  An embedder that wants to set `[lints]`/`deny-warnings` policy
+  programmatically — without shipping a `brink.toml` at all, or to override
+  one it doesn't control — calls `setLintOverrides(json)` (issue #1417): a
+  JSON object `{ "<CODE>": "deny" | "warn" | "allow" }` that **replaces**
+  the session's explicit override map (`"{}"` clears it), plus
+  `setDenyWarningsOverride(bool)`/`clearDenyWarningsOverride()` for the
+  blanket flag. Both always win over the same code in an applied
+  `brink.toml`'s `[lints]` table, in either call order — a later
+  `applyProjectConfig`/`discoverProjectConfig` re-applies the explicit
+  overrides on top of whatever it just resolved from the file, so a
+  `brink.toml` reload can never silently drop a previously-set override.
+  Returns the unrecognized-level/unrecognized-code warnings as JSON (a
+  `string[]`), the same channel `applyProjectConfig` uses.
 
 ## Driving the compiler as a library
 

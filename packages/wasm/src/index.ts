@@ -326,10 +326,12 @@ export class EditorSessionHandle {
    * {@link setLanguageDialect}/{@link setTypePolicy} call — an explicit
    * call always overrides the file for `dialect`/`types` (matches the
    * CLI's `--dialect`/`--types` flag precedence: the file is the default,
-   * code wins). `[lints]`/`deny-warnings` has no explicit-API override
-   * source yet, so the file's table always applies. Re-analyzes
-   * immediately for whichever field the file sets — including `[lints]`,
-   * which can change diagnostic severity: a `[lints] E014 = "deny"` or
+   * code wins). `[lints]`/`deny-warnings` has its own explicit-API
+   * override tier too (#1417): {@link setLintOverrides}/
+   * {@link setDenyWarningsOverride} always win over whatever this call
+   * resolves from the file, in either call order. Re-analyzes immediately
+   * for whichever field the file sets — including `[lints]`, which can
+   * change diagnostic severity: a `[lints] E014 = "deny"` or
    * `deny-warnings = true` entry can promote a diagnostic that previously
    * rendered as `"Warning"` to `"Error"` in subsequent `compileProject`
    * results.
@@ -378,6 +380,58 @@ export class EditorSessionHandle {
     this.bump();
     const json = this.session.discover_project_config(entry);
     return JSON.parse(json) as string[];
+  }
+
+  /**
+   * Set explicit CLI/API-tier per-code `[lints]` overrides (#1417) — the
+   * wasm/editor counterpart of `brink compile`'s repeatable
+   * `--deny`/`--warn`/`--allow <CODE>` flags and `brink-lsp`'s
+   * `initializationOptions.lints`. `overrides` maps a diagnostic code to
+   * `"deny" | "warn" | "allow"`. Wholesale **replaces** this session's
+   * explicit override map (mirrors {@link applyProjectConfig}'s own
+   * `[lints]`-replace-not-merge semantics) — pass `{}` to clear every
+   * override.
+   *
+   * Always wins over the same code in an applied `brink.toml`'s `[lints]`
+   * table, in either call order: this reapplies on top of whatever
+   * {@link applyProjectConfig}/{@link discoverProjectConfig} last
+   * resolved from the file, and a later file re-apply reapplies these
+   * overrides on top of itself — so a `brink.toml` reload can never
+   * silently drop a previously-set explicit override.
+   *
+   * Throws only on malformed JSON. An unrecognized per-code level string
+   * and an unrecognized/non-overridable diagnostic code are never thrown
+   * — both are reported as warning strings in the returned array, the
+   * same channel {@link applyProjectConfig} uses. Re-analyzes
+   * immediately.
+   */
+  setLintOverrides(overrides: Record<string, "deny" | "warn" | "allow">): string[] {
+    this.bump();
+    const json = this.session.set_lint_overrides(JSON.stringify(overrides));
+    return JSON.parse(json) as string[];
+  }
+
+  /**
+   * Set an explicit `deny-warnings` override (#1417), parallel to
+   * {@link setLintOverrides} — the wasm/editor counterpart of
+   * `brink compile`'s `-D warnings` and `brink-lsp`'s
+   * `initializationOptions.denyWarnings`. Always wins over an applied
+   * `brink.toml`'s `deny-warnings` key. Re-analyzes immediately.
+   */
+  setDenyWarningsOverride(deny: boolean): void {
+    this.bump();
+    this.session.set_deny_warnings_override(deny);
+  }
+
+  /**
+   * Clear the explicit `deny-warnings` override set by
+   * {@link setDenyWarningsOverride} — reverts to the applied
+   * `brink.toml`'s `deny-warnings` value (or `false`, absent a file).
+   * Re-analyzes immediately.
+   */
+  clearDenyWarningsOverride(): void {
+    this.bump();
+    this.session.clear_deny_warnings_override();
   }
 
   setActiveFile(path: string): boolean {

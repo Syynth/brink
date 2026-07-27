@@ -1,9 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use brink_analyzer::{AnalysisOptions, AnalysisResult, Dialect, LintPolicy, TypePolicy};
+use brink_analyzer::{AnalysisOptions, AnalysisResult, Dialect, LintLevel, LintPolicy, TypePolicy};
 use brink_syntax::ast::AstNode;
 use tokio::sync::{Notify, watch};
 use tower_lsp::jsonrpc::Result;
@@ -109,14 +109,14 @@ pub struct LanguageOptions {
     types: Arc<Mutex<Option<TypePolicy>>>,
     /// Resolved `[lints]` policy (issue #1160/#1367): a discovered
     /// `brink.toml`'s `[lints]` table, applied via
-    /// `AnalysisOptions::apply_project_config` in
-    /// `resolve_language_options`. Mirrors `dialect`/`types` — no
-    /// `initializationOptions` equivalent exists for `[lints]` (it is
-    /// file-only), so this is written only from `resolve_language_options`'s
-    /// output, never from `ConfigOverrides`. Feeds both `analysis_loop`'s
-    /// `AnalysisOptions` and every diagnostic-publish site's
-    /// `effective_severity` call, so a re-leveled code's LSP-published
-    /// severity matches its build-gating severity.
+    /// `AnalysisOptions::apply_project_config`, then overlaid with any
+    /// client-declared `initializationOptions.lints`/`.denyWarnings` (issue
+    /// #1417, `AnalysisOptions::apply_lint_overrides`) — both in
+    /// `resolve_language_options`. Written only from that function's
+    /// output, never read directly off `ConfigOverrides`. Feeds both
+    /// `analysis_loop`'s `AnalysisOptions` and every diagnostic-publish
+    /// site's `effective_severity` call, so a re-leveled code's
+    /// LSP-published severity matches its build-gating severity.
     lints: Arc<Mutex<LintPolicy>>,
 }
 
@@ -421,11 +421,11 @@ impl Backend {
             Err(poisoned) => poisoned.into_inner().clone(),
         };
         let overrides = match self.config_overrides.lock() {
-            Ok(guard) => *guard,
-            Err(poisoned) => *poisoned.into_inner(),
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
         };
 
-        let (resolved, outcome) = resolve_language_options(overrides, &roots);
+        let (resolved, outcome) = resolve_language_options(&overrides, &roots);
 
         self.language.store(resolved);
         // A `brink.toml` appearing, moving, or disappearing moves the native
@@ -815,16 +815,87 @@ fn explicit_initialization_option<'a>(params: &'a InitializeParams, key: &str) -
         .and_then(|v| v.as_str())
 }
 
-/// Client-declared `initializationOptions.dialect`/`.types`, resolved once
-/// from `InitializeParams` (`Some(_)` means the client set the key at all —
-/// see [`explicit_initialization_option`]) and reused, unchanged, by every
-/// later `brink.toml` reload (#1055 gap 2): the client never resends
-/// `initializationOptions` mid-session, only the file's own contribution to
-/// [`resolve_language_options`] can change.
-#[derive(Debug, Clone, Copy, Default)]
+/// Read `initializationOptions.<key>` as a bool, if the client set it —
+/// mirrors [`explicit_initialization_option`] for `denyWarnings` (issue
+/// #1417): `Some(_)` only when the client actually set the key to a JSON
+/// boolean, `None` for a missing key *or* a key holding a non-bool value
+/// (the value is simply not "an explicit bool", same "unset" treatment
+/// `types`' unrecognized-string case gets).
+fn explicit_initialization_bool(params: &InitializeParams, key: &str) -> Option<bool> {
+    params
+        .initialization_options
+        .as_ref()
+        .and_then(|opts| opts.get(key))
+        .and_then(serde_json::Value::as_bool)
+}
+
+/// Read `initializationOptions.lints` — a client-declared per-code
+/// lint-level override map (issue #1417), the LSP's counterpart of the
+/// CLI's repeatable `--deny`/`--warn`/`--allow <CODE>` flags (#1373) and
+/// `BrinkPlugin::with_config`'s `ProjectConfig.lints` (#1394). Accepts a
+/// JSON object `{ "<CODE>": "deny" | "warn" | "allow" }` — the same three
+/// strings a `brink.toml` `[lints]` table accepts
+/// (`brink_project_config::parse_lint_level`). A missing key resolves to no
+/// overrides at all (an empty map, the same as never setting the field). A
+/// present but non-object value, or a per-code value that isn't one of the
+/// three recognized strings, is skipped with a `tracing::warn!` — the same
+/// "warn, never silently drop" channel [`resolve_language_options`] already
+/// uses for a `brink.toml`'s own unknown keys — rather than resolving to a
+/// hard `initialize` failure; the real code/overridability validation still
+/// happens once, downstream, in
+/// `AnalysisOptions::apply_lint_overrides` (#1160's `validate_lint_code`
+/// gate).
+fn explicit_initialization_lints(params: &InitializeParams) -> BTreeMap<String, LintLevel> {
+    let mut lints = BTreeMap::new();
+    let Some(obj) = params
+        .initialization_options
+        .as_ref()
+        .and_then(|opts| opts.get("lints"))
+        .and_then(serde_json::Value::as_object)
+    else {
+        return lints;
+    };
+    for (code, value) in obj {
+        match value.as_str() {
+            Some("deny") => {
+                lints.insert(code.clone(), LintLevel::Deny);
+            }
+            Some("warn") => {
+                lints.insert(code.clone(), LintLevel::Warn);
+            }
+            Some("allow") => {
+                lints.insert(code.clone(), LintLevel::Allow);
+            }
+            _ => {
+                tracing::warn!(
+                    "initializationOptions.lints.{code}: expected \"allow\" | \"warn\" | \"deny\", ignored"
+                );
+            }
+        }
+    }
+    lints
+}
+
+/// Client-declared `initializationOptions.dialect`/`.types`/`.lints`/
+/// `.denyWarnings`, resolved once from `InitializeParams` (`Some(_)`/a
+/// non-empty map means the client set the key at all — see
+/// [`explicit_initialization_option`]/[`explicit_initialization_lints`]) and
+/// reused, unchanged, by every later `brink.toml` reload (#1055 gap 2): the
+/// client never resends `initializationOptions` mid-session, only the
+/// file's own contribution to [`resolve_language_options`] can change.
+///
+/// `lints`/`deny_warnings` (issue #1417) extend the same override tier
+/// `dialect`/`types` established (#1030) to `[lints]`, closing the gap this
+/// type's own doc comment used to name explicitly ("no
+/// `initializationOptions` equivalent exists for `[lints]`"). Not `Copy`
+/// (unlike the pre-#1417 `dialect`/`types`-only version) — `lints` is a
+/// `BTreeMap`, so callers now `.clone()` where they used to deref-copy.
+#[derive(Debug, Clone, Default)]
 struct ConfigOverrides {
     dialect: Option<Dialect>,
     types: Option<TypePolicy>,
+    lints: BTreeMap<String, LintLevel>,
+    deny_warnings: Option<bool>,
 }
 
 impl ConfigOverrides {
@@ -839,6 +910,8 @@ impl ConfigOverrides {
                 "gradual" => Some(TypePolicy::Gradual),
                 _ => None,
             }),
+            lints: explicit_initialization_lints(params),
+            deny_warnings: explicit_initialization_bool(params, "denyWarnings"),
         }
     }
 }
@@ -951,7 +1024,7 @@ fn config_error_diagnostic(
 /// `brink.toml` itself (#1055 gap 2), so edits apply without a client
 /// restart.
 fn resolve_language_options(
-    overrides: ConfigOverrides,
+    overrides: &ConfigOverrides,
     roots: &[PathBuf],
 ) -> (AnalysisOptions, ConfigLoadOutcome) {
     let mut options = AnalysisOptions::default();
@@ -1011,6 +1084,20 @@ fn resolve_language_options(
     // responsibility, same as the compiler CLI.
     if let Some(types) = overrides.types {
         options.types = Some(types);
+    }
+
+    // `[lints]`/`deny-warnings` CLI/API override tier (issue #1417),
+    // completing the #1373/#1394 seam for the LSP surface: applied last, on
+    // top of whatever the file above just resolved, so an explicit
+    // `initializationOptions.lints`/`.denyWarnings` always wins over the
+    // same code in a discovered `brink.toml`'s `[lints]` table — the same
+    // `CLI/API > file > default` precedence `dialect`/`types` follow.
+    let lint_override_warnings =
+        options.apply_lint_overrides(&overrides.lints, overrides.deny_warnings);
+    for warning in &lint_override_warnings {
+        // Same "warn, never silently drop" channel as the file-sourced
+        // `[lints]` warnings above (house rule).
+        tracing::warn!("{warning}");
     }
 
     (options, outcome)
@@ -1132,7 +1219,7 @@ impl LanguageServer for Backend {
         // sending notifications before this handler returns its
         // `InitializeResult`, so `initialized()` publishes it instead.
         let overrides = ConfigOverrides::from_initialize_params(&params);
-        let (resolved, outcome) = resolve_language_options(overrides, &roots);
+        let (resolved, outcome) = resolve_language_options(&overrides, &roots);
         self.language.store(resolved);
         // #1572: declare the native source root before any file is loaded, so
         // the very first analysis pass already mints compile-identical native
@@ -3141,7 +3228,7 @@ mod tests {
         .expect("write brink.toml");
 
         let (_, outcome) =
-            resolve_language_options(ConfigOverrides::default(), std::slice::from_ref(&root));
+            resolve_language_options(&ConfigOverrides::default(), std::slice::from_ref(&root));
 
         let diag = outcome
             .diagnostic
@@ -3178,7 +3265,7 @@ mod tests {
         .expect("write brink.toml");
 
         let (_, outcome) =
-            resolve_language_options(ConfigOverrides::default(), std::slice::from_ref(&game));
+            resolve_language_options(&ConfigOverrides::default(), std::slice::from_ref(&game));
 
         assert_eq!(
             native_source_root(std::slice::from_ref(&game), &outcome),
