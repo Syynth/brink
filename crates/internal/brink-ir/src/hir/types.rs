@@ -1450,14 +1450,20 @@ pub struct Diagnostic {
 /// How seriously a diagnostic should be treated by a consumer (CLI renderer,
 /// LSP client, editor diagnostics panel).
 ///
-/// No `DiagnosticCode`'s *default* severity ([`DiagnosticCode::severity`])
-/// is `Info` or `Hint` today — the two advisory tiers exist so a project's
-/// `[lints]` table (`brink-project-config`'s `LintLevel::Info`/`LintLevel::Hint`,
+/// The two advisory tiers below `Warning` exist so a project's `[lints]`
+/// table (`brink-project-config`'s `LintLevel::Info`/`LintLevel::Hint`,
 /// resolved through `brink_analyzer::effective_severity`) can opt a
 /// `Warning`-default code down to one when a squiggle is too loud (issue
-/// #1162). Moving any *existing* code's default into one of these tiers is a
-/// separate decision, deliberately not made by the issue that introduced the
-/// tiers.
+/// #1162). #1162 deliberately moved no existing code's *default* into either
+/// tier, leaving that as a separate decision (issue #1617). #1617 then
+/// settled it for two of the four candidates it named: `E092` and `E095`
+/// now default to `Hint` — both are directives whose emission site proves
+/// they have *zero* effect on the compiled output regardless of whether the
+/// author acts on them (see each variant's doc comment). `E038`/`E043`
+/// (malformed/inapplicable doc-comment tags) were left at `Warning`: unlike
+/// `E092`/`E095`, they mark doc content that is silently dropped from the
+/// parsed `DocBlock` — a real, actionable content loss, not a pure no-op —
+/// so softening them risked hiding a genuine defect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Severity {
     /// Blocks compilation / is surfaced as a hard failure.
@@ -1951,7 +1957,10 @@ pub enum DiagnosticCode {
     E091,
     /// A `#@public`/`#@private` override that restates the module's default
     /// (e.g. `#@public` in an undeclared module, `#@private` in a declared
-    /// one) — redundant, no effect (warning, modules-spec §4/§7).
+    /// one) — redundant, no effect (`Hint` as of issue #1617: the override
+    /// changes nothing either way `effective_visibility` resolves it, so
+    /// there is nothing to act on, only to optionally clean up;
+    /// modules-spec §4/§7).
     E092,
     /// Conflicting or repeated visibility directives on one declaration
     /// (both `#@private` and `#@public`, or the same one twice). A
@@ -1966,7 +1975,9 @@ pub enum DiagnosticCode {
     /// `#@was(name)` names the thing's own *current* name — a self-alias
     /// that would be a no-op entry in the compiled alias table. Nothing to
     /// migrate; likely a stale directive left over from a previous rename
-    /// (warning, modules-spec §5/§7).
+    /// (`Hint` as of issue #1617: `m.was` is left unset exactly as if the
+    /// directive were absent, so the directive has zero effect on the
+    /// compiled output; modules-spec §5/§7).
     E095,
 
     // ── M-2c cross-module collisions (issue #784, decision-log
@@ -2975,6 +2986,7 @@ impl DiagnosticCode {
     #[must_use]
     pub fn severity(self) -> Severity {
         match self {
+            Self::E092 | Self::E095 => Severity::Hint,
             Self::E014
             | Self::E022
             | Self::E023
@@ -2988,8 +3000,6 @@ impl DiagnosticCode {
             | Self::E043
             | Self::E054
             | Self::E063
-            | Self::E092
-            | Self::E095
             | Self::E106
             | Self::E110
             | Self::E131

@@ -87,11 +87,12 @@ pub fn severity_to_lsp(sev: brink_ir::Severity) -> lsp_types::DiagnosticSeverity
 ///   that is *missing* a divert; the flagged text itself is exactly what the
 ///   author needs to keep and extend, not delete.
 ///
-/// This is independent of #1617 (whether any code's *default* severity
-/// should move into the `Info`/`Hint` tier, still an open decision): the
-/// tag is orthogonal to severity and applies to a code's diagnostics at
-/// whatever severity they end up published at, including the `Warning`
-/// default these codes carry today.
+/// This is independent of severity: the tag is orthogonal and applies to a
+/// code's diagnostics at whatever severity they end up published at. Issue
+/// #1617 has since settled `E095`'s *default* severity to `Hint` (previously
+/// `Warning`, like `E033` still is) — the tag assignment above didn't need
+/// to change, since it never depended on which tier the code happened to
+/// default to.
 fn is_unnecessary(code: brink_ir::DiagnosticCode) -> bool {
     matches!(
         code,
@@ -189,7 +190,8 @@ mod tests {
     }
 
     /// #1163 regression: a `DiagnosticCode` whose default severity is
-    /// `Warning` (E014 is one of the 17 warning-default codes) must surface
+    /// `Warning` (E014 is one of the 19 warning-default codes, after issue
+    /// #1617 moved `E092`/`E095` to `Hint`) must surface
     /// as `DiagnosticSeverity::WARNING`, not `ERROR`, once routed through
     /// `diagnostic_to_lsp` with no `[lints]` override in play.
     #[test]
@@ -325,6 +327,59 @@ mod tests {
             &brink_analyzer::LintPolicy::default(),
         );
         assert_eq!(lsp.tags, None);
+    }
+
+    /// #1617: `E092`/`E095` now default to `Hint`, so with no `[lints]`
+    /// override in play `diagnostic_to_lsp` must publish `HINT`, not
+    /// `WARNING` — proving the reclassification actually reaches the LSP
+    /// client, not just `DiagnosticCode::severity()` in isolation.
+    #[test]
+    fn diagnostic_to_lsp_publishes_hint_for_reclassified_codes() {
+        for code in [
+            brink_ir::DiagnosticCode::E092,
+            brink_ir::DiagnosticCode::E095,
+        ] {
+            let diag = brink_ir::Diagnostic {
+                file: brink_ir::FileId(0),
+                range: TextRange::new(TextSize::from(0), TextSize::from(1)),
+                message: "test".to_owned(),
+                code,
+            };
+            let idx = LineIndex::new("x");
+            let lsp = diagnostic_to_lsp(
+                &diag,
+                &idx,
+                brink_analyzer::TypePolicy::Gradual,
+                &brink_analyzer::LintPolicy::default(),
+            );
+            assert_eq!(
+                lsp.severity,
+                Some(lsp_types::DiagnosticSeverity::HINT),
+                "{code:?} must default to Hint"
+            );
+        }
+    }
+
+    /// #1617: an `Info`/`Hint`-*default* code must still be re-levelable by
+    /// `[lints]` in both directions — the `effective_severity` early-return
+    /// bug this issue's implementation found and fixed would have made
+    /// `E092 = "deny"` silently do nothing, because a base severity below
+    /// `Warning` used to skip the `[lints]` table entirely.
+    #[test]
+    fn diagnostic_to_lsp_lints_override_still_applies_to_hint_default_code() {
+        let diag = brink_ir::Diagnostic {
+            file: brink_ir::FileId(0),
+            range: TextRange::new(TextSize::from(0), TextSize::from(1)),
+            message: "test".to_owned(),
+            code: brink_ir::DiagnosticCode::E092,
+        };
+        let idx = LineIndex::new("x");
+        let mut lints = brink_analyzer::LintPolicy::default();
+        lints
+            .overrides
+            .insert("E092".to_owned(), brink_analyzer::LintLevel::Deny);
+        let lsp = diagnostic_to_lsp(&diag, &idx, brink_analyzer::TypePolicy::Gradual, &lints);
+        assert_eq!(lsp.severity, Some(lsp_types::DiagnosticSeverity::ERROR));
     }
 
     /// #1618: a code that is *not* in the unnecessary class (e.g. `E014`,

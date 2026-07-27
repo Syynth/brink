@@ -1789,6 +1789,72 @@ fn e152_denied_through_the_lints_control_plane_becomes_an_error() {
     );
 }
 
+// ─── E092 severity tier (issue #1617): `Hint` by default, end to end ────
+//
+// `redundant_private_in_declared_module_is_e092`/
+// `redundant_public_in_undeclared_module_is_e092`
+// (`brink-db/src/db.rs`) already prove E092 *fires*. These prove what tier
+// it fires *at*, through the real `compile_with_options` pipeline rather
+// than a unit call on `effective_severity` — the same reachability bar
+// `e151_denied_through_the_lints_control_plane_becomes_an_error` above sets
+// for the `[lints]` control plane.
+
+/// With no `[lints]` override, a redundant `#@private` resolves to `Hint`
+/// (issue #1617, down from the pre-#1617 `Warning`) and — being below
+/// `Warning` — still lands in `out.warnings`, never blocking the compile.
+#[test]
+fn e092_defaults_to_hint_severity_end_to_end() {
+    // `#@module`/`#@private` are brink-dialect directives (`E051` under the
+    // `strict-ink` default), unrelated to the severity-tier behavior under
+    // test — `brink_options()` opts in the same way every other directive
+    // fixture in this file does.
+    let source = "#@module(quest)\n== ambush ==\n#@private\nHi\n-> DONE\n";
+    let out = compile(source, brink_options())
+        .unwrap_or_else(|e| panic!("a Hint-severity diagnostic must not fail the compile: {e:?}"));
+    let e092 = out
+        .warnings
+        .iter()
+        .find(|d| d.code == DiagnosticCode::E092)
+        .unwrap_or_else(|| panic!("expected an E092 diagnostic, got: {:?}", out.warnings));
+    assert_eq!(
+        e092.severity,
+        brink_ir::Severity::Hint,
+        "E092's resolved severity must be its new Hint default, not the pre-#1617 Warning"
+    );
+}
+
+/// The fix this issue's implementation needed: before it, a Hint-*default*
+/// code short-circuited past `[lints]` inside `effective_severity` (it only
+/// ever expected a non-`Warning` base to mean `Error`), so `E092 = "deny"`
+/// would have silently done nothing. Through the real pipeline, it must
+/// promote E092 to a hard compile error, exactly like
+/// `e151_denied_through_the_lints_control_plane_becomes_an_error` proves for
+/// a `Warning`-default code.
+#[test]
+fn e092_denied_through_the_lints_control_plane_becomes_an_error() {
+    let source = "#@module(quest)\n== ambush ==\n#@private\nHi\n-> DONE\n";
+    let options = AnalysisOptions {
+        dialect: Dialect::Brink,
+        lints: LintPolicy {
+            overrides: BTreeMap::from([("E092".to_owned(), LintLevel::Deny)]),
+            deny_warnings: false,
+        },
+        ..AnalysisOptions::default()
+    };
+    let err = compile(source, options)
+        .map(|_| ())
+        .expect_err("`[lints] E092 = deny` must promote the Hint-default lint to a compile error");
+    let diags = errors_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E092),
+        "expected E092 among errors, got: {diags:?}"
+    );
+    assert!(
+        diags.iter().all(|d| d.code != DiagnosticCode::E051),
+        "fixture must be dialect-clean so the E092 escalation is the only error: {diags:?}"
+    );
+}
+
 // ─── E153 / E154 / E155 (issue #1161): the `@[allow(Exxx, …)]` source-level
 // suppression annotation ─────────────────────────────────────────────────
 //
