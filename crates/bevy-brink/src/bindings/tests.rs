@@ -608,6 +608,76 @@ fn call_ink_function_pure_and_errors() {
     );
 }
 
+/// Regression for issue #1096: a `bind_brink_command`-bound `EXTERNAL`
+/// reached through `call_ink_function` (the exclusive engine→ink eval
+/// driver) must fire its Bevy event, not silently run the in-story
+/// fallback the way an *unbound* external would.
+///
+/// The fixture gives `ping` an in-story fallback (`~ return -1`) so the
+/// pre-fix bug is genuinely *silent*: `EvalHandler::call` used to fall
+/// through to `ExternalResult::Fallback` for a command binding exactly as
+/// it does for an unbound name, so the call would resolve `Ok(-1)` with no
+/// error and no event — indistinguishable from a legitimate call unless
+/// something asserts the event actually fired. Asserting only that the
+/// call returns `Ok` (as `call_ink_function_pure_and_errors` does for pure
+/// bindings) would therefore pass on both the broken and fixed code; this
+/// test asserts both the command's real reply (not the fallback's `-1`)
+/// *and* the observer log, so it fails loudly against the silent-fallback
+/// bug.
+#[test]
+fn call_ink_function_fires_command_event_not_silent_fallback() {
+    use crate::BrinkFlowRequest;
+    use crate::test_support::{add_story_assets, make_test_app};
+
+    #[derive(Resource, Default)]
+    struct PingLog(Vec<String>);
+
+    let mut app = make_test_app();
+    app.bind_brink_command::<(), Ping>("ping");
+    app.init_resource::<PingLog>();
+    app.add_observer(|on: On<Ping>, mut log: ResMut<PingLog>| {
+        log.0.push(on.event().label.clone());
+    });
+
+    let (program, tables, ctx) = compile_test_story(
+        "EXTERNAL ping(label)\n\
+         -> END\n\
+         === function ping(label) ===\n\
+         ~ return -1\n\
+         === function sound_alarm() ===\n\
+         ~ return ping(\"intruder\")\n",
+    );
+    let story = add_story_assets(&mut app, program, tables, ctx);
+    let entity = app
+        .world_mut()
+        .spawn(BrinkFlowRequest::<()>::builder().story(story).build())
+        .id();
+    app.update();
+
+    let result = call_ink_function::<()>(app.world_mut(), entity, "sound_alarm", &[]).unwrap();
+
+    // `Ping::reply` returns the label's length (`"intruder".len() == 8`);
+    // the in-story fallback would have returned `-1`. A `-1` here would
+    // mean the call quietly ran the fallback instead of the binding.
+    assert_eq!(
+        result,
+        Value::Int(8),
+        "expected the command binding's reply (label length 8), not the \
+             in-story fallback's -1 — the command binding must resolve the call"
+    );
+
+    // The actual regression: the event must have fired, not merely have
+    // the call return a plausible value.
+    let log = app.world().resource::<PingLog>();
+    assert_eq!(
+        log.0,
+        vec!["intruder".to_string()],
+        "call_ink_function must fire the bind_brink_command event, not \
+             silently fall back to the in-story body; observer log: {:?}",
+        log.0
+    );
+}
+
 /// A story line that calls a world-access query binding inline
 /// (`{enemy_count()}`) resolves transparently when driven by
 /// `advance_flow`.

@@ -413,7 +413,13 @@ finding, not just a seam choice — see "What was awkward" point 1 below.
    write `SpottedEvent` itself — the same seam `ink_alarm_system` already
    uses to *read* `SpottedEvent`, just one step earlier in the chain. Filed
    as a new issue (checked for a dupe first, per the #996 precedent — none
-   existed): **G6 (#1096)**.
+   existed): **G6 (#1096)**. **Update: #1096 is fixed** — `EvalHandler` now
+   buffers a `bind_brink_command` trigger the same way `BrinkHandler` does
+   and the exclusive driver fires it against the World once the call
+   completes, so the originally-planned command-based design is reachable
+   again. This port keeps the boolean-return workaround (switching it back
+   is a demo-architecture change, not part of the fix) — see
+   `ink_cameras.rs`'s `sweep_camera` doc comment.
 2. **`#@local` is the right tool, but this is the first port to need it —
    the flywheel didn't cover it.** Neither the alarm (one shared flow, plain
    `VAR`s) nor doors (N flows, zero `VAR`s) needed a storage-class

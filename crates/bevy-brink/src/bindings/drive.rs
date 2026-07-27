@@ -118,6 +118,7 @@ fn drive_function_eval_to_done<M: Send + Sync + 'static>(
     entity: Entity,
     state: &mut EvalSystemState<M>,
     mut next: NextStep,
+    triggers: &mut Vec<TriggerFn>,
 ) -> Result<Value, BrinkCallError> {
     loop {
         match next {
@@ -152,10 +153,24 @@ fn drive_function_eval_to_done<M: Send + Sync + 'static>(
                         &handler,
                         None,
                     )?;
+                    triggers.extend(handler.take_queued());
                     classify_eval(&flow.inner, program, &bindings, outcome)?
                 };
             }
         }
+    }
+}
+
+/// Fire buffered command-event triggers from a completed engine→ink eval
+/// pass directly against the World — the exclusive driver's equivalent of
+/// [`BrinkHandler::flush`], since [`call_ink_function`] and friends already
+/// hold `&mut World` rather than a deferred [`bevy_ecs::system::Commands`]
+/// queue. Called only once evaluation reaches [`NextStep::Done`]; a mid-eval
+/// error drops any triggers queued so far, matching [`advance_flow`]'s
+/// existing drop-on-error precedent for buffered command triggers.
+fn flush_eval_triggers(world: &mut World, triggers: Vec<TriggerFn>) {
+    for trigger in triggers {
+        trigger(world);
     }
 }
 
@@ -209,13 +224,18 @@ pub fn call_ink_function<M: Send + Sync + 'static>(
     args: &[Value],
 ) -> Result<Value, BrinkCallError> {
     let mut state: EvalSystemState<M> = SystemState::new(world);
+    let mut triggers: Vec<TriggerFn> = Vec::new();
 
     // Begin the evaluation (resolve the function by name, then start it).
-    let next = begin_eval_by_name(world, entity, &mut state, name, args)?;
+    let next = begin_eval_by_name(world, entity, &mut state, name, args, &mut triggers)?;
 
     // Drive: run each pending world-access query against the World, resolve
     // it, and resume — until the function returns.
-    drive_function_eval_to_done(world, entity, &mut state, next)
+    let value = drive_function_eval_to_done(world, entity, &mut state, next, &mut triggers)?;
+
+    // Fire any command-event triggers the call queued along the way (#1096).
+    flush_eval_triggers(world, triggers);
+    Ok(value)
 }
 
 /// Begin one by-name function evaluation against an already-built
@@ -231,6 +251,7 @@ fn begin_eval_by_name<M: Send + Sync + 'static>(
     state: &mut EvalSystemState<M>,
     name: &str,
     args: &[Value],
+    triggers: &mut Vec<TriggerFn>,
 ) -> Result<NextStep, BrinkCallError> {
     let (mut flows, globals, programs, tables, bindings) = state
         .get_mut(world)
@@ -262,6 +283,7 @@ fn begin_eval_by_name<M: Send + Sync + 'static>(
         args,
         None,
     )?;
+    triggers.extend(handler.take_queued());
     classify_eval(&flow.inner, program, &bindings, outcome)
 }
 
@@ -324,8 +346,24 @@ where
     calls
         .into_iter()
         .map(|(name, args)| {
-            let next = begin_eval_by_name(world, entity, &mut state, name.as_ref(), args.as_ref())?;
-            drive_function_eval_to_done(world, entity, &mut state, next)
+            // Fresh trigger buffer per call so a command-event fires right
+            // after *its own* call completes — preserving the "isolated
+            // outputs, identical to a standalone call_ink_function" contract
+            // this batch API documents, rather than deferring every call's
+            // triggers to the end of the whole batch.
+            let mut triggers: Vec<TriggerFn> = Vec::new();
+            let next = begin_eval_by_name(
+                world,
+                entity,
+                &mut state,
+                name.as_ref(),
+                args.as_ref(),
+                &mut triggers,
+            )?;
+            let value =
+                drive_function_eval_to_done(world, entity, &mut state, next, &mut triggers)?;
+            flush_eval_triggers(world, triggers);
+            Ok(value)
         })
         .collect()
 }
@@ -359,6 +397,7 @@ pub fn call_ink_function_value<M: Send + Sync + 'static>(
     args: &[Value],
 ) -> Result<Value, BrinkCallError> {
     let mut state: EvalSystemState<M> = SystemState::new(world);
+    let mut triggers: Vec<TriggerFn> = Vec::new();
 
     // Begin the evaluation through the opaque function-value token.
     let next = {
@@ -388,10 +427,13 @@ pub fn call_ink_function_value<M: Send + Sync + 'static>(
             args,
             None,
         )?;
+        triggers.extend(handler.take_queued());
         classify_eval(&flow.inner, program, &bindings, outcome)?
     };
 
-    drive_function_eval_to_done(world, entity, &mut state, next)
+    let value = drive_function_eval_to_done(world, entity, &mut state, next, &mut triggers)?;
+    flush_eval_triggers(world, triggers);
+    Ok(value)
 }
 
 /// One step of the [`advance_flow`] loop, captured inside the borrow scope

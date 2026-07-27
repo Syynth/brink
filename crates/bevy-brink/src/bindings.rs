@@ -10,9 +10,12 @@
 //!   formatting, table lookups against captured data.
 //! - **`bind_brink_command`** — fire-and-forget: parse the ink args into a
 //!   Bevy [`Event`] and trigger it. The event is *buffered* during stepping
-//!   (the handler can't touch the World mid-step) and flushed afterward via
-//!   [`BrinkHandler::flush`]. Optionally returns a value to ink via
-//!   [`BrinkCommand::reply`].
+//!   (the handler can't touch the World mid-step) and flushed afterward —
+//!   via [`BrinkHandler::flush`] on the normal playback path, or fired
+//!   directly against the World once the call completes when reached
+//!   through [`call_ink_function`]'s exclusive-`&mut World` driver (issue
+//!   #1096: this used to fall through to the in-story fallback silently).
+//!   Optionally returns a value to ink via [`BrinkCommand::reply`].
 //!
 //! plus a third, *world-access* kind used by engine→ink calls:
 //!
