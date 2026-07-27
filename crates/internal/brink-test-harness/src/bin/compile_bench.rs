@@ -69,6 +69,17 @@
 //!    real `E061`s (an error), which would otherwise break that project's
 //!    "compiles clean" invariant.
 //!
+//! 8. **`ProjectDb` stage profile** (issue #460): (6) reports the warm
+//!    `story_data()` re-pull as one opaque number, so it cannot say *where*
+//!    a recompile's time goes. [`bench_projectdb_stage_profile`] splits both
+//!    the cold and the warm pull along the query graph's own layer
+//!    boundaries — resolutions / prelude / per-knot chunks / diagnostics /
+//!    link / T2-3 effect inference / codegen — using public `ProjectDb`
+//!    accessors and salsa's memoization, so each row is that layer's
+//!    marginal cost. This is the profile #460 is gated on ("invest only if
+//!    measured"); its conclusions are written up in
+//!    `docs/compile-time-profile-findings.md`.
+//!
 //! Stability over rigor: medians of N runs (default 5), fixed deterministic
 //! inputs, one stable greppable row per metric. Run with:
 //!
@@ -972,44 +983,7 @@ fn bench_projectdb_stage_profile(project: &BTreeMap<String, String>) -> Result<(
     db.set_entry("main.ink")
         .ok_or_else(|| "stage profile setup: set_entry(main.ink) failed".to_string())?;
 
-    let cold = profile_pulls(&db, &[]);
-    let knots = cold.knot_count;
-    row(
-        "projectdb_cold.resolutions_index",
-        "parse + HIR + symbol index + resolve",
-        &[cold.resolutions],
-    );
-    row(
-        "projectdb_cold.prelude_decls",
-        "FG-4e prelude: globals/lists/externals/shapes",
-        &[cold.prelude],
-    );
-    row(
-        "projectdb_cold.knot_chunks",
-        &format!("FG-4d per-knot LIR chunk memos (knots={knots})"),
-        &[cold.chunks],
-    );
-    row(
-        "projectdb_cold.diagnostics",
-        "analysis diagnostics + suppression partition",
-        &[cold.diagnostics],
-    );
-    row(
-        "projectdb_cold.link",
-        "lir_lowering link: chunks -> one lir::Program",
-        &[cold.link],
-    );
-    row(
-        "projectdb_cold.effect_inference",
-        "T2-3 effects(def) fixpoint over every inferable def",
-        &[cold.effects],
-    );
-    row(
-        "projectdb_cold.story_data_rest",
-        "codegen emit + effect-row assembly",
-        &[cold.story_data],
-    );
-    row("projectdb_cold.total", "sum of stages", &[cold.total()]);
+    report_cold_stage_rows(&profile_pulls(&db, &[]));
 
     // Warm: one-line body edit to a single knot, then the same pulls.
     let edit_path = format!("file_{EDIT_FILE:02}.ink");
@@ -1082,6 +1056,49 @@ fn bench_projectdb_stage_profile(project: &BTreeMap<String, String>) -> Result<(
     );
     row("projectdb_warm.total", "sum of stages", &totals);
     Ok(())
+}
+
+/// The cold half of [`bench_projectdb_stage_profile`]'s table. Cold rows are
+/// single-sample by construction: a db is cold exactly once, so there is no
+/// second run to take a median over.
+fn report_cold_stage_rows(cold: &PullMs) {
+    let knots = cold.knot_count;
+    row(
+        "projectdb_cold.resolutions_index",
+        "parse + HIR + symbol index + resolve",
+        &[cold.resolutions],
+    );
+    row(
+        "projectdb_cold.prelude_decls",
+        "FG-4e prelude: globals/lists/externals/shapes",
+        &[cold.prelude],
+    );
+    row(
+        "projectdb_cold.knot_chunks",
+        &format!("FG-4d per-knot LIR chunk memos (knots={knots})"),
+        &[cold.chunks],
+    );
+    row(
+        "projectdb_cold.diagnostics",
+        "analysis diagnostics + suppression partition",
+        &[cold.diagnostics],
+    );
+    row(
+        "projectdb_cold.link",
+        "lir_lowering link: chunks -> one lir::Program",
+        &[cold.link],
+    );
+    row(
+        "projectdb_cold.effect_inference",
+        "T2-3 effects(def) fixpoint over every inferable def",
+        &[cold.effects],
+    );
+    row(
+        "projectdb_cold.story_data_rest",
+        "codegen emit + effect-row assembly",
+        &[cold.story_data],
+    );
+    row("projectdb_cold.total", "sum of stages", &[cold.total()]);
 }
 
 /// One pass of the [`bench_projectdb_stage_profile`] pull sequence.

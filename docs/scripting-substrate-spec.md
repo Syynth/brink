@@ -160,7 +160,14 @@ about the *pass structure*, not necessarily crate boundaries.
   knot_cache/file_state retired; consumers migrated. LIR
   logic/narrative module hygiene rides along.
 - **Slice C (#460)** — split lowering/codegen per container behind
-  `story_data()` assembly; measured against #498.
+  `story_data()` assembly; measured against #498. **Measured, and the
+  per-container split is deferred** — see
+  `docs/compile-time-profile-findings.md`: on the #498 studio-scale
+  project, chunks + link + codegen together are 2.6% of a cold compile and
+  37% of a warm one-line-edit recompile, while T2-3 advisory effect
+  inference is 88% of the cold compile. The remaining per-container /
+  symbolic-ref redesign stays parked in #633; what shipped instead was the
+  shared per-knot lowering context the profile exposed.
 
 Each slice is a separate PR train, oracle-gated, with the fuzz harness
 (§6.2) required from slice B on.

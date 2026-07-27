@@ -580,10 +580,6 @@ pub struct ChunkLoweringCtx {
 impl ChunkLoweringCtx {
     /// Build the shared context from the same cutoff-friendly inputs the
     /// per-knot memo already depends on.
-    #[expect(
-        clippy::implicit_hasher,
-        reason = "internal API called only by brink-db"
-    )]
     #[must_use]
     pub fn new(
         resolutions: &ResolutionMap,
