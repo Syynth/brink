@@ -388,6 +388,24 @@ policy on ordinary knots; `await` is the author-written park form.
 is a query over `FlowSleep`. (The callback-registry alternative is
 rejected.)
 
+**What a row can and cannot say about a dependency** (issue #1146,
+the #1101 fix): point 2's "only when a dependency moved" is decided by
+intersecting the changed cells of a batch turn's Apply with the
+condition's inferred **read row**. That row bounds **global cells**
+(§2's `reads`) and nothing else — story *bookkeeping* (visit counts,
+turn counts, the turn index, RNG state) has no read atom, so a
+condition reading `TURNS_SINCE(-> knot)` or a visit count is
+indistinguishable from a constant one. Because every real turn writes
+bookkeeping, treating it as a dependency of everything would collapse
+the whole mechanism back to "re-check on any change", so v1 treats a
+bookkeeping write as inert for a condition with a known, non-opaque row
+and asks the host to declare the exception (bevy-brink:
+`FlowSleep::reads_bookkeeping()`). A missing or **opaque** row still
+re-evaluates on any change — the conservative floor of §3 applies here
+exactly as everywhere else. Graduating a bookkeeping dimension on the
+row (so the declaration is inferred, like `emits`/`tags`/`faults` in
+NS-A2) is the recorded follow-up.
+
 ### 13.2 Manifest capability grammar
 
 Capabilities extend the existing JSON manifest per external:

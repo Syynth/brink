@@ -29,10 +29,10 @@ use crate::request::fulfill_flow_requests;
 /// **This plugin does not register an auto-advance system.** Most games
 /// drive advancement from input or game-state events, not every tick.
 /// Apps that want per-tick advancement can register
-/// [`advance_flows`](crate::advance_flows) themselves:
+/// [`advance_flow`](crate::advance_flow) themselves:
 ///
 /// ```ignore
-/// app.add_systems(Update, advance_flows::<MyStory>);
+/// app.add_systems(Update, advance_flow::<MyStory>);
 /// ```
 pub struct BrinkPlugin<M: Send + Sync + 'static = ()> {
     policy: WorldPolicy,
@@ -261,6 +261,15 @@ impl<M: Send + Sync + 'static> Plugin for BrinkPlugin<M> {
         // `app.add_systems(Update, advance_batch::<M>)` when it wants
         // frame-start-consistent batched stepping.
         app.init_resource::<crate::batch::BrinkBatchReport<M>>();
+        // Issue #1146 (the #1101 fix): the row-directed wake-dirtying ledger.
+        // A batch turn's Apply records *which* shared-world cells it wrote;
+        // `mark_wake_dirty` drains it and re-evaluates only the parked
+        // policies whose condition's effect read row intersects that set.
+        // Always present so a host that opts into `advance_batch::<M>` /
+        // `advance_batch_parallel::<M>` gets the precision automatically;
+        // without a batch driver it simply never records and the wake pass
+        // stays on the coarse `BrinkGlobals` change bit.
+        app.init_resource::<crate::wake_delta::BrinkWorldDelta<M>>();
         // BH-4 (docs/effects-spec.md §13.1; #973): reactive sleep. `FlowSleep`
         // is a standing wake policy on a flow entity; parked flows are skipped
         // by Collect (`advance_batch`). `mark_wake_dirty` consults the `#913`
@@ -296,6 +305,17 @@ impl<M: Send + Sync + 'static> Plugin for BrinkPlugin<M> {
         // regardless of scheduler ordering. Inert if the host never adds
         // `advance_batch::<M>` (an ordering constraint against an absent
         // system is a no-op).
+        //
+        // The same constraint is placed against `advance_batch_parallel::<M>`:
+        // without it, the parallel driver is unconstrained relative to this
+        // chain, so the module docs' "the wake pass is ordered before it"
+        // claim (`crate::wake_delta`, `record_wake_delta`'s doc in
+        // `crate::batch`, `mark_wake_dirty`'s doc) would not actually hold for
+        // a host that opts into the parallel driver. Ordering costs precision
+        // only (an unordered parallel driver still never under-reports), but
+        // pinning it keeps the doc claim true for every driver, not just the
+        // serial one. Inert if the host never adds
+        // `advance_batch_parallel::<M>`.
         app.add_systems(
             Update,
             (
@@ -304,6 +324,7 @@ impl<M: Send + Sync + 'static> Plugin for BrinkPlugin<M> {
             )
                 .chain()
                 .before(crate::batch::advance_batch::<M>)
+                .before(crate::batch::parallel::advance_batch_parallel::<M>)
                 .run_if(
                     bevy_ecs::schedule::common_conditions::any_with_component::<
                         crate::sleep::FlowSleep<M>,

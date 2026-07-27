@@ -16,7 +16,7 @@ icu_plurals = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-xliff2 = { workspace = true }
+xliff2 = { workspace = true, features = ["metadata"] }
 
 [dev-dependencies]
 brink-compiler = { path = "../../brink-compiler" }
