@@ -56,9 +56,6 @@ pub fn severity_to_lsp(sev: brink_ir::Severity) -> lsp_types::DiagnosticSeverity
 /// Deliberately narrow. Included:
 /// - [`E033`](brink_ir::DiagnosticCode::E033) — unreachable code after a
 ///   divert: the flagged statements can never execute.
-/// - [`E092`](brink_ir::DiagnosticCode::E092) — a `#@public`/`#@private`
-///   override that restates the module's own default: removing it changes
-///   nothing.
 /// - [`E095`](brink_ir::DiagnosticCode::E095) — `#@was(name)` naming the
 ///   definition's own current name: a no-op alias entry.
 ///
@@ -66,6 +63,22 @@ pub fn severity_to_lsp(sev: brink_ir::Severity) -> lsp_types::DiagnosticSeverity
 /// - `E014` ("logic line has no effect") also fires on a malformed
 ///   temp-decl/assignment with a missing identifier or value — that needs
 ///   fixing, not deleting, so dimming it would misdirect the author.
+/// - [`E092`](brink_ir::DiagnosticCode::E092) — a `#@public`/`#@private`
+///   override that restates the module's own default. The *directive* is
+///   what's removable, but `E092`'s emission site
+///   (`brink-analyzer::manifest::insert_symbol`) reports on `sym.range`,
+///   which is `DeclaredSymbol::range` — the declaration's *name* span
+///   (`Knot::name.range`/`Stitch::name.range` at HIR-lowering time), not the
+///   directive's own range. HIR does carry a directive-level range
+///   (`VisibilityDirective::range`), but it never reaches `DeclaredSymbol`:
+///   `Knot::visibility`/`DeclaredSymbol::visibility` keep only
+///   `Option<VisibilityMark>`, unlike `was: Option<(String, TextRange)>`,
+///   which is exactly why `E095` above *can* be included. Tagging `E092`
+///   today would dim the knot/stitch/VAR *name* — telling a client "this
+///   definition is dead, delete it", which is false. Re-include once
+///   `VisibilityDirective::range` is plumbed through to
+///   `DeclaredSymbol::visibility` so `E092` can anchor on the directive
+///   (tracked as a follow-up).
 /// - `E131` (`<-` splice used outside a choice point) is documented as
 ///   ambiguous with literal dialogue punctuation the author may have meant
 ///   to keep — tagging it Unnecessary would tell a client to fade text that
@@ -78,13 +91,11 @@ pub fn severity_to_lsp(sev: brink_ir::Severity) -> lsp_types::DiagnosticSeverity
 /// should move into the `Info`/`Hint` tier, still an open decision): the
 /// tag is orthogonal to severity and applies to a code's diagnostics at
 /// whatever severity they end up published at, including the `Warning`
-/// default these three codes carry today.
+/// default these codes carry today.
 fn is_unnecessary(code: brink_ir::DiagnosticCode) -> bool {
     matches!(
         code,
-        brink_ir::DiagnosticCode::E033
-            | brink_ir::DiagnosticCode::E092
-            | brink_ir::DiagnosticCode::E095
+        brink_ir::DiagnosticCode::E033 | brink_ir::DiagnosticCode::E095
     )
 }
 
@@ -266,34 +277,54 @@ mod tests {
         assert_eq!(lsp.tags, Some(vec![lsp_types::DiagnosticTag::UNNECESSARY]));
     }
 
-    /// #1618: the same tag must fire for both `E092` (redundant visibility
-    /// override) and `E095` (`#@was` self-alias) — the full unnecessary-class
-    /// set, not just `E033`.
+    /// #1618: `E095` (`#@was` self-alias) must carry the Unnecessary tag —
+    /// unlike `E092`, its emission site anchors on a directive-level range
+    /// (`was_range`, HIR `Knot::was`/`Stitch::was` carry
+    /// `Option<(String, TextRange)>`), so the flagged range genuinely is the
+    /// removable text.
     #[test]
-    fn diagnostic_to_lsp_tags_redundant_directives_as_unnecessary() {
+    fn diagnostic_to_lsp_tags_was_self_alias_as_unnecessary() {
+        let diag = brink_ir::Diagnostic {
+            file: brink_ir::FileId(0),
+            range: TextRange::new(TextSize::from(0), TextSize::from(1)),
+            message: "test".to_owned(),
+            code: brink_ir::DiagnosticCode::E095,
+        };
         let idx = LineIndex::new("x");
-        for code in [
-            brink_ir::DiagnosticCode::E092,
-            brink_ir::DiagnosticCode::E095,
-        ] {
-            let diag = brink_ir::Diagnostic {
-                file: brink_ir::FileId(0),
-                range: TextRange::new(TextSize::from(0), TextSize::from(1)),
-                message: "test".to_owned(),
-                code,
-            };
-            let lsp = diagnostic_to_lsp(
-                &diag,
-                &idx,
-                brink_analyzer::TypePolicy::Gradual,
-                &brink_analyzer::LintPolicy::default(),
-            );
-            assert_eq!(
-                lsp.tags,
-                Some(vec![lsp_types::DiagnosticTag::UNNECESSARY]),
-                "{code:?} should carry the Unnecessary tag"
-            );
-        }
+        let lsp = diagnostic_to_lsp(
+            &diag,
+            &idx,
+            brink_analyzer::TypePolicy::Gradual,
+            &brink_analyzer::LintPolicy::default(),
+        );
+        assert_eq!(lsp.tags, Some(vec![lsp_types::DiagnosticTag::UNNECESSARY]));
+    }
+
+    /// #1618 review finding: `E092` (redundant `#@public`/`#@private`
+    /// override) must NOT carry the Unnecessary tag, despite sounding like a
+    /// no-op-directive code akin to `E095`. Its emission site
+    /// (`brink-analyzer::manifest::insert_symbol`) reports on
+    /// `DeclaredSymbol::range`, which is the declaration's *name* span, not
+    /// the directive's own range — `Knot::visibility`/`DeclaredSymbol::visibility`
+    /// keep only `Option<VisibilityMark>`, with no range to anchor on. Tagging
+    /// it today would dim the knot/stitch/VAR name itself, falsely telling a
+    /// client the *definition* is dead. See [`is_unnecessary`]'s doc comment.
+    #[test]
+    fn diagnostic_to_lsp_does_not_tag_redundant_visibility_override() {
+        let diag = brink_ir::Diagnostic {
+            file: brink_ir::FileId(0),
+            range: TextRange::new(TextSize::from(0), TextSize::from(1)),
+            message: "test".to_owned(),
+            code: brink_ir::DiagnosticCode::E092,
+        };
+        let idx = LineIndex::new("x");
+        let lsp = diagnostic_to_lsp(
+            &diag,
+            &idx,
+            brink_analyzer::TypePolicy::Gradual,
+            &brink_analyzer::LintPolicy::default(),
+        );
+        assert_eq!(lsp.tags, None);
     }
 
     /// #1618: a code that is *not* in the unnecessary class (e.g. `E014`,

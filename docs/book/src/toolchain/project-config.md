@@ -211,7 +211,14 @@ one-off choice that the file must not silently overrule.
   applied last, so they always win over the same code in the discovered
   `brink.toml`. An unrecognized per-code level string, or an unrecognized/
   non-overridable code, is reported through the server's usual
-  `tracing::warn!` channel, never silently dropped.
+  `tracing::warn!` channel, never silently dropped. A second, independent
+  mechanism also dims text in the client (issue #1618): `E033` (unreachable
+  code after a divert) and `E095` (`#@was` self-alias) publish with LSP's
+  `DiagnosticTag::UNNECESSARY`, which VS Code and similar clients render as
+  faded/dimmed rather than underlined. This tag is orthogonal to
+  severity — it rides alongside whatever severity the code is published at
+  (including the `Warning` default these two carry today), not another tier
+  like `Info`/`Hint` above.
 - **The wasm editor session** (`@brink-lang/web`'s `EditorSessionHandle`) has
   no filesystem of its own — but it is inherently virtual, so it discovers
   `brink.toml` the same way `brink compile`/`brink ide` do: by walking its

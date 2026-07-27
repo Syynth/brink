@@ -1353,7 +1353,7 @@ fn init_options_lints_hint_publishes_hint_severity() {
 
 /// `-> DONE` immediately followed by more content in the same block lowers
 /// to `E033` ("unreachable code after divert"), `Warning` by default — one
-/// of the three codes `is_unnecessary` recognizes.
+/// of the two codes `is_unnecessary` recognizes.
 const E033_PROBE_SOURCE: &str = "\
 == start ==
 -> DONE
