@@ -75,12 +75,16 @@ fn main() {
         hir.structs[0].fields[0].ty
     );
 
-    // The same hand-assembled "honest minimal native pipeline"
+    // An honest minimal native pipeline, hand-assembled here because this
+    // test seeds `whole_project_diagnostics` with the same `InferenceResult`
+    // it goes on to hand `ufcs_resolution` (the composed
+    // `analyze_with_modules(…, is_native = true)` call
     // `brink-test-harness::corpus::compile_and_explore_from_brink_native`
-    // runs — `brink_analyzer::analyze`'s pure path always passes
-    // `is_native = false` internally (see that function's own doc), which
-    // would misclassify this fixture as ink-syntax-under-strict-dialect and
-    // reject the `STRUCT`/construction-literal brink extensions with E051.
+    // makes computes its own instead). Every pass is given
+    // `is_native = true`: `brink_analyzer::analyze`'s pure path passes
+    // `is_native = false` (see that function's own doc), which would
+    // misclassify this fixture as ink-syntax-under-strict-dialect and reject
+    // the `STRUCT`/construction-literal brink extensions with E051.
     let (index, mut diagnostics) = brink_analyzer::symbol_index(&[(file_id, &manifest)]);
     let scope =
         brink_analyzer::ImportScope::new(hir.module.as_ref().map(|m| m.name.clone()), &hir.imports);
@@ -111,6 +115,9 @@ fn main() {
         &index,
         &resolutions,
         &brink_analyzer::AnalysisOptions::default(),
+        // `is_native` (issue #1358): this fixture is real `.brink` source,
+        // so the ink-only `E064` axis must not apply to it.
+        true,
         Some(&inference),
     );
     diagnostics.extend(whole_diagnostics);
