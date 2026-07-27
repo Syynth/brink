@@ -1844,27 +1844,52 @@ mod config_discovery_tests {
         // Uniquely-spelled code (the capture buffer is process-global across
         // this file's tests) -- a real `DiagnosticCode` whose base severity
         // isn't `Warning`, so it's rejected as "not overridable" rather than
-        // "not a recognized diagnostic code" (the served-file counterpart of
+        // "not a recognized diagnostic code". `E001` is deliberately avoided
+        // here: it's also used by
         // `plugin_override_unknown_and_non_overridable_lint_codes_warn_but_valid_entry_still_applies`'s
-        // `E001` case, but driven by a *served* file, not `with_config`).
-        dir.insert_asset_text(Path::new("brink.toml"), "[lints]\nE001 = \"deny\"\n");
+        // `with_config` case, and that test's `joined.contains("[lints]
+        // `E001` is not overridable")` assertion would be satisfied by this
+        // served-file warning too (the capture buffer is shared process-wide)
+        // whenever this test runs first, making that other test's own
+        // `with_config` path go unverified without either test failing.
+        // `E002` is a real, non-overridable `DiagnosticCode`
+        // (`DiagnosticCode::severity`, `brink-ir/src/hir/types.rs`) used
+        // nowhere else in this file, so it stays independent of both.
+        //
+        // A second entry, `E8888_SERVED_TYPO`, covers the sibling rejection
+        // class ("not a recognized diagnostic code") on this same served-file
+        // path -- the precedent test above deliberately covers both classes
+        // because a bare code substring can't distinguish them, so this test
+        // does too.
+        dir.insert_asset_text(
+            Path::new("brink.toml"),
+            "[lints]\nE002 = \"deny\"\nE8888_SERVED_TYPO = \"deny\"\n",
+        );
 
         let handle = app
             .world()
             .resource::<AssetServer>()
             .load::<BrinkStoryAsset>("intro.ink");
-        // The rejected entry is never applied, so E014 stays a non-blocking
-        // Warning and the load still succeeds -- the point is to observe the
-        // warning, not a failed compile.
+        // The rejected entries are never applied, so E014 stays a
+        // non-blocking Warning and the load still succeeds -- the point is
+        // to observe the warnings, not a failed compile.
         wait_for_loaded(&mut app, &handle);
 
         let joined = captured.lock().unwrap().join("\n");
         assert!(
-            joined.contains("[brink.toml] [lints] `E001` is not overridable"),
+            joined.contains("[brink.toml] [lints] `E002` is not overridable"),
             "a served brink.toml's rejected [lints] entry must warn with the \
              full resolve_options-produced message (config-key-prefixed, not \
              just the code substring) through the real AssetServer -> \
              InkLoader -> Project::load path; captured: {joined}"
+        );
+        assert!(
+            joined.contains(
+                "[brink.toml] [lints] `E8888_SERVED_TYPO` is not a recognized diagnostic code"
+            ),
+            "a served brink.toml's unrecognized [lints] code must also warn, \
+             distinguishable from the not-overridable class above; \
+             captured: {joined}"
         );
     }
 
