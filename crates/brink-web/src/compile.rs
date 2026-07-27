@@ -369,6 +369,15 @@ mod compile_fragment_tests {
         // `compile_project` would discover it — `[lints] E014 = "deny"`
         // must re-level a bare `~` line's E014 to Error and block the
         // fragment compile, not just the editor's project compile.
+        //
+        // Issue #1383: the diagnostic's *rendered* `severity` field — what
+        // `diagnostic_to_js` (this file's real wasm boundary, not
+        // `compile_project`'s own duplicate `to_js` closure in
+        // `editor/mod.rs`) actually hands a consumer through this JSON — must
+        // itself read `"Error"`, not just have `ok: false` and E014 present
+        // among the diagnostics (the wrong-layer assertion #1383 calls out:
+        // presence proves the compile failed, not that the *severity* a
+        // consumer renders was promoted).
         let src = sources_json(&[
             ("brink.toml", "[lints]\nE014 = \"deny\"\n"),
             (
@@ -380,11 +389,50 @@ mod compile_fragment_tests {
         let json = compile_fragment("main.ink", &src, synthetic);
         let v: serde_json::Value = serde_json::from_str(&json).expect("valid json");
         assert_eq!(v["ok"], false, "{json}");
+        let warnings = v["warnings"].as_array();
+        let e014 = warnings.and_then(|w| w.iter().find(|d| d["code"] == "E014"));
         assert!(
-            v["warnings"]
-                .as_array()
-                .is_some_and(|w| w.iter().any(|d| d["code"] == "E014")),
+            e014.is_some(),
             "expected E014 among the surfaced diagnostics: {json}"
+        );
+        let e014 = e014.expect("checked above");
+        assert_eq!(
+            e014["severity"], "Error",
+            "[lints] E014 = \"deny\" must promote diagnostic_to_js's rendered severity, not \
+             just fail the compile: {json}"
+        );
+    }
+
+    #[test]
+    fn served_brink_toml_deny_warnings_promotes_e014_severity_through_fragment_compile() {
+        // Sibling of the per-code test above, covering the other override
+        // flavor named in issue #1383's title: `deny-warnings = true`
+        // (rather than a specific code) must promote every ordinarily-
+        // `Warning` diagnostic — again asserted on the actual `severity`
+        // string `diagnostic_to_js` renders into the JSON a consumer reads,
+        // not merely that the fragment compile failed.
+        let src = sources_json(&[
+            ("brink.toml", "[lints]\ndeny-warnings = true\n"),
+            (
+                "main.ink",
+                "Hello.\n~\n-> start\n\n=== start ===\nHi.\n-> END\n",
+            ),
+        ]);
+        let synthetic = "=== function __eval_test() ===\n~ return 1\n";
+        let json = compile_fragment("main.ink", &src, synthetic);
+        let v: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        assert_eq!(v["ok"], false, "{json}");
+        let warnings = v["warnings"].as_array();
+        let e014 = warnings.and_then(|w| w.iter().find(|d| d["code"] == "E014"));
+        assert!(
+            e014.is_some(),
+            "expected E014 among the surfaced diagnostics: {json}"
+        );
+        let e014 = e014.expect("checked above");
+        assert_eq!(
+            e014["severity"], "Error",
+            "[lints] deny-warnings = true must promote diagnostic_to_js's rendered severity \
+             for E014: {json}"
         );
     }
 
