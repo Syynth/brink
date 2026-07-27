@@ -33,7 +33,7 @@ pub fn lines_json_to_xliff(
             let units: Vec<Unit> = scope
                 .lines
                 .iter()
-                .map(|line| line_to_unit(display_name, line))
+                .map(|line| line_to_unit(&scope.id, scope.name.as_deref(), line))
                 .collect();
             File {
                 id: display_name.to_string(),
@@ -118,6 +118,44 @@ pub fn xliff_to_lines_json(doc: &Document) -> Result<LinesJson, IntlError> {
     })
 }
 
+/// Migrate an XLIFF document's unit ids from the legacy display-name-based
+/// scheme (`{scope_name}:{line_index}`) to the stable scope-id-based scheme
+/// (`{scope_id}:{line_index}`) introduced by #1442.
+///
+/// This is a pure `id`-attribute rewrite: `<source>`/`<target>` content,
+/// segment `state`, and every `brink:*` extension attribute (`hash`,
+/// `audio`, `scope-id`) are left untouched, so existing translations bind to
+/// the migrated units exactly as they did before. Units already on the new
+/// scheme are left as-is, so this is idempotent and safe to run
+/// unconditionally on any `.xlf` file — including ones exported by a version
+/// of brink that never had the bug.
+///
+/// Returns the number of unit ids that were actually rewritten.
+///
+/// # Errors
+///
+/// Returns [`IntlError::InvalidUnitId`] if a unit id cannot be parsed for
+/// its trailing line index (see [`parse_unit_index`]).
+pub fn migrate_unit_ids(doc: &mut Document) -> Result<usize, IntlError> {
+    let mut changed = 0;
+    for file in &mut doc.files {
+        // Same fallback as `xliff_to_lines_json`: prefer the durable
+        // `brink:scope-id` extension, fall back to `file.id` for documents
+        // that predate even that.
+        let scope_id = ext_attr_value(&file.extensions, "scope-id")
+            .map_or_else(|| file.id.clone(), str::to_string);
+        for unit in &mut file.units {
+            let index = parse_unit_index(&unit.id)?;
+            let new_id = format!("{scope_id}:{index}");
+            if unit.id != new_id {
+                unit.id = new_id;
+                changed += 1;
+            }
+        }
+    }
+    Ok(changed)
+}
+
 // ── LinesJson → XLIFF helpers ──────────────────────────────────────────
 
 fn is_whitespace_only(line: &LineJson) -> bool {
@@ -128,8 +166,27 @@ fn is_whitespace_only(line: &LineJson) -> bool {
     }
 }
 
-fn line_to_unit(scope_name: &str, line: &LineJson) -> Unit {
-    let unit_id = format!("{scope_name}:{}", line.index);
+fn line_to_unit(scope_id: &str, scope_name: Option<&str>, line: &LineJson) -> Unit {
+    // The unit id is keyed on the scope's `DefinitionId` (`scope_id`, e.g.
+    // "0x0100000000000001"), never on its display name. This does NOT make
+    // unit ids rename-stable: a `DefinitionId` is itself a hash of the
+    // scope's (qualified) name/path (see `manifest.rs::hash_name`,
+    // `hir/stamp.rs::alloc_address`), so renaming a knot or stitch still
+    // produces a new `DefinitionId` and still orphans its translations —
+    // `docs/intl-spec.md`'s scope-matching section says so explicitly. Real
+    // rename stability would require a DefinitionId-level change, which is
+    // out of scope here and needs maintainer sign-off on #1442.
+    //
+    // What this DOES fix relative to the display-name scheme it replaces:
+    // the id is now a canonical, NMTOKEN-safe hex string (display names can
+    // contain characters that aren't valid in an XML `id`), it matches the
+    // format `brink:scope-id` and `IntlError::InvalidUnitId` already
+    // documented (`scope_id:line_index`), and it's decoupled from
+    // `scope.name`, a mutable, non-unique-across-scopes display field —
+    // collisions between two same-named scopes are no longer possible. The
+    // human-readable name, when present, rides the `name` attribute instead,
+    // for translator context.
+    let unit_id = format!("{scope_id}:{}", line.index);
     let translate = if is_whitespace_only(line) {
         Some(false)
     } else {
@@ -165,9 +222,16 @@ fn line_to_unit(scope_name: &str, line: &LineJson) -> Unit {
         target: None,
     };
 
+    // `name` carries the legacy readable id verbatim (`{scope_name}:{index}`,
+    // what `id` used to be pre-#1442), not the bare scope name — a bare name
+    // is identical across every unit in a file and adds nothing over the
+    // containing `<file id>`. This is what genuinely preserves the
+    // 2026-03-14 decision's readability rationale.
+    let name = scope_name.map(|n| format!("{n}:{}", line.index));
+
     Unit {
         id: unit_id,
-        name: None,
+        name,
         translate,
         notes: Vec::new(),
         sub_units: vec![SubUnit::Segment(segment)],
@@ -591,5 +655,166 @@ mod tests {
             unreachable!()
         };
         assert!(seg.source.elements.is_empty());
+    }
+
+    // ── #1442: unit ids are keyed on scope-id, not display name ─────────
+    //
+    // NOTE: this does not make unit ids rename-stable — a `DefinitionId` is
+    // itself a hash of the scope's (qualified) name/path, so renaming a
+    // knot/stitch still produces a new `DefinitionId` and still orphans its
+    // translations (`docs/intl-spec.md:415`). Real rename stability needs a
+    // `DefinitionId`-level change, out of scope for this PR (see #1442).
+
+    #[test]
+    fn unit_id_is_scope_id_based_not_display_name() {
+        let lines = make_lines_json(vec![make_scope(
+            "0x0100000000000001",
+            Some("intro"),
+            vec![make_line(
+                0,
+                "aaa",
+                Some(ContentJson::Plain("Hello".to_string())),
+                None,
+            )],
+        )]);
+        let doc = lines_json_to_xliff(&lines, "en", None);
+        assert_eq!(doc.files[0].units[0].id, "0x0100000000000001:0");
+        // The legacy readable id (`{scope_name}:{index}`) still rides along
+        // as the `name` attribute, not as part of `id`, so translators
+        // still get readable labels in tooling that shows `name`.
+        assert_eq!(doc.files[0].units[0].name, Some("intro:0".to_string()));
+    }
+
+    #[test]
+    fn unit_id_ignores_scope_display_name() {
+        // Same `scope.id`, different `scope.name`. This is NOT a rename
+        // simulation — a real rename changes `scope.id` too, since the id
+        // is a hash of the scope's name/path (see the module note above).
+        // This only proves `line_to_unit` keys `id` off `scope_id`, not off
+        // `scope.name`.
+        let a = make_lines_json(vec![make_scope(
+            "0x0100000000000001",
+            Some("intro"),
+            vec![make_line(
+                0,
+                "aaa",
+                Some(ContentJson::Plain("Hello".to_string())),
+                None,
+            )],
+        )]);
+        let b = make_lines_json(vec![make_scope(
+            "0x0100000000000001",
+            Some("prologue"),
+            vec![make_line(
+                0,
+                "aaa",
+                Some(ContentJson::Plain("Hello".to_string())),
+                None,
+            )],
+        )]);
+
+        let doc_a = lines_json_to_xliff(&a, "en", None);
+        let doc_b = lines_json_to_xliff(&b, "en", None);
+
+        assert_eq!(doc_a.files[0].units[0].id, doc_b.files[0].units[0].id);
+        // The display name (carried on `File.id` and `Unit.name`) did
+        // change, proving this isn't a no-op.
+        assert_ne!(doc_a.files[0].id, doc_b.files[0].id);
+    }
+
+    #[test]
+    fn migrate_unit_ids_rewrites_legacy_ids_preserving_translations() {
+        // Build a document the way pre-#1442 brink would have: unit id
+        // built from the display name.
+        let mut doc = Document {
+            version: "2.0".to_string(),
+            src_lang: "en".to_string(),
+            trg_lang: Some("es".to_string()),
+            files: vec![File {
+                id: "intro".to_string(),
+                original: None,
+                notes: Vec::new(),
+                skeleton: None,
+                groups: Vec::new(),
+                units: vec![Unit {
+                    id: "intro:0".to_string(),
+                    name: None,
+                    translate: None,
+                    notes: Vec::new(),
+                    sub_units: vec![SubUnit::Segment(Segment {
+                        id: None,
+                        state: Some(State::Translated),
+                        sub_state: None,
+                        source: Content {
+                            lang: None,
+                            elements: vec![InlineElement::Text("Hello".to_string())],
+                        },
+                        target: Some(Content {
+                            lang: None,
+                            elements: vec![InlineElement::Text("Hola".to_string())],
+                        }),
+                    })],
+                    original_data: None,
+                    extensions: Extensions {
+                        elements: Vec::new(),
+                        attributes: vec![ExtensionAttribute {
+                            namespace: BRINK_PREFIX.to_string(),
+                            local_name: "hash".to_string(),
+                            value: "aaa".to_string(),
+                        }],
+                    },
+                }],
+                extensions: Extensions {
+                    elements: Vec::new(),
+                    attributes: vec![ExtensionAttribute {
+                        namespace: BRINK_PREFIX.to_string(),
+                        local_name: "scope-id".to_string(),
+                        value: "0x0100000000000001".to_string(),
+                    }],
+                },
+            }],
+            extensions: Extensions::default(),
+        };
+
+        let changed = migrate_unit_ids(&mut doc).unwrap();
+        assert_eq!(changed, 1);
+        assert_eq!(doc.files[0].units[0].id, "0x0100000000000001:0");
+
+        // Translation content, state, and hash extension are untouched.
+        let SubUnit::Segment(seg) = &doc.files[0].units[0].sub_units[0] else {
+            unreachable!()
+        };
+        assert_eq!(seg.state, Some(State::Translated));
+        assert_eq!(
+            seg.target.as_ref().unwrap().elements,
+            vec![InlineElement::Text("Hola".to_string())]
+        );
+        assert_eq!(
+            ext_attr_value(&doc.files[0].units[0].extensions, "hash"),
+            Some("aaa")
+        );
+    }
+
+    #[test]
+    fn migrate_unit_ids_is_idempotent() {
+        let lines = make_lines_json(vec![make_scope(
+            "0x0100000000000001",
+            Some("intro"),
+            vec![make_line(
+                0,
+                "aaa",
+                Some(ContentJson::Plain("Hello".to_string())),
+                None,
+            )],
+        )]);
+        let mut doc = lines_json_to_xliff(&lines, "en", None);
+
+        // Already on the new scheme — migrating should be a no-op.
+        let first_pass = migrate_unit_ids(&mut doc).unwrap();
+        assert_eq!(first_pass, 0);
+        assert_eq!(doc.files[0].units[0].id, "0x0100000000000001:0");
+
+        let second_pass = migrate_unit_ids(&mut doc).unwrap();
+        assert_eq!(second_pass, 0);
     }
 }
