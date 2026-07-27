@@ -1,0 +1,19 @@
+// The following three declarations exercise SyntaxKind tokens the lexer
+// produces but no parser grammar currently consumes as their "intended"
+// operator: `*=`/`/=` (STAR_EQ/SLASH_EQ, lexer/punctuation.rs) have no
+// ASSIGN_STMT owner (stmt.rs::at_assignment only recognizes `=`/`+=`/`-=`),
+// and `^` (CARET) has no INFIX_EXPR precedence entry (expr.rs's Prec table
+// only wires `+ - * / %`). Each falls out of its intended grammar and is
+// recovered as content-ground TEXT — a real, timely grammar gap (see the
+// #1200 completeness-gate PR body), not a reason to exempt these three
+// SyntaxKinds from the gate: they are genuinely produced by the pipeline
+// for this input.
+var star_eq_gap = { x *= 1; }
+var slash_eq_gap = { x /= 1; }
+var caret_gap = { x ^ 1; }
+
+// A malformed flow header (no closing `)` before the body brace) proves
+// the parser's single-token error-recovery wrapper node (ERROR) is
+// reachable.
+flow bad_header( {
+}
