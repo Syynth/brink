@@ -1207,3 +1207,51 @@ fn ide_check_deny_flag_wins_over_a_conflicting_brink_toml_allow() {
     assert_eq!(v[0]["severity"], "error");
     fs::remove_dir_all(&dir).ok();
 }
+
+/// `--allow` must win over a conflicting `brink.toml` `[lints] E014 =
+/// "deny"` entry, the reverse direction of the above — the precedent this
+/// PR mirrors (`crates/brink-cli/tests/project_config_cli.rs`'s
+/// `compile_allow_flag_overrides_a_conflicting_brink_toml_deny`) covers this
+/// direction for `brink compile`; `brink ide check` had none. Also passes
+/// `-D warnings` alongside `--allow E014`: `Allow` is a distinct branch of
+/// `effective_severity` (step 3) that short-circuits before `deny_warnings`
+/// (step 4) is ever consulted, so `--allow` must win even when
+/// `deny-warnings` is also in effect for this code.
+#[test]
+fn ide_check_allow_flag_wins_over_a_conflicting_brink_toml_deny() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-ide-cli-allow-wins-over-file-{}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("brink.toml"), "[lints]\nE014 = \"deny\"\n").unwrap();
+    fs::write(dir.join("story.ink"), E014_FIXTURE).unwrap();
+
+    // Sanity check: the file alone denies E014 and fails `check`.
+    let baseline = brink()
+        .args(["ide", "check", "-e"])
+        .arg(dir.join("story.ink"))
+        .output()
+        .unwrap();
+    assert_eq!(
+        baseline.status.code(),
+        Some(1),
+        "sanity check: brink.toml's E014 = \"deny\" alone must fail `ide check`: {}",
+        String::from_utf8_lossy(&baseline.stderr)
+    );
+
+    let out = brink()
+        .args(["ide", "check", "--format", "json", "-e"])
+        .arg(dir.join("story.ink"))
+        .args(["--allow", "E014"])
+        .args(["-D", "warnings"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "--allow E014 must win over the file's `[lints] E014 = \"deny\"`, and stay immune to \
+         -D warnings: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    fs::remove_dir_all(&dir).ok();
+}

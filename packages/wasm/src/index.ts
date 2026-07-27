@@ -373,8 +373,11 @@ export class EditorSessionHandle {
    * {@link applyProjectConfig}: an explicit {@link setLanguageDialect}/
    * {@link setTypePolicy} call still wins over the file, `[lints]` still
    * always merges, and the returned array carries the same
-   * unrecognized-key/lint-code warning strings. Throws only on malformed
-   * TOML or a recognized key with an invalid value.
+   * unrecognized-key/lint-code warning strings. The `[lints]`/`deny-warnings`
+   * override tier too (#1417): {@link setLintOverrides}/
+   * {@link setDenyWarningsOverride} still win over whatever this call
+   * resolves from the file. Throws only on malformed TOML or a recognized
+   * key with an invalid value.
    */
   discoverProjectConfig(entry: string): string[] {
     this.bump();

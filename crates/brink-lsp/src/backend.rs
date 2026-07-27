@@ -818,15 +818,22 @@ fn explicit_initialization_option<'a>(params: &'a InitializeParams, key: &str) -
 /// Read `initializationOptions.<key>` as a bool, if the client set it —
 /// mirrors [`explicit_initialization_option`] for `denyWarnings` (issue
 /// #1417): `Some(_)` only when the client actually set the key to a JSON
-/// boolean, `None` for a missing key *or* a key holding a non-bool value
-/// (the value is simply not "an explicit bool", same "unset" treatment
-/// `types`' unrecognized-string case gets).
+/// boolean, `None` for a missing key. A key that *is* present but holds a
+/// non-bool value is skipped with a `tracing::warn!` — the same "warn, never
+/// silently drop" channel [`explicit_initialization_lints`] uses for a
+/// present-but-malformed `lints` value — rather than being treated as
+/// silently unset.
 fn explicit_initialization_bool(params: &InitializeParams, key: &str) -> Option<bool> {
-    params
+    let value = params
         .initialization_options
         .as_ref()
-        .and_then(|opts| opts.get(key))
-        .and_then(serde_json::Value::as_bool)
+        .and_then(|opts| opts.get(key))?;
+    if let Some(b) = value.as_bool() {
+        Some(b)
+    } else {
+        tracing::warn!("initializationOptions.{key}: expected a boolean, got {value}, ignored");
+        None
+    }
 }
 
 /// Read `initializationOptions.lints` — a client-declared per-code
@@ -847,12 +854,15 @@ fn explicit_initialization_bool(params: &InitializeParams, key: &str) -> Option<
 /// gate).
 fn explicit_initialization_lints(params: &InitializeParams) -> BTreeMap<String, LintLevel> {
     let mut lints = BTreeMap::new();
-    let Some(obj) = params
+    let Some(value) = params
         .initialization_options
         .as_ref()
         .and_then(|opts| opts.get("lints"))
-        .and_then(serde_json::Value::as_object)
     else {
+        return lints;
+    };
+    let Some(obj) = value.as_object() else {
+        tracing::warn!("initializationOptions.lints: expected an object, got {value}, ignored");
         return lints;
     };
     for (code, value) in obj {
