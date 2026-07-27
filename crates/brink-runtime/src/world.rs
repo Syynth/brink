@@ -1305,10 +1305,9 @@ impl<'a> FrameStartView<'a> {
     /// either must capture both).
     #[inline]
     fn rng_mut(&mut self) -> &mut LocalRng {
-        let frame_start = self.frame_start;
-        self.rng.get_or_insert_with(|| LocalRng {
-            seed: frame_start.rng_seed,
-            previous_random: frame_start.previous_random,
+        self.rng.get_or_insert(LocalRng {
+            seed: self.frame_start.rng_seed,
+            previous_random: self.frame_start.previous_random,
         })
     }
 }
@@ -2852,11 +2851,15 @@ mod frame_start_view_tests {
         world
     }
 
-    /// Every readable cell of a `ContextAccess`, as one comparable tuple —
-    /// the observation vector the equivalence test diffs.
-    fn snapshot(
-        ctx: &impl ContextAccess,
-    ) -> (Vec<Value>, Vec<u32>, Vec<Option<u32>>, u32, i32, i32) {
+    /// Every readable cell of a `ContextAccess`, as one comparable value:
+    /// `(globals, visit counts, turn counts, turn index, rng seed, previous
+    /// random)`. This is the observation vector the equivalence test diffs —
+    /// if two contexts compare equal on it, nothing the VM can ask either one
+    /// tells them apart.
+    type Observation = (Vec<Value>, Vec<u32>, Vec<Option<u32>>, u32, i32, i32);
+
+    /// Read every cell of `ctx` into one [`Observation`].
+    fn snapshot(ctx: &impl ContextAccess) -> Observation {
         (
             (0..3).map(|i| ctx.global(i).clone()).collect(),
             (0..3).map(|i| ctx.visit_count(knot(i))).collect(),

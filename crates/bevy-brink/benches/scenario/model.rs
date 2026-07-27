@@ -191,7 +191,9 @@ pub fn generate_story(
     // Padding globals (#937): declared, never read or written, so they add
     // nothing to per-turn VM work — only to the size of the story world.
     for i in 0..story_globals {
-        s.push_str(&format!("VAR pad_{i} = 0\n"));
+        s.push_str("VAR pad_");
+        s.push_str(&i.to_string());
+        s.push_str(" = 0\n");
     }
     if collection_global {
         s.push_str("VAR live = 0\nVAR history = 0\n");
