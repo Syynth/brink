@@ -1224,6 +1224,205 @@ impl ContextAccess for ContextView<'_> {
     }
 }
 
+// ── FrameStartView: borrow, don't copy ──────────────────────────────────
+
+/// A **borrowing** view over a pinned frame-start [`World`]: reads are
+/// served by reference from the shared `&World`, writes land in a private
+/// per-view overlay that the shared world never sees.
+///
+/// This is `docs/effects-spec.md` §12.2's "borrow, don't copy" primitive
+/// (issue #937). It exists for batch-mode stepping, where N flows must each
+/// advance against *the same* frame-start state while their writes stay
+/// private until a later, ordered Apply pass. The obvious way to get that
+/// is to hand every flow its own `frame_start.clone()`; the cost of that
+/// clone is `O(world size)` **per flow, per turn** — every global `Value`,
+/// every visit/turn-count entry — which is nearly free for a scalar toy
+/// world and emphatically not free for a real game's.
+///
+/// `FrameStartView` pays `O(1)` to construct and `O(cells this flow
+/// actually wrote)` thereafter. It is **observationally identical** to
+/// stepping against a private clone:
+///
+/// - a **read** returns the overlay's value if this view has written that
+///   cell, else the frame-start value — i.e. `frame_start ⊕ own writes`,
+///   exactly what a clone would hold;
+/// - a **write** only ever mutates the overlay, so the borrowed `&World`
+///   (and therefore every peer view over it) is untouched;
+/// - an **increment** (`increment_visit`, `increment_turn_index`) is
+///   copy-on-write from that same read-through value, so a flow's first
+///   increment starts from the frame-start count rather than 0.
+///
+/// Because it borrows shared-immutably, many `FrameStartView`s over one
+/// `&World` can run **concurrently** — the property `bevy-brink`'s parallel
+/// batch driver needs, and the reason this type takes `&World` rather than
+/// the `&mut World` [`ContextView`] requires. The semantics are those of
+/// [`Mode::Sandbox`] (every unit treated as flow-private, the shared world
+/// read-only), reachable here without a `&mut` borrow and without a
+/// [`FlowLocal`] chain — this view has no frozen base and consults no
+/// [`ResolvedPolicy`], because every cell is unconditionally overlaid.
+///
+/// The overlay is intentionally **not** readable back out: the authoritative
+/// record of what a flow wrote is the
+/// [`WriteObserver`](crate::WriteObserver) callback stream, which a caller
+/// gets by wrapping this view in an
+/// [`ObservedContext`](crate::ObservedContext). Keeping one changeset
+/// record instead of two is what makes the buffered-write Apply pass
+/// trivially consistent with what the flow actually observed.
+pub struct FrameStartView<'a> {
+    /// The pinned, shared frame-start state. Never mutated.
+    frame_start: &'a World,
+    /// Globals this view has written, keyed by slot index.
+    globals: BTreeMap<u32, Value>,
+    /// Visit counts this view has written or incremented.
+    visit_counts: BTreeMap<DefinitionId, u32>,
+    /// Turn counts this view has written.
+    turn_counts: BTreeMap<DefinitionId, u32>,
+    /// Turn index, once this view has written or incremented it.
+    turn_index: Option<u32>,
+    /// RNG stream, once this view has written either half of it.
+    rng: Option<LocalRng>,
+}
+
+impl<'a> FrameStartView<'a> {
+    /// Open a fresh view over `frame_start`. The overlay starts empty, so
+    /// every read passes straight through to the borrowed world until this
+    /// view writes the cell in question.
+    #[must_use]
+    pub fn new(frame_start: &'a World) -> Self {
+        Self {
+            frame_start,
+            globals: BTreeMap::new(),
+            visit_counts: BTreeMap::new(),
+            turn_counts: BTreeMap::new(),
+            turn_index: None,
+            rng: None,
+        }
+    }
+
+    /// The overlaid RNG stream, seeded from the frame-start values on first
+    /// write — the copy-on-write half of `set_rng_seed`/`set_previous_random`
+    /// (the two scalars [`WorldPolicy::rng`] scopes as one unit, so writing
+    /// either must capture both).
+    #[inline]
+    fn rng_mut(&mut self) -> &mut LocalRng {
+        self.rng.get_or_insert(LocalRng {
+            seed: self.frame_start.rng_seed,
+            previous_random: self.frame_start.previous_random,
+        })
+    }
+}
+
+impl ContextAccess for FrameStartView<'_> {
+    #[inline]
+    fn global(&self, idx: u32) -> &Value {
+        self.globals
+            .get(&idx)
+            .unwrap_or_else(|| self.frame_start.global(idx))
+    }
+
+    #[inline]
+    fn set_global(&mut self, idx: u32, value: Value) {
+        self.globals.insert(idx, value);
+    }
+
+    /// A real [`core::mem::replace`] move once the slot is in the overlay —
+    /// which is what keeps `docs/value-model-spec.md` §5's take → `make_mut`
+    /// → write-back discipline `O(1)`-amortized here, exactly as it is
+    /// against a private clone. The **first** take of a given slot must
+    /// still clone out of the borrowed frame-start world (it is shared; this
+    /// view may not move out of it), but that is one `Arc` bump for one
+    /// cell — the same bump a whole-world clone would have paid for that
+    /// cell up front, and every subsequent take of the slot is a move.
+    #[inline]
+    fn take_global(&mut self, idx: u32) -> Value {
+        if let Some(slot) = self.globals.get_mut(&idx) {
+            return core::mem::replace(slot, Value::Null);
+        }
+        let value = self.frame_start.global(idx).clone();
+        self.globals.insert(idx, Value::Null);
+        value
+    }
+
+    #[inline]
+    fn visit_count(&self, id: DefinitionId) -> u32 {
+        self.visit_counts
+            .get(&id)
+            .copied()
+            .unwrap_or_else(|| self.frame_start.visit_count(id))
+    }
+
+    #[inline]
+    fn increment_visit(&mut self, id: DefinitionId) {
+        let base = self.visit_count(id);
+        self.visit_counts.insert(id, base + 1);
+    }
+
+    #[inline]
+    fn set_visit_count(&mut self, id: DefinitionId, count: u32) {
+        self.visit_counts.insert(id, count);
+    }
+
+    #[inline]
+    fn turn_count(&self, id: DefinitionId) -> Option<u32> {
+        self.turn_counts
+            .get(&id)
+            .copied()
+            .or_else(|| self.frame_start.turn_count(id))
+    }
+
+    #[inline]
+    fn set_turn_count(&mut self, id: DefinitionId, turn: u32) {
+        self.turn_counts.insert(id, turn);
+    }
+
+    #[inline]
+    fn turn_index(&self) -> u32 {
+        self.turn_index.unwrap_or(self.frame_start.turn_index)
+    }
+
+    #[inline]
+    fn increment_turn_index(&mut self) {
+        self.turn_index = Some(self.turn_index() + 1);
+    }
+
+    #[inline]
+    fn set_turn_index(&mut self, index: u32) {
+        self.turn_index = Some(index);
+    }
+
+    #[inline]
+    fn rng_seed(&self) -> i32 {
+        self.rng.map_or(self.frame_start.rng_seed, |rng| rng.seed)
+    }
+
+    #[inline]
+    fn set_rng_seed(&mut self, seed: i32) {
+        self.rng_mut().seed = seed;
+    }
+
+    #[inline]
+    fn previous_random(&self) -> i32 {
+        self.rng
+            .map_or(self.frame_start.previous_random, |rng| rng.previous_random)
+    }
+
+    #[inline]
+    fn set_previous_random(&mut self, val: i32) {
+        self.rng_mut().previous_random = val;
+    }
+
+    #[inline]
+    fn next_random<R: StoryRng>(&self, seed: i32) -> i32 {
+        // Pure function of the explicit `seed` argument — not overlaid
+        // state, so it delegates unchanged (see `ContextView`'s note).
+        self.frame_start.next_random::<R>(seed)
+    }
+
+    fn random_sequence<R: StoryRng>(&self, seed: i32, count: usize) -> Vec<i32> {
+        self.frame_start.random_sequence::<R>(seed, count)
+    }
+}
+
 #[cfg(test)]
 mod policy_tests {
     use super::*;
@@ -2611,6 +2810,268 @@ mod take_global_tests {
             world.global(0),
             &array,
             "World's own copy is untouched — Local writes never land in World"
+        );
+    }
+}
+
+/// [`FrameStartView`] (issue #937, `docs/effects-spec.md` §12.2 "borrow,
+/// don't copy"): the borrowing replacement for batch mode's per-flow
+/// `frame_start.clone()`.
+///
+/// The load-bearing property is **observational equivalence with the clone
+/// it replaces** — `frame_start ⊕ own writes`, cell for cell — so the
+/// centerpiece here is `equivalent_to_stepping_against_a_private_clone`,
+/// which replays one op script against both a real clone and a view and
+/// compares every readable cell after every op. The rest pin the individual
+/// mechanics that equivalence rests on.
+#[cfg(test)]
+mod frame_start_view_tests {
+    use brink_format::DefinitionTag;
+
+    use super::*;
+    use crate::rng::FastRng;
+
+    fn knot(n: u64) -> DefinitionId {
+        DefinitionId::new(DefinitionTag::Address, n)
+    }
+
+    /// A frame-start world with some pre-existing state in every unit the
+    /// view overlays, so a passthrough read is distinguishable from a
+    /// default-initialized one.
+    fn frame_start() -> World {
+        let mut world = World::from_globals(
+            vec![Value::Int(10), Value::Int(20), Value::Int(30)],
+            ResolvedPolicy::all_world(),
+        );
+        world.visit_counts.insert(knot(1), 5);
+        world.turn_counts.insert(knot(1), 7);
+        world.turn_index = 42;
+        world.rng_seed = 99;
+        world.previous_random = 77;
+        world
+    }
+
+    /// Every readable cell of a `ContextAccess`, as one comparable value:
+    /// `(globals, visit counts, turn counts, turn index, rng seed, previous
+    /// random)`. This is the observation vector the equivalence test diffs —
+    /// if two contexts compare equal on it, nothing the VM can ask either one
+    /// tells them apart.
+    type Observation = (Vec<Value>, Vec<u32>, Vec<Option<u32>>, u32, i32, i32);
+
+    /// Read every cell of `ctx` into one [`Observation`].
+    fn snapshot(ctx: &impl ContextAccess) -> Observation {
+        (
+            (0..3).map(|i| ctx.global(i).clone()).collect(),
+            (0..3).map(|i| ctx.visit_count(knot(i))).collect(),
+            (0..3).map(|i| ctx.turn_count(knot(i))).collect(),
+            ctx.turn_index(),
+            ctx.rng_seed(),
+            ctx.previous_random(),
+        )
+    }
+
+    /// One mutation, applied identically to both sides of the equivalence
+    /// comparison.
+    #[derive(Clone, Copy)]
+    enum Op {
+        SetGlobal(u32, i32),
+        TakeGlobal(u32),
+        IncrementVisit(u64),
+        SetVisitCount(u64, u32),
+        SetTurnCount(u64, u32),
+        IncrementTurnIndex,
+        SetTurnIndex(u32),
+        SetRngSeed(i32),
+        SetPreviousRandom(i32),
+    }
+
+    /// Apply `op`, returning anything it hands back (only `TakeGlobal` does)
+    /// so the two sides' return values can be compared too, not just the
+    /// resulting state.
+    fn apply(ctx: &mut impl ContextAccess, op: Op) -> Option<Value> {
+        match op {
+            Op::SetGlobal(idx, v) => {
+                ctx.set_global(idx, Value::Int(v));
+                None
+            }
+            Op::TakeGlobal(idx) => Some(ctx.take_global(idx)),
+            Op::IncrementVisit(id) => {
+                ctx.increment_visit(knot(id));
+                None
+            }
+            Op::SetVisitCount(id, c) => {
+                ctx.set_visit_count(knot(id), c);
+                None
+            }
+            Op::SetTurnCount(id, t) => {
+                ctx.set_turn_count(knot(id), t);
+                None
+            }
+            Op::IncrementTurnIndex => {
+                ctx.increment_turn_index();
+                None
+            }
+            Op::SetTurnIndex(i) => {
+                ctx.set_turn_index(i);
+                None
+            }
+            Op::SetRngSeed(s) => {
+                ctx.set_rng_seed(s);
+                None
+            }
+            Op::SetPreviousRandom(v) => {
+                ctx.set_previous_random(v);
+                None
+            }
+        }
+    }
+
+    /// **The property this type exists to preserve.** Replay one op script
+    /// against (a) a private `World` clone — the mechanism `FrameStartView`
+    /// replaces — and (b) a view borrowing the same frame-start world, and
+    /// assert the two are indistinguishable through `ContextAccess` after
+    /// every single op, including each op's own return value. Covers all
+    /// nine mutating entry points, exercising each cell both before and
+    /// after it enters the overlay (the two branches every read has).
+    #[test]
+    fn equivalent_to_stepping_against_a_private_clone() {
+        let script = [
+            // Reads before any write: pure passthrough on the view side.
+            Op::IncrementVisit(1), // CoW increment off a non-zero base
+            Op::IncrementVisit(1), // ...then off the overlay's own value
+            Op::IncrementVisit(2), // ...and off an absent (zero) base
+            Op::SetVisitCount(0, 3),
+            Op::SetTurnCount(1, 11), // overwrite a present turn count
+            Op::SetTurnCount(2, 13), // set an absent one
+            Op::IncrementTurnIndex,
+            Op::IncrementTurnIndex,
+            Op::SetTurnIndex(100),
+            Op::SetRngSeed(-5), // first RNG write must capture both halves
+            Op::SetPreviousRandom(6),
+            Op::SetGlobal(0, 111),
+            Op::TakeGlobal(0), // take an already-overlaid slot (a real move)
+            Op::TakeGlobal(1), // take a slot still in the frame-start world
+            Op::TakeGlobal(1), // ...and again, now that it is overlaid
+            Op::SetGlobal(1, 222),
+            Op::SetGlobal(2, 333),
+        ];
+
+        let world = frame_start();
+        let mut cloned = world.clone();
+        let mut view = FrameStartView::new(&world);
+
+        assert_eq!(
+            snapshot(&cloned),
+            snapshot(&view),
+            "a fresh view must read identically to a fresh clone"
+        );
+
+        for (step, op) in script.into_iter().enumerate() {
+            let from_clone = apply(&mut cloned, op);
+            let from_view = apply(&mut view, op);
+            assert_eq!(from_clone, from_view, "op {step} returned differently");
+            assert_eq!(
+                snapshot(&cloned),
+                snapshot(&view),
+                "diverged after op {step}"
+            );
+        }
+
+        // The whole point: none of that reached the borrowed world.
+        assert_eq!(snapshot(&world), snapshot(&frame_start()));
+    }
+
+    /// The concurrency property the parallel batch driver depends on: peer
+    /// views over one shared `&World` are mutually invisible, so the order
+    /// they are stepped in cannot affect any of their outcomes.
+    #[test]
+    fn peer_views_over_one_world_are_independent() {
+        let world = frame_start();
+        let mut a = FrameStartView::new(&world);
+        let mut b = FrameStartView::new(&world);
+
+        a.set_global(0, Value::Int(1));
+        a.increment_visit(knot(1));
+        a.set_turn_index(1);
+        a.set_rng_seed(1);
+
+        assert_eq!(b.global(0), &Value::Int(10), "peer write must be invisible");
+        assert_eq!(b.visit_count(knot(1)), 5);
+        assert_eq!(b.turn_index(), 42);
+        assert_eq!(b.rng_seed(), 99);
+
+        b.set_global(0, Value::Int(2));
+        assert_eq!(a.global(0), &Value::Int(1), "a still reads its own write");
+    }
+
+    /// `take_global` keeps value-model-spec §5's move discipline: the first
+    /// take of a slot clones once out of the shared frame-start world (it may
+    /// not move out of a borrow), and every take after that is a real
+    /// `mem::replace` move of the overlay's own allocation.
+    #[test]
+    fn take_global_clones_once_then_moves() {
+        let array = Value::array(vec![Value::Int(1), Value::Int(2)]);
+        let external = Arc::clone(array.as_array().expect("array"));
+        let world = World::from_globals(vec![array], ResolvedPolicy::all_world());
+        assert_eq!(Arc::strong_count(&external), 2, "world's slot + external");
+
+        let mut view = FrameStartView::new(&world);
+
+        // First take: one clone off the shared world — the refcount rises,
+        // and the world keeps its own copy.
+        let first = view.take_global(0);
+        assert_eq!(
+            Arc::strong_count(&external),
+            3,
+            "world's slot + external + the clone this take made"
+        );
+        assert_eq!(view.global(0), &Value::Null);
+        assert_eq!(
+            Arc::as_ptr(world.global(0).as_array().expect("array")),
+            Arc::as_ptr(&external),
+            "the borrowed world still holds its own value"
+        );
+
+        // Put it back and take again: now the slot is the overlay's own, so
+        // the take is a move — same allocation out, no refcount bump.
+        view.set_global(0, first);
+        let before = Arc::strong_count(&external);
+        let second = view.take_global(0);
+        assert_eq!(
+            Arc::as_ptr(second.as_array().expect("array")),
+            Arc::as_ptr(&external),
+            "take must return the SAME allocation, not a copy"
+        );
+        assert_eq!(
+            Arc::strong_count(&external),
+            before,
+            "the take itself must not bump the refcount"
+        );
+        assert_eq!(view.global(0), &Value::Null);
+    }
+
+    /// `next_random`/`random_sequence` are pure functions of the seed they
+    /// are handed, so the view must answer exactly as the borrowed world
+    /// does — including after the view has overlaid its own RNG stream.
+    #[test]
+    fn random_helpers_delegate_to_the_borrowed_world() {
+        let world = frame_start();
+        let mut view = FrameStartView::new(&world);
+
+        assert_eq!(
+            view.next_random::<FastRng>(3),
+            world.next_random::<FastRng>(3)
+        );
+        assert_eq!(
+            view.random_sequence::<FastRng>(3, 4),
+            world.random_sequence::<FastRng>(3, 4)
+        );
+
+        view.set_rng_seed(1234);
+        assert_eq!(
+            view.next_random::<FastRng>(3),
+            world.next_random::<FastRng>(3),
+            "the overlaid stream must not change how an explicit seed draws"
         );
     }
 }

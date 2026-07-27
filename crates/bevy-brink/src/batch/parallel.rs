@@ -31,12 +31,13 @@
 //! because the law-verifying fuzz test's workload never included one). The
 //! only difference the two drivers are *meant* to have is *where* the Step
 //! loop runs — the task pool instead of the main thread. Because each flow
-//! steps against a **private clone** of the frame-start world and buffers its
-//! writes (BH-2's proven core), the Step phase touches no shared mutable
-//! state, so thread interleaving cannot affect any flow's outcome; Apply then
-//! flushes every buffer in flow-id order, so the converged world is a pure
-//! function of the flow-id order — the same order the serial driver applies
-//! in.
+//! steps through its own [`FrameStartView`](brink_runtime::FrameStartView) —
+//! a **shared-immutable borrow** of the frame-start world plus a private
+//! write overlay (§12.2 "borrow, don't copy", #937) — and buffers its writes
+//! (BH-2's proven core), the Step phase touches no shared *mutable* state, so
+//! thread interleaving cannot affect any flow's outcome; Apply then flushes
+//! every buffer in flow-id order, so the converged world is a pure function
+//! of the flow-id order — the same order the serial driver applies in.
 //!
 //! Per the ruling, **parallelism is a perf feature, never a correctness
 //! dependency**: if the law ever fails to hold, quarantine this module and
@@ -325,11 +326,15 @@ fn parallel_step<M: Send + Sync + 'static>(
                     // reads is shared-immutable (`frame_start`, `job.program`,
                     // `job.tables`, `bindings`). Crucially, no task writes the
                     // shared world during Step — `step_one` runs the flow
-                    // against a private clone of `frame_start` and buffers its
-                    // writes (BH-2's core) — so the concurrent component
-                    // accesses are provably disjoint (BH-1's Access-set
-                    // disjointness, made unconditional here by the private
-                    // clone). The cell outlives the scope (`frame_start`,
+                    // through a `FrameStartView`, which *borrows*
+                    // `frame_start` shared-immutably (`&World`, so `&`-only
+                    // aliasing across tasks is exactly what the type system
+                    // already permits) and diverts every write into that
+                    // task's own overlay + buffer (BH-2's core, #937's
+                    // borrow-not-copy) — so the concurrent component accesses
+                    // are provably disjoint (BH-1's Access-set disjointness,
+                    // made unconditional here by the read-only frame-start
+                    // borrow). The cell outlives the scope (`frame_start`,
                     // `programs`, `bindings` are owned/borrowed above it).
                     let entity_cell = cell.get_entity(job.entity).ok()?;
                     // SAFETY: see the block comment above — a unique-entity,

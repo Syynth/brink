@@ -91,6 +91,6 @@ pub use story::{
     FlowInstance, FunctionEval, Line, Stats, StepOutcome, Story, StorySnapshot, StoryStatus,
 };
 pub use world::{
-    CommitError, ContextView, FlowLocal, Mode, PolicyError, ResolvedPolicy, Scope, World,
-    WorldPolicy, commit,
+    CommitError, ContextView, FlowLocal, FrameStartView, Mode, PolicyError, ResolvedPolicy, Scope,
+    World, WorldPolicy, commit,
 };

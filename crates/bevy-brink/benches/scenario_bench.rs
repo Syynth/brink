@@ -43,10 +43,15 @@
 //! per-flow row/access sets (`BH-1` isn't wired to real Bevy components),
 //! so it cannot yet show anything about scheduling contention — it exists
 //! so a future `BH-3` PR can extend this same harness instead of building a
-//! second one. The **`active_fraction`** axis is a fixed active:parked
-//! split assigned once at spawn (see Collect, above). **`turn_weight`**
-//! varies the generated ink program's per-turn workload (text volume, one
-//! var mutation, one inline conditional).
+//! second one. It is a **Bevy**-`World` axis; the **`story_globals`** axis
+//! (`--story-globals N`, #937) is the *brink*-`World` one, padding the story
+//! with N extra declared-but-unread `VAR`s. Batch mode's frame-start
+//! handling scales on the latter, not the former, so the checked-in
+//! baselines' 1–3-global story is the cheapest case that axis has — see
+//! `ScenarioConfig::story_globals`. The **`active_fraction`** axis is a
+//! fixed active:parked split assigned once at spawn (see Collect, above).
+//! **`turn_weight`** varies the generated ink program's per-turn workload
+//! (text volume, one var mutation, one inline conditional).
 //!
 //! Oracle untouched: this harness never touches `tests/tier{1,2,3}` or the
 //! oracle snapshot corpus; the synthetic story is generated in memory.
@@ -66,6 +71,9 @@
 //! # Thread-curve exploration (one ComputeTaskPool size per process; prints
 //! # only, never writes baseline files):
 //! cargo bench -p bevy-brink --features bench-counters --bench scenario_bench -- --mode parallel --compute-threads 2
+//! # brink-World-size exploration (#937): pad the story with N extra
+//! # declared globals — prints only, never writes baseline files:
+//! cargo bench -p bevy-brink --bench scenario_bench -- --mode batch --story-globals 1000
 //! ```
 //!
 //! Writes `benches/baselines/serial-driver.csv` and

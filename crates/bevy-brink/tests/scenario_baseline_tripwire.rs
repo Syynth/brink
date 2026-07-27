@@ -151,6 +151,7 @@ fn checked_in_baseline_matches_a_fresh_mini_run() {
         flow_count: row.flow_count,
         active_fraction: row.active_fraction,
         world_size: row.world_size,
+        story_globals: 0,
         turn_weight: turn_weight_from_label(&row.turn_weight),
         frames: row.frames,
         seed: row.seed,
