@@ -161,11 +161,13 @@ transcript untouched, visit counts not bumped):
 - `commands.brink_call_batch::<M>(flow, calls).observe(|on: On<BrinkCallBatchResolved>| …)`
   — deferred **batch** counterpart of `call_ink_functions` (#1076): a
   normal system queues a whole ordered call list at once. The plugin's
-  `resolve_brink_call_batches` resolves the whole batch through
-  `call_ink_functions` in one VM-eval setup, so the front-to-back
-  ordering and per-call isolation `call_ink_functions` guarantees hold
-  for the deferred path too — not just "these calls happen to land in
-  the same frame." Delivers one `BrinkCallBatchResolved` (one `Result`
+  `resolve_brink_call_batches` resolves the whole batch through one
+  `call_ink_functions` call, so the front-to-back ordering and per-call
+  isolation `call_ink_functions` guarantees hold for the deferred path
+  too — not just "these calls happen to land in the same frame."
+  (`call_ink_functions` also amortizes one VM-eval setup across the
+  batch, but that's a cost saving, not what pins the ordering.) Delivers
+  one `BrinkCallBatchResolved` (one `Result`
   per call, in call order, no short-circuit on a failing call) scoped to
   the batch's call entity. Ordering *across* separate deferred requests
   targeting the same flow in the same frame (whether `brink_call` or

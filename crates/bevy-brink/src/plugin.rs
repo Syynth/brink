@@ -388,9 +388,12 @@ fn register_deferred_call_resolvers<M: Send + Sync + 'static>(app: &mut App) {
             >,
         ),
     );
-    // Each pending batch runs through call_ink_functions in one VM-eval
-    // setup, so its front-to-back ordering guarantee holds for the
-    // deferred path too, not just the exclusive one.
+    // Each pending batch runs through a single call_ink_functions call, so
+    // its front-to-back ordering guarantee holds for the deferred path too,
+    // not just the exclusive one. (call_ink_functions also amortizes one
+    // VM-eval setup across the batch's calls, but that's a cost saving —
+    // ordering is pinned by the whole list arriving and running
+    // sequentially in one request, not by the setup itself.)
     app.add_systems(
         Update,
         crate::call::resolve_brink_call_batches::<M>.run_if(

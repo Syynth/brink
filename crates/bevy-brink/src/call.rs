@@ -31,11 +31,14 @@
 //! `SystemState` setup — and per-call resolution order — that isn't
 //! pinned across separate deferred requests. `brink_call_batch` spawns one
 //! request entity holding the whole ordered call list; the plugin's
-//! exclusive [`resolve_brink_call_batches`] system resolves it through
-//! [`call_ink_functions`](crate::call_ink_functions) in a **single VM-eval
-//! setup**, which is what pins the front-to-back ordering and per-call
+//! exclusive [`resolve_brink_call_batches`] system resolves the whole list
+//! through [`call_ink_functions`](crate::call_ink_functions) in a single
+//! call, which is what pins the front-to-back ordering and per-call
 //! isolation [`call_ink_functions`](crate::call_ink_functions) documents —
-//! not merely "these requests happen to run in the same frame." The whole
+//! not merely "these requests happen to run in the same frame." (The
+//! **single VM-eval setup** it also does is a separate amortization — one
+//! `SystemState` build instead of one per call — not the mechanism that
+//! pins ordering.) The whole
 //! batch's results (one `Result` per call, in call order — a failing call
 //! does not abort the batch, matching [`call_ink_functions`](crate::call_ink_functions)'s
 //! no-short-circuit contract) are delivered in one
@@ -430,8 +433,11 @@ mod tests {
     /// results in call order. Also proves the batch's #1076 core property
     /// end-to-end through the deferred path: a failing call (unknown
     /// function) fails in its own slot without aborting the batch or
-    /// perturbing story state, and a later call still sees an earlier
-    /// call's mutation — the same ordering/isolation `call_ink_functions`
+    /// perturbing story state, a later call still sees an earlier call's
+    /// mutation, and — critically, since this is the reason the deferred
+    /// resolver must be exclusive — a **world-access `bind_brink_query`
+    /// binding** queued right after the failing slot still resolves
+    /// against the World, the same ordering/isolation `call_ink_functions`
     /// guarantees for the exclusive path.
     #[test]
     fn brink_call_batch_resolves_ordered_results_to_observer() {
@@ -440,11 +446,15 @@ mod tests {
 
         let mut app = make_test_app();
         app.init_resource::<Result>();
+        app.bind_brink_query::<(), _, _>("enemy_count", enemy_count);
+        app.world_mut().spawn(Enemy);
+        app.world_mut().spawn(Enemy);
 
         let (program, tables, ctx) = compile_test_story(
-            "VAR total = 0\n-> END\n\
+            "EXTERNAL enemy_count()\nVAR total = 0\n-> END\n\
              === function add(n) ===\n~ total = total + n\n~ return total\n\
-             === function get() ===\n~ return total\n",
+             === function get() ===\n~ return total\n\
+             === function seen() ===\n~ return enemy_count()\n",
         );
         let story = add_story_assets(&mut app, program, tables, ctx);
         app.world_mut()
@@ -467,6 +477,10 @@ mod tests {
                             [
                                 ("add", vec![Value::Int(1)]),
                                 ("nope", vec![]), // unknown fn — must not abort the batch
+                                // A world-access query call, queued right after the
+                                // failing slot: proves the failure didn't wedge the
+                                // batch's shared SystemState/query access.
+                                ("seen", vec![]),
                                 ("add", vec![Value::Int(10)]),
                                 ("get", vec![]),
                             ],
@@ -490,15 +504,22 @@ mod tests {
         let out = &app.world().resource::<Result>().0;
         assert_eq!(out.len(), 1, "delivered exactly once");
         let results = &out[0];
-        assert_eq!(results.len(), 4, "one slot per call, no drops");
+        assert_eq!(results.len(), 5, "one slot per call, no drops");
         assert_eq!(results[0].as_ref().unwrap(), &Value::Int(1));
         assert!(
             results[1].is_err(),
             "the bad call fails in its own slot; got {:?}",
             results[1]
         );
+        // The world-access query call right after the failing slot still
+        // resolves against the World (2 enemies spawned above).
+        assert_eq!(
+            results[2].as_ref().unwrap(),
+            &Value::Int(2),
+            "a query-backed call still runs post-error"
+        );
         // The failed call did not perturb `total`: the next add sees 1, not 0.
-        assert_eq!(results[2].as_ref().unwrap(), &Value::Int(11));
         assert_eq!(results[3].as_ref().unwrap(), &Value::Int(11));
+        assert_eq!(results[4].as_ref().unwrap(), &Value::Int(11));
     }
 }

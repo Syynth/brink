@@ -133,11 +133,16 @@ fn main() {
     // Restore to 2 enemies for the rest of the demo.
     despawn_two_enemies(&mut app);
 
-    // ── (3) Engine→ink, deferred — commands.brink_call(_batch) ─────────
-    // request_deferred_check and request_deferred_batch (normal systems)
-    // each issued their request; a few ticks let the plugin's resolvers
-    // evaluate them and fire their observers.
-    info!("--- engine→ink (deferred): commands.brink_call / brink_call_batch ---");
+    // ── (3) Engine→ink, deferred — commands.brink_call ──────────────────
+    // request_deferred_check (a normal system) issued a brink_call; a few
+    // ticks let the plugin's resolver evaluate it and fire the observer.
+    info!("--- engine→ink (deferred): commands.brink_call ---");
+
+    // ── (4) Engine→ink, deferred batch — commands.brink_call_batch ─────
+    // request_deferred_batch (a normal system, #1076) issued a
+    // brink_call_batch in the same frame as (3) above; the tick loop
+    // below resolves both deferred requests and fires their observers.
+    info!("--- engine→ink (deferred): commands.brink_call_batch ---");
     for _ in 0..3 {
         app.update();
     }
