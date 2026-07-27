@@ -86,6 +86,11 @@ first amendment: `K` names a handle kind declared in the external
 manifest's host semantic-type vocabulary — not an ink-source
 declaration like `LIST`/`STRUCT`), plus declared struct names.
 
+**RULED (issue #1591): "the body" of a function/knot/stitch, for
+inferred-void and return-value-fall-through purposes, is the def's own
+block *plus* its stitches** — a stitch is reachable by fall-through and
+is part of the same definition's execution, not a separate callable.
+
 ## 4. Coercion lattice in strict mode — PROPOSED
 
 - `int → float`: implicit, directional (the one ink numeric promotion).
