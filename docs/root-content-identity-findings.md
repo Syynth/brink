@@ -17,9 +17,14 @@ Both findings in #1504 reproduce. One of them is worse than the issue says.
   included file runs the entry file's choice body instead.** Reachable through
   the ordinary `brink_compiler::compile` entry point with a plain `INCLUDE` —
   no unusual flags, no native dialect, no incremental session.
-- **(b) reproduces**, but the precise failure is *save-key churn under an
-  unrelated edit*, not a break of the FG-4d `incremental ≡ from-scratch` gate.
-  See [Correcting the framing of (b)](#correcting-the-framing-of-b).
+- **(b) reproduces**, but not the way the issue frames it. `discover`'s BFS
+  always seeds the entry first, so an ordinary from-scratch compile mints the
+  entry `FileId(0)` regardless of how many files it `INCLUDE`s — file *count*
+  is not the trigger. The reachable trigger is file *registration order*: an
+  editor/LSP session that admits an `INCLUDE` target before the entry file
+  mints a different id space than a real compile of the same tree. Also not a
+  break of the FG-4d `incremental ≡ from-scratch` gate. See
+  [Correcting the framing of (b)](#correcting-the-framing-of-b).
 - **#1504 does not have to wait for #1442.** The collisions in (a) are entirely
   in *anonymous* weave containers, whose identity must stay structural. #1442's
   rename-invariance question is about *named* definitions. These are separable
@@ -34,7 +39,14 @@ un-ignoring them is the acceptance criterion for #1504.
 - `crates/internal/brink-ir/tests/lir_lowering/root_content_definition_id_soundness.rs`
 - `crates/brink-compiler/tests/issue_1504_root_content_identity.rs`
 
-Run them with `--ignored` at `999581354` and all four fail. Verbatim:
+A fifth, added in review follow-up, demonstrates the *reachable* form of (b)
+(editor/LSP file-registration order, not `INCLUDE` count — see
+[Correcting the framing of (b)](#correcting-the-framing-of-b)):
+
+- `crates/internal/brink-driver/src/discover.rs`'s
+  `root_content_ids_agree_between_discover_and_editor_order`
+
+Run the first four with `--ignored` at `999581354` and all four fail. Verbatim:
 
 ```
 duplicate container ids in the compiled program: [
@@ -51,7 +63,7 @@ two files' root weaves share DefinitionIds: [
     "Address(0xef2ee91775101d) -> [\"g-0\", \"g-0\"]",
 ]
 
-the root terminus address moved when an unrelated INCLUDE was added
+the root terminus address moved when the entry's FileId assignment shifted
   left: Some(Address(0x49590a9a660758))
  right: Some(Address(0xbd6652c9fc545d))
 ```
@@ -79,6 +91,14 @@ INCLUDE inc.ink
 
 the player is offered `inc one` / `inc two`, picks `inc one`, and the runtime
 prints `main one` / `MAIN-ONE-BODY`. `INC-ONE-BODY` is unreachable.
+
+The fourth quoted failure above (the terminus one) is from the LIR-level unit
+test, which mints each source's `FileId` from its position in a test-harness
+array — an artifact of the harness, not of anything a real `INCLUDE` count
+does on the ordinary `discover` path. See
+[Correcting the framing of (b)](#correcting-the-framing-of-b) for the
+reachable form of this same defect (editor/LSP file-registration order),
+which a `brink-driver`-level test also demonstrates.
 
 ## Mechanism
 
@@ -157,13 +177,17 @@ let terminus_id = ids.alloc_address(&format!("#root-terminus.{}", file_id.0));
 This is the only `alloc_address` call in `brink-ir` whose key is a `FileId`
 rather than a scope path. The existing comment above it is candid about the
 motive: keeping the file in the key left single-file programs' addresses
-byte-identical to what #1448/#1500 shipped.
+byte-identical to what #1448 shipped.
 
 #### Correcting the framing of (b)
 
 The issue says "file order changes the address," and cites FG-4d
-history-independence. Both are true, but the FG-4d gate that actually breaks is
-narrower than it looks, and the report should be precise:
+history-independence. The gate really is narrower than the issue's framing
+suggests, but not in the direction an earlier draft of this doc claimed —
+that draft's "adding an unrelated `INCLUDE` moves the terminus" claim is
+**false on the ordinary path** and should be retracted. Two things were
+conflated: the LIR-lowering unit test's own `FileId` assignment (a
+harness artifact) and what a real compile does.
 
 - `docs/fine-grained-salsa-proposal.md:488` states the constraint as
   *"id assignment must be history-independent — an incremental re-link after N
@@ -175,17 +199,44 @@ narrower than it looks, and the report should be precise:
   (`crates/internal/brink-db/src/queries/mod.rs:525`). So an incremental re-link
   and a from-scratch build of the *same* tree agree. The
   `incremental ≡ from-scratch` gate is **not** violated.
-- What *is* violated is content-purity across an edit. The entry file's `FileId`
-  is a function of how many files discovery walked before it, so **adding an
-  unrelated `INCLUDE` anywhere in the project moves the terminus address**, even
-  though the entry file's own text is byte-identical. That is the measured
-  result above (`0x49590a9a660758` → `0xbd6652c9fc545d`). Since the terminus
-  carries visit counts, that is save-key churn triggered by an edit to a
-  different file.
+- **`discover` seeds its BFS queue with the entry** (`crate::discover::discover`,
+  `crates/internal/brink-driver/src/discover.rs:51`), so a from-scratch ink
+  compile always mints the entry `FileId(0)`, regardless of how many files it
+  `INCLUDE`s. Measured through `Driver::discover` + `db.story_data()`:
+  compiling `main.ink` alone vs. `main.ink` + `INCLUDE extra.ink` gives the
+  entry `FileId(0)` both times, and the solo compile's container-id set is a
+  strict subset of the with-include set — no id moves. **Adding an unrelated
+  `INCLUDE` does not move the terminus address on this path.** The supporting
+  argument for the old claim was also a non-sequitur: `topological_order`
+  fixes the *chunk order* lowering consumes (`mod.rs:502`'s `files` iteration
+  order), not the `FileId` *value* baked into the terminus key —
+  that value is minted once, in `ProjectDb::set_file`'s registration order
+  (`crates/internal/brink-db/src/db.rs:93`), independent of topological order.
+- **The case this doc previously called safe is the one that is actually
+  broken.** `ProjectDb::set_file` mints `FileId`s in registration order, and
+  nothing requires an editor session to register the entry file first.
+  `brink-lsp`'s `load_file_from_disk` (`crates/brink-lsp/src/backend.rs:624`)
+  is the shared admission sink for both an explicit `did_open` and a chased
+  `INCLUDE` target — a workspace walk or an `INCLUDE` chase can register a
+  sibling ahead of the entry. Registering a sibling before the entry gives the
+  entry `FileId(1)` instead of `FileId(0)` and moves the terminus address for
+  the *same* tree and the *same* entry file, with every other container id
+  unchanged. That id is allocation-history-derived — exactly what
+  `docs/fine-grained-salsa-proposal.md:488` forbids — and it breaks the same
+  editor-vs-compile identity parity already asserted for native
+  (`crates/internal/brink-driver/src/discover_native.rs:349`). A
+  `brink-driver`-level test,
+  `root_content_ids_agree_between_discover_and_editor_order`
+  (`crates/internal/brink-driver/src/discover.rs`), reproduces this directly:
+  it builds one `ProjectDb` via `Driver::discover` and one by `set_file`-ing a
+  sibling before the entry, over the identical source pair, and the two
+  programs' root-content container-id sets differ by exactly the terminus id.
 
-So (b) is a real defect and does need fixing, but it should be filed as
-*save-key stability*, not as an FG-4d gate failure. The `incremental ≡
-from-scratch` check will never catch it, which is precisely why it survived.
+So (b) is a real defect and does need fixing, but the reachable trigger is
+**editor/LSP file-registration order**, not `INCLUDE` count, and it should be
+filed as *save-key stability*, not as an FG-4d gate failure. Neither the
+`incremental ≡ from-scratch` check nor a from-scratch-only compile will ever
+catch it, which is precisely why it survived.
 
 ## The migration problem
 
@@ -225,7 +276,7 @@ will remain a path under *any* design, including one that later mints
 rename-invariant ids for named definitions.
 
 **Therefore #1504 can be settled without pre-judging #1442.** Qualifying an
-anonymous container's structural path with its owning module is compatible with
+anonymous container's structural path with its owning file is compatible with
 every candidate answer to #1442, because it changes what the path *is*, not
 whether named definitions derive their ids from paths at all. Bundling them
 risks blocking a live miscompile behind a much larger design question.
@@ -235,21 +286,40 @@ combined change.
 
 ## Recommended shape
 
-### Primary: qualify root-content scope paths by owning module
+### Primary: qualify root-content scope paths by the owning file, not the module
 
-Replace the unconditional `String::new()` at `mod.rs:487` with the file's
-module path, so file A's first root choice is `story::a::c-0` and file B's is
-`story::b::c-0`. The exact spelling should match whatever the native dialect
-already uses for module paths (`HirFile.module`), with ink files deriving one
-from their normalized root-relative source path.
+Replace the unconditional `String::new()` at `mod.rs:487` with a qualifier
+derived from the file itself — its normalized root-relative source path (or
+equivalently, a stem unique within the project) — so file A's first root
+choice is `a.ink::c-0` and file B's is `b.ink::c-0`.
+
+This must be **per-file**, not "per owning module" as an earlier draft of
+this recommendation said. Module path alone is insufficient and leaves (a)
+unfixed for exactly the kind of project #1504 was filed against: under
+`dialect = brink`, `#@module(name)` is permitted on `.ink` files
+(`dialect_gate.rs` flags it only under strict-ink,
+`crates/internal/brink-analyzer/src/dialect_gate.rs:103-110`), and
+`docs/modules-spec.md` §1 rules — implemented and tested
+(`crates/internal/brink-db/src/modules.rs:144`,
+`crates/internal/brink-db/src/db.rs`'s
+`included_file_inherits_module_identity`) — that an `INCLUDE`d file with no
+declaration of its own inherits its includer's module. So a brink-dialect
+project with `#@module(story)` on the entry, plus a plain `INCLUDE`d file
+with root-level weave and no `#@module` of its own, resolves **both** files
+to the module `story` and reproduces the exact (a) collision after a
+module-qualified fix — the included file's `c-0` and the entry's `c-0` both
+hash `story::c-0` again. Qualifying by the file itself sidesteps this
+entirely, since two distinct files always have distinct paths regardless of
+what module either one declares or inherits.
 
 Fold (b) into the same change: the terminus key becomes
-`{module_path}#root-terminus`, dropping the `FileId` entirely and making it
-content-derived like every other `alloc_address` call.
+`{file_qualifier}#root-terminus`, dropping the `FileId` entirely and making
+it content-derived like every other `alloc_address` call.
 
 Why this shape:
 
-- Fixes (a) and (b) with one concept, at one locus.
+- Fixes (a) and (b) with one concept, at one locus, and fixes (a) for
+  declared-module projects too, unlike the module-qualified variant.
 - Keeps the existing `hash(path)` model, so FG-4d purity and the
   `incremental ≡ from-scratch` gate are preserved by construction.
 - Does not foreclose any answer to #1442.
@@ -263,11 +333,11 @@ Known costs, which are the substance of the ruling being requested:
    with no migration path (see above). At `0.0.11` this is judged cheap; it
    will not stay cheap.
 2. **File renames become a new id-churn axis.** Once the path includes the
-   module, renaming `inc.ink` churns its root-content ids — the same class of
-   problem #1442 reports for scope renames, now extended to files. This is a
-   genuine argument for solving both together, and the owner should weigh it.
-   Note the churn is bounded to root-level weave content; knots are already
-   qualified by name and unaffected.
+   file's own identity, renaming `inc.ink` churns its root-content ids — the
+   same class of problem #1442 reports for scope renames, now extended to
+   files. This is a genuine argument for solving both together, and the owner
+   should weigh it. Note the churn is bounded to root-level weave content;
+   knots are already qualified by name and unaffected.
 
 ### Variant considered and rejected: keep the entry file unqualified
 
@@ -283,17 +353,22 @@ sharp edge.
 #1504 floats "per-file allocators with a content-derived discriminator." If
 "content" means the file's *source text*, this should be rejected outright:
 every edit to a file would change every id in it, making save-key churn
-continuous rather than one-time. If "content" means the module path, it is the
-primary recommendation above — but note the per-file allocator itself is
-irrelevant, since `alloc_address` is a pure hash (see
+continuous rather than one-time. If "content" means the file's identity (path
+or stem), it is the primary recommendation above — but note the per-file
+allocator itself is irrelevant, since `alloc_address` is a pure hash (see
 [Mechanism](#a-cross-file-collisions)).
 
 ## Suggested follow-ups
 
 Independent of the ruling:
 
-- Add a tier-1 corpus case with root-level weave content in an `INCLUDE`d file,
-  so the oracle covers the shape at all.
+- Add a tier-3 corpus case with root-level weave content in **both** the
+  entry file and an `INCLUDE`d file — the actual collision shape (a)
+  describes. `tests/tier3/includes/included-file-trailing-weave/` and
+  `tests/tier3/includes/choice-accumulation-across-include/` already cover
+  root weave in an included file alone (their entry `story.ink` has no
+  root-level weave of its own), so a corpus case asking for that shape again
+  would be a duplicate.
 - Consider a codegen-level assertion that no two containers share a
   `DefinitionId`. This bug reached the runtime silently; the compiler had
   every opportunity to reject it. That guard is cheap, is independent of the

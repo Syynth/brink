@@ -55,14 +55,23 @@ fn terminus_id(program: &lir::Program) -> Option<brink_format::DefinitionId> {
 /// Measured on `origin/main` (commit 999581354): the 8-container tree
 /// carries three collided ids — `c-0`, `c-1` and `g-0` each appear twice,
 /// once per file.
+///
+/// Uses [`lower_ink_files_with_paths`] rather than [`lower_ink_files`] —
+/// the recommended fix (`docs/root-content-identity-findings.md`,
+/// "Recommended shape") qualifies a root-content scope path by the owning
+/// file's identity. `lower_ink_files` always hands lowering an *empty*
+/// `file_paths` map (`support.rs`), so under that fix both files would
+/// still resolve to the same (absent) qualifier and this test would keep
+/// failing for a reason unrelated to the bug it documents. Distinct real
+/// paths give the fix something to key on once it lands.
 #[test]
 #[ignore = "known bug #1504(a): root-content scope paths are unqualified by \
             file, so two files' root weaves collide; fix is blocked on the \
             FG-4d identity ruling"]
 fn root_content_ids_are_distinct_across_files() {
-    let p = lower_ink_files(&[
-        "* alpha one\n* alpha two\n- alpha gathered\n",
-        "* beta one\n* beta two\n- beta gathered\n",
+    let p = lower_ink_files_with_paths(&[
+        ("alpha.ink", "* alpha one\n* alpha two\n- alpha gathered\n"),
+        ("beta.ink", "* beta one\n* beta two\n- beta gathered\n"),
     ]);
 
     let mut ids = Vec::new();
@@ -88,17 +97,28 @@ fn root_content_ids_are_distinct_across_files() {
 ///
 /// `attach_root_final_gather` keys it `#root-terminus.{file_id}`
 /// (`mod.rs:1957`) — the only `alloc_address` call in `brink-ir` keyed by
-/// `FileId` rather than a scope path. The entry file's `FileId` is a
-/// function of how many files discovery walked before it, so adding an
-/// unrelated `INCLUDE` renumbers it and moves the terminus address, even
-/// though the entry file's own text is byte-identical.
+/// `FileId` rather than a scope path. This test proves that sensitivity at
+/// the LIR-lowering level: [`lower_ink_files`] mints each source's `FileId`
+/// strictly from its position in the `sources` slice (`support.rs`), so
+/// prepending an extra source shifts the entry's numeric id and moves the
+/// terminus address, even though the entry's own text is byte-identical.
+///
+/// This does **not** prove the same thing happens on any real user action —
+/// see `docs/root-content-identity-findings.md`'s "Correcting the framing
+/// of (b)" section: `discover`'s BFS always seeds the entry first, so an
+/// ordinary from-scratch compile always mints the entry `FileId(0)`
+/// regardless of how many files it `INCLUDE`s. The reachable form of this
+/// bug is editor/LSP file-registration order, not `INCLUDE` count, and is
+/// covered separately by
+/// `brink-driver`'s `root_content_ids_agree_between_discover_and_editor_order`
+/// (`crates/internal/brink-driver/src/discover.rs`).
 #[test]
 #[ignore = "known bug #1504(b): the terminus address is keyed by FileId, so \
-            an unrelated INCLUDE moves it; fix is blocked on the FG-4d \
-            identity ruling"]
-fn root_terminus_address_is_independent_of_unrelated_includes() {
+            its position in the file list moves it; fix is blocked on the \
+            FG-4d identity ruling"]
+fn root_terminus_address_is_independent_of_file_id_assignment() {
     // Same entry file, same root weave — only the number of unrelated
-    // included files ahead of it differs.
+    // files ahead of it in the lowered file list differs.
     let entry = "* one\n* two\n- gathered\n";
     let unrelated = "=== helper ===\nhelper text\n-> DONE\n";
 
@@ -108,6 +128,6 @@ fn root_terminus_address_is_independent_of_unrelated_includes() {
     assert!(one_include.is_some(), "expected a synthesized terminus");
     assert_eq!(
         one_include, two_includes,
-        "the root terminus address moved when an unrelated INCLUDE was added",
+        "the root terminus address moved when the entry's FileId assignment shifted",
     );
 }
