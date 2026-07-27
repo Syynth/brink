@@ -1181,9 +1181,28 @@ fn is_brink_toml_path(path: &str) -> bool {
 /// `node_modules/` (vendored ink content opened directly as a folder) still
 /// has its own files admitted — only descendants' ignored-dir components
 /// count, never the root's own ancestry (#1415 review: path-scope
-/// divergence from the prune this helper claims to mirror). A path with no
-/// matching root falls back to checking every component, same as before.
+/// divergence from the prune this helper claims to mirror). A path under
+/// **non-empty** `roots`, none of which is a prefix of it, falls back to
+/// checking every component, same as before — see below for what happens
+/// when `roots` itself is empty.
+///
+/// `roots` itself can be empty — single-file mode (no workspace folders and
+/// no legacy `root_uri`), or a watcher event that lands before `initialize`
+/// has populated `self.workspace_roots` at all. There, house rule 19a
+/// applies exactly as it did for `native_root` in #1576: with nothing to
+/// strip, the path is returned untouched rather than mangled — this
+/// function declines to prune rather than falling back to matching
+/// components of the raw, unscoped absolute path. That whole-path fallback
+/// is exactly the pre-#1415 behavior, and it treats any directory name that
+/// merely *appears* somewhere in the user's absolute path (a project
+/// checked out under `~/code/node_modules-backup/…`, say) as an ignored
+/// directory, silently rejecting a real file it has no business rejecting
+/// (#1434). No workspace root means there is no root-relative frame to
+/// scope the check against, so the check is skipped rather than guessed.
 fn path_under_ignored_dir(path: &str, roots: &[std::path::PathBuf]) -> bool {
+    if roots.is_empty() {
+        return false;
+    }
     let full = std::path::Path::new(path);
     let scoped = roots
         .iter()
@@ -3162,17 +3181,61 @@ mod tests {
     /// since it never walks a directory tree entry-by-entry the way
     /// `collect_source_files` does — must flag a path whose *any*
     /// component is `target/`, `.git/`, or `node_modules/`, not just a leaf
-    /// directory name, and must leave ordinary paths alone.
+    /// directory name, and must leave ordinary paths alone. Scoped to a
+    /// matching root (rather than `&[]`, which after #1434 skips the check
+    /// entirely — see `path_under_ignored_dir_does_not_prune_without_a_root`
+    /// below) so this still exercises the "any component" claim.
     #[test]
     fn path_under_ignored_dir_matches_any_component() {
-        assert!(path_under_ignored_dir("/repo/target/debug/build.ink", &[]));
-        assert!(path_under_ignored_dir("/repo/.git/objects/pack.ink", &[]));
+        let root = std::path::PathBuf::from("/repo");
+        let roots = std::slice::from_ref(&root);
+        assert!(path_under_ignored_dir(
+            "/repo/target/debug/build.ink",
+            roots
+        ));
+        assert!(path_under_ignored_dir("/repo/.git/objects/pack.ink", roots));
         assert!(path_under_ignored_dir(
             "/repo/node_modules/some-pkg/index.ink",
+            roots
+        ));
+        assert!(!path_under_ignored_dir("/repo/src/main.ink", roots));
+        assert!(!path_under_ignored_dir("/repo/targets/main.ink", roots));
+    }
+
+    /// #1603 review: with a **non-empty** `roots`, none of which is a prefix
+    /// of `path`, `path_under_ignored_dir` falls back to checking every
+    /// component of the raw, unscoped path (the `.unwrap_or(full)` branch) —
+    /// deliberately preserved pre-#1434 behavior, distinct from the
+    /// empty-`roots` case which declines to prune entirely (see
+    /// `path_under_ignored_dir_does_not_prune_without_a_root`). This was the
+    /// only reachable case left with no direct test.
+    #[test]
+    fn path_under_ignored_dir_matches_any_component_when_no_root_prefixes_it() {
+        let root = std::path::PathBuf::from("/repo");
+        assert!(path_under_ignored_dir(
+            "/elsewhere/node_modules/pkg/main.ink",
+            std::slice::from_ref(&root)
+        ));
+    }
+
+    /// #1434 regression (the issue's own acceptance criterion): with
+    /// `workspace_roots` empty — single-file mode, or a watcher event that
+    /// arrives before `initialize` has populated it — there is no
+    /// root-relative frame to scope the check against. Falling back to the
+    /// pre-#1415 whole-path check (as `path_under_ignored_dir` used to,
+    /// before this fix) would flag any absolute path that merely *contains*
+    /// an ignored-looking component anywhere in its ancestry, even when
+    /// that component has nothing to do with the file's actual project
+    /// tree. The fix declines to prune rather than guessing.
+    #[test]
+    fn path_under_ignored_dir_does_not_prune_without_a_root() {
+        assert!(!path_under_ignored_dir(
+            "/Users/dev/node_modules/my-project/story.ink",
             &[]
         ));
+        assert!(!path_under_ignored_dir("/repo/target/debug/build.ink", &[]));
+        assert!(!path_under_ignored_dir("/repo/.git/objects/pack.ink", &[]));
         assert!(!path_under_ignored_dir("/repo/src/main.ink", &[]));
-        assert!(!path_under_ignored_dir("/repo/targets/main.ink", &[]));
     }
 
     /// #1415 review finding: path-scope divergence. `collect_source_files`
@@ -3201,9 +3264,10 @@ mod tests {
             std::slice::from_ref(&root)
         ));
 
-        // With no matching root, the check falls back to every component of
-        // the full path (matches the pre-#1415-fix, whole-path behavior).
-        assert!(path_under_ignored_dir(
+        // With `roots` empty — no root at all to scope against — #1434
+        // changed this from falling back to the pre-#1415-fix whole-path
+        // check (which wrongly flagged this file) to declining to prune.
+        assert!(!path_under_ignored_dir(
             "/repo/node_modules/vendor-ink/main.ink",
             &[]
         ));

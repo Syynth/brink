@@ -85,7 +85,10 @@ below):
   [`brink ide`](./cli/ide.md#anatomy-of-a-command).
 - **`bevy-brink`**'s dev-mode `InkLoader`, via
   `BrinkPlugin::with_config(ProjectConfig { lints, deny_warnings, .. })`
-  (issue #1394).
+  (issue #1394) — the same override also reaches
+  `compile_story_inline` (issue #1380), as long as it's called *after*
+  the `BrinkPlugin`/`BrinkAssetsPlugin` that carries the override has
+  been added to the app.
 - **`brink-lsp`** (issue #1417), via
   `initializationOptions.lints`/`.denyWarnings` — see
   [Per mount](#per-mount) below.
@@ -140,7 +143,7 @@ one-off choice that the file must not silently overrule.
 | `initializationOptions.lints`/`.denyWarnings` (`brink-lsp`, key actually set at `initialize`) | `brink.toml`, defaults |
 | `setLanguageDialect(...)` / `setTypePolicy(...)` (explicit call) | `brink.toml`, defaults |
 | `setLintOverrides(...)` / `setDenyWarningsOverride(...)` (wasm editor session, explicit call) | `brink.toml`, defaults |
-| `BrinkPlugin::with_config(...)` / `BrinkAssetsPlugin::with_config(...)` (`bevy-brink`, field actually set) | `brink.toml`, defaults |
+| `BrinkPlugin::with_config(...)` / `BrinkAssetsPlugin::with_config(...)` (`bevy-brink`, field actually set — reaches `InkLoader` and `compile_story_inline`) | `brink.toml`, defaults |
 | `brink.toml`'s `[project] dialect`/`types` | defaults only |
 | `brink.toml`'s `[lints]`/`deny-warnings` (for a code without a CLI/API override above) | defaults only |
 | Dialect-keyed default (`brink` → `strict`, `strict-ink` → `gradual`) | — |
