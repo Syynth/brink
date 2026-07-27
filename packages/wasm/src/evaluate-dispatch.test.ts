@@ -4,6 +4,9 @@ import {
   parseEvaluateSource,
   fragmentContentHash,
   cacheFragmentInto,
+  isNativeEntry,
+  expressionWrapSource,
+  contentWrapSource,
   type FragmentCompileEntry,
 } from "./evaluate-dispatch";
 
@@ -86,6 +89,57 @@ describe("fragmentContentHash", () => {
     expect(fragmentContentHash("a")).not.toBe(fragmentContentHash("b"));
     // Whitespace is significant — the hash is over the raw source.
     expect(fragmentContentHash("gold ")).not.toBe(fragmentContentHash("gold"));
+  });
+});
+
+// #1598: `StoryRunnerHandle.compileFragment` must append the synthetic
+// symbol using the entry's own dialect's wrap syntax — ink `=== ===` knots
+// are a native parse error against a `.brink` entry, so Tier-1 fragment eval
+// could never reach a native project without this.
+describe("isNativeEntry", () => {
+  it("is true for a .brink entry, at any depth", () => {
+    expect(isNativeEntry("main.brink")).toBe(true);
+    expect(isNativeEntry("chapters/main.brink")).toBe(true);
+    expect(isNativeEntry("a/b/c/story.brink")).toBe(true);
+  });
+
+  it("is false for an ink entry or an extensionless one", () => {
+    expect(isNativeEntry("main.ink")).toBe(false);
+    expect(isNativeEntry("chapters/main.ink")).toBe(false);
+    expect(isNativeEntry("main")).toBe(false);
+  });
+
+  it("is false for a dotfile with no real extension (mirrors Path::extension())", () => {
+    expect(isNativeEntry(".brink")).toBe(false);
+    expect(isNativeEntry("dir/.brink")).toBe(false);
+  });
+});
+
+describe("expressionWrapSource", () => {
+  it("wraps as a native fn for a native entry", () => {
+    expect(expressionWrapSource("__eval_test", "gold + 1", true)).toBe(
+      "fn __eval_test() {\n  return (gold + 1);\n}\n",
+    );
+  });
+
+  it("wraps as an ink function knot for an ink entry", () => {
+    expect(expressionWrapSource("__eval_test", "gold + 1", false)).toBe(
+      "=== function __eval_test() ===\n~ return (gold + 1)\n",
+    );
+  });
+});
+
+describe("contentWrapSource", () => {
+  it("wraps as a native flow for a native entry", () => {
+    expect(contentWrapSource("__eval_test", "You have {gold} gold.", true)).toBe(
+      "flow __eval_test() {\nYou have {gold} gold.\n}\n",
+    );
+  });
+
+  it("wraps as an ink knot for an ink entry", () => {
+    expect(contentWrapSource("__eval_test", "You have {gold} gold.", false)).toBe(
+      "=== __eval_test ===\nYou have {gold} gold.\n",
+    );
   });
 });
 

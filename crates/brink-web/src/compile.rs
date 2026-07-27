@@ -183,11 +183,12 @@ pub fn program_checksum(story_bytes: &[u8]) -> Result<String, JsError> {
 /// — the only difference is the file set is caller-supplied JSON instead of a
 /// stateful session, since a `StoryRunner` keeps no reference to the project
 /// that produced it). `entry` must be one of `sources_json`'s keys.
-/// `synthetic_source` — already wrapped by the caller as
-/// `=== function NAME() ===\n~ return (...)\n` or `=== NAME ===\n...\n` — is
-/// appended to the entry file's served content before compiling; nothing
-/// else about `entry`'s real content changes, and every other file is served
-/// verbatim.
+/// `synthetic_source` — already wrapped by the caller as ink
+/// `=== function NAME() ===\n~ return (...)\n` / `=== NAME ===\n...\n`, or as
+/// native `fn NAME() { return (...); }` / `flow NAME() { ... }`, matching
+/// `entry`'s dialect — is appended to the entry file's served content before
+/// compiling; nothing else about `entry`'s real content changes, and every
+/// other file is served verbatim.
 ///
 /// Returns the same JSON `CompileResult` shape as `compile()`/
 /// `compile_project()`: `story_bytes` on success, `warnings`/`error` on
@@ -444,16 +445,15 @@ mod compile_fragment_tests {
     // should work identically; these two pin that it actually does, using
     // native `fn`/`flow` syntax rather than ink's `=== ===` knot syntax.
     //
-    // Caveat: this pins `compile_fragment` itself, not a reachable native
-    // embedder path. `compile_fragment` is not re-exported from
-    // `@brink-lang/web`; its only caller is `packages/wasm/src/index.ts`'s
-    // `StoryRunnerHandle.compileFragment`, which hardcodes ink-only wraps
-    // (`=== function NAME() ===` / `=== NAME ===`) — appended to a `.brink`
-    // entry those are native parse errors. So `evaluate()`'s Tier-1 path
-    // cannot succeed for a native project today; these tests prove the
-    // primitive is dialect-agnostic, not that a native embedder can reach it
-    // (see issue #1387 follow-up for wiring `compileFragment` to native
-    // wrap syntax).
+    // Issue #1598 closed the reachability gap noted here previously:
+    // `packages/wasm/src/index.ts`'s `StoryRunnerHandle.compileFragment`
+    // (the only caller of `compile_fragment`, `evaluate()`'s Tier-1
+    // fragment-compile step) now picks native (`fn`/`flow`) vs ink
+    // (`=== ===`) wrap syntax from `project.entry`'s extension
+    // (`evaluate-dispatch.ts`'s `isNativeEntry`/`expressionWrapSource`/
+    // `contentWrapSource`), so a native-project embedder's Tier-1 fragment
+    // eval actually reaches this primitive now — see
+    // `packages/wasm/src/evaluate-fragment-native.test.ts`.
 
     #[test]
     fn native_entry_expression_wrap_resolves_against_project_globals() {
@@ -461,7 +461,7 @@ mod compile_fragment_tests {
             "main.brink",
             "var gold = 5\n\nflow main() {\n  Hi. -> END\n}\n",
         )]);
-        let synthetic = "fn __eval_test() {\n  return gold + 1;\n}\n";
+        let synthetic = "fn __eval_test() {\n  return (gold + 1);\n}\n";
         let json = compile_fragment("main.brink", &src, synthetic);
         let v: serde_json::Value = serde_json::from_str(&json).expect("valid json");
         assert_eq!(v["ok"], true, "{json}");
@@ -474,7 +474,7 @@ mod compile_fragment_tests {
             "main.brink",
             "var gold = 5\n\nflow main() {\n  Hi. -> END\n}\n",
         )]);
-        let synthetic = "flow __eval_test() {\n  You have {gold} gold.\n}\n";
+        let synthetic = "flow __eval_test() {\nYou have {gold} gold.\n}\n";
         let json = compile_fragment("main.brink", &src, synthetic);
         let v: serde_json::Value = serde_json::from_str(&json).expect("valid json");
         assert_eq!(v["ok"], true, "{json}");
