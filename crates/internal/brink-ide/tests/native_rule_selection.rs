@@ -17,12 +17,17 @@
 //!   is not a policy native source can compile under — could not fire at
 //!   all, because the pure path had no way to express it.
 //!
-//! Every test here pairs its assertion with the *ink arm* of the same
-//! inputs, run through the same analyzer entry point with `is_native =
-//! false`. That guard is what makes these non-vacuous: it proves the
-//! fixture really does provoke the rule under the ink arm, so a passing
-//! assertion is evidence the native arm was selected, not evidence the
-//! fixture happens to be clean.
+//! Every test whose assertion is an *absence* (no `E051`/`E064`/…) pairs it
+//! with the *ink arm* of the same inputs, run through the same analyzer
+//! entry point with `is_native = false`. That guard is what makes those
+//! tests non-vacuous: it proves the fixture really does provoke the rule
+//! under the ink arm, so a passing assertion is evidence the native arm was
+//! selected, not evidence the fixture happens to be clean. The
+//! `analyze_overlay`/`analyze_projection` tests run the ink arm off the
+//! throwaway `ProjectDb` the gate itself returns, since that db owns the
+//! `FileId`s the gate's result is keyed against. The same-named-flow test
+//! doesn't need a guard: its assertion (`greets == 2`) is inherently
+//! non-vacuous — the ink arm would collapse it to `1`, not silently pass.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -69,6 +74,15 @@ fn ink_arm(session: &IdeSession) -> AnalysisResult {
 
 fn has(result: &AnalysisResult, code: DiagnosticCode) -> bool {
     result.diagnostics.iter().any(|d| d.code == code)
+}
+
+/// The same non-vacuity guard as `ink_arm`, but for a gate's throwaway db
+/// (`analyze_overlay`/`analyze_projection`): that db reassigns `FileId`s, so
+/// the ink arm has to run off the same db the gate did, not the session's.
+fn ink_arm_from_db(session: &IdeSession, db: &brink_db::ProjectDb) -> AnalysisResult {
+    let inputs = db.analysis_inputs();
+    let refs: Vec<_> = inputs.iter().map(|(id, hir, m)| (*id, hir, m)).collect();
+    brink_analyzer::analyze_with_modules(&refs, db.module_map(), &session.analysis_options(), false)
 }
 
 #[test]
@@ -136,8 +150,13 @@ fn native_session_reports_the_strict_only_gate_for_explicit_gradual() {
 fn the_overlay_gate_uses_the_native_rule_set_too() {
     let session = native_session();
     let overlay = std::collections::BTreeMap::from([("main.brink".to_owned(), MAIN.to_owned())]);
-    let (result, _db) = session.analyze_overlay(&overlay);
+    let (result, db) = session.analyze_overlay(&overlay);
 
+    assert!(
+        has(&ink_arm_from_db(&session, &db), DiagnosticCode::E051),
+        "guard: the fixture must provoke `E051` under the ink arm, or this \
+         test proves nothing"
+    );
     assert!(
         !has(&result, DiagnosticCode::E051),
         "the overlay gate must judge native source by the native rules: {:?}",
@@ -151,8 +170,13 @@ fn the_projection_gate_uses_the_native_rule_set_too() {
     let session = native_session();
     let projection =
         std::collections::BTreeMap::from([("moved/main.brink".to_owned(), MAIN.to_owned())]);
-    let (result, _db) = session.analyze_projection(&projection);
+    let (result, db) = session.analyze_projection(&projection);
 
+    assert!(
+        has(&ink_arm_from_db(&session, &db), DiagnosticCode::E051),
+        "guard: the fixture must provoke `E051` under the ink arm, or this \
+         test proves nothing"
+    );
     assert!(
         !has(&result, DiagnosticCode::E051),
         "the projection gate must judge native source by the native rules: {:?}",

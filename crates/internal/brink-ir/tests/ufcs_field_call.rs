@@ -77,10 +77,10 @@ fn main() {
 
     // An honest minimal native pipeline, hand-assembled here because this
     // test seeds `whole_project_diagnostics` with the same `InferenceResult`
-    // it goes on to hand `ufcs_resolution` (the composed
-    // `analyze_with_modules(…, is_native = true)` call
+    // it goes on to hand `ufcs_resolution`, instead of the composed
+    // `analyze_with_modules(…, is_native = true)` call that
     // `brink-test-harness::corpus::compile_and_explore_from_brink_native`
-    // makes computes its own instead). Every pass is given
+    // makes, which computes its own. Every pass is given
     // `is_native = true`: `brink_analyzer::analyze`'s pure path passes
     // `is_native = false` (see that function's own doc), which would
     // misclassify this fixture as ink-syntax-under-strict-dialect and reject

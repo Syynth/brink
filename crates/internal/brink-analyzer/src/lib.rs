@@ -951,8 +951,13 @@ pub fn strict_diagnostics(
 /// ink-only `E064` config error is skipped — forwarded verbatim to
 /// [`strict_diagnostics`], whose own `is_native` doc has the reasoning
 /// (issue #1348). `brink-db`'s `whole_project_diagnostics_query` passes its
-/// `project_is_native` answer at the same seam; this is what lets the pure
-/// path match it.
+/// own `project_is_native` answer at the same seam, but that answer is
+/// entry-anchored — it reads `false` whenever the db has no entry set — so
+/// it does not automatically agree with a caller-computed `is_native` for a
+/// db that never calls `set_entry` (e.g. `IdeSession`'s editor/LSP analysis
+/// path, as opposed to `IdeSession::compile`). Callers of this function are
+/// responsible for supplying an `is_native` that actually matches their file
+/// set.
 #[must_use]
 pub fn whole_project_diagnostics(
     files: &[(FileId, &HirFile, &SymbolManifest)],
