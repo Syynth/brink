@@ -526,12 +526,13 @@ pub const MAX_ANCESTOR_DEPTH: usize = 32;
 /// A thin wrapper over [`find_config_with_warnings`] that discards its
 /// [`ConfigWarning`]s — for callers with no warning channel of their own to
 /// report them through. A caller that *does* have one (the LSP's
-/// `tracing::warn!`, [`load_from_entry`]'s [`LoadedConfig::warnings`])
-/// should call [`find_config_with_warnings`] directly instead, per house
-/// rule 9 (silent drops are always bugs until proven otherwise).
+/// `tracing::warn!`, [`load_from_entry`]'s returned `Vec<ConfigWarning>` via
+/// [`discover_from_entry_with_warnings`]) should call
+/// [`find_config_with_warnings`] directly instead, per house rule 9 (silent
+/// drops are always bugs until proven otherwise).
 #[must_use]
 pub fn find_config(start_dir: &Path) -> Option<PathBuf> {
-    find_config_with_warnings(start_dir).0
+    find_config_inner(start_dir, false).0
 }
 
 /// [`find_config`], additionally reporting when the bounded walk stepped
@@ -572,6 +573,22 @@ pub fn find_config(start_dir: &Path) -> Option<PathBuf> {
 /// caller can tell the author their file was ignored.
 #[must_use]
 pub fn find_config_with_warnings(start_dir: &Path) -> (Option<PathBuf>, Vec<ConfigWarning>) {
+    find_config_inner(start_dir, true)
+}
+
+/// Shared implementation behind [`find_config`] and
+/// [`find_config_with_warnings`]. `want_warnings` gates the second, bounded
+/// probe past the stop point: [`find_config`] has nowhere to put a
+/// [`ConfigWarning`] it would only immediately discard, so it passes `false`
+/// and this function skips the probe's filesystem stats entirely instead of
+/// running them and throwing the result away — up to [`MAX_ANCESTOR_DEPTH`]
+/// (32) extra `is_file` calls per miss, climbing *past* the very
+/// git/depth boundary the bound exists to stay inside, was wasted work every
+/// discarding caller paid for unconditionally (review finding on #1435).
+fn find_config_inner(
+    start_dir: &Path,
+    want_warnings: bool,
+) -> (Option<PathBuf>, Vec<ConfigWarning>) {
     let mut dir = Some(start_dir);
     let mut depth = 0usize;
     // Where (and why) the primary search stopped short of the filesystem
@@ -606,6 +623,12 @@ pub fn find_config_with_warnings(start_dir: &Path) -> (Option<PathBuf>, Vec<Conf
         return (None, Vec::new());
     };
 
+    if !want_warnings {
+        // No warning channel to report through — skip the probe rather than
+        // running it and discarding the result (#1435 review finding).
+        return (None, Vec::new());
+    }
+
     // Bounded peek past the stop point, purely to detect a stray config an
     // author might expect to be picked up — its existence is reported as a
     // warning, but it is never returned as a result. Bounded by the same
@@ -618,7 +641,7 @@ pub fn find_config_with_warnings(start_dir: &Path) -> (Option<PathBuf>, Vec<Conf
             return (
                 None,
                 vec![ConfigWarning(format!(
-                    "{} exists above the {reason} at {} and was ignored (#1435)",
+                    "{} exists above the {reason} at {} and was ignored",
                     candidate.display(),
                     stopped_at.display(),
                 ))],
@@ -1317,6 +1340,46 @@ mod tests {
         let (found, warnings) = find_config_with_warnings(&deepest);
         assert_eq!(found, None);
         assert!(warnings.is_empty(), "got: {warnings:?}");
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// `find_config` (the discarding wrapper) must behave identically to
+    /// `find_config_with_warnings(...).0` for a stray config skipped at the
+    /// git boundary — the shared `find_config_inner(..., want_warnings:
+    /// false)` path skips the second probe entirely (review finding on
+    /// #1435: the probe cost was paid and thrown away), but the result must
+    /// still be `None`, never the stray path.
+    #[test]
+    fn find_config_skips_the_warning_probe_but_still_returns_none_at_git_boundary() {
+        let root = unique_tmp_dir("no-warn-probe-git-boundary");
+        let repo = root.join("repo");
+        let nested = repo.join("a").join("b");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::write(
+            root.join(CONFIG_FILE_NAME),
+            "[project]\ndialect = \"brink\"\n",
+        )
+        .unwrap();
+
+        assert_eq!(find_config(&nested), None);
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The depth-cap analog of the above.
+    #[test]
+    fn find_config_skips_the_warning_probe_but_still_returns_none_beyond_depth_cap() {
+        let root = unique_tmp_dir("no-warn-probe-depth-cap");
+        let deepest = nested_chain(&root, MAX_ANCESTOR_DEPTH + 10);
+        std::fs::write(
+            root.join(CONFIG_FILE_NAME),
+            "[project]\ndialect = \"brink\"\n",
+        )
+        .unwrap();
+
+        assert_eq!(find_config(&deepest), None);
 
         std::fs::remove_dir_all(&root).unwrap();
     }
