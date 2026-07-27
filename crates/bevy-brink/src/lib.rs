@@ -123,7 +123,8 @@ pub use brkt::{
     BrktLoader, BrktLoaderError, TranscriptAsset, capture_transcript, render_transcript_asset,
 };
 pub use call::{
-    BrinkCallCommandsExt, BrinkCallFailed, BrinkCallRequest, BrinkCallResolved, IntoBrinkArgs,
+    BrinkCallBatchRequest, BrinkCallBatchResolved, BrinkCallCommandsExt, BrinkCallFailed,
+    BrinkCallRequest, BrinkCallResolved, IntoBrinkArgs, resolve_brink_call_batches,
     resolve_brink_calls,
 };
 pub use capability::{

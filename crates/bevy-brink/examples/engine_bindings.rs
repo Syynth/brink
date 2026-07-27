@@ -17,7 +17,12 @@
 //! 3. **`commands.brink_call(...).observe(...)`** — the same, but deferred,
 //!    for a normal (non-exclusive) system. The result is delivered to a
 //!    per-call-scoped observer, so it can never be mis-correlated.
-//! 4. **`advance_flow`** — drive normal playback from an exclusive context,
+//! 4. **`commands.brink_call_batch(...).observe(...)`** (#1076) — the
+//!    deferred *batch* counterpart: a normal system queues a whole ordered
+//!    call list at once, resolved through `call_ink_functions` in one
+//!    VM-eval setup, delivering one result `Vec` (call order preserved) to
+//!    the observer.
+//! 5. **`advance_flow`** — drive normal playback from an exclusive context,
 //!    resolving inline `{query()}` calls in the narration transparently.
 //!
 //! The story is compiled inline and its assets inserted directly (no file
@@ -31,19 +36,22 @@
 use bevy::log::LogPlugin;
 use bevy::prelude::*;
 use bevy_brink::{
-    BrinkBindingsAppExt, BrinkCallCommandsExt, BrinkCallResolved, BrinkCommand, BrinkFlow,
-    BrinkFlowRequest, BrinkPlugin, BrinkQueryInput, BrinkStoryAsset, LineTablesAsset, ProgramAsset,
-    Value, advance_flow, call_ink_function,
+    BrinkBindingsAppExt, BrinkCallBatchResolved, BrinkCallCommandsExt, BrinkCallResolved,
+    BrinkCommand, BrinkFlow, BrinkFlowRequest, BrinkPlugin, BrinkQueryInput, BrinkStoryAsset,
+    LineTablesAsset, ProgramAsset, Value, advance_flow, call_ink_function,
 };
 use brink_runtime::FlowInstance;
 
 /// The story. `can_advance()` and the inline `{enemy_count()}` both call
 /// the world-access `enemy_count` query binding; `play_sound` is a
-/// fire-and-forget command; `shout` is a pure function.
+/// fire-and-forget command; `shout` is a pure function. `bump_checks()`
+/// mutates `checks` and returns the running total — used to demonstrate
+/// the batch call's front-to-back ordering guarantee.
 const STORY: &str = "\
 EXTERNAL enemy_count()
 EXTERNAL play_sound(name)
 EXTERNAL shout(text)
+VAR checks = 0
 ~ play_sound(\"ambient_hum\")
 You scan the clearing. Enemies near: {enemy_count()}.
 {shout(\"stay sharp\")}
@@ -51,6 +59,10 @@ You scan the clearing. Enemies near: {enemy_count()}.
 
 === function can_advance() ===
 ~ return enemy_count() < 3
+
+=== function bump_checks() ===
+~ checks = checks + 1
+~ return checks
 ";
 
 /// A unit of live World state the ink story can query.
@@ -93,7 +105,7 @@ fn main() {
         })
         .bind_brink_command::<(), PlaySound>("play_sound")
         .add_observer(on_play_sound)
-        .add_systems(Update, request_deferred_check);
+        .add_systems(Update, (request_deferred_check, request_deferred_batch));
 
     // ── Build the story + the world it queries ─────────────────────────
     let Some(story) = build_story(&mut app, STORY) else {
@@ -121,15 +133,21 @@ fn main() {
     // Restore to 2 enemies for the rest of the demo.
     despawn_two_enemies(&mut app);
 
-    // ── (3) Engine→ink, deferred — commands.brink_call ─────────────────
+    // ── (3) Engine→ink, deferred — commands.brink_call ──────────────────
     // request_deferred_check (a normal system) issued a brink_call; a few
     // ticks let the plugin's resolver evaluate it and fire the observer.
     info!("--- engine→ink (deferred): commands.brink_call ---");
+
+    // ── (4) Engine→ink, deferred batch — commands.brink_call_batch ─────
+    // request_deferred_batch (a normal system, #1076) issued a
+    // brink_call_batch in the same frame as (3) above; the tick loop
+    // below resolves both deferred requests and fires their observers.
+    info!("--- engine→ink (deferred): commands.brink_call_batch ---");
     for _ in 0..3 {
         app.update();
     }
 
-    // ── (4) Playback with inline world queries — advance_flow ──────────
+    // ── (5) Playback with inline world queries — advance_flow ──────────
     info!("--- playback (advance_flow): inline {{enemy_count()}} ---");
     drive_to_end(&mut app, flow);
 
@@ -205,6 +223,39 @@ fn request_deferred_check(
                 );
             },
         );
+    }
+}
+
+/// A normal (non-exclusive) system: issue one deferred *batch*
+/// (`brink_call_batch`, #1076) once a flow exists — two `bump_checks()`
+/// calls then a `can_advance()`, run front-to-back in a single VM-eval
+/// setup, reacting to the whole ordered result `Vec` with one
+/// per-batch-scoped observer.
+fn request_deferred_batch(
+    mut issued: Local<bool>,
+    mut commands: Commands,
+    flows: Query<Entity, With<BrinkFlow<()>>>,
+) {
+    if *issued {
+        return;
+    }
+    if let Ok(flow) = flows.single() {
+        *issued = true;
+        commands
+            .brink_call_batch::<()>(
+                flow,
+                [
+                    ("bump_checks", Vec::<Value>::new()),
+                    ("bump_checks", Vec::<Value>::new()),
+                    ("can_advance", Vec::<Value>::new()),
+                ],
+            )
+            .observe(|on: On<BrinkCallBatchResolved<()>>| {
+                info!(
+                    "brink_call_batch results (delivered to observer, in order): {:?}",
+                    on.event().results
+                );
+            });
     }
 }
 
