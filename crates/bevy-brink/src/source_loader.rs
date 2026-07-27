@@ -1342,6 +1342,75 @@ mod config_discovery_tests {
         );
     }
 
+    /// Issue #1382 sweep finding: a *second* `BrinkPlugin<M>` registration's
+    /// `with_config` override used to vanish with no trace at all once
+    /// `BrinkAssetsPlugin` already existed (added by an earlier marker's
+    /// plugin) — `BrinkPlugin::with_config`'s own doc comment already
+    /// documented the precedence rule ("only the plugin that ends up adding
+    /// `BrinkAssetsPlugin` applies its config"), but neither the
+    /// `tracing::warn!` channel nor [`BrinkConfigWarnings`] ever recorded
+    /// that a *later* marker's whole `ProjectConfig` was the one that lost —
+    /// exactly the silent-drop pattern this issue swept for, just under a
+    /// different name than `resolve_*_options`. Two distinct marker types
+    /// reproduce a real multi-story app rather than a synthetic double
+    /// registration: `MarkerA`'s plugin (no override) is the one that adds
+    /// `BrinkAssetsPlugin`, so `MarkerB`'s `with_config` has nothing left to
+    /// land in.
+    #[test]
+    fn second_marker_with_config_drop_is_diagnosed_not_silent() {
+        struct MarkerA;
+        struct MarkerB;
+
+        let captured = captured_warnings();
+
+        let mut app = bevy_app::App::new();
+        let dir = Dir::default();
+        let dir_clone = dir.clone();
+        app.register_asset_source(
+            AssetSourceId::Default,
+            AssetSourceBuilder::new(move || {
+                Box::new(MemoryAssetReader {
+                    root: dir_clone.clone(),
+                })
+            }),
+        )
+        .add_plugins((
+            TaskPoolPlugin::default(),
+            AssetPlugin {
+                watch_for_changes_override: Some(false),
+                use_asset_processor_override: Some(false),
+                ..Default::default()
+            },
+            // `MarkerA`'s plugin has no override and is the one that ends up
+            // adding `BrinkAssetsPlugin` (first in registration order).
+            crate::BrinkPlugin::<MarkerA>::default(),
+            // `MarkerB`'s override arrives after `BrinkAssetsPlugin` already
+            // exists, so it must be diagnosed rather than silently dropped.
+            crate::BrinkPlugin::<MarkerB>::default().with_config(ProjectConfig {
+                dialect: Some(Dialect::Brink),
+                ..ProjectConfig::default()
+            }),
+        ));
+
+        let warnings = app.world().resource::<crate::BrinkConfigWarnings>();
+        assert!(
+            warnings
+                .0
+                .iter()
+                .any(|w| w.contains("MarkerB") && w.contains("ignored")),
+            "a second marker's dropped `with_config` override must be recorded \
+             in `BrinkConfigWarnings`, not silently discarded; got: {warnings:?}"
+        );
+
+        let joined = captured.lock().unwrap().join("\n");
+        assert!(
+            joined.contains("MarkerB") && joined.contains("ignored"),
+            "the same drop must also reach the tracing::warn! channel (the \
+             'warn, never silently drop' rule every other mount's config \
+             resolution already follows); captured: {joined}"
+        );
+    }
+
     #[test]
     fn hot_reload_picks_up_edited_brink_toml() {
         let (mut app, dir) = make_memory_asset_app();
