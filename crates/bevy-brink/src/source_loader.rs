@@ -350,45 +350,39 @@ fn ancestor_dirs(entry_path: &str) -> Vec<String> {
 /// to the asset source root — mirroring the CLI's `brink.toml` walk-up
 /// (`brink_project_config::find_config`), but over the async `AssetReader`
 /// since a bevy source tree may be virtual or packed rather than a real
-/// filesystem. Every candidate found is read via
-/// [`LoadContext::read_asset_bytes`], which registers it as a load
-/// dependency, so hot-reload "just works" exactly like an `INCLUDE`.
+/// filesystem.
 ///
-/// Returns every candidate this probe found along the way — key + raw
-/// text, **not** parsed, and no precedence applied. This loader's job
-/// stops at supplying bytes; the caller lands every pair at its own key in
-/// the drained source map, and [`Project::load`] (over the resulting
-/// `SourceTree`) then runs its own discovery walk
-/// (`brink_project_config::discover_from_entry_in_tree`) to decide which
-/// candidate governs, parses it, and applies the `CLI/API > file >
-/// default` precedence (#1360).
+/// Returns at most one candidate — the nearest `brink.toml` found, or
+/// `None` if no `brink.toml` exists at any ancestor level. The returned
+/// candidate is read via [`LoadContext::read_asset_bytes`], which
+/// registers it as a load dependency, so hot-reload "just works" exactly
+/// like an `INCLUDE`. Returns key + raw text, **not** parsed, and no
+/// precedence applied — this loader's job stops at supplying bytes; the
+/// caller lands it in the drained source map, and [`Project::load`]
+/// (over the resulting `SourceTree`) then parses it and applies the
+/// `CLI/API > file > default` precedence (#1360).
 ///
-/// ## One walk, not two (#1406)
+/// ## Single pass (#1439)
 ///
-/// This probe deliberately does **not** stop at the first hit. #1360 left
-/// the bounded ancestor walk-up performed twice — once here (fetching
-/// bytes through the async `AssetReader`, stopping as soon as a candidate
-/// was found) and again inside `Project::load` (`discover_from_entry_in_tree`,
-/// walking the same ancestor chain over the resulting tree to decide which
-/// candidate governs) — so this loader was quietly re-implementing the
-/// same nearest-wins decision `discover_from_entry_in_tree` already makes,
-/// with the two walks only ever agreeing because at most one candidate was
-/// ever landed in the tree to find. Walking every ancestor to the asset
-/// source root instead — landing every candidate that exists, not just
-/// the nearest — means `Project::load`'s own walk is the **only** place
-/// that decision is made; this probe just gathers raw bytes. Only the
-/// nearest candidate is ever actually read as config (farther ones are
-/// shadowed exactly as before — [`Project::load`]'s walk still stops at
-/// the first hit it finds), so the extra reads never change which
-/// candidate governs, just who decides.
+/// This probe stops at the first match found, collapsing the ancestor
+/// walk to a single pass. Before #1439, the walk happened twice: once here
+/// (fetching bytes through the async `AssetReader`, landing **all**
+/// candidates in the tree) and again inside `Project::load`
+/// (`discover_from_entry_in_tree`, walking the same ancestor chain over
+/// the resulting tree to pick the nearest). Stopping here at the first
+/// match (guaranteed to be nearest, since [`ancestor_dirs`] returns
+/// nearest-first) means [`Project::load`]'s own walk finds exactly one
+/// candidate (or none), so it completes in O(1) rather than O(depth).
+/// Behavior is identical — only the nearest candidate is ever read as
+/// config anyway — this is purely a perf optimization (fewer async reads,
+/// shorter sync discovery walk).
 ///
-/// A miss at every ancestor returns `Ok(vec![])` — not an error, matching
+/// A miss at every ancestor returns `Ok(None)` — not an error, matching
 /// `brink-project-config`'s "missing config changes nothing" contract.
 async fn probe_brink_toml(
     load_context: &mut LoadContext<'_>,
     entry_path: &str,
-) -> Result<Vec<(String, String)>, InkLoaderError> {
-    let mut found = Vec::new();
+) -> Result<Option<(String, String)>, InkLoaderError> {
     for dir in ancestor_dirs(entry_path) {
         let candidate = if dir.is_empty() {
             brink_project_config::CONFIG_FILE_NAME.to_string()
@@ -397,17 +391,22 @@ async fn probe_brink_toml(
         };
         if let Ok(bytes) = load_context.read_asset_bytes(candidate.clone()).await {
             match String::from_utf8(bytes) {
-                Ok(text) => found.push((candidate, text)),
-                // Only the nearest candidate is load-relevant (it's the only
-                // one `discover_from_entry_in_tree` can ever pick); an
-                // undecodable *farther* ancestor is shadowed and must not
-                // fail a load that would otherwise succeed.
-                Err(err) if found.is_empty() => return Err(err.into()),
-                Err(_) => {}
+                Ok(text) => {
+                    // Found the nearest candidate; return immediately (single
+                    // pass, no need to continue walking).
+                    return Ok(Some((candidate, text)));
+                }
+                // An undecodable nearest candidate fails the load — this
+                // candidate governs, and we can't read it, so this is a
+                // genuine failure (not a case for `discover_from_entry_in_tree`
+                // to potentially shadow with a farther ancestor). Farther
+                // ancestors are never consulted.
+                Err(err) => return Err(err.into()),
             }
         }
     }
-    Ok(found)
+    // No `brink.toml` found at any ancestor level.
+    Ok(None)
 }
 
 impl AssetLoader for InkLoader {
@@ -462,15 +461,13 @@ impl AssetLoader for InkLoader {
             sources.insert(path, source);
         }
 
-        // #1029/#1360/#1406: bounded ancestor walk-up for `brink.toml`
-        // through the async AssetReader (see the module/struct docs). Only
-        // the bytes are fetched here — every candidate found along the way,
-        // not just the nearest — landing each pair at its own key in
-        // `sources` lets `Project::load` below run the *sole* discovery
-        // walk (over the resulting tree) that decides which candidate
-        // governs, parses it, and applies precedence; this loader no longer
-        // duplicates that decision.
-        for (config_path, text) in probe_brink_toml(load_context, &entry_path).await? {
+        // #1029/#1360/#1439: bounded ancestor walk-up for `brink.toml`
+        // through the async AssetReader (see [`probe_brink_toml`]'s doc).
+        // Single-pass discovery (#1439): the probe stops at the first match
+        // (guaranteed nearest), so only one candidate (or none) is added to
+        // the tree. [`Project::load`] below then discovers it with an O(1)
+        // walk instead of re-walking all ancestors.
+        if let Some((config_path, text)) = probe_brink_toml(load_context, &entry_path).await? {
             sources.insert(config_path, text);
         }
 
@@ -1124,6 +1121,38 @@ mod config_discovery_tests {
             .world()
             .resource::<AssetServer>()
             .load::<BrinkStoryAsset>("stories/ch1/intro.ink");
+        wait_for_loaded(&mut app, &handle);
+    }
+
+    /// #1439 regression: verify the discovered config path for a nested
+    /// project is the nearest one, not a farther sibling. The single-pass
+    /// optimization (_this_ PR) stops at the first match found, which is
+    /// guaranteed to be nearest since [`ancestor_dirs`] returns nearest
+    /// first; this test pins that discovered path stays correct after the
+    /// optimization.
+    #[test]
+    fn single_pass_discovery_finds_nearest_config_for_nested_entry() {
+        let (mut app, dir) = make_memory_asset_app();
+        // Entry deep in a nested tree.
+        dir.insert_asset_text(
+            Path::new("project/nested/deep/story.ink"),
+            BRINK_ONLY_SOURCE,
+        );
+        // Nearer config (should win).
+        dir.insert_asset_text(
+            Path::new("project/nested/brink.toml"),
+            "[project]\ndialect = \"brink\"\n",
+        );
+        // Farther config (should be ignored).
+        dir.insert_asset_text(
+            Path::new("project/brink.toml"),
+            "[project]\ndialect = \"strict-ink\"\n",
+        );
+
+        let handle = app
+            .world()
+            .resource::<AssetServer>()
+            .load::<BrinkStoryAsset>("project/nested/deep/story.ink");
         wait_for_loaded(&mut app, &handle);
     }
 
