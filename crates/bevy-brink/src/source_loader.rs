@@ -90,7 +90,7 @@ fn overrides_from_config(config: Option<&ProjectConfig>) -> OptionOverrides {
 /// [`brink_runtime::link`] and emits labeled subassets (`#program`,
 /// `#line_tables`) just like [`InkbLoader`](crate::InkbLoader).
 ///
-/// ## `brink.toml` discovery (#1029, #1360, #1406)
+/// ## `brink.toml` discovery (#1029, #1360, #1406, #1439)
 ///
 /// A `brink.toml` beside (or above) the entry asset supplies the
 /// [`ProjectConfig`] (`dialect`/`types`) that gates T1b brink-extension
@@ -98,22 +98,31 @@ fn overrides_from_config(config: Option<&ProjectConfig>) -> OptionOverrides {
 /// filesystem (`brink-project-config::load_from_entry`). Bevy's
 /// `AssetReader` may be virtual or packed, so [`load`](AssetLoader::load)
 /// probes for it over the async reader itself: `brink.toml` beside the
-/// entry, then each ancestor directory in turn, via
+/// entry, then each ancestor directory in turn (nearest first), via
 /// [`LoadContext::read_asset_bytes`] — bounded at the asset source root
 /// (never above it) and naturally finite (the entry path has finitely many
-/// `/`-separated ancestors). Every candidate found (not just the nearest)
-/// is registered as a load dependency exactly like an `INCLUDE`, so editing
-/// any of them in dev mode hot-reloads the story, and its text is landed at
-/// its own key in the drained source map. Discovering *which* key governs,
-/// parsing it, and applying `CLI/API > file > default` precedence is then
-/// entirely [`Project::load`]'s job
+/// `/`-separated ancestors). As of #1439, [`probe_brink_toml`] stops at the
+/// first candidate it finds — the nearest one, since the walk is
+/// nearest-first — so only that candidate is ever read or registered as a
+/// load dependency; a farther, shadowed `brink.toml` is never fetched, so
+/// editing one in dev mode no longer triggers a hot-reload. The candidate's
+/// text is landed at its own key in the drained source map; parsing it and
+/// applying `CLI/API > file > default` precedence is [`Project::load`]'s job
 /// (`brink_project_config::discover_from_entry_in_tree` over the same map,
-/// walking the same bounded ancestor chain once more — but now as the
-/// *only* place that walk makes a governing-candidate decision, see
-/// [`probe_brink_toml`]'s doc) — this loader only supplies candidate bytes,
-/// it does not re-implement the resolution policy. A miss at every level
-/// leaves `AnalysisOptions` at its default — byte-identical to pre-#1029
-/// behavior.
+/// walking the same bounded ancestor chain again over whatever the map
+/// contains) — this loader only supplies candidate bytes, it does not
+/// re-implement the resolution policy. Because the probe already stops at
+/// the nearest hit, `Project::load`'s walk finds at most one candidate in
+/// practice, but it is still the one place that applies the precedence
+/// rule; the probe is, deliberately, back to being a second "which
+/// candidate is nearest" decider (the duplication #1406 removed and #1439
+/// reintroduced on purpose, for the perf win — see [`probe_brink_toml`]'s
+/// doc). The two decisions agree by construction today because both walk
+/// [`ancestor_dirs`]-equivalent nearest-first order over the same bounded
+/// chain, but they are two independent implementations: a future change to
+/// `brink-project-config`'s bound/precedence shape would need to be mirrored
+/// here to stay honored on this path. A miss at every level leaves
+/// `AnalysisOptions` at its default — byte-identical to pre-#1029 behavior.
 ///
 /// [`override_config`](Self::override_config), set via
 /// [`BrinkPlugin::with_config`](crate::BrinkPlugin::with_config) /
@@ -364,18 +373,24 @@ fn ancestor_dirs(entry_path: &str) -> Vec<String> {
 ///
 /// ## Single pass (#1439)
 ///
-/// This probe stops at the first match found, collapsing the ancestor
-/// walk to a single pass. Before #1439, the walk happened twice: once here
-/// (fetching bytes through the async `AssetReader`, landing **all**
-/// candidates in the tree) and again inside `Project::load`
-/// (`discover_from_entry_in_tree`, walking the same ancestor chain over
-/// the resulting tree to pick the nearest). Stopping here at the first
-/// match (guaranteed to be nearest, since [`ancestor_dirs`] returns
-/// nearest-first) means [`Project::load`]'s own walk finds exactly one
-/// candidate (or none), so it completes in O(1) rather than O(depth).
-/// Behavior is identical — only the nearest candidate is ever read as
-/// config anyway — this is purely a perf optimization (fewer async reads,
-/// shorter sync discovery walk).
+/// This probe stops at the first match found, collapsing the *async* side
+/// of the ancestor walk to a single pass. Before #1439, this probe fetched
+/// bytes for **every** candidate ancestor through the async `AssetReader`
+/// and landed all of them in the tree; `Project::load`'s own walk
+/// (`discover_from_entry_in_tree`) then re-walked the same bounded ancestor
+/// chain, synchronously, over that tree to pick the nearest one. Stopping
+/// here at the first match (guaranteed to be nearest, since
+/// [`ancestor_dirs`] returns nearest-first) means at most one candidate is
+/// ever landed, so `Project::load`'s subsequent sync walk finds it (or
+/// nothing) on its very first probe. That sync walk was already
+/// stopping at its first hit before this change (`find_config_in_tree`
+/// returns as soon as it finds a candidate), so its own probe count —
+/// the entry-to-nearest-config distance — is unchanged and still
+/// `O(depth)` when no config exists anywhere; what #1439 saves is strictly
+/// the number of async `read_asset_bytes` calls this probe makes (at most
+/// one hit instead of one per ancestor with a `brink.toml`), not the shape
+/// of either walk. Behavior is identical — only the nearest candidate was
+/// ever read as config before this change either.
 ///
 /// A miss at every ancestor returns `Ok(None)` — not an error, matching
 /// `brink-project-config`'s "missing config changes nothing" contract.
@@ -465,8 +480,11 @@ impl AssetLoader for InkLoader {
         // through the async AssetReader (see [`probe_brink_toml`]'s doc).
         // Single-pass discovery (#1439): the probe stops at the first match
         // (guaranteed nearest), so only one candidate (or none) is added to
-        // the tree. [`Project::load`] below then discovers it with an O(1)
-        // walk instead of re-walking all ancestors.
+        // the tree — saving async `read_asset_bytes` calls for shadowed
+        // farther candidates. [`Project::load`] below still performs its own
+        // bounded sync walk over the tree to apply precedence; that walk's
+        // shape (and its O(depth) cost when nothing is found) is unchanged
+        // by this optimization.
         if let Some((config_path, text)) = probe_brink_toml(load_context, &entry_path).await? {
             sources.insert(config_path, text);
         }
@@ -1094,16 +1112,24 @@ mod config_discovery_tests {
         wait_for_loaded(&mut app, &handle);
     }
 
-    /// #1406 regression: with a `brink.toml` at *two* ancestor levels
-    /// (conflicting settings), the nearest one must still govern even
-    /// though [`super::probe_brink_toml`] now lands **both** candidates in
-    /// the drained tree (it no longer stops at the first hit — see its doc
-    /// comment). The farther, root-level `brink.toml` sets
+    /// #1406/#1439 regression: with a `brink.toml` at *two* ancestor levels
+    /// (conflicting settings), the nearest one must still govern.
+    /// [`super::probe_brink_toml`] stops at the first (nearest) hit as of
+    /// #1439, so the farther, root-level `brink.toml` is never even fetched
+    /// — it does not land in the drained tree at all, and `Project::load`'s
+    /// own walk sees only the nearer candidate. The farther file sets
     /// `dialect = "strict-ink"`, which alone would reject `BRINK_ONLY_SOURCE`
     /// (`#@private`) — only the nearer `stories/ch1/brink.toml`'s
     /// `dialect = "brink"` makes it compile, so a `Loaded` outcome here
-    /// proves `Project::load`'s own walk (`discover_from_entry_in_tree`),
-    /// not this probe, is still the sole "which candidate governs" decider.
+    /// pins that the nearer candidate is the one actually used, both by the
+    /// probe (which never reads the farther file) and by `Project::load`'s
+    /// precedence resolution.
+    ///
+    /// `single_pass_discovery_finds_nearest_config_for_nested_entry` below
+    /// covers a distinct case: here, the nearest config sits *beside* the
+    /// entry's own directory (`stories/ch1/`); there, it sits one level
+    /// *above* the entry's own directory, pinning that the walk-up still
+    /// finds a nearest config that isn't a same-directory sibling.
     #[test]
     fn nearest_ancestor_brink_toml_shadows_a_farther_conflicting_one() {
         let (mut app, dir) = make_memory_asset_app();
@@ -1156,16 +1182,17 @@ mod config_discovery_tests {
         wait_for_loaded(&mut app, &handle);
     }
 
-    /// w-review regression: an *undecodable* farther ancestor `brink.toml`
-    /// must not fail a load whose nearest, decodable candidate is the one
-    /// that actually governs. On `main` (pre-guard), `probe_brink_toml`
-    /// propagates `String::from_utf8`'s error for *every* candidate it
-    /// reads, including shadowed ones — a non-UTF-8 root-level
-    /// `brink.toml` that `discover_from_entry_in_tree` would never even
-    /// look at (the nearer `stories/ch1/brink.toml` shadows it) turns a
-    /// load that used to succeed into a `Failed` one. This fails on that
-    /// code path and only passes once the probe skips a decode error on a
-    /// candidate found *after* a decodable one already landed.
+    /// w-review regression, retained post-#1439: an *undecodable* farther
+    /// ancestor `brink.toml` must not fail a load whose nearest, decodable
+    /// candidate is the one that actually governs. As of #1439,
+    /// `probe_brink_toml` stops at the first (nearest) candidate it finds,
+    /// so the farther, non-UTF-8 root-level `brink.toml` here is never even
+    /// fetched — the load succeeds simply because that file is never read,
+    /// not because of a decode-error-skipping branch (that guard was
+    /// removed by #1439; see `probe_brink_toml`'s doc). This test is kept
+    /// as a regression guard for the outcome — a farther, shadowed,
+    /// undecodable candidate must never be able to fail a load — even
+    /// though the mechanism that guarantees it changed.
     #[test]
     fn undecodable_farther_ancestor_brink_toml_does_not_fail_the_load() {
         let (mut app, dir) = make_memory_asset_app();
@@ -1183,6 +1210,28 @@ mod config_discovery_tests {
             .resource::<AssetServer>()
             .load::<BrinkStoryAsset>("stories/ch1/intro.ink");
         wait_for_loaded(&mut app, &handle);
+    }
+
+    /// w-review regression: the mirror of
+    /// `undecodable_farther_ancestor_brink_toml_does_not_fail_the_load`
+    /// above — an *undecodable nearest* `brink.toml` must fail the load,
+    /// since it is the candidate that governs and `probe_brink_toml`
+    /// propagates its `String::from_utf8` error rather than silently
+    /// treating it as "no config" or falling through to a farther ancestor.
+    #[test]
+    fn undecodable_nearest_brink_toml_fails_the_load() {
+        let (mut app, dir) = make_memory_asset_app();
+        dir.insert_asset_text(Path::new("stories/ch1/intro.ink"), BRINK_ONLY_SOURCE);
+        // Invalid UTF-8 (a lone continuation byte) at the *nearest* level --
+        // this candidate governs, so an undecodable read here must fail the
+        // load rather than being skipped.
+        dir.insert_asset(Path::new("stories/ch1/brink.toml"), vec![0x80_u8]);
+
+        let handle = app
+            .world()
+            .resource::<AssetServer>()
+            .load::<BrinkStoryAsset>("stories/ch1/intro.ink");
+        wait_for_failed(&mut app, &handle);
     }
 
     #[test]
