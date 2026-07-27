@@ -261,6 +261,7 @@ fn empty_hir() -> HirFile {
         imports: Vec::new(),
         visibility: Vec::new(),
         was_directives: Vec::new(),
+        allow_scopes: Vec::new(),
     }
 }
 

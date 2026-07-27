@@ -590,6 +590,10 @@ mod diagnostic_to_js_tests {
             file: brink_ir::FileId(0),
             range: rowan::TextRange::new(rowan::TextSize::from(0), rowan::TextSize::from(1)),
             message: "test".to_owned(),
+            // `diagnostic_to_js` never reads this field — it renders
+            // `effective_severity(d.code, ...)` instead (issue #1367) — so
+            // the value here is a placeholder, not a fixture under test.
+            severity: code.severity(),
             code,
         }
     }
@@ -614,6 +618,30 @@ mod diagnostic_to_js_tests {
             .insert("E014".to_owned(), brink_analyzer::LintLevel::Deny);
         let overridden = diagnostic_to_js(&d, "x", brink_analyzer::TypePolicy::Gradual, &lints);
         assert_eq!(overridden.severity, "Error");
+    }
+
+    /// #1162: a `[lints] E014 = "info"`/`"hint"` override must render the
+    /// new advisory tiers through the wasm boundary, not just error/warning —
+    /// `diagnostic_to_js` renders `effective_severity` via `{:?}`, so this
+    /// also locks in that the new `Severity` variants keep their `Info`/
+    /// `Hint` `Debug` spelling.
+    #[test]
+    fn diagnostic_to_js_renders_info_and_hint_tiers() {
+        let d = diag(brink_ir::DiagnosticCode::E014);
+
+        let mut info_lints = brink_analyzer::LintPolicy::default();
+        info_lints
+            .overrides
+            .insert("E014".to_owned(), brink_analyzer::LintLevel::Info);
+        let info = diagnostic_to_js(&d, "x", brink_analyzer::TypePolicy::Gradual, &info_lints);
+        assert_eq!(info.severity, "Info");
+
+        let mut hint_lints = brink_analyzer::LintPolicy::default();
+        hint_lints
+            .overrides
+            .insert("E014".to_owned(), brink_analyzer::LintLevel::Hint);
+        let hint = diagnostic_to_js(&d, "x", brink_analyzer::TypePolicy::Gradual, &hint_lints);
+        assert_eq!(hint.severity, "Hint");
     }
 }
 

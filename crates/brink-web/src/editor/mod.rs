@@ -270,8 +270,9 @@ impl EditorSession {
     }
 
     /// Set explicit CLI/API-tier per-code lint-level overrides from a JSON
-    /// object `{ "<CODE>": "deny" | "warn" | "allow" }` (issue #1417) —
-    /// the wasm/editor counterpart of `brink compile`'s repeatable
+    /// object `{ "<CODE>": "deny" | "warn" | "allow" | "info" | "hint" }`
+    /// (issue #1417; `"info"`/`"hint"` added by issue #1162) — the
+    /// wasm/editor counterpart of `brink compile`'s repeatable
     /// `--deny`/`--warn`/`--allow <CODE>` flags (#1373) and `brink-lsp`'s
     /// `initializationOptions.lints`, extending the same
     /// `AnalysisOptions::apply_lint_overrides` seam those two established
@@ -289,8 +290,8 @@ impl EditorSession {
     /// never silently drop a previously-set explicit override.
     ///
     /// Errors only on malformed JSON. An unrecognized per-code level
-    /// string (anything but `"deny"`/`"warn"`/`"allow"`) and an
-    /// unrecognized/non-overridable diagnostic code are never hard
+    /// string (anything but `"deny"`/`"warn"`/`"allow"`/`"info"`/`"hint"`)
+    /// and an unrecognized/non-overridable diagnostic code are never hard
     /// errors — both are reported as warning strings in the returned JSON
     /// array (a `string[]`), the same "warn, never silently drop" channel
     /// `apply_project_config` already uses. Re-analyzes immediately.
@@ -310,8 +311,14 @@ impl EditorSession {
                 "allow" => {
                     overrides.insert(code, brink_analyzer::LintLevel::Allow);
                 }
+                "info" => {
+                    overrides.insert(code, brink_analyzer::LintLevel::Info);
+                }
+                "hint" => {
+                    overrides.insert(code, brink_analyzer::LintLevel::Hint);
+                }
                 other => warnings.push(format!(
-                    "[lints] `{code}` has unrecognized level `{other}` (expected \"allow\" | \"warn\" | \"deny\"); ignored"
+                    "[lints] `{code}` has unrecognized level `{other}` (expected \"allow\" | \"warn\" | \"deny\" | \"info\" | \"hint\"); ignored"
                 )),
             }
         }
@@ -3519,6 +3526,49 @@ mod tests {
             .and_then(|w| w.iter().find(|d| d["code"] == "E014"))
             .map(|d| d["severity"].clone());
         assert_eq!(severity, Some(serde_json::json!("Error")));
+    }
+
+    /// #1162: `set_lint_overrides({"E014":"hint"})` must down-level E014 to
+    /// `Hint` — unlike `deny`, this must NOT fail the compile (`Info`/`Hint`
+    /// stay non-blocking exactly like the `Warning` they're demoted from).
+    #[test]
+    fn set_lint_overrides_hint_relevels_e014_and_still_compiles() {
+        let source = "~\nHello.\n-> DONE\n";
+
+        let mut s = EditorSession::new();
+        s.update_file("main.ink", source);
+
+        let warnings = s
+            .set_lint_overrides(r#"{"E014":"hint"}"#)
+            .expect("valid lint overrides");
+        assert_eq!(warnings, "[]", "a valid overridable code earns no warning");
+
+        let after = json(&s.compile_project("main.ink"));
+        assert_eq!(
+            after["ok"],
+            serde_json::json!(true),
+            "set_lint_overrides({{\"E014\":\"hint\"}}) must stay non-blocking: {after}"
+        );
+        let severity = after["warnings"]
+            .as_array()
+            .and_then(|w| w.iter().find(|d| d["code"] == "E014"))
+            .map(|d| d["severity"].clone());
+        assert_eq!(severity, Some(serde_json::json!("Hint")));
+    }
+
+    /// #1162: an unrecognized per-code level string must still be reported
+    /// through the same warning channel now that there are five valid
+    /// strings instead of three.
+    #[test]
+    fn set_lint_overrides_unrecognized_level_is_reported_and_ignored() {
+        let mut s = EditorSession::new();
+        let warnings = s
+            .set_lint_overrides(r#"{"E014":"sideways"}"#)
+            .expect("malformed-level JSON is still well-formed JSON");
+        assert!(
+            warnings.contains("sideways") && warnings.contains("E014"),
+            "unrecognized level must be named in the returned warning: {warnings}"
+        );
     }
 
     #[test]

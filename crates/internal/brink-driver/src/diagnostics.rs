@@ -8,7 +8,11 @@ use brink_ir::{Diagnostic, FileId};
 pub struct DiagnosticReport {
     /// Diagnostics with `Severity::Error`.
     pub errors: Vec<Diagnostic>,
-    /// Diagnostics with `Severity::Warning`.
+    /// Everything else — `Severity::Warning`, and (issue #1162) a
+    /// `Warning`-default code down-leveled by `[lints]` to `Severity::Info`
+    /// or `Severity::Hint` still bisects into this bucket: partitioning is
+    /// binary (`effective_severity(...) == Error` or not), not a per-tier
+    /// split.
     pub warnings: Vec<Diagnostic>,
 }
 

@@ -451,6 +451,12 @@ fn hir_file_heap(hir: &HirFile) -> usize {
         + vec_heap(&hir.imports)
         + vec_heap(&hir.visibility)
         + vec_heap(&hir.was_directives)
+        + vec_heap(&hir.allow_scopes)
+        + hir
+            .allow_scopes
+            .iter()
+            .map(|s| vec_heap(&s.codes))
+            .sum::<usize>()
 }
 
 pub(crate) fn lowered_file_heap_size(value: &LoweredFile) -> usize {
@@ -636,6 +642,41 @@ mod tests {
             text: text.to_string(),
             range: rowan::TextRange::new(rowan::TextSize::new(0), rowan::TextSize::new(1)),
         }
+    }
+
+    /// Regression for the native `@[allow(Exxx, …)]` suppression-scope HIR
+    /// field (`HirFile::allow_scopes`, issue #1161): `hir_file_heap` must
+    /// count it — same precedent as `was_directives` (a `Vec<TextRange>`
+    /// added by an earlier annotation PR) that this field sits right next
+    /// to. Uses the real native lower (`hir::lower_native::lower`) rather
+    /// than a hand-built `HirFile`, since `allow_scopes` is only ever
+    /// populated by that frontend.
+    #[test]
+    fn hir_file_heap_counts_allow_scopes() {
+        let empty_src = "var gold = 0\n";
+        let scoped_src = "@[allow(E014)]\nvar gold = 0\n";
+
+        let empty_parse = brink_syntax_native::parse(empty_src);
+        let scoped_parse = brink_syntax_native::parse(scoped_src);
+        assert!(empty_parse.errors().is_empty());
+        assert!(scoped_parse.errors().is_empty());
+
+        let (empty_hir, _, empty_diags) =
+            brink_ir::hir::lower_native::lower(brink_ir::FileId(0), &empty_parse.tree());
+        let (scoped_hir, _, scoped_diags) =
+            brink_ir::hir::lower_native::lower(brink_ir::FileId(0), &scoped_parse.tree());
+        assert!(empty_diags.is_empty());
+        assert!(scoped_diags.is_empty());
+        assert!(empty_hir.allow_scopes.is_empty());
+        assert_eq!(scoped_hir.allow_scopes.len(), 1);
+
+        let empty_size = hir_file_heap(&empty_hir);
+        let scoped_size = hir_file_heap(&scoped_hir);
+        assert!(
+            scoped_size > empty_size,
+            "expected the allow scope's codes Vec to grow the heap estimate: \
+             empty={empty_size} scoped={scoped_size}"
+        );
     }
 
     /// Regression for the two-binding `for k, v in m` HIR field

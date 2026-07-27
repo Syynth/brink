@@ -1,0 +1,15 @@
+var gold = 7
+
+@[allow(E014)]
+var mood = 0
+
+@[allow(E151, E152)]
+@[effects(reads(gold, mood))]
+flow main() {
+  Purse: {gold} coins.
+  @[allow(E035)]
+  flow tally() {
+    Mood: {mood} -> END
+  }
+  -> tally
+}

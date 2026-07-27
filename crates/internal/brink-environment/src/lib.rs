@@ -501,11 +501,17 @@ pub fn compile(env: &Environment) -> Result<CompileOutput, CompileError> {
 
 /// Resolve `FileId`-keyed diagnostics to path-carrying [`ResolvedDiagnostic`]s
 /// while the db is still alive (it owns the `FileId`→path map). Mirrors
-/// `brink-compiler`'s own resolution, using only the public `ProjectDb` API.
+/// `brink-compiler`'s own resolution, using only the public `ProjectDb` API —
+/// including resolving `severity` through `brink_driver::effective_severity`
+/// against the db's own `AnalysisOptions`, same as the mirrored function
+/// (issue #1162), so the two never drift on which severity a diagnostic
+/// carries.
 fn resolve_diagnostics(
     db: &brink_driver::ProjectDb,
     diags: Vec<Diagnostic>,
 ) -> Vec<ResolvedDiagnostic> {
+    let opts = db.analysis_options();
+    let types = opts.type_policy();
     diags
         .into_iter()
         .map(|d| ResolvedDiagnostic {
@@ -513,6 +519,7 @@ fn resolve_diagnostics(
             file: d.file,
             range: d.range,
             message: d.message,
+            severity: brink_driver::effective_severity(d.code, types, &opts.lints),
             code: d.code,
         })
         .collect()

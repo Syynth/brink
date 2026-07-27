@@ -840,15 +840,16 @@ fn explicit_initialization_bool(params: &InitializeParams, key: &str) -> Option<
 /// lint-level override map (issue #1417), the LSP's counterpart of the
 /// CLI's repeatable `--deny`/`--warn`/`--allow <CODE>` flags (#1373) and
 /// `BrinkPlugin::with_config`'s `ProjectConfig.lints` (#1394). Accepts a
-/// JSON object `{ "<CODE>": "deny" | "warn" | "allow" }` — the same three
-/// strings a `brink.toml` `[lints]` table accepts
-/// (`brink_project_config::parse_lint_level`). A missing key resolves to no
-/// overrides at all (an empty map, the same as never setting the field). A
-/// present but non-object value, or a per-code value that isn't one of the
-/// three recognized strings, is skipped with a `tracing::warn!` — the same
-/// "warn, never silently drop" channel [`resolve_language_options`] already
-/// uses for a `brink.toml`'s own unknown keys — rather than resolving to a
-/// hard `initialize` failure; the real code/overridability validation still
+/// JSON object `{ "<CODE>": "deny" | "warn" | "allow" | "info" | "hint" }`
+/// — the same five strings a `brink.toml` `[lints]` table accepts
+/// (`brink_project_config::parse_lint_level`; `"info"`/`"hint"` added by
+/// issue #1162). A missing key resolves to no overrides at all (an empty
+/// map, the same as never setting the field). A present but non-object
+/// value, or a per-code value that isn't one of the five recognized
+/// strings, is skipped with a `tracing::warn!` — the same "warn, never
+/// silently drop" channel [`resolve_language_options`] already uses for a
+/// `brink.toml`'s own unknown keys — rather than resolving to a hard
+/// `initialize` failure; the real code/overridability validation still
 /// happens once, downstream, in
 /// `AnalysisOptions::apply_lint_overrides` (#1160's `validate_lint_code`
 /// gate).
@@ -876,9 +877,15 @@ fn explicit_initialization_lints(params: &InitializeParams) -> BTreeMap<String, 
             Some("allow") => {
                 lints.insert(code.clone(), LintLevel::Allow);
             }
+            Some("info") => {
+                lints.insert(code.clone(), LintLevel::Info);
+            }
+            Some("hint") => {
+                lints.insert(code.clone(), LintLevel::Hint);
+            }
             _ => {
                 tracing::warn!(
-                    "initializationOptions.lints.{code}: expected \"allow\" | \"warn\" | \"deny\", ignored"
+                    "initializationOptions.lints.{code}: expected \"allow\" | \"warn\" | \"deny\" | \"info\" | \"hint\", ignored"
                 );
             }
         }

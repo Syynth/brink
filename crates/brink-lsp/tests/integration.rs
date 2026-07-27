@@ -1316,6 +1316,33 @@ fn init_options_lints_deny_wins_over_conflicting_brink_toml_allow() {
     );
 }
 
+/// #1162: `initializationOptions.lints.E014 = "hint"` must publish
+/// `DiagnosticSeverity::HINT` (LSP wire value `4`) end to end — the same
+/// real-process assertion `init_options_lints_deny_promotes_published_severity_to_error`
+/// makes for `deny`/`Error`, now covering the new advisory tier's LSP entry
+/// point (`explicit_initialization_lints`, not just `brink.toml`'s
+/// `[lints]` table).
+#[test]
+fn init_options_lints_hint_publishes_hint_severity() {
+    let root = unique_tmp_dir("init-lints-hint");
+    std::fs::create_dir_all(&root).unwrap();
+
+    let diags = diagnostics_for_uri_settled_with_init_options(
+        &root,
+        E014_PROBE_SOURCE,
+        json!({ "lints": { "E014": "hint" } }),
+    );
+
+    std::fs::remove_dir_all(&root).unwrap();
+
+    assert_eq!(
+        e014_severity(&diags),
+        Some(4),
+        "initializationOptions.lints.E014 = hint should publish DiagnosticSeverity::HINT \
+         (wire value 4), got: {diags:?}"
+    );
+}
+
 // ── #1055: malformed brink.toml diagnostic + live reload ───────────────
 //
 // Two related gaps closed together (see `backend.rs`): (1) a malformed

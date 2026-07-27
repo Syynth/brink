@@ -1,0 +1,2 @@
+Purse: 7 coins.
+Mood: 0
