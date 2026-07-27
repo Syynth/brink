@@ -1114,10 +1114,17 @@ fn use_tree_malformed_missing_path_does_not_commit() {
     let src = "use ::foo;\n";
     let p = assert_lossless(src);
     // No error from the parser — the line is treated as prose, not a broken USE_DECL.
-    assert!(p.errors().is_empty(), "no parser errors expected, got: {:?}", p.errors());
+    assert!(
+        p.errors().is_empty(),
+        "no parser errors expected, got: {:?}",
+        p.errors()
+    );
     // No USE_DECL node is created at all.
     let decl: Option<ast::UseDecl> = find_child(&p.syntax());
-    assert!(decl.is_none(), "no USE_DECL should be created for `use ::foo;`");
+    assert!(
+        decl.is_none(),
+        "no USE_DECL should be created for `use ::foo;`"
+    );
 }
 
 #[test]
