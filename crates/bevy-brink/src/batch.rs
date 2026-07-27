@@ -13,8 +13,9 @@
 //! Together they make the drivers **byte-identical** by construction (the
 //! determinism law): the parallel driver only moves the Step *loop* onto
 //! [`ComputeTaskPool`](bevy_tasks::ComputeTaskPool); every flow still steps
-//! against a private frame-start clone, so thread interleaving cannot affect
-//! any outcome, and Apply flushes in flow-id order either way.
+//! against its own read-only view of the frame-start world and writes only
+//! into its own buffer, so thread interleaving cannot affect any outcome, and
+//! Apply flushes in flow-id order either way.
 //!
 //! ## What batch mode changes
 //!
@@ -36,7 +37,7 @@
 //!   turn (a peer's same-frame write is *not* visible — it lands next frame,
 //!   double-buffered / simulation-tick semantics); World-scoped writes and
 //!   command triggers **buffer** per flow instead of applying immediately.
-//!   Because each flow reads only the frame-start snapshot plus its own
+//!   Because each flow reads only the frame-start state plus its own
 //!   buffered writes, its produced lines and its buffer are a pure function
 //!   of (frame-start, that flow's own parked state) — **independent of the
 //!   order flows are stepped in**. That is the order-invariance property BH-2
@@ -68,12 +69,13 @@
 //!   still park (`AwaitingExternal`); a parked flow is simply left for the
 //!   plugin's existing resolver and re-collected next batch. §12.3 prefetch
 //!   (synchronous world reads under a held borrow) is a later slice.
-//! - **Per-flow snapshot clone.** Both drivers step each flow against a
-//!   private clone of the frame-start world. BH-3 parallelizes *that* Step
-//!   (the clone is what makes the concurrent step trivially race-free); §12.2's
-//!   "borrow, don't copy" (one `UnsafeWorldCell` scope over the *shared* world,
-//!   no clones) is a further optimization that trades this clone for a
-//!   narrower, rows-proven borrow — a later slice.
+//! - **Borrowed frame-start reads (§12.2, #937).** Both drivers step each
+//!   flow through a [`FrameStartView`] — a shared-immutable *borrow* of the
+//!   frame-start world plus a private write overlay — not a per-flow clone.
+//!   That is what makes the concurrent Step trivially race-free (no task
+//!   writes shared state) at `O(1)` per flow instead of `O(world size)`.
+//!   §12.3 **prefetch** (synchronous world reads served under the same held
+//!   borrow) remains a later slice; see "No prefetch" above.
 //!
 //! ## Capability bookkeeping (BH-1 wiring)
 //!
@@ -96,8 +98,8 @@ use bevy_ecs::system::{Commands, Query, Res, ResMut};
 use bevy_log::warn;
 use brink_format::{DefinitionId, LineEntry, Value};
 use brink_runtime::{
-    ContextAccess, DriveOutcome, ExternalFnHandler, FallbackHandler, FastRng, FlowInstance, Line,
-    Program, RuntimeError, Scope, World, WorldPolicy, WriteObserver,
+    ContextAccess, DriveOutcome, ExternalFnHandler, FallbackHandler, FastRng, FlowInstance,
+    FrameStartView, Line, Program, RuntimeError, Scope, World, WorldPolicy, WriteObserver,
 };
 
 use crate::asset::{BrinkProgram, LineTablesAsset, ProgramAsset};
@@ -380,12 +382,22 @@ pub(crate) fn aggregate_access(table: &ContainerAccessTable) -> Access {
 /// is never silently folded into a normal terminal outcome: the caller must
 /// surface it (log + distinct bookkeeping), not count it as a stepped flow.
 ///
-/// The flow steps against a **private clone** of `frame_start` wrapped in an
+/// The flow steps against a **borrowed** view of `frame_start` — a
+/// [`FrameStartView`], wrapped in an
 /// [`ObservedContext`](brink_runtime::ObservedContext): reads resolve against
-/// the clone (frame-start ⊕ this flow's own already-buffered writes — never a
-/// peer's), writes mutate the clone (so the flow reads them back) *and* record
-/// into `buf`. The clone is discarded; only `buf` (the ordered changeset)
-/// survives to Apply.
+/// frame-start ⊕ this flow's own already-buffered writes (never a peer's),
+/// writes land in the view's private overlay (so the flow reads them back)
+/// *and* record into `buf`. The overlay is discarded; only `buf` (the ordered
+/// changeset) survives to Apply.
+///
+/// The view **borrows** `frame_start` shared-immutably rather than cloning it
+/// (§12.2 "borrow, don't copy"; issue #937). Both properties the phase model
+/// rests on survive that swap unchanged, because the view is observationally
+/// identical to the clone it replaces (`brink_runtime`'s
+/// `equivalent_to_stepping_against_a_private_clone`): the flow still cannot
+/// see a peer's same-turn write, and it still cannot mutate the shared world
+/// during Step. What changes is only the cost — `O(1)` to open plus `O(cells
+/// this flow wrote)`, instead of `O(world size)` per flow per turn.
 fn step_flow(
     frame_start: &World,
     flow: &mut FlowInstance,
@@ -394,7 +406,7 @@ fn step_flow(
     handler: &dyn ExternalFnHandler,
     buf: &mut WriteBuffer,
 ) -> (Vec<Line>, bool, Option<RuntimeError>) {
-    let mut scratch = frame_start.clone();
+    let mut scratch = FrameStartView::new(frame_start);
     let mut observed = brink_runtime::ObservedContext::new(&mut scratch, buf);
     let mut budget = FlowInstance::LINE_LIMIT;
     match flow.drive::<FastRng>(
