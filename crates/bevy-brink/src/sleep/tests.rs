@@ -2248,9 +2248,11 @@ fn a_direct_host_write_still_wakes_a_flow_with_a_precise_row() {
 /// `BrinkWorldDelta::drain`'s tick comparison, from "nothing happened after
 /// this Apply". A precise-row sleeper reading the cell the observer wrote was
 /// then never dirtied. Observers on `BrinkTurnDone<M>` writing
-/// `BrinkGlobals<M>` are the documented ink→engine global-write pattern (the
-/// plugin's own `gc_on_turn_done` takes the same `ResMut<BrinkGlobals<M>>`
-/// shape), so this must hold for them.
+/// `BrinkGlobals<M>` are the documented ink→engine global-write pattern, so
+/// this must hold for them. (The plugin's own `gc_on_turn_done` takes the
+/// same `ResMut<BrinkGlobals<M>>` shape but is *not* an example of one: it
+/// only reads, and since #1632 it bypasses change detection so it never
+/// manufactures this signal at all.)
 ///
 /// The sleeper here carries a [`BrinkProgram`] but **no** `BrinkFlow` —
 /// deliberately kept out of any driver's Collect. This is a pre-existing,
