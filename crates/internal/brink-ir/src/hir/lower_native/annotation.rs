@@ -12,7 +12,7 @@
 //!
 //! # What is ruled, and what is not
 //!
-//! Only two annotation names have a ruled native meaning today:
+//! Three annotation names have a ruled native meaning today:
 //!
 //! - **`effects`** — `@[effects(pure, silent, total, reads(a), writes(b),
 //!   calls(c))]`, the assertion final form (`docs/effects-spec.md` §10,
@@ -23,6 +23,14 @@
 //! - **`was`** — the file-level module-rename record, already delivered by
 //!   [`super::module`] (issue #1286/#1355). This module only keeps it out of
 //!   the unknown-name error and rejects it at non-file-level positions.
+//! - **`allow`** — `@[allow(E151, E014)]`, source-level diagnostic
+//!   suppression scoped to the annotated declaration (issue #1161; the
+//!   issue's own framing: "the `@[…]` directive namespace … is the ruled
+//!   home for suppression"). Warning-tier codes only; see
+//!   [`allow_scopes`] for the three ways it is rejected and
+//!   [`crate::suppressions`] for the filter and the
+//!   source-`allow`-beats-project-`deny` ordering. **This module delivers
+//!   it.**
 //!
 //! Everything else the specs mention is either *deferred* or *not yet ruled
 //! for a native declaration*, and is deliberately NOT invented here:
@@ -31,8 +39,8 @@
 //! lowering channel), a per-*declaration* `@[was(old_name)]` rename (ink's
 //! `#@was` on a knot, `docs/modules-spec.md` §5 — no native ruling, and it
 //! would need the alias-table half too), and `directive-annotations-spec.md`
-//! §6's explicitly non-normative future tenants (`@world`, `@returns`,
-//! `@notranslate`, `@maxlen`, `@deprecated`, `@allow`, …). All of them land
+//! §6's remaining non-normative future tenants (`@world`, `@returns`,
+//! `@notranslate`, `@maxlen`, `@deprecated`, …). All of them land
 //! on `E111`, which is the reserved-namespace rule (§1.1) working as
 //! designed: an unknown annotation is loud, never a silent no-op.
 //!
@@ -63,7 +71,8 @@ use brink_syntax_native::ast::{self, AstNode as _};
 use rowan::TextRange;
 
 use crate::hir::FileId;
-use crate::{Diagnostic, DiagnosticCode, EffectsAssertion};
+use crate::suppressions::AllowScope;
+use crate::{Diagnostic, DiagnosticCode, EffectsAssertion, Severity};
 
 use super::SyntaxNode;
 
@@ -73,6 +82,9 @@ const EFFECTS: &str = "effects";
 /// The module-rename annotation name — consumed by [`super::module`] at file
 /// level; named here only so it is not reported as an unknown name.
 const WAS: &str = "was";
+
+/// The source-level diagnostic-suppression annotation name (issue #1161).
+const ALLOW: &str = "allow";
 
 fn diag(file: FileId, range: TextRange, code: DiagnosticCode) -> Diagnostic {
     Diagnostic {
@@ -191,6 +203,14 @@ fn is_consumed_position(name: &str, line: &SyntaxNode) -> bool {
                 _ => false,
             }
         }),
+        // A suppression scope is the annotated declaration's own span, so
+        // any declaration this annotation can sit above is a consumed
+        // placement — unlike `effects`, nothing downstream has to be able
+        // to *lower* the target for the scope to be meaningful (an
+        // `@[allow]` over a construct that itself only produces `E129` is
+        // still a well-formed scope; it just cannot silence that error).
+        // Only a trailing annotation with nothing after it is misplaced.
+        ALLOW => attached_declaration(line).is_some(),
         _ => false,
     }
 }
@@ -208,11 +228,114 @@ pub(super) fn handle_line(file_id: FileId, node: &SyntaxNode, diags: &mut Vec<Di
         return;
     };
     let range = node.text_range();
-    if !matches!(name.text(), EFFECTS | WAS) {
+    if !matches!(name.text(), EFFECTS | WAS | ALLOW) {
         diags.push(diag(file_id, range, DiagnosticCode::E111));
     } else if !is_consumed_position(name.text(), node) {
         diags.push(diag(file_id, range, DiagnosticCode::E112));
     }
+}
+
+/// Collect every `@[allow(Exxx, …)]` suppression scope in the file (issue
+/// #1161), diagnosing the malformed ones.
+///
+/// A whole-tree walk rather than an owner lookback, because the *owner* of a
+/// suppression scope is not a HIR node at all — the scope is a `(span,
+/// codes)` fact about the file that [`crate::suppressions::apply_suppressions`]
+/// consumes, and it must be collected identically whether the annotation sits
+/// above a top-level `fn`, a nested `flow`, or a `var` inside a body. The
+/// placement/erasure half still runs through [`handle_line`] like every other
+/// annotation, so a *misplaced* `@[allow]` is `E112` there and is skipped
+/// here (no double report, no scope recorded for it).
+///
+/// Three ways an `@[allow]` fails, all hard errors so a suppression that does
+/// nothing can never be silent (the `@`-namespace rule,
+/// `docs/directive-annotations-spec.md` §1.1):
+///
+/// - `E155` — no argument list, an empty one, or an argument that is not a
+///   bare identifier (a string, a nested clause);
+/// - `E153` — an identifier that is not a known diagnostic code (a typo);
+/// - `E154` — a known code whose default severity is `Error`, which is not
+///   suppressible at any tier.
+///
+/// A line with any of these produces no scope at all: partial silencing off a
+/// broken directive would be worse than none.
+pub(super) fn allow_scopes(
+    file_id: FileId,
+    root: &SyntaxNode,
+    diags: &mut Vec<Diagnostic>,
+) -> Vec<AllowScope> {
+    let mut out = Vec::new();
+    for node in root.descendants() {
+        if node.kind() != N::ANNOTATION_LINE {
+            continue;
+        }
+        let Some(line) = ast::AnnotationLine::cast(node.clone()) else {
+            continue;
+        };
+        if line.name_token().is_none_or(|t| t.text() != ALLOW) {
+            continue;
+        }
+        // Misplaced — `handle_line` already reported `E112`.
+        let Some(target) = attached_declaration(&node) else {
+            continue;
+        };
+        if let Some(codes) = parse_allow(file_id, &line, node.text_range(), diags) {
+            out.push(AllowScope {
+                range: target.text_range(),
+                codes,
+            });
+        }
+    }
+    out
+}
+
+/// Parse and validate one `@[allow(…)]` line's argument list into the codes
+/// it silences. `None` (with a diagnostic pushed) when the line is malformed
+/// in any of the three ways [`allow_scopes`] documents.
+fn parse_allow(
+    file_id: FileId,
+    line: &ast::AnnotationLine,
+    range: TextRange,
+    diags: &mut Vec<Diagnostic>,
+) -> Option<Vec<DiagnosticCode>> {
+    let Some(args) = line.args() else {
+        diags.push(diag(file_id, range, DiagnosticCode::E155));
+        return None;
+    };
+
+    let mut codes = Vec::new();
+    let mut ok = true;
+    let mut any = false;
+    for arg in args.args() {
+        any = true;
+        // A bare identifier and nothing else: no nested clause, no literal.
+        let name = match arg.name_token() {
+            Some(t) if arg.nested_args().is_none() => t,
+            _ => {
+                diags.push(diag(file_id, range, DiagnosticCode::E155));
+                ok = false;
+                continue;
+            }
+        };
+        let Some(code) = DiagnosticCode::from_str_code(name.text()) else {
+            diags.push(diag(file_id, name.text_range(), DiagnosticCode::E153));
+            ok = false;
+            continue;
+        };
+        if code.severity() != Severity::Warning {
+            diags.push(diag(file_id, name.text_range(), DiagnosticCode::E154));
+            ok = false;
+            continue;
+        }
+        codes.push(code);
+    }
+
+    if !any {
+        // `@[allow()]` — parses, silences nothing.
+        diags.push(diag(file_id, range, DiagnosticCode::E155));
+        return None;
+    }
+    ok.then_some(codes)
 }
 
 /// Read the `@[effects(…)]` assertion attached to `decl` (a `flow`/`fn`

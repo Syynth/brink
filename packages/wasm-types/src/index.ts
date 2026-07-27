@@ -11,7 +11,7 @@ export interface Diagnostic {
   start: number;
   end: number;
   message: string;
-  severity: "Error" | "Warning";
+  severity: "Error" | "Warning" | "Info" | "Hint";
   /**
    * Structured diagnostic code, e.g. `"E065"` (issue #1004). Lets consumers
    * filter or group diagnostics programmatically instead of string-matching
@@ -631,7 +631,7 @@ export interface CrossFileEdit {
 /** One entry in a structural op's breakage report — a diagnostic the op would
  * introduce. Locations are 1-based, matching the editor's status surfaces. */
 export interface RenameDiagnostic {
-  severity: "error" | "warning";
+  severity: "error" | "warning" | "info" | "hint";
   /** Stable diagnostic code, e.g. `E022`. */
   code: string;
   message: string;

@@ -338,6 +338,24 @@ fn run_command(command: Commands) -> ExitCode {
     }
 }
 
+/// Log one non-fatal compile diagnostic at the `tracing` level matching its
+/// actual resolved severity (`ResolvedDiagnostic::severity`, issue #1162) —
+/// a `[lints]` code down-leveled to `info`/`hint` must render at the
+/// matching tier here rather than every `CompileOutput::warnings` entry
+/// printing as `warn!` regardless of what it actually resolved to.
+/// `Severity::Error` doesn't occur in practice (`CompileOutput::warnings`
+/// never carries an error-severity entry — those fail the compile via
+/// `CompileError::Diagnostics` instead), but the match stays exhaustive
+/// rather than assuming that invariant here too.
+fn log_diagnostic(d: &brink_compiler::ResolvedDiagnostic) {
+    match d.severity {
+        brink_ir::Severity::Error => tracing::error!("[{}] {}", d.code.as_str(), d.message),
+        brink_ir::Severity::Warning => tracing::warn!("[{}] {}", d.code.as_str(), d.message),
+        brink_ir::Severity::Info => tracing::info!("[{}] {}", d.code.as_str(), d.message),
+        brink_ir::Severity::Hint => tracing::debug!("[{}] {}", d.code.as_str(), d.message),
+    }
+}
+
 /// Build the #1306 [`Environment`](brink_environment::Environment) for `entry`
 /// and run the pure compile over it — `Project::load` → `compile(&env)`, the
 /// one path every `brink compile`/`convert`/`play`/`replay`/`export-xliff`
@@ -369,24 +387,6 @@ fn run_command(command: Commands) -> ExitCode {
 /// producer, never treated as errors (forward compat / #1160).
 ///
 /// [`native_source_root`]: brink_driver::native_source_root
-/// Log one non-fatal compile diagnostic at the `tracing` level matching its
-/// actual resolved severity (`ResolvedDiagnostic::severity`, issue #1162) —
-/// a `[lints]` code down-leveled to `info`/`hint` must render at the
-/// matching tier here rather than every `CompileOutput::warnings` entry
-/// printing as `warn!` regardless of what it actually resolved to.
-/// `Severity::Error` doesn't occur in practice (`CompileOutput::warnings`
-/// never carries an error-severity entry — those fail the compile via
-/// `CompileError::Diagnostics` instead), but the match stays exhaustive
-/// rather than assuming that invariant here too.
-fn log_diagnostic(d: &brink_compiler::ResolvedDiagnostic) {
-    match d.severity {
-        brink_ir::Severity::Error => tracing::error!("[{}] {}", d.code.as_str(), d.message),
-        brink_ir::Severity::Warning => tracing::warn!("[{}] {}", d.code.as_str(), d.message),
-        brink_ir::Severity::Info => tracing::info!("[{}] {}", d.code.as_str(), d.message),
-        brink_ir::Severity::Hint => tracing::debug!("[{}] {}", d.code.as_str(), d.message),
-    }
-}
-
 fn compile_entry(
     entry: &std::path::Path,
     dialect: Option<brink_compiler::Dialect>,

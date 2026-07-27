@@ -81,6 +81,18 @@ pub struct HirFile {
     /// separately: `ModuleDecl::was` for the module, `DeclaredSymbol::was`
     /// for a definition.
     pub was_directives: Vec<TextRange>,
+    /// Source-level `@[allow(Exxx, …)]` suppression scopes (issue #1161):
+    /// one entry per well-formed `@[allow(…)]` annotation, carrying the
+    /// annotated declaration's own span and the codes it silences inside
+    /// it. Populated by the native frontend's annotation channel
+    /// (`hir::lower_native::annotation`); always empty for the ink
+    /// frontend, whose `@[…]` channel has no `allow` tenant yet.
+    ///
+    /// Consumed by [`crate::suppressions::apply_suppressions`] — the same
+    /// filter the `//brink-disable` comment channel already flows through
+    /// — via `brink-db`'s `suppressions_query`, so every diagnostic
+    /// consumer (CLI, LSP, wasm) gets the filtering from one seam.
+    pub allow_scopes: Vec<crate::suppressions::AllowScope>,
 }
 
 /// A file's explicit `#@module(name)` declaration (M-1, modules-spec §1).
@@ -2520,6 +2532,45 @@ pub enum DiagnosticCode {
     /// check, so it flows through the ordinary suppressible `diagnostics`
     /// channel and is re-levelable via the project's `[lints]` table.
     E152,
+
+    // ── `@[allow(…)]` source-level suppression (issue #1161) ───────
+    /// An `@[allow(…)]` argument is not a diagnostic code this compiler
+    /// knows (`DiagnosticCode::from_str_code` says no) — a typo like
+    /// `@[allow(E1511)]` or a name like `@[allow(dead_code)]`.
+    ///
+    /// A hard error by construction, and deliberately so: the whole point
+    /// of a suppression directive is that the author believes a diagnostic
+    /// is being silenced, so a misspelled code that silently does nothing
+    /// is the worst possible outcome (the #1374 reserved-keys lesson, and
+    /// the `@`-namespace rule in `docs/directive-annotations-spec.md` §1.1
+    /// — every `@`-mark is a valid directive in a valid placement or a hard
+    /// error).
+    E153,
+
+    /// An `@[allow(…)]` names a real diagnostic code that is **not
+    /// suppressible**: one whose default severity
+    /// ([`DiagnosticCode::severity`]) is `Error`.
+    ///
+    /// Source-level suppression only ever reaches the warning/lint tier. An
+    /// error means the compiler cannot produce a correct artifact, so
+    /// letting an annotation silence one would be a way to ship broken
+    /// code; the B0.3 admission-validator family (`E121`–`E128`) is covered
+    /// by the same rule (all `Error`-severity) *and* structurally, since
+    /// admission diagnostics never route through
+    /// [`crate::suppressions::apply_suppressions`] at all. This mirrors the
+    /// `[lints]` table's own hard-error exemption (issue #1160, step 2 of
+    /// `brink_analyzer::effective_severity`): rather than curating which
+    /// `Error` codes are "safe" to relax, none of them are reachable.
+    E154,
+
+    /// An `@[allow(…)]` whose argument list is missing, empty, or not a
+    /// flat list of bare code identifiers (`@[allow]`, `@[allow()]`,
+    /// `@[allow("E151")]`, `@[allow(reads(x))]`).
+    ///
+    /// The grammar counterpart of `E100` on the `@[effects(…)]` channel:
+    /// the annotation parses as an annotation but declares nothing this
+    /// channel can act on.
+    E155,
 }
 
 impl DiagnosticCode {
@@ -2683,6 +2734,9 @@ impl DiagnosticCode {
             Self::E150 => "E150",
             Self::E151 => "E151",
             Self::E152 => "E152",
+            Self::E153 => "E153",
+            Self::E154 => "E154",
+            Self::E155 => "E155",
         }
     }
 
@@ -2832,10 +2886,10 @@ impl DiagnosticCode {
                 "`#@effects(…)` is deprecated; use the `@[effects(…)]` annotation spelling"
             }
             Self::E111 => {
-                "unknown annotation name (the `@[…]` channel recognizes `effects`, plus `was` on a native module)"
+                "unknown annotation name (the `@[…]` channel recognizes `effects`, plus `was` and `allow` on the native surface)"
             }
             Self::E112 => {
-                "annotation line outside a recognized placement (ink: top of a knot/stitch body; native: directly above a `flow`/`fn`)"
+                "annotation line outside a recognized placement (ink: top of a knot/stitch body; native: directly above a `flow`/`fn`, or above any declaration or statement for `allow`)"
             }
             Self::E113 => {
                 "reserved protocol method name (`display`/`compare`/`next` belong to the protocol registry)"
@@ -2906,6 +2960,13 @@ impl DiagnosticCode {
             }
             Self::E152 => {
                 "`contains`'s needle is statically outside the map key domain — this call always returns `false`"
+            }
+            Self::E153 => "`@[allow(…)]` names a diagnostic code this compiler does not know",
+            Self::E154 => {
+                "`@[allow(…)]` names a non-suppressible diagnostic — only warning-severity codes can be silenced at the source"
+            }
+            Self::E155 => {
+                "`@[allow(…)]` needs at least one bare diagnostic code, e.g. `@[allow(E151)]`"
             }
         }
     }
@@ -3099,6 +3160,9 @@ impl DiagnosticCode {
             "E150" => Some(Self::E150),
             "E151" => Some(Self::E151),
             "E152" => Some(Self::E152),
+            "E153" => Some(Self::E153),
+            "E154" => Some(Self::E154),
+            "E155" => Some(Self::E155),
             _ => None,
         }
     }
