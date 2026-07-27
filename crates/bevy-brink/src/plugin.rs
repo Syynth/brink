@@ -282,7 +282,7 @@ impl<M: Send + Sync + 'static> Plugin for BrinkPlugin<M> {
         //
         // `.before(advance_batch::<M>)` closes a same-frame race discovered
         // while hardening issue #1081's `WakeArming::Latch` tests: `Collect`
-        // (`advance_batch`) steps any flow whose `FlowSleep::wants_collect()`
+        // — in either driver — steps any flow whose `FlowSleep::wants_collect()`
         // is true (`state == Woken`), and only `run_flow_sleep`'s repark
         // phase clears that back to `Parked` once the woken turn reaches a
         // `Done` boundary. Without an explicit order, a host that also
