@@ -3,7 +3,10 @@
 Fill pump.js's CONFIG from these when running the pump on this repo.
 
 ## Gates
-- **Rust (default GATE)**: `cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && cargo test -p brink-test-harness --test oracle_snapshots`
+- **Rust (default GATE)**: `cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo nextest run --workspace && cargo test -p brink-test-harness --test oracle_snapshots`
+  - ⚠ **`cargo nextest run`, not `cargo test`** (measured 2026-07-28, issue #1695): identical results (6590 passed, 0 failed under both) at **35s vs 2m52s**. `cargo test` averaged **~56% CPU** — effectively running the 183 test binaries one at a time — while nextest averaged **~507%**, i.e. the process pool actually working. This is the per-round cost that multiplies across every fix cycle.
+  - **Doctests are deliberately NOT in the per-round gate.** nextest does not run them, and `cargo test --workspace --doc` costs **101s to execute exactly ONE real doctest** (21 others are `ignore`d). That belongs on a pre-merge/CI gate, not on every agent iteration. If you need it: `cargo test --workspace --doc`.
+  - Requires `cargo install cargo-nextest --locked` once (~2m07s). Already installed on the local machine.
 - **TS entries (gate override)**: `wasm-pack build crates/brink-web --target web --out-dir www/pkg && wasm-pack test --node crates/brink-web && pnpm install --frozen-lockfile && pnpm --filter @brink-lang/editor typecheck && pnpm --filter @brink-lang/studio typecheck && pnpm --filter @brink-lang/studio test && pnpm --filter @brink-lang/editor build`
 - **Demo lane (gate override)**: `cd demos/compound && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test && cd ../.. && cargo check --workspace` — oracle-free, minutes; the workspace check proves the demo stays excluded.
 - ⚠ 2026-07-18: `wasm-pack test --node` joined the TS gate because a real wasm-leg bug (PR #1017) passed both cargo test (native) and vitest (mocked) — the wasm32 target was a local blind spot.
