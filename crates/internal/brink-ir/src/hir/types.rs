@@ -929,9 +929,13 @@ pub enum Expr {
     FnLiteral(FnLiteral),
     /// `|x| expr` / `|g: Guest|: bool { … }` — an anonymous fn value
     /// (native surface, RULED 2026-07-19 "Lambdas ruled: Rust pipes under
-    /// the RustScript north star"; issue #1685). Only the native frontend
+    /// the `RustScript` north star"; issue #1685). Only the native frontend
     /// produces this shape — ink's grammar cannot spell a lambda at all.
-    Lambda(LambdaExpr),
+    ///
+    /// Boxed: a lambda carries params, an annotation and a whole body, and
+    /// leaving it inline would make every `Expr` (and so every `Stmt`,
+    /// `Content`, …) pay for the largest variant in the tree.
+    Lambda(Box<LambdaExpr>),
     /// `ref lvalue-path` — path-projection creation (brink extension, T1e,
     /// docs/t1e-spec.md §2): a symbolic `(root cell, path segments)` value.
     /// Legal only in ref-argument position (calls, `#fn(…)`, `bind(…)`);
@@ -961,7 +965,7 @@ pub struct FnLiteral {
 
 /// `|x, y| expr` / `|g: Guest|: bool { … }` / `||` — an anonymous fn value
 /// (RULED 2026-07-19, `docs/decision-log.md` "Lambdas ruled: Rust pipes
-/// under the RustScript north star"; issue #1685).
+/// under the `RustScript` north star"; issue #1685).
 ///
 /// This is the "real anonymous-body node" the native lowering's `E129`
 /// fence used to wait for. What the ruling fixes and this shape records:

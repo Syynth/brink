@@ -2,7 +2,7 @@
 //! value (issue #1685).
 //!
 //! The surface is Rust pipes with colon returns, RULED 2026-07-19
-//! (`docs/decision-log.md`, "Lambdas ruled: Rust pipes under the RustScript
+//! (`docs/decision-log.md`, "Lambdas ruled: Rust pipes under the `RustScript`
 //! north star"): `|g| g.awake` · `|g: Guest|: bool { … }` · `||`. What that
 //! ruling fixes, and where each half lands:
 //!
@@ -103,12 +103,12 @@ pub(super) fn lower_lambda(
 
     check_capture_writes(file_id, &lambda, diags);
 
-    Expr::Lambda(LambdaExpr {
+    Expr::Lambda(Box::new(LambdaExpr {
         ptr: native_provenance(file_id, NodeClass::Lambda, node),
         params,
         return_type,
         body,
-    })
+    }))
 }
 
 /// Lower a `LAMBDA_PARAMS` row to the HIR [`Param`] shape.
@@ -173,10 +173,10 @@ fn check_capture_writes(file_id: FileId, lambda: &ast::LambdaExpr, diags: &mut V
             continue;
         };
         let text = root.text().to_string();
-        if inner.iter().any(|b| *b == text) {
+        if inner.contains(&text) {
             continue;
         }
-        if outer.iter().any(|b| *b == text) {
+        if outer.contains(&text) {
             diags.push(diag(file_id, assign.text_range(), DiagnosticCode::E156));
         }
     }

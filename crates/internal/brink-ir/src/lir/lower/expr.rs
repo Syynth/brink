@@ -165,7 +165,7 @@ fn lower_lambda_fence(l: &hir::LambdaExpr, ctx: &mut LowerCtx<'_>) -> lir::Expr 
              yet — lambda lifting to a synthesized function value is a later \
              slice (issue #1685)",
             crate::DiagnosticCode::E052.title(),
-            crate::display_expr(&crate::Expr::Lambda(l.clone())),
+            crate::display_expr(&crate::Expr::Lambda(Box::new(l.clone()))),
         ),
         code: crate::DiagnosticCode::E052,
     });

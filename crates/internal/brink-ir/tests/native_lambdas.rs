@@ -2,7 +2,7 @@
 //! orphaned-ruling slice.
 //!
 //! The 2026-07-19 airport sitting ruled the whole lambda surface
-//! (`docs/decision-log.md`, "Lambdas ruled: Rust pipes under the RustScript
+//! (`docs/decision-log.md`, "Lambdas ruled: Rust pipes under the `RustScript`
 //! north star"), but `hir::lower_native::expr` kept an `E129` fence saying
 //! it was waiting for that sitting. These tests pin each half of the ruling
 //! against the real lowering:
@@ -59,7 +59,7 @@ fn first_lambda(hir: &HirFile) -> LambdaExpr {
             if let Expr::Lambda(l) = e
                 && self.0.is_none()
             {
-                self.0 = Some(l.clone());
+                self.0 = Some((**l).clone());
             }
         }
     }
@@ -282,10 +282,11 @@ fn a_lambda_carries_its_own_provenance_span() {
     let src = "var awake = |g| g.awake\n";
     let (hir, _) = lower(src);
     let lambda = match &hir.variables[0].value {
-        Expr::Lambda(l) => l.clone(),
+        Expr::Lambda(l) => (**l).clone(),
         other => panic!("expected a lambda, got {other:?}"),
     };
-    let span = brink_ir::expr_span(&Expr::Lambda(lambda.clone())).expect("lambda has a span");
+    let span =
+        brink_ir::expr_span(&Expr::Lambda(Box::new(lambda.clone()))).expect("lambda has a span");
     assert_eq!(
         &src[usize::from(span.start())..usize::from(span.end())],
         "|g| g.awake",
