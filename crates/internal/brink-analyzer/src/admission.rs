@@ -579,6 +579,21 @@ impl Collector {
                 self.check_range(ra.ptr.text_range());
                 self.walk_expr(&ra.operand);
             }
+            // A lambda (issue #1685) carries provenance of its own, so its
+            // range is admission-checked like every other provenance-
+            // carrying shape; the body's statements and value expression
+            // are walked so nothing inside escapes the check.
+            Expr::Lambda(l) => {
+                self.check_range(l.ptr.text_range());
+                if let brink_ir::LambdaBody::Block { stmts, .. } = &l.body {
+                    for s in stmts {
+                        self.walk_block_stmt(s);
+                    }
+                }
+                for e in l.body.value_exprs() {
+                    self.walk_expr(e);
+                }
+            }
         }
     }
 }

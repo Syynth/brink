@@ -199,7 +199,7 @@ inside points; `::`/`.` separator stratification + the casing partition
 `@[…]` annotations with the **paren-clause grammar** (`reads(gold, hp)` —
 the ruled form, not the drifted colon form: the D9 lesson, recognizers
 don't define the contract); `//` `/* */` trivia; lambda pipes `|x|`
-tokenized (lowering deferred, §3). The **body-dialect seam** is a parser
+tokenized (lowering landed later, in #1685 — see §3). The **body-dialect seam** is a parser
 dispatch point (prose vs code ground per container; chart #905 plugs in
 here later — Q5(a)). Whitespace never load-bearing; every structural mark
 renderer-elidable (charter §2).
@@ -359,10 +359,17 @@ path.
   construction was ruled by #1103 (2026-07-23) and built by #1464 — the
   native grammar (`CONSTRUCT_LITERAL`/`CONSTRUCT_ENTRY`) plus the
   `construct` protocol registry (`brink_ir::hir::construct`), std-only.
-- **Lambdas** — ruled (Rust pipes) but `FnLiteral` is partial application,
-  not an anonymous body; a new HIR node is semantics-adjacent work owed to
-  the code-dialect sitting's implementation round. B0.5 tokenizes pipes;
-  B0.8 does not lower them (B0.9 rejects loudly).
+- **Lambdas** — ~~ruled but unlowered~~ **LOWERED** (issue #1685). The
+  anonymous-body node this entry was waiting on exists: `hir::Expr::Lambda`
+  / `LambdaBody`, lowered by `hir::lower_native::lambda` per the 2026-07-19
+  ruling (pipes, colon returns, optional param annotations, expression or
+  braced-block bodies with the tail as the value, by-value capture with
+  `E156` for a write to a captured binding). `FnLiteral` remains what it
+  always was — partial application over a *named* target — and is a
+  different shape, not a substitute. Still open: the runtime
+  representation. Codegen has no anonymous-body form, so LIR lowering
+  carries a targeted `E052` fence; lambda lifting to a synthesized function
+  value is the follow-up slice.
 - **Enums** — ruled (§13.1) but no HIR node exists; the contract reserves
   the `HirFile.enums` channel; the node + exhaustive `match` land with the
   enum feature, not B0.

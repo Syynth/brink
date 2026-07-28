@@ -927,6 +927,15 @@ pub enum Expr {
     /// T1c, docs/t1c-spec.md §2): partial application over the statically
     /// named function `target`, binding a prefix of its declared params.
     FnLiteral(FnLiteral),
+    /// `|x| expr` / `|g: Guest|: bool { … }` — an anonymous fn value
+    /// (native surface, RULED 2026-07-19 "Lambdas ruled: Rust pipes under
+    /// the `RustScript` north star"; issue #1685). Only the native frontend
+    /// produces this shape — ink's grammar cannot spell a lambda at all.
+    ///
+    /// Boxed: a lambda carries params, an annotation and a whole body, and
+    /// leaving it inline would make every `Expr` (and so every `Stmt`,
+    /// `Content`, …) pay for the largest variant in the tree.
+    Lambda(Box<LambdaExpr>),
     /// `ref lvalue-path` — path-projection creation (brink extension, T1e,
     /// docs/t1e-spec.md §2): a symbolic `(root cell, path segments)` value.
     /// Legal only in ref-argument position (calls, `#fn(…)`, `bind(…)`);
@@ -952,6 +961,94 @@ pub struct FnLiteral {
     /// target's declared param row (over-binding is E081; `ref`-param
     /// binding discipline is E080).
     pub args: Vec<Expr>,
+}
+
+/// `|x, y| expr` / `|g: Guest|: bool { … }` / `||` — an anonymous fn value
+/// (RULED 2026-07-19, `docs/decision-log.md` "Lambdas ruled: Rust pipes
+/// under the `RustScript` north star"; issue #1685).
+///
+/// This is the "real anonymous-body node" the native lowering's `E129`
+/// fence used to wait for. What the ruling fixes and this shape records:
+/// params are optionally annotated (mono-HM infers the rest at concrete
+/// call sites, so an unannotated param is `None`, never a fabricated type);
+/// the return annotation is the ruled colon spelling (`|g|: bool { … }`),
+/// not `->`, which stays purely a divert; the body is either a single
+/// expression or a braced block whose **last expression is the value**
+/// ([`LambdaBody`]).
+///
+/// What this shape deliberately does *not* carry:
+/// - **Captures.** Capture is BY-VALUE always (no `move` keyword, no ref
+///   captures in v1), so there is no capture *mode* to record; *which*
+///   names a body captures is a resolution fact, not a syntax one, and is
+///   left to the layer that resolves names. The one capture rule that is
+///   decidable lexically — assignment to a captured binding is a compile
+///   error, since a snapshot write is always a lost write — is enforced at
+///   lowering (`hir::lower_native::lambda`, `E156`).
+/// - **An effect row.** Lambdas are fn-colored always, and rows compose
+///   through captures (#872) — but `Ty::Fn` carries no rows at all today
+///   (#1680), so there is nothing here to put one in. Recording an
+///   invented row would be worse than recording none; see issue #1685's
+///   coordination note.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LambdaExpr {
+    /// The whole `|…| …` expression's own source range — the identity key a
+    /// side table addresses this node by, same convention as
+    /// [`InfixExpr`]'s `ptr`.
+    pub ptr: Provenance,
+    /// The pipe-delimited parameter row, in source order. Empty for the
+    /// zero-arg form `||`. `is_ref`/`is_divert` are always `false`: the
+    /// native grammar accepts neither on a lambda parameter (ref captures
+    /// do not exist in v1, and there is no divert-typed lambda param).
+    pub params: Vec<Param>,
+    /// The `: type` return annotation, if written — the ruled colon
+    /// spelling. `None` means "infer", not "void".
+    pub return_type: Option<TypeExpr>,
+    /// The body: one expression, or a braced block.
+    pub body: LambdaBody,
+}
+
+/// A [`LambdaExpr`]'s body — the two ruled spellings ("single-expression or
+/// braced-block bodies; `return` leaves the lambda; last expression is the
+/// value").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LambdaBody {
+    /// `|g| g.awake` — the expression *is* the value.
+    Expr(Box<Expr>),
+    /// `|g|: bool { let a = f(g); a }` — statements, then the block's
+    /// trailing expression (the grammar's own blocks-as-values tail,
+    /// `brink_syntax_native::ast::StmtBlock::tail`).
+    Block {
+        /// The `;`-terminated statements, in source order.
+        stmts: Vec<BlockStmt>,
+        /// The block's trailing unterminated expression — "last expression
+        /// is the value". `None` when the body ends in a statement, in
+        /// which case the value comes from an explicit `return` (which
+        /// leaves the lambda, not the enclosing function) or the lambda
+        /// yields nothing.
+        tail: Option<Box<Expr>>,
+    },
+}
+
+impl LambdaBody {
+    /// The body's direct **expression** children: the single-expression
+    /// body, or a braced body's trailing value expression ("last expression
+    /// is the value"). Empty for a braced body that ends in a statement.
+    ///
+    /// A braced body's *statements* are deliberately not exposed here —
+    /// they are statements, not expressions, and there is no honest way to
+    /// hand them to an expression-only walker. Consumers that can handle
+    /// statements descend into [`LambdaBody::Block`]'s `stmts` explicitly
+    /// (see [`crate::hir::visit`]'s `walk_expr`, which walks them with the
+    /// same `walk_block_stmt` every code-ground block gets). This helper
+    /// exists so the many expression-only walkers spell "the lambda's value
+    /// expression" one way instead of eleven.
+    #[must_use]
+    pub fn value_exprs(&self) -> Vec<&Expr> {
+        match self {
+            Self::Expr(e) => vec![e],
+            Self::Block { tail, .. } => tail.as_deref().into_iter().collect(),
+        }
+    }
 }
 
 /// `ref lvalue-path` — path-projection creation (brink extension, T1e,
@@ -1225,6 +1322,18 @@ pub fn display_expr(expr: &Expr) -> String {
             }
         }
         Expr::RefArg(ra) => format!("ref {}", display_expr(&ra.operand)),
+        Expr::Lambda(l) => {
+            let params = l
+                .params
+                .iter()
+                .map(|p| p.name.text.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            match &l.body {
+                LambdaBody::Expr(e) => format!("|{params}| {}", display_expr(e)),
+                LambdaBody::Block { .. } => format!("|{params}| {{ ... }}"),
+            }
+        }
         Expr::Range(r) => {
             let op = if r.inclusive { "..=" } else { ".." };
             format!("{}{op}{}", display_expr(&r.start), display_expr(&r.end))

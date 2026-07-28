@@ -121,6 +121,28 @@ pub fn lower_stmt_block(
         .collect()
 }
 
+/// Lower only a `STMT_BLOCK`'s **statements**, leaving its blocks-as-values
+/// tail expression to the caller (issue #1685).
+///
+/// The one caller is [`super::lambda::lower_lambda`]: a lambda's braced body
+/// is the one place in the grammar where the tail has a real home — it is
+/// the lambda's value ("last expression is the value", RULED 2026-07-19),
+/// lowered into `LambdaBody::Block { stmts, tail }`. Everywhere else a tail
+/// still has nowhere to live, which is why [`lower_stmt_block`] keeps
+/// routing it through the `E129` "loud, not a silent drop" arm.
+pub(super) fn lower_stmt_block_stmts(
+    file_id: FileId,
+    block: &ast::StmtBlock,
+    diags: &mut Vec<Diagnostic>,
+) -> Vec<BlockStmt> {
+    let tail = block.tail();
+    block
+        .items()
+        .filter(|item| Some(item) != tail.as_ref())
+        .filter_map(|item| lower_block_item(file_id, &item, diags))
+        .collect()
+}
+
 fn lower_block_item(
     file_id: FileId,
     item: &SyntaxNode,

@@ -261,12 +261,11 @@ fn paren_expr(p: &mut Parser<'_, '_>) {
     p.finish_node();
 }
 
-/// `|x, y| expr` / `|g: Guest|: bool { … }` — lambda pipes, tokenized and
-/// structurally parsed; lowering is explicitly deferred (charter §7/§8,
-/// b0-sequencing §B0.5: "B0.5 tokenizes pipes; B0.8 does not lower them"),
-/// so the annotations added here (NG-A, issue #1487) are **grammar-only**
-/// too — a `LAMBDA_EXPR` still lands behind `lower_native`'s `E129` fence
-/// whether or not it carries types.
+/// `|x, y| expr` / `|g: Guest|: bool { … }` — lambda pipes. This grammar
+/// (including the NG-A annotations, issue #1487) has a real lowering since
+/// issue #1685: `hir::lower_native::lambda` turns the node into
+/// `hir::Expr::Lambda`, params, colon return and all. The `E129` fence that
+/// used to swallow every `LAMBDA_EXPR` is gone.
 ///
 /// The optional return annotation sits between the closing pipe and the
 /// body (ratified 2026-07-23, `docs/decision-log.md` "Lambda surface =

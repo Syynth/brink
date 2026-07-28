@@ -99,9 +99,9 @@ use std::fmt::Write as _;
 
 use crate::{
     Block, Choice, ChoiceSet, CondBranch, CondKind, Conditional, ConstDecl, Content, ContentPart,
-    DivertPath, DivertTarget, Expr, ExternalDecl, HirFile, Import, InfixOp, Knot, ListDecl, Name,
-    Param, Path, PostfixOp, PrefixOp, Return, Stitch, Stmt, StringPart, StructDecl, Tag, TypeExpr,
-    VarDecl,
+    DivertPath, DivertTarget, Expr, ExternalDecl, HirFile, Import, InfixOp, Knot, LambdaBody,
+    ListDecl, Name, Param, Path, PostfixOp, PrefixOp, Return, Stitch, Stmt, StringPart, StructDecl,
+    Tag, TypeExpr, VarDecl,
 };
 
 // ─── Labeled lines (G-1) ─────────────────────────────────────────────
@@ -1146,6 +1146,22 @@ fn emit_expr(e: &Expr, context: &str) -> Result<String, EmitError> {
         Expr::FieldAccess(_) => Err(unsupported("field access expression", context)),
         Expr::FnLiteral(_) => Err(unsupported("`#fn` literal", context)),
         Expr::RefArg(_) => Err(unsupported("`ref` argument expression", context)),
+        // Lambdas (issue #1685): the expression-body form respells exactly
+        // — pipes, optional param annotations, the ruled `:` return clause.
+        // A *braced* body carries code-ground statements, which this
+        // emitter has no printer for at all (`LogicBlock` is unsupported
+        // for the same reason), so it refuses loudly rather than emitting a
+        // body it cannot round-trip.
+        Expr::Lambda(l) => {
+            let params = emit_params(&l.params, context)?;
+            let ret = emit_annotation_suffix(l.return_type.as_ref());
+            match &l.body {
+                LambdaBody::Expr(body) => {
+                    Ok(format!("|{params}|{ret} {}", emit_expr(body, context)?))
+                }
+                LambdaBody::Block { .. } => Err(unsupported("lambda with a braced body", context)),
+            }
+        }
     }
 }
 
