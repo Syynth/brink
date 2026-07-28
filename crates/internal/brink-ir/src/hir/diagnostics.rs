@@ -1219,6 +1219,27 @@ pub enum DiagnosticCode {
     /// this either (its computed index is `0` regardless of visit count —
     /// genuinely stateless despite the syntax).
     E157,
+
+    // ── Lambda lifting, LIR (issue #1709 review) ───────────────────
+    /// A lambda body reads a name that the analyzer resolved as a
+    /// `Temp`/`Param` of the enclosing frame, but that lifting's free-name
+    /// scan cannot see as a capturable local at the point it runs — in
+    /// practice, the lambda's own not-yet-bound `let` name, read
+    /// recursively (`let f = |x| f(x - 1);`): the initializer is scanned
+    /// for captures *before* the `let` finishes binding `f`, so `f` has no
+    /// temp slot yet in the enclosing frame.
+    ///
+    /// A hard error rather than a silent fall-through: an unresolved free
+    /// name that is not a real local (a global `var`, a knot/function
+    /// name) is left alone and resolved by name from inside the lifted
+    /// function, which is correct. But a name the analyzer says *is* a
+    /// local must not take that same silent path — falling through would
+    /// let call lowering target the `let`'s own `DefinitionId` as though
+    /// it were a callable container, a miscompile that only surfaces as a
+    /// runtime fault. Recursive lambdas are not supported in this slice;
+    /// this refuses them at compile time instead of shipping a broken
+    /// call.
+    E158,
 }
 
 impl DiagnosticCode {
@@ -1387,6 +1408,7 @@ impl DiagnosticCode {
             Self::E155 => "E155",
             Self::E156 => "E156",
             Self::E157 => "E157",
+            Self::E158 => "E158",
         }
     }
 
@@ -1629,6 +1651,9 @@ impl DiagnosticCode {
             Self::E157 => {
                 "this once-only choice or sequence carries durable state but has no name to anchor its identity across edits"
             }
+            Self::E158 => {
+                "a lambda cannot capture this local here — most likely its own `let` name read recursively, before the `let` finishes binding"
+            }
         }
     }
 
@@ -1834,6 +1859,7 @@ impl DiagnosticCode {
             "E155" => Some(Self::E155),
             "E156" => Some(Self::E156),
             "E157" => Some(Self::E157),
+            "E158" => Some(Self::E158),
             _ => None,
         }
     }

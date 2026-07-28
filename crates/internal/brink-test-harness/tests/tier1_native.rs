@@ -192,7 +192,10 @@ fn array_literal() {
 /// zero-capture lambda into each of `map`/`filter`/`fold`, a **capturing**
 /// lambda (`|x| x * factor`, by-value per the 2026-07-19 ruling), the three
 /// verbs composed, and a braced-body lambda with its own `let` and trailing
-/// value expression.
+/// value expression. It also carries the three capture shapes the free-name
+/// walk used to drop silently (issue #1709 review): a captured local read
+/// as a call's callee, as a UFCS method-call receiver, and through a bare
+/// dotted field access.
 #[test]
 fn lambda_verbs() {
     assert_case("lambda-verbs");

@@ -4,3 +4,6 @@ Total: 10
 Scaled: [5, 10, 15]
 Chained: 120
 Braced: [4, 9, 16]
+CallThroughCapture: 3
+UfcsThroughCapture: 13
+FieldThroughCapture: 4

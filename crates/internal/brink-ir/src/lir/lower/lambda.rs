@@ -57,8 +57,11 @@
 //! that enforcement.
 
 use brink_format::CountingFlags;
+use rowan::TextRange;
 
 use crate::hir;
+use crate::symbols::SymbolKind;
+use crate::{Diagnostic, DiagnosticCode};
 
 use super::context::{LowerCtx, TempMap};
 use super::lir;
@@ -220,8 +223,9 @@ fn value_return(value: lir::Expr) -> lir::Stmt {
     }
 }
 
-/// The lambda's **captures**: every free single-segment name its body reads
-/// that resolves to a temp/param slot in the enclosing frame, in
+/// The lambda's **captures**: every free name its body reads (as a bare
+/// local, a call callee, or the head of a `base.field`/`base.method()`
+/// chain) that resolves to a temp/param slot in the enclosing frame, in
 /// first-occurrence source order (deterministic — never a hash order).
 ///
 /// A name that is not a local of the enclosing frame is not a capture at
@@ -231,7 +235,16 @@ fn value_return(value: lir::Expr) -> lir::Stmt {
 /// simplification. This mirrors the rule
 /// `hir::lower_native::lambda::check_capture_writes` already enforces
 /// lexically for `E156`.
-fn captured_locals(l: &hir::LambdaExpr, ctx: &LowerCtx<'_>) -> Vec<(String, u16)> {
+///
+/// A free name that fails `ctx.temp_slot` is not automatically "not a
+/// local" — the lambda's own not-yet-bound `let` name (a self/recursive
+/// reference) resolves to a `Temp`/`Param` in the analyzer's own symbol
+/// table but has no slot here, because lifting scans the initializer
+/// *before* the enclosing `let` finishes binding. Falling through would
+/// leave `lower_call` to target that temp's own `DefinitionId` as a
+/// callee — a container that does not exist. `E158` refuses that case
+/// loudly instead (issue #1709 review).
+fn captured_locals(l: &hir::LambdaExpr, ctx: &mut LowerCtx<'_>) -> Vec<(String, u16)> {
     let mut scan = FreeScan {
         bound: vec![l.params.iter().map(|p| p.name.text.clone()).collect()],
         free: Vec::new(),
@@ -239,8 +252,39 @@ fn captured_locals(l: &hir::LambdaExpr, ctx: &LowerCtx<'_>) -> Vec<(String, u16)
     scan.body(&l.body);
     scan.free
         .into_iter()
-        .filter_map(|name| ctx.temp_slot(&name).map(|slot| (name, slot)))
+        .filter_map(|(name, range)| {
+            if let Some(slot) = ctx.temp_slot(&name) {
+                return Some((name, slot));
+            }
+            reject_unliftable_capture(&name, range, ctx);
+            None
+        })
         .collect()
+}
+
+/// `E158`: a free name the analyzer resolved to a `Temp`/`Param` of the
+/// enclosing frame, but which `ctx.temp_slot` cannot see at this lambda's
+/// lifting point (its own not-yet-bound `let` name — recursion/self
+/// reference). Everything else that misses `ctx.temp_slot` is a
+/// legitimate non-local (a global `var` cell, a knot/function name) and is
+/// left alone silently, per `captured_locals`'s own doc.
+fn reject_unliftable_capture(name: &str, range: TextRange, ctx: &mut LowerCtx<'_>) {
+    let Some(info) = ctx.resolve_path(range) else {
+        return;
+    };
+    if !matches!(info.kind, SymbolKind::Temp | SymbolKind::Param) {
+        return;
+    }
+    ctx.diagnostics.push(Diagnostic {
+        file: ctx.file,
+        range,
+        message: format!(
+            "{}: `{name}` is a local the lambda cannot capture here — most likely its own \
+             `let` name, read before the `let` finishes binding (recursion is not supported)",
+            DiagnosticCode::E158.title(),
+        ),
+        code: DiagnosticCode::E158,
+    });
 }
 
 /// Free-name collection over a lambda body, with a binder scope stack.
@@ -254,8 +298,10 @@ fn captured_locals(l: &hir::LambdaExpr, ctx: &LowerCtx<'_>) -> Vec<(String, u16)
 struct FreeScan {
     /// Innermost-last stack of binder frames.
     bound: Vec<Vec<String>>,
-    /// Free names, first-occurrence order, deduped.
-    free: Vec<String>,
+    /// Free names, first-occurrence order, deduped. The `TextRange` is
+    /// where that first occurrence was read — `captured_locals` needs it
+    /// to resolve an unliftable capture (`E158`) back to a source span.
+    free: Vec<(String, TextRange)>,
 }
 
 impl FreeScan {
@@ -263,9 +309,9 @@ impl FreeScan {
         self.bound.iter().any(|f| f.iter().any(|n| n == name))
     }
 
-    fn read(&mut self, name: &str) {
-        if !self.is_bound(name) && !self.free.iter().any(|n| n == name) {
-            self.free.push(name.to_string());
+    fn read(&mut self, name: &str, range: TextRange) {
+        if !self.is_bound(name) && !self.free.iter().any(|(n, _)| n == name) {
+            self.free.push((name.to_string(), range));
         }
     }
 
@@ -373,10 +419,16 @@ impl FreeScan {
     fn expr(&mut self, e: &hir::Expr) {
         match e {
             hir::Expr::Path(p) => {
-                // A multi-segment path (`knot.stitch`, `list.item`) is a
-                // static reference, never a frame local.
-                if p.segments.len() == 1 {
-                    self.read(&p.segments[0].text);
+                // The *head* segment is what can be a frame local,
+                // regardless of how many segments follow: a bare
+                // `ident.ident` chain (`p.x`, `items.len`) still lowers as
+                // one `Expr::Path` — see `hir::Expr::FieldAccess`'s own doc
+                // — so `p`/`items` is the name that must resolve, not the
+                // path taken as a whole (issue #1709 review: this arm used
+                // to require exactly one segment, silently dropping every
+                // dotted-field or UFCS-shaped read of a captured local).
+                if let Some(head) = p.segments.first() {
+                    self.read(&head.text, p.range);
                 }
             }
             hir::Expr::Prefix(_, inner) | hir::Expr::Postfix(inner, _) => self.expr(inner),
@@ -384,7 +436,20 @@ impl FreeScan {
                 self.expr(&ie.lhs);
                 self.expr(&ie.rhs);
             }
-            hir::Expr::Call(_, args) => {
+            hir::Expr::Call(p, args) => {
+                // The callee path's head segment is a frame local exactly
+                // when the call goes through it: a single-segment callee
+                // held in a temp/param (`lower_call`'s `CallVariableTemp`
+                // branch — calling a captured fn value) or a multi-segment
+                // UFCS callee whose head is the receiver local
+                // (`lower_ufcs_call`). A static function/knot name head
+                // fails `ctx.temp_slot` in `captured_locals` and is
+                // dropped there, same as any other non-local — reading it
+                // here is always safe (issue #1709 review: this arm used
+                // to skip the callee entirely).
+                if let Some(head) = p.segments.first() {
+                    self.read(&head.text, p.range);
+                }
                 for a in args {
                     self.expr(a);
                 }

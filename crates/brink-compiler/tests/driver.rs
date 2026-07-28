@@ -329,6 +329,44 @@ fn compile_path_native_lambda_is_a_legal_verb_callback() {
     );
 }
 
+/// A lambda reading its own `let` name — recursion — is a compile-time
+/// refusal (`E158`), not a compile-clean runtime fault (issue #1709
+/// review). `f`'s initializer is scanned for captures *before* `let f = …`
+/// finishes binding `f`, so `f` has no temp slot yet in the enclosing frame
+/// even though the analyzer resolves it as a real local; falling through
+/// would let call lowering target `f`'s own `let`-declaration id as though
+/// it were a callable function — a miscompile that previously only
+/// surfaced as `RuntimeError::UnresolvedDefinition` when `f` called itself.
+#[test]
+fn compile_path_native_lambda_self_reference_is_e158() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-native-lambda-self-ref-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("main.brink"),
+        "fn a() {\n  let f = |x| {\n    if x <= 0 { return 0; }\n    \
+         return f(x - 1) + 1;\n  };\n  return f(3);\n}\n\n\
+         flow main() {\n  Out: {a()} -> END\n}\n",
+    )
+    .unwrap();
+
+    let result = brink_compiler::compile_path(&dir.join("main.brink"));
+    std::fs::remove_dir_all(&dir).ok();
+
+    let err = result.expect_err(
+        "a lambda reading its own not-yet-bound `let` name (recursion) must refuse to \
+         compile, not silently target the wrong container and fault at runtime",
+    );
+    let codes = diagnostic_codes(&err);
+    assert!(
+        codes.contains(&"E158"),
+        "expected E158 (unliftable lambda capture) among diagnostics, got: {codes:?}"
+    );
+}
+
 /// A `target/` subdirectory sitting next to a valid `.brink` entry, holding
 /// a file that is not valid brink source at all: native discovery must
 /// never walk into `target/` in the first place (issue #1381), so the
