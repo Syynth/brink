@@ -1397,22 +1397,22 @@ fn step_impl<R: crate::rng::StoryRng>(
         // are legal. ───────────────────────────────────────────────────
         Opcode::SeqVerb(op) => match op {
             brink_format::SeqVerbOp::Map => {
-                seq_map::<R>(flow, program, line_tables, context, stats, resolver)?;
+                seq_map::<R>(flow, program, line_tables, context, stats, resolver, op)?;
             }
             brink_format::SeqVerbOp::Filter => {
-                seq_filter::<R>(flow, program, line_tables, context, stats, resolver)?;
+                seq_filter::<R>(flow, program, line_tables, context, stats, resolver, op)?;
             }
             brink_format::SeqVerbOp::Fold => {
-                seq_fold::<R>(flow, program, line_tables, context, stats, resolver)?;
+                seq_fold::<R>(flow, program, line_tables, context, stats, resolver, op)?;
             }
             brink_format::SeqVerbOp::FilterMap => {
-                seq_filter_map::<R>(flow, program, line_tables, context, stats, resolver)?;
+                seq_filter_map::<R>(flow, program, line_tables, context, stats, resolver, op)?;
             }
             brink_format::SeqVerbOp::Each => {
-                seq_each::<R>(flow, program, line_tables, context, stats, resolver)?;
+                seq_each::<R>(flow, program, line_tables, context, stats, resolver, op)?;
             }
             brink_format::SeqVerbOp::MapEach => {
-                seq_map_each::<R>(flow, program, line_tables, context, stats, resolver)?;
+                seq_map_each::<R>(flow, program, line_tables, context, stats, resolver, op)?;
             }
         },
 
@@ -1846,9 +1846,15 @@ fn enter_fn_value(
 /// and the fn-value verbs walk their array in iteration order). Inside an
 /// **effectful** callback (`each`/`map_each`, issue #1679 slice 2) the
 /// guard never fires, in either mode — world-writes are exactly what that
-/// pair exists to permit (`docs/stdlib-spec.md` §4). Outside any callback
-/// this is a single predictable depth-is-zero branch on data already in
-/// `Flow` — no instrumentation threads through the production write path.
+/// pair exists to permit (`docs/stdlib-spec.md` §4). This is NOT merely the
+/// innermost scope: `flow.pure_callback.effectful` is sticky to the whole
+/// ancestry ([`enter_callback_scope`]) — an `each`/`map_each` nested
+/// *inside* a pure-required scope (a `map` callback, a `sort_by`
+/// comparator) does not disarm the guard for that enclosing pure scope, so
+/// a pure callback can't launder a world-write through a nested effectful
+/// one. Outside any callback this is a single predictable depth-is-zero
+/// branch on data already in `Flow` — no instrumentation threads through
+/// the production write path.
 ///
 /// Deliberately NOT guarded:
 /// - visit/turn-count increments — the callback's own in-story dispatch
@@ -1974,23 +1980,31 @@ fn enter_pure_callback(
     enter_callback_scope(flow, verb, false)
 }
 
-/// Enter an **effectful**-callback scope for `verb` (`each`/`map_each`,
-/// issue #1679 slice 2): the same nesting-depth bound as
-/// [`enter_pure_callback`] — a callback that itself runs a callback verb
-/// still recurses through [`step`] on the Rust stack, regardless of which
-/// contract — but `effectful: true` disarms [`guard_comparator_write`] for
-/// the scope. Returns the caller's [`PureCallbackState`] to restore on every
-/// exit path, same discipline as the pure entry point.
-fn enter_effectful_callback(
-    flow: &mut Flow,
-    verb: &'static str,
-) -> Result<PureCallbackState, RuntimeError> {
-    enter_callback_scope(flow, verb, true)
-}
-
-/// Shared body of [`enter_pure_callback`]/[`enter_effectful_callback`] —
-/// the nesting-depth check and the state swap are identical for both
-/// contracts; only the `effectful` bit differs.
+/// Shared body of [`enter_pure_callback`] (`sort_by`'s comparator) and
+/// every `SeqVerb` op (`map`/`filter`/`fold`/`filter_map`/`each`/
+/// `map_each`, via [`seq_map`]/[`seq_filter`]/[`seq_fold`]/
+/// [`seq_filter_map`]/[`seq_each`]/[`seq_map_each`]) — the nesting-depth
+/// check and the state swap are identical for every caller; only the
+/// `effectful` bit differs. The `SeqVerb` family calls this directly with
+/// [`SeqVerbOp::is_effectful`](brink_format::SeqVerbOp::is_effectful),
+/// which single-sources the pure/effectful classification: there is
+/// exactly one place a new `SeqVerbOp` variant's contract can be gotten
+/// wrong.
+///
+/// Purity is **sticky**: an `each`/`map_each` scope entered *inside* a
+/// pure-required scope (`sort_by`'s comparator, or the pure quartet's
+/// callback) does not disarm [`guard_comparator_write`] for the enclosing
+/// scope. Without this, `map(a, f)` with an opaque `f` (routed through a
+/// variable — exactly the case E119 cannot prove, which is why the dev-mode
+/// guard exists at all) whose body calls `each(b, g)` with a writing `g`
+/// would perform a real world-write inside a pure-required `map` callback
+/// under Dev with no fault, because [`enter_callback_scope`] would simply
+/// overwrite `flow.pure_callback` with the inner (effectful) scope. So the
+/// *effective* effectful bit is `effectful && outer.effectful` whenever
+/// there is an enclosing scope (`outer.depth > 0`) — an inner scope can
+/// only be effectful if every enclosing scope is too. A top-level entry
+/// (`outer.depth == 0`, no enclosing scope) is unaffected and keeps
+/// whichever bit it was called with.
 fn enter_callback_scope(
     flow: &mut Flow,
     verb: &'static str,
@@ -2004,10 +2018,11 @@ fn enter_callback_scope(
         });
     }
     let outer = flow.pure_callback;
+    let effective_effectful = effectful && (outer.depth == 0 || outer.effectful);
     flow.pure_callback = PureCallbackState {
         depth: outer.depth + 1,
         verb,
-        effectful,
+        effectful: effective_effectful,
     };
     Ok(outer)
 }
@@ -2054,10 +2069,11 @@ fn seq_map<R: crate::rng::StoryRng>(
     context: &mut (impl ContextAccess + ?Sized),
     stats: &mut Stats,
     resolver: Option<&dyn PluralResolver>,
+    op: brink_format::SeqVerbOp,
 ) -> Result<(), RuntimeError> {
     const VERB: &str = "map";
     let (items, f) = pop_seq_and_callback(flow, VERB, "`fn(T): U`")?;
-    let outer = enter_pure_callback(flow, VERB)?;
+    let outer = enter_callback_scope(flow, VERB, op.is_effectful())?;
     let mut out = Vec::with_capacity(items.len());
     let result = (|| -> Result<(), RuntimeError> {
         for item in items {
@@ -2092,10 +2108,11 @@ fn seq_filter<R: crate::rng::StoryRng>(
     context: &mut (impl ContextAccess + ?Sized),
     stats: &mut Stats,
     resolver: Option<&dyn PluralResolver>,
+    op: brink_format::SeqVerbOp,
 ) -> Result<(), RuntimeError> {
     const VERB: &str = "filter";
     let (items, pred) = pop_seq_and_callback(flow, VERB, "`fn(T): bool`")?;
-    let outer = enter_pure_callback(flow, VERB)?;
+    let outer = enter_callback_scope(flow, VERB, op.is_effectful())?;
     let mut out = Vec::new();
     let result = (|| -> Result<(), RuntimeError> {
         for item in items {
@@ -2142,6 +2159,7 @@ fn seq_fold<R: crate::rng::StoryRng>(
     context: &mut (impl ContextAccess + ?Sized),
     stats: &mut Stats,
     resolver: Option<&dyn PluralResolver>,
+    op: brink_format::SeqVerbOp,
 ) -> Result<(), RuntimeError> {
     const VERB: &str = "fold";
     // Operand order at the op is `seq`, `init`, `f` — the callback is on
@@ -2165,7 +2183,7 @@ fn seq_fold<R: crate::rng::StoryRng>(
         });
     }
     let items = items.as_ref().clone();
-    let outer = enter_pure_callback(flow, VERB)?;
+    let outer = enter_callback_scope(flow, VERB, op.is_effectful())?;
     let mut acc = init;
     let result = (|| -> Result<(), RuntimeError> {
         for item in items {
@@ -2202,10 +2220,11 @@ fn seq_filter_map<R: crate::rng::StoryRng>(
     context: &mut (impl ContextAccess + ?Sized),
     stats: &mut Stats,
     resolver: Option<&dyn PluralResolver>,
+    op: brink_format::SeqVerbOp,
 ) -> Result<(), RuntimeError> {
     const VERB: &str = "filter_map";
     let (items, f) = pop_seq_and_callback(flow, VERB, "`fn(T): Option[U]`")?;
-    let outer = enter_pure_callback(flow, VERB)?;
+    let outer = enter_callback_scope(flow, VERB, op.is_effectful())?;
     let mut out = Vec::new();
     let result = (|| -> Result<(), RuntimeError> {
         for item in items {
@@ -2247,11 +2266,13 @@ fn seq_filter_map<R: crate::rng::StoryRng>(
 /// rule (not by construction the way the pure quartet's fusion license
 /// works — `each`'s whole point is that side-effect order IS observable).
 ///
-/// **Effectful**, not pure: [`enter_effectful_callback`] disarms
-/// [`guard_comparator_write`] for this callback's world-writes, and
-/// [`call_effectful_callback`] lets its output reach the transcript instead
-/// of capturing and discarding it. What the pure quartet's callback may
-/// never do is exactly what `each`'s callback exists to do.
+/// **Effectful**, not pure: entering the scope with
+/// [`SeqVerbOp::is_effectful`](brink_format::SeqVerbOp::is_effectful)
+/// `true` (via [`enter_callback_scope`]) disarms [`guard_comparator_write`]
+/// for this callback's world-writes, and [`call_effectful_callback`] lets
+/// its output reach the transcript instead of capturing and discarding it.
+/// What the pure quartet's callback may never do is exactly what `each`'s
+/// callback exists to do.
 fn seq_each<R: crate::rng::StoryRng>(
     flow: &mut Flow,
     program: &Program,
@@ -2259,10 +2280,11 @@ fn seq_each<R: crate::rng::StoryRng>(
     context: &mut (impl ContextAccess + ?Sized),
     stats: &mut Stats,
     resolver: Option<&dyn PluralResolver>,
+    op: brink_format::SeqVerbOp,
 ) -> Result<(), RuntimeError> {
     const VERB: &str = "each";
     let (items, f) = pop_seq_and_callback(flow, VERB, "`fn(T)`")?;
-    let outer = enter_effectful_callback(flow, VERB)?;
+    let outer = enter_callback_scope(flow, VERB, op.is_effectful())?;
     let result = (|| -> Result<(), RuntimeError> {
         for item in items {
             call_effectful_callback::<R>(
@@ -2297,10 +2319,11 @@ fn seq_map_each<R: crate::rng::StoryRng>(
     context: &mut (impl ContextAccess + ?Sized),
     stats: &mut Stats,
     resolver: Option<&dyn PluralResolver>,
+    op: brink_format::SeqVerbOp,
 ) -> Result<(), RuntimeError> {
     const VERB: &str = "map_each";
     let (items, f) = pop_seq_and_callback(flow, VERB, "`fn(T): U`")?;
-    let outer = enter_effectful_callback(flow, VERB)?;
+    let outer = enter_callback_scope(flow, VERB, op.is_effectful())?;
     let mut out = Vec::with_capacity(items.len());
     let result = (|| -> Result<(), RuntimeError> {
         for item in items {
@@ -2413,8 +2436,8 @@ fn call_pure_callback<R: crate::rng::StoryRng>(
 /// `capture_output: false`.
 ///
 /// The caller is responsible for having entered an effectful-callback scope
-/// ([`enter_effectful_callback`]) — that is what bounds nesting depth and
-/// disarms the dev-mode world-write guard for this scope.
+/// ([`enter_callback_scope`] with `effectful: true`) — that is what bounds
+/// nesting depth and disarms the dev-mode world-write guard for this scope.
 #[expect(
     clippy::too_many_arguments,
     reason = "the VM environment (the step signature) plus the verb, callee and argument row"
@@ -2466,8 +2489,9 @@ fn call_effectful_callback<R: crate::rng::StoryRng>(
 /// exists down here), not a purity rule, so being effectful doesn't lift it.
 ///
 /// The caller is responsible for having entered the matching callback scope
-/// ([`enter_pure_callback`]/[`enter_effectful_callback`]) — that is what
-/// bounds nesting depth and sets the dev-mode world-write guard's posture.
+/// ([`enter_pure_callback`], or [`enter_callback_scope`] directly with
+/// `effectful: true`) — that is what bounds nesting depth and sets the
+/// dev-mode world-write guard's posture.
 #[expect(
     clippy::too_many_arguments,
     reason = "the VM environment (the step signature) plus the verb, callee, argument row and \
@@ -3330,14 +3354,16 @@ mod tests {
         assert!(guard_comparator_write(&flow, "assigned a global variable").is_ok());
     }
 
-    /// [`enter_effectful_callback`] shares the depth bound with
-    /// [`enter_pure_callback`] (both recurse through [`step`] on the Rust
-    /// stack) but marks the scope `effectful: true` — the bit
-    /// [`guard_comparator_write`] reads.
+    /// [`enter_callback_scope`] with `effectful: true` shares the depth
+    /// bound with [`enter_pure_callback`] (both recurse through [`step`] on
+    /// the Rust stack) but marks the scope `effectful: true` — the bit
+    /// [`guard_comparator_write`] reads. This is exactly what
+    /// [`seq_each`]/[`seq_map_each`] do, driven by
+    /// [`SeqVerbOp::is_effectful`](brink_format::SeqVerbOp::is_effectful).
     #[test]
-    fn enter_effectful_callback_sets_the_effectful_bit_and_shares_the_depth_bound() {
+    fn enter_callback_scope_sets_the_effectful_bit_and_shares_the_depth_bound() {
         let mut flow = test_flow();
-        let outer = enter_effectful_callback(&mut flow, "map_each").unwrap();
+        let outer = enter_callback_scope(&mut flow, "map_each", true).unwrap();
         assert_eq!(outer.depth, 0);
         assert_eq!(flow.pure_callback.depth, 1);
         assert_eq!(flow.pure_callback.verb, "map_each");
@@ -3349,7 +3375,7 @@ mod tests {
             verb: "each",
             effectful: true,
         };
-        let err = enter_effectful_callback(&mut flow, "each").unwrap_err();
+        let err = enter_callback_scope(&mut flow, "each", true).unwrap_err();
         assert!(
             matches!(
                 err,
@@ -3361,5 +3387,64 @@ mod tests {
             ),
             "{err:?}"
         );
+    }
+
+    /// Purity must be sticky (regression for the review finding on
+    /// [`enter_callback_scope`]): `map(a, f)` with an opaque `f` — exactly
+    /// the case E119 cannot prove, which is why the dev-mode guard exists —
+    /// whose body calls `each(b, g)` must NOT disarm the guard for the
+    /// enclosing `map` scope just because `each`'s own scope is effectful.
+    /// An outer pure frame (`map`) followed by a nested effectful scope
+    /// (`each`, entered via [`enter_callback_scope`] with `effectful: true`
+    /// — what [`seq_each`] actually calls) must still fault on a
+    /// world-write, and it must still be blamed on the outer `map`, not
+    /// `each` — `flow.pure_callback` at the write seam is whatever the
+    /// *innermost* active scope is, and that scope's effective `effectful`
+    /// bit must have inherited the outer scope's purity.
+    #[test]
+    fn purity_is_sticky_through_a_nested_effectful_callback() {
+        let mut flow = test_flow();
+        let outer_map = enter_pure_callback(&mut flow, "map").unwrap();
+        assert_eq!(flow.pure_callback.depth, 1);
+        assert!(!flow.pure_callback.effectful);
+
+        let outer_each = enter_callback_scope(&mut flow, "each", true).unwrap();
+        assert_eq!(flow.pure_callback.depth, 2);
+        assert_eq!(flow.pure_callback.verb, "each");
+        assert!(
+            !flow.pure_callback.effectful,
+            "each nested inside map's pure scope must not itself read as effectful"
+        );
+
+        let err = guard_comparator_write(&flow, "assigned a global variable").unwrap_err();
+        assert!(
+            matches!(
+                err,
+                RuntimeError::ComparatorWroteState {
+                    verb: "each",
+                    role: "callback",
+                    what: "assigned a global variable",
+                }
+            ),
+            "a world-write inside the nested each callback must still fault while a pure \
+             map scope encloses it: {err:?}"
+        );
+
+        flow.pure_callback = outer_each;
+        flow.pure_callback = outer_map;
+        assert_eq!(flow.pure_callback.depth, 0);
+    }
+
+    /// A top-level `each`/`map_each` (no enclosing pure scope) is unaffected
+    /// by the stickiness fix — `outer.depth == 0` short-circuits the
+    /// inheritance check, so the requested `effectful` bit is honored as
+    /// before.
+    #[test]
+    fn effectful_at_the_top_level_is_unaffected_by_stickiness() {
+        let mut flow = test_flow();
+        let outer = enter_callback_scope(&mut flow, "each", true).unwrap();
+        assert_eq!(outer.depth, 0);
+        assert!(flow.pure_callback.effectful);
+        assert!(guard_comparator_write(&flow, "assigned a global variable").is_ok());
     }
 }

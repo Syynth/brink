@@ -835,8 +835,13 @@ impl SeqVerbOp {
     /// Whether this verb's callback runs under the pure·silent contract
     /// (E119-gated, output captured, dev-mode world-write guard armed) or
     /// the effectful contract (`each`/`map_each`: output reaches the
-    /// transcript, writes are legal). The VM dispatch and
-    /// `guard_comparator_write`'s posture both key off this.
+    /// transcript, writes are legal). The VM's `seq_map`/`seq_filter`/
+    /// `seq_fold`/`seq_filter_map`/`seq_each`/`seq_map_each` each read this
+    /// directly when entering their callback scope
+    /// (`enter_callback_scope(flow, VERB, op.is_effectful())`), so it
+    /// single-sources the classification `guard_comparator_write`'s posture
+    /// ultimately keys off — there is exactly one place a new `SeqVerbOp`
+    /// variant's pure/effectful contract can be gotten wrong.
     #[must_use]
     pub fn is_effectful(self) -> bool {
         matches!(self, Self::Each | Self::MapEach)
