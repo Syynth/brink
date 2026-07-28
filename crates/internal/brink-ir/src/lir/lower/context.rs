@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
@@ -378,6 +379,11 @@ pub struct IdAllocator {
     /// shared between the plan phase and lowering phase to ensure
     /// unique container paths across all sub-scopes.
     seq_counter: usize,
+    /// Prefix every allocated path is qualified with (#1504). Empty for a
+    /// knot chunk, whose paths are already qualified by the knot name; set
+    /// per file while lowering root content, where they are not. See
+    /// [`set_path_prefix`](Self::set_path_prefix).
+    path_prefix: String,
 }
 
 impl IdAllocator {
@@ -385,17 +391,33 @@ impl IdAllocator {
         Self {
             used: LookupMap::new(),
             seq_counter: 0,
+            path_prefix: String::new(),
         }
     }
 
-    /// Allocate an address id from a path string (e.g. `""`, `"knot.c0"`).
+    /// Qualify every subsequently allocated path with `prefix` (#1504).
+    ///
+    /// `lower_root_content_chunks` shares one allocator across every file's
+    /// root weave, and those paths (`s-0`, `#root-terminus`, …) restart per
+    /// file — so without a per-file prefix two files' root content mints the
+    /// same `DefinitionId`. Callers set
+    /// [`hir::root_content_scope_path`](crate::hir::root_content_scope_path)
+    /// here, the same qualifier the HIR stamping pass gives the anonymous
+    /// choice/gather containers of the same file.
+    pub fn set_path_prefix(&mut self, prefix: String) {
+        self.path_prefix = prefix;
+    }
+
+    /// Allocate an address id from a path string (e.g. `""`, `"knot.c0"`),
+    /// qualified by the current [`set_path_prefix`](Self::set_path_prefix).
     pub fn alloc_address(&mut self, path: &str) -> DefinitionId {
-        if let Some(&id) = self.used.get(path) {
+        let qualified = qualify_path(&self.path_prefix, path);
+        if let Some(&id) = self.used.get(qualified.as_ref()) {
             return id;
         }
-        let hash = hash_path(path);
+        let hash = hash_path(&qualified);
         let id = DefinitionId::new(DefinitionTag::Address, hash);
-        self.used.insert(path.to_string(), id);
+        self.used.insert(qualified.into_owned(), id);
         id
     }
 
@@ -414,6 +436,20 @@ impl IdAllocator {
     /// where the scope path prefix changes.
     pub fn reset_seq_counter(&mut self) {
         self.seq_counter = 0;
+    }
+}
+
+/// Join an [`IdAllocator`] path prefix with a scope-relative path (#1504).
+///
+/// Borrows when there is no prefix, so the overwhelmingly common case (knot
+/// chunks, whose paths are already knot-qualified) allocates nothing.
+fn qualify_path<'a>(prefix: &str, path: &'a str) -> Cow<'a, str> {
+    if prefix.is_empty() {
+        Cow::Borrowed(path)
+    } else if path.is_empty() {
+        Cow::Owned(prefix.to_string())
+    } else {
+        Cow::Owned(format!("{prefix}.{path}"))
     }
 }
 

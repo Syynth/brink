@@ -14,21 +14,72 @@ use std::hash::{Hash, Hasher};
 use brink_format::{DefinitionId, DefinitionTag};
 
 use crate::FileId;
+use crate::determinism::LookupMap;
 use crate::hir;
 use crate::symbols::{SymbolIndex, SymbolKind};
+
+/// The structural scope path every *anonymous* container in `file_path`'s
+/// root-level weave hangs off (#1504).
+///
+/// A knot scopes its children under the knot name, so two files' knots can
+/// never mint the same anonymous path. Root content has no such prefix: with
+/// an empty root scope path, file A's first root choice and file B's first
+/// root choice both hash `c-0` and — because address allocation is a pure
+/// hash with no collision avoidance — receive the
+/// **same** `DefinitionId`. That id is the linker's address key
+/// (last-write-wins) and the save key for visit counts, so the collision
+/// miscompiles: picking a choice from the included file runs the entry file's
+/// choice body.
+///
+/// Qualifying by the *file* rather than by the owning module is deliberate.
+/// An `INCLUDE`d file with no `#@module` of its own inherits its includer's
+/// module (`docs/modules-spec.md` §1), so a module qualifier leaves exactly
+/// the shape #1504 was filed against still colliding; two distinct files
+/// always have distinct paths. See `docs/root-content-identity-findings.md`.
+///
+/// The `#` prefix is what makes the qualifier collision-proof against
+/// authored scope paths: `#` is not legal in a knot, stitch or label name,
+/// and the synthesized segments are all `c-N`/`g-N`/`b-N`/`s-N`.
+///
+/// `None` (a file whose path the caller did not supply — only in-crate test
+/// harnesses do that) yields an empty qualifier, i.e. the pre-#1504 paths.
+#[must_use]
+pub fn root_content_scope_path(file_path: Option<&str>) -> String {
+    match file_path {
+        Some(path) if !path.is_empty() => format!("#file:{path}"),
+        _ => String::new(),
+    }
+}
 
 /// Stamp container IDs on all HIR files.
 ///
 /// Must be called after analysis (needs `SymbolIndex` for labeled containers)
 /// and before LIR lowering.
-pub fn stamp_container_ids(files: &mut [(FileId, hir::HirFile)], index: &SymbolIndex) {
+///
+/// `file_paths` supplies each file's registered project path, which qualifies
+/// its root-content scope path (see [`root_content_scope_path`]). Name-based
+/// lookups (`label_scope`) stay unqualified: an author's root-level label is
+/// addressed by its bare name from anywhere in the project, and the analyzer's
+/// `SymbolIndex` keys it that way.
+#[expect(
+    clippy::implicit_hasher,
+    reason = "internal API, no need to generalize"
+)]
+pub fn stamp_container_ids(
+    files: &mut [(FileId, hir::HirFile)],
+    index: &SymbolIndex,
+    file_paths: &LookupMap<FileId, String>,
+) {
     for (file_id, hir_file) in files {
-        // Root content — scope is empty, counters start at 0.
+        // Root content — scoped by the owning file (#1504), counters start
+        // at 0. The *label* scope stays empty: root labels are addressed by
+        // bare name.
         let mut seq = 0;
+        let root_scope = root_content_scope_path(file_paths.get(file_id).map(String::as_str));
         stamp_block(
             &mut hir_file.root_content,
             *file_id,
-            "",
+            &root_scope,
             "",
             index,
             &mut seq,
