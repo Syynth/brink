@@ -782,6 +782,16 @@ impl AnnotationArg {
     pub fn path(&self) -> Option<Path> {
         support::child(&self.syntax)
     }
+
+    /// The `= "value"` clause's string-literal value (issue #1719,
+    /// `@[element(args = "…")]` / `@[style(chan = "…")]`), if this argument
+    /// has one. `None` for the bare-`IDENT`, nested-clause, path, and
+    /// numeric-literal shapes — only the key/value form parses a
+    /// `STRING_LIT` as a **sibling** of the key `IDENT` rather than the
+    /// arg's sole child.
+    pub fn eq_value(&self) -> Option<StringLit> {
+        support::child(&self.syntax)
+    }
 }
 
 impl CallExpr {

@@ -174,21 +174,33 @@ fn a_duplicate_assertion_is_e048_and_the_first_wins() {
 
 /// An unrecognized annotation name is `E111` wherever it appears — the
 /// `@` namespace is fully reserved (`docs/directive-annotations-spec.md`
-/// §1.1), so a typo can never become a silent no-op. `@[element]` and
-/// `@[style]` are ruled *features* but have no lowering yet, and land here
-/// too rather than being invented.
+/// §1.1), so a typo can never become a silent no-op.
 #[test]
 fn an_unknown_annotation_name_is_e111() {
     for src in [
         "@[bogus]\nfn heal() {\n  return;\n}\n",
-        "@[element(challenge)]\nfn heal() {\n  return;\n}\n",
-        "@[style(uppercase)]\nfn heal() {\n  return;\n}\n",
         // The tag-channel directive names do not alias into this channel.
         "@[local]\nvar hp = 10\n",
     ] {
         let (_hir, diags) = lower(src);
         assert_eq!(codes(&diags), vec![DiagnosticCode::E111], "{src:?}");
     }
+}
+
+/// `@[element]`/`@[style]` (issue #1719) ARE recognized names in this
+/// channel — a malformed clause under either diagnoses under its own code
+/// (`E159`/`E161`), never falls through to the unknown-name `E111`. The
+/// full declaration-surface coverage (valid parses, capture validation,
+/// pairing) lives in `hir::lower_native::tests`; this only pins that the
+/// name itself is recognized here, alongside `effects`/`was`/`allow`.
+#[test]
+fn element_and_style_are_recognized_names_not_e111() {
+    let (_hir, diags) = lower("@[element()]\nfn heal() {\n  return;\n}\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E159]);
+
+    let (_hir, diags) =
+        lower("@[element(args = \"^ready$\")]\n@[style()]\nfn heal() {\n  return;\n}\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E161]);
 }
 
 /// A recognized name outside its placement is `E112`: `effects` on anything

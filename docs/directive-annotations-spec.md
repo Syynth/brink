@@ -229,24 +229,34 @@ following from native having real declaration nodes:
   annotation lines allowed to intervene. Ink's top-of-body placement
   exists because a tag line above a knot header structurally belongs to
   the previous scope; native has no such problem.
-- **The recognized name set is `effects`, `was`, and `allow`.**
-  `@[effects(…)]`
-  attaches to a `flow`/`fn` head at either container level (top-level →
-  `Knot.effects_assertion`, nested → `Stitch.effects_assertion`) and is
-  checked by the same frontend-agnostic exceedance pass (`E103`/`E108`/
-  `E109`) that judges ink assertions. `@[was("old::module::path")]` is
-  the **file-level** module-rename record (§5 of `modules-spec`, issues
-  #1286/#1355) and is recognized only as a direct child of the file.
-  `@[allow(…)]` is source-level diagnostic suppression — §5d.
+- **The recognized name set is `effects`, `was`, `allow`, `element`, and
+  `style`.** `@[effects(…)]` attaches to a `flow`/`fn` head at either
+  container level (top-level → `Knot.effects_assertion`, nested →
+  `Stitch.effects_assertion`) and is checked by the same
+  frontend-agnostic exceedance pass (`E103`/`E108`/`E109`) that judges
+  ink assertions. `@[was("old::module::path")]` is the **file-level**
+  module-rename record (§5 of `modules-spec`, issues #1286/#1355) and is
+  recognized only as a direct child of the file. `@[allow(…)]` is
+  source-level diagnostic suppression — §5d. `@[element(args = "…")]`
+  (issue #1719) declares the prose-dispatch pattern on a `flow`/`fn`
+  head — the pattern must compile as a portable regex (`E159`) and its
+  named captures must each bind a real parameter on the declaration
+  (`E160`). `@[style(key = "value", …)]` (same issue) is a companion
+  annotation requiring a paired `@[element]` on the same declaration
+  (`E163`); each key must be `line`, `dispatch`, or one of `element`'s
+  captures (`E162`), and a malformed clause list is `E161`. Both attach
+  and lower at either container level, the same as `effects`.
 
 Everything else is the reserved-namespace rule (§1.1) doing its job: an
 unknown name is `E111`, a recognized name out of placement is `E112`, and
 the grammar codes are shared with the ink recognizer (`E100` empty
-assertion, `E101` malformed argument, `E048` duplicate). In particular
-`@[element(…)]`/`@[style(…)]` (the prose sitting-4 addenda) and a
-per-*declaration* `@[was(old_name)]` rename are **not** wired: they are
-ruled features awaiting their own slices, not annotation names this
-channel may guess at.
+assertion, `E101` malformed argument, `E048` duplicate). `@[element]`/
+`@[style]` deliver only the declaration surface — parse, validate, store
+on the `Knot`/`Stitch`. The `!name` sigil dispatch rewrite these
+annotations exist to drive (matching a content line, binding captures,
+lowering to a call) is **not** wired yet, nor is a per-*declaration*
+`@[was(old_name)]` rename: both are ruled features awaiting their own
+slices, not annotation names this channel may guess at.
 
 ### 5d. `@[allow(Exxx, …)]` — source-level suppression (issue #1161)
 
