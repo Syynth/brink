@@ -280,18 +280,25 @@ internally — `gold.bump(1)` → `bump(ref gold, 1)` in desugar notation (the
 native surface has no call-site `ref` keyword; the spellable equivalent is
 the unmarked `bump(gold, 1)`), `party.leader.heal(5)` →
 `heal(ref party.leader, 5)` — riding the T1e ref-argument/projection
-machinery rather than a parallel path — so it inherits T1e's durable-root
-rule. `E143` is repurposed as the ruled refusal for a receiver that cannot
-be written through (a `CONST`; a projection rooted in a frame-local; and the
-ruled rvalue receivers `[1,2].push(3)`/`a.sorted().push(x)` once the grammar
-can spell them at all). A non-`ref` first parameter is untouched — plain
-by-value desugar, no lvalue requirement. The *projection* receiver is
-reachable end to end since issue #1530 made a struct-typed durable global
-spellable (a well-formed construction literal is now a legal `VAR` default);
+machinery for a **durable** root, or (**RULED 2026-07-27**, issue #1531) a
+frame-local read/call/write-back RMW expansion for a **frame-local** root
+one field deep. `E143` is the ruled refusal for a receiver that still
+cannot be written through (a `CONST`; a frame-local projection deeper than
+one field; and the ruled rvalue receivers `[1,2].push(3)`/
+`a.sorted().push(x)` once the grammar can spell them at all). A non-`ref`
+first parameter is untouched — plain by-value desugar, no lvalue
+requirement. The **durable-root** projection receiver is reachable end to
+end since issue #1530 made a struct-typed durable global spellable (a
+well-formed construction literal is now a legal `VAR` default); the
+**frame-local** projection receiver is reachable end to end since issue
+#1531's ruling narrowed T1e's durable-root requirement to the durable case
+only — a frame-local mutation is unobservable outside the frame and needs
+no effect row.
 `brink-test-harness/tests/b3a_ufcs_e2e.rs`'s
-`auto_ref_mutates_a_projection_off_a_durable_global_end_to_end` drives it
-through the real `.brink` pipeline, alongside the LIR-lowering coverage in
-`brink-ir/tests/ufcs_auto_ref.rs`.
+`auto_ref_mutates_a_projection_off_a_durable_global_end_to_end` and
+`auto_ref_mutates_a_projection_off_a_frame_local_end_to_end` drive both
+arms through the real `.brink` pipeline, alongside the LIR-lowering
+coverage in `brink-ir/tests/ufcs_auto_ref.rs`.
 
 ### Wave B4 — display-boundary None-render in interpolation (SHIPPED, issue #1463)
 The §1.6b forgiveness: a final-None interpolation renders as nothing;
