@@ -24,6 +24,11 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Incremental compilation is PURE OVERHEAD on a CI runner: every job starts
+  # from a cold checkout, so the per-CGU dependency-graph cache is written and
+  # never read. (Context in #1695: a full `--workspace --tests` build is 15G at
+  # default settings; incremental is part of that write volume.)
+  CARGO_INCREMENTAL: 0
 
 # Third-party actions are pinned to full commit SHAs (mutable tags can be
 # repointed at malicious code). The trailing comment tracks the version;
