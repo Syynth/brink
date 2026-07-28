@@ -1707,6 +1707,25 @@ fn array_literal_elements_may_be_construction_literals() {
     );
 }
 
+/// The array literal's own bracket lifts `no_construct_literal` for its
+/// elements even when the array itself sits inside a genuinely restricted
+/// head (`head_expression`, `control_flow.rs`'s `if`/`while`/`for-in`) —
+/// unlike a bare path followed by `{`, the brackets already disambiguate
+/// where the head's expression ends, so a construction literal composes
+/// freely as an element without needing the parenthesized-restoration
+/// escape hatch `parentheses_restore_the_construct_literal_inside_a_control_flow_head`
+/// exercises above.
+#[test]
+fn array_literal_in_a_for_in_head_still_allows_construction_literal_elements() {
+    let p = assert_lossless("var x = { for q in [Point { x: 1 }] { 1; } };\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::ARRAY_LITERAL));
+    assert_eq!(
+        count_node_kind(&p.syntax(), SyntaxKind::CONSTRUCT_LITERAL),
+        1
+    );
+}
+
 #[test]
 fn unterminated_array_literal_never_panics() {
     let src = "var a = [1, 2\n";

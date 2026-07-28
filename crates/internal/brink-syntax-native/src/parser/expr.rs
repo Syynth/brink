@@ -408,7 +408,10 @@ fn array_literal(p: &mut Parser<'_, '_>) {
     p.expect(L_BRACKET);
     // The construction-literal restriction lifts inside `[…]`, same
     // reasoning as `paren_expr`/`arg_list`: the brackets already
-    // disambiguate, so `if [Point { x: 1 }].len() > 0 { … }` still parses.
+    // disambiguate, so a construction literal composes freely as an
+    // element even inside a restricted head, e.g.
+    // `for p in [Point { x: 1 }] { … }` (`control_flow.rs`'s
+    // `head_expression`, used by `if`/`while`/`for-in`).
     let saved = p.set_no_construct_literal(false);
     if p.enter_depth() {
         loop {

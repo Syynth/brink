@@ -16,7 +16,16 @@ fn empty_count() {
   return n;
 }
 
+fn sum_head_literal() {
+  let total = 0;
+  for x in [4, 5, 6] {
+    total = total + x;
+  }
+  return total;
+}
+
 flow main() {
   Sum: {sum_all()}
-  Empty: {empty_count()} -> END
+  Empty: {empty_count()}
+  HeadLiteral: {sum_head_literal()} -> END
 }

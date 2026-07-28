@@ -168,13 +168,16 @@ fn annotations_effects() {
 }
 
 /// NG-D array/sequence literals (issue #1490, RULED 2026-07-27:
-/// `[1, 2, 3]`). Two functions: one builds a three-element array and sums
-/// it by iterating with `for` (proving `Expr::ArrayLiteral` reaches real
-/// element values, not just an empty shape), the other builds `[]` and
-/// iterates zero times (proving the empty form compiles and runs, not just
-/// parses). Neither reads the ink-json oracle — there is nothing there to
-/// compare against, since `[…]` has no ink counterpart; this corpus is the
-/// only end-to-end proof this construct actually plays.
+/// `[1, 2, 3]`). Three functions: one builds a three-element array bound to
+/// a `let` and sums it by iterating with `for` (proving `Expr::ArrayLiteral`
+/// reaches real element values, not just an empty shape), one builds `[]`
+/// and iterates zero times (proving the empty form compiles and runs, not
+/// just parses), and one writes the array literal directly in the `for …
+/// in` head (`for x in [4, 5, 6] { … }`, the most idiomatic spelling of
+/// this feature) so that position is covered end-to-end too, not just via a
+/// path binding. Neither reads the ink-json oracle — there is nothing there
+/// to compare against, since `[…]` has no ink counterpart; this corpus is
+/// the only end-to-end proof this construct actually plays.
 #[test]
 fn array_literal() {
     assert_case("array-literal");
