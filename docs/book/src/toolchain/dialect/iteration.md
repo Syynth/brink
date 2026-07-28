@@ -516,7 +516,8 @@ Total seen: 43.
 
 `for` is not a lesser substitute for any of these — it is the same closed
 iterable set, the same snapshot contracts, and every one of these verbs
-lowers to a loop shaped exactly like the ones this chapter already taught.
+answers a computation shaped exactly like a loop you already know how to
+write.
 
 ## Reference: the diagnostics in this chapter
 
