@@ -5,9 +5,12 @@
 use super::*;
 
 fn first_node(root: &SyntaxNode, kind: SyntaxKind) -> SyntaxNode {
-    root.descendants()
-        .find(|n| n.kind() == kind)
-        .unwrap_or_else(|| panic!("no {kind:?} node in tree"))
+    // `assert!` + `expect`, not `unwrap_or_else(|| panic!(…))`: this
+    // crate's `clippy.toml` exempts `unwrap`/`expect` in tests but
+    // `clippy::panic` stays denied everywhere.
+    let found = root.descendants().find(|n| n.kind() == kind);
+    assert!(found.is_some(), "no {kind:?} node in tree");
+    found.expect("asserted present just above")
 }
 
 fn tag_texts(node: &SyntaxNode) -> Vec<String> {
