@@ -246,24 +246,36 @@ pub fn load_state<C: ContextAccess + ?Sized>(
 // ─── M-3 rehydration miss-path lookup (docs/modules-spec.md §5) ───────────
 
 /// Resolve a visit/turn-count entry's saved id against the current program,
-/// falling back to the alias table on a direct miss. Reports a teaching
-/// message when still unresolved (only for a program with any alias-table
-/// entries, and only when the entry carries an author `path` to name in the
-/// message — an anonymous synthetic address has nothing to teach a fix
-/// against).
+/// falling back to the alias table on a direct miss. On a still-unresolved
+/// miss: a **named** scope (`entry.path` is `Some`) gets the M-3 teaching
+/// message, but only for a program with any alias-table entries at all (an
+/// ordinary content edit with no `#@was` directive stays silent, same as
+/// before M-3). An **anonymous** scope (`entry.path` is `None` — a gather,
+/// choice point, or sequence with no author label) has no path to teach a
+/// fix against and — unlike a named miss — can never be recovered through
+/// the alias table regardless of whether the program uses `#@was` elsewhere
+/// (an alias entry is only ever written against a name), so it is counted
+/// in [`LoadReport::anonymous_states_dropped`] unconditionally (issue
+/// #1674, gap 4 of the identity cluster) rather than gated on
+/// `Program::has_aliases` — the count is the *only* legible signal an
+/// anonymous miss gets, so gating it the way the named case is gated would
+/// make it silent for the overwhelming majority of projects.
 fn rebind_address_key(
     program: &Program,
     entry: &VisitEntry,
     report: &mut LoadReport,
 ) -> DefinitionId {
     let (id, unresolved) = rebind_address(program, entry.id);
-    if unresolved
-        && program.has_aliases()
-        && let Some(path) = &entry.path
-    {
-        report
-            .unresolved_renames
-            .push(teach_was_message("visit count", path));
+    if unresolved {
+        match &entry.path {
+            Some(path) if program.has_aliases() => {
+                report
+                    .unresolved_renames
+                    .push(teach_was_message("visit count", path));
+            }
+            Some(_) => {}
+            None => report.anonymous_states_dropped += 1,
+        }
     }
     id
 }
@@ -628,5 +640,91 @@ mod tests {
         let mut sorted = ids.clone();
         sorted.sort_unstable();
         assert_eq!(ids, sorted, "SaveState::visits must be sorted by id");
+    }
+
+    /// Issue #1674: a saved visit/turn-count entry for an **anonymous**
+    /// scope (`path: None` — the shape an unlabeled once-only choice or a
+    /// sequence's own visit entry carries) that the current program no
+    /// longer recognizes is counted in
+    /// [`brink_format::LoadReport::anonymous_states_dropped`] — legible
+    /// through the existing tolerant `LoadReport` rather than silently
+    /// retained under an id nothing can ever reach again. The phantom id
+    /// here stands in for what a real content edit does: shift an
+    /// unlabeled once-only choice's positional id out from under an
+    /// earlier save (see `anonymous_stateful` in `brink-analyzer` for the
+    /// companion compile-time lint).
+    #[test]
+    fn anonymous_unresolved_visit_entry_is_counted_in_load_report() {
+        let (program, tables) = compile_for_flow(
+            "-> alpha\n\
+             === alpha ===\n\
+             Alpha.\n\
+             -> DONE\n",
+        );
+        let program = Arc::new(program);
+        let mut story = crate::Story::<FastRng>::new(Arc::clone(&program), tables);
+        story.continue_maximally().expect("continue");
+
+        let mut save = story.save_state();
+        assert!(
+            save.visits.iter().all(|e| e.path.is_some()),
+            "sanity: the real save has no anonymous entries to confuse this \
+             test: {:?}",
+            save.visits
+        );
+        let phantom_id =
+            brink_format::DefinitionId::new(brink_format::DefinitionTag::Address, u64::MAX);
+        save.visits.push(brink_format::VisitEntry {
+            id: phantom_id,
+            path: None,
+            count: 3,
+        });
+
+        let report = story.load_state(&save);
+        assert_eq!(report.anonymous_states_dropped, 1, "{report:?}");
+        assert!(!report.is_clean(), "{report:?}");
+        assert!(
+            report.unresolved_renames.is_empty(),
+            "an anonymous miss has no path to teach a #@was fix against, \
+             so it must never land in unresolved_renames: {report:?}"
+        );
+    }
+
+    /// A saved **named** scope's unresolved entry (`path: Some(_)`) must
+    /// never be counted as an anonymous drop, even when the program has no
+    /// `#@was` alias table at all (the ordinary "content edit deleted a
+    /// knot" case, which stays silent by design) — the two report channels
+    /// are for genuinely different situations and must not bleed into each
+    /// other.
+    #[test]
+    fn named_unresolved_visit_entry_is_not_counted_as_anonymous() {
+        let (program, tables) = compile_for_flow(
+            "-> alpha\n\
+             === alpha ===\n\
+             Alpha.\n\
+             -> DONE\n",
+        );
+        let program = Arc::new(program);
+        let mut story = crate::Story::<FastRng>::new(Arc::clone(&program), tables);
+
+        let phantom_id =
+            brink_format::DefinitionId::new(brink_format::DefinitionTag::Address, u64::MAX);
+        let mut save = story.save_state();
+        save.visits.push(brink_format::VisitEntry {
+            id: phantom_id,
+            path: Some("forest.gone_knot".to_owned()),
+            count: 3,
+        });
+
+        let report = story.load_state(&save);
+        assert_eq!(
+            report.anonymous_states_dropped, 0,
+            "a named miss is not an anonymous drop: {report:?}"
+        );
+        assert!(
+            report.unresolved_renames.is_empty(),
+            "no #@was alias table on this program, so the named miss stays \
+             silent exactly like before M-3: {report:?}"
+        );
     }
 }

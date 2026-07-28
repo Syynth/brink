@@ -188,7 +188,8 @@ pub enum WakeSource {
 /// never dropped — counts for scopes the current program lacks are retained
 /// harmlessly (unused until/unless the scope returns), so they aren't reported
 /// *except* when the miss-path alias lookup (M-3, docs/modules-spec.md §5)
-/// still can't place them — see `unresolved_renames`.
+/// still can't place them — see `unresolved_renames` for a **named** scope,
+/// or `anonymous_states_dropped` for an anonymous one.
 #[derive(Default, Clone, Debug, PartialEq, Serialize)]
 pub struct LoadReport {
     /// Saved global names with no matching global in the current program.
@@ -201,14 +202,38 @@ pub struct LoadReport {
     /// ordinary content edit with no rename directive stays silent, same
     /// as before M-3.
     pub unresolved_renames: Vec<String>,
+    /// Count of saved visit/turn-count entries for an **anonymous** scope
+    /// (`VisitEntry::path` is `None` — a gather or choice point with no
+    /// author label, or a sequence, none of which have a name an `#@was`
+    /// alias table entry could ever be written against) that could not be
+    /// placed in the current program (issue #1674, gap 4 of the identity
+    /// cluster: "anonymous-container state is bounded and reported, not
+    /// solved"). Unlike `unresolved_renames`, this is populated
+    /// unconditionally on a miss — an anonymous scope's positional id can
+    /// never be recovered through the alias table regardless of whether the
+    /// program uses `#@was` elsewhere, so gating this on
+    /// `Program::has_aliases` (the way `unresolved_renames` is) would make
+    /// it silent for the overwhelming majority of projects, defeating the
+    /// point.
+    ///
+    /// The bounded fallout `docs/decision-log.md`'s 2026-07-27 ruling
+    /// measured: a once-only choice may reappear as if never chosen, or a
+    /// sequence may restart from its first branch. Each miss increments
+    /// this once per saved entry — a scope with both a visit *and* a turn
+    /// count that both go unresolved counts as two, since each is
+    /// independently lost state, not one.
+    pub anonymous_states_dropped: u32,
 }
 
 impl LoadReport {
     /// Whether the load applied cleanly (nothing dropped, nothing left
-    /// unresolved after the rename miss-path lookup).
+    /// unresolved after the rename miss-path lookup, no anonymous state
+    /// orphaned).
     #[must_use]
     pub fn is_clean(&self) -> bool {
-        self.unknown_globals.is_empty() && self.unresolved_renames.is_empty()
+        self.unknown_globals.is_empty()
+            && self.unresolved_renames.is_empty()
+            && self.anonymous_states_dropped == 0
     }
 }
 
