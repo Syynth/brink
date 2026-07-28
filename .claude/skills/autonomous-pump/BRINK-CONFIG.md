@@ -26,6 +26,20 @@ Fill pump.js's CONFIG from these when running the pump on this repo.
 - Unique TRAIN_WT per wave (e.g. /tmp/pump-merge-train-brink-w4).
 - npm "Version Packages" bot PR merges LAST — but do not starve it: if a consumer is waiting on a released fix, merge it immediately (the 0.9.1 lesson). Bot force-pushes don't trigger CI — close/reopen to kick, or admin-merge version-only PRs.
 
+## Recurring build-quality rules (the lessons loop — appended by the Lessons phase)
+
+> **Why this section exists.** Measured over 671 pump agents: **build 44.2% of tokens, review 22.1%, fix 18.3%** — and there were **133 fix agents against 165 reviews, i.e. ~80% of reviewed PRs needed a fix cycle**. Each cycle is a full re-read, re-gate and re-push. The findings that trigger them recur, so every rule here that lands is spend removed from the 18.3%. The Lessons phase appends here automatically; a human still reviews the PR.
+
+- **A regression test must FAIL without the fix.** Revert the production diff and watch it go red before you commit it. A test that passes on both commits proves nothing about the change it claims to guard.
+- **Never state a number, `file:line`, symbol, or PR/issue attribution you did not just read at the ref you are citing.** A PR was rejected for claiming "ratchet verified at commit X = 5577" when that ref read 5607, with every coordinate in its audit wrong. Unverified claims are worse than omissions because the next agent trusts them.
+- **When you add a field or variant to an existing type, grep EVERY consumer** — especially heap-size/size-estimator accumulators and serialization sites. Exhaustive-match guards do NOT catch a consumer that silently ignores a new field.
+- **When you add a guard to one function, check its structurally parallel siblings.** A guard on `rename` but not `prepare_rename`, or on one arm of a matched pair, silently breaks the pair.
+- **Before citing a caller, spec section, or "this is handled downstream" in a doc comment, verify it exists and does that.** Several PRs shipped confidently false claims about their own seams.
+- **Assert the value a CONSUMER actually receives**, not an internal enum an intermediate layer holds. A test asserting the wrong layer passes while the user-visible behavior is broken.
+- **Cross-check sibling unreleased changesets for claims your change invalidates.** Contradictory unreleased release notes are worse than none.
+- **A ruling lands in a SPEC, not only in docs/decision-log.md.** The log is history; a spec is the current normative statement. A ruling that lives only in the log is invisible to everyone reading the specs — that is how five rulings got re-derived from scratch in one week.
+- **Commit AND PUSH before running the long gate.** This rule existed and was violated anyway, costing work three times; the pump deletes worktrees between waves, so an unpushed branch is one prune from gone.
+
 ## RULES additions (waves 4–5 lessons, 2026-07-14)
 - Every call-dispatch path (direct fn-value call, CallValue, divert-target variable call) must independently enforce arity/argc in gradual mode.
 - When an opcode operand doesn't carry a count needed for correctness, add the operand — never derive it from arity math.
