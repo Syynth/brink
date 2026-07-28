@@ -4,6 +4,7 @@ mod content;
 mod context;
 mod decls;
 mod expr;
+mod lambda;
 mod recognize;
 mod stmts;
 mod structs;
@@ -494,6 +495,7 @@ fn lower_root_content_chunks(
         ids.set_path_prefix(hir::root_content_scope_path(
             file_paths.get(&file_id).map(String::as_str),
         ));
+        let mut lifted: Vec<lir::Container> = Vec::new();
         let (stmts, mut block_children) = {
             let mut ctx = make_ctx(
                 file_id,
@@ -511,6 +513,7 @@ fn lower_root_content_chunks(
                 &mut diagnostics,
                 struct_ctx,
                 tables,
+                &mut lifted,
             );
             let mut cc = 0;
             let mut gc = 0;
@@ -520,6 +523,11 @@ fn lower_root_content_chunks(
         if chunk_index == last_chunk {
             attach_root_final_gather(&mut block_children, &mut ids);
         }
+        // Lambda-lifted functions (issue #1709) are appended *after* the
+        // terminus so the root weave's own container order is untouched:
+        // nothing enters a container by falling off a sibling, so their
+        // position among root children is inert.
+        block_children.append(&mut lifted);
         chunks.push((
             chunk::ScopeChunk::root_content(stmts, block_children, local_names.into_entries()),
             diagnostics,
@@ -550,6 +558,7 @@ fn lower_knot_chunk(
     let mut ids = context::IdAllocator::new();
     let _ = ids.alloc_address("");
     let mut diagnostics = Vec::new();
+    let mut lifted = Vec::new();
     let knot_container = lower_knot(
         file_id,
         hir_file,
@@ -563,9 +572,10 @@ fn lower_knot_chunk(
         &mut diagnostics,
         struct_ctx,
         tables,
+        &mut lifted,
     );
     (
-        chunk::ScopeChunk::knot(knot_container, local_names.into_entries()),
+        chunk::ScopeChunk::knot(knot_container, lifted, local_names.into_entries()),
         diagnostics,
     )
 }
@@ -758,6 +768,7 @@ fn lower_knot(
     diagnostics: &mut Vec<crate::Diagnostic>,
     structs: &context::StructCtx<'_>,
     tables: context::AnalyzerTables<'_>,
+    lifted: &mut Vec<lir::Container>,
 ) -> lir::Container {
     let knot_name = &knot.name.text;
     let knot_id = lookup_container_id(index, knot_name).unwrap_or(root_id);
@@ -791,11 +802,13 @@ fn lower_knot(
         diagnostics,
         structs,
         tables,
+        lifted,
     );
     let mut cc = 0;
     let mut gc = 0;
     ctx.ids.reset_seq_counter();
     let (body, mut children) = lower_block_with_children(&knot.body, &mut ctx, &mut cc, &mut gc);
+    drop(ctx);
 
     // Add stitches as children
     for stitch in &knot.stitches {
@@ -814,6 +827,7 @@ fn lower_knot(
             diagnostics,
             structs,
             tables,
+            lifted,
         ));
     }
 
@@ -863,6 +877,7 @@ fn lower_stitch(
     diagnostics: &mut Vec<crate::Diagnostic>,
     structs: &context::StructCtx<'_>,
     tables: context::AnalyzerTables<'_>,
+    lifted: &mut Vec<lir::Container>,
 ) -> lir::Container {
     let stitch_name = &stitch.name.text;
     let stitch_path = format!("{}.{stitch_name}", knot.name.text);
@@ -887,6 +902,7 @@ fn lower_stitch(
         diagnostics,
         structs,
         tables,
+        lifted,
     );
     let mut cc = 0;
     let mut gc = 0;
@@ -1590,6 +1606,7 @@ fn make_ctx<'a>(
     diagnostics: &'a mut Vec<crate::Diagnostic>,
     structs: &'a context::StructCtx<'a>,
     tables: context::AnalyzerTables<'a>,
+    lifted: &'a mut Vec<lir::Container>,
 ) -> LowerCtx<'a> {
     LowerCtx {
         file,
@@ -1614,6 +1631,7 @@ fn make_ctx<'a>(
         structs,
         temp_shapes: LookupMap::new(),
         tables,
+        lifted,
     }
 }
 

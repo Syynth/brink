@@ -421,6 +421,20 @@ impl IdAllocator {
         id
     }
 
+    /// Allocate an address id for a lambda-lifted function (issue #1709),
+    /// returning it alongside the **qualified** path string.
+    ///
+    /// [`alloc_address`](Self::alloc_address) keeps the qualification
+    /// private; a lifted function needs it back out, because the container
+    /// is emitted at top level and codegen derives its `path_hash` and
+    /// address path from `Container::name`. Handing back the same string
+    /// the id was hashed from keeps the two spellings of one identity from
+    /// drifting.
+    pub fn alloc_lambda_address(&mut self, path: &str) -> (DefinitionId, String) {
+        let qualified = qualify_path(&self.path_prefix, path).into_owned();
+        (self.alloc_address(path), qualified)
+    }
+
     /// Allocate the next sequential index for a conditional or sequence scope.
     /// This counter never resets when entering sub-scopes within a knot/stitch,
     /// ensuring unique paths like `b-0`, `b-1`, etc. It resets at knot/stitch
@@ -618,6 +632,17 @@ pub struct LowerCtx<'a> {
     /// threading discipline as `structs`. Empty for every caller that never
     /// ran the corresponding analyzer pass — see [`AnalyzerTables`]'s doc.
     pub tables: AnalyzerTables<'a>,
+    /// Lambda-lifted function containers synthesized while lowering this
+    /// scope (issue #1709, `lower::lambda`). Shared by mutable reference
+    /// across an entire chunk — the same threading discipline as
+    /// `ids`/`next_block_slot`/`diagnostics` — because a lambda can appear
+    /// anywhere an expression can, including inside a stitch that shares
+    /// the knot's frame. The chunk's caller drains this into the chunk's
+    /// top-level containers, so every lifted function ends up a sibling of
+    /// the project's function knots rather than nested inside the frame
+    /// that created it (see `lower::lambda`'s module doc for why that
+    /// placement is the safe one).
+    pub lifted: &'a mut Vec<crate::lir::types::Container>,
 }
 
 impl<'a> LowerCtx<'a> {
