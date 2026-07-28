@@ -218,7 +218,10 @@ impl Project {
     /// unrecognized/non-overridable override codes) are reported as
     /// warnings on stderr, never treated as errors.
     pub(super) fn load(entry: &Path, lints: &LintOverrides) -> Result<Self, String> {
-        let root = brink_driver::native_source_root(entry);
+        let (root, warnings) = brink_driver::native_source_root_with_warnings(entry);
+        for warning in &warnings {
+            let _ = writeln!(io::stderr(), "warning: {warning}");
+        }
         let tree = RealFs::new(&root);
         let entry_key = brink_driver::relative_key(&root, entry);
 
@@ -450,7 +453,10 @@ impl Project {
         edited: &BTreeMap<String, String>,
         removed: Option<&str>,
     ) -> Result<Vec<DiagEntry>, String> {
-        let root = brink_driver::native_source_root(entry);
+        let (root, warnings) = brink_driver::native_source_root_with_warnings(entry);
+        for warning in &warnings {
+            let _ = writeln!(io::stderr(), "warning: {warning}");
+        }
         let entry_key = brink_driver::relative_key(&root, entry);
 
         let mut driver = Driver::new();
@@ -767,7 +773,10 @@ pub(super) fn load_git_baseline(
     lints: &LintOverrides,
 ) -> Result<Project, String> {
     let entry_s = entry.to_string_lossy().into_owned();
-    let root = brink_driver::native_source_root(entry);
+    let (root, warnings) = brink_driver::native_source_root_with_warnings(entry);
+    for warning in &warnings {
+        let _ = writeln!(io::stderr(), "warning: {warning}");
+    }
     let entry_key = brink_driver::relative_key(&root, entry);
 
     let mut driver = Driver::new();

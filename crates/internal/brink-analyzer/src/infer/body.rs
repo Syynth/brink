@@ -1191,6 +1191,27 @@ impl InferPass<'_, '_> {
     /// which is precisely the coordination issue #1685 flagged. When
     /// `Ty::Fn` grows rows, a lambda's row is composed here from its body
     /// and its captures (#872).
+    ///
+    /// Composing it here is **necessary but not sufficient** to make a
+    /// lambda's row reachable through a live fn value — the missing half is
+    /// a structural gap in the shipped table, not a follow-on to this
+    /// function's own analyzer-side work (rows on `Ty::Fn`, the unifier row
+    /// join, and §6.1 row-polymorphism all land regardless). Walking the
+    /// body inside *this* pass absorbs its atoms into the **enclosing**
+    /// definition's row — sound (spec §3 allows over-reporting) but it
+    /// gives the lambda no row of its own, and nothing downstream can mint
+    /// one either: `populate_effect_rows` keys the shipped
+    /// `DefinitionId → row` table off `inferable_defs_from_index`, i.e.
+    /// `SymbolKind::Knot | SymbolKind::Stitch` symbols, whereas a lifted
+    /// lambda's `DefinitionId` is minted by
+    /// `lir::lower::context::IdAllocator::alloc_lambda_address` and is never
+    /// an indexed symbol at all — a keyspace gap, not a phase-order one. So
+    /// effects-spec §7's "a live fn value is a token; its row is a table
+    /// lookup" currently *misses* for every lambda token, which blocks the
+    /// shipped-table/§7-narrowing path (§6 item 4, an optional host
+    /// optimization) and, conditionally, T1c item 4's row field — not
+    /// #1680's own analyzer-side work. Pinned by
+    /// `brink-db/tests/issue_1680_lambda_effect_row_gap.rs`.
     fn infer_lambda(&mut self, l: &brink_ir::LambdaExpr) -> Ty {
         for e in l.body.value_exprs() {
             self.infer_expr(e);
