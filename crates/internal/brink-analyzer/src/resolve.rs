@@ -1081,15 +1081,20 @@ pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
             | "clamp"
             | "lerp"
             // The fn-value verb layer (issue #1679, `docs/stdlib-spec.md`
-            // §4): the pure trio `map`/`filter`/`fold` — callbacks are
-            // pure·silent-required (RULED 2026-07-18), enforced where
-            // provable by `crate::comparator_contract`'s E119. Same
-            // slice-1 machinery: shadowable with E035, `strict-ink`
-            // rejection via the dialect gate. `filter_map` and the
-            // effectful spellings `each`/`map_each` are later slices.
+            // §4): the pure quartet `map`/`filter`/`fold`/`filter_map` —
+            // callbacks are pure·silent-required (RULED 2026-07-18),
+            // enforced where provable by `crate::comparator_contract`'s
+            // E119. Plus the ruled effectful spellings `each`/`map_each`
+            // (slice 2), deliberately NOT E119-gated — their whole purpose
+            // is to be the legal home for the effects the gate rejects.
+            // Same slice-1 machinery for all six: shadowable with E035,
+            // `strict-ink` rejection via the dialect gate.
             | "map"
             | "filter"
             | "fold"
+            | "filter_map"
+            | "each"
+            | "map_each"
     )
 }
 

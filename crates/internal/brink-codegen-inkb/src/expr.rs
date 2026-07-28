@@ -415,6 +415,25 @@ impl ContainerEmitter<'_> {
                 self.emit_expr(f, false);
                 self.emit(Opcode::SeqVerb(SeqVerbOp::Fold));
             }
+            // Slice 2 (issue #1679): `filter_map` stays pure (the same
+            // stack shape as `map`/`filter`); `each`/`map_each` are the
+            // effectful spellings — same codegen shape, the runtime op is
+            // what changes their contract.
+            lir::Expr::SeqFilterMap { seq, f } => {
+                self.emit_expr(seq, false);
+                self.emit_expr(f, false);
+                self.emit(Opcode::SeqVerb(SeqVerbOp::FilterMap));
+            }
+            lir::Expr::SeqEach { seq, f } => {
+                self.emit_expr(seq, false);
+                self.emit_expr(f, false);
+                self.emit(Opcode::SeqVerb(SeqVerbOp::Each));
+            }
+            lir::Expr::SeqMapEach { seq, f } => {
+                self.emit_expr(seq, false);
+                self.emit_expr(f, false);
+                self.emit(Opcode::SeqVerb(SeqVerbOp::MapEach));
+            }
 
             // ── NS-A5: range values (#1111) ──────────────────────────
             lir::Expr::RangeMake {

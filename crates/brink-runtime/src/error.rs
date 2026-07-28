@@ -356,11 +356,12 @@ pub enum RuntimeError {
         verb: &'static str,
         found: &'static str,
     },
-    /// A fn-value verb (`map`/`filter`/`fold` — `docs/stdlib-spec.md` §4,
-    /// issue #1679) was handed a callback that is not a function value
-    /// (`FnRef`/`Closure`). Malformed question — turn-terminating. Distinct
-    /// from [`ComparatorNotAFunction`](Self::ComparatorNotAFunction) because
-    /// each verb names its own expected shape.
+    /// A fn-value verb (`map`/`filter`/`fold`/`filter_map`/`each`/
+    /// `map_each` — `docs/stdlib-spec.md` §4, issue #1679) was handed a
+    /// callback that is not a function value (`FnRef`/`Closure`). Malformed
+    /// question — turn-terminating, pure or effectful alike. Distinct from
+    /// [`ComparatorNotAFunction`](Self::ComparatorNotAFunction) because each
+    /// verb names its own expected shape.
     #[error("`{verb}` callback must be a function value {expected}, got {found}")]
     CallbackNotAFunction {
         verb: &'static str,
@@ -370,9 +371,10 @@ pub enum RuntimeError {
         found: &'static str,
     },
     /// A fn-value verb's callback returned a value of the wrong shape —
-    /// today only `filter`, whose predicate must return a bool. Coercing
-    /// truthiness here would silently change which elements survive, so
-    /// this is turn-terminating.
+    /// `filter`, whose predicate must return a bool, and `filter_map`,
+    /// whose Option-mapper must return an `Option`. Coercing truthiness or
+    /// unwrapping a non-Option here would silently change which elements
+    /// survive, so this is turn-terminating.
     #[error("`{verb}` callback must return {expected}, got {found}")]
     CallbackReturnType {
         verb: &'static str,
@@ -380,15 +382,20 @@ pub enum RuntimeError {
         found: &'static str,
     },
     /// A `sort_by`/`sorted_by` comparator, or a fn-value verb's callback
-    /// (issue #1679), broke the pure·silent contract in a way the VM can
-    /// observe: it presented a choice, reached `-> DONE`/`-> END`, called
-    /// an external function, exceeded the nested-evaluation step budget, or
-    /// recursed past the nesting depth limit. The checker enforces the
-    /// contract statically where the callee's origin is provable (E119);
-    /// this is the gradual-mode runtime residual. `role` names the shape
-    /// the *author* wrote — `"comparator"` for `sort_by`/`sorted_by`,
-    /// `"callback"` for the trio (`callback_role`) — so a `map`/`filter`/
-    /// `fold` author is never told they wrote a bad comparator.
+    /// (issue #1679, pure quartet and effectful pair alike), broke a
+    /// contract the VM can observe: it presented a choice, reached
+    /// `-> DONE`/`-> END`, called an external function, exceeded the
+    /// nested-evaluation step budget, or recursed past the nesting depth
+    /// limit. These four are architectural — no handler exists mid-opcode —
+    /// so they fire for `each`/`map_each` exactly as for the pure quartet;
+    /// being effectful widens what a callback may *do*, not what the VM can
+    /// honor mid-op. The checker enforces the pure·silent half of the
+    /// contract statically where the callee's origin is provable (E119,
+    /// pure quartet only); this fault is the gradual-mode runtime residual
+    /// either way. `role` names the shape the *author* wrote —
+    /// `"comparator"` for `sort_by`/`sorted_by`, `"callback"` for every
+    /// fn-value verb (`callback_role`) — so a `map`/`each`/… author is
+    /// never told they wrote a bad comparator.
     #[error("`{verb}` {role} {what} — {role}s must be pure, silent functions")]
     ComparatorEscaped {
         verb: &'static str,
@@ -396,7 +403,8 @@ pub enum RuntimeError {
         what: &'static str,
     },
     /// DEV mode only (F34, ruled 2026-07-19): a `sort_by`/`sorted_by`
-    /// comparator, or a fn-value verb's callback (issue #1679), performed a
+    /// comparator, or a **pure** fn-value verb's callback
+    /// (`map`/`filter`/`fold`/`filter_map`, issue #1679), performed a
     /// world-write mid-evaluation — assigned a global (directly, or through
     /// a `ref`-parameter pointer / path projection) or advanced the RNG
     /// cell (a draw IS a write: a random comparator/callback is exactly the
@@ -408,9 +416,12 @@ pub enum RuntimeError {
     /// increments from the callee's own invocation are NOT world-writes —
     /// they are the ruled in-story dispatch semantics and stay exempt.
     /// Reads are not guarded at runtime (E119's static bound owns the read
-    /// posture). `role` is the same author-facing noun as
-    /// [`ComparatorEscaped`](Self::ComparatorEscaped); like it, this is the
-    /// gradual-mode runtime residual of the E119 gate.
+    /// posture, where E119 gates at all). `role` is the same author-facing
+    /// noun as [`ComparatorEscaped`](Self::ComparatorEscaped); like it,
+    /// this is the gradual-mode runtime residual of the E119 gate. **Never
+    /// fires for the effectful pair** (`each`/`map_each`, issue #1679 slice
+    /// 2, in either mode): world-writes are exactly what they exist to
+    /// permit — see `vm::guard_comparator_write`.
     #[error(
         "`{verb}` {role} {what} — {role}s must be pure, silent functions (dev-mode fault; prod \
          mode executes the write)"

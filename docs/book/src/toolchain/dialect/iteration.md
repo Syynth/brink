@@ -425,9 +425,9 @@ cleanest multi-level exit the language has; the two returns hand
 inference everything it needs (`first_over` settles as
 `(array<int>, int) -> Option[int]`, no annotation); and the caller gets
 a value in the full absence doctrine — testable with `== none`, equal to
-`some(7)` exactly when the world had one. When the pure verb trio lands
-(below), many of these hand-rolled loops collapse into one-liners — the
-doctrine they answer with will not change.
+`some(7)` exactly when the world had one. The fn-value verbs below
+collapse a loop shaped exactly like this one into a single `filter_map`
+call — the doctrine they answer with does not change.
 
 ## Iteration across a pause — the current posture
 
@@ -449,40 +449,74 @@ serializable values (F7) for the same reason — a parked loop's cursor
 has to survive a save. When suspension ships, loops will cross it
 without this chapter changing its contracts.
 
-## Planned — the pure verbs: `map`, `filter`, `fold`
+## The fn-value verbs: `map`, `filter`, `fold`, `filter_map`, `each`, `map_each`
 
-The ruled iteration surface is larger than `for`, and its centerpiece —
-the fn-value trio — is **ruled but not yet in the dialect**: no spelling
-of `map`/`filter`/`fold` compiles today, which is why this section has
-doctrine and no code fences. What is already settled:
+The ruled iteration surface is larger than `for`. Its centerpiece is a
+family of six verbs, every one taking a function value as its last
+argument — a pure quartet plus a deliberately-ugly effectful pair:
 
-- **The trio requires pure·silent callbacks.** `map` (transform each),
-  `filter` (keep some), and `fold` (combine into one) accept only
-  callbacks whose effect rows are pure and silent — reading story state
-  is legal (filtering on state is the bread-and-butter case), writing,
-  emitting, and drawing randomness are not. Faulting is permitted; a
-  callback that can fault makes the whole call able to fault, rows
-  composing as usual ([Effects](effects.md)).
+- **The pure quartet requires pure·silent callbacks.** `map` (transform
+  each), `filter` (keep some), `fold` (combine into one), and
+  `filter_map` (transform-and-drop — see below) accept only callbacks
+  whose effect rows are pure and silent — reading story state is legal
+  (filtering on state is the bread-and-butter case), writing, emitting,
+  and drawing randomness are not. Faulting is permitted; a callback that
+  can fault makes the whole call able to fault, rows composing as usual
+  ([Effects](effects.md)). A callback whose origin is not statically
+  visible — routed through a variable rather than written inline as
+  `#fn(target)` — is not *provably* pure, so the compile-time check
+  cannot fire for it; the VM's own output isolation and its dev-mode
+  world-write guard are the runtime backstop either way.
 - **"One logical pass, order unobservable."** Because callbacks are
   pure, whether stages interleave or fuse is unobservable *by
   construction* — the eager-versus-lazy question is dissolved, not
   deferred, and the implementation may fuse freely, forever.
+- **`filter_map(a, f)`** — the Option-aware mapper: `f` returns
+  `Option[U]`, `some(v)` is kept and unwrapped, `none` drops the element.
+  It is the ruled bridge to the [Option chapter](option.md), and the
+  one-line form of the find-shaped loop above:
+  `filter_map(coins, #fn(over_amount))` in place of the hand-rolled loop,
+  same doctrine.
 - **Effectful iteration is a different concept with different
   spellings**: `each` (do something per element, no result) and
   `map_each` (the effectful transform — sequential, in iteration order,
   element by element, never fused). The standing naming law was ruled
   with them: **the weird thing gets the ugly method.** Convenience is
   spent on the pure spelling; the friction in `map_each` *is* the speed
-  bump. The trio's rejection error will name both exits: make it pure,
-  or say `map_each`.
-- **`filter_map`** — the Option-aware mapper (callback returns
-  `Option[U]`; `none`s drop) — is the ruled bridge to the
-  [Option chapter](option.md), and the destined one-line form of the
-  find-shaped loops above.
+  bump. A write or emission that would be an `E119` compile error (or a
+  dev-mode runtime fault, for an opaque callback) inside `map`'s callback
+  is legal inside `each`'s or `map_each`'s — that is the entire reason
+  the pair exists. They are deliberately not gated by `E119`.
 
-Until the verbs land, `for` is not a lesser substitute — it is the same
-closed iterable set, the same snapshot contracts, and every trio-shaped
-computation in this chapter's examples is a loop you already know how to
+```ink
+VAR seen = 0
+~ temp coins = #[3, 12, 7, 20, 1]
+
+Doubled big coins: {filter_map(coins, #fn(double_if_big))}.
+~ each(coins, #fn(tally))
+Total seen: {seen}.
+-> END
+
+=== function double_if_big(n: int) ===
+~ {
+    if n > 10 {
+        return some(n * 2)
+    }
+}
+~ return none
+
+=== function tally(n: int) ===
+~ seen = seen + n
+```
+
+```text
+Doubled big coins: [24, 40].
+Total seen: 43.
+```
+
+`for` is not a lesser substitute for any of these — it is the same closed
+iterable set, the same snapshot contracts, and every one of these verbs
+answers a computation shaped exactly like a loop you already know how to
 write.
 
 ## Reference: the diagnostics in this chapter
@@ -524,10 +558,11 @@ safety-limit error — mid-step, instance spent, restart from a snapshot.
 - **F7/F8: ranges as a real Value kind; empty ranges iterate zero
   times; refinements inert under gradual** — decision log 2026-07-19;
   `docs/stdlib-spec.md` §7; NS-A5 (#1136).
-- **The trio: pure-required; eager/lazy dissolved; `each`/`map_each`;
-  "the weird thing gets the ugly method"** — decision log 2026-07-18;
-  `docs/stdlib-spec.md` §4. Surface not yet landed — no compiling
-  spelling today.
+- **The fn-value verbs: pure-quartet-required; eager/lazy dissolved;
+  `each`/`map_each`; "the weird thing gets the ugly method"** — decision
+  log 2026-07-18; `docs/stdlib-spec.md` §4. Landed 2026-07-28, issue
+  #1679: `map`/`filter`/`fold` (slice 1), then `filter_map`/`each`/
+  `map_each` (slice 2), same day.
 - **Mutating iteration `for ref x`** — `docs/stdlib-spec.md` §4,
   marked proposed (🔶): under design, not ruled, not taught.
 - **The step budget** ("guard against unbounded growth"; safety-limit

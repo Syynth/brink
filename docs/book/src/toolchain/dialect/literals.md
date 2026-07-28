@@ -678,7 +678,7 @@ compile error, and computed bounds pass through the `non_empty(r)`
 validator, which returns `Option` (`E117` is strict mode's enforcement;
 gradual faults at runtime). That story — parse-don't-validate, and every
 draw being an effect — is the Randomness chapter's; iteration in full
-(`for`, and the pure verb trio when it lands) is the Iteration chapter's.
+(`for`, and the fn-value verb family) is the Iteration chapter's.
 
 > **Views — a performance contract, ruled ahead of its verbs.** Slicing
 > verbs (`slice`, `split`, `trim`) haven't landed in the dialect yet, but

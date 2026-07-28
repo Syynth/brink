@@ -7,3 +7,7 @@ Braced: [4, 9, 16]
 CallThroughCapture: 3
 UfcsThroughCapture: 13
 FieldThroughCapture: 4
+Positives: [3, 8]
+EachSums: 10
+MapEachScaled: [10, 20, 30]
+MapEachTotal: 6
