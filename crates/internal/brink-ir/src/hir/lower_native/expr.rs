@@ -45,6 +45,7 @@
 //! only mode, single-expression or braced-block bodies), so the
 //! anonymous-body node the fence was waiting on now exists. See
 //! [`super::lambda`]'s module doc for how each half of that ruling lands.
+//!
 //! **Array/sequence literal (NG-D, issue #1490, RULED 2026-07-27)**:
 //! `ARRAY_LITERAL` — the `[1, 2, 3]` atom — lowers through
 //! [`lower_array_literal`] below directly to `Expr::ArrayLiteral`, the same
@@ -57,11 +58,6 @@
 //! (`per_file_diagnostics`'s `is_native` short-circuit) — so an array
 //! literal reached from `.brink` source is never mistaken for the brink
 //! dialect's own sigil-literal extension.
-//!
-//! `LAMBDA_EXPR` is tokenized/parsed (B0.5) but explicitly unlowered until
-//! the code sitting rules a real anonymous-body node (`docs/b0-sequencing.md`
-//! §3: "B0.5 tokenizes pipes; B0.8 does not lower them") — encountering one
-//! here is E129, not a silent `Expr::Null`.
 
 use brink_syntax_native::SyntaxKind as N;
 use brink_syntax_native::ast::{self, AstNode as _};

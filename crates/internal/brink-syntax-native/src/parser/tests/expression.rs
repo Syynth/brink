@@ -12,19 +12,8 @@
 //! and — since B5 (issue #1464) — the one construction-initializer grammar
 //! `TypeName { … }` (`CONSTRUCT_LITERAL`/`CONSTRUCT_ENTRY`), which is how
 //! maps and struct construction are spelled on the native surface (there is
-//! no `#{…}`/`Name#{…}` sigil here; that is the brink dialect's spelling).
-//! `parser/expr.rs`): no fn-value sigil literals, no ranges, no indexing, no
-//! field access, no postfix `++`/`--` — those don't exist as `SyntaxKind`s
-//! here yet (checked against `syntax_kind.rs`). So this file mirrors the
-//! parity target's *structure and depth* for the forms that DO exist:
-//! literals, paths, prefix/infix expressions, parenthesization,
-//! `CALL_EXPR`/`ARG_LIST`, `LAMBDA_EXPR`/`LAMBDA_PARAMS` (tokenized only —
-//! lowering is B0.8, per the node's own doc comment in `syntax_kind.rs`),
-//! the one construction-initializer grammar `TypeName { … }` (B5, issue
-//! #1464 — `CONSTRUCT_LITERAL`/`CONSTRUCT_ENTRY`, how maps and struct
-//! construction are spelled on the native surface; there is no
-//! `#{…}`/`Name#{…}` sigil here, that is the brink dialect's spelling), and
-//! — since NG-D (issue #1490) — the array/sequence literal `[1, 2, 3]`
+//! no `#{…}`/`Name#{…}` sigil here; that is the brink dialect's spelling),
+//! and — since NG-D (issue #1490) — the array/sequence literal `[1, 2, 3]`
 //! (`ARRAY_LITERAL`), the everyday collection literal's own lightest
 //! spelling (no `#[…]` sigil on the native surface either).
 //!

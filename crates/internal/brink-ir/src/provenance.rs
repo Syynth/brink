@@ -75,6 +75,8 @@ pub enum NodeClass {
     Expr = 1,
 
     // ── Specific classes (16..) — append-only, never reused ─────────
+    // (Appending one also means adding its `from_u16` arm and bumping the
+    // `node_class_u16_round_trips` sentinel to the new last variant.)
     /// A `Tag` attached to content.
     Tag = 16,
     /// A knot definition (`== knot`). A `hir::Knot` carries this class only
@@ -382,10 +384,11 @@ mod tests {
                 assert_eq!(class.as_u16(), v);
             }
         }
-        assert_eq!(
-            NodeClass::from_u16(NodeClass::SequenceBranch.as_u16() + 1),
-            None
-        );
+        // One past the *last* assigned class is unknown. Appending a class
+        // to the enum means bumping this name to the new last variant —
+        // otherwise the sentinel starts naming an assigned value and this
+        // assertion fails.
+        assert_eq!(NodeClass::from_u16(NodeClass::Lambda.as_u16() + 1), None);
         assert_eq!(NodeClass::from_u16(2), None, "generic range is reserved");
     }
 
