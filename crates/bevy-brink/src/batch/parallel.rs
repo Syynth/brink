@@ -119,7 +119,11 @@ struct Job<'w> {
 /// [`advance_batch`](super::advance_batch) it is not auto-registered — a host
 /// opts in when it wants parallel stepping:
 ///
-/// ```ignore
+/// ```no_run
+/// # use bevy_app::{App, Update};
+/// # use bevy_brink::advance_batch_parallel;
+/// # struct MyStory;
+/// # let mut app = App::new();
 /// app.add_systems(Update, advance_batch_parallel::<MyStory>);
 /// ```
 pub fn advance_batch_parallel<M: Send + Sync + 'static>(world: &mut World) {

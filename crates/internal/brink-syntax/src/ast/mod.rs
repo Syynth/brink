@@ -29,7 +29,7 @@ pub trait AstNode: Sized {
 
 /// Generates a zero-cost newtype struct implementing [`AstNode`].
 ///
-/// ```ignore
+/// ```text
 /// ast_node!(SourceFile, SOURCE_FILE);
 /// ```
 ///

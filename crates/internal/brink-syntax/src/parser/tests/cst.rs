@@ -16,7 +16,7 @@ pub struct ExpectedNode {
 /// can be added in `[ ]` after the node kind — these assert that the
 /// listed token kinds appear as direct token children of that node.
 ///
-/// ```ignore
+/// ```text
 /// cst!(SOURCE_FILE {
 ///     LOGIC_LINE {
 ///         ASSIGNMENT [EQ] {

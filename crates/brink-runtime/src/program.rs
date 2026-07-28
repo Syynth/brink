@@ -295,10 +295,14 @@ impl Program {
     /// knot/stitch scope paths only. Use this to spawn flows at named entry
     /// points:
     ///
-    /// ```ignore
+    /// ```no_run
+    /// # fn example(program: &brink_runtime::Program) {
+    /// use brink_runtime::FlowInstance;
+    ///
     /// if let Some((idx, _)) = program.find_address("intro_scene") {
     ///     let (flow, ctx) = FlowInstance::new_at(program, idx);
     /// }
+    /// # }
     /// ```
     #[must_use]
     pub fn find_address(&self, path: &str) -> Option<(u32, usize)> {

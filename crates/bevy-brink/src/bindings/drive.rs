@@ -327,7 +327,20 @@ fn begin_eval_by_name<M: Send + Sync + 'static>(
 /// `()` for the default). For callers that don't have `&mut World` (a normal
 /// system), issue a deferred `commands.brink_call_batch(...)` instead.
 ///
-/// ```ignore
+/// ```no_run
+/// # use bevy_ecs::entity::Entity;
+/// # use bevy_ecs::world::World;
+/// # use bevy_log::warn;
+/// # use bevy_brink::{Value, call_ink_functions};
+/// # struct AlarmStory;
+/// # fn example(
+/// #     world: &mut World,
+/// #     flow: Entity,
+/// #     round_started: bool,
+/// #     dt: f32,
+/// #     spots: Vec<f32>,
+/// #     has_global: bool,
+/// # ) {
 /// // The alarm write-seam, one VM entry instead of N+2:
 /// let mut calls: Vec<(&str, Vec<Value>)> = Vec::new();
 /// if round_started { calls.push(("alarm_reset", vec![])); }
@@ -337,6 +350,7 @@ fn begin_eval_by_name<M: Send + Sync + 'static>(
 /// for (call, res) in calls.iter().zip(call_ink_functions::<AlarmStory, _, _>(world, flow, calls.clone())) {
 ///     if let Err(err) = res { warn!("[alarm] ink call {} failed: {err}", call.0); }
 /// }
+/// # }
 /// ```
 ///
 /// # Errors
