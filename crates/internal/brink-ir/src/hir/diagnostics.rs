@@ -865,6 +865,17 @@ pub enum DiagnosticCode {
     /// position, or any other CST shape `hir::lower_native` does not yet
     /// recognize). The construct is skipped — not silently: this diagnostic
     /// names exactly what was skipped and why.
+    ///
+    /// Also raised by `brink_analyzer::modules::check` (issue #1592,
+    /// #1686 review) for the whole-project-only instance of the same gap:
+    /// a bare `use`/`IMPORT` item's trailing segment that is both aliased
+    /// and — only knowable once whole-project module data resolves the
+    /// dual-reading — a declared **submodule**. Aliasing an entire
+    /// imported module's export set has no `Import`/`ImportItem`
+    /// representation, same as the single-segment `use a as m;` form
+    /// `lower_native::import::lower_use_decl` already rejects with this
+    /// code; this later firing exists only because that verdict isn't
+    /// decidable until the analyzer's whole-project pass.
     E129,
     /// A native `flow` is declared more than two levels deep (a `flow`
     /// nested inside another nested `flow`'s body) — the contract's Q4(b)

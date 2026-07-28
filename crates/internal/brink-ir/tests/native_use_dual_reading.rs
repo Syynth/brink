@@ -90,9 +90,19 @@ fn lower_brink(file: FileId, src: &str) -> (HirFile, SymbolManifest) {
 /// `story::market` is deliberately **absent** — no file is that module, only
 /// its submodule `story::market::barter` is declared.
 fn module_map() -> ModuleMap {
+    module_map_with_main("story::main")
+}
+
+/// Parameterized over `MAIN_FILE`'s own declared module — used by the #1686
+/// review's regression test to make `MAIN_FILE` the **parent** module
+/// (`story::market`) rather than an unrelated sibling (`story::main`), which
+/// is exactly the shape that false-positived `E090` before the fix (see
+/// `parent_importing_its_own_declared_child_submodule_licenses_with_no_e090`
+/// below).
+fn module_map_with_main(main_module: &str) -> ModuleMap {
     [
         (BARTER_FILE, "story::market::barter"),
-        (MAIN_FILE, "story::main"),
+        (MAIN_FILE, main_module),
     ]
     .into_iter()
     .map(|(file, name)| {
@@ -188,6 +198,106 @@ fn use_naming_neither_an_item_nor_a_module_now_diagnoses() {
         1,
         "a trailing segment resolving to neither an item nor a module must now diagnose \
          (the retired silent no-op): {:?}",
+        result.diagnostics
+    );
+}
+
+/// `main.brink` declared as **`story::market`** itself — the parent of the
+/// declared submodule `story::market::barter` it `use`s — reusing the same
+/// `MAIN` source (`use story::market::barter;`) as the module-licensing
+/// test above.
+const MAIN_MODULE: &str = "story::market";
+
+/// Review finding #1686 (BLOCKING E090 false positive): a **parent** module
+/// (`story::market`) importing its own declared **child** submodule
+/// (`story::market::barter`) via the leaf-item shape must diagnose nothing —
+/// in particular no `E090` — and must still license `haggle` bare, end to
+/// end through the real pipeline (not just the diagnostics-only unit test in
+/// `brink-analyzer/src/modules.rs`). This is the exact repro the review gave:
+/// changing `MAIN_FILE`'s module from `story::main` to `story::market`.
+#[test]
+fn parent_importing_its_own_declared_child_submodule_licenses_with_no_e090() {
+    let barter = lower_ink(BARTER_FILE, BARTER);
+    let main = lower_brink(MAIN_FILE, MAIN);
+    let inputs: Vec<(FileId, &HirFile, &SymbolManifest)> = vec![
+        (BARTER_FILE, &barter.0, &barter.1),
+        (MAIN_FILE, &main.0, &main.1),
+    ];
+    let opts = AnalysisOptions {
+        dialect: Dialect::Brink,
+        ..AnalysisOptions::default()
+    };
+    let result = brink_analyzer::analyze_with_modules(
+        &inputs,
+        &module_map_with_main(MAIN_MODULE),
+        &opts,
+        true,
+    );
+
+    assert!(
+        result.diagnostics.is_empty(),
+        "a parent module importing its own declared child submodule must diagnose nothing \
+         (no E090 false positive, no E025/E087/E088): {:?}",
+        result.diagnostics
+    );
+
+    let haggle_module: BTreeMap<FileId, Option<String>> = result
+        .resolutions
+        .iter()
+        .filter_map(|r| {
+            let info = result.index.symbols.get(&r.target)?;
+            (info.name == "haggle").then(|| (r.file, info.module.clone()))
+        })
+        .collect();
+    assert_eq!(
+        haggle_module.get(&MAIN_FILE).and_then(Option::as_deref),
+        Some("story::market::barter"),
+        "licensing must still apply — the bare `-> haggle` must resolve into the child \
+         submodule even when the importer is the parent module"
+    );
+}
+
+/// `use story::market::barter as b;` — the trailing segment `barter`
+/// resolves as a declared submodule, and the item is also aliased.
+const MAIN_ALIASED: &str = "\
+use story::market::barter as b;
+
+flow start() {
+  -> DONE
+}
+";
+
+/// Review finding #1686 (BLOCKING aliased trailing module segment): aliasing
+/// a trailing segment that resolves as a **module** has no sound `Import`
+/// representation (aliasing a whole export set, not one name) and must
+/// diagnose `E129` end to end through the real pipeline — mirroring
+/// `lower_native::import::lower_use_decl`'s `E129` for the single-segment
+/// `use a as m;` module-alias shape, just decided one pipeline stage later
+/// once whole-project module data resolves the dual-reading.
+#[test]
+fn aliased_trailing_segment_resolving_to_a_module_diagnoses_e129() {
+    let barter = lower_ink(BARTER_FILE, BARTER);
+    let main = lower_brink(MAIN_FILE, MAIN_ALIASED);
+    let inputs: Vec<(FileId, &HirFile, &SymbolManifest)> = vec![
+        (BARTER_FILE, &barter.0, &barter.1),
+        (MAIN_FILE, &main.0, &main.1),
+    ];
+    let opts = AnalysisOptions {
+        dialect: Dialect::Brink,
+        ..AnalysisOptions::default()
+    };
+    let result = brink_analyzer::analyze_with_modules(&inputs, &module_map(), &opts, true);
+
+    let e129: Vec<_> = result
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == DiagnosticCode::E129)
+        .collect();
+    assert_eq!(
+        e129.len(),
+        1,
+        "aliasing a trailing segment that resolves as a module must diagnose E129, not \
+         silently drop the alias: {:?}",
         result.diagnostics
     );
 }

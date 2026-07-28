@@ -69,10 +69,28 @@ pub(crate) fn import_coverage_for_file(
                 // Dual-reading (issue #1592, doc above): `item.name` might
                 // itself name a submodule of `import.module` rather than an
                 // item of it. `::`-joining is native's real module-path
-                // separator (`brink_db::modules::native_module_path`); ink's
-                // flat, unnested module names never contain `::`, so this
-                // phantom candidate can never coincide with a real ink
-                // module and this is a complete no-op for the ink dialect.
+                // separator (`brink_db::modules::native_module_path`), but
+                // `#@module(...)` places no structural constraint on an ink
+                // module's own name either (it accepts any non-empty
+                // string, `::`-joined or not — see
+                // `modules::known_module_names`'s doc, corrected by the
+                // #1686 review), so this is *not* a structural ink no-op.
+                // It is a no-op only for the corpus this compiler actually
+                // has to stay byte-identical for — no `#@module`/`IMPORT`/
+                // `use` construct appears anywhere in the oracle/tier1
+                // corpus at all (`modules`'s own Compat doc).
+                //
+                // Unconditional on `item.alias`, deliberately: this phantom
+                // candidate is inserted whether or not the item was
+                // aliased, so an aliased trailing segment that resolves to
+                // a module (`use a::b as c;` where `b` is a submodule)
+                // still licenses `b`'s exports bare under their *own*
+                // names, even though `c` binds nothing useful. That shape
+                // has no sound alias representation at all (aliasing a
+                // whole module's export set, not one name) and is
+                // diagnosed loudly at the whole-project level instead —
+                // `modules::check`'s `E129` fires when this pass's
+                // `is_module` reading and `item.alias.is_some()` coincide.
                 qualified.insert(format!("{}::{}", import.module, item.name));
             }
         } else {
