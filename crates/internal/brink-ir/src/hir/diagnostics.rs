@@ -1553,7 +1553,12 @@ impl DiagnosticCode {
             Self::E118 => {
                 "numeric-tower kinds are compiler-known and cannot implement registry protocols"
             }
-            Self::E119 => "sort comparator must be a pure, silent function",
+            // Two verb families share this code because one sitting ruled
+            // both: NS-A4's `sort_by`/`sorted_by` comparators and the
+            // fn-value verb layer's pure trio `map`/`filter`/`fold`
+            // (issue #1679). The title names the shared requirement; the
+            // per-site message names the verb and its callback's role.
+            Self::E119 => "callback must be a pure, silent function",
             Self::E120 => "`weighted` requires weight/value pairs with positive int weights",
             Self::E121 => {
                 "admission: unresolved reference has no matching referencing expression in the HIR body"

@@ -7,14 +7,20 @@
 //!
 //! Most games will use the default `()` marker and just do:
 //!
-//! ```ignore
-//! app.add_plugins(BrinkPlugin::default());
+//! ```no_run
+//! # use bevy_app::App;
+//! # use bevy_brink::BrinkPlugin;
+//! # let mut app = App::new();
+//! app.add_plugins(BrinkPlugin::<()>::default());
 //! ```
 //!
 //! Games with multiple concurrent story instances declare marker types
 //! and register a plugin per marker:
 //!
-//! ```ignore
+//! ```no_run
+//! # use bevy_app::App;
+//! # use bevy_brink::BrinkPlugin;
+//! # let mut app = App::new();
 //! struct MainStory;
 //! struct DreamSequence;
 //!

@@ -50,13 +50,18 @@ pub enum FlowStart {
 /// Spawn it with [`BrinkFlowRequest::builder`] (a `bon`-generated
 /// builder) and let the fulfillment system handle the rest:
 ///
-/// ```ignore
+/// ```no_run
+/// # use bevy_asset::AssetServer;
+/// # use bevy_ecs::system::{Commands, Res};
+/// # use bevy_brink::{BrinkFlowRequest, FlowStart};
+/// # fn example(mut commands: Commands, asset_server: Res<AssetServer>) {
 /// commands.spawn(
 ///     BrinkFlowRequest::<()>::builder()
 ///         .story(asset_server.load("dialogue.ink"))
 ///         .start(FlowStart::Address("intro_scene".into()))
 ///         .build(),
 /// );
+/// # }
 /// ```
 ///
 /// The fulfillment system removes this component and inserts

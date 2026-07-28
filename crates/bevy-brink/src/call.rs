@@ -6,7 +6,18 @@
 //! [`brink_call`](BrinkCallCommandsExt::brink_call) and reacts to the
 //! result with an observer scoped to a unique per-call entity:
 //!
-//! ```ignore
+//! ```no_run
+//! # use bevy_ecs::entity::Entity;
+//! # use bevy_ecs::observer::On;
+//! # use bevy_ecs::resource::Resource;
+//! # use bevy_ecs::system::{Commands, ResMut};
+//! # use bevy_brink::{BrinkCallCommandsExt, BrinkCallResolved};
+//! # #[derive(Resource, Default)]
+//! # struct PendingMoves;
+//! # impl PendingMoves {
+//! #     fn execute_queued(&mut self) {}
+//! # }
+//! # fn example(mut commands: Commands, flow_entity: Entity, in_combat: bool) {
 //! commands
 //!     .brink_call::<()>(flow_entity, "can_player_advance", (in_combat,))
 //!     .observe(|on: On<BrinkCallResolved>, mut moves: ResMut<PendingMoves>| {
@@ -14,6 +25,7 @@
 //!             moves.execute_queued();
 //!         }
 //!     });
+//! # }
 //! ```
 //!
 //! Each `brink_call` spawns its own entity; the plugin's exclusive
@@ -44,7 +56,12 @@
 //! no-short-circuit contract) are delivered in one
 //! [`BrinkCallBatchResolved`] event at the call entity:
 //!
-//! ```ignore
+//! ```no_run
+//! # use bevy_ecs::entity::Entity;
+//! # use bevy_ecs::observer::On;
+//! # use bevy_ecs::system::Commands;
+//! # use bevy_brink::{BrinkCallBatchResolved, BrinkCallCommandsExt, Value};
+//! # fn example(mut commands: Commands, flow_entity: Entity, dt: f32, amount: f32) {
 //! commands
 //!     .brink_call_batch::<()>(flow_entity, [
 //!         ("decay", vec![Value::Float(dt)]),
@@ -53,6 +70,7 @@
 //!     .observe(|on: On<BrinkCallBatchResolved>| {
 //!         for result in &on.event().results { /* … */ }
 //!     });
+//! # }
 //! ```
 //!
 //! Same-frame ordering *across* separate deferred requests (whether two
@@ -220,9 +238,15 @@ pub trait BrinkCallCommandsExt {
     /// returning the [`EntityCommands`] of the spawned per-call entity so
     /// you can attach result observers:
     ///
-    /// ```ignore
+    /// ```no_run
+    /// # use bevy_ecs::entity::Entity;
+    /// # use bevy_ecs::observer::On;
+    /// # use bevy_ecs::system::Commands;
+    /// # use bevy_brink::{BrinkCallCommandsExt, BrinkCallResolved};
+    /// # fn example(mut commands: Commands, flow: Entity) {
     /// commands.brink_call::<()>(flow, "can_spawn", ())
     ///     .observe(|on: On<BrinkCallResolved>| { /* use on.event().value */ });
+    /// # }
     /// ```
     ///
     /// The result is delivered exactly once, scoped to the returned entity
@@ -240,13 +264,19 @@ pub trait BrinkCallCommandsExt {
     /// Returns the [`EntityCommands`] of the spawned per-batch entity so
     /// you can attach a result observer:
     ///
-    /// ```ignore
+    /// ```no_run
+    /// # use bevy_ecs::entity::Entity;
+    /// # use bevy_ecs::observer::On;
+    /// # use bevy_ecs::system::Commands;
+    /// # use bevy_brink::{BrinkCallBatchResolved, BrinkCallCommandsExt, Value};
+    /// # fn example(mut commands: Commands, flow: Entity, dt: f32, amount: f32) {
     /// commands
     ///     .brink_call_batch::<()>(flow, [
     ///         ("decay", vec![Value::Float(dt)]),
     ///         ("escalate_spotting", vec![Value::Float(amount)]),
     ///     ])
     ///     .observe(|on: On<BrinkCallBatchResolved>| { /* on.event().results */ });
+    /// # }
     /// ```
     ///
     /// The whole batch's results (one `Result` per call, in call order) are

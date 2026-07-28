@@ -1046,10 +1046,11 @@ pub fn whole_project_diagnostics(
     // effect, so both passes share one inference when *either* an `#@effects`
     // assertion or an `await` appears anywhere in the project.
     // The NS-A4 comparator-contract gate (E119, docs/stdlib-spec.md §4b,
-    // issue #1110) rides the same whole-project effect table with the same
-    // brink-only + laziness posture: a project with no `sort_by`/
-    // `sorted_by`-with-inline-`#fn` site never triggers effect inference
-    // for it.
+    // issue #1110 — extended to the fn-value verb trio `map`/`filter`/
+    // `fold` by issue #1679, §4) rides the same whole-project effect table
+    // with the same brink-only + laziness posture: a project with no
+    // `sort_by`/`sorted_by`/`map`/`filter`/`fold`-with-inline-`#fn` site
+    // never triggers effect inference for it.
     let needs_effects = hir_inputs.iter().any(|&(_, hir)| {
         hir_has_effects_assertion(hir)
             || await_purity::hir_has_await(hir)
@@ -1074,7 +1075,9 @@ pub fn whole_project_diagnostics(
             diagnostics.extend(await_purity::check(file_id, hir, index, resolutions, &rows));
             // The NS-A4 comparator-contract gate (E119) — same resolution
             // discipline, judging inline `#fn(target)` comparators of
-            // `sort_by`/`sorted_by` against their target's row.
+            // `sort_by`/`sorted_by` and the fn-value verb trio's callbacks
+            // (`map`/`filter`/`fold`, issue #1679) against their target's
+            // row.
             diagnostics.extend(comparator_contract::check(
                 file_id,
                 hir,

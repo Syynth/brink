@@ -28,11 +28,27 @@ use crate::request::fulfill_flow_requests;
 ///
 /// **This plugin does not register an auto-advance system.** Most games
 /// drive advancement from input or game-state events, not every tick.
-/// Apps that want per-tick advancement can register
-/// [`advance_flow`](crate::advance_flow) themselves:
+/// Apps that want per-tick advancement can drive
+/// [`advance_flow`](crate::advance_flow) — which needs `&mut World` plus
+/// the flow's `Entity`, so it can't be registered directly — from their
+/// own exclusive system:
 ///
-/// ```ignore
-/// app.add_systems(Update, advance_flow::<MyStory>);
+/// ```no_run
+/// # use bevy_app::{App, Update};
+/// # use bevy_ecs::prelude::*;
+/// # use bevy_brink::{BrinkFlow, advance_flow};
+/// # struct MyStory;
+/// # let mut app = App::new();
+/// fn advance_all_flows(world: &mut World) {
+///     let entities: Vec<Entity> = world
+///         .query_filtered::<Entity, With<BrinkFlow<MyStory>>>()
+///         .iter(world)
+///         .collect();
+///     for entity in entities {
+///         let _ = advance_flow::<MyStory>(world, entity);
+///     }
+/// }
+/// app.add_systems(Update, advance_all_flows);
 /// ```
 pub struct BrinkPlugin<M: Send + Sync + 'static = ()> {
     policy: WorldPolicy,

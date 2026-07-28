@@ -120,6 +120,25 @@ const MAX: u8 = 0x96;
 // External fns
 const CALL_EXTERNAL: u8 = 0xA0;
 
+// The fn-value verb layer (`docs/stdlib-spec.md` §4, issue #1679) — the pure
+// trio `map`/`filter`/`fold`. ONE discriminant byte with a [`SeqVerbOp`] kind
+// immediate, the `Tower`/`Collect` economy applied a third time, sized for the
+// whole ruled family (`filter_map`, `each`, `map_each` are later slices and
+// add kinds, not bytes).
+//
+// **Why 0xA1 rather than the high tail.** The stdlib blocks above walked
+// `0xF7`-`0xFD` down to a single free byte (`0xFF`); `0xCB`/`0xCC` are held
+// for `StoreVarIfNew`/`EqVars`. `0xFF` is deliberately left unclaimed as the
+// escape byte a future extended-opcode prefix would want, so this family takes
+// the first byte of the next contiguous free run instead — `0xA1`-`0xAF`,
+// immediately after `CallExternal`.
+//
+//   0xA1 SeqVerb(kind)  the kind byte selects the verb; see [`SeqVerbOp`] for
+//                       each one's stack shape. Every kind takes its callback
+//                       as a function value (`FnRef`/`Closure`) and evaluates
+//                       it re-entrantly, exactly like `SeqSortedBy`.
+const SEQ_VERB: u8 = 0xA1;
+
 // v4 collection opcodes (`docs/format-v4-rfc.md` §3 "Collections (T1a)") —
 // numeric assignments frozen by the §9 one-bump rule, contiguous and
 // adjacent to the existing List ops block below. Live as of T1b-2 (#570):
@@ -714,6 +733,74 @@ impl CollectOp {
     }
 }
 
+/// The fn-value verb selected by an [`Opcode::SeqVerb`] instruction's kind
+/// byte (`docs/stdlib-spec.md` §4, issue #1679).
+///
+/// The **pure trio**: `map`, `filter`, `fold`. Callbacks are pure·silent by
+/// the 2026-07-18 ruling, which is what dissolves the eager/lazy question —
+/// "one logical pass, order unobservable; the implementation may fuse
+/// freely." Every kind evaluates its callback re-entrantly with output
+/// isolated, the `SeqSortedBy` shape; a callback that yields, presents a
+/// choice, calls a host external, or diverges is a turn-terminating fault.
+///
+/// The ruled effectful spellings (`each`, `map_each`) and `filter_map` are
+/// later slices of the same issue and will add kinds here, not new opcode
+/// bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SeqVerbOp {
+    /// `[a, f]` → `[a']` — the array of `f(x)` for each element, in
+    /// iteration order. `f: fn(T): U`.
+    Map,
+    /// `[a, pred]` → `[a']` — the elements for which `pred(x)` is `true`,
+    /// in iteration order. `pred: fn(T): bool`; a non-bool return is a
+    /// turn-terminating fault.
+    Filter,
+    /// `[a, init, f]` → `[acc]` — left fold: `acc` starts at `init` and
+    /// becomes `f(acc, x)` for each element in iteration order.
+    /// `f: fn(U, T): U`.
+    Fold,
+}
+
+impl SeqVerbOp {
+    /// Every fn-value verb, in kind-byte order (tests + tooling).
+    pub const ALL: [SeqVerbOp; 3] = [Self::Map, Self::Filter, Self::Fold];
+
+    fn to_byte(self) -> u8 {
+        match self {
+            Self::Map => 0,
+            Self::Filter => 1,
+            Self::Fold => 2,
+        }
+    }
+
+    fn from_byte(b: u8) -> Result<Self, DecodeError> {
+        match b {
+            0 => Ok(Self::Map),
+            1 => Ok(Self::Filter),
+            2 => Ok(Self::Fold),
+            _ => Err(DecodeError::InvalidSeqVerbOp(b)),
+        }
+    }
+
+    /// The source spelling of this verb — also the `.inkt` mnemonic and the
+    /// `program_model` disassembly text, and the verb name runtime faults
+    /// report. Stable, boring, `snake_case`.
+    #[must_use]
+    pub fn mnemonic(self) -> &'static str {
+        match self {
+            Self::Map => "map",
+            Self::Filter => "filter",
+            Self::Fold => "fold",
+        }
+    }
+
+    /// Inverse of [`mnemonic`](Self::mnemonic) for the `.inkt` reader.
+    #[must_use]
+    pub fn from_mnemonic(s: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|op| op.mnemonic() == s)
+    }
+}
+
 /// The kind of sequence/shuffle container.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SequenceKind {
@@ -811,6 +898,9 @@ pub enum DecodeError {
     InvalidTowerOp(u8),
     /// Invalid collections+ op kind byte (NS-A7 `Collect` opcode immediate).
     InvalidCollectOp(u8),
+    /// Invalid fn-value verb kind byte (`SeqVerb` opcode immediate,
+    /// issue #1679).
+    InvalidSeqVerbOp(u8),
     /// .inkb magic bytes are not `INKB`.
     BadMagic([u8; 4]),
     /// .inkb version is not supported.
@@ -895,6 +985,7 @@ impl fmt::Display for DecodeError {
             Self::InvalidSequenceKind(b) => write!(f, "invalid sequence kind: {b}"),
             Self::InvalidTowerOp(b) => write!(f, "invalid tower op kind: {b:#04x}"),
             Self::InvalidCollectOp(b) => write!(f, "invalid collections+ op kind: {b:#04x}"),
+            Self::InvalidSeqVerbOp(b) => write!(f, "invalid fn-value verb kind: {b:#04x}"),
             Self::BadMagic(m) => write!(f, "bad magic: {m:02x?}"),
             Self::UnsupportedVersion(v) => write!(f, "unsupported .inkb version: {v}"),
             Self::InvalidUtf8 => write!(f, "invalid UTF-8 in string field"),
@@ -1490,6 +1581,14 @@ pub enum Opcode {
     /// entry-check; everything else is pure over its operands.
     Collect(CollectOp),
 
+    // ── The fn-value verb layer (`docs/stdlib-spec.md` §4, issue #1679) ──
+    /// One opcode, one operation per [`SeqVerbOp`] kind: the pure trio
+    /// `map`/`filter`/`fold`. Every kind pops a callback function value
+    /// (`FnRef`/`Closure`) and evaluates it re-entrantly per element with
+    /// output isolated — the `SeqSortedBy` machinery, one callback contract.
+    /// See the per-kind docs for stack shapes.
+    SeqVerb(SeqVerbOp),
+
     // ── Lifecycle ───────────────────────────────────────────────────────
     Done,
     /// Pause for choice presentation. Like `Done` but does NOT set
@@ -1870,6 +1969,12 @@ impl Opcode {
                 write_u8(buf, op.to_byte());
             }
 
+            // The fn-value verbs: discriminant + SeqVerbOp kind byte.
+            Self::SeqVerb(op) => {
+                write_u8(buf, SEQ_VERB);
+                write_u8(buf, op.to_byte());
+            }
+
             // NS-A8 numeric tower: discriminant + TowerOp kind byte.
             Self::Tower(op) => {
                 write_u8(buf, TOWER);
@@ -2135,6 +2240,10 @@ impl Opcode {
             // NS-A7 collections+: CollectOp kind byte follows; unknown
             // kinds are a decode error (reserved-tag discipline).
             COLLECT => Self::Collect(CollectOp::from_byte(read_u8(buf, offset)?)?),
+
+            // The fn-value verbs: SeqVerbOp kind byte follows; unknown
+            // kinds are a decode error (reserved-tag discipline).
+            SEQ_VERB => Self::SeqVerb(SeqVerbOp::from_byte(read_u8(buf, offset)?)?),
 
             // Lifecycle
             DONE => Self::Done,
@@ -2709,6 +2818,53 @@ mod tests {
         let mut offset = 0;
         let err = Opcode::decode(&buf, &mut offset).unwrap_err();
         assert_eq!(err, DecodeError::InvalidCollectOp(5));
+    }
+
+    #[test]
+    fn roundtrip_seq_verb_ops() {
+        for kind in SeqVerbOp::ALL {
+            roundtrip(&Opcode::SeqVerb(kind));
+        }
+    }
+
+    /// The fn-value verb layout (issue #1679): ONE discriminant byte
+    /// (`0xA1` — the first byte of the `0xA1`-`0xAF` run after
+    /// `CallExternal`, chosen over the high tail's last free byte `0xFF`,
+    /// which stays unclaimed as a future extended-opcode prefix) with the
+    /// `SeqVerbOp` kind as a u8 immediate in kind-byte order 0..=2. See the
+    /// `SEQ_VERB` const's comment.
+    #[test]
+    fn seq_verb_opcode_layout() {
+        for (i, kind) in SeqVerbOp::ALL.into_iter().enumerate() {
+            let mut buf = Vec::new();
+            Opcode::SeqVerb(kind).encode(&mut buf);
+            #[expect(clippy::cast_possible_truncation, reason = "3 kinds")]
+            let expected_kind = i as u8;
+            assert_eq!(buf, [0xA1, expected_kind], "{kind:?} layout drifted");
+        }
+    }
+
+    /// An unknown fn-value verb kind byte is a decode error, not a silent
+    /// skip — same reserved-tag discipline as `TowerOp`/`CollectOp`.
+    #[test]
+    fn decode_unknown_seq_verb_kind_rejected() {
+        let buf = [0xA1, 3];
+        let mut offset = 0;
+        let err = Opcode::decode(&buf, &mut offset).unwrap_err();
+        assert_eq!(err, DecodeError::InvalidSeqVerbOp(3));
+    }
+
+    /// Mnemonics round-trip through the `.inkt` reader's inverse, and are
+    /// exactly the source spellings the verbs ship under.
+    #[test]
+    fn seq_verb_mnemonics_round_trip() {
+        for kind in SeqVerbOp::ALL {
+            assert_eq!(SeqVerbOp::from_mnemonic(kind.mnemonic()), Some(kind));
+        }
+        assert_eq!(SeqVerbOp::Map.mnemonic(), "map");
+        assert_eq!(SeqVerbOp::Filter.mnemonic(), "filter");
+        assert_eq!(SeqVerbOp::Fold.mnemonic(), "fold");
+        assert_eq!(SeqVerbOp::from_mnemonic("map_each"), None);
     }
 
     #[test]

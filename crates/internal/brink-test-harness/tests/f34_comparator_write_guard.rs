@@ -90,6 +90,7 @@ fn dev_mode_global_write_comparator_faults() {
             err,
             RuntimeError::ComparatorWroteState {
                 verb: "sort_by",
+                role: "comparator",
                 what: "assigned a global variable",
             }
         ),
@@ -137,6 +138,7 @@ fn dev_mode_ref_param_write_through_faults() {
             err,
             RuntimeError::ComparatorWroteState {
                 verb: "sort_by",
+                role: "comparator",
                 what: "assigned a global through a `ref` parameter",
             }
         ),
@@ -166,6 +168,7 @@ fn dev_mode_rand_in_comparator_faults() {
             err,
             RuntimeError::ComparatorWroteState {
                 verb: "sort_by",
+                role: "comparator",
                 what: "advanced the RNG state (a draw is a write)",
             }
         ),

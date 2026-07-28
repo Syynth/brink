@@ -192,12 +192,19 @@ pub fn is_native(path: &Path) -> bool {
     path.extension().is_some_and(|ext| ext == NATIVE_EXTENSION)
 }
 
-/// Resolve a native project's source root from an entry file's path: the
-/// directory containing the nearest `brink.toml` found by walking up from
-/// the entry (`brink-project-config`'s discovery), or — if none exists —
-/// the entry's own directory (decision-log 2026-07-22 "native module
-/// identity ... source root": the explicit, documented single-file-project
-/// mode, not a silent fallback).
+/// Resolve a project's source root from an entry file's path: the directory
+/// containing the nearest `brink.toml` found by walking up from the entry
+/// (`brink-project-config`'s discovery), or — if none exists — the entry's
+/// own directory (decision-log 2026-07-22 "native module identity ...
+/// source root": the explicit, documented single-file-project mode, not a
+/// silent fallback).
+///
+/// Despite the name, this is no longer native-only: `prepare_driver`
+/// (`brink-compiler/src/driver.rs`) also calls it for an `.ink` entry, to
+/// register `ProjectDb::set_ink_root` (issue #1696) — the same root
+/// discovery a native compile already used, reused so `hir::
+/// root_content_scope_path`'s qualifier is a root-relative key rather than
+/// the entry's raw spelling.
 ///
 /// A *relative* multi-component `entry_dir` like `chapters` has
 /// `Path::parent` return `Some("")` — not `None` — once the walk-up inside

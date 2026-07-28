@@ -662,6 +662,10 @@ fn format_opcode(op: &Opcode, r: &Resolver) -> String {
         // NS-A7 collections+ (#1113): one opcode, per-kind mnemonic —
         // mirrors the `.inkt` disassembly (`CollectOp::mnemonic`).
         Opcode::Collect(op) => op.mnemonic().to_owned(),
+
+        // The fn-value verbs (#1679): one opcode, per-kind mnemonic —
+        // mirrors the `.inkt` disassembly (`SeqVerbOp::mnemonic`).
+        Opcode::SeqVerb(op) => op.mnemonic().to_owned(),
     }
 }
 

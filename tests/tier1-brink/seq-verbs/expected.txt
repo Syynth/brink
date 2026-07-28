@@ -1,0 +1,7 @@
+map: [2, 4, 6, 8]; source kept: [1, 2, 3, 4].
+filter: [2, 4].
+fold: 10.
+chained: 112.
+lengths: [3, 5].
+empty map: []; empty fold: 7.
+bound: [11, 12, 13, 14].

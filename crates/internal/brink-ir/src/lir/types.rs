@@ -929,6 +929,34 @@ pub enum Expr {
         cmp: Box<Expr>,
     },
 
+    // ── The fn-value verb layer (`docs/stdlib-spec.md` §4, issue #1679) ──
+    /// `Opcode::SeqVerb(Map)`: evaluates an array and a transform function
+    /// value (`fn(T): U`), pushes the array of results in iteration order.
+    /// The callback is pure-required (RULED 2026-07-18) — which is exactly
+    /// what makes "one logical pass, order unobservable" true, so nothing
+    /// downstream may observe how many passes the runtime actually makes.
+    SeqMap {
+        seq: Box<Expr>,
+        f: Box<Expr>,
+    },
+    /// `Opcode::SeqVerb(Filter)`: evaluates an array and a predicate
+    /// function value (`fn(T): bool`), pushes the retained elements in
+    /// iteration order. Pure-required callback, as [`Expr::SeqMap`].
+    SeqFilter {
+        seq: Box<Expr>,
+        pred: Box<Expr>,
+    },
+    /// `Opcode::SeqVerb(Fold)`: evaluates an array, an initial accumulator,
+    /// and a combining function value (`fn(U, T): U`), pushes the final
+    /// accumulator. Left fold in iteration order; pure-required callback.
+    /// Operands are pushed `seq`, `init`, `f` — the runtime pops in
+    /// reverse.
+    SeqFold {
+        seq: Box<Expr>,
+        init: Box<Expr>,
+        f: Box<Expr>,
+    },
+
     // ── NS-A8: the numeric tower (`docs/tower-mini-spec.md`, issue
     // #1114) ────────────────────────────────────────────────────────────
     /// One node for the whole tower family — `Opcode::Tower(op)` after the

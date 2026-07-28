@@ -416,6 +416,7 @@ fn parse_instruction(pair: P<'_>) -> Result<Opcode, InktParseError> {
         // spellings, `TowerOp::mnemonic`/`from_mnemonic` the single pairing.
         _ => tower_mnemonic_opcode(mnemonic)
             .or_else(|| collect_mnemonic_opcode(mnemonic))
+            .or_else(|| seq_verb_mnemonic_opcode(mnemonic))
             .ok_or_else(|| InktParseError {
                 message: format!("unknown opcode: {mnemonic}"),
                 line: mnemonic_pair.line_col().0,
@@ -434,6 +435,13 @@ fn tower_mnemonic_opcode(mnemonic: &str) -> Option<Opcode> {
 /// mnemonic to `Opcode::Collect(kind)` via [`crate::CollectOp::from_mnemonic`].
 fn collect_mnemonic_opcode(mnemonic: &str) -> Option<Opcode> {
     crate::CollectOp::from_mnemonic(mnemonic).map(Opcode::Collect)
+}
+
+/// The `.inkt` reader leg for the `SeqVerb` fn-value verb family (issue
+/// #1679): resolve a mnemonic to `Opcode::SeqVerb(kind)` via
+/// [`crate::SeqVerbOp::from_mnemonic`].
+fn seq_verb_mnemonic_opcode(mnemonic: &str) -> Option<Opcode> {
+    crate::SeqVerbOp::from_mnemonic(mnemonic).map(Opcode::SeqVerb)
 }
 
 fn parse_choice_flags_operand(

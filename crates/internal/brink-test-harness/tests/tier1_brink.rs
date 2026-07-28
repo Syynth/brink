@@ -446,6 +446,7 @@ fn every_case_directory_has_a_test() {
         "numeric-tower",
         "sort-verbs",
         "weighted-heap-verbs",
+        "seq-verbs",
     ];
     let mut found: Vec<String> = std::fs::read_dir(corpus_dir())
         .expect("read tests/tier1-brink")
@@ -2285,6 +2286,18 @@ fn sort_verbs_end_to_end() {
 #[test]
 fn weighted_heap_verbs_end_to_end() {
     assert_case("weighted-heap-verbs");
+}
+
+/// The fn-value verb layer's pure trio (`docs/stdlib-spec.md` §4, issue
+/// #1679) end to end in the brink dialect: `map`/`filter`/`fold` over
+/// `#fn(target)` callbacks, chaining (the verbs compose because `map`'s
+/// result is an ordinary array), an element-type change under `map`, the
+/// empty-array cases (`fold` returns `init` untouched — no absence case, so
+/// no `Option`), and a `bind(…)` closure as a callback. Strict types (the
+/// brink-dialect default).
+#[test]
+fn seq_verbs_end_to_end() {
+    assert_case("seq-verbs");
 }
 
 #[test]

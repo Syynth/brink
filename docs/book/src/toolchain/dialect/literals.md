@@ -708,7 +708,7 @@ draw being an effect — is the Randomness chapter's; iteration in full
 | `E107` | a bare `none` with no type from context | both |
 | `E116` | an `Option[T]` used as a condition — no truthiness | strict (runtime fault under gradual) |
 | `E117` | `int(r)` over a range not proven inhabited | strict (runtime fault under gradual) |
-| `E119` | a `sort_by`/`sorted_by` comparator provably exceeds pure·silent | both |
+| `E119` | a `sort_by`/`sorted_by` comparator — or a `map`/`filter`/`fold` callback — provably exceeds pure·silent | both |
 | `E149` | `remove` on a statically-known array — use `remove_at` | strict (runtime fault under gradual) |
 | `E152` | a statically non-key-domain needle in `contains(m, …)` on a statically-known map | strict (warning; runtime returns `false` under gradual) |
 

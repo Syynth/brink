@@ -60,22 +60,23 @@ root-weave choices across the `INCLUDE` splice the way C# ink does, the same
 gap `tier3/includes/choice-accumulation-across-include` and
 `tier3/includes/root-content-splice-site` already record.
 
-⚠ **Known limitation, flagged in review: the qualifier is not normalized.**
-`hir::root_content_scope_path` qualifies by the file's *raw registered path*,
-not a normalized root-relative key. Anonymous root-content identity is
-therefore a function of how the entry (and any `INCLUDE`d file) happened to be
+⚠ **Known limitation, flagged in review: the qualifier was not normalized —
+fixed by [#1696](https://github.com/Syynth/brink/issues/1696).**
+`hir::root_content_scope_path` used to qualify by the file's *raw registered
+path*, not a normalized root-relative key, so anonymous root-content identity
+was a function of how the entry (and any `INCLUDE`d file) happened to be
 spelled when it was registered: `brink compile story.ink`, `./story.ink`, and
-an absolute spelling of the same file mint three different anonymous
+an absolute spelling of the same file minted three different anonymous
 container-id sets for identical source, and `brink-lsp` (which keys by
 absolute OS path) and the CLI (which keys by whatever spelling the caller
-passed) disagree on ids for the same tree beyond the registration-order
-parity this PR restores (`root_content_ids_agree_between_discover_and_editor_
+passed) disagreed on ids for the same tree beyond the registration-order
+parity this PR restored (`root_content_ids_agree_between_discover_and_editor_
 order` covers registration order only, with the same path spelling in both
-orders — see its doc comment). Pinned by
-`root_content_ids_are_sensitive_to_entry_path_spelling_known_limitation` in
-`crates/brink-compiler/tests/issue_1504_root_content_identity.rs`. Tracked as
-[#1696](https://github.com/Syynth/brink/issues/1696): derive the qualifier
-from a root-relative key via `brink_driver::native_source_root` +
-`brink_db::modules::native_root_relative_key` (the mechanism #1572 built for
-exactly this hazard in native modules), extended to cover ink — see
-`docs/root-content-identity-findings.md`'s "Known limitation" section.
+orders — see its doc comment). #1696 derives the qualifier from a
+root-relative key via `brink_driver::native_source_root` +
+`brink_db::modules::root_relative_key` (the mechanism #1572 built for exactly
+this hazard in native modules, extended to cover ink) — see
+`.changeset/issue-1696-ink-root-content-key-normalization.md` for that
+change's own save/translation-impact writeup and
+`docs/root-content-identity-findings.md`'s "Known limitation" section for the
+full history.

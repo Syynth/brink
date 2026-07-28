@@ -21,7 +21,7 @@
 //! supported. Generated code refers to everything through `::bevy_brink`,
 //! so the deriving crate needs only a dependency on `bevy-brink`.
 //!
-//! ```ignore
+//! ```text
 //! #[derive(Event, Clone, BrinkCommand)]
 //! struct PlaySound { name: String, volume: f32 }
 //! ```

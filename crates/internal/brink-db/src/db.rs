@@ -56,7 +56,14 @@ impl ProjectDb {
     /// Create an empty project database.
     pub fn new() -> Self {
         let salsa = BrinkDatabase::default();
-        let project = ProjectInput::new(&salsa, Vec::new(), None, AnalysisOptions::default(), None);
+        let project = ProjectInput::new(
+            &salsa,
+            Vec::new(),
+            None,
+            AnalysisOptions::default(),
+            None,
+            None,
+        );
         Self {
             salsa,
             project,
@@ -202,6 +209,28 @@ impl ProjectDb {
     /// [`set_native_root`](Self::set_native_root).
     pub fn native_root(&self) -> Option<&str> {
         self.project.native_root(&self.salsa).as_deref()
+    }
+
+    /// Register the directory `.ink` file keys are root-relative *to*
+    /// (issue #1696) — ink's sibling of [`set_native_root`](Self::set_native_root),
+    /// consulted by [`hir::root_content_scope_path`](brink_ir::hir::root_content_scope_path)'s
+    /// qualifier rather than by module identity.
+    ///
+    /// `brink-compiler/src/driver.rs`'s `prepare_driver` registers this for
+    /// every ink compile, using `brink_driver::native_source_root` (the same
+    /// root-discovery rule native compiles already use) fed the entry path.
+    /// `None` — no caller has registered a root — is byte-identical to the
+    /// pre-#1696 world: the qualifier stays the file's raw registered path.
+    pub fn set_ink_root(&mut self, root: Option<String>) {
+        if self.project.ink_root(&self.salsa) != &root {
+            self.project.set_ink_root(&mut self.salsa).to(root);
+        }
+    }
+
+    /// The registered ink source root, if any — see
+    /// [`set_ink_root`](Self::set_ink_root).
+    pub fn ink_root(&self) -> Option<&str> {
+        self.project.ink_root(&self.salsa).as_deref()
     }
 
     /// Look up a file's ID by path.
