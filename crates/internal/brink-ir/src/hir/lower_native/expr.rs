@@ -45,6 +45,23 @@
 //! only mode, single-expression or braced-block bodies), so the
 //! anonymous-body node the fence was waiting on now exists. See
 //! [`super::lambda`]'s module doc for how each half of that ruling lands.
+//! **Array/sequence literal (NG-D, issue #1490, RULED 2026-07-27)**:
+//! `ARRAY_LITERAL` — the `[1, 2, 3]` atom — lowers through
+//! [`lower_array_literal`] below directly to `Expr::ArrayLiteral`, the same
+//! HIR shape the brink dialect's `#[…]` sigil literal already lowers to
+//! (`hir::lower::expr::sigils::LowerExpr for ast::ArrayLiteral`). No new HIR
+//! node, no analyzer change: `brink-analyzer`'s `Ty::Array` handling
+//! (`infer::body`, `strict.rs`'s collection-join logic, …) is already
+//! dialect-agnostic over this shape, and the T1b dialect gate
+//! (`dialect_gate::check`) never runs for native files at all
+//! (`per_file_diagnostics`'s `is_native` short-circuit) — so an array
+//! literal reached from `.brink` source is never mistaken for the brink
+//! dialect's own sigil-literal extension.
+//!
+//! `LAMBDA_EXPR` is tokenized/parsed (B0.5) but explicitly unlowered until
+//! the code sitting rules a real anonymous-body node (`docs/b0-sequencing.md`
+//! §3: "B0.5 tokenizes pipes; B0.8 does not lower them") — encountering one
+//! here is E129, not a silent `Expr::Null`.
 
 use brink_syntax_native::SyntaxKind as N;
 use brink_syntax_native::ast::{self, AstNode as _};
@@ -121,6 +138,7 @@ pub(super) fn lower_expr(file_id: FileId, node: &SyntaxNode, diags: &mut Vec<Dia
         N::CALL_EXPR => lower_call(file_id, node, diags),
         N::CONSTRUCT_LITERAL => lower_construct(file_id, node, diags),
         N::LAMBDA_EXPR => super::lambda::lower_lambda(file_id, node, diags),
+        N::ARRAY_LITERAL => lower_array_literal(file_id, node, diags),
         N::STMT_BLOCK => {
             // Blocks-as-values (decision-log 2026-07-23 item 2) has no HIR
             // representation yet — no `Expr::Block` variant exists, and
@@ -441,6 +459,27 @@ fn bare_field_name(key: &SyntaxNode) -> Option<Name> {
         [only] => Some(only.clone()),
         _ => None,
     }
+}
+
+/// Lower a `[expr, expr, …]` array/sequence literal (NG-D, issue #1490;
+/// RULED 2026-07-27 "`[1, 2, 3]`. Bracket literal on the native surface")
+/// straight to `Expr::ArrayLiteral` — the ruling's whole point, unlike B5's
+/// construction initializer, is that this atom needs no dispatch layer at
+/// all: the everyday collection literal gets the lightest spelling *and*
+/// the most direct lowering.
+fn lower_array_literal(file_id: FileId, node: &SyntaxNode, diags: &mut Vec<Diagnostic>) -> Expr {
+    let Some(lit) = ast::ArrayLiteral::cast(node.clone()) else {
+        diags.push(diag(file_id, node.text_range(), DiagnosticCode::E015));
+        return Expr::Null;
+    };
+    let elements = lit
+        .elements()
+        .map(|el| lower_expr(file_id, &el, diags))
+        .collect();
+    Expr::ArrayLiteral(crate::ArrayLiteral {
+        ptr: native_provenance(file_id, NodeClass::ArrayLiteral, node),
+        elements,
+    })
 }
 
 fn lower_call(file_id: FileId, node: &SyntaxNode, diags: &mut Vec<Diagnostic>) -> Expr {

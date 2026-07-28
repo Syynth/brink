@@ -1,0 +1,31 @@
+fn sum_all() {
+  let items = [1, 2, 3];
+  let total = 0;
+  for x in items {
+    total = total + x;
+  }
+  return total;
+}
+
+fn empty_count() {
+  let items = [];
+  let n = 0;
+  for x in items {
+    n = n + 1;
+  }
+  return n;
+}
+
+fn sum_head_literal() {
+  let total = 0;
+  for x in [4, 5, 6] {
+    total = total + x;
+  }
+  return total;
+}
+
+flow main() {
+  Sum: {sum_all()}
+  Empty: {empty_count()}
+  HeadLiteral: {sum_head_literal()} -> END
+}

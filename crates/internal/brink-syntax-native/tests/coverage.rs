@@ -264,6 +264,9 @@ fn classify(kind: SyntaxKind) -> Coverage {
         | SyntaxKind::LAMBDA_EXPR
         | SyntaxKind::LAMBDA_PARAMS => Exercised,
 
+        // ── Node kinds — the array/sequence literal (NG-D, #1490) ──
+        SyntaxKind::ARRAY_LITERAL => Exercised,
+
         // ── Node kinds — the construction initializer ─────────────
         SyntaxKind::CONSTRUCT_LITERAL | SyntaxKind::CONSTRUCT_ENTRY => Exercised,
 

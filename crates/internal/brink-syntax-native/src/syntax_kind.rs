@@ -498,6 +498,20 @@ pub enum SyntaxKind {
     /// parameter used to be a bare `IDENT` token directly under this node;
     /// promoting them to `PARAM` lets `: type` attach to the right one.
     LAMBDA_PARAMS,
+    /// `[expr, expr, …]` — the array/sequence literal (NG-D, issue #1490,
+    /// RULED 2026-07-27: "the everyday collection literal deserves the
+    /// lightest spelling"). The B5-symmetric `Array { … }` construction-
+    /// registry entry was weighed and rejected in the same ruling —
+    /// `L_BRACKET`/`R_BRACKET` were already lexed and idle in expression
+    /// position, so this is a new atom, not a `CONSTRUCT_LITERAL` registry
+    /// entry. Holds its element expressions as direct children (same shape
+    /// as [`Self::ARG_LIST`] — no per-element wrapper node, unlike
+    /// [`Self::CONSTRUCT_ENTRY`], since an array element is never a pair).
+    /// Distinct from the type-annotation grammar's `<T>` generic-argument
+    /// syntax (NG-D's sibling ruling, issue #1552): `[ ]` is for *values*,
+    /// `< >` is for *type arguments* — `parser/types.rs` never touches
+    /// `L_BRACKET`, so the two spellings cannot collide.
+    ARRAY_LITERAL,
 
     // ── Node kinds — the construction initializer (B5, issue #1464, ─────
     // ── #1103 RULED 2026-07-23, `docs/stdlib-spec.md` §9.6) ─────────────

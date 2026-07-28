@@ -52,6 +52,30 @@ IMPORT quest_3                                      // qualified: -> quest_3.amb
   name offers a quick-fix inserting the IMPORT; completion offers
   out-of-module names with the import edit attached; rename keeps
   import lines coherent (the INCLUDE-rewrite machinery precedent).
+- **A bare import's trailing segment dual-reads (RULED, issue #1592,
+  2026-07-27)**: `IMPORT { barter } FROM story::market` /
+  `use story::market::barter;` checks `barter` against **both**
+  readings independently — an item `story::market` publicly exports,
+  and a declared submodule `story::market::barter` in its own right —
+  and licenses whichever holds. **Both may hold at once, with no
+  precedence between them**: the item is bare-importable under its
+  own name, and (if `barter` is also a declared submodule) that
+  submodule's public exports become bare-referenceable too, exactly
+  as an explicit qualified import of it would grant. The well-formedness
+  check (`E088`) only fires when the trailing segment resolves as
+  **neither**. A parent module importing its own declared child
+  submodule this way (`story::market` writing
+  `use story::market::barter;`) is not a self-import (`E090`) — it is
+  the mandatory spelling the import-required gate demands to reference
+  the child's exports; self-import (`E090`) still fires for the
+  qualified form (`IMPORT story::market;` from within `story::market`)
+  and for the leaf-item form naming the importing file's own module
+  outright (`use story::market::barter;` from inside
+  `story::market::barter` itself). **Aliasing a trailing segment that
+  resolves as a module has no representation** (`AS`/`as` renames one
+  local binding, not a whole export set) and is rejected the same way
+  the single-segment module-alias form is (native's `use a as m;`) —
+  loud, never silently dropped.
 
 **PROPOSED spellings**: `IMPORT`/`FROM`/`AS` as shown (declaration
 position, top of file, after any `#@module`); duplicate import of

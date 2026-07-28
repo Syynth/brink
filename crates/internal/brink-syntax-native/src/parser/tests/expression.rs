@@ -13,6 +13,20 @@
 //! `TypeName { … }` (`CONSTRUCT_LITERAL`/`CONSTRUCT_ENTRY`), which is how
 //! maps and struct construction are spelled on the native surface (there is
 //! no `#{…}`/`Name#{…}` sigil here; that is the brink dialect's spelling).
+//! `parser/expr.rs`): no fn-value sigil literals, no ranges, no indexing, no
+//! field access, no postfix `++`/`--` — those don't exist as `SyntaxKind`s
+//! here yet (checked against `syntax_kind.rs`). So this file mirrors the
+//! parity target's *structure and depth* for the forms that DO exist:
+//! literals, paths, prefix/infix expressions, parenthesization,
+//! `CALL_EXPR`/`ARG_LIST`, `LAMBDA_EXPR`/`LAMBDA_PARAMS` (tokenized only —
+//! lowering is B0.8, per the node's own doc comment in `syntax_kind.rs`),
+//! the one construction-initializer grammar `TypeName { … }` (B5, issue
+//! #1464 — `CONSTRUCT_LITERAL`/`CONSTRUCT_ENTRY`, how maps and struct
+//! construction are spelled on the native surface; there is no
+//! `#{…}`/`Name#{…}` sigil here, that is the brink dialect's spelling), and
+//! — since NG-D (issue #1490) — the array/sequence literal `[1, 2, 3]`
+//! (`ARRAY_LITERAL`), the everyday collection literal's own lightest
+//! spelling (no `#[…]` sigil on the native surface either).
 //!
 //! Entry point: every case below goes through `var name = <expr>` (or, for
 //! the accessor tests, `const`), since that's the shortest reachable path
@@ -1614,6 +1628,128 @@ fn construct_entry_accessors_distinguish_the_two_forms() {
     assert!(!entry.is_pair());
     assert!(entry.key().is_none());
     assert_eq!(entry.value().expect("value").kind(), SyntaxKind::PATH_EXPR);
+}
+
+// ── N3. Array/sequence literals, `[…]` (NG-D, issue #1490, RULED ─────
+// ── 2026-07-27: "`[1, 2, 3]`. Bracket literal on the native surface") ─
+// A plain atom, not a construction-registry entry — the B5-symmetric
+// `Array { … }` spelling was weighed and rejected in the same ruling.
+// Elements are bare expression children directly under `ARRAY_LITERAL`
+// (mirrors `ARG_LIST`'s shape); there is no per-element wrapper node the
+// way `CONSTRUCT_ENTRY` wraps a construction literal's entries, since an
+// array element is never a key/value pair.
+
+/// The empty form — legal grammar, and the shortest thing that proves the
+/// `L_BRACKET` atom commits at all.
+#[test]
+fn array_literal_empty() {
+    let p = assert_lossless("var a = []\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::ARRAY_LITERAL));
+}
+
+#[test]
+fn array_literal_produces_one_child_per_element() {
+    let p = assert_lossless("var a = [1, 2, 3]\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let lit = p
+        .syntax()
+        .descendants()
+        .find_map(ast::ArrayLiteral::cast)
+        .expect("one ARRAY_LITERAL");
+    assert_eq!(lit.elements().count(), 3);
+}
+
+#[test]
+fn array_literal_accepts_a_trailing_comma() {
+    let p = assert_lossless("var a = [1, 2, ]\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let lit = p
+        .syntax()
+        .descendants()
+        .find_map(ast::ArrayLiteral::cast)
+        .expect("one ARRAY_LITERAL");
+    assert_eq!(lit.elements().count(), 2);
+}
+
+#[test]
+fn array_literal_elements_may_span_lines() {
+    let p = assert_lossless("var a = [\n  1,\n  2,\n]\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let lit = p
+        .syntax()
+        .descendants()
+        .find_map(ast::ArrayLiteral::cast)
+        .expect("one ARRAY_LITERAL");
+    assert_eq!(lit.elements().count(), 2);
+}
+
+#[test]
+fn array_literal_nests() {
+    let p = assert_lossless("var a = [[1, 2], [3, 4]]\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::ARRAY_LITERAL), 3);
+}
+
+/// An array literal is an ordinary atom, so it composes with the rest of
+/// the expression grammar (call argument position here) — the same proof
+/// `construct_literal_in_call_argument_position` gives the construction
+/// initializer.
+#[test]
+fn array_literal_in_call_argument_position() {
+    let p = assert_lossless("var x = size([1, 2, 3])\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::ARRAY_LITERAL));
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::ARG_LIST));
+}
+
+/// A construction literal composes inside an array element without the
+/// no-construct-literal restriction ever engaging — `[` never triggers it
+/// (unlike a bare path followed by `{` in a control-flow head, see
+/// `a_control_flow_head_does_not_swallow_its_body_brace` above).
+#[test]
+fn array_literal_elements_may_be_construction_literals() {
+    let p = assert_lossless("var a = [Point { x: 1 }, Point { x: 2 }]\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert_eq!(
+        count_node_kind(&p.syntax(), SyntaxKind::CONSTRUCT_LITERAL),
+        2
+    );
+}
+
+/// The array literal's own bracket lifts `no_construct_literal` for its
+/// elements even when the array itself sits inside a genuinely restricted
+/// head (`head_expression`, `control_flow.rs`'s `if`/`while`/`for-in`) —
+/// unlike a bare path followed by `{`, the brackets already disambiguate
+/// where the head's expression ends, so a construction literal composes
+/// freely as an element without needing the parenthesized-restoration
+/// escape hatch `parentheses_restore_the_construct_literal_inside_a_control_flow_head`
+/// exercises above.
+#[test]
+fn array_literal_in_a_for_in_head_still_allows_construction_literal_elements() {
+    let p = assert_lossless("var x = { for q in [Point { x: 1 }] { 1; } };\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::ARRAY_LITERAL));
+    assert_eq!(
+        count_node_kind(&p.syntax(), SyntaxKind::CONSTRUCT_LITERAL),
+        1
+    );
+}
+
+#[test]
+fn unterminated_array_literal_never_panics() {
+    let src = "var a = [1, 2\n";
+    let p = parse(src);
+    assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
+    assert!(!p.errors().is_empty());
+}
+
+#[test]
+fn garbage_inside_an_array_literal_never_panics() {
+    let src = "var a = [ @@@ ]\n";
+    let p = parse(src);
+    assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
+    assert!(!p.errors().is_empty());
 }
 
 // ── O. Proptest round-trip generator (local to this family file — see  ──

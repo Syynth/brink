@@ -105,6 +105,10 @@ ast_node!(ArgList, ARG_LIST);
 ast_node!(LambdaExpr, LAMBDA_EXPR);
 ast_node!(LambdaParams, LAMBDA_PARAMS);
 
+// ── The array/sequence literal (NG-D, issue #1490) ────────────────────
+
+ast_node!(ArrayLiteral, ARRAY_LITERAL);
+
 // ── The construction initializer (B5, issue #1464) ───────────────────
 
 ast_node!(ConstructLiteral, CONSTRUCT_LITERAL);
@@ -787,6 +791,16 @@ impl CallExpr {
 impl PathExpr {
     pub fn path(&self) -> Option<Path> {
         support::child(&self.syntax)
+    }
+}
+
+impl ArrayLiteral {
+    /// The literal's element expressions, in source order. Empty for `[]`.
+    /// Raw `SyntaxNode` children, same idiom `CallExpr::arg_list`'s callers
+    /// use for `ARG_LIST` — this crate has no `ast::Expr` union type to cast
+    /// into (unlike `brink-syntax`'s own `ArrayLiteral::elements`).
+    pub fn elements(&self) -> impl Iterator<Item = SyntaxNode> {
+        self.syntax.children()
     }
 }
 

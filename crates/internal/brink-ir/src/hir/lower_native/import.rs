@@ -40,6 +40,19 @@
 //! (`bare: false`), matching `import story;`. Aliasing that (`use a as m;`)
 //! is a module-level alias, which ink's `Import` has no field for — still
 //! `E129`.
+//!
+//! # Dual-reading is resolved downstream, not here (issue #1592)
+//!
+//! "Leaf-is-an-item" above is only the *provisional* parse this module
+//! produces — it does not decide whether `use story::market::barter;`'s
+//! `barter` is really an item of `story::market` or is itself the
+//! submodule `story::market::barter`. That question needs whole-project
+//! module knowledge this per-file lowering pass never has, so it is left
+//! to the analyzer: `brink_analyzer::resolve::import_coverage_for_file`
+//! licenses *both* readings unconditionally (harmless when one is
+//! phantom), and `brink_analyzer::modules::check`'s `E088` is what
+//! actually validates the two readings against real project data and
+//! diagnoses when the trailing segment names neither.
 
 use brink_syntax_native::ast::{self, AstNode as _};
 use rowan::TextRange;
