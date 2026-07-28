@@ -182,6 +182,25 @@ fn an_error_severity_code_is_not_suppressible() {
     assert!(hir.allow_scopes.is_empty(), "{:?}", hir.allow_scopes);
 }
 
+/// Issue #1674 widens suppressibility from "default severity is `Warning`"
+/// to "default severity is not `Error`", so `E157` — the first code whose
+/// default is `Info` rather than `Warning` — is suppressible too, while an
+/// `Error`-default code like `E001` still fires `E154`. This is the
+/// regression test for that gate: before the fix it read
+/// `severity() != Severity::Warning`, which would have wrongly rejected
+/// `E157` here.
+#[test]
+fn an_info_severity_code_is_suppressible_but_an_error_one_is_not() {
+    let (hir, diags) = lower("@[allow(E157)]\nflow main() {\n  Steel.\n}\n");
+    assert!(diags.is_empty(), "{diags:?}");
+    assert_eq!(hir.allow_scopes.len(), 1, "{:?}", hir.allow_scopes);
+    assert_eq!(hir.allow_scopes[0].codes, [DiagnosticCode::E157]);
+
+    let (hir, diags) = lower("@[allow(E001)]\nflow main() {\n  Steel.\n}\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E154], "{diags:?}");
+    assert!(hir.allow_scopes.is_empty(), "{:?}", hir.allow_scopes);
+}
+
 /// The B0.3 admission-validator family (`docs/hir-admission-contract.md`
 /// §4.2) is exempt by the issue's own wording. It needs no special case:
 /// every one of `E121`–`E128` is `Error`-severity, so the blanket rule above

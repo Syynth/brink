@@ -2617,6 +2617,14 @@ fn lower_file(file_id: FileId, parse: &Parse) -> LoweredFile {
         code: DiagnosticCode::E037,
     }));
 
+    // Anonymous-container state lint (`E157`, issue #1674): off/info by
+    // default, `Warning`-flow-shaped otherwise — folded into `diagnostics`
+    // (never `admission`) so it flows through `apply_suppressions`/
+    // `effective_severity` in `partition_diagnostics` exactly like `E151`
+    // below does for native, and is configurable through `[lints]`/
+    // `//brink-disable` like any other tier-able diagnostic.
+    diagnostics.extend(brink_analyzer::check_anonymous_stateful(file_id, &hir));
+
     // B0.3 admission validator (docs/hir-admission-contract.md §4.2, issue
     // #1172): a loud, non-suppressible pass wired directly at this seam so
     // it runs on every lowering (NF-6, always-on). Kept in its own field —
@@ -2678,6 +2686,12 @@ fn lower_native_file(file_id: FileId, parse: &NativeParse) -> LoweredFile {
     // `apply_suppressions`/`effective_severity` in `partition_diagnostics`,
     // which only `diagnostics` does.
     diagnostics.extend(brink_analyzer::check_native_choice_dead_end(file_id, &hir));
+
+    // Anonymous-container state lint (`E157`, issue #1674) — see `lower_file`'s
+    // identical wiring comment; the check itself is frontend-agnostic (it
+    // only reads `Choice::is_sticky`/`label` and `Sequence::kind`/branches,
+    // both populated the same way by ink and native lowering).
+    diagnostics.extend(brink_analyzer::check_anonymous_stateful(file_id, &hir));
 
     // B0.3 admission validator (docs/hir-admission-contract.md §4.2, issue
     // #1172): the same loud, non-suppressible pass `lower_file` runs, kept in

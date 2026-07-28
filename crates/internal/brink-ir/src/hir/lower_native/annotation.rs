@@ -322,7 +322,7 @@ fn parse_allow(
             ok = false;
             continue;
         };
-        if code.severity() != Severity::Warning {
+        if code.severity() == Severity::Error {
             diags.push(diag(file_id, name.text_range(), DiagnosticCode::E154));
             ok = false;
             continue;

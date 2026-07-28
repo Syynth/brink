@@ -151,7 +151,11 @@ struct SaveState {
     turn_index: u32, rng_seed: i32, previous_random: i32,
 }
 struct VisitEntry { id: DefinitionId, path: Option<String>, count: u32 }
-struct LoadReport { unknown_globals: Vec<String> }
+struct LoadReport {
+    unknown_globals: Vec<String>,
+    unresolved_renames: Vec<String>,   // M-3 #@was teaching messages
+    anonymous_states_dropped: u32,     // issue #1674 — see below
+}
 ```
 
 Globals are name-keyed (readable, patch-tolerant). Visit/turn counts are keyed
@@ -173,7 +177,13 @@ impl Story {
 `load_state` reconciles, version-tolerantly: globals matched by name (unmatched
 → reported in `LoadReport`, since they're genuinely dropped — no slot); visit/
 turn counts applied by id (scopes the program lacks are **retained**, not
-dropped, so nothing to report). No `program_checksum` gate — gating would defeat
+dropped, so nothing to report) — **except** an anonymous scope's entry (no
+author path — a gather, choice point, or sequence with no `(label)`), which
+can never be recovered through the `#@was` alias table the way a named miss
+can (an alias is only ever written against a name): that miss is counted in
+`LoadReport::anonymous_states_dropped` (issue #1674) so the bounded exposure
+— a once-only choice may reappear, a sequence may restart — is legible
+rather than silent. No `program_checksum` gate — gating would defeat
 patch-tolerance.
 
 ### brink-web — two transports over the one format

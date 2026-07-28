@@ -246,24 +246,36 @@ pub fn load_state<C: ContextAccess + ?Sized>(
 // ─── M-3 rehydration miss-path lookup (docs/modules-spec.md §5) ───────────
 
 /// Resolve a visit/turn-count entry's saved id against the current program,
-/// falling back to the alias table on a direct miss. Reports a teaching
-/// message when still unresolved (only for a program with any alias-table
-/// entries, and only when the entry carries an author `path` to name in the
-/// message — an anonymous synthetic address has nothing to teach a fix
-/// against).
+/// falling back to the alias table on a direct miss. On a still-unresolved
+/// miss: a **named** scope (`entry.path` is `Some`) gets the M-3 teaching
+/// message, but only for a program with any alias-table entries at all (an
+/// ordinary content edit with no `#@was` directive stays silent, same as
+/// before M-3). An **anonymous** scope (`entry.path` is `None` — a gather,
+/// choice point, or sequence with no author label) has no path to teach a
+/// fix against and — unlike a named miss — can never be recovered through
+/// the alias table regardless of whether the program uses `#@was` elsewhere
+/// (an alias entry is only ever written against a name), so it is counted
+/// in [`LoadReport::anonymous_states_dropped`] unconditionally (issue
+/// #1674, gap 4 of the identity cluster) rather than gated on
+/// `Program::has_aliases` — the count is the *only* legible signal an
+/// anonymous miss gets, so gating it the way the named case is gated would
+/// make it silent for the overwhelming majority of projects.
 fn rebind_address_key(
     program: &Program,
     entry: &VisitEntry,
     report: &mut LoadReport,
 ) -> DefinitionId {
     let (id, unresolved) = rebind_address(program, entry.id);
-    if unresolved
-        && program.has_aliases()
-        && let Some(path) = &entry.path
-    {
-        report
-            .unresolved_renames
-            .push(teach_was_message("visit count", path));
+    if unresolved {
+        match &entry.path {
+            Some(path) if program.has_aliases() => {
+                report
+                    .unresolved_renames
+                    .push(teach_was_message("visit count", path));
+            }
+            Some(_) => {}
+            None => report.anonymous_states_dropped += 1,
+        }
     }
     id
 }
@@ -628,5 +640,170 @@ mod tests {
         let mut sorted = ids.clone();
         sorted.sort_unstable();
         assert_eq!(ids, sorted, "SaveState::visits must be sorted by id");
+    }
+
+    /// Issue #1674: a saved visit/turn-count entry for an **anonymous**
+    /// scope (`path: None` — the shape an unlabeled once-only choice or a
+    /// sequence's own visit entry carries) that the current program no
+    /// longer recognizes is counted in
+    /// [`brink_format::LoadReport::anonymous_states_dropped`] — legible
+    /// through the existing tolerant `LoadReport` rather than silently
+    /// retained under an id nothing can ever reach again. The phantom id
+    /// here stands in for what a real content edit does: shift an
+    /// unlabeled once-only choice's positional id out from under an
+    /// earlier save (see `anonymous_stateful` in `brink-analyzer` for the
+    /// companion compile-time lint).
+    #[test]
+    fn anonymous_unresolved_visit_entry_is_counted_in_load_report() {
+        let (program, tables) = compile_for_flow(
+            "-> alpha\n\
+             === alpha ===\n\
+             Alpha.\n\
+             -> DONE\n",
+        );
+        let program = Arc::new(program);
+        let mut story = crate::Story::<FastRng>::new(Arc::clone(&program), tables);
+        story.continue_maximally().expect("continue");
+
+        let mut save = story.save_state();
+        assert!(
+            save.visits.iter().all(|e| e.path.is_some()),
+            "sanity: the real save has no anonymous entries to confuse this \
+             test: {:?}",
+            save.visits
+        );
+        let phantom_id =
+            brink_format::DefinitionId::new(brink_format::DefinitionTag::Address, u64::MAX);
+        save.visits.push(brink_format::VisitEntry {
+            id: phantom_id,
+            path: None,
+            count: 3,
+        });
+
+        let report = story.load_state(&save);
+        assert_eq!(report.anonymous_states_dropped, 1, "{report:?}");
+        assert!(!report.is_clean(), "{report:?}");
+        assert!(
+            report.unresolved_renames.is_empty(),
+            "an anonymous miss has no path to teach a #@was fix against, \
+             so it must never land in unresolved_renames: {report:?}"
+        );
+    }
+
+    /// A saved **named** scope's unresolved entry (`path: Some(_)`) must
+    /// never be counted as an anonymous drop, even when the program has no
+    /// `#@was` alias table at all (the ordinary "content edit deleted a
+    /// knot" case, which stays silent by design) — the two report channels
+    /// are for genuinely different situations and must not bleed into each
+    /// other.
+    #[test]
+    fn named_unresolved_visit_entry_is_not_counted_as_anonymous() {
+        let (program, tables) = compile_for_flow(
+            "-> alpha\n\
+             === alpha ===\n\
+             Alpha.\n\
+             -> DONE\n",
+        );
+        let program = Arc::new(program);
+        let mut story = crate::Story::<FastRng>::new(Arc::clone(&program), tables);
+
+        let phantom_id =
+            brink_format::DefinitionId::new(brink_format::DefinitionTag::Address, u64::MAX);
+        let mut save = story.save_state();
+        save.visits.push(brink_format::VisitEntry {
+            id: phantom_id,
+            path: Some("forest.gone_knot".to_owned()),
+            count: 3,
+        });
+
+        let report = story.load_state(&save);
+        assert_eq!(
+            report.anonymous_states_dropped, 0,
+            "a named miss is not an anonymous drop: {report:?}"
+        );
+        assert!(
+            report.unresolved_renames.is_empty(),
+            "no #@was alias table on this program, so the named miss stays \
+             silent exactly like before M-3: {report:?}"
+        );
+    }
+
+    /// The end-to-end proof `anonymous_unresolved_visit_entry_is_counted_
+    /// in_load_report` above stops short of: that test's `path: None` entry
+    /// is a synthetic phantom id, so it would still pass even if
+    /// `save_state` never actually emitted a `path: None` entry for a real
+    /// anonymous container (i.e. if the whole feature were dead). This test
+    /// compiles two REAL stories and lets a real content edit do the
+    /// shifting.
+    ///
+    /// Story A has one unlabeled once-only choice (`c0` of knot `alpha`,
+    /// `stamp::stamp_stmt`'s positional counter) — take it, so its target
+    /// container's `path: None` visit/turn entries are real, not
+    /// constructed. Story B inserts a *labeled* choice above it: labeling
+    /// "extra" makes its own id come from the label, not the `c{N}`
+    /// counter, so — unlike an unlabeled insertion, which would just make
+    /// "extra" inherit `pick`'s old `c0` id and silently retarget the load
+    /// to the wrong choice (the "reappear" hazard E157 warns about, not a
+    /// drop) — nothing in program B ends up using the string `"alpha.c0"`
+    /// at all: `extra` is label-derived, `pick` shifted to `c1`. Loading
+    /// story A's save into story B therefore hits a genuine miss.
+    ///
+    /// Two entries, not one: a once-only choice's target container carries
+    /// both `CountingFlags::VISITS` and `COUNT_START_ONLY`, so `save_state`
+    /// emits both a visit *and* a turn entry for it — per this field's own
+    /// doc, a scope whose visit *and* turn count both go unresolved counts
+    /// as two independent losses, not one.
+    #[test]
+    fn a_real_content_edit_shifting_an_anonymous_choice_is_counted_in_load_report() {
+        let (program_a, tables_a) = compile_for_flow(
+            "-> alpha\n\
+             === alpha ===\n\
+             * [pick]\n\
+             \tPicked.\n\
+             \t-> DONE\n",
+        );
+        let program_a = Arc::new(program_a);
+        let mut story_a = crate::Story::<FastRng>::new(Arc::clone(&program_a), tables_a);
+        story_a.continue_maximally().expect("continue");
+        story_a.choose(0).expect("choose `pick`");
+        story_a.continue_maximally().expect("continue");
+
+        let save = story_a.save_state();
+        assert_eq!(
+            save.visits.len(),
+            1,
+            "sanity: exactly `pick`'s own anonymous visit entry: {:?}",
+            save.visits
+        );
+        assert!(
+            save.visits[0].path.is_none(),
+            "sanity: a real unlabeled once-only choice's container really \
+             does save with `path: None`: {:?}",
+            save.visits[0]
+        );
+
+        let (program_b, tables_b) = compile_for_flow(
+            "-> alpha\n\
+             === alpha ===\n\
+             * (extra) [extra]\n\
+             \tExtra.\n\
+             \t-> DONE\n\
+             * [pick]\n\
+             \tPicked.\n\
+             \t-> DONE\n",
+        );
+        let program_b = Arc::new(program_b);
+        let mut story_b = crate::Story::<FastRng>::new(Arc::clone(&program_b), tables_b);
+
+        let report = story_b.load_state(&save);
+        assert_eq!(
+            report.anonymous_states_dropped, 2,
+            "the shifted choice's visit AND turn entry both go unresolved: {report:?}"
+        );
+        assert!(!report.is_clean(), "{report:?}");
+        assert!(
+            report.unresolved_renames.is_empty(),
+            "an anonymous miss has no path to teach a #@was fix against: {report:?}"
+        );
     }
 }

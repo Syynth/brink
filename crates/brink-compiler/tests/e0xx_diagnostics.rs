@@ -2032,3 +2032,68 @@ fn e155_allow_annotation_with_no_codes() {
         "expected E155 among errors, got: {diags:?}"
     );
 }
+
+// ─── E157 (issue #1674): anonymous-container state lint, wired end to end ──
+//
+// `brink_analyzer::check_anonymous_stateful` itself is unit-tested directly
+// in `brink-analyzer/src/anonymous_stateful.rs`; these fixtures instead pin
+// the `brink-db` wiring (`lower_file`/`lower_native_file`, the same seam
+// `E151`/`E156` use) through the real pipeline — the reachability the PR
+// body claims — plus the `[lints]` deny-promotion `E151` already covers
+// above, mirrored for the first `Info`-base code.
+
+/// Ink frontend: an unlabeled once-only choice reaches `out.warnings` at
+/// `E157`'s default `Info` severity with no config needed — `Info`, like
+/// `Warning`, partitions into `warnings`, never `errors`
+/// (`partition_diagnostics` only routes `Severity::Error` there).
+#[test]
+fn e157_ink_unlabeled_once_only_choice_reaches_out_warnings() {
+    let source = "=== main ===\n* [pick] -> DONE\n";
+    let out = compile(source, default_options())
+        .unwrap_or_else(|e| panic!("an Info-severity lint must not fail the compile: {e:?}"));
+    assert!(
+        out.warnings.iter().any(|d| d.code == DiagnosticCode::E157),
+        "expected E157, got: {:?}",
+        out.warnings
+    );
+}
+
+/// Native frontend: the same shape, through `lower_native_file`.
+#[test]
+fn e157_native_unlabeled_once_only_choice_reaches_out_warnings() {
+    let source = "flow main() {\n  {?\n    * [Look] You look around.\n  }\n}\n";
+    let out = compile_native("e157-native-unlabeled", source, AnalysisOptions::default())
+        .unwrap_or_else(|e| panic!("an Info-severity lint must not fail the compile: {e:?}"));
+    assert!(
+        out.warnings.iter().any(|d| d.code == DiagnosticCode::E157),
+        "expected E157, got: {:?}",
+        out.warnings
+    );
+}
+
+/// The `[lints]` control plane, end to end: `E157 = "deny"` must promote
+/// this lint from its `Info` default to a real compile `Error` through the
+/// actual pipeline — the same proof `e151_denied_through_the_lints_control_
+/// plane_becomes_an_error` gives for a `Warning`-base code, substantiating
+/// that `effective_severity`/`validate_lint_code`'s widening past
+/// `Warning`-only actually reaches `E157` and isn't merely accepted by the
+/// config parser.
+#[test]
+fn e157_denied_through_the_lints_control_plane_becomes_an_error() {
+    let source = "flow main() {\n  {?\n    * [Look] You look around.\n  }\n}\n";
+    let options = AnalysisOptions {
+        lints: LintPolicy {
+            overrides: BTreeMap::from([("E157".to_owned(), LintLevel::Deny)]),
+            deny_warnings: false,
+        },
+        ..AnalysisOptions::default()
+    };
+    let err = compile_native("e157-denied", source, options)
+        .map(|_| ())
+        .expect_err("`[lints] E157 = deny` must promote the lint to a compile error");
+    let diags = errors_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E157),
+        "expected E157 among errors, got: {diags:?}"
+    );
+}

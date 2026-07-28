@@ -163,17 +163,25 @@ pub fn resolve_type_policy(dialect: crate::Dialect, explicit: Option<TypePolicy>
 ///    error by default can never be downgraded by `[lints]`. This is the
 ///    "conservative overridable set" #1160 asks for: rather than inventing
 ///    a policy for which `Error`-default codes are "safe" to relax, none of
-///    them are reachable through this table at all.
-/// 3. **`[lints]` per-code override**, for a `Warning`-base code only:
-///    `Deny` → `Error`; `Allow` → `Warning`, immune to step 4; `Info`/`Hint`
-///    (issue #1162) → `Severity::Info`/`Severity::Hint`, also immune to step
-///    4 — an author who deliberately down-leveled a code to an advisory tier
-///    does not want `deny-warnings` escalating it back past `Warning`, the
-///    same reasoning `Allow`'s immunity already rests on; `Warn`/unset →
-///    falls through to step 4 exactly like an unconfigured code.
-/// 4. **`deny-warnings`**: a `Warning`-base code with no override (or an
-///    explicit `Warn`) becomes `Error` if `lints.deny_warnings` is set —
-///    the `-D warnings` equivalent.
+///    them are reachable through this table at all. Everything else (a
+///    `Warning`-base code, or — since issue #1674 — an `Info`/`Hint`-base
+///    one) *is* reachable; the exemption is specifically about `Error`, not
+///    about `Warning` being the only overridable base.
+/// 3. **`[lints]` per-code override**: `Deny` → `Error`; `Allow` → the base
+///    severity unchanged, immune to step 4; `Info`/`Hint` (issue #1162) →
+///    `Severity::Info`/`Severity::Hint`, also immune to step 4 — an author
+///    who deliberately down-leveled a code to an advisory tier does not want
+///    `deny-warnings` escalating it back past `Warning`, the same reasoning
+///    `Allow`'s immunity already rests on; `Warn` → `Severity::Warning`
+///    unconditionally (an explicit ask to promote an `Info`/`Hint`-base code
+///    up a tier, or to restate a `Warning`-base code's own default).
+/// 4. **`deny-warnings`**: *no* override, resolving to the base severity —
+///    becomes `Error` if that base is `Warning` and `lints.deny_warnings` is
+///    set (the `-D warnings` equivalent); an `Info`/`Hint`-base code with no
+///    override is never touched by `deny-warnings` (issue #1674: the
+///    default-`Info` `E157`'s whole point is staying quiet until an author
+///    opts it up through `[lints]` — `deny-warnings` alone must not do that
+///    for them).
 #[must_use]
 pub fn effective_severity(
     code: brink_ir::DiagnosticCode,
@@ -186,22 +194,36 @@ pub fn effective_severity(
         code.severity()
     };
 
-    if base != brink_ir::Severity::Warning {
+    if base == brink_ir::Severity::Error {
         return base;
     }
 
-    match lints.overrides.get(code.as_str()) {
-        Some(LintLevel::Deny) => brink_ir::Severity::Error,
-        Some(LintLevel::Allow) => brink_ir::Severity::Warning,
-        Some(LintLevel::Info) => brink_ir::Severity::Info,
-        Some(LintLevel::Hint) => brink_ir::Severity::Hint,
-        Some(LintLevel::Warn) | None => {
-            if lints.deny_warnings {
-                brink_ir::Severity::Error
-            } else {
-                brink_ir::Severity::Warning
-            }
-        }
+    // The "candidate" severity before `deny-warnings` gets a look: an
+    // explicit `Deny`/`Allow`/`Info`/`Hint` override resolves (and returns)
+    // immediately, same as before #1674 — none of those four are ever
+    // touched by `deny-warnings` (`Allow`/`Info`/`Hint` are deliberate
+    // downgrades immune to it by design; `Deny` is already `Error`).
+    // `Warn`/unset both fall through to the shared `deny-warnings` check
+    // below — byte-identical to the pre-#1674 `Warning`-base-only version
+    // of this function when `base == Warning` (see this module's
+    // `info_base_code_*` tests for the new `Info`/`Hint`-base behavior this
+    // generalization adds).
+    let candidate = match lints.overrides.get(code.as_str()) {
+        Some(LintLevel::Deny) => return brink_ir::Severity::Error,
+        Some(LintLevel::Allow) => return base,
+        Some(LintLevel::Info) => return brink_ir::Severity::Info,
+        Some(LintLevel::Hint) => return brink_ir::Severity::Hint,
+        // An explicit `warn` always means "Warning", regardless of the
+        // code's own base — the one case where the override outranks a
+        // non-`Warning` base.
+        Some(LintLevel::Warn) => brink_ir::Severity::Warning,
+        None => base,
+    };
+
+    if candidate == brink_ir::Severity::Warning && lints.deny_warnings {
+        brink_ir::Severity::Error
+    } else {
+        candidate
     }
 }
 
@@ -3077,6 +3099,128 @@ mod tests {
         assert_eq!(
             effective_severity(DiagnosticCode::E014, TypePolicy::Gradual, &lints),
             brink_ir::Severity::Error
+        );
+    }
+
+    /// Regression pin for the #1674 refactor: an *explicit* `[lints] E014 =
+    /// "warn"` on a `Warning`-base code must still be escalated by
+    /// `deny-warnings`, exactly like an unconfigured code (the pre-#1674
+    /// implementation grouped `Some(Warn) | None` under one `if
+    /// deny_warnings {Error} else {Warning}` arm — the generalized version
+    /// must reach the same answer via its `candidate == Warning &&
+    /// deny_warnings` check).
+    #[test]
+    fn explicit_warn_override_is_still_escalated_by_deny_warnings() {
+        let lints = LintPolicy {
+            overrides: BTreeMap::from([("E014".to_owned(), LintLevel::Warn)]),
+            deny_warnings: true,
+        };
+        assert_eq!(
+            effective_severity(DiagnosticCode::E014, TypePolicy::Gradual, &lints),
+            brink_ir::Severity::Error
+        );
+    }
+
+    // ── effective_severity: Info/Hint-base codes (issue #1674) ──────
+    //
+    // `E157` is the first code whose *default* severity is `Info` rather
+    // than `Warning` — these pin the generalized `effective_severity`/
+    // `validate_lint_code` behavior for that base, alongside the
+    // `Warning`-base regression coverage above (proving the widened
+    // resolution order reaches the byte-identical answer for every
+    // pre-#1674 case).
+
+    #[test]
+    fn info_base_code_defaults_to_info_with_no_lints() {
+        assert_eq!(
+            DiagnosticCode::E157.severity(),
+            brink_ir::Severity::Info,
+            "E157 is the off/info-by-default lint issue #1674 rules for"
+        );
+        assert_eq!(
+            effective_severity(
+                DiagnosticCode::E157,
+                TypePolicy::Gradual,
+                &LintPolicy::default()
+            ),
+            brink_ir::Severity::Info
+        );
+    }
+
+    #[test]
+    fn info_base_code_is_immune_to_deny_warnings_when_unconfigured() {
+        // The whole point of defaulting to `Info`: a project that never
+        // touches `[lints]` for E157 must not have `deny-warnings` promote
+        // it to `Error` behind the author's back.
+        let lints = LintPolicy {
+            overrides: BTreeMap::new(),
+            deny_warnings: true,
+        };
+        assert_eq!(
+            effective_severity(DiagnosticCode::E157, TypePolicy::Gradual, &lints),
+            brink_ir::Severity::Info
+        );
+    }
+
+    #[test]
+    fn info_base_code_can_be_raised_to_warn_via_lints() {
+        let lints = LintPolicy {
+            overrides: BTreeMap::from([("E157".to_owned(), LintLevel::Warn)]),
+            deny_warnings: false,
+        };
+        assert_eq!(
+            effective_severity(DiagnosticCode::E157, TypePolicy::Gradual, &lints),
+            brink_ir::Severity::Warning
+        );
+    }
+
+    #[test]
+    fn info_base_code_raised_to_warn_is_then_escalated_by_deny_warnings() {
+        let lints = LintPolicy {
+            overrides: BTreeMap::from([("E157".to_owned(), LintLevel::Warn)]),
+            deny_warnings: true,
+        };
+        assert_eq!(
+            effective_severity(DiagnosticCode::E157, TypePolicy::Gradual, &lints),
+            brink_ir::Severity::Error
+        );
+    }
+
+    #[test]
+    fn info_base_code_can_be_denied_straight_to_error() {
+        let lints = LintPolicy {
+            overrides: BTreeMap::from([("E157".to_owned(), LintLevel::Deny)]),
+            deny_warnings: false,
+        };
+        assert_eq!(
+            effective_severity(DiagnosticCode::E157, TypePolicy::Gradual, &lints),
+            brink_ir::Severity::Error
+        );
+    }
+
+    #[test]
+    fn info_base_code_can_be_downleveled_to_hint() {
+        let lints = LintPolicy {
+            overrides: BTreeMap::from([("E157".to_owned(), LintLevel::Hint)]),
+            deny_warnings: true,
+        };
+        assert_eq!(
+            effective_severity(DiagnosticCode::E157, TypePolicy::Gradual, &lints),
+            brink_ir::Severity::Hint,
+            "an explicit Hint downgrade must stay immune to deny-warnings too"
+        );
+    }
+
+    #[test]
+    fn info_base_code_allow_override_is_a_no_op() {
+        let lints = LintPolicy {
+            overrides: BTreeMap::from([("E157".to_owned(), LintLevel::Allow)]),
+            deny_warnings: true,
+        };
+        assert_eq!(
+            effective_severity(DiagnosticCode::E157, TypePolicy::Gradual, &lints),
+            brink_ir::Severity::Info,
+            "Allow keeps the code at its own base — Info here, not Warning"
         );
     }
 

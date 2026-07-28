@@ -168,10 +168,17 @@ export interface VisitEntry {
   count: number;
 }
 
-/** What a load couldn't apply. Empty `unknown_globals` means a clean load;
- * listed names are saved globals the current story no longer declares. */
+/** What a load couldn't apply. `unknown_globals` lists saved globals the
+ * current story no longer declares; `unresolved_renames` lists saved
+ * fn/divert/visit-turn-count keys that still didn't match after consulting
+ * the compiled rename-alias table; `anonymous_states_dropped` counts saved
+ * visit/turn-count entries for an *anonymous* scope (an unlabeled once-only
+ * choice or a sequence — no name an alias table entry could ever be written
+ * against) that could not be placed. All empty/zero means a clean load. */
 export interface LoadReport {
   unknown_globals: string[];
+  unresolved_renames: string[];
+  anonymous_states_dropped: number;
 }
 
 // ── Story Session (#370/#387) ────────────────────────────────────

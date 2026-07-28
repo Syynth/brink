@@ -7,6 +7,7 @@
 
 mod admission;
 mod annotations;
+mod anonymous_stateful;
 mod await_purity;
 mod coalesce;
 mod comparator_contract;
@@ -43,6 +44,7 @@ pub use admission::validate_admission;
 pub use annotations::{
     check as check_annotations, mismatches as annotation_mismatches, resolve as resolve_annotation,
 };
+pub use anonymous_stateful::check as check_anonymous_stateful;
 pub use await_purity::{
     check as await_purity_diagnostics, condition_callees as await_condition_callees, hir_has_await,
 };
@@ -335,15 +337,23 @@ impl AnalysisOptions {
 /// a key against the real code set" channel, shared by
 /// [`AnalysisOptions::apply_project_config`]'s `[lints]` handling and
 /// [`AnalysisOptions::apply_lint_overrides`] — #1373): `Ok(())` if `code` is
-/// overridable (a recognized code whose *default* severity is `Warning`),
-/// otherwise the same-shaped [`ConfigWarning`] both call sites surface,
-/// keeping the wording byte-identical regardless of which tier the code came
-/// from.
+/// overridable, otherwise the same-shaped [`ConfigWarning`] both call sites
+/// surface, keeping the wording byte-identical regardless of which tier the
+/// code came from.
+///
+/// Overridable means "not `Error`-by-default" — originally just the
+/// `Warning`-base set (#1160's "conservative overridable set": a hard error
+/// can never be downgraded by `[lints]`, so it is never even looked up).
+/// Issue #1674 widens this past `Warning` to `Info`/`Hint`-base codes too
+/// (today, only `E157`): the exemption `effective_severity` actually
+/// enforces is about `Error`, never reachable through `[lints]` regardless of
+/// what this function allows, not about `Warning` being the only overridable
+/// base — see that function's own doc for the resolution order this mirrors.
 fn validate_lint_code(code: &str) -> Result<(), ConfigWarning> {
     match DiagnosticCode::from_str_code(code) {
-        Some(parsed) if parsed.severity() == Severity::Warning => Ok(()),
+        Some(parsed) if parsed.severity() != Severity::Error => Ok(()),
         Some(_) => Err(ConfigWarning(format!(
-            "[lints] `{code}` is not overridable (its default severity is not `Warning`); ignored"
+            "[lints] `{code}` is not overridable (its default severity is `Error`); ignored"
         ))),
         None => Err(ConfigWarning(format!(
             "[lints] `{code}` is not a recognized diagnostic code; ignored"
@@ -2141,6 +2151,26 @@ EXTERNAL add_state(who)
         let warnings = options.apply_project_config(&config, false, false);
 
         assert!(warnings.is_empty());
+    }
+
+    /// Issue #1674: `E157`'s default severity is `Info`, not `Warning` — the
+    /// widened `validate_lint_code` gate (anything short of `Error`) must
+    /// still accept a `[lints] E157 = "warn"` override rather than rejecting
+    /// it the way the pre-#1674 `Warning`-base-only gate would have.
+    #[test]
+    fn apply_project_config_accepts_info_base_lint_code() {
+        let mut options = AnalysisOptions::default();
+        let mut config = ProjectConfig::default();
+        assert_eq!(
+            brink_ir::DiagnosticCode::E157.severity(),
+            brink_ir::Severity::Info
+        );
+        config.lints.insert("E157".to_owned(), LintLevel::Warn);
+
+        let warnings = options.apply_project_config(&config, false, false);
+
+        assert!(warnings.is_empty());
+        assert_eq!(options.lints.overrides.get("E157"), Some(&LintLevel::Warn));
     }
 
     // ── AnalysisOptions::apply_lint_overrides: CLI/API tier (issue #1373) ──

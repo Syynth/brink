@@ -105,6 +105,17 @@ pub trait HirVisitor {
     /// `tags`) is exposed; the walker does not descend into tags itself.
     fn enter_content(&mut self, _content: &Content, _ctx: ContentContext) {}
 
+    /// A [`Sequence`] node is about to be walked (its branch bodies follow).
+    /// Fires for **both** shapes a sequence can appear in — a block-level
+    /// `Stmt::Sequence` (a promoted multiline `{&\n- a\n- b\n}` block) and a
+    /// `ContentPart::InlineSequence` nested inside a content line's text
+    /// (`{&a|b}`) — one hook so a consumer that only cares about the
+    /// `Sequence` node itself (its `kind`/branch count/`container_id`)
+    /// doesn't have to match both `Stmt::Sequence` in `enter_stmt` and
+    /// `ContentPart::InlineSequence` inside its own `enter_content` descent
+    /// (issue #1674).
+    fn enter_sequence(&mut self, _seq: &Sequence) {}
+
     /// An expression node, in descent order — only called when
     /// [`HirVisitor::visit_exprs`] returns `true`.
     fn enter_expr(&mut self, _expr: &Expr) {}
@@ -353,6 +364,7 @@ fn walk_conditional(cond: &Conditional, ctx: ContentContext, v: &mut impl HirVis
 }
 
 fn walk_sequence(seq: &Sequence, ctx: ContentContext, v: &mut impl HirVisitor) {
+    v.enter_sequence(seq);
     for branch in &seq.branches {
         walk_block_ctx(&branch.body, ctx, v);
     }
@@ -462,6 +474,7 @@ mod tests {
         stmts: usize,
         content: usize,
         exprs: usize,
+        sequences: usize,
         visit_exprs: bool,
     }
 
@@ -486,6 +499,9 @@ mod tests {
         }
         fn enter_expr(&mut self, _: &Expr) {
             self.exprs += 1;
+        }
+        fn enter_sequence(&mut self, _: &Sequence) {
+            self.sequences += 1;
         }
         fn visit_exprs(&self) -> bool {
             self.visit_exprs
@@ -579,5 +595,30 @@ mod tests {
         assert_eq!(plain.stmts, with_decls.stmts);
         assert_eq!(plain.content, with_decls.content);
         assert_eq!(plain.exprs, with_decls.exprs);
+    }
+
+    /// Issue #1674: [`HirVisitor::enter_sequence`] must fire for a sequence
+    /// reached either shape it can appear in — a single-line pipe-separated
+    /// inline sequence (`ContentPart::InlineSequence`, nested inside a
+    /// content line) and a promoted multiline block sequence
+    /// (`Stmt::Sequence`) — so a consumer that only implements this one hook
+    /// sees both without also matching `Stmt::Sequence` in `enter_stmt`.
+    #[test]
+    fn enter_sequence_fires_for_inline_and_block_forms() {
+        let inline_hir = lower_src("{&a|b}\n");
+        let mut inline_counts = Counts::default();
+        visit(&inline_hir, &mut inline_counts);
+        assert_eq!(
+            inline_counts.sequences, 1,
+            "inline pipe-separated sequence: {inline_hir:?}"
+        );
+
+        let block_hir = lower_src("{&\n- a\n- b\n}\n");
+        let mut block_counts = Counts::default();
+        visit(&block_hir, &mut block_counts);
+        assert_eq!(
+            block_counts.sequences, 1,
+            "promoted multiline block sequence: {block_hir:?}"
+        );
     }
 }

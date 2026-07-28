@@ -78,15 +78,21 @@
 //! declares is dropped and named in
 //! [`LoadReport::unknown_globals`](brink_runtime::LoadReport::unknown_globals)
 //! so the host can surface it (e.g. after a story patch that renamed or
-//! removed a `VAR`); saved visit/turn counts for scopes the program no
-//! longer has are retained harmlessly rather than reported. See
-//! [`brink_runtime::load_state`]'s docs for the full reconciliation
-//! semantics, including the one behavioral note worth restating here: a
-//! stale saved entry (a global/scope the *current* program lacks) is not
-//! re-emitted by a later save — [`brink_runtime::save_state`] enumerates
-//! the current program's own globals/containers, not whatever the live
-//! context happens to hold — so ghost entries from an old program version
-//! don't round-trip through save after save indefinitely.
+//! removed a `VAR`); saved visit/turn counts for a **named** scope the
+//! program no longer has are retained harmlessly rather than reported. A
+//! saved **anonymous** scope's entry (no author label — a gather, choice
+//! point, or sequence) that no longer resolves is different: it can never
+//! be recovered the way a named miss sometimes can, so it is counted in
+//! [`LoadReport::anonymous_states_dropped`](brink_runtime::LoadReport::anonymous_states_dropped)
+//! instead (issue #1674) — the bounded fallout is a once-only choice
+//! reappearing or a sequence restarting. See [`brink_runtime::load_state`]'s
+//! docs for the full reconciliation semantics, including the one
+//! behavioral note worth restating here: a stale saved entry (a
+//! global/scope the *current* program lacks) is not re-emitted by a later
+//! save — [`brink_runtime::save_state`] enumerates the current program's
+//! own globals/containers, not whatever the live context happens to hold —
+//! so ghost entries from an old program version don't round-trip through
+//! save after save indefinitely.
 
 use std::marker::PhantomData;
 
