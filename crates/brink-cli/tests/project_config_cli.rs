@@ -725,7 +725,6 @@ fn ide_rename_write_stamps_was_under_brink_dialect() {
 /// (`brink compile`, `brink-cli/src/main.rs::compile_entry`) over a fixture
 /// with a `brink.toml` sitting above a `.git` boundary, and asserts the
 /// warning text lands on stderr.
-#[expect(clippy::unwrap_used, reason = "test fixture setup")]
 #[test]
 fn compile_warns_on_stderr_about_a_brink_toml_above_the_git_boundary() {
     let dir = project_dir("compile-warn-above-git-boundary");
