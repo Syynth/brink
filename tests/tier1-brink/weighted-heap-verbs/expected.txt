@@ -1,3 +1,4 @@
+typed table: Weighted { 1: gem }
 table: Weighted { 3: sword, 1: shield, 3: potion }
 multiset: true
 rolls: potion, shield, potion, potion, sword

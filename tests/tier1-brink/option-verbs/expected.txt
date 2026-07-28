@@ -1,5 +1,6 @@
 f1 is some(6).
 f2 is .
+f3 is .
 f1 matched at six.
 f2 is absent.
 after bare f2 interpolation.

@@ -113,28 +113,29 @@ values** ([Function Values](function-values.md)), **ranges**, the
 **numeric tower** (`vec2`…`mat4`), and **handles** (host-owned resources,
 typed by the engine's manifest).
 
-When you write a type — in any annotation position — the names are
-lowercase nominals:
+When you write a type — in any annotation position — primitives are
+lowercase and every other type name is Uppercase:
 
 | Written as | Meaning |
 |---|---|
 | `int`, `float`, `bool`, `string` | the scalar kinds |
 | `divert` | a divert target as a value |
 | `void` | return position only: "this function returns nothing" |
-| `list<L>` | `L` names a declared `LIST` |
-| `array<T>`, `map<K, V>` | typed collections |
+| `List<L>` | `L` names a declared `LIST` |
+| `Array<T>`, `Map<K, V>` | typed collections |
+| `Option<T>`, `Weighted<T>` | see below |
 | `fn(T…): R` | a function value ([Function Values](function-values.md)) |
 | `vec2` `vec3` `vec4` `quat` `mat2` `mat3` `mat4` | the numeric tower |
-| `handle<K>` | `K` names a handle kind from the host manifest |
+| `Handle<K>` | `K` names a handle kind from the host manifest |
 | a declared `STRUCT` name | that struct's shape |
 
 A name outside this vocabulary is `E061` ("`…` is not a recognized type"),
-which lists exactly the table above. One kind is deliberately absent:
-`Option[T]` appears in inferred types, diagnostics, and the
-[Standard Library](stdlib.md)'s signatures (`find`, map `get`), but it is
-display notation — you cannot write it in an annotation today, and a bare
-`none` with no surrounding context to type it is its own error (`E107`,
-"bare `none` needs a type from context").
+which lists exactly the table above. `Option<T>` appears in inferred
+types, diagnostics, and the [Standard Library](stdlib.md)'s signatures
+(`find`, map `get`), and — like `Weighted<T>` — is now annotatable too
+(issue #1552); a bare `none` with no surrounding context to type it is
+still its own error (`E107`, "bare `none` needs a type from context").
+`range` stays construction-only for now: no annotation spelling yet.
 
 ## Inferred inside, declared at the edges
 
@@ -297,7 +298,7 @@ narrows the lattice to one rule and two escape hatches.
 
 **`int → float` is the one implicit, directional promotion.** An `int` is
 welcome anywhere a `float` is expected — `#[1, 2.5]` is a well-typed
-`array<float>`, `VAR rate: float = 1` is legal, and an `int` argument
+`Array<float>`, `VAR rate: float = 1` is legal, and an `int` argument
 promotes to match a `float` parameter:
 
 ```ink
@@ -379,7 +380,7 @@ only where types genuinely conflict, never on ordinary visit-count logic.
 
 One neighboring idiom does **not** survive, on purpose: an `Option` in
 condition position. `{mood.first(): …}` is not "is there a first mood" —
-`Option[T]` has no truthiness, ever. The condition-position error (`E116`)
+`Option<T>` has no truthiness, ever. The condition-position error (`E116`)
 tells you the honest spelling: test `== none` / `== some(x)` explicitly.
 A fault says "your program is wrong"; `none` says "the world didn't have
 one" — and a bare truthiness test blurs exactly that line.
@@ -408,7 +409,7 @@ it, that's an `Unknown` escape (`E065`): annotate the binding.
 -> pack
 
 === pack ===
-~ temp satchel: array<int> = #[]
+~ temp satchel: Array<int> = #[]
 ~ push(satchel, 3)
 {len(satchel)} item in the satchel.
 -> DONE
@@ -526,7 +527,7 @@ can't, and each edge has its own answer:
 | `E078` | `int()`/`float()` argument outside the numeric+bool+string domain | strict (runtime fault under gradual) |
 | `E084` | duplicate field in a struct construction literal | both |
 | `E107` | bare `none` with no type from context | both |
-| `E116` | `Option[T]` used as a condition — no truthiness | strict (runtime fault under gradual) |
+| `E116` | `Option<T>` used as a condition — no truthiness | strict (runtime fault under gradual) |
 
 ## Where this is ruled
 

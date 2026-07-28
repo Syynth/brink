@@ -90,13 +90,16 @@ VAR gold: int = 100          // optional anywhere; required only at boundaries
 **PROPOSED grammar details** (ratify at review): `name: type` after
 params and declarations; `): type ===` return position; `void` for
 no-return functions (assigning a `void` call is an error in strict
-mode). Type names are lowercase nominals: `int`, `float`, `bool`,
-`string`, `divert`, `list<L>` (nominal per LIST declaration),
-`array<T>`, `map<K, V>`, `fn(T…): R` (function values, for the
-unfrozen T1c), `handle<K>` (T1d-2, docs/t1d-spec.md §3 — this spec's
-first amendment: `K` names a handle kind declared in the external
-manifest's host semantic-type vocabulary — not an ink-source
-declaration like `LIST`/`STRUCT`), plus declared struct names.
+mode). Primitives are lowercase, every other type name is Uppercase
+(issue #1552, `docs/decision-log.md` 2026-07-27 "Type-name surface
+ruled" — enforcement of this spec's own 2026-07-19 casing partition):
+`int`, `float`, `bool`, `string`, `divert`, `List<L>` (nominal per LIST
+declaration), `Array<T>`, `Map<K, V>`, `Option<T>`, `Weighted<T>`,
+`fn(T…): R` (function values, for the unfrozen T1c), `Handle<K>`
+(T1d-2, docs/t1d-spec.md §3 — this spec's first amendment: `K` names a
+handle kind declared in the external manifest's host semantic-type
+vocabulary — not an ink-source declaration like `LIST`/`STRUCT`), plus
+declared struct names.
 
 **RULED (issue #1591): "the body" of a function/knot/stitch, for
 inferred-void and return-value-fall-through purposes, is the def's own
@@ -117,7 +120,7 @@ is part of the same definition's execution, not a separate callable.
 
 ## 5. Collections and the empty-literal rule — PROPOSED
 
-Element types unify per definition: `#[1, 2.0]` is `array<float>` (via
+Element types unify per definition: `#[1, 2.0]` is `Array<float>` (via
 the int→float join); `#[1, "a"]` is an error pointing at structs.
 `#[]`/`#{}` take their types from surrounding constraints within the
 def; if unconstrained, that's an `Unknown` escape → annotate the

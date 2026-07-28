@@ -494,7 +494,7 @@ asserts every variant has a corresponding doc file and that no orphaned doc file
 | [`E117`](diagnostics/E117.md) | A range-refinement violation under `types = strict` (the E078 precedent — strict-only; gradual mode is... |
 | [`E118`](diagnostics/E118.md) | A protocol impl registration named a numeric-tower kind (`vec2`/`vec3`/`vec4`/`quat`/`mat2`/`mat3`/`mat4`)... |
 | [`E119`](diagnostics/E119.md) | A pure-callback verb's callback provably breaks the pure·silent contract. Two verb families carry this code, because the 2026-07-18 sitting ruled both: |
-| [`E120`](diagnostics/E120.md) | NS-A7 `Weighted[T]` construction refusal: |
+| [`E120`](diagnostics/E120.md) | NS-A7 `Weighted<T>` construction refusal: |
 | [`E121`](diagnostics/E121.md) | Contract §4.2 check 1a (manifest ⇄ HIR agreement): |
 | [`E122`](diagnostics/E122.md) | Contract §4.2 check 1b (manifest ⇄ HIR agreement): |
 | [`E123`](diagnostics/E123.md) | Contract §4.2 check 1c: |

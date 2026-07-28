@@ -18,7 +18,7 @@ dangles; charter fix owed.)
    deferred-with-intent.** Design every verb total where honest;
    turn-terminating faults for true domain errors (the E078
    lineage). **RULED 2026-07-18 (supersedes the martyr strategy):
-   `Option[T]` is pulled forward as the third compiler-known
+   `Option<T>` is pulled forward as the third compiler-known
    parameterized builtin (§1.4) — a compiler-owned enum, NO user
    generics unlocked (the `[T]`/`[K: V]` door; evidence + shape on
    #1090). Doctrine: a fault says "your program is wrong"; Option
@@ -40,7 +40,7 @@ dangles; charter fix owed.)
    fields (+defaults). Struct patterns in `let` (match's grammar).
 4. **Intrinsic typing doctrine**: parameterized BUILTINS join the
    static type language — `[T]` arrays, `[K: V]` maps, and
-   `Option[T]` (RULED 2026-07-18) (syntax mirrors literals;
+   `Option<T>` (RULED 2026-07-18) (syntax mirrors literals;
    statically homogeneous; NOT user generics — #1090 candidate
    (b), promoted). Intrinsics carry checker-known polymorphic
    signatures (closed set); UFCS completion reads them. A bare
@@ -59,7 +59,7 @@ dangles; charter fix owed.)
    FINAL value is None renders as nothing — absence renders as
    absence, the honest narrative meaning. Everywhere else (guards,
    arithmetic, bindings, arguments — anywhere in an A*
-   implementation) `Option[T]` ≠ `T`, strict. Cut by POSITION, not
+   implementation) `Option<T>` ≠ `T`, strict. Cut by POSITION, not
    dialect: nested compositions are never forgiven
    (`{mood.first() + 1}` is a type error; only the boundary
    shrugs). Riders: the forgiveness is TRACEABLE (transcript/debug
@@ -78,11 +78,11 @@ dangles; charter fix owed.)
    question remain open (deferred, not silently dropped — see
    `docs/stdlib-sequencing.md`'s Wave B4 entry). **F27 RULED
    (2026-07-19): Option has NO truthiness** — a condition-position
-   `Option[T]` is a compile error under strict and a runtime fault
+   `Option<T>` is a compile error under strict and a runtime fault
    under gradual; the author writes `== none`, `== some(x)`, or
    the `as`-binding (RULED 2026-07-26, SHIPPED on the native
    surface in B1b, issue #1475). Truthiness is a quiet coercion of
-   exactly the kind `Option[T] ≠ T` exists to ban. (Supersedes
+   exactly the kind `Option<T> ≠ T` exists to ban. (Supersedes
    A1's shipped falsy-none — implementation fix owed.) **F28 RULED
    (2026-07-19)**: `none`/`some(…)` render totally via `string()`
    forever (`value_ops::stringify`, unaffected by B4); the interpolation
@@ -124,7 +124,7 @@ authored code ever needs them). Casing = locale-independent Unicode
 simple mapping (Turkish-i named as out of scope; locale casing =
 intl pipeline). `char_at`/`slice` OOB fault (one indexing contract
 with arrays — OOB indexing is a bug, not absence). `find` →
-`Option[int]` (martyr #1, redeemed by the 2026-07-18 ruling; the
+`Option<int>` (martyr #1, redeemed by the 2026-07-18 ruling; the
 -1 sentinel dies unshipped). Prelude: `len contains char_at`;
 rest `std::text`.
 
@@ -161,7 +161,7 @@ cross-referenced so views ≠ projections.
   `a.map(f)` faults iff `f` can, reads what `f` reads. This is
   the established position-demands-row pattern (wake conditions,
   display/compare impls). `filter_map(f)` where
-  `f: fn(T): Option[U]` is the Option-mapper (drops nones) — the
+  `f: fn(T): Option<U>` is the Option-mapper (drops nones) — the
   natural companion under the Option ruling.
 - **Effectful iteration is a different concept and gets different
   spellings**: `each` (do something per element, no result), and
@@ -228,7 +228,7 @@ cross-referenced so views ≠ projections.
   remove_at each map filter fold filter_map`. **Absence returns
   (RULED 2026-07-18, flipping the earlier empty⇒fault posture —
   one doctrine, no day-one exceptions)**: `first last min max pop`
-  → `Option` on empty; `index_of` → `Option[int]` (martyr #2,
+  → `Option` on empty; `index_of` → `Option<int>` (martyr #2,
   redeemed). OOB *indexing* (`a[i]`, `insert`, `remove_at`) stays
   a fault — an index you computed wrong is a bug; an empty
   extremum is absence. **`remove` is NOT a seq verb** — the
@@ -322,7 +322,7 @@ Serves `sort`/`sort_by`/`min`/`max`/heap (§8) and `compare` (§9.6).
   better) with the code-dialect sitting's syntax-in-value-position
   decision, where it is exhibit #1 (§10).
 - **The non-faulting read (updated per the 2026-07-18 Option
-  ruling)**: `get(m, k)` → `Option[V]` — martyr #3, redeemed
+  ruling)**: `get(m, k)` → `Option<V>` — martyr #3, redeemed
   before it was ever martyred. `m.get(k) or default` covers the
   with-default idiom, so no `get_or` verb ships (the `or`
   spelling subsumes it — one spelling per concept); `contains_key`
@@ -429,7 +429,7 @@ precedent, oracle byte-identical):
   (`1..=6`, `5..=5`, CONST refs fold) coerces in free — dice
   cost nothing; a statically-empty literal (`0..0`) is a
   **compile error**; computed bounds must arrive through the
-  validator **`(a..b).nonempty()` → `Option[<inhabited range>]`**
+  validator **`(a..b).nonempty()` → `Option<<inhabited range>>`**
   — parse-don't-validate: the Option tax sits once, at the
   boundary where dynamic data enters, then N draws cost nothing
   (amortized; contrast per-draw `pick` coalescing). Plain
@@ -471,7 +471,7 @@ precedent, oracle byte-identical):
 ## 8. Domain 7 — collections+ (RULED 2026-07-18)
 
 - **Weighted tables — the dossier's evidenced structure.** A
-  parameterized builtin `Weighted[T]`; construction reuses the map
+  parameterized builtin `Weighted<T>`; construction reuses the map
   literal shape with weights as keys: `Weighted { 3: sword,
   1: shield }` (grammar `weight: value` as chartered; weights =
   positive ints v1). One draw verb: `rand::roll(w)` → T — lives in
@@ -500,7 +500,7 @@ precedent, oracle byte-identical):
   doctrine (§4b): `heap_push` NaN-checks at entry (dev fault /
   prod pinned order). If the
   ledger later shows shape-confusion incidents (heap-array indexed
-  as if sorted), a sealed `Heap[T]` builtin is the designed
+  as if sorted), a sealed `Heap<T>` builtin is the designed
   upgrade path — recorded, not built.
 - Anything further (deque, set-as-type) is **evidence-gated** —
   `std::collections` is the landing zone, the dossier is the gate.
@@ -606,7 +606,7 @@ precedent, oracle byte-identical):
      structural always; `compare == 0` need not imply `==`,
      divergence is legal and documented (sort never implies dedup
      semantics); enforceable by construction.
-   - `iterate` — **pull-shaped**: `next(ref Self): Option[T]`,
+   - `iterate` — **pull-shaped**: `next(ref Self): Option<T>`,
      row ⊆ writes-receiver·silent·total, laws attached ("every
      element once; `none` terminal and sticky" — property-harness
      enforced; machine-form impls make them structural). Chosen
@@ -621,7 +621,7 @@ precedent, oracle byte-identical):
    - `construct` — the **4th entry (RULED 2026-07-23, #1103)**:
      `TypeName { … }` construction is protocol dispatch (the C#
      `Add`-method lineage), **not** closed compiler grammar over a
-     fixed set — so a future collection (`Heap[T]`, host types)
+     fixed set — so a future collection (`Heap<T>`, host types)
      joins the literal grammar with no grammar change, and it's
      symmetric with `display`/`compare` being protocols rather than
      the lone grammar exception. The brace *tokens* (element / pair
@@ -658,7 +658,7 @@ precedent, oracle byte-identical):
 ## 10. Remaining docket ⏳
 
 - **RULED 2026-07-18 (in-conversation, this session)**: the
-  Option package — `Option[T]` as builtin #3, the fault=bug /
+  Option package — `Option<T>` as builtin #3, the fault=bug /
   Option=absence doctrine, `or`, display-boundary forgiveness
   (§1.1/§1.4/§1.6) — and the seq/text/map flips (§§3–5). Recorded
   in the decision log.
@@ -690,9 +690,9 @@ precedent, oracle byte-identical):
   (§7 — rng-as-cell, `rand::int` total by type via the inhabited
   range: the first value refinement, closed-refinement doctrine
   recorded; `pick` Option; determinism posture) · collections+
-  (§8 — `Weighted[T]` evidence-by-construction with the
+  (§8 — `Weighted<T>` evidence-by-construction with the
   Option-constructor evolution recorded; humble heap over arrays
-  with the sealed-`Heap[T]` upgrade path; further additions
+  with the sealed-`Heap<T>` upgrade path; further additions
   evidence-gated) · the closers (§9 — anonymous records RETIRED,
   `for k, v in m` replaces `entries`, multi-return = declared
   struct, `@[effects]` final form, prelude final list, display

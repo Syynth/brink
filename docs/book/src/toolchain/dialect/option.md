@@ -25,7 +25,7 @@ Nothing went wrong in that scene. Asking the register about Edda was a
 perfectly reasonable question, and *the register answered it*: `none`. The
 answer is a real value — it printed, it compared, it could have been stored
 or passed along — and the story kept running. That value's type is
-`Option[T]`, this chapter's subject, and the doctrine it carries is one line
+`Option<T>`, this chapter's subject, and the doctrine it carries is one line
 long: **a fault says "your program is wrong"; Option says "the world didn't
 have one."**
 
@@ -69,9 +69,9 @@ politely forces authors into one of two old traps:
 Brink shipped neither. `find` and `index_of` were headed for `-1` sentinels
 and the empty-array extremums for faults when the Option ruling caught them
 — the sentinels died unshipped, and every absence-shaped verb was flipped to
-return `Option[T]` before any story could depend on the bad answers.
+return `Option<T>` before any story could depend on the bad answers.
 
-An `Option[T]` is one of exactly two things:
+An `Option<T>` is one of exactly two things:
 
 - **`some(x)`** — the world had one, and here it is.
 - **`none`** — the world didn't have one. Not zero, not `-1`, not a fault:
@@ -94,23 +94,23 @@ carry around: *absence never faults; malformed questions always do.*
 
 ## The verbs that answer with Option
 
-Ten verbs across the stdlib return `Option[T]` today — every place the
+Ten verbs across the stdlib return `Option<T>` today — every place the
 language asks the world a question the world might honestly have no answer
 to. Signatures in the standard display notation (*display notation; `T` is
 not writable in source*):
 
 | Verb | Signature | `none` means |
 |---|---|---|
-| `find` | `find(s: string, sub: string): Option[int]` | substring absent (USV index when present) |
-| `index_of` | `index_of(a: [T], x: T): Option[int]` | no element equal to `x` |
-| `first` | `first(a: [T]): Option[T]` | array empty |
-| `last` | `last(a: [T]): Option[T]` | array empty |
-| `min` | `min(a: [T]): Option[T]` | array empty |
-| `max` | `max(a: [T]): Option[T]` | array empty |
-| `pop` | `pop(a: [T]): Option[T]` | array empty — nothing removed |
-| `get` | `get(m: [K: V], k: K): Option[V]` | key absent |
-| `pick` | `pick(x: [T] \| range): Option[T]` | nothing to draw from |
-| `non_empty` | `non_empty(r: range): Option[NonEmptyRange]` | the range was empty |
+| `find` | `find(s: string, sub: string): Option<int>` | substring absent (USV index when present) |
+| `index_of` | `index_of(a: [T], x: T): Option<int>` | no element equal to `x` |
+| `first` | `first(a: [T]): Option<T>` | array empty |
+| `last` | `last(a: [T]): Option<T>` | array empty |
+| `min` | `min(a: [T]): Option<T>` | array empty |
+| `max` | `max(a: [T]): Option<T>` | array empty |
+| `pop` | `pop(a: [T]): Option<T>` | array empty — nothing removed |
+| `get` | `get(m: [K: V], k: K): Option<V>` | key absent |
+| `pick` | `pick(x: [T] \| range): Option<T>` | nothing to draw from |
+| `non_empty` | `non_empty(r: range): Option<NonEmptyRange>` | the range was empty |
 
 Three of these deserve a word beyond the table. `pop` is the hybrid the
 Collections chapter flagged — it removes the last element *and* hands it
@@ -185,12 +185,12 @@ Option-returning verb (`find`/`get`/`pop`/…) instead." Every *other* `none`
 position — an assignment to an existing Option slot, a comparison operand,
 a call argument — has context by construction and is fine.
 
-## `Option[T]` is not `T`
+## `Option<T>` is not `T`
 
-The type `Option[int]` and the type `int` are different types, and the
+The type `Option<int>` and the type `int` are different types, and the
 checker holds that line everywhere: no implicit unwrap, no coercion, no
 "it's probably `some`, treat it as the number." The strictness is the whole
-point — if `Option[T]` quietly became `T` wherever convenient, the sentinel
+point — if `Option<T>` quietly became `T` wherever convenient, the sentinel
 bug would be back with better manners, and absence would go silent again
 exactly where it matters.
 
@@ -211,7 +211,7 @@ Mira sleeps on floor {floor}.
 -> DONE
 ```
 
-`get` answered `Option[int]`; the assignment insists on `int`; no
+`get` answered `Option<int>`; the assignment insists on `int`; no
 annotation reconciles them. The same collision caught anywhere else —
 an Option operand in arithmetic, an Option passed where a plain value is
 declared — is the same conflict. Under `types = gradual` the checker lets
@@ -237,30 +237,27 @@ Mira: {room_of("Mira")}. Edda: {string(room_of("Edda"))}.
 Mira: some(3). Edda: none.
 ```
 
-`room_of` settles as `(string) -> Option[int]` with no annotation — the
+`room_of` settles as `(string) -> Option<int>` with no annotation — the
 body's `get` is all the evidence needed.
 
-One asymmetry to know as a current fact: `Option[T]` is **inferable but
-not annotatable**. It appears in inferred signatures, in diagnostics, and
-throughout this chapter's tables, but the annotation grammar has no
-spelling for it — you cannot write `Option[int]` after a name the way you
-can `int` or `array<int>`. (The ruled static type language does include
-`Option[T]` alongside `[T]`/`[K: V]`; the writable form simply hasn't
-reached the dialect's annotation syntax.) The practical consequence:
-keep Option-typed values in inferred interiors — locals, internal helper
-functions — where the checker names the type for you, rather than at
-boundaries that demand a written annotation.
+`Option<T>` is both **inferable and annotatable** (issue #1552): it
+appears in inferred signatures, in diagnostics, and throughout this
+chapter's tables, and you can also write it yourself — `~ temp best:
+Option<int> = none` resolves exactly like `int` or `Array<int>` would.
+`Weighted<T>` gained the same annotation spelling in the same change.
+`range` is the one remaining construction-only builtin: no annotation
+form yet, pending demonstrated demand.
 
 ## No truthiness
 
 The oldest ink idiom — a bare value in condition position, nonzero meaning
 true — does **not** extend to Option, on purpose. `{get(rooms, "Edda"): …}`
 reads like "is Edda registered", but a truthiness test is a quiet coercion
-of exactly the kind `Option[T] ≠ T` exists to ban: it blurs "the world had
+of exactly the kind `Option<T> ≠ T` exists to ban: it blurs "the world had
 one" into "the value was truthy," and it reintroduces the silent-absence
 bug class one condition at a time. So Option has *no* truthiness, anywhere,
 and the condition-position error tells you the honest spelling. This fails
-with `E116`, "an `Option[T]` has no truthiness (F27, docs/stdlib-spec.md
+with `E116`, "an `Option<T>` has no truthiness (F27, docs/stdlib-spec.md
 §1.6) — test `== none` / `== some(x)` explicitly":
 
 ```ink,error(E116)
@@ -295,7 +292,7 @@ the explicit forms fix for the cost of one comparison.
 
 Here is the honest state of the surface: today you can *make* Options,
 *print* them, and *compare* them — and comparing is the only door from
-`Option[T]` back to `T`-shaped decisions. There is no unwrap verb, no
+`Option<T>` back to `T`-shaped decisions. There is no unwrap verb, no
 default-extraction verb, no per-verb `get_or` family. That narrowness is
 deliberate (the ruling that shipped Option explicitly folded `get_or` into
 the coalescing form to come — one spelling per concept, and no stopgap
@@ -375,7 +372,7 @@ The heaviest night on the tab: 7 coins — the ledger says some(7).
 > {if get(rooms, "Edda") as r: room {r} it is else: no room tonight}
 > ```
 >
-> The binding is immutable, typed `T` from the condition's `Option[T]`,
+> The binding is immutable, typed `T` from the condition's `Option<T>`,
 > scoped strictly to the success arm (an `else` never sees it), and
 > rebinds every iteration in `while`. For v1 the binding must be the
 > **entire** condition — composing it with `&&`/`||` is an error (`E145`);
@@ -402,7 +399,7 @@ debugging artifact, not something a player should read.
 
 ```ink
 ~ temp tab = #[4, 7, 2]
-~ temp empty: array<int> = #[]
+~ temp empty: Array<int> = #[]
 Tonight's best: {max(tab)}, same as {string(max(tab))} via string().
 Empty ledger, interpolated: "{max(empty)}".
 Empty ledger, via string(): {string(max(empty))}.
@@ -424,8 +421,8 @@ through `string()`, it still spells out `"none"`.
 The forgiveness is cut by **position**, not by type or dialect: it only
 ever applies to an interpolation's own **final**, top-level value. Compose
 an Option with anything else — `{mood.first() + 1}`, an Option operand in
-concatenation — and `Option[T] ≠ T` strictness still holds; that stays the
-ordinary type error from [`Option[T]` is not `T`](#optiont-is-not-t), never
+concatenation — and `Option<T> ≠ T` strictness still holds; that stays the
+ordinary type error from [`Option<T>` is not `T`](#optiont-is-not-t), never
 silently forgiven. And the forgiveness never destroys information: every
 `None`-render is traceable in the transcript (the runtime's append-only
 output log records the real `Value::OptionVal(None)`, not the empty text
@@ -441,7 +438,7 @@ are both still open questions, not yet answered by an implementation.
 ## Option and the collections
 
 You've already met most of this chapter in [Collections](literals.md)
-without the theory: half its verb table returns `Option[T]`, its
+without the theory: half its verb table returns `Option<T>`, its
 `when-the-world-doesn't-have-one` section is this doctrine in miniature,
 and its empty-literal rule is E107's twin (a value born without a type must
 be told one at birth). What this chapter adds is the frame those verbs sit
@@ -464,7 +461,7 @@ other half of the fault story. Both chapters assume you read this one.
 |---|---|---|
 | `E066` | an Option and its element type collide — the slot is `Conflicted` | strict (runtime type fault under gradual) |
 | `E107` | a fresh un-annotated declaration initialized from a bare `none` | both dialects, both policies |
-| `E116` | an `Option[T]` used as a condition — no truthiness | strict (runtime fault under gradual) |
+| `E116` | an `Option<T>` used as a condition — no truthiness | strict (runtime fault under gradual) |
 
 The gradual-mode runtime backstops, for completeness: an Option reaching a
 truthiness evaluation is the no-truthiness fault; an Option meeting a plain
@@ -477,7 +474,7 @@ value in `==`/arithmetic is a type fault; and the malformed-question faults
 - **The Option package and the absence doctrine** ("a fault says 'your
   program is wrong'; Option says 'the world didn't have one'") —
   `docs/stdlib-spec.md` §1.1/§1.4/§1.6; decision log 2026-07-18
-  ("Option[T] pulled forward as a compiler-known builtin; the absence
+  ("Option<T> pulled forward as a compiler-known builtin; the absence
   doctrine").
 - **The verb flips** (`find`/`index_of`/`first`/`last`/`min`/`max`/`pop`/
   `get` → `Option`; the sentinels dying unshipped) — `docs/stdlib-spec.md`
@@ -489,7 +486,7 @@ value in `==`/arithmetic is a type fault; and the malformed-question faults
   forgives `none`** — same 2026-07-19 ruling; the display-boundary
   forgiveness (position-cut, nested never forgiven, traceable) is Track
   B4, `docs/stdlib-spec.md` §1.6b, SHIPPED (issue #1463). It turned out
-  not to need the native surface — interpolation and `Option[T]` already
+  not to need the native surface — interpolation and `Option<T>` already
   exist on the current brink dialect, so it landed as a `brink-runtime`
   display change (`docs/stdlib-sequencing.md`'s Wave B4 entry has the
   as-built note).
@@ -501,7 +498,7 @@ value in `==`/arithmetic is a type fault; and the malformed-question faults
 - **The `as`-binding** — named as the post-B1 condition-position spelling
   by F27 (below), then ruled in full by the decision log's 2026-07-26
   entry "The `as` binding: one construct, both condition positions,
-  `{if}` spelling" (immutable, typed `T` from `Option[T]`, scoped to the
+  `{if}` spelling" (immutable, typed `T` from `Option<T>`, scoped to the
   success arm, rebinding per iteration in `while`, whole-condition-only
   for v1). Landed on the native `.brink` surface in B1b (issue #1475).
   Choice-guard `as` is ruled separately the same day
@@ -509,6 +506,9 @@ value in `==`/arithmetic is a type fault; and the malformed-question faults
   (COW), rides v6") and is deliberately **not** implemented yet.
 - **Bare `none` needs a type from context** — `docs/stdlib-spec.md` §1.4;
   E107's declaration rule (#1107).
-- **`Option[T]` in the static type language (inferable today, annotatable
-  with the native surface)** — `docs/stdlib-spec.md` §1.4; the annotation
-  gap is a current implementation fact, not a ruling.
+- **`Option<T>` in the static type language** — `docs/stdlib-spec.md`
+  §1.4. Originally inferable-only, with annotatability slated for the
+  native surface; landed generally instead as part of the 2026-07-27
+  type-name conformance sweep (issue #1552) — `Option<T>`/`Weighted<T>`
+  are annotatable on the ink/brink dialect today, not just the native
+  frontend.

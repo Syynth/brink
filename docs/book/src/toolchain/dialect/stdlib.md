@@ -158,7 +158,7 @@ VAR arr = 0
 len is {len(arr)}.
 -> END
 
-=== function len(x: array<int>)
+=== function len(x: Array<int>)
 ~ return 999
 ```
 

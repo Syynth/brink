@@ -1,8 +1,12 @@
 ~ temp s = "hello world"
 ~ temp f1 = find(s, "world")
 ~ temp f2 = find(s, "xyz")
+// #1552: Option<T> is now annotatable, not just inferable — proves the
+// annotation itself resolves and agrees with the body under strict.
+~ temp f3: Option<int> = find(s, "again")
 f1 is {f1}.
 f2 is {f2}.
+f3 is {f3}.
 {f1 == some(6): f1 matched at six.}
 {f2 == none: f2 is absent.}
 {f2}
