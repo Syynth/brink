@@ -62,8 +62,8 @@ still open.
 > pseudo-generic letter form (`T`, `U`, `K`, `V`, `I`). **`T` is not
 > writable in source** (#1090 guards the user-generics door). The
 > notation exists because UFCS completion already renders this shape;
-> docs and IDE agree. `[T]` = array, `[K: V]` = map, `Option[T]`,
-> `Weighted[T]` are the four compiler-known parameterized builtins
+> docs and IDE agree. `[T]` = array, `[K: V]` = map, `Option<T>`,
+> `Weighted<T>` are the four compiler-known parameterized builtins
 > (arrays, maps, Option, Weighted). `iterable[T]` = the closed
 > iterable set (arrays · ranges · flags subsets · maps-by-keys),
 > not a source-writable type.
@@ -88,7 +88,7 @@ Every verb row records the full T2 row extended by #1087/#1097:
 
 ### 0.3 Posture columns
 
-- **Option/refine** — does the verb return `Option[T]` (typed
+- **Option/refine** — does the verb return `Option<T>` (typed
   absence) or consume/produce a value refinement (inhabited range)?
 - **Proto** — protocol dependency: `display` (§9.6), `compare`
   (ordering), `iterate` (pull `next`), or `eq` (built-in structural
@@ -110,7 +110,7 @@ never a fault (§2). No protocol deps.
 **Built: none.** No scalar-math verb is dispatched on main, and the kit
 is not pinned to any Track A wave (`docs/stdlib-sequencing.md` sequences
 A1–A8 without it). The dispatched `min`/`max` on main are §4's
-array-extremum forms (`[T] → Option[T]`) — the two-arg scalar overloads
+array-extremum forms (`[T] → Option<T>`) — the two-arg scalar overloads
 are not built.
 
 | Verb | Signature | NS | Pre | Recv | Row | Option/refine |
@@ -206,7 +206,7 @@ unobservable). No protocol deps except structural `eq` for `contains`.
 | `contains` | `fn contains(s: string, sub: string): bool` | text | ✓ | val | P | — | eq | ✅ |
 | `starts_with` | `fn starts_with(s: string, prefix: string): bool` | text | · | val | P | — | — | 🔜 |
 | `ends_with` | `fn ends_with(s: string, suffix: string): bool` | text | · | val | P | — | — | 🔜 |
-| `find` | `fn find(s: string, sub: string): Option[int]` | text | · | val | P | **Option[int]** (martyr #1) | — | ✅ (0xE2) |
+| `find` | `fn find(s: string, sub: string): Option<int>` | text | · | val | P | **Option<int>** (martyr #1) | — | ✅ (0xE2) |
 | `replace` | `fn replace(s: string, from: string, to: string): string` | text | · | val | P | — | — | 🔜 |
 | `split` | `fn split(s: string, sep: string): [string]` | text | · | val | P | — (Views) | — | 🔜 |
 | `join` | `fn join(parts: [string], sep: string): string` | text | · | val | P | — | — | 🔜 |
@@ -243,9 +243,9 @@ scalar-element verbs.
 | Verb | Signature | NS | Pre | Recv | Row | Option/refine | Proto | Built |
 |---|---|---|---|---|---|---|---|---|
 | `len` | `fn len(a: [T]): int` | seq | ✓ | val | P | — | — | ✅ |
-| `first` | `fn first(a: [T]): Option[T]` | seq | · | val | P | **Option[T]** (empty→none) | — | ✅ (0xE6) |
-| `last` | `fn last(a: [T]): Option[T]` | seq | · | val | P | **Option[T]** | — | ✅ (0xE7) |
-| `index_of` | `fn index_of(a: [T], x: T): Option[int]` | seq | · | val | P | **Option[int]** (martyr #2) | eq ⚠F21 | ✅ (0xE3) |
+| `first` | `fn first(a: [T]): Option<T>` | seq | · | val | P | **Option<T>** (empty→none) | — | ✅ (0xE6) |
+| `last` | `fn last(a: [T]): Option<T>` | seq | · | val | P | **Option<T>** | — | ✅ (0xE7) |
+| `index_of` | `fn index_of(a: [T], x: T): Option<int>` | seq | · | val | P | **Option<int>** (martyr #2) | eq ⚠F21 | ✅ (0xE3) |
 | `contains` | `fn contains(a: [T], x: T): bool` | seq | ✓ | val | P | — | eq ⚠F22 | ✅ |
 | `slice` | `fn slice(a: [T], start: int, end: int): [T]` | seq | · | val | `F:oob` ⚠F13 | — (View) | — | 🔜 |
 | `concat` | `fn concat(a: [T], b: [T]): [T]` | seq | · | val | P | — | — ⚠F27 (findings-doc numbering: naming-axis, open) | 🔜 |
@@ -255,17 +255,17 @@ scalar-element verbs.
 | `sorted_by` | `fn sorted_by(a: [T], cmp: fn(T,T): int): [T]` (added by the F0 ruling — the functional past-participle twin) | seq | · | val | `⊕cmp` + inconsistency-fault ⚠F14 | — | — | 🔜A4 |
 | `reverse` | `fn reverse(ref a: [T]): void` ⚠F26 | seq | · | lval | P | — | — | 🔜 |
 | `reversed` | `fn reversed(a: [T]): [T]` | seq | · | val | P | — | — | 🔜 |
-| `min` | `fn min(a: [T]): Option[T]` | seq | · | val | `F:float` | **Option[T]** ⚠F2,F11 | compare | ✅ (0xE4; scalar elements only until A4 — see C9 note above) |
-| `max` | `fn max(a: [T]): Option[T]` | seq | · | val | `F:float` | **Option[T]** ⚠F2,F11 | compare | ✅ (0xE5; scalar elements only until A4) |
+| `min` | `fn min(a: [T]): Option<T>` | seq | · | val | `F:float` | **Option<T>** ⚠F2,F11 | compare | ✅ (0xE4; scalar elements only until A4 — see C9 note above) |
+| `max` | `fn max(a: [T]): Option<T>` | seq | · | val | `F:float` | **Option<T>** ⚠F2,F11 | compare | ✅ (0xE5; scalar elements only until A4) |
 | `push` | `fn push(ref a: [T], x: T): void` | seq | ✓ | lval | P | — | — | ✅ |
-| `pop` | `fn pop(ref a: [T]): Option[T]` | seq | · | lval | P | **Option[T]** (empty→none) | — | ✅ (0xE8) |
+| `pop` | `fn pop(ref a: [T]): Option<T>` | seq | · | lval | P | **Option<T>** (empty→none) | — | ✅ (0xE8) |
 | `insert` | `fn insert(ref a: [T], i: int, x: T): void` | seq | · | lval | `F:oob` | — | — | ✅ |
 | `remove_at` | `fn remove_at(ref a: [T], i: int): void` (issue #1484, 2026-07-26 ruling: renamed off `remove` — one name spanning a faulting index-claim and a total identity-removal was accidental; F5b's open return-type question is resolved by the shipped shape: `void`, matching the other `remove`s, not the element) | seq | · | lval | `F:oob` | — | — | ✅ (0xFD) |
 | `each` | `fn each(a: [T], f: fn(T): void): void` | seq | · | val | `⊕f` (writes/emits/tags/faults all compose) | — | — | 🔜 |
 | `map` | `fn map(a: [T], f: fn(T): U): [U]` | seq | · | val | `⊕f` (reads+faults only; f pure-required) | — | — | 🔜 |
 | `filter` | `fn filter(a: [T], pred: fn(T): bool): [T]` | seq | · | val | `⊕pred` (pure-required) | — | — | 🔜 |
 | `fold` | `fn fold(a: [T], init: U, f: fn(U,T): U): U` | seq | · | val | `⊕f` (pure-required) | — | — | 🔜 |
-| `filter_map` | `fn filter_map(a: [T], f: fn(T): Option[U]): [U]` | seq | · | val | `⊕f` (pure-required) ⚠F9 | callback returns Option | — | 🔜 |
+| `filter_map` | `fn filter_map(a: [T], f: fn(T): Option<U>): [U]` | seq | · | val | `⊕f` (pure-required) ⚠F9 | callback returns Option | — | 🔜 |
 | `map_each` | `fn map_each(a: [T], f: fn(T): U): [U]` | seq | · | val | `⊕f` (full: writes/emits/tags; sequential, never fused) | — | — | 🔜 |
 
 Unmarked-🔜 seq verbs (slice/concat/reverse/reversed + the trio and its
@@ -287,7 +287,7 @@ enum variants (non-scalar key = E076 lineage). Prelude: `len` only; rest
 | `len` | `fn len(m: [K: V]): int` | map | ✓ | val | P | — | — | ✅ |
 | `contains_key` | `fn contains_key(m: [K: V], k: K): bool` | map | · | val | P | — | — | 🔜 (not dispatched — note: map membership on main is the polymorphic `contains`) |
 | `contains_value` | `fn contains_value(m: [K: V], v: V): bool` | map | · | val | P (O(n)) | — | eq | ✅ (0xEA) |
-| `get` | `fn get(m: [K: V], k: K): Option[V]` | map | · | val | P | **Option[V]** (martyr #3) | — | ✅ (0xE9) |
+| `get` | `fn get(m: [K: V], k: K): Option<V>` | map | · | val | P | **Option<V>** (martyr #3) | — | ✅ (0xE9) |
 | `keys` | `fn keys(m: [K: V]): [K]` | map | · | val | P (insertion-order snapshot) | — | — | ✅ |
 | `values` | `fn values(m: [K: V]): [V]` | map | · | val | P (insertion-order snapshot) | — | — | ✅ |
 | `remove` | `fn remove(ref m: [K: V], k: K): void` | map | · | lval | P (idempotent-total) | — | — | ✅ |
@@ -339,13 +339,13 @@ not a unilateral call inside an unrelated issue.
 | `add` | `fn add(ref s: Mood, m: Mood): void` | flags | · | lval | P (idempotent) | — | `+=` |
 | `remove` | `fn remove(ref s: Mood, m: Mood): void` | flags | · | lval | P (idempotent-total) | — | `-=` |
 | `intersect` | `fn intersect(a: Mood, b: Mood): Mood` | flags | · | val | P | — | `^` |
-| `first` | `fn first(s: Mood): Option[Mood]` | flags | · | val | P | **Option** (empty→none) | `LIST_MIN` |
-| `last` | `fn last(s: Mood): Option[Mood]` | flags | · | val | P | **Option** | `LIST_MAX` |
+| `first` | `fn first(s: Mood): Option<Mood>` | flags | · | val | P | **Option** (empty→none) | `LIST_MIN` |
+| `last` | `fn last(s: Mood): Option<Mood>` | flags | · | val | P | **Option** | `LIST_MAX` |
 | `index_of` | `fn index_of(m: Mood): int` | flags | · | val | `F:malformed` | int; multi/empty faults ⚠F21 | `LIST_VALUE` (conversion frozen) |
 | `range` | `fn range(Mood, a: Mood, b: Mood): Mood` | flags | · | — | P | — | `LIST_RANGE` |
 | `invert` | `fn invert(s: Mood): Mood` | flags | · | val | P | — | `LIST_INVERT` |
-| `next` | `fn next(s: Mood): Option[Mood]` | flags | · | val | `F:malformed` | **Option** (edge→none; multi/empty faults) | `+1` (frozen) |
-| `prev` | `fn prev(s: Mood): Option[Mood]` | flags | · | val | `F:malformed` | **Option** | `-1` (frozen) |
+| `next` | `fn next(s: Mood): Option<Mood>` | flags | · | val | `F:malformed` | **Option** (edge→none; multi/empty faults) | `+1` (frozen) |
+| `prev` | `fn prev(s: Mood): Option<Mood>` | flags | · | val | `F:malformed` | **Option** | `-1` (frozen) |
 
 `rand::pick` accepts a flags subset (§7). The numeric coupling
 (explicit flag values, subsets↔ints) stays **frozen** — never respelled.
@@ -365,12 +365,12 @@ with the story, seeded replay identical cross-platform.
 | `int` | `fn int(r: <inhabited range>): int` | rand | · | — | `W:rng` | **consumes inhabited-range refinement** (total by type) | — | 🔜A5 (range-draw form; the `int(x)` *conversion* is shipped, §10) |
 | `float` | `fn float(): float` → [0,1) | rand | · | — | `W:rng` | — (F4 resolved in-wave A6: nullary = draw, unary = the conversion) | — | ✅ (0xEC) |
 | `chance` | `fn chance(p: float): bool` | rand | · | — | `W:rng` (F3 RULED 2026-07-19: `p` clamps to [0,1], NaN → false — total; interpretation, not fabrication) | — | — | ✅ (0xED) |
-| `pick` | `fn pick(it: iterable[T]): Option[T]` | rand | · | lval/val | `W:rng` | **Option[T]** (empty→none) ⚠F18 | iterate | ✅ (0xEE; arrays + flags subsets) |
+| `pick` | `fn pick(it: iterable[T]): Option<T>` | rand | · | lval/val | `W:rng` | **Option<T>** (empty→none) ⚠F18 | iterate | ✅ (0xEE; arrays + flags subsets) |
 | `shuffle` | `fn shuffle(ref a: [T]): void` | rand | · | lval | `W:rng` | — | — | ✅ (0xEF) |
 | `shuffled` | `fn shuffled(a: [T]): [T]` | rand | · | val | `W:rng` | — | — | ✅ |
 | `seed` | `fn seed(n: int): void` | rand | · | — | `W:rng` | — | — | ✅ (reuses frozen `SeedRandom` 0x85) |
-| `roll` | `fn roll(w: Weighted[T]): T` | rand | · | val | `W:rng` | — (total by construction — §8) | — | ✅ (`Collect` 0xFA) |
-| `nonempty` | `fn nonempty(r: range): Option[<inhabited range>]` | rand? (F7 RULED 2026-07-19: ranges are a REAL Value kind — wire/equality/display/save; A5 specifies, incl. the NS home) | · | val | P | **produces the refinement** (validator) | — | 🔜A5 |
+| `roll` | `fn roll(w: Weighted<T>): T` | rand | · | val | `W:rng` | — (total by construction — §8) | — | ✅ (`Collect` 0xFA) |
+| `nonempty` | `fn nonempty(r: range): Option<<inhabited range>>` | rand? (F7 RULED 2026-07-19: ranges are a REAL Value kind — wire/equality/display/save; A5 specifies, incl. the NS home) | · | val | P | **produces the refinement** (validator) | — | 🔜A5 |
 
 **Frozen siblings**: ink `RANDOM(min, max)` / `SEED_RANDOM` are frozen
 spellings of the same cell — one RNG, two surfaces, no drift.
@@ -380,7 +380,7 @@ spellings of the same cell — one RNG, two surfaces, no drift.
 ## 8. Domain 7 — collections+ (§8)
 
 NS `std::collections`. Heap = verbs over ordinary `[T]` (min-heap; zero
-new value kinds). `Weighted[T]` is a parameterized builtin.
+new value kinds). `Weighted<T>` is a parameterized builtin.
 
 **Built: the whole domain shipped in wave A7** (issue #1113): one
 `Collect` opcode (0xFA, kind byte — the `Tower` economy), VAL_WEIGHTED
@@ -390,9 +390,9 @@ the chartered literal until B5: `weighted(w1, v1, w2, v2, …)`.
 | Verb / type | Signature | NS | Pre | Recv | Row | Option/refine | Proto | Built |
 |---|---|---|---|---|---|---|---|---|
 | `heap_push` | `fn heap_push(ref a: [T], x: T): void` | collections | · | lval | `F:float` (NaN entry-check §4b) | — | compare | ✅ A7 |
-| `heap_pop` | `fn heap_pop(ref a: [T]): Option[T]` | collections | · | lval | P | **Option[T]** (empty→none) | compare | ✅ A7 |
-| `heap_peek` | `fn heap_peek(a: [T]): Option[T]` | collections | · | val | P | **Option[T]** | compare | ✅ A7 |
-| `Weighted[T]` | type; literal `Weighted { weight: value }` | collections | — | — | — (construction refuses empty/zero/neg — evidence-by-construction; **E120** where classifiable, construction fault for computed weights) | evidence refinement; F17 multiset equality (RULED, as built) | — | ✅ A7 |
+| `heap_pop` | `fn heap_pop(ref a: [T]): Option<T>` | collections | · | lval | P | **Option<T>** (empty→none) | compare | ✅ A7 |
+| `heap_peek` | `fn heap_peek(a: [T]): Option<T>` | collections | · | val | P | **Option<T>** | compare | ✅ A7 |
+| `Weighted<T>` | type; literal `Weighted { weight: value }` | collections | — | — | — (construction refuses empty/zero/neg — evidence-by-construction; **E120** where classifiable, construction fault for computed weights) | evidence refinement; F17 multiset equality (RULED, as built) | — | ✅ A7 |
 | `roll` | (in `std::rand`, §7) | rand | · | val | `W:rng` | total by construction | — | ✅ A7 |
 
 `while heap_pop(ref open) as node { … }` is the drain loop — depends on
@@ -414,7 +414,7 @@ behavior. Promotion evidence-gated via #1090.
 |---|---|---|---|---|
 | `display` | `fn display(self: T): string` | row ⊆ **pure·silent·total** | structural default for enums/structs; user impl overrides; machine states inherit (#905) | feeds the §1.6 display boundary; F1 RULED 2026-07-19: BOTH interpolation and `string()` dispatch through `display` — one display path; F6 RULED 2026-07-19: `display`/`compare`/`next` are RESERVED names — author shadowing is a hard error (E113), not E035 |
 | `compare` | `fn compare(a: T, b: T): int` | row ⊆ **pure·silent·total** | none (no structural auto-order; derive-by-fields evidence-gated) | slots into the §4b ordering doctrine; coherence RULED 2026-07-19 (F15 closed): `compare` is ORDERING ONLY — equality stays structural always; `compare == 0` need not imply `==`, divergence legal and documented (sort never implies dedup) |
-| `iterate` | `next(ref Self): Option[T]` | row ⊆ **writes-receiver·silent·total** | machine-form impls make laws structural | "every element once; `none` is terminal and sticky" — property-harness enforced |
+| `iterate` | `next(ref Self): Option<T>` | row ⊆ **writes-receiver·silent·total** | machine-form impls make laws structural | "every element once; `none` is terminal and sticky" — property-harness enforced |
 
 **Why pull-shaped iterate** (RULED): a push-desugared `for` body is an
 fn-value callback and **functions never await** — push would ban `await`
@@ -482,7 +482,7 @@ name falls through to the declared-struct reading).
 | map | `Map { k: v }` | key: value pairs | duplicate key = compile error **E138** (the E076-lineage code, ruled in #1103's cascade (A)) |
 | flags | `Flags { calm, wary }` / `none(Mood)` / `all(Mood)` | bare members (a subset) | dup member = ⚠(idempotent? or error) |
 | array | `[a, b, c]` | elements | n/a |
-| `Weighted[T]` | `Weighted { 3: sword, 1: shield }` | weight: value pairs, positive-int weights | **duplicate weight LEGAL (multiset)** ⚠F17 — diverges from map! |
+| `Weighted<T>` | `Weighted { 3: sword, 1: shield }` | weight: value pairs, positive-int weights | **duplicate weight LEGAL (multiset)** ⚠F17 — diverges from map! |
 | enum variant | `Phase.Suspicious { level: 0.5 }` | named-field payload | duplicate field = E084 |
 | tower | `vec3 { x:, y:, z: }` | components per `docs/tower-mini-spec.md` (F24 ruled) | — |
 
@@ -505,7 +505,7 @@ Weighted-by-construction with A7.
 
 | Refinement | Introduced by | Construction | Consumers | Gradual mode |
 |---|---|---|---|---|
-| **inhabited range** | `1..=6` literal (const-folded bounds coerce free); `(a..b).nonempty()` for computed bounds | statically-empty literal (`0..0`) = compile error; computed → `Option[<inhabited range>]` | `rand::int` (total by type) | F8 RULED 2026-07-19: refinements are INERT in gradual with a runtime-fault residual — `rand::int` faults on an empty range under gradual (the `int()`/E078 precedent; recorded as the general rule for all future refinements) |
+| **inhabited range** | `1..=6` literal (const-folded bounds coerce free); `(a..b).nonempty()` for computed bounds | statically-empty literal (`0..0`) = compile error; computed → `Option<<inhabited range>>` | `rand::int` (total by type) | F8 RULED 2026-07-19: refinements are INERT in gradual with a runtime-fault residual — `rand::int` faults on an empty range under gradual (the `int()`/E078 precedent; recorded as the general rule for all future refinements) |
 | **Weighted-by-construction** | `Weighted { … }` literal (`weighted(w, v, …)` in the brink dialect until B5) | empty/zero/negative refused: compile error **E120** where classifiable (literal weights, empty/odd pair rows), **construction fault** (`WeightedBadWeight`) for computed weights | `rand::roll` (total by construction) | construction fault carries to gradual (E078-style split); E120 fires in BOTH regimes (it lives at the lowering, not the checker) |
 
 Recorded evolution (not built): a validating `Option`-returning
@@ -525,7 +525,7 @@ the way `nonempty()` killed the range construction-fault residual.
 | maps (§5) | 8 | 7 (`len keys values get contains_value remove clear`) | `contains_key` not dispatched; `insert` reserved (never ships); 2 operators built |
 | flags (§6) | 14 | 0 | unsequenced (frozen LIST ops remain the surface) |
 | rand (§7) | 8 + `nonempty` validator | 8 (`float chance pick shuffle shuffled seed` + A5's `int(range)`/`non_empty` + A7's `roll`) | — |
-| collections (§8) | 3 heap verbs | 3 (`heap_push heap_pop heap_peek`) + `Weighted[T]`/`weighted` (A7) | v1 = construct-and-roll / push-pop-peek |
+| collections (§8) | 3 heap verbs | 3 (`heap_push heap_pop heap_peek`) + `Weighted<T>`/`weighted` (A7) | v1 = construct-and-roll / push-pop-peek |
 | **protocols (§9.6)** | 3 (`display`,`compare`,`iterate/next`) | machinery only (A3: E113/E114/E115, structural defaults; no impl spelling) | not verbs — protocol methods |
 
 **Ruled verb total ≈ 94** (the old "≈93 shipped" mislabeled this — it

@@ -37,7 +37,7 @@ chapter.
 
 > **Current spelling** — examples in this chapter compile in today's brink
 > dialect: collection literals carry the `#[…]`/`#{…}` sigils, type
-> ascriptions spell `array<T>`/`map<K, V>`, mutating verbs are free calls
+> ascriptions spell `Array<T>`/`Map<K, V>`, mutating verbs are free calls
 > (`push(tab, 5)`), and function values are `#fn(name)` references. The
 > ruled native `.brink` spellings — bare `[…]` literals, `Map { k: v }`
 > construction, `[T]`/`[K: V]` type notation, method-position calls with
@@ -144,14 +144,14 @@ refuses. See [Enabling the Dialect](enabling.md).)
 
 Collections are statically homogeneous: one element type per array, one
 key type and one value type per map. In an annotation the spellings are
-`array<T>` and `map<K, V>`; almost everywhere, though, you write nothing
+`Array<T>` and `Map<K, V>`; almost everywhere, though, you write nothing
 and inference reads the literal:
 
-- `#[1, 2, 3]` is an `array<int>`.
-- `#[1, 2.5]` is an `array<float>` — the one implicit numeric promotion
+- `#[1, 2, 3]` is an `Array<int>`.
+- `#[1, 2.5]` is an `Array<float>` — the one implicit numeric promotion
   (`int → float`, see [Values & Types](types.md)) joins elements before
   homogeneity is judged.
-- `#{"Mira": 3}` is a `map<string, int>`.
+- `#{"Mira": 3}` is a `Map<string, int>`.
 
 Elements that *can't* unify make the collection's type `Conflicted`, and
 under strict types (the brink dialect's default) the binding holding it
@@ -168,7 +168,7 @@ types — its uses disagree on its type":
 ```
 
 No annotation fixes a `Conflicted` collection — declaring the tray
-`array<int>` doesn't make `"brandy"` a number. Either the elements agree,
+`Array<int>` doesn't make `"brandy"` a number. Either the elements agree,
 or they were never one collection.
 
 ### The empty-literal rule
@@ -197,7 +197,7 @@ known — use is not ascription. The fix is the one the message names.
 Ascribe the binding, and the literal takes its type from the declaration:
 
 ```ink
-~ temp cellar: array<string> = #[]
+~ temp cellar: Array<string> = #[]
 ~ push(cellar, "amber ale")
 ~ push(cellar, "black cider")
 The cellar ledger holds {len(cellar)} casks: {cellar}.
@@ -379,10 +379,10 @@ notation (*display notation; `T` is not writable in source*):
 | `contains` | `contains(a: [T], x: T): bool` | element scan (arrays); **key** test on maps |
 | `contains_value` | `contains_value(m: [K: V], v: V): bool` | content-equality scan over values; O(n) and honest about it |
 | `keys` / `values` | `keys(m: [K: V]): [K]` | eager snapshots, insertion order |
-| `index_of` | `index_of(a: [T], x: T): Option[int]` | first match, or `none` |
-| `first` / `last` | `first(a: [T]): Option[T]` | `none` on empty |
-| `min` / `max` | `min(a: [T]): Option[T]` | doctrine order; `none` on empty |
-| `get` | `get(m: [K: V], k: K): Option[V]` | the non-faulting map read |
+| `index_of` | `index_of(a: [T], x: T): Option<int>` | first match, or `none` |
+| `first` / `last` | `first(a: [T]): Option<T>` | `none` on empty |
+| `min` / `max` | `min(a: [T]): Option<T>` | doctrine order; `none` on empty |
+| `get` | `get(m: [K: V], k: K): Option<V>` | the non-faulting map read |
 | `sorted` / `sorted_by` | `sorted(a: [T]): [T]` | functional twins of `sort`/`sort_by` |
 
 And the mutators — statement-only, lvalue-first:
@@ -396,7 +396,7 @@ And the mutators — statement-only, lvalue-first:
 | `remove` | `remove(m: [K: V], k: K)` | total — removing an absent key is a no-op |
 | `clear` | `clear(m: [K: V])` | empty in place |
 | `sort` / `sort_by` | `sort(a: [T])` | in-place ordering — next section |
-| `pop` | `pop(a: [T]): Option[T]` | the hybrid: removes *and* returns the last element — the one mutator legal in expression position |
+| `pop` | `pop(a: [T]): Option<T>` | the hybrid: removes *and* returns the last element — the one mutator legal in expression position |
 
 Two postures hiding in that table deserve their doctrine lines:
 
@@ -435,7 +435,7 @@ the compiler harvests it from the call.
 
 ## When the world doesn't have one
 
-Half the verbs above return `Option[T]`, and the reason is the language's
+Half the verbs above return `Option<T>`, and the reason is the language's
 absence doctrine in one line: **a fault says "your program is wrong";
 `Option` says "the world didn't have one."** An out-of-bounds index is
 the first kind — a bug, surfaced loudly. An empty array's `max`, a search
@@ -443,7 +443,7 @@ that found nothing, a key that was never filed — those are the second
 kind: honest answers to reasonable questions, and they come back as a
 value you can test.
 
-An `Option[T]` is either `some(x)` — the world had one, here it is — or
+An `Option<T>` is either `some(x)` — the world had one, here it is — or
 `none`. `some(x)` always renders as `some(x)`; a bare `none` at the
 **final** value of an interpolation renders as nothing at all — absence
 rendering as absence ([Option and Absence](option.md#how-option-prints)
@@ -472,9 +472,9 @@ No Edda on the register tonight.
 (Edda's room prints nothing, not the word `none` — that's the
 interpolation boundary at work, not a rendering bug.)
 
-Two fences keep the doctrine honest. First, `Option[T]` has **no
+Two fences keep the doctrine honest. First, `Option<T>` has **no
 truthiness** — `{first(tab): …}` is not "is there a first element", it is
-a compile error under strict (`E116`: "an `Option[T]` has no truthiness —
+a compile error under strict (`E116`: "an `Option<T>` has no truthiness —
 test `== none` / `== some(x)` explicitly") and a runtime fault under
 gradual:
 
@@ -488,12 +488,12 @@ gradual:
 ```
 
 A truthiness test is a quiet coercion of exactly the kind
-`Option[T] ≠ T` exists to ban — it blurs "the world had one" into "the
+`Option<T> ≠ T` exists to ban — it blurs "the world had one" into "the
 value was truthy." Second, a bare `none` carries no element type, so a
 fresh un-annotated `VAR gap = none` is `E107` ("bare `none` needs a type
 from context") — the empty-literal rule again, wearing its Option hat.
 
-`Option[T]` appears in this chapter's signatures and diagnostics but is
+`Option<T>` appears in this chapter's signatures and diagnostics but is
 display notation — you cannot write it in an annotation today. The full
 doctrine — `x or default` coalescing, the display-boundary forgiveness,
 `filter_map` — belongs to the Option chapter of the book's
@@ -706,7 +706,7 @@ draw being an effect — is the Randomness chapter's; iteration in full
 | `E083` | a declaration default that isn't compile-time constant | both |
 | `E106` | a statically-visible map-literal key outside `int`/`string`/`bool` | both (warning) |
 | `E107` | a bare `none` with no type from context | both |
-| `E116` | an `Option[T]` used as a condition — no truthiness | strict (runtime fault under gradual) |
+| `E116` | an `Option<T>` used as a condition — no truthiness | strict (runtime fault under gradual) |
 | `E117` | `int(r)` over a range not proven inhabited | strict (runtime fault under gradual) |
 | `E119` | a `sort_by`/`sorted_by` comparator provably exceeds pure·silent | both |
 | `E149` | `remove` on a statically-known array — use `remove_at` | strict (runtime fault under gradual) |
@@ -722,7 +722,7 @@ draw being an effect — is the Randomness chapter's; iteration in full
 - **The Option package and the absence flips** (`find`/`index_of`/
   `get`/`first`/`last`/`min`/`max`/`pop` → `Option`) —
   `docs/stdlib-spec.md` §§1.1/1.4, §§4–5; decision log 2026-07-18
-  ("Option[T] pulled forward"); F27 no-truthiness ruled 2026-07-19.
+  ("Option<T> pulled forward"); F27 no-truthiness ruled 2026-07-19.
 - **Mutation posture and the naming law** (imperative in-place /
   past-participle functional, lvalue receivers) — `docs/stdlib-spec.md`
   §4; decision log 2026-07-18 ("Mutation posture").

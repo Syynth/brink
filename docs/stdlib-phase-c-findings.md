@@ -211,7 +211,7 @@ all right now.
 durable iterator representation; promoting the range to a real Value
 kind (small, three fields) is cheaper than maintaining a hidden
 iterator-only encoding *plus* the syntactic-range forms, and it makes
-`nonempty()`'s `Option[<inhabited range>]` return type a genuine value
+`nonempty()`'s `Option<<inhabited range>>` return type a genuine value
 rather than a phantom. Either way **a ruling is required** — the range's
 row is empty until then. **Blocking.**
 
@@ -258,7 +258,7 @@ default type mode.
 ### F10 — `for k, v in m`: exact lowering + mutation-during-iteration — BLOCKING
 
 **The collision.** Two rulings meet: (i) maps `iterate` **by keys** via
-the pull protocol (`next(ref Self): Option[K]` yields keys, §9.6); (ii)
+the pull protocol (`next(ref Self): Option<K>` yields keys, §9.6); (ii)
 `for k, v in m` desugars to "key-iteration + `let v = m[k]`" (§5, §9.1).
 Where does the second binding come from under a pull protocol that
 yields *one* value?
@@ -266,7 +266,7 @@ yields *one* value?
 **The lowering (proposed, needs ratifying).**
 ```
 for k, v in m { <body> }
-⟶  for k in m {              // pull: next(ref iter) → Option[K]
+⟶  for k in m {              // pull: next(ref iter) → Option<K>
        let v = m[k]          // read-index; total because k came from m
        <body>
    }
@@ -314,7 +314,7 @@ hides a fault.
 
 ### F2 — min/max over `[float]`: two absence-ish channels — NON-BLOCKING (coherent)
 
-`min`/`max` over `[float]` carry **both** `Option[float]` (empty → none)
+`min`/`max` over `[float]` carry **both** `Option<float>` (empty → none)
 **and** `F:float` (dev-fault on NaN / prod pinned order). Are two
 "no-good-answer" channels coherent? **Yes** — they are orthogonal:
 emptiness is *absence* (the world had no elements → Option), NaN is a
@@ -349,7 +349,7 @@ teaching load is real. **Recommendation:** ship a "removal cheat-sheet"
 in the docs; the divergence is *chosen*, keep it.
 
 **F5b (blocking-lite underspecification).** Does seq `remove(ref a, i)`
-**return the removed element** or `void`? `pop` returns `Option[T]`
+**return the removed element** or `void`? `pop` returns `Option<T>`
 (the element); map/flags `remove` return `void`. If seq `remove` returns
 the element, its return type diverges from the other `remove`s (which is
 fine — intrinsic overloading) but is unspecified. **Recommendation:** seq
@@ -359,11 +359,11 @@ there is always an element to return — no Option needed); map/flags
 
 ### F9 — `filter_map` is in the pure-required trio — NON-BLOCKING (confirm)
 
-`filter_map(f: fn(T): Option[U])` is listed with the trio and named a
-fused hot-path verb (§4). Its callback returning `Option[U]` is
+`filter_map(f: fn(T): Option<U>)` is listed with the trio and named a
+fused hot-path verb (§4). Its callback returning `Option<U>` is
 orthogonal to purity (Option is *data*, not an effect). **Recommendation:**
 confirm **yes, `filter_map` is pure-required** like `map`/`filter`/`fold`.
-Note the distinction from `map(f: fn(T): Option[U]): [Option[U]]` (which
+Note the distinction from `map(f: fn(T): Option<U>): [Option<U>]` (which
 *keeps* the nones as elements) — `filter_map` drops them. Both legal;
 teach the difference.
 
@@ -468,7 +468,7 @@ total return.
 ### F19 — `or` typing and chaining — NON-BLOCKING (substrate)
 
 The `x or default` coalescing spelling needs a stated type rule. Is it
-`(Option[T], T) → T` only, or also `(Option[T], Option[T]) → Option[T]`
+`(Option<T>, T) → T` only, or also `(Option<T>, Option<T>) → Option<T>`
 for chaining (`a.get(k) or a.get(k2) or default`)? **Recommendation:**
 both overloads — the two-Option form keeps optionality for chaining, the
 Option-then-value form collapses to `T`; left-associative. This belongs
@@ -477,7 +477,7 @@ the rows lean on it. Flag so it is not forgotten.
 
 ### F21 — `index_of` diverges: seq/text Option vs flags int-or-fault — NON-BLOCKING
 
-`index_of` returns `Option[int]` in seq/text (element may be absent) but
+`index_of` returns `Option<int>` in seq/text (element may be absent) but
 `int` in flags (a single flag always has a domain position; multi/empty
 subset **faults**). Same name, different return type *and* fault posture.
 Coherent under the doctrine (a flag's position always exists; an array
