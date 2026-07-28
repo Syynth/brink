@@ -365,12 +365,21 @@ flow main() {
     assert!(err.contains("cannot mutate"), "ruled wording: {err}");
 }
 
-/// The projection desugar inherits T1e's durable-root rule (`docs/
-/// t1e-spec.md` §2): a projection off a frame-local is refused rather than
-/// lowered against a root that dies with the frame.
+/// **RULED 2026-07-27** (issue #1531, `docs/decision-log.md`): the exact
+/// case #1462's conflict left unresolved — `let g = Guest { … };
+/// g.hp.heal(5)` — is legal. A frame-local cell is a valid projection root,
+/// and needs no effect row (the mutation is unobservable outside the
+/// frame). LIR lowering never reuses `RefProjection` for this (that
+/// variant's root stays durable-only); it splices a read/call/write-back
+/// RMW sequence instead (`brink_ir::lir::lower::blocks::
+/// try_lower_frame_local_auto_ref_stmt`), the same discipline `g.hp = 5`
+/// already rides. Before this ruling this exact source was refused with
+/// `E143`, whose "bind the receiver to a durable cell" advice was a dead
+/// end until #1530 (below) — struct-typed durable globals were unspellable
+/// until then.
 #[test]
-fn auto_ref_onto_a_projection_off_a_local_refuses_the_compile() {
-    let err = refuse(
+fn auto_ref_mutates_a_projection_off_a_frame_local_end_to_end() {
+    let out = play(
         "\
 struct Guest {
   hp: int
@@ -387,12 +396,92 @@ fn total() {
 }
 
 flow main() {
+  HP is {total()}.
+}
+",
+    );
+    assert_eq!(out, "HP is 6.\n");
+}
+
+/// The ruling's own boundary: LIR's RMW expansion for a frame-local
+/// projection is single-field-level only (the same limit plain assignment
+/// draws — `try_lower_field_assignment`'s `E074`), so a receiver two fields
+/// deep off a frame-local still refuses at the analyzer gate rather than
+/// silently mis-desugaring.
+#[test]
+fn auto_ref_onto_a_two_field_deep_frame_local_projection_still_refuses_the_compile() {
+    let err = refuse(
+        "\
+struct Hp {
+  current: int
+}
+
+struct Guest {
+  hp: Hp
+}
+
+fn heal(ref h, amount) {
+  h = h + amount;
+}
+
+fn total() {
+  let g = Guest { hp: Hp { current: 1 } };
+  g.hp.current.heal(5);
+  return g.hp.current;
+}
+
+flow main() {
   {total()}
 }
 ",
     );
     assert!(err.contains("E143"), "expected E143, got: {err}");
     assert!(err.contains("cannot mutate"), "ruled wording: {err}");
+}
+
+/// LIR lowering's other boundary on the frame-local ruling: the RMW
+/// expansion is statement-shaped only (it needs a read, the call, and a
+/// write-back as three separate statements), so a single-field-deep
+/// frame-local receiver used from *expression* position — nested inside a
+/// `let` initializer rather than standing alone as its own statement —
+/// still refuses (`expr::lower_ref_projection_arg`'s own frame-local
+/// guard) instead of silently building a `RefProjection` whose root has no
+/// runtime representation.
+#[test]
+fn auto_ref_onto_a_frame_local_projection_in_expression_position_still_refuses_the_compile() {
+    let err = refuse(
+        "\
+struct Guest {
+  hp: int
+}
+
+fn heal(ref h, amount) {
+  h = h + amount;
+}
+
+fn total() {
+  let g = Guest { hp: 1 };
+  let unused = g.hp.heal(5);
+  return g.hp;
+}
+
+flow main() {
+  {total()}
+}
+",
+    );
+    // Assert the new LIR guard's distinctive wording, not just "E143" — the
+    // analyzer refused this exact source with E143 even before the
+    // frame-local ruling relaxed the gate (a blanket "cannot mutate"
+    // refusal), so a bare code-only assertion can't tell the new
+    // statement-position guard apart from a regression back to that old
+    // blanket refusal. "its own statement" is unique to
+    // `expr::lower_ref_projection_arg`'s frame-local arm.
+    assert!(err.contains("E143"), "expected E143, got: {err}");
+    assert!(
+        err.contains("its own statement"),
+        "expected the new LIR guard's statement-position wording, got: {err}"
+    );
 }
 
 /// The **positive** half of the durable-root rule, and the one arm of D5
@@ -408,10 +497,8 @@ flow main() {
 /// also made `E143`'s own remediation advice — bind the receiver to a
 /// durable cell — point at something the language could not express.
 ///
-/// Note the boundary: this is the durable-**global** root. Whether a
-/// frame-local should ever be a legal projection receiver is issue #1531
-/// (RULING REQUEST, unresolved); the refusal test above pins today's
-/// behavior and is deliberately left alone.
+/// Note the boundary: this is the durable-**global** root; the frame-local
+/// arm was the #1531 conflict this file's other tests now cover.
 #[test]
 fn auto_ref_mutates_a_projection_off_a_durable_global_end_to_end() {
     let out = play(

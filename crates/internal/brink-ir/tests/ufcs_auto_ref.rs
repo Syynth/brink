@@ -210,3 +210,46 @@ fn main() {
         "the projection must name the field it walks"
     );
 }
+
+/// A projection off a **frame-local** root (issue #1531, RULED
+/// 2026-07-27): `g.hp.heal(5)` — unlike the durable-root case just above —
+/// never lowers as a `RefProjection` at all (that variant's root is a
+/// durable global only). `blocks::try_lower_frame_local_auto_ref_stmt`
+/// recognizes the statement and splices its own RMW sequence, so the call
+/// this test extracts carries an ordinary bare `RefTemp` for the receiver —
+/// the synthetic temp the recognizer reads the field into before the call
+/// and writes back after it. The full read/call/write-back sequence (and
+/// the mutation actually surviving the call) is proven end to end in
+/// `brink-test-harness/tests/b3a_ufcs_e2e.rs`'s
+/// `auto_ref_mutates_a_projection_off_a_frame_local_end_to_end` — this is
+/// the unit-level pin on the *shape*, mirroring the two tests above.
+#[test]
+fn a_frame_local_projection_receiver_auto_refs_via_a_synthetic_temp_not_a_projection() {
+    let args = lower_call_args(
+        "\
+struct Guest {
+  hp: int
+}
+
+fn heal(ref h, amount) {
+  h = h + amount;
+}
+
+fn main() {
+  let g = Guest { hp: 1 };
+  g.hp.heal(5);
+}
+",
+    );
+    assert_eq!(args.len(), 2, "receiver + one written argument");
+    assert!(
+        matches!(args[0], lir::CallArg::RefTemp(_, _)),
+        "a frame-local projection receiver must lower as a bare RefTemp, never a \
+         RefProjection: {:?}",
+        std::mem::discriminant(&args[0])
+    );
+    assert!(
+        matches!(args[1], lir::CallArg::Value(lir::Expr::Int(5))),
+        "the written argument is unaffected by auto-ref"
+    );
+}
