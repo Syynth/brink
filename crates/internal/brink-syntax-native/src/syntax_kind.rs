@@ -490,9 +490,9 @@ pub enum SyntaxKind {
     INFIX_EXPR,
     CALL_EXPR,
     ARG_LIST,
-    /// `|x, y| expr` — lambda pipes, tokenized and structurally parsed;
-    /// lowering is explicitly deferred (charter §7/§8: "B0.5 tokenizes
-    /// pipes; B0.8 does not lower them").
+    /// `|x, y| expr` — lambda pipes. Tokenized and structurally parsed in
+    /// B0.5; **lowered** since issue #1685 (`hir::lower_native::lambda` →
+    /// `hir::Expr::Lambda`), per the 2026-07-19 ruling.
     LAMBDA_EXPR,
     /// Holds one `PARAM` child per lambda parameter (NG-A, #1487) — each
     /// parameter used to be a bare `IDENT` token directly under this node;
