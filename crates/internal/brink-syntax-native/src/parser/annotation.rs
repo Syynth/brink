@@ -95,11 +95,16 @@ fn annotation_arg(p: &mut Parser<'_, '_>) {
                 // Only a string-literal value is accepted — the ruled
                 // spellings (`@[element(args = "…")]`, `@[style(chan =
                 // "…")]`) never carry a bare-ident or numeric value on the
-                // right of `=`, so nothing else is attempted here; a
-                // malformed right-hand side just leaves no `STRING_LIT`
-                // child for `AnnotationArg::eq_value` to find, and the
-                // lowering-side reader diagnoses that as a missing value
-                // rather than this parser guessing at recovery.
+                // right of `=`, so nothing else is attempted here. A
+                // malformed right-hand side is NOT recovered: it leaves no
+                // `STRING_LIT` child for `AnnotationArg::eq_value` to find
+                // (the lowering-side reader diagnoses that as a missing
+                // value), but the token itself is left unconsumed, which
+                // desyncs the enclosing `annotation_args`/`annotation_line`
+                // loops — expect a real parser error (`expected R_PAREN`,
+                // then `expected R_BRACKET`, then a trailing-text error on
+                // the line) for a non-string right-hand side, not a single
+                // clean diagnostic.
                 p.expect(EQ);
                 if p.at(QUOTE) {
                     annotation_string_value(p);
@@ -148,13 +153,22 @@ fn annotation_arg(p: &mut Parser<'_, '_>) {
 /// node (same `SyntaxKind`), so `AnnotationArg::eq_value`'s
 /// `support::child::<StringLit>` cast and every other `STRING_LIT`
 /// consumer keep working unchanged.
+///
+/// `{…}` interpolation is deliberately **not** accepted here (unlike
+/// `expr::string_lit`): an annotation value is never dialogue text, so
+/// there is no locale-resolution reason to parse an interpolation node —
+/// and the lowering-side reader (`hir::lower_native::annotation::
+/// eq_value_text`) only folds tokens, not nodes, so a `{…}` silently
+/// vanished from the value (and from a regex pattern, silently truncated
+/// it) when this was accepted. Hitting `{` here just ends the loop, the
+/// same as any other unrecognized token, and `p.expect(QUOTE)` below
+/// reports the resulting mismatch.
 fn annotation_string_value(p: &mut Parser<'_, '_>) {
     p.start_node(STRING_LIT);
     p.expect(QUOTE);
     loop {
         match p.current() {
             STRING_TEXT | STRING_ESCAPE | L_BRACKET | R_BRACKET => p.bump(),
-            crate::SyntaxKind::L_BRACE => super::content::interpolation(p),
             _ => break,
         }
     }

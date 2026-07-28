@@ -271,15 +271,49 @@ fn annotation_args_multiple_key_value_pairs() {
 /// `eq_value` to find (the lowering side diagnoses this as a missing
 /// value), and the arg still round-trips losslessly (no panic, no dropped
 /// text) even though it doesn't parse as a clean key/value pair.
+///
+/// The unconsumed `bare` token desyncs the enclosing arg-list/line grammar
+/// — this is real recovery-by-error, not a single clean diagnostic, so
+/// this asserts the actual error set rather than just `p.errors().is_empty
+/// ()`/ignoring it.
 #[test]
 fn annotation_arg_key_value_non_string_rhs_has_no_eq_value() {
     let src = "@[style(chan = bare)]\n";
     let p = assert_lossless(src);
+    let messages: Vec<_> = p.errors().iter().map(|e| e.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        vec![
+            "expected R_PAREN, found IDENT",
+            "expected R_BRACKET, found IDENT",
+            "unexpected text after `]` on an annotation line",
+        ],
+        "errors: {messages:?}"
+    );
     let line = annotation_line_node(&p);
     let args = line.args().expect("ANNOTATION_ARGS");
     let arg = args.args().next().expect("ANNOTATION_ARG");
     assert_eq!(arg.name_token().unwrap().text(), "chan");
     assert!(arg.eq_value().is_none());
+}
+
+/// Issue #1719 review finding: `{…}` interpolation inside an annotation
+/// clause's `= "…"` value must not be silently accepted. Before this fix
+/// `annotation_string_value` routed `{` into `content::interpolation`, but
+/// the lowering-side reader (`hir::lower_native::annotation::
+/// eq_value_text`) only folds *tokens*, not the resulting `INTERPOLATION`
+/// node — so `{chan}` inside a regex pattern silently vanished from the
+/// compiled value with zero diagnostics. `{` now just ends the value early
+/// like any other token the grammar doesn't accept there, and the
+/// unterminated string is a real parse error.
+#[test]
+fn annotation_arg_key_value_rejects_interpolation() {
+    let src = "@[element(args = \"^{chan}(?<chan>\\w+)$\")]\n";
+    let p = assert_lossless(src);
+    assert!(
+        !p.errors().is_empty(),
+        "a `{{…}}` interpolation in an annotation value must be a parse error, not silently dropped"
+    );
 }
 
 /// Issue #1349: the arg to `@[was(...)]` (native rename migration, the
