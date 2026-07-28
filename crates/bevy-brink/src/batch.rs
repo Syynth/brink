@@ -660,7 +660,11 @@ pub(crate) fn flush_deferred<M: Send + Sync + 'static>(
 /// host opts in explicitly when it wants the batched, frame-start-consistent
 /// stepping semantics for its flows:
 ///
-/// ```ignore
+/// ```no_run
+/// # use bevy_app::{App, Update};
+/// # use bevy_brink::advance_batch;
+/// # struct MyStory;
+/// # let mut app = App::new();
 /// app.add_systems(Update, advance_batch::<MyStory>);
 /// ```
 ///

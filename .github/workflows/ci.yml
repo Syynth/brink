@@ -205,6 +205,17 @@ jobs:
         id: bevy_test
         if: '!cancelled()'
         run: cargo test -p bevy-brink -p bevy-brink-derive --all-features --lib --tests
+      # Doctests are a separate cargo invocation from `--lib --tests` above
+      # (cargo has no combined flag for lib+tests+doc), so they need their
+      # own step, but they carry the same 2026-07-20 link-crash exemption:
+      # `--doc` builds one merged doctest binary from the crate's `///`/`//!`
+      # examples and never touches `examples/play_story.rs`, so it does not
+      # reopen that bus error (verified locally under `--all-features`: all
+      # 17 bevy-brink doctests compile and link in ~9s, #1700).
+      - name: Test (bevy-brink, doc)
+        id: bevy_doc
+        if: '!cancelled()'
+        run: cargo test -p bevy-brink -p bevy-brink-derive --all-features --doc
 
   # Companion to `clippy-all-features` above — see its comment for why this
   # leg exists and how it subsumes #947. Runtime cost measured comparable to

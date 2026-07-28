@@ -25,10 +25,25 @@ const DIGIT_KEYS: [KeyCode; 9] = [
 ///
 /// Convenience for the common "press 1 to pick the first choice" UI:
 ///
-/// ```ignore
+/// ```no_run
+/// # use bevy::prelude::*;
+/// # use bevy_brink::{
+/// #     BrinkContext, BrinkFlow, BrinkGlobals, Choice, RuntimeError, digit_key_to_choice_index,
+/// #     flow_context_view,
+/// # };
+/// # fn example(
+/// #     keys: Res<ButtonInput<KeyCode>>,
+/// #     choices: &[Choice],
+/// #     flow: &mut BrinkFlow,
+/// #     globals: &mut BrinkGlobals,
+/// #     ctx: &mut BrinkContext,
+/// # ) -> Result<(), RuntimeError> {
 /// if let Some(idx) = digit_key_to_choice_index(&keys, choices.len()) {
-///     flow.choose(&mut ctx, idx)?;
+///     let mut view = flow_context_view(globals, ctx);
+///     flow.choose(&mut view, idx)?;
 /// }
+/// # Ok(())
+/// # }
 /// ```
 #[must_use]
 pub fn digit_key_to_choice_index(keys: &ButtonInput<KeyCode>, max: usize) -> Option<usize> {
