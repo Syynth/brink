@@ -55,6 +55,23 @@
 //! gradual typing intends, and the runtime's dev-mode write guard
 //! (`vm::guard_comparator_write`) remains the backstop. Nothing here fakes
 //! that enforcement.
+//!
+//! There is a second, *structural* half to that gap, and it lives here
+//! rather than in the analyzer: the `DefinitionId` this module mints is
+//! never a key in the shipped `DefinitionId → row` table. That table
+//! (`StoryData::effect_rows`) is populated by `brink-db`'s
+//! `populate_effect_rows` from `inferable_defs_from_index`, which is
+//! `index.symbols` filtered to `SymbolKind::Knot | SymbolKind::Stitch`; a
+//! lambda is an inline `hir::Expr::Lambda`, so no lifted function can ever
+//! appear in that set, and the id itself does not exist until
+//! `IdAllocator::alloc_lambda_address` runs here — after every row has been
+//! inferred. Consequence: even once `Ty::Fn` grows rows, effects-spec §7's
+//! "a live fn value is a token; its row is a table lookup" has nothing to
+//! find for a lambda token, so making lifted ids row-addressable is a
+//! prerequisite of #1680, not a follow-on. Sound today only because
+//! `InferPass::infer_lambda` absorbs the body's atoms into the enclosing
+//! definition's row (over-reporting, spec §3). Pinned by
+//! `brink-db/tests/issue_1680_lambda_effect_row_gap.rs`.
 
 use brink_format::CountingFlags;
 use rowan::TextRange;

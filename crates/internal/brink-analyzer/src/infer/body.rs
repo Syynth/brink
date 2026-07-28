@@ -1191,6 +1191,21 @@ impl InferPass<'_, '_> {
     /// which is precisely the coordination issue #1685 flagged. When
     /// `Ty::Fn` grows rows, a lambda's row is composed here from its body
     /// and its captures (#872).
+    ///
+    /// Composing it here is **necessary but not sufficient**, and the
+    /// missing half is a prerequisite rather than a follow-on. Walking the
+    /// body inside *this* pass absorbs its atoms into the **enclosing**
+    /// definition's row — sound (spec §3 allows over-reporting) but it
+    /// gives the lambda no row of its own, and nothing downstream can mint
+    /// one either: `populate_effect_rows` keys the shipped
+    /// `DefinitionId → row` table off `inferable_defs_from_index`, i.e.
+    /// `SymbolKind::Knot | SymbolKind::Stitch` symbols, whereas a lifted
+    /// lambda's `DefinitionId` is minted a layer later by
+    /// `lir::lower::context::IdAllocator::alloc_lambda_address` and is never
+    /// an indexed symbol at all. So effects-spec §7's "a live fn value is a
+    /// token; its row is a table lookup" currently *misses* for every
+    /// lambda token. Pinned by
+    /// `brink-db/tests/issue_1680_lambda_effect_row_gap.rs`.
     fn infer_lambda(&mut self, l: &brink_ir::LambdaExpr) -> Ty {
         for e in l.body.value_exprs() {
             self.infer_expr(e);
