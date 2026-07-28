@@ -195,13 +195,20 @@ attachment (source-static, not emission-order); a dangling attached element
 (cue with nothing attachable) is a **compile diagnostic**, not a runtime
 surprise.
 
-### 3.7 Consecutive lines & blocks (🔶 under discussion)
+### 3.7 Consecutive lines & blocks (RULED — closed by §8d.2)
 Multiple content lines under one attachment (a multi-line speech) form a
-**block**. Direction being worked: emit **per-line** (the finer granularity
-— pacing stays a host beat) with a **baked block id** in element data;
-block-level delivery is API sugar / host aggregation over the id, robust
-under control flow (id-matching, not positional). Screenplay `(CONT'D)` is
-derivable (same speaker, new block) — an editor/preset concern, not wire.
+**block**. Emit **per-line** (the finer granularity — pacing stays a host
+beat) with a **baked block id** in element data; block-level delivery is
+API sugar / host aggregation over the id, robust under control flow
+(id-matching, not positional). Screenplay `(CONT'D)` is derivable (same
+speaker, new block) — an editor/preset concern, not wire.
+
+The one open question this section carried — *which* runs get a block id
+— was closed by **§8d.2: block id is universal**, every run of same-element
+adjacent content lines carries one, and §9.5 has recorded it closed since
+sitting 5. The 🔶 marker on this header was stale and is retired here
+(issue #1715). The wire half — the `block_id` field itself — rides the
+format bump (#1683) and the `Step`/`OutputLine` contract (#1684).
 
 ### 3.5b The `@[element]` annotation surface (RULED, sitting 4 addenda 2–3)
 
@@ -539,6 +546,33 @@ unless marked:
 13. Yarn's persisted-line-ID localization model added to the
     translation-round-2 agenda as a genuine fork vs `source_hash`
     (hybrid opt-in is the candidate).
+
+### 8b-i. Implementation status — the block-element grammar (#1715)
+
+The *grammar* half of §8b/§8d is built, in `brink-syntax-native`
+(`parser/element.rs`, `SyntaxKind::SCENE_STITCH`/`SCENE_HEADING`/
+`SCENE_TITLE`/`SCENE_SLUG`/`SCENE_BODY`/`CUE`/`CUE_NAME`/`COMPACT_CUE`/
+`PARENTHETICAL`):
+
+- the heading pattern with trailing `[slug]` then tags, in that line
+  order (§8b.3), and the header-scoped stitch body (§8b.2) — flat
+  siblings, delimited by the next heading or the enclosing close;
+- the block cue, the compact cue `@NAME: text` as a second declared
+  pattern beside it (§8b.9), and cue extensions on the tag channel
+  (§8d.4);
+- parentheticals, gated on a live cue chain so G-1's `(label)`
+  content-line spelling is untouched outside dialogue;
+- trailing `#tag`s on a `flow` header line (§8b.4).
+
+**Nothing lowers yet, deliberately.** Element roles/attachment and the
+conventions `lower:` column are §3.6/§8b.7–8 → issue #1717; the built-in
+preset is #1720; per-flow tag *APIs* are #474, whose iceboxed authoring
+surface this grammar supplies. Until those land, `hir::lower_native`
+reports every one of these shapes as not-yet-lowered (`E129`) rather than
+reading them as ordinary prose or dropping them.
+
+The **lyrics element stays dropped** (§8b.1): there is no `LYRICS` shape
+in the grammar, and the `~` conflict died with it.
 
 ## 8c. Worked case: the gated questline (validation)
 

@@ -9,9 +9,9 @@
 //! `|`).
 
 use crate::SyntaxKind::{
-    self, CONTENT_LINE, DIVERT, DOC_COMMENT_INNER, DOC_COMMENT_OUTER, EOF, GLUE, GLUE_NODE, HASH,
-    IDENT, INTERPOLATION, KW_ELSE, L_BRACE, L_PAREN, LABEL, NEWLINE, R_BRACE, R_PAREN, TAG,
-    TAG_LINE, TEXT,
+    self, CONTENT_LINE, DIVERT, DOC_COMMENT_INNER, DOC_COMMENT_OUTER, EOF, GLUE, GLUE_NODE, GT,
+    HASH, IDENT, INTERPOLATION, KW_ELSE, L_BRACE, L_PAREN, LABEL, NEWLINE, R_BRACE, R_PAREN, TAG,
+    TAG_LINE, TEXT, TILDE,
 };
 
 use super::Parser;
@@ -391,14 +391,34 @@ pub(crate) fn tag_line(p: &mut Parser<'_, '_>) {
 /// consume to keep making forward progress.
 pub(crate) fn tag_line_tail(p: &mut Parser<'_, '_>) {
     while p.at(HASH) {
-        tag(p);
+        tag(p, &[]);
     }
 }
 
-fn tag(p: &mut Parser<'_, '_>) {
+/// [`tag_line_tail`]'s twin for a *declaration header* line
+/// (`decl::header_tags`, §8b.4's `flow x #tag { … }`): identical, except
+/// each tag's text also stops at the body opener that follows it on the
+/// same line — a bare `{`, or a `~`/`>` body-dialect selector (charter §4).
+/// Without the extra stops the last tag's free-text run would swallow the
+/// brace and the header would lose its body.
+///
+/// The two entry points are kept separate rather than always stopping at
+/// `L_BRACE`/`TILDE`/`GT`, because on a *content* line those characters are
+/// ordinary tag text with no body opener anywhere in sight, and narrowing
+/// the general tag grammar to serve the header case would silently change
+/// what an existing `#tag` means.
+pub(crate) fn header_tag_tail(p: &mut Parser<'_, '_>) {
+    while p.at(HASH) {
+        tag(p, &[L_BRACE, TILDE, GT]);
+    }
+}
+
+fn tag(p: &mut Parser<'_, '_>, extra_stop: &[SyntaxKind]) {
     p.start_node(TAG);
     p.expect(HASH);
-    while !matches!(p.current(), NEWLINE | EOF | HASH | R_BRACE) {
+    while !matches!(p.current(), NEWLINE | EOF | HASH | R_BRACE)
+        && !extra_stop.contains(&p.current())
+    {
         p.bump();
     }
     p.finish_node();

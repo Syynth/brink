@@ -220,12 +220,19 @@ pub enum SyntaxKind {
     TILDE,
     /// `\`
     BACKSLASH,
-    /// `@`. A lone `@` outside the `@[` pair is not otherwise meaningful
-    /// punctuation in this grammar; it still lexes as its own `AT` token
-    /// (not `ERROR_TOKEN`) and folds into plain `TEXT` at parse time, so
-    /// prose containing a bare `@` round-trips losslessly and errorlessly
-    /// (`docs/directive-annotations-spec.md` §5b: "a lone `@` in prose
-    /// stays plain text").
+    /// `@`. Always its own token (never `ERROR_TOKEN`), whatever role the
+    /// parser gives it from structural position:
+    /// - directly against an identifier at body-item position it opens a
+    ///   [`Self::CUE`]/[`Self::COMPACT_CUE`] — the ruled block-cue
+    ///   spelling (`docs/prose-dialect-spec.md` §8b.9, issue #1715);
+    /// - anywhere else — detached (`@ 5pm`), or reached mid-line — it
+    ///   folds into plain `TEXT`, so prose containing a bare `@`
+    ///   round-trips losslessly and errorlessly
+    ///   (`docs/directive-annotations-spec.md` §5b: "a lone `@` in prose
+    ///   stays plain text").
+    ///
+    /// The `@[` annotation opener is a separate compound token
+    /// ([`Self::AT_L_BRACKET`]), so the two `@` channels never compete.
     AT,
 
     // ── Compound tokens ──────────────────────────────────────────
@@ -345,8 +352,66 @@ pub enum SyntaxKind {
     /// `# tag text` — a tag line (charter §11: tags kept).
     TAG_LINE,
     /// One `#`-prefixed tag inside a `TAG_LINE` or a `CONTENT_LINE`'s
-    /// trailing-tags tail.
+    /// trailing-tags tail. Also the trailing-tag shape a `FLOW_DECL`
+    /// header line and a [`Self::SCENE_HEADING`] carry (§8b.4 —
+    /// container-level per-flow tags).
     TAG,
+
+    // ── Node kinds — prose block elements (docs/prose-dialect-spec.md ──
+    // ── §8b/§8d, RULED 2026-07-25 across sittings 4–5) ────────────────
+    //
+    // The built-in screenplay preset's *grammar*. Recognition is
+    // line-shape-static (spec §3.1) and lives in `parser/element.rs`;
+    // attachment, the `lower:` column and the preset's data schema are
+    // deliberately elsewhere (issues #1717/#1720) — this enum only names
+    // the shapes the parser can see. `LYRICS` is absent on purpose: the
+    // lyrics element was **dropped** (§8b.1) because Fountain's `~`
+    // force-marker collides with the logic-line escape.
+    /// A header-scoped stitch: a [`Self::SCENE_HEADING`] plus the
+    /// [`Self::SCENE_BODY`] it scopes (§8b.2, RULED). **Amends charter
+    /// §4's "braces are the universal body delimiter"** for preset
+    /// heading-elements in prose-ground only — a scene runs to the next
+    /// heading or the enclosing close, restoring ink's own header-scoped
+    /// stitch. Heading-stitches are **flat siblings**: scenes never nest,
+    /// as on a real page, and deeper nesting keeps the general
+    /// `flow x { … }` spelling, which stays first-class in prose-ground.
+    SCENE_STITCH,
+    /// The heading line itself: `INT. MARKET SQUARE - NIGHT [market]
+    /// #tense #act1`. Line order is fixed (§8b.3): pattern, `[slug]`,
+    /// tags. Two rejected slug spellings, recorded so they are not
+    /// revisited: `#x#` (clashes with the tag lexer) and `{x}` (lexes as
+    /// interpolation — headings get **no** carve-out).
+    SCENE_HEADING,
+    /// The heading's title run — everything before the optional
+    /// `[slug]`/tags. The title is the display name (§3.3) and, with no
+    /// explicit slug, the address is inferred from it.
+    SCENE_TITLE,
+    /// `[market]` — the explicit address slug on a heading (§8b.3).
+    SCENE_SLUG,
+    /// The header-scoped body a [`Self::SCENE_HEADING`] opens: every item
+    /// up to the next heading, the enclosing `}`, or EOF. Braceless by
+    /// construction — that is the whole point of §8b.2 — so it is a
+    /// distinct node kind from [`Self::BLOCK`], whose contract is "a
+    /// brace-delimited body".
+    SCENE_BODY,
+    /// `@VENDOR` — a block character cue (attached-forward, §3.6). Its
+    /// trailing tags are the ruled home for cue extensions (§8d.4:
+    /// `@VENDOR #(v.o.)` — no parsed `ext` capture, no new payload
+    /// machinery).
+    CUE,
+    /// The name run inside a [`Self::CUE`]/[`Self::COMPACT_CUE`], after
+    /// the `@` sigil and before `:`/tags/end of line.
+    CUE_NAME,
+    /// `@KID: Says who?` — the compact cue (§8b.9, the Yarn cross): cue
+    /// plus a single fused dialogue line, declared as a **second pattern
+    /// beside** the block cue rather than a rewrite of it. Holds a
+    /// [`Self::CUE_NAME`] and the fused [`Self::CONTENT_LINE`].
+    COMPACT_CUE,
+    /// `(hushed)` — a parenthetical delivery line (attached-forward,
+    /// §3.6). Recognized only inside a live cue chain (after a cue, a
+    /// parenthetical, or that cue's dialogue), so the G-1 `(label)`
+    /// content-line spelling is untouched everywhere else.
+    PARENTHETICAL,
 
     // ── Node kinds — choice points (charter §5) ─────────────────
     /// `{? … }` — an explicit choice point.

@@ -1,0 +1,39 @@
+// Prose block elements (#1715) - docs/prose-dialect-spec.md 8b/8d.
+// A trimmed version of the spec's own "complement-pass page": every shape
+// this slice's grammar recognizes, and nothing from the slices that follow
+// (no markup spans, no !name annotation elements, no attachment).
+
+/// The market, after curfew.
+INT. MARKET SQUARE - NIGHT [market] #act1 #tense
+
+The square is empty. A single lantern gutters against the dark.
+
+@VENDOR #(v.o.)
+(hushed)
+You shouldn't be here after dark. The gates closed an hour ago.
+
+@KID: Says who?
+
+@MARKET VENDOR: The curfew, kid. That.
+
+-> alley_escape
+
+EXT. COLD ALLEY - CONTINUOUS [alley_escape]
+
+Cold brick. Distant bells.
+
+@KID
+(to nobody)
+Fine.
+-> DONE
+
+INT. THE CELLAR - LATER
+
+A heading with no explicit slug infers its address from the title.
+
+flow deeper #act2 {
+  Deeper nesting keeps the general flow-with-braces spelling: scenes are
+  flat siblings and never nest.
+  (a_label) A bare (label) line outside a cue chain is still G-1's label.
+  -> DONE
+}

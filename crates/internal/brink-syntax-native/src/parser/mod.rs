@@ -7,6 +7,7 @@ mod control_flow;
 mod decl;
 mod divert;
 mod doc_comment;
+mod element;
 mod expr;
 mod family;
 mod source_file;
@@ -138,6 +139,19 @@ pub(crate) struct Parser<'t, 'c> {
     /// argument list and a construction literal's own entry list all clear
     /// it again, so `if (Point { x: 1 }) == p { … }` still parses.
     no_construct_literal: bool,
+    /// Whether a **cue chain** is currently live at body-item position —
+    /// the prose dialect's chain rule (`docs/prose-dialect-spec.md` §3.1:
+    /// "chain rules (dialogue is the line after a cue/parenthetical)", the
+    /// shipped `brink_ir::dialect` classifier's mechanism promoted to the
+    /// grammar). Set by a cue, carried across that cue's parentheticals
+    /// and dialogue lines, and cleared by a blank line or any other item
+    /// (`dialect.rs`: "blank lines always break a chain").
+    ///
+    /// Only [`element::at_parenthetical`] consults it, and only to decide
+    /// whether a whole-line `( … )` is a parenthetical or an ordinary
+    /// content line — so outside a cue chain the G-1 `(label)` spelling
+    /// (`content::at_content_label`) is reached exactly as before.
+    cue_chain: bool,
 }
 
 impl<'t> Parser<'t, 'static> {
@@ -151,6 +165,7 @@ impl<'t> Parser<'t, 'static> {
             builder: rowan::GreenNodeBuilder::new(),
             errors: Vec::new(),
             no_construct_literal: false,
+            cue_chain: false,
         }
     }
 }
@@ -166,6 +181,7 @@ impl<'t, 'c> Parser<'t, 'c> {
             builder: rowan::GreenNodeBuilder::with_cache(cache),
             errors: Vec::new(),
             no_construct_literal: false,
+            cue_chain: false,
         }
     }
 
@@ -217,6 +233,20 @@ impl<'t, 'c> Parser<'t, 'c> {
         !self.no_construct_literal
     }
 
+    /// Set the [`Self::cue_chain`] flag, returning the previous value — a
+    /// save/restore pair like [`Self::set_no_construct_literal`], so a
+    /// nested body can start a fresh chain and unwind to whatever its
+    /// enclosing body was in the middle of.
+    fn set_cue_chain(&mut self, value: bool) -> bool {
+        std::mem::replace(&mut self.cue_chain, value)
+    }
+
+    /// Whether a cue chain is live at the current body-item position (see
+    /// [`Self::cue_chain`]).
+    fn in_cue_chain(&self) -> bool {
+        self.cue_chain
+    }
+
     // ── Lookahead ───────────────────────────────────────────────
 
     /// The kind of the current token (or `EOF` if past the end).
@@ -233,6 +263,35 @@ impl<'t, 'c> Parser<'t, 'c> {
             self.tokens[self.non_trivia[target]].0
         } else {
             SyntaxKind::EOF
+        }
+    }
+
+    /// The source text of the `n`-th non-trivia token ahead (`""` past the
+    /// end). The text counterpart of [`Self::nth`], for the handful of
+    /// guards that recognize a *specific word* rather than a token kind —
+    /// today only the prose dialect's `INT.`/`EXT.` scene-heading prefix
+    /// (`parser::element::at_scene_heading`), which is a declared
+    /// line-shape pattern, not a reserved keyword.
+    fn nth_text(&self, n: usize) -> &'t str {
+        let start = self.non_trivia.partition_point(|&idx| idx < self.pos);
+        self.non_trivia
+            .get(start + n)
+            .map_or("", |&idx| self.tokens[idx].1)
+    }
+
+    /// True when the `n`-th and `n+1`-th non-trivia tokens ahead are
+    /// *directly adjacent* in the source — no whitespace or comment
+    /// between them. Used by sigil guards whose spelling is tight by
+    /// construction (`@NAME` — a lone `@` followed by a space stays plain
+    /// prose, per `SyntaxKind::AT`'s doc comment).
+    fn nth_adjacent(&self, n: usize) -> bool {
+        let start = self.non_trivia.partition_point(|&idx| idx < self.pos);
+        match (
+            self.non_trivia.get(start + n),
+            self.non_trivia.get(start + n + 1),
+        ) {
+            (Some(&a), Some(&b)) => b == a + 1,
+            _ => false,
         }
     }
 
