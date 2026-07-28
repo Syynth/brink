@@ -1,7 +1,9 @@
 # Root-content `DefinitionId` identity — findings and recommended fix shape
 
 **Issue:** [#1504](https://github.com/Syynth/brink/issues/1504)
-**Status:** **SHIPPED.** The [primary recommendation](#primary-qualify-root-content-scope-paths-by-the-owning-file-not-the-module)
+**Status:** **SHIPPED, with a known limitation** — see
+[Known limitation: the qualifier is not normalized](#known-limitation-the-qualifier-is-not-normalized).
+The [primary recommendation](#primary-qualify-root-content-scope-paths-by-the-owning-file-not-the-module)
 below is what landed: `hir::root_content_scope_path` qualifies a file's
 anonymous root-content scope path with that file's project path, and
 `IdAllocator::set_path_prefix` carries the same qualifier through LIR
@@ -405,3 +407,42 @@ bite. Pinned by
 state is the surface that *does* move: anonymous visit counts and sequence
 positions are re-keyed, with no migration path (see
 [The migration problem](#the-migration-problem)).
+
+## Known limitation: the qualifier is not normalized
+
+Flagged in review on #1693. `root_content_scope_path` qualifies by the
+file's **raw registered path** — `brink-db/src/queries/mod.rs`'s
+`normalized_stamped_query`, `chunk_lowering_ctx_query`, and
+`lir_lowering_query` all build the `file_paths` map from `file.path(db)`
+verbatim — not a normalized root-relative key. That path is whatever the
+caller registered: `brink-compiler/src/driver.rs`'s `prepare_driver` uses
+`entry.to_string()` unchanged for ink, and `brink-driver/src/discover.rs`'s
+BFS seeds its queue with that exact string and registers it unmodified.
+
+Consequence: **anonymous root-content identity is a function of the
+registered path's spelling, not just the tree's contents.**
+`brink compile story.ink`, `./story.ink`, and `/abs/proj/story.ink` mint
+three different anonymous container-id sets for identical source. Worse,
+`brink-lsp` keys `ProjectDb` by absolute OS path (`backend.rs`'s
+`uri_to_path`) while the CLI keys by whatever spelling the invocation used,
+so an editor session and a CLI compile of the same tree disagree on ids —
+beyond the registration-*order* parity this PR restores. (`brink-driver`'s
+`root_content_ids_agree_between_discover_and_editor_order` covers
+registration order only — same path spelling, different `FileId` assignment
+order — not spelling divergence; see that test's doc comment.)
+
+Pinned as a known, tested limitation by
+`root_content_ids_are_sensitive_to_entry_path_spelling_known_limitation`
+(`crates/brink-compiler/tests/issue_1504_root_content_identity.rs`), which
+asserts the divergence rather than silently letting it drift.
+
+**Tracked fix (not built here):** [#1696](https://github.com/Syynth/brink/issues/1696)
+— derive the qualifier from a root-relative key by extending the mechanism
+#1572 built for exactly this hazard in native modules
+(`ProjectDb::set_native_root` + `modules::native_root_relative_key`) to cover
+ink too. Deferred out of this PR because, unlike native (whose `RealFs`-scoped
+discovery tree already yields root-relative keys for free), ink discovery has
+no existing "project root" concept to normalize against — introducing one is
+a wider design change than a qualifier fix, and the review asked for the full
+`brink-db`/`brink-driver`/`brink-lsp` suites to be re-run against it, not just
+a new targeted test.

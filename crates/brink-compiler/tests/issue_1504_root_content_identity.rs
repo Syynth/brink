@@ -174,19 +174,21 @@ fn choosing_an_included_files_choice_runs_that_files_body() {
 /// qualifying anonymous root-content container ids leaves every XLIFF unit
 /// id for root-level lines exactly where it was.
 ///
-/// This pins that: the same entry file exports the same root-content scope
-/// id whether or not it `INCLUDE`s a second file that also carries root
-/// weave — the case in which #1504's qualifier is doing work.
+/// This pins that two ways. First, discriminatingly: byte-identical content
+/// compiled under two *different* entry filenames must export the same root
+/// scope id. Every line table in either fixture is the root's, whose id is
+/// `context::root_definition_id()` — a fixed hash of the empty path that no
+/// file qualifier can move — so this assertion fails the moment a root scope
+/// id ever becomes file-qualified, which a same-content/same-name comparison
+/// (the second assertion below) cannot detect: with only one entry name in
+/// play, that comparison would keep passing even in the world it claims to
+/// exclude, since both fixtures would still qualify by the same name. Second,
+/// as the original regression: the same entry file exports the same
+/// root-content scope id whether or not it `INCLUDE`s a second file that also
+/// carries root weave — the case in which #1504's qualifier is doing work.
 #[test]
 fn root_content_translation_scope_id_is_unaffected_by_the_qualifier() {
     const ENTRY: &str = "* main one\n* main two\n- main gathered\n";
-
-    let entry_with_include = format!("INCLUDE inc.ink\n{ENTRY}");
-    let solo: HashMap<&str, &str> = HashMap::from([("main.ink", ENTRY)]);
-    let with_include: HashMap<&str, &str> = HashMap::from([
-        ("main.ink", entry_with_include.as_str()),
-        ("inc.ink", "* inc one\n* inc two\n- inc gathered\n"),
-    ]);
 
     let scope_ids = |data: &brink_format::StoryData| -> Vec<u64> {
         data.line_tables
@@ -195,12 +197,71 @@ fn root_content_translation_scope_id_is_unaffected_by_the_qualifier() {
             .collect()
     };
 
+    // Discriminating: same content, two different entry filenames, no
+    // INCLUDE graph in play at all.
+    let under_main: HashMap<&str, &str> = HashMap::from([("main.ink", ENTRY)]);
+    let under_other: HashMap<&str, &str> = HashMap::from([("other.ink", ENTRY)]);
+    let main_data = compile_mem("main.ink", &under_main).unwrap();
+    let other_data = compile_mem("other.ink", &under_other).unwrap();
+    assert_eq!(
+        scope_ids(&main_data),
+        scope_ids(&other_data),
+        "root-content translation scope ids must not depend on the entry file's name",
+    );
+
+    // Original regression: the shape #1504's qualifier actually touches — an
+    // entry that INCLUDEs a second file which also carries root weave.
+    let entry_with_include = format!("INCLUDE inc.ink\n{ENTRY}");
+    let solo: HashMap<&str, &str> = HashMap::from([("main.ink", ENTRY)]);
+    let with_include: HashMap<&str, &str> = HashMap::from([
+        ("main.ink", entry_with_include.as_str()),
+        ("inc.ink", "* inc one\n* inc two\n- inc gathered\n"),
+    ]);
     let solo_data = compile_mem("main.ink", &solo).unwrap();
     let include_data = compile_mem("main.ink", &with_include).unwrap();
-
     assert_eq!(
         scope_ids(&solo_data),
         scope_ids(&include_data),
         "root-content translation scope ids must not depend on the #1504 file qualifier",
+    );
+}
+
+/// KNOWN LIMITATION, flagged in review on #1693: the qualifier
+/// [`hir::root_content_scope_path`](brink_ir::hir::root_content_scope_path)
+/// uses is the file's **raw registered path**, not a normalized
+/// root-relative key. Two spellings of what is, on disk, the *same* file
+/// therefore mint DIFFERENT anonymous root-content `DefinitionId`s —
+/// `brink compile main.ink` and `brink compile ./main.ink` disagree, and so
+/// do the CLI (relative spelling) and `brink-lsp` (absolute-OS-path
+/// spelling, `backend.rs`'s `uri_to_path`) for the identical project tree.
+///
+/// This test pins that limitation rather than letting it drift silently: if
+/// a future change normalizes the qualifier (the tracked follow-up —
+/// reusing `brink_driver::native_source_root` +
+/// `brink_db::modules::native_root_relative_key`, extended to ink, per the
+/// review finding), this assertion starts failing and must be flipped to
+/// `assert_eq!` alongside updating `docs/root-content-identity-findings.md`'s
+/// "Known limitation" section and the `.changeset` entry that describe it —
+/// not silently deleted.
+#[test]
+fn root_content_ids_are_sensitive_to_entry_path_spelling_known_limitation() {
+    let content = "* one\n* two\n- gathered\n";
+    let bare: HashMap<&str, &str> = HashMap::from([("main.ink", content)]);
+    let dotslash: HashMap<&str, &str> = HashMap::from([("./main.ink", content)]);
+
+    let bare_data = compile_mem("main.ink", &bare).unwrap();
+    let dotslash_data = compile_mem("./main.ink", &dotslash).unwrap();
+
+    let ids = |data: &brink_format::StoryData| -> Vec<u64> {
+        data.containers.iter().map(|c| c.id.to_raw()).collect()
+    };
+
+    assert_ne!(
+        ids(&bare_data),
+        ids(&dotslash_data),
+        "byte-identical content compiled under two spellings of the same path \
+         minted the SAME container ids — the known spelling-sensitivity \
+         limitation appears to be fixed; update this test (and the docs it \
+         references) instead of deleting it",
     );
 }
