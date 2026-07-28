@@ -752,6 +752,56 @@ mod tests {
         );
     }
 
+    /// Review finding #1686 (E088 guard widening): swapping the old
+    /// `declared_exports.get(&import.module).is_some()` guard for
+    /// `known_modules.contains(&import.module)` (needed so a pure-directory
+    /// prefix like `story::market` is checked at all, dual-reading's whole
+    /// point) is broader than just that pure-directory case — `E088` now
+    /// also fires for a bare import naming an item of a **declared module
+    /// that exports nothing publicly at all** (every top-level symbol
+    /// `#@private`/unmarked-native-default-private), where before this PR
+    /// it was silent (no `declared_exports` entry to check against, exactly
+    /// like the pure-directory case, but for a different underlying
+    /// reason). Pinned here so this widening — real and intentional, since
+    /// `known_modules` is the correct superset for the pure-directory case
+    /// — doesn't silently drift further. `E088`'s own diagnostic title
+    /// ("names a definition the declared module does not export") already
+    /// reads correctly for this case: a private item genuinely is not
+    /// exported, so no wording change is needed alongside the widening.
+    #[test]
+    fn bare_import_from_a_declared_module_with_no_public_exports_is_e088() {
+        let vault = hir_with_module("vault");
+        let main = hir_with_module_and_imports("main", vec![bare_import("vault", "secret")]);
+        let files = [(FileId(0), &vault), (FileId(1), &main)];
+
+        // `vault` declares `secret`, but it's Private — never a
+        // `declared_exports` entry, so `is_item` is false. `secret` also
+        // isn't itself a declared module, so `is_module` is false too.
+        let secret_id = DefinitionId::new(DefinitionTag::Address, 1);
+        let mut index = SymbolIndex::default();
+        index.symbols.insert(
+            secret_id,
+            SymbolInfo {
+                file: FileId(0),
+                visibility: Visibility::Private,
+                ..symbol(secret_id, SymbolKind::Knot, "secret", Some("vault"), None)
+            },
+        );
+
+        let diagnostics = check(&files, &index, &Vec::new());
+        let e088: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.code == DiagnosticCode::E088)
+            .collect();
+        assert_eq!(
+            e088.len(),
+            1,
+            "a bare import from a declared module that exports nothing publicly must diagnose \
+             E088 (the known_modules-superset widening), even though the named item genuinely \
+             exists (just private): {diagnostics:?}"
+        );
+    }
+
     // ── Issue #1592: dual-reading `use`/`IMPORT` trailing segments ──────
 
     /// A `story::market` prefix with **no file of its own** — a pure
