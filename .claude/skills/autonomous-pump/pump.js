@@ -208,7 +208,15 @@ const lessons = allFindings.length
   ? await agent(`Distill HOUSE-RULE candidates from this wave's review findings for ${REPO}. A lesson qualifies only if it GENERALIZES (would prevent a class of mistake in future builds), not a one-off fix. Merge duplicates; imperative voice; one line each ("use only tokens from X", "wire features into the UI, not just a hook"). 0-6 lessons — an empty list is a valid answer.
 FINDINGS:\n${allFindings.map((s) => "- " + s).join("\n")}
 Current house rules (don't repeat):\n${RULES || "(none)"}
-Return {lessons}.`,
+Return {lessons}.
+
+⚠ THEN PERSIST THEM — this is the whole point, and it has historically been the broken link. Measured across 671 agents: **fix cycles are 18.3% of all token spend, and ~80% of reviewed PRs need one** (133 fix agents against 165 reviews). Those fixes are triggered by findings that RECUR wave after wave. Returning lessons as text that a human must remember to copy forward is why the same mistakes kept costing full re-read/re-gate/re-push cycles.
+
+So: open a PR adding each GRADUATED lesson to the "Recurring build-quality rules" section of .claude/skills/autonomous-pump/BRINK-CONFIG.md, in a fresh worktree off origin/main (never the user's live checkout), and enable auto-merge. Rules:
+- Append only; do NOT rewrite or reorder existing rules.
+- MERGE with an existing rule when it is the same lesson said differently — a list of 40 near-duplicates is worse than 15 sharp ones, because nobody reads it.
+- Each rule states the FAILURE it prevents, not just the principle — agents follow "a test that passes on both commits proves nothing; revert the fix and watch it fail" far better than "write good tests".
+- If nothing generalizes this wave, open NO PR and say so. An empty result is a valid, honest outcome.`,
       { label: "lessons", phase: "Lessons", effort: "medium", model: "sonnet", schema: LESSONS })
   : { lessons: [] };
 
