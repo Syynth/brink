@@ -173,15 +173,23 @@ cross-referenced so views ≠ projections.
   effectful one (`map_each`); the name is the speed bump. The
   trio's rejection error names both exits: "make it pure, or say
   map_each." Further `_each` variants only on evidence.
-  *(As-built 2026-07-28, issue #1679 first slice: the pure trio
+  *(As-built 2026-07-28, issue #1679 slice 1: the pure trio
   `map`/`filter`/`fold` ships — one `SeqVerb` opcode, callbacks
   evaluated re-entrantly per element with output isolated, purity
   gated by E119 where the callback's origin is an inline `#fn(target)`.
-  `filter_map`, `each` and `map_each` are NOT built yet, so the
-  rejection message names the effectful exit as pending rather than as
-  advice. The gate cannot see through a fn value at all — `Ty::Fn`
-  carries no effect rows, issue #1680 — so "pure-required" is enforced
-  only at syntactically-visible callback origins today.)*
+  Slice 2, same day: `filter_map` joins the pure side (same seam, an
+  Option unwrap — `SeqVerb` gains a kind byte, not a new opcode) and
+  `each`/`map_each` ship as the effectful pair — the SAME re-entrancy
+  seam with output reaching the transcript instead of being captured,
+  and the dev-mode world-write guard disarmed for their scope
+  (`PureCallbackState.effectful`). Deliberately NOT added to E119's
+  roster — their whole purpose is to be the legal home for the effects
+  the gate rejects. The rejection message now names the effectful exit
+  as real advice, not a pending one. The gate still cannot see through
+  an opaque fn value at all — `Ty::Fn` carries no effect rows, issue
+  #1680 — so "pure-required" (for the four verbs it still gates) is
+  enforced only at syntactically-visible callback origins today; that
+  gap is unchanged by this slice.)*
 - 🔶 **Mutating iteration — `for ref m in maps { m[k] = v }`**
   (proposed; arose from the §5 array-of-maps case): a ref-binding
   in `for` over arrays, desugaring to index-based access so

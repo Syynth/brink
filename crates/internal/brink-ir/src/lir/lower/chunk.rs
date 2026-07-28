@@ -377,11 +377,14 @@ fn remap_expr(expr: &mut lir::Expr, map: &[NameId]) {
 
         // Two-subexpression seq walks: the NS-A4 comparator verb, NS-A7's
         // heap entry, and the fn-value verbs' `(array, callback)` pair
-        // (#1679).
+        // (#1679, both the pure quartet and the effectful pair).
         Expr::SeqSortedBy { seq, cmp: second }
         | Expr::HeapPush { seq, value: second }
         | Expr::SeqMap { seq, f: second }
-        | Expr::SeqFilter { seq, pred: second } => {
+        | Expr::SeqFilter { seq, pred: second }
+        | Expr::SeqFilterMap { seq, f: second }
+        | Expr::SeqEach { seq, f: second }
+        | Expr::SeqMapEach { seq, f: second } => {
             remap_expr(seq, map);
             remap_expr(second, map);
         }

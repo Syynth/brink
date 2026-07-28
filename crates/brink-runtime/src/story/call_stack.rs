@@ -290,24 +290,33 @@ pub(crate) struct Flow {
     pub pure_callback: PureCallbackState,
 }
 
-/// Transient bookkeeping for in-flight nested pure-callback evaluations:
-/// a `sort_by`/`sorted_by` comparator (NS-A4) or a fn-value verb's callback
-/// (`map`/`filter`/`fold` — `docs/stdlib-spec.md` §4, issue #1679). Both
-/// re-enter [`crate::vm::step`] from inside a single opcode under the same
-/// pure·silent contract, so they share one counter.
+/// Transient bookkeeping for in-flight nested callback evaluations: a
+/// `sort_by`/`sorted_by` comparator (NS-A4), a pure fn-value verb's callback
+/// (`map`/`filter`/`fold`/`filter_map` — `docs/stdlib-spec.md` §4, issue
+/// #1679), or an effectful fn-value verb's callback (`each`/`map_each`,
+/// issue #1679 slice 2). All three re-enter [`crate::vm::step`] from inside
+/// a single opcode, so they share one counter — `effectful` is what splits
+/// the two runtime contracts without splitting the bookkeeping.
 ///
 /// Never persisted (a callback always completes within the opcode that
 /// started it). The depth guards Rust stack recursion when a callback itself
-/// runs a callback verb; the verb name is what the dev-mode world-write
-/// guard reports.
+/// runs a callback verb, regardless of which contract; the verb name is
+/// what the dev-mode world-write guard reports.
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct PureCallbackState {
-    /// Number of pure-callback evaluations currently on the Rust stack.
+    /// Number of nested callback evaluations currently on the Rust stack
+    /// (pure and effectful alike).
     pub depth: u16,
     /// The source spelling of the innermost verb whose callback is running
-    /// (`"sort_by"`, `"map"`, …). Only meaningful while `depth > 0`;
-    /// the default `""` is never read.
+    /// (`"sort_by"`, `"map"`, `"each"`, …). Only meaningful while
+    /// `depth > 0`; the default `""` is never read.
     pub verb: &'static str,
+    /// Whether the innermost running callback is the **effectful** contract
+    /// (`each`/`map_each`): output reaches the transcript instead of being
+    /// captured, and [`crate::vm`]'s dev-mode world-write guard is disarmed
+    /// for it. `false` for the pure quartet and for `sort_by`/`sorted_by`.
+    /// Only meaningful while `depth > 0`.
+    pub effectful: bool,
 }
 
 impl Flow {

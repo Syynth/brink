@@ -265,22 +265,26 @@ scalar-element verbs.
 | `pop` | `fn pop(ref a: [T]): Option[T]` | seq | · | lval | P | **Option[T]** (empty→none) | — | ✅ (0xE8) |
 | `insert` | `fn insert(ref a: [T], i: int, x: T): void` | seq | · | lval | `F:oob` | — | — | ✅ |
 | `remove_at` | `fn remove_at(ref a: [T], i: int): void` (issue #1484, 2026-07-26 ruling: renamed off `remove` — one name spanning a faulting index-claim and a total identity-removal was accidental; F5b's open return-type question is resolved by the shipped shape: `void`, matching the other `remove`s, not the element) | seq | · | lval | `F:oob` | — | — | ✅ (0xFD) |
-| `each` | `fn each(a: [T], f: fn(T): void): void` | seq | · | val | `⊕f` (writes/emits/tags/faults all compose) | — | — | 🔜 |
+| `each` | `fn each(a: [T], f: fn(T): void): void` | seq | · | val | `⊕f` (writes/emits/tags/faults all compose) | — | — | ✅ (0xA1 `SeqVerb(each)`) |
 | `map` | `fn map(a: [T], f: fn(T): U): [U]` | seq | · | val | `⊕f` (reads+faults only; f pure-required) | — | — | ✅ (0xA1 `SeqVerb(map)`) |
 | `filter` | `fn filter(a: [T], pred: fn(T): bool): [T]` | seq | · | val | `⊕pred` (pure-required) | — | — | ✅ (0xA1 `SeqVerb(filter)`) |
 | `fold` | `fn fold(a: [T], init: U, f: fn(U,T): U): U` | seq | · | val | `⊕f` (pure-required) | — | — | ✅ (0xA1 `SeqVerb(fold)`) |
-| `filter_map` | `fn filter_map(a: [T], f: fn(T): Option[U]): [U]` | seq | · | val | `⊕f` (pure-required) ⚠F9 | callback returns Option | — | 🔜 |
-| `map_each` | `fn map_each(a: [T], f: fn(T): U): [U]` | seq | · | val | `⊕f` (full: writes/emits/tags; sequential, never fused) | — | — | 🔜 |
+| `filter_map` | `fn filter_map(a: [T], f: fn(T): Option[U]): [U]` | seq | · | val | `⊕f` (pure-required) ⚠F9 | callback returns Option | — | ✅ (0xA1 `SeqVerb(filter_map)`) |
+| `map_each` | `fn map_each(a: [T], f: fn(T): U): [U]` | seq | · | val | `⊕f` (full: writes/emits/tags; sequential, never fused) | — | — | ✅ (0xA1 `SeqVerb(map_each)`) |
 
-Unmarked-🔜 seq verbs (slice/concat/reverse/reversed + `filter_map` and the
-effectful spellings) are not pinned to a Track A wave (unsequenced).
+Unmarked-🔜 seq verbs (slice/concat/reverse/reversed) are not pinned to a
+Track A wave (unsequenced).
 
-**The pure trio shipped 2026-07-28 (issue #1679, first slice)** —
-`map`/`filter`/`fold` dispatch on main through `SeqVerb` (0xA1), with the
-callbacks' pure·silent contract enforced by E119's gate, generalized off
-`sort_by` (`brink-analyzer/src/comparator_contract.rs`). `filter_map` and
-the effectful spellings `each`/`map_each` remain unbuilt — the same issue's
-later slices. Two as-built notes:
+**The whole fn-value verb layer shipped 2026-07-28 (issue #1679, both
+slices)** — `map`/`filter`/`fold`/`filter_map`/`each`/`map_each` all
+dispatch on main through the single `SeqVerb` opcode (0xA1) with a
+`SeqVerbOp` kind byte. The pure quartet's callbacks are enforced by E119's
+gate, generalized off `sort_by`
+(`brink-analyzer/src/comparator_contract.rs`); `each`/`map_each` are
+deliberately NOT on that gate's roster — they share the same re-entrancy
+seam (`vm::call_callback`) but with output reaching the transcript instead
+of being captured, and the dev-mode world-write guard disarmed for their
+scope (`PureCallbackState.effectful`). Two as-built notes:
 
 - **Callable fn values are `#fn(target)` / `bind(…)` / a lambda literal.**
   Lambdas (`|x| …`) parsed and lowered to HIR in #1685 but stopped at an LIR
@@ -545,7 +549,7 @@ the way `nonempty()` killed the range construction-fault residual.
 | math scalar (§1) | 20 | 0 | + 2 constants (PI, TAU); `/`,`%` operators frozen; unsequenced |
 | numeric tower (§2b) | 2 verbs (`dot`,`cross`) + operators + 4 tower-wide (min/max/clamp/lerp) | 0 | mini-spec RULED (F24, `docs/tower-mini-spec.md`); all → A8 |
 | text (§3) | 14 | 4 (`len contains char_at find`) | rest unsequenced |
-| seq (§4) | 25 | 11 (`len contains index_of min max first last push pop insert remove`) + the pure trio (`map filter fold`, #1679) | incl. trio + `each`/`map_each`/`filter_map` + `sorted_by` (F0 ruling); `reverse` per naming convention ⚠F26; `sort`/`sort_by`/`sorted`/`sorted_by` → A4 |
+| seq (§4) | 25 | 11 (`len contains index_of min max first last push pop insert remove`) + the whole fn-value verb layer (`map filter fold filter_map each map_each`, #1679, both slices) | incl. `sorted_by` (F0 ruling); `reverse` per naming convention ⚠F26; `sort`/`sort_by`/`sorted`/`sorted_by` → A4 |
 | maps (§5) | 8 | 7 (`len keys values get contains_value remove clear`) | `contains_key` not dispatched; `insert` reserved (never ships); 2 operators built |
 | flags (§6) | 14 | 0 | unsequenced (frozen LIST ops remain the surface) |
 | rand (§7) | 8 + `nonempty` validator | 8 (`float chance pick shuffle shuffled seed` + A5's `int(range)`/`non_empty` + A7's `roll`) | — |

@@ -451,10 +451,10 @@ a fault (absence versus a wrong claim), and why none of these answers will
 ever swap categories: the fault-vs-absence line is a ruling, not a
 convention.
 
-The two chapters that follow lean on this one harder. Iteration's pure
+The two chapters that follow lean on this one harder. Iteration's fn-value
 verbs include `filter_map` — the Option-aware mapper that transforms and
-drops `none`s in one pass — which lands with the function-value trio and
-is taught there. Ordering has to answer what `min`/`max` mean when the
+drops `none`s in one pass — taught alongside the rest of that family
+there. Ordering has to answer what `min`/`max` mean when the
 elements themselves misbehave (NaN), and its dev/prod doctrine is the
 other half of the fault story. Both chapters assume you read this one.
 

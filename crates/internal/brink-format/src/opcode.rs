@@ -121,10 +121,10 @@ const MAX: u8 = 0x96;
 const CALL_EXTERNAL: u8 = 0xA0;
 
 // The fn-value verb layer (`docs/stdlib-spec.md` §4, issue #1679) — the pure
-// trio `map`/`filter`/`fold`. ONE discriminant byte with a [`SeqVerbOp`] kind
+// quartet `map`/`filter`/`fold`/`filter_map` plus the effectful spellings
+// `each`/`map_each`. ONE discriminant byte with a [`SeqVerbOp`] kind
 // immediate, the `Tower`/`Collect` economy applied a third time, sized for the
-// whole ruled family (`filter_map`, `each`, `map_each` are later slices and
-// add kinds, not bytes).
+// whole ruled family.
 //
 // **Why 0xA1 rather than the high tail.** The stdlib blocks above walked
 // `0xF7`-`0xFD` down to a single free byte (`0xFF`); `0xCB`/`0xCC` are held
@@ -736,16 +736,23 @@ impl CollectOp {
 /// The fn-value verb selected by an [`Opcode::SeqVerb`] instruction's kind
 /// byte (`docs/stdlib-spec.md` §4, issue #1679).
 ///
-/// The **pure trio**: `map`, `filter`, `fold`. Callbacks are pure·silent by
-/// the 2026-07-18 ruling, which is what dissolves the eager/lazy question —
-/// "one logical pass, order unobservable; the implementation may fuse
-/// freely." Every kind evaluates its callback re-entrantly with output
-/// isolated, the `SeqSortedBy` shape; a callback that yields, presents a
-/// choice, calls a host external, or diverges is a turn-terminating fault.
+/// The **pure quartet**: `map`, `filter`, `fold`, `filter_map`. Callbacks are
+/// pure·silent by the 2026-07-18 ruling, which is what dissolves the
+/// eager/lazy question — "one logical pass, order unobservable; the
+/// implementation may fuse freely." Every kind evaluates its callback
+/// re-entrantly with output isolated, the `SeqSortedBy` shape; a callback
+/// that yields, presents a choice, calls a host external, or diverges is a
+/// turn-terminating fault.
 ///
-/// The ruled effectful spellings (`each`, `map_each`) and `filter_map` are
-/// later slices of the same issue and will add kinds here, not new opcode
-/// bytes.
+/// The ruled **effectful spellings**: `each`, `map_each`. Slice 2 of the
+/// same issue — deliberately the opposite runtime contract: output reaches
+/// the transcript instead of being captured, and the dev-mode world-write
+/// guard is disarmed for their callback (`docs/stdlib-spec.md` §4: "the weird
+/// thing gets the ugly method" — friction lives in the name, not in an
+/// enforcement gate). Sequential in iteration order, never fused. They are
+/// deliberately NOT gated by E119 (`brink_analyzer::comparator_contract`) —
+/// their whole purpose is to be the legal home for the effects the pure
+/// quartet's callbacks may not perform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SeqVerbOp {
     /// `[a, f]` → `[a']` — the array of `f(x)` for each element, in
@@ -759,17 +766,42 @@ pub enum SeqVerbOp {
     /// becomes `f(acc, x)` for each element in iteration order.
     /// `f: fn(U, T): U`.
     Fold,
+    /// `[a, f]` → `[a']` — the Option-mapper: `f(x)` for each element, kept
+    /// unwrapped when `some(v)`, dropped when `none`, in iteration order.
+    /// `f: fn(T): Option[U]`; a non-Option return is a turn-terminating
+    /// fault. Still pure·silent-required — the natural companion of `map`
+    /// under the §1.4 Option ruling, not a relaxation.
+    FilterMap,
+    /// `[a, f]` → `[null]` — the effectful "do something per element, no
+    /// result" spelling: `f(x)` runs for each element, in iteration order,
+    /// for its side effects; the return value is discarded. `f: fn(T)`.
+    /// Effectful: writes and emitted output are legal.
+    Each,
+    /// `[a, f]` → `[a']` — the effectful transform: the array of `f(x)` for
+    /// each element, in iteration order, sequential and never fused; `f`
+    /// may write/emit. `f: fn(T): U`. `map`'s ugly, honest twin.
+    MapEach,
 }
 
 impl SeqVerbOp {
     /// Every fn-value verb, in kind-byte order (tests + tooling).
-    pub const ALL: [SeqVerbOp; 3] = [Self::Map, Self::Filter, Self::Fold];
+    pub const ALL: [SeqVerbOp; 6] = [
+        Self::Map,
+        Self::Filter,
+        Self::Fold,
+        Self::FilterMap,
+        Self::Each,
+        Self::MapEach,
+    ];
 
     fn to_byte(self) -> u8 {
         match self {
             Self::Map => 0,
             Self::Filter => 1,
             Self::Fold => 2,
+            Self::FilterMap => 3,
+            Self::Each => 4,
+            Self::MapEach => 5,
         }
     }
 
@@ -778,6 +810,9 @@ impl SeqVerbOp {
             0 => Ok(Self::Map),
             1 => Ok(Self::Filter),
             2 => Ok(Self::Fold),
+            3 => Ok(Self::FilterMap),
+            4 => Ok(Self::Each),
+            5 => Ok(Self::MapEach),
             _ => Err(DecodeError::InvalidSeqVerbOp(b)),
         }
     }
@@ -791,7 +826,20 @@ impl SeqVerbOp {
             Self::Map => "map",
             Self::Filter => "filter",
             Self::Fold => "fold",
+            Self::FilterMap => "filter_map",
+            Self::Each => "each",
+            Self::MapEach => "map_each",
         }
+    }
+
+    /// Whether this verb's callback runs under the pure·silent contract
+    /// (E119-gated, output captured, dev-mode world-write guard armed) or
+    /// the effectful contract (`each`/`map_each`: output reaches the
+    /// transcript, writes are legal). The VM dispatch and
+    /// `guard_comparator_write`'s posture both key off this.
+    #[must_use]
+    pub fn is_effectful(self) -> bool {
+        matches!(self, Self::Each | Self::MapEach)
     }
 
     /// Inverse of [`mnemonic`](Self::mnemonic) for the `.inkt` reader.
@@ -2831,14 +2879,14 @@ mod tests {
     /// (`0xA1` — the first byte of the `0xA1`-`0xAF` run after
     /// `CallExternal`, chosen over the high tail's last free byte `0xFF`,
     /// which stays unclaimed as a future extended-opcode prefix) with the
-    /// `SeqVerbOp` kind as a u8 immediate in kind-byte order 0..=2. See the
+    /// `SeqVerbOp` kind as a u8 immediate in kind-byte order 0..=5. See the
     /// `SEQ_VERB` const's comment.
     #[test]
     fn seq_verb_opcode_layout() {
         for (i, kind) in SeqVerbOp::ALL.into_iter().enumerate() {
             let mut buf = Vec::new();
             Opcode::SeqVerb(kind).encode(&mut buf);
-            #[expect(clippy::cast_possible_truncation, reason = "3 kinds")]
+            #[expect(clippy::cast_possible_truncation, reason = "6 kinds")]
             let expected_kind = i as u8;
             assert_eq!(buf, [0xA1, expected_kind], "{kind:?} layout drifted");
         }
@@ -2848,10 +2896,10 @@ mod tests {
     /// skip — same reserved-tag discipline as `TowerOp`/`CollectOp`.
     #[test]
     fn decode_unknown_seq_verb_kind_rejected() {
-        let buf = [0xA1, 3];
+        let buf = [0xA1, 6];
         let mut offset = 0;
         let err = Opcode::decode(&buf, &mut offset).unwrap_err();
-        assert_eq!(err, DecodeError::InvalidSeqVerbOp(3));
+        assert_eq!(err, DecodeError::InvalidSeqVerbOp(6));
     }
 
     /// Mnemonics round-trip through the `.inkt` reader's inverse, and are
@@ -2864,7 +2912,32 @@ mod tests {
         assert_eq!(SeqVerbOp::Map.mnemonic(), "map");
         assert_eq!(SeqVerbOp::Filter.mnemonic(), "filter");
         assert_eq!(SeqVerbOp::Fold.mnemonic(), "fold");
-        assert_eq!(SeqVerbOp::from_mnemonic("map_each"), None);
+        assert_eq!(SeqVerbOp::FilterMap.mnemonic(), "filter_map");
+        assert_eq!(SeqVerbOp::Each.mnemonic(), "each");
+        assert_eq!(SeqVerbOp::MapEach.mnemonic(), "map_each");
+        assert_eq!(
+            SeqVerbOp::from_mnemonic("map_each"),
+            Some(SeqVerbOp::MapEach)
+        );
+        assert_eq!(SeqVerbOp::from_mnemonic("not_a_verb"), None);
+    }
+
+    /// [`SeqVerbOp::is_effectful`] is the VM dispatch/`guard_comparator_write`
+    /// posture switch (issue #1679 slice 2): the pure quartet is `false`,
+    /// the effectful pair is `true`.
+    #[test]
+    fn seq_verb_effectful_split() {
+        for kind in [
+            SeqVerbOp::Map,
+            SeqVerbOp::Filter,
+            SeqVerbOp::Fold,
+            SeqVerbOp::FilterMap,
+        ] {
+            assert!(!kind.is_effectful(), "{kind:?} must be pure");
+        }
+        for kind in [SeqVerbOp::Each, SeqVerbOp::MapEach] {
+            assert!(kind.is_effectful(), "{kind:?} must be effectful");
+        }
     }
 
     #[test]

@@ -956,6 +956,34 @@ pub enum Expr {
         init: Box<Expr>,
         f: Box<Expr>,
     },
+    /// `Opcode::SeqVerb(FilterMap)`: evaluates an array and an
+    /// `Option`-mapper function value (`fn(T): Option[U]`), pushes the
+    /// unwrapped `some(v)` results in iteration order (drops `none`).
+    /// Pure-required callback, as [`Expr::SeqMap`] — the Option ruling's
+    /// natural companion to `map` (`docs/stdlib-spec.md` §4).
+    SeqFilterMap {
+        seq: Box<Expr>,
+        f: Box<Expr>,
+    },
+    /// `Opcode::SeqVerb(Each)`: evaluates an array and a callback function
+    /// value (`fn(T)`), runs it once per element in iteration order for its
+    /// side effects, pushes `Null`. The **effectful** spelling (issue #1679
+    /// slice 2, `docs/stdlib-spec.md` §4): unlike the pure quartet above,
+    /// output reaches the transcript and world-writes are legal — never
+    /// E119-gated, never fused.
+    SeqEach {
+        seq: Box<Expr>,
+        f: Box<Expr>,
+    },
+    /// `Opcode::SeqVerb(MapEach)`: evaluates an array and a transform
+    /// function value (`fn(T): U`), pushes the array of results in
+    /// iteration order. `map`'s **effectful** twin (issue #1679 slice 2):
+    /// the callback may write/emit; sequential, defined element-by-element,
+    /// never fused, never E119-gated.
+    SeqMapEach {
+        seq: Box<Expr>,
+        f: Box<Expr>,
+    },
 
     // ── NS-A8: the numeric tower (`docs/tower-mini-spec.md`, issue
     // #1114) ────────────────────────────────────────────────────────────

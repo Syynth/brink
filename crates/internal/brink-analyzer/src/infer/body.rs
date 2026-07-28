@@ -1962,7 +1962,11 @@ impl InferPass<'_, '_> {
             // `#fn(…)` literal), and degrades to `Unknown` otherwise —
             // never a guess: `Ty::Fn` is the only evidence there is, since
             // the verb never sees the callback body.
-            "map" => {
+            // `map_each` (§4, issue #1679 slice 2) shares `map`'s exact
+            // typing shape — the effectful/pure split is a runtime-contract
+            // difference, not a typing one — merged per clippy
+            // `match_same_arms` (the #694 `len | int` precedent).
+            "map" | "map_each" => {
                 if let Some(f) = args.get(1) {
                     let hint = self.value_call_origin(f);
                     self.pending_value_calls.push(hint);
@@ -1985,6 +1989,42 @@ impl InferPass<'_, '_> {
                     Some(Ty::Fn(_, ret)) => (**ret).clone(),
                     _ => arg_tys.get(1).cloned().unwrap_or(Ty::Unknown),
                 }
+            }
+            // `filter_map(a, f)` → `[U]` where `f: fn(T): Option[U]` (§4,
+            // issue #1679 slice 2) — the Option-mapper, dropping `none`.
+            // Same shape as `map`: read the callback's `Ty::Fn` return, and
+            // unwrap one layer of `Option` when it's known; degrade to
+            // `Unknown` otherwise (never a guess — the verb never sees the
+            // callback body, only its declared return shape).
+            "filter_map" => {
+                if let Some(f) = args.get(1) {
+                    let hint = self.value_call_origin(f);
+                    self.pending_value_calls.push(hint);
+                }
+                match (arg_tys.first(), arg_tys.get(1)) {
+                    (Some(Ty::Array(_)), Some(Ty::Fn(_, ret))) => match ret.as_ref() {
+                        Ty::Option(inner) => Ty::Array(inner.clone()),
+                        _ => Ty::Unknown,
+                    },
+                    _ => Ty::Unknown,
+                }
+            }
+            // `each(a, f)` — the ruled effectful spelling (§4, issue #1679
+            // slice 2) — `f: fn(T)` runs per element for its side effects,
+            // no result (`Unknown`, the `sort`/`clear` statement-shaped-verb
+            // posture — #880). `map_each` is typed above, merged into
+            // `map`'s arm (same result shape, different runtime contract).
+            // Neither is E119-gated (`crate::comparator_contract`'s module
+            // doc), but the callback's row still composes through the same
+            // `pending_value_calls` machinery as the pure quartet — being
+            // effectful widens what the callback may legally do, not
+            // whether its own effects matter to the caller's row.
+            "each" => {
+                if let Some(f) = args.get(1) {
+                    let hint = self.value_call_origin(f);
+                    self.pending_value_calls.push(hint);
+                }
+                Ty::Unknown
             }
             "sort_by" => {
                 if let Some(cmp) = args.get(1) {

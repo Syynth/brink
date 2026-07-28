@@ -5,12 +5,13 @@
 //! Two verb families are gated, because one sitting ruled both:
 //!
 //! - NS-A4's `sort_by`/`sorted_by` comparators (issue #1110, §4b);
-//! - the fn-value verb layer's pure trio `map`/`filter`/`fold` (issue
-//!   #1679, §4) — pure·silent-required by the 2026-07-18 ruling, which is
-//!   what dissolves the eager/lazy question: with a pure callback, stage
-//!   interleaving is unobservable by construction. The effectful spellings
-//!   `each`/`map_each` exist precisely so authors have a legal home for the
-//!   effects this gate rejects, and are deliberately NOT gated here.
+//! - the fn-value verb layer's pure quartet `map`/`filter`/`fold`/
+//!   `filter_map` (issue #1679, §4) — pure·silent-required by the
+//!   2026-07-18 ruling, which is what dissolves the eager/lazy question:
+//!   with a pure callback, stage interleaving is unobservable by
+//!   construction. The effectful spellings `each`/`map_each` (issue #1679
+//!   slice 2) exist precisely so authors have a legal home for the effects
+//!   this gate rejects, and are deliberately NOT gated here.
 //!
 //! [`callback_arg_index`] is the single roster; adding a verb there is all
 //! that a new pure-callback verb needs.
@@ -63,18 +64,18 @@ use crate::infer::EffectRow;
 ///
 /// Two families share this gate because they share the ruling: the NS-A4
 /// comparator pair (F0: the imperative in-place form and its functional
-/// past-participle twin), and the fn-value verb layer's pure trio
+/// past-participle twin), and the fn-value verb layer's pure quartet
 /// (`docs/stdlib-spec.md` §4, issue #1679), whose callbacks are
 /// pure·silent-required by the same 2026-07-18 sitting. `fold`'s callback is
 /// its *third* argument (`fold(a, init, f)`) — which is exactly why this is a
 /// position lookup rather than a boolean.
 ///
-/// The ruled effectful spellings (`each`, `map_each`) deliberately never
-/// appear here: their whole purpose is to permit the effects this gate
-/// rejects.
+/// The ruled effectful spellings (`each`, `map_each`, issue #1679 slice 2)
+/// deliberately never appear here: their whole purpose is to permit the
+/// effects this gate rejects.
 fn callback_arg_index(name: &str) -> Option<usize> {
     match name {
-        "sort_by" | "sorted_by" | "map" | "filter" => Some(1),
+        "sort_by" | "sorted_by" | "map" | "filter" | "filter_map" => Some(1),
         "fold" => Some(2),
         _ => None,
     }
@@ -89,6 +90,7 @@ fn verb_name(name: &str) -> Option<&'static str> {
         "map" => Some("map"),
         "filter" => Some("filter"),
         "fold" => Some("fold"),
+        "filter_map" => Some("filter_map"),
         _ => None,
     }
 }
@@ -184,14 +186,12 @@ pub fn comparator_callees(
 }
 
 /// How to name the callback and what the diagnostic should demand of it.
-/// The comparator pair keeps its original §4b wording verbatim; the trio
+/// The comparator pair keeps its original §4b wording verbatim; the quartet
 /// gets §4's own.
 ///
-/// §4 rules that the trio's rejection "names both exits" — pure, or the
-/// effectful spelling. The second exit is named as a *pending* one here
-/// rather than as advice, because `each`/`map_each` are a later slice of
-/// issue #1679 and do not exist yet; pointing an author at a verb that
-/// does not resolve would be worse than naming the ruling.
+/// §4 rules that the quartet's rejection "names both exits" — pure, or the
+/// effectful spelling. Now that `each`/`map_each` ship (issue #1679 slice
+/// 2), the message names them as the real advice they are.
 fn callback_role(verb: &str) -> (&'static str, &'static str) {
     match verb {
         "sort_by" | "sorted_by" => (
@@ -201,9 +201,9 @@ fn callback_role(verb: &str) -> (&'static str, &'static str) {
         ),
         _ => (
             "callback",
-            "the callback must be pure and silent (stdlib-spec §4: the trio is \
-             pure-required, which is what makes iteration order unobservable); the effectful \
-             spellings `each`/`map_each` are not shipped yet (issue #1679)",
+            "the callback must be pure and silent (stdlib-spec §4: the quartet is \
+             pure-required, which is what makes iteration order unobservable) — make it pure, \
+             or say `each`/`map_each`",
         ),
     }
 }

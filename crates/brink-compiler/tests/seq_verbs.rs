@@ -1,5 +1,7 @@
-//! End-to-end compiler + runtime tests for the fn-value verb layer's pure
-//! trio (`docs/stdlib-spec.md` §4, issue #1679): `map`, `filter`, `fold`.
+//! End-to-end compiler + runtime tests for the fn-value verb layer
+//! (`docs/stdlib-spec.md` §4, issue #1679): the pure quartet `map`,
+//! `filter`, `fold`, `filter_map`, and the effectful pair `each`,
+//! `map_each` (slice 2).
 //!
 //! Covers, through `brink_compiler::compile_with_options` and then the VM:
 //! - the ruled arity of each verb (`E031` otherwise);
@@ -9,11 +11,16 @@
 //!   exceedance-only posture, whose runtime residual is the ops' isolation
 //!   and fault machinery);
 //! - the runtime dispatch faults (non-array receiver, non-function
-//!   callback, non-bool `filter` predicate return);
+//!   callback, non-bool `filter` predicate return, non-Option
+//!   `filter_map` return);
 //! - the dev-mode world-write guard naming the fn-value verb rather than
 //!   `sort_by` (the shared `PureCallbackState` seam);
-//! - strict-ink unreachability — the trio is brink-dialect surface, so the
-//!   oracle corpus can never reach these ops.
+//! - `each`/`map_each`'s inverse contract: the SAME world-write that E119
+//!   rejects for the pure quartet, and that `ComparatorWroteState` faults at
+//!   runtime for an opaque pure callback, is legal for the effectful pair —
+//!   neither is E119-gated, and the guard never fires for them;
+//! - strict-ink unreachability — the whole family is brink-dialect surface,
+//!   so the oracle corpus can never reach these ops.
 
 #![allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 
@@ -144,7 +151,37 @@ fn fold_arity_mismatch_is_e031() {
     );
 }
 
-// ── E119: the pure-callback contract gate, all three verbs ───────────
+/// Slice 2 (issue #1679): `filter_map(a, f)` shares `map`/`filter`'s arity.
+#[test]
+fn filter_map_arity_mismatch_is_e031() {
+    let message = arity_warning("~ temp a = #[1]\n~ temp b = filter_map(a)\n{b}\n-> END\n");
+    assert!(
+        message.contains("`filter_map` expects 2 argument(s)"),
+        "{message}"
+    );
+}
+
+/// Slice 2 (issue #1679): the effectful pair, `each(a, f)`.
+#[test]
+fn each_arity_mismatch_is_e031() {
+    let message = arity_warning("~ temp a = #[1]\n~ each(a)\n-> END\n");
+    assert!(
+        message.contains("`each` expects 2 argument(s)"),
+        "{message}"
+    );
+}
+
+/// Slice 2 (issue #1679): the effectful pair, `map_each(a, f)`.
+#[test]
+fn map_each_arity_mismatch_is_e031() {
+    let message = arity_warning("~ temp a = #[1]\n~ temp b = map_each(a)\n{b}\n-> END\n");
+    assert!(
+        message.contains("`map_each` expects 2 argument(s)"),
+        "{message}"
+    );
+}
+
+// ── E119: the pure-callback contract gate, all four pure verbs ───────
 //
 // A precedent test in `ns_a4_ordering.rs` covers both exceedance kinds
 // (write, emit) for the comparator pair; the trio covers every verb,
@@ -174,8 +211,18 @@ fn writing_fold_callback_is_e119() {
     assert!(has_code(&diags, DiagnosticCode::E119), "{diags:?}");
 }
 
-/// The E119 message must name the verb and the trio's own requirement, not
-/// the comparator wording it is generalized from.
+/// `filter_map`'s callback sits at argument index 1, exactly like
+/// `map`/`filter` — it stayed on the pure roster in slice 2, unlike its
+/// effectful siblings below.
+#[test]
+fn writing_filter_map_callback_is_e119() {
+    let source = "VAR seen = 0\n~ temp a = #[1]\n~ temp b = filter_map(a, #fn(spy))\n{b}\n-> END\n\n=== function spy(n: int) ===\n~ seen = seen + 1\n~ return some(n)\n";
+    let diags = diagnostics_of(compile_brink(source, Some(TypePolicy::Gradual)).unwrap_err());
+    assert!(has_code(&diags, DiagnosticCode::E119), "{diags:?}");
+}
+
+/// The E119 message must name the verb and the quartet's own requirement,
+/// not the comparator wording it is generalized from.
 #[test]
 fn trio_e119_message_names_the_callback_not_a_comparator() {
     let source = "VAR seen = 0\n~ temp a = #[1]\n~ temp b = map(a, #fn(spy))\n{b}\n-> END\n\n=== function spy(n: int): int ===\n~ seen = seen + 1\n~ return n\n";
@@ -189,9 +236,41 @@ fn trio_e119_message_names_the_callback_not_a_comparator() {
     assert!(!message.contains("comparator"), "{message}");
 }
 
+/// The rejection message names the real effectful exit now that it ships
+/// (slice 2) — the pre-slice-2 wording called it "not shipped yet".
+#[test]
+fn e119_message_points_at_the_shipped_effectful_exit() {
+    let source = "VAR seen = 0\n~ temp a = #[1]\n~ temp b = map(a, #fn(spy))\n{b}\n-> END\n\n=== function spy(n: int): int ===\n~ seen = seen + 1\n~ return n\n";
+    let diags = diagnostics_of(compile_brink(source, Some(TypePolicy::Gradual)).unwrap_err());
+    let message = diags
+        .iter()
+        .find(|d| d.code == DiagnosticCode::E119)
+        .map(|d| d.message.clone())
+        .expect("an E119");
+    assert!(message.contains("each"), "{message}");
+    assert!(message.contains("map_each"), "{message}");
+    assert!(!message.contains("not shipped yet"), "{message}");
+}
+
+/// The effectful pair is deliberately absent from E119's roster (the
+/// module doc's central claim) — the SAME world-write that
+/// `writing_map_callback_is_e119` rejects for `map` must compile clean for
+/// `each`, inline callback and all (no #1680 opacity dodge required, unlike
+/// the pure quartet).
+#[test]
+fn each_and_map_each_are_not_e119_gated() {
+    let source = "VAR seen = 0\n~ temp a = #[1, 2]\n~ each(a, #fn(spy))\n{seen}\n-> END\n\n=== function spy(n) ===\n~ seen = seen + n\n~ return n\n";
+    compile_brink(source, Some(TypePolicy::Gradual))
+        .expect("each's callback must not be E119-gated even though it writes a global");
+
+    let source = "VAR seen = 0\n~ temp a = #[1, 2]\n~ temp b = map_each(a, #fn(spy))\n{seen}\n-> END\n\n=== function spy(n) ===\n~ seen = seen + n\n~ return n * 10\n";
+    compile_brink(source, Some(TypePolicy::Gradual))
+        .expect("map_each's callback must not be E119-gated either");
+}
+
 #[test]
 fn pure_callbacks_pass_the_gate() {
-    let source = "~ temp a = #[1, 2]\n{map(a, #fn(double))}\n{filter(a, #fn(is_even))}\n{fold(a, 0, #fn(add))}\n-> END\n\n=== function double(n: int): int ===\n~ return n * 2\n\n=== function is_even(n: int): bool ===\n~ return n % 2 == 0\n\n=== function add(acc: int, n: int): int ===\n~ return acc + n\n";
+    let source = "~ temp a = #[1, 2]\n{map(a, #fn(double))}\n{filter(a, #fn(is_even))}\n{fold(a, 0, #fn(add))}\n{filter_map(a, #fn(keep_all))}\n-> END\n\n=== function double(n: int): int ===\n~ return n * 2\n\n=== function is_even(n: int): bool ===\n~ return n % 2 == 0\n\n=== function add(acc: int, n: int): int ===\n~ return acc + n\n\n=== function keep_all(n: int) ===\n~ return some(n)\n";
     compile_brink(source, None).expect("pure callbacks must pass E119 under the strict default");
 }
 
@@ -212,6 +291,33 @@ fn opaque_callback_is_not_proven_and_passes() {
 fn the_trio_runs_end_to_end() {
     let source = "~ temp a = #[1, 2, 3]\nmap={map(a, #fn(double))} filter={filter(a, #fn(is_even))} fold={fold(a, 0, #fn(add))}\n-> END\n\n=== function double(n: int): int ===\n~ return n * 2\n\n=== function is_even(n: int): bool ===\n~ return n % 2 == 0\n\n=== function add(acc: int, n: int): int ===\n~ return acc + n\n";
     assert_eq!(run(source), "map=[2, 4, 6] filter=[2] fold=6\n");
+}
+
+/// `filter_map` drops `none` and unwraps `some(v)`, in iteration order —
+/// the Option-mapper companion of `map` (§4).
+#[test]
+fn filter_map_runs_end_to_end() {
+    let source = "~ temp a = #[1, 2, 3, 4, 5]\n{filter_map(a, #fn(keep_even_doubled))}\n-> END\n\n=== function keep_even_doubled(n: int) ===\n~ {\n    if n % 2 == 0 {\n        return some(n * 10)\n    }\n    return none\n}\n";
+    assert_eq!(run(source), "[20, 40]\n");
+}
+
+/// `each`'s whole point: the callback's world-write reaches the story's
+/// visible state, and `each` itself contributes no printed value (it
+/// produces no result — the "do something per element" spelling).
+#[test]
+fn each_runs_a_callback_with_legal_world_writes() {
+    let source = "VAR seen = 0\n~ temp a = #[1, 2, 3]\n~ each(a, #fn(bump))\n{seen}\n-> END\n\n=== function bump(n) ===\n~ seen = seen + n\n";
+    assert_eq!(run(source), "6\n");
+}
+
+/// `map_each` is `map`'s effectful twin: it both returns the transformed
+/// array AND lets its callback write a global — `map`'s own E119 test
+/// (`writing_map_callback_is_e119`) rejects the identical write; this is
+/// the whole reason the effectful spelling exists.
+#[test]
+fn map_each_runs_a_callback_with_legal_world_writes() {
+    let source = "VAR seen = 0\n~ temp a = #[1, 2, 3]\n~ temp b = map_each(a, #fn(tally))\n{b} seen={seen}\n-> END\n\n=== function tally(n: int): int ===\n~ seen = seen + n\n~ return n * 10\n";
+    assert_eq!(run(source), "[10, 20, 30] seen=6\n");
 }
 
 // ── runtime dispatch faults (the gradual-mode residual) ──────────────
@@ -275,6 +381,83 @@ fn dev_mode_world_write_inside_a_map_callback_names_map() {
     // the verb (issue #1679), but must not generalize the *noun*: a `map`
     // author must not be told they wrote a bad comparator.
     assert!(!message.contains("comparator"), "{message}");
+}
+
+// ── slice 2 dispatch faults: filter_map, each, map_each ──────────────
+
+#[test]
+fn filter_map_over_a_non_array_faults() {
+    let source = "~ temp a = 1\n~ temp b = filter_map(a, #fn(keep))\n{b}\n-> END\n\n=== function keep(n) ===\n~ return some(n)\n";
+    let message = run_expecting_fault(source);
+    assert!(message.contains("`filter_map`"), "{message}");
+    assert!(message.contains("an array"), "{message}");
+}
+
+#[test]
+fn filter_map_with_a_non_function_callback_faults() {
+    let source = "~ temp a = #[1]\n~ temp b = filter_map(a, 7)\n{b}\n-> END\n";
+    let message = run_expecting_fault(source);
+    assert!(message.contains("`filter_map` callback"), "{message}");
+    assert!(message.contains("`fn(T): Option[U]`"), "{message}");
+}
+
+/// A non-Option return is a fault, never a silent pass-through — coercing
+/// would either drop nothing or unwrap garbage.
+#[test]
+fn filter_map_callback_returning_a_non_option_faults() {
+    let source = "~ temp a = #[1]\n~ temp b = filter_map(a, #fn(nonsense))\n{b}\n-> END\n\n=== function nonsense(n) ===\n~ return 7\n";
+    let message = run_expecting_fault(source);
+    assert!(
+        message.contains("`filter_map` callback must return an Option"),
+        "{message}"
+    );
+}
+
+#[test]
+fn each_over_a_non_array_faults() {
+    let source =
+        "~ temp a = 1\n~ each(a, #fn(bump))\n-> END\n\n=== function bump(n) ===\n~ return n\n";
+    let message = run_expecting_fault(source);
+    assert!(message.contains("`each`"), "{message}");
+    assert!(message.contains("an array"), "{message}");
+}
+
+#[test]
+fn each_with_a_non_function_callback_faults() {
+    let source = "~ temp a = #[1]\n~ each(a, 7)\n-> END\n";
+    let message = run_expecting_fault(source);
+    assert!(message.contains("`each` callback"), "{message}");
+    assert!(message.contains("`fn(T)`"), "{message}");
+}
+
+#[test]
+fn map_each_over_a_non_array_faults() {
+    let source = "~ temp a = 1\n~ temp b = map_each(a, #fn(bump))\n{b}\n-> END\n\n=== function bump(n) ===\n~ return n\n";
+    let message = run_expecting_fault(source);
+    assert!(message.contains("`map_each`"), "{message}");
+    assert!(message.contains("an array"), "{message}");
+}
+
+#[test]
+fn map_each_with_a_non_function_callback_faults() {
+    let source = "~ temp a = #[1]\n~ temp b = map_each(a, 7)\n{b}\n-> END\n";
+    let message = run_expecting_fault(source);
+    assert!(message.contains("`map_each` callback"), "{message}");
+    assert!(message.contains("`fn(T): U`"), "{message}");
+}
+
+/// `each`/`map_each`'s escaping-behavior faults (choice/DONE/END/external
+/// call) are architectural, not a purity rule — being effectful doesn't
+/// lift the "no handler exists mid-opcode" limitation. A callback that
+/// diverges to `-> END` mid-`each` still faults, exactly like `map`'s
+/// callback would.
+#[test]
+fn each_callback_reaching_end_still_escapes() {
+    let source =
+        "~ temp a = #[1]\n~ each(a, #fn(leaves))\n-> END\n\n=== function leaves(n) ===\n-> END\n";
+    let message = run_expecting_fault(source);
+    assert!(message.contains("`each`"), "{message}");
+    assert!(message.contains("DONE"), "{message}");
 }
 
 // ── strict-ink: the trio is brink-dialect surface ────────────────────

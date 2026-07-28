@@ -1573,6 +1573,39 @@ fn lower_t1b_stdlib_call(
                 f: Box::new(lower_expr(&args[2], ctx)),
             })
         }
+        // The fn-value verb layer, slice 2 (`docs/stdlib-spec.md` §4, issue
+        // #1679): `filter_map` stays pure-required (the Option-mapper
+        // companion of `map`); `each`/`map_each` are the ruled effectful
+        // spellings — ordinary expressions like their pure siblings (none of
+        // the three mutates a receiver, so the imperative/past-participle
+        // naming law doesn't apply here either). ─────────────────────────
+        "filter_map" => {
+            if !arity_ok(ctx, 2) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::SeqFilterMap {
+                seq: Box::new(lower_expr(&args[0], ctx)),
+                f: Box::new(lower_expr(&args[1], ctx)),
+            })
+        }
+        "each" => {
+            if !arity_ok(ctx, 2) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::SeqEach {
+                seq: Box::new(lower_expr(&args[0], ctx)),
+                f: Box::new(lower_expr(&args[1], ctx)),
+            })
+        }
+        "map_each" => {
+            if !arity_ok(ctx, 2) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::SeqMapEach {
+                seq: Box::new(lower_expr(&args[0], ctx)),
+                f: Box::new(lower_expr(&args[1], ctx)),
+            })
+        }
         // `shuffled(a)` — the functional twin (§4's ruled naming
         // convention): evaluates its argument, returns a new shuffled
         // array; the argument itself is never written back.
@@ -1847,12 +1880,19 @@ pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
             | "clamp"
             | "lerp"
             // The fn-value verb layer (issue #1679, `docs/stdlib-spec.md`
-            // §4): the pure trio, callbacks pure-required per the
-            // 2026-07-18 ruling. `filter_map` and the effectful spellings
-            // `each`/`map_each` are later slices of the same issue.
+            // §4): the pure quartet, callbacks pure-required per the
+            // 2026-07-18 ruling — `filter_map` is the Option-mapper
+            // companion of `map` (§1.4's Option ruling). Plus the ruled
+            // effectful spellings `each`/`map_each` (slice 2): same
+            // slice-1 machinery (shadowable with E035, `strict-ink`
+            // rejection via the dialect gate), deliberately NOT E119-gated
+            // — see `brink_analyzer::comparator_contract`.
             | "map"
             | "filter"
             | "fold"
+            | "filter_map"
+            | "each"
+            | "map_each"
     )
 }
 
