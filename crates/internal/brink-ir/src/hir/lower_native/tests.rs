@@ -1188,9 +1188,13 @@ fn style_annotation_unknown_key_diagnoses_e162() {
     let (hir, _m, diags) = lower_src(
         "@[element(args = \"^(?<chan>\\\\w+)$\")]\n@[style(nope = \"dim\")]\nflow radio(chan) {\n  Hi, {chan}!\n}\n",
     );
-    assert!(
-        diags.iter().any(|d| d.code == DiagnosticCode::E162),
-        "a style key that is neither line/dispatch nor a capture must raise E162: {diags:?}"
+    // Exact vector, not `.any(…)` — `parse_style` must not also report the
+    // empty-args `E161` once every clause is rejected (the `!ok` check runs
+    // before the emptiness check, mirroring `parse_allow`).
+    assert_eq!(
+        diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![DiagnosticCode::E162],
+        "a style key that is neither line/dispatch nor a capture must raise exactly E162: {diags:?}"
     );
     assert!(hir.knots[0].style_annotation.is_none());
 }
@@ -1200,9 +1204,27 @@ fn style_annotation_empty_args_diagnoses_e161() {
     let (hir, _m, diags) = lower_src(
         "@[element(args = \"^(?<chan>\\\\w+)$\")]\n@[style()]\nflow radio(chan) {\n  Hi, {chan}!\n}\n",
     );
-    assert!(
-        diags.iter().any(|d| d.code == DiagnosticCode::E161),
-        "an empty @[style()] argument list must raise E161: {diags:?}"
+    assert_eq!(
+        diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![DiagnosticCode::E161],
+        "an empty @[style()] argument list must raise exactly E161: {diags:?}"
+    );
+    assert!(hir.knots[0].style_annotation.is_none());
+}
+
+/// Regression for the ordering bug where `parse_style` checked
+/// `entries.is_empty()` before `!ok`: when every clause in a non-empty
+/// argument list is rejected, the diagnostic must be the clause's own code
+/// (`E162` here), never also the empty-args `E161`.
+#[test]
+fn style_annotation_all_clauses_rejected_is_not_also_e161() {
+    let (hir, _m, diags) = lower_src(
+        "@[element(args = \"^(?<chan>\\\\w+)$\")]\n@[style(chan = bare)]\nflow radio(chan) {\n  Hi, {chan}!\n}\n",
+    );
+    assert_eq!(
+        diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![DiagnosticCode::E161],
+        "a malformed clause must raise exactly one E161, not a spurious second one: {diags:?}"
     );
     assert!(hir.knots[0].style_annotation.is_none());
 }

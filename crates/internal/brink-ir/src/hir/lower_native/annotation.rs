@@ -219,9 +219,11 @@ fn is_consumed_position(name: &str, line: &SyntaxNode) -> bool {
         // The module-rename record is a *file-level* fact — `module::
         // lower_file_module` scans `SOURCE_FILE`'s own children for it.
         WAS => line.parent().is_some_and(|p| p.kind() == N::SOURCE_FILE),
-        // The effects assertion attaches to a callable container that
-        // `container.rs` actually lowers.
-        EFFECTS => attached_declaration(line).is_some_and(|d| {
+        // The effects assertion, and the `element`/`style` declaration-
+        // surface annotations (issue #1719), attach to a callable container
+        // that `container.rs` actually lowers — same consumed-position rule
+        // for all three.
+        EFFECTS | ELEMENT | STYLE => attached_declaration(line).is_some_and(|d| {
             let depth = container_nesting_depth(&d);
             match d.kind() {
                 // A `flow` lowers at top level (→ `Knot`) and nested exactly
@@ -241,18 +243,6 @@ fn is_consumed_position(name: &str, line: &SyntaxNode) -> bool {
         // still a well-formed scope; it just cannot silence that error).
         // Only a trailing annotation with nothing after it is misplaced.
         ALLOW => attached_declaration(line).is_some(),
-        // `element`/`style` are the same declaration-surface annotations
-        // `effects` is (issue #1719) — same consumed-position rule: a
-        // `flow` lowers at top level or nested exactly one level, an `fn`
-        // only at top level.
-        ELEMENT | STYLE => attached_declaration(line).is_some_and(|d| {
-            let depth = container_nesting_depth(&d);
-            match d.kind() {
-                N::FLOW_DECL => depth <= 1,
-                N::FN_DECL => depth == 0,
-                _ => false,
-            }
-        }),
         _ => false,
     }
 }
@@ -704,7 +694,9 @@ fn parse_style(
 
     let mut entries = Vec::new();
     let mut ok = true;
+    let mut any = false;
     for arg in args.args() {
+        any = true;
         let arg_range = arg.syntax().text_range();
         let key = arg.name_token();
         let value = eq_value_text(&arg);
@@ -729,11 +721,12 @@ fn parse_style(
         });
     }
 
-    if entries.is_empty() {
-        diags.push(diag(file_id, range, DiagnosticCode::E161));
+    if !ok {
         return None;
     }
-    if !ok {
+    if !any {
+        // `@[style()]` — parses, silences nothing.
+        diags.push(diag(file_id, range, DiagnosticCode::E161));
         return None;
     }
     Some(StyleAnnotation { entries, range })
