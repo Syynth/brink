@@ -271,9 +271,11 @@ impl Default for BrinkDatabase {
                 // FS-2 (issue #928): the `await`-condition purity gate (E105),
                 // reading `effects_query` only for defs a condition calls.
                 .ingredient::<await_purity_diagnostics_query>()
-                // NS-A4 (issue #1110): the comparator-contract gate (E119),
+                // NS-A4 (issue #1110, extended to the fn-value verb trio by
+                // issue #1679): the comparator-contract gate (E119),
                 // reading `effects_query` only for defs named as inline
-                // `#fn` comparators of `sort_by`/`sorted_by`.
+                // `#fn` comparators/callbacks of `sort_by`/`sorted_by`/
+                // `map`/`filter`/`fold`.
                 .ingredient::<comparator_contract_diagnostics_query>()
                 // Layer 3.
                 .ingredient::<lir_query>()

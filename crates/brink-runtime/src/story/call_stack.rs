@@ -285,11 +285,29 @@ pub(crate) struct Flow {
     /// knob, not story state — never persisted; defaults to
     /// [`ExecMode::Dev`].
     pub exec_mode: ExecMode,
-    /// Depth of in-flight nested comparator evaluations (`sort_by`/
-    /// `sorted_by` — `vm::call_comparator`). Transient VM bookkeeping (a
-    /// comparator always completes within one opcode); guards Rust stack
-    /// recursion when a comparator itself sorts with a comparator.
-    pub comparator_depth: u16,
+    /// In-flight nested **pure-callback** evaluation state — see
+    /// [`PureCallbackState`].
+    pub pure_callback: PureCallbackState,
+}
+
+/// Transient bookkeeping for in-flight nested pure-callback evaluations:
+/// a `sort_by`/`sorted_by` comparator (NS-A4) or a fn-value verb's callback
+/// (`map`/`filter`/`fold` — `docs/stdlib-spec.md` §4, issue #1679). Both
+/// re-enter [`crate::vm::step`] from inside a single opcode under the same
+/// pure·silent contract, so they share one counter.
+///
+/// Never persisted (a callback always completes within the opcode that
+/// started it). The depth guards Rust stack recursion when a callback itself
+/// runs a callback verb; the verb name is what the dev-mode world-write
+/// guard reports.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct PureCallbackState {
+    /// Number of pure-callback evaluations currently on the Rust stack.
+    pub depth: u16,
+    /// The source spelling of the innermost verb whose callback is running
+    /// (`"sort_by"`, `"map"`, …). Only meaningful while `depth > 0`;
+    /// the default `""` is never read.
+    pub verb: &'static str,
 }
 
 impl Flow {

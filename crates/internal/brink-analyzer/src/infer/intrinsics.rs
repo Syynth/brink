@@ -131,6 +131,15 @@ pub(crate) fn intrinsic_effects(name: &str, arg_count: usize) -> IntrinsicEffect
                 | "cross"
                 | "clamp"
                 | "lerp"
+                // The fn-value verbs (issue #1679, stdlib-spec §4): the
+                // pure trio faults on a non-array receiver or a callback
+                // that is not a function value, and `filter` additionally
+                // on a non-bool predicate return — plus `⊕f`, the
+                // callback's own row (composed through
+                // `pending_value_calls`, the `sort_by` machinery).
+                | "map"
+                | "filter"
+                | "fold"
         );
     let rng_write = is_rand_float_draw
         || matches!(
@@ -176,7 +185,9 @@ pub(crate) fn intrinsic_effects(name: &str, arg_count: usize) -> IntrinsicEffect
 ///   key), `char_at` (OOB), `int`/`float`/`INT`/`FLOAT` (parse/domain),
 ///   `chance`/`pick`/`shuffle`/`shuffled` (wrong-type but rand-coupled —
 ///   kept simple), `non_empty`, the tower family, `sort_by`/`sorted_by`
-///   (comparator dispatch + `⊕cmp`).
+///   (comparator dispatch + `⊕cmp`), and the fn-value verbs
+///   `map`/`filter`/`fold` (callback dispatch + `⊕f` — the callback's own
+///   faults are never local type evidence).
 pub(crate) fn intrinsic_fault_discharged(name: &str, arg_tys: &[super::Ty]) -> bool {
     use super::Ty;
     let scalar_orderable = |t: &Ty| matches!(t, Ty::Int | Ty::String | Ty::Bool);

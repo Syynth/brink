@@ -28,7 +28,13 @@
 //!
 //! ## Wiring it up
 //!
-//! ```ignore
+//! ```no_run
+//! # use bevy_app::App;
+//! # use bevy_ecs::event::Event;
+//! # use bevy_brink::{BrinkBindingsAppExt, BrinkCommand, Value};
+//! # #[derive(Event, Clone, BrinkCommand)]
+//! # struct PlaySound { name: String, volume: f32 }
+//! # let mut app = App::new();
 //! app.bind_brink_fn::<(), _, _>("clamp01", |args| {
 //!     args.first().and_then(Value::as_float).unwrap_or(0.0).clamp(0.0, 1.0)
 //! });
@@ -38,11 +44,28 @@
 //! Then, in the system that drives flows, build a handler from the
 //! registry, step the flow with it, and flush:
 //!
-//! ```ignore
+//! ```no_run
+//! # use bevy_ecs::entity::Entity;
+//! # use bevy_ecs::system::{Commands, ResMut};
+//! # use bevy_brink::{BrinkBindings, BrinkContext, BrinkFlow, BrinkGlobals, Program, RuntimeError};
+//! # use brink_format::LineEntry;
+//! # fn example(
+//! #     bindings: &BrinkBindings,
+//! #     flow: &mut BrinkFlow,
+//! #     mut globals: ResMut<BrinkGlobals>,
+//! #     mut ctx: BrinkContext,
+//! #     program: &Program,
+//! #     tables: &[Vec<LineEntry>],
+//! #     entity: Entity,
+//! #     mut commands: Commands,
+//! # ) -> Result<(), RuntimeError> {
 //! let handler = bindings.handler();
 //! let mut view = bevy_brink::flow_context_view(&mut globals, &mut ctx);
 //! let line = flow.step_one(program, tables, &mut view, &handler, entity, &mut commands)?;
 //! handler.flush(&mut commands);
+//! # let _ = line;
+//! # Ok(())
+//! # }
 //! ```
 //!
 //! ## Module layout
