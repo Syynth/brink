@@ -148,17 +148,20 @@ mod tests {
     ///
     /// Narrowly, because this test holds the path spelling fixed
     /// (`"entry.ink"`/`"sibling.ink"` in both orders) and varies only which
-    /// `FileId` gets assigned first. It does **not** cover — and does not
-    /// claim to cover — the wider parity gap flagged in review on #1693: the
-    /// qualifier `hir::root_content_scope_path` uses is the file's raw
-    /// registered path, and `brink-lsp` registers files by absolute OS path
-    /// (`backend.rs`'s `uri_to_path`) while the CLI registers whatever
-    /// spelling the caller passed. Two path *spellings* of the same file
-    /// still mint different root-content ids after this fix — see
+    /// `FileId` gets assigned first. It does **not** cover the wider
+    /// spelling-parity gap flagged in review on #1693 and closed by #1696:
+    /// this test builds a `Driver` directly, bypassing
+    /// `brink-compiler/src/driver.rs`'s `prepare_driver` (which now
+    /// registers a root-relative-key qualifier via `ProjectDb::set_ink_root`)
+    /// and `brink-lsp`'s `register_native_root` (which now registers the
+    /// same session root under `set_ink_root` alongside `set_native_root`),
+    /// so a `Driver` used this directly still qualifies by the raw
+    /// registered path — see
     /// `crates/brink-compiler/tests/issue_1504_root_content_identity.rs`'s
-    /// `root_content_ids_are_sensitive_to_entry_path_spelling_known_
-    /// limitation`, which pins that gap, and
-    /// `docs/root-content-identity-findings.md`'s "Known limitation" section.
+    /// `root_content_ids_are_stable_across_entry_path_spellings`, which
+    /// covers the fixed behavior through `prepare_driver`, and
+    /// `docs/root-content-identity-findings.md`'s "Known limitation" section
+    /// for the full history.
     #[test]
     fn root_content_ids_agree_between_discover_and_editor_order() {
         use std::collections::BTreeSet;

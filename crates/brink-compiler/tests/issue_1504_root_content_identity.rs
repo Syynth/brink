@@ -226,42 +226,53 @@ fn root_content_translation_scope_id_is_unaffected_by_the_qualifier() {
     );
 }
 
-/// KNOWN LIMITATION, flagged in review on #1693: the qualifier
+/// #1696 (follow-up to #1693's review): the qualifier
 /// [`hir::root_content_scope_path`](brink_ir::hir::root_content_scope_path)
-/// uses is the file's **raw registered path**, not a normalized
-/// root-relative key. Two spellings of what is, on disk, the *same* file
-/// therefore mint DIFFERENT anonymous root-content `DefinitionId`s —
-/// `brink compile main.ink` and `brink compile ./main.ink` disagree, and so
-/// do the CLI (relative spelling) and `brink-lsp` (absolute-OS-path
-/// spelling, `backend.rs`'s `uri_to_path`) for the identical project tree.
+/// uses is now a **root-relative key**
+/// (`brink_db::modules::root_relative_key` against `ProjectDb::ink_root`,
+/// registered by `prepare_driver` via `brink_driver::native_source_root` —
+/// the same `brink.toml`-walk-up rule native compiles already used, extended
+/// to ink), not the file's raw registered path. Three spellings of what is,
+/// on disk, the *same* file therefore now mint the SAME anonymous
+/// root-content `DefinitionId`s: `brink compile main.ink`, `./main.ink`, and
+/// an absolute spelling all agree — closing the CLI-vs-`brink-lsp` (absolute
+/// OS path, `backend.rs`'s `uri_to_path`) disagreement this test used to pin
+/// as a known limitation.
 ///
-/// This test pins that limitation rather than letting it drift silently: if
-/// a future change normalizes the qualifier (the tracked follow-up —
-/// reusing `brink_driver::native_source_root` +
-/// `brink_db::modules::native_root_relative_key`, extended to ink, per the
-/// review finding), this assertion starts failing and must be flipped to
-/// `assert_eq!` alongside updating `docs/root-content-identity-findings.md`'s
-/// "Known limitation" section and the `.changeset` entry that describe it —
-/// not silently deleted.
+/// ⚠ This is the identity break the fix accepts, not a regression: every
+/// project's anonymous root-content ids move once more (on top of #1504's
+/// one-time move) for any entry whose registered spelling was not already
+/// bare-relative. See `.changeset/issue-1696-ink-root-content-key-
+/// normalization.md` for the save/translation-impact writeup.
 #[test]
-fn root_content_ids_are_sensitive_to_entry_path_spelling_known_limitation() {
+fn root_content_ids_are_stable_across_entry_path_spellings() {
     let content = "* one\n* two\n- gathered\n";
     let bare: HashMap<&str, &str> = HashMap::from([("main.ink", content)]);
     let dotslash: HashMap<&str, &str> = HashMap::from([("./main.ink", content)]);
+    let absolute: HashMap<&str, &str> =
+        HashMap::from([("/nonexistent-brink-test-root/proj/main.ink", content)]);
 
     let bare_data = compile_mem("main.ink", &bare).unwrap();
     let dotslash_data = compile_mem("./main.ink", &dotslash).unwrap();
+    let absolute_data =
+        compile_mem("/nonexistent-brink-test-root/proj/main.ink", &absolute).unwrap();
 
     let ids = |data: &brink_format::StoryData| -> Vec<u64> {
         data.containers.iter().map(|c| c.id.to_raw()).collect()
     };
 
-    assert_ne!(
+    assert_eq!(
         ids(&bare_data),
         ids(&dotslash_data),
-        "byte-identical content compiled under two spellings of the same path \
-         minted the SAME container ids — the known spelling-sensitivity \
-         limitation appears to be fixed; update this test (and the docs it \
-         references) instead of deleting it",
+        "byte-identical content compiled under `main.ink` vs `./main.ink` \
+         minted DIFFERENT container ids — the #1696 root-relative-key \
+         normalization regressed",
+    );
+    assert_eq!(
+        ids(&bare_data),
+        ids(&absolute_data),
+        "byte-identical content compiled under `main.ink` vs an absolute \
+         spelling of the same file minted DIFFERENT container ids — the \
+         #1696 root-relative-key normalization regressed",
     );
 }

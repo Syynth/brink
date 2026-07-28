@@ -47,18 +47,25 @@ pub(crate) fn file_stem(path: &str) -> &str {
     name.strip_suffix(".ink").unwrap_or(name)
 }
 
-/// The **root-relative key** a native file's module identity is derived
-/// from, given the database's registered native source root (issue #1572).
+/// The **root-relative key** a path's identity is derived from, given a
+/// database-registered root — `native_root` for a `.brink` file's module
+/// identity (issue #1572), or `ink_root` for a `.ink` file's root-content
+/// scope-path qualifier (issue #1696, extending #1572's mechanism to ink).
+/// Generic over which root the caller passes: the strip logic itself has no
+/// language-specific behavior.
 ///
 /// [`native_module_path`] is contractually a function of a *root-relative*
-/// key. Native discovery (`brink_driver::discover_native`) already registers
-/// files under exactly such keys, so `root` is `None` there and `path` is
-/// returned untouched. A long-lived editor session is the other case: the LSP
+/// key, and so is [`hir::root_content_scope_path`](brink_ir::hir::root_content_scope_path).
+/// Native discovery (`brink_driver::discover_native`) already registers files
+/// under exactly such keys, so `native_root` is `None` there and `path` is
+/// returned untouched; ink's CLI discovery has no such `RealFs`-scoped tree,
+/// so `ink_root` is registered explicitly by `prepare_driver` instead. A
+/// long-lived editor session is the other case both roots serve: the LSP
 /// keys `ProjectDb` by **absolute OS path** (it must — every path it holds
 /// round-trips through a `file://` URI), so without the strip below every
-/// module name it minted embedded the machine's directory layout
+/// identity it minted embedded the machine's directory layout
 /// (`story::Users::…::market::barter`) and diverged from a real compile of the
-/// same tree. Normalizing here, at the one place the identity function is
+/// same tree. Normalizing here, at the one place each identity function is
 /// fed, is the house-rule-19a "normalize before you key" fix: the db keyspace
 /// stays absolute (and collision-free across workspace roots) while identity
 /// stays root-relative.
@@ -68,7 +75,7 @@ pub(crate) fn file_stem(path: &str) -> &str {
 /// under `root` is returned unchanged rather than mangled: a file outside the
 /// configured tree keeps whatever key it was registered under, exactly as
 /// before this function existed.
-pub(crate) fn native_root_relative_key<'a>(root: Option<&str>, path: &'a str) -> Cow<'a, str> {
+pub(crate) fn root_relative_key<'a>(root: Option<&str>, path: &'a str) -> Cow<'a, str> {
     let Some(root) = root.filter(|r| !r.is_empty()) else {
         return Cow::Borrowed(path);
     };
@@ -81,7 +88,7 @@ pub(crate) fn native_root_relative_key<'a>(root: Option<&str>, path: &'a str) ->
 /// A native `.brink` file's module path, derived **purely** from its
 /// root-relative key (decision-log 2026-07-22 "Native module identity: pure
 /// function of the root-relative path"; charter §13.2: path on disk = path
-/// in language) — see [`native_root_relative_key`] for how a caller that
+/// in language) — see [`root_relative_key`] for how a caller that
 /// keys by absolute path obtains one. Directory segments become
 /// `::`-separated module walls, the file (`.brink` stripped) is the leaf, and
 /// `story::` is the absolute root:
@@ -257,15 +264,15 @@ mod tests {
     /// `discover_native` already keys root-relative — the key is the path,
     /// untouched.
     #[test]
-    fn native_root_relative_key_is_identity_without_a_root() {
+    fn root_relative_key_is_identity_without_a_root() {
         assert_eq!(
-            native_root_relative_key(None, "market/barter.brink"),
+            root_relative_key(None, "market/barter.brink"),
             "market/barter.brink"
         );
         // An empty root is treated as "no root", not as a prefix that
         // matches everything.
         assert_eq!(
-            native_root_relative_key(Some(""), "market/barter.brink"),
+            root_relative_key(Some(""), "market/barter.brink"),
             "market/barter.brink"
         );
     }
@@ -274,14 +281,14 @@ mod tests {
     /// tree root gets exactly the key `discover_native` would have produced —
     /// so `native_module_path` mints compile-identical module identity.
     #[test]
-    fn native_root_relative_key_strips_a_declared_root() {
+    fn root_relative_key_strips_a_declared_root() {
         let root = "/home/dev/game";
         assert_eq!(
-            native_root_relative_key(Some(root), "/home/dev/game/market/barter.brink"),
+            root_relative_key(Some(root), "/home/dev/game/market/barter.brink"),
             "market/barter.brink"
         );
         assert_eq!(
-            native_module_path(&native_root_relative_key(
+            native_module_path(&root_relative_key(
                 Some(root),
                 "/home/dev/game/market/barter.brink"
             )),
@@ -290,7 +297,7 @@ mod tests {
         );
         // A trailing separator on the root is the same root.
         assert_eq!(
-            native_root_relative_key(Some("/home/dev/game/"), "/home/dev/game/main.brink"),
+            root_relative_key(Some("/home/dev/game/"), "/home/dev/game/main.brink"),
             "main.brink"
         );
     }
@@ -300,13 +307,13 @@ mod tests {
     /// whole components, so a root that is only a *textual* prefix of the
     /// path (`…/game` vs `…/game-assets`) is not a match either.
     #[test]
-    fn native_root_relative_key_leaves_paths_outside_the_root_alone() {
+    fn root_relative_key_leaves_paths_outside_the_root_alone() {
         assert_eq!(
-            native_root_relative_key(Some("/home/dev/game"), "/elsewhere/stray.brink"),
+            root_relative_key(Some("/home/dev/game"), "/elsewhere/stray.brink"),
             "/elsewhere/stray.brink"
         );
         assert_eq!(
-            native_root_relative_key(Some("/home/dev/game"), "/home/dev/game-assets/a.brink"),
+            root_relative_key(Some("/home/dev/game"), "/home/dev/game-assets/a.brink"),
             "/home/dev/game-assets/a.brink"
         );
     }
