@@ -12,7 +12,7 @@
 //!
 //! # What is ruled, and what is not
 //!
-//! Three annotation names have a ruled native meaning today:
+//! Five annotation names have a ruled native meaning today:
 //!
 //! - **`effects`** — `@[effects(pure, silent, total, reads(a), writes(b),
 //!   calls(c))]`, the assertion final form (`docs/effects-spec.md` §10,
@@ -31,15 +31,34 @@
 //!   [`crate::suppressions`] for the filter and the
 //!   source-`allow`-beats-project-`deny` ordering. **This module delivers
 //!   it.**
+//! - **`element`** — `@[element(args = "…")]`, the prose-dialect "second
+//!   authoring surface"'s pattern declaration (issue #1719,
+//!   `docs/prose-dialect-spec.md` §3.5b sitting 4 addenda 2–3). **This
+//!   module delivers the declaration surface** — [`element_annotation`]
+//!   parses the `args`/`name` clauses, validates the pattern compiles as a
+//!   portable regex (`E159`), and validates its named captures against the
+//!   declaration's own params (`E160`, the spec's "compile-checked" capture
+//!   contract). The `!name` sigil dispatch rewrite the annotation exists to
+//!   drive — matching a content line, binding captures, and lowering to a
+//!   call — is **not** implemented here; see [`ElementAnnotation`]'s own
+//!   doc for why, and `docs/prose-dialect-spec.md` §3.5b's Deferred list.
+//! - **`style`** — `@[style(…)]`, the companion editor-presentation
+//!   annotation (same spec section, addenda 3–4). **This module delivers
+//!   it** as a pure declaration surface — [`style_annotation`] requires a
+//!   paired `element` on the same declaration (`E163`), parses `key =
+//!   "value"` clauses (`E161`), validates each key against `element`'s
+//!   captures plus `line`/`dispatch` (`E162`), and classifies each value
+//!   against the closed built-in presentation vocabulary
+//!   ([`crate::StyleToken`]). Nothing downstream reads it yet — the
+//!   consumer is the held editor track (NS-T, issues #1131/#1350); see
+//!   [`crate::StyleAnnotation`]'s doc.
 //!
 //! Everything else the specs mention is either *deferred* or *not yet ruled
-//! for a native declaration*, and is deliberately NOT invented here:
-//! `@[element(pattern)]` / `@[style(…)]` (ruled in principle by the prose
-//! sitting-4 addenda, but they are the prose-dispatch feature itself, not a
-//! lowering channel), a per-*declaration* `@[was(old_name)]` rename (ink's
-//! `#@was` on a knot, `docs/modules-spec.md` §5 — no native ruling, and it
-//! would need the alias-table half too), and `directive-annotations-spec.md`
-//! §6's remaining non-normative future tenants (`@world`, `@returns`,
+//! for a native declaration*, and is deliberately NOT invented here: a
+//! per-*declaration* `@[was(old_name)]` rename (ink's `#@was` on a knot,
+//! `docs/modules-spec.md` §5 — no native ruling, and it would need the
+//! alias-table half too), and `directive-annotations-spec.md` §6's
+//! remaining non-normative future tenants (`@world`, `@returns`,
 //! `@notranslate`, `@maxlen`, `@deprecated`, …). All of them land
 //! on `E111`, which is the reserved-namespace rule (§1.1) working as
 //! designed: an unknown annotation is loud, never a silent no-op.
@@ -72,7 +91,10 @@ use rowan::TextRange;
 
 use crate::hir::FileId;
 use crate::suppressions::AllowScope;
-use crate::{Diagnostic, DiagnosticCode, EffectsAssertion, Severity};
+use crate::{
+    Diagnostic, DiagnosticCode, EffectsAssertion, ElementAnnotation, Param, Severity,
+    StyleAnnotation, StyleEntry, StyleToken,
+};
 
 use super::SyntaxNode;
 
@@ -85,6 +107,14 @@ const WAS: &str = "was";
 
 /// The source-level diagnostic-suppression annotation name (issue #1161).
 const ALLOW: &str = "allow";
+
+/// The prose-dispatch pattern-declaration annotation name (issue #1719,
+/// `docs/prose-dialect-spec.md` §3.5b).
+const ELEMENT: &str = "element";
+
+/// The editor-presentation companion annotation name (issue #1719, same
+/// spec section, addenda 3–4).
+const STYLE: &str = "style";
 
 fn diag(file: FileId, range: TextRange, code: DiagnosticCode) -> Diagnostic {
     Diagnostic {
@@ -189,9 +219,11 @@ fn is_consumed_position(name: &str, line: &SyntaxNode) -> bool {
         // The module-rename record is a *file-level* fact — `module::
         // lower_file_module` scans `SOURCE_FILE`'s own children for it.
         WAS => line.parent().is_some_and(|p| p.kind() == N::SOURCE_FILE),
-        // The effects assertion attaches to a callable container that
-        // `container.rs` actually lowers.
-        EFFECTS => attached_declaration(line).is_some_and(|d| {
+        // The effects assertion, and the `element`/`style` declaration-
+        // surface annotations (issue #1719), attach to a callable container
+        // that `container.rs` actually lowers — same consumed-position rule
+        // for all three.
+        EFFECTS | ELEMENT | STYLE => attached_declaration(line).is_some_and(|d| {
             let depth = container_nesting_depth(&d);
             match d.kind() {
                 // A `flow` lowers at top level (→ `Knot`) and nested exactly
@@ -228,7 +260,7 @@ pub(super) fn handle_line(file_id: FileId, node: &SyntaxNode, diags: &mut Vec<Di
         return;
     };
     let range = node.text_range();
-    if !matches!(name.text(), EFFECTS | WAS | ALLOW) {
+    if !matches!(name.text(), EFFECTS | WAS | ALLOW | ELEMENT | STYLE) {
         diags.push(diag(file_id, range, DiagnosticCode::E111));
     } else if !is_consumed_position(name.text(), node) {
         diags.push(diag(file_id, range, DiagnosticCode::E112));
@@ -465,4 +497,268 @@ fn parse_effects(
         calls,
         range,
     })
+}
+
+// ─── `@[element]` / `@[style]` declaration surface (issue #1719) ─────────
+//
+// The `!name` sigil dispatch rewrite these annotations exist to declare is
+// NOT implemented here — only the declaration surface is (parse, validate,
+// store on the `Knot`/`Stitch`). See this module's doc comment for why.
+
+/// The `@[element(…)]` clause keys: `args = "…"` (required, the portable-
+/// regex pattern) and `name = "…"` (optional, the dispatch-name alias).
+const ELEMENT_ARGS: &str = "args";
+const ELEMENT_NAME: &str = "name";
+
+/// The two `@[style(…)]` keys that name the whole line rather than a
+/// capture: the dispatched line's full text, and the `!name` prefix itself
+/// (§3.5b addendum 4).
+const STYLE_KEY_LINE: &str = "line";
+const STYLE_KEY_DISPATCH: &str = "dispatch";
+
+/// Extract an `ANNOTATION_ARG`'s `key = "value"` clause value as plain text
+/// — the key/value counterpart of `module::string_lit_text` (the
+/// `@[was("…")]` string-literal reader), widened to also fold
+/// `L_BRACKET`/`R_BRACKET` tokens back into the text.
+/// `brink-syntax-native`'s `parser::annotation::annotation_string_value`
+/// deliberately doesn't break on those the way a dialogue-quoted `expr::
+/// string_lit` does — see that function's doc for why a regex character
+/// class (`@[element(args = "…[A-Z]…")]`) needs this. `None` when the arg
+/// has no `eq_value` at all (a bare ident, a nested clause, or a
+/// non-string right-hand side).
+fn eq_value_text(arg: &ast::AnnotationArg) -> Option<String> {
+    let value = arg.eq_value()?;
+    let mut out = String::new();
+    for el in value.syntax().children_with_tokens() {
+        if let rowan::NodeOrToken::Token(t) = el {
+            match t.kind() {
+                N::STRING_TEXT | N::L_BRACKET | N::R_BRACKET => out.push_str(t.text()),
+                N::STRING_ESCAPE => out.push_str(super::expr::unescape_string_token(t.text())),
+                _ => {}
+            }
+        }
+    }
+    Some(out)
+}
+
+/// Read the `@[element(args = "…")]` annotation attached to `decl` (a
+/// `flow`/`fn` declaration node), if it declares one.
+///
+/// A second `@[element]` on the same declaration is `E048` (the same
+/// duplicate-directive discipline [`effects_assertion`] uses) and the
+/// first wins. A malformed clause — a missing/non-string `args` value, an
+/// unrecognized clause key, or a pattern that doesn't compile as a
+/// portable regex — is `E159` and yields no `ElementAnnotation` at all
+/// (never a partial one). A named capture group that doesn't match any
+/// parameter on `decl` is `E160` — the capture contract (§3.5b: "named
+/// captures bind params by name (compile-checked)") enforced at the
+/// declaration.
+pub(super) fn element_annotation(
+    file_id: FileId,
+    decl: &SyntaxNode,
+    params: &[Param],
+    diags: &mut Vec<Diagnostic>,
+) -> Option<ElementAnnotation> {
+    let mut chosen: Option<ElementAnnotation> = None;
+    for line in annotations_before(decl) {
+        if line.name_token().is_none_or(|t| t.text() != ELEMENT) {
+            continue;
+        }
+        let range = line.syntax().text_range();
+        let Some(parsed) = parse_element(file_id, &line, range, params, diags) else {
+            continue; // already diagnosed
+        };
+        if chosen.is_some() {
+            diags.push(diag(file_id, range, DiagnosticCode::E048));
+            continue;
+        }
+        chosen = Some(parsed);
+    }
+    chosen
+}
+
+fn parse_element(
+    file_id: FileId,
+    line: &ast::AnnotationLine,
+    range: TextRange,
+    params: &[Param],
+    diags: &mut Vec<Diagnostic>,
+) -> Option<ElementAnnotation> {
+    let Some(args) = line.args() else {
+        diags.push(diag(file_id, range, DiagnosticCode::E159));
+        return None;
+    };
+
+    let mut pattern: Option<String> = None;
+    let mut alias: Option<String> = None;
+    let mut ok = true;
+    for arg in args.args() {
+        let Some(key) = arg.name_token() else {
+            ok = false;
+            continue;
+        };
+        let Some(value) = eq_value_text(&arg) else {
+            ok = false;
+            continue;
+        };
+        match key.text() {
+            ELEMENT_ARGS if pattern.is_none() => pattern = Some(value),
+            ELEMENT_NAME if alias.is_none() => alias = Some(value),
+            _ => ok = false,
+        }
+    }
+
+    if !ok {
+        diags.push(diag(file_id, range, DiagnosticCode::E159));
+        return None;
+    }
+    let Some(pattern) = pattern else {
+        diags.push(diag(file_id, range, DiagnosticCode::E159));
+        return None;
+    };
+
+    let Ok(compiled) = regex::Regex::new(&pattern) else {
+        diags.push(diag(file_id, range, DiagnosticCode::E159));
+        return None;
+    };
+    let captures: Vec<String> = compiled
+        .capture_names()
+        .flatten()
+        .map(ToString::to_string)
+        .collect();
+
+    for cap in &captures {
+        if !params.iter().any(|p| &p.name.text == cap) {
+            diags.push(diag(file_id, range, DiagnosticCode::E160));
+            return None;
+        }
+    }
+
+    Some(ElementAnnotation {
+        pattern,
+        captures,
+        alias,
+        range,
+    })
+}
+
+/// Read the `@[style(…)]` annotation attached to `decl`, if it declares
+/// one. Requires a paired [`element_annotation`] on the same declaration
+/// (`E163`) — pass the already-lowered `element` (or `None`) so this
+/// doesn't re-parse the `@[element(…)]` line itself.
+///
+/// A second `@[style]` on the same declaration is `E048`. A clause that
+/// isn't a clean `key = "value"` pair, or an argument list that is
+/// missing/empty, is `E161`. A key that is neither `line`, `dispatch`,
+/// nor one of `element`'s named captures is `E162`.
+pub(super) fn style_annotation(
+    file_id: FileId,
+    decl: &SyntaxNode,
+    element: Option<&ElementAnnotation>,
+    diags: &mut Vec<Diagnostic>,
+) -> Option<StyleAnnotation> {
+    let mut chosen: Option<StyleAnnotation> = None;
+    for line in annotations_before(decl) {
+        if line.name_token().is_none_or(|t| t.text() != STYLE) {
+            continue;
+        }
+        let range = line.syntax().text_range();
+        let Some(parsed) = parse_style(file_id, &line, range, element, diags) else {
+            continue;
+        };
+        if chosen.is_some() {
+            diags.push(diag(file_id, range, DiagnosticCode::E048));
+            continue;
+        }
+        chosen = Some(parsed);
+    }
+    chosen
+}
+
+fn parse_style(
+    file_id: FileId,
+    line: &ast::AnnotationLine,
+    range: TextRange,
+    element: Option<&ElementAnnotation>,
+    diags: &mut Vec<Diagnostic>,
+) -> Option<StyleAnnotation> {
+    let Some(element) = element else {
+        diags.push(diag(file_id, range, DiagnosticCode::E163));
+        return None;
+    };
+
+    let Some(args) = line.args() else {
+        diags.push(diag(file_id, range, DiagnosticCode::E161));
+        return None;
+    };
+
+    let mut entries = Vec::new();
+    let mut ok = true;
+    let mut any = false;
+    for arg in args.args() {
+        any = true;
+        let arg_range = arg.syntax().text_range();
+        let key = arg.name_token();
+        let value = eq_value_text(&arg);
+        let (Some(key), Some(value)) = (key, value) else {
+            diags.push(diag(file_id, arg_range, DiagnosticCode::E161));
+            ok = false;
+            continue;
+        };
+        let key_text = key.text().to_string();
+        if key_text != STYLE_KEY_LINE
+            && key_text != STYLE_KEY_DISPATCH
+            && !element.captures.contains(&key_text)
+        {
+            diags.push(diag(file_id, arg_range, DiagnosticCode::E162));
+            ok = false;
+            continue;
+        }
+        entries.push(StyleEntry {
+            key: key_text,
+            value: parse_style_token(&value),
+            range: arg_range,
+        });
+    }
+
+    if !ok {
+        return None;
+    }
+    if !any {
+        // `@[style()]` — parses, silences nothing.
+        diags.push(diag(file_id, range, DiagnosticCode::E161));
+        return None;
+    }
+    Some(StyleAnnotation { entries, range })
+}
+
+/// Classify a `@[style(…)]` clause's value string against the closed
+/// built-in presentation vocabulary (`docs/prose-dialect-spec.md` §3.5b
+/// addenda 3–4). Never fails — "any other name is a custom hook emitting a
+/// stable `brink-*` class for host CSS" is the spec's own fallback rule,
+/// so an unrecognized value is [`StyleToken::Custom`], not a diagnostic.
+fn parse_style_token(value: &str) -> StyleToken {
+    match value {
+        "left" => StyleToken::AlignLeft,
+        "center" => StyleToken::AlignCenter,
+        "right" => StyleToken::AlignRight,
+        "bold" => StyleToken::Bold,
+        "italic" => StyleToken::Italic,
+        "dim" => StyleToken::Dim,
+        "mono" => StyleToken::Mono,
+        "uppercase" => StyleToken::Uppercase,
+        "conceal" => StyleToken::Conceal,
+        _ if is_hex_color(value) => StyleToken::Color(value.to_string()),
+        _ => StyleToken::Custom(value.to_string()),
+    }
+}
+
+/// `#rgb` or `#rrggbb` — the narrow, unambiguous raw-color shape this v1
+/// recognizes (see [`StyleToken::Color`]'s doc for why nothing wider, like
+/// a named-CSS-color keyword list, is attempted).
+fn is_hex_color(value: &str) -> bool {
+    let Some(hex) = value.strip_prefix('#') else {
+        return false;
+    };
+    (hex.len() == 3 || hex.len() == 6) && hex.bytes().all(|b| b.is_ascii_hexdigit())
 }

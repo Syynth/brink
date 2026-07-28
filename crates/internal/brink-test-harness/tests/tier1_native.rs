@@ -167,6 +167,23 @@ fn annotations_effects() {
     assert_case("annotations-effects");
 }
 
+/// The `@[element(args = "…")]` declaration surface (issue #1719) at the
+/// same three attachment points `annotations_effects` covers: a top-level
+/// `fn` (captures binding both its params), a top-level `flow` (a
+/// capture-free pattern), and a nested `flow` (the `Stitch` level, with
+/// the optional `name = "…"` alias clause). Until this landed, every one
+/// of these lines hard-failed the compile with `E129`, so the signal here
+/// is exactly that: an annotated `.brink` story compiles and runs. The
+/// `!name` sigil dispatch rewrite the annotation exists to eventually
+/// drive is not implemented — see `docs/prose-dialect-spec.md` §3.5b's
+/// Deferred list — so this only pins that the declaration surface itself
+/// never regresses a clean compile, the same narrow signal
+/// `annotations_was`/`annotations_effects` pin for their own tenants.
+#[test]
+fn annotations_element() {
+    assert_case("annotations-element");
+}
+
 /// NG-D array/sequence literals (issue #1490, RULED 2026-07-27:
 /// `[1, 2, 3]`). Three functions: one builds a three-element array bound to
 /// a `let` and sums it by iterating with `for` (proving `Expr::ArrayLiteral`
@@ -214,6 +231,7 @@ fn every_case_directory_has_a_test() {
         "annotations-was",
         "annotations-effects",
         "annotations-allow",
+        "annotations-element",
         "array-literal",
         "lambda-verbs",
     ];

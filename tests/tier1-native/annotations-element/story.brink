@@ -1,0 +1,16 @@
+var call_sign = "HQ"
+
+@[element(args = "^(?<chan>[A-Z0-9-]+): (?<text>.+)$")]
+fn radio(chan, text) {
+  return text;
+}
+
+@[element(args = "^ready$")]
+flow main() {
+  Feed: {radio(call_sign, "come in")}.
+  @[element(args = "^ready$", name = "walkie")]
+  flow tally() {
+    Channel ready -> END
+  }
+  -> tally
+}

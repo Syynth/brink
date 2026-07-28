@@ -198,6 +198,15 @@ pub(super) fn lower_top_level_container(
         super::body::apply_implicit_done(&mut body_block);
     }
 
+    // The attached `@[element(…)]` / `@[style(…)]` declarations, if the
+    // declaration carries them (issue #1719, [`super::annotation`]) —
+    // `style` is read second and passed the already-lowered `element` so
+    // its key validation can check against `element`'s captures without
+    // re-parsing the `@[element(…)]` line.
+    let element_annotation = super::annotation::element_annotation(file_id, syntax, &params, diags);
+    let style_annotation =
+        super::annotation::style_annotation(file_id, syntax, element_annotation.as_ref(), diags);
+
     Some(Knot {
         ptr: native_provenance(file_id, NodeClass::Knot, syntax),
         name,
@@ -209,6 +218,8 @@ pub(super) fn lower_top_level_container(
         // The attached `@[effects(…)]` assertion, if the declaration carries
         // one (issue #1563, [`super::annotation`]).
         effects_assertion: super::annotation::effects_assertion(file_id, syntax, diags),
+        element_annotation,
+        style_annotation,
         return_type,
         doc,
         visibility: None,
@@ -288,6 +299,12 @@ fn lower_stitch(
     if return_type.is_none() {
         super::body::apply_implicit_done(&mut body_block);
     }
+    // Same annotation channel as a top-level container — a nested `flow`'s
+    // `@[element(…)]`/`@[style(…)]` sit above its own head (issue #1719).
+    let element_annotation = super::annotation::element_annotation(file_id, syntax, &params, diags);
+    let style_annotation =
+        super::annotation::style_annotation(file_id, syntax, element_annotation.as_ref(), diags);
+
     Some(Stitch {
         ptr: native_provenance(file_id, NodeClass::Stitch, syntax),
         name,
@@ -297,6 +314,8 @@ fn lower_stitch(
         // Same annotation channel as a top-level container — a nested
         // `flow`'s `@[effects(…)]` sits above its own head (issue #1563).
         effects_assertion: super::annotation::effects_assertion(file_id, syntax, diags),
+        element_annotation,
+        style_annotation,
         return_type,
         doc,
         visibility: None,

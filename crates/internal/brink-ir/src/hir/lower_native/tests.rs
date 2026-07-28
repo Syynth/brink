@@ -1073,6 +1073,181 @@ fn effects_annotation_on_a_depth_three_flow_is_diagnosed_not_silently_dropped() 
     );
 }
 
+// ─── `@[element]` / `@[style]` declaration surface (issue #1719) ─────
+
+#[test]
+fn element_annotation_lowers_pattern_and_captures() {
+    let (hir, _m, diags) = lower_src(
+        "@[element(args = \"^(?<chan>\\\\w+): (?<text>.+)$\")]\nflow radio(chan, text) {\n  Hi, {chan} and {text}!\n}\n",
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let knot = &hir.knots[0];
+    let element = knot
+        .element_annotation
+        .as_ref()
+        .expect("@[element] must lower to an ElementAnnotation");
+    assert!(element.pattern.contains("(?<chan>"));
+    assert_eq!(
+        element.captures,
+        vec!["chan".to_string(), "text".to_string()]
+    );
+    assert!(element.alias.is_none());
+}
+
+#[test]
+fn element_annotation_alias_lowers() {
+    let (hir, _m, diags) = lower_src(
+        "@[element(args = \"^(?<chan>\\\\w+)$\", name = \"walkie\")]\nflow radio(chan) {\n  Hi, {chan}!\n}\n",
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let element = hir.knots[0].element_annotation.as_ref().expect("present");
+    assert_eq!(element.alias.as_deref(), Some("walkie"));
+}
+
+#[test]
+fn element_annotation_missing_args_clause_diagnoses_e159() {
+    let (hir, _m, diags) = lower_src("@[element()]\nflow radio(chan) {\n  Hi, {chan}!\n}\n");
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E159),
+        "an @[element] with no args= clause must raise E159: {diags:?}"
+    );
+    assert!(hir.knots[0].element_annotation.is_none());
+}
+
+#[test]
+fn element_annotation_bad_regex_diagnoses_e159() {
+    let (hir, _m, diags) =
+        lower_src("@[element(args = \"(unclosed\")]\nflow radio(chan) {\n  Hi, {chan}!\n}\n");
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E159),
+        "a pattern that doesn't compile as regex must raise E159: {diags:?}"
+    );
+    assert!(hir.knots[0].element_annotation.is_none());
+}
+
+#[test]
+fn element_annotation_capture_without_matching_param_diagnoses_e160() {
+    let (hir, _m, diags) = lower_src(
+        "@[element(args = \"^(?<chan>\\\\w+)$\")]\nflow radio(other) {\n  Hi, {other}!\n}\n",
+    );
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E160),
+        "a capture with no matching param must raise E160: {diags:?}"
+    );
+    assert!(hir.knots[0].element_annotation.is_none());
+}
+
+#[test]
+fn style_annotation_lowers_with_paired_element() {
+    let (hir, _m, diags) = lower_src(
+        "@[element(args = \"^(?<chan>\\\\w+): (?<text>.+)$\")]\n@[style(chan = \"channel\", line = \"dim\")]\nflow radio(chan, text) {\n  Hi, {chan} and {text}!\n}\n",
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let style = hir.knots[0]
+        .style_annotation
+        .as_ref()
+        .expect("@[style] must lower to a StyleAnnotation");
+    assert_eq!(style.entries.len(), 2);
+    assert_eq!(style.entries[0].key, "chan");
+    assert_eq!(
+        style.entries[0].value,
+        crate::StyleToken::Custom("channel".to_string())
+    );
+    assert_eq!(style.entries[1].key, "line");
+    assert_eq!(style.entries[1].value, crate::StyleToken::Dim);
+}
+
+#[test]
+fn style_annotation_recognizes_built_in_vocabulary() {
+    let (hir, _m, diags) = lower_src(
+        "@[element(args = \"^(?<chan>\\\\w+)$\")]\n@[style(chan = \"uppercase\", line = \"conceal\", dispatch = \"#a1b2c3\")]\nflow radio(chan) {\n  Hi, {chan}!\n}\n",
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let style = hir.knots[0].style_annotation.as_ref().expect("present");
+    assert_eq!(style.entries[0].value, crate::StyleToken::Uppercase);
+    assert_eq!(style.entries[1].value, crate::StyleToken::Conceal);
+    assert_eq!(
+        style.entries[2].value,
+        crate::StyleToken::Color("#a1b2c3".to_string())
+    );
+}
+
+#[test]
+fn style_annotation_without_paired_element_diagnoses_e163() {
+    let (hir, _m, diags) =
+        lower_src("@[style(line = \"dim\")]\nflow radio(chan) {\n  Hi, {chan}!\n}\n");
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E163),
+        "@[style] with no paired @[element] must raise E163: {diags:?}"
+    );
+    assert!(hir.knots[0].style_annotation.is_none());
+}
+
+#[test]
+fn style_annotation_unknown_key_diagnoses_e162() {
+    let (hir, _m, diags) = lower_src(
+        "@[element(args = \"^(?<chan>\\\\w+)$\")]\n@[style(nope = \"dim\")]\nflow radio(chan) {\n  Hi, {chan}!\n}\n",
+    );
+    // Exact vector, not `.any(…)` — `parse_style` must not also report the
+    // empty-args `E161` once every clause is rejected (the `!ok` check runs
+    // before the emptiness check, mirroring `parse_allow`).
+    assert_eq!(
+        diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![DiagnosticCode::E162],
+        "a style key that is neither line/dispatch nor a capture must raise exactly E162: {diags:?}"
+    );
+    assert!(hir.knots[0].style_annotation.is_none());
+}
+
+#[test]
+fn style_annotation_empty_args_diagnoses_e161() {
+    let (hir, _m, diags) = lower_src(
+        "@[element(args = \"^(?<chan>\\\\w+)$\")]\n@[style()]\nflow radio(chan) {\n  Hi, {chan}!\n}\n",
+    );
+    assert_eq!(
+        diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![DiagnosticCode::E161],
+        "an empty @[style()] argument list must raise exactly E161: {diags:?}"
+    );
+    assert!(hir.knots[0].style_annotation.is_none());
+}
+
+/// Regression for the ordering bug where `parse_style` checked
+/// `entries.is_empty()` before `!ok`: when every clause in a non-empty
+/// argument list is rejected, the diagnostic must be the clause's own code
+/// (`E162` here), never also the empty-args `E161`.
+#[test]
+fn style_annotation_all_clauses_rejected_is_not_also_e161() {
+    let (hir, _m, diags) = lower_src(
+        "@[element(args = \"^(?<chan>\\\\w+)$\")]\n@[style(chan = bare)]\nflow radio(chan) {\n  Hi, {chan}!\n}\n",
+    );
+    assert_eq!(
+        diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![DiagnosticCode::E161],
+        "a malformed clause must raise exactly one E161, not a spurious second one: {diags:?}"
+    );
+    assert!(hir.knots[0].style_annotation.is_none());
+}
+
+#[test]
+fn element_and_style_annotation_on_a_nested_fn_is_diagnosed_not_silently_dropped() {
+    // Same E129/E112 shape `effects_annotation_on_a_nested_fn_is_diagnosed_
+    // not_silently_dropped` already covers for `@[effects]` — a nested `fn`
+    // never lowers (E129 fence), so its attached `@[element]`/`@[style]`
+    // must not be waved through as "consumed" only to be read by nothing.
+    let (_hir, _m, diags) = lower_src(
+        "flow a() {\n  @[element(args = \"^(?<chan>\\\\w+)$\")]\n  fn b(chan) {\n    x\n  }\n}\n",
+    );
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E129),
+        "the nested fn itself is still the E129 fence: {diags:?}"
+    );
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E112),
+        "the annotation attached to it must be separately diagnosed, not silently dropped: {diags:?}"
+    );
+}
+
 // ─── Block::tail (S1, docs/block-effect-model.md §10 row j) ────────
 //
 // Expand-phase groundwork only: `tail` is populated from `stmts`' final
