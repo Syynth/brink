@@ -1675,7 +1675,12 @@ pub(crate) fn normalized_stamped_query(
     let mut hir = lowered_query(db, file).hir.clone();
     brink_ir::normalize_file(&mut hir);
     let mut slice = [(file.file_id(db), hir)];
-    brink_ir::stamp_container_ids(&mut slice, &resolved.index);
+    // #1504: the file's own path qualifies its root-content scope path, so
+    // two files' root weaves no longer mint the same anonymous ids. Reading
+    // `path` here adds no invalidation edge this memo did not already have —
+    // it is an input field of the `SourceFile` it is already keyed on.
+    let file_paths = std::collections::HashMap::from([(file.file_id(db), file.path(db).clone())]);
+    brink_ir::stamp_container_ids(&mut slice, &resolved.index, &file_paths);
     let [(_, stamped)] = slice;
     Arc::new(stamped)
 }

@@ -1,26 +1,25 @@
 // ─── Root-content DefinitionId soundness (#1504) ─────────────────────
 //
-// `lower_root_content_chunks` lowers *every* file's root-level weave under
-// the same empty scope path (`mod.rs:487` hands `String::new()` to
-// `make_ctx` unconditionally), and `IdAllocator::alloc_address`
-// (`context.rs:392`) is a pure hash of that path. So the first choice of
-// file A's root weave and the first choice of file B's root weave both
-// hash the path `c-0` and receive the **same** `DefinitionId`.
+// Before the #1504 fix, `lower_root_content_chunks` lowered *every* file's
+// root-level weave under the same empty scope path, and address allocation
+// is a pure hash of that path. So the first choice of file A's root weave
+// and the first choice of file B's root weave both hashed `c-0` and
+// received the **same** `DefinitionId`.
 //
-// `DefinitionId` is the address key (`linker.rs:88`, last-write-wins) and
-// the save key for visit/turn counts (`save.rs:113`), so this is a
+// `DefinitionId` is the address key (`linker.rs`, last-write-wins) and
+// the save key for visit/turn counts (`save.rs`), so that was a
 // miscompile, not merely a cosmetic clash — see
 // `docs/root-content-identity-findings.md` for the full analysis and the
 // end-to-end demonstration in
 // `brink-compiler/tests/issue_1504_root_content_identity.rs`.
 //
-// Both tests below are **acceptance tests for the fix**, not
-// characterization tests: they assert the behavior brink should have, and
-// are `#[ignore]`d because the fix shape is blocked on the FG-4d identity
-// ruling (#1504 is labeled `needs-design`, and #1442's owner comment asks
-// for one answer across #1504/#1442/`@[was]`). Un-ignoring them is the
-// acceptance criterion. Do **not** convert them into assertions of the
-// current (wrong) behavior — that would bless the bug.
+// Both tests below were written as acceptance tests for the fix and were
+// `#[ignore]`d while its shape was design-gated. The fix landed
+// (`hir::root_content_scope_path` qualifies a file's root-content scope
+// path by the file's own project path, and the allocator carries the same
+// qualifier for the terminus), so they now run as regression tests. Do
+// **not** convert them into assertions of the pre-fix behavior — that
+// would bless the bug.
 
 use std::collections::BTreeMap;
 
@@ -57,17 +56,15 @@ fn terminus_id(program: &lir::Program) -> Option<brink_format::DefinitionId> {
 /// once per file.
 ///
 /// Uses [`lower_ink_files_with_paths`] rather than [`lower_ink_files`] —
-/// the recommended fix (`docs/root-content-identity-findings.md`,
+/// the shipped fix (`docs/root-content-identity-findings.md`,
 /// "Recommended shape") qualifies a root-content scope path by the owning
 /// file's identity. `lower_ink_files` always hands lowering an *empty*
 /// `file_paths` map (`support.rs`), so under that fix both files would
 /// still resolve to the same (absent) qualifier and this test would keep
 /// failing for a reason unrelated to the bug it documents. Distinct real
-/// paths give the fix something to key on once it lands.
+/// paths are what the fix keys on — which is what the real pipeline
+/// always supplies (`chunk_lowering_ctx_query`).
 #[test]
-#[ignore = "known bug #1504(a): root-content scope paths are unqualified by \
-            file, so two files' root weaves collide; fix is blocked on the \
-            FG-4d identity ruling"]
 fn root_content_ids_are_distinct_across_files() {
     let p = lower_ink_files_with_paths(&[
         ("alpha.ink", "* alpha one\n* alpha two\n- alpha gathered\n"),
@@ -95,9 +92,12 @@ fn root_content_ids_are_distinct_across_files() {
 
 /// #1504(b): the synthesized root terminus address must be content-derived.
 ///
-/// `attach_root_final_gather` keys it `#root-terminus.{file_id}`
-/// (`mod.rs:1957`) — the only `alloc_address` call in `brink-ir` keyed by
-/// `FileId` rather than a scope path. This test proves that sensitivity at
+/// `attach_root_final_gather` used to key it `#root-terminus.{file_id}` —
+/// the only `alloc_address` call in `brink-ir` keyed by
+/// `FileId` rather than a scope path. It now keys the bare
+/// `#root-terminus` under the allocator's per-file path prefix, so the
+/// owning file reaches the id through its *path*, never its `FileId`.
+/// This test proves that at
 /// the LIR-lowering level: [`lower_ink_files`] mints each source's `FileId`
 /// strictly from its position in the `sources` slice (`support.rs`), so
 /// prepending an extra source shifts the entry's numeric id and moves the
@@ -113,9 +113,6 @@ fn root_content_ids_are_distinct_across_files() {
 /// `brink-driver`'s `root_content_ids_agree_between_discover_and_editor_order`
 /// (`crates/internal/brink-driver/src/discover.rs`).
 #[test]
-#[ignore = "known bug #1504(b): the terminus address is keyed by FileId, so \
-            its position in the file list moves it; fix is blocked on the \
-            FG-4d identity ruling"]
 fn root_terminus_address_is_independent_of_file_id_assignment() {
     // Same entry file, same root weave — only the number of unrelated
     // files ahead of it in the lowered file list differs.

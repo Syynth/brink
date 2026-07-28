@@ -1,34 +1,27 @@
-//! End-to-end demonstration of #1504: two files with root-level weave
-//! content miscompile into colliding container ids.
+//! End-to-end regression tests for #1504: two files with root-level weave
+//! content used to miscompile into colliding container ids.
 //!
 //! This is the user-facing half of the analysis in
-//! `docs/root-content-identity-findings.md`. The LIR-level acceptance tests
+//! `docs/root-content-identity-findings.md`. The LIR-level tests
 //! live in `brink-ir/tests/lir_lowering/root_content_definition_id_soundness.rs`.
 //!
 //! Reachable through the ordinary compiler entry point
 //! (`brink_compiler::compile`) with a plain `INCLUDE` — no unusual flags,
 //! no native dialect, no incremental session. Any ink project where the
-//! entry file **and** an included file both carry root-level weave content
-//! hits it.
+//! entry file **and** an included file both carried root-level weave content
+//! hit it.
 //!
-//! Both tests are **acceptance tests for the fix** and are `#[ignore]`d:
-//! #1504 is labeled `needs-design` and the fix shape is blocked on the
-//! FG-4d identity ruling. Un-ignoring them is the acceptance criterion.
-//! Do not rewrite them to assert the current (wrong) behavior.
+//! The fix qualifies a file's *anonymous* root-content scope path by that
+//! file's own project path (`hir::root_content_scope_path`), so `c-0` in
+//! `main.ink` and `c-0` in `inc.ink` no longer hash to one `DefinitionId`.
+//! These tests were written as acceptance tests while the fix shape was
+//! design-gated; they now run unconditionally. Do not rewrite them to
+//! assert the pre-fix behavior.
 //!
-//! #1673 added a codegen-boundary guard that refuses a `Program` containing
-//! two containers with the same `DefinitionId` (see
-//! `included_and_entry_root_weaves_trip_the_duplicate_definition_id_guard`
-//! below). That guard now intercepts this exact shape *before* either
-//! `#[ignore]`d test's own `compile_mem(...).unwrap()` — so running them
-//! today (`cargo test -- --ignored`) panics on that `unwrap()` with the
-//! guard's `E060` error rather than reaching the assertions they were
-//! originally written to check. That's the intended effect of #1673: the
-//! underlying #1504(a) id-derivation defect is unchanged, but it now fails
-//! loudly at compile time instead of silently producing wrong player-visible
-//! output. Both tests remain valid as acceptance tests for #1504(a) itself:
-//! once the real fix removes the id collision, the guard has nothing to
-//! fire on and both compiles succeed again, exactly as originally written.
+//! #1673's codegen-boundary guard — which refuses a `Program` containing
+//! two containers with the same `DefinitionId` — stays as the backstop; see
+//! `included_and_entry_root_weaves_compile_without_tripping_the_uniqueness_guard`
+//! below, which asserts it has nothing left to fire on for this shape.
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
@@ -54,11 +47,10 @@ fn compile_mem(
 
 /// The compiled program must not contain two containers with one id.
 ///
-/// Measured on `origin/main` (commit 999581354): 8 containers, of which
-/// three ids appear twice (`0x1779765f903c98e`, `0x1dde84850f175fb`,
-/// `0x1ef2ee91775101d`).
+/// Measured before the fix (`origin/main` at commit 999581354): 8
+/// containers, of which three ids appeared twice (`0x1779765f903c98e`,
+/// `0x1dde84850f175fb`, `0x1ef2ee91775101d`).
 #[test]
-#[ignore = "known bug #1504(a); fix is blocked on the FG-4d identity ruling"]
 fn included_and_entry_root_weaves_get_distinct_container_ids() {
     let files: HashMap<&str, &str> = HashMap::from([
         (
@@ -86,23 +78,18 @@ fn included_and_entry_root_weaves_get_distinct_container_ids() {
     );
 }
 
-/// #1673: until #1504(a) lands, this exact shape still produces two
-/// containers with the same `DefinitionId` (proven by the `#[ignore]`d
-/// `included_and_entry_root_weaves_get_distinct_container_ids` above). The
-/// codegen-boundary uniqueness guard (`brink-codegen-inkb`, #1673) must
-/// catch that at compile time — through the ordinary `brink_compiler::
-/// compile` entry point, no unusual flags — instead of letting it reach the
-/// runtime silently, which is what `choosing_an_included_files_choice_
-/// runs_that_files_body` above demonstrates it does downstream of codegen
-/// today.
+/// #1673's codegen-boundary uniqueness guard must have nothing to fire on
+/// once #1504(a) is fixed.
 ///
-/// Deliberately **not** `#[ignore]`d: this must be green both before and
-/// after #1504(a) lands. Before: the guard fires on the collision. After:
-/// the fix removes the collision the guard would have fired on, so
-/// `compile_mem` starts succeeding here too — at which point this test
-/// should be rewritten to assert `Ok`, mirroring the sibling test above.
+/// While the collision existed, this shape tripped the guard with an `E060`
+/// (`duplicate DefinitionId … at paths …`) — the guard's whole point was to
+/// turn the silent miscompile into a loud compile error. The #1504 fix
+/// removes the collision itself, so the same shape must now compile
+/// cleanly; the guard stays as the backstop for any future id-derivation
+/// defect. Rewritten to assert `Ok` exactly as this test's pre-fix doc
+/// instructed.
 #[test]
-fn included_and_entry_root_weaves_trip_the_duplicate_definition_id_guard() {
+fn included_and_entry_root_weaves_compile_without_tripping_the_uniqueness_guard() {
     let files: HashMap<&str, &str> = HashMap::from([
         (
             "main.ink",
@@ -111,40 +98,29 @@ fn included_and_entry_root_weaves_trip_the_duplicate_definition_id_guard() {
         ("inc.ink", "* inc one\n* inc two\n- inc gathered\n"),
     ]);
 
-    let err = compile_mem("main.ink", &files)
-        .expect_err("the #1504 collision should trip the #1673 codegen guard, not compile");
+    let story = compile_mem("main.ink", &files)
+        .expect("root weaves in two files must compile — #1504 removed the id collision");
 
-    // The real pipeline (`driver::compile_with_options`) routes a codegen
-    // `Err` through the diagnostics query (`brink-db`'s `story_data`), which
-    // wraps it as an `E060` `ResolvedDiagnostic` rather than surfacing the
-    // raw `CompileError::Codegen` variant directly — see the `E060` entry in
-    // `e0xx_diagnostics.rs`.
-    let brink_compiler::CompileError::Diagnostics(diagnostics) = err else {
-        panic!("expected CompileError::Diagnostics, got a different variant: {err:?}");
-    };
-    assert_eq!(
-        diagnostics.len(),
-        1,
-        "expected exactly one diagnostic: {diagnostics:#?}"
-    );
-    assert_eq!(diagnostics[0].code, brink_compiler::DiagnosticCode::E060);
+    // Sanity: the guard's precondition holds, not just its absence of error.
+    let mut seen: BTreeMap<u64, usize> = BTreeMap::new();
+    for container in &story.containers {
+        *seen.entry(container.id.to_raw()).or_default() += 1;
+    }
     assert!(
-        diagnostics[0].message.contains("duplicate DefinitionId"),
-        "expected the #1673 guard's message, got: {}",
-        diagnostics[0].message
+        seen.values().all(|count| *count == 1),
+        "every container must carry a unique DefinitionId: {seen:#?}",
     );
 }
 
-/// The collision is observable as wrong output: the linker's address map is
-/// last-write-wins (`brink-runtime/src/linker.rs:88`), so the entry file's
-/// root-weave containers overwrite the included file's. Picking the
-/// included file's first choice runs the **entry** file's first choice body.
+/// The collision was observable as wrong output: the linker's address map is
+/// last-write-wins (`brink-runtime/src/linker.rs`), so the entry file's
+/// root-weave containers overwrote the included file's, and picking the
+/// included file's first choice ran the **entry** file's first choice body.
 ///
-/// Measured on `origin/main` (commit 999581354), choosing index 0 from the
-/// `inc one` / `inc two` set yields `main one` + `MAIN-ONE-BODY`;
-/// `INC-ONE-BODY` never executes.
+/// Measured before the fix (`origin/main` at commit 999581354), choosing
+/// index 0 from the `inc one` / `inc two` set yielded `main one` +
+/// `MAIN-ONE-BODY`; `INC-ONE-BODY` never executed.
 #[test]
-#[ignore = "known bug #1504(a); fix is blocked on the FG-4d identity ruling"]
 fn choosing_an_included_files_choice_runs_that_files_body() {
     let files: HashMap<&str, &str> = HashMap::from([
         (

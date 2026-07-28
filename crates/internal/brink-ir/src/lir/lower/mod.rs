@@ -146,7 +146,7 @@ pub fn lower_to_program_with_type_mode(
     // `lir_lowering.rs` tests, `compile_bench`, `golden_i078.rs`) keep a
     // single whole-project call; `brink-db` caches the per-knot phase
     // individually, per `DefinitionId`, instead.
-    let prelude = build_prelude(files, index, resolutions, type_mode);
+    let prelude = build_prelude(files, index, resolutions, file_paths, type_mode);
     let resolutions = ResolutionLookup::build(resolutions);
     let struct_ctx = prelude.struct_ctx();
 
@@ -414,11 +414,20 @@ pub fn assemble_prelude(
 /// [`build_prelude_decls`] (steps 1–2) over the normalized files (step 0) —
 /// see [`PreludeDecls`]'s doc for why running decl collection on normalized
 /// vs. raw HIR is byte-identical.
+///
+/// `file_paths` reaches the stamping pass, which qualifies each file's
+/// root-content scope path with it (#1504 — see
+/// [`hir::root_content_scope_path`]).
 #[must_use]
+#[expect(
+    clippy::implicit_hasher,
+    reason = "internal API, no need to generalize"
+)]
 pub fn build_prelude(
     files: &[(FileId, &hir::HirFile)],
     index: &SymbolIndex,
     resolutions: &ResolutionMap,
+    file_paths: &LookupMap<FileId, String>,
     type_mode: context::TypeMode,
 ) -> LirPrelude {
     let mut normalized: Vec<(FileId, hir::HirFile)> = files
@@ -429,7 +438,7 @@ pub fn build_prelude(
             (*id, h)
         })
         .collect();
-    hir::stamp_container_ids(&mut normalized, index);
+    hir::stamp_container_ids(&mut normalized, index, file_paths);
 
     let normalized_refs: Vec<(FileId, &hir::HirFile)> =
         normalized.iter().map(|(id, h)| (*id, h)).collect();
@@ -475,6 +484,16 @@ fn lower_root_content_chunks(
     for (chunk_index, &(file_id, hir_file)) in files.iter().enumerate() {
         let mut local_names = NameTable::new();
         let mut diagnostics = Vec::new();
+        // #1504: every path this allocator mints for the chunk below (inline
+        // sequence wrappers, the synthesized terminus) restarts per file, so
+        // qualify them by the owning file — the same qualifier the stamping
+        // pass gave this file's anonymous choice/gather containers. `ctx
+        // .scope_path` deliberately stays empty: it also drives author-label
+        // lookup (`LowerCtx::qualify_label`), and a root-level label is
+        // addressed by its bare name.
+        ids.set_path_prefix(hir::root_content_scope_path(
+            file_paths.get(&file_id).map(String::as_str),
+        ));
         let (stmts, mut block_children) = {
             let mut ctx = make_ctx(
                 file_id,
@@ -499,7 +518,7 @@ fn lower_root_content_chunks(
             lower_block_with_children(&hir_file.root_content, &mut ctx, &mut cc, &mut gc)
         };
         if chunk_index == last_chunk {
-            attach_root_final_gather(file_id, &mut block_children, &mut ids);
+            attach_root_final_gather(&mut block_children, &mut ids);
         }
         chunks.push((
             chunk::ScopeChunk::root_content(stmts, block_children, local_names.into_entries()),
@@ -1944,17 +1963,17 @@ const ROOT_TERMINUS_NAME: &str = "g-final";
 /// but `.brink` modules have no root weave to terminate.) Positionally this
 /// is also the only correct spot: the chunks concatenate into one root body,
 /// and C#'s implicit gather sits at the very end of it.
-fn attach_root_final_gather(
-    file_id: FileId,
-    children: &mut Vec<lir::Container>,
-    ids: &mut context::IdAllocator,
-) {
+fn attach_root_final_gather(children: &mut Vec<lir::Container>, ids: &mut context::IdAllocator) {
     // `#` never appears in a lowering scope path, so this key cannot collide
-    // with a real container address. Still keyed by the file whose chunk owns
-    // it — at most one terminus exists per program, but keeping the file in
-    // the key leaves single-file programs' addresses byte-identical to what
-    // #1448 shipped.
-    let terminus_id = ids.alloc_address(&format!("#root-terminus.{}", file_id.0));
+    // with a real container address. Content-pure since #1504: it used to be
+    // keyed `#root-terminus.{file_id}`, the one `alloc_address` call in this
+    // crate keyed by a `FileId` — an allocation-history-derived id (the
+    // editor mints a different `FileId` for the same file when a sibling is
+    // registered first), which `docs/fine-grained-salsa-proposal.md` §FG-4d
+    // forbids. The owning file now reaches the key through the allocator's
+    // path prefix (`IdAllocator::set_path_prefix`), which is derived from
+    // that file's project path instead.
+    let terminus_id = ids.alloc_address("#root-terminus");
 
     if !patch_root_loose_end(children, terminus_id) {
         return;
