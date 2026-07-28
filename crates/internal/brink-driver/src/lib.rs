@@ -20,7 +20,9 @@ pub use brink_db::{CompileProduct, LirProduct, ProjectDb, SourceTree};
 pub use brink_ir::FileId;
 pub use diagnostics::DiagnosticReport;
 pub use discover::DiscoverError;
-pub use source_tree::{GitRev, RealFs, is_native, native_source_root, relative_key};
+pub use source_tree::{
+    GitRev, RealFs, is_native, native_source_root, native_source_root_with_warnings, relative_key,
+};
 
 /// Pipeline orchestration wrapper around `ProjectDb`.
 pub struct Driver {

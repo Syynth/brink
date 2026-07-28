@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use brink_driver::{AnalysisOptions, Driver, RealFs};
 use brink_ir::Diagnostic;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::{CompileError, CompileOutput, ResolvedDiagnostic};
 
@@ -70,7 +70,10 @@ where
     driver.set_analysis_options(options);
 
     let entry_key = if brink_driver::is_native(Path::new(entry)) {
-        let root = brink_driver::native_source_root(Path::new(entry));
+        let (root, warnings) = brink_driver::native_source_root_with_warnings(Path::new(entry));
+        for warning in &warnings {
+            warn!("{warning}");
+        }
         let tree = RealFs::new(&root);
         driver.discover_native(&tree)?;
         brink_driver::relative_key(&root, Path::new(entry))
@@ -86,7 +89,10 @@ where
         // downstream reader when the registered root strips to nothing
         // (`root_relative_key` leaves an unrelated path unchanged), so this
         // never changes behavior for a project whose entry was already bare.
-        let root = brink_driver::native_source_root(Path::new(entry));
+        let (root, warnings) = brink_driver::native_source_root_with_warnings(Path::new(entry));
+        for warning in &warnings {
+            warn!("{warning}");
+        }
         driver
             .db_mut()
             .set_ink_root(Some(root.to_string_lossy().into_owned()));
