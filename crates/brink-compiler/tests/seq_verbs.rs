@@ -19,6 +19,11 @@
 //!   rejects for the pure quartet, and that `ComparatorWroteState` faults at
 //!   runtime for an opaque pure callback, is legal for the effectful pair —
 //!   neither is E119-gated, and the guard never fires for them;
+//! - `each`/`map_each`'s other headline effect — printed output reaching
+//!   the transcript instead of being captured and discarded — in both
+//!   statement position and inside a `{…}` interpolation slot, pinning the
+//!   ordering between a callback's own output and the surrounding literal
+//!   text;
 //! - strict-ink unreachability — the whole family is brink-dialect surface,
 //!   so the oracle corpus can never reach these ops.
 
@@ -318,6 +323,32 @@ fn each_runs_a_callback_with_legal_world_writes() {
 fn map_each_runs_a_callback_with_legal_world_writes() {
     let source = "VAR seen = 0\n~ temp a = #[1, 2, 3]\n~ temp b = map_each(a, #fn(tally))\n{b} seen={seen}\n-> END\n\n=== function tally(n: int): int ===\n~ seen = seen + n\n~ return n * 10\n";
     assert_eq!(run(source), "[10, 20, 30] seen=6\n");
+}
+
+/// The headline effectful contract — "output reaches the transcript" — is
+/// asserted in prose across the changeset, `docs/stdlib-spec.md` §4,
+/// `docs/stdlib-inventory.md`, `docs/book/src/toolchain/dialect/
+/// iteration.md`, `RuntimeError`'s docs and `call_callback`'s doc, but
+/// nothing before this test actually made a callback *emit text*: every
+/// existing `each`/`map_each` test only assigns a global. This is the
+/// `capture_output: false` branch at `vm.rs`'s `call_callback` exercised
+/// end to end, in statement position — `each` contributes no printed value
+/// of its own, so every character in the output is the callback's.
+#[test]
+fn each_callback_output_reaches_the_transcript_in_statement_position() {
+    let source = "~ temp a = #[1, 2, 3]\n~ each(a, #fn(shout))\n-> END\n\n=== function shout(n) ===\nLoud {n}!\n~ return n\n";
+    assert_eq!(run(source), "Loud 1!Loud 2!Loud 3!\n");
+}
+
+/// The same contract, but for `map_each` inside a `{…}` interpolation
+/// slot — slot evaluation runs before the surrounding literal text is
+/// emitted, so the callback's own output must land BEFORE the interpolated
+/// array value and before the literal text that follows the slot in
+/// source order. Pinning this ordering, not merely "doesn't fault".
+#[test]
+fn map_each_callback_output_reaches_the_transcript_inside_an_interpolation() {
+    let source = "~ temp a = #[1, 2]\nresult: {map_each(a, #fn(shout))}\n-> END\n\n=== function shout(n) ===\nLoud {n}!\n~ return n * 10\n";
+    assert_eq!(run(source), "Loud 1!Loud 2!result: [10, 20]\n");
 }
 
 // ── runtime dispatch faults (the gradual-mode residual) ──────────────
