@@ -1,6 +1,6 @@
 //! Compilation driver: file discovery, parsing, lowering, analysis, codegen.
 
-use std::io;
+use std::io::{self, Write};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -70,7 +70,10 @@ where
     driver.set_analysis_options(options);
 
     let entry_key = if brink_driver::is_native(Path::new(entry)) {
-        let root = brink_driver::native_source_root(Path::new(entry));
+        let (root, warnings) = brink_driver::native_source_root_with_warnings(Path::new(entry));
+        for warning in &warnings {
+            let _ = writeln!(io::stderr(), "warning: {warning}");
+        }
         let tree = RealFs::new(&root);
         driver.discover_native(&tree)?;
         brink_driver::relative_key(&root, Path::new(entry))
@@ -86,7 +89,10 @@ where
         // downstream reader when the registered root strips to nothing
         // (`root_relative_key` leaves an unrelated path unchanged), so this
         // never changes behavior for a project whose entry was already bare.
-        let root = brink_driver::native_source_root(Path::new(entry));
+        let (root, warnings) = brink_driver::native_source_root_with_warnings(Path::new(entry));
+        for warning in &warnings {
+            let _ = writeln!(io::stderr(), "warning: {warning}");
+        }
         driver
             .db_mut()
             .set_ink_root(Some(root.to_string_lossy().into_owned()));
