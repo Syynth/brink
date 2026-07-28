@@ -50,8 +50,12 @@ fn resolve_diagnostics(driver: &Driver, diags: Vec<Diagnostic>) -> Vec<ResolvedD
 /// walk of the project's source root (a `brink.toml` walk-up, or the
 /// entry's own directory if none exists — the single-file-project ruling),
 /// `read_file` unused since native has no per-caller content-provider
-/// need (the whole tree is read directly off disk). A `.ink` entry is
-/// unchanged: `read_file`-driven `INCLUDE` BFS.
+/// need (the whole tree is read directly off disk). A `.ink` entry still
+/// discovers via `read_file`-driven `INCLUDE` BFS, registering files under
+/// whatever spelling the caller passed — but also registers that same
+/// `brink.toml`-walk-up root (issue #1696) via `ProjectDb::set_ink_root`, so
+/// [`hir::root_content_scope_path`](brink_ir::hir::root_content_scope_path)'s
+/// qualifier is a root-relative key instead of the raw spelling.
 fn prepare_driver<F>(
     entry: &str,
     read_file: F,
@@ -72,6 +76,20 @@ where
         brink_driver::relative_key(&root, Path::new(entry))
     } else {
         driver.discover(entry, read_file)?;
+        // #1696: register the ink project root — the same `brink.toml`
+        // walk-up (or entry's own directory, single-file-project ruling)
+        // native compiles already use — so `hir::root_content_scope_path`'s
+        // qualifier (read through `ProjectDb::ink_root`) is a root-relative
+        // key rather than `entry`'s raw spelling. `main.ink`, `./main.ink`,
+        // and an absolute spelling of the same file now mint the same
+        // anonymous root-content `DefinitionId`s. A no-op for every
+        // downstream reader when the registered root strips to nothing
+        // (`root_relative_key` leaves an unrelated path unchanged), so this
+        // never changes behavior for a project whose entry was already bare.
+        let root = brink_driver::native_source_root(Path::new(entry));
+        driver
+            .db_mut()
+            .set_ink_root(Some(root.to_string_lossy().into_owned()));
         entry.to_string()
     };
 

@@ -20,7 +20,7 @@
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use brink_analyzer::{ModuleMap, ResolvedModule};
 use brink_ir::{Diagnostic, DiagnosticCode, FileId};
@@ -47,32 +47,63 @@ pub(crate) fn file_stem(path: &str) -> &str {
     name.strip_suffix(".ink").unwrap_or(name)
 }
 
-/// The **root-relative key** a native file's module identity is derived
-/// from, given the database's registered native source root (issue #1572).
+/// The **root-relative key** a path's identity is derived from, given a
+/// database-registered root — `native_root` for a `.brink` file's module
+/// identity (issue #1572), or `ink_root` for a `.ink` file's root-content
+/// scope-path qualifier (issue #1696, extending #1572's mechanism to ink).
+/// Generic over which root the caller passes: the strip logic itself has no
+/// language-specific behavior.
 ///
 /// [`native_module_path`] is contractually a function of a *root-relative*
-/// key. Native discovery (`brink_driver::discover_native`) already registers
-/// files under exactly such keys, so `root` is `None` there and `path` is
-/// returned untouched. A long-lived editor session is the other case: the LSP
+/// key, and so is [`hir::root_content_scope_path`](brink_ir::hir::root_content_scope_path).
+/// Native discovery (`brink_driver::discover_native`) already registers files
+/// under exactly such keys, so `native_root` is `None` there and `path` is
+/// returned untouched; ink's CLI discovery has no such `RealFs`-scoped tree,
+/// so `ink_root` is registered explicitly by `prepare_driver` instead. A
+/// long-lived editor session is the other case both roots serve: the LSP
 /// keys `ProjectDb` by **absolute OS path** (it must — every path it holds
 /// round-trips through a `file://` URI), so without the strip below every
-/// module name it minted embedded the machine's directory layout
+/// identity it minted embedded the machine's directory layout
 /// (`story::Users::…::market::barter`) and diverged from a real compile of the
-/// same tree. Normalizing here, at the one place the identity function is
+/// same tree. Normalizing here, at the one place each identity function is
 /// fed, is the house-rule-19a "normalize before you key" fix: the db keyspace
 /// stays absolute (and collision-free across workspace roots) while identity
 /// stays root-relative.
 ///
-/// The strip is purely lexical (`Path::strip_prefix`, component-wise — no
-/// filesystem access, so it is wasm-safe), and a `path` that does not live
-/// under `root` is returned unchanged rather than mangled: a file outside the
-/// configured tree keeps whatever key it was registered under, exactly as
-/// before this function existed.
-pub(crate) fn native_root_relative_key<'a>(root: Option<&str>, path: &'a str) -> Cow<'a, str> {
+/// Both `root` and `path` are absolutized first, via [`std::path::absolute`]
+/// (lexical `.`/`..` resolution against the process cwd — no filesystem
+/// access, so it stays wasm-safe: it either succeeds with no I/O or fails
+/// cleanly, it never touches disk), before the strip. A bare `Path::
+/// strip_prefix` without this is unsound whenever `root` and `path` are
+/// spelled with different qualifiers for the same file — e.g. `root` came
+/// back absolute from `native_source_root`'s #1413 retry (a `brink.toml`
+/// found only by walking up from an *absolutized* entry dir, because the
+/// entry was relatively spelled and its cwd-relative walk alone came up
+/// empty) while `path` is still `entry`'s raw relative spelling
+/// (`prepare_driver` registers the ink entry key verbatim): `main.ink`,
+/// `./main.ink`, and an absolute spelling of the same file would then strip
+/// to three *different* keys (`main.ink`, `./main.ink`, and the
+/// root-relative form) instead of agreeing — reopening the exact
+/// CLI-vs-`brink-lsp` divergence #1696 exists to close (review finding on
+/// #1706). Absolutizing both sides first means every spelling resolves to
+/// the same real path before the strip ever runs.
+///
+/// When [`std::path::absolute`] errors on either side (only possible if the
+/// process has no queryable cwd, e.g. wasm — see its doc), this falls back
+/// to the raw, unabsolutized strip so wasm callers keep exactly their prior
+/// (already root-relative-spelled) behavior instead of hard-erroring.
+///
+/// A `path` that does not live under `root` — even after absolutizing — is
+/// returned unchanged (the original, non-absolutized string) rather than
+/// mangled: a file outside the configured tree keeps whatever key it was
+/// registered under, exactly as before this function existed.
+pub(crate) fn root_relative_key<'a>(root: Option<&str>, path: &'a str) -> Cow<'a, str> {
     let Some(root) = root.filter(|r| !r.is_empty()) else {
         return Cow::Borrowed(path);
     };
-    match Path::new(path).strip_prefix(Path::new(root)) {
+    let root_abs = std::path::absolute(Path::new(root)).unwrap_or_else(|_| PathBuf::from(root));
+    let path_abs = std::path::absolute(Path::new(path)).unwrap_or_else(|_| PathBuf::from(path));
+    match path_abs.strip_prefix(&root_abs) {
         Ok(rel) => Cow::Owned(rel.to_string_lossy().into_owned()),
         Err(_) => Cow::Borrowed(path),
     }
@@ -81,7 +112,7 @@ pub(crate) fn native_root_relative_key<'a>(root: Option<&str>, path: &'a str) ->
 /// A native `.brink` file's module path, derived **purely** from its
 /// root-relative key (decision-log 2026-07-22 "Native module identity: pure
 /// function of the root-relative path"; charter §13.2: path on disk = path
-/// in language) — see [`native_root_relative_key`] for how a caller that
+/// in language) — see [`root_relative_key`] for how a caller that
 /// keys by absolute path obtains one. Directory segments become
 /// `::`-separated module walls, the file (`.brink` stripped) is the leaf, and
 /// `story::` is the absolute root:
@@ -257,15 +288,15 @@ mod tests {
     /// `discover_native` already keys root-relative — the key is the path,
     /// untouched.
     #[test]
-    fn native_root_relative_key_is_identity_without_a_root() {
+    fn root_relative_key_is_identity_without_a_root() {
         assert_eq!(
-            native_root_relative_key(None, "market/barter.brink"),
+            root_relative_key(None, "market/barter.brink"),
             "market/barter.brink"
         );
         // An empty root is treated as "no root", not as a prefix that
         // matches everything.
         assert_eq!(
-            native_root_relative_key(Some(""), "market/barter.brink"),
+            root_relative_key(Some(""), "market/barter.brink"),
             "market/barter.brink"
         );
     }
@@ -274,14 +305,14 @@ mod tests {
     /// tree root gets exactly the key `discover_native` would have produced —
     /// so `native_module_path` mints compile-identical module identity.
     #[test]
-    fn native_root_relative_key_strips_a_declared_root() {
+    fn root_relative_key_strips_a_declared_root() {
         let root = "/home/dev/game";
         assert_eq!(
-            native_root_relative_key(Some(root), "/home/dev/game/market/barter.brink"),
+            root_relative_key(Some(root), "/home/dev/game/market/barter.brink"),
             "market/barter.brink"
         );
         assert_eq!(
-            native_module_path(&native_root_relative_key(
+            native_module_path(&root_relative_key(
                 Some(root),
                 "/home/dev/game/market/barter.brink"
             )),
@@ -290,8 +321,36 @@ mod tests {
         );
         // A trailing separator on the root is the same root.
         assert_eq!(
-            native_root_relative_key(Some("/home/dev/game/"), "/home/dev/game/main.brink"),
+            root_relative_key(Some("/home/dev/game/"), "/home/dev/game/main.brink"),
             "main.brink"
+        );
+    }
+
+    /// Review finding on #1706: `native_source_root`'s #1413 absolutized
+    /// retry can hand back an ABSOLUTE root for an entry that was itself
+    /// registered under a relative spelling (`prepare_driver` registers the
+    /// ink entry key verbatim, never resolved against `root`). A bare
+    /// `Path::strip_prefix` without absolutizing both sides first cannot
+    /// match an absolute root against a relative path even when they name
+    /// the same real file, so `main.ink` and `./main.ink` used to strip to
+    /// two different keys (each left unchanged) once `root` was absolute.
+    /// Uses the real process cwd as `root` — no filesystem access, no
+    /// `chdir`, no file needs to exist — precisely because
+    /// [`std::path::absolute`] resolves a relative `path` against cwd
+    /// lexically; the full `native_source_root`-driven, real-`brink.toml`
+    /// version of this same scenario lives at
+    /// `crates/brink-compiler/tests/issue_1504_root_content_identity.rs`'s
+    /// `root_content_ids_are_stable_when_brink_toml_lives_above_the_entry_dir`.
+    #[test]
+    fn root_relative_key_absolutizes_a_relative_path_against_an_absolute_root() {
+        let cwd = std::env::current_dir().expect("process must have a cwd");
+        let root = cwd.to_string_lossy().into_owned();
+
+        assert_eq!(root_relative_key(Some(&root), "main.ink"), "main.ink");
+        assert_eq!(root_relative_key(Some(&root), "./main.ink"), "main.ink");
+        assert_eq!(
+            root_relative_key(Some(&root), "sub/main.ink"),
+            "sub/main.ink"
         );
     }
 
@@ -300,13 +359,13 @@ mod tests {
     /// whole components, so a root that is only a *textual* prefix of the
     /// path (`…/game` vs `…/game-assets`) is not a match either.
     #[test]
-    fn native_root_relative_key_leaves_paths_outside_the_root_alone() {
+    fn root_relative_key_leaves_paths_outside_the_root_alone() {
         assert_eq!(
-            native_root_relative_key(Some("/home/dev/game"), "/elsewhere/stray.brink"),
+            root_relative_key(Some("/home/dev/game"), "/elsewhere/stray.brink"),
             "/elsewhere/stray.brink"
         );
         assert_eq!(
-            native_root_relative_key(Some("/home/dev/game"), "/home/dev/game-assets/a.brink"),
+            root_relative_key(Some("/home/dev/game"), "/home/dev/game-assets/a.brink"),
             "/home/dev/game-assets/a.brink"
         );
     }

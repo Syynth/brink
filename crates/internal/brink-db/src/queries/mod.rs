@@ -315,9 +315,24 @@ pub(crate) struct ProjectInput {
     /// the LSP keys by absolute OS path). `None` — every compile path, where
     /// `discover_native` already keys root-relative — means "the keys are
     /// already root-relative", and is byte-identical to the pre-#1572 world.
-    /// Only [`crate::modules::native_root_relative_key`] reads it.
+    /// Only [`crate::modules::root_relative_key`] reads it, for native module
+    /// identity ([`module_map_query`]'s native branch).
     #[returns(ref)]
     pub native_root: Option<String>,
+    /// The directory `.ink` keys are root-relative *to*, for
+    /// [`hir::root_content_scope_path`](brink_ir::hir::root_content_scope_path)'s
+    /// qualifier (issue #1696) — ink's sibling of `native_root` above, reusing
+    /// the same [`crate::modules::root_relative_key`] mechanism #1572 built.
+    /// Unlike native, ink's CLI discovery has no `RealFs`-scoped tree to key
+    /// root-relative "for free": `brink-driver`'s `discover` BFS registers
+    /// files under whatever spelling the caller passed `prepare_driver`
+    /// (`brink-compiler/src/driver.rs`), so `main.ink`, `./main.ink`, and an
+    /// absolute spelling of the same file used to mint different anonymous
+    /// root-content `DefinitionId`s for byte-identical source. `None` (no
+    /// caller has registered a root) is byte-identical to the pre-#1696
+    /// world — `root_relative_key` returns every path unchanged.
+    #[returns(ref)]
+    pub ink_root: Option<String>,
 }
 
 // ─── Layer 1: per-file queries ───────────────────────────────────────
@@ -637,7 +652,7 @@ pub(crate) fn module_map_query(
                 .module
                 .as_ref()
                 .and_then(|m| m.was.as_ref().map(|(old, _)| old.clone()));
-            let key = crate::modules::native_root_relative_key(native_root, f.path(db));
+            let key = crate::modules::root_relative_key(native_root, f.path(db));
             map.insert(
                 f.file_id(db),
                 brink_analyzer::ResolvedModule {
@@ -1681,8 +1696,18 @@ pub(crate) fn normalized_stamped_query(
     // two files' root weaves no longer mint the same anonymous ids. Reading
     // `path` here adds no invalidation edge this memo did not already have —
     // it is an input field of the `SourceFile` it is already keyed on.
-    let file_paths: LookupMap<FileId, String> =
-        std::iter::once((file.file_id(db), file.path(db).clone())).collect();
+    //
+    // #1696: the qualifier is the file's *root-relative* key, not its raw
+    // registered path — `crate::modules::root_relative_key` against the
+    // project's registered `ink_root` (`None` for every ordinary compile,
+    // where it is a no-op), the same normalization `native_root` already
+    // gives `.brink` module identity (issue #1572).
+    let ink_root = project.ink_root(db).as_deref();
+    let file_paths: LookupMap<FileId, String> = std::iter::once((
+        file.file_id(db),
+        crate::modules::root_relative_key(ink_root, file.path(db)).into_owned(),
+    ))
+    .collect();
     brink_ir::stamp_container_ids(&mut slice, &resolved.index, &file_paths);
     let [(_, stamped)] = slice;
     Arc::new(stamped)
@@ -1843,10 +1868,17 @@ pub(crate) fn chunk_lowering_ctx_query(
         TypePolicy::Strict => brink_ir::lir::TypeMode::Strict,
         TypePolicy::Gradual => brink_ir::lir::TypeMode::Gradual,
     };
+    // #1696: root-relative, not raw — see `normalized_stamped_query`'s doc.
+    let ink_root = project.ink_root(db).as_deref();
     let file_paths: LookupMap<FileId, String> = project
         .files(db)
         .iter()
-        .map(|f| (f.file_id(db), f.path(db).clone()))
+        .map(|f| {
+            (
+                f.file_id(db),
+                crate::modules::root_relative_key(ink_root, f.path(db)).into_owned(),
+            )
+        })
         .collect();
     ChunkLoweringCtxResult {
         ctx: Arc::new(brink_ir::lir::ChunkLoweringCtx::new(
@@ -1995,9 +2027,21 @@ pub(crate) fn lir_lowering_query(db: &dyn salsa::Database, project: ProjectInput
     // directly rather than through this order.
     let by_id: LookupMap<FileId, SourceFile> = files.iter().map(|f| (f.file_id(db), *f)).collect();
     let topo = compilation_closure_files(db, project);
+    // #1696: root-relative, not raw — see `normalized_stamped_query`'s doc.
+    // Feeds `lower_root_content_for_prelude`'s `IdAllocator::set_path_prefix`
+    // call below, which must agree with `normalized_stamped_query`'s
+    // pre-stamped HIR ids byte-for-byte, so both use the same normalization.
+    let ink_root = project.ink_root(db).as_deref();
     let paths: LookupMap<FileId, String> = topo
         .iter()
-        .filter_map(|id| by_id.get(id).map(|f| (*id, f.path(db).clone())))
+        .filter_map(|id| {
+            by_id.get(id).map(|f| {
+                (
+                    *id,
+                    crate::modules::root_relative_key(ink_root, f.path(db)).into_owned(),
+                )
+            })
+        })
         .collect();
 
     // TM-4c (`docs/typed-mode-spec.md` §6): the project's `types` policy

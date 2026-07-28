@@ -437,26 +437,38 @@ impl Backend {
         self.publish_config_outcome(&outcome).await;
     }
 
-    /// Register this session's native source root with `ProjectDb` (#1572),
-    /// so the module identity the editor mints for a `.brink` file equals the
-    /// identity a real compile of the same tree mints.
+    /// Register this session's source root with `ProjectDb`, both as the
+    /// native root (#1572) and the ink root (#1696), so the identity the
+    /// editor mints for a `.brink` file's module or an `.ink` file's
+    /// root-content scope equals what a real compile of the same tree mints.
     ///
     /// The LSP keys `ProjectDb` by absolute OS path — it must, since every
     /// path it holds round-trips through a `file://` URI — but a native
-    /// file's module is contractually a function of its *root-relative* key.
-    /// Declaring the root closes that gap at the one place the identity
-    /// function is fed (see [`brink_db::ProjectDb::set_native_root`]).
+    /// file's module and an ink file's root-content qualifier are both
+    /// contractually a function of a *root-relative* key. Declaring the same
+    /// root under both fields closes that gap at the one place each identity
+    /// function is fed (see [`brink_db::ProjectDb::set_native_root`] and
+    /// [`brink_db::ProjectDb::set_ink_root`]) — one workspace has one source
+    /// root regardless of which of the two languages a given file is, so
+    /// there is no reason for the two fields to ever diverge here (unlike
+    /// `brink-compiler`'s `prepare_driver`, which computes a *per-entry* root
+    /// from the entry's own directory, since a one-shot compile has no
+    /// broader "workspace" to anchor to).
     ///
     /// Called from `initialize` and from every later
     /// [`reload_brink_toml`](Self::reload_brink_toml). Goes through
     /// [`mutate_db`](Self::mutate_db) so the content generation advances:
-    /// changing the root changes every native module name, which is a real
-    /// input change the background pass must re-analyze against.
+    /// changing the root changes every native module name and every ink
+    /// root-content id, both real input changes the background pass must
+    /// re-analyze against.
     fn register_native_root(&self, roots: &[PathBuf], outcome: &ConfigLoadOutcome) {
         let root = native_source_root(roots, outcome)
             .map(|p| p.to_string_lossy().into_owned())
             .filter(|p| !p.is_empty());
-        self.mutate_db(|db| db.set_native_root(root));
+        self.mutate_db(|db| {
+            db.set_native_root(root.clone());
+            db.set_ink_root(root);
+        });
     }
 
     /// Publish per-file diagnostics (parse + lowering only, no analysis).

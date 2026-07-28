@@ -26,8 +26,27 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use brink_runtime::{DotNetRng, Line, Story};
+
+/// Every test in this file compiles through `prepare_driver`, which calls
+/// `brink_driver::native_source_root` — and for a bare/`./`-relative entry
+/// (every `compile_mem` call below passes one), that walks up from the
+/// *real process cwd* looking for a `brink.toml`. Only
+/// `root_content_ids_are_stable_when_brink_toml_lives_above_the_entry_dir`
+/// below actually changes cwd (there is no other way to exercise a
+/// relatively-spelled entry against a real, disk-resident `brink.toml`),
+/// but every test here is implicitly cwd-sensitive, so all of them take this
+/// same lock for their duration — otherwise a `chdir` landing mid-test could
+/// make an unrelated test's two sequential `compile_mem` calls resolve
+/// against two different roots and spuriously diverge.
+fn cwd_lock() -> MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 /// Compile from an in-memory file system, mirroring `driver.rs`'s helper.
 fn compile_mem(
@@ -52,6 +71,7 @@ fn compile_mem(
 /// `0x1dde84850f175fb`, `0x1ef2ee91775101d`).
 #[test]
 fn included_and_entry_root_weaves_get_distinct_container_ids() {
+    let _cwd_guard = cwd_lock();
     let files: HashMap<&str, &str> = HashMap::from([
         (
             "main.ink",
@@ -90,6 +110,7 @@ fn included_and_entry_root_weaves_get_distinct_container_ids() {
 /// instructed.
 #[test]
 fn included_and_entry_root_weaves_compile_without_tripping_the_uniqueness_guard() {
+    let _cwd_guard = cwd_lock();
     let files: HashMap<&str, &str> = HashMap::from([
         (
             "main.ink",
@@ -122,6 +143,7 @@ fn included_and_entry_root_weaves_compile_without_tripping_the_uniqueness_guard(
 /// `MAIN-ONE-BODY`; `INC-ONE-BODY` never executed.
 #[test]
 fn choosing_an_included_files_choice_runs_that_files_body() {
+    let _cwd_guard = cwd_lock();
     let files: HashMap<&str, &str> = HashMap::from([
         (
             "main.ink",
@@ -189,6 +211,7 @@ fn choosing_an_included_files_choice_runs_that_files_body() {
 #[test]
 fn root_content_translation_scope_id_is_unaffected_by_the_qualifier() {
     const ENTRY: &str = "* main one\n* main two\n- main gathered\n";
+    let _cwd_guard = cwd_lock();
 
     let scope_ids = |data: &brink_format::StoryData| -> Vec<u64> {
         data.line_tables
@@ -226,42 +249,145 @@ fn root_content_translation_scope_id_is_unaffected_by_the_qualifier() {
     );
 }
 
-/// KNOWN LIMITATION, flagged in review on #1693: the qualifier
+/// #1696 (follow-up to #1693's review): the qualifier
 /// [`hir::root_content_scope_path`](brink_ir::hir::root_content_scope_path)
-/// uses is the file's **raw registered path**, not a normalized
-/// root-relative key. Two spellings of what is, on disk, the *same* file
-/// therefore mint DIFFERENT anonymous root-content `DefinitionId`s —
-/// `brink compile main.ink` and `brink compile ./main.ink` disagree, and so
-/// do the CLI (relative spelling) and `brink-lsp` (absolute-OS-path
-/// spelling, `backend.rs`'s `uri_to_path`) for the identical project tree.
+/// uses is now a **root-relative key**
+/// (`brink_db::modules::root_relative_key` against `ProjectDb::ink_root`,
+/// registered by `prepare_driver` via `brink_driver::native_source_root` —
+/// the same `brink.toml`-walk-up rule native compiles already used, extended
+/// to ink), not the file's raw registered path. Three spellings of what is,
+/// on disk, the *same* file therefore now mint the SAME anonymous
+/// root-content `DefinitionId`s: `brink compile main.ink`, `./main.ink`, and
+/// an absolute spelling all agree — closing the CLI-vs-`brink-lsp` (absolute
+/// OS path, `backend.rs`'s `uri_to_path`) disagreement this test used to pin
+/// as a known limitation.
 ///
-/// This test pins that limitation rather than letting it drift silently: if
-/// a future change normalizes the qualifier (the tracked follow-up —
-/// reusing `brink_driver::native_source_root` +
-/// `brink_db::modules::native_root_relative_key`, extended to ink, per the
-/// review finding), this assertion starts failing and must be flipped to
-/// `assert_eq!` alongside updating `docs/root-content-identity-findings.md`'s
-/// "Known limitation" section and the `.changeset` entry that describe it —
-/// not silently deleted.
+/// ⚠ This is the identity break the fix accepts, not a regression: every
+/// project's anonymous root-content ids move once more (on top of #1504's
+/// one-time move) for any entry whose registered spelling was not already
+/// bare-relative. See `.changeset/issue-1696-ink-root-content-key-
+/// normalization.md` for the save/translation-impact writeup.
 #[test]
-fn root_content_ids_are_sensitive_to_entry_path_spelling_known_limitation() {
+fn root_content_ids_are_stable_across_entry_path_spellings() {
+    let _cwd_guard = cwd_lock();
     let content = "* one\n* two\n- gathered\n";
     let bare: HashMap<&str, &str> = HashMap::from([("main.ink", content)]);
     let dotslash: HashMap<&str, &str> = HashMap::from([("./main.ink", content)]);
+    let absolute: HashMap<&str, &str> =
+        HashMap::from([("/nonexistent-brink-test-root/proj/main.ink", content)]);
 
     let bare_data = compile_mem("main.ink", &bare).unwrap();
     let dotslash_data = compile_mem("./main.ink", &dotslash).unwrap();
+    let absolute_data =
+        compile_mem("/nonexistent-brink-test-root/proj/main.ink", &absolute).unwrap();
 
     let ids = |data: &brink_format::StoryData| -> Vec<u64> {
         data.containers.iter().map(|c| c.id.to_raw()).collect()
     };
 
-    assert_ne!(
+    assert_eq!(
         ids(&bare_data),
         ids(&dotslash_data),
-        "byte-identical content compiled under two spellings of the same path \
-         minted the SAME container ids — the known spelling-sensitivity \
-         limitation appears to be fixed; update this test (and the docs it \
-         references) instead of deleting it",
+        "byte-identical content compiled under `main.ink` vs `./main.ink` \
+         minted DIFFERENT container ids — the #1696 root-relative-key \
+         normalization regressed",
     );
+    assert_eq!(
+        ids(&bare_data),
+        ids(&absolute_data),
+        "byte-identical content compiled under `main.ink` vs an absolute \
+         spelling of the same file minted DIFFERENT container ids — the \
+         #1696 root-relative-key normalization regressed",
+    );
+}
+
+/// A unique, empty directory under the system temp dir — real disk, not the
+/// in-memory `compile_mem` fixture, because this test's whole point is
+/// `native_source_root`'s real `brink.toml`-walk-up behavior, which only
+/// runs against a real filesystem.
+fn unique_temp_dir(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-test-{tag}-{}-{:?}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir)
+        .unwrap_or_else(|e| panic!("create temp dir {}: {e}", dir.display()));
+    dir
+}
+
+/// Restores the process cwd on drop (including on panic/unwind) — used by
+/// `root_content_ids_are_stable_when_brink_toml_lives_above_the_entry_dir`,
+/// the one test in this file that actually `chdir`s.
+struct RestoreCwd(std::path::PathBuf);
+impl Drop for RestoreCwd {
+    fn drop(&mut self) {
+        let _ = std::env::set_current_dir(&self.0);
+    }
+}
+
+/// Review finding on #1706: `root_content_ids_are_stable_across_entry_path_
+/// spellings` above only exercises `root = "."` (no `brink.toml` found at
+/// all, since `compile_mem` has no real filesystem) — the one case where a
+/// bare `Path::strip_prefix` already happens to work for both `main.ink` and
+/// `./main.ink`. It never reaches the case that actually motivated this fix:
+/// a `brink.toml` living *above* the entry's own directory, which sends
+/// `native_source_root` down its #1413 absolutized-retry path and hands back
+/// an ABSOLUTE root for a relatively-spelled entry.
+///
+/// Real disk, real `brink.toml`, real `chdir` into the entry's own directory
+/// — the only way a bare `main.ink` / `./main.ink` spelling is meaningful at
+/// all (both are resolved against the process cwd by the OS, not by this
+/// test). Guarded by `cwd_lock` for the whole body; `chdir` is restored
+/// (even on panic, via the drop guard) before the lock is released.
+#[test]
+fn root_content_ids_are_stable_when_brink_toml_lives_above_the_entry_dir() {
+    let _cwd_guard = cwd_lock();
+    let restore_guard = RestoreCwd(std::env::current_dir().expect("process must have a cwd"));
+
+    let root_dir = unique_temp_dir("brink-toml-above-entry-dir");
+    // `brink.toml` lives ONE directory above the entry — never in the
+    // entry's own directory.
+    std::fs::write(root_dir.join("brink.toml"), "[project]\n").expect("write brink.toml");
+    let entry_dir = root_dir.join("sub");
+    std::fs::create_dir_all(&entry_dir).expect("mkdir sub");
+    std::fs::write(entry_dir.join("main.ink"), "* one\n* two\n- gathered\n")
+        .expect("write main.ink");
+
+    std::env::set_current_dir(&entry_dir).expect("chdir into the entry's own directory");
+
+    let bare = brink_compiler::compile_path(std::path::Path::new("main.ink"))
+        .expect("bare relative spelling must compile");
+    let dotslash = brink_compiler::compile_path(std::path::Path::new("./main.ink"))
+        .expect("`./`-relative spelling must compile");
+    let absolute = brink_compiler::compile_path(&entry_dir.join("main.ink"))
+        .expect("absolute spelling must compile");
+
+    let ids = |data: &brink_format::StoryData| -> Vec<u64> {
+        data.containers.iter().map(|c| c.id.to_raw()).collect()
+    };
+
+    assert_eq!(
+        ids(&bare.data),
+        ids(&dotslash.data),
+        "`main.ink` vs `./main.ink`, compiled against a brink.toml living \
+         ABOVE the entry's directory (so native_source_root's absolutized \
+         retry hands back an absolute root for a relatively-spelled entry), \
+         minted DIFFERENT container ids — root_relative_key must absolutize \
+         both sides before stripping",
+    );
+    assert_eq!(
+        ids(&bare.data),
+        ids(&absolute.data),
+        "`main.ink` vs an absolute spelling, compiled against a brink.toml \
+         living ABOVE the entry's directory, minted DIFFERENT container \
+         ids — root_relative_key must absolutize both sides before \
+         stripping",
+    );
+
+    drop(restore_guard);
+    std::fs::remove_dir_all(&root_dir).expect("cleanup temp dir");
 }
