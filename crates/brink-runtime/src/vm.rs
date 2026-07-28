@@ -2932,8 +2932,8 @@ mod tests {
             depth: 1,
             verb: "map",
         };
-        let err = guard_comparator_write(&flow, "advanced the random number generator")
-            .unwrap_err();
+        let err =
+            guard_comparator_write(&flow, "advanced the random number generator").unwrap_err();
         assert!(
             matches!(
                 err,

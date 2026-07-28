@@ -110,11 +110,10 @@ fn run_expecting_fault(source: &str) -> String {
 fn arity_warning(source: &str) -> String {
     let out = compile_brink(source, Some(TypePolicy::Gradual))
         .expect("wrong arity is a warning, not a compile error");
-    out.warnings
-        .iter()
-        .find(|d| d.code == DiagnosticCode::E031)
-        .map(|d| d.message.clone())
-        .unwrap_or_else(|| panic!("expected E031, got {:?}", out.warnings))
+    let Some(d) = out.warnings.iter().find(|d| d.code == DiagnosticCode::E031) else {
+        panic!("expected E031, got {:?}", out.warnings)
+    };
+    d.message.clone()
 }
 
 #[test]
@@ -139,7 +138,10 @@ fn fold_arity_mismatch_is_e031() {
     let message = arity_warning(
         "~ temp a = #[1]\n~ temp b = fold(a, 0)\n{b}\n-> END\n\n=== function add(x, y) ===\n~ return x + y\n",
     );
-    assert!(message.contains("`fold` expects 3 argument(s)"), "{message}");
+    assert!(
+        message.contains("`fold` expects 3 argument(s)"),
+        "{message}"
+    );
 }
 
 // ── E119: the pure-callback contract gate, all three verbs ───────────
@@ -244,7 +246,10 @@ fn fold_with_a_non_function_callback_faults() {
 fn filter_predicate_returning_a_non_bool_faults() {
     let source = "~ temp a = #[1]\n~ temp b = filter(a, #fn(nonsense))\n{b}\n-> END\n\n=== function nonsense(n) ===\n~ return 7\n";
     let message = run_expecting_fault(source);
-    assert!(message.contains("`filter` callback must return a bool"), "{message}");
+    assert!(
+        message.contains("`filter` callback must return a bool"),
+        "{message}"
+    );
 }
 
 /// The dev-mode world-write guard is shared with `sort_by` but must report

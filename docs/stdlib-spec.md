@@ -173,6 +173,15 @@ cross-referenced so views ≠ projections.
   effectful one (`map_each`); the name is the speed bump. The
   trio's rejection error names both exits: "make it pure, or say
   map_each." Further `_each` variants only on evidence.
+  *(As-built 2026-07-28, issue #1679 first slice: the pure trio
+  `map`/`filter`/`fold` ships — one `SeqVerb` opcode, callbacks
+  evaluated re-entrantly per element with output isolated, purity
+  gated by E119 where the callback's origin is an inline `#fn(target)`.
+  `filter_map`, `each` and `map_each` are NOT built yet, so the
+  rejection message names the effectful exit as pending rather than as
+  advice. The gate cannot see through a fn value at all — `Ty::Fn`
+  carries no effect rows, issue #1680 — so "pure-required" is enforced
+  only at syntactically-visible callback origins today.)*
 - 🔶 **Mutating iteration — `for ref m in maps { m[k] = v }`**
   (proposed; arose from the §5 array-of-maps case): a ref-binding
   in `for` over arrays, desugaring to index-based access so

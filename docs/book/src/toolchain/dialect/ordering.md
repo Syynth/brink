@@ -468,7 +468,7 @@ registered order speaks for the type everywhere, sight unseen.)
 | `E056` | `sort`/`sort_by`/`heap_push` used in expression position — they return nothing | both |
 | `E058` | wrong argument count on `sort`/`sort_by`/`heap_push` — names the expected signature | both |
 | `E118` | a protocol impl registration names a numeric-tower kind — tower kinds are compiler-known and not orderable (registration is a programmatic surface today; no source spelling reaches it) | both |
-| `E119` | a provably impure/unsilent `#fn` comparator on `sort_by`/`sorted_by` — exceedance-only | both |
+| `E119` | a provably impure/unsilent `#fn` comparator on `sort_by`/`sorted_by` — exceedance-only (the same code also gates the fn-value verbs `map`/`filter`/`fold`) | both |
 
 And the runtime's side of the line, all turn-terminating faults:
 `NotOrderable` (an element outside the roster, or a cross-type pair);
