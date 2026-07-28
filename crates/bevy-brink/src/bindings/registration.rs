@@ -417,7 +417,14 @@ pub trait BrinkBindingsAppExt {
     /// drive it via `run_system_with` between suspensions; the binding can
     /// therefore query anything in the World, with no upfront declaration.
     ///
-    /// ```ignore
+    /// ```no_run
+    /// # use bevy_app::App;
+    /// # use bevy_ecs::component::Component;
+    /// # use bevy_ecs::system::{In, Query};
+    /// # use bevy_brink::{BrinkBindingsAppExt, BrinkQueryInput, Value};
+    /// # #[derive(Component)]
+    /// # struct Enemy;
+    /// # let mut app = App::new();
     /// fn enemy_count(In((_e, _args)): In<BrinkQueryInput>, q: Query<&Enemy>) -> Value {
     ///     Value::Int(q.iter().count() as i32)
     /// }
@@ -455,7 +462,11 @@ pub trait BrinkBindingsAppExt {
     /// (heavy compute, IO, network). For World-dependent async, use
     /// [`bind_brink_async`](Self::bind_brink_async).
     ///
-    /// ```ignore
+    /// ```no_run
+    /// # use bevy_app::App;
+    /// # use bevy_brink::{BrinkBindingsAppExt, Value};
+    /// # async fn compute_roll(n: i32) -> i32 { n }
+    /// # let mut app = App::new();
     /// app.bind_brink_task::<(), _, _>("expensive_roll", |args| async move {
     ///     let n = args.first().and_then(Value::as_int).unwrap_or(1);
     ///     Value::Int(compute_roll(n).await)
