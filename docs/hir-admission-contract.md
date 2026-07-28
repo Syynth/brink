@@ -277,8 +277,11 @@ happy path is: native constructs lower to *existing* HIR nodes. Where they do:
    per the 2026-07-19 ruling (Rust pipes, colon returns, by-value capture,
    `E156` for a write to a captured binding). `FnLiteral` remains what it
    always was — partial application over a *named* target — a different
-   shape, not a substitute. Codegen has no runtime representation yet; LIR
-   lowering fences on a targeted `E052` until lambda lifting lands.
+   shape, not a substitute. **Lambda lifting landed** (#1709): LIR lowering
+   synthesizes a top-level function from the lambda body and creates an
+   ordinary fn value over it (`lir::lower::lambda`), so the targeted `E052`
+   codegen fence that stood here is retired. Still unrepresentable: the
+   lifted function's **effect row**, because `Ty::Fn` carries none (#1680).
 5. **blocks-as-values** (watch list). No HIR support; `Stmt`/`Expr` are separated
    (F-K). *Defer to a semantics round (parking-lot); it is not same-semantics.*
 6. **Deep container nesting >2** (watch list). No HIR support; the model,

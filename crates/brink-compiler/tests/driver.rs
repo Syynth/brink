@@ -234,56 +234,136 @@ fn compile_path_native_multi_file_no_brink_toml() {
 }
 
 /// A lambda in a real `.brink` project, compiled through the production
-/// entry point (issue #1685). Two facts, both user-visible:
+/// entry point and **run** (issues #1685 and #1709).
 ///
-/// 1. the blanket `E129` ("construct not supported by this lowering") that
-///    used to be a lambda's only outcome is gone — the lambda lowers, and
-///    its body is analyzed like any other code;
-/// 2. what stops the compile now is the targeted codegen fence (`E052`),
-///    because an anonymous body still has no runtime representation.
+/// This assertion used to point the other way. Through #1685 a lambda
+/// lowered to HIR and then stopped at a targeted `E052` codegen fence
+/// (`lir::lower::expr::lower_lambda_fence`), because an anonymous body had
+/// no runtime representation; this test pinned that fence green, which is
+/// precisely why nothing signalled that the fn-value verb layer (#1679)
+/// could not actually be handed a lambda. #1709 lifts the lambda into a
+/// synthesized function value, so the fence is gone and the user-visible
+/// fact to pin is the opposite one: the lambda compiles, is *called*, and
+/// its result reaches the transcript.
 #[test]
-fn compile_path_native_lambda_reports_the_codegen_fence_not_the_unsupported_fence() {
+fn compile_path_native_lambda_lifts_to_a_callable_function_value() {
+    let output = compile_and_run_native(
+        "lambda-lift",
+        "fn tally(n: int): int {\n  let add = |x| x + 1;\n  return add(n);\n}\n\n\
+         flow main() {\n  Tally: {tally(41)} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Tally: 42"),
+        "the lambda must be lifted to a real function value and invoked, got: {output:?}"
+    );
+}
+
+/// The by-value capture half of lambda lifting (RULED 2026-07-19, issue
+/// #1709): a lambda's read of an enclosing local is snapshotted into the
+/// closure environment **at the point the lambda value is made**, so a
+/// later write to that local cannot be seen through the already-created
+/// value. `bump` is created while `step` is `1`, `step` then becomes `100`,
+/// and the call still adds `1`.
+#[test]
+fn compile_path_native_lambda_captures_by_value_at_creation() {
+    let output = compile_and_run_native(
+        "lambda-capture",
+        "fn shifted(): int {\n  let step = 1;\n  let bump = |x| x + step;\n  \
+         step = 100;\n  return bump(5);\n}\n\n\
+         flow main() {\n  Shifted: {shifted()} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Shifted: 6"),
+        "a capture is a creation-site snapshot, not a live read, got: {output:?}"
+    );
+}
+
+/// Two lifting edges the tier1-native golden case does not reach (#1709).
+///
+/// `tailless` — a braced body whose block ends in a **statement**: "last
+/// expression is the value" has no last expression, so the value comes from
+/// the explicit `return` inside the block, which (per the 2026-07-19
+/// ruling) leaves the *lambda*, not the enclosing function. Lifting must
+/// therefore not append a synthetic terminal `Return` here; if it returned
+/// from the wrong frame, `tailless` would never reach `f(41)`.
+///
+/// `nested` — **transitive** capture: `inner` reads `outer`, a local of the
+/// frame two levels out. `outer` is not free in `inner`'s own enclosing
+/// frame by accident — it has to be captured by `make` *and* re-captured by
+/// `inner` for the read to resolve, which is exactly what the free-name
+/// walk's nested-lambda arm is for.
+#[test]
+fn compile_path_native_lambda_tailless_body_and_transitive_capture() {
+    let output = compile_and_run_native(
+        "lambda-edges",
+        "fn tailless() {\n  let f = |x| { return x + 1; };\n  return f(41);\n}\n\n\
+         fn nested() {\n  let outer = 10;\n  \
+         let make = |y| { let inner = |z| z + outer; inner(y) };\n  return make(5);\n}\n\n\
+         flow main() {\n  Tailless: {tailless()}\n  Nested: {nested()} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Tailless: 42"),
+        "an explicit `return` must leave the lambda, not the enclosing fn, got: {output:?}"
+    );
+    assert!(
+        output.contains("Nested: 15"),
+        "a nested lambda's read of a two-levels-out local must capture transitively, \
+         got: {output:?}"
+    );
+}
+
+/// A lambda handed straight to the pure trio (`docs/stdlib-spec.md` §4,
+/// issue #1679) — the interaction #1709 exists to unblock. `#fn(target)`
+/// over a named function was the only fn-value spelling that reached these
+/// ops before lifting landed.
+#[test]
+fn compile_path_native_lambda_is_a_legal_verb_callback() {
+    let output = compile_and_run_native(
+        "lambda-verb-callback",
+        "fn doubled() {\n  return map([1, 2, 3], |x| x * 2);\n}\n\n\
+         flow main() {\n  Doubled: {doubled()} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Doubled: [2, 4, 6]"),
+        "a lambda literal must be a legal `map` callback, got: {output:?}"
+    );
+}
+
+/// A lambda reading its own `let` name — recursion — is a compile-time
+/// refusal (`E158`), not a compile-clean runtime fault (issue #1709
+/// review). `f`'s initializer is scanned for captures *before* `let f = …`
+/// finishes binding `f`, so `f` has no temp slot yet in the enclosing frame
+/// even though the analyzer resolves it as a real local; falling through
+/// would let call lowering target `f`'s own `let`-declaration id as though
+/// it were a callable function — a miscompile that previously only
+/// surfaced as `RuntimeError::UnresolvedDefinition` when `f` called itself.
+#[test]
+fn compile_path_native_lambda_self_reference_is_e158() {
     let dir = std::env::temp_dir().join(format!(
-        "brink-compiler-native-lambda-{}",
+        "brink-compiler-native-lambda-self-ref-{}",
         std::process::id()
     ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
         dir.join("main.brink"),
-        "fn tally(n: int): int {\n  let add = |x| x + 1;\n  return n;\n}\n\n\
-         flow main() {\n  Hello. -> END\n}\n",
+        "fn a() {\n  let f = |x| {\n    if x <= 0 { return 0; }\n    \
+         return f(x - 1) + 1;\n  };\n  return f(3);\n}\n\n\
+         flow main() {\n  Out: {a()} -> END\n}\n",
     )
     .unwrap();
 
     let result = brink_compiler::compile_path(&dir.join("main.brink"));
     std::fs::remove_dir_all(&dir).ok();
 
-    let err = result.expect_err("a lambda has no runtime representation yet");
+    let err = result.expect_err(
+        "a lambda reading its own not-yet-bound `let` name (recursion) must refuse to \
+         compile, not silently target the wrong container and fault at runtime",
+    );
     let codes = diagnostic_codes(&err);
     assert!(
-        codes.contains(&"E052"),
-        "expected the targeted lambda codegen fence (E052), got: {codes:?}"
-    );
-    assert!(
-        !codes.contains(&"E129"),
-        "the lambda must no longer hit the blanket unsupported-construct fence: {codes:?}"
-    );
-    // E052 is a generic "brink extension not yet implemented" title shared
-    // with the `#fn` and `ref` fences (`hir::diagnostics::DiagnosticCode`),
-    // so asserting the code alone would let this test go green on a
-    // completely different unimplemented-extension fence. Pin the lambda
-    // codegen fence's own distinctive message
-    // (`lir::lower::expr::lower_lambda_fence`) so this test can only pass
-    // for the lambda path.
-    let brink_compiler::CompileError::Diagnostics(diags) = &err else {
-        panic!("expected CompileError::Diagnostics, got {err:?}");
-    };
-    assert!(
-        diags.iter().any(|d| d.code.as_str() == "E052"
-            && d.message.contains("lambdas")
-            && d.message.contains("have no runtime representation yet")),
-        "expected the lambda-specific E052 message, got: {diags:?}"
+        codes.contains(&"E158"),
+        "expected E158 (unliftable lambda capture) among diagnostics, got: {codes:?}"
     );
 }
 

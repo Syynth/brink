@@ -4,9 +4,10 @@
 // Callbacks are pure·silent-required (RULED 2026-07-18) — which is what
 // makes "one logical pass, order unobservable" true and dissolves the
 // eager/lazy question. Every callback here is a `#fn(target)` literal over
-// a named function: lambdas parse and lower to HIR (#1685) but still stop
-// at the LIR codegen fence, so `#fn(…)` is the only fn-value spelling that
-// reaches these ops today.
+// a named function — the only fn-value spelling this dialect can write.
+// Lambdas (`|x| …`) are a **native-surface** construct and lift to a real
+// fn value since #1709; `tests/tier1-native/lambda-verbs/` is that half's
+// end-to-end case.
 //
 // TYPES POLICY: strict (the brink-dialect default). Callback params and
 // returns are annotated for the same reason `sort-verbs`' comparator is —

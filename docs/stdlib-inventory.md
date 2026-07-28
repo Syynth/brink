@@ -282,11 +282,13 @@ callbacks' pure·silent contract enforced by E119's gate, generalized off
 the effectful spellings `each`/`map_each` remain unbuilt — the same issue's
 later slices. Two as-built notes:
 
-- **The only callable fn value is `#fn(target)` / `bind(…)`.** Lambdas
-  (`|x| …`) parse and lower to HIR (#1685) but stop at the LIR codegen
-  fence (`lir::lower::expr::lower_lambda_fence`, E052) — lambda lifting is
-  still owed, so an author cannot yet pass an anonymous callback to these
-  verbs.
+- **Callable fn values are `#fn(target)` / `bind(…)` / a lambda literal.**
+  Lambdas (`|x| …`) parsed and lowered to HIR in #1685 but stopped at an LIR
+  codegen fence; **lambda lifting shipped 2026-07-28 (issue #1709)**, so an
+  anonymous callback is now a legal argument to these verbs. A lambda is
+  lifted to a synthesized top-level function and created as an ordinary fn
+  value over it (`lir::lower::lambda`) — no captures ⇒ `PushFnRef`, captures
+  ⇒ `MakeClosure`, with capture by value always per the 2026-07-19 ruling.
 - **"Pure-required" is only enforceable where the callback's origin is
   syntactically visible** — an inline `#fn(target)`. `Ty::Fn` carries no
   effect rows (#1680), so a callback routed through a variable is

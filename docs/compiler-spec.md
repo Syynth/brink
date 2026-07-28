@@ -366,7 +366,7 @@ Key semantics from the reference C# ink implementation relevant to compilation:
 
 ## Diagnostic Codes
 
-Every diagnostic the compiler can emit has a stable code (`E001`–`E157`) and a
+Every diagnostic the compiler can emit has a stable code (`E001`–`E158`) and a
 per-code reference file under [`docs/diagnostics/`](diagnostics/) with a summary,
 explanation, minimal repro, and fix guidance. `DiagnosticCode::as_str` /
 `DiagnosticCode::from_str_code` (`crates/internal/brink-ir/src/hir/types.rs`) are the
@@ -532,6 +532,7 @@ asserts every variant has a corresponding doc file and that no orphaned doc file
 | [`E155`](diagnostics/E155.md) | An `@[allow(…)]` whose argument list is missing, empty, or not a flat list of bare code identifiers... |
 | [`E156`](diagnostics/E156.md) | A lambda body assigns to a captured binding — a `let` binding or parameter declared outside the... |
 | [`E157`](diagnostics/E157.md) | An unnamed once-only choice, or an unnamed sequence (`{cycle: …}` / `{stopping: …}` / `{once: …}`... |
+| [`E158`](diagnostics/E158.md) | A lambda body reads a name that is a local of the enclosing frame but is not yet bound when lambda... |
 
 ## Known limitations
 
