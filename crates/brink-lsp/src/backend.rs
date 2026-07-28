@@ -330,6 +330,15 @@ pub struct Backend {
     /// the `InitializeResult`, which the `initialized` notification confirms
     /// receipt of (#1055 gap 1).
     initial_config_outcome: Arc<Mutex<Option<ConfigLoadOutcome>>>,
+    /// The last-published manifest per file (issue #1672 part 2,
+    /// docs/modules-spec.md §5): `publish_perfile_diagnostics` diffs the
+    /// current [`brink_ir::SymbolManifest`] against the entry recorded here
+    /// (the file's "previous compile") to surface an undeclared-rename hint
+    /// via [`brink_ide::rename_detection::detect_undeclared_renames`], then
+    /// overwrites the entry with the current manifest for next time. Absent
+    /// for a file never published before (first `did_open`), which is
+    /// exactly right — there's nothing to diff against yet.
+    previous_manifests: Arc<Mutex<HashMap<brink_ir::FileId, brink_ir::SymbolManifest>>>,
 }
 
 impl Backend {
@@ -353,6 +362,7 @@ impl Backend {
             language,
             config_overrides: Arc::new(Mutex::new(ConfigOverrides::default())),
             initial_config_outcome: Arc::new(Mutex::new(None)),
+            previous_manifests: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -513,10 +523,38 @@ impl Backend {
                 &suppressions,
             );
 
-            let lsp_diags: Vec<_> = filtered
+            let mut lsp_diags: Vec<_> = filtered
                 .iter()
                 .map(|d| convert::diagnostic_to_lsp(d, &idx, types, &lints))
                 .collect();
+
+            // Undeclared-rename detection (issue #1672 part 2,
+            // docs/modules-spec.md §5): diff this file's manifest against
+            // the one recorded for it last publish (its "previous
+            // compile") and fold any suspicion hint into the *same*
+            // publish — `publishDiagnostics` replaces a URI's whole
+            // diagnostic set per call, so this can't be sent separately
+            // without one clobbering the other. No entry yet (first
+            // `did_open`) means nothing to diff against, correctly.
+            if let Some(new_manifest) = db.manifest(file_id) {
+                let previous = self
+                    .previous_manifests
+                    .lock()
+                    .map_or_else(|_| None, |guard| guard.get(&file_id).cloned());
+                if let Some(previous) = &previous {
+                    lsp_diags.extend(
+                        brink_ide::rename_detection::detect_undeclared_renames(
+                            previous,
+                            new_manifest,
+                        )
+                        .iter()
+                        .map(|s| convert::rename_suspicion_to_lsp(s, &idx)),
+                    );
+                }
+                if let Ok(mut guard) = self.previous_manifests.lock() {
+                    guard.insert(file_id, new_manifest.clone());
+                }
+            }
 
             // Generation this set reflects: read under the same db lock as the
             // content, so `(content, generation)` is a consistent pair (the bump
@@ -1641,6 +1679,13 @@ impl LanguageServer for Backend {
         // Drop the last-published record so a reopen republishes from scratch.
         if let Some(fid) = file_id {
             self.publisher.forget(fid).await;
+            // Same reasoning for the undeclared-rename manifest baseline
+            // (issue #1672 part 2): a reopen has no "previous compile" of
+            // its own yet, so a stale entry from before the close must not
+            // survive to be diffed against the reopened file's first edit.
+            if let Ok(mut guard) = self.previous_manifests.lock() {
+                guard.remove(&fid);
+            }
         }
 
         self.client

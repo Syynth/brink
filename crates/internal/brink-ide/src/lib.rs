@@ -24,6 +24,7 @@ pub mod line_convert;
 mod line_index;
 pub mod navigation;
 pub mod rename;
+pub mod rename_detection;
 pub mod semantic_tokens;
 pub mod session;
 pub mod signature;

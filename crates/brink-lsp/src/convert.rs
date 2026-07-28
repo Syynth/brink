@@ -127,6 +127,36 @@ pub fn diagnostic_to_lsp(
     }
 }
 
+/// Undeclared-rename detection (issue #1672 part 2, docs/modules-spec.md
+/// §5): render a [`brink_ide::rename_detection::RenameSuspicion`] as a
+/// `DiagnosticSeverity::HINT` — advisory, never blocking, distinct from the
+/// compiler's own `E`-coded diagnostics (this isn't one; it's authoring-time
+/// guidance, not something a compile can fail on). `code` is a stable
+/// string tag (not a [`brink_ir::DiagnosticCode`] — the registry is for
+/// compiler-produced diagnostics; this one is computed by diffing two
+/// `SymbolManifest`s across an edit, which the compiler pipeline never
+/// sees) so client-side tooling can filter on it if it wants to.
+pub fn rename_suspicion_to_lsp(
+    suspicion: &brink_ide::rename_detection::RenameSuspicion,
+    idx: &LineIndex,
+) -> lsp_types::Diagnostic {
+    lsp_types::Diagnostic {
+        range: to_lsp_range(suspicion.new_range, idx),
+        severity: Some(lsp_types::DiagnosticSeverity::HINT),
+        code: Some(lsp_types::NumberOrString::String(
+            "rename-suspicion".to_owned(),
+        )),
+        source: Some("brink".to_owned()),
+        message: format!(
+            "`{}` disappeared and `{}` appeared — did you rename it? Add `#@was({})` here to \
+             record the migration (docs/modules-spec.md §5) so saves made under the old name \
+             still rebind.",
+            suspicion.old_name, suspicion.new_name, suspicion.old_name
+        ),
+        ..Default::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -2687,3 +2687,119 @@ fn native_homonym_flows_coexist_under_the_default_dialect() {
         );
     }
 }
+
+/// Undeclared-rename detection (issue #1672 part 2, docs/modules-spec.md
+/// §5): hand-renaming a knot — a plain text edit, never going through the
+/// IDE's own F2 rename refactor (`brink_ide::rename`, which stamps `#@was`
+/// itself and is covered by that crate's own tests) — surfaces a
+/// `DiagnosticSeverity::HINT` "did you rename it?" diagnostic in the very
+/// next `textDocument/publishDiagnostics` for the file. End-to-end through
+/// a real `brink-lsp` process: this is the part of #1672 with no other
+/// black-box coverage (`brink-ide::rename_detection`'s own unit tests
+/// exercise the pure diff, not the LSP wiring that surfaces it to an
+/// author).
+#[test]
+fn hand_renaming_a_knot_surfaces_an_undeclared_rename_hint() {
+    const MAX_MESSAGES: u64 = 500;
+
+    let bin = env!("CARGO_BIN_EXE_brink-lsp");
+
+    let mut child = Command::new(bin)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to start brink-lsp");
+
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {"capabilities": {}, "rootUri": Value::Null},
+        }),
+    );
+    let (_init_resp, _) = recv_response(&mut stdout, 1);
+    send(
+        &mut stdin,
+        &json!({"jsonrpc": "2.0", "method": "initialized", "params": {}}),
+    );
+
+    let file_uri = "file:///tmp/rename_suspicion_test_story.ink";
+    let original = "=== hub ===\nHi.\n-> END\n";
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": file_uri,
+                    "languageId": "ink",
+                    "version": 1,
+                    "text": original,
+                }
+            }
+        }),
+    );
+
+    // `did_open`'s own per-file publish records the baseline manifest
+    // ("hub") for the next diff, but never hits the wire: `hub.ink` has no
+    // diagnostics, and `DiagnosticsPublisher`'s anti-downgrade rule (#615)
+    // never sends a *never-published* file's empty set (`publish_decision`:
+    // "so a clean file never generates a spurious empty publish") — so
+    // there's nothing to wait for here. Send the rename edit immediately.
+
+    // Hand-rename `hub` -> `plaza`: a plain full-document text replacement,
+    // not the IDE's rename refactor, so no `#@was` gets written here.
+    let renamed = "=== plaza ===\nHi.\n-> END\n";
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didChange",
+            "params": {
+                "textDocument": {"uri": file_uri, "version": 2},
+                "contentChanges": [{"text": renamed}],
+            }
+        }),
+    );
+
+    let mut suspicion: Option<Value> = None;
+    for _ in 0..MAX_MESSAGES {
+        let msg = recv(&mut stdout);
+        if msg["method"] == "textDocument/publishDiagnostics"
+            && msg["params"]["uri"] == file_uri
+            && let Some(diags) = msg["params"]["diagnostics"].as_array()
+            && let Some(d) = diags.iter().find(|d| d["code"] == "rename-suspicion")
+        {
+            suspicion = Some(d.clone());
+            break;
+        }
+    }
+
+    drop(stdin);
+    drop(stdout);
+    let _ = child.wait();
+
+    let suspicion =
+        suspicion.expect("expected a rename-suspicion diagnostic after the hand rename");
+    assert_eq!(
+        suspicion["severity"].as_u64(),
+        Some(4),
+        "rename-suspicion must publish at DiagnosticSeverity::HINT (4), got {suspicion}"
+    );
+    let message = suspicion["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("hub") && message.contains("plaza"),
+        "message should name both the vanished and the new symbol: {message}"
+    );
+    assert!(
+        message.contains("#@was(hub)"),
+        "message should tell the author the exact directive to add: {message}"
+    );
+}
