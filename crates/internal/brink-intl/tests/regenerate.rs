@@ -42,7 +42,7 @@ fn identity_preserves_translations_exactly() {
     let mut existing = export_from_base();
     translate_all(&mut existing, "ES");
 
-    let result = regenerate_lines(&new_export, &existing);
+    let result = regenerate_lines(&new_export, &existing, &[]);
 
     assert_eq!(result.scopes.len(), existing.scopes.len());
     for (result_scope, existing_scope) in result.scopes.iter().zip(existing.scopes.iter()) {
@@ -75,7 +75,7 @@ fn insertion_leaves_new_line_untranslated() {
     };
     new_export.scopes[0].lines.insert(1, new_line);
 
-    let result = regenerate_lines(&new_export, &existing);
+    let result = regenerate_lines(&new_export, &existing, &[]);
     let scope = &result.scopes[0];
 
     // The original first line should be translated.
@@ -101,7 +101,7 @@ fn deletion_preserves_remaining_translations() {
         trimmed_export.scopes[0].lines.remove(0);
     }
 
-    let result = regenerate_lines(&trimmed_export, &existing);
+    let result = regenerate_lines(&trimmed_export, &existing, &[]);
     // All remaining lines should have translations.
     for line in &result.scopes[0].lines {
         assert!(
@@ -123,7 +123,7 @@ fn edit_preserves_old_translation_with_new_hash() {
     let original_translation = existing.scopes[0].lines[0].content.clone();
     new_export.scopes[0].lines[0].hash = "deadbeefdeadbeef".to_string();
 
-    let result = regenerate_lines(&new_export, &existing);
+    let result = regenerate_lines(&new_export, &existing, &[]);
     let line = &result.scopes[0].lines[0];
 
     // Old translation should be preserved.
@@ -151,7 +151,7 @@ fn new_scope_all_lines_untranslated() {
         }],
     });
 
-    let result = regenerate_lines(&new_export, &existing);
+    let result = regenerate_lines(&new_export, &existing, &[]);
     let new_scope = result.scopes.last().unwrap();
     assert_eq!(new_scope.id, "0x0100000099999999");
     assert!(new_scope.lines[0].content.is_none());
@@ -176,7 +176,7 @@ fn removed_scope_dropped_from_output() {
         }],
     });
 
-    let result = regenerate_lines(&new_export, &existing);
+    let result = regenerate_lines(&new_export, &existing, &[]);
     // Removed scope should not appear.
     assert!(
         !result.scopes.iter().any(|s| s.id == "0x0100000088888888"),
@@ -206,7 +206,7 @@ fn multiple_changes_in_same_scope() {
         source: None,
     });
 
-    let result = regenerate_lines(&new_export, &existing);
+    let result = regenerate_lines(&new_export, &existing, &[]);
     let result_scope = &result.scopes[0];
 
     // First line: edit → old translation preserved, new hash.
@@ -229,7 +229,7 @@ fn audio_refs_preserved_through_regeneration() {
     assert!(!existing.scopes[0].lines.is_empty());
     existing.scopes[0].lines[0].audio = Some("audio/greeting.ogg".to_string());
 
-    let result = regenerate_lines(&new_export, &existing);
+    let result = regenerate_lines(&new_export, &existing, &[]);
     assert_eq!(
         result.scopes[0].lines[0].audio,
         Some("audio/greeting.ogg".to_string())
@@ -244,7 +244,7 @@ fn checksum_and_version_from_new_export() {
     new_export.source_checksum = "0xcafebabe".to_string();
     new_export.version = 2;
 
-    let result = regenerate_lines(&new_export, &existing);
+    let result = regenerate_lines(&new_export, &existing, &[]);
     assert_eq!(result.source_checksum, "0xcafebabe");
     assert_eq!(result.version, 2);
 }

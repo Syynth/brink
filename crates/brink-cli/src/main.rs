@@ -163,10 +163,12 @@ enum Commands {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
-    /// Migrate an existing XLIFF file's unit ids to the stable scope-id-based
-    /// scheme (#1442), preserving every translation, state, and hash in
-    /// place. Safe to run unconditionally — units already on the new scheme
-    /// are left untouched.
+    /// Migrate an existing XLIFF file's unit ids to the canonical
+    /// scope-id-based scheme, preserving every translation, state, and hash
+    /// in place. Safe to run unconditionally — units already on the new
+    /// scheme are left untouched. Not needed after a `#@was` rename:
+    /// `compile-locale` and `regenerate-xliff` rebind moved scope ids
+    /// themselves.
     MigrateXliff {
         /// Existing .xlf file (any unit-id scheme)
         input: PathBuf,

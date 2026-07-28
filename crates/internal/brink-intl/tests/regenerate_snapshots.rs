@@ -59,7 +59,7 @@ fn snapshot_duplicate_hashes() {
         )],
     );
 
-    let result = regenerate_lines(&new_export, &existing);
+    let result = regenerate_lines(&new_export, &existing, &[]);
     insta::assert_json_snapshot!(result);
 }
 
@@ -92,7 +92,7 @@ fn snapshot_all_lines_changed() {
         )],
     );
 
-    let result = regenerate_lines(&new_export, &existing);
+    let result = regenerate_lines(&new_export, &existing, &[]);
     insta::assert_json_snapshot!(result);
 }
 
@@ -109,7 +109,7 @@ fn snapshot_empty_scope_survives() {
         vec![make_scope("0x01", Some("empty_knot"), vec![])],
     );
 
-    let result = regenerate_lines(&new_export, &existing);
+    let result = regenerate_lines(&new_export, &existing, &[]);
     insta::assert_json_snapshot!(result);
 }
 
@@ -143,6 +143,6 @@ fn snapshot_insertion_and_deletion_net_zero() {
         )],
     );
 
-    let result = regenerate_lines(&new_export, &existing);
+    let result = regenerate_lines(&new_export, &existing, &[]);
     insta::assert_json_snapshot!(result);
 }

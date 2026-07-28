@@ -338,6 +338,7 @@ Implemented in `brink_intl::compile_locale()`.
 1. Read the translated `lines.json`
 2. Read the base `.inkb` (needed for the content checksum and scope list)
 3. For each scope in the translated JSON:
+   - Resolve its `DefinitionId` against the base — directly, else through the base `.inkb`'s `#@was` alias table (see [Matching strategy](#matching-strategy))
    - Parse each line's `content` back into `LineContent` (plain or template)
    - Collect `audio_ref` from each line's `audio` field
    - Build a line table with the translated entries
@@ -349,7 +350,8 @@ Implemented in `brink_intl::compile_locale()`.
 
 The compile step validates:
 
-- Every scope `DefinitionId` in the JSON exists in the base `.inkb`
+- Every scope `DefinitionId` in the JSON exists in the base `.inkb`, either directly or after `#@was` alias rebinding (see [Matching strategy](#matching-strategy)); one that resolves to neither is `IntlError::ScopeNotInBase`, naming the id the file carried
+- Two scopes in the JSON do not land on the same base scope via a rebind (`IntlError::AmbiguousScopeRebind`) — letting the last one win would silently drop a translation
 - Line indices are contiguous and match the base `.inkb` line counts per scope
 - Template slot indices are within bounds (the base `.inkb` knows how many slots each `EmitLine` pushes)
 - Select variants use valid `SelectKey` syntax
@@ -412,9 +414,24 @@ Implemented in `brink_intl::regenerate_lines()` (JSON) and `brink_intl::regenera
 
 Matching operates in two tiers: **scope matching** then **line matching within each scope**.
 
-**Scope matching** uses `DefinitionId` — the lexical scope's identity, stable across recompiles (hash of fully qualified path). A knot renamed or moved gets a new `DefinitionId` and its translations are orphaned. Scopes present in the old translation but absent from the new `.inkb` are orphaned. Scopes in the new `.inkb` with no old translation are new.
+**Scope matching** uses `DefinitionId` — the lexical scope's identity, stable across recompiles (hash of fully qualified path). A knot renamed or moved gets a new `DefinitionId`, so an *undeclared* rename orphans its translations. Scopes present in the old translation but absent from the new `.inkb` are orphaned. Scopes in the new `.inkb` with no old translation are new.
 
-This orphaning holds even when the rename is *declared* with `#@was`: scope matching compares id strings and never consults the compiled alias table that the save path already uses. Closing that gap is issue #1442 (`needs-design`) — see `docs/design/definition-identity-proposals.md` for the analysis, the options, and the ruling it waits on.
+**Alias rebinding (`#@was`).** A scope whose id moved because the rename was *declared* is not orphaned. Both `regenerate_lines` and `compile_locale` consult the compiled `#@was` alias table (`docs/modules-spec.md` §5) — the same old→new edges the save path uses — and rebind the moved scope instead of treating it as gone:
+
+| Surface | Direction | Where the edges come from |
+|---------|-----------|---------------------------|
+| `regenerate_lines` / `regenerate_locale` | new id → pre-rename ids | `StoryData::alias_table`, passed by the caller |
+| `compile_locale` / `compile_locale_xliff` | stale id → current id | the base `.inkb`'s `AliasTable` section, read in-place |
+
+Rules that hold for both directions:
+
+- **A direct id match always wins** over a rebind, so an already-regenerated file is unaffected.
+- **Rebinding is keyed on the id alone** and never reads the scope's display name, so anonymous scopes — root content is one — rebind exactly like named knots.
+- **Alias chains are not followed**, mirroring `Program::resolve_alias`: the compiler emits `old -> new` against the definition's *current* id, never `old -> old2`.
+- **The rebind is a one-time cost.** Regeneration writes the new ids into its output, so the `#@was` directive stays deletable after its migration window.
+- **The `#@was` net is only as deep as the alias table.** A rename mints one entry per definition the directive covers; a stitch re-keyed only because its *parent* was renamed has no edge and is still orphaned. Re-declaring `#@was` on the stitch is not a workaround — the old name is qualified with the *current* parent name, so the edge collapses to a self-edge (pinned by `rename_identity.rs::stitch_was_cannot_bridge_an_ancestor_rename`). That transitive gap is issue #1671, not a matching-rule gap.
+
+Rebinding is automatic rather than a separate CLI migration step (`migrate_unit_ids` / `brink migrate-xliff` remains scoped to the one-off `<unit id>` *spelling* migration, which is a format change, not an id move): the alias edges already ride in the artifacts both surfaces read, an id move can happen on any recompile, and a manual step would fail open every time an author forgot to run it.
 
 **Line matching** within a scope uses `source_hash` alignment, not line index. Line indices are unstable — inserting or deleting a line shifts all subsequent indices within the scope. Matching by index would incorrectly mark every shifted line as changed.
 
