@@ -62,15 +62,21 @@
 //! (`StoryData::effect_rows`) is populated by `brink-db`'s
 //! `populate_effect_rows` from `inferable_defs_from_index`, which is
 //! `index.symbols` filtered to `SymbolKind::Knot | SymbolKind::Stitch`; a
-//! lambda is an inline `hir::Expr::Lambda`, so no lifted function can ever
-//! appear in that set, and the id itself does not exist until
-//! `IdAllocator::alloc_lambda_address` runs here — after every row has been
-//! inferred. Consequence: even once `Ty::Fn` grows rows, effects-spec §7's
-//! "a live fn value is a token; its row is a table lookup" has nothing to
-//! find for a lambda token, so making lifted ids row-addressable is a
-//! prerequisite of #1680, not a follow-on. Sound today only because
-//! `InferPass::infer_lambda` absorbs the body's atoms into the enclosing
-//! definition's row (over-reporting, spec §3). Pinned by
+//! lambda is an inline `hir::Expr::Lambda`, never an indexed symbol, so it
+//! has no `DefKey`/SCC membership and no iteration of that set can ever
+//! yield one — the obstacle is the keyspace, not the order the id and the
+//! rows are minted in (`IdAllocator::alloc_lambda_address` has already run,
+//! by construction, by the time `populate_effect_rows` executes later in
+//! the same `story_data_query`). Consequence: effects-spec §7's "a live fn
+//! value is a token; its row is a table lookup" has nothing to find for a
+//! lambda token — that blocks the shipped-table/§7-narrowing path for
+//! lambda tokens (§6 item 4, an optional host optimization) and,
+//! conditionally, T1c item 4's row field if that is ruled to be an id
+//! reference rather than an inline row. It does not block #1680's own
+//! analyzer-side work (rows on `Ty::Fn`, the unifier row join, §6.1
+//! row-polymorphism). Sound today only because `InferPass::infer_lambda`
+//! absorbs the body's atoms into the enclosing definition's row
+//! (over-reporting, spec §3). Pinned by
 //! `brink-db/tests/issue_1680_lambda_effect_row_gap.rs`.
 
 use brink_format::CountingFlags;

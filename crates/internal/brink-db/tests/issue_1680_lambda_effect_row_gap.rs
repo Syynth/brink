@@ -4,13 +4,22 @@
 //! value form the native higher-order core is built on.
 //!
 //! This is a *gap* pin, not a contract — it asserts what the compiler does
-//! today so the next attempt at #1680 finds the prerequisite already
-//! measured instead of rediscovering it. It is the same discipline #1709
-//! used for its `E052` fence, and it must **flip** when #1680 lands.
+//! today so the next attempt at the shipped-table/§7-narrowing path (§6
+//! item 4, an optional host optimization, and conditionally T1c item 4's
+//! row field) finds the gap already measured instead of rediscovering it.
+//! It does not block #1680's own analyzer-side work (rows on `Ty::Fn`, the
+//! unifier row join, §6.1 row-polymorphism). It is the same discipline
+//! #1685 (flipped by #1709) used for its `E052` fence, and it must
+//! **flip** when the row table is made to reach lifted lambdas.
 //!
 //! ## Why the row is missing
 //!
-//! The two halves are minted a layer apart:
+//! The obstacle is the keyspace, not the order the id and the rows are
+//! minted in — by the time `populate_effect_rows` runs, the lambda's
+//! `DefinitionId` already exists (`story_data_query` orders
+//! `lir_in_closure_query` → `brink_codegen_inkb::emit` →
+//! `populate_effect_rows`, so LIR lowering, which mints the id, has already
+//! completed):
 //!
 //! - `populate_effect_rows` (`brink-db/src/queries/mod.rs`) walks
 //!   `inferable_defs_query`, which is
@@ -21,7 +30,9 @@
 //!   iteration of that set can ever yield one.
 //! - The lifted function's `DefinitionId` is minted in **LIR** lowering, by
 //!   `IdAllocator::alloc_lambda_address` (`brink-ir/src/lir/lower/context.rs`),
-//!   which runs after the analyzer has already produced every row.
+//!   but a lambda has no index symbol, so it has no `DefKey`/SCC membership
+//!   and `inferable_defs_from_index` was never going to enumerate it
+//!   regardless of when the id is minted.
 //!
 //! So the id that ends up in a live `VAL_FN_REF`/`VAL_CLOSURE` token is a
 //! `DefinitionTag::Address` id that the row table was never given a chance
