@@ -163,3 +163,44 @@ fn choosing_an_included_files_choice_runs_that_files_body() {
         "picking `inc one` ran the entry file's body instead; got: {output:?}",
     );
 }
+
+/// The intl surface does **not** move with #1504's re-keying.
+///
+/// `brink-intl`'s export keys each translation scope on a
+/// `ScopeLineTable::scope_id` (`export.rs`), and codegen opens a line table
+/// only for a *scope-kind* container — `Root`, `Knot`, `Stitch`. Every
+/// root-level choice and gather inherits the enclosing **root** scope's id,
+/// which is the hash of the empty path and is not qualified by file. So
+/// qualifying anonymous root-content container ids leaves every XLIFF unit
+/// id for root-level lines exactly where it was.
+///
+/// This pins that: the same entry file exports the same root-content scope
+/// id whether or not it `INCLUDE`s a second file that also carries root
+/// weave — the case in which #1504's qualifier is doing work.
+#[test]
+fn root_content_translation_scope_id_is_unaffected_by_the_qualifier() {
+    const ENTRY: &str = "* main one\n* main two\n- main gathered\n";
+
+    let entry_with_include = format!("INCLUDE inc.ink\n{ENTRY}");
+    let solo: HashMap<&str, &str> = HashMap::from([("main.ink", ENTRY)]);
+    let with_include: HashMap<&str, &str> = HashMap::from([
+        ("main.ink", entry_with_include.as_str()),
+        ("inc.ink", "* inc one\n* inc two\n- inc gathered\n"),
+    ]);
+
+    let scope_ids = |data: &brink_format::StoryData| -> Vec<u64> {
+        data.line_tables
+            .iter()
+            .map(|table| table.scope_id.to_raw())
+            .collect()
+    };
+
+    let solo_data = compile_mem("main.ink", &solo).unwrap();
+    let include_data = compile_mem("main.ink", &with_include).unwrap();
+
+    assert_eq!(
+        scope_ids(&solo_data),
+        scope_ids(&include_data),
+        "root-content translation scope ids must not depend on the #1504 file qualifier",
+    );
+}

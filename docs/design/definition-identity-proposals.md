@@ -83,10 +83,14 @@ Two consequences worth naming, because they surface again in §5 (Options):
   of everything beneath a knot is a function of the knot's name.
 - The path-hash scheme is documented as **content-pure** — a fresh
   `IdAllocator` inside a per-chunk salsa memo must produce the same id
-  as the whole-project walk (`context.rs:360-369`, FG-4d
-  history-independence). #1504(b) is the one violation:
-  `#root-terminus.{file_id}` keys an address by `FileId`
-  (`brink-ir/src/lir/lower/mod.rs:1957`).
+  as the whole-project walk (`context.rs`, FG-4d
+  history-independence). #1504(b) was the one violation —
+  `#root-terminus.{file_id}` keyed an address by `FileId` — and is now
+  fixed: the terminus key is the bare `#root-terminus` under the
+  allocator's per-file path prefix, which is derived from the owning
+  file's project path (`brink-ir/src/hir/stamp.rs`'s
+  `root_content_scope_path`). The same qualifier is what stops two files'
+  root weaves from colliding, #1504(a).
 - The scope-prefixed local scheme is *not* file-qualified: its own doc
   comment (`manifest.rs:435-440`) records that two files which
   (pathologically) declare the same scope-qualified local name still
@@ -303,10 +307,14 @@ it is implemented here.
 3. **IDE rename writes `#@was`** — the ruled autopilot (§4) that makes
    1 and 2 reachable for ordinary authors rather than only for authors
    who know the directive exists.
-4. **#1504 qualification fix** — and note it re-keys existing
-   definitions, so it should ride the same migration window and be
-   called out as an identity break in the changeset, not slipped in as
-   a bug fix.
+4. **#1504 qualification fix** — **landed** (after R1 was ruled), by the
+   owning *file*'s project path rather than by module, since an
+   `INCLUDE`d file inherits its includer's module and would still have
+   collided. It re-keys existing definitions, and the changeset calls
+   that out as an identity break rather than slipping it in as a bug
+   fix. Measured consequence: anonymous visit counts move; translation
+   scope ids do **not** (root content's line table is keyed on the root
+   scope id, which is not file-qualified).
 
 Each of those is separately reviewable; none should land before R1.
 

@@ -1,10 +1,19 @@
 # Root-content `DefinitionId` identity — findings and recommended fix shape
 
-**Issue:** [#1504](https://github.com/Syynth/brink/issues/1504) (`needs-design`)
-**Status:** analysis only — no production code changed. The fix shape needs the
-FG-4d owner's ruling before it is built.
+**Issue:** [#1504](https://github.com/Syynth/brink/issues/1504)
+**Status:** **SHIPPED.** The [primary recommendation](#primary-qualify-root-content-scope-paths-by-the-owning-file-not-the-module)
+below is what landed: `hir::root_content_scope_path` qualifies a file's
+anonymous root-content scope path with that file's project path, and
+`IdAllocator::set_path_prefix` carries the same qualifier through LIR
+lowering so the synthesized terminus is content-derived too. Every
+acceptance test named below now runs unignored. Two entries in
+[Suggested follow-ups](#suggested-follow-ups) also landed: the codegen
+duplicate-`DefinitionId` guard (#1673) and the corpus case, added at
+`tests/tier1/includes/root-weave-in-entry-and-included-file` — tier 1 per the
+ruling on #1504, rather than the tier 3 this document originally suggested.
 **Baseline:** every measurement below was taken at commit `999581354`
-(`main`, workspace version `0.0.11`).
+(`main`, workspace version `0.0.11`), i.e. *before* the fix. Line/column
+coordinates quoted throughout are from that commit and have since moved.
 
 ## TL;DR
 
@@ -32,9 +41,10 @@ Both findings in #1504 reproduce. One of them is worse than the issue says.
 
 ## Evidence
 
-Four acceptance tests ship with this analysis. They assert the behavior brink
-*should* have and are `#[ignore]`d, because the fix is design-gated —
-un-ignoring them is the acceptance criterion for #1504.
+Four acceptance tests shipped with this analysis. They assert the behavior
+brink *should* have and were `#[ignore]`d while the fix was design-gated;
+un-ignoring them was the acceptance criterion for #1504, and they now run
+unconditionally.
 
 - `crates/internal/brink-ir/tests/lir_lowering/root_content_definition_id_soundness.rs`
 - `crates/brink-compiler/tests/issue_1504_root_content_identity.rs`
@@ -46,7 +56,8 @@ A fifth, added in review follow-up, demonstrates the *reachable* form of (b)
 - `crates/internal/brink-driver/src/discover.rs`'s
   `root_content_ids_agree_between_discover_and_editor_order`
 
-Run the first four with `--ignored` at `999581354` and all four fail. Verbatim:
+Run the first four with `--ignored` at `999581354` — before the fix — and all
+four fail. Verbatim:
 
 ```
 duplicate container ids in the compiled program: [
@@ -360,16 +371,37 @@ allocator itself is irrelevant, since `alloc_address` is a pure hash (see
 
 ## Suggested follow-ups
 
-Independent of the ruling:
+Independent of the ruling — both **landed**:
 
-- Add a tier-3 corpus case with root-level weave content in **both** the
-  entry file and an `INCLUDE`d file — the actual collision shape (a)
-  describes. `tests/tier3/includes/included-file-trailing-weave/` and
+- ~~Add a corpus case with root-level weave content in **both** the
+  entry file and an `INCLUDE`d file~~ — shipped as
+  `tests/tier1/includes/root-weave-in-entry-and-included-file` (tier 1, per
+  the #1504 ruling). `tests/tier3/includes/included-file-trailing-weave/` and
   `tests/tier3/includes/choice-accumulation-across-include/` already cover
   root weave in an included file alone (their entry `story.ink` has no
   root-level weave of its own), so a corpus case asking for that shape again
-  would be a duplicate.
-- Consider a codegen-level assertion that no two containers share a
-  `DefinitionId`. This bug reached the runtime silently; the compiler had
-  every opportunity to reject it. That guard is cheap, is independent of the
-  identity ruling, and would have caught this at authoring time.
+  would have been a duplicate. The new case exposed a *second*, unrelated
+  divergence: brink does not accumulate root-weave choices across the
+  `INCLUDE` splice the way C# ink does, so the case compiles but fails 0/4
+  episodes — the same gap `choice-accumulation-across-include` and
+  `root-content-splice-site` already record.
+- ~~Consider a codegen-level assertion that no two containers share a
+  `DefinitionId`~~ — shipped in #1673. This bug reached the runtime silently;
+  the compiler had every opportunity to reject it. That guard is cheap, is
+  independent of the identity ruling, and would have caught this at authoring
+  time.
+
+## What the fix did not disturb
+
+`brink-intl`'s export keys a translation scope on a
+`ScopeLineTable::scope_id` (`export.rs`), and codegen opens a line table only
+for a scope-kind container (`Root`/`Knot`/`Stitch`). Root-level choices and
+gathers inherit the **root** scope's id — the hash of the empty path, not
+qualified by file — so no XLIFF unit id for a root-level line moves, and the
+alias-blindness concern raised while sequencing this against #1442 does not
+bite. Pinned by
+`root_content_translation_scope_id_is_unaffected_by_the_qualifier`
+(`crates/brink-compiler/tests/issue_1504_root_content_identity.rs`). Save
+state is the surface that *does* move: anonymous visit counts and sequence
+positions are re-keyed, with no migration path (see
+[The migration problem](#the-migration-problem)).

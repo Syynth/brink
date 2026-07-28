@@ -132,25 +132,20 @@ mod tests {
 
     /// #1504(b), reachable form: an editor session that admits an
     /// `INCLUDE` target before the entry file itself (`brink-lsp`'s
-    /// `load_file_from_disk`, `backend.rs:624`, which can walk-and-load a
+    /// `load_file_from_disk`, which can walk-and-load a
     /// sibling ahead of an explicit `did_open` on the entry) mints the
     /// entry a different numeric `FileId` than [`super::discover`] does —
-    /// `discover` always seeds its BFS queue with the entry
-    /// (`crate::discover::discover`, `discover.rs:51`), so a from-scratch
-    /// compile always mints the entry `FileId(0)`. The synthesized root
-    /// terminus is keyed by that numeric id
-    /// (`attach_root_final_gather`, `brink-ir/src/lir/lower/mod.rs:1957`),
-    /// not by anything content-derived, so the container-id set an
-    /// editor-order load produces diverges from a real compile of the
-    /// identical tree — the ink-mode sibling of the editor-vs-compile
-    /// identity parity `discover_native.rs:349` already guards for native.
+    /// `discover` always seeds its BFS queue with the entry, so a
+    /// from-scratch compile always mints the entry `FileId(0)`. The
+    /// synthesized root terminus used to be keyed by that numeric id
+    /// (`attach_root_final_gather`), not by anything content-derived, so the
+    /// container-id set an editor-order load produced diverged from a real
+    /// compile of the identical tree — the ink-mode sibling of the
+    /// editor-vs-compile identity parity `discover_native.rs` already guards
+    /// for native. #1504 re-keyed the terminus on the owning file's *path*
+    /// (`hir::root_content_scope_path`), so the two orders now agree; this
+    /// runs as the regression test for that.
     #[test]
-    #[ignore = "known bug #1504(b), reachable form: the root-terminus \
-                DefinitionId is keyed by numeric FileId, so loading an \
-                INCLUDE target before the entry file (editor/LSP order) \
-                mints a different id space than a real `discover` compile \
-                of the same tree; fix is blocked on the FG-4d identity \
-                ruling"]
     fn root_content_ids_agree_between_discover_and_editor_order() {
         use std::collections::BTreeSet;
         use std::collections::HashMap;
