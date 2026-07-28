@@ -166,11 +166,11 @@ fn annotation_arg(p: &mut Parser<'_, '_>) {
 fn annotation_string_value(p: &mut Parser<'_, '_>) {
     p.start_node(STRING_LIT);
     p.expect(QUOTE);
-    loop {
-        match p.current() {
-            STRING_TEXT | STRING_ESCAPE | L_BRACKET | R_BRACKET => p.bump(),
-            _ => break,
-        }
+    while matches!(
+        p.current(),
+        STRING_TEXT | STRING_ESCAPE | L_BRACKET | R_BRACKET
+    ) {
+        p.bump();
     }
     p.expect(QUOTE);
     p.finish_node();
