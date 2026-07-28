@@ -47,6 +47,21 @@ fn write(dir: &std::path::Path, rel: &str, content: &str) -> PathBuf {
 /// because of something a fixture deliberately adds elsewhere in the tree.
 const VALID_ENTRY: &str = "flow main() {\n  Hello. -> END\n}\n";
 
+/// A second, valid, but *distinctly-named* native flow — used wherever a
+/// fixture needs an "admitted and harmless" `.brink` file alongside
+/// `main.brink`'s own `flow main()`. Reusing `VALID_ENTRY` (also named
+/// `main`) there would make the two files collide on the same
+/// `DefinitionId` once discovery admits both — #1673's codegen-boundary
+/// uniqueness guard now catches exactly that collision (loudly, as an E060
+/// compile error, instead of the two `flow main()`s silently compiling to
+/// one broken `StoryData` with the linker's last-write-wins address map
+/// dropping one of them). That's a real result — the same #1504-class
+/// landmine, reachable a third way, via ordinary cross-file same-named
+/// native flows — but it's incidental to what these fixtures are actually
+/// testing (directory-prune scoping), so this constant just gives the
+/// "admitted" file its own name to sidestep it.
+const VALID_ENTRY_OTHER_NAME: &str = "flow vendor() {\n  Hello. -> END\n}\n";
+
 /// Deliberately unparseable `.brink` source — used as a tripwire: if
 /// discovery admits this file, the compile fails; if discovery prunes it
 /// away, the compile succeeds despite it existing on disk.
@@ -117,7 +132,16 @@ fn unprune_dirs_does_not_widen_an_unnamed_sibling_ignored_dir() {
     );
     let entry = write(&dir, "main.brink", VALID_ENTRY);
     // Admitted and valid, so it doesn't fail the compile on its own.
-    write(&dir, "node_modules/vendor-ink/extra.brink", VALID_ENTRY);
+    // Distinctly-named (`VALID_ENTRY_OTHER_NAME`, not `VALID_ENTRY`): both
+    // are now genuinely discovered once node_modules/ is admitted, and
+    // reusing the entry's own `flow main()` here would collide on
+    // `DefinitionId` (#1673) — a real but incidental-to-this-test
+    // collision this fixture isn't testing for.
+    write(
+        &dir,
+        "node_modules/vendor-ink/extra.brink",
+        VALID_ENTRY_OTHER_NAME,
+    );
     // Not named by unprune-dirs, so target/ must stay pruned; if it didn't,
     // this unparseable file would fail the compile.
     write(&dir, "target/debug/bad.brink", UNPARSEABLE);
@@ -230,7 +254,11 @@ fn unprune_dirs_silences_the_diagnostic_for_the_directory_it_names() {
         "[project]\nunprune-dirs = [\"node_modules\"]\n",
     );
     let entry = write(&dir, "main.brink", VALID_ENTRY);
-    write(&dir, "node_modules/vendor.brink", VALID_ENTRY);
+    // Distinctly-named — see `VALID_ENTRY_OTHER_NAME`'s doc comment: this
+    // file is genuinely discovered (unprune-dirs admits node_modules/), so
+    // reusing the entry's own `flow main()` here would collide on
+    // `DefinitionId` (#1673), which isn't what this test is about.
+    write(&dir, "node_modules/vendor.brink", VALID_ENTRY_OTHER_NAME);
 
     let out = brink()
         .arg("compile")

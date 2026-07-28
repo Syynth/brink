@@ -132,25 +132,34 @@ mod tests {
 
     /// #1504(b), reachable form: an editor session that admits an
     /// `INCLUDE` target before the entry file itself (`brink-lsp`'s
-    /// `load_file_from_disk`, `backend.rs:624`, which can walk-and-load a
+    /// `load_file_from_disk`, which can walk-and-load a
     /// sibling ahead of an explicit `did_open` on the entry) mints the
     /// entry a different numeric `FileId` than [`super::discover`] does —
-    /// `discover` always seeds its BFS queue with the entry
-    /// (`crate::discover::discover`, `discover.rs:51`), so a from-scratch
-    /// compile always mints the entry `FileId(0)`. The synthesized root
-    /// terminus is keyed by that numeric id
-    /// (`attach_root_final_gather`, `brink-ir/src/lir/lower/mod.rs:1957`),
-    /// not by anything content-derived, so the container-id set an
-    /// editor-order load produces diverges from a real compile of the
-    /// identical tree — the ink-mode sibling of the editor-vs-compile
-    /// identity parity `discover_native.rs:349` already guards for native.
+    /// `discover` always seeds its BFS queue with the entry, so a
+    /// from-scratch compile always mints the entry `FileId(0)`. The
+    /// synthesized root terminus used to be keyed by that numeric id
+    /// (`attach_root_final_gather`), not by anything content-derived, so the
+    /// container-id set an editor-order load produced diverged from a real
+    /// compile of the identical tree — the ink-mode sibling of the
+    /// editor-vs-compile identity parity `discover_native.rs` already guards
+    /// for native. #1504 re-keyed the terminus on the owning file's *path*
+    /// (`hir::root_content_scope_path`), so the two REGISTRATION ORDERS now
+    /// agree; this runs as the regression test for that, narrowly.
+    ///
+    /// Narrowly, because this test holds the path spelling fixed
+    /// (`"entry.ink"`/`"sibling.ink"` in both orders) and varies only which
+    /// `FileId` gets assigned first. It does **not** cover — and does not
+    /// claim to cover — the wider parity gap flagged in review on #1693: the
+    /// qualifier `hir::root_content_scope_path` uses is the file's raw
+    /// registered path, and `brink-lsp` registers files by absolute OS path
+    /// (`backend.rs`'s `uri_to_path`) while the CLI registers whatever
+    /// spelling the caller passed. Two path *spellings* of the same file
+    /// still mint different root-content ids after this fix — see
+    /// `crates/brink-compiler/tests/issue_1504_root_content_identity.rs`'s
+    /// `root_content_ids_are_sensitive_to_entry_path_spelling_known_
+    /// limitation`, which pins that gap, and
+    /// `docs/root-content-identity-findings.md`'s "Known limitation" section.
     #[test]
-    #[ignore = "known bug #1504(b), reachable form: the root-terminus \
-                DefinitionId is keyed by numeric FileId, so loading an \
-                INCLUDE target before the entry file (editor/LSP order) \
-                mints a different id space than a real `discover` compile \
-                of the same tree; fix is blocked on the FG-4d identity \
-                ruling"]
     fn root_content_ids_agree_between_discover_and_editor_order() {
         use std::collections::BTreeSet;
         use std::collections::HashMap;

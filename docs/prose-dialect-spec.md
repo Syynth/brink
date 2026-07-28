@@ -335,18 +335,28 @@ exactly the externals-manifest pattern.
   Deciding this later would be a mass translation-memory invalidation.
 - **Format cost, acknowledged**: a new `LinePart` tag is a `.inkb`
   version bump (v6) + `.inkl` bump (decoders hard-reject unknown part
-  tags; section 0x07 has no section-local version). **Batch the bump** with the other
-  line-table growth (element data, block id, the Choice captured
-  environment). **Amended 2026-07-27:** the intl spec's "future
-  recognizers" (inline conditionals → `Select`, sequences as slots) are
-  **RETRACTED** and are NOT a v6 payload — source-side branching is
-  handled by branch expansion (decision log 2026-03-15), which needs no
-  format change; `Select` stays target-side only. #1446.
+  tags; section 0x07 has no section-local version). **Batch the bump**
+  with any other pending line-table growth at the time — the intl
+  spec's own "future recognizers" section that this note originally
+  meant to batch with (inline conditionals → `Select`, sequences as
+  slots) was **retracted** by issue #1667: neither ships, and
+  `LinePart::Select` stays target-side only. Inline conditionals/
+  sequences needed **no** format bump at all — `hir::normalize_file`
+  already lifted them into independently-recognized branches on
+  2026-03-15, the actual #1667 gap was a missing `Text`-part merge at
+  the splice seam (`normalize.rs::extend_merging_text`), a pure HIR-level
+  fix. This span work is still the next thing that would need a real
+  format bump.
 - **The recognizer is the chokepoint**: marked-up lines must be
   *admitted to line recognition* or they shred into per-run entries and
-  stop being single translation units. (Pre-existing: inline
-  conditionals/sequences already shred today — the prose round elevates
-  the priority of those future recognizers.)
+  stop being single translation units. (Inline conditionals/sequences
+  used to shred the same way for a narrower reason than "never lifted"
+  — issue #1667 found the lifting already existed and fixed the
+  seam-merge gap that kept it from ever matching `Plain`/`Template`;
+  span admission for the prose round is a separate, still-open concern.
+  Choice display/bracket/inner text with an inline conditional/sequence
+  is a related gap #1667 did *not* fix — `normalize_file` never walks
+  choice display text, only choice bodies — filed as a follow-up.)
 - **Public API**: `Line` grows a structured span surface (additive).
   Prefer structural parts over byte-range offsets — the runtime trims
   and collapses whitespace after assembly, so ranges are a trap.

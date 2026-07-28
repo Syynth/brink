@@ -42,6 +42,11 @@ pub fn compile_locale_xliff(
 /// `LinesJson`, runs `regenerate_lines`, and converts back to XLIFF.
 /// Translations with matching hashes keep their state; edited lines get
 /// `state="initial"` to signal review.
+///
+/// The story's compiled `#@was` alias table is handed to `regenerate_lines`,
+/// so a `<file>` whose `brink:scope-id` moved because the scope (or an
+/// ancestor) was renamed rebinds to its pre-rename units instead of being
+/// treated as brand new (#1442).
 pub fn regenerate_locale(
     story: &StoryData,
     source_checksum: u32,
@@ -50,7 +55,7 @@ pub fn regenerate_locale(
 ) -> Result<Document, IntlError> {
     let new_export = export_lines(story, source_checksum);
     let existing_lines = xliff_to_lines_json(existing)?;
-    let merged = regenerate_lines(&new_export, &existing_lines);
+    let merged = regenerate_lines(&new_export, &existing_lines, &story.alias_table);
 
     // Build the document from the *new export* so <source> elements contain
     // the original English text. Translations from `merged` go into <target>.

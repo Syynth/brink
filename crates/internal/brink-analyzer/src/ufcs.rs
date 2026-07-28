@@ -44,12 +44,16 @@
 //! ([`UfcsVerdict::FreeFnAutoRef`]) and the desugar spells the projection
 //! explicitly — `party.members.heal(5)` → `heal(ref party.members, 5)` —
 //! riding the T1e ref-argument/projection machinery
-//! (`brink_ir::lir::lower::expr::lower_call_args`), never a parallel path.
-//! A receiver that cannot be written through is refused with
-//! [`DiagnosticCode::E143`] rather than silently desugared by value, which
-//! would drop the mutation: see [`UfcsVisitor::auto_ref_fault`] for exactly
-//! which receivers those are. A non-`ref` first parameter is unaffected —
-//! plain by-value desugar, with no lvalue requirement on the receiver.
+//! (`brink_ir::lir::lower::expr::lower_call_args`) for a **durable** root,
+//! or (**RULED 2026-07-27**, issue #1531) a frame-local read/call/
+//! write-back RMW expansion for a **frame-local** root one field deep
+//! (`brink_ir::lir::lower::blocks::try_lower_frame_local_auto_ref_stmt`) —
+//! never a parallel path for the durable case. A receiver that cannot be
+//! written through is refused with [`DiagnosticCode::E143`] rather than
+//! silently desugared by value, which would drop the mutation: see
+//! [`UfcsVisitor::auto_ref_fault`] for exactly which receivers those are. A
+//! non-`ref` first parameter is unaffected — plain by-value desugar, with
+//! no lvalue requirement on the receiver.
 //!
 //! ## Scope fences
 //!
@@ -777,12 +781,25 @@ impl UfcsVisitor<'_> {
     /// - A **bare** receiver (`gold.bump(1)`) binds like any unmarked
     ///   ref-argument: a frame slot (param/temp) or a global `VAR` both work
     ///   — `lower_ref_path_call_arg`'s `RefTemp`/`RefGlobal` pair.
-    /// - A **projection** receiver (`party.leader.heal(5)`) becomes a real
-    ///   `lir::CallArg::RefProjection`, whose root must be a **durable cell**
-    ///   (`docs/t1e-spec.md` §2, the `E080` rule `ref_projection::
-    ///   check_durable_root` enforces for the explicitly spelled form): a
-    ///   frame-local root dies with its frame and has no projection
-    ///   representation at all.
+    /// - A **projection off a durable cell** (`party.leader.heal(5)` where
+    ///   `party` is a `VAR`) becomes a real `lir::CallArg::RefProjection`,
+    ///   whose root must be durable (`docs/t1e-spec.md` §2, the `E080` rule
+    ///   `ref_projection::check_durable_root` enforces for the explicitly
+    ///   spelled form) — that requirement is unchanged by this gate.
+    /// - A **projection off a frame-local** (`g.hp.heal(5)` where `g` is a
+    ///   `let`/param) is legal too, **RULED 2026-07-27** (issue #1531,
+    ///   `docs/decision-log.md`): a frame-local cell is a valid projection
+    ///   root, and the mutation needs no effect row because it is
+    ///   unobservable outside the frame. `RefProjection`'s own root stays
+    ///   durable-only (`docs/format-v4-rfc.md` §1), so LIR lowering does not
+    ///   reuse that machinery for this case — it splices a read/call/
+    ///   write-back RMW sequence instead (`brink_ir::lir::lower::blocks::
+    ///   try_lower_frame_local_auto_ref_stmt`), the same discipline plain
+    ///   assignment (`g.hp = 5`) already uses. That lowering only has a
+    ///   statement-shaped expansion, so it covers a **single field level**
+    ///   only — the same boundary `try_lower_field_assignment` draws
+    ///   (`E074` for a deeper chain); this gate mirrors that boundary by
+    ///   only clearing a two-segment receiver (root + one field).
     /// - A `CONST` is never writable at any depth.
     ///
     /// The ruled rvalue receivers (`[1,2].push(3)`, `a.sorted().push(x)` —
@@ -793,12 +810,16 @@ impl UfcsVisitor<'_> {
     /// position at all.
     fn auto_ref_fault(&self, receiver: &Receiver<'_>) -> Option<String> {
         let head = receiver.segments.first().map_or("", |s| s.text.as_str());
-        let is_projection = receiver.segments.len() > 1;
+        // A frame-local projection root is legal (issue #1531) only one
+        // field level deep — `head.field`, i.e. exactly two receiver
+        // segments. Anything deeper has no lowering (LIR's RMW expansion is
+        // single-level, matching `try_lower_field_assignment`'s own `E074`
+        // boundary), so it still faults here.
         let frame_local = || {
-            is_projection.then(|| {
+            (receiver.segments.len() > 2).then(|| {
                 format!(
-                    "`{head}` is a temp/param that dies with its frame, and a `ref` projection's \
-                     root must be a durable cell (a VAR — `docs/t1e-spec.md` §2)"
+                    "`{head}` is a temp/param — a frame-local projection can only reach one \
+                     field level (`{head}.field`); this receiver goes deeper than that"
                 )
             })
         };

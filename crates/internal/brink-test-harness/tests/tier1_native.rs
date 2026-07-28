@@ -167,6 +167,22 @@ fn annotations_effects() {
     assert_case("annotations-effects");
 }
 
+/// NG-D array/sequence literals (issue #1490, RULED 2026-07-27:
+/// `[1, 2, 3]`). Three functions: one builds a three-element array bound to
+/// a `let` and sums it by iterating with `for` (proving `Expr::ArrayLiteral`
+/// reaches real element values, not just an empty shape), one builds `[]`
+/// and iterates zero times (proving the empty form compiles and runs, not
+/// just parses), and one writes the array literal directly in the `for …
+/// in` head (`for x in [4, 5, 6] { … }`, the most idiomatic spelling of
+/// this feature) so that position is covered end-to-end too, not just via a
+/// path binding. Neither reads the ink-json oracle — there is nothing there
+/// to compare against, since `[…]` has no ink counterpart; this corpus is
+/// the only end-to-end proof this construct actually plays.
+#[test]
+fn array_literal() {
+    assert_case("array-literal");
+}
+
 /// Every `tests/tier1-native/` case directory is exercised by a `#[test]`
 /// above — a directory with no matching test would silently never run.
 #[test]
@@ -180,6 +196,7 @@ fn every_case_directory_has_a_test() {
         "annotations-was",
         "annotations-effects",
         "annotations-allow",
+        "array-literal",
     ];
     let mut found: Vec<String> = std::fs::read_dir(corpus_dir())
         .expect("read tests/tier1-native")

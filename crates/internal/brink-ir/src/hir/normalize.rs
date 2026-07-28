@@ -246,6 +246,39 @@ fn try_lift_inline(content: Content, trailing_eol: bool) -> Result<Vec<Stmt>, Co
 
 // ─── Splice helper ──────────────────────────────────────────────────
 
+/// Append `extra` onto `parts`, merging into the last element when both the
+/// last element of `parts` and the next element of `extra` are `Text`
+/// (collapsing doubled whitespace at the seam, e.g. `"Hello "` + `" world"`
+/// → `"Hello world"`) — otherwise identical to `parts.extend_from_slice`.
+///
+/// Splicing prefix/branch/suffix content parts (below) used to leave them
+/// as separate adjacent `Text` entries — structurally fine, but it meant a
+/// spliced branch's recognizer pass (`lir::lower::recognize::try_recognize`,
+/// which only matches a *single* `Text` part as `Plain`, or an
+/// interpolation-bearing run as `Template`) could never match a spliced
+/// line, no matter how plain its text was. Every branch fell back to
+/// `EmitContent`, which still emits one line-table entry **per fragment**
+/// — the exact "runtime assembles text from parts, translators see shredded
+/// fragments" shape the 2026-03-15 ruling (issue #1667) retired. Merging
+/// here, at the one place every splice funnels through, is what actually
+/// lets the recognizer see one flat line and produce one `LineEntry` per
+/// branch — this pass already did the structural half of the ruling (branch
+/// lifting + splicing, added the same day as the ruling); merging was the
+/// missing half.
+fn extend_merging_text(parts: &mut Vec<ContentPart>, extra: &[ContentPart]) {
+    for part in extra {
+        if let (Some(ContentPart::Text(last)), ContentPart::Text(next)) = (parts.last_mut(), part) {
+            if last.ends_with(char::is_whitespace) && next.starts_with(char::is_whitespace) {
+                last.push_str(next.trim_start());
+            } else {
+                last.push_str(next);
+            }
+        } else {
+            parts.push(part.clone());
+        }
+    }
+}
+
 /// Splice prefix/suffix text around a branch block's content.
 ///
 /// Handles these cases:
@@ -271,7 +304,7 @@ fn splice_around(
     // Empty block — create a new Content with prefix + suffix.
     if block.stmts.is_empty() {
         let mut parts = prefix.to_vec();
-        parts.extend_from_slice(suffix);
+        extend_merging_text(&mut parts, suffix);
         if !parts.is_empty() || !tags.is_empty() {
             block.stmts.push(Stmt::Content(Content {
                 ptr,
@@ -287,8 +320,9 @@ fn splice_around(
         && let Stmt::Content(ref mut c) = block.stmts[0]
     {
         let mut new_parts = prefix.to_vec();
-        new_parts.append(&mut c.parts);
-        new_parts.extend_from_slice(suffix);
+        let original = std::mem::take(&mut c.parts);
+        extend_merging_text(&mut new_parts, &original);
+        extend_merging_text(&mut new_parts, suffix);
         c.parts = new_parts;
         c.tags.extend_from_slice(tags);
         if c.ptr.is_none() {
@@ -311,7 +345,8 @@ fn splice_around(
         // Prepend prefix to first Content.
         if has_prefix && let Stmt::Content(ref mut c) = block.stmts[first] {
             let mut new_parts = prefix.to_vec();
-            new_parts.append(&mut c.parts);
+            let original = std::mem::take(&mut c.parts);
+            extend_merging_text(&mut new_parts, &original);
             c.parts = new_parts;
             c.tags.extend_from_slice(tags);
             if c.ptr.is_none() {
@@ -324,12 +359,12 @@ fn splice_around(
         }
         // Append suffix to last Content.
         if has_suffix && let Stmt::Content(ref mut c) = block.stmts[last] {
-            c.parts.extend_from_slice(suffix);
+            extend_merging_text(&mut c.parts, suffix);
         }
     } else {
         // No Content stmts at all — insert a new Content at position 0.
         let mut parts = prefix.to_vec();
-        parts.extend_from_slice(suffix);
+        extend_merging_text(&mut parts, suffix);
         if !parts.is_empty() || !tags.is_empty() {
             block.stmts.insert(
                 0,
@@ -711,11 +746,25 @@ mod tests {
         };
         assert_eq!(seq.branches.len(), 3);
 
-        // Branch 1 (empty) should still get "It's  fine".
+        // Branch 1 (empty) should still get prefix+suffix, seam-collapsed to
+        // a single space — issue #1667: `extend_merging_text` now merges
+        // adjacent `Text` parts at every splice seam (prefix/branch/suffix)
+        // so the recognizer sees one flat `Text` part and can match `Plain`.
+        // Before that fix, "It's " + "" + " fine" stayed three separate
+        // parts (never recognized, always `EmitContent`); at runtime the
+        // unrecognized path's `Spring` opcodes collapsed the same double
+        // whitespace anyway, so this also matches actual rendered output,
+        // not just the new intermediate shape.
         let Stmt::Content(c1) = &seq.branches[1].body.stmts[0] else {
             panic!("expected Content in empty branch");
         };
-        assert_eq!(content_text(c1), "It's  fine");
+        assert_eq!(content_text(c1), "It's fine");
+        assert_eq!(
+            c1.parts.len(),
+            1,
+            "prefix+suffix should merge into a single Text part so the \
+             recognizer can match Plain"
+        );
     }
 
     #[test]

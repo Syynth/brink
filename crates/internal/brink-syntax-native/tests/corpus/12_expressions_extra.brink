@@ -9,6 +9,7 @@ flow narrate2(ref x, y) {
   Div: {x / y}
   Mod: {x % y}
   Built: {Point { x: 1, y: 2 }}
+  Array: {[1, 2, 3]}
 }
 
 var add = |a, b| a + b

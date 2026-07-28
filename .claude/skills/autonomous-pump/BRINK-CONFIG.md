@@ -3,7 +3,10 @@
 Fill pump.js's CONFIG from these when running the pump on this repo.
 
 ## Gates
-- **Rust (default GATE)**: `cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && cargo test -p brink-test-harness --test oracle_snapshots`
+- **Rust (default GATE)**: `cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo nextest run --workspace && cargo test -p brink-test-harness --test oracle_snapshots`
+  - ⚠ **`cargo nextest run`, not `cargo test`** (measured 2026-07-28, issue #1695): identical results (6590 passed, 0 failed under both) at **35s vs 2m52s**. `cargo test` averaged **~56% CPU** — effectively running the 183 test binaries one at a time — while nextest averaged **~507%**, i.e. the process pool actually working. This is the per-round cost that multiplies across every fix cycle.
+  - **Doctests are deliberately NOT in the per-round gate.** nextest does not run them, and `cargo test --workspace --doc` costs **101s to execute exactly ONE real doctest** (21 others are `ignore`d). That belongs on a pre-merge/CI gate, not on every agent iteration. If you need it: `cargo test --workspace --doc`.
+  - Requires `cargo install cargo-nextest --locked` once (~2m07s). Already installed on the local machine.
 - **TS entries (gate override)**: `wasm-pack build crates/brink-web --target web --out-dir www/pkg && wasm-pack test --node crates/brink-web && pnpm install --frozen-lockfile && pnpm --filter @brink-lang/editor typecheck && pnpm --filter @brink-lang/studio typecheck && pnpm --filter @brink-lang/studio test && pnpm --filter @brink-lang/editor build`
 - **Demo lane (gate override)**: `cd demos/compound && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test && cd ../.. && cargo check --workspace` — oracle-free, minutes; the workspace check proves the demo stays excluded.
 - ⚠ 2026-07-18: `wasm-pack test --node` joined the TS gate because a real wasm-leg bug (PR #1017) passed both cargo test (native) and vitest (mocked) — the wasm32 target was a local blind spot.
@@ -17,6 +20,7 @@ Fill pump.js's CONFIG from these when running the pump on this repo.
 - Never add app.register_type for #[derive(Reflect)] types; never touch .github/workflows/release.yml; VM tests must not hang (keep step limits).
 - Studio work is dropped; issues below ~#300 are presumed stale and need justification.
 - If an issue's own body says needs-design/deferred, DECLINE and report — do not implement architecture unilaterally (the #458 precedent).
+- A ruling lands in a SPEC, not only in docs/decision-log.md. The log is HISTORY (what was decided, when, why); a spec is the CURRENT normative statement. A decision-log PR that amends no spec leaves the ruling invisible to every future reader — that is how five rulings got re-derived from scratch in one week, and how the ledger audit (2026-07-27, 296 rulings) found 29 ORPHANED / 15 CONTRADICTED. Reviewers check for this explicitly; name the spec file+section.
 
 ## Merge trains
 - Unique TRAIN_WT per wave (e.g. /tmp/pump-merge-train-brink-w4).
@@ -32,6 +36,26 @@ Fill pump.js's CONFIG from these when running the pump on this repo.
 - Don't add defensive branches the caller's guard makes unreachable — dead branches mask real fallthrough.
 
 ## Disk rule (2026-07-14 incident: 68G of invisible variant caches)
+
+### 2026-07-28 incident: disk hit **0 bytes**, wedging the host mid-wave
+
+Six concurrent agents (two opus, all touching analyzer/IR) exhausted **49G in a single wave**. The shell then could not run *at all* — the Bash tool failed writing its own output file — so the session could not even clean up after itself; a human had to run `rm -rf` by hand.
+
+**The leak was structural, not bad luck.** The between-waves reset only ever cleared the SHARED `CARGO_TARGET_DIR`. But when the shared target gets contaminated (a known, recurring failure — see the cross-contamination notes), agents correctly switch to a PRIVATE target dir — and **nothing ever cleans those up**. They accumulate in `/tmp/brink*` and in the session scratchpad, invisible until the disk is gone. Post-incident sweep found **26G inside the session scratchpad alone** (one private target at 15G) plus ~190 abandoned `/tmp/brink-*` review/build dirs going back ~30 waves.
+
+**Between EVERY wave, sweep all three, not just the shared target:**
+```
+rm -rf "$SHARED_TARGET" /tmp/pump-merge-train-brink-*
+for d in /tmp/brink* /tmp/pr* /tmp/rev*; do rm -rf "$d"; done   # stale review/build dirs
+for d in "$SCRATCHPAD"/*/; do rm -rf "$d"; done                  # agent private targets
+git -C <repo> worktree prune
+```
+
+**Before launching, assert headroom and cap concurrency:**
+- Require **≥60G free** before a wave starts; below that, sweep first and re-check rather than launching hopefully.
+- A build-heavy wave (analyzer/IR/runtime) is **≤4 items with at most one opus build**. Six concurrent builds against one shared target is what produced this.
+
+**⚠ Audit before deleting anything with a `.git` in it** (standing rule: never destroy work without a push-state audit). Check whether HEAD is contained in any remote branch — reviewer clones of PR heads look "unpushed" but are merged work, while a genuinely orphaned commit must be pushed to a branch before its directory is removed.
 - Agents must use ONLY the provided shared CARGO_TARGET_DIR or the worktree-local ./target (which dies with the worktree). NEVER mint variant /tmp cache dirs (pump-cargo-target-brink-issueN / -fuzz / -prN / verify-target-*) — they defeat boundary sweeps and accumulated 68G across three waves. If the shared cache misbehaves (stale sibling binaries, phantom errors), `cargo clean -p <crate>` it or fall back to ./target; never a third path.
 - Review agents needing to run code clone into the worktree they were given or /tmp/brink-review-<pr> and DELETE it before returning.
 - Boundary sweep checklist: worktrees (all completed waves) → /tmp/pump-* glob (not exact path) → /tmp/brink-* clones → shared cache if no wave imminent.

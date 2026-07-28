@@ -172,10 +172,12 @@ fn line_to_unit(scope_id: &str, scope_name: Option<&str>, line: &LineJson) -> Un
     // unit ids rename-stable: a `DefinitionId` is itself a hash of the
     // scope's (qualified) name/path (see `manifest.rs::hash_name`,
     // `hir/stamp.rs::alloc_address`), so renaming a knot or stitch still
-    // produces a new `DefinitionId` and still orphans its translations —
-    // `docs/intl-spec.md`'s scope-matching section says so explicitly. Real
-    // rename stability would require a DefinitionId-level change, which is
-    // out of scope here and needs maintainer sign-off on #1442.
+    // produces a new `DefinitionId` and every unit id beneath it changes.
+    // Name-derived identity is the ruled model (R1, 2026-07-27,
+    // `docs/modules-spec.md` §5), so that churn is by design. What #1442
+    // fixed is the *consequence*: `compile_locale` and `regenerate_lines`
+    // now follow the compiled `#@was` alias table (`crate::scope_alias`), so
+    // a declared rename rebinds its translations instead of orphaning them.
     //
     // What this DOES fix relative to the display-name scheme it replaces:
     // the id is now a canonical, NMTOKEN-safe hex string (display names can

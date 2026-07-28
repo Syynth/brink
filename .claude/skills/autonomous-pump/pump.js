@@ -32,7 +32,11 @@ const REPO = "OWNER/REPO";
 // Gate: build shared deps -> test -> typecheck. CACHE is prepended to every
 // gate invocation so all agents share one build cache (turbo/nx: unchanged
 // packages become cache hits — this is the pump's single biggest speed lever).
-const CACHE = "export TURBO_CACHE_DIR=/tmp/pump-turbo-cache";
+// CARGO_INCREMENTAL=0: every build agent works in a FRESH worktree, so the
+// incremental dep-graph cache is written and never read — pure disk write for
+// zero benefit, multiplied by ~5 agents per wave across thousands of builds.
+// (Local human iteration is unaffected; this only applies to agent gates.)
+const CACHE = "export TURBO_CACHE_DIR=/tmp/pump-turbo-cache CARGO_INCREMENTAL=0";
 const GATE = "pnpm install --prefer-offline && pnpm turbo run test typecheck";
 const MILESTONE = null; // optional milestone name for scope reconciliation
 const LEDGER = null; // optional: standing wave-ledger issue number (durable-by-default rule) — brink: 967
@@ -160,7 +164,7 @@ Return ok, issue, pr (number/url), gateGreen (true only if step 6 fully passed),
     return agent(`Adversarially review PR ${build.pr} (issue #${b.n}) of ${REPO} for an autonomous merge decision. Try to REFUTE it. ${CONV}${RULES ? `\nHOUSE RULES:\n${RULES}\n` : ""}
 Build reported: gateGreen=${build.gateGreen}; reachability="${build.reachability}"; ${build.summary}
 READ-ONLY MANDATE: you have NO worktree — your shell cwd is the USER'S LIVE session worktree; NEVER run \`gh pr checkout\`, \`git checkout\`, \`git reset\`, \`git stash\`, or ANY state-mutating git command anywhere (a reviewer that checked out a PR branch in the user's worktree hijacked their live session). Inspect via \`gh pr diff\`/\`gh api\`/\`gh pr view\` and Read files at their committed paths; if you must run code, clone/fetch into a fresh dir under /tmp.
-DO: \`gh pr diff ${build.pr} --repo ${REPO}\` + read changed files in context. Judge: correct + COMPLETE for #${b.n}? Actually REACHABLE/wired (not dead code)? In scope (no unrelated churn)? Conventions + house rules honored (no invented tokens)? Bugs / missing tests / regressions? Gate genuinely green? Decide approve | changes (list SPECIFIC actionable fixes) | reject (fundamentally wrong). Default to "changes" if materially off.
+DO: \`gh pr diff ${build.pr} --repo ${REPO}\` + read changed files in context. Judge: correct + COMPLETE for #${b.n}? Actually REACHABLE/wired (not dead code)? In scope (no unrelated churn)? Conventions + house rules honored (no invented tokens)? Bugs / missing tests / regressions? Gate genuinely green? **SPEC DRIFT** — does this PR leave a SPEC disagreeing with reality? Two shapes: (a) a decision-log PR that rules something but amends NO spec, so the ruling's only home is history nobody reads; (b) an implementation PR whose behavior contradicts, or is absent from, the spec that owns that territory. A 2026-07-27 ledger audit of 296 rulings found 29 ORPHANED and 15 CONTRADICTED precisely here — including a same-day ruling PR that touched only the decision log while the spec kept carrying the spelling that ruling rejected. Name the spec file+section in your findings. Decide approve | changes (list SPECIFIC actionable fixes) | reject (fundamentally wrong). Default to "changes" if materially off.
 DISCIPLINE: every \`findings\` entry must be a REAL, actionable fix to THIS PR's diff — never placeholders. If your only material notes are follow-up scope (work outside this PR's fence), the decision is "approve" and those notes go in \`scopeGaps\`; "changes" with an empty/junk findings list wastes a fix-agent run.
 ALWAYS post your verdict as ONE comment on the PR (\`gh pr comment ${build.pr} --repo ${REPO} --body "…"\`) — decision, findings, and scope gaps, INCLUDING approvals (durable-by-default rule, decision 2026-07-18: an approval's scope gaps are exactly the context that evaporates otherwise). Commenting is allowed under the read-only mandate; git state mutation is not. ALSO: note in \`scopeGaps\` anything the issue (or its milestone) UNDER-captured — work that clearly belongs but no issue covers. Return {pr, decision, findings, scopeGaps}.`,
       { label: `review#${b.n}`, phase: "Review", effort: effortFor(b), model: REVIEW_MODEL, schema: VERDICT })
