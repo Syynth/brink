@@ -266,6 +266,20 @@ fn assigning_to_a_let_declared_inside_the_lambda_is_fine() {
 }
 
 #[test]
+fn assigning_to_an_if_as_binding_is_an_error() {
+    // `as NAME` is a trailing sibling of the condition head, parsed as a
+    // child of `IF_STMT`/`WHILE_STMT`/`CONDITIONAL_BLOCK`/`CHOICE_GUARD`
+    // (`parser::binding::as_binding`) — never an ancestor of the lambda
+    // itself, so `outer_binders` must scan the `IF_STMT`'s children to see
+    // it, the same way it already scans a `STMT_BLOCK`'s children for a
+    // sibling `let`.
+    assert!(
+        has_e156("fn f(o: option<int>) {\n  if find(o) as i {\n    let g = |x| { i = x; };\n  }\n}\n"),
+        "writing to the `if ... as i` binding from an inner lambda must be E156"
+    );
+}
+
+#[test]
 fn assigning_to_a_global_is_not_a_capture() {
     // A module-level `var` is a durable cell reached by name, not a
     // snapshotted binding — writing to one from a lambda is a real write.

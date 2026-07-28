@@ -233,7 +233,18 @@ fn outer_binders(lambda_node: &SyntaxNode) -> Vec<String> {
                         .filter_map(|p| p.name_token().map(|t| t.text().to_string())),
                 );
             }
-            N::STMT_BLOCK => {
+            N::STMT_BLOCK
+            | N::IF_STMT
+            | N::WHILE_STMT
+            | N::UNTIL_STMT
+            | N::CONDITIONAL_BLOCK
+            | N::CHOICE_GUARD => {
+                // `AS_BINDING` is parsed as a trailing sibling of the
+                // condition head, inside the construct that binds it
+                // (`parser::binding::as_binding`'s doc comment) — never an
+                // ancestor of its own, so it only surfaces by scanning
+                // these constructs' direct children rather than by
+                // matching on `ancestor.kind()` itself.
                 for child in ancestor.children() {
                     collect_binder_names(&child, &mut names);
                 }
