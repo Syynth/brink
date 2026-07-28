@@ -259,8 +259,8 @@ pub enum DiagnosticCode {
 
     // ── TM-2 inline type annotations (docs/typed-mode-spec.md §3) ────
     /// A type annotation names something that isn't a recognized nominal
-    /// type (`int`/`float`/`bool`/`string`/`divert`/`void`), a `list<L>`
-    /// naming a declared `LIST`, `array<T>`, or `map<K, V>` — declared
+    /// type (`int`/`float`/`bool`/`string`/`divert`/`void`), a `List<L>`
+    /// naming a declared `LIST`, `Array<T>`, or `Map<K, V>` — declared
     /// struct names arrive in TM-4.
     E061,
     /// RETIRED (T1c-1, #699): previously "`fn(T…): R` function-type

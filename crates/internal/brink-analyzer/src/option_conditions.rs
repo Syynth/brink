@@ -56,7 +56,7 @@ pub(crate) fn check(
     resolutions: &ResolutionMap,
 ) -> Vec<Diagnostic> {
     // No manifest access, mirroring `conversions::check`'s own note — an
-    // Option type never originates from a `handle<K>` manifest vocabulary.
+    // Option type never originates from a `Handle<K>` manifest vocabulary.
     let globals = crate::infer::collect_globals(files, index, None);
     let mut out = Vec::new();
     for &(file, hir) in files {

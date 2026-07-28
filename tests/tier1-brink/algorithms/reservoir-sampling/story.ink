@@ -13,7 +13,7 @@
 // a single forward pass with no persisted-across-turns RNG state to
 // speak of, so the built-in generator is the simpler, sufficient tool.
 //
-// TYPES POLICY: gradual (default). `array<string>` (the stream/
+// TYPES POLICY: gradual (default). `Array<string>` (the stream/
 // reservoir), `int` (loop indices); nothing here needs annotation.
 //
 // ERGONOMICS-FINDINGS:

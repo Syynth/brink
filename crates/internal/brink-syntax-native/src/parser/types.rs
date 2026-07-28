@@ -16,8 +16,10 @@
 //! `brink_ir::hir::TypeExpr` shape. Like that module, this one is **purely
 //! syntactic**: any `IDENT` is accepted as a type name or generic head, and
 //! recognizing the fixed nominal set (`int`, `float`, `bool`, `string`,
-//! `list<L>`, `map<K, V>`, declared struct names, …) is `brink-analyzer`'s
-//! job, never this parser's.
+//! `List<L>`, `Map<K, V>`, `Array<T>`, `Option<T>`, `Weighted<T>`,
+//! `Handle<K>`, declared struct names, …) is `brink-analyzer`'s job, never
+//! this parser's. Non-primitive type names are Uppercase (issue #1552,
+//! `docs/decision-log.md` 2026-07-27 "Type-name surface ruled").
 
 use crate::SyntaxKind::{
     COLON, COMMA, GT, IDENT, KW_FN, L_PAREN, LT, R_PAREN, TYPE_ANNOTATION, TYPE_EXPR, TYPE_FN,
@@ -57,7 +59,7 @@ pub(crate) fn type_annotation(p: &mut Parser<'_, '_>) {
 /// ```
 ///
 /// Depth-guarded like every other recursive rule in this parser: a
-/// pathological `list<list<list<…>>>` records the nesting-depth diagnostic
+/// pathological `List<List<List<…>>>` records the nesting-depth diagnostic
 /// and stops recursing rather than blowing the stack (CLAUDE.md "guard
 /// against unbounded growth"). A depth-limited node is left childless — the
 /// "absent data is legal" contract every optional AST child in this grammar

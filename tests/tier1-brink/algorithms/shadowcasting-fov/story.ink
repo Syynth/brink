@@ -31,7 +31,7 @@
 // - THE CATALOG'S OWN PREDICTION ABOUT SHARED OCTANT LOGIC HOLDS: "8-way
 //   octant symmetry (repeated logic — tests whether brink wants a shared
 //   `#fn` for octant transform)." The answer here is DATA, not a
-//   function value: `octants` is an `array<Octant>` of the eight
+//   function value: `octants` is an `Array<Octant>` of the eight
 //   `(xx, xy, yx, yy)` sign/swap transforms, and the single `cast_light`
 //   function is called once per octant with a different transform
 //   struct's fields as four extra `int` parameters — no `#fn`/partial-

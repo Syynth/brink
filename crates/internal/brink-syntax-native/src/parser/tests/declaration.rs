@@ -750,11 +750,11 @@ fn struct_decl_unexpected_token_in_body_recovers() {
 #[test]
 fn struct_decl_generic_field_type() {
     // NG-E (issue #1505): `struct_field` now parses a full `type_expr`,
-    // so a container-typed field (`list<int>`) is a first-class shape —
+    // so a container-typed field (`List<int>`) is a first-class shape —
     // no longer the documented gap the pre-#1505 test of this name
-    // asserted. `map<K, V>` (multiple type arguments) is covered by
+    // asserted. `Map<K, V>` (multiple type arguments) is covered by
     // `struct_decl_map_field_type` below.
-    let src = "struct Bag {\n  items: list<int>\n}\n";
+    let src = "struct Bag {\n  items: List<int>\n}\n";
     let p = assert_lossless(src);
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
     let decl: ast::StructDecl = find_child(&p.syntax()).expect("struct decl");
@@ -772,9 +772,9 @@ fn struct_decl_generic_field_type() {
 
 #[test]
 fn struct_decl_map_field_type() {
-    // `map<K, V>` — a generic field type with more than one type argument
+    // `Map<K, V>` — a generic field type with more than one type argument
     // (NG-E, issue #1505).
-    let src = "struct Registry {\n  items: map<string, int>\n}\n";
+    let src = "struct Registry {\n  items: Map<string, int>\n}\n";
     let p = assert_lossless(src);
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
     let decl: ast::StructDecl = find_child(&p.syntax()).expect("struct decl");
@@ -1363,7 +1363,7 @@ fn extern_params_take_type_annotations_via_the_shared_param_list() {
 
 #[test]
 fn generic_and_nested_generic_type_arguments_parse() {
-    let p = assert_lossless("fn tally(m: map<string, list<int>>) {\n  return 1;\n}\n");
+    let p = assert_lossless("fn tally(m: Map<string, List<int>>) {\n  return 1;\n}\n");
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
     let decl: ast::FnDecl = find_child(&p.syntax()).expect("fn decl");
     let annotation = decl

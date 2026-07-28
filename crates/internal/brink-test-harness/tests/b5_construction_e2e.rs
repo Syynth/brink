@@ -94,7 +94,7 @@ flow main() {
 }
 
 /// NG-E (issue #1505) widened `struct_field` from a bare `PATH` to the
-/// full `type_expr` production, so a container-typed field (`map<K, V>`)
+/// full `type_expr` production, so a container-typed field (`Map<K, V>`)
 /// is a first-class struct field shape now, not just a parser/CST
 /// curiosity — it survives lowering, codegen, linking, and actually plays.
 /// `Map { … }` is a real native construct literal (`ConstructTarget::Map`),
@@ -104,7 +104,7 @@ fn container_typed_struct_field_plays() {
     let out = play(
         "\
 struct Bag {
-  m: map<string, int>
+  m: Map<string, int>
 }
 
 fn count() {

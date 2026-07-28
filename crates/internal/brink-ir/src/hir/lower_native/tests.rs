@@ -1290,7 +1290,7 @@ fn unannotated_param_still_lowers_with_none() {
 
 #[test]
 fn generic_param_annotation_lowers_with_its_arguments() {
-    let (hir, _m, diags) = lower_src("fn tally(m: map<string, int>) {\n  return 1;\n}\n");
+    let (hir, _m, diags) = lower_src("fn tally(m: Map<string, int>) {\n  return 1;\n}\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     let Some(crate::TypeExpr::Generic { name, args, .. }) =
         hir.knots[0].params[0].annotation.as_ref()

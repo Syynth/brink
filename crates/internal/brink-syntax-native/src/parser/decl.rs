@@ -342,7 +342,7 @@ pub(crate) fn struct_decl(p: &mut Parser<'_, '_>, doc: Option<rowan::Checkpoint>
 /// wrapper (`super::types::type_annotation`), the same node every other
 /// `: type` position in this grammar produces (`param`, `binding_annotation`,
 /// `return_type_clause`), so a field's type may now be a generic
-/// instantiation (`list<int>`, `map<K, V>`) or a function type
+/// instantiation (`List<int>`, `Map<K, V>`) or a function type
 /// (`fn(int): bool`) — not just a bare dotted path — unblocking
 /// function-typed and container-typed struct fields (#1482, #1487).
 fn struct_field(p: &mut Parser<'_, '_>) {

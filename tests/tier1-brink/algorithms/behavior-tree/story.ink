@@ -8,7 +8,7 @@
 // below for the verdict.
 //
 // TYPES POLICY: gradual (default). `BTNode` is self-referential
-// (`children: array<BTNode>`) and carries a `fn(): int` field — both are
+// (`children: Array<BTNode>`) and carries a `fn(): int` field — both are
 // genuinely new shapes for this corpus, so gradual was chosen deliberately
 // to isolate "does composition work at all" from "does it work under
 // strict inference" as two separable questions. Whether `fn(...)` struct
@@ -24,9 +24,9 @@
 //    represent tree nodes (arena-of-structs-by-index is the likely
 //    answer, itself a findings note)." Tested directly before writing
 //    this file's tree-building code: `STRUCT BTNode = #{ kind: int,
-//    action: fn(): int, children: array<BTNode> }` compiles and runs
+//    action: fn(): int, children: Array<BTNode> }` compiles and runs
 //    correctly under gradual mode, nested at least two levels deep, with
-//    no arena/index workaround needed. `BTNode`'s `children: array<BTNode>`
+//    no arena/index workaround needed. `BTNode`'s `children: Array<BTNode>`
 //    is a direct value-semantics recursive struct — every level is copied
 //    by value on construction/pass (per `docs/book/.../types.md`'s struct
 //    value-semantics rule), which is fine for a tree built once and never
@@ -138,7 +138,7 @@ CONST NODE_INVERT = 3
 STRUCT BTNode = #{
     kind: int,
     action: fn(): int,
-    children: array<BTNode>,
+    children: Array<BTNode>,
 }
 
 VAR health = 40

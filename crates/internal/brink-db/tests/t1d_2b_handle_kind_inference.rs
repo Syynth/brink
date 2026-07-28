@@ -2,7 +2,7 @@
 //! `HostManifest`'s handle-kind vocabulary through the FG-2 salsa substrate
 //! into inference (`solve_scc_query`/`signature_query`, and their
 //! `brink_analyzer` counterparts `solve_scc`/`signature`) — making strict
-//! `handle<K>` kind-rejection reachable end-to-end through the *production*
+//! `Handle<K>` kind-rejection reachable end-to-end through the *production*
 //! `db.diagnostics(file)` seam (`diagnostics_query` -> `analysis_query` ->
 //! `finish_analysis`), the same path CLI/LSP/IDE consumers read. PR #769
 //! (T1d-2) landed the manifest-vs-annotation resolution and the
@@ -26,13 +26,13 @@ use brink_ir::{BaseType, DiagnosticCode, HostManifest, SemanticTypeDef};
 /// annotation of their own — then get compared, a genuine cross-kind handle
 /// mismatch detectable only from body-usage inference.
 const CROSS_KIND_SRC: &str = "\
-=== function get_audio(id: int): handle<AudioInstance> ===\n~ return id\n\
-=== function get_timer(id: int): handle<Timer> ===\n~ return id\n\
+=== function get_audio(id: int): Handle<AudioInstance> ===\n~ return id\n\
+=== function get_timer(id: int): Handle<Timer> ===\n~ return id\n\
 === main ===\n~ temp a = get_audio(1)\n~ temp b = get_timer(1)\n{a == b:\n  ok\n}\n-> DONE\n";
 
 const SAME_KIND_SRC: &str = "\
-=== function get_audio(id: int): handle<AudioInstance> ===\n~ return id\n\
-=== function get_audio2(id: int): handle<AudioInstance> ===\n~ return id\n\
+=== function get_audio(id: int): Handle<AudioInstance> ===\n~ return id\n\
+=== function get_audio2(id: int): Handle<AudioInstance> ===\n~ return id\n\
 === main ===\n~ temp a = get_audio(1)\n~ temp c = get_audio2(1)\n{a == c:\n  ok\n}\n-> DONE\n";
 
 fn two_kind_manifest() -> HostManifest {
@@ -67,7 +67,7 @@ fn strict_opts(manifest: HostManifest) -> AnalysisOptions {
 }
 
 /// Positive case, through the real salsa pipeline: `binding declared
-/// handle<AudioInstance> rejects handle<Timer> at compile time` (the #767
+/// Handle<AudioInstance> rejects Handle<Timer> at compile time` (the #767
 /// acceptance criterion) — `db.diagnostics(file)` must carry `E066` for the
 /// cross-kind comparison, reached via `solve_scc_query` (not the pure
 /// `infer_project` fallback — `db.diagnostics` always goes through

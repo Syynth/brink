@@ -579,7 +579,7 @@ pub fn analyze_with_modules(
 /// - [`annotations::check`]'s cross-file inputs are the project's declared
 ///   `LIST`/`STRUCT` names (derivable from a range-free index projection —
 ///   `declared_list_names`/`declared_struct_names` read no symbol's range)
-///   and, for `handle<K>` (T1d-2, docs/t1d-spec.md §3), the registered host
+///   and, for `Handle<K>` (T1d-2, docs/t1d-spec.md §3), the registered host
 ///   manifest — project-wide, host-set config, not file-edit-derived, so
 ///   reading it here is the same coarse dependency shape `dialect` already
 ///   is, not a reintroduction of whole-project churn.

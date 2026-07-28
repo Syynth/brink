@@ -1064,7 +1064,7 @@ fn block_scoped_temp_ascription_lowers_onto_block_temp_decl() {
 
 #[test]
 fn generic_list_and_map_annotations_lower_with_args() {
-    let (hir, diags) = lower_hir("VAR w: list<Weathers> = 0\nVAR m: map<string, int> = 0\n");
+    let (hir, diags) = lower_hir("VAR w: List<Weathers> = 0\nVAR m: Map<string, int> = 0\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     match &hir.variables[0].annotation {
         Some(TypeExpr::Generic { name, args, .. }) => {

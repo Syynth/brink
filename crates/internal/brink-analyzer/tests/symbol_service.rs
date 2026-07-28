@@ -352,7 +352,7 @@ fn signature_unannotated_const_keeps_the_literal_inferred_type() {
 
 #[test]
 fn signature_list_generic_annotation_resolves_against_declared_list_names() {
-    let src = "LIST Weathers = sunny, (rainy)\n=== function pick(w: list<Weathers>): void ===\n~ return\n";
+    let src = "LIST Weathers = sunny, (rainy)\n=== function pick(w: List<Weathers>): void ===\n~ return\n";
     let (hir, _manifest, result) = analyzed(src);
     let def = def_id(&result, SymbolKind::Knot, "pick");
     let sig = signature(def, &result.index, &[(FileId(0), &hir)], None).expect("known def");
@@ -375,12 +375,12 @@ fn signature_list_generic_annotation_resolves_against_declared_list_names() {
 // map. Each fixture below asserts BOTH fields: `value_type` proves the
 // wire domain is unchanged, `value_ty` proves the type actually landed.
 
-/// The `ty_to_inferred_type` gap itself: an `array<T>` annotation has no
+/// The `ty_to_inferred_type` gap itself: an `Array<T>` annotation has no
 /// `InferredType` representation, so before #1540 this global's static type
 /// was whatever the (irrelevant) initializer literal said.
 #[test]
 fn signature_var_array_annotation_survives_on_value_ty() {
-    let src = "VAR arr: array<int> = 0\n";
+    let src = "VAR arr: Array<int> = 0\n";
     let (hir, _manifest, result) = analyzed(src);
     let def = def_id(&result, SymbolKind::Variable, "arr");
     let sig = signature(def, &result.index, &[(FileId(0), &hir)], None).expect("known def");
@@ -392,10 +392,10 @@ fn signature_var_array_annotation_survives_on_value_ty() {
     assert_eq!(sig.value_type, Some(brink_analyzer::InferredType::Int));
 }
 
-/// `map<K, V>` — the second half of the same annotation gap.
+/// `Map<K, V>` — the second half of the same annotation gap.
 #[test]
 fn signature_var_map_annotation_survives_on_value_ty() {
-    let src = "VAR m: map<string, int> = 0\n";
+    let src = "VAR m: Map<string, int> = 0\n";
     let (hir, _manifest, result) = analyzed(src);
     let def = def_id(&result, SymbolKind::Variable, "m");
     let sig = signature(def, &result.index, &[(FileId(0), &hir)], None).expect("known def");
@@ -487,7 +487,7 @@ fn signature_var_struct_annotation_and_literal_both_reach_ty_struct() {
     );
 }
 
-/// The scalar/`list<L>` domain is unchanged: `value_ty` agrees with what
+/// The scalar/`List<L>` domain is unchanged: `value_ty` agrees with what
 /// `value_type` already said, so no existing consumer sees a different
 /// answer for a global that already had one.
 #[test]

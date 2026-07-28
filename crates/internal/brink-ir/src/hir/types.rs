@@ -320,7 +320,7 @@ pub enum TypeExpr {
     /// `void`, or an unrecognized identifier (flagged by a targeted
     /// diagnostic — declared struct names arrive in TM-4).
     Named { name: String, range: TextRange },
-    /// `name<args…>` — `list<L>`, `array<T>`, `map<K, V>`, or an
+    /// `name<args…>` — `List<L>`, `Array<T>`, `Map<K, V>`, or an
     /// unrecognized generic head.
     Generic {
         name: String,

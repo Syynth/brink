@@ -21,10 +21,10 @@
 //
 // ERGONOMICS-FINDINGS:
 //
-// 1. THE HEADLINE FINDING — WHY THIS FILE USES AN ARENA (`array<QuadNode>`
+// 1. THE HEADLINE FINDING — WHY THIS FILE USES AN ARENA (`Array<QuadNode>`
 //    + INT CHILD INDICES), NOT A SELF-REFERENTIAL STRUCT, AND WHY THAT
 //    ANSWER DIFFERS FROM `behavior-tree/story.ink`'S FINDING NEXT DOOR.
-//    That file discovered `STRUCT BTNode = #{ …, children: array<BTNode> }`
+//    That file discovered `STRUCT BTNode = #{ …, children: Array<BTNode> }`
 //    compiles and runs correctly — "self-referential structs work,
 //    contradicting this epic's own prediction" — and warned future ports
 //    in this same epic not to "reflexively reach for an arena when a
@@ -38,14 +38,14 @@
 //    called once PER POINT, and a later insert routinely needs to mutate
 //    a node that an earlier insert already built (converting a leaf into
 //    an internal node, or appending a point to an existing leaf's
-//    bucket). With `children: array<QuadNode>` as a value, the child
+//    bucket). With `children: Array<QuadNode>` as a value, the child
 //    subtree handed to a recursive call is a COPY — mutating it inside
 //    the call cannot be observed by the caller's own copy without
 //    threading a freshly-rebuilt struct back up through every stack
 //    frame on every single insert (a full root-to-leaf copy per point,
 //    same cost shape `bsp-dungeon`'s header already flags for its
 //    one-time, build-only tree). The arena sidesteps this completely:
-//    `nodes` is one flat top-level `VAR array<QuadNode>`, exactly the
+//    `nodes` is one flat top-level `VAR Array<QuadNode>`, exactly the
 //    kind of global this corpus's DP lane already mutates directly by
 //    name (`memoized-fibonacci`'s `memo`, `knapsack-01`'s `memo`) with no
 //    `ref` parameters — `quad_insert`/`quad_subdivide` read and write
@@ -138,9 +138,9 @@ STRUCT QuadNode = #{
     h: int,
     depth: int,
     is_leaf: bool,
-    pt_xs: array<int>,
-    pt_ys: array<int>,
-    pt_ids: array<int>,
+    pt_xs: Array<int>,
+    pt_ys: Array<int>,
+    pt_ids: Array<int>,
     nw: int,
     ne: int,
     sw: int,

@@ -152,7 +152,7 @@ fn struct_literal_default_folds_nested_literals_recursively() {
     // reference all fold for real one level in.
     let source = "\
 STRUCT Inner = #{\n    v: int,\n}
-STRUCT Outer = #{\n    inner: Inner,\n    tags: array<int>,\n}
+STRUCT Outer = #{\n    inner: Inner,\n    tags: Array<int>,\n}
 
 CONST BASE = 7
 VAR o = Outer#{inner: Inner#{v: BASE}, tags: #[1, 2]}

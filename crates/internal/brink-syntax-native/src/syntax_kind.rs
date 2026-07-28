@@ -627,7 +627,7 @@ pub enum SyntaxKind {
     /// grammar accepts any `IDENT`; recognizing the fixed set is a semantic
     /// check (`brink-analyzer`), never this parser's concern.
     TYPE_NAME,
-    /// `name<arg, …>` — `list<L>`, `map<K, V>`, or any unrecognized
+    /// `name<arg, …>` — `List<L>`, `Map<K, V>`, or any unrecognized
     /// generic head.
     TYPE_GENERIC,
     /// `fn(type, …): type` — a function type. Parses here; the checker

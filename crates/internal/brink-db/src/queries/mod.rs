@@ -803,7 +803,7 @@ pub(crate) struct DefKey<'db> {
 /// a body edit elsewhere in the project no longer invalidates this memo.
 ///
 /// **Manifest dependency (T1d-2b, issue #774, docs/t1d-spec.md §3).** Also
-/// reads `project.analysis_options(db).host_manifest` so `handle<K>`
+/// reads `project.analysis_options(db).host_manifest` so `Handle<K>`
 /// annotations resolve to `Ty::Handle(K)` here — the registered manifest is
 /// project-wide, host-set config, not derived from any file's edits, so
 /// reading it is the same coarse dependency shape `per_file_diagnostics_query`
@@ -1161,7 +1161,7 @@ pub(crate) struct SolvedScc {
 ///
 /// **Manifest dependency (T1d-2b, issue #774, docs/t1d-spec.md §3).** Also
 /// reads `project.analysis_options(db).host_manifest`, threaded to
-/// [`brink_analyzer::solve_scc`] so a `handle<K>` param/return/temp
+/// [`brink_analyzer::solve_scc`] so a `Handle<K>` param/return/temp
 /// annotation resolves to `Ty::Handle(K)` during the per-SCC body-uses
 /// solve — the seam that makes strict-mode handle-kind rejection reachable
 /// end-to-end (the #767 acceptance criterion): once two locals of
@@ -1181,7 +1181,7 @@ pub(crate) struct SolvedScc {
 /// `EXTERNAL` documented purely inline (no matching registered
 /// `ManifestExternal`) now seeds a `known_sigs` entry too, and so a
 /// registered/inline param or return type naming a *scalar* semantic type
-/// (not just a `handle<K>` kind) resolves to its own base `Ty`. Range-free
+/// (not just a `Handle<K>` kind) resolves to its own base `Ty`. Range-free
 /// (`DocBlock` carries no source spans), so this doesn't reintroduce the
 /// whole-project-HIR churn FG-2/FG-2.1 eliminated — a doc-content-preserving
 /// edit backdates through `inline_docs_query`'s own `Eq` cutoff exactly like
@@ -1244,7 +1244,7 @@ pub(crate) fn solve_scc_query<'db>(
         global_ids.extend(referenced_globals_query(db, project, DefKey::new(db, member)).iter());
     }
     // `value_ty` carries the declaration's type at full `Ty` fidelity —
-    // scalars, `list<L>`, and (since issue #1540) `Array`/`Map`/`Struct`/
+    // scalars, `List<L>`, and (since issue #1540) `Array`/`Map`/`Struct`/
     // `Fn`/`Handle` alike (`Option`/`Range` have no annotation grammar yet,
     // so they never reach here). Mirrors `brink_analyzer::infer::
     // collect_globals`'s own single read exactly, so this narrowed path

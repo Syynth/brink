@@ -23,9 +23,9 @@
 // `weighted-loot-table` next door.
 INCLUDE ../pcg-rng/pcg.ink
 
-// TYPES POLICY: gradual (default). `array<int>` (weights), `array<float>`
+// TYPES POLICY: gradual (default). `Array<int>` (weights), `Array<float>`
 // (the scaled-probability worklists and the final probability table),
-// `array<string>` (names) — gradual inference handles the float/int mix
+// `Array<string>` (names) — gradual inference handles the float/int mix
 // without annotation ceremony.
 //
 // ERGONOMICS-FINDINGS:

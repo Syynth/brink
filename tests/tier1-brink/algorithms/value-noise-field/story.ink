@@ -42,7 +42,7 @@
 // first and finding it structurally doesn't fit.
 //
 // TYPES POLICY: gradual (default). Floats, ints, and one nested
-// `array<array<float>>` lattice/field pair; gradual inference resolves
+// `Array<Array<float>>` lattice/field pair; gradual inference resolves
 // everything without annotation ceremony.
 //
 // ERGONOMICS-FINDINGS:

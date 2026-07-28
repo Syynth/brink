@@ -870,7 +870,7 @@ LIST Weathers = sunny, (rainy)
 ~ temp bonus: string = \"none\"
 ~ return true
 = aftermath
-~ temp w: list<Weathers> = sunny
+~ temp w: List<Weathers> = sunny
 -> DONE
 ";
         let p = project(src);

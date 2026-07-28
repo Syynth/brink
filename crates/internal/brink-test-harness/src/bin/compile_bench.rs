@@ -54,7 +54,7 @@
 //!    call), an all-fallback choice set (`validate`'s E034), and content
 //!    unreachable after a divert (`validate`'s E033) — plus, every
 //!    [`DIAG_FN_STRIDE`]'th file, one annotated `function` knot
-//!    (`int`/`string`/`list<L>`/`fn(T…): R` params + return, all
+//!    (`int`/`string`/`List<L>`/`fn(T…): R` params + return, all
 //!    *recognized* names) for `annotations::check`'s content-resolution
 //!    walk. E033/E034 are warnings (never block compilation); the
 //!    extension constructs and annotations are only `E051` errors under
@@ -1206,11 +1206,11 @@ fn profile_pulls(db: &ProjectDb, chunk_files: &[FileId]) -> PullMs {
 /// instead of four: the original text/mutation/choices/conditional mix,
 /// plus a brink-extension-heavy `~ { … }` block, an all-fallback choice set,
 /// and unreachable-after-divert content. Declares one project-wide `STRUCT`
-/// and `LIST` (needed for the struct-literal/`list<L>` content above and the
+/// and `LIST` (needed for the struct-literal/`List<L>` content above and the
 /// annotated function knots below) once, in `diag_main.ink`.
 ///
 /// Every [`DIAG_FN_STRIDE`]th file also gets one annotated `function` knot —
-/// `int`/`string`/`list<Signals>`/`fn(int): string` param + return
+/// `int`/`string`/`List<Signals>`/`fn(int): string` param + return
 /// annotations, every name recognized so `annotations::check` resolves them
 /// without flagging `E061` (the whole point: this project must compile
 /// clean under `Dialect::Brink` — see the module doc's item 7 for why
@@ -1381,13 +1381,13 @@ fn push_diag_unreachable_after_divert(s: &mut String, rng: &mut Lcg, next: &str)
 }
 
 /// One annotated `function` knot per [`DIAG_FN_STRIDE`]'th file —
-/// `int`/`string`/`list<Signals>`/`fn(int): string` param + return
+/// `int`/`string`/`List<Signals>`/`fn(int): string` param + return
 /// annotations, every name recognized (see [`generate_diag_project`]'s doc
 /// for why unrecognized names live in a separate fixture).
 fn push_diag_annotated_function(s: &mut String, f: usize) {
     let _ = writeln!(
         s,
-        "=== function diag_sig_{f:02}(count: int, label: string, items: list<Signals>, \
+        "=== function diag_sig_{f:02}(count: int, label: string, items: List<Signals>, \
          transform: fn(int): string): string ==="
     );
     s.push_str("~ {\n");
@@ -1702,7 +1702,7 @@ Root text, never reached by anything below. # generated
     return 0
 }
 
-=== function bogus_generic(items: list<NotDeclared>): int ===
+=== function bogus_generic(items: List<NotDeclared>): int ===
 ~ {
     return 0
 }

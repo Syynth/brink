@@ -360,9 +360,9 @@ fn arb_type_leaf() -> impl Strategy<Value = String> {
 fn arb_type_expr() -> impl Strategy<Value = String> {
     arb_type_leaf().prop_recursive(2, 8, 3, |inner| {
         prop_oneof![
-            inner.clone().prop_map(|t| format!("array<{t}>")),
-            (inner.clone(), inner.clone()).prop_map(|(k, v)| format!("map<{k}, {v}>")),
-            inner.clone().prop_map(|t| format!("list<{t}>")),
+            inner.clone().prop_map(|t| format!("Array<{t}>")),
+            (inner.clone(), inner.clone()).prop_map(|(k, v)| format!("Map<{k}, {v}>")),
+            inner.clone().prop_map(|t| format!("List<{t}>")),
             prop::collection::vec(inner.clone(), 0..=3).prop_map(|params| format!(
                 "fn({}): {}",
                 params.join(", "),

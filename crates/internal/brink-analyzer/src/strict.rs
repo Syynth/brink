@@ -287,7 +287,7 @@ pub fn native_strict_only_error(
 /// per-file projection of).
 ///
 /// `manifest`: the registered host manifest (T1d-2, docs/t1d-spec.md §3) —
-/// the `handle<K>` annotation-firewall vocabulary source, threaded through
+/// the `Handle<K>` annotation-firewall vocabulary source, threaded through
 /// to [`check_escapes`] and `annotations::mismatches`. `None` degrades to an
 /// empty handle-kind set, same posture as every other manifest-driven check.
 #[must_use]
@@ -1749,7 +1749,7 @@ mod tests {
         assert!(diags.is_empty(), "annotation supplies the type: {diags:?}");
     }
 
-    /// T1d-2 (docs/t1d-spec.md §3): a `handle<K>`-annotated, otherwise-unused
+    /// T1d-2 (docs/t1d-spec.md §3): a `Handle<K>`-annotated, otherwise-unused
     /// param is exempt from `E065` the same way any other resolvable
     /// annotation is — "strict kind-checking via existing TM-3 machinery",
     /// reusing the annotation-firewall exemption path, no new code needed.
@@ -1758,7 +1758,7 @@ mod tests {
     /// as `Unknown` exactly like an unrecognized type name would.
     #[test]
     fn annotated_handle_param_is_exempt_from_unknown_escape_when_kind_is_registered() {
-        let (hir, index, res) = build("=== noop(x: handle<AudioInstance>) ===\nHello.\n-> DONE\n");
+        let (hir, index, res) = build("=== noop(x: Handle<AudioInstance>) ===\nHello.\n-> DONE\n");
         let inference =
             crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
         let manifest = brink_ir::HostManifest {
@@ -2012,7 +2012,7 @@ mod tests {
 
     #[test]
     fn handle_param_escapes_as_unknown_with_no_manifest_registered() {
-        let (hir, index, res) = build("=== noop(x: handle<AudioInstance>) ===\nHello.\n-> DONE\n");
+        let (hir, index, res) = build("=== noop(x: Handle<AudioInstance>) ===\nHello.\n-> DONE\n");
         let inference =
             crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
         let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
@@ -2021,8 +2021,8 @@ mod tests {
     }
 
     /// T1d-2b (issue #774, docs/t1d-spec.md §3 — the #767 acceptance
-    /// criterion): "binding declared handle<AudioInstance> rejects
-    /// handle<Timer> at compile time". `get_audio`/`get_timer` are leaf
+    /// criterion): "binding declared Handle<AudioInstance> rejects
+    /// Handle<Timer> at compile time". `get_audio`/`get_timer` are leaf
     /// functions whose return type is annotated with a distinct handle
     /// kind each — their body-derived return type stays `Unknown` (`id` is
     /// never otherwise constrained), so the T1c annotation-firewall overlay
@@ -2031,7 +2031,7 @@ mod tests {
     /// annotation of their own), then get compared — a genuine cross-kind
     /// handle mismatch detected *purely from body-usage inference*, exactly
     /// the gap PR #769 disclosed as deferred. Before T1d-2b threaded the
-    /// manifest into `infer_project`/`solve_scc`, `handle<K>` annotations
+    /// manifest into `infer_project`/`solve_scc`, `Handle<K>` annotations
     /// never resolved during body inference at all (an empty kind set), so
     /// `get_audio`/`get_timer` would return `Ty::Unknown`, `unify` would
     /// never see two distinct `Ty::Handle` kinds meet, and this mismatch
@@ -2040,8 +2040,8 @@ mod tests {
     #[test]
     fn cross_kind_handle_comparison_from_body_usage_is_conflicted_under_strict() {
         let src = "\
-=== function get_audio(id: int): handle<AudioInstance> ===\n~ return id\n\
-=== function get_timer(id: int): handle<Timer> ===\n~ return id\n\
+=== function get_audio(id: int): Handle<AudioInstance> ===\n~ return id\n\
+=== function get_timer(id: int): Handle<Timer> ===\n~ return id\n\
 === main ===\n~ temp a = get_audio(1)\n~ temp b = get_timer(1)\n{a == b:\n  ok\n}\n-> DONE\n";
         let (hir, index, res) = build(src);
         let manifest = brink_ir::HostManifest {
@@ -2101,8 +2101,8 @@ mod tests {
     #[test]
     fn same_kind_handle_comparison_from_body_usage_is_clean_under_strict() {
         let src = "\
-=== function get_audio(id: int): handle<AudioInstance> ===\n~ return id\n\
-=== function get_audio2(id: int): handle<AudioInstance> ===\n~ return id\n\
+=== function get_audio(id: int): Handle<AudioInstance> ===\n~ return id\n\
+=== function get_audio2(id: int): Handle<AudioInstance> ===\n~ return id\n\
 === main ===\n~ temp a = get_audio(1)\n~ temp c = get_audio2(1)\n{a == c:\n  ok\n}\n-> DONE\n";
         let (hir, index, res) = build(src);
         let manifest = brink_ir::HostManifest {
@@ -2180,7 +2180,7 @@ mod tests {
 
     /// Before T1d-2b (issue #774), this exact cross-kind fixture was
     /// silently unreachable: `infer_project`/`solve_scc` had no manifest
-    /// seam, so `handle<K>` return annotations never resolved during body
+    /// seam, so `Handle<K>` return annotations never resolved during body
     /// inference and both `get_audio`/`get_timer` returned `Ty::Unknown`
     /// instead of their distinct handle kinds — `unify(Unknown, Unknown)`
     /// stays `Unknown`, never `Conflicted`, so no escape ever fired even
@@ -2190,8 +2190,8 @@ mod tests {
     #[test]
     fn cross_kind_handle_mismatch_is_unreachable_without_manifest_reaching_inference() {
         let src = "\
-=== function get_audio(id: int): handle<AudioInstance> ===\n~ return id\n\
-=== function get_timer(id: int): handle<Timer> ===\n~ return id\n\
+=== function get_audio(id: int): Handle<AudioInstance> ===\n~ return id\n\
+=== function get_timer(id: int): Handle<Timer> ===\n~ return id\n\
 === main ===\n~ temp a = get_audio(1)\n~ temp b = get_timer(1)\n{a == b:\n  ok\n}\n-> DONE\n";
         let (hir, index, res) = build(src);
         let manifest = brink_ir::HostManifest {
@@ -2246,8 +2246,8 @@ mod tests {
     // ─── `EXTERNAL` call-site argument checking (issue #786) ────────────
     //
     // docs/t1d-spec.md §3's own acceptance criterion: "under `types =
-    // strict`, a binding declared to take `handle<AudioInstance>` rejects a
-    // `handle<Timer>` argument at compile time". T1d-2b (#774) closed this
+    // strict`, a binding declared to take `Handle<AudioInstance>` rejects a
+    // `Handle<Timer>` argument at compile time". T1d-2b (#774) closed this
     // for two *locals* meeting through body-usage inference (comparison,
     // reassignment); this closes the literal reading of the sentence — the
     // binding itself, at its own call site — reusing the identical
@@ -2289,12 +2289,12 @@ mod tests {
 
     /// The #767/#786 acceptance criterion, literally: a binding
     /// (`EXTERNAL play_sound`) declared in the manifest to take
-    /// `handle<AudioInstance>` rejects a `handle<Timer>`-kinded argument at
+    /// `Handle<AudioInstance>` rejects a `Handle<Timer>`-kinded argument at
     /// compile time under `types = strict`.
     #[test]
     fn external_binding_rejects_cross_kind_handle_argument_under_strict() {
         let src = "EXTERNAL play_sound(inst)\n\
-=== function get_timer(id: int): handle<Timer> ===\n~ return id\n\
+=== function get_timer(id: int): Handle<Timer> ===\n~ return id\n\
 === main ===\n~ temp t = get_timer(1)\n~ play_sound(t)\n-> DONE\n";
         let (hir, index, res) = build(src);
         let manifest = audio_and_timer_manifest("AudioInstance");
@@ -2331,7 +2331,7 @@ mod tests {
     #[test]
     fn external_binding_accepts_same_kind_handle_argument_under_strict() {
         let src = "EXTERNAL play_sound(inst)\n\
-=== function get_audio(id: int): handle<AudioInstance> ===\n~ return id\n\
+=== function get_audio(id: int): Handle<AudioInstance> ===\n~ return id\n\
 === main ===\n~ temp t = get_audio(1)\n~ play_sound(t)\n-> DONE\n";
         let (hir, index, res) = build(src);
         let manifest = audio_and_timer_manifest("AudioInstance");
@@ -2366,7 +2366,7 @@ mod tests {
     #[test]
     fn external_binding_cross_kind_argument_is_not_checked_under_gradual() {
         let src = "EXTERNAL play_sound(inst)\n\
-=== function get_timer(id: int): handle<Timer> ===\n~ return id\n\
+=== function get_timer(id: int): Handle<Timer> ===\n~ return id\n\
 === main ===\n~ temp t = get_timer(1)\n~ play_sound(t)\n-> DONE\n";
         let (hir, index, res) = build(src);
         let manifest = audio_and_timer_manifest("AudioInstance");
@@ -2399,7 +2399,7 @@ mod tests {
     #[test]
     fn external_binding_with_unregistered_name_is_unchecked() {
         let src = "EXTERNAL other_call(inst)\n\
-=== function get_timer(id: int): handle<Timer> ===\n~ return id\n\
+=== function get_timer(id: int): Handle<Timer> ===\n~ return id\n\
 === main ===\n~ temp t = get_timer(1)\n~ other_call(t)\n-> DONE\n";
         let (hir, index, res) = build(src);
         let manifest = audio_and_timer_manifest("AudioInstance");
@@ -2569,7 +2569,7 @@ mod tests {
     fn annotated_empty_array_temp_is_exempt() {
         // spec §5: "if unconstrained, that's an Unknown escape -> annotate
         // the binding" — following that advice must silence the error.
-        let (hir, index, res) = build("=== main ===\n~ temp x: array<int> = #[]\n-> DONE\n");
+        let (hir, index, res) = build("=== main ===\n~ temp x: Array<int> = #[]\n-> DONE\n");
         let inference =
             crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
         let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
@@ -2631,13 +2631,13 @@ mod tests {
 
     /// `docs/book/src/toolchain/dialect/iteration.md`'s `first_over` fence
     /// (unmarked from `ink,proposed` in this same PR): a `for` loop over
-    /// an annotated `array<int>` param, `return some(<loop var>)` on one
+    /// an annotated `Array<int>` param, `return some(<loop var>)` on one
     /// path and `return none` on the other — both the return type and the
     /// loop-var temp used to escape as `Unknown`.
     #[test]
     fn first_over_style_option_return_no_longer_escapes() {
         let (hir, index, res) = build(
-            "=== function first_over(tab: array<int>, floor: int) ===\n\
+            "=== function first_over(tab: Array<int>, floor: int) ===\n\
              ~ {\n    for coins in tab {\n        if coins > floor {\n            return some(coins)\n        }\n    }\n}\n\
              ~ return none\n",
         );
@@ -3712,13 +3712,13 @@ mod tests {
     //    (docs/typed-mode-spec.md §2/§5) ─────────────────────────────────
 
     /// A VAR initialized directly to a list literal must infer its nominal
-    /// `list<L>` type end-to-end, not collapse to `Unknown` (the phase-0
+    /// `List<L>` type end-to-end, not collapse to `Unknown` (the phase-0
     /// `Sig` stub bug this issue reports). A temp assigned straight from
     /// such a VAR is the concrete, checkable consequence: before the fix,
     /// `weather`'s `Sig::value_type` fed `collect_globals` as `Ty::Unknown`
     /// (`infer::mod`'s `From<InferredType> for Ty` collapse), so `w` would
     /// spuriously trip the Unknown-escape check (`E065`) under strict even
-    /// though its value is plainly a `list<Weathers>` — the same "resolved
+    /// though its value is plainly a `List<Weathers>` — the same "resolved
     /// nominal type is clean" treatment `Ty::Struct`/`Ty::Handle` already
     /// get (`classify`'s doc above).
     #[test]

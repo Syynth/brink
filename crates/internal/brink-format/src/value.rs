@@ -1683,7 +1683,7 @@ mod tests {
     ///
     /// This is pinned only at the `Value` layer, not as an end-to-end
     /// `tests/tier1-brink/` fixture, because the obvious source form —
-    /// `STRUCT Bag = #{ items: array<int> }`, `push(a.items, 3)` — does not
+    /// `STRUCT Bag = #{ items: Array<int> }`, `push(a.items, 3)` — does not
     /// currently reach this code path: `push`/`insert`/`remove`'s
     /// bare-lvalue fast path (`try_lower_mutator_stmt` in
     /// `brink-ir::lir::lower::blocks`) treats *any* `hir::Expr::Path`

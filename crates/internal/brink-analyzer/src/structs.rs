@@ -112,7 +112,7 @@ pub fn declared_shapes(
 ) -> BTreeMap<String, ShapeInfo> {
     // No manifest access at this call site (`structs::check` isn't
     // threaded a `HostManifest` — struct field types aren't in T1d-2's
-    // scope), so `handle<K>` field types resolve `None` here, same as any
+    // scope), so `Handle<K>` field types resolve `None` here, same as any
     // other name `TypeNames` doesn't recognize — consistent with
     // `annotations::resolve`'s documented "unresolved -> silent" contract.
     let names = annotations::TypeNames::new(index, None);
@@ -152,7 +152,7 @@ pub fn check(
 ) -> Vec<Diagnostic> {
     let shapes = declared_shapes(files, index);
     // No manifest access at this call site, same as `declared_shapes` above
-    // — a global's own annotation resolving against `handle<K>` isn't in
+    // — a global's own annotation resolving against `Handle<K>` isn't in
     // this check's scope any more than a struct field's is.
     let globals = crate::infer::collect_globals(files, index, None);
     let mut out = Vec::new();
@@ -627,7 +627,7 @@ pub(crate) fn classify_expr_ty(expr: &Expr, ctx: &MistypeCtx<'_>) -> Option<Ty> 
 /// param/temp reads the enclosing def's finalized `BodyTypes::locals`
 /// (`ctx.locals`, `None` at file scope — see [`MistypeCtx`]'s doc); a
 /// global `VAR`/`CONST` reads `infer::collect_globals`'s declaration-derived
-/// type; a `LIST`/list-item name is nominally `list<L>`. Mirrors
+/// type; a `LIST`/list-item name is nominally `List<L>`. Mirrors
 /// `infer::body::InferPass::ty_of_def`'s own dispatch exactly (the same
 /// firewall a body's own inference already enforces), just read post hoc
 /// from the finalized results instead of live during a body solve.
@@ -820,7 +820,7 @@ mod tests {
     #[test]
     fn index_valued_initializer_fires_when_provably_mistyped() {
         // `xs` is a local `~ temp` bound to a `#[...]` array-of-strings
-        // literal, so its finalized locals type is `array<string>` — indexing
+        // literal, so its finalized locals type is `Array<string>` — indexing
         // it yields `string`, disagreeing with `Point.x`'s declared `float`.
         let diags = check_all(
             "STRUCT Point = #{x: float}\n\

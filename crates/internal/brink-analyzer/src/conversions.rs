@@ -76,7 +76,7 @@ pub fn check(
     resolutions: &ResolutionMap,
 ) -> Vec<Diagnostic> {
     // No manifest access at this call site, mirroring `structs::check`'s own
-    // note — a global's `handle<K>` annotation resolving isn't in this
+    // note — a global's `Handle<K>` annotation resolving isn't in this
     // check's scope any more than a struct field's is.
     let globals = crate::infer::collect_globals(files, index, None);
     let mut out = Vec::new();
@@ -548,7 +548,7 @@ mod tests {
 
     #[test]
     fn temp_variable_valued_argument_fires_when_provably_mistyped() {
-        // `xs`'s finalized `BodyTypes::locals` type is `map<string, int>`
+        // `xs`'s finalized `BodyTypes::locals` type is `Map<string, int>`
         // (its own literal initializer) — out of domain.
         let diags = check_all("=== main ===\n~ temp xs = #{\"a\": 1}\n~ x = int(xs)\n-> DONE\n");
         assert_eq!(diags.len(), 1, "{diags:?}");
@@ -588,7 +588,7 @@ mod tests {
     fn index_valued_argument_fires_when_provably_mistyped() {
         // `xs` is a local `~ temp` bound to a `#[#[..], #[..]]`
         // array-of-arrays literal, so its finalized locals type is
-        // `array<array<int>>` — indexing it yields `array<int>`, out of
+        // `Array<Array<int>>` — indexing it yields `Array<int>`, out of
         // domain.
         let diags = check_all(
             "=== main ===\n\
@@ -623,7 +623,7 @@ mod tests {
         // body. This drives the `enter_stitch`/`stitch_locals` dispatch
         // path specifically (the exact gap PR #975's own review caught for
         // `structs::check`): `t`'s finalized `BodyTypes::locals` type is a
-        // concrete `array<int>` — out of domain.
+        // concrete `Array<int>` — out of domain.
         let diags =
             check_all("=== room ===\n= inside\n~ temp t = #[1, 2]\n~ x = int(t)\n-> DONE\n");
         assert_eq!(diags.len(), 1, "{diags:?}");
@@ -636,7 +636,7 @@ mod tests {
         // A call in a file-level VAR/CONST initializer has no enclosing
         // knot/stitch body — only a reference to *another* global is
         // classifiable there (mirrors `structs::check`'s identical file-scope
-        // note). `other`'s declared type (`list<Colors>`, one of the two
+        // note). `other`'s declared type (`List<Colors>`, one of the two
         // non-scalar shapes `InferredType` represents — see the previous
         // test's comment) is out of domain.
         let diags = check_all("LIST Colors = red, blue\nVAR other = (red)\nVAR x = int(other)\n");
