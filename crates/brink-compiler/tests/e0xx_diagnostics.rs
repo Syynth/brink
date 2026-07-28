@@ -1334,7 +1334,7 @@ struct Guest {
   hp: int
 }
 
-fn heal(ref h, amount) {
+fn heal(ref h: int, amount: int) {
   h = h + amount;
 }
 
