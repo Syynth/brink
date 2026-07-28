@@ -1,12 +1,12 @@
 //! Compilation driver: file discovery, parsing, lowering, analysis, codegen.
 
-use std::io::{self, Write};
+use std::io;
 use std::path::Path;
 use std::sync::Arc;
 
 use brink_driver::{AnalysisOptions, Driver, RealFs};
 use brink_ir::Diagnostic;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::{CompileError, CompileOutput, ResolvedDiagnostic};
 
@@ -72,7 +72,7 @@ where
     let entry_key = if brink_driver::is_native(Path::new(entry)) {
         let (root, warnings) = brink_driver::native_source_root_with_warnings(Path::new(entry));
         for warning in &warnings {
-            let _ = writeln!(io::stderr(), "warning: {warning}");
+            warn!("{warning}");
         }
         let tree = RealFs::new(&root);
         driver.discover_native(&tree)?;
@@ -91,7 +91,7 @@ where
         // never changes behavior for a project whose entry was already bare.
         let (root, warnings) = brink_driver::native_source_root_with_warnings(Path::new(entry));
         for warning in &warnings {
-            let _ = writeln!(io::stderr(), "warning: {warning}");
+            warn!("{warning}");
         }
         driver
             .db_mut()

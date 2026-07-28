@@ -263,7 +263,7 @@ pub fn is_native(path: &Path) -> bool {
 /// ever found.
 #[must_use]
 pub fn native_source_root(entry: &Path) -> PathBuf {
-    native_source_root_with_warnings(entry).0
+    native_source_root_inner(entry, false).0
 }
 
 /// Like [`native_source_root`], but additionally reports warnings when
@@ -273,19 +273,35 @@ pub fn native_source_root(entry: &Path) -> PathBuf {
 pub fn native_source_root_with_warnings(
     entry: &Path,
 ) -> (PathBuf, Vec<brink_project_config::ConfigWarning>) {
+    native_source_root_inner(entry, true)
+}
+
+/// Shared implementation behind [`native_source_root`] and
+/// [`native_source_root_with_warnings`]. `want_warnings` gates whether the
+/// bounded past-the-boundary probe inside
+/// [`brink_project_config::find_config_with_warnings`] runs at all —
+/// mirroring that function's own `find_config`/`find_config_with_warnings`
+/// split (review finding on #1712: `native_source_root` used to always
+/// delegate to the warnings-producing path and just discard the result, so
+/// every no-warning caller paid for up to [`brink_project_config::
+/// MAX_ANCESTOR_DEPTH`] extra `is_file` calls per miss for nothing).
+fn native_source_root_inner(
+    entry: &Path,
+    want_warnings: bool,
+) -> (PathBuf, Vec<brink_project_config::ConfigWarning>) {
     let entry_dir = entry
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
 
-    let (root, mut warnings) = source_root_from_config_with_warnings(entry_dir);
+    let (root, mut warnings) = source_root_from_config(entry_dir, want_warnings);
     if let Some(root) = root {
         return (root, warnings);
     }
 
     let entry_dir_abs = std::path::absolute(entry_dir).unwrap_or_else(|_| entry_dir.to_path_buf());
     if entry_dir_abs != entry_dir {
-        let (root, abs_warnings) = source_root_from_config_with_warnings(&entry_dir_abs);
+        let (root, abs_warnings) = source_root_from_config(&entry_dir_abs, want_warnings);
         warnings.extend(abs_warnings);
         if let Some(root) = root {
             return (root, warnings);
@@ -296,17 +312,22 @@ pub fn native_source_root_with_warnings(
 }
 
 /// Walk up from `entry_dir` for a `brink.toml` via
-/// [`brink_project_config::find_config_with_warnings`], returning the directory that
-/// governs it — `None` when no config is found anywhere above `entry_dir`.
-/// An empty parent (a bare `brink.toml` found exactly at `entry_dir`, e.g.
-/// the process cwd for a relative walk) maps to `Path::new(".")` rather
-/// than being discarded — see [`native_source_root`]'s doc for why.
-/// Additionally reports warnings when the bounded walk stepped over a `brink.toml`
-/// (see [`brink_project_config::find_config_with_warnings`] for details).
-fn source_root_from_config_with_warnings(
+/// [`brink_project_config::find_config`] (`want_warnings = false`) or
+/// [`brink_project_config::find_config_with_warnings`] (`want_warnings =
+/// true`), returning the directory that governs it — `None` when no config
+/// is found anywhere above `entry_dir`. An empty parent (a bare
+/// `brink.toml` found exactly at `entry_dir`, e.g. the process cwd for a
+/// relative walk) maps to `Path::new(".")` rather than being discarded —
+/// see [`native_source_root`]'s doc for why.
+fn source_root_from_config(
     entry_dir: &Path,
+    want_warnings: bool,
 ) -> (Option<PathBuf>, Vec<brink_project_config::ConfigWarning>) {
-    let (config_path, warnings) = brink_project_config::find_config_with_warnings(entry_dir);
+    let (config_path, warnings) = if want_warnings {
+        brink_project_config::find_config_with_warnings(entry_dir)
+    } else {
+        (brink_project_config::find_config(entry_dir), Vec::new())
+    };
     let root = config_path.map(|path| {
         let parent = path.parent().unwrap_or_else(|| Path::new(""));
         if parent.as_os_str().is_empty() {
@@ -1007,25 +1028,28 @@ mod tests {
     /// not an internal enum an intermediate layer happens to hold).
     #[test]
     fn native_source_root_with_warnings_reports_discovery_warnings() {
-        let root = temp_dir("native-source-root-warnings");
+        // Keep the whole fixture inside this test's own temp dir — never
+        // write into the shared `$TMPDIR` itself (review finding on #1712:
+        // writing `brink.toml` directly under `std::env::temp_dir()` races
+        // every other fixture in this file, and any of them, rooted there,
+        // would spuriously discover it as an ancestor config).
+        let base = temp_dir("native-source-root-warnings");
 
         // Create a structure:
-        //   root/
-        //     .git/              (marks a repository boundary; walk stops here)
-        //     sub/
-        //       deep/
-        //         entry.brink    (entry point)
+        //   base/
+        //     brink.toml         (above the repository boundary)
+        //     proj/
+        //       .git/            (marks a repository boundary; walk stops here)
+        //       sub/
+        //         deep/
+        //           entry.brink  (entry point)
+        fs::write(base.join("brink.toml"), "[project]\n").expect("write above brink.toml");
+        let root = base.join("proj");
         fs::create_dir_all(root.join(".git")).expect("mkdir .git");
         fs::write(root.join(".git/HEAD"), "ref: refs/heads/main\n").expect("write .git/HEAD");
         fs::create_dir_all(root.join("sub/deep")).expect("mkdir sub/deep");
         fs::write(root.join("sub/deep/entry.brink"), "flow main() {}\n")
             .expect("write entry.brink");
-
-        // Create a `brink.toml` above the `.git` boundary. The walk-up will
-        // stop at `.git` and NOT find any config, then the bounded probe will
-        // detect the stepped-over `brink.toml` and report it as a warning.
-        let above = root.parent().unwrap().to_path_buf();
-        fs::write(above.join("brink.toml"), "[project]\n").expect("write above brink.toml");
 
         let entry = root.join("sub/deep/entry.brink");
         let (resolved_root, warnings) = native_source_root_with_warnings(&entry);
@@ -1035,14 +1059,18 @@ mod tests {
         assert_eq!(resolved_root, root.join("sub/deep"));
 
         // `find_config_with_warnings` reported the stepped-over file as a
-        // [`ConfigWarning`], and it reached the caller (rule 20e).
+        // [`ConfigWarning`], and it reached the caller (rule 20e). Assert the
+        // warning text actually names the stepped-over path, not merely that
+        // *some* warning arrived (review finding on #1712).
+        assert_eq!(warnings.len(), 1, "expected exactly one discovery warning");
+        let warning_text = warnings[0].to_string();
+        let stepped_over = base.join("brink.toml");
         assert!(
-            !warnings.is_empty(),
-            "native_source_root_with_warnings must report warnings about \
-             stepped-over brink.toml files, not silently drop them"
+            warning_text.contains(&stepped_over.display().to_string()),
+            "warning must name the stepped-over brink.toml path {}: got {warning_text}",
+            stepped_over.display(),
         );
 
-        fs::remove_dir_all(&root).expect("cleanup temp dir");
-        fs::remove_file(above.join("brink.toml")).expect("cleanup above brink.toml");
+        fs::remove_dir_all(&base).expect("cleanup temp dir");
     }
 }

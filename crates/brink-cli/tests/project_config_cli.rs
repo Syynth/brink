@@ -712,3 +712,45 @@ fn ide_rename_write_stamps_was_under_brink_dialect() {
 // parses, per `brink-analyzer::dialect_gate`), so a black-box CLI assertion
 // here would pass identically with or without the fix. The unit test
 // compares `analysis_options()` directly instead.
+
+// ── discovery warnings reach the actual consumer (issue #1610) ────────
+
+/// Review finding on #1712: the six `native_source_root_with_warnings` call
+/// sites (and `brink-compiler`'s library-side `prepare_driver`) had no test
+/// covering the thing an author actually sees — every call site could be
+/// reverted to the plain, warning-discarding `native_source_root` with the
+/// whole suite still green, because the only test that existed asserted a
+/// `Vec<ConfigWarning>` at the `brink-driver` boundary, not author-visible
+/// stderr output (rules 11/20a/20e). This drives the real `brink` binary
+/// (`brink compile`, `brink-cli/src/main.rs::compile_entry`) over a fixture
+/// with a `brink.toml` sitting above a `.git` boundary, and asserts the
+/// warning text lands on stderr.
+#[expect(clippy::unwrap_used, reason = "test fixture setup")]
+#[test]
+fn compile_warns_on_stderr_about_a_brink_toml_above_the_git_boundary() {
+    let dir = project_dir("compile-warn-above-git-boundary");
+    write_config(&dir, "[project]\ndialect = \"brink\"\n");
+
+    let proj = dir.join("proj");
+    fs::create_dir_all(proj.join(".git")).unwrap();
+    let story = write_story(&proj, EXTENSION_FIXTURE);
+
+    let out = brink().arg("compile").arg(&story).output().unwrap();
+
+    // No brink.toml was found *within* the git boundary, so the fixture's
+    // brink-extension syntax is rejected under the default strict-ink
+    // dialect — the same "unchanged behavior" a stepped-over config must
+    // produce.
+    assert!(
+        !out.status.success(),
+        "a brink.toml above the git boundary must not be applied"
+    );
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("exists above the workspace/git boundary"),
+        "compile must warn on stderr that the stepped-over brink.toml was ignored: {stderr}"
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
