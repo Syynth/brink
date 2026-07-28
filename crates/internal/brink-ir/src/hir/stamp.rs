@@ -61,6 +61,10 @@ pub fn root_content_scope_path(file_path: Option<&str>) -> String {
 /// lookups (`label_scope`) stay unqualified: an author's root-level label is
 /// addressed by its bare name from anywhere in the project, and the analyzer's
 /// `SymbolIndex` keys it that way.
+#[expect(
+    clippy::implicit_hasher,
+    reason = "internal API, no need to generalize"
+)]
 pub fn stamp_container_ids(
     files: &mut [(FileId, hir::HirFile)],
     index: &SymbolIndex,
