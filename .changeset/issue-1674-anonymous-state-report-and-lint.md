@@ -7,11 +7,13 @@
 - **`LoadReport` gains `anonymous_states_dropped: u32`.** A saved visit/turn
   count for an anonymous scope (an unlabeled once-only choice or a
   sequence — no author `(label)`) that no longer resolves against the
-  current program is counted here, instead of being silently retained
-  under an orphaned id. Additive, wire-visible through `@brink-lang/web`'s
-  `load()`/`loadBytes()` JSON (`saveState.load`/`Story.loadState`
-  equivalents): the field is always present now (`0` on a clean load),
-  where it was previously absent from the shape entirely.
+  current program is counted here, rather than being silently unreported
+  (it was, and still is, retained under its saved id either way — this
+  changes what's *reported*, not what's *retained*). Additive, wire-visible
+  through `@brink-lang/web`'s `load()`/`loadBytes()` JSON
+  (`saveState.load`/`Story.loadState` equivalents): the field is always
+  present now (`0` on a clean load), where it was previously absent from the
+  shape entirely.
 - **New diagnostic `E157`** — an unlabeled once-only choice, or a sequence
   with genuine durable state, carries an anonymous, position-derived
   identity that a later content edit can shift. **Off/info by default**

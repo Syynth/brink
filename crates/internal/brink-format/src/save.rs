@@ -222,6 +222,12 @@ pub struct LoadReport {
     /// this once per saved entry — a scope with both a visit *and* a turn
     /// count that both go unresolved counts as two, since each is
     /// independently lost state, not one.
+    ///
+    /// That "bounded" measurement covers the visit/turn-count half only.
+    /// The same day's "CORRECTION to the R1 entry" widened the blast
+    /// radius: anonymous scopes also carry translation units (intl exports
+    /// keyed by scope id, `Option`-named), which this field does not
+    /// account for — it counts only what `Story::load_state` itself drops.
     pub anonymous_states_dropped: u32,
 }
 

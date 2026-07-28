@@ -206,8 +206,8 @@ pub fn effective_severity(
     // `Warn`/unset both fall through to the shared `deny-warnings` check
     // below — byte-identical to the pre-#1674 `Warning`-base-only version
     // of this function when `base == Warning` (see this module's
-    // `effective_severity_e157_style_info_base_*` tests for the new
-    // `Info`/`Hint`-base behavior this generalization adds).
+    // `info_base_code_*` tests for the new `Info`/`Hint`-base behavior this
+    // generalization adds).
     let candidate = match lints.overrides.get(code.as_str()) {
         Some(LintLevel::Deny) => return brink_ir::Severity::Error,
         Some(LintLevel::Allow) => return base,

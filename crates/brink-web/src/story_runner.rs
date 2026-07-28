@@ -270,9 +270,10 @@ impl StoryRunner {
     }
 
     /// Reconcile a JSON save (from [`save`](Self::save)) into the running
-    /// story. Returns a `LoadReport` JSON (`{ unknown_globals: [...] }`) of
-    /// saved globals the current story no longer has — empty means a clean
-    /// load. Tolerant of story patches.
+    /// story. Returns a `LoadReport` JSON (`{ unknown_globals: [...],
+    /// unresolved_renames: [...], anonymous_states_dropped: N }`) of what
+    /// the load couldn't apply — all empty/zero means a clean load.
+    /// Tolerant of story patches.
     pub fn load(&self, json: &str) -> Result<String, JsError> {
         let state: brink_runtime::SaveState =
             serde_json::from_str(json).map_err(|e| JsError::new(&format!("load error: {e}")))?;

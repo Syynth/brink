@@ -13,7 +13,7 @@ brink compile <INPUT> [--output <OUTPUT>] [--dialect <strict-ink|brink>] [--type
 | `--output <FILE>` / `-o` | stdout | Output file path. Format inferred from extension. |
 | `--dialect <DIALECT>` | `strict-ink` (or a discovered [`brink.toml`](../project-config.md)) | `strict-ink` rejects [brink-dialect extension syntax](../dialect/index.md) (`~ { … }` blocks, `#[…]`/`#{…}` literals, indexing) with a targeted diagnostic; `brink` accepts it. Mount-time only — never embedded in the compiled output. |
 | `--types <POLICY>` | `gradual` (or a discovered [`brink.toml`](../project-config.md)) | `gradual` is today's behavior; `strict` requires `--dialect brink` and makes `Unknown`/`Conflicted`-escaping inference a compile error. Mount-time only. |
-| `--deny <CODE>` / `-D <CODE>` | — (repeatable) | Promote diagnostic `CODE` to a hard compile error. Only codes whose *default* severity is `Warning` are overridable — see [Lint severity](../project-config.md#lint-severity). The special code `warnings` (`-D warnings`, mirroring `rustc`) is `deny-warnings`: promote every otherwise-`Warning` diagnostic to `Error`. |
+| `--deny <CODE>` / `-D <CODE>` | — (repeatable) | Promote diagnostic `CODE` to a hard compile error. Only codes whose *default* severity is not `Error` are overridable — see [Lint severity](../project-config.md#lint-severity). The special code `warnings` (`-D warnings`, mirroring `rustc`) is `deny-warnings`: promote every otherwise-`Warning` diagnostic to `Error`. |
 | `--warn <CODE>` | — (repeatable) | Force `CODE` to `Warning`, still promotable by `-D warnings`/a project's `deny-warnings`. |
 | `--allow <CODE>` | — (repeatable) | Force `CODE` to stay `Warning` even under `-D warnings`/`deny-warnings`. |
 

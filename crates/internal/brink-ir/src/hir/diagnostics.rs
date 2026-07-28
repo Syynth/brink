@@ -1618,7 +1618,7 @@ impl DiagnosticCode {
             }
             Self::E153 => "`@[allow(…)]` names a diagnostic code this compiler does not know",
             Self::E154 => {
-                "`@[allow(…)]` names a non-suppressible diagnostic — only warning-severity codes can be silenced at the source"
+                "`@[allow(…)]` names a non-suppressible diagnostic — only codes whose default severity is not `Error` can be silenced at the source"
             }
             Self::E155 => {
                 "`@[allow(…)]` needs at least one bare diagnostic code, e.g. `@[allow(E151)]`"

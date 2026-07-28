@@ -47,7 +47,7 @@ reverts any codes a previous, non-empty `[lints]` table had set.
 
 Unknown keys — a stray top-level table, a key inside `[project]`, or a
 `[lints]` entry naming a code this version of `brink` doesn't recognize (or
-one whose default severity isn't `Warning`, so it isn't overridable at all —
+one whose default severity is `Error`, so it isn't overridable at all —
 see [Lint severity](#lint-severity) below) — are reported as
 **warnings**, never compile failures. This is a forward-compatibility
 guarantee: a `brink.toml` written against a newer schema still compiles with
@@ -75,8 +75,8 @@ understand.
   defeat the point of it). These map to the LSP client's `Information`/`Hint`
   `DiagnosticSeverity` — the tier IDE conventions use for advisory findings
   that would be too loud as a `Warning` squiggle (e.g. unused-symbol
-  dimming). No diagnostic code defaults to either tier; a project opts a
-  `Warning`-default code into one explicitly, per code.
+  dimming). Only `E157` defaults to either tier (`Info`); a project opts any
+  other non-`Error`-default code into one explicitly, per code.
 
 ### A source-level `@[allow]` wins
 
@@ -85,15 +85,15 @@ that diagnostic for the declaration's whole span, and it **beats this
 table** — including `E151 = "deny"` and `deny-warnings = true`. The
 annotation names one declaration and was written deliberately; `brink.toml`
 cannot be that specific. What the annotation cannot do is widen the
-suppressible set: it accepts only codes whose *default* severity is
-`Warning`, so no `[lints]` entry can make an error-tier code suppressible,
-and none can make a warning-tier code unsuppressible. Naming an unknown code
-(`E153`) or an error-tier one (`E154`) is itself a compile error — a
+suppressible set: it accepts only codes whose *default* severity is not
+`Error`, so no `[lints]` entry can make an error-tier code suppressible,
+and none can make a non-error-tier code unsuppressible. Naming an unknown
+code (`E153`) or an error-tier one (`E154`) is itself a compile error — a
 suppression that silently does nothing is never allowed.
 
-Only codes whose *default* severity is `Warning` are overridable at all — a
-diagnostic that is a hard error by default (e.g. a parse error) can never be
-downgraded through `[lints]`; the table is never even consulted for it.
+Only codes whose *default* severity is not `Error` are overridable at all —
+a diagnostic that is a hard error by default (e.g. a parse error) can never
+be downgraded through `[lints]`; the table is never even consulted for it.
 `E063` (annotation-vs-inference mismatch) is a special case worth knowing:
 its own *base* severity is `types`-policy-dependent (`Error` under `types =
 strict`), so a `[lints]` entry for it is only ever consulted under `types =

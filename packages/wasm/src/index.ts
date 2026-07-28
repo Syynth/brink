@@ -1064,7 +1064,8 @@ export class StoryRunnerHandle {
   }
 
   /** Reconcile a saved state into the running story; returns what couldn't be
-   * applied (empty `unknown_globals` = clean). Tolerant of story patches. */
+   * applied (empty `unknown_globals`/`unresolved_renames` and zero
+   * `anonymous_states_dropped` = clean). Tolerant of story patches. */
   load(state: SaveState): LoadReport {
     return JSON.parse(this.runner.load(JSON.stringify(state))) as LoadReport;
   }

@@ -727,4 +727,83 @@ mod tests {
              silent exactly like before M-3: {report:?}"
         );
     }
+
+    /// The end-to-end proof `anonymous_unresolved_visit_entry_is_counted_
+    /// in_load_report` above stops short of: that test's `path: None` entry
+    /// is a synthetic phantom id, so it would still pass even if
+    /// `save_state` never actually emitted a `path: None` entry for a real
+    /// anonymous container (i.e. if the whole feature were dead). This test
+    /// compiles two REAL stories and lets a real content edit do the
+    /// shifting.
+    ///
+    /// Story A has one unlabeled once-only choice (`c0` of knot `alpha`,
+    /// `stamp::stamp_stmt`'s positional counter) — take it, so its target
+    /// container's `path: None` visit/turn entries are real, not
+    /// constructed. Story B inserts a *labeled* choice above it: labeling
+    /// "extra" makes its own id come from the label, not the `c{N}`
+    /// counter, so — unlike an unlabeled insertion, which would just make
+    /// "extra" inherit `pick`'s old `c0` id and silently retarget the load
+    /// to the wrong choice (the "reappear" hazard E157 warns about, not a
+    /// drop) — nothing in program B ends up using the string `"alpha.c0"`
+    /// at all: `extra` is label-derived, `pick` shifted to `c1`. Loading
+    /// story A's save into story B therefore hits a genuine miss.
+    ///
+    /// Two entries, not one: a once-only choice's target container carries
+    /// both `CountingFlags::VISITS` and `COUNT_START_ONLY`, so `save_state`
+    /// emits both a visit *and* a turn entry for it — per this field's own
+    /// doc, a scope whose visit *and* turn count both go unresolved counts
+    /// as two independent losses, not one.
+    #[test]
+    fn a_real_content_edit_shifting_an_anonymous_choice_is_counted_in_load_report() {
+        let (program_a, tables_a) = compile_for_flow(
+            "-> alpha\n\
+             === alpha ===\n\
+             * [pick]\n\
+             \tPicked.\n\
+             \t-> DONE\n",
+        );
+        let program_a = Arc::new(program_a);
+        let mut story_a = crate::Story::<FastRng>::new(Arc::clone(&program_a), tables_a);
+        story_a.continue_maximally().expect("continue");
+        story_a.choose(0).expect("choose `pick`");
+        story_a.continue_maximally().expect("continue");
+
+        let save = story_a.save_state();
+        assert_eq!(
+            save.visits.len(),
+            1,
+            "sanity: exactly `pick`'s own anonymous visit entry: {:?}",
+            save.visits
+        );
+        assert!(
+            save.visits[0].path.is_none(),
+            "sanity: a real unlabeled once-only choice's container really \
+             does save with `path: None`: {:?}",
+            save.visits[0]
+        );
+
+        let (program_b, tables_b) = compile_for_flow(
+            "-> alpha\n\
+             === alpha ===\n\
+             * (extra) [extra]\n\
+             \tExtra.\n\
+             \t-> DONE\n\
+             * [pick]\n\
+             \tPicked.\n\
+             \t-> DONE\n",
+        );
+        let program_b = Arc::new(program_b);
+        let mut story_b = crate::Story::<FastRng>::new(Arc::clone(&program_b), tables_b);
+
+        let report = story_b.load_state(&save);
+        assert_eq!(
+            report.anonymous_states_dropped, 2,
+            "the shifted choice's visit AND turn entry both go unresolved: {report:?}"
+        );
+        assert!(!report.is_clean(), "{report:?}");
+        assert!(
+            report.unresolved_renames.is_empty(),
+            "an anonymous miss has no path to teach a #@was fix against: {report:?}"
+        );
+    }
 }
