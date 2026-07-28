@@ -32,7 +32,11 @@ const REPO = "OWNER/REPO";
 // Gate: build shared deps -> test -> typecheck. CACHE is prepended to every
 // gate invocation so all agents share one build cache (turbo/nx: unchanged
 // packages become cache hits — this is the pump's single biggest speed lever).
-const CACHE = "export TURBO_CACHE_DIR=/tmp/pump-turbo-cache";
+// CARGO_INCREMENTAL=0: every build agent works in a FRESH worktree, so the
+// incremental dep-graph cache is written and never read — pure disk write for
+// zero benefit, multiplied by ~5 agents per wave across thousands of builds.
+// (Local human iteration is unaffected; this only applies to agent gates.)
+const CACHE = "export TURBO_CACHE_DIR=/tmp/pump-turbo-cache CARGO_INCREMENTAL=0";
 const GATE = "pnpm install --prefer-offline && pnpm turbo run test typecheck";
 const MILESTONE = null; // optional milestone name for scope reconciliation
 const LEDGER = null; // optional: standing wave-ledger issue number (durable-by-default rule) — brink: 967

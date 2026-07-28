@@ -42,9 +42,19 @@
 //!   lowering fence is obsolete. Reserved, not reused.
 //! - E053 — RETIRED (T1b-2, #570) — T1b brink-extension HIR nodes now lower
 //!   for real; former LIR backstop is obsolete. Reserved, not reused.
-//! - E060 — emitted only when codegen rejects a `Program` violating an
-//!   invariant an earlier stage guarantees (a compiler bug by definition);
-//!   not constructible from source.
+//! - E060 — emitted when codegen rejects a `Program` violating an invariant
+//!   an earlier stage is supposed to guarantee (a compiler bug by
+//!   definition). Most `brink_codegen_inkb::CodegenError`s (e.g. #586's
+//!   out-of-loop `break`/`continue` backstop) are genuinely not
+//!   constructible from source — LIR lowering rejects those shapes first,
+//!   non-suppressibly. But #1673's duplicate-`DefinitionId` guard *is*
+//!   reachable from source today: the #1504 collision (two files with
+//!   root-level weave content) trips it through the ordinary
+//!   `brink_compiler::compile` entry point. Covered in
+//!   `issue_1504_root_content_identity.rs`
+//!   (`included_and_entry_root_weaves_trip_the_duplicate_definition_id_guard`)
+//!   rather than duplicated here, since that file already carries the rest
+//!   of the #1504 shape's fixture and end-to-end context.
 //! - E072 — RETIRED (TM-4c, #666), documented as reserved-not-reused.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -390,9 +400,29 @@ fn e021_inline_sequence_without_branches() {
 #[test]
 fn e022_duplicate_knot_warns() {
     let source = "== k ==\nA\n-> END\n== k ==\nB\n-> END\n-> k\n";
-    let out = compile(source, default_options()).expect("duplicate knot is a warning");
-    // The warning points at the *second* definition's name.
-    assert_code_at_nth(&out.warnings, DiagnosticCode::E022, source, "== k ==", 1);
+    // E022 itself is still warning-severity — the analyzer accepts a
+    // duplicate knot name and keeps going. But both same-named knots still
+    // lower to their own container, each addressed by that shared name, so
+    // they collide on `DefinitionId` — a second, source-reachable instance
+    // of the exact #1504-class landmine (#1504's collision was cross-file
+    // and anonymous; this one is same-file and named, but it is still two
+    // containers assigned one id). Before #1673 this silently compiled to a
+    // broken `StoryData` (the linker's last-write-wins address map dropped
+    // one knot's body); now the #1673 codegen-boundary guard trips E060 and
+    // the whole compile fails loudly instead. Whether E022 itself should be
+    // promoted to a hard error (giving a more precise source span than
+    // E060's compiler-internal one) is a separate design question, not
+    // decided here.
+    let err = compile(source, default_options())
+        .map(|_| ())
+        .expect_err("duplicate knot names collide on DefinitionId and now trip the #1673 guard");
+    let diags = errors_of(err);
+    // The warning still points at the *second* definition's name.
+    assert_code_at_nth(&diags, DiagnosticCode::E022, source, "== k ==", 1);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E060),
+        "expected the #1673 duplicate-DefinitionId guard (E060) alongside E022: {diags:#?}"
+    );
 }
 
 #[test]
@@ -1255,12 +1285,18 @@ fn e142_as_binding_on_a_non_option_condition() {
 }
 
 /// E148 — the binding is immutable by ruling. Every write shape resolves
-/// its target through the same LIR choke point, so all four are refused:
-/// plain assignment, compound assignment, an in-place mutator, and passing
-/// the binding by `ref` to a function that writes through it (the review
-/// finding this last case guards: `ref` bypasses `lower_assign_target`
-/// entirely — it hands the callee a raw pointer to the slot — so it needs
-/// its own refusal at `lower_ref_path_call_arg`/`lower_ref_projection_arg`).
+/// its target through the same LIR choke point, so all five are refused:
+/// plain assignment, compound assignment, an in-place mutator, passing the
+/// binding by `ref` to a function that writes through it (the review
+/// finding this case guards: `ref` bypasses `lower_assign_target` entirely
+/// — it hands the callee a raw pointer to the slot — so it needs its own
+/// refusal at `lower_ref_path_call_arg`/`lower_ref_projection_arg`), and a
+/// UFCS auto-ref onto a frame-local projection rooted at the binding (the
+/// #1531-review finding this fifth case guards: issue #1531's frame-local
+/// auto-ref recognizer, `blocks::try_lower_frame_local_auto_ref_stmt`,
+/// writes back into the receiver's root slot via its own `Assign`, bypassing
+/// `lower_assign_target` exactly like the `ref` case above — the same E148
+/// as the `-ref` case, but via a different LIR choke point).
 #[test]
 fn e143_as_binding_is_immutable() {
     for (suffix, write) in [
@@ -1287,6 +1323,35 @@ fn e143_as_binding_is_immutable() {
             "expected E148 for `{write}`, got: {diags:?}"
         );
     }
+
+    // The fifth shape needs its own source: the `as` binding must be a
+    // struct so `n.field` is a genuine one-level-deep frame-local
+    // projection (issue #1531), and the write goes through
+    // `try_lower_frame_local_auto_ref_stmt`'s UFCS auto-ref RMW splice
+    // rather than `bump`'s ordinary `ref` parameter.
+    let source = "\
+struct Guest {
+  hp: int
+}
+
+fn heal(ref h: int, amount: int) {
+  h = h + amount;
+}
+
+flow main() ~{
+  if some(Guest { hp: 1 }) as g {
+    g.hp.heal(5);
+  }
+}
+";
+    let err = compile_native("as-imm-ufcs-projection", source, native_strict_options())
+        .map(|_| ())
+        .unwrap_err();
+    let diags = errors_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E148),
+        "expected E148 for `g.hp.heal(5);`, got: {diags:?}"
+    );
 }
 
 // ─── `remove`/`remove_at` migration tail (E149, issue #1532) ────────────

@@ -452,3 +452,123 @@ fn migrate_unit_ids_survives_full_xml_round_trip() {
     let second_pass = migrate_unit_ids(&mut already_migrated).unwrap();
     assert_eq!(second_pass, 0);
 }
+
+// ── #1442: a declared `#@was` rename rebinds through the alias table ──
+//
+// The whole `brink regenerate-xliff` path, over real XML: export the
+// pre-rename story, translate it, serialize, rename the knot with `#@was`,
+// recompile, and regenerate. Before alias-awareness the renamed knot's
+// `<file>` came back with every `<target>` gone.
+
+/// A knot whose translations must survive the rename below.
+const RENAME_BEFORE: &str = "\
+== hub ==
+Welcome to the hub.
+-> END
+";
+
+/// [`RENAME_BEFORE`] with the knot renamed and the rename declared.
+const RENAME_AFTER: &str = "\
+== plaza ==
+#@was(hub)
+Welcome to the hub.
+-> END
+";
+
+/// `#@was` is a brink-dialect extension (`E051` under strict ink).
+fn compile_brink(src: &str) -> brink_format::StoryData {
+    let options = brink_compiler::AnalysisOptions {
+        dialect: brink_compiler::Dialect::Brink,
+        ..brink_compiler::AnalysisOptions::default()
+    };
+    brink_compiler::compile_with_options("story.ink", |_p| Ok(src.to_owned()), options)
+        .unwrap()
+        .data
+}
+
+/// The `brink:scope-id` of the exported scope with this display name.
+fn exported_scope_id(story: &brink_format::StoryData, name: &str) -> String {
+    brink_intl::export_lines(story, 0)
+        .scopes
+        .into_iter()
+        .find(|s| s.name.as_deref() == Some(name))
+        .unwrap()
+        .id
+}
+
+/// Every `<target>` text in the `<file>` carrying this `brink:scope-id`.
+fn targets_of_scope(doc: &Document, scope_id: &str) -> Vec<String> {
+    doc.files
+        .iter()
+        .filter(|f| {
+            f.extensions.attributes.iter().any(|a| {
+                a.namespace == "brink" && a.local_name == "scope-id" && a.value == scope_id
+            })
+        })
+        .flat_map(|f| &f.units)
+        .flat_map(|u| &u.sub_units)
+        .filter_map(|su| match su {
+            SubUnit::Segment(seg) => seg.target.as_ref(),
+            SubUnit::Ignorable(_) => None,
+        })
+        .flat_map(|c| &c.elements)
+        .filter_map(|el| match el {
+            InlineElement::Text(t) => Some(t.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn regenerate_locale_rebinds_a_declared_rename_through_real_xml() {
+    let before = compile_brink(RENAME_BEFORE);
+    let after = compile_brink(RENAME_AFTER);
+    assert!(
+        !after.alias_table.is_empty(),
+        "`#@was(hub)` must mint the alias edge this test rebinds through"
+    );
+
+    let mut doc = generate_locale(&before, 0x1111, "en", Some("es"));
+    for file in &mut doc.files {
+        for unit in &mut file.units {
+            for su in &mut unit.sub_units {
+                if let SubUnit::Segment(seg) = su {
+                    seg.target = Some(Content {
+                        lang: None,
+                        elements: vec![InlineElement::Text("Bienvenido".to_string())],
+                    });
+                    seg.state = Some(State::Translated);
+                }
+            }
+        }
+    }
+    // Through real XLIFF XML, as `brink regenerate-xliff` reads it.
+    let xml = xliff2::write::to_string(&doc).unwrap();
+    let existing = xliff2::read::read_xliff(&xml).unwrap();
+    let old_knot = exported_scope_id(&before, "hub");
+    assert_eq!(targets_of_scope(&existing, &old_knot), ["Bienvenido"]);
+
+    let result = regenerate_locale(&after, 0x2222, "en", &existing).unwrap();
+
+    let new_knot = exported_scope_id(&after, "plaza");
+    assert_ne!(old_knot, new_knot, "the rename must move the scope id");
+    assert_eq!(
+        targets_of_scope(&result, &new_knot),
+        ["Bienvenido"],
+        "the declared rename must carry the translation onto the new scope id"
+    );
+
+    // The state survives too: the prose is byte-identical, so the line hash
+    // is unchanged and the segment must not be reset to `initial`.
+    let states: Vec<Option<State>> = result
+        .files
+        .iter()
+        .flat_map(|f| &f.units)
+        .flat_map(|u| &u.sub_units)
+        .filter_map(|su| match su {
+            SubUnit::Segment(seg) => Some(seg.state),
+            SubUnit::Ignorable(_) => None,
+        })
+        .collect();
+    assert_eq!(states, [Some(State::Translated)]);
+}

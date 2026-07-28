@@ -1,20 +1,34 @@
 //! Compile translated `lines.json` into a `.inkl` locale overlay.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use brink_format::{
     DefinitionId, LineContent, LinePart, LocaleData, LocaleLineEntry, LocaleScopeTable,
-    PluralCategory, ScopeLineTable, SelectKey, read_inkb_index, read_section_line_tables,
-    write_inkl,
+    PluralCategory, ScopeLineTable, SelectKey, read_inkb_index, read_section_alias_table,
+    read_section_line_tables, write_inkl,
 };
 
 use crate::error::IntlError;
 use crate::json_model::{ContentJson, LinesJson, PartJson};
+use crate::scope_alias::{ScopeAliasIndex, format_scope_id, parse_scope_id_lenient};
 
 /// Compile a translated `LinesJson` against a base `.inkb` file into `.inkl` bytes.
 ///
 /// `base_inkb` is the raw `.inkb` bytes. `lines_json` is the deserialized
 /// translated lines. `locale_tag` is a BCP 47 locale string (e.g. "es", "ja").
+///
+/// # Rename rebinding (#1442)
+///
+/// A translation exported before a declared `#@was` rename carries the
+/// definition's *pre-rename* scope id, which no longer appears in the base
+/// `.inkb`. Rather than failing with [`IntlError::ScopeNotInBase`], such a
+/// scope is rebound through the base file's own `AliasTable` section — the
+/// same `#@was`-derived edges the save path consults. Rebinding is automatic
+/// and needs no separate CLI migration step: the alias edges already ride in
+/// the artifact this function reads, and a rename can happen on any recompile,
+/// so a manual step would fail open every time an author forgot to run it.
+/// (`migrate_unit_ids` / `brink migrate-xliff` remains the tool for the one-off
+/// *id-spelling* migration of PR #1594 — a format change, not an id move.)
 pub fn compile_locale(
     base_inkb: &[u8],
     lines_json: &LinesJson,
@@ -26,16 +40,19 @@ pub fn compile_locale(
 
     let index = read_inkb_index(base_inkb)?;
     let base_tables = read_section_line_tables(base_inkb, &index)?;
+    let aliases = ScopeAliasIndex::new(&read_section_alias_table(base_inkb, &index)?);
 
     // Build lookup from scope_id → base scope line table (line count +
     // per-line slot metadata).
     let base_scope_map: HashMap<DefinitionId, &ScopeLineTable> =
         base_tables.iter().map(|lt| (lt.scope_id, lt)).collect();
 
+    let bindings = resolve_scope_bindings(lines_json, &base_scope_map, &aliases)?;
+
     let mut locale_tables = Vec::with_capacity(lines_json.scopes.len());
 
-    for scope in &lines_json.scopes {
-        let scope_id = parse_scope_id(&scope.id)?;
+    for (scope, binding) in lines_json.scopes.iter().zip(&bindings) {
+        let scope_id = binding.scope_id;
 
         let base_table = base_scope_map
             .get(&scope_id)
@@ -94,6 +111,71 @@ pub fn compile_locale(
     Ok(buf)
 }
 
+/// The base scope a translated scope binds to, and whether getting there
+/// needed a `#@was` alias edge.
+struct ScopeBinding {
+    scope_id: DefinitionId,
+    rebound: bool,
+}
+
+/// Resolve every translated scope to the base scope it compiles against,
+/// following `#@was` alias edges for ids the base no longer knows.
+///
+/// A direct match always wins over an alias edge, so a translation that was
+/// already regenerated past the rename is unaffected. Two translated scopes
+/// landing on the same base scope is rejected rather than silently letting
+/// the last one win (that would be a silent data drop) — but only when a
+/// rebind is involved, leaving the pre-existing duplicate-id behavior alone.
+fn resolve_scope_bindings(
+    lines_json: &LinesJson,
+    base_scope_map: &HashMap<DefinitionId, &ScopeLineTable>,
+    aliases: &ScopeAliasIndex,
+) -> Result<Vec<ScopeBinding>, IntlError> {
+    let mut bindings = Vec::with_capacity(lines_json.scopes.len());
+    for scope in &lines_json.scopes {
+        let declared = parse_scope_id(&scope.id)?;
+        let binding = if base_scope_map.contains_key(&declared) {
+            ScopeBinding {
+                scope_id: declared,
+                rebound: false,
+            }
+        } else {
+            match aliases.current(declared) {
+                Some(current) if base_scope_map.contains_key(&current) => ScopeBinding {
+                    scope_id: current,
+                    rebound: true,
+                },
+                // No usable alias edge: keep the declared id so the caller
+                // reports `ScopeNotInBase` naming the id the file carried.
+                _ => ScopeBinding {
+                    scope_id: declared,
+                    rebound: false,
+                },
+            }
+        };
+        bindings.push(binding);
+    }
+
+    let mut claims: BTreeMap<DefinitionId, Vec<usize>> = BTreeMap::new();
+    for (idx, binding) in bindings.iter().enumerate() {
+        claims.entry(binding.scope_id).or_default().push(idx);
+    }
+    for (base_scope_id, claimants) in &claims {
+        if claimants.len() > 1 && claimants.iter().any(|&i| bindings[i].rebound) {
+            return Err(IntlError::AmbiguousScopeRebind {
+                scope_ids: claimants
+                    .iter()
+                    .map(|&i| lines_json.scopes[i].id.clone())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                base_scope_id: format_scope_id(*base_scope_id),
+            });
+        }
+    }
+
+    Ok(bindings)
+}
+
 /// Validate that every slot index referenced by a translated line's
 /// template — both plain `{slot n}` interpolations and `Select` branches —
 /// exists in the base line at this position.
@@ -130,13 +212,10 @@ fn validate_slot_indices(
 }
 
 fn parse_scope_id(id_str: &str) -> Result<DefinitionId, IntlError> {
-    // Format: "0x" + hex digits
-    let hex = id_str
-        .strip_prefix("0x")
-        .ok_or_else(|| IntlError::InvalidScopeId(id_str.to_string()))?;
-    let raw =
-        u64::from_str_radix(hex, 16).map_err(|_| IntlError::InvalidScopeId(id_str.to_string()))?;
-    DefinitionId::from_raw(raw).ok_or_else(|| IntlError::InvalidScopeId(id_str.to_string()))
+    // Format: "0x" + hex digits. Locale compilation is the strict side of the
+    // workflow — an unparseable scope id is a hard error here, while
+    // regeneration merely skips rebinding for it.
+    parse_scope_id_lenient(id_str).ok_or_else(|| IntlError::InvalidScopeId(id_str.to_string()))
 }
 
 fn convert_content_json(content: &ContentJson) -> Result<LineContent, IntlError> {

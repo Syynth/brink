@@ -136,11 +136,17 @@ Codegen handles both:
 
 **Interpolation templates:** `[Text, Interpolation, Text, ...]` with at least one `Interpolation` → `LineContent::Template([Literal, Slot, Literal, ...])`. Handles single and multiple interpolations. Each interpolation becomes a `Slot(n)` with its expression pushed to the stack before `EmitLine`.
 
-### Future recognizers
+### Branch expansion (inline conditionals/sequences)
 
-**Inline conditionals as Select:** `[Text(a), InlineConditional(cond), Text(b)]` → `Template([Literal(a), Select { slot: 0, ... }, Literal(b)])`. Would allow the compiler to produce `LinePart::Select` entries directly from ink inline conditionals. Currently Select entries only come from hand-authored translations compiled via `compile-locale`.
+**RETRACTED (2026-07-28, issue #1667):** this section previously proposed two "future recognizers" — inline conditionals lowering to `LinePart::Select`, inline sequences lowering to a `Slot` carrying the branch index. Neither is the mechanism; the 2026-03-15 decision-log ruling was implemented differently, and `LinePart::Select` is **not** part of it — it stays target-side only, a translator-introduced variation compiled from a hand-authored `.inkl` overlay via `compile-locale`. Routing source-side branching through it would mean the runtime assembles a line's text from parts at read time, which is exactly what the ruling replaces.
 
-**Inline sequences as slots:** `[Text(a), InlineSequence(seq), Text(b)]` → `Template([Literal(a), Slot(0), Literal(b)])`. The sequence index becomes a slot value.
+The actual mechanism turned out to already be half-built: `hir::normalize_file` (added 2026-03-15, the same day as the ruling) lifts an inline conditional/sequence out of its content line into a block-level `Sequence`/`Conditional` statement, splicing the surrounding prefix/suffix text into every branch and giving each branch its own child container — so each branch already reaches the ordinary content recognizer (`try_recognize`) independently, gets its own `LineEntry`, and the runtime already *selects* the branch (the same condition-evaluation / `CurrentVisitCount`-driven bytecode used for block-level conditionals/sequences) rather than assembling text inline. What was missing (issue #1667's actual fix) was much smaller: the spliced prefix/branch/suffix content parts were never *merged* — they stayed three separate adjacent `Text` parts, so the recognizer's `Plain` pattern (`parts.len() == 1`) could never match, and every branch silently fell back to `EmitContent`, which still emits one line-table entry **per fragment**. `normalize.rs::extend_merging_text` merges adjacent `Text` parts at each splice seam, trimming the right-hand side's leading whitespace at the join — that one fix is what actually lets a spliced branch recognize as `Plain`/`Template` and get a real, single `LineEntry`. The merge only trims one side, so a seam can still carry doubled whitespace or a literal tab through to codegen; rendered output stays identical anyway because `add_line_with_hash` (`brink-codegen-inkb/src/lib.rs`) runs every `Plain`/`Template` line through `collapse_whitespace` before it lands in the line table, the same as it always has.
+
+A branch whose merged content still doesn't reduce to a single `Text` part (`try_recognize`'s `Plain` pattern) or a run of only `Text`/`Interpolation` parts with at least one interpolation (`Template`) still falls back to the pre-ruling per-fragment `EmitContent` path for that branch — for example, an interior `Glue` or `Spring` part left adjacent to a `Text` part after splicing. No arbitrary complexity threshold was added; recognition either succeeds on the merged flat line or falls back exactly as it always has.
+
+**Known gap, not part of this fix:** `normalize_file` only walks `Block.stmts` (root/knot/stitch bodies, gather continuations, choice *bodies*) — it does not touch a `Choice`'s own display/bracket/inner text. An inline conditional/sequence embedded directly in choice display text (`* Pick {x: A|B}`) still keeps its `ContentPart::InlineConditional`/`InlineSequence` shape all the way to codegen and is still assembled from parts at runtime. Filed as a follow-up on issue #1667 rather than folded into this change.
+
+**`source_hash`/TM impact:** this fix does not change which lines get a `source_hash` or what canonicalizes into one — a branch that was already being spliced by `normalize_file` (present since 2026-03-15) keeps the same composed text and the same `source_hash`; it just now reaches `RecognizedLine::Plain`/`Template` (one clean `LineEntry`) instead of falling back to `EmitContent`'s per-fragment `LineEntry`s. Any `.xlf` unit that was already exported from the fragment path is affected: `EmitContent`'s fragments are keyed by their own (fragment-level) `source_hash`, distinct from the merged line's single `source_hash`, so an existing translation compiled against the old, per-fragment line table would be orphaned. See the PR body for issue #1667 for the exact oracle before/after — this is a genuine migration question for any story with inline conditionals/sequences that already has translated `.xlf` units, not something absorbed silently by this change.
 
 ### Container boundary rule
 
@@ -338,6 +344,7 @@ Implemented in `brink_intl::compile_locale()`.
 1. Read the translated `lines.json`
 2. Read the base `.inkb` (needed for the content checksum and scope list)
 3. For each scope in the translated JSON:
+   - Resolve its `DefinitionId` against the base — directly, else through the base `.inkb`'s `#@was` alias table (see [Matching strategy](#matching-strategy))
    - Parse each line's `content` back into `LineContent` (plain or template)
    - Collect `audio_ref` from each line's `audio` field
    - Build a line table with the translated entries
@@ -349,7 +356,8 @@ Implemented in `brink_intl::compile_locale()`.
 
 The compile step validates:
 
-- Every scope `DefinitionId` in the JSON exists in the base `.inkb`
+- Every scope `DefinitionId` in the JSON exists in the base `.inkb`, either directly or after `#@was` alias rebinding (see [Matching strategy](#matching-strategy)); one that resolves to neither is `IntlError::ScopeNotInBase`, naming the id the file carried
+- Two scopes in the JSON do not land on the same base scope via a rebind (`IntlError::AmbiguousScopeRebind`) — letting the last one win would silently drop a translation
 - Line indices are contiguous and match the base `.inkb` line counts per scope
 - Template slot indices are within bounds (the base `.inkb` knows how many slots each `EmitLine` pushes)
 - Select variants use valid `SelectKey` syntax
@@ -412,9 +420,24 @@ Implemented in `brink_intl::regenerate_lines()` (JSON) and `brink_intl::regenera
 
 Matching operates in two tiers: **scope matching** then **line matching within each scope**.
 
-**Scope matching** uses `DefinitionId` — the lexical scope's identity, stable across recompiles (hash of fully qualified path). A knot renamed or moved gets a new `DefinitionId` and its translations are orphaned. Scopes present in the old translation but absent from the new `.inkb` are orphaned. Scopes in the new `.inkb` with no old translation are new.
+**Scope matching** uses `DefinitionId` — the lexical scope's identity, stable across recompiles (hash of fully qualified path). A knot renamed or moved gets a new `DefinitionId`, so an *undeclared* rename orphans its translations. Scopes present in the old translation but absent from the new `.inkb` are orphaned. Scopes in the new `.inkb` with no old translation are new.
 
-This orphaning holds even when the rename is *declared* with `#@was`: scope matching compares id strings and never consults the compiled alias table that the save path already uses. Closing that gap is issue #1442 (`needs-design`) — see `docs/design/definition-identity-proposals.md` for the analysis, the options, and the ruling it waits on.
+**Alias rebinding (`#@was`).** A scope whose id moved because the rename was *declared* is not orphaned. Both `regenerate_lines` and `compile_locale` consult the compiled `#@was` alias table (`docs/modules-spec.md` §5) — the same old→new edges the save path uses — and rebind the moved scope instead of treating it as gone:
+
+| Surface | Direction | Where the edges come from |
+|---------|-----------|---------------------------|
+| `regenerate_lines` / `regenerate_locale` | new id → pre-rename ids | `StoryData::alias_table`, passed by the caller |
+| `compile_locale` / `compile_locale_xliff` | stale id → current id | the base `.inkb`'s `AliasTable` section, read in-place |
+
+Rules that hold for both directions:
+
+- **A direct id match always wins** over a rebind, so an already-regenerated file is unaffected.
+- **Rebinding is keyed on the id alone** and never reads the scope's display name, so anonymous scopes — root content is one — rebind exactly like named knots.
+- **Alias chains are not followed**, mirroring `Program::resolve_alias`: the compiler emits `old -> new` against the definition's *current* id, never `old -> old2`.
+- **The rebind is a one-time cost.** Regeneration writes the new ids into its output, so the `#@was` directive stays deletable after its migration window.
+- **The `#@was` net is only as deep as the alias table.** A rename mints one entry per definition the directive covers; a stitch re-keyed only because its *parent* was renamed has no edge and is still orphaned. Re-declaring `#@was` on the stitch is not a workaround — the old name is qualified with the *current* parent name, so the edge collapses to a self-edge (pinned by `rename_identity.rs::stitch_was_cannot_bridge_an_ancestor_rename`). That transitive gap is issue #1671, not a matching-rule gap.
+
+Rebinding is automatic rather than a separate CLI migration step (`migrate_unit_ids` / `brink migrate-xliff` remains scoped to the one-off `<unit id>` *spelling* migration, which is a format change, not an id move): the alias edges already ride in the artifacts both surfaces read, an id move can happen on any recompile, and a manual step would fail open every time an author forgot to run it.
 
 **Line matching** within a scope uses `source_hash` alignment, not line index. Line indices are unstable — inserting or deleting a line shifts all subsequent indices within the scope. Matching by index would incorrectly mark every shifted line as changed.
 

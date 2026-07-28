@@ -2028,6 +2028,37 @@ fn lower_ref_projection_arg(ra: &hir::RefArgExpr, ctx: &mut LowerCtx<'_>) -> lir
     let Some(info) = ctx.resolve_path(root.range) else {
         return lir::CallArg::Value(lower_ref_arg_fence(ra, ctx));
     };
+    // Issue #1531 (RULED 2026-07-27, docs/decision-log.md): a frame-local
+    // projection root is now legal, but only as a *statement*
+    // (`blocks::try_lower_frame_local_auto_ref_stmt` splices the
+    // read/call/write-back RMW sequence a frame-local root needs — there is
+    // no expression-shaped representation of one, since `RefProjection`'s
+    // root is a durable global `DefinitionId` only,
+    // `docs/format-v4-rfc.md` §1). Reaching this arm with a `Param`/`Temp`
+    // root means the statement-level recognizer never got a chance to run
+    // (the call is nested inside a larger expression) — refuse loudly
+    // rather than emit a `RefProjection` whose root is a `LocalVar`-tagged
+    // id the linker never registers as a global, which would fault at
+    // runtime as `UnresolvedGlobal` with no compile diagnostic (the same
+    // hazard `lower_ref_path_call_arg`'s block-scoped-temp guard documents
+    // for the bare-receiver case). The explicit `ref n.field` syntax never
+    // reaches here with a frame-local root at all — the analyzer's own
+    // `E080` durable-root check refuses it before lowering ever sees it;
+    // this is purely the UFCS auto-ref desugar's own synthetic `RefArg`.
+    if matches!(info.kind, SymbolKind::Param | SymbolKind::Temp) {
+        ctx.diagnostics.push(crate::Diagnostic {
+            file: ctx.file,
+            range: root.range,
+            message: format!(
+                "{}: `{root_name}` is a temp/param — a frame-local projection receiver \
+                 (`{root_name}.field`) is legal only when the call is its own statement, not \
+                 nested inside a larger expression",
+                crate::DiagnosticCode::E143.title(),
+            ),
+            code: crate::DiagnosticCode::E143,
+        });
+        return lir::CallArg::Value(lir::Expr::Null);
+    }
     let root_id = if info.kind == SymbolKind::List {
         list_def_to_global_var(info.id)
     } else {

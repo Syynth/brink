@@ -1,0 +1,78 @@
+{
+  "steps": [
+    {
+      "text": "The included file opens a root weave of its own.\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "The entry file opens its own root weave.\n",
+      "tags": [],
+      "outcome": {
+        "Choices": {
+          "presented": [
+            {
+              "text": "sub one",
+              "index": 0,
+              "tags": []
+            },
+            {
+              "text": "sub two",
+              "index": 1,
+              "tags": []
+            },
+            {
+              "text": "entry one",
+              "index": 2,
+              "tags": []
+            },
+            {
+              "text": "entry two",
+              "index": 3,
+              "tags": []
+            }
+          ],
+          "selected": 3
+        }
+      },
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    },
+    {
+      "text": "entry two\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "ENTRY-TWO-BODY\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    },
+    {
+      "text": "entry gathered\n",
+      "tags": [],
+      "outcome": "Ended",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 1
+    }
+  ],
+  "outcome": "Ended",
+  "choice_path": [
+    3
+  ],
+  "initial_state": {
+    "variables": {},
+    "turn_index": 0
+  }
+}

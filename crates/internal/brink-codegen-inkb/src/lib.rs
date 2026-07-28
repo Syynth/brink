@@ -76,6 +76,7 @@ pub fn emit(program: &lir::Program) -> Result<StoryData, CodegenError> {
     let mut state = EmitState {
         chunks: Vec::new(),
         addresses: Vec::new(),
+        definition_id_first_seen: HashMap::new(),
         address_paths: Vec::new(),
         scope_line_tables: HashMap::new(),
         list_literals: Vec::new(),
@@ -182,6 +183,15 @@ struct EmitState {
     /// phase in [`emit`] resolves. Pushed in container-walk order.
     chunks: Vec<ContainerChunk>,
     addresses: Vec<AddressDef>,
+    /// #1673 codegen-boundary uniqueness guard: every emitted container's
+    /// `DefinitionId` mapped to the (inklecate-style) path it was first
+    /// seen at. A well-formed `Program` assigns every container a distinct
+    /// id; nothing upstream of codegen independently re-verified that
+    /// before this guard existed, and the #1504 collision reached the
+    /// runtime silently — the linker's address map is last-write-wins, so
+    /// a duplicate id made a player-picked choice run the *other*
+    /// container's body. See [`walk_container`]'s check against this map.
+    definition_id_first_seen: HashMap<DefinitionId, String>,
     /// Qualified-path → target table (scope containers + author labels).
     address_paths: Vec<AddressPath>,
     /// Scope-shared line tables: `scope_id` → accumulated line entries.
@@ -412,6 +422,27 @@ fn walk_container(
     scope_id: DefinitionId,
     state: &mut EmitState,
 ) {
+    // #1673 codegen-boundary uniqueness guard: two containers must never
+    // share a `DefinitionId`. This should be structurally impossible — every
+    // id is a content-pure hash minted once per container during LIR
+    // lowering — but the #1504 collision proved it *can* happen (unqualified
+    // anonymous scope paths across files) and, when it does, the failure is
+    // silent all the way to the player: the linker's address map (and this
+    // walk's own `state.chunks`/`state.addresses`) is last-write-wins, so
+    // the second container to reach this point quietly overwrites the
+    // first's entry instead of erroring. Checked once per container walked,
+    // O(1) amortized against the `HashMap` insert every other per-container
+    // table here already pays — cheap by design (see #1673).
+    if let Some(prior_path) = state
+        .definition_id_first_seen
+        .insert(container.id, path.to_string())
+    {
+        state.errors.push(CodegenError::new(format!(
+            "duplicate DefinitionId {} assigned to two different containers, at paths {prior_path:?} and {path:?} — every container must have a unique DefinitionId (#1673); this collision would otherwise reach the runtime silently and produce wrong player-visible output, as it did in #1504",
+            container.id
+        )));
+    }
+
     // The author-facing path of the nearest enclosing scope. For a scope
     // container this is its own `path` (scope paths never get inklecate's
     // implicit `0.` stitch prefix); non-scope containers inherit it. Used to
