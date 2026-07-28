@@ -669,6 +669,41 @@ fn ide_rename_write_succeeds_under_brink_dialect_extension_syntax() {
     fs::remove_dir_all(&dir).ok();
 }
 
+/// Issue #1672 (docs/modules-spec.md §5, RULED but never implemented until
+/// now): `brink ide rename --write` — the CLI rename surface — stamps
+/// `#@was(old_name)` onto the renamed declaration, exactly like the
+/// LSP/editor paths funneling through the same `brink_ide::rename::rename`
+/// chokepoint. Only reachable under `dialect = brink` (`#@was` is itself a
+/// brink extension), same as `ide_rename_write_succeeds_under_brink_dialect_extension_syntax`
+/// above — this mirrors that test's `brink.toml`-discovery setup and adds
+/// the `#@was` assertion its dialect coverage was missing.
+#[test]
+fn ide_rename_write_stamps_was_under_brink_dialect() {
+    let dir = project_dir("ide-rename-was");
+    let story = write_story(&dir, EXTENSION_RENAME_FIXTURE);
+    write_config(&dir, "[project]\ndialect = \"brink\"\n");
+
+    let out = brink()
+        .args(["ide", "rename", "gold", "--to", "coins", "--write", "-e"])
+        .arg(&story)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "rename must succeed under dialect = brink: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let src = fs::read_to_string(&story).unwrap();
+    assert!(src.contains("VAR coins"), "declaration renamed: {src}");
+    assert!(
+        src.contains("#@was(gold)\nVAR coins"),
+        "the #@was directive is stamped on the line immediately above the \
+         renamed declaration: {src}"
+    );
+
+    fs::remove_dir_all(&dir).ok();
+}
+
 // `load_git_baseline` (used by `brink ide effects-diff --rev`) has its own
 // regression test as a unit test in `crates/brink-cli/src/ide.rs` — its
 // `AnalysisOptions` divergence from `Project::load` isn't observable through
