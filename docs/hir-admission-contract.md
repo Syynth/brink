@@ -273,8 +273,12 @@ happy path is: native constructs lower to *existing* HIR nodes. Where they do:
    (a lowering rule, not a node).*
 4. **Anonymous lambdas.** `FnLiteral` is partial application over a *named*
    target, not an anonymous body (F-K). Charter §7 leans UFCS-over-lambdas
-   ("no method system"). *Defer — do not add an anonymous-fn-body node until the
-   code sitting rules one is wanted.*
+   ("no method system"). **Landed** (#1685): `hir::Expr::Lambda`/`LambdaBody`
+   per the 2026-07-19 ruling (Rust pipes, colon returns, by-value capture,
+   `E156` for a write to a captured binding). `FnLiteral` remains what it
+   always was — partial application over a *named* target — a different
+   shape, not a substitute. Codegen has no runtime representation yet; LIR
+   lowering fences on a targeted `E052` until lambda lifting lands.
 5. **blocks-as-values** (watch list). No HIR support; `Stmt`/`Expr` are separated
    (F-K). *Defer to a semantics round (parking-lot); it is not same-semantics.*
 6. **Deep container nesting >2** (watch list). No HIR support; the model,
@@ -515,7 +519,7 @@ never-reuse-codes rule (`hir/types.rs` DiagnosticCode doc).
 ### 4.4 Versioning / extension posture for the contract itself
 
 - **The node set is additive-open, closed to silent extension.** New nodes (enums,
-  `for k,v`, a future lambda) land as new variants/fields + their admission checks
+  `for k,v`, lambdas (landed, #1685)) land as new variants/fields + their admission checks
   + their downstream handling, exactly as the directive channel's reserved
   namespace makes new directives non-breaking (F-E). A frontend emitting a node
   the running compiler doesn't know is a **loud admission error**, never a silent
