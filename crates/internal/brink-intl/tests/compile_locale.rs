@@ -245,14 +245,15 @@ fn end_to_end_localize_and_run() {
     );
 }
 
-// ── #1442: `#@was` rebinding at compile-locale time ──
+// ── #1442/#1671: `#@was` rebinding at compile-locale time ──
 //
 // A stale locale file carries pre-rename scope ids. `compile_locale` reads
 // the base `.inkb`'s own `AliasTable` section and rebinds; the happy path is
 // covered end-to-end in `rename_identity.rs`, so these pin the two edges.
 
-/// A knot plus a stitch. Renaming the knot re-keys both, but `#@was` on the
-/// knot only mints an edge for the knot itself (#1671).
+/// A knot plus a stitch. Renaming the knot re-keys both, and `#@was` on the
+/// knot mints an edge for each — the knot's own plus the stitch's
+/// transitive bridge (#1671).
 const RENAME_BEFORE: &str = "\
 == hub ==
 Welcome to the hub.
@@ -294,11 +295,12 @@ fn scope_id_of(story: &brink_format::StoryData, name: &str) -> String {
         .id
 }
 
-/// The stitch is re-keyed by the rename but has no alias entry of its own,
-/// so it cannot rebind and must still report `ScopeNotInBase` — naming the
-/// id the translation file actually carried.
+/// The stitch is re-keyed by the rename too (its qualified name embeds the
+/// knot's), and #1671 gives it its own transitive alias entry, so a locale
+/// file carrying only its pre-rename id still rebinds through
+/// `compile_locale` — it is not left to report `ScopeNotInBase`.
 #[test]
-fn a_scope_with_no_alias_edge_still_reports_scope_not_in_base() {
+fn a_transitively_rekeyed_scope_still_rebinds_through_compile_locale() {
     let before = compile_brink(RENAME_BEFORE);
     let after = compile_brink(RENAME_AFTER);
     let mut inkb = Vec::new();
@@ -309,11 +311,21 @@ fn a_scope_with_no_alias_edge_still_reports_scope_not_in_base() {
     stale.scopes.retain(|s| s.id == old_stitch);
     assert_eq!(stale.scopes.len(), 1);
 
-    let err = compile_locale(&inkb, &stale, "es").unwrap_err();
-    match err {
-        IntlError::ScopeNotInBase(id) => assert_eq!(id, old_stitch),
-        other => panic!("expected ScopeNotInBase, got {other:?}"),
-    }
+    let locale_bytes = compile_locale(&inkb, &stale, "es")
+        .expect("the stitch's transitive alias entry (#1671) must rebind it");
+    let locale = read_inkl(&locale_bytes).unwrap();
+
+    let new_stitch = scope_id_of(&after, "plaza.market");
+    let bound: Vec<String> = locale
+        .line_tables
+        .iter()
+        .map(|t| format!("0x{:016x}", t.scope_id.to_raw()))
+        .collect();
+    assert_eq!(
+        bound,
+        vec![new_stitch],
+        "the overlay must be keyed on the post-rename stitch id"
+    );
 }
 
 /// A hand-merged file carrying *both* the pre- and post-rename ids for the

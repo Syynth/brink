@@ -8,7 +8,7 @@ The workflow is shipped end-to-end: the `brink` CLI exposes `export-xliff`, `com
 
 That churn no longer costs you translations, as long as the rename is **declared**. Annotate it with `#@was(old_name)` and both `regenerate-xliff` and `compile-locale` follow the compiled alias table to rebind the moved scope onto its old translations, instead of treating it as a brand-new scope (or, for `compile-locale`, failing outright). You do not need to run `migrate-xliff` after a rename — rebinding is automatic, and `migrate-xliff` exists only for the one-off migration of `.xlf` files exported before unit ids moved off display names.
 
-One limit to know: `#@was` on a knot records an alias for **that knot only**. A *stitch* inside it is re-keyed too (its qualified name contains the knot's name) but has no alias of its own, so its translations are still orphaned — and adding `#@was(market)` to the stitch does not help, because the old name is qualified with the knot's *current* name and the edge collapses to a no-op. Carrying a whole renamed subtree across is tracked as issue #1671. See the scope-matching rules in `docs/intl-spec.md` for the full set.
+`#@was` on a knot or stitch records an alias for **the whole renamed subtree**, not just the declaration itself: every stitch and label re-keyed only because its parent's name changed (its qualified name contains the parent's name) gets its own compiled alias entry too, so its translations rebind right alongside the renamed container's. See the scope-matching rules in `docs/intl-spec.md` for the full set.
 
 ## Why XLIFF
 
