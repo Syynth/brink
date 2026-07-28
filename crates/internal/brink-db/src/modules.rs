@@ -20,7 +20,7 @@
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use brink_analyzer::{ModuleMap, ResolvedModule};
 use brink_ir::{Diagnostic, DiagnosticCode, FileId};
@@ -70,16 +70,40 @@ pub(crate) fn file_stem(path: &str) -> &str {
 /// stays absolute (and collision-free across workspace roots) while identity
 /// stays root-relative.
 ///
-/// The strip is purely lexical (`Path::strip_prefix`, component-wise — no
-/// filesystem access, so it is wasm-safe), and a `path` that does not live
-/// under `root` is returned unchanged rather than mangled: a file outside the
-/// configured tree keeps whatever key it was registered under, exactly as
-/// before this function existed.
+/// Both `root` and `path` are absolutized first, via [`std::path::absolute`]
+/// (lexical `.`/`..` resolution against the process cwd — no filesystem
+/// access, so it stays wasm-safe: it either succeeds with no I/O or fails
+/// cleanly, it never touches disk), before the strip. A bare `Path::
+/// strip_prefix` without this is unsound whenever `root` and `path` are
+/// spelled with different qualifiers for the same file — e.g. `root` came
+/// back absolute from `native_source_root`'s #1413 retry (a `brink.toml`
+/// found only by walking up from an *absolutized* entry dir, because the
+/// entry was relatively spelled and its cwd-relative walk alone came up
+/// empty) while `path` is still `entry`'s raw relative spelling
+/// (`prepare_driver` registers the ink entry key verbatim): `main.ink`,
+/// `./main.ink`, and an absolute spelling of the same file would then strip
+/// to three *different* keys (`main.ink`, `./main.ink`, and the
+/// root-relative form) instead of agreeing — reopening the exact
+/// CLI-vs-`brink-lsp` divergence #1696 exists to close (review finding on
+/// #1706). Absolutizing both sides first means every spelling resolves to
+/// the same real path before the strip ever runs.
+///
+/// When [`std::path::absolute`] errors on either side (only possible if the
+/// process has no queryable cwd, e.g. wasm — see its doc), this falls back
+/// to the raw, unabsolutized strip so wasm callers keep exactly their prior
+/// (already root-relative-spelled) behavior instead of hard-erroring.
+///
+/// A `path` that does not live under `root` — even after absolutizing — is
+/// returned unchanged (the original, non-absolutized string) rather than
+/// mangled: a file outside the configured tree keeps whatever key it was
+/// registered under, exactly as before this function existed.
 pub(crate) fn root_relative_key<'a>(root: Option<&str>, path: &'a str) -> Cow<'a, str> {
     let Some(root) = root.filter(|r| !r.is_empty()) else {
         return Cow::Borrowed(path);
     };
-    match Path::new(path).strip_prefix(Path::new(root)) {
+    let root_abs = std::path::absolute(Path::new(root)).unwrap_or_else(|_| PathBuf::from(root));
+    let path_abs = std::path::absolute(Path::new(path)).unwrap_or_else(|_| PathBuf::from(path));
+    match path_abs.strip_prefix(&root_abs) {
         Ok(rel) => Cow::Owned(rel.to_string_lossy().into_owned()),
         Err(_) => Cow::Borrowed(path),
     }
@@ -299,6 +323,34 @@ mod tests {
         assert_eq!(
             root_relative_key(Some("/home/dev/game/"), "/home/dev/game/main.brink"),
             "main.brink"
+        );
+    }
+
+    /// Review finding on #1706: `native_source_root`'s #1413 absolutized
+    /// retry can hand back an ABSOLUTE root for an entry that was itself
+    /// registered under a relative spelling (`prepare_driver` registers the
+    /// ink entry key verbatim, never resolved against `root`). A bare
+    /// `Path::strip_prefix` without absolutizing both sides first cannot
+    /// match an absolute root against a relative path even when they name
+    /// the same real file, so `main.ink` and `./main.ink` used to strip to
+    /// two different keys (each left unchanged) once `root` was absolute.
+    /// Uses the real process cwd as `root` — no filesystem access, no
+    /// `chdir`, no file needs to exist — precisely because
+    /// [`std::path::absolute`] resolves a relative `path` against cwd
+    /// lexically; the full `native_source_root`-driven, real-`brink.toml`
+    /// version of this same scenario lives at
+    /// `crates/brink-compiler/tests/issue_1504_root_content_identity.rs`'s
+    /// `root_content_ids_are_stable_when_brink_toml_lives_above_the_entry_dir`.
+    #[test]
+    fn root_relative_key_absolutizes_a_relative_path_against_an_absolute_root() {
+        let cwd = std::env::current_dir().expect("process must have a cwd");
+        let root = cwd.to_string_lossy().into_owned();
+
+        assert_eq!(root_relative_key(Some(&root), "main.ink"), "main.ink");
+        assert_eq!(root_relative_key(Some(&root), "./main.ink"), "main.ink");
+        assert_eq!(
+            root_relative_key(Some(&root), "sub/main.ink"),
+            "sub/main.ink"
         );
     }
 

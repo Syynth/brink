@@ -1,8 +1,9 @@
 # Root-content `DefinitionId` identity — findings and recommended fix shape
 
 **Issue:** [#1504](https://github.com/Syynth/brink/issues/1504)
-**Status:** **SHIPPED, with a known limitation** — see
-[Known limitation: the qualifier is not normalized](#known-limitation-the-qualifier-is-not-normalized).
+**Status:** **SHIPPED.** The qualifier-normalization gap flagged below was
+fixed by #1696 — see
+[Known limitation: the qualifier is not normalized — FIXED by #1696](#known-limitation-the-qualifier-is-not-normalized--fixed-by-1696).
 The [primary recommendation](#primary-qualify-root-content-scope-paths-by-the-owning-file-not-the-module)
 below is what landed: `hir::root_content_scope_path` qualifies a file's
 anonymous root-content scope path with that file's project path, and

@@ -22,14 +22,37 @@ now strips that root before qualifying, via the renamed, now-shared
 `brink_db::modules::root_relative_key` (previously `native_root_relative_key`,
 native-only).
 
-**Observable through `@brink-lang/web`**: `brink-web`'s compile session calls
-`brink_compiler::compile` directly, and every ink compile now unconditionally
-registers this root — a playground/editor project's compiled `StoryData` gets
-root-relative anonymous container ids where it previously got raw-path-
-qualified ones.
+**Reachability, corrected (review finding on #1706, re-traced against the
+real call graph):** `@brink-lang/web` is **not** reached by this mechanism.
+`brink-web`'s compile entry point is `compile_over_tree`, which always goes
+through `Project::load` + `brink_environment::compile` — never
+`brink_compiler::compile`/`compile_path` directly (every call to those in
+`crates/brink-web/src` is inside a `#[cfg(test)]` /
+`#[cfg(all(test, target_arch = "wasm32"))]` module, exercising nothing
+reachable from the published package). `brink_environment::compile` never
+calls `set_ink_root`, and does not need to: `Project::load` already seeds
+`ProjectDb` with root-relative source keys, so `root_relative_key` is the
+identity function on that path (`ink_root` stays `None`) both before and
+after this PR. The CLI's `brink compile` is the same story — it calls
+`brink_environment::compile` too, via `compile_entry` in
+`crates/brink-cli/src/main.rs`, not `brink_compiler::compile*`.
+This changeset is filed per the standing "crates-only PRs need a
+`@brink-lang/web` patch" policy (decision 2026-07-11) despite the traced nil
+delta, so the release still carries a record of the identity-re-keying below
+for anyone reading the changelog.
 
-⚠ **This is a second identity break on top of #1504's, not a plain bug fix.**
-It re-keys existing definitions again:
+**The surfaces this PR actually re-keys** are the callers who use the
+`brink-compiler` library's `compile`/`compile_path` entry points directly,
+bypassing `brink_environment`/`Project::load`'s already-root-relative
+registration: the oracle harness (`compile_path` in
+`brink-test-harness`), `bevy-brink` (`brink_compiler::compile*` call sites
+in `crates/bevy-brink/src/{request,ground_truth,source_loader,brkt,
+test_support,replay,locale,capability}.rs` and `bindings/tests.rs`), and any
+other external consumer of the `brink-compiler` crate — plus `brink-lsp`,
+whose `register_native_root` now also calls `set_ink_root`.
+
+⚠ **This is a second identity break on top of #1504's, not a plain bug fix,
+for those surfaces.** It re-keys existing definitions again:
 
 - **Anonymous visit counts and sequence positions in existing saves are
   invalidated a second time**, for any project whose entry is registered
@@ -44,8 +67,8 @@ It re-keys existing definitions again:
   no-migration-path caveat as #1504: anonymous containers (`c-N`, `g-N`,
   `b-N`, `s-N`) have no author-visible name, so `#@was`/alias rebinding
   cannot teach the loader the old id.
-- **Translations are not affected**, for the same reason #1504's changeset
-  gives: `brink-intl`'s export keys a translation scope on
+- **Translation *scope* ids are not affected**, for the same reason #1504's
+  changeset gives: `brink-intl`'s export keys a translation scope on
   `ScopeLineTable::scope_id`, and codegen opens a line table only for a
   scope-kind container (`Root`/`Knot`/`Stitch`); root-level choices and
   gathers inherit the **root** scope's id, the hash of the empty path, which
@@ -53,6 +76,23 @@ It re-keys existing definitions again:
   `root_content_translation_scope_id_is_unaffected_by_the_qualifier` in
   `crates/brink-compiler/tests/issue_1504_root_content_identity.rs`, unchanged
   by this PR.
+- **Translation export's per-line `source.file` reference *does* change**
+  (review finding on #1706 — narrowing an earlier, overbroad "translations
+  are not affected" claim in this changeset). The same `file_paths` map
+  `chunk_lowering_ctx_query`/`lir_lowering_query` now root-relativize also
+  feeds `brink-ir`'s `build_source_location`
+  (`crates/internal/brink-ir/src/lir/lower/recognize.rs`), which populates
+  `LineEntry::source_location.file`; `brink-intl`'s `export_lines`
+  (`crates/internal/brink-intl/src/export.rs`) emits that verbatim as
+  `SourceJson.file` in `lines.json`/XLIFF. For any of the direct-library
+  surfaces listed above whose entry was registered under a non-root-relative
+  spelling, the `source.file` an exported translation unit points at changes
+  from that raw spelling to the root-relative one — a metadata-only change
+  (the export's scope/line *identity*, `scope_id` and `hash`, is untouched;
+  only the human-readable source-file annotation moves). `@brink-lang/web`'s
+  own translation export (`story_runner.rs`'s `export_lines`, over a
+  `brink_environment`-compiled `StoryData`) is unaffected, per the
+  reachability correction above.
 
 Oracle conformance: the harness compiles every case through an *absolute*
 entry path (`CARGO_MANIFEST_DIR`-derived), so this change does move every
