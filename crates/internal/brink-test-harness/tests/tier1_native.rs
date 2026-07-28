@@ -183,6 +183,21 @@ fn array_literal() {
     assert_case("array-literal");
 }
 
+/// Lambda **lifting** (issue #1709) meeting the fn-value verb layer's pure
+/// trio (`map`/`filter`/`fold`, issue #1679). Issue #1685 landed lambdas as
+/// far as HIR; LIR lowering then raised an `E052` codegen fence, so a
+/// writer could not actually hand a lambda literal to the trio at runtime —
+/// `#fn(named_function)` was the only fn-value spelling that reached those
+/// ops. This case is the end-to-end proof that gap is closed: a
+/// zero-capture lambda into each of `map`/`filter`/`fold`, a **capturing**
+/// lambda (`|x| x * factor`, by-value per the 2026-07-19 ruling), the three
+/// verbs composed, and a braced-body lambda with its own `let` and trailing
+/// value expression.
+#[test]
+fn lambda_verbs() {
+    assert_case("lambda-verbs");
+}
+
 /// Every `tests/tier1-native/` case directory is exercised by a `#[test]`
 /// above — a directory with no matching test would silently never run.
 #[test]
@@ -197,6 +212,7 @@ fn every_case_directory_has_a_test() {
         "annotations-effects",
         "annotations-allow",
         "array-literal",
+        "lambda-verbs",
     ];
     let mut found: Vec<String> = std::fs::read_dir(corpus_dir())
         .expect("read tests/tier1-native")

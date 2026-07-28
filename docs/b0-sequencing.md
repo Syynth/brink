@@ -366,10 +366,13 @@ path.
   braced-block bodies with the tail as the value, by-value capture with
   `E156` for a write to a captured binding). `FnLiteral` remains what it
   always was — partial application over a *named* target — and is a
-  different shape, not a substitute. Still open: the runtime
-  representation. Codegen has no anonymous-body form, so LIR lowering
-  carries a targeted `E052` fence; lambda lifting to a synthesized function
-  value is the follow-up slice.
+  different shape, not a substitute. The runtime representation — the
+  follow-up slice this entry left open — **LANDED** (issue #1709):
+  `lir::lower::lambda` lifts the body into a synthesized top-level function
+  and creates an ordinary T1c fn value over it (`PushFnRef` with no
+  captures, `MakeClosure` with them), retiring the `E052` fence. Still
+  open: the lifted function's **effect row**, which `Ty::Fn` cannot carry
+  (#1680).
 - **Enums** — ruled (§13.1) but no HIR node exists; the contract reserves
   the `HirFile.enums` channel; the node + exhaustive `match` land with the
   enum feature, not B0.

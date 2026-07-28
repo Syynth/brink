@@ -1,0 +1,53 @@
+// Lambda lifting (issue #1709) meeting the fn-value verb layer's pure
+// trio (`docs/stdlib-spec.md` §4, issue #1679).
+//
+// Before lifting landed, a lambda lowered to HIR and then stopped at the
+// LIR codegen fence (E052), so `#fn(named_function)` was the only fn-value
+// spelling that reached `map`/`filter`/`fold`. This case is the proof that
+// a writer can now hand a **lambda literal** straight to the trio.
+//
+// Capture is BY-VALUE always (RULED 2026-07-19): `scaled` reads the
+// enclosing `factor` local, which is snapshotted into the lifted
+// function's closure environment at the point the lambda value is made.
+
+fn doubled() {
+  let items = [1, 2, 3];
+  return map(items, |x| x * 2);
+}
+
+fn evens() {
+  let items = [1, 2, 3, 4, 5, 6];
+  return filter(items, |x| x % 2 == 0);
+}
+
+fn total() {
+  let items = [1, 2, 3, 4];
+  return fold(items, 0, |acc, x| acc + x);
+}
+
+fn scaled(factor) {
+  let items = [1, 2, 3];
+  return map(items, |x| x * factor);
+}
+
+fn chained() {
+  let items = [1, 2, 3, 4, 5, 6];
+  return fold(map(filter(items, |x| x % 2 == 0), |x| x * 10), 0, |acc, x| acc + x);
+}
+
+fn braced() {
+  let items = [1, 2, 3];
+  return map(items, |x| {
+    let bumped = x + 1;
+    bumped * bumped
+  });
+}
+
+flow main() {
+  Doubled: {doubled()}
+  Evens: {evens()}
+  Total: {total()}
+  Scaled: {scaled(5)}
+  Chained: {chained()}
+  Braced: {braced()} -> END
+}

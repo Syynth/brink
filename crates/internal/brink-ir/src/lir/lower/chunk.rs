@@ -74,10 +74,25 @@ impl ScopeChunk {
 
     /// A knot chunk: the lowered knot container (stitches + inline children
     /// nested) plus the names collected while lowering the whole subtree.
-    pub fn knot(container: lir::Container, local_names: Vec<String>) -> Self {
+    ///
+    /// `lifted` carries the lambda-lifted function containers synthesized
+    /// while lowering that subtree (issue #1709). They are *siblings* of the
+    /// knot, not children of it — a lifted function is entered only through
+    /// its own fn value, so it belongs at top level next to the project's
+    /// function knots (see `lower::lambda`'s module doc). Appending them
+    /// after the knot leaves the assembled root-children order for every
+    /// lambda-free project byte-identical.
+    pub fn knot(
+        container: lir::Container,
+        lifted: Vec<lir::Container>,
+        local_names: Vec<String>,
+    ) -> Self {
+        let mut children = Vec::with_capacity(1 + lifted.len());
+        children.push(container);
+        children.extend(lifted);
         Self {
             body: Vec::new(),
-            children: vec![container],
+            children,
             local_names,
         }
     }

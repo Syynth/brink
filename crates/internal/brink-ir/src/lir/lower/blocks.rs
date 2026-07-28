@@ -53,7 +53,10 @@ pub(super) fn lower_logic_block(
     out
 }
 
-fn lower_block_stmt_list(stmts: &[hir::BlockStmt], ctx: &mut LowerCtx<'_>) -> Vec<lir::Stmt> {
+pub(super) fn lower_block_stmt_list(
+    stmts: &[hir::BlockStmt],
+    ctx: &mut LowerCtx<'_>,
+) -> Vec<lir::Stmt> {
     let mut out = Vec::new();
     for stmt in stmts {
         lower_block_stmt(stmt, ctx, &mut out);
