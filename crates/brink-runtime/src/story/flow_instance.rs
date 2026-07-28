@@ -130,7 +130,7 @@ impl FlowInstance {
                 did_safe_exit: false,
                 did_unsafe_yield: false,
                 exec_mode: ExecMode::default(),
-                comparator_depth: 0,
+                pure_callback: crate::story::PureCallbackState::default(),
             },
             status: StoryStatus::Active,
             stats: Stats::default(),

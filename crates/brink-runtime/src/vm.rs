@@ -24,7 +24,8 @@ use crate::range_ops;
 use crate::record_ops;
 use crate::state::ContextAccess;
 use crate::story::{
-    CallFrame, CallFrameType, ContainerPosition, ExecMode, Flow, PendingChoice, Stats,
+    CallFrame, CallFrameType, ContainerPosition, ExecMode, Flow, PendingChoice, PureCallbackState,
+    Stats,
 };
 use crate::string_ops;
 use crate::tower_ops;
@@ -1386,6 +1387,23 @@ fn step_impl<R: crate::rng::StoryRng>(
             seq_sorted_by::<R>(flow, program, line_tables, context, stats, resolver)?;
         }
 
+        // ── The fn-value verb layer (issue #1679, `docs/stdlib-spec.md`
+        // §4): the pure trio. Each re-enters the VM per element to run the
+        // user callback (`call_pure_callback`), under the same pure·silent
+        // contract, output isolation and dev-mode world-write guard the
+        // NS-A4 comparator uses. ────────────────────────────────────────
+        Opcode::SeqVerb(op) => match op {
+            brink_format::SeqVerbOp::Map => {
+                seq_map::<R>(flow, program, line_tables, context, stats, resolver)?;
+            }
+            brink_format::SeqVerbOp::Filter => {
+                seq_filter::<R>(flow, program, line_tables, context, stats, resolver)?;
+            }
+            brink_format::SeqVerbOp::Fold => {
+                seq_fold::<R>(flow, program, line_tables, context, stats, resolver)?;
+            }
+        },
+
         // ── NS-A8: the numeric tower (#1114) — constructors + verbs.
         // Pure: no reads, no writes, no draws; wrong-operand-type is the
         // only fault path (`tower_ops`' module doc).
@@ -1803,21 +1821,23 @@ fn enter_fn_value(
     Ok(())
 }
 
-/// F34 (ruled 2026-07-19): the dev-mode world-write guard for comparator
+/// F34 (ruled 2026-07-19): the dev-mode world-write guard for pure-callback
 /// frames. Called at each VM write seam — global assignment (direct, or
 /// write-through via a `ref`-parameter pointer / path projection) and every
-/// RNG-cell advance — *before* the write lands. Inside a comparator
-/// (`flow.comparator_depth > 0`) under [`ExecMode::Dev`] the write is the
-/// turn-terminating [`RuntimeError::ComparatorWroteState`] fault; under
-/// [`ExecMode::Prod`] the check is skipped entirely and the write executes
-/// (defined + deterministic — the stable merge-sort's comparison sequence
-/// is fixed). Outside a comparator this is a single predictable
+/// RNG-cell advance — *before* the write lands. Inside a pure callback
+/// (`flow.pure_callback.depth > 0` — a `sort_by`/`sorted_by` comparator, or
+/// a fn-value verb's callback since issue #1679) under [`ExecMode::Dev`] the
+/// write is the turn-terminating [`RuntimeError::ComparatorWroteState`]
+/// fault; under [`ExecMode::Prod`] the check is skipped entirely and the
+/// write executes (defined + deterministic — the stable merge-sort's
+/// comparison sequence is fixed, and the fn-value verbs walk their array in
+/// iteration order). Outside a callback this is a single predictable
 /// depth-is-zero branch on data already in `Flow` — no instrumentation
 /// threads through the production write path.
 ///
 /// Deliberately NOT guarded:
-/// - visit/turn-count increments — the comparator's own in-story dispatch
-///   counts visits by rule (NS-A4), so a comparator calling knot functions
+/// - visit/turn-count increments — the callback's own in-story dispatch
+///   counts visits by rule (NS-A4), so a callback calling knot functions
 ///   stays legal in both modes;
 /// - reads (`GetGlobal`) — E119's static bound owns the read posture; and
 ///   the read half of an RMW (`TakeGlobal`/`TakeTemp`-via-pointer, which
@@ -1828,9 +1848,9 @@ fn enter_fn_value(
 ///   count + story seed and never advance the RNG cell.
 #[inline]
 fn guard_comparator_write(flow: &Flow, what: &'static str) -> Result<(), RuntimeError> {
-    if flow.comparator_depth > 0 && flow.exec_mode == ExecMode::Dev {
+    if flow.pure_callback.depth > 0 && flow.exec_mode == ExecMode::Dev {
         return Err(RuntimeError::ComparatorWroteState {
-            verb: "sort_by",
+            verb: flow.pure_callback.verb,
             what,
         });
     }
@@ -1885,14 +1905,8 @@ fn seq_sorted_by<R: crate::rng::StoryRng>(
             found: value_type_name(&cmp),
         });
     }
-    if flow.comparator_depth >= COMPARATOR_DEPTH_LIMIT {
-        return Err(RuntimeError::ComparatorEscaped {
-            verb: "sort_by",
-            what: "recursed past the nesting depth limit",
-        });
-    }
+    let outer = enter_pure_callback(flow, "sort_by")?;
     let mut sorted: Vec<Value> = items.as_ref().clone();
-    flow.comparator_depth += 1;
     let result = collection_ops::fallible_stable_sort(&mut sorted, &mut |a, b| {
         call_comparator::<R>(
             flow,
@@ -1906,27 +1920,217 @@ fn seq_sorted_by<R: crate::rng::StoryRng>(
             b.clone(),
         )
     });
-    flow.comparator_depth -= 1;
+    flow.pure_callback = outer;
     result?;
     flow.value_stack.push(Value::array(sorted));
     Ok(())
 }
 
-/// Evaluate a `sort_by`/`sorted_by` comparator function value against one
-/// pair of comparands, re-entrantly, inside the current opcode: push a
-/// boundary frame (`FunctionEvalFromGame`, `return_address: None` — the
-/// `begin_function_eval` shape), drive [`step`] until the frame pops, and
-/// read the return value off the value stack. Output is captured and
-/// discarded (comparators are silent by contract; the checker enforces it
-/// where the comparator's origin is provable — E119 — and this isolation
-/// is the gradual-mode residual, mirroring `begin_function_eval`).
+/// Enter a pure-callback scope for `verb`: check the nesting-depth bound,
+/// bump the depth, and return the caller's [`PureCallbackState`] so the
+/// scope can be closed by restoring it (`flow.pure_callback = outer`) on
+/// every exit path — including the error paths, which is why this returns
+/// the saved state rather than relying on a matching decrement.
+fn enter_pure_callback(
+    flow: &mut Flow,
+    verb: &'static str,
+) -> Result<PureCallbackState, RuntimeError> {
+    if flow.pure_callback.depth >= COMPARATOR_DEPTH_LIMIT {
+        return Err(RuntimeError::ComparatorEscaped {
+            verb,
+            what: "recursed past the nesting depth limit",
+        });
+    }
+    let outer = flow.pure_callback;
+    flow.pure_callback = PureCallbackState {
+        depth: outer.depth + 1,
+        verb,
+    };
+    Ok(outer)
+}
+
+/// Pop and validate the `(array, callback)` operand pair every fn-value
+/// verb shares (`docs/stdlib-spec.md` §4, issue #1679). The callback is on
+/// top — codegen pushes the array first, exactly like `SeqSortedBy`.
+fn pop_seq_and_callback(
+    flow: &mut Flow,
+    verb: &'static str,
+    expected: &'static str,
+) -> Result<(Vec<Value>, Value), RuntimeError> {
+    let f = flow.pop_value()?;
+    let container = flow.pop_value()?;
+    let Value::Array(items) = &container else {
+        return Err(RuntimeError::StdlibWrongType {
+            verb,
+            expected: "an array",
+            found: value_type_name(&container),
+        });
+    };
+    if !matches!(f, Value::FnRef(_) | Value::Closure(_)) {
+        return Err(RuntimeError::CallbackNotAFunction {
+            verb,
+            expected,
+            found: value_type_name(&f),
+        });
+    }
+    Ok((items.as_ref().clone(), f))
+}
+
+/// `SeqVerb(Map)` (`docs/stdlib-spec.md` §4, issue #1679): `[a, f]` →
+/// `[a']` — the array of `f(x)` for each element, in iteration order.
 ///
-/// In-story dispatch semantics apply (visit counting, exactly like
-/// `enter_fn_value`); comparator behavior the VM cannot honor mid-op —
-/// choices, `-> DONE`/`-> END`, external calls (there is no handler down
-/// here), divergence past [`COMPARATOR_STEP_LIMIT`] — is a
-/// turn-terminating [`RuntimeError::ComparatorEscaped`] fault. A non-int
-/// return is [`RuntimeError::ComparatorReturnType`].
+/// The callback is pure-required by the 2026-07-18 ruling, which is what
+/// makes the iteration order unobservable and licenses fusion; the runtime
+/// nevertheless walks the array front-to-back, so the one fusion-visible
+/// artifact §4 leaves unspecified (which element's fault fires first) is
+/// simply "the earliest one" here.
+fn seq_map<R: crate::rng::StoryRng>(
+    flow: &mut Flow,
+    program: &Program,
+    line_tables: &[Vec<LineEntry>],
+    context: &mut (impl ContextAccess + ?Sized),
+    stats: &mut Stats,
+    resolver: Option<&dyn PluralResolver>,
+) -> Result<(), RuntimeError> {
+    const VERB: &str = "map";
+    let (items, f) = pop_seq_and_callback(flow, VERB, "`fn(T): U`")?;
+    let outer = enter_pure_callback(flow, VERB)?;
+    let mut out = Vec::with_capacity(items.len());
+    let result = (|| -> Result<(), RuntimeError> {
+        for item in items {
+            out.push(call_pure_callback::<R>(
+                flow,
+                program,
+                line_tables,
+                context,
+                stats,
+                resolver,
+                VERB,
+                &f,
+                vec![item],
+            )?);
+        }
+        Ok(())
+    })();
+    flow.pure_callback = outer;
+    result?;
+    flow.value_stack.push(Value::array(out));
+    Ok(())
+}
+
+/// `SeqVerb(Filter)` (`docs/stdlib-spec.md` §4, issue #1679): `[a, pred]` →
+/// `[a']` — the elements for which `pred(x)` is `true`, in iteration order.
+/// A non-bool predicate return is a turn-terminating fault: a silent
+/// truthiness coercion here would quietly change which elements survive.
+fn seq_filter<R: crate::rng::StoryRng>(
+    flow: &mut Flow,
+    program: &Program,
+    line_tables: &[Vec<LineEntry>],
+    context: &mut (impl ContextAccess + ?Sized),
+    stats: &mut Stats,
+    resolver: Option<&dyn PluralResolver>,
+) -> Result<(), RuntimeError> {
+    const VERB: &str = "filter";
+    let (items, pred) = pop_seq_and_callback(flow, VERB, "`fn(T): bool`")?;
+    let outer = enter_pure_callback(flow, VERB)?;
+    let mut out = Vec::new();
+    let result = (|| -> Result<(), RuntimeError> {
+        for item in items {
+            let keep = call_pure_callback::<R>(
+                flow,
+                program,
+                line_tables,
+                context,
+                stats,
+                resolver,
+                VERB,
+                &pred,
+                vec![item.clone()],
+            )?;
+            match keep {
+                Value::Bool(true) => out.push(item),
+                Value::Bool(false) => {}
+                other => {
+                    return Err(RuntimeError::CallbackReturnType {
+                        verb: VERB,
+                        expected: "a bool",
+                        found: value_type_name(&other),
+                    });
+                }
+            }
+        }
+        Ok(())
+    })();
+    flow.pure_callback = outer;
+    result?;
+    flow.value_stack.push(Value::array(out));
+    Ok(())
+}
+
+/// `SeqVerb(Fold)` (`docs/stdlib-spec.md` §4, issue #1679): `[a, init, f]`
+/// → `[acc]` — the left fold. `acc` starts at `init` and becomes
+/// `f(acc, x)` for each element in iteration order; an empty array yields
+/// `init` unchanged (no absence case, so no `Option` — contrast `min`/`max`
+/// under the §4 absence-returns doctrine).
+fn seq_fold<R: crate::rng::StoryRng>(
+    flow: &mut Flow,
+    program: &Program,
+    line_tables: &[Vec<LineEntry>],
+    context: &mut (impl ContextAccess + ?Sized),
+    stats: &mut Stats,
+    resolver: Option<&dyn PluralResolver>,
+) -> Result<(), RuntimeError> {
+    const VERB: &str = "fold";
+    // Operand order at the op is `seq`, `init`, `f` — the callback is on
+    // top, so the shared pair-popper cannot be reused directly: pop the
+    // callback, then the init, then validate the array underneath.
+    let f = flow.pop_value()?;
+    let init = flow.pop_value()?;
+    let container = flow.pop_value()?;
+    let Value::Array(items) = &container else {
+        return Err(RuntimeError::StdlibWrongType {
+            verb: VERB,
+            expected: "an array",
+            found: value_type_name(&container),
+        });
+    };
+    if !matches!(f, Value::FnRef(_) | Value::Closure(_)) {
+        return Err(RuntimeError::CallbackNotAFunction {
+            verb: VERB,
+            expected: "`fn(U, T): U`",
+            found: value_type_name(&f),
+        });
+    }
+    let items = items.as_ref().clone();
+    let outer = enter_pure_callback(flow, VERB)?;
+    let mut acc = init;
+    let result = (|| -> Result<(), RuntimeError> {
+        for item in items {
+            acc = call_pure_callback::<R>(
+                flow,
+                program,
+                line_tables,
+                context,
+                stats,
+                resolver,
+                VERB,
+                &f,
+                vec![acc.clone(), item],
+            )?;
+        }
+        Ok(())
+    })();
+    flow.pure_callback = outer;
+    result?;
+    flow.value_stack.push(acc);
+    Ok(())
+}
+
+/// Evaluate a `sort_by`/`sorted_by` comparator against one pair of
+/// comparands and interpret its return as an [`Ordering`](core::cmp::Ordering)
+/// (F0's ruled shape: negative = less, zero = tie, positive = greater). A
+/// non-int return is [`RuntimeError::ComparatorReturnType`]; everything else
+/// is [`call_pure_callback`]'s contract.
 #[expect(
     clippy::too_many_arguments,
     reason = "the VM environment (the step signature) plus the callee and comparands"
@@ -1943,7 +2147,65 @@ fn call_comparator<R: crate::rng::StoryRng>(
     b: Value,
 ) -> Result<core::cmp::Ordering, RuntimeError> {
     const VERB: &str = "sort_by";
-    let (container_idx, target, full_args) = prepare_fn_value_call(program, cmp, vec![a, b])?;
+    let ret = call_pure_callback::<R>(
+        flow,
+        program,
+        line_tables,
+        context,
+        stats,
+        resolver,
+        VERB,
+        cmp,
+        vec![a, b],
+    )?;
+    match ret {
+        Value::Int(i) => Ok(i.cmp(&0)),
+        other => Err(RuntimeError::ComparatorReturnType {
+            verb: VERB,
+            found: value_type_name(&other),
+        }),
+    }
+}
+
+/// Evaluate a pure callback function value against one argument row,
+/// re-entrantly, inside the current opcode: push a boundary frame
+/// (`FunctionEvalFromGame`, `return_address: None` — the
+/// `begin_function_eval` shape), drive [`step`] until the frame pops, and
+/// read the return value off the value stack. Output is captured and
+/// discarded (these callbacks are silent by contract; the checker enforces
+/// it where the callback's origin is provable — E119 — and this isolation
+/// is the gradual-mode residual, mirroring `begin_function_eval`).
+///
+/// Shared by the NS-A4 comparator verbs and the fn-value verb layer
+/// (`map`/`filter`/`fold`, issue #1679) — one re-entrancy seam, one
+/// contract, so the two families cannot drift.
+///
+/// In-story dispatch semantics apply (visit counting, exactly like
+/// `enter_fn_value`); callback behavior the VM cannot honor mid-op —
+/// choices, `-> DONE`/`-> END`, external calls (there is no handler down
+/// here), divergence past [`COMPARATOR_STEP_LIMIT`] — is a
+/// turn-terminating [`RuntimeError::ComparatorEscaped`] fault, as is
+/// returning nothing at all.
+///
+/// The caller is responsible for having entered a pure-callback scope
+/// ([`enter_pure_callback`]) — that is what bounds nesting depth and arms
+/// the dev-mode world-write guard.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the VM environment (the step signature) plus the verb, callee and argument row"
+)]
+fn call_pure_callback<R: crate::rng::StoryRng>(
+    flow: &mut Flow,
+    program: &Program,
+    line_tables: &[Vec<LineEntry>],
+    context: &mut (impl ContextAccess + ?Sized),
+    stats: &mut Stats,
+    resolver: Option<&dyn PluralResolver>,
+    verb: &'static str,
+    callee: &Value,
+    args: Vec<Value>,
+) -> Result<Value, RuntimeError> {
+    let (container_idx, target, full_args) = prepare_fn_value_call(program, callee, args)?;
 
     let value_floor = flow.value_stack.len();
     let choice_floor = flow.pending_choices.len();
@@ -1984,7 +2246,7 @@ fn call_comparator<R: crate::rng::StoryRng>(
         stats.steps += 1;
         if steps > COMPARATOR_STEP_LIMIT {
             break Err(RuntimeError::ComparatorEscaped {
-                verb: VERB,
+                verb,
                 what: "exceeded the nested evaluation step budget",
             });
         }
@@ -1995,13 +2257,13 @@ fn call_comparator<R: crate::rng::StoryRng>(
         match stepped {
             Stepped::Done | Stepped::Ended => {
                 break Err(RuntimeError::ComparatorEscaped {
-                    verb: VERB,
+                    verb,
                     what: "reached `-> DONE`/`-> END`",
                 });
             }
             Stepped::ExternalCall => {
                 break Err(RuntimeError::ComparatorEscaped {
-                    verb: VERB,
+                    verb,
                     what: "called an external function",
                 });
             }
@@ -2009,7 +2271,7 @@ fn call_comparator<R: crate::rng::StoryRng>(
         }
         if flow.pending_choices.len() > choice_floor {
             break Err(RuntimeError::ComparatorEscaped {
-                verb: VERB,
+                verb,
                 what: "presented a choice",
             });
         }
@@ -2033,17 +2295,10 @@ fn call_comparator<R: crate::rng::StoryRng>(
             ret = v;
         }
     }
-    match ret {
-        Some(Value::Int(i)) => Ok(i.cmp(&0)),
-        Some(other) => Err(RuntimeError::ComparatorReturnType {
-            verb: VERB,
-            found: value_type_name(&other),
-        }),
-        None => Err(RuntimeError::ComparatorReturnType {
-            verb: VERB,
-            found: "no return value",
-        }),
-    }
+    ret.ok_or(RuntimeError::ComparatorEscaped {
+        verb,
+        what: "returned no value",
+    })
 }
 
 fn resolve_line(
@@ -2619,7 +2874,7 @@ mod tests {
     use crate::output::OutputBuffer;
 
     /// A bare `Flow` for exercising [`guard_comparator_write`] — only
-    /// `comparator_depth` and `exec_mode` matter to the guard.
+    /// `pure_callback` and `exec_mode` matter to the guard.
     fn test_flow() -> Flow {
         Flow {
             threads: Vec::new(),
@@ -2632,7 +2887,7 @@ mod tests {
             did_safe_exit: false,
             did_unsafe_yield: false,
             exec_mode: ExecMode::default(),
-            comparator_depth: 0,
+            pure_callback: crate::story::PureCallbackState::default(),
         }
     }
 
@@ -2650,7 +2905,10 @@ mod tests {
     #[test]
     fn guard_faults_inside_a_comparator_under_dev() {
         let mut flow = test_flow();
-        flow.comparator_depth = 1;
+        flow.pure_callback = PureCallbackState {
+            depth: 1,
+            verb: "sort_by",
+        };
         let err = guard_comparator_write(&flow, "assigned a global variable").unwrap_err();
         assert!(
             matches!(
@@ -2664,11 +2922,74 @@ mod tests {
         );
     }
 
+    /// The guard reports the verb whose callback is actually running — the
+    /// fn-value verbs (#1679) share the seam with the NS-A4 comparator, so
+    /// a `map` callback's write must not be blamed on `sort_by`.
+    #[test]
+    fn guard_names_the_fn_value_verb_whose_callback_is_running() {
+        let mut flow = test_flow();
+        flow.pure_callback = PureCallbackState {
+            depth: 1,
+            verb: "map",
+        };
+        let err = guard_comparator_write(&flow, "advanced the random number generator")
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                RuntimeError::ComparatorWroteState {
+                    verb: "map",
+                    what: "advanced the random number generator",
+                }
+            ),
+            "{err:?}"
+        );
+    }
+
     #[test]
     fn guard_is_skipped_inside_a_comparator_under_prod() {
         let mut flow = test_flow();
-        flow.comparator_depth = 1;
+        flow.pure_callback = PureCallbackState {
+            depth: 1,
+            verb: "sort_by",
+        };
         flow.exec_mode = ExecMode::Prod;
         assert!(guard_comparator_write(&flow, "assigned a global variable").is_ok());
+    }
+
+    /// [`enter_pure_callback`] returns the caller's state so a nested scope
+    /// restores rather than blindly decrements — and refuses to nest past
+    /// the depth bound (the "VM tests must not hang" recursion guard).
+    #[test]
+    fn enter_pure_callback_nests_and_bounds() {
+        let mut flow = test_flow();
+        let outer = enter_pure_callback(&mut flow, "map").unwrap();
+        assert_eq!(outer.depth, 0);
+        assert_eq!(flow.pure_callback.depth, 1);
+        assert_eq!(flow.pure_callback.verb, "map");
+
+        let inner = enter_pure_callback(&mut flow, "fold").unwrap();
+        assert_eq!(inner.depth, 1);
+        assert_eq!(flow.pure_callback.verb, "fold");
+        flow.pure_callback = inner;
+        assert_eq!(flow.pure_callback.verb, "map", "the outer verb is restored");
+        flow.pure_callback = outer;
+        assert_eq!(flow.pure_callback.depth, 0);
+
+        flow.pure_callback = PureCallbackState {
+            depth: COMPARATOR_DEPTH_LIMIT,
+            verb: "filter",
+        };
+        let err = enter_pure_callback(&mut flow, "filter").unwrap_err();
+        assert!(
+            matches!(
+                err,
+                RuntimeError::ComparatorEscaped {
+                    verb: "filter",
+                    what: "recursed past the nesting depth limit",
+                }
+            ),
+            "{err:?}"
+        );
     }
 }

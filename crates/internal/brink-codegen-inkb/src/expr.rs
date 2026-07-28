@@ -1,6 +1,6 @@
 //! Expression compilation: LIR `Expr` → opcodes.
 
-use brink_format::{ListValue, Opcode};
+use brink_format::{ListValue, Opcode, SeqVerbOp};
 use brink_ir::lir;
 
 use crate::ContainerEmitter;
@@ -394,6 +394,26 @@ impl ContainerEmitter<'_> {
                 self.emit_expr(seq, false);
                 self.emit_expr(cmp, false);
                 self.emit(Opcode::SeqSortedBy);
+            }
+
+            // ── The fn-value verbs (#1679, stdlib-spec §4) ───────────
+            // Operands in source order, callback last — the `SeqSortedBy`
+            // stack shape, so the VM pops callback-first.
+            lir::Expr::SeqMap { seq, f } => {
+                self.emit_expr(seq, false);
+                self.emit_expr(f, false);
+                self.emit(Opcode::SeqVerb(SeqVerbOp::Map));
+            }
+            lir::Expr::SeqFilter { seq, pred } => {
+                self.emit_expr(seq, false);
+                self.emit_expr(pred, false);
+                self.emit(Opcode::SeqVerb(SeqVerbOp::Filter));
+            }
+            lir::Expr::SeqFold { seq, init, f } => {
+                self.emit_expr(seq, false);
+                self.emit_expr(init, false);
+                self.emit_expr(f, false);
+                self.emit(Opcode::SeqVerb(SeqVerbOp::Fold));
             }
 
             // ── NS-A5: range values (#1111) ──────────────────────────

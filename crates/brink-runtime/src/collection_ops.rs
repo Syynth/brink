@@ -1244,7 +1244,7 @@ mod tests {
             did_safe_exit: false,
             did_unsafe_yield: false,
             exec_mode: crate::story::ExecMode::default(),
-            comparator_depth: 0,
+            pure_callback: crate::story::PureCallbackState::default(),
         }
     }
 

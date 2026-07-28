@@ -1,6 +1,19 @@
-//! NS-A4 `sort_by`/`sorted_by` comparator **contract gate** (E119,
-//! `docs/stdlib-spec.md` §4b, issue #1110), built on the effects machinery
-//! (#859) in the `await_purity` (E105) pass shape.
+//! The pure-callback **contract gate** (E119, `docs/stdlib-spec.md` §4/§4b),
+//! built on the effects machinery (#859) in the `await_purity` (E105) pass
+//! shape.
+//!
+//! Two verb families are gated, because one sitting ruled both:
+//!
+//! - NS-A4's `sort_by`/`sorted_by` comparators (issue #1110, §4b);
+//! - the fn-value verb layer's pure trio `map`/`filter`/`fold` (issue
+//!   #1679, §4) — pure·silent-required by the 2026-07-18 ruling, which is
+//!   what dissolves the eager/lazy question: with a pure callback, stage
+//!   interleaving is unobservable by construction. The effectful spellings
+//!   `each`/`map_each` exist precisely so authors have a legal home for the
+//!   effects this gate rejects, and are deliberately NOT gated here.
+//!
+//! [`callback_arg_index`] is the single roster; adding a verb there is all
+//! that a new pure-callback verb needs.
 //!
 //! §4b (RULED 2026-07-18): "the comparator falls under the trio's
 //! pure·silent rule plus the consistent-total-order LAW." A comparator that
@@ -13,15 +26,22 @@
 //! be a pure function of the two comparands.
 //!
 //! **Exceedance-only** (the E103/E108/E114 posture): the gate fires only on
-//! a *proven* violation — a comparator written as an inline `#fn(target)`
+//! a *proven* violation — a callback written as an inline `#fn(target)`
 //! literal whose statically-named target's inferred row shows the effect.
-//! A comparator that arrives as an opaque value (a variable, a parameter, a
+//! A callback that arrives as an opaque value (a variable, a parameter, a
 //! `bind(…)` result) is not provable here and passes; the VM's output
 //! isolation and the `ComparatorEscaped`/fault machinery are the runtime
-//! residual, exactly as gradual typing intends. Faults in the comparator
+//! residual, exactly as gradual typing intends. Faults in the callback
 //! are NOT flagged — the contract is pure·silent, deliberately not total
 //! (F14: `sort_by`'s row is `⊕cmp` + the inconsistency fault; a comparator
-//! may fault, and that fault is honest).
+//! may fault, and that fault is honest — §4 says the same of the trio).
+//!
+//! **The known hole (#1680):** `Ty::Fn` carries no effect rows, so an
+//! opaque function *value* is unjudgeable — "pure-required" cannot be
+//! enforced *through* a fn value today, only at the one site where the
+//! callback's origin is syntactically visible. That is a real gap in the
+//! ruling's coverage, not a design choice of this gate; it is recorded on
+//! issue #1679 rather than papered over.
 //!
 //! Brink-only, same posture as the other effect passes: under strict-ink
 //! the `#fn(…)` literal (and the verbs themselves) are already rejected by
@@ -38,15 +58,45 @@ use rowan::TextRange;
 
 use crate::infer::EffectRow;
 
-/// The two verb spellings that take a comparator (F0: the imperative
-/// in-place form and its functional past-participle twin).
-fn is_comparator_verb(name: &str) -> bool {
-    name == "sort_by" || name == "sorted_by"
+/// The **position of the pure callback** in `name`'s argument row, for every
+/// verb that takes one — `None` for anything else.
+///
+/// Two families share this gate because they share the ruling: the NS-A4
+/// comparator pair (F0: the imperative in-place form and its functional
+/// past-participle twin), and the fn-value verb layer's pure trio
+/// (`docs/stdlib-spec.md` §4, issue #1679), whose callbacks are
+/// pure·silent-required by the same 2026-07-18 sitting. `fold`'s callback is
+/// its *third* argument (`fold(a, init, f)`) — which is exactly why this is a
+/// position lookup rather than a boolean.
+///
+/// The ruled effectful spellings (`each`, `map_each`) deliberately never
+/// appear here: their whole purpose is to permit the effects this gate
+/// rejects.
+fn callback_arg_index(name: &str) -> Option<usize> {
+    match name {
+        "sort_by" | "sorted_by" | "map" | "filter" => Some(1),
+        "fold" => Some(2),
+        _ => None,
+    }
 }
 
-/// Check every `sort_by`/`sorted_by` call in `hir` whose comparator is an
-/// inline `#fn(target)` literal against the whole-project effect rows.
-/// Returns an `E119` for each comparator whose row provably exceeds
+/// The verb spellings this gate knows, as `&'static str` — the diagnostic
+/// interns the name so [`ComparatorSite`] can stay `Copy`-cheap.
+fn verb_name(name: &str) -> Option<&'static str> {
+    match name {
+        "sort_by" => Some("sort_by"),
+        "sorted_by" => Some("sorted_by"),
+        "map" => Some("map"),
+        "filter" => Some("filter"),
+        "fold" => Some("fold"),
+        _ => None,
+    }
+}
+
+/// Check every pure-callback verb call in `hir` (see
+/// [`callback_arg_index`]) whose callback is an inline `#fn(target)`
+/// literal against the whole-project effect rows. Returns an `E119` for
+/// each callback whose row provably exceeds
 /// pure·silent.
 #[must_use]
 pub fn check(
@@ -73,13 +123,12 @@ pub fn check(
             continue; // no row (an EXTERNAL etc.) — not provable here
         };
         if let Some(exceedance) = contract_exceedance(row, index) {
+            let (role, requirement) = callback_role(site.verb);
             out.push(Diagnostic {
                 file,
                 range: site.call_range,
                 message: format!(
-                    "{}: `{}`'s comparator `{}` {} — a comparator must be a pure, silent \
-                     `fn(T, T): int` (stdlib-spec §4b: the order must depend only on the two \
-                     comparands)",
+                    "{}: `{}`'s {role} `{}` {} — {requirement}",
                     DiagnosticCode::E119.title(),
                     site.verb,
                     site.target_name,
@@ -93,7 +142,7 @@ pub fn check(
 }
 
 /// Cheap structural scan: does any knot/stitch body in `hir` contain a
-/// `sort_by`/`sorted_by` call with an inline `#fn(…)` comparator? The
+/// pure-callback verb call with an inline `#fn(…)` callback? The
 /// laziness gate for the whole-project pass — a project without such a
 /// site never triggers effect inference here, mirroring the `#@effects`
 /// and `await`-purity gates.
@@ -104,8 +153,8 @@ pub fn hir_has_comparator_site(hir: &HirFile) -> bool {
     !sites.is_empty()
 }
 
-/// Every [`DefinitionId`] named as an inline `#fn(target)` comparator of a
-/// `sort_by`/`sorted_by` call in `hir`, resolved through `resolutions`.
+/// Every [`DefinitionId`] named as an inline `#fn(target)` callback of a
+/// pure-callback verb call in `hir`, resolved through `resolutions`.
 /// The salsa path (`brink-db`'s `comparator_contract_diagnostics_query`)
 /// uses this to fetch exactly those defs' memoized per-def effect rows —
 /// the incremental analogue of the monolithic path handing [`check`] the
@@ -132,6 +181,31 @@ pub fn comparator_callees(
         }
     }
     out
+}
+
+/// How to name the callback and what the diagnostic should demand of it.
+/// The comparator pair keeps its original §4b wording verbatim; the trio
+/// gets §4's own.
+///
+/// §4 rules that the trio's rejection "names both exits" — pure, or the
+/// effectful spelling. The second exit is named as a *pending* one here
+/// rather than as advice, because `each`/`map_each` are a later slice of
+/// issue #1679 and do not exist yet; pointing an author at a verb that
+/// does not resolve would be worse than naming the ruling.
+fn callback_role(verb: &str) -> (&'static str, &'static str) {
+    match verb {
+        "sort_by" | "sorted_by" => (
+            "comparator",
+            "a comparator must be a pure, silent `fn(T, T): int` (stdlib-spec §4b: the order \
+             must depend only on the two comparands)",
+        ),
+        _ => (
+            "callback",
+            "the callback must be pure and silent (stdlib-spec §4: the trio is \
+             pure-required, which is what makes iteration order unobservable); the effectful \
+             spellings `each`/`map_each` are not shipped yet (issue #1679)",
+        ),
+    }
 }
 
 fn range_map(file: FileId, resolutions: &ResolutionMap) -> BTreeMap<(u32, u32), DefinitionId> {
@@ -178,7 +252,7 @@ fn contract_exceedance(row: &EffectRow, index: &SymbolIndex) -> Option<String> {
     }
 }
 
-/// One comparator site: the call's diagnostic anchor, the verb spelling,
+/// One pure-callback site: the call's diagnostic anchor, the verb spelling,
 /// and the inline `#fn` literal's target.
 struct ComparatorSite {
     call_range: TextRange,
@@ -340,15 +414,11 @@ fn collect_expr(expr: &Expr, out: &mut Vec<ComparatorSite>) {
     match expr {
         Expr::Call(path, args) => {
             let name = path.segments.last().map_or("", |seg| seg.text.as_str());
-            if is_comparator_verb(name)
-                && path.segments.len() == 1
-                && let Some(Expr::FnLiteral(fnl)) = args.get(1)
+            if path.segments.len() == 1
+                && let Some(idx) = callback_arg_index(name)
+                && let Some(verb) = verb_name(name)
+                && let Some(Expr::FnLiteral(fnl)) = args.get(idx)
             {
-                let verb: &'static str = if name == "sort_by" {
-                    "sort_by"
-                } else {
-                    "sorted_by"
-                };
                 out.push(ComparatorSite {
                     call_range: path.range,
                     verb,

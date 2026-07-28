@@ -356,6 +356,29 @@ pub enum RuntimeError {
         verb: &'static str,
         found: &'static str,
     },
+    /// A fn-value verb (`map`/`filter`/`fold` — `docs/stdlib-spec.md` §4,
+    /// issue #1679) was handed a callback that is not a function value
+    /// (`FnRef`/`Closure`). Malformed question — turn-terminating. Distinct
+    /// from [`ComparatorNotAFunction`](Self::ComparatorNotAFunction) because
+    /// each verb names its own expected shape.
+    #[error("`{verb}` callback must be a function value {expected}, got {found}")]
+    CallbackNotAFunction {
+        verb: &'static str,
+        /// The callback's declared shape, already back-quoted for the
+        /// message (e.g. `` `fn(T): bool` ``).
+        expected: &'static str,
+        found: &'static str,
+    },
+    /// A fn-value verb's callback returned a value of the wrong shape —
+    /// today only `filter`, whose predicate must return a bool. Coercing
+    /// truthiness here would silently change which elements survive, so
+    /// this is turn-terminating.
+    #[error("`{verb}` callback must return {expected}, got {found}")]
+    CallbackReturnType {
+        verb: &'static str,
+        expected: &'static str,
+        found: &'static str,
+    },
     /// A `sort_by`/`sorted_by` comparator broke the pure·silent contract in
     /// a way the VM can observe: it presented a choice, reached
     /// `-> DONE`/`-> END`, called an external function, exceeded the

@@ -1945,6 +1945,54 @@ impl InferPass<'_, '_> {
                     _ => Ty::Unknown,
                 }
             }
+            // The fn-value verb layer (issue #1679, `docs/stdlib-spec.md`
+            // §4): the pure trio. Like the NS-A4 comparator pair, the
+            // callback is a function value the *verb* invokes, so its row
+            // composes through the same pending-value-call machinery
+            // (`⊕f`); the pure·silent contract itself is E119
+            // (`crate::comparator_contract`), exceedance-only.
+            //
+            // Result typing reads the callback's own `Ty::Fn` return where
+            // one is known (an annotated target reached through an inline
+            // `#fn(…)` literal), and degrades to `Unknown` otherwise —
+            // never a guess: `Ty::Fn` is the only evidence there is, since
+            // the verb never sees the callback body.
+            "map" => {
+                if let Some(f) = args.get(1) {
+                    let hint = self.value_call_origin(f);
+                    self.pending_value_calls.push(hint);
+                }
+                match (arg_tys.first(), arg_tys.get(1)) {
+                    (Some(Ty::Array(_)), Some(Ty::Fn(_, ret))) => Ty::Array(ret.clone()),
+                    _ => Ty::Unknown,
+                }
+            }
+            // `filter` preserves the element type — the array's own type is
+            // the answer, no callback evidence needed.
+            "filter" => {
+                if let Some(pred) = args.get(1) {
+                    let hint = self.value_call_origin(pred);
+                    self.pending_value_calls.push(hint);
+                }
+                match arg_tys.first() {
+                    Some(Ty::Array(elem)) => Ty::Array(elem.clone()),
+                    _ => Ty::Unknown,
+                }
+            }
+            // `fold(a, init, f)` → the accumulator type. `f`'s return is
+            // the accumulator by signature, so prefer it when known and
+            // fall back to `init`'s inferred type (which the mono-HM pass
+            // usually has even when the callback is opaque).
+            "fold" => {
+                if let Some(f) = args.get(2) {
+                    let hint = self.value_call_origin(f);
+                    self.pending_value_calls.push(hint);
+                }
+                match arg_tys.get(2) {
+                    Some(Ty::Fn(_, ret)) => (**ret).clone(),
+                    _ => arg_tys.get(1).cloned().unwrap_or(Ty::Unknown),
+                }
+            }
             "sort_by" => {
                 if let Some(cmp) = args.get(1) {
                     let hint = self.value_call_origin(cmp);
