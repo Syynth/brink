@@ -330,9 +330,73 @@ pub struct Backend {
     /// the `InitializeResult`, which the `initialized` notification confirms
     /// receipt of (#1055 gap 1).
     initial_config_outcome: Arc<Mutex<Option<ConfigLoadOutcome>>>,
+    /// The undeclared-rename-detection baseline per file (issue #1672 part
+    /// 2, docs/modules-spec.md §5): both `publish_perfile_diagnostics` and
+    /// the background [`analysis_loop`]'s `publish_all_diagnostics` diff a
+    /// file's current [`brink_ir::SymbolManifest`] against the entry
+    /// recorded here (via [`rename_suspicion_diags`]) to surface an
+    /// undeclared-rename hint. Shared with `analysis_loop` (constructed once
+    /// in `main`, cloned into both) so the two publishers read the exact
+    /// same baseline.
+    ///
+    /// Review finding on #1672 part 2 (blocking + should-fix): the baseline
+    /// is advanced *only* by [`Self::checkpoint_manifest_baseline`], called
+    /// from `did_open`/`did_save` — never from a per-file publish, and never
+    /// on every `did_change` keystroke. Advancing it on every publish (the
+    /// original shape) had two failures: (1) the background pass's own
+    /// same-generation publish diffed against a baseline the per-file
+    /// publish had *already* overwritten with the new content, so it always
+    /// recomputed an empty suspicion set and its same-or-newer `Analysis`-
+    /// tier publish silently replaced the client's hint with nothing —
+    /// flashing for milliseconds then gone forever; (2) anchoring at every
+    /// keystroke meant the suggested "old name" was usually an intermediate
+    /// typing state (`hub` -> `plaz` -> `plaza`) rather than anything ever
+    /// saved. Anchoring only at `did_open`/`did_save` fixes both: the
+    /// baseline is stable across a burst of `did_change`s (so the fast and
+    /// background publishes for the same edit agree), and it never records
+    /// a name that only existed mid-keystroke.
+    ///
+    /// Absent for a file never published before (first `did_open`), which is
+    /// exactly right — there's nothing to diff against yet.
+    previous_manifests: Arc<Mutex<HashMap<brink_ir::FileId, brink_ir::SymbolManifest>>>,
+}
+
+/// Compute the undeclared-rename-suspicion diagnostics for `file_id`'s
+/// current manifest (issue #1672 part 2), diffed read-only against the
+/// checkpoint recorded in `previous_manifests` — see
+/// [`Backend::previous_manifests`] for why this never writes back.
+///
+/// Gated on `dialect == Dialect::Brink`: `#@was` — what accepting the
+/// suggestion ultimately writes — is itself a brink-extension directive
+/// (`dialect_gate.rs`: "M-3 … `#@was` is brink-only"), so under the default
+/// `Dialect::StrictInk` the suggestion would point the author at a directive
+/// that immediately produces a fresh `E051` (review finding on #1672 part
+/// 2, blocking: `rename()` itself gates on this same condition, but this
+/// wiring site — and the equivalent one in `publish_all_diagnostics` — had
+/// no dialect check at all).
+fn rename_suspicion_diags(
+    previous_manifests: &Mutex<HashMap<brink_ir::FileId, brink_ir::SymbolManifest>>,
+    dialect: Dialect,
+    file_id: brink_ir::FileId,
+    new_manifest: &brink_ir::SymbolManifest,
+    idx: &LineIndex,
+) -> Vec<tower_lsp::lsp_types::Diagnostic> {
+    if dialect != Dialect::Brink {
+        return Vec::new();
+    }
+    let previous = previous_manifests
+        .lock()
+        .map_or_else(|_| None, |guard| guard.get(&file_id).cloned());
+    previous.as_ref().map_or_else(Vec::new, |previous| {
+        brink_ide::rename_detection::detect_undeclared_renames(previous, new_manifest)
+            .iter()
+            .map(|s| convert::rename_suspicion_to_lsp(s, idx))
+            .collect()
+    })
 }
 
 impl Backend {
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         client: Client,
         db: Arc<Mutex<brink_db::ProjectDb>>,
@@ -341,6 +405,7 @@ impl Backend {
         generation: Arc<AtomicU64>,
         publisher: DiagnosticsPublisher,
         language: LanguageOptions,
+        previous_manifests: Arc<Mutex<HashMap<brink_ir::FileId, brink_ir::SymbolManifest>>>,
     ) -> Self {
         Self {
             client,
@@ -353,6 +418,7 @@ impl Backend {
             language,
             config_overrides: Arc::new(Mutex::new(ConfigOverrides::default())),
             initial_config_outcome: Arc::new(Mutex::new(None)),
+            previous_manifests,
         }
     }
 
@@ -513,10 +579,30 @@ impl Backend {
                 &suppressions,
             );
 
-            let lsp_diags: Vec<_> = filtered
+            let mut lsp_diags: Vec<_> = filtered
                 .iter()
                 .map(|d| convert::diagnostic_to_lsp(d, &idx, types, &lints))
                 .collect();
+
+            // Undeclared-rename detection (issue #1672 part 2,
+            // docs/modules-spec.md §5): diff this file's manifest against
+            // the checkpoint recorded for it (see
+            // [`Self::checkpoint_manifest_baseline`]) and fold any
+            // suspicion hint into the *same* publish —
+            // `publishDiagnostics` replaces a URI's whole diagnostic set
+            // per call, so this can't be sent separately without one
+            // clobbering the other. Read-only: the baseline is advanced
+            // only at `did_open`/`did_save`, never here (review finding on
+            // #1672 part 2 — see [`rename_suspicion_diags`]).
+            if let Some(new_manifest) = db.manifest(file_id) {
+                lsp_diags.extend(rename_suspicion_diags(
+                    &self.previous_manifests,
+                    db.analysis_options().dialect,
+                    file_id,
+                    new_manifest,
+                    &idx,
+                ));
+            }
 
             // Generation this set reflects: read under the same db lock as the
             // content, so `(content, generation)` is a consistent pair (the bump
@@ -540,6 +626,26 @@ impl Backend {
                 version,
             )
             .await;
+    }
+
+    /// Advance the undeclared-rename-detection baseline (issue #1672 part 2)
+    /// for `path` to its just-loaded manifest — see
+    /// [`Self::previous_manifests`] for why this is the *only* place the
+    /// baseline moves. Called from `did_open` and `did_save`, always after
+    /// that handler's own [`Self::publish_perfile_diagnostics`] call, so the
+    /// event's own diff (if any) still runs against the *old* checkpoint
+    /// before this replaces it.
+    fn checkpoint_manifest_baseline(&self, path: &str) {
+        let db = lock_db(&self.db);
+        let Some(file_id) = db.file_id(path) else {
+            return;
+        };
+        let Some(manifest) = db.manifest(file_id) else {
+            return;
+        };
+        if let Ok(mut guard) = self.previous_manifests.lock() {
+            guard.insert(file_id, manifest.clone());
+        }
     }
 
     /// Apply a content mutation to the db and advance the content generation
@@ -1582,6 +1688,10 @@ impl LanguageServer for Backend {
 
         self.publish_perfile_diagnostics(&path, Some(params.text_document.version))
             .await;
+        // Seed the undeclared-rename baseline from this open (issue #1672
+        // part 2) — after the publish above, so a freshly opened file with
+        // no prior checkpoint still correctly diffs against nothing.
+        self.checkpoint_manifest_baseline(&path);
         self.trigger_analysis();
     }
 
@@ -1622,6 +1732,12 @@ impl LanguageServer for Backend {
         // `DidSaveTextDocumentParams` carries no document version, so this
         // publish can't be version-tagged like didOpen/didChange's.
         self.publish_perfile_diagnostics(&path, None).await;
+        // Re-anchor the undeclared-rename baseline at this save (issue
+        // #1672 part 2, review finding: the "stable checkpoint" — anchoring
+        // on every `did_change` instead recorded intermediate typing states
+        // as the suggested old name). After the publish above, so this
+        // save's own diff still runs against the *previous* checkpoint.
+        self.checkpoint_manifest_baseline(&path);
         self.trigger_analysis();
     }
 
@@ -1641,6 +1757,13 @@ impl LanguageServer for Backend {
         // Drop the last-published record so a reopen republishes from scratch.
         if let Some(fid) = file_id {
             self.publisher.forget(fid).await;
+            // Same reasoning for the undeclared-rename manifest baseline
+            // (issue #1672 part 2): a reopen has no "previous compile" of
+            // its own yet, so a stale entry from before the close must not
+            // survive to be diffed against the reopened file's first edit.
+            if let Ok(mut guard) = self.previous_manifests.lock() {
+                guard.remove(&fid);
+            }
         }
 
         self.client
@@ -2577,6 +2700,8 @@ struct BackgroundAnalysisCompleteParams {
 /// iteration so a client that (re-)declares either gets diagnostics
 /// analyzed under the current values on the very next background pass, with
 /// no separate propagation step needed.
+#[expect(clippy::too_many_arguments)]
+#[expect(clippy::too_many_lines)]
 pub async fn analysis_loop(
     db: Arc<Mutex<brink_db::ProjectDb>>,
     generation: Arc<AtomicU64>,
@@ -2585,6 +2710,12 @@ pub async fn analysis_loop(
     client: Client,
     publisher: DiagnosticsPublisher,
     language: LanguageOptions,
+    // Shared with `Backend` (issue #1672 part 2, review finding): the
+    // background pass diffs the same undeclared-rename baseline
+    // `Backend::checkpoint_manifest_baseline` maintains, read-only here
+    // too — see [`rename_suspicion_diags`] for why both publishers must
+    // agree on this baseline within one generation.
+    previous_manifests: Arc<Mutex<HashMap<brink_ir::FileId, brink_ir::SymbolManifest>>>,
 ) {
     loop {
         trigger.notified().await;
@@ -2622,6 +2753,7 @@ pub async fn analysis_loop(
             file_meta,
             per_file_diags,
             file_suppressions,
+            manifests,
         ) = {
             let mut db = lock_db(&db);
             // Push the same options this pass analyzes under into the db as a
@@ -2684,6 +2816,17 @@ pub async fn analysis_loop(
                 meta.iter()
                     .filter_map(|(fid, _, _)| Some((*fid, db.suppressions(*fid)?.clone())))
                     .collect();
+            // Current manifests, snapshotted under the same lock (issue
+            // #1672 part 2, review finding): `publish_all_diagnostics`
+            // diffs these against `previous_manifests` to compute the same
+            // undeclared-rename suspicion the fast per-file publish
+            // computes, so the two publishes for one generation agree
+            // instead of the background pass's publish silently clobbering
+            // the hint with a set that never carried it.
+            let manifests: HashMap<brink_ir::FileId, brink_ir::SymbolManifest> = meta
+                .iter()
+                .filter_map(|(fid, _, _)| Some((*fid, db.manifest(*fid)?.clone())))
+                .collect();
             (
                 generation,
                 project_inputs,
@@ -2692,6 +2835,7 @@ pub async fn analysis_loop(
                 meta,
                 diags,
                 suppressions,
+                manifests,
             )
         };
 
@@ -2738,6 +2882,8 @@ pub async fn analysis_loop(
             &file_suppressions,
             generation,
             &opts,
+            &manifests,
+            &previous_manifests,
         )
         .await;
 
@@ -2847,6 +2993,16 @@ fn collect_multiproject_diags(
 ///
 /// Unions analysis diagnostics from all projects containing a file.
 /// Applies suppression directives before publishing.
+///
+/// `manifests`/`previous_manifests` fold the undeclared-rename-suspicion
+/// hint (issue #1672 part 2) into this `Analysis`-tier set too — review
+/// finding on #1672 part 2 (blocking): without this, the fast per-file
+/// publish was the *only* place that ever computed the hint, and this
+/// pass's same-or-newer `Analysis`-tier publish (computing a set that never
+/// carried it) won the anti-downgrade exchange and silently replaced it
+/// with nothing, the moment background analysis ran for the same edit.
+#[expect(clippy::too_many_arguments)]
+#[expect(clippy::too_many_lines)]
 async fn publish_all_diagnostics(
     publisher: &DiagnosticsPublisher,
     projects: &ProjectAnalyses,
@@ -2855,6 +3011,8 @@ async fn publish_all_diagnostics(
     file_suppressions: &HashMap<brink_ir::FileId, brink_ir::suppressions::Suppressions>,
     generation: u64,
     opts: &AnalysisOptions,
+    manifests: &HashMap<brink_ir::FileId, brink_ir::SymbolManifest>,
+    previous_manifests: &Mutex<HashMap<brink_ir::FileId, brink_ir::SymbolManifest>>,
 ) {
     let lowering_diags: HashMap<brink_ir::FileId, &[brink_ir::Diagnostic]> = per_file_diags
         .iter()
@@ -2922,6 +3080,15 @@ async fn publish_all_diagnostics(
                     &mut lsp_diags,
                     opts,
                 );
+                if let Some(new_manifest) = manifests.get(file_id) {
+                    lsp_diags.extend(rename_suspicion_diags(
+                        previous_manifests,
+                        opts.dialect,
+                        *file_id,
+                        new_manifest,
+                        &idx,
+                    ));
+                }
 
                 publisher
                     .publish(
@@ -2945,10 +3112,19 @@ async fn publish_all_diagnostics(
             raw_diags
         };
 
-        let lsp_diags: Vec<tower_lsp::lsp_types::Diagnostic> = filtered
+        let mut lsp_diags: Vec<tower_lsp::lsp_types::Diagnostic> = filtered
             .iter()
             .map(|d| convert::diagnostic_to_lsp(d, &idx, opts.type_policy(), &opts.lints))
             .collect();
+        if let Some(new_manifest) = manifests.get(file_id) {
+            lsp_diags.extend(rename_suspicion_diags(
+                previous_manifests,
+                opts.dialect,
+                *file_id,
+                new_manifest,
+                &idx,
+            ));
+        }
 
         publisher
             .publish(
@@ -3177,10 +3353,16 @@ fn code_action_data_from_json(
 mod tests {
     use tower_lsp::lsp_types::Diagnostic;
 
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    use brink_analyzer::Dialect;
+    use rowan::{TextRange, TextSize};
+
     use super::{
-        ConfigLoadOutcome, ConfigOverrides, PublishDecision, PublishRecord, PublishTier,
+        ConfigLoadOutcome, ConfigOverrides, LineIndex, PublishDecision, PublishRecord, PublishTier,
         collect_source_files, config_error_diagnostic, native_source_root, path_under_ignored_dir,
-        publish_decision, resolve_language_options,
+        publish_decision, rename_suspicion_diags, resolve_language_options,
     };
 
     /// A unique per-test scratch directory under the OS temp dir, mirroring
@@ -3652,5 +3834,79 @@ mod tests {
             ),
             DROP,
         );
+    }
+
+    /// A minimal `DeclaredSymbol` naming a knot, for feeding
+    /// [`rename_suspicion_diags`] a manifest without going through a full
+    /// `IdeSession`.
+    fn knot_decl(name: &str, start: u32) -> brink_ir::DeclaredSymbol {
+        let end = start + u32::try_from(name.len()).expect("test name fits u32");
+        brink_ir::DeclaredSymbol {
+            name: name.to_owned(),
+            range: TextRange::new(TextSize::from(start), TextSize::from(end)),
+            params: Vec::new(),
+            detail: None,
+            visibility: None,
+            was: None,
+        }
+    }
+
+    #[test]
+    fn rename_suspicion_diags_is_gated_on_brink_dialect() {
+        // Review finding on #1672 part 2 (blocking): `rename()` itself
+        // gates `#@was` stamping on `Dialect::Brink` (see
+        // `brink_ide::rename::renaming_under_strict_ink_dialect_does_not_stamp_was`),
+        // but this wiring site had no dialect check at all — under the
+        // default `Dialect::StrictInk`, the suspicion would suggest a
+        // directive (`#@was`) that itself produces a fresh `E051`.
+        let file_id = brink_ir::FileId(0);
+        let mut previous = HashMap::new();
+        previous.insert(
+            file_id,
+            brink_ir::SymbolManifest {
+                knots: vec![knot_decl("hub", 4)],
+                ..Default::default()
+            },
+        );
+        let previous_manifests = Mutex::new(previous);
+        let new_manifest = brink_ir::SymbolManifest {
+            knots: vec![knot_decl("plaza", 4)],
+            ..Default::default()
+        };
+        let idx = LineIndex::new("=== plaza ===\nHi.\n-> END\n");
+
+        let strict_ink = rename_suspicion_diags(
+            &previous_manifests,
+            Dialect::StrictInk,
+            file_id,
+            &new_manifest,
+            &idx,
+        );
+        assert!(
+            strict_ink.is_empty(),
+            "no suspicion under Dialect::StrictInk — #@was is brink-only, so suggesting it \
+             would point the author at a directive that itself produces E051: {strict_ink:?}"
+        );
+
+        let brink = rename_suspicion_diags(
+            &previous_manifests,
+            Dialect::Brink,
+            file_id,
+            &new_manifest,
+            &idx,
+        );
+        assert_eq!(
+            brink.len(),
+            1,
+            "the same diff must surface the hint under Dialect::Brink: {brink:?}"
+        );
+        assert_eq!(brink[0].code, Some(lsp_code("rename-suspicion")));
+    }
+
+    /// Build the `NumberOrString::String` code value `diagnostic_to_lsp`/
+    /// `rename_suspicion_to_lsp` publish, for asserting against a returned
+    /// [`Diagnostic::code`].
+    fn lsp_code(code: &str) -> tower_lsp::lsp_types::NumberOrString {
+        tower_lsp::lsp_types::NumberOrString::String(code.to_owned())
     }
 }

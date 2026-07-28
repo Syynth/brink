@@ -214,7 +214,193 @@ pub fn rename(
         });
     }
 
+    // 4. Stamp `#@was(old_name)` on the renamed declaration (issue #1672,
+    // docs/modules-spec.md §5 — RULED, never implemented until now). This is
+    // the one shared chokepoint every rename surface (CLI, LSP, brink-web's
+    // `rename_safe`) funnels through, so stamping here — rather than in each
+    // caller — is what keeps the surfaces from diverging the way #1539/#1550
+    // did. See [`was_directive_edit`] for the kinds this applies to and why.
+    //
+    // `#@was` is a brink-extension directive (dialect_gate.rs: "M-3 …
+    // `#@was` is brink-only") — under `Dialect::StrictInk` (the default,
+    // and the dialect the oracle-conformance corpus compiles under)
+    // stamping it would introduce a fresh `E051` on every rename, i.e. this
+    // "safe" rename would no longer be safe. Only stamp under `Brink`.
+    //
+    // `old_name` is read straight out of the pre-edit source at `decl_range`
+    // rather than from `SymbolInfo::name` — that field is the *canonical/
+    // qualified* name (`hub.market`, `Colors.Red`), but `decl_range` is
+    // exactly the bare name token's own span (edit 1 above replaces only
+    // that span), and `#@was` always records the bare old name (stitch.rs's
+    // own doc comment: "takes the bare old stitch name").
+    if db.analysis_options().dialect == brink_analyzer::Dialect::Brink {
+        let old_name = db.source(decl_file).and_then(|src| {
+            src.get(usize::from(decl_range.start())..usize::from(decl_range.end()))
+        });
+        if let Some(old_name) = old_name
+            && old_name != new_name
+            && let Some(was_edit) =
+                was_directive_edit(db, decl_file, decl_range, target_kind, old_name)
+        {
+            edits.push(was_edit);
+        }
+    }
+
     Some(RenameResult { edits })
+}
+
+/// Compute the insertion edit that stamps `#@was(old_name)` on the
+/// declaration at `decl_range`, if it is a kind that carries a `was` field
+/// in its HIR node and doesn't already have one.
+///
+/// `#@was`-eligible kinds are `Knot`, `Stitch`, `Variable`, `Constant`, and
+/// `List` — exactly the ones with a `was: Option<(String, TextRange)>`
+/// field on their HIR node (`hir::types`). `External` is excluded because
+/// [`rename`] already refuses to rename it (a host binding's name can't be
+/// renamed from the ink side); `Label`/`ListItem`/`Param`/`Temp` have no
+/// `was` field at all; `Struct` explicitly never carries one (`StructDecl`'s
+/// own doc comment — M-2 only wires visibility for that kind).
+///
+/// Returns `None` — never overwriting or duplicating — when: the kind isn't
+/// `#@was`-eligible, the matching declaration can't be found, the
+/// declaration already carries a `#@was` (a second rename of an
+/// already-migrated declaration keeps its original record rather than
+/// silently losing it), or no insertion point can be computed (e.g. a
+/// knot/stitch header with no trailing newline in the file — degrades to no
+/// stamp rather than risking a corrupt insertion).
+fn was_directive_edit(
+    db: &ProjectDb,
+    decl_file: FileId,
+    decl_range: TextRange,
+    target_kind: brink_ir::SymbolKind,
+    old_name: &str,
+) -> Option<FileEdit> {
+    let hir = db.hir(decl_file)?;
+    let src = db.source(decl_file)?;
+
+    match target_kind {
+        brink_ir::SymbolKind::Knot => {
+            let knot = hir.knots.iter().find(|k| k.name.range == decl_range)?;
+            (knot.was.is_none())
+                .then(|| insert_after_header_line(src, decl_file, knot.ptr.range, old_name))
+                .flatten()
+        }
+        brink_ir::SymbolKind::Stitch => {
+            // Either a top-level `= stitch` promoted to knot status
+            // (`symbol_kind()` reports `Stitch` but it's stored as a
+            // `Knot`, F-I#5) or a real nested `Stitch` under some knot's
+            // `stitches`.
+            if let Some(knot) = hir
+                .knots
+                .iter()
+                .find(|k| k.name.range == decl_range && k.symbol_kind() == target_kind)
+            {
+                return (knot.was.is_none())
+                    .then(|| insert_after_header_line(src, decl_file, knot.ptr.range, old_name))
+                    .flatten();
+            }
+            let stitch = hir
+                .knots
+                .iter()
+                .flat_map(|k| &k.stitches)
+                .find(|s| s.name.range == decl_range)?;
+            (stitch.was.is_none())
+                .then(|| insert_after_header_line(src, decl_file, stitch.ptr.range, old_name))
+                .flatten()
+        }
+        brink_ir::SymbolKind::Variable => {
+            let v = hir.variables.iter().find(|v| v.name.range == decl_range)?;
+            (v.was.is_none())
+                .then(|| insert_before_decl_line(src, decl_file, v.ptr.range, old_name))
+                .flatten()
+        }
+        brink_ir::SymbolKind::Constant => {
+            let c = hir.constants.iter().find(|c| c.name.range == decl_range)?;
+            (c.was.is_none())
+                .then(|| insert_before_decl_line(src, decl_file, c.ptr.range, old_name))
+                .flatten()
+        }
+        brink_ir::SymbolKind::List => {
+            let l = hir.lists.iter().find(|l| l.name.range == decl_range)?;
+            (l.was.is_none())
+                .then(|| insert_before_decl_line(src, decl_file, l.ptr.range, old_name))
+                .flatten()
+        }
+        brink_ir::SymbolKind::External
+        | brink_ir::SymbolKind::ListItem
+        | brink_ir::SymbolKind::Label
+        | brink_ir::SymbolKind::Param
+        | brink_ir::SymbolKind::Temp
+        | brink_ir::SymbolKind::Struct => None,
+    }
+}
+
+/// Insert `#@was(old_name)` as the first line of a knot/stitch body — the
+/// "leading tag-line run" placement `hir::lower::directive::in_leading_body_run`
+/// requires. `node_range` is the whole `KNOT_DEF`/`STITCH_DEF` provenance
+/// range; its header line (`== name ==` / `= name`) is single-line by
+/// grammar, so the first newline at or after the range's start ends it.
+fn insert_after_header_line(
+    src: &str,
+    file: FileId,
+    node_range: TextRange,
+    old_name: &str,
+) -> Option<FileEdit> {
+    let start = usize::from(node_range.start());
+    let rel_nl = src.get(start..)?.find('\n')?;
+    let at = TextSize::try_from(start + rel_nl + 1).ok()?;
+    Some(FileEdit {
+        file,
+        range: TextRange::empty(at),
+        new_text: format!("#@was({old_name})\n"),
+    })
+}
+
+/// Insert `#@was(old_name)` on its own line immediately above a
+/// `VAR`/`CONST`/`LIST` declaration — the "directive line immediately above
+/// a declaration" placement `hir::lower::directive::attached_declaration`
+/// requires. `decl_range` is the whole declaration node's provenance range;
+/// the insertion point is the start of the line it begins on, walked back
+/// over any contiguous run of `///` doc-comment lines and pre-existing
+/// `#@…` directive lines immediately above the declaration.
+///
+/// Review finding on #1672 (blocking): inserting at the declaration's own
+/// line landed `#@was` *between* a `///` doc block and the declaration it
+/// documents (`hir::lower::doc_comment::collect_doc_lines` only walks a
+/// *contiguous* run of doc-comment lines back from the declaration, so a
+/// directive spliced in between breaks that contiguity) — the doc block
+/// silently vanished from `SymbolManifest::docs` with no diagnostic. Walking
+/// the insertion point back over the whole leading run keeps both: the
+/// directive lands above the doc block, which stays attached to the
+/// declaration.
+fn insert_before_decl_line(
+    src: &str,
+    file: FileId,
+    decl_range: TextRange,
+    old_name: &str,
+) -> Option<FileEdit> {
+    let mut line_start = src
+        .get(..usize::from(decl_range.start()))?
+        .rfind('\n')
+        .map_or(0, |i| i + 1);
+
+    while line_start > 0 {
+        let end_of_prev = line_start - 1; // the '\n' terminating the line above
+        let start_of_prev = src.get(..end_of_prev)?.rfind('\n').map_or(0, |i| i + 1);
+        let prev_line = src.get(start_of_prev..end_of_prev)?.trim_start();
+        if prev_line.starts_with("///") || prev_line.starts_with("#@") {
+            line_start = start_of_prev;
+        } else {
+            break;
+        }
+    }
+
+    let at = TextSize::try_from(line_start).ok()?;
+    Some(FileEdit {
+        file,
+        range: TextRange::empty(at),
+        new_text: format!("#@was({old_name})\n"),
+    })
 }
 
 // ─── Safe rename (studio path) ──────────────────────────────────────────
@@ -314,6 +500,10 @@ mod tests {
 
         // Both the divert reference and the declaration (same file) are folded
         // into new_source — no cross-file edits, and the old name is gone.
+        // `session()` doesn't opt into `Dialect::Brink`, so `#@was` (a brink
+        // extension, issue #1672) is correctly withheld here — see
+        // `was_directive_edit_tests` below for the dialect==Brink case where
+        // it stamps.
         let new_source = res.new_source.as_deref().expect("new_source");
         assert!(
             new_source.contains("-> greeting") && new_source.contains("=== greeting ==="),
@@ -468,6 +658,9 @@ fn main() {
             new_source.contains("fn salute(") && new_source.contains("g.salute(3)"),
             "decl + UFCS call site both rewritten: {new_source}"
         );
+        // `native_session()` doesn't opt into `Dialect::Brink` either, so
+        // `#@was` (issue #1672) is correctly withheld — same reasoning as
+        // `safe_rename_updates_refs_with_no_new_diagnostics` above.
         assert!(
             !new_source.contains("greet"),
             "old name fully removed: {new_source}"
@@ -1119,6 +1312,228 @@ fn main() {
             (range.start(), range.end()),
             (TextSize::from(recv_pos), TextSize::from(recv_pos + 1)),
             "F2 on `g` must offer only the receiver segment, not the whole `g.greet` path"
+        );
+    }
+
+    // ── Issue #1672: rename stamps `#@was(old_name)` on the renamed
+    // declaration (docs/modules-spec.md §5, RULED but never implemented
+    // until now). Only under `Dialect::Brink` — `#@was` is itself a brink
+    // extension (`dialect_gate.rs`), so stamping it into a strict-ink
+    // project would introduce a fresh E051, making a "safe" rename unsafe.
+    // ───────────────────────────────────────────────────────────────────
+
+    fn brink_session(src: &str) -> (IdeSession, brink_ir::FileId) {
+        let mut s = IdeSession::new();
+        s.set_language_dialect(brink_analyzer::Dialect::Brink);
+        let id = s.update_and_analyze("t.ink", src.to_string());
+        (s, id)
+    }
+
+    #[test]
+    fn renaming_a_knot_under_brink_dialect_stamps_was_directly_after_the_header() {
+        let (s, id) = brink_session("=== hello ===\nHi.\n-> END\n");
+        let hir = s.hir(id).expect("hir");
+        let offset = declaration_offset(hir, "hello", None).expect("offset");
+
+        let res = rename_safe(&s, id, offset, "greeting").expect("rename");
+
+        let new_source = res.new_source.as_deref().expect("new_source");
+        assert!(
+            new_source.contains("=== greeting ===\n#@was(hello)\nHi.\n-> END\n"),
+            "expected #@was stamped as the first line of the knot body: {new_source}"
+        );
+        assert!(
+            res.introduced.is_empty(),
+            "stamping #@was under Dialect::Brink must introduce no new diagnostics, got {:?}",
+            res.introduced
+                .iter()
+                .map(|d| (d.code.as_str(), d.message.as_str()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn renaming_a_stitch_under_brink_dialect_computes_a_was_directive_edit() {
+        // `rename_safe`'s apply-and-reanalyze round trip is deliberately
+        // not used here: a stitch's own declaration is *also* recorded as a
+        // resolved reference to itself — a pre-existing, independent bug
+        // (issue #1571's scope note: "`rename` emits two identical-range
+        // edits for a stitch declaration, and `apply_edits` splices both —
+        // corrupting the source... Worth its own issue", never fixed).
+        // That corrupts `apply_edits`' splice for *any* stitch rename,
+        // #@was or not, so it's out of this issue's fence — flagged
+        // separately rather than fixed here (see the PR description). This
+        // test instead asserts directly against `rename`'s edit list, which
+        // proves the #@was edit itself is computed correctly independent of
+        // that unrelated bug.
+        let src = "=== hub ===\n= market\nHi.\n-> DONE\n";
+        let (s, id) = brink_session(src);
+        let hir = s.hir(id).expect("hir");
+        let offset = declaration_offset(hir, "hub", Some("market")).expect("offset");
+        let analysis = s.analysis().expect("analysis");
+
+        let result = rename(s.db(), analysis, id, offset, "plaza").expect("rename");
+
+        let insert_pos = u32::try_from(src.find("Hi.").expect("body")).expect("offset");
+        let was_edit = result
+            .edits
+            .iter()
+            .find(|e| e.range == rowan::TextRange::empty(TextSize::from(insert_pos)));
+        assert!(
+            was_edit.is_some(),
+            "expected a #@was insertion right before the stitch body, got {:?}",
+            result
+                .edits
+                .iter()
+                .map(|e| (e.range, e.new_text.as_str()))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(was_edit.expect("checked above").new_text, "#@was(market)\n");
+    }
+
+    #[test]
+    fn renaming_a_variable_under_brink_dialect_stamps_was_on_the_line_above() {
+        let src = "VAR hello = 0\n=== main ===\n-> DONE\n";
+        let (s, id) = brink_session(src);
+        let decl_pos = u32::try_from(src.find("hello").expect("decl")).expect("offset");
+
+        let res = rename_safe(&s, id, TextSize::from(decl_pos), "greeting").expect("rename");
+
+        let new_source = res.new_source.as_deref().expect("new_source");
+        assert!(
+            new_source.contains("#@was(hello)\nVAR greeting = 0\n"),
+            "expected #@was stamped on the line immediately above the VAR declaration: \
+             {new_source}"
+        );
+        assert!(
+            res.introduced.is_empty(),
+            "stamping #@was under Dialect::Brink must introduce no new diagnostics, got {:?}",
+            res.introduced
+                .iter()
+                .map(|d| (d.code.as_str(), d.message.as_str()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn renaming_a_constant_under_brink_dialect_stamps_was_on_the_line_above() {
+        let src = "CONST hello = 0\n=== main ===\n-> DONE\n";
+        let (s, id) = brink_session(src);
+        let decl_pos = u32::try_from(src.find("hello").expect("decl")).expect("offset");
+
+        let res = rename_safe(&s, id, TextSize::from(decl_pos), "greeting").expect("rename");
+
+        let new_source = res.new_source.as_deref().expect("new_source");
+        assert!(
+            new_source.contains("#@was(hello)\nCONST greeting = 0\n"),
+            "expected #@was stamped on the line immediately above the CONST declaration: \
+             {new_source}"
+        );
+    }
+
+    #[test]
+    fn renaming_a_list_under_brink_dialect_stamps_was_on_the_line_above() {
+        let src = "LIST Colors = Red, Green\n=== main ===\n-> DONE\n";
+        let (s, id) = brink_session(src);
+        let decl_pos = u32::try_from(src.find("Colors").expect("decl")).expect("offset");
+
+        let res = rename_safe(&s, id, TextSize::from(decl_pos), "Palette").expect("rename");
+
+        let new_source = res.new_source.as_deref().expect("new_source");
+        assert!(
+            new_source.contains("#@was(Colors)\nLIST Palette = Red, Green\n"),
+            "expected #@was stamped on the line immediately above the LIST declaration: \
+             {new_source}"
+        );
+    }
+
+    #[test]
+    fn rename_does_not_duplicate_or_overwrite_an_existing_was_directive() {
+        // A second rename of an already-migrated declaration keeps its
+        // original `#@was` record rather than silently losing it (a fresh
+        // stamp would only preserve the *most recent* rename, defeating the
+        // "reads a chain back to the original name" purpose of the
+        // directive).
+        let (s, id) = brink_session("=== hello ===\n#@was(original)\nHi.\n-> END\n");
+        let hir = s.hir(id).expect("hir");
+        let offset = declaration_offset(hir, "hello", None).expect("offset");
+
+        let res = rename_safe(&s, id, offset, "greeting").expect("rename");
+
+        let new_source = res.new_source.as_deref().expect("new_source");
+        assert!(
+            new_source.contains("=== greeting ===\n#@was(original)\n"),
+            "the original #@was record must survive unchanged: {new_source}"
+        );
+        assert_eq!(
+            new_source.matches("#@was").count(),
+            1,
+            "must not add a second #@was directive on top of an existing one: {new_source}"
+        );
+    }
+
+    #[test]
+    fn renaming_a_documented_variable_keeps_the_doc_block_above_the_was_directive() {
+        // Review finding on #1672 (blocking): `insert_before_decl_line` used
+        // to insert `#@was` at the start of the declaration's own line,
+        // landing it *between* a `///` doc comment and the `VAR` it
+        // documents — `collect_doc_lines` only walks a *contiguous* run of
+        // doc lines back from the declaration, so the inserted directive
+        // broke that contiguity and the doc block silently vanished from
+        // `SymbolManifest::docs`, with no diagnostic.
+        let src = "/// The player's gold.\nVAR hello = 0\n=== main ===\n-> DONE\n";
+        let (s, id) = brink_session(src);
+        let decl_pos = u32::try_from(src.find("hello").expect("decl")).expect("offset");
+
+        let res = rename_safe(&s, id, TextSize::from(decl_pos), "greeting").expect("rename");
+
+        let new_source = res.new_source.as_deref().expect("new_source");
+        assert!(
+            new_source.contains("#@was(hello)\n/// The player's gold.\nVAR greeting = 0\n"),
+            "the #@was directive must land above the doc-comment run, not between it and the \
+             declaration: {new_source}"
+        );
+
+        // The doc block itself must survive re-analysis, still attached to
+        // the renamed declaration.
+        let mut fresh = IdeSession::new();
+        fresh.set_language_dialect(brink_analyzer::Dialect::Brink);
+        let fresh_id = fresh.update_and_analyze("t.ink", new_source.to_owned());
+        let manifest = fresh.manifest(fresh_id).expect("manifest");
+        let doc = manifest
+            .docs
+            .get(&(brink_ir::SymbolKind::Variable, "greeting".to_owned()));
+        assert_eq!(
+            doc.and_then(|d| d.doc.clone()),
+            Some("The player's gold.".to_owned()),
+            "the doc block must survive the rename, attached to the new name: {manifest:?}"
+        );
+    }
+
+    #[test]
+    fn renaming_under_strict_ink_dialect_does_not_stamp_was() {
+        // `#@was` is itself a brink extension (dialect_gate.rs) — under the
+        // default `Dialect::StrictInk` (the oracle-conformance dialect),
+        // stamping it would introduce a fresh E051 on every rename. This is
+        // the regression test for the dialect gate in `rename` (issue
+        // #1672 review): without it, `safe_rename_updates_refs_with_no_new_diagnostics`
+        // above would fail because `rename_safe` reports the E051 it just
+        // introduced.
+        let (s, id) = session("=== hello ===\nHi.\n-> END\n");
+        let hir = s.hir(id).expect("hir");
+        let offset = declaration_offset(hir, "hello", None).expect("offset");
+        let analysis = s.analysis().expect("analysis");
+
+        let result = rename(s.db(), analysis, id, offset, "greeting").expect("rename");
+
+        assert!(
+            result.edits.iter().all(|e| !e.new_text.contains("#@was")),
+            "no edit may introduce #@was under Dialect::StrictInk, got {:?}",
+            result
+                .edits
+                .iter()
+                .map(|e| e.new_text.as_str())
+                .collect::<Vec<_>>()
         );
     }
 }
