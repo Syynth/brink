@@ -202,3 +202,37 @@ fn branch_expansion_reachable_via_full_compile_and_codegen() {
          several EmitContent fragments"
     );
 }
+
+#[test]
+fn multiple_branch_points_produce_the_full_cartesian_product() {
+    // Issue #1667 explicitly scopes this clause: "multiple branch points in
+    // a single line produce the full cartesian product." It's the case most
+    // likely to regress silently, since it depends on `normalize_block`'s
+    // second, re-entrant pass over freshly created branches (the first
+    // inline conditional is lifted into an outer `Stmt::Conditional`, then
+    // the pass re-walks each new branch body and lifts the second inline
+    // conditional found there into a *nested* `Stmt::Conditional`) — so the
+    // outer branch containers hold no direct `EmitLine` themselves, only the
+    // inner containers do.
+    let program = lower_ink("VAR a = true\nVAR b = true\n{a: X|Y} and {b: P|Q}.\n");
+    let bodies = branch_bodies(&program);
+
+    // 2 outer branches (a=true/false), each wrapping a nested 2-branch
+    // conditional (b=true/false) — 6 branch containers total, of which the
+    // 2 outer ones carry no direct Plain text (their content is the nested
+    // conditional, not a line of their own).
+    assert_eq!(
+        bodies.len(),
+        6,
+        "outer {{a}} conditional (2 branches) each nesting an inner {{b}} \
+         conditional (2 branches) should yield 6 branch containers total"
+    );
+
+    let leaf_texts: Vec<&str> = bodies.iter().filter_map(|b| plain_text(b)).collect();
+    assert_eq!(
+        leaf_texts,
+        vec![" X and P.", " X and Q.", "Y and P.", "Y and Q."],
+        "the full cartesian product of both branch points should recognize \
+         as 4 independent Plain lines, not collapse to just one axis"
+    );
+}
