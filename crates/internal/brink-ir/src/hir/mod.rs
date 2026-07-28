@@ -26,6 +26,6 @@ pub use ink_provenance::{InkProvenanceResolver, ink_provenance};
 pub use lower::{WeaveItem, fold_weave, lower, lower_single_knot, lower_top_level};
 pub use normalize::normalize_file;
 pub use spans::expr_span;
-pub use stamp::stamp_container_ids;
+pub use stamp::{root_content_scope_path, stamp_container_ids};
 pub use types::*;
 pub use visit::{ContentContext, HirVisitor, walk_block};

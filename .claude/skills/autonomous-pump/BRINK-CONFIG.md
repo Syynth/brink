@@ -33,6 +33,26 @@ Fill pump.js's CONFIG from these when running the pump on this repo.
 - Don't add defensive branches the caller's guard makes unreachable — dead branches mask real fallthrough.
 
 ## Disk rule (2026-07-14 incident: 68G of invisible variant caches)
+
+### 2026-07-28 incident: disk hit **0 bytes**, wedging the host mid-wave
+
+Six concurrent agents (two opus, all touching analyzer/IR) exhausted **49G in a single wave**. The shell then could not run *at all* — the Bash tool failed writing its own output file — so the session could not even clean up after itself; a human had to run `rm -rf` by hand.
+
+**The leak was structural, not bad luck.** The between-waves reset only ever cleared the SHARED `CARGO_TARGET_DIR`. But when the shared target gets contaminated (a known, recurring failure — see the cross-contamination notes), agents correctly switch to a PRIVATE target dir — and **nothing ever cleans those up**. They accumulate in `/tmp/brink*` and in the session scratchpad, invisible until the disk is gone. Post-incident sweep found **26G inside the session scratchpad alone** (one private target at 15G) plus ~190 abandoned `/tmp/brink-*` review/build dirs going back ~30 waves.
+
+**Between EVERY wave, sweep all three, not just the shared target:**
+```
+rm -rf "$SHARED_TARGET" /tmp/pump-merge-train-brink-*
+for d in /tmp/brink* /tmp/pr* /tmp/rev*; do rm -rf "$d"; done   # stale review/build dirs
+for d in "$SCRATCHPAD"/*/; do rm -rf "$d"; done                  # agent private targets
+git -C <repo> worktree prune
+```
+
+**Before launching, assert headroom and cap concurrency:**
+- Require **≥60G free** before a wave starts; below that, sweep first and re-check rather than launching hopefully.
+- A build-heavy wave (analyzer/IR/runtime) is **≤4 items with at most one opus build**. Six concurrent builds against one shared target is what produced this.
+
+**⚠ Audit before deleting anything with a `.git` in it** (standing rule: never destroy work without a push-state audit). Check whether HEAD is contained in any remote branch — reviewer clones of PR heads look "unpushed" but are merged work, while a genuinely orphaned commit must be pushed to a branch before its directory is removed.
 - Agents must use ONLY the provided shared CARGO_TARGET_DIR or the worktree-local ./target (which dies with the worktree). NEVER mint variant /tmp cache dirs (pump-cargo-target-brink-issueN / -fuzz / -prN / verify-target-*) — they defeat boundary sweeps and accumulated 68G across three waves. If the shared cache misbehaves (stale sibling binaries, phantom errors), `cargo clean -p <crate>` it or fall back to ./target; never a third path.
 - Review agents needing to run code clone into the worktree they were given or /tmp/brink-review-<pr> and DELETE it before returning.
 - Boundary sweep checklist: worktrees (all completed waves) → /tmp/pump-* glob (not exact path) → /tmp/brink-* clones → shared cache if no wave imminent.

@@ -1,0 +1,11 @@
+description = "Root-level weave content in BOTH the entry file and an INCLUDEd file — the shape whose anonymous container ids collided in #1504"
+mode = "runtime"
+
+[source]
+origin = "brink"
+original_id = "root-weave-in-entry-and-included-file"
+
+[classification]
+tier = 1
+feature = "includes"
+tags = ["includes", "weave", "choices", "gather"]

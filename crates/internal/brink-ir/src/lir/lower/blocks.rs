@@ -118,7 +118,9 @@ fn lower_block_stmt(stmt: &hir::BlockStmt, ctx: &mut LowerCtx<'_>, out: &mut Vec
             lower_loop_control(ptr, "continue", lir::Stmt::LogicContinue, ctx, out);
         }
         hir::BlockStmt::ExprStmt(expr) => {
-            if !try_lower_mutator_stmt(expr, ctx, out) {
+            if !try_lower_mutator_stmt(expr, ctx, out)
+                && !try_lower_frame_local_auto_ref_stmt(expr, ctx, out)
+            {
                 out.push(lir::Stmt::ExprStmt(lower_expr(expr, ctx)));
             }
         }
@@ -1113,6 +1115,168 @@ pub(super) fn try_lower_mutator_stmt(
     }
 
     lower_mutator_call(kind, &name, path, args, ctx, out);
+    true
+}
+
+/// Frame-local projection auto-ref (issue #1531, RULED 2026-07-27 —
+/// `docs/decision-log.md`): `g.hp.heal(5)` where `g` is a temp/param and
+/// `heal`'s first parameter is `ref`. `brink-analyzer::ufcs::
+/// auto_ref_fault` now accepts a frame-local, single-field-deep receiver
+/// like this one as a legal `FreeFnAutoRef` verdict — a frame-local cell is
+/// a valid projection root, and the mutation needs no effect row because it
+/// is unobservable outside the frame.
+///
+/// There is still no *expression*-shaped lowering for it, though:
+/// [`lir::CallArg::RefProjection`]'s root is a durable global
+/// [`brink_format::DefinitionId`] only (`docs/format-v4-rfc.md` §1) — using
+/// a frame-local's `LocalVar`-tagged id there would fault at runtime as
+/// `UnresolvedGlobal` with no compile diagnostic (the same hazard
+/// `expr::lower_ref_path_call_arg`'s block-scoped-temp guard already
+/// documents for the bare-receiver case). So this recognizes the shape at
+/// **statement** position only and expands it as the same RMW discipline
+/// `try_lower_field_assignment` already established for `g.hp = v`: read
+/// the field into a synthetic temp, call the target passing that temp by
+/// `ref` (an ordinary bare [`lir::CallArg::RefTemp`], never a projection),
+/// then write the temp back into the field. `expr::lower_ref_projection_arg`
+/// carries the matching defense-in-depth refusal for the same verdict
+/// reached from *expression* position (nested inside a larger expression,
+/// where this recognizer never gets a chance to run) — see that function's
+/// own frame-local guard.
+///
+/// Returns `false` (nothing lowered) for every other call shape, so the
+/// caller falls through to ordinary call lowering — including a
+/// `FreeFnAutoRef` verdict whose receiver is a durable global or a bare
+/// (non-projection) frame-local, both of which
+/// `expr::lower_ufcs_desugared_call` already handles correctly, and a
+/// receiver more than one field deep, which `brink-analyzer`'s own gate
+/// still refuses with `E143` before lowering ever sees it.
+pub(super) fn try_lower_frame_local_auto_ref_stmt(
+    expr: &hir::Expr,
+    ctx: &mut LowerCtx<'_>,
+    out: &mut Vec<lir::Stmt>,
+) -> bool {
+    let hir::Expr::Call(path, args) = expr else {
+        return false;
+    };
+    let Some(UfcsVerdict::FreeFnAutoRef { target }) =
+        ctx.tables.ufcs.get(ctx.file, path.range).cloned()
+    else {
+        return false;
+    };
+    let receiver = super::expr::ufcs_receiver_path(path);
+    if receiver.segments.len() != 2 {
+        return false;
+    }
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "just proved receiver.segments.len() == 2"
+    )]
+    let head_name = receiver.segments[0].text.clone();
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "just proved receiver.segments.len() == 2"
+    )]
+    let field_name = receiver.segments[1].text.clone();
+    // A durable global (or an unresolved name) falls through to the
+    // ordinary `RefProjection` desugar — only a genuine frame-local takes
+    // this path.
+    let Some(root_slot) = ctx.temp_slot(&head_name) else {
+        return false;
+    };
+    // B1b (issue #1475): the same `ref`-bypasses-immutability hole
+    // `lower_ref_path_call_arg` and `lower_ref_projection_arg` both guard —
+    // this recognizer writes the receiver back into `root_slot` too (step
+    // 3 below), so an `as` binding must be refused here as well. Return
+    // `true` (handled) rather than `false`: falling through would let this
+    // same call reach `expr::lower_ref_projection_arg`'s frame-local guard
+    // instead, which emits the misleading "must be its own statement"
+    // `E143` — this call *is* its own statement; the real problem is the
+    // `as` binding's immutability.
+    if ctx.as_binding_slots.contains(&root_slot) {
+        ctx.diagnostics.push(Diagnostic {
+            file: ctx.file,
+            range: path.range,
+            message: format!(
+                "{}: `{head_name}` is an `as` binding — it is immutable and cannot be passed \
+                 by `ref`",
+                DiagnosticCode::E148.title(),
+            ),
+            code: DiagnosticCode::E148,
+        });
+        return true;
+    }
+    let Some(target_info) = ctx.index.symbols.get(&target) else {
+        // Structurally unreachable — `target` came from the analyzer's own
+        // resolution against this same project index, exactly like
+        // `expr::lower_ufcs_desugared_call`'s identical guard. Falling
+        // through lets that function's own copy of this guard handle it.
+        return false;
+    };
+
+    let head_name_id = ctx.names.intern(&head_name);
+    let field = ctx.names.intern(&field_name);
+    let root_target = lir::AssignTarget::Temp(root_slot, head_name_id);
+
+    let static_offset = if ctx.structs.type_mode == TypeMode::Strict {
+        ctx.temp_shape(root_slot)
+            .and_then(|s| ctx.structs.shapes.get(s))
+            .and_then(|shape| shape.field(&field_name))
+            .map(|(offset, _)| offset)
+    } else {
+        None
+    };
+
+    // 1. Read the field into a synthetic temp — the call's receiver
+    //    argument. A non-mutating read, so it can't itself trigger a COW.
+    let current = lir::Expr::RecordGet {
+        base: Box::new(get_expr_for_target(&root_target)),
+        field,
+        static_offset,
+    };
+    let (recv_slot, recv_name) = declare_synthetic("__recv", current, ctx, out);
+
+    // 2. The call: `target(ref __recv, args…)` — a bare receiver, so it
+    //    rides the ordinary `RefTemp` write-through (`Opcode::
+    //    PushTempPointer`/`SetTemp`'s `Value::TempPointer` arm), never a
+    //    projection.
+    let rest_params = target_info.params.get(1..).unwrap_or(&[]);
+    let mut call_args = Vec::with_capacity(args.len() + 1);
+    call_args.push(lir::CallArg::RefTemp(recv_slot, recv_name));
+    call_args.extend(super::expr::lower_call_args(args, rest_params, ctx));
+    let call_expr = if target_info.kind == SymbolKind::External {
+        lir::Expr::CallExternal {
+            target,
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "ink externals have <=255 params"
+            )]
+            arg_count: target_info.params.len() as u8,
+            args: call_args,
+        }
+    } else {
+        lir::Expr::Call {
+            target,
+            args: call_args,
+        }
+    };
+    out.push(lir::Stmt::ExprStmt(call_expr));
+
+    // 3. Write the (possibly mutated) receiver back into the field. No
+    //    fault pre-check is needed here — step 1's read already proved this
+    //    exact field is valid on this exact root, and nothing between then
+    //    and now could have invalidated that.
+    let write_back = lir::Expr::RecordSet {
+        base: Box::new(take_expr_for_target(&root_target)),
+        field,
+        static_offset,
+        value: Box::new(lir::Expr::GetTemp(recv_slot, recv_name)),
+    };
+    out.push(lir::Stmt::Assign {
+        target: root_target,
+        op: AssignOp::Set,
+        value: write_back,
+    });
+
     true
 }
 
