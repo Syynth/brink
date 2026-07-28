@@ -736,8 +736,7 @@ mod tests {
 
     #[test]
     fn resolve_option_and_weighted_generics() {
-        let (hir, _index) =
-            build("VAR o: Option<int> = 0\nVAR w: Weighted<string> = 0\n");
+        let (hir, _index) = build("VAR o: Option<int> = 0\nVAR w: Weighted<string> = 0\n");
         let o = hir.variables[0].annotation.as_ref().expect("o");
         let w = hir.variables[1].annotation.as_ref().expect("w");
         let empty = BTreeSet::new();
@@ -753,8 +752,7 @@ mod tests {
 
     #[test]
     fn check_accepts_option_and_weighted_annotations() {
-        let (hir, index) =
-            build("VAR o: Option<int> = 0\nVAR w: Weighted<float> = 0\n");
+        let (hir, index) = build("VAR o: Option<int> = 0\nVAR w: Weighted<float> = 0\n");
         let diags = check(&[(FileId(0), &hir)], &index, None);
         assert!(diags.is_empty(), "{diags:?}");
     }
