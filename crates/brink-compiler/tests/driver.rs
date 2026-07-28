@@ -233,6 +233,44 @@ fn compile_path_native_multi_file_no_brink_toml() {
     );
 }
 
+/// A lambda in a real `.brink` project, compiled through the production
+/// entry point (issue #1685). Two facts, both user-visible:
+///
+/// 1. the blanket `E129` ("construct not supported by this lowering") that
+///    used to be a lambda's only outcome is gone — the lambda lowers, and
+///    its body is analyzed like any other code;
+/// 2. what stops the compile now is the targeted codegen fence (`E052`),
+///    because an anonymous body still has no runtime representation.
+#[test]
+fn compile_path_native_lambda_reports_the_codegen_fence_not_the_unsupported_fence() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-native-lambda-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("main.brink"),
+        "fn tally(n: int): int {\n  let add = |x| x + 1;\n  return n;\n}\n\n\
+         flow main() {\n  Hello. -> END\n}\n",
+    )
+    .unwrap();
+
+    let result = brink_compiler::compile_path(&dir.join("main.brink"));
+    std::fs::remove_dir_all(&dir).ok();
+
+    let err = result.expect_err("a lambda has no runtime representation yet");
+    let codes = diagnostic_codes(&err);
+    assert!(
+        codes.contains(&"E052"),
+        "expected the targeted lambda codegen fence (E052), got: {codes:?}"
+    );
+    assert!(
+        !codes.contains(&"E129"),
+        "the lambda must no longer hit the blanket unsupported-construct fence: {codes:?}"
+    );
+}
+
 /// A `target/` subdirectory sitting next to a valid `.brink` entry, holding
 /// a file that is not valid brink source at all: native discovery must
 /// never walk into `target/` in the first place (issue #1381), so the

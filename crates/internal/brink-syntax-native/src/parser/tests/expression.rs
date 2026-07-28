@@ -2,18 +2,18 @@
 //!
 //! Parity target studied: `brink-syntax/src/parser/tests/expression/{mod,cst}.rs`
 //! (71 tests). This grammar is deliberately a *skeleton* (module doc on
-//! `parser/expr.rs`): no fn-value sigil literals, no ranges, no indexing, no
-//! field access, no postfix `++`/`--` — those don't exist as `SyntaxKind`s
-//! here yet (checked against `syntax_kind.rs`). So this file mirrors the
-//! parity target's *structure and depth* for the forms that DO exist:
-//! literals, paths, prefix/infix expressions, parenthesization,
-//! `CALL_EXPR`/`ARG_LIST`, `LAMBDA_EXPR`/`LAMBDA_PARAMS` (tokenized only —
-//! lowering is B0.8, per the node's own doc comment in `syntax_kind.rs`),
-//! the one construction-initializer grammar `TypeName { … }` (B5, issue
-//! #1464 — `CONSTRUCT_LITERAL`/`CONSTRUCT_ENTRY`, how maps and struct
-//! construction are spelled on the native surface; there is no
-//! `#{…}`/`Name#{…}` sigil here, that is the brink dialect's spelling), and
-//! — since NG-D (issue #1490) — the array/sequence literal `[1, 2, 3]`
+//! `parser/expr.rs`): no array/fn-value sigil literals, no ranges, no
+//! indexing, no field access, no postfix `++`/`--` — those don't exist as
+//! `SyntaxKind`s here yet (checked against `syntax_kind.rs`). So this file
+//! mirrors the parity target's *structure and depth* for the forms that DO
+//! exist: literals, paths, prefix/infix expressions, parenthesization,
+//! `CALL_EXPR`/`ARG_LIST`, `LAMBDA_EXPR`/`LAMBDA_PARAMS` (shape only here;
+//! their lowering is tested in `brink-ir/tests/native_lambdas.rs`),
+//! and — since B5 (issue #1464) — the one construction-initializer grammar
+//! `TypeName { … }` (`CONSTRUCT_LITERAL`/`CONSTRUCT_ENTRY`), which is how
+//! maps and struct construction are spelled on the native surface (there is
+//! no `#{…}`/`Name#{…}` sigil here; that is the brink dialect's spelling),
+//! and — since NG-D (issue #1490) — the array/sequence literal `[1, 2, 3]`
 //! (`ARRAY_LITERAL`), the everyday collection literal's own lightest
 //! spelling (no `#[…]` sigil on the native surface either).
 //!
@@ -756,10 +756,9 @@ fn dotted_without_call_is_path_expr_not_call_expr() {
 
 // ── I. Lambda expressions ───────────────────────────────────────────
 //
-// `LAMBDA_EXPR`/`LAMBDA_PARAMS` are tokenized and structurally parsed but
-// deliberately NOT lowered (charter §7/§8, `syntax_kind.rs`'s own doc
-// comment on `LAMBDA_EXPR`: "B0.5 tokenizes pipes; B0.8 does not lower
-// them") — these are parse-only shape tests, no semantic coverage expected.
+// These are parse-only *shape* tests: the semantic coverage for lambdas
+// lives with the lowering that consumes these nodes
+// (`brink-ir/tests/native_lambdas.rs`, issue #1685).
 
 /// The declared names of a `LAMBDA_PARAMS` node's parameters, in source
 /// order. Each one is a `PARAM` node (the same shape `fn`/`flow` headers
@@ -874,10 +873,10 @@ fn lambda_nested_in_call_argument() {
 
 // ── I-bis. Lambda type annotations (NG-A, issue #1487) ───────────────
 //
-// GRAMMAR ONLY. `LAMBDA_EXPR` still has no HIR lowering (charter §7/§8,
-// "B0.5 tokenizes pipes; B0.8 does not lower them") — `lower_native` sends
-// the whole node to its `E129` fence with or without annotations, so these
-// are parse-shape tests, exactly like every other lambda test above.
+// GRAMMAR ONLY here — the annotations' *lowering* (into `Param.annotation`
+// and `LambdaExpr.return_type`) is covered by
+// `brink-ir/tests/native_lambdas.rs` (issue #1685); these are parse-shape
+// tests, exactly like every other lambda test above.
 
 fn lambda_of(p: &Parse) -> ast::LambdaExpr {
     p.syntax()

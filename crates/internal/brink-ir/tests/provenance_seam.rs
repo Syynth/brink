@@ -644,6 +644,20 @@ fn garble_expr(e: &mut hir::Expr) {
             garble(&mut ra.ptr);
             garble_expr(&mut ra.operand);
         }
+        hir::Expr::Lambda(l) => {
+            garble(&mut l.ptr);
+            match &mut l.body {
+                hir::LambdaBody::Expr(e) => garble_expr(e),
+                hir::LambdaBody::Block { stmts, tail } => {
+                    for bs in stmts {
+                        garble_block_stmt(bs);
+                    }
+                    if let Some(t) = tail {
+                        garble_expr(t);
+                    }
+                }
+            }
+        }
     }
 }
 

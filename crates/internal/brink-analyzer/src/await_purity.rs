@@ -197,8 +197,9 @@ fn collect_call_callees(
                 collect_call_callees(v, by_range, out);
             }
         }
-        // A `FnLiteral` (lambda) is *not* recursed: its body is not invoked
-        // during condition re-evaluation, only the surrounding expression is.
+        // Neither fn-value shape is recursed: a `FnLiteral`'s target and a
+        // lambda's body (issue #1685) are not invoked during condition
+        // re-evaluation, only the surrounding expression is.
         Expr::Int(_)
         | Expr::Float(_)
         | Expr::Bool(_)
@@ -208,6 +209,7 @@ fn collect_call_callees(
         | Expr::DivertTarget(_)
         | Expr::ListLiteral(_)
         | Expr::FnLiteral(_)
+        | Expr::Lambda(_)
         | Expr::RefArg(_) => {}
     }
 }
@@ -286,9 +288,10 @@ impl Ctx<'_> {
             }
             // Leaves and other expression kinds carry no call atoms of their
             // own (a bare `Path` — including a fn-value reference used as a
-            // dynamic condition — is read-only by construction, spec §3). A
-            // `FnLiteral` (lambda) is deliberately *not* recursed: its body is
-            // not invoked during condition re-evaluation.
+            // dynamic condition — is read-only by construction, spec §3).
+            // Neither fn-value shape is recursed: a `FnLiteral`'s target
+            // and a lambda's body (issue #1685) are not invoked during
+            // condition re-evaluation.
             Expr::Int(_)
             | Expr::Float(_)
             | Expr::Bool(_)
@@ -298,6 +301,7 @@ impl Ctx<'_> {
             | Expr::DivertTarget(_)
             | Expr::ListLiteral(_)
             | Expr::FnLiteral(_)
+            | Expr::Lambda(_)
             | Expr::RefArg(_) => {}
         }
     }

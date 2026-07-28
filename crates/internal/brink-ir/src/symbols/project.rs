@@ -59,8 +59,8 @@ use rowan::TextRange;
 
 use crate::hir::{
     Block, BlockStmt, Choice, ChoiceSet, CondKind, Conditional, Content, ContentPart, DivertPath,
-    DivertTarget, ElseBranch, ForStmt, HirFile, IfStmt, Knot, LogicBlock, Param, Path, Sequence,
-    Stmt, StringPart, Tag, WhileStmt,
+    DivertTarget, ElseBranch, ForStmt, HirFile, IfStmt, Knot, LambdaBody, LambdaExpr, LogicBlock,
+    Param, Path, Sequence, Stmt, StringPart, Tag, WhileStmt,
 };
 use crate::host_manifest::DocBlock;
 use crate::{Expr, ParamInfo, Scope, SymbolKind, VisibilityMark};
@@ -734,6 +734,48 @@ impl Projector {
                 }
             }
             Expr::RefArg(ra) => self.walk_expr(&ra.operand, knot, stitch),
+            // A lambda (issue #1685) introduces locals — its params — and
+            // then a body that reads them. The params are recorded with the
+            // same `SymbolKind::Temp` a `for` binding and a `let` get: they
+            // are bindings a construct introduces inside a body, not
+            // declaration-header params, and recording them is what lets a
+            // reference to `g` inside `|g| g.awake` resolve at all (as well
+            // as giving hover/goto-def/rename the same handle they have on
+            // every other local).
+            Expr::Lambda(l) => self.walk_lambda(l, knot, stitch),
+        }
+    }
+
+    /// A lambda (issue #1685) introduces locals — its params — and then a
+    /// body that reads them. The params are recorded with the same
+    /// `SymbolKind::Temp` a `for` binding and a `let` get: they are
+    /// bindings a construct introduces inside a body, not
+    /// declaration-header params, and recording them is what lets a
+    /// reference to `g` inside `|g| g.awake` resolve at all (as well as
+    /// giving hover/goto-def/rename the same handle they have on every
+    /// other local).
+    fn walk_lambda(&mut self, l: &LambdaExpr, knot: Option<&str>, stitch: Option<&str>) {
+        for p in &l.params {
+            self.push_local(
+                p.name.text.clone(),
+                p.name.range,
+                SymbolKind::Temp,
+                knot,
+                stitch,
+                None,
+                None,
+            );
+        }
+        match &l.body {
+            LambdaBody::Expr(e) => self.walk_expr(e, knot, stitch),
+            LambdaBody::Block { stmts, tail } => {
+                for s in stmts {
+                    self.walk_block_stmt(s, knot, stitch);
+                }
+                if let Some(t) = tail {
+                    self.walk_expr(t, knot, stitch);
+                }
+            }
         }
     }
 }

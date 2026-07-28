@@ -60,10 +60,7 @@
 //!    a `module { … }` block (no HIR "module container" node exists —
 //!    `HirFile.module` is a single file-identity fact, not a recursive
 //!    container; contents are flattened into the enclosing scope and the
-//!    diagnostic says so); a lambda
-//!    expression in value position (`FnLiteral` is partial application
-//!    over a named target, not an anonymous body — charter §8, no lambda
-//!    node exists); any other body-line construct reaching top-level
+//!    diagnostic says so); any other body-line construct reaching top-level
 //!    declaration position (content/tags/choices/diverts/conditionals with
 //!    no enclosing `flow`/`fn` — a native file has no top-level body ground
 //!    the way ink's root weave does; the only top-level "entry" spelling is
@@ -127,6 +124,7 @@ pub mod control_flow;
 mod decl;
 mod doc_comment;
 mod expr;
+mod lambda;
 mod module;
 pub mod provenance;
 mod types;

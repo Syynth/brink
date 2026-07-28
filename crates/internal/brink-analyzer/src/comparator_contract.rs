@@ -405,6 +405,13 @@ fn collect_expr(expr: &Expr, out: &mut Vec<ComparatorSite>) {
             }
         }
         Expr::RefArg(r) => collect_expr(&r.operand, out),
+        // A lambda's value expression (issue #1685) — its braced body's
+        // statements are not expressions; see `LambdaBody::value_exprs`.
+        Expr::Lambda(l) => {
+            for e in l.body.value_exprs() {
+                collect_expr(e, out);
+            }
+        }
         Expr::Int(_)
         | Expr::Float(_)
         | Expr::Bool(_)

@@ -75,6 +75,8 @@ pub enum NodeClass {
     Expr = 1,
 
     // ── Specific classes (16..) — append-only, never reused ─────────
+    // (Appending one also means adding its `from_u16` arm and bumping the
+    // `node_class_u16_round_trips` sentinel to the new last variant.)
     /// A `Tag` attached to content.
     Tag = 16,
     /// A knot definition (`== knot`). A `hir::Knot` carries this class only
@@ -159,6 +161,10 @@ pub enum NodeClass {
     /// #404), mirroring [`Self::ConditionalBranch`] for `- ...` sequence
     /// arms and `|`-separated inline alternatives.
     SequenceBranch = 52,
+    /// A `|x| …` lambda expression — the native surface's anonymous fn
+    /// value (RULED 2026-07-19, issue #1685). Native-only: ink's grammar
+    /// cannot spell a lambda.
+    Lambda = 53,
 }
 
 impl NodeClass {
@@ -213,6 +219,7 @@ impl NodeClass {
             50 => Self::Infix,
             51 => Self::ConditionalBranch,
             52 => Self::SequenceBranch,
+            53 => Self::Lambda,
             _ => return None,
         })
     }
@@ -377,10 +384,11 @@ mod tests {
                 assert_eq!(class.as_u16(), v);
             }
         }
-        assert_eq!(
-            NodeClass::from_u16(NodeClass::SequenceBranch.as_u16() + 1),
-            None
-        );
+        // One past the *last* assigned class is unknown. Appending a class
+        // to the enum means bumping this name to the new last variant —
+        // otherwise the sentinel starts naming an assigned value and this
+        // assertion fails.
+        assert_eq!(NodeClass::from_u16(NodeClass::Lambda.as_u16() + 1), None);
         assert_eq!(NodeClass::from_u16(2), None, "generic range is reserved");
     }
 
