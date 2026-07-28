@@ -396,7 +396,10 @@ fn compile_entry(
     lints: std::collections::BTreeMap<String, brink_driver::LintLevel>,
     deny_warnings: Option<bool>,
 ) -> Result<brink_compiler::CompileOutput, Box<dyn std::error::Error>> {
-    let root = brink_driver::native_source_root(entry);
+    let (root, warnings) = brink_driver::native_source_root_with_warnings(entry);
+    for warning in &warnings {
+        let _ = writeln!(std::io::stderr(), "warning: {warning}");
+    }
     let tree = brink_driver::RealFs::new(&root);
     let entry_key = brink_driver::relative_key(&root, entry);
     let overrides = brink_environment::OptionOverrides {
