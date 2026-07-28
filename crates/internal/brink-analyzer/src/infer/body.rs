@@ -1924,18 +1924,23 @@ impl InferPass<'_, '_> {
                 Some(Ty::Array(elem)) => Ty::Array(elem.clone()),
                 _ => Ty::Unknown,
             },
-            // NS-A4: the comparator pair. The comparator is a function
-            // value the *verb* will call — the one other place (besides
-            // `call(f)`/`f(args)`) a real callee's effects escape the
-            // static call graph, so its row composes through the same
-            // pending-value-call machinery (`⊕cmp`, F14): a provable
-            // single origin pulls that def's row in transitively;
-            // anything else degrades to the pessimal opaque floor.
-            // Dispatch faults (non-function comparator, non-int return,
-            // detected inconsistency) ride the intrinsic table's faults
-            // bit. The pure·silent contract itself is E119
-            // (`comparator_contract`), exceedance-only.
-            "sorted_by" => {
+            // NS-A4: the comparator pair, merged with `filter`'s fn-value
+            // verb (issue #1679) — both push a value-call hint from
+            // `args[1]` and share `filter`'s "array in, array of the same
+            // element type out" shape (clippy `match_same_arms`: the
+            // bodies were byte-identical, so one arm serves both). The
+            // comparator is a function value the *verb* will call — the
+            // one other place (besides `call(f)`/`f(args)`) a real
+            // callee's effects escape the static call graph, so its row
+            // composes through the same pending-value-call machinery
+            // (`⊕cmp`/`⊕f`, F14): a provable single origin pulls that
+            // def's row in transitively; anything else degrades to the
+            // pessimal opaque floor. Dispatch faults (non-function
+            // comparator/callback, non-int/non-bool return, detected
+            // inconsistency) ride the intrinsic table's faults bit. The
+            // pure·silent contract itself is E119 (`comparator_contract`),
+            // exceedance-only.
+            "sorted_by" | "filter" => {
                 if let Some(cmp) = args.get(1) {
                     let hint = self.value_call_origin(cmp);
                     self.pending_value_calls.push(hint);
@@ -1964,18 +1969,6 @@ impl InferPass<'_, '_> {
                 }
                 match (arg_tys.first(), arg_tys.get(1)) {
                     (Some(Ty::Array(_)), Some(Ty::Fn(_, ret))) => Ty::Array(ret.clone()),
-                    _ => Ty::Unknown,
-                }
-            }
-            // `filter` preserves the element type — the array's own type is
-            // the answer, no callback evidence needed.
-            "filter" => {
-                if let Some(pred) = args.get(1) {
-                    let hint = self.value_call_origin(pred);
-                    self.pending_value_calls.push(hint);
-                }
-                match arg_tys.first() {
-                    Some(Ty::Array(elem)) => Ty::Array(elem.clone()),
                     _ => Ty::Unknown,
                 }
             }

@@ -379,38 +379,45 @@ pub enum RuntimeError {
         expected: &'static str,
         found: &'static str,
     },
-    /// A `sort_by`/`sorted_by` comparator broke the pure·silent contract in
-    /// a way the VM can observe: it presented a choice, reached
-    /// `-> DONE`/`-> END`, called an external function, exceeded the
-    /// nested-evaluation step budget, or recursed past the nesting depth
-    /// limit. The checker enforces the contract statically where the
-    /// comparator's origin is provable (E119); this is the gradual-mode
-    /// runtime residual.
-    #[error("`{verb}` comparator {what} — comparators must be pure, silent functions")]
+    /// A `sort_by`/`sorted_by` comparator, or a fn-value verb's callback
+    /// (issue #1679), broke the pure·silent contract in a way the VM can
+    /// observe: it presented a choice, reached `-> DONE`/`-> END`, called
+    /// an external function, exceeded the nested-evaluation step budget, or
+    /// recursed past the nesting depth limit. The checker enforces the
+    /// contract statically where the callee's origin is provable (E119);
+    /// this is the gradual-mode runtime residual. `role` names the shape
+    /// the *author* wrote — `"comparator"` for `sort_by`/`sorted_by`,
+    /// `"callback"` for the trio (`callback_role`) — so a `map`/`filter`/
+    /// `fold` author is never told they wrote a bad comparator.
+    #[error("`{verb}` {role} {what} — {role}s must be pure, silent functions")]
     ComparatorEscaped {
         verb: &'static str,
+        role: &'static str,
         what: &'static str,
     },
     /// DEV mode only (F34, ruled 2026-07-19): a `sort_by`/`sorted_by`
-    /// comparator performed a world-write mid-sort — assigned a global
-    /// (directly, or through a `ref`-parameter pointer / path projection)
-    /// or advanced the RNG cell (a draw IS a write: a random comparator is
-    /// exactly the non-determinism the pure·silent contract bans). PROD
-    /// mode skips the check entirely and the write executes — defined and
-    /// deterministic, because the stable merge-sort's comparison sequence
-    /// is fixed (the mode changes WHERE execution stops, never WHAT the
-    /// sort produces). Visit-count increments from the comparator's own
-    /// invocation are NOT world-writes — they are the ruled in-story
-    /// dispatch semantics and stay exempt. Reads are not guarded at
-    /// runtime (E119's static bound owns the read posture). Like
-    /// [`ComparatorEscaped`](Self::ComparatorEscaped), this is the
+    /// comparator, or a fn-value verb's callback (issue #1679), performed a
+    /// world-write mid-evaluation — assigned a global (directly, or through
+    /// a `ref`-parameter pointer / path projection) or advanced the RNG
+    /// cell (a draw IS a write: a random comparator/callback is exactly the
+    /// non-determinism the pure·silent contract bans). PROD mode skips the
+    /// check entirely and the write executes — defined and deterministic,
+    /// because the stable merge-sort's comparison sequence is fixed and the
+    /// fn-value verbs walk their array in iteration order (the mode changes
+    /// WHERE execution stops, never WHAT is produced). Visit-count
+    /// increments from the callee's own invocation are NOT world-writes —
+    /// they are the ruled in-story dispatch semantics and stay exempt.
+    /// Reads are not guarded at runtime (E119's static bound owns the read
+    /// posture). `role` is the same author-facing noun as
+    /// [`ComparatorEscaped`](Self::ComparatorEscaped); like it, this is the
     /// gradual-mode runtime residual of the E119 gate.
     #[error(
-        "`{verb}` comparator {what} — comparators must be pure, silent functions (dev-mode \
-         fault; prod mode executes the write)"
+        "`{verb}` {role} {what} — {role}s must be pure, silent functions (dev-mode fault; prod \
+         mode executes the write)"
     )]
     ComparatorWroteState {
         verb: &'static str,
+        role: &'static str,
         what: &'static str,
     },
 

@@ -224,6 +224,16 @@ fn map_over_a_non_array_faults() {
     assert!(message.contains("an array"), "{message}");
 }
 
+/// `map`'s own `CallbackNotAFunction` case — `filter` and `fold` (below)
+/// each already cover it; `map` had only the non-array-receiver fault.
+#[test]
+fn map_with_a_non_function_callback_faults() {
+    let source = "~ temp a = #[1]\n~ temp b = map(a, 7)\n{b}\n-> END\n";
+    let message = run_expecting_fault(source);
+    assert!(message.contains("`map` callback"), "{message}");
+    assert!(message.contains("`fn(T): U`"), "{message}");
+}
+
 #[test]
 fn filter_with_a_non_function_callback_faults() {
     let source = "~ temp a = #[1]\n~ temp b = filter(a, 7)\n{b}\n-> END\n";
@@ -261,20 +271,35 @@ fn dev_mode_world_write_inside_a_map_callback_names_map() {
     let message = run_expecting_fault(source);
     assert!(message.contains("`map`"), "{message}");
     assert!(!message.contains("sort_by"), "{message}");
+    // `call_pure_callback`/`guard_comparator_write` are generalized over
+    // the verb (issue #1679), but must not generalize the *noun*: a `map`
+    // author must not be told they wrote a bad comparator.
+    assert!(!message.contains("comparator"), "{message}");
 }
 
 // ── strict-ink: the trio is brink-dialect surface ────────────────────
 
 #[test]
 fn strict_ink_never_reaches_the_fn_value_verbs() {
-    // Under strict-ink the sigil array literal is already rejected and the
-    // verb names stay ordinary unresolved calls — the trio is
-    // vanilla-unreachable, which is what keeps the oracle corpus safe from
-    // these ops. Any diagnostics are fine; compiling *successfully into
-    // SeqVerb opcodes* would not be.
+    // Under strict-ink the sigil array literal is already rejected too, so
+    // this alone would fail even with the `map(...)` line deleted — that's
+    // not the claim under test. `lower_t1b_stdlib_call` is dialect-agnostic
+    // (reachability is fenced by the dialect gate, not by lowering), so the
+    // load-bearing assertion is that the gate's *own* diagnostic fires on
+    // the `map` call specifically: `is_t1b_stdlib_call_name` recognizes it
+    // and `GateVisitor::flag`s it under `StrictInk` (E051, `` `map` stdlib
+    // function is a brink extension ``) — proving the trio is unreachable
+    // by the dialect gate itself, not merely that compilation failed for
+    // some unrelated reason.
     let source = "~ temp a = #[1]\n~ temp b = map(a, #fn(double))\n{b}\n-> END\n\n=== function double(n) ===\n~ return n * 2\n";
+    let diags = diagnostics_of(
+        compile_in(source, Dialect::StrictInk, None)
+            .expect_err("strict-ink must reject the brink verb surface"),
+    );
     assert!(
-        compile_in(source, Dialect::StrictInk, None).is_err(),
-        "strict-ink must reject the brink verb surface"
+        diags
+            .iter()
+            .any(|d| d.message.contains("`map` stdlib function")),
+        "expected a dialect-gate diagnostic naming the `map` call, got {diags:?}"
     );
 }

@@ -1849,12 +1849,29 @@ fn enter_fn_value(
 #[inline]
 fn guard_comparator_write(flow: &Flow, what: &'static str) -> Result<(), RuntimeError> {
     if flow.pure_callback.depth > 0 && flow.exec_mode == ExecMode::Dev {
+        let verb = flow.pure_callback.verb;
         return Err(RuntimeError::ComparatorWroteState {
-            verb: flow.pure_callback.verb,
+            verb,
+            role: callback_role(verb),
             what,
         });
     }
     Ok(())
+}
+
+/// The author-facing noun for `verb`'s callee, shared by every
+/// [`RuntimeError::ComparatorEscaped`]/[`RuntimeError::ComparatorWroteState`]
+/// site: `"comparator"` for the NS-A4 pair (`sort_by`/`sorted_by`),
+/// `"callback"` for the fn-value verb trio (`map`/`filter`/`fold`, issue
+/// #1679). `call_pure_callback` and `guard_comparator_write` are shared
+/// across both families — this is what keeps a `map`/`filter`/`fold`
+/// author from being told they wrote a bad *comparator*.
+#[inline]
+fn callback_role(verb: &str) -> &'static str {
+    match verb {
+        "sort_by" | "sorted_by" => "comparator",
+        _ => "callback",
+    }
 }
 
 /// Per-comparator-call step budget for `sort_by`/`sorted_by` (NS-A4). The
@@ -1938,6 +1955,7 @@ fn enter_pure_callback(
     if flow.pure_callback.depth >= COMPARATOR_DEPTH_LIMIT {
         return Err(RuntimeError::ComparatorEscaped {
             verb,
+            role: callback_role(verb),
             what: "recursed past the nesting depth limit",
         });
     }
@@ -2240,6 +2258,7 @@ fn call_pure_callback<R: crate::rng::StoryRng>(
         flow.value_stack.push(v);
     }
 
+    let role = callback_role(verb);
     let mut steps = 0u64;
     let outcome: Result<(), RuntimeError> = loop {
         steps += 1;
@@ -2247,6 +2266,7 @@ fn call_pure_callback<R: crate::rng::StoryRng>(
         if steps > COMPARATOR_STEP_LIMIT {
             break Err(RuntimeError::ComparatorEscaped {
                 verb,
+                role,
                 what: "exceeded the nested evaluation step budget",
             });
         }
@@ -2258,12 +2278,14 @@ fn call_pure_callback<R: crate::rng::StoryRng>(
             Stepped::Done | Stepped::Ended => {
                 break Err(RuntimeError::ComparatorEscaped {
                     verb,
+                    role,
                     what: "reached `-> DONE`/`-> END`",
                 });
             }
             Stepped::ExternalCall => {
                 break Err(RuntimeError::ComparatorEscaped {
                     verb,
+                    role,
                     what: "called an external function",
                 });
             }
@@ -2272,6 +2294,7 @@ fn call_pure_callback<R: crate::rng::StoryRng>(
         if flow.pending_choices.len() > choice_floor {
             break Err(RuntimeError::ComparatorEscaped {
                 verb,
+                role,
                 what: "presented a choice",
             });
         }
@@ -2295,9 +2318,26 @@ fn call_pure_callback<R: crate::rng::StoryRng>(
             ret = v;
         }
     }
-    ret.ok_or(RuntimeError::ComparatorEscaped {
-        verb,
-        what: "returned no value",
+    ret.ok_or_else(|| {
+        // Pre-#1679, a comparator that fell off without returning was
+        // `ComparatorReturnType { found: "no return value" }` — folding it
+        // into the shared `ComparatorEscaped` "returned no value" case
+        // (below) would be an unannounced wording change on an
+        // already-shipped fault. Keep `sort_by`/`sorted_by` on the old
+        // variant; the trio's callbacks (first release, no established
+        // wording to preserve) take the shared `ComparatorEscaped` path.
+        if role == "comparator" {
+            RuntimeError::ComparatorReturnType {
+                verb,
+                found: "no return value",
+            }
+        } else {
+            RuntimeError::ComparatorEscaped {
+                verb,
+                role,
+                what: "returned no value",
+            }
+        }
     })
 }
 
@@ -2915,6 +2955,7 @@ mod tests {
                 err,
                 RuntimeError::ComparatorWroteState {
                     verb: "sort_by",
+                    role: "comparator",
                     what: "assigned a global variable",
                 }
             ),
@@ -2939,6 +2980,7 @@ mod tests {
                 err,
                 RuntimeError::ComparatorWroteState {
                     verb: "map",
+                    role: "callback",
                     what: "advanced the random number generator",
                 }
             ),
@@ -2986,6 +3028,7 @@ mod tests {
                 err,
                 RuntimeError::ComparatorEscaped {
                     verb: "filter",
+                    role: "callback",
                     what: "recursed past the nesting depth limit",
                 }
             ),
