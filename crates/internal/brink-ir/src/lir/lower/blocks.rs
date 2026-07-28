@@ -1183,6 +1183,28 @@ pub(super) fn try_lower_frame_local_auto_ref_stmt(
     let Some(root_slot) = ctx.temp_slot(&head_name) else {
         return false;
     };
+    // B1b (issue #1475): the same `ref`-bypasses-immutability hole
+    // `lower_ref_path_call_arg` and `lower_ref_projection_arg` both guard —
+    // this recognizer writes the receiver back into `root_slot` too (step
+    // 3 below), so an `as` binding must be refused here as well. Return
+    // `true` (handled) rather than `false`: falling through would let this
+    // same call reach `expr::lower_ref_projection_arg`'s frame-local guard
+    // instead, which emits the misleading "must be its own statement"
+    // `E143` — this call *is* its own statement; the real problem is the
+    // `as` binding's immutability.
+    if ctx.as_binding_slots.contains(&root_slot) {
+        ctx.diagnostics.push(Diagnostic {
+            file: ctx.file,
+            range: path.range,
+            message: format!(
+                "{}: `{head_name}` is an `as` binding — it is immutable and cannot be passed \
+                 by `ref`",
+                DiagnosticCode::E148.title(),
+            ),
+            code: DiagnosticCode::E148,
+        });
+        return true;
+    }
     let Some(target_info) = ctx.index.symbols.get(&target) else {
         // Structurally unreachable — `target` came from the analyzer's own
         // resolution against this same project index, exactly like

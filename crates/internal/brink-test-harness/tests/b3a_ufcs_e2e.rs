@@ -470,7 +470,18 @@ flow main() {
 }
 ",
     );
+    // Assert the new LIR guard's distinctive wording, not just "E143" — the
+    // analyzer refused this exact source with E143 even before the
+    // frame-local ruling relaxed the gate (a blanket "cannot mutate"
+    // refusal), so a bare code-only assertion can't tell the new
+    // statement-position guard apart from a regression back to that old
+    // blanket refusal. "its own statement" is unique to
+    // `expr::lower_ref_projection_arg`'s frame-local arm.
     assert!(err.contains("E143"), "expected E143, got: {err}");
+    assert!(
+        err.contains("its own statement"),
+        "expected the new LIR guard's statement-position wording, got: {err}"
+    );
 }
 
 /// The **positive** half of the durable-root rule, and the one arm of D5
