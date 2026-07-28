@@ -418,6 +418,8 @@ fn arb_opcode() -> impl Strategy<Value = Opcode> {
         Just(Opcode::SeqSortedBy),
         // NS-A8 numeric tower (#1114): one opcode, thirteen kinds.
         prop::sample::select(brink_format::TowerOp::ALL.as_slice()).prop_map(Opcode::Tower),
+        // The fn-value verbs (#1679): one opcode, one kind per verb.
+        prop::sample::select(brink_format::SeqVerbOp::ALL.as_slice()).prop_map(Opcode::SeqVerb),
     ]
 }
 
@@ -582,6 +584,7 @@ fn assert_opcode_variants_exhaustive(op: &Opcode) {
         | Opcode::SeqSortedBy
         | Opcode::Tower(_)
         | Opcode::Collect(_)
+        | Opcode::SeqVerb(_)
         | Opcode::Done
         | Opcode::Yield
         | Opcode::End

@@ -1554,6 +1554,43 @@ fn lower_t1b_stdlib_call(
                 cmp: Box::new(lower_expr(&args[1], ctx)),
             })
         }
+
+        // ── The fn-value verb layer (`docs/stdlib-spec.md` §4, issue
+        // #1679): the pure trio. All three are ordinary expressions — no
+        // statement/mutator twin exists, because the ruled naming law
+        // reserves the imperative spelling for in-place mutation and none
+        // of these mutates its receiver. The callbacks' pure·silent
+        // contract is enforced (where provable) by
+        // `brink_analyzer::comparator_contract`'s E119; the runtime ops
+        // carry the dispatch faults. ────────────────────────────────────
+        "map" => {
+            if !arity_ok(ctx, 2) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::SeqMap {
+                seq: Box::new(lower_expr(&args[0], ctx)),
+                f: Box::new(lower_expr(&args[1], ctx)),
+            })
+        }
+        "filter" => {
+            if !arity_ok(ctx, 2) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::SeqFilter {
+                seq: Box::new(lower_expr(&args[0], ctx)),
+                pred: Box::new(lower_expr(&args[1], ctx)),
+            })
+        }
+        "fold" => {
+            if !arity_ok(ctx, 3) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lir::Expr::SeqFold {
+                seq: Box::new(lower_expr(&args[0], ctx)),
+                init: Box::new(lower_expr(&args[1], ctx)),
+                f: Box::new(lower_expr(&args[2], ctx)),
+            })
+        }
         // `shuffled(a)` — the functional twin (§4's ruled naming
         // convention): evaluates its argument, returns a new shuffled
         // array; the argument itself is never written back.
@@ -1827,6 +1864,13 @@ pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
             | "cross"
             | "clamp"
             | "lerp"
+            // The fn-value verb layer (issue #1679, `docs/stdlib-spec.md`
+            // §4): the pure trio, callbacks pure-required per the
+            // 2026-07-18 ruling. `filter_map` and the effectful spellings
+            // `each`/`map_each` are later slices of the same issue.
+            | "map"
+            | "filter"
+            | "fold"
     )
 }
 

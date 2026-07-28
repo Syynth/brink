@@ -398,11 +398,13 @@ pub(crate) fn await_purity_diagnostics_query(
 }
 
 /// One file's NS-A4 comparator-contract diagnostics (E119,
-/// docs/stdlib-spec.md §4b, issue #1110): `sort_by`/`sorted_by` calls whose
-/// inline `#fn(target)` comparator's row provably exceeds pure·silent.
-/// Brink-only + lazy, the exact [`await_purity_diagnostics_query`] shape: a
-/// file with no such site never fetches a single per-def effect row, so a
-/// comparator-free project stays effect-inference-free.
+/// docs/stdlib-spec.md §4b, issue #1110 — extended to the fn-value verb
+/// trio `map`/`filter`/`fold` by issue #1679, §4): `sort_by`/`sorted_by`/
+/// `map`/`filter`/`fold` calls whose inline `#fn(target)` callback's row
+/// provably exceeds pure·silent. Brink-only + lazy, the exact
+/// [`await_purity_diagnostics_query`] shape: a file with no such site never
+/// fetches a single per-def effect row, so a callback-free project stays
+/// effect-inference-free.
 ///
 /// `lru = 4096`: per-file runaway-guard ceiling (issue #647).
 #[salsa::tracked(lru = 4096)]
@@ -557,9 +559,11 @@ pub(crate) fn whole_project_diagnostics_query(
         );
     }
     // NS-A4 comparator-contract gate (E119, docs/stdlib-spec.md §4b, issue
-    // #1110) — per-file, lazy (see `comparator_contract_diagnostics_query`'s
-    // doc): a project with no inline-`#fn` comparator site never triggers
-    // effect inference here.
+    // #1110 — extended to the fn-value verb trio `map`/`filter`/`fold` by
+    // issue #1679, §4) — per-file, lazy (see
+    // `comparator_contract_diagnostics_query`'s doc): a project with no
+    // inline-`#fn` comparator/callback site never triggers effect
+    // inference here.
     for file in project.files(db) {
         diagnostics.extend(
             comparator_contract_diagnostics_query(db, project, *file)

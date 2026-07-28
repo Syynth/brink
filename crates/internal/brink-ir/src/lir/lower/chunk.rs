@@ -360,9 +360,20 @@ fn remap_expr(expr: &mut lir::Expr, map: &[NameId]) {
         | Expr::RandRoll(e)
         | Expr::HeapPeek(e) => remap_expr(e, map),
 
-        Expr::SeqSortedBy { seq, cmp: second } | Expr::HeapPush { seq, value: second } => {
+        // Two-subexpression seq walks: the NS-A4 comparator verb, NS-A7's
+        // heap entry, and the fn-value verbs' `(array, callback)` pair
+        // (#1679).
+        Expr::SeqSortedBy { seq, cmp: second }
+        | Expr::HeapPush { seq, value: second }
+        | Expr::SeqMap { seq, f: second }
+        | Expr::SeqFilter { seq, pred: second } => {
             remap_expr(seq, map);
             remap_expr(second, map);
+        }
+        Expr::SeqFold { seq, init, f } => {
+            remap_expr(seq, map);
+            remap_expr(init, map);
+            remap_expr(f, map);
         }
         Expr::RangeMake { start, end, .. } => {
             remap_expr(start, map);

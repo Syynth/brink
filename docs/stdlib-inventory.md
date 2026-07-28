@@ -38,7 +38,11 @@ still open.
 > — A7). **Allocated opcodes**: 0xDE/0xDF (`PushNone`/`MakeSome`),
 > 0xE2–0xEB (NS-A1 verb flips), 0xEC–0xEF (NS-A6 rand draws; `seed`
 > reuses frozen `SeedRandom` 0x85), 0xFA (`Collect` — NS-A7 weighted +
-> heap family, one opcode + kind byte per the 0xF7 `Tower` economy).
+> heap family, one opcode + kind byte per the 0xF7 `Tower` economy),
+> 0xA1 (`SeqVerb` — the fn-value verb layer, issue #1679; the same
+> one-opcode-plus-kind-byte economy, taking the first byte of the
+> `0xA1`-`0xAF` run rather than the high tail's last free byte `0xFF`,
+> which stays unclaimed for a future extended-opcode prefix).
 >
 > **As-built caveats**: (1) A1 shipped falsy-`none` truthiness; the
 > queue's **F27 ruling (2026-07-19) supersedes it** — Option has NO
@@ -262,14 +266,32 @@ scalar-element verbs.
 | `insert` | `fn insert(ref a: [T], i: int, x: T): void` | seq | · | lval | `F:oob` | — | — | ✅ |
 | `remove_at` | `fn remove_at(ref a: [T], i: int): void` (issue #1484, 2026-07-26 ruling: renamed off `remove` — one name spanning a faulting index-claim and a total identity-removal was accidental; F5b's open return-type question is resolved by the shipped shape: `void`, matching the other `remove`s, not the element) | seq | · | lval | `F:oob` | — | — | ✅ (0xFD) |
 | `each` | `fn each(a: [T], f: fn(T): void): void` | seq | · | val | `⊕f` (writes/emits/tags/faults all compose) | — | — | 🔜 |
-| `map` | `fn map(a: [T], f: fn(T): U): [U]` | seq | · | val | `⊕f` (reads+faults only; f pure-required) | — | — | 🔜 |
-| `filter` | `fn filter(a: [T], pred: fn(T): bool): [T]` | seq | · | val | `⊕pred` (pure-required) | — | — | 🔜 |
-| `fold` | `fn fold(a: [T], init: U, f: fn(U,T): U): U` | seq | · | val | `⊕f` (pure-required) | — | — | 🔜 |
+| `map` | `fn map(a: [T], f: fn(T): U): [U]` | seq | · | val | `⊕f` (reads+faults only; f pure-required) | — | — | ✅ (0xA1 `SeqVerb(map)`) |
+| `filter` | `fn filter(a: [T], pred: fn(T): bool): [T]` | seq | · | val | `⊕pred` (pure-required) | — | — | ✅ (0xA1 `SeqVerb(filter)`) |
+| `fold` | `fn fold(a: [T], init: U, f: fn(U,T): U): U` | seq | · | val | `⊕f` (pure-required) | — | — | ✅ (0xA1 `SeqVerb(fold)`) |
 | `filter_map` | `fn filter_map(a: [T], f: fn(T): Option[U]): [U]` | seq | · | val | `⊕f` (pure-required) ⚠F9 | callback returns Option | — | 🔜 |
 | `map_each` | `fn map_each(a: [T], f: fn(T): U): [U]` | seq | · | val | `⊕f` (full: writes/emits/tags; sequential, never fused) | — | — | 🔜 |
 
-Unmarked-🔜 seq verbs (slice/concat/reverse/reversed + the trio and its
+Unmarked-🔜 seq verbs (slice/concat/reverse/reversed + `filter_map` and the
 effectful spellings) are not pinned to a Track A wave (unsequenced).
+
+**The pure trio shipped 2026-07-28 (issue #1679, first slice)** —
+`map`/`filter`/`fold` dispatch on main through `SeqVerb` (0xA1), with the
+callbacks' pure·silent contract enforced by E119's gate, generalized off
+`sort_by` (`brink-analyzer/src/comparator_contract.rs`). `filter_map` and
+the effectful spellings `each`/`map_each` remain unbuilt — the same issue's
+later slices. Two as-built notes:
+
+- **The only callable fn value is `#fn(target)` / `bind(…)`.** Lambdas
+  (`|x| …`) parse and lower to HIR (#1685) but stop at the LIR codegen
+  fence (`lir::lower::expr::lower_lambda_fence`, E052) — lambda lifting is
+  still owed, so an author cannot yet pass an anonymous callback to these
+  verbs.
+- **"Pure-required" is only enforceable where the callback's origin is
+  syntactically visible** — an inline `#fn(target)`. `Ty::Fn` carries no
+  effect rows (#1680), so a callback routed through a variable is
+  unjudgeable; the dev-mode world-write guard and the ops' output isolation
+  are the runtime residual.
 
 **🔶 `for ref m in maps { m[k] = v }`** — mutating iteration (loop form,
 not a verb; index-desugar over RMW; #829 projections stay icebox).
@@ -521,7 +543,7 @@ the way `nonempty()` killed the range construction-fault residual.
 | math scalar (§1) | 20 | 0 | + 2 constants (PI, TAU); `/`,`%` operators frozen; unsequenced |
 | numeric tower (§2b) | 2 verbs (`dot`,`cross`) + operators + 4 tower-wide (min/max/clamp/lerp) | 0 | mini-spec RULED (F24, `docs/tower-mini-spec.md`); all → A8 |
 | text (§3) | 14 | 4 (`len contains char_at find`) | rest unsequenced |
-| seq (§4) | 25 | 11 (`len contains index_of min max first last push pop insert remove`) | incl. trio + `each`/`map_each`/`filter_map` + `sorted_by` (F0 ruling); `reverse` per naming convention ⚠F26; `sort`/`sort_by`/`sorted`/`sorted_by` → A4 |
+| seq (§4) | 25 | 11 (`len contains index_of min max first last push pop insert remove`) + the pure trio (`map filter fold`, #1679) | incl. trio + `each`/`map_each`/`filter_map` + `sorted_by` (F0 ruling); `reverse` per naming convention ⚠F26; `sort`/`sort_by`/`sorted`/`sorted_by` → A4 |
 | maps (§5) | 8 | 7 (`len keys values get contains_value remove clear`) | `contains_key` not dispatched; `insert` reserved (never ships); 2 operators built |
 | flags (§6) | 14 | 0 | unsequenced (frozen LIST ops remain the surface) |
 | rand (§7) | 8 + `nonempty` validator | 8 (`float chance pick shuffle shuffled seed` + A5's `int(range)`/`non_empty` + A7's `roll`) | — |

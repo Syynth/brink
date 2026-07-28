@@ -3009,7 +3009,7 @@ mod tower_tests {
             did_safe_exit: false,
             did_unsafe_yield: false,
             exec_mode: crate::story::ExecMode::default(),
-            comparator_depth: 0,
+            pure_callback: crate::story::PureCallbackState::default(),
         };
         flow.value_stack
             .push(Value::array(vec![v2(1.0, 2.0), v2(3.0, 4.0)]));
