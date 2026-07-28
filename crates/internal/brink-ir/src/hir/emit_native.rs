@@ -1425,6 +1425,51 @@ mod tests {
         assert_eq!(hir.imports[2].items[1].alias, None);
     }
 
+    /// Issue #1685: the `Expr::Lambda` arm added to `emit_expr` is
+    /// reachable from a top-level `var` initializer
+    /// (`a_lambda_lowers_in_a_top_level_var_initializer_too`,
+    /// `crates/internal/brink-ir/tests/native_lambdas.rs`) — every other
+    /// emit shape added to this file got a round-trip test right here
+    /// (`fn_type_annotation_round_trips`, `stitch_return_type_round_trips`,
+    /// `conditional_as_binding_round_trips`, `use_and_import_round_trip`),
+    /// so the lambda arm needs one too, pinned on the trickiest spelling:
+    /// an *annotated* expression body, where the ruled `:` return clause
+    /// sits immediately before the unbraced body with no other separator
+    /// (`|x: int|: int x + 1`) — the shape most likely to re-parse wrong.
+    #[test]
+    fn lambda_with_annotated_expr_body_round_trips() {
+        let src = "var add = |x: int|: int x + 1\n";
+        let emitted = lower_and_emit(src).expect("annotated lambda expr body must emit");
+        assert!(
+            emitted.contains("|x: int|: int"),
+            "expected the emitted source to spell the param + return annotations back out:\n{emitted}"
+        );
+
+        let hir = reparse_and_lower(&emitted);
+        let Expr::Lambda(lambda) = &hir.variables.first().expect("one var").value else {
+            panic!(
+                "re-lowered var initializer lost its lambda: {:?}",
+                hir.variables
+            );
+        };
+        assert_eq!(lambda.params.len(), 1);
+        assert!(
+            matches!(&lambda.params[0].annotation, Some(TypeExpr::Named { name, .. }) if name == "int"),
+            "re-lowered lambda lost its param annotation: {:?}",
+            lambda.params[0].annotation
+        );
+        assert!(
+            matches!(&lambda.return_type, Some(TypeExpr::Named { name, .. }) if name == "int"),
+            "re-lowered lambda lost its return annotation: {:?}",
+            lambda.return_type
+        );
+        assert!(
+            matches!(&lambda.body, LambdaBody::Expr(_)),
+            "re-lowered lambda lost its expression body: {:?}",
+            lambda.body
+        );
+    }
+
     /// Issue #1614/#1161: `HirFile::allow_scopes` carries a `(range,
     /// codes)` fact with no pointer back to the declaration it decorates —
     /// this emitter has no way to re-place the `@[allow(…)]` line, so a

@@ -269,6 +269,22 @@ fn compile_path_native_lambda_reports_the_codegen_fence_not_the_unsupported_fenc
         !codes.contains(&"E129"),
         "the lambda must no longer hit the blanket unsupported-construct fence: {codes:?}"
     );
+    // E052 is a generic "brink extension not yet implemented" title shared
+    // with the `#fn` and `ref` fences (`hir::diagnostics::DiagnosticCode`),
+    // so asserting the code alone would let this test go green on a
+    // completely different unimplemented-extension fence. Pin the lambda
+    // codegen fence's own distinctive message
+    // (`lir::lower::expr::lower_lambda_fence`) so this test can only pass
+    // for the lambda path.
+    let brink_compiler::CompileError::Diagnostics(diags) = &err else {
+        panic!("expected CompileError::Diagnostics, got {err:?}");
+    };
+    assert!(
+        diags.iter().any(|d| d.code.as_str() == "E052"
+            && d.message.contains("lambdas")
+            && d.message.contains("have no runtime representation yet")),
+        "expected the lambda-specific E052 message, got: {diags:?}"
+    );
 }
 
 /// A `target/` subdirectory sitting next to a valid `.brink` entry, holding
