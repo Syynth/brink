@@ -47,6 +47,8 @@ mod bare_var_reference_nested_in_declaration_default;
 mod basic_content;
 #[path = "lir_lowering/block_scoped_temp_read_after_block_closes.rs"]
 mod block_scoped_temp_read_after_block_closes;
+#[path = "lir_lowering/branch_expansion.rs"]
+mod branch_expansion;
 #[path = "lir_lowering/break_continue_outside_loop.rs"]
 mod break_continue_outside_loop;
 #[path = "lir_lowering/builtin_functions.rs"]

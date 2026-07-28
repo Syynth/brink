@@ -1161,23 +1161,36 @@ fn intercept_agree_choice_diverts_to_correct_gather() {
     // The Agree choice body should divert to the gather that contains
     // the {teacup: <>, sipping...} conditional. In the .inkt, the
     // Agree body ends with `goto $container` and that container should
-    // contain `emit_line 69` (the "sipping" text).
+    // contain `emit_line 51` (the "sipping" text).
     //
     // This test compiles TheIntercept, dumps the .inkt, and verifies
     // that the goto target from the "Awkward" container leads to a
     // container that references the "sipping" line.
+    //
+    // The line-table indices here are whole-story ordinals, not stable
+    // identifiers — issue #1667's compile-time branch-expansion fix
+    // (normalize.rs::extend_merging_text) shrank the earlier part of
+    // TheIntercept's line table by consolidating spliced inline-
+    // conditional branches from several `EmitContent` fragments into one
+    // recognized `Plain`/`Template` entry each, shifting "Awkward," from
+    // 62 to 44 and "sipping" from 69 to 51 (the 7-line gap between them
+    // is unchanged — this fix doesn't touch anything *between* those two
+    // lines, only *before* them). The oracle comparison confirms
+    // TheIntercept's actual compiled/rendered output is unaffected by the
+    // fix (`docs/decision-log.md`, PR body for #1667) — only these
+    // hardcoded ordinals needed updating.
     let data = compile_intercept();
     let inkt = dump_inkt(&data);
 
     let lines: Vec<&str> = inkt.lines().collect();
 
-    // Find the container with emit_line 62 ("Awkward," I reply)
+    // Find the container with emit_line 44 ("Awkward," I reply)
     // and extract its goto target.
     let mut goto_target = None;
     let mut in_awkward_container = false;
     for line in &lines {
         let trimmed = line.trim();
-        if trimmed.contains("emit_line 62 ") {
+        if trimmed.contains("emit_line 44 ") {
             in_awkward_container = true;
         }
         if in_awkward_container && trimmed.starts_with("goto ") {
@@ -1190,10 +1203,10 @@ fn intercept_agree_choice_diverts_to_correct_gather() {
         }
     }
 
-    let target = goto_target.expect("Agree choice body should have a goto after emit_line 62");
+    let target = goto_target.expect("Agree choice body should have a goto after emit_line 44");
     println!("Agree choice goto target: {target}");
 
-    // Now find the target container and check it references emit_line 69
+    // Now find the target container and check it references emit_line 51
     // (the "sipping" text) or enters a sub-container that does.
     let target_header = format!("(container {target}");
     let mut in_target = false;
@@ -1205,7 +1218,7 @@ fn intercept_agree_choice_diverts_to_correct_gather() {
             continue;
         }
         if in_target {
-            if trimmed.contains("emit_line 69") {
+            if trimmed.contains("emit_line 51") {
                 has_sipping_or_enters_conditional = true;
                 break;
             }
@@ -1223,7 +1236,7 @@ fn intercept_agree_choice_diverts_to_correct_gather() {
 
     assert!(
         has_sipping_or_enters_conditional,
-        "Agree choice goto target {target} should contain emit_line 69 (sipping) \
+        "Agree choice goto target {target} should contain emit_line 51 (sipping) \
          or enter_container for the teacup conditional, but it doesn't. \
          The gather target is wrong — the choice diverts to the wrong place.",
     );
@@ -1232,10 +1245,16 @@ fn intercept_agree_choice_diverts_to_correct_gather() {
 #[test]
 fn intercept_agree_body_goto_resolves_to_correct_linked_container() {
     // Verify at the bytecode/linker level:
-    // 1. Find the container whose line table entry 62 is "Awkward," I reply
+    // 1. Find the container whose line table entry 44 is "Awkward," I reply
     // 2. Decode its bytecode to find the Goto opcode
     // 3. Verify the Goto's DefinitionId resolves to a container that
-    //    contains the teacup conditional (enter_container or emit_line 69)
+    //    contains the teacup conditional (enter_container or emit_line 51)
+    //
+    // (Line-table ordinals 44/51, not the original 62/69 — see the sibling
+    // test's doc comment: issue #1667's branch-expansion fix shrank the
+    // earlier part of TheIntercept's line table by consolidating spliced
+    // inline-conditional branches into single recognized entries, shifting
+    // every later ordinal down by the same fixed amount.)
     let data = compile_intercept();
     let (program, _line_tables) = brink_runtime::link(&data).expect("link failed");
 
@@ -1243,11 +1262,10 @@ fn intercept_agree_body_goto_resolves_to_correct_linked_container() {
     // DefinitionId, then verify the linking at the bytecode level.
     let inkt = dump_inkt(&data);
 
-    // From the .inkt, the Agree body container ($01_a67b2466500645) ends with
-    // goto $01_cadfa2d17d7ec8. The gather ($01_cadfa2d17d7ec8) should contain
-    // enter_container for the teacup conditional.
+    // From the .inkt, the Agree body container ends with `goto $gather`. The
+    // gather should contain enter_container for the teacup conditional.
     //
-    // Find the Agree body container by looking for the one with emit_line 62.
+    // Find the Agree body container by looking for the one with emit_line 44.
     // Then decode its bytecode to extract the Goto DefinitionId and verify
     // it resolves to the expected gather.
 
@@ -1255,17 +1273,17 @@ fn intercept_agree_body_goto_resolves_to_correct_linked_container() {
     let mut agree_goto_id = None;
     for cdef in &data.containers {
         let mut offset = 0;
-        let mut has_emit_line_62 = false;
+        let mut has_emit_line_44 = false;
         let mut last_goto = None;
         while offset < cdef.bytecode.len() {
             match brink_format::Opcode::decode(&cdef.bytecode, &mut offset) {
-                Ok(brink_format::Opcode::EmitLine(62, _)) => has_emit_line_62 = true,
+                Ok(brink_format::Opcode::EmitLine(44, _)) => has_emit_line_44 = true,
                 Ok(brink_format::Opcode::Goto(id)) => last_goto = Some(id),
                 Ok(_) => {}
                 Err(_) => break,
             }
         }
-        if has_emit_line_62 {
+        if has_emit_line_44 {
             agree_goto_id = last_goto;
             println!(
                 "Agree body: container id={:?}, goto target={last_goto:?}",
@@ -1276,7 +1294,7 @@ fn intercept_agree_body_goto_resolves_to_correct_linked_container() {
     }
 
     let goto_def_id =
-        agree_goto_id.expect("Agree choice body should have a Goto after EmitLine(62)");
+        agree_goto_id.expect("Agree choice body should have a Goto after EmitLine(44)");
 
     // Step 2: Verify the Goto resolves in the linked program
     let resolved = program.resolve_address(goto_def_id);
@@ -1429,25 +1447,29 @@ fn intercept_step23_opcode_trace() {
     }
 
     // Find the ACTUAL teacup conditional body — the container with
-    // push_bool true / set_global drugged / glue / emit_line 69
+    // push_bool true / set_global drugged / glue / emit_line 51 (see
+    // intercept_agree_choice_diverts_to_correct_gather's doc comment for
+    // why this is 51, not the original 69 — issue #1667). No assertions in
+    // this function — pure diagnostic trace — but kept in sync so its
+    // printed output stays meaningful.
     println!("\n=== Searching for teacup conditional body ===");
     for (i, cdef) in data.containers.iter().enumerate() {
         let mut off2 = 0;
         let mut has_set_global = false;
         let mut has_glue = false;
-        let mut has_emit_line_69 = false;
+        let mut has_emit_line_51 = false;
         while off2 < cdef.bytecode.len() {
             match brink_format::Opcode::decode(&cdef.bytecode, &mut off2) {
                 Ok(brink_format::Opcode::SetGlobal(_)) => has_set_global = true,
                 Ok(brink_format::Opcode::Glue) => has_glue = true,
-                Ok(brink_format::Opcode::EmitLine(69, _)) => has_emit_line_69 = true,
+                Ok(brink_format::Opcode::EmitLine(51, _)) => has_emit_line_51 = true,
                 Ok(_) => {}
                 Err(_) => break,
             }
         }
-        if has_emit_line_69 && has_glue {
+        if has_emit_line_51 && has_glue {
             println!(
-                "container {i}: id={:?} has SetGlobal={has_set_global} Glue={has_glue} EmitLine(69)={has_emit_line_69}",
+                "container {i}: id={:?} has SetGlobal={has_set_global} Glue={has_glue} EmitLine(51)={has_emit_line_51}",
                 cdef.id,
             );
         }
