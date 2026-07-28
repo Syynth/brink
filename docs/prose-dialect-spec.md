@@ -222,8 +222,9 @@ fn radio(chan: string, text: content) {
 
 - **Sigil + name dispatch (RULED, addendum 3).** Annotation elements
   live behind the `!` sigil: `!name args…`. The first identifier
-  dispatches **by name** to the annotated fn (fn name, or an alias in
-  the annotation); the `args` pattern parses only the remainder,
+  dispatches **by name** to the annotated fn (fn name, or an alias
+  given by `@[element(name = "alias")]`); the `args` pattern parses
+  only the remainder,
   binding captures to params. Rationale: without a sigil, a user
   pattern can silently claim natural prose — declared, but *invisible
   at the use site*; the sigil makes every rewritten line
@@ -288,7 +289,12 @@ fn radio(chan: string, text: content) {
   captures-bind-params-by-name compile check, all in
   `brink_ir::hir::lower_native::annotation`; nothing dispatches yet);
   cross-file dispatch-name resolution and the duplicate-dispatch-name
-  check (v1 validates one declaration at a time).
+  check (v1 validates one declaration at a time); **multi-token style
+  values** — issue #1719's `@[style(key = "value")]` value is a single
+  presentation token today (one `StyleToken` per key), not the
+  space-separated list this section's own screenplay preset describes
+  (`[right, uppercase]`, `[uppercase]`); a `key = "a b"` value lowers to
+  one `StyleToken::Custom("a b")` rather than two tokens.
 - **Staging**: v1 = built-in screenplay preset + `!`-dispatched
   annotations (zero comptime); the §3.5 conventions-module evaluation
   arrives later for authoring full custom presets.
