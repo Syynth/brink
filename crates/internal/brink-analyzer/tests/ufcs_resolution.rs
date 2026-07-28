@@ -589,11 +589,15 @@ fn main() {
     );
 }
 
-/// The projection desugar inherits T1e's durable-root rule (`docs/
-/// t1e-spec.md` §2, the `E080` rule the explicitly spelled form obeys): a
-/// projection whose root is a frame-local has no representation at all.
+/// **RULED 2026-07-27** (issue #1531, `docs/decision-log.md`): a projection
+/// whose root is a frame-local is a legal `ref`-first-param receiver, one
+/// field level deep — a frame-local cell is a valid projection root, and
+/// the mutation needs no effect row (unobservable outside the frame). The
+/// analyzer records the ordinary `FreeFnAutoRef` verdict; LIR lowering
+/// (`brink_ir::lir::lower::blocks::try_lower_frame_local_auto_ref_stmt`) is
+/// what supplies the actual (non-`RefProjection`) lowering for it.
 #[test]
-fn a_projection_off_a_frame_local_under_a_ref_first_param_is_refused() {
+fn a_projection_off_a_frame_local_under_a_ref_first_param_is_accepted() {
     let (hir, manifest) = lower(
         "\
 struct Guest {
@@ -610,12 +614,48 @@ fn main() {
 }
 ",
     );
+    let verdicts = verdicts(&hir, &manifest);
+    assert_eq!(verdicts.len(), 1, "one UFCS site: {verdicts:?}");
+    assert!(matches!(verdicts[0], UfcsVerdict::FreeFnAutoRef { .. }));
+    assert!(
+        !codes(&diagnostics(&hir, &manifest)).contains(&DiagnosticCode::E143),
+        "a single-field-deep frame-local projection is a legal receiver"
+    );
+}
+
+/// The ruling's own boundary: the analyzer gate only clears a frame-local
+/// projection **one field level deep** — LIR's RMW expansion for it is
+/// statement-shaped and single-level, the same boundary plain assignment
+/// draws (`try_lower_field_assignment`'s `E074`). A deeper chain off a
+/// frame-local still refuses.
+#[test]
+fn a_two_field_deep_projection_off_a_frame_local_under_a_ref_first_param_is_refused() {
+    let (hir, manifest) = lower(
+        "\
+struct Hp {
+  current: int
+}
+
+struct Guest {
+  hp: Hp
+}
+
+fn heal(ref h, amount) {
+  h = h + amount;
+}
+
+fn main() {
+  let g = Guest { hp: Hp { current: 1 } };
+  g.hp.current.heal(5);
+}
+",
+    );
     assert!(verdicts(&hir, &manifest).is_empty());
     let diags = diagnostics(&hir, &manifest);
     let e143 = only(&diags, DiagnosticCode::E143);
     assert!(
-        e143.message.contains("cannot mutate") && e143.message.contains("durable"),
-        "E143 must name the durable-root rule: {}",
+        e143.message.contains("cannot mutate") && e143.message.contains("one field"),
+        "E143 must name the field-depth rule: {}",
         e143.message
     );
 }

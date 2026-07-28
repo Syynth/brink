@@ -1254,6 +1254,18 @@ fn lower_block_with_children(
                 pos += 1;
             }
 
+            // A classic (non-block) frame-local projection auto-ref
+            // (`g.hp.heal(5)`, issue #1531) — same RMW splicing the block
+            // form (`blocks::lower_block_stmt`'s `ExprStmt` arm) uses, and
+            // for the same reason: the read/call/write-back sequence needs
+            // more than one `lir::Stmt`.
+            hir::Stmt::ExprStmt(expr)
+                if blocks::try_lower_frame_local_auto_ref_stmt(expr, ctx, &mut stmts) =>
+            {
+                children.append(&mut ctx.pending_children);
+                pos += 1;
+            }
+
             _ => {
                 if let Some(s) = stmts::lower_stmt(stmt, ctx) {
                     stmts.push(s);
