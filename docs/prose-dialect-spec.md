@@ -278,7 +278,17 @@ fn radio(chan: string, text: content) {
   shows the handler's signature and body; the explain-match query
   answers is/isn't-matched + what bound.
 - **Deferred**: numeric capture coercion; context injection (handlers
-  reading attachment data); `Option` params for optional captures.
+  reading attachment data); `Option` params for optional captures;
+  `content`-typed captures (the type does not exist in the native type
+  system yet — the ruled `fn radio(chan: string, text: content)` example's
+  `text` param is out of reach until it lands); the `!name` sigil dispatch
+  rewrite itself (matching a content line, binding captures, lowering to a
+  call — issue #1719 delivered the `@[element]`/`@[style]` **declaration
+  surface** only: parsing, portable-regex validation, and the
+  captures-bind-params-by-name compile check, all in
+  `brink_ir::hir::lower_native::annotation`; nothing dispatches yet);
+  cross-file dispatch-name resolution and the duplicate-dispatch-name
+  check (v1 validates one declaration at a time).
 - **Staging**: v1 = built-in screenplay preset + `!`-dispatched
   annotations (zero comptime); the §3.5 conventions-module evaluation
   arrives later for authoring full custom presets.

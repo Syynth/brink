@@ -85,6 +85,10 @@ pub(super) fn lower_knot(
         stitches,
         is_local,
         effects_assertion,
+        // Native-only annotations (issue #1719) — ink has no `@[element]`/
+        // `@[style]` equivalent tag.
+        element_annotation: None,
+        style_annotation: None,
         return_type,
         doc,
         visibility,

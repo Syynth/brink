@@ -1240,6 +1240,46 @@ pub enum DiagnosticCode {
     /// this refuses them at compile time instead of shipping a broken
     /// call.
     E158,
+
+    // ── `@[element]` / `@[style]` declaration surface (issue #1719,
+    //    `docs/prose-dialect-spec.md` §3.5b sitting 4 addenda 2–4) ───────
+    /// An `@[element(…)]` annotation whose `args` clause is missing, or
+    /// whose value is not a quoted string, or whose value does not compile
+    /// as a portable-regex pattern (`regex::Regex::new`).
+    ///
+    /// The grammar counterpart of `E100`/`E155` on the `@[effects]`/
+    /// `@[allow]` channels: the annotation parses as an annotation but
+    /// declares a pattern this channel can't act on.
+    E159,
+    /// An `@[element(args = "…")]` pattern's named capture group does not
+    /// match the name of any parameter on the annotated declaration.
+    ///
+    /// The capture contract (§3.5b: "named captures bind params by name
+    /// (compile-checked)") is enforced here, at the declaration, rather
+    /// than deferred to the `!name` dispatch site — a capture that can
+    /// never bind anything is a static defect in the pattern itself, not
+    /// a per-call-site concern.
+    E160,
+    /// An `@[style(…)]` clause is not the `key = "value"` shape (a bare
+    /// identifier, a nested paren-clause, or a non-string value), or the
+    /// argument list is missing or empty.
+    E161,
+    /// An `@[style(…)]` clause's key is neither `line`, `dispatch`, nor
+    /// the name of a named capture group in the paired `@[element(…)]`
+    /// pattern on the same declaration.
+    ///
+    /// Validated against the real capture set rather than accepted
+    /// blind — a typo'd key would otherwise silently style nothing
+    /// (`CLAUDE.md` "flag silent data drops").
+    E162,
+    /// An `@[style(…)]` annotation with no paired `@[element(…)]` on the
+    /// same declaration.
+    ///
+    /// `@[style]` is a *companion* annotation (§3.5b addendum 4): its keys
+    /// name `@[element]`'s captures (plus the two special keys, `line` and
+    /// `dispatch`), so a style declaration with nothing to style against
+    /// is malformed rather than silently inert.
+    E163,
 }
 
 impl DiagnosticCode {
@@ -1409,6 +1449,11 @@ impl DiagnosticCode {
             Self::E156 => "E156",
             Self::E157 => "E157",
             Self::E158 => "E158",
+            Self::E159 => "E159",
+            Self::E160 => "E160",
+            Self::E161 => "E161",
+            Self::E162 => "E162",
+            Self::E163 => "E163",
         }
     }
 
@@ -1654,6 +1699,19 @@ impl DiagnosticCode {
             Self::E158 => {
                 "a lambda cannot capture this local here — most likely its own `let` name read recursively, before the `let` finishes binding"
             }
+            Self::E159 => {
+                "`@[element(…)]` needs an `args = \"…\"` clause whose value compiles as a portable-regex pattern"
+            }
+            Self::E160 => {
+                "`@[element(…)]`'s pattern names a capture group that does not match any parameter on the annotated declaration"
+            }
+            Self::E161 => {
+                "`@[style(…)]` clauses must be `key = \"value\"` pairs, e.g. `@[style(line = \"dim\")]`"
+            }
+            Self::E162 => {
+                "`@[style(…)]` names a key that is neither `line`, `dispatch`, nor a capture declared by the paired `@[element(…)]`"
+            }
+            Self::E163 => "`@[style(…)]` needs a paired `@[element(…)]` on the same declaration",
         }
     }
 
@@ -1860,6 +1918,11 @@ impl DiagnosticCode {
             "E156" => Some(Self::E156),
             "E157" => Some(Self::E157),
             "E158" => Some(Self::E158),
+            "E159" => Some(Self::E159),
+            "E160" => Some(Self::E160),
+            "E161" => Some(Self::E161),
+            "E162" => Some(Self::E162),
+            "E163" => Some(Self::E163),
             _ => None,
         }
     }

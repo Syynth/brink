@@ -195,6 +195,105 @@ pub struct EffectsAssertion {
     pub range: TextRange,
 }
 
+/// An `@[element(args = "…")]` per-declaration annotation (issue #1719,
+/// `docs/prose-dialect-spec.md` §3.5b) — the **declaration surface** for
+/// the prose-dialect "second authoring surface": a `!name`-dispatched
+/// content line rewrites to a call on the annotated `fn`/`flow`, with the
+/// pattern's named captures binding params by name.
+///
+/// This struct carries only what the annotation *declares*; the `!name`
+/// dispatch rewrite itself (matching a content line against `pattern`,
+/// binding captures, and lowering to a call) is not implemented by this
+/// slice — see the module doc on [`crate::hir::lower_native::annotation`]
+/// for why, and `docs/prose-dialect-spec.md` §3.5b's Deferred list, which
+/// this issue adds to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ElementAnnotation {
+    /// The portable-regex source text of the `args = "…"` clause, anchored
+    /// against the dispatched line's remainder (after the `!name ` prefix
+    /// is stripped). Not yet compiled here — `regex::Regex::new` is only
+    /// used to *validate* the pattern at lowering time (`E159`); nothing
+    /// downstream of this struct owns a live `Regex` yet.
+    pub pattern: String,
+    /// `pattern`'s named capture groups, in the order `regex::Regex::
+    /// capture_names` yields them — the set a paired `@[style(…)]`'s keys
+    /// are validated against (`E162`), and (once the `!name` dispatch
+    /// rewrite lands) the set that binds the annotated declaration's
+    /// params by name.
+    pub captures: Vec<String>,
+    /// An explicit dispatch-name alias (`name = "…"` in the same
+    /// annotation), overriding the fn/flow's own name as the `!`-sigil
+    /// dispatch key. `None` when the declaration's own name is the
+    /// dispatch name.
+    pub alias: Option<String>,
+    /// Source range of the whole `@[element(…)]` annotation line.
+    pub range: TextRange,
+}
+
+/// A built-in editor-presentation token (`docs/prose-dialect-spec.md`
+/// §3.5b addenda 3–4) — the closed, LSP-semantic-token-style vocabulary
+/// every conforming editor implements natively. Anything outside this
+/// closed set is [`StyleToken::Custom`], never a diagnostic: "any other
+/// name is a custom hook emitting a stable `brink-*` class for host CSS."
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StyleToken {
+    /// `left` / `center` / `right` — line alignment.
+    AlignLeft,
+    AlignCenter,
+    AlignRight,
+    /// `bold` / `italic` / `dim` / `mono` — emphasis.
+    Bold,
+    Italic,
+    Dim,
+    Mono,
+    /// `uppercase` — the one built-in case transform.
+    Uppercase,
+    /// `conceal` — rides the shipped hidden-span/atomic-range machinery;
+    /// also the declared spelling for hiding the `!name` dispatch prefix.
+    Conceal,
+    /// A raw hex color (`#rgb` or `#rrggbb`) — "a basic theme-overridable
+    /// default." The narrow, unambiguous shape this v1 recognizes; any
+    /// other spelling (a named CSS color, a preset reference) is a
+    /// [`StyleToken::Custom`] hook instead, per the spec's own fallback
+    /// rule — no closed color-keyword list is invented here.
+    Color(String),
+    /// Any name outside the built-in vocabulary: "a custom hook emitting a
+    /// stable `brink-*` class for host CSS." Never a diagnostic.
+    Custom(String),
+}
+
+/// One `key = "value"` clause of an `@[style(…)]` annotation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StyleEntry {
+    /// The clause's key: `"line"`, `"dispatch"`, or the name of a capture
+    /// group declared by the paired [`ElementAnnotation::pattern`]
+    /// (validated at lowering time — `E162`).
+    pub key: String,
+    pub value: StyleToken,
+    /// Source range of this one clause (not the whole annotation line).
+    pub range: TextRange,
+}
+
+/// An `@[style(…)]` per-declaration annotation (issue #1719,
+/// `docs/prose-dialect-spec.md` §3.5b addenda 3–4) — declared editor
+/// presentation, mapping a paired [`ElementAnnotation`]'s captures (plus
+/// the two special keys `line`/`dispatch`) to [`StyleToken`]s.
+///
+/// **Editor-presentation only.** The consumer of this data is the editor
+/// track (NS-T, issues #1131/#1350), which is held — this struct exists so
+/// the declaration is parsed, validated, and not silently dropped; nothing
+/// in the compiler or runtime reads it yet. Buffer decoration is firmly
+/// distinct from the runtime markup layer (§4) — output styling is the
+/// handler's own emitted markup spans, not this.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StyleAnnotation {
+    /// Clauses in source order. Never empty — an empty argument list is
+    /// `E161` and produces no [`StyleAnnotation`] at all.
+    pub entries: Vec<StyleEntry>,
+    /// Source range of the whole `@[style(…)]` annotation line.
+    pub range: TextRange,
+}
+
 // ─── Containers ─────────────────────────────────────────────────────
 
 /// A knot definition (or a top-level stitch promoted to knot status).
@@ -223,6 +322,14 @@ pub struct Knot {
     /// The `#@effects(…)` assertion directive line at the top of the body,
     /// if any (T2-2, docs/effects-spec.md §10, issue #861).
     pub effects_assertion: Option<EffectsAssertion>,
+    /// The `@[element(args = "…")]` annotation, if any (issue #1719,
+    /// `docs/prose-dialect-spec.md` §3.5b). Native-only — ink has no
+    /// equivalent tag.
+    pub element_annotation: Option<ElementAnnotation>,
+    /// The `@[style(…)]` annotation, if any (issue #1719, same spec
+    /// section). Requires a paired `element_annotation` on the same
+    /// declaration (`E163`) — see [`StyleAnnotation`].
+    pub style_annotation: Option<StyleAnnotation>,
     /// The function-header return type annotation (TM-2, docs/typed-mode-spec.md
     /// §3: `): type ===`), brink-dialect-gated syntax. `None` when absent —
     /// not the same as an explicit `void`, which lowers as
@@ -273,6 +380,12 @@ pub struct Stitch {
     /// The `#@effects(…)` assertion directive line at the top of the body,
     /// if any (T2-2, docs/effects-spec.md §10, issue #861).
     pub effects_assertion: Option<EffectsAssertion>,
+    /// The `@[element(args = "…")]` annotation, if any (issue #1719). See
+    /// [`Knot::element_annotation`].
+    pub element_annotation: Option<ElementAnnotation>,
+    /// The `@[style(…)]` annotation, if any (issue #1719). See
+    /// [`Knot::style_annotation`].
+    pub style_annotation: Option<StyleAnnotation>,
     /// The stitch-header return type annotation (NG-C, issue #1489, widened
     /// to stitches by #1509: `= name(params): type` for ink, `flow
     /// name(params): type { … }` for a nested native flow). `None` when

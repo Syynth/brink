@@ -366,7 +366,7 @@ Key semantics from the reference C# ink implementation relevant to compilation:
 
 ## Diagnostic Codes
 
-Every diagnostic the compiler can emit has a stable code (`E001`–`E158`) and a
+Every diagnostic the compiler can emit has a stable code (`E001`–`E163`) and a
 per-code reference file under [`docs/diagnostics/`](diagnostics/) with a summary,
 explanation, minimal repro, and fix guidance. `DiagnosticCode::as_str` /
 `DiagnosticCode::from_str_code` (`crates/internal/brink-ir/src/hir/types.rs`) are the
@@ -533,6 +533,11 @@ asserts every variant has a corresponding doc file and that no orphaned doc file
 | [`E156`](diagnostics/E156.md) | A lambda body assigns to a captured binding — a `let` binding or parameter declared outside the... |
 | [`E157`](diagnostics/E157.md) | An unnamed once-only choice, or an unnamed sequence (`{cycle: …}` / `{stopping: …}` / `{once: …}`... |
 | [`E158`](diagnostics/E158.md) | A lambda body reads a name that is a local of the enclosing frame but is not yet bound when lambda... |
+| [`E159`](diagnostics/E159.md) | An `@[element(…)]` annotation whose `args` clause is missing, whose value is not a quoted string, or... |
+| [`E160`](diagnostics/E160.md) | An `@[element(args = "…")]` pattern's named capture group does not match the name of any parameter... |
+| [`E161`](diagnostics/E161.md) | An `@[style(…)]` clause that is not a `key = "value"` pair, or an `@[style(…)]` argument list that... |
+| [`E162`](diagnostics/E162.md) | An `@[style(…)]` clause's key is neither `line`, `dispatch`, nor the name of a named capture group... |
+| [`E163`](diagnostics/E163.md) | An `@[style(…)]` annotation with no paired `@[element(…)]` on the same declaration. |
 
 ## Known limitations
 

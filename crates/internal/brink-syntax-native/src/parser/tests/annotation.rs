@@ -209,6 +209,79 @@ fn annotation_arg_string_literal() {
     assert!(lit.syntax().text().to_string().contains("hi there"));
 }
 
+/// Issue #1719: the key/value clause form (`@[element(args = "…")]` /
+/// `@[style(chan = "…")]`) — a bare `IDENT` key, `=`, then a quoted string
+/// value. `name_token` still reads the key; `eq_value` reads the value.
+#[test]
+fn annotation_arg_key_value_string() {
+    let src = "@[element(args = \"^(?<chan>[A-Z]+): (?<text>.+)$\")]\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let line = annotation_line_node(&p);
+    assert_eq!(line.name_token().unwrap().text(), "element");
+    let args = line.args().expect("ANNOTATION_ARGS");
+    let arg = args.args().next().expect("ANNOTATION_ARG");
+    assert_eq!(arg.name_token().unwrap().text(), "args");
+    assert!(arg.nested_args().is_none());
+    let value = arg.eq_value().expect("eq_value");
+    assert!(
+        value
+            .syntax()
+            .text()
+            .to_string()
+            .contains("(?<chan>[A-Z]+)")
+    );
+}
+
+/// Two key/value clauses in one annotation, the `@[style(...)]` shape from
+/// the ruled example (`docs/prose-dialect-spec.md` §3.5b).
+#[test]
+fn annotation_args_multiple_key_value_pairs() {
+    let src = "@[style(chan = \"channel\", line = \"radio\")]\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let line = annotation_line_node(&p);
+    let args = line.args().expect("ANNOTATION_ARGS");
+    let top: Vec<_> = args.args().collect();
+    assert_eq!(top.len(), 2);
+    assert_eq!(top[0].name_token().unwrap().text(), "chan");
+    assert!(
+        top[0]
+            .eq_value()
+            .unwrap()
+            .syntax()
+            .text()
+            .to_string()
+            .contains("channel")
+    );
+    assert_eq!(top[1].name_token().unwrap().text(), "line");
+    assert!(
+        top[1]
+            .eq_value()
+            .unwrap()
+            .syntax()
+            .text()
+            .to_string()
+            .contains("radio")
+    );
+}
+
+/// A `key = value` clause with a non-string right-hand side (a bare ident)
+/// is not the ruled shape — the parser leaves no `STRING_LIT` for
+/// `eq_value` to find (the lowering side diagnoses this as a missing
+/// value), and the arg still round-trips losslessly (no panic, no dropped
+/// text) even though it doesn't parse as a clean key/value pair.
+#[test]
+fn annotation_arg_key_value_non_string_rhs_has_no_eq_value() {
+    let src = "@[style(chan = bare)]\n";
+    let p = assert_lossless(src);
+    let line = annotation_line_node(&p);
+    let args = line.args().expect("ANNOTATION_ARGS");
+    let arg = args.args().next().expect("ANNOTATION_ARG");
+    assert_eq!(arg.name_token().unwrap().text(), "chan");
+    assert!(arg.eq_value().is_none());
+}
+
 /// Issue #1349: the arg to `@[was(...)]` (native rename migration, the
 /// closed #1286) must accept an *unquoted* `::`-separated module path, not
 /// only the quoted-string form `lower_native`'s `module.rs` already
