@@ -575,6 +575,7 @@ introduction is its own one-bump event: `.inkb` format version 4 → 5 (the
 row encoding itself stays section-locally versioned so it can still evolve
 without a further whole-file bump). `0x0E` is taken by `Visibility`, so this
 takes the next free tag, `0x0F`.
+
 A `#@was` on a knot or stitch mints **one entry per descendant** whose
 qualified name (and so `DefinitionId`) changed too — every stitch and label
 beneath a renamed knot, every label beneath a renamed stitch — not just one
