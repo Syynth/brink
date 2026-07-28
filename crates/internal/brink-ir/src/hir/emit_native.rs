@@ -1447,7 +1447,10 @@ mod tests {
 
         let hir = reparse_and_lower(&emitted);
         let Expr::Lambda(lambda) = &hir.variables.first().expect("one var").value else {
-            panic!("re-lowered var initializer lost its lambda: {:?}", hir.variables);
+            panic!(
+                "re-lowered var initializer lost its lambda: {:?}",
+                hir.variables
+            );
         };
         assert_eq!(lambda.params.len(), 1);
         assert!(

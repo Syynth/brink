@@ -274,7 +274,9 @@ fn assigning_to_an_if_as_binding_is_an_error() {
     // it, the same way it already scans a `STMT_BLOCK`'s children for a
     // sibling `let`.
     assert!(
-        has_e156("fn f(o: option<int>) {\n  if find(o) as i {\n    let g = |x| { i = x; };\n  }\n}\n"),
+        has_e156(
+            "fn f(o: option<int>) {\n  if find(o) as i {\n    let g = |x| { i = x; };\n  }\n}\n"
+        ),
         "writing to the `if ... as i` binding from an inner lambda must be E156"
     );
 }
