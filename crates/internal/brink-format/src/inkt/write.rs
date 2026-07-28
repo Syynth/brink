@@ -771,9 +771,9 @@ fn write_opcode(w: &mut dyn fmt::Write, op: &Opcode) -> fmt::Result {
         Opcode::Collect(op) => write!(w, "{}", op.mnemonic()),
 
         // The fn-value verbs (issue #1679): same one-opcode-per-kind-
-        // mnemonic pattern — the mnemonic IS the source spelling
-        // (`map`/`filter`/`fold`), `SeqVerbOp::mnemonic`/`from_mnemonic` the
-        // single pairing.
+        // mnemonic pattern — the mnemonic IS the source spelling, for all
+        // six kinds (`map`/`filter`/`fold`/`filter_map`/`each`/`map_each`),
+        // `SeqVerbOp::mnemonic`/`from_mnemonic` the single pairing.
         Opcode::SeqVerb(op) => write!(w, "{}", op.mnemonic()),
     }
 }
