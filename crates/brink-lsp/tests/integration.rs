@@ -2692,15 +2692,35 @@ fn native_homonym_flows_coexist_under_the_default_dialect() {
 /// §5): hand-renaming a knot — a plain text edit, never going through the
 /// IDE's own F2 rename refactor (`brink_ide::rename`, which stamps `#@was`
 /// itself and is covered by that crate's own tests) — surfaces a
-/// `DiagnosticSeverity::HINT` "did you rename it?" diagnostic in the very
-/// next `textDocument/publishDiagnostics` for the file. End-to-end through
-/// a real `brink-lsp` process: this is the part of #1672 with no other
-/// black-box coverage (`brink-ide::rename_detection`'s own unit tests
-/// exercise the pure diff, not the LSP wiring that surfaces it to an
-/// author).
+/// `DiagnosticSeverity::HINT` "did you rename it?" diagnostic that *survives*
+/// into the final published set for the file, not just a `publishDiagnostics`
+/// that flashes and is immediately overwritten. End-to-end through a real
+/// `brink-lsp` process: this is the part of #1672 with no other black-box
+/// coverage (`brink-ide::rename_detection`'s own unit tests exercise the pure
+/// diff, not the LSP wiring that surfaces it to an author).
+///
+/// Review finding on #1672 part 2 (blocking): the original version of this
+/// test stopped at the *first* `publishDiagnostics` carrying the hint — the
+/// fast per-file publish. It never proved the hint survived the background
+/// `analysis_loop`'s own follow-up publish for the same file, which
+/// (before the fix) recomputed a set that never carried the hint at all
+/// (its own diff ran against a baseline the per-file publish had already
+/// overwritten) and, being same-or-newer generation, won
+/// `DiagnosticsPublisher`'s anti-downgrade exchange and silently replaced
+/// the client's diagnostics with a set missing the hint. This version keeps
+/// reading past the first hint-carrying publish, through a background
+/// analysis pass (`$/brink/backgroundAnalysisComplete`), and asserts against
+/// the *last* diagnostics set actually shown for the file's URI.
+///
+/// `initializationOptions.dialect: "brink"` is required post-fix: the
+/// suspicion is gated on `Dialect::Brink` (`#@was` is a brink-only
+/// directive), so under the default `StrictInk` nothing would ever surface
+/// here at all — see `backend::tests::rename_suspicion_diags_is_gated_on_brink_dialect`
+/// for the StrictInk-suppresses-it half of that gate.
 #[test]
-fn hand_renaming_a_knot_surfaces_an_undeclared_rename_hint() {
-    const MAX_MESSAGES: u64 = 500;
+#[expect(clippy::too_many_lines)]
+fn hand_renaming_a_knot_surfaces_an_undeclared_rename_hint_that_survives_background_analysis() {
+    const MAX_MESSAGES: u64 = 2000;
 
     let bin = env!("CARGO_BIN_EXE_brink-lsp");
 
@@ -2720,7 +2740,11 @@ fn hand_renaming_a_knot_surfaces_an_undeclared_rename_hint() {
             "jsonrpc": "2.0",
             "id": 1,
             "method": "initialize",
-            "params": {"capabilities": {}, "rootUri": Value::Null},
+            "params": {
+                "capabilities": {},
+                "rootUri": Value::Null,
+                "initializationOptions": {"dialect": "brink"},
+            },
         }),
     );
     let (_init_resp, _) = recv_response(&mut stdout, 1);
@@ -2769,15 +2793,33 @@ fn hand_renaming_a_knot_surfaces_an_undeclared_rename_hint() {
         }),
     );
 
-    let mut suspicion: Option<Value> = None;
+    let mut first_seen_suspicion = false;
+    let mut last_diags_for_uri: Option<Vec<Value>> = None;
     for _ in 0..MAX_MESSAGES {
         let msg = recv(&mut stdout);
-        if msg["method"] == "textDocument/publishDiagnostics"
-            && msg["params"]["uri"] == file_uri
-            && let Some(diags) = msg["params"]["diagnostics"].as_array()
-            && let Some(d) = diags.iter().find(|d| d["code"] == "rename-suspicion")
+        if msg["method"] == "textDocument/publishDiagnostics" && msg["params"]["uri"] == file_uri {
+            if let Some(diags) = msg["params"]["diagnostics"].as_array() {
+                last_diags_for_uri = Some(diags.clone());
+                if diags.iter().any(|d| d["code"] == "rename-suspicion") {
+                    first_seen_suspicion = true;
+                }
+            }
+        } else if first_seen_suspicion
+            && msg["method"] == "$/brink/backgroundAnalysisComplete"
+            && msg["params"]["file_count"].as_u64().is_some_and(|c| c >= 1)
         {
-            suspicion = Some(d.clone());
+            // One background pass completing *after* the hint first
+            // appeared is both necessary and sufficient: `did_change`'s
+            // `mutate_db` (committing the rename) and its
+            // `publish_perfile_diagnostics` (which is what set
+            // `first_seen_suspicion`) both run before its `trigger_analysis`
+            // call, and `tokio::sync::Notify::notify_one` buffers at least
+            // one wakeup — so this completion is guaranteed to be a pass
+            // that read the already-renamed db content. Waiting for a
+            // second one is not just unnecessary but can hang the test:
+            // `analysis_loop` coalesces rapid triggers into a single pass,
+            // so there may never be a further trigger (and thus no further
+            // completion) once this one fires.
             break;
         }
     }
@@ -2786,8 +2828,22 @@ fn hand_renaming_a_knot_surfaces_an_undeclared_rename_hint() {
     drop(stdout);
     let _ = child.wait();
 
-    let suspicion =
-        suspicion.expect("expected a rename-suspicion diagnostic after the hand rename");
+    assert!(
+        first_seen_suspicion,
+        "expected a rename-suspicion diagnostic after the hand rename"
+    );
+    let final_diags =
+        last_diags_for_uri.expect("expected at least one publishDiagnostics for the renamed file");
+    assert!(
+        final_diags.iter().any(|d| d["code"] == "rename-suspicion"),
+        "the rename-suspicion hint must survive into the final published set, not just flash on \
+         the first (per-file) publish and be clobbered by the next background-analysis publish: \
+         {final_diags:?}"
+    );
+    let suspicion = final_diags
+        .iter()
+        .find(|d| d["code"] == "rename-suspicion")
+        .expect("checked above");
     assert_eq!(
         suspicion["severity"].as_u64(),
         Some(4),
@@ -2801,5 +2857,110 @@ fn hand_renaming_a_knot_surfaces_an_undeclared_rename_hint() {
     assert!(
         message.contains("#@was(hub)"),
         "message should tell the author the exact directive to add: {message}"
+    );
+}
+
+/// The dialect-gate half of the finding above: under the default
+/// `Dialect::StrictInk` (no `initializationOptions.dialect` at all), the same
+/// hand-rename must produce no `rename-suspicion` diagnostic anywhere —
+/// `#@was` is a brink-only directive (`dialect_gate.rs`), so surfacing the
+/// hint under strict ink would point the author at a directive that itself
+/// produces a fresh `E051`. Mirrors
+/// `brink_ide::rename::tests::renaming_under_strict_ink_dialect_does_not_stamp_was`,
+/// but end-to-end through the LSP wiring rather than the pure `rename()` fn.
+#[test]
+fn hand_renaming_a_knot_under_strict_ink_dialect_surfaces_no_rename_suspicion() {
+    const MAX_MESSAGES: u64 = 500;
+
+    let bin = env!("CARGO_BIN_EXE_brink-lsp");
+
+    let mut child = Command::new(bin)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to start brink-lsp");
+
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {"capabilities": {}, "rootUri": Value::Null},
+        }),
+    );
+    let (_init_resp, _) = recv_response(&mut stdout, 1);
+    send(
+        &mut stdin,
+        &json!({"jsonrpc": "2.0", "method": "initialized", "params": {}}),
+    );
+
+    let file_uri = "file:///tmp/rename_suspicion_strict_ink_test_story.ink";
+    let original = "=== hub ===\nHi.\n-> END\n";
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": file_uri,
+                    "languageId": "ink",
+                    "version": 1,
+                    "text": original,
+                }
+            }
+        }),
+    );
+
+    let renamed = "=== plaza ===\nHi.\n-> END\n";
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didChange",
+            "params": {
+                "textDocument": {"uri": file_uri, "version": 2},
+                "contentChanges": [{"text": renamed}],
+            }
+        }),
+    );
+
+    // Wait for a background-analysis completion covering the file — by the
+    // time it fires, `did_change`'s `mutate_db` (committing the rename) has
+    // already run, so this pass is guaranteed to have analyzed the renamed
+    // content — then assert no rename-suspicion diagnostic was ever
+    // published. (Waiting for more than one such completion risks a hang:
+    // `analysis_loop` coalesces rapid triggers into a single pass, so a
+    // second one is not guaranteed to ever arrive.)
+    let mut saw_suspicion = false;
+    for _ in 0..MAX_MESSAGES {
+        let msg = recv(&mut stdout);
+        if msg["method"] == "textDocument/publishDiagnostics"
+            && msg["params"]["uri"] == file_uri
+            && let Some(diags) = msg["params"]["diagnostics"].as_array()
+            && diags.iter().any(|d| d["code"] == "rename-suspicion")
+        {
+            saw_suspicion = true;
+            break;
+        }
+        if msg["method"] == "$/brink/backgroundAnalysisComplete"
+            && msg["params"]["file_count"].as_u64().is_some_and(|c| c >= 1)
+        {
+            break;
+        }
+    }
+
+    drop(stdin);
+    drop(stdout);
+    let _ = child.wait();
+
+    assert!(
+        !saw_suspicion,
+        "no rename-suspicion diagnostic may surface under the default Dialect::StrictInk"
     );
 }

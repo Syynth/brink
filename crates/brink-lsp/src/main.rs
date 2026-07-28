@@ -2,6 +2,7 @@ mod backend;
 mod convert;
 mod semantic_tokens;
 
+use std::collections::HashMap;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 
@@ -29,6 +30,14 @@ async fn main() {
     // background `analysis_loop` task read them, so live diagnostics
     // analyze under the same client-declared policy as everything else.
     let language = LanguageOptions::new();
+    // Shared undeclared-rename-detection baseline (issue #1672 part 2,
+    // review finding): one map, cloned into both the foreground `Backend`
+    // (which advances it at `did_open`/`did_save`) and the background
+    // `analysis_loop` (which only reads it), so the two publishers agree on
+    // the same checkpoint within one generation instead of the background
+    // pass diffing against a baseline the foreground side had already moved.
+    let previous_manifests: Arc<Mutex<HashMap<brink_ir::FileId, brink_ir::SymbolManifest>>> =
+        Arc::new(Mutex::new(HashMap::new()));
 
     let (service, socket) = LspService::new(|client| {
         // One serialized diagnostics publisher shared by the foreground
@@ -45,6 +54,7 @@ async fn main() {
             client.clone(),
             publisher.clone(),
             language.clone(),
+            Arc::clone(&previous_manifests),
         ));
 
         Backend::new(
@@ -55,6 +65,7 @@ async fn main() {
             Arc::clone(&generation),
             publisher,
             language.clone(),
+            Arc::clone(&previous_manifests),
         )
     });
     Server::new(stdin, stdout, socket).serve(service).await;

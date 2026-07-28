@@ -360,15 +360,41 @@ fn insert_after_header_line(
 /// `VAR`/`CONST`/`LIST` declaration — the "directive line immediately above
 /// a declaration" placement `hir::lower::directive::attached_declaration`
 /// requires. `decl_range` is the whole declaration node's provenance range;
-/// the insertion point is the start of the line it begins on.
+/// the insertion point is the start of the line it begins on, walked back
+/// over any contiguous run of `///` doc-comment lines and pre-existing
+/// `#@…` directive lines immediately above the declaration.
+///
+/// Review finding on #1672 (blocking): inserting at the declaration's own
+/// line landed `#@was` *between* a `///` doc block and the declaration it
+/// documents (`hir::lower::doc_comment::collect_doc_lines` only walks a
+/// *contiguous* run of doc-comment lines back from the declaration, so a
+/// directive spliced in between breaks that contiguity) — the doc block
+/// silently vanished from `SymbolManifest::docs` with no diagnostic. Walking
+/// the insertion point back over the whole leading run keeps both: the
+/// directive lands above the doc block, which stays attached to the
+/// declaration.
 fn insert_before_decl_line(
     src: &str,
     file: FileId,
     decl_range: TextRange,
     old_name: &str,
 ) -> Option<FileEdit> {
-    let start = usize::from(decl_range.start());
-    let line_start = src.get(..start)?.rfind('\n').map_or(0, |i| i + 1);
+    let mut line_start = src
+        .get(..usize::from(decl_range.start()))?
+        .rfind('\n')
+        .map_or(0, |i| i + 1);
+
+    while line_start > 0 {
+        let end_of_prev = line_start - 1; // the '\n' terminating the line above
+        let start_of_prev = src.get(..end_of_prev)?.rfind('\n').map_or(0, |i| i + 1);
+        let prev_line = src.get(start_of_prev..end_of_prev)?.trim_start();
+        if prev_line.starts_with("///") || prev_line.starts_with("#@") {
+            line_start = start_of_prev;
+        } else {
+            break;
+        }
+    }
+
     let at = TextSize::try_from(line_start).ok()?;
     Some(FileEdit {
         file,
@@ -1443,6 +1469,44 @@ fn main() {
             new_source.matches("#@was").count(),
             1,
             "must not add a second #@was directive on top of an existing one: {new_source}"
+        );
+    }
+
+    #[test]
+    fn renaming_a_documented_variable_keeps_the_doc_block_above_the_was_directive() {
+        // Review finding on #1672 (blocking): `insert_before_decl_line` used
+        // to insert `#@was` at the start of the declaration's own line,
+        // landing it *between* a `///` doc comment and the `VAR` it
+        // documents — `collect_doc_lines` only walks a *contiguous* run of
+        // doc lines back from the declaration, so the inserted directive
+        // broke that contiguity and the doc block silently vanished from
+        // `SymbolManifest::docs`, with no diagnostic.
+        let src = "/// The player's gold.\nVAR hello = 0\n=== main ===\n-> DONE\n";
+        let (s, id) = brink_session(src);
+        let decl_pos = u32::try_from(src.find("hello").expect("decl")).expect("offset");
+
+        let res = rename_safe(&s, id, TextSize::from(decl_pos), "greeting").expect("rename");
+
+        let new_source = res.new_source.as_deref().expect("new_source");
+        assert!(
+            new_source.contains("#@was(hello)\n/// The player's gold.\nVAR greeting = 0\n"),
+            "the #@was directive must land above the doc-comment run, not between it and the \
+             declaration: {new_source}"
+        );
+
+        // The doc block itself must survive re-analysis, still attached to
+        // the renamed declaration.
+        let mut fresh = IdeSession::new();
+        fresh.set_language_dialect(brink_analyzer::Dialect::Brink);
+        let fresh_id = fresh.update_and_analyze("t.ink", new_source.to_owned());
+        let manifest = fresh.manifest(fresh_id).expect("manifest");
+        let doc = manifest
+            .docs
+            .get(&(brink_ir::SymbolKind::Variable, "greeting".to_owned()));
+        assert_eq!(
+            doc.and_then(|d| d.doc.clone()),
+            Some("The player's gold.".to_owned()),
+            "the doc block must survive the rename, attached to the new name: {manifest:?}"
         );
     }
 

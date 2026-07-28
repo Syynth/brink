@@ -21,7 +21,7 @@
 //! save against a possibly-wrong target with no one to confirm it). This
 //! runs at *authoring* time, decides nothing on its own, and only ever
 //! *asks* — accepting the suggestion is still the author writing `#@was`
-//! (by hand, or via the companion quick-fix), same as any other rename.
+//! by hand, same as any other rename.
 //!
 //! Deliberately conservative: a kind (Knot, Stitch, Variable, Constant,
 //! List — the same set [`crate::rename::was_directive_edit`] stamps) only
@@ -65,7 +65,7 @@ pub fn detect_undeclared_renames(
 ) -> Vec<RenameSuspicion> {
     let mut out = Vec::new();
     out.extend(diff_kind(SymbolKind::Knot, &old.knots, &new.knots));
-    out.extend(diff_kind(SymbolKind::Stitch, &old.stitches, &new.stitches));
+    out.extend(diff_stitches(&old.stitches, &new.stitches));
     out.extend(diff_kind(
         SymbolKind::Variable,
         &old.variables,
@@ -112,6 +112,79 @@ fn diff_kind(
         }],
         _ => Vec::new(),
     }
+}
+
+/// Group qualified `parent.bare` declarations by their `parent` segment,
+/// pairing each with its own bare tail. A declaration with no `.` (shouldn't
+/// occur for stitches — [`SymbolManifest::stitches`] is always qualified —
+/// but never assumed) is silently excluded rather than mis-grouped.
+fn group_by_parent(
+    decls: &[DeclaredSymbol],
+) -> std::collections::BTreeMap<&str, Vec<(&str, &DeclaredSymbol)>> {
+    let mut map: std::collections::BTreeMap<&str, Vec<(&str, &DeclaredSymbol)>> =
+        std::collections::BTreeMap::new();
+    for d in decls {
+        if let Some((parent, bare)) = d.name.rsplit_once('.') {
+            map.entry(parent).or_default().push((bare, d));
+        }
+    }
+    map
+}
+
+/// The `Stitch`-only half of [`detect_undeclared_renames`] (review finding on
+/// #1672 part 2, blocking): unlike every other `#@was`-eligible kind,
+/// `SymbolManifest::stitches` names are *qualified* (`knot.stitch`,
+/// [`SymbolManifest`]'s own doc comment) — a plain
+/// [`diff_kind`]-style whole-name diff conflates a genuine stitch rename with
+/// the cascade a *knot* rename produces on every one of its children's
+/// qualified names, and a nested stitch's `#@was` always takes the **bare**
+/// old name ([`crate::rename::was_directive_edit`]'s doc comment), not the
+/// qualified one this would otherwise report.
+///
+/// Grouped by qualifier (the parent knot) instead: a name diff runs only
+/// *within* a parent present in both `old` and `new` — a knot rename changes
+/// the qualifier on both sides, so the vanished qualified name lands in the
+/// old parent's now-vanished group and the appeared one lands in a group that
+/// has no old-side counterpart to pair against, and neither group ever
+/// produces a same-group 1:1 match. This also transitively covers "the
+/// parent was itself detected as renamed" and "the parent already carries
+/// `#@was`" — either way the qualifier changed (or never existed) on the old
+/// side, so the parent's group is never present on both sides to compare.
+fn diff_stitches(old: &[DeclaredSymbol], new: &[DeclaredSymbol]) -> Vec<RenameSuspicion> {
+    let old_by_parent = group_by_parent(old);
+    let new_by_parent = group_by_parent(new);
+
+    let mut out = Vec::new();
+    for (parent, old_members) in &old_by_parent {
+        let Some(new_members) = new_by_parent.get(parent) else {
+            // The parent qualifier doesn't exist on the new side at all —
+            // whether because the parent knot was itself renamed, deleted,
+            // or (via `#@was`) already migrated, there is nothing on this
+            // side to pair a bare-name diff against. Skip rather than guess.
+            continue;
+        };
+
+        let disappeared: Vec<&str> = old_members
+            .iter()
+            .map(|(bare, _)| *bare)
+            .filter(|bare| !new_members.iter().any(|(nb, _)| nb == bare))
+            .collect();
+        let appeared: Vec<&(&str, &DeclaredSymbol)> = new_members
+            .iter()
+            .filter(|(bare, d)| d.was.is_none() && !old_members.iter().any(|(ob, _)| ob == bare))
+            .collect();
+
+        if let ([old_bare], [(new_bare, new_decl)]) = (disappeared.as_slice(), appeared.as_slice())
+        {
+            out.push(RenameSuspicion {
+                kind: SymbolKind::Stitch,
+                old_name: (*old_bare).to_owned(),
+                new_name: (*new_bare).to_owned(),
+                new_range: new_decl.range,
+            });
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -195,7 +268,12 @@ mod tests {
     }
 
     #[test]
-    fn a_renamed_stitch_is_reported_at_the_stitch_kind() {
+    fn a_renamed_stitch_is_reported_at_the_stitch_kind_with_its_bare_name() {
+        // The reported names are the *bare* stitch names, not the qualified
+        // `knot.stitch` form — a nested stitch's `#@was` always takes the
+        // bare old name (`crate::rename::was_directive_edit`'s doc comment),
+        // so `RenameSuspicion::old_name` must match what the directive it
+        // suggests actually expects.
         let old = manifest_of("=== hub ===\n= market\nHi.\n-> DONE\n");
         let new = manifest_of("=== hub ===\n= plaza\nHi.\n-> DONE\n");
 
@@ -205,28 +283,79 @@ mod tests {
             suspicions,
             vec![RenameSuspicion {
                 kind: SymbolKind::Stitch,
-                old_name: "hub.market".to_owned(),
-                new_name: "hub.plaza".to_owned(),
+                old_name: "market".to_owned(),
+                new_name: "plaza".to_owned(),
                 new_range: new.stitches[0].range,
             }]
         );
     }
 
+    // ── Review finding on #1672 part 2 (blocking): a pure knot rename
+    // fabricates a bogus stitch suspicion. `SymbolManifest::stitches` names
+    // are qualified `knot.stitch`, so renaming only the parent knot changes
+    // every child stitch's qualified name too — a naive whole-name diff
+    // reports that as a stitch rename, and the `#@was(hub.market)` it
+    // suggests is invalid (nested-stitch `#@was` takes the bare name) ──────
+
     #[test]
-    fn a_knot_rename_and_a_stitch_rename_in_the_same_diff_are_both_reported() {
-        let old = "=== hub ===\n= market\nHi.\n-> DONE\n";
-        let new = "=== plaza ===\n= bazaar\nHi.\n-> DONE\n";
+    fn renaming_a_knot_alone_does_not_fabricate_a_stitch_suspicion_for_an_unchanged_child() {
+        let old = manifest_of("=== hub ===\n= market\nHi.\n-> DONE\n");
+        let new = manifest_of("=== plaza ===\n= market\nHi.\n-> DONE\n");
 
-        let suspicions = detect_undeclared_renames(&manifest_of(old), &manifest_of(new));
+        let suspicions = detect_undeclared_renames(&old, &new);
 
-        assert_eq!(suspicions.len(), 2, "one per kind: {suspicions:?}");
-        assert!(
-            suspicions.iter().any(|s| s.kind == SymbolKind::Knot
-                && s.old_name == "hub"
-                && s.new_name == "plaza")
+        assert_eq!(
+            suspicions,
+            vec![RenameSuspicion {
+                kind: SymbolKind::Knot,
+                old_name: "hub".to_owned(),
+                new_name: "plaza".to_owned(),
+                new_range: new.knots[0].range,
+            }],
+            "only the knot rename may be reported — the stitch's qualifier changed purely as \
+             a cascade of the knot rename, not a stitch rename of its own: {suspicions:?}"
         );
-        assert!(suspicions.iter().any(|s| s.kind == SymbolKind::Stitch
-            && s.old_name == "hub.market"
-            && s.new_name == "plaza.bazaar"));
+    }
+
+    #[test]
+    fn renaming_a_knot_via_an_existing_was_directive_still_does_not_fabricate_a_stitch_suspicion() {
+        // Same shape as above, but the knot rename is already recorded via
+        // `#@was(hub)` on the knot itself (so it isn't reported either) —
+        // the child stitch's cascaded qualifier change must still not be
+        // mistaken for a stitch rename of its own.
+        let old = manifest_of("=== hub ===\n= market\nHi.\n-> DONE\n");
+        let new = manifest_of("=== plaza ===\n#@was(hub)\n= market\nHi.\n-> DONE\n");
+
+        assert!(
+            detect_undeclared_renames(&old, &new).is_empty(),
+            "a knot rename already recorded via #@was must not fabricate a stitch suspicion \
+             for its unchanged child"
+        );
+    }
+
+    #[test]
+    fn a_knot_rename_and_a_simultaneous_stitch_rename_only_reports_the_knot() {
+        // A knot rename and a stitch rename landing in the very same diff
+        // step is inherently ambiguous from a `SymbolManifest` diff alone:
+        // nothing distinguishes "the author renamed both" from "the author
+        // renamed only the knot, and the stitch's qualified name changed as
+        // a cascade of that". Per the module's own never-guess principle,
+        // only the unambiguous knot rename is reported.
+        let old = manifest_of("=== hub ===\n= market\nHi.\n-> DONE\n");
+        let new = manifest_of("=== plaza ===\n= bazaar\nHi.\n-> DONE\n");
+
+        let suspicions = detect_undeclared_renames(&old, &new);
+
+        assert_eq!(
+            suspicions,
+            vec![RenameSuspicion {
+                kind: SymbolKind::Knot,
+                old_name: "hub".to_owned(),
+                new_name: "plaza".to_owned(),
+                new_range: new.knots[0].range,
+            }],
+            "the simultaneous stitch rename is ambiguous and must not be guessed at: \
+             {suspicions:?}"
+        );
     }
 }
