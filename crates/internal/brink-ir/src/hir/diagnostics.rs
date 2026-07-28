@@ -29,14 +29,17 @@ pub struct Diagnostic {
 /// How seriously a diagnostic should be treated by a consumer (CLI renderer,
 /// LSP client, editor diagnostics panel).
 ///
-/// No `DiagnosticCode`'s *default* severity ([`DiagnosticCode::severity`])
-/// is `Info` or `Hint` today — the two advisory tiers exist so a project's
-/// `[lints]` table (`brink-project-config`'s `LintLevel::Info`/`LintLevel::Hint`,
-/// resolved through `brink_analyzer::effective_severity`) can opt a
-/// `Warning`-default code down to one when a squiggle is too loud (issue
-/// #1162). Moving any *existing* code's default into one of these tiers is a
-/// separate decision, deliberately not made by the issue that introduced the
-/// tiers.
+/// Until issue #1674, no `DiagnosticCode`'s *default* severity
+/// ([`DiagnosticCode::severity`]) was ever `Info` or `Hint` — the two
+/// advisory tiers existed only so a project's `[lints]` table
+/// (`brink-project-config`'s `LintLevel::Info`/`LintLevel::Hint`, resolved
+/// through `brink_analyzer::effective_severity`) could opt a `Warning`-default
+/// code down to one when a squiggle is too loud (issue #1162). Moving any
+/// *existing* code's default into one of these tiers is a separate decision,
+/// deliberately not made by the issue that introduced the tiers.
+/// [`DiagnosticCode::E157`] (issue #1674) is the first code to default here
+/// directly — RULED "off or info by default" for a narrow, precision-tuned
+/// lint that must not nag a single-shot project.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Severity {
     /// Blocks compilation / is surfaced as a hard failure.
@@ -1182,6 +1185,40 @@ pub enum DiagnosticCode {
     /// and are not flagged: a global is a durable cell reached by name, not
     /// a snapshotted binding.
     E156,
+
+    // ── Anonymous-container state lint (issue #1674, gap 4 of the identity
+    //    cluster; ruled 2026-07-27 in PR #1670) ─────────────────────────
+    /// An unnamed once-only choice, or an unnamed sequence (`{cycle: …}` /
+    /// `{stopping: …}` / `{once: …}` / `{shuffle: …}` and combinations), that
+    /// genuinely carries durable visit/turn-count state with no author name
+    /// to anchor it — the choice/sequence's compiled scope id is purely
+    /// structural (a positional hash, `brink_ir::hir::stamp`), so a content
+    /// edit anywhere earlier in the same scope can shift it, orphaning the
+    /// saved count under the old id. The observable fallout is bounded (only
+    /// visit/turn counts key on a scope id — see
+    /// `brink_format::LoadReport::anonymous_states_dropped`): a once-only
+    /// choice may reappear, or a sequence may restart from its first branch.
+    ///
+    /// Naming is the opt-in fix — a labeled choice (`* (label) …`) resolves
+    /// its identity by name instead of position (`stamp::stamp_stmt`'s
+    /// `lookup_label_id` branch), immune to this drift. Sequences have no
+    /// label syntax of their own; the mitigation is structural (isolate the
+    /// sequence in its own small, stably-named stitch so nothing can be
+    /// inserted ahead of it).
+    ///
+    /// **Off/info by default, tier-able through `[lints]`** like any other
+    /// diagnostic (`brink_analyzer::strict::effective_severity` — this is
+    /// the one code whose *default* severity is `Info`, not `Warning`; see
+    /// that function's doc for how `[lints]` still reaches it). A
+    /// single-shot project that never patches its content is never nagged;
+    /// a live-ops/UGC project can raise it to `warn`/`deny`.
+    ///
+    /// Precision over recall (`brink_analyzer::anonymous_stateful`): a `+`
+    /// sticky/repeatable choice never triggers this (no once-only gating,
+    /// no state) and a single-branch, non-`once` sequence never triggers
+    /// this either (its computed index is `0` regardless of visit count —
+    /// genuinely stateless despite the syntax).
+    E157,
 }
 
 impl DiagnosticCode {
@@ -1349,6 +1386,7 @@ impl DiagnosticCode {
             Self::E154 => "E154",
             Self::E155 => "E155",
             Self::E156 => "E156",
+            Self::E157 => "E157",
         }
     }
 
@@ -1583,6 +1621,9 @@ impl DiagnosticCode {
             Self::E156 => {
                 "a lambda cannot assign to a captured binding — captures are by value, so the write would be lost"
             }
+            Self::E157 => {
+                "this once-only choice or sequence carries durable state but has no name to anchor its identity across edits"
+            }
         }
     }
 
@@ -1611,6 +1652,14 @@ impl DiagnosticCode {
             | Self::E132
             | Self::E151
             | Self::E152 => Severity::Warning,
+            // Issue #1674: the one code whose *default* is the `Info`
+            // advisory tier rather than `Warning` — RULED "off or info by
+            // default" (a single-shot project should not be nagged) while
+            // staying tier-able through `[lints]` like every other code
+            // (`brink_analyzer::strict::effective_severity` widens its
+            // overridable set past `Warning`-base codes to cover this one,
+            // issue #1674).
+            Self::E157 => Severity::Info,
             _ => Severity::Error,
         }
     }
@@ -1779,6 +1828,7 @@ impl DiagnosticCode {
             "E154" => Some(Self::E154),
             "E155" => Some(Self::E155),
             "E156" => Some(Self::E156),
+            "E157" => Some(Self::E157),
             _ => None,
         }
     }
