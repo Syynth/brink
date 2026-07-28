@@ -186,6 +186,102 @@ fn insert_file_symbols(
     for local in &manifest.locals {
         insert_local(index, file_id, local);
     }
+
+    push_transitive_aliases(index, module, manifest);
+}
+
+/// M-3 transitive alias entries (issue #1671, docs/modules-spec.md §5): a
+/// `#@was` on a knot or stitch re-keys **every** stitch/label beneath it,
+/// because their qualified names embed the container's name — but
+/// [`insert_symbol`] mints only the container's *own* alias entry, so a
+/// declared rename still lost every descendant's durable state. The loader
+/// cannot recover this at load time (a `DefinitionId` is a hash; no path can
+/// be derived from one), so it must be materialized here, where the
+/// compiler still knows every descendant's qualified path.
+///
+/// Mirrors [`insert_symbol`]'s own-alias construction, additive and
+/// independent per level — a knot renamed *simultaneously* with one of its
+/// own stitches produces one edge per level (`old_knot.new_stitch...` and
+/// `new_knot.old_stitch...`), not the doubly-old `old_knot.old_stitch...`
+/// form, the same documented limitation [`insert_symbol`]'s module+name
+/// case already carries. Table growth is bounded by the renamed container's
+/// subtree size (docs/format-spec.md's alias-table section).
+fn push_transitive_aliases(
+    index: &mut SymbolIndex,
+    module: ModuleCtx<'_>,
+    manifest: &SymbolManifest,
+) {
+    // A knot rename re-keys every stitch and label qualified under its
+    // (bare) name.
+    for knot in &manifest.knots {
+        let Some((old_name, _range)) = &knot.was else {
+            continue;
+        };
+        if old_name == &knot.name {
+            continue; // already diagnosed E095 at lowering; no bridge to mint
+        }
+        let new_prefix = format!("{}.", knot.name);
+        let old_prefix = format!("{old_name}.");
+        for (descendants, kind) in [
+            (&manifest.stitches, SymbolKind::Stitch),
+            (&manifest.labels, SymbolKind::Label),
+        ] {
+            push_prefix_bridged_aliases(index, module, descendants, kind, &new_prefix, &old_prefix);
+        }
+    }
+
+    // A stitch rename re-keys every label qualified under it. `stitch.was`
+    // is already fully qualified as `{knot}.{old_stitch}` (`lower_stitch`
+    // qualifies it with the *current* knot name before storing — see
+    // `Stitch::was`'s doc), matching `stitch.name`'s `{knot}.{new_stitch}`
+    // shape, so only labels (never stitches — stitches don't nest) need a
+    // bridge here.
+    for stitch in &manifest.stitches {
+        let Some((old_qualified, _range)) = &stitch.was else {
+            continue;
+        };
+        if old_qualified == &stitch.name {
+            continue;
+        }
+        let new_prefix = format!("{}.", stitch.name);
+        let old_prefix = format!("{old_qualified}.");
+        push_prefix_bridged_aliases(
+            index,
+            module,
+            &manifest.labels,
+            SymbolKind::Label,
+            &new_prefix,
+            &old_prefix,
+        );
+    }
+}
+
+/// For every `descendant` whose qualified name starts with `new_prefix`,
+/// mint an [`brink_format::AliasEntry`] bridging its pre-rename identity
+/// (`old_prefix` substituted for `new_prefix`) to its real, already-current
+/// id. Shared by both [`push_transitive_aliases`] levels (knot→{stitch,
+/// label}, stitch→label) — same substitution, different prefix pair.
+fn push_prefix_bridged_aliases(
+    index: &mut SymbolIndex,
+    module: ModuleCtx<'_>,
+    descendants: &[brink_ir::DeclaredSymbol],
+    kind: SymbolKind,
+    new_prefix: &str,
+    old_prefix: &str,
+) {
+    let tag = kind.definition_tag();
+    for sym in descendants {
+        let Some(rest) = sym.name.strip_prefix(new_prefix) else {
+            continue;
+        };
+        let old_qualified = format!("{old_prefix}{rest}");
+        let old_hash = hash_qualified_name(module.name, &old_qualified, tag);
+        let new_hash = hash_qualified_name(module.name, &sym.name, tag);
+        index.aliases.push(brink_format::AliasEntry {
+            old: DefinitionId::new(tag, old_hash),
+            new: DefinitionId::new(tag, new_hash),
+        });
+    }
 }
 
 /// M-2d import-scoped coexistence (issue #790, decision-log "Cross-module
@@ -453,10 +549,14 @@ pub(crate) fn local_definition_id(scope: &Scope, name: &str, kind: SymbolKind) -
 #[cfg(test)]
 #[expect(clippy::cast_possible_truncation, reason = "test helper ranges")]
 mod tests {
+    use brink_format::{DefinitionId, DefinitionTag};
     use brink_ir::{DeclaredSymbol, DiagnosticCode, FileId, SymbolManifest};
     use rowan::{TextRange, TextSize};
 
-    use super::{ModuleMap, ResolvedModule, merge_manifests, merge_manifests_with_modules};
+    use super::{
+        ModuleMap, ResolvedModule, hash_qualified_name, merge_manifests,
+        merge_manifests_with_modules,
+    };
 
     fn range(offset: u32, len: u32) -> TextRange {
         TextRange::new(TextSize::new(offset), TextSize::new(offset + len))
@@ -471,6 +571,24 @@ mod tests {
             visibility: None,
             was: None,
         }
+    }
+
+    /// A declared symbol carrying a `#@was(old_name)` record — `old_name` is
+    /// exactly what `DeclaredSymbol::was` stores (bare for a knot, already
+    /// knot-qualified for a stitch — see `Stitch::was`'s doc).
+    fn sym_with_was(name: &str, offset: u32, old_name: &str) -> DeclaredSymbol {
+        DeclaredSymbol {
+            was: Some((old_name.to_string(), range(offset, old_name.len() as u32))),
+            ..sym(name, offset)
+        }
+    }
+
+    fn bridge(old_name: &str, new_name: &str) -> (DefinitionId, DefinitionId) {
+        let tag = DefinitionTag::Address;
+        (
+            DefinitionId::new(tag, hash_qualified_name(None, old_name, tag)),
+            DefinitionId::new(tag, hash_qualified_name(None, new_name, tag)),
+        )
     }
 
     #[test]
@@ -868,5 +986,88 @@ mod tests {
             q_start.unwrap().tag(),
             "qualification changes the hash, not the tag"
         );
+    }
+
+    // ── M-3 transitive aliases (issue #1671, docs/modules-spec.md §5)
+    // ─────────────────────────────────────────────────────────────────
+
+    /// `#@was` on a knot mints the knot's own alias entry *and* one per
+    /// descendant re-keyed only because the knot's name changed — a stitch
+    /// and a label nested directly under the knot, in this case.
+    #[test]
+    fn knot_rename_transitively_aliases_stitch_and_label() {
+        let mut manifest = SymbolManifest::default();
+        manifest.knots.push(sym_with_was("plaza", 0, "hub"));
+        manifest.stitches.push(sym("plaza.market", 10));
+        manifest.labels.push(sym("plaza.done", 30));
+
+        let files = vec![(FileId(0), &manifest)];
+        let (index, _diags) = merge_manifests(&files);
+
+        let expected = [
+            bridge("hub", "plaza"),
+            bridge("hub.market", "plaza.market"),
+            bridge("hub.done", "plaza.done"),
+        ];
+        for (old, new) in expected {
+            assert!(
+                index.aliases.iter().any(|a| a.old == old && a.new == new),
+                "missing bridge {old:?} -> {new:?}; aliases={:?}",
+                index.aliases
+            );
+        }
+        assert_eq!(
+            index.aliases.len(),
+            3,
+            "one entry for the knot plus one per descendant; aliases={:?}",
+            index.aliases
+        );
+    }
+
+    /// `#@was` on a stitch (unrelated to any knot rename) mints the stitch's
+    /// own entry plus one for a label nested under it — `Stitch::was` is
+    /// already qualified with the enclosing (current) knot name, so the
+    /// bridge lands on `{knot}.{old_stitch}.{label}` ->
+    /// `{knot}.{new_stitch}.{label}`.
+    #[test]
+    fn stitch_rename_transitively_aliases_its_label() {
+        let mut manifest = SymbolManifest::default();
+        manifest.knots.push(sym("hub", 0));
+        manifest
+            .stitches
+            .push(sym_with_was("hub.bazaar", 10, "hub.market"));
+        manifest.labels.push(sym("hub.bazaar.done", 30));
+
+        let files = vec![(FileId(0), &manifest)];
+        let (index, _diags) = merge_manifests(&files);
+
+        let expected = [
+            bridge("hub.market", "hub.bazaar"),
+            bridge("hub.market.done", "hub.bazaar.done"),
+        ];
+        for (old, new) in expected {
+            assert!(
+                index.aliases.iter().any(|a| a.old == old && a.new == new),
+                "missing bridge {old:?} -> {new:?}; aliases={:?}",
+                index.aliases
+            );
+        }
+        assert_eq!(index.aliases.len(), 2, "aliases={:?}", index.aliases);
+    }
+
+    /// No `#@was` anywhere — no aliases minted at all, transitive or
+    /// otherwise. (Guards against `push_transitive_aliases` firing on an
+    /// empty-prefix false positive.)
+    #[test]
+    fn no_rename_no_aliases() {
+        let mut manifest = SymbolManifest::default();
+        manifest.knots.push(sym("hub", 0));
+        manifest.stitches.push(sym("hub.market", 10));
+        manifest.labels.push(sym("hub.market.done", 30));
+
+        let files = vec![(FileId(0), &manifest)];
+        let (index, _diags) = merge_manifests(&files);
+
+        assert!(index.aliases.is_empty(), "aliases={:?}", index.aliases);
     }
 }

@@ -4,15 +4,22 @@
 //! behavior `docs/design/definition-identity-proposals.md` analyzes for
 //! issue #1442.
 //!
-//! Tests 1–3 pin *today's* behavior, including the parts that are still the
-//! problem: R1 (ruled 2026-07-27, PR #1670) kept identity name-derived with
-//! `#@was` as the sole migration edge, so id churn under a rename is by
-//! design and the shallow rename net is tracked separately as #1671.
+//! Test 1 pins *today's* behavior, which is still the problem: R1 (ruled
+//! 2026-07-27, PR #1670) kept identity name-derived, so a rename churns
+//! every scope id beneath the renamed container by design — the loader
+//! cannot recover a path from a hash, so nothing but a compiled alias-table
+//! entry can bridge a stale id back to its current one.
 //!
 //! Test 4 **flipped** when #1442 landed: regeneration and locale compilation
 //! now consult the compiled alias table, so a *declared* rename carries its
-//! own translations across. Test 5 pins the residue — the transitive gap
-//! #1671 owns — and test 6 covers the `compile-locale` half.
+//! own translations across.
+//!
+//! Tests 2, 3b, and 5 **flipped** when #1671 landed: `#@was` on a knot or
+//! stitch now mints one alias entry per descendant whose id changed (every
+//! stitch/label qualified under the renamed container), not just the
+//! container's own entry, so the transitive residue those tests used to pin
+//! is gone — the descendant's durable state (visit counts, translations)
+//! now has a migration path too. Test 6 covers the `compile-locale` half.
 //!
 //! See `docs/design/definition-identity-proposals.md` for the analysis and
 //! `docs/intl-spec.md` for the resulting matching rules.
@@ -134,20 +141,20 @@ fn knot_rename_churns_every_scope_id_beneath_it() {
     );
 }
 
-/// **2.** `#@was` on the knot mints exactly **one** alias entry — the knot's
-/// own. The stitch's pre-rename id is not aliased, even though the stitch was
-/// not renamed and its own qualified name only changed because its *parent*
-/// did. The rename net is therefore shallow while the churn is transitive:
-/// the stitch's saved visit count and its translations have no migration
-/// path at all.
+/// **2.** `#@was` on the knot mints one alias entry for the knot's own id
+/// *and* one for every descendant beneath it — #1671: the stitch was not
+/// renamed itself, but its qualified name only changed because its
+/// *parent* did, so the compiler bridges its pre-rename id too. The rename
+/// net is transitive, matching the churn.
 #[test]
-fn knot_was_aliases_the_knot_but_not_its_stitch() {
+fn knot_was_aliases_the_knot_and_its_stitch() {
     let before = compile_story(BEFORE);
     let after = compile_story(KNOT_RENAMED);
 
     let old_knot = scope_id_of(&before, "hub");
     let new_knot = scope_id_of(&after, "plaza");
     let old_stitch = scope_id_of(&before, "hub.market");
+    let new_stitch = scope_id_of(&after, "plaza.market");
 
     let aliases: Vec<(String, String)> = after
         .alias_table
@@ -160,15 +167,16 @@ fn knot_was_aliases_the_knot_but_not_its_stitch() {
         "`#@was(hub)` must alias the knot's own id; aliases={aliases:?}"
     );
     assert!(
-        !aliases.iter().any(|(old, _)| old == &old_stitch),
-        "today the stitch `hub.market` -> `plaza.market` gets no alias entry, \
-         so its durable state is unrecoverable; aliases={aliases:?}"
+        aliases.contains(&(old_stitch.clone(), new_stitch.clone())),
+        "`#@was(hub)` must also bridge the untouched stitch `hub.market` -> \
+         `plaza.market`, since only its parent's name changed; \
+         aliases={aliases:?}"
     );
     assert_eq!(
         aliases.len(),
-        1,
-        "one declaration renamed, one alias entry — the relation is not \
-         transitive; aliases={aliases:?}"
+        2,
+        "one declaration renamed, one entry for the knot and one for its \
+         re-keyed descendant; aliases={aliases:?}"
     );
 }
 
@@ -199,12 +207,14 @@ fn stitch_was_aliases_the_qualified_pre_rename_id() {
 }
 
 /// **3b.** …and a stitch-level `#@was` is *not* an author-side workaround for
-/// the transitive gap in test 2. Declaring `#@was(market)` on an unrenamed
-/// stitch inside a renamed knot qualifies the old name with the knot's
-/// **current** name (`plaza.market`), which is the stitch's new id — a no-op
-/// self-edge, not the `hub.market -> plaza.market` bridge an author would
-/// expect. So #1671 is the only path for a renamed subtree; there is nothing
-/// to hand-write today.
+/// the transitive gap #1671 closes — it was never needed. Declaring
+/// `#@was(market)` on an unrenamed stitch inside a renamed knot qualifies
+/// the old name with the knot's **current** name (`plaza.market`), which is
+/// the stitch's own new id — a no-op self-edge (`E095`), not the
+/// `hub.market -> plaza.market` bridge an author might reach for by hand.
+/// That bridge is minted automatically instead, by the knot's own `#@was`
+/// (test 2) — so this redundant stitch-level directive contributes nothing
+/// *beyond* the transitive edge the knot rename already produced.
 #[test]
 fn stitch_was_cannot_bridge_an_ancestor_rename() {
     const KNOT_RENAMED_STITCH_REDECLARED: &str = "\
@@ -221,23 +231,26 @@ Fish, mostly.
     let before = compile_story(BEFORE);
     let after = compile_story(KNOT_RENAMED_STITCH_REDECLARED);
 
-    let aliases: Vec<(String, String)> = after
+    let aliases: BTreeSet<(String, String)> = after
         .alias_table
         .iter()
         .map(|a| (hex(a.old), hex(a.new)))
         .collect();
 
+    let expected: BTreeSet<(String, String)> = [
+        (scope_id_of(&before, "hub"), scope_id_of(&after, "plaza")),
+        (
+            scope_id_of(&before, "hub.market"),
+            scope_id_of(&after, "plaza.market"),
+        ),
+    ]
+    .into_iter()
+    .collect();
+
     assert_eq!(
-        aliases,
-        vec![(scope_id_of(&before, "hub"), scope_id_of(&after, "plaza"))],
-        "the knot's edge is the only one minted; the stitch's `#@was` \
-         resolves to its own new id and contributes nothing"
-    );
-    assert!(
-        !aliases
-            .iter()
-            .any(|(old, _)| old == &scope_id_of(&before, "hub.market")),
-        "no edge names the stitch's pre-rename id; aliases={aliases:?}"
+        aliases, expected,
+        "the knot's own edge plus the transitive stitch bridge (#1671) — the \
+         stitch's own redundant `#@was` mints nothing further; aliases={aliases:?}"
     );
 }
 
@@ -304,22 +317,21 @@ fn declared_rename_carries_the_renamed_scopes_translations_across() {
     );
 }
 
-/// **5.** The residue, owned by #1671: `#@was` on the knot mints exactly one
-/// alias entry (test 2), so the *stitch* beneath it — re-keyed only because
-/// its parent's name changed — has no edge to rebind through and its
-/// translations are still orphaned. Alias-awareness can only carry what the
-/// alias table records.
+/// **5.** #1671: `#@was` on the knot now mints a transitive alias entry for
+/// the *stitch* beneath it too (test 2) — even though the stitch was never
+/// renamed itself, its qualified name (and so its id) changed purely
+/// because its parent's did, and the compiler-materialized bridge lets
+/// regeneration rebind its translations onto the post-rename id, exactly
+/// like the knot's own (test 4).
 #[test]
-fn transitive_rename_still_orphans_the_stitch() {
+fn transitive_rename_carries_the_stitchs_translations_across() {
     let before = compile_story(BEFORE);
     let after = compile_story(KNOT_RENAMED);
 
     let translated = fully_translated(&before);
     let old_stitch = scope_id_of(&before, "hub.market");
-    assert!(
-        translated_in_scope(&translated, &old_stitch) > 0,
-        "the stitch must have translated lines"
-    );
+    let expected = translated_in_scope(&translated, &old_stitch);
+    assert!(expected > 0, "the stitch must have translated lines");
 
     let regenerated = brink_intl::regenerate_lines(
         &brink_intl::export_lines(&after, 0),
@@ -330,8 +342,9 @@ fn transitive_rename_still_orphans_the_stitch() {
     let new_stitch = scope_id_of(&after, "plaza.market");
     assert_eq!(
         translated_in_scope(&regenerated, &new_stitch),
-        0,
-        "the stitch has no alias entry (see #1671), so it cannot rebind"
+        expected,
+        "the stitch's transitive alias entry (#1671) must rebind its \
+         translations onto `plaza.market`"
     );
 }
 
@@ -343,8 +356,9 @@ fn compile_locale_rebinds_a_stale_locale_file_through_the_alias_table() {
     let before = compile_story(BEFORE);
     let after_inkb = compile_inkb(KNOT_RENAMED);
 
-    // Only the renamed knot — the stitch has no alias edge (test 5), and an
-    // unrebindable scope is still `ScopeNotInBase`.
+    // Restricted to just the renamed knot's scope — the stitch has its own
+    // transitive alias edge too (test 5), but keeping this fixture to one
+    // scope keeps the binding assertion below unambiguous.
     let mut translated = fully_translated(&before);
     let old_knot = scope_id_of(&before, "hub");
     translated.scopes.retain(|s| s.id == old_knot);

@@ -576,6 +576,20 @@ row encoding itself stays section-locally versioned so it can still evolve
 without a further whole-file bump). `0x0E` is taken by `Visibility`, so this
 takes the next free tag, `0x0F`.
 
+A `#@was` on a knot or stitch mints **one entry per descendant** whose
+qualified name (and so `DefinitionId`) changed too — every stitch and label
+beneath a renamed knot, every label beneath a renamed stitch — not just one
+entry for the renamed declaration itself (issue #1671): a rename's own id
+is recoverable only from the declared `#@was`, but a descendant's stale id
+can never be derived at load time (a `DefinitionId` is a hash; no path can
+be recovered from one), so the compiler must materialize the whole bridge
+set while it still knows every descendant's path. Table growth is therefore
+bounded by the renamed container's subtree size, not by 1 per `#@was`
+directive — a knot with many stitches and labels renamed once produces one
+entry per descendant, additively (a stitch renamed *simultaneously* with
+its own enclosing knot produces one edge per level, not a doubly-old
+composite path).
+
 **`FrameShapes` section (`0x10`, FS-3)** — carries per-`await`-site frame
 shapes (`docs/flow-suspension-spec.md` §4/§11): a one-byte section-local
 version, then a `u32` count, then that many entries, each the site's stable

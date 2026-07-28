@@ -30,7 +30,8 @@ shape unilaterally.
 Companion artifact: `crates/internal/brink-intl/tests/rename_identity.rs`
 (added alongside this document) pinned the failure as executable
 evidence. Its translation-orphaning case flipped when #1442 landed; the
-churn and shallow-net cases still hold, by design.
+churn case flipped when #1671 landed. The shallow-net case still holds,
+by design.
 
 ---
 
@@ -129,30 +130,33 @@ to `plaza` and the rename **declared** (`#@was(hub)`). Observed:
 | `hub` → `plaza` | `0x01dc2d3e4dc206af` | `0x01a3ccc344ad71ad` |
 | `hub.market` → `plaza.market` | `0x01a409a019e32d22` | `0x015d074d1121ba51` |
 
-Compiled alias table after the rename: **one** entry,
-`0x01dc2d3e4dc206af → 0x01a3ccc344ad71ad`.
+Compiled alias table after the rename (pre-#1671 measurement): **one**
+entry, `0x01dc2d3e4dc206af → 0x01a3ccc344ad71ad`.
 
 Three facts fall out, and the tests pin all three:
 
-1. **Churn is transitive; the rename net is not.** The stitch was not
-   renamed, but its id changed because its parent's name is part of its
-   own qualified name — and no alias entry covers it. Its saved visit
-   count and its whole translation set have *no* migration path, even
-   though the author did declare the rename. (A stitch-level `#@was`
-   *does* work — the lowering qualifies the old name at
-   `brink-ir/src/hir/lower/structure/stitch.rs:135-146` — so the gap is
-   specifically the ancestor-renamed case. The test file carries that
-   positive control.)
+1. **Churn is transitive; the rename net is not.**
+   **CLOSED (#1671):** the stitch was not renamed, but its id changed
+   because its parent's name is part of its own qualified name — and no
+   alias entry covered it, so its saved visit count and its whole
+   translation set had *no* migration path, even though the author did
+   declare the rename. (A stitch-level `#@was` *does* work — the
+   lowering qualifies the old name at
+   `brink-ir/src/hir/lower/structure/stitch.rs:135-146` — so the gap was
+   specifically the ancestor-renamed case. The test file carried that
+   positive control.) `push_transitive_aliases`
+   (`brink-analyzer/src/manifest.rs`) now mints a bridging alias entry
+   for every descendant stitch/label re-keyed by an ancestor's `#@was`.
 2. **Translations orphan even when the migration edge exists.**
    Regeneration matched scopes by id string and never read
    `StoryData::alias_table`, so the knot's own translations were dropped
    too. For `compile-locale` it was worse than a drop: a stale locale
    file was a hard `ScopeNotInBase` error, not a partial merge.
    **CLOSED (#1442):** both surfaces now rebind through the alias table
-   — see the "Alias rebinding" rules in `docs/intl-spec.md`. What
-   remains is the residue of fact 1: a scope with no alias entry of its
-   own still cannot rebind, which is #1671's transitive-`#@was` gap, not
-   a matching-rule gap.
+   — see the "Alias rebinding" rules in `docs/intl-spec.md`. The
+   residue this left — a scope with no alias entry of its own could not
+   rebind — was fact 1's transitive-`#@was` gap, not a matching-rule
+   gap, and is now closed too (see fact 1, **CLOSED (#1671)**).
 3. **The safety net is unwired at the authoring end.** `modules-spec`
    §5 says "IDE rename writes the directive automatically (module and
    knot renames both go through the #305/#306 rename machinery)".
