@@ -5,7 +5,7 @@
 // flat version to a nested state stack; that generalization is future
 // work, not attempted here). A vendor NPC's dialogue state (`idle` /
 // `greet` / `trade`) advances by looking its CURRENT state up in a
-// `map<string, fn(string): string>` and calling whatever handler comes
+// `Map<string, fn(string): string>` and calling whatever handler comes
 // back with the next scripted event — the dispatch-table idiom this
 // corpus keeps returning to (behavior-tree's `kind`-tagged struct arena
 // is the same idea with an `int` tag instead of a `string` key).
@@ -97,7 +97,7 @@ VAR transcript = #[]
 
 VAR handlers = #{}
 
-VAR events: array<string> = #["approach", "trade", "buy", "buy", "leave", "approach", "leave", "buy", "approach"]
+VAR events: Array<string> = #["approach", "trade", "buy", "buy", "leave", "approach", "leave", "buy", "approach"]
 
 ~ {
     // `#fn(...)` isn't a compile-time-constant expression (E077 — see the

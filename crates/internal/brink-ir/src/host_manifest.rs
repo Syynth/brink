@@ -230,7 +230,7 @@ impl TypeRef {
 /// scalar bases above: a `SemanticTypeDef { base: Handle, .. }` entry doesn't
 /// specialize a primitive (the way `switch_id` specializes `int`) — its
 /// `name` field *is* the declared handle-kind name (e.g. `AudioInstance`),
-/// the nominal vocabulary `handle<K>` type annotations resolve `K` against.
+/// the nominal vocabulary `Handle<K>` type annotations resolve `K` against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BaseType {
@@ -401,7 +401,7 @@ mod value_source_tests {
     fn handle_base_json_roundtrip() {
         // The host authors this JSON (e.g. via `setHostManifest`); lock the
         // wire shape for `"base": "handle"` the same way the other base
-        // keywords are locked above — the with-manifest handle<K> path
+        // keywords are locked above — the with-manifest Handle<K> path
         // depends on this JSON -> BaseType::Handle deserialization, not just
         // on constructing BaseType::Handle directly in Rust.
         let def: SemanticTypeDef =
@@ -418,7 +418,7 @@ mod value_source_tests {
 /// (during #911's batch work and again in #921's review, tracked from #897 as
 /// issue #924): the docs' Tier-1 JSON examples and `bevy-brink::capability`'s
 /// doc-header example previously showed `params` as 2-tuples (`["item","string"]`)
-/// or `{"type": "handle<Npc>"}`, but [`ManifestParam`]'s real serde shape is
+/// or `{"type": "Handle<Npc>"}`, but [`ManifestParam`]'s real serde shape is
 /// `{"name": ..., "ty": ...}`. This test parses the doc's actual Tier-1 example
 /// JSON (`docs/host-capability-manifest.md` §"Tier 1") verbatim and round-trips
 /// it through serde, so if a future edit reintroduces the wrong param shape in

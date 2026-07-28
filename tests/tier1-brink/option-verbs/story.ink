@@ -31,10 +31,10 @@ first over 5 is {hit}.
 first over 10 is {string(miss)}.
 -> END
 
-=== function room_of(rooms: map<string, int>, name: string) ===
+=== function room_of(rooms: Map<string, int>, name: string) ===
 ~ return get(rooms, name)
 
-=== function first_over(tab: array<int>, floor: int) ===
+=== function first_over(tab: Array<int>, floor: int) ===
 ~ {
     for coins in tab {
         if coins > floor {

@@ -16,7 +16,7 @@
 // once from a fixed entity list; there's no natural pause point.
 //
 // TYPES POLICY: gradual (default). Entities are `int` id/x/y; the bucket
-// map is `map<string, array<int>>` (composite cell key, see the finding
+// map is `Map<string, Array<int>>` (composite cell key, see the finding
 // below); nothing here needs strict's escape-error discipline.
 //
 // ERGONOMICS-FINDINGS:
@@ -70,7 +70,7 @@
 //   struct construction isn't (a plain `#[1, 2, 3]` `VAR` default is fine
 //   throughout this corpus — see every grid file's `VAR grid = #[...]`).
 //   `utility-ai/story.ink` had already independently worked around this
-//   by building its `array<ActionOption>` as a `temp` inside a `~ { }`
+//   by building its `Array<ActionOption>` as a `temp` inside a `~ { }`
 //   block rather than a `VAR` default; this file hits the same wall and
 //   uses the same fix, just assigning straight to the top-level `VAR`
 //   (`entities = #[Entity#{...}, ...]`) instead of a `temp` — worth

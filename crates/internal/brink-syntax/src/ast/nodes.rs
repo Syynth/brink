@@ -229,7 +229,7 @@ impl TypeGeneric {
         self.identifier().and_then(|id| id.name())
     }
 
-    /// The type arguments in source order (e.g. `[K, V]` for `map<K, V>`).
+    /// The type arguments in source order (e.g. `[K, V]` for `Map<K, V>`).
     pub fn args(&self) -> impl Iterator<Item = TypeExpr> {
         support::children(&self.syntax)
     }

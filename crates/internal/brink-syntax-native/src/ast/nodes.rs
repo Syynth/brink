@@ -556,7 +556,7 @@ impl TypeGeneric {
         self.name_token().map(|t| t.text().to_string())
     }
 
-    /// The type arguments in source order (e.g. `[K, V]` for `map<K, V>`).
+    /// The type arguments in source order (e.g. `[K, V]` for `Map<K, V>`).
     pub fn args(&self) -> impl Iterator<Item = TypeExpr> {
         support::children(&self.syntax)
     }

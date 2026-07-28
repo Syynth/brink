@@ -2,7 +2,7 @@
 // Memoized (top-down) Fibonacci: the canonical "map as memo table" case.
 //
 // TYPES POLICY: gradual (default). Every value here is an `int` or a
-// `map<int, int>`; gradual inference resolves `memo[n]`, `n - 1`, etc.
+// `Map<int, int>`; gradual inference resolves `memo[n]`, `n - 1`, etc.
 // cleanly end to end. Nothing here earns strict's escape-error discipline.
 //
 // ERGONOMICS-FINDINGS:

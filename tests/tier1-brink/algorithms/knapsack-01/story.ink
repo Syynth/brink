@@ -3,7 +3,7 @@
 // capacity) — the first two-dimensional memo table in this lane.
 //
 // TYPES POLICY: gradual (default). Weights/values/capacity are `int`,
-// the memo table is `map<string, int>`; nothing here needs strict's
+// the memo table is `Map<string, int>`; nothing here needs strict's
 // escape-error discipline to type-check cleanly.
 //
 // ERGONOMICS-FINDINGS:

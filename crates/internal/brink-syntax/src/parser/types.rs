@@ -3,14 +3,16 @@
 //! `name: type` after params and `VAR`/`temp` declarations, `): type ===`
 //! in the function-header return position. Superset grammar — parses
 //! identically in both dialects; `strict-ink` rejection (E051) happens at
-//! analysis (`brink-analyzer::dialect_gate`), never here. Nominal type names
-//! are lowercase: `int`, `float`, `bool`, `string`, `divert`, `void`,
-//! `list<L>`, `array<T>`, `map<K, V>`, `fn(T…): R`, `handle<K>` (T1d-2,
-//! docs/t1d-spec.md §3 — a manifest-declared handle kind name). Grammar
-//! accepts *any* identifier as a type name or generic head — recognizing
-//! the fixed set, rejecting unknown names, and flagging `fn(...)` as
-//! reserved-until-T1c are semantic checks (`brink-analyzer`), not parser
-//! concerns.
+//! analysis (`brink-analyzer::dialect_gate`), never here. Primitive leaf
+//! names are lowercase: `int`, `float`, `bool`, `string`, `divert`, `void`.
+//! Every non-primitive type name is Uppercase (issue #1552,
+//! `docs/decision-log.md` 2026-07-27 "Type-name surface ruled"): `List<L>`,
+//! `Array<T>`, `Map<K, V>`, `Option<T>`, `Weighted<T>`, `Handle<K>` (T1d-2,
+//! docs/t1d-spec.md §3 — a manifest-declared handle kind name), plus
+//! `fn(T…): R`. Grammar accepts *any* identifier as a type name or generic
+//! head — recognizing the fixed set, rejecting unknown names, and flagging
+//! `fn(...)` as reserved-until-T1c are semantic checks (`brink-analyzer`),
+//! not parser concerns.
 
 use crate::SyntaxKind::{
     COLON, COMMA, GT, IDENTIFIER, L_PAREN, LT, R_PAREN, TYPE_ANNOTATION, TYPE_EXPR, TYPE_FN,
@@ -188,7 +190,7 @@ mod tests {
 
     #[test]
     fn generic_list_type_parses() {
-        let out = dump("VAR w: list<Weathers> = sunny\n");
+        let out = dump("VAR w: List<Weathers> = sunny\n");
         assert!(
             out.contains(&format!("{:?}", SyntaxKind::TYPE_GENERIC)),
             "{out}"
@@ -197,7 +199,7 @@ mod tests {
 
     #[test]
     fn generic_map_type_parses_two_args() {
-        let out = dump("VAR m: map<string, int> = 0\n");
+        let out = dump("VAR m: Map<string, int> = 0\n");
         assert!(
             out.contains(&format!("{:?}", SyntaxKind::TYPE_GENERIC)),
             "{out}"
@@ -205,21 +207,21 @@ mod tests {
     }
 
     /// T1d-2 (docs/t1d-spec.md §3, typed-mode-spec.md §3 amendment):
-    /// `handle<K>` needs no grammar change at all — the generic-instantiation
+    /// `Handle<K>` needs no grammar change at all — the generic-instantiation
     /// rule already accepts any identifier as a generic head (this test's
-    /// whole point), same as `list<L>`/`array<T>`/`map<K, V>` before it.
-    /// Recognizing `handle` specifically, and validating `K` against the
+    /// whole point), same as `List<L>`/`Array<T>`/`Map<K, V>` before it.
+    /// Recognizing `Handle` specifically, and validating `K` against the
     /// manifest's declared kinds, are `brink-analyzer` semantic concerns
     /// (`annotations::resolve`/`check`), not this parser's.
     #[test]
     fn generic_handle_type_parses_like_any_other_generic() {
-        let out = dump("VAR h: handle<AudioInstance> = 0\n");
+        let out = dump("VAR h: Handle<AudioInstance> = 0\n");
         assert!(
             out.contains(&format!("{:?}", SyntaxKind::TYPE_GENERIC)),
             "{out}"
         );
         assert_eq!(
-            parse("VAR h: handle<AudioInstance> = 0\n").errors().len(),
+            parse("VAR h: Handle<AudioInstance> = 0\n").errors().len(),
             0
         );
     }

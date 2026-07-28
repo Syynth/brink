@@ -283,8 +283,8 @@ pub(crate) fn collect_globals(
 }
 
 /// Declaration-derived `EXTERNAL` signatures (issue #786, docs/t1d-spec.md
-/// §3: "a binding declared to take `handle<AudioInstance>` rejects a
-/// `handle<Timer>` argument at compile time" under `types = strict`; issue
+/// §3: "a binding declared to take `Handle<AudioInstance>` rejects a
+/// `Handle<Timer>` argument at compile time" under `types = strict`; issue
 /// #805 widens this to the manifest's full scalar-semantic-type vocabulary
 /// and to inline-doc-only bindings).
 ///
@@ -318,7 +318,7 @@ pub(crate) fn collect_globals(
 /// [`SemanticTypeDef`](brink_ir::SemanticTypeDef) table regardless of which
 /// source (manifest or inline doc) supplied the ref; a scalar semantic type
 /// (e.g. `switch_id`, `base: Int`) now types as its own `base` (`Ty::Int`)
-/// exactly like a `handle<K>`-based one types as `Ty::Handle(K)` — the same
+/// exactly like a `Handle<K>`-based one types as `Ty::Handle(K)` — the same
 /// `known_sigs`/`observe`/`unify` call-checking path applies to both, so a
 /// literal-typed argument that disagrees with a declared scalar semantic
 /// type folds to `Ty::Conflicted` and reports through the pre-existing
@@ -394,7 +394,7 @@ pub fn collect_external_sigs(
 /// `Ty::Int`/`Ty::Float`/`Ty::Bool` for a scalar specialization (e.g.
 /// `switch_id`, `base: Int`), `Ty::Handle(name)` for a `base: Handle` kind
 /// definition (T1d-2, docs/t1d-spec.md §3 — the def's own `name` *is* the
-/// declared handle-kind name `handle<K>` annotations resolve `K` against).
+/// declared handle-kind name `Handle<K>` annotations resolve `K` against).
 /// `void` (either the bare keyword or a registered `base: Void` def) has no
 /// `Ty` (return-only, same as an annotation's `void`); an unresolved name —
 /// no manifest at all, or a name neither a base keyword nor a registered
@@ -500,7 +500,7 @@ struct ProjectCtx<'a> {
     struct_names: BTreeSet<String>,
     /// Declared handle-kind names from the registered `HostManifest`
     /// (T1d-2b, issue #774, docs/t1d-spec.md §3) — computed once per
-    /// context, same shape as `list_names`/`struct_names`, so `handle<K>`
+    /// context, same shape as `list_names`/`struct_names`, so `Handle<K>`
     /// param/return/temp annotations resolve during body inference too, not
     /// just at the `signature()`/annotation-firewall seam.
     handle_names: BTreeSet<String>,
@@ -640,7 +640,7 @@ fn solve_one_batch(
 /// signature ([`collect_external_sigs`]), seeded into `known_sigs` before any
 /// batch solves — a call to an external now resolves through the exact same
 /// `known_sigs` lookup + [`body::BodyCtx::observe`] unify path an ordinary
-/// knot/stitch call already uses, so a `handle<K>`-mismatched argument folds
+/// knot/stitch call already uses, so a `Handle<K>`-mismatched argument folds
 /// its local to `Ty::Conflicted` and reports through the pre-existing `E066`
 /// classification, no parallel checking surface. Externals are never SCC
 /// members (never in any `batch`), so this seed is never touched again by
@@ -672,7 +672,7 @@ fn solve_batches(
 /// tests, and the exact function `type_inference_query` wraps for salsa
 /// memoization. `manifest` (T1d-2b, issue #774): the registered host
 /// manifest, threaded through to `signature()`/annotation resolution so
-/// `handle<K>` param/return/temp annotations resolve to `Ty::Handle(K)`
+/// `Handle<K>` param/return/temp annotations resolve to `Ty::Handle(K)`
 /// during body inference — `None` degrades to an empty handle-kind set,
 /// same posture as every other manifest-driven check. Also threaded to
 /// [`collect_external_sigs`] (issue #786) so a call to a manifest-registered
@@ -1004,7 +1004,7 @@ pub fn effects_project(
 /// assembly turn out to be.
 ///
 /// `manifest` (T1d-2b, issue #774): the registered host manifest, threaded
-/// through to `ProjectCtx` so a `handle<K>` param/return/temp annotation
+/// through to `ProjectCtx` so a `Handle<K>` param/return/temp annotation
 /// resolves to `Ty::Handle(K)` here too — this is the seam that makes
 /// strict-mode handle-kind rejection reachable end-to-end (docs/t1d-spec.md
 /// §3, the #767 acceptance criterion): once two locals of different
@@ -1329,7 +1329,7 @@ mod tests {
     }
 
     /// The #786 mechanism, isolated: a manifest-registered `EXTERNAL`'s
-    /// declared `handle<K>` param type propagates into `known_sigs` exactly
+    /// declared `Handle<K>` param type propagates into `known_sigs` exactly
     /// like a knot/stitch callee's declared param type does
     /// ([`call_site_propagates_callee_param_type_to_caller_local`]'s own
     /// pattern) — a caller's local passed as the argument picks up the
@@ -1338,7 +1338,7 @@ mod tests {
     fn external_call_propagates_declared_handle_kind_to_caller_local() {
         let (hir, index, res) = build(
             "EXTERNAL play_sound(inst)\n=== main ===\n~ temp s = get_sound(1)\n\
-             ~ play_sound(s)\n-> DONE\n=== function get_sound(id): handle<AudioInstance> ===\n~ return id\n",
+             ~ play_sound(s)\n-> DONE\n=== function get_sound(id): Handle<AudioInstance> ===\n~ return id\n",
         );
         let manifest = audio_manifest_with_external("AudioInstance");
         let result = infer_project(
@@ -1373,7 +1373,7 @@ mod tests {
     fn external_call_with_cross_kind_argument_conflicts_the_caller_local() {
         let (hir, index, res) = build(
             "EXTERNAL play_sound(inst)\n=== main ===\n~ temp t = get_timer(1)\n\
-             ~ play_sound(t)\n-> DONE\n=== function get_timer(id): handle<Timer> ===\n~ return id\n",
+             ~ play_sound(t)\n-> DONE\n=== function get_timer(id): Handle<Timer> ===\n~ return id\n",
         );
         let manifest = audio_manifest_with_external("AudioInstance");
         let result = infer_project(
@@ -1471,9 +1471,9 @@ mod tests {
     }
 
     /// Point (1): a manifest-registered `EXTERNAL`'s param declared with a
-    /// *scalar* semantic type (not a `handle<K>` kind) now resolves to its
+    /// *scalar* semantic type (not a `Handle<K>` kind) now resolves to its
     /// own `base` (`switch_id` -> `Ty::Int`) and propagates into the
-    /// caller's local exactly like a `handle<K>`-declared param already did
+    /// caller's local exactly like a `Handle<K>`-declared param already did
     /// (mirrors `external_call_propagates_declared_handle_kind_to_caller_local`).
     #[test]
     fn external_call_scalar_semantic_type_param_propagates_to_caller_local() {
@@ -1516,7 +1516,7 @@ mod tests {
     /// Point (1), negative: a caller's local pinned to a *different*
     /// concrete type (string) than the binding's declared scalar semantic
     /// type (`switch_id`, base int) folds to `Ty::Conflicted` at the call
-    /// site — the same #627 lattice a `handle<K>` mismatch already used, no
+    /// site — the same #627 lattice a `Handle<K>` mismatch already used, no
     /// new diagnostic code.
     #[test]
     fn external_call_scalar_semantic_type_mismatch_conflicts_the_caller_local() {
@@ -1569,7 +1569,7 @@ mod tests {
             "/// @param inst {AudioInstance}\n\
              EXTERNAL play_sound(inst)\n\
              === main ===\n~ temp s = get_sound(1)\n~ play_sound(s)\n-> DONE\n\
-             === function get_sound(id): handle<AudioInstance> ===\n~ return id\n",
+             === function get_sound(id): Handle<AudioInstance> ===\n~ return id\n",
         );
         let manifest = brink_ir::HostManifest {
             markup: Vec::new(),
@@ -1622,7 +1622,7 @@ mod tests {
             "/// @param inst {AudioInstance}\n\
              EXTERNAL play_sound(inst)\n\
              === main ===\n~ temp t = get_timer(1)\n~ play_sound(t)\n-> DONE\n\
-             === function get_timer(id): handle<Timer> ===\n~ return id\n",
+             === function get_timer(id): Handle<Timer> ===\n~ return id\n",
         );
         let manifest = brink_ir::HostManifest {
             markup: Vec::new(),
@@ -2171,27 +2171,27 @@ mod tests {
         assert_eq!(sig.return_ty, Ty::Option(Box::new(Ty::Int)));
     }
 
-    /// `get(m, k)` where `m` is an annotated `map<...>` param, likewise
+    /// `get(m, k)` where `m` is an annotated `Map<...>` param, likewise
     /// never evidenced elsewhere — the confirmation comment's second
     /// repro ("`get(<any map>)` … infer `Option[Unknown]`").
     #[test]
     fn get_of_an_unevidenced_annotated_map_param_infers_option_of_the_value_type() {
         let (hir, index, res) =
-            build("=== function f(m: map<string, int>, k: string) ===\n~ return get(m, k)\n");
+            build("=== function f(m: Map<string, int>, k: string) ===\n~ return get(m, k)\n");
         let result = infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
         let sig = sig_of(&result, &index, "f");
         assert_eq!(sig.return_ty, Ty::Option(Box::new(Ty::Int)));
     }
 
     /// `iteration.md`'s `first_over` fence: a `for` loop over an annotated
-    /// `array<int>` param used nowhere else, `return some(<the loop var>)`
+    /// `Array<int>` param used nowhere else, `return some(<the loop var>)`
     /// on one path and `return none` on the other. Regression for the
     /// iterable-position half of #1168 (the loop var itself escaped too,
     /// since its type comes from the iterable's element type).
     #[test]
     fn some_of_a_for_loop_var_over_an_unevidenced_annotated_array_param() {
         let (hir, index, res) = build(
-            "=== function first_over(tab: array<int>, floor: int) ===\n\
+            "=== function first_over(tab: Array<int>, floor: int) ===\n\
              ~ {\n    for coins in tab {\n        if coins > floor {\n            return some(coins)\n        }\n    }\n}\n\
              ~ return none\n",
         );
@@ -2237,7 +2237,7 @@ mod tests {
     /// call derives `elem` from `arg_tys[0]` (the container's shape) — if
     /// that shape were read from `tab`'s own annotation-fallback type
     /// (`read_tys`) instead of its evidence-only type (`arg_tys`), `tab`'s
-    /// `array<int>` annotation would become body *evidence* for `needle`
+    /// `Array<int>` annotation would become body *evidence* for `needle`
     /// (the sibling arg), silently discarding `needle`'s own `string`
     /// annotation. `tab` has no other evidence anywhere in the body, so
     /// this pins that `contains`'s observe call never reads the
@@ -2246,7 +2246,7 @@ mod tests {
     #[test]
     fn intrinsic_sibling_arg_never_seeds_from_a_containers_own_annotation() {
         let (hir, index, res) = build(
-            "=== function f(tab: array<int>, needle: string) ===\n\
+            "=== function f(tab: Array<int>, needle: string) ===\n\
              ~ return contains(tab, needle)\n",
         );
         let result = infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());

@@ -74,9 +74,9 @@ impl BodyCtx<'_> {
     /// A [`crate::annotations::TypeNames`] bundle for this ctx's
     /// annotation-resolution call sites — `handles` now carries the real
     /// registered handle-kind vocabulary (T1d-2b, issue #774), so a
-    /// `handle<K>` annotation on a param/return/temp resolves to
+    /// `Handle<K>` annotation on a param/return/temp resolves to
     /// `Ty::Handle(K)` during body inference whenever `K` is declared in the
-    /// registered manifest, exactly like `list<L>`/`STRUCT` already do
+    /// registered manifest, exactly like `List<L>`/`STRUCT` already do
     /// against their own declared-name sets.
     fn type_names(&self) -> crate::annotations::TypeNames {
         crate::annotations::TypeNames {
@@ -2825,7 +2825,7 @@ impl InferPass<'_, '_> {
                 // a second operand, so an annotated-but-otherwise-
                 // unevidenced param/temp iterable should still carry its
                 // own declared type here (`iteration.md`'s `first_over`
-                // fence: `for coins in tab` where `tab: array<int>` is
+                // fence: `for coins in tab` where `tab: Array<int>` is
                 // never touched anywhere else in the body).
                 let iter_ty = self.or_own_annotation(&f.iterable, iter_ty);
                 // F29 discharge: a provably-iterable type (the closed

@@ -99,8 +99,8 @@ pub struct ValueMeta {
 /// concepts that must not leak into the manifest serialization schema.
 ///
 /// `List` carries the declaring LIST's name (issue #628): a list-literal
-/// initializer's type is nominal (`list<L>`), same as every other list type
-/// in the `Ty` universe (`Ty::List`, TM-2's `list<L>` annotation) — the
+/// initializer's type is nominal (`List<L>`), same as every other list type
+/// in the `Ty` universe (`Ty::List`, TM-2's `List<L>` annotation) — the
 /// scalar/divert variants have no such nominal identity, so they stay bare.
 /// Not `Copy` any more (the `String` payload), unlike before.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,7 +115,7 @@ pub enum InferredType {
 
 impl InferredType {
     /// Display name, as shown in hover (e.g. `health: int`,
-    /// `weather: list<Weathers>`).
+    /// `weather: List<Weathers>`).
     #[must_use]
     pub fn name(&self) -> String {
         match self {
@@ -124,7 +124,7 @@ impl InferredType {
             Self::Bool => "bool".to_string(),
             Self::String => "string".to_string(),
             Self::Divert => "divert".to_string(),
-            Self::List(list) => format!("list<{list}>"),
+            Self::List(list) => format!("List<{list}>"),
         }
     }
 }

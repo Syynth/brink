@@ -18,8 +18,8 @@
 // draw sequence too) — the same rationale pcg.ink's header documents.
 INCLUDE ../pcg-rng/pcg.ink
 
-// TYPES POLICY: gradual (default). `array<LootEntry>`, `array<int>`
-// (cumulative weights), `map<string, int>` (tally) — gradual inference
+// TYPES POLICY: gradual (default). `Array<LootEntry>`, `Array<int>`
+// (cumulative weights), `Map<string, int>` (tally) — gradual inference
 // resolves all of it without annotation ceremony.
 //
 // ERGONOMICS-FINDINGS:

@@ -97,7 +97,7 @@ pub(crate) fn resolutions_index_query(
 /// the narrow, cutoff-friendly [`resolution_index_query`] projection (for
 /// annotation content checks' declared-`LIST`-name lookup — range-free, so
 /// it doesn't reintroduce whole-project churn) and the registered host
-/// manifest (T1d-2, docs/t1d-spec.md §3 — `handle<K>` annotation content
+/// manifest (T1d-2, docs/t1d-spec.md §3 — `Handle<K>` annotation content
 /// checks' declared-handle-kind lookup). The manifest is project-wide,
 /// host-set config, not derived from any file's edits — reading it here is
 /// the same coarse, range-free dependency shape as `dialect`, already read

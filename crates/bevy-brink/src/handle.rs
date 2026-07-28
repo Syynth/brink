@@ -65,7 +65,7 @@ use bevy_asset::Assets;
 /// meaningless across sessions"). Ephemerality is an implementor choice,
 /// never a category the spec assigns.
 pub trait HandleKind: Send + Sync + 'static {
-    /// The manifest-declared kind name (`handle<KIND>` in ink source).
+    /// The manifest-declared kind name (`Handle<KIND>` in ink source).
     const KIND: &'static str;
     /// The live host resource this kind's tokens dereference to.
     type Resource: Send + Sync + 'static;
@@ -121,7 +121,7 @@ impl<K: HandleKind> HandleRegistry<K> {
     /// Mint a token and build the ink-facing [`Value::Handle`] for it,
     /// resolving this kind's name id against `program`'s name table.
     /// `None` if this compile never interned [`HandleKind::KIND`] (no
-    /// `handle<K>`-typed signature/annotation anywhere in the source graph
+    /// `Handle<K>`-typed signature/annotation anywhere in the source graph
     /// — see [`Program::name_id`](brink_runtime::Program::name_id)).
     pub fn mint_value(&mut self, program: &Program, resource: K::Resource) -> Option<Value> {
         let kind = program.name_id(K::KIND)?;

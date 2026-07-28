@@ -182,7 +182,7 @@ Color, item_id, enum, and pattern all fit comfortably in flat-nominal.
 distinct fifth base alongside `string`/`int`/`float`/`bool`/`void` — but
 unlike those, it doesn't specialize a primitive. The semantic type's own
 `name` field *is* the declared handle-kind name (e.g. `AudioInstance`,
-`Timer`) — the vocabulary the typed dialect's `handle<K>` annotation form
+`Timer`) — the vocabulary the typed dialect's `Handle<K>` annotation form
 resolves `K` against (`docs/typed-mode-spec.md` §3's first amendment).
 `Value::Handle { kind, id }` tokens (T1d-1) carry the kind as a `NameId`
 at runtime; the manifest is where that vocabulary is declared for the
