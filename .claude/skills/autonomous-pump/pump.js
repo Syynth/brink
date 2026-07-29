@@ -227,10 +227,16 @@ const scopeSignals = [
   ...reviewed.flatMap((v) => (v?.scopeGaps ?? []).map((g) => `${v.pr} (review): ${g}`)),
 ];
 // Per-item tracker facts: the retro compares DELIVERED vs REQUESTED, so it
-// needs each item's issue/PR/merge state, not just newly-discovered scope.
-const trackerFacts = results.map((r) => {
-  const cl = closesList({ n: r.issue, closes: r.closes });
-  return `#${r.issue} -> ${r.build?.pr ?? "(no PR)"} | ${r.land?.merged ? "MERGED" : (r.build?.pr ? "NOT MERGED" : "no PR")} | verdict ${r.verdict?.decision ?? "-"} | claims: ${cl.map((x) => "#" + x).join(",")}`;
+// needs every ATTEMPTED item's issue/PR/merge state. Built from BATCH, not
+// from `results` — a build that dies (API error, killed agent) is dropped
+// from `results`, and a retro that only sees survivors reports a wave where
+// EVERYTHING failed as "scope-held". An item that never ran must say so.
+const trackerFacts = BATCH.map((b) => {
+  const r = results.find((x) => x && x.issue === b.n);
+  const cl = closesList(b).map((x) => "#" + x).join(",");
+  if (!r) return `#${b.n} -> NEVER RAN (agent died or was skipped — no build result at all; NOT evidence the issue is fine)`;
+  const state = r.land?.merged ? "MERGED" : (r.build?.pr ? "NOT MERGED" : "no PR opened");
+  return `#${b.n} -> ${r.build?.pr ?? "(no PR)"} | ${state} | verdict ${r.verdict?.decision ?? "-"} | claims: ${cl}`;
 }).join("\n");
 
 const scopeReconciliation = await agent(`You are running this wave's RETRO for ${REPO}${MILESTONE ? ` — milestone "${MILESTONE}"` : ""}. An agent landed a deliverable for each item below. Your job is to TRUE UP what was actually built against what was actually requested, item by item, and leave both the tracker and the plan honest.
@@ -247,7 +253,7 @@ For EACH item, compare DELIVERED against REQUESTED and land the difference somew
 - **PR did not merge** — say why in one line: conflict, auto-merge armed but never completed, or review parked it. An auto-merge that arms and then conflicts leaves work LOOKING landed while its issue stays open; that has silently lost two PRs here.
 - **The build found the premise already false** (already implemented, already ruled) — verify the delivering PR, comment naming it, and close the issue if nothing remains. Reporting it only to the pump means the next wave rediscovers it at the cost of another build agent.
 - **Something this wave ruled or shipped supersedes a DIFFERENT open issue's premise** — update that issue too. A ruling that lands only in a doc leaves the tracker lying.
-- **Genuinely new work no existing issue covers** — file it, after deduping against the board (\`gh issue list --repo ${REPO}${MILESTONE ? ` --milestone "${MILESTONE}" --state all` : ""}\`; read the roadmap/plan doc if the repo has one).
+- **The item NEVER RAN** (agent died mid-flight) — say so plainly and recommend a re-queue. Do NOT report the wave as scope-held on the strength of items that never executed; absence of a result is absence of evidence, not evidence of health.\n- **Genuinely new work no existing issue covers** — file it, after deduping against the board (\`gh issue list --repo ${REPO}${MILESTONE ? ` --milestone "${MILESTONE}" --state all` : ""}\`; read the roadmap/plan doc if the repo has one).
 
 You MAY act on all of the above — it is truing up the record of work that already happened, not rewriting the plan. The one thing you may NOT do unilaterally is restructure MILESTONES (add or expand one): propose that with rationale and let the human decide.
 
