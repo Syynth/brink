@@ -23,7 +23,7 @@ export const meta = {
     { title: "Merge train" },
     { title: "Fix loop" },
     { title: "Lessons" },
-    { title: "Scope reconciliation" },
+    { title: "Retro / scope reconciliation" },
   ],
 };
 
@@ -108,7 +108,7 @@ const SCOPE = {
     assessment: { type: "string", enum: ["scope-held", "under-captured", "over-captured"] },
     discoveredWork: { type: "array", items: { type: "object", additionalProperties: false, required: ["title", "why"], properties: {
       title: { type: "string" }, why: { type: "string" }, suggestedMilestone: { type: "string" } } } },
-    trackerActions: { type: "array", items: { type: "string" }, description: "tracker corrections actually MADE this wave (issues closed, remainders commented, follow-ups filed) — actions taken, not proposals" },
+    trackerActions: { type: "array", items: { type: "string" }, description: "true-up actions actually TAKEN (issues closed, remainders commented, follow-ons filed) — actions, not proposals" },
     recommendation: { type: "string", enum: ["scope-held", "file-issues", "expand-milestone", "add-milestone"] },
     proposal: { type: "string", description: "concrete proposal for the HUMAN to approve: which issues to file + which milestone to expand or add, with rationale" },
   },
@@ -221,35 +221,40 @@ So: open a PR adding each GRADUATED lesson to the "Recurring build-quality rules
       { label: "lessons", phase: "Lessons", effort: "medium", model: "sonnet", schema: LESSONS })
   : { lessons: [] };
 
-phase("Scope reconciliation"); // did building reveal work the plan didn't capture? PROPOSE, don't auto-restructure.
+phase("Retro / scope reconciliation"); // did building reveal work the plan didn't capture? PROPOSE, don't auto-restructure.
 const scopeSignals = [
   ...built.filter((b) => b && b.scopeNotes && b.scopeNotes.trim()).map((b) => `#${b.issue} (build): ${b.scopeNotes}`),
   ...reviewed.flatMap((v) => (v?.scopeGaps ?? []).map((g) => `${v.pr} (review): ${g}`)),
 ];
-// Per-item tracker facts, so reconciliation can check the RECORD against
-// reality (not just look forward at newly-discovered scope).
+// Per-item tracker facts: the retro compares DELIVERED vs REQUESTED, so it
+// needs each item's issue/PR/merge state, not just newly-discovered scope.
 const trackerFacts = results.map((r) => {
   const cl = closesList({ n: r.issue, closes: r.closes });
   return `#${r.issue} -> ${r.build?.pr ?? "(no PR)"} | ${r.land?.merged ? "MERGED" : (r.build?.pr ? "NOT MERGED" : "no PR")} | verdict ${r.verdict?.decision ?? "-"} | claims: ${cl.map((x) => "#" + x).join(",")}`;
 }).join("\n");
 
-const scopeReconciliation = await agent(`You reconcile PLANNED scope against what this batch's building actually revealed, for ${REPO}${MILESTONE ? ` — milestone "${MILESTONE}"` : ""}. The pump SURFACES; the human decides milestone structure — so PROPOSE, do NOT create issues or milestones.
-Discovered-scope signals from this batch:
-${scopeSignals.length ? scopeSignals.map((s) => "- " + s).join("\n") : "(none reported)"}
-THIS BATCH'S TRACKER FACTS (issue -> PR -> merge state):
+const scopeReconciliation = await agent(`You are running this wave's RETRO for ${REPO}${MILESTONE ? ` — milestone "${MILESTONE}"` : ""}. An agent landed a deliverable for each item below. Your job is to TRUE UP what was actually built against what was actually requested, item by item, and leave both the tracker and the plan honest.
+
+THIS WAVE'S ITEMS (issue -> PR -> merge state -> what the PR claims to close):
 ${trackerFacts || "(none)"}
 
-**PART 1 — RECONCILE THE RECORD (backward-looking). This is BOOKKEEPING about work that already happened, so ACT, do not merely propose** — the propose-don't-create rule below governs NEW scope and milestone structure, not making the record match reality. Six issues in one month had state that lied about the code, and every one was a write-side failure that this phase was positioned to catch and did not. For each item above:
-  a. If its PR MERGED but the issue is still open, read the PR body. If it says \`Closes\`, close the issue. If it says \`Part of\` (or delivered less than the issue's full fence), the remainder is UNTRACKED unless someone tracked it — post a comment on the issue stating exactly what shipped, what is left, and what blocks it; file the follow-up issue if none exists, or name the existing one.
-  b. If its PR did NOT merge, say why in one line (conflict? auto-merge armed but never completed? review parked it?). An auto-merge that armed and then conflicted leaves work LOOKING landed while the issue stays open — that has silently lost two PRs here.
-  c. If a build reported the issue's PREMISE was already false (already implemented, already ruled), verify the delivering PR and FIX THE TRACKER: comment naming it, and close the issue if nothing remains. Reporting it only to the pump means the next wave rediscovers it at the cost of another build agent.
-  d. If anything this wave RULED or SHIPPED supersedes some other open issue's premise, update THAT issue too — a ruling that lands only in a doc leaves the tracker lying.
-Report what you changed in \`trackerActions\`.
+DISCOVERED-SCOPE SIGNALS reported by the builds and reviews:
+${scopeSignals.length ? scopeSignals.map((s) => "- " + s).join("\n") : "(none reported)"}
 
-**PART 2 — FORWARD-LOOKING SCOPE (propose only).** DO: weigh those signals; \`gh issue list --repo ${REPO}${MILESTONE ? ` --milestone "${MILESTONE}" --state all` : ""}\` (and read the roadmap/plan doc if the repo has one) to see what's already captured. Judge whether ${MILESTONE ? `the "${MILESTONE}" milestone` : "this batch"}'s scope HELD, UNDER-captured, or OVER-captured. List concrete NEW work no existing issue covers (dedup against the board). Recommend exactly one: scope-held | file-issues | expand-milestone | add-milestone — with a crisp \`proposal\` the human can act on.${LEDGER ? `
-FINALLY (durable-by-default rule): append ONE compact wave-ledger comment to issue #${LEDGER} (\`gh issue comment ${LEDGER} --repo ${REPO}\`): wave id ${WAVE_ID}; the batch; landed/parked; the lessons harvested this wave (the orchestrator passes them below if any); your scope assessment + proposal summary. Issues later filed from the proposal carry the pump:scope label; graduated lessons carry pump:lesson.` : ""}
-Return {assessment, discoveredWork:[{title,why,suggestedMilestone}], recommendation, proposal, trackerActions}.`,
-  { label: "scope-reconcile", phase: "Scope reconciliation", effort: "high", model: "sonnet", schema: SCOPE });
+For EACH item, compare DELIVERED against REQUESTED and land the difference somewhere real:
+- **Delivered the whole fence and the PR merged** — close the issue if it is still open.
+- **Delivered less than the fence** (the PR says "Part of", or the review/scope notes name a missing piece) — the remainder is INVISIBLE unless you record it. Comment on the issue with what shipped, what is left, and what blocks it, and file the follow-on issue (or name the existing one that covers it). A "Part of" with an untracked remainder reads exactly like "not started" — that is how six issues in one month ended up with state that lied about the code.
+- **PR did not merge** — say why in one line: conflict, auto-merge armed but never completed, or review parked it. An auto-merge that arms and then conflicts leaves work LOOKING landed while its issue stays open; that has silently lost two PRs here.
+- **The build found the premise already false** (already implemented, already ruled) — verify the delivering PR, comment naming it, and close the issue if nothing remains. Reporting it only to the pump means the next wave rediscovers it at the cost of another build agent.
+- **Something this wave ruled or shipped supersedes a DIFFERENT open issue's premise** — update that issue too. A ruling that lands only in a doc leaves the tracker lying.
+- **Genuinely new work no existing issue covers** — file it, after deduping against the board (\`gh issue list --repo ${REPO}${MILESTONE ? ` --milestone "${MILESTONE}" --state all` : ""}\`; read the roadmap/plan doc if the repo has one).
+
+You MAY act on all of the above — it is truing up the record of work that already happened, not rewriting the plan. The one thing you may NOT do unilaterally is restructure MILESTONES (add or expand one): propose that with rationale and let the human decide.
+
+Finally judge the batch as a whole: did its scope HOLD, UNDER-capture, or OVER-capture? Recommend exactly one: scope-held | file-issues | expand-milestone | add-milestone, with a crisp \`proposal\` the human can act on.${LEDGER ? `
+Then (durable-by-default rule) append ONE compact wave-ledger comment to issue #${LEDGER} (\`gh issue comment ${LEDGER} --repo ${REPO}\`): wave id ${WAVE_ID}; the batch; landed/parked; the lessons harvested this wave (passed below if any); your true-up actions and scope assessment. Issues filed here carry the pump:scope label; graduated lessons carry pump:lesson.` : ""}
+Return {assessment, trackerActions, discoveredWork:[{title,why,suggestedMilestone}], recommendation, proposal}.`,
+  { label: "retro", phase: "Retro / scope reconciliation", effort: "high", model: "sonnet", schema: SCOPE });
 
 // Reconciliation: every built+ok PR must be accounted for — merged, or parked
 // WITH a reason. No silent drops. (v3: verdict + landing ride each item, so
