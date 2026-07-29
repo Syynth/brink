@@ -866,8 +866,10 @@ pub fn referenced_globals(
 /// One def's raw effect atoms: the read set (VAR/CONST globals read), the
 /// write set (assignment targets resolving to a VAR/CONST), the call-kind set
 /// (`EXTERNAL` names directly called), the inferable direct-call edges the
-/// effect fixpoint follows, and whether the body calls through a function
-/// value (→ pessimal). Harvested by the exact same body walk
+/// effect fixpoint follows, the fn-value creation targets (Fork A, issue
+/// #1726 — `EffectAtoms::creates_fn_values`), and whether the body calls
+/// through a function value it cannot trace (→ pessimal). Harvested by the
+/// exact same body walk
 /// [`referenced_globals`]/[`call_edges`] drive — the read set here *is*
 /// FG-2.1's `referenced_globals`, and the direct-call edges are `call_edges`'s
 /// set — so no new walk shape is introduced, only the per-def atom bundle T2
@@ -903,6 +905,7 @@ pub fn def_effect_atoms(
         writes: result.effect_writes,
         calls: result.external_calls,
         direct_calls: result.calls,
+        creates_fn_values: result.created_fn_values,
         opaque: result.effect_opaque,
         emits: result.effect_emits,
         tags: result.effect_tags,
@@ -944,7 +947,19 @@ pub fn effects_project(
     let mut graph = CallGraph::new();
     for (&id, a) in &atoms {
         graph.add_node(id);
-        for &callee in &a.direct_calls {
+        // Fork A (issue #1726): fn-value creation sites are call-graph edges
+        // alongside the direct calls — structurally harvested, so no row is
+        // ever consulted to build this graph. `creates_fn_values` is a subset
+        // of `direct_calls` today (the same walk records both at a `#fn`
+        // literal), but *this monolithic path* (`effects_project`, not the
+        // salsa `call_graph_query` the IDE/`brink check`/@brink-lang/web
+        // actually run — that graph is built from `call_edges_query`/
+        // `direct_calls` alone and never reads `creates_fn_values`) names it
+        // explicitly so batching here does not silently depend on that
+        // coincidence. The salsa path deliberately still relies on the
+        // subset property; `every_fn_value_creation_target_is_also_a_call_graph_edge`
+        // (below) is its guard.
+        for &callee in a.direct_calls.iter().chain(&a.creates_fn_values) {
             graph.add_edge(id, callee);
         }
     }
@@ -2729,26 +2744,232 @@ mod tests {
         assert!(rows[&user].writes.contains(&total));
     }
 
-    /// Conservative-total's sacred guard: a local reassigned to a *second*,
-    /// different known origin must stay pessimal — the write-once check must
-    /// actually gate on the whole body's write count, not just "some origin
-    /// was seen at some point". Regression shape for the exact hazard the
-    /// ground-truth harness (#885/#891 lineage) exists to catch: narrowing
-    /// this would under-report whichever branch didn't run at analysis time.
+    /// Fork A (`docs/decision-log.md` 2026-07-28, issue #1726) supersedes the
+    /// pre-#1726 write-once guard here. The old rule narrowed to a *single*
+    /// def, so a local reassigned to a second known origin had to stay
+    /// pessimal — picking either origin would under-report whichever branch
+    /// didn't run. Joining **both** creation targets removes the choice: the
+    /// row covers every value the local can hold, which over-reports at worst
+    /// and so keeps the conservative-total direction (spec §3). The two
+    /// origins write two *different* globals here so the join is visible —
+    /// a single shared global would pass even if only one edge were taken.
     #[test]
-    fn a_local_reassigned_to_a_different_known_origin_stays_pessimal() {
-        let src = "VAR total = 0\n\
+    fn a_local_reassigned_to_a_second_known_origin_joins_both_rows() {
+        let src = "VAR total = 0\nVAR extra = 0\n\
                    === function bar() ===\n~ total = total + 1\n~ return total\n\
-                   === function baz() ===\n~ total = total + 100\n~ return total\n\
+                   === function baz() ===\n~ extra = extra + 100\n~ return extra\n\
                    === function user(cond) ===\n~ temp f = #fn(bar)\n\
                    {cond:\n  ~ f = #fn(baz)\n}\n~ return f()\n";
         let (hir, index, res) = build(src);
         let files = [(FileId(0), &hir)];
         let rows = effects_project(&files, &index, &res, None);
         let user = id_of(&index, "user");
+        let total = id_of(&index, "total");
+        let extra = id_of(&index, "extra");
+        assert!(
+            !rows[&user].opaque,
+            "every write to f traced to an in-project creation site, so the \
+             row must collapse to a real row instead of the pessimal floor"
+        );
+        assert!(
+            rows[&user].writes.contains(&total),
+            "the join must cover bar's write to total"
+        );
+        assert!(
+            rows[&user].writes.contains(&extra),
+            "the join must cover baz's write to extra — narrowing to a single \
+             origin would under-report the other branch"
+        );
+    }
+
+    /// The guard Fork A keeps: one write whose value did **not** trace to an
+    /// in-project creation site poisons the whole name. Here `f` is
+    /// reassigned from a param, so the reaching value could have been created
+    /// anywhere — including a host callback (spec §6.2) — and the row must
+    /// stay pessimal even though the *other* write is a perfectly good
+    /// `#fn(bar)`.
+    #[test]
+    fn a_local_with_one_untraced_write_stays_pessimal() {
+        let src = "VAR total = 0\n\
+                   === function bar() ===\n~ total = total + 1\n~ return total\n\
+                   === function user(cond, cb) ===\n~ temp f = #fn(bar)\n\
+                   {cond:\n  ~ f = cb\n}\n~ return f()\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let user = id_of(&index, "user");
         assert!(
             rows[&user].opaque,
-            "a reassigned local must not be trusted as write-once — narrowing here would be unsound"
+            "a write from an untraceable source must keep the pessimal floor"
+        );
+    }
+
+    /// Review-finding regression (Fork A, issue #1726): a Temp local passed
+    /// into a `ref` parameter slot is rebound by the *callee* to whatever the
+    /// caller passed for that other position — `poke(f, cb)` below can leave
+    /// `f` holding `cb`, an arbitrary caller-supplied value, exactly like the
+    /// param-assignment case `a_local_with_one_untraced_write_stays_pessimal`
+    /// covers. Before `record_ref_param_writes` folded this into
+    /// `local_fn_origins` too, `f`'s summary saw only its one traced
+    /// `#fn(bar)` write and Fork A's join-over-writes rule narrowed `user`'s
+    /// row to `bar`'s alone — silently dropping the fact that `f` could also
+    /// be `cb` after the `poke` call. The row must stay pessimal instead.
+    #[test]
+    fn a_ref_param_rebind_through_a_call_site_stays_pessimal() {
+        let src = "VAR total = 0\n\
+                   === function bar() ===\n~ total = total + 1\n~ return total\n\
+                   === function poke(ref g, h) ===\n~ g = h\n\
+                   === function user(cond, cb) ===\n~ temp f = #fn(bar)\n\
+                   {cond:\n  ~ poke(f, cb)\n}\n~ return f()\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let user = id_of(&index, "user");
+        assert!(
+            rows[&user].opaque,
+            "a ref-param rebind at a call site is an untraced write to the \
+             local — narrowing through it under-reports whatever the caller \
+             actually passed"
+        );
+    }
+
+    // ─── Fork A (docs/decision-log.md 2026-07-28, issue #1726): the
+    // structural fn-value creation atom ─────────────────────────────────
+
+    /// The atom itself: `#fn(target, …)` — bare, `bind`-wrapped, or never
+    /// called at all — records `target` in `EffectAtoms::creates_fn_values`,
+    /// and a body with no `#fn` literal records nothing. Harvested by the
+    /// same empty-globals/empty-sigs walk every other structural atom uses,
+    /// so no inferred row or signature is ever consulted to decide an edge.
+    #[test]
+    fn fn_value_creation_sites_are_harvested_as_a_structural_atom() {
+        let src = "VAR total = 0\n\
+                   === function bar(n) ===\n~ total = total + n\n~ return total\n\
+                   === function baz() ===\n~ return 0\n\
+                   === function creates() ===\n~ temp f = #fn(bar, 1)\n~ return call(f)\n\
+                   === function binds() ===\n~ return call(bind(#fn(bar), 5))\n\
+                   === function hands_out() ===\n~ return #fn(baz)\n\
+                   === function plain() ===\n~ return bar(1)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let inferable = inferable_defs(&files, &index);
+        let bar = id_of(&index, "bar");
+        let baz = id_of(&index, "baz");
+
+        let atoms = |name: &str| {
+            def_effect_atoms(id_of(&index, name), &files, &index, &res, &inferable, None)
+        };
+
+        assert!(
+            atoms("creates").creates_fn_values.contains(&bar),
+            "a bare #fn literal is a creation site"
+        );
+        assert!(
+            atoms("binds").creates_fn_values.contains(&bar),
+            "bind() copies a value rather than naming a target — the nested \
+             #fn literal is what gets recorded"
+        );
+        assert!(
+            atoms("hands_out").creates_fn_values.contains(&baz),
+            "a fn value that is created and returned, never called here, is \
+             still a creation site"
+        );
+        assert!(
+            atoms("plain").creates_fn_values.is_empty(),
+            "a direct call creates no fn value"
+        );
+    }
+
+    /// `creates_fn_values` is a subset of `direct_calls` by construction —
+    /// the same walk records a `#fn` target as a call-graph edge, which is
+    /// exactly how these edges reach the SCC batching and `solve_scc_effects`
+    /// with no change to either. Pinned so a future edit cannot quietly break
+    /// the batching invariant `effects_project`'s graph relies on.
+    #[test]
+    fn every_fn_value_creation_target_is_also_a_call_graph_edge() {
+        let src = "VAR total = 0\n\
+                   === function bar() ===\n~ total = total + 1\n~ return total\n\
+                   === function hands_out() ===\n~ return #fn(bar)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let inferable = inferable_defs(&files, &index);
+        let atoms = def_effect_atoms(
+            id_of(&index, "hands_out"),
+            &files,
+            &index,
+            &res,
+            &inferable,
+            None,
+        );
+        assert!(
+            atoms.creates_fn_values.is_subset(&atoms.direct_calls),
+            "creation targets must also be call-graph edges: {:?} ⊄ {:?}",
+            atoms.creates_fn_values,
+            atoms.direct_calls
+        );
+    }
+
+    /// An `EXTERNAL` `#fn` target is deliberately not a creation-atom member:
+    /// it has no inferable body, so it is not a legal call-graph edge. The
+    /// call-kind atom is still recorded (`record_call_edge`'s external arm),
+    /// so nothing is silently dropped — see `record_fn_value_creation`'s doc.
+    #[test]
+    fn an_external_fn_value_target_is_a_call_kind_atom_not_a_creation_edge() {
+        let src = "EXTERNAL play_sfx(x)\n\
+                   === function hands_out() ===\n~ return #fn(play_sfx)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let inferable = inferable_defs(&files, &index);
+        let atoms = def_effect_atoms(
+            id_of(&index, "hands_out"),
+            &files,
+            &index,
+            &res,
+            &inferable,
+            None,
+        );
+        assert!(
+            atoms.creates_fn_values.is_empty(),
+            "an EXTERNAL target has no row to follow, so it is not an edge"
+        );
+        assert!(
+            atoms.calls.contains("play_sfx"),
+            "the call-kind atom is still harvested — no silent drop"
+        );
+    }
+
+    /// A def that creates a fn value and hands it out without ever calling it
+    /// still carries the target's row, because §6.1 fixes the value's row at
+    /// its creation site. This is what makes a downstream `opaque` collapse
+    /// worth having — the effects are already attributed where the value was
+    /// born.
+    ///
+    /// **This behavior predates #1726** and is pinned here, not introduced:
+    /// `infer_fn_literal` already routed every `#fn` target through
+    /// [`InferPass::record_call_edge`], so the graph edge existed before the
+    /// creation atom did. `creates_fn_values` is therefore a strict subset of
+    /// `direct_calls` and adds no new edge today — its value is making the
+    /// creation fact *addressable* (spec §7's token table, §8 rung 1's
+    /// reachability slicing) and guaranteeing the property stays true. The
+    /// guard is `every_fn_value_creation_target_is_also_a_call_graph_edge`;
+    /// this test pins that the atom did not disturb the row it rides on.
+    #[test]
+    fn creating_a_fn_value_joins_the_targets_row_even_without_a_call() {
+        let src = "VAR total = 0\n\
+                   === function bar() ===\n~ total = total + 1\n~ return total\n\
+                   === function hands_out() ===\n~ return #fn(bar)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let hands_out = id_of(&index, "hands_out");
+        let total = id_of(&index, "total");
+        assert!(
+            rows[&hands_out].writes.contains(&total),
+            "the creation edge must pull bar's row into hands_out"
+        );
+        assert!(
+            !rows[&hands_out].opaque,
+            "creating a fn value is not itself an opaque construct"
         );
     }
 

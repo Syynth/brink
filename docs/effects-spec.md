@@ -103,6 +103,55 @@ is the exact and only home of §8's refinements.
 4. **Runtime narrowing** (SPECIFIED; optional host optimization) —
    §7.
 
+### 6.1a How the call graph learns a fn-value edge — RULED 2026-07-28
+
+*(Fork A of #1680; `docs/decision-log.md` "Fork A — fn-value call-graph
+edges are harvested STRUCTURALLY"; implemented by issue #1726.)*
+
+Fn-value callees become call-graph edges through a **structural atom**,
+never a row-derived one. `EffectAtoms.creates_fn_values` is the per-def
+set of targets whose fn values a body **creates**, harvested by the same
+body walk that already produces `direct_calls`/`referenced_globals` —
+run with **empty globals and empty sigs**, keeping only structural id
+sets. In the monolithic `effects_project` path it is fed into that
+function's call graph explicitly, alongside `direct_calls`. The salsa
+path (`call_graph_query` → `call_edges_query`/`direct_calls`, what the
+IDE, `brink check`, and `@brink-lang/web` actually run) does **not**
+read `creates_fn_values` at all; it relies instead on the fact that
+`creates_fn_values` is a subset of `direct_calls` by construction (the
+same walk records a `#fn` target as both), a property pinned by the
+`every_fn_value_creation_target_is_also_a_call_graph_edge` test. Either
+way, SCC batching and the `solve_scc_effects` fixpoint are unchanged.
+
+**No inferred row or signature may ever be consulted to decide an edge.**
+That is what keeps `call_graph → scc_membership → solve_scc →
+call_graph` acyclic, and it costs nothing, because §6.1 fixes every fn
+value's row *at its creation site* and creation sites are **syntactic**:
+`#fn(g)` names `g` literally, and `bind` copies from an already-known
+value rather than naming a new target. Salsa's native `cycle_fn`/
+`cycle_initial` therefore stays **declined** (#623, upheld 2026-07-28):
+keeping the dependency graph acyclic is a better property than making a
+cycle tractable.
+
+**Consequence for the opaque floor.** `EffectAtoms.opaque` is no longer
+a flat *"calls through a function value → pessimal"*. A call through a
+local whose **every** write traced to an in-project creation site
+narrows to the **join over those targets** — joining over-reports at
+worst, so conservative-total (§3) is preserved without having to pick
+one origin. The floor survives exactly where the source is genuinely
+unknown: a single untraced write (a param, a call's return, a heap
+load, or a `ref`-parameter call-site rebind — passing the local into a
+`ref` slot lets the callee reassign it to whatever the caller passed
+in, so that write is recorded as untraced too) poisons the name, and
+those cases belong to §6.2 (manifest-declared host callbacks) and §6.3
+/ §5 (the heap's type-row join).
+
+**Known gap — lambda literals.** A lambda's `DefinitionId` is minted
+during LIR lowering (`lir::lower::lambda`), downstream of HIR
+inference, so it has **no index symbol** to harvest and is out of scope
+for this mechanism. The obstacle is keyspace (no index symbol → no
+`DefKey`/SCC membership), not timing. Tracked separately (#1727).
+
 ## 7. Runtime narrowing: selection, not inference — RULED
 
 The runtime never computes a row. Every row that can exist is
@@ -522,12 +571,18 @@ writes / calls / emits / suspend defeat fusion).
 ### 14.6 Build posture
 
 - **§6.1 shallow row-polymorphism is IN-SCOPE, not deferred.** Without it,
-  every call through a fn-value is opaque/pessimal, which makes the row
+  a call through a fn-value is opaque/pessimal, which makes the row
   useless across the native code dialect's higher-order core (lambdas,
   fn-value iteration) — precise only for first-order code. It builds as
   part of the effect-system work (tractable: substitution over
   creation-fixed rows, riding the SCC fixpoint), off the "author a scene"
-  critical path but not deferred.
+  critical path but not deferred. **Partially landed** by §6.1a's
+  structural creation-site atom (#1726): a call through a *local* whose
+  every write traced to an in-project `#fn`/`bind` creation site already
+  narrows to the join over those targets. What still needs row variables
+  is the case the atom cannot reach — a call through a fn-typed
+  **param**, whose value the caller supplies (and whose lambda origins
+  await #1727's index symbols).
 - The shipped core (set-based row, per-SCC fixpoint, `EffectRows` wire
   format, `@[effects(…)]` assertions) is reused unchanged; this amendment
   ADDS the two dimensions and the "one canonical signature" framing, and

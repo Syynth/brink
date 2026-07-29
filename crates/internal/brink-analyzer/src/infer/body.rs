@@ -140,11 +140,13 @@ pub(super) struct BodyResult {
     /// origin couldn't be narrowed (or another construct whose callee
     /// effects inference cannot summarize), so its effect row is pessimal
     /// (docs/effects-spec.md §3/§4 — the conservative-total floor). Issue
-    /// #872 (§8 precision rung) reads a concrete origin back off a
-    /// write-once local's stored `Ty::Fn` when one is statically known —
-    /// see `InferPass::resolve_pending_value_calls` — so this only stays
-    /// `true` when no such origin could be proven; the heap (VAR/CONST
-    /// cells) case remains coarse/pessimal, still unaddressed.
+    /// #872 (§8 precision rung), widened by Fork A (issue #1726), reads the
+    /// concrete creation targets back off a local's whole-body write summary
+    /// when *every* write traced to one — see
+    /// `InferPass::resolve_pending_value_calls` — so this only stays `true`
+    /// when the reaching values were not all created in-project; the heap
+    /// (VAR/CONST cells) case remains coarse/pessimal, still unaddressed
+    /// (spec §6.3).
     pub effect_opaque: bool,
     /// NS-A2 (issue #1108): the body directly contains a content-producing
     /// construct — see `EffectAtoms::emits`.
@@ -174,6 +176,29 @@ pub(super) struct BodyResult {
     /// only by strict mode (`strict::check_array_remove_calls`, `E149`) —
     /// gradual mode keeps the `MapRemove` runtime fault as its backstop.
     pub array_remove_calls: Vec<TextRange>,
+    /// Fork A (`docs/decision-log.md` 2026-07-28 "Fork A — fn-value
+    /// call-graph edges are harvested STRUCTURALLY", issue #1726): the
+    /// inferable targets whose **fn values this body creates** — every
+    /// `#fn(target, …)` literal walked here, whether or not the resulting
+    /// value is ever called in this body.
+    ///
+    /// Purely structural, exactly like [`Self::calls`] and
+    /// [`Self::referenced_globals`]: the target of a `#fn` literal is a
+    /// syntactic name, so no inferred row or signature is ever consulted to
+    /// decide membership. That is what keeps the call graph row-independent
+    /// (and so keeps `call_graph → scc_membership → solve_scc → call_graph`
+    /// acyclic) while still letting the effect fixpoint see fn-value flow.
+    /// `bind(f, …)` contributes nothing of its own — it copies an existing
+    /// value rather than naming a new target, so its base's own `#fn` literal
+    /// (if any) is what gets recorded, by the nested walk.
+    ///
+    /// A subset of [`Self::calls`] by construction: `infer_fn_literal`
+    /// records the same target as a call-graph edge, which is precisely how
+    /// these edges reach the SCC batching without any change to it. Kept as
+    /// its own set anyway because "creates a value for `g`" and "calls `g`"
+    /// are different facts — spec §7's token table and §8 rung 1's
+    /// reachability slicing both need the creation sites specifically.
+    pub created_fn_values: BTreeSet<DefinitionId>,
 }
 
 /// Infer one definition's body against `ctx`. `def.params` are the declared
@@ -221,8 +246,8 @@ pub(super) fn infer_def_body(def: &super::Def<'_>, ctx: &BodyCtx<'_>) -> BodyRes
         annotated,
         value_calls: Vec::new(),
         array_remove_calls: Vec::new(),
-        local_write_counts: BTreeMap::new(),
-        local_fn_origin: BTreeMap::new(),
+        created_fn_values: BTreeSet::new(),
+        local_fn_origins: BTreeMap::new(),
         pending_value_calls: Vec::new(),
     };
     // NS-A2 fault dimension (issue #1108, from #1097): a `ref` parameter's
@@ -286,6 +311,7 @@ pub(super) fn infer_def_body(def: &super::Def<'_>, ctx: &BodyCtx<'_>) -> BodyRes
         effect_faults_refined: pass.effect_faults_refined,
         value_calls: pass.value_calls,
         array_remove_calls: pass.array_remove_calls,
+        created_fn_values: pass.created_fn_values,
     }
 }
 
@@ -364,30 +390,61 @@ struct InferPass<'a, 'b> {
     /// See [`BodyResult::array_remove_calls`] — accumulated the same way
     /// `value_calls` is, during the one body walk.
     array_remove_calls: Vec<TextRange>,
-    /// T2 §8 precision rung (docs/effects-spec.md §6 item 3/§8, issue #872): every
-    /// write (`TempDecl` initializer or bare-`Path` `Assignment`) to a
-    /// Temp local, by name, counted regardless of whether the write's
-    /// value traces to a known `#fn` origin. Param writes are deliberately
-    /// not counted here for narrowing purposes (see
-    /// [`InferPass::local_call_origin`]'s doc) — a Param carries an implicit
-    /// caller-provided initial value no write count can ever see. Consulted only after the whole
-    /// body is walked ([`InferPass::resolve_pending_value_calls`]) — a
-    /// single-pass "as accumulated so far" read would miss a reassignment
-    /// that appears later in program order but, inside a loop body, executes
-    /// *before* an earlier-positioned call on the next iteration: reading a
-    /// partial count there would risk narrowing a call whose live value
-    /// could actually vary, an unsound under-report. Whole-body-final counts
-    /// close that hole: a name is trusted only when it was written *exactly
-    /// once*, period, so loop-carried reassignment always poisons it.
-    local_write_counts: BTreeMap<String, u32>,
-    /// The `#fn(target, …)`/`bind(…)`-chain origin recorded at each local's
-    /// write (last-write-wins bookkeeping only) — meaningful only once
-    /// `local_write_counts` confirms that name had exactly one write.
-    local_fn_origin: BTreeMap<String, Option<DefinitionId>>,
+    /// Fork A (docs/decision-log.md 2026-07-28, issue #1726): the structural
+    /// fn-value *creation* atom — see [`BodyResult::created_fn_values`].
+    created_fn_values: BTreeSet<DefinitionId>,
+    /// T2 §8 precision rung (docs/effects-spec.md §6 item 3/§8, issue #872;
+    /// widened to a *set* by Fork A, issue #1726): every write (`TempDecl`
+    /// initializer or bare-`Path` `Assignment`) to a Temp local, by name,
+    /// folded into the [`LocalFnOrigins`] summary of what that name can hold.
+    /// Param writes are deliberately not recorded here for narrowing purposes
+    /// (see [`InferPass::local_call_origin`]'s doc) — a Param carries an
+    /// implicit caller-provided initial value no write summary can ever see.
+    ///
+    /// Consulted only after the whole body is walked
+    /// ([`InferPass::resolve_pending_value_calls`]) — a single-pass "as
+    /// accumulated so far" read would miss a reassignment that appears later
+    /// in program order but, inside a loop body, executes *before* an
+    /// earlier-positioned call on the next iteration. Whole-body-final
+    /// summaries close that hole: the narrowed edge set is the join over
+    /// *every* write's origin, so a loop-carried reassignment is already
+    /// covered rather than needing to poison the name.
+    local_fn_origins: BTreeMap<String, LocalFnOrigins>,
     /// Every value-call site's narrowing candidate, recorded during the walk
     /// and resolved once by [`InferPass::resolve_pending_value_calls`] after
-    /// the whole body (and therefore `local_write_counts`) is final.
+    /// the whole body (and therefore `local_fn_origins`) is final.
     pending_value_calls: Vec<ValueCallOrigin>,
+}
+
+/// Fork A (issue #1726): what one Temp local can hold, summarized over every
+/// write to it in the whole body — the structural fact
+/// [`InferPass::resolve_pending_value_calls`] narrows a call through that
+/// local with.
+///
+/// The soundness argument is the join: a Temp cannot be read before its
+/// defining `TempDecl`, so every value a read can observe was written by one
+/// of the writes folded in here — **provided every write site actually folds
+/// its write in**. That is not automatic from the Temp/`TempDecl` ordering
+/// argument alone: a `ref`-param call-site rebind (`~ poke(f, cb)` where a
+/// `ref` parameter reassigns the caller's `f`) mutates the local exactly like
+/// an in-body assignment does, but it happens at the *call site*, not inside
+/// `f`'s own definition, so it only lands in this summary because
+/// [`InferPass::record_ref_param_writes`] explicitly folds it in (as an
+/// untraced write — the callee could reassign `f` to any argument it was
+/// passed). If *every* one of the folded writes traced to a known creation
+/// target, the call reaches one of `targets` and joining all of them
+/// over-reports at worst — the conservative-total direction (spec §3). A
+/// single write that did not trace (an aliased local, a call's return value,
+/// a param read, a heap load, or the `ref`-rebind case above) sets
+/// `untraced`, and the whole name falls back to the pessimal floor: the
+/// reaching value could have been created anywhere, including outside the
+/// project.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct LocalFnOrigins {
+    /// The creation targets this name's writes traced to, sorted.
+    targets: BTreeSet<DefinitionId>,
+    /// At least one write's value did not trace to a creation site.
+    untraced: bool,
 }
 
 /// T2 §8 precision rung (docs/effects-spec.md §6 item 3/§8, issue #872): one
@@ -400,9 +457,10 @@ struct InferPass<'a, 'b> {
 enum ValueCallOrigin {
     /// The callee is a bare Temp local reference (never a Param — see
     /// [`InferPass::local_call_origin`]'s doc for why a Param can't be
-    /// trusted here). Resolved post-walk: narrowable only if `name` was
-    /// written exactly once in the whole body and that write's value traced
-    /// to a single known def.
+    /// trusted here). Resolved post-walk: narrowable to the join over every
+    /// creation target `name`'s writes traced to, and only if *every* write
+    /// traced (Fork A, issue #1726 — see
+    /// [`InferPass::resolve_pending_value_calls`]).
     Local(String),
     /// The callee is *itself* (optionally through one or more `bind(…)`
     /// wrappers) an `#fn(target, …)` literal evaluated fresh at this call
@@ -531,6 +589,25 @@ impl InferPass<'_, '_> {
         }
     }
 
+    /// Fork A (issue #1726): record a `#fn(target, …)` creation site's target
+    /// as this body's structural fn-value creation atom — see
+    /// [`BodyResult::created_fn_values`].
+    ///
+    /// Gated on `ctx.inferable` for the same reason
+    /// [`Self::record_call_edge`]'s own first arm is: only an inferable
+    /// knot/stitch has a body the effect fixpoint can follow, so only those
+    /// ids are legal call-graph edges. An `EXTERNAL` `#fn` target is
+    /// deliberately *not* folded in here — it has no row to join, and the
+    /// call-kind atom for a host binding that is actually invoked is recorded
+    /// at the invoking site by [`Self::record_call_edge`]; a value merely
+    /// created and handed to the host is §6.2's manifest-declared surface,
+    /// not this atom's.
+    fn record_fn_value_creation(&mut self, def: DefinitionId) {
+        if self.ctx.inferable.contains(&def) {
+            self.created_fn_values.insert(def);
+        }
+    }
+
     // ── T2 §8 precision rung (docs/effects-spec.md §6 item 3/§8, issue #872) ──
 
     /// The single def a `#fn(target, …)` literal (optionally through one or
@@ -589,20 +666,19 @@ impl InferPass<'_, '_> {
     }
 
     /// Classify a resolved call-through-value target for narrowing: a bare
-    /// Temp local (checked post-walk against its whole-body write count) is
+    /// Temp local (checked post-walk against its whole-body write summary) is
     /// [`ValueCallOrigin::Local`]; anything else (a VAR/CONST global — the
     /// heap case, still coarse per spec §5/§8 — a Param, or an
     /// unresolvable/non-local kind) is [`ValueCallOrigin::Unknown`].
     ///
     /// **Param is deliberately excluded** (soundness, not a missed
     /// optimization): a Temp cannot be referenced before its defining
-    /// `TempDecl`, so "written exactly once in the whole body" really does
-    /// bound its value at every read. A Param, by contrast, carries an
-    /// implicit caller-provided initial value that
-    /// [`Self::local_write_counts`] never counts — a param reassigned
-    /// exactly once inside the body would reach `write_count == 1` and
-    /// [`Self::resolve_pending_value_calls`] would narrow *every* call site
-    /// through it, including ones reachable before that single
+    /// `TempDecl`, so the join over its whole-body writes really does bound
+    /// its value at every read. A Param, by contrast, carries an implicit
+    /// caller-provided initial value that [`Self::local_fn_origins`] never
+    /// sees — a param reassigned inside the body would summarize as fully
+    /// traced and [`Self::resolve_pending_value_calls`] would narrow *every*
+    /// call site through it, including ones reachable before that
     /// reassignment, where the param still holds the caller's arbitrary
     /// (unknown) fn value. That would violate the conservative-total
     /// invariant this rung promises to preserve.
@@ -635,13 +711,20 @@ impl InferPass<'_, '_> {
         ValueCallOrigin::Unknown
     }
 
-    /// Record one write to a Param/Temp local for later write-count-gated
-    /// narrowing — a no-op for any other resolution (mirrors [`Self::observe`]'s
-    /// own guard: a VAR/CONST/other target isn't tracked by this local-only
-    /// rung at all, the heap case stays pessimal per spec §5/§8).
+    /// Fold one write to a Temp local into that name's [`LocalFnOrigins`]
+    /// summary — a traced `#fn`/`bind`-chain origin joins `targets`, an
+    /// untraced one poisons the name. A no-op for any other resolution
+    /// (mirrors [`Self::observe`]'s own guard: a VAR/CONST/other target isn't
+    /// tracked by this local-only rung at all, the heap case stays pessimal
+    /// per spec §5/§8).
     fn bump_local_write(&mut self, name: &str, origin: Option<DefinitionId>) {
-        *self.local_write_counts.entry(name.to_string()).or_insert(0) += 1;
-        self.local_fn_origin.insert(name.to_string(), origin);
+        let entry = self.local_fn_origins.entry(name.to_string()).or_default();
+        match origin {
+            Some(def) => {
+                entry.targets.insert(def);
+            }
+            None => entry.untraced = true,
+        }
     }
 
     /// [`Self::bump_local_write`] for an `Assignment`/`BlockStmt::Assignment`
@@ -649,14 +732,13 @@ impl InferPass<'_, '_> {
     /// Temp counts (a dotted/indexed target reassigns a *nested* slot, not
     /// the local's own value, same guard [`Self::observe`] applies).
     ///
-    /// Param is excluded here too — not for soundness (bumping a count only
-    /// ever makes [`Self::local_call_origin`]'s write-once check *stricter*,
-    /// since Param is never classified as [`ValueCallOrigin::Local`] in the
-    /// first place, so this can't under-report), but to avoid spuriously
-    /// pessimizing a same-named Temp elsewhere in the body: without this
-    /// guard, a Param write would bump `local_write_counts` under that
-    /// param's name, and if a Temp happens to share the name the two
-    /// tallies would collide in the same map entry.
+    /// Param is excluded here too — not for soundness (folding a param write
+    /// in can only ever *add* to a name's summary, and a Param is never
+    /// classified as [`ValueCallOrigin::Local`] in the first place, so this
+    /// can't under-report), but to avoid contaminating a same-named Temp
+    /// elsewhere in the body: without this guard, a Param write would land
+    /// under that param's name, and if a Temp happens to share the name the
+    /// two summaries would collide in the same map entry.
     fn record_fn_write(&mut self, target: &Expr, origin: Option<DefinitionId>) {
         let Expr::Path(p) = target else { return };
         if p.segments.len() != 1 {
@@ -677,37 +759,47 @@ impl InferPass<'_, '_> {
 
     /// Resolve every value-call site recorded during the walk
     /// ([`Self::check_value_call`]'s `pending_value_calls.push`) against the
-    /// now-final `local_write_counts`/`local_fn_origin` — **must** run after
+    /// now-final `local_fn_origins` — **must** run after
     /// [`InferPass::infer_block`] finishes the whole body (see
-    /// `local_write_counts`'s field doc for the loop-carried-reassignment
+    /// `local_fn_origins`'s field doc for the loop-carried-reassignment
     /// hazard a mid-walk read would risk). `Inline` narrows unconditionally;
-    /// `Local` narrows only if its name was written exactly once and that
-    /// write traced to a known def; `Unknown` (and any `Local` that fails
-    /// the write-once check) keeps the pessimal floor — `effect_opaque =
-    /// true`, exactly what every value call unconditionally set before this
-    /// rung existed. A narrowed call routes through
-    /// [`Self::record_call_edge`], the same edge a direct call/`#fn` creation
-    /// site records, so it correctly lands in `self.calls` (inferable
-    /// knot/stitch — joins via the SCC effect fixpoint) or
-    /// `self.external_calls` (an `EXTERNAL` binding — a call-kind atom) per
-    /// what the origin actually is.
+    /// `Local` narrows to the **join over every creation target its writes
+    /// traced to** (Fork A, issue #1726 — a name written twice with two known
+    /// origins reaches one of them, so joining both is conservative);
+    /// `Unknown`, a `Local` with an untraced write, and a `Local` never
+    /// written at all keep the pessimal floor — `effect_opaque = true`,
+    /// exactly what every value call unconditionally set before this rung
+    /// existed. A narrowed call routes through [`Self::record_call_edge`],
+    /// the same edge a direct call/`#fn` creation site records, so it
+    /// correctly lands in `self.calls` (inferable knot/stitch — joins via the
+    /// SCC effect fixpoint) or `self.external_calls` (an `EXTERNAL` binding —
+    /// a call-kind atom) per what the origin actually is.
+    ///
+    /// **What Fork A changed and why it is still sound.** The pre-#1726 rule
+    /// demanded the name be written *exactly once*, because it narrowed to a
+    /// *single* def and a second write would have made that choice arbitrary
+    /// — an under-report of whichever write the analysis didn't pick. Joining
+    /// every traced write's target instead removes the choice: the row covers
+    /// all of them. The one guard that must survive is the untraced write —
+    /// a value the body did not create can come from anywhere, including a
+    /// host callback, so it keeps the floor.
     fn resolve_pending_value_calls(&mut self) {
         let pending = std::mem::take(&mut self.pending_value_calls);
         for origin in pending {
-            let narrowed = match origin {
-                ValueCallOrigin::Inline(def) => Some(def),
-                ValueCallOrigin::Local(name) => {
-                    if self.local_write_counts.get(&name).copied() == Some(1) {
-                        self.local_fn_origin.get(&name).copied().flatten()
-                    } else {
-                        None
-                    }
-                }
-                ValueCallOrigin::Unknown => None,
+            let narrowed: BTreeSet<DefinitionId> = match origin {
+                ValueCallOrigin::Inline(def) => BTreeSet::from([def]),
+                ValueCallOrigin::Local(name) => match self.local_fn_origins.get(&name) {
+                    Some(summary) if !summary.untraced => summary.targets.clone(),
+                    _ => BTreeSet::new(),
+                },
+                ValueCallOrigin::Unknown => BTreeSet::new(),
             };
-            match narrowed {
-                Some(def) => self.record_call_edge(def),
-                None => self.effect_opaque = true,
+            if narrowed.is_empty() {
+                self.effect_opaque = true;
+            } else {
+                for def in narrowed {
+                    self.record_call_edge(def);
+                }
             }
         }
     }
@@ -755,6 +847,19 @@ impl InferPass<'_, '_> {
     /// explicit `ref` sigil (T1e, docs/t1e-spec.md §2 — `ref npc.hp`, `ref
     /// inventory[idx]`) is unwrapped down to its root path first: mutating a
     /// projection still writes through the root global's own cell.
+    ///
+    /// Fork A conservative-total fix (review finding on issue #1726's PR): a
+    /// `ref` slot can just as well be handed a *Temp* local (`~ poke(f, cb)`
+    /// where `f` is `~ temp f = #fn(bar)`) — the callee can reassign it to
+    /// the caller's arbitrary argument (here `h`, which could hold anything),
+    /// so from this call site's perspective `root`'s value after the call is
+    /// untraced. `record_write` alone only folds VAR/CONST globals
+    /// (`local_fn_origins` never sees it), so under Fork A's join-over-writes
+    /// rule an all-traced Temp summary would silently narrow a call through
+    /// `f` post-`poke` to the pre-`poke` targets only — an under-report. The
+    /// old write-*once* rule accidentally covered this (two writes already
+    /// forced the pessimal floor); joining removes that incidental cover, so
+    /// the untraced write has to be recorded explicitly here too.
     fn record_ref_param_writes(&mut self, def: DefinitionId, args: &[Expr]) {
         let Some(info) = self.ctx.index.symbols.get(&def) else {
             return;
@@ -763,6 +868,7 @@ impl InferPass<'_, '_> {
             if info.params.get(i).is_some_and(|p| p.is_ref) {
                 let root = ref_arg_root(arg);
                 self.record_write(root);
+                self.record_fn_write(root, None);
             }
         }
     }
@@ -1247,6 +1353,7 @@ impl InferPass<'_, '_> {
             return Ty::Unknown;
         };
         self.record_call_edge(def);
+        self.record_fn_value_creation(def);
         let Some(sig) = self.ctx.known_sigs.get(&def) else {
             return Ty::Unknown;
         };
@@ -2160,7 +2267,7 @@ impl InferPass<'_, '_> {
                 let ty = t.value.as_ref().map_or(Ty::Unknown, |e| self.infer_expr(e));
                 self.bind_local(&t.name.text, &ty);
                 // T2 §8 (issue #872): track this write towards the local's
-                // whole-body write count/origin — see `bump_local_write`.
+                // whole-body write summary — see `bump_local_write`.
                 let origin = t
                     .value
                     .as_ref()
