@@ -1,0 +1,24 @@
+# Native-only fixture (no ink origin). See ../README.md.
+ink_source = "n/a (native-only; see notes)"
+oracle_case = "n/a (native-only; see notes)"
+family = "inline markup escape set (#1716)"
+status = "hand-written native, episode-identity proven (round_trip.rs only)"
+notes = """
+Reviewer finding on PR #1732 (issue #1716): `emit_native.rs`'s
+`ContentPart::Text`/`emit_span` emission pushed literal text and
+attribute values unescaped, so a HIR `Text` containing e.g. `<b>` (or a
+span attribute value containing `"`) could silently re-parse as
+different syntax on the way back through the native parser. Not a
+respelling of any ink source — there is no ink original, because inline
+markup (`docs/prose-dialect-spec.md` §4) is a native-only surface. Same
+posture as `typed-annotations/` (native-only, provenance-free).
+
+Exercises a span attribute value containing an escaped quote
+(`id="the \\"old\\" lantern"`) and a content line containing every
+character in the final escape set (`\\< \\{ \\# \\\\`, §8d.6) as a
+literal, none of them opening a real span/interpolation/tag/escape on
+the original parse. Proves `emit_native` escapes them back out
+symmetrically on the lower -> emit -> reparse -> relower -> replay
+cycle (`crates/internal/brink-respell/tests/round_trip.rs`), rather than
+letting any of them re-parse as live syntax.
+"""
