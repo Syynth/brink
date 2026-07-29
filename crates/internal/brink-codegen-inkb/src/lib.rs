@@ -49,6 +49,32 @@ impl std::fmt::Display for CodegenError {
 
 impl std::error::Error for CodegenError {}
 
+/// Apply [`collapse_whitespace`] to a template part's literal text, recursing
+/// into `Span { children }` so nested literals get the same treatment as
+/// top-level ones (`<b>a  b</b>` must collapse the same as `a  b`).
+/// `Slot`/`Select` carry no literal text of their own and pass through
+/// unchanged.
+fn collapse_whitespace_in_part(part: brink_format::LinePart) -> brink_format::LinePart {
+    match part {
+        brink_format::LinePart::Literal(s) => {
+            brink_format::LinePart::Literal(collapse_whitespace(&s))
+        }
+        brink_format::LinePart::Span {
+            name,
+            attrs,
+            children,
+        } => brink_format::LinePart::Span {
+            name,
+            attrs,
+            children: children
+                .into_iter()
+                .map(collapse_whitespace_in_part)
+                .collect(),
+        },
+        other @ (brink_format::LinePart::Slot(_) | brink_format::LinePart::Select { .. }) => other,
+    }
+}
+
 /// Collapse runs of consecutive spaces/tabs within `s` to a single space.
 fn collapse_whitespace(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -345,15 +371,7 @@ impl<'a> ContainerEmitter<'a> {
         source_location: Option<brink_format::SourceLocation>,
     ) -> u16 {
         let idx = self.scope_line_table.len() as u16;
-        let parts = parts
-            .into_iter()
-            .map(|part| match part {
-                brink_format::LinePart::Literal(s) => {
-                    brink_format::LinePart::Literal(collapse_whitespace(&s))
-                }
-                other => other,
-            })
-            .collect();
+        let parts = parts.into_iter().map(collapse_whitespace_in_part).collect();
         let content = LineContent::Template(parts);
         let flags = brink_format::LineFlags::from_content(&content);
         self.scope_line_table.push(LineEntry {

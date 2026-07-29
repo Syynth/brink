@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::panic)]
 
 use brink_intl::{
     ContentJson, LineJson, LinesJson, PartJson, ScopeJson, SelectJson, compile_locale_xliff,
@@ -155,6 +155,90 @@ fn full_roundtrip_through_xml() {
     // Second scope
     assert_eq!(recovered.scopes[1].id, "0x0100000000000002");
     assert_eq!(recovered.scopes[1].name, Some("knot_a".to_string()));
+}
+
+// ── Inline markup spans through XLIFF (#1716) — documented v1 flattening ──
+
+/// `PartJson::Span` (#1716) round-trips through XLIFF as flattened text: the
+/// span's `children` splice into the surrounding element stream (no `<pc>`
+/// paired inline code yet — "Translation, round 2",
+/// `docs/prose-dialect-spec.md` §9), but every word and slot inside it
+/// still survives the export → XML → parse → import round trip correctly.
+/// This proves the *documented* v1 limitation is exactly what's documented
+/// — the text is not lost, only the span boundary doesn't survive.
+#[test]
+fn span_flattens_through_xliff_but_loses_no_text_or_slots() {
+    let lines = make_lines_json(vec![make_scope(
+        "0x0100000000000001",
+        Some("root"),
+        vec![make_line(
+            0,
+            "aaaa",
+            Some(ContentJson::Template {
+                template: vec![
+                    PartJson::Literal("He hands you ".to_string()),
+                    PartJson::Span {
+                        span: brink_intl::SpanJson {
+                            name: "item".to_string(),
+                            attrs: vec![brink_intl::AttrJson {
+                                name: "id".to_string(),
+                                value: "lantern".to_string(),
+                            }],
+                            children: vec![
+                                PartJson::Literal("the ".to_string()),
+                                PartJson::Slot { slot: 0 },
+                                PartJson::Literal(" lantern".to_string()),
+                            ],
+                        },
+                    },
+                    PartJson::Literal(".".to_string()),
+                ],
+            }),
+            None,
+        )],
+    )]);
+
+    let doc = lines_json_to_xliff(&lines, "en", None);
+    let xml = xliff2::write::to_string(&doc).unwrap();
+    let parsed = xliff2::read::read_xliff(&xml).unwrap();
+    let translated = fill_targets(parsed);
+    let recovered = xliff_to_lines_json(&translated).unwrap();
+
+    let content = recovered.scopes[0].lines[0]
+        .content
+        .as_ref()
+        .expect("content present");
+    let ContentJson::Template { template } = content else {
+        panic!("expected a Template, got {content:?}");
+    };
+    // Flattened: no PartJson::Span survives the round trip (documented v1
+    // limitation), but every literal and the slot are still present, in
+    // order, with the span's own text intact.
+    assert!(
+        !template.iter().any(|p| matches!(p, PartJson::Span { .. })),
+        "span structure is not (yet) preserved through XLIFF: {template:?}"
+    );
+    // Adjacent literal parts may merge across the XML round trip (XML text
+    // nodes don't preserve arbitrary split boundaries between adjacent
+    // `InlineElement::Text`s) — what matters is the *concatenated* text is
+    // unchanged, not the exact segmentation.
+    let concatenated: String = template
+        .iter()
+        .filter_map(|p| match p {
+            PartJson::Literal(s) => Some(s.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        concatenated, "He hands you the  lantern.",
+        "no text lost by flattening"
+    );
+    assert!(
+        template
+            .iter()
+            .any(|p| matches!(p, PartJson::Slot { slot: 0 })),
+        "the slot inside the span must survive"
+    );
 }
 
 // ── generate_locale → fill targets → compile_locale_xliff ──

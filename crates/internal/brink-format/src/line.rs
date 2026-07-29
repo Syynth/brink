@@ -56,10 +56,17 @@ impl LineFlags {
         let mut flags = Self::empty();
 
         // ALL_WS: only true if every part is whitespace-only literals.
-        // Any Slot/Select means we can't guarantee all-whitespace.
+        // Any Slot/Select means we can't guarantee all-whitespace. A Span
+        // is conservative too, for the same reason Slot/Select are — its
+        // `children` could resolve to anything once a `Slot` inside it
+        // does — even though a *literal-only* span's whitespace-ness
+        // could in principle be computed recursively, that refinement
+        // isn't needed for the runtime's current use of this flag
+        // (suppressing empty/whitespace-only output before real content
+        // has started) and conservative-false is always a safe answer.
         let all_ws = parts.iter().all(|p| match p {
             LinePart::Literal(s) => s.trim().is_empty(),
-            LinePart::Slot(_) | LinePart::Select { .. } => false,
+            LinePart::Slot(_) | LinePart::Select { .. } | LinePart::Span { .. } => false,
         });
         if all_ws {
             flags |= Self::ALL_WS;
@@ -84,6 +91,26 @@ pub enum LinePart {
         slot: u8,
         variants: Vec<(SelectKey, String)>,
         default: String,
+    },
+    /// `<name attr="v">…</name>` — an inline markup span
+    /// (`docs/prose-dialect-spec.md` §4.4, issue #1716). Genuinely nested,
+    /// mirroring `hir::ContentPart::Span`: the decoder enforces balance
+    /// structurally, so a mangled translation (unbalanced inline codes, a
+    /// classic TMS failure) becomes a decode error, not silent rendering
+    /// corruption. `children` is empty for a self-closing / point-marker
+    /// span (`<pause/>`, `<sfx name="bell"/>`, §8b.11).
+    ///
+    /// **Hash-transparent** (§4.4, RULED before any markup ships): `name`/
+    /// `attrs` never contribute to `source_hash` — only `children`'s own
+    /// text/slots do, recursively, the same way an `Interpolation`
+    /// contributes a `"{…}"` placeholder rather than its resolved value.
+    /// `Hello <wave>world</wave>` hashes identically to `Hello world`. See
+    /// `brink-ir`'s `lir::lower::recognize` — the one place that builds
+    /// this variant, and the one place hash-transparency is enforced.
+    Span {
+        name: String,
+        attrs: Vec<(String, String)>,
+        children: Vec<LinePart>,
     },
 }
 

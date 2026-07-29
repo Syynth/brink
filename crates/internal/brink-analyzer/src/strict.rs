@@ -1252,22 +1252,38 @@ fn check_void_content(
     out: &mut Vec<brink_ir::Diagnostic>,
 ) {
     for part in &content.parts {
-        match part {
-            ContentPart::InlineConditional(c) => {
-                for branch in &c.branches {
-                    check_void_block(file, &branch.body, void_defs, resolution_by_range, out);
-                }
+        check_void_content_part(file, part, void_defs, resolution_by_range, out);
+    }
+}
+
+fn check_void_content_part(
+    file: FileId,
+    part: &ContentPart,
+    void_defs: &BTreeSet<DefinitionId>,
+    resolution_by_range: &BTreeMap<(u32, u32), DefinitionId>,
+    out: &mut Vec<brink_ir::Diagnostic>,
+) {
+    match part {
+        ContentPart::InlineConditional(c) => {
+            for branch in &c.branches {
+                check_void_block(file, &branch.body, void_defs, resolution_by_range, out);
             }
-            ContentPart::InlineSequence(s) => {
-                for branch in &s.branches {
-                    check_void_block(file, &branch.body, void_defs, resolution_by_range, out);
-                }
-            }
-            ContentPart::Interpolation(_)
-            | ContentPart::Text(_)
-            | ContentPart::Glue
-            | ContentPart::Spring => {}
         }
+        ContentPart::InlineSequence(s) => {
+            for branch in &s.branches {
+                check_void_block(file, &branch.body, void_defs, resolution_by_range, out);
+            }
+        }
+        // A span can nest a conditional/sequence (§4.3).
+        ContentPart::Span(span) => {
+            for child in &span.children {
+                check_void_content_part(file, child, void_defs, resolution_by_range, out);
+            }
+        }
+        ContentPart::Interpolation(_)
+        | ContentPart::Text(_)
+        | ContentPart::Glue
+        | ContentPart::Spring => {}
     }
 }
 
@@ -1481,22 +1497,36 @@ fn collect_temps_content(
     out: &mut BTreeMap<String, TempDecl>,
 ) {
     for part in &content.parts {
-        match part {
-            ContentPart::InlineConditional(c) => {
-                for branch in &c.branches {
-                    collect_temps_block(&branch.body, names, out);
-                }
+        collect_temps_content_part(part, names, out);
+    }
+}
+
+fn collect_temps_content_part(
+    part: &ContentPart,
+    names: &annotations::TypeNames,
+    out: &mut BTreeMap<String, TempDecl>,
+) {
+    match part {
+        ContentPart::InlineConditional(c) => {
+            for branch in &c.branches {
+                collect_temps_block(&branch.body, names, out);
             }
-            ContentPart::InlineSequence(s) => {
-                for branch in &s.branches {
-                    collect_temps_block(&branch.body, names, out);
-                }
-            }
-            ContentPart::Interpolation(_)
-            | ContentPart::Text(_)
-            | ContentPart::Glue
-            | ContentPart::Spring => {}
         }
+        ContentPart::InlineSequence(s) => {
+            for branch in &s.branches {
+                collect_temps_block(&branch.body, names, out);
+            }
+        }
+        // A span can nest a conditional/sequence (§4.3).
+        ContentPart::Span(span) => {
+            for child in &span.children {
+                collect_temps_content_part(child, names, out);
+            }
+        }
+        ContentPart::Interpolation(_)
+        | ContentPart::Text(_)
+        | ContentPart::Glue
+        | ContentPart::Spring => {}
     }
 }
 

@@ -273,22 +273,33 @@ fn walk_stmts(stmts: &[Stmt], push: &mut impl FnMut(&Name, &str)) {
 
 fn walk_content(content: &Content, push: &mut impl FnMut(&Name, &str)) {
     for part in &content.parts {
-        match part {
-            ContentPart::InlineConditional(c) => {
-                for branch in &c.branches {
-                    walk_stmts(&branch.body.stmts, push);
-                }
+        walk_content_part(part, push);
+    }
+}
+
+fn walk_content_part(part: &ContentPart, push: &mut impl FnMut(&Name, &str)) {
+    match part {
+        ContentPart::InlineConditional(c) => {
+            for branch in &c.branches {
+                walk_stmts(&branch.body.stmts, push);
             }
-            ContentPart::InlineSequence(s) => {
-                for branch in &s.branches {
-                    walk_stmts(&branch.body.stmts, push);
-                }
-            }
-            ContentPart::Interpolation(_)
-            | ContentPart::Text(_)
-            | ContentPart::Glue
-            | ContentPart::Spring => {}
         }
+        ContentPart::InlineSequence(s) => {
+            for branch in &s.branches {
+                walk_stmts(&branch.body.stmts, push);
+            }
+        }
+        // A span can nest a conditional/sequence (§4.3), each with its own
+        // statement bodies to walk.
+        ContentPart::Span(span) => {
+            for child in &span.children {
+                walk_content_part(child, push);
+            }
+        }
+        ContentPart::Interpolation(_)
+        | ContentPart::Text(_)
+        | ContentPart::Glue
+        | ContentPart::Spring => {}
     }
 }
 

@@ -218,6 +218,27 @@ fn lambda_verbs() {
     assert_case("lambda-verbs");
 }
 
+/// Reviewer finding on #1732 (issue #1716): a line whose *entire* content is
+/// a childless, point-marker inline-markup span (§8b.11's `<pause/>` shape)
+/// on its own, with no surrounding text, used to be declined by
+/// `try_recognize_template` (it required ≥1 non-whitespace `Text` part) and
+/// fall to `EmitContent`'s flattening, which for a childless span appends
+/// nothing at all — the line vanished with no diagnostic, no wire
+/// `LinePart::Span`, and (as this fixture proves end-to-end) no visible
+/// line in the transcript either: `story.brink`'s middle `<pause/>` line
+/// used to leave `"Bell tolls.\nDoor slams."`, collapsing two paragraphs
+/// into one. Now it's admitted to `Template` recognition and produces its
+/// own (visibly empty) line, matching `expected.txt`'s blank middle line —
+/// `crates/internal/brink-ir/tests/markup_wire_recognition.rs`'s
+/// `a_lone_point_marker_span_is_admitted_to_template_recognition` pins the
+/// same fix at the wire-structure layer (the `LinePart::Span` itself, which
+/// this transcript-level fixture can't distinguish from any other way of
+/// producing an empty line).
+#[test]
+fn inline_markup_point_marker() {
+    assert_case("inline-markup-point-marker");
+}
+
 /// Every `tests/tier1-native/` case directory is exercised by a `#[test]`
 /// above — a directory with no matching test would silently never run.
 #[test]
@@ -234,6 +255,7 @@ fn every_case_directory_has_a_test() {
         "annotations-element",
         "array-literal",
         "lambda-verbs",
+        "inline-markup-point-marker",
     ];
     let mut found: Vec<String> = std::fs::read_dir(corpus_dir())
         .expect("read tests/tier1-native")

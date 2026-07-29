@@ -9,9 +9,9 @@
 //! `|`).
 
 use crate::SyntaxKind::{
-    self, CONTENT_LINE, DIVERT, DOC_COMMENT_INNER, DOC_COMMENT_OUTER, EOF, GLUE, GLUE_NODE, GT,
-    HASH, IDENT, INTERPOLATION, KW_ELSE, L_BRACE, L_PAREN, LABEL, NEWLINE, R_BRACE, R_PAREN, TAG,
-    TAG_LINE, TEXT, TILDE,
+    self, BACKSLASH, CONTENT_LINE, DIVERT, DOC_COMMENT_INNER, DOC_COMMENT_OUTER, EOF, GLUE,
+    GLUE_NODE, GT, HASH, IDENT, INTERPOLATION, KW_ELSE, L_BRACE, L_PAREN, LABEL, LT, NEWLINE,
+    R_BRACE, R_PAREN, TAG, TAG_LINE, TEXT, TILDE,
 };
 
 use super::Parser;
@@ -94,7 +94,7 @@ pub(crate) fn label(p: &mut Parser<'_, '_>) {
 /// and stops as soon as the current (trivia-skipped) token is EOF or
 /// appears in `stop`. Does not consume the stopping token.
 pub(crate) fn content_items_until(p: &mut Parser<'_, '_>, stop: &[SyntaxKind]) {
-    content_items_until_impl(p, stop, false);
+    content_items_until_impl(p, stop, false, None);
 }
 
 /// [`content_items_until`]'s twin for `family::colon_body`'s per-line
@@ -109,10 +109,27 @@ pub(crate) fn content_items_until(p: &mut Parser<'_, '_>, stop: &[SyntaxKind]) {
 /// must keep its leading whitespace like any other `TEXT`-run word, never
 /// treated as a structural boundary the way a real else-arm opener is.
 pub(crate) fn content_items_until_else_boundary(p: &mut Parser<'_, '_>, stop: &[SyntaxKind]) {
-    content_items_until_impl(p, stop, true);
+    content_items_until_impl(p, stop, true, None);
 }
 
-fn content_items_until_impl(p: &mut Parser<'_, '_>, stop: &[SyntaxKind], stop_at_else_arm: bool) {
+/// The shared engine's actual body. `expected_close` is `Some(name)` only
+/// when this call is [`super::markup::span`] scanning a span's own body
+/// looking for `</name>` — every other caller passes `None`. Forwarding the
+/// exact same `stop`/`stop_at_else_arm` a span's caller was given, one
+/// level down, into the recursive call `markup::span` makes for its body,
+/// is the entire nesting-doctrine enforcement mechanism (see
+/// `markup`'s module doc); this function does not need to know that, it
+/// only needs to treat a close tag matching `expected_close` as a stop
+/// condition like any other.
+///
+/// `pub(crate)`, not private: `markup::span` (a sibling module) is the one
+/// other caller, recursing back in for a span's body.
+pub(crate) fn content_items_until_impl(
+    p: &mut Parser<'_, '_>,
+    stop: &[SyntaxKind],
+    stop_at_else_arm: bool,
+    expected_close: Option<&str>,
+) {
     loop {
         let cur = p.current();
         // Inter-interpolation whitespace fix (#1264): same bug class as
@@ -134,6 +151,25 @@ fn content_items_until_impl(p: &mut Parser<'_, '_>, stop: &[SyntaxKind], stop_at
         // trivia left, so nothing downstream (`is_body_open_brace`
         // included) sees a different parser state than before this fix.
         if cur == L_BRACE && p.nth_raw(0).is_trivia() && at_bare_interpolation(p, stop) {
+            text_run_until(p, stop, stop_at_else_arm);
+            continue;
+        }
+        // Same whitespace-significance fix as the interpolation one just
+        // above, for `\` (escape) and `<`/`</` (span open/close): each is
+        // unconditionally special in `starts_text_run` (so the outer
+        // `skip_ws()` a few lines down would otherwise discard pending
+        // trivia bare, landing outside any node — `Hello <b>` losing the
+        // space before `<b>`, or `\< \{`'s inter-escape space vanishing).
+        // Fold pending trivia into a `TEXT` node first; the item is then
+        // parsed fresh on the next iteration with nothing pending.
+        if cur == BACKSLASH && p.nth_raw(0).is_trivia() {
+            text_run_until(p, stop, stop_at_else_arm);
+            continue;
+        }
+        if cur == LT
+            && p.nth_raw(0).is_trivia()
+            && (super::markup::at_span_open(p) || super::markup::at_span_close(p))
+        {
             text_run_until(p, stop, stop_at_else_arm);
             continue;
         }
@@ -167,7 +203,7 @@ fn content_items_until_impl(p: &mut Parser<'_, '_>, stop: &[SyntaxKind], stop_at
         // is never captured here: every caller (`block`, `colon_body`,
         // `entry`, `inline_alternatives`, `choice`, `content_line`) already
         // skips it before this loop is entered.
-        if !starts_text_run(cur, stop) {
+        if !starts_text_run(p, cur, stop) {
             p.skip_ws();
         }
         // `HASH` always stops this loop, whether or not the caller asked
@@ -179,6 +215,20 @@ fn content_items_until_impl(p: &mut Parser<'_, '_>, stop: &[SyntaxKind], stop_at
         // agreement to stay infinite-loop-safe.
         if cur == EOF || cur == HASH {
             break;
+        }
+        // A close tag always breaks the loop too — whether it's the one
+        // *this* frame is looking for (`expected_close`, handed back to
+        // `markup::span` to consume) or someone else's/a stray one (handled
+        // right here, loudly, with forward progress guaranteed — see
+        // `markup::consume_stray_close`'s doc). Checked before the generic
+        // `stop`/`L_BRACE` handling below since `LT` is never itself a
+        // caller-supplied stop kind.
+        if cur == LT && super::markup::at_span_close(p) {
+            if expected_close == Some(p.nth_text(2)) {
+                break;
+            }
+            super::markup::consume_stray_close(p);
+            continue;
         }
         if cur == L_BRACE {
             // G-2: an `L_BRACE` a caller lists as a stop kind (choice-text
@@ -200,6 +250,10 @@ fn content_items_until_impl(p: &mut Parser<'_, '_>, stop: &[SyntaxKind], stop_at
             break;
         }
         match cur {
+            LT if super::markup::at_span_open(p) => {
+                super::markup::span(p, stop, stop_at_else_arm);
+            }
+            BACKSLASH => super::markup::escape(p),
             L_BRACE if super::family::at_choice_point(p) => super::choice::choice_point(p),
             L_BRACE if super::family::at_conditional(p) => super::family::conditional_block(p),
             L_BRACE if super::family::at_alternation(p) => super::family::alternation_block(p),
@@ -244,7 +298,19 @@ fn content_items_until_impl(p: &mut Parser<'_, '_>, stop: &[SyntaxKind], stop_at
 /// the loop or dispatches to an item whose own `bump`/`expect` (or the
 /// explicit `skip_ws` the loop still performs) consumes the leading trivia,
 /// so structural lookahead and node-boundary placement are unchanged.
-fn starts_text_run(cur: SyntaxKind, stop: &[SyntaxKind]) -> bool {
+fn starts_text_run(p: &Parser<'_, '_>, cur: SyntaxKind, stop: &[SyntaxKind]) -> bool {
+    // `BACKSLASH` is always special (an escape or a compile error, §8d.6 —
+    // never plain text), and a qualifying `<` (an actual span open/close,
+    // `markup::at_span_open`/`at_span_close`) is a structural item like
+    // every other one this loop recognizes. A `<` that does NOT qualify
+    // (`5 < 10`, a lone `<3`) falls through and stays ordinary text,
+    // unchanged.
+    if cur == BACKSLASH {
+        return false;
+    }
+    if cur == LT && (super::markup::at_span_open(p) || super::markup::at_span_close(p)) {
+        return false;
+    }
     !matches!(
         cur,
         EOF | HASH | L_BRACE | GLUE | DIVERT | DOC_COMMENT_OUTER | DOC_COMMENT_INNER
@@ -359,6 +425,8 @@ fn text_run_until(p: &mut Parser<'_, '_>, stop: &[SyntaxKind], stop_at_else_arm:
             || k == GLUE
             || k == HASH
             || k == DIVERT
+            || k == BACKSLASH
+            || (k == LT && (super::markup::at_span_open(p) || super::markup::at_span_close(p)))
             || k == DOC_COMMENT_OUTER
             || k == DOC_COMMENT_INNER
             || stop.contains(&k)

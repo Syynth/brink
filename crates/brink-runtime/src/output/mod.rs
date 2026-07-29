@@ -162,62 +162,89 @@ fn resolve_line_ref(
     match &entry.content {
         LineContent::Plain(s) => s.clone(),
         LineContent::Template(parts) => {
-            let mut result = String::new();
-            for part in parts {
-                let owned;
-                let fragment: &str = match part {
-                    LinePart::Literal(s) => s.as_str(),
-                    LinePart::Slot(n) => {
-                        owned = slots
-                            .get(*n as usize)
-                            .map(|v| match v {
-                                Value::FragmentRef(idx) => {
-                                    let idx = *idx as usize;
-                                    fragments.get(idx).map_or_else(String::new, |frag| {
-                                        resolve_parts(
-                                            &frag.parts,
-                                            program,
-                                            line_tables,
-                                            resolver,
-                                            fragments,
-                                        )
-                                    })
-                                }
-                                // B4 (`docs/stdlib-spec.md` §1.6b) — same
-                                // display-boundary forgiveness as the
-                                // `ValueRef` arm above; the surrounding
-                                // whitespace-collapse logic below already
-                                // treats an empty slot fragment correctly.
-                                other => value_ops::stringify_display(other, program),
-                            })
-                            .unwrap_or_default();
-                        owned.as_str()
-                    }
-                    LinePart::Select {
-                        slot,
-                        variants,
-                        default,
-                    } => {
-                        owned =
-                            resolve_select(*slot, variants, default, slots, resolver).to_string();
-                        owned.as_str()
-                    }
-                };
-                // Skip empty fragments (null/empty slots) and collapse
-                // whitespace at join points when empty slots produce
-                // adjacent spaces or leading whitespace.
-                if fragment.is_empty() {
-                    continue;
-                }
-                if (result.is_empty() || result.ends_with(' ')) && fragment.starts_with(' ') {
-                    result.push_str(fragment.trim_start());
-                } else {
-                    result.push_str(fragment);
-                }
-            }
-            result
+            resolve_line_parts(parts, program, line_tables, slots, resolver, fragments)
         }
     }
+}
+
+/// Resolve a sequence of `LinePart`s (a `LineContent::Template`'s own, or a
+/// [`LinePart::Span`]'s `children`) to flat text.
+///
+/// A span is presentational (§4.3) and the runtime's current public API
+/// (`Line::Text.text`) is flat text with no structured span surface yet
+/// (`docs/prose-dialect-spec.md` §7/§9.1: the `Step`/`Part` redesign that
+/// would carry `Part::Span` structure through to a consumer is still ⏳) —
+/// so a span resolves here to its children's concatenated text, tag name
+/// and attrs stripped, recursing through this same function. That is
+/// additive groundwork for the future structured surface, not a
+/// replacement of it: §4.4 explicitly wants "structural parts over
+/// byte-range offsets" once that surface lands.
+fn resolve_line_parts(
+    parts: &[LinePart],
+    program: &Program,
+    line_tables: &[Vec<LineEntry>],
+    slots: &[Value],
+    resolver: Option<&dyn PluralResolver>,
+    fragments: &[Fragment],
+) -> String {
+    let mut result = String::new();
+    for part in parts {
+        let owned;
+        let fragment: &str = match part {
+            LinePart::Literal(s) => s.as_str(),
+            LinePart::Slot(n) => {
+                owned = slots
+                    .get(*n as usize)
+                    .map(|v| match v {
+                        Value::FragmentRef(idx) => {
+                            let idx = *idx as usize;
+                            fragments.get(idx).map_or_else(String::new, |frag| {
+                                resolve_parts(
+                                    &frag.parts,
+                                    program,
+                                    line_tables,
+                                    resolver,
+                                    fragments,
+                                )
+                            })
+                        }
+                        // B4 (`docs/stdlib-spec.md` §1.6b) — same
+                        // display-boundary forgiveness as the
+                        // `ValueRef` arm above; the surrounding
+                        // whitespace-collapse logic below already
+                        // treats an empty slot fragment correctly.
+                        other => value_ops::stringify_display(other, program),
+                    })
+                    .unwrap_or_default();
+                owned.as_str()
+            }
+            LinePart::Select {
+                slot,
+                variants,
+                default,
+            } => {
+                owned = resolve_select(*slot, variants, default, slots, resolver).to_string();
+                owned.as_str()
+            }
+            LinePart::Span { children, .. } => {
+                owned =
+                    resolve_line_parts(children, program, line_tables, slots, resolver, fragments);
+                owned.as_str()
+            }
+        };
+        // Skip empty fragments (null/empty slots) and collapse
+        // whitespace at join points when empty slots produce
+        // adjacent spaces or leading whitespace.
+        if fragment.is_empty() {
+            continue;
+        }
+        if (result.is_empty() || result.ends_with(' ')) && fragment.starts_with(' ') {
+            result.push_str(fragment.trim_start());
+        } else {
+            result.push_str(fragment);
+        }
+    }
+    result
 }
 
 /// Resolve a Select part against its slot value.
@@ -1371,6 +1398,76 @@ mod tests {
             &[Value::String("".into())],
         );
         assert_eq!(result, "Hello world");
+    }
+
+    // ── Inline markup spans (#1716, docs/prose-dialect-spec.md §4) ─────
+    //
+    // No structured `Part::Span` consumer surface exists yet (§7/§9.1 ⏳)
+    // — a span resolves to its children's concatenated text, tag name/
+    // attrs stripped, recursing through the same `resolve_line_parts` a
+    // plain Template does.
+
+    #[test]
+    fn span_resolves_to_its_children_text_tag_stripped() {
+        let result = resolve_template(
+            vec![
+                LinePart::Literal("Hello ".into()),
+                LinePart::Span {
+                    name: "wave".into(),
+                    attrs: vec![],
+                    children: vec![LinePart::Literal("world".into())],
+                },
+            ],
+            &[],
+        );
+        assert_eq!(result, "Hello world");
+    }
+
+    #[test]
+    fn a_self_closing_span_with_no_children_resolves_to_nothing() {
+        let result = resolve_template(
+            vec![
+                LinePart::Literal("Bell tolls. ".into()),
+                LinePart::Span {
+                    name: "pause".into(),
+                    attrs: vec![],
+                    children: vec![],
+                },
+                LinePart::Literal(" Door slams.".into()),
+            ],
+            &[],
+        );
+        assert_eq!(result, "Bell tolls. Door slams.");
+    }
+
+    #[test]
+    fn a_span_containing_a_slot_resolves_the_slot() {
+        let result = resolve_template(
+            vec![LinePart::Span {
+                name: "b".into(),
+                attrs: vec![],
+                children: vec![LinePart::Literal("hello ".into()), LinePart::Slot(0)],
+            }],
+            &[Value::String("Fogg".into())],
+        );
+        assert_eq!(result, "hello Fogg");
+    }
+
+    #[test]
+    fn nested_spans_resolve_recursively() {
+        let result = resolve_template(
+            vec![LinePart::Span {
+                name: "b".into(),
+                attrs: vec![],
+                children: vec![LinePart::Span {
+                    name: "i".into(),
+                    attrs: vec![],
+                    children: vec![LinePart::Literal("hi".into())],
+                }],
+            }],
+            &[],
+        );
+        assert_eq!(result, "hi");
     }
 
     // ── B4 display-boundary forgiveness (`docs/stdlib-spec.md` §1.6b) ──

@@ -22,7 +22,7 @@ use crate::{
     DivertPath, Expr, Stmt, ThreadStart,
 };
 
-use super::body::{lower_divert_like, lower_items, push_text};
+use super::body::{lower_divert_like, lower_items, lower_span, push_escape, push_text};
 use super::cond::{lower_alternation, lower_conditional};
 use super::expr::lower_path;
 use super::provenance::native_provenance;
@@ -251,9 +251,11 @@ fn lower_choice_region(
     for child in node.children() {
         match child.kind() {
             N::TEXT => push_text(&mut parts, &child),
+            N::ESCAPE => push_escape(&mut parts, &child),
             N::INTERPOLATION => {
                 parts.push(super::body::lower_interpolation(file_id, &child, diags));
             }
+            N::SPAN => parts.push(lower_span(file_id, &child, diags)),
             N::GLUE_NODE => parts.push(ContentPart::Glue),
             N::DIVERT_STMT | N::TUNNEL_CALL => {
                 if divert.is_none() {

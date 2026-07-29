@@ -72,7 +72,20 @@ pub(crate) const MAGIC: &[u8; 4] = b"INKB";
 /// one-byte section-local version so its *row encoding* can still evolve
 /// without a further format bump, matching the `EffectRows` precedent.
 /// `AliasTable` takes tag `0x0F` (the next free tag after `Visibility`).
-pub(crate) const VERSION: u16 = 5;
+/// v6 added the `PART_SPAN` `LinePart` tag (#1716, `docs/prose-dialect-spec.md`
+/// §4.4/§4.5): like `AliasTable`, `PART_SPAN` was not part of the v4 RFC's
+/// pre-reserved inventory (that inventory covers `VAL_ARRAY`/`VAL_MAP`-style
+/// *value* tags and the `StructShapes`/`EffectRows` sections — it never
+/// reserved a `LinePart` tag), so introducing it is its own one-bump event,
+/// not a free ride on the `VAL_VEC2`/`VAL_WEIGHTED` no-bump precedent (see
+/// `PART_SPAN`'s doc comment below). Ruled directly by issue #1716's own
+/// ⚠ ("`LinePart::Span` is a v6 payload") and coordinated with #1683 (the
+/// v6 bump manifest); this PR lands only the `Span` payload of that
+/// manifest, so `VERSION` 6 stays open to absorb #1683's remaining payloads
+/// (element kind/data, universal block id, choice captured environment)
+/// without a further bump, the same way v4 absorbed its later Tier-1
+/// milestones — a single bump event, not a bump per payload.
+pub(crate) const VERSION: u16 = 6;
 /// Fixed-size preamble: magic + version + section count + reserved + file size + checksum.
 pub(crate) const HEADER_PREAMBLE: usize = 16;
 /// Each offset table entry: kind(1) + reserved(3) + offset(4)
@@ -201,6 +214,22 @@ pub(crate) const LINE_TEMPLATE: u8 = 0x01;
 pub(crate) const PART_LITERAL: u8 = 0x00;
 pub(crate) const PART_SLOT: u8 = 0x01;
 pub(crate) const PART_SELECT: u8 = 0x02;
+// #1716 (`docs/prose-dialect-spec.md` §4.4/§4.5): the inline markup span.
+// Structurally, adding this tag is one match arm on the existing `u8`
+// part-tag dispatch — an old reader hard-rejects the unknown tag
+// (`decode_line_part`'s `_ => Err(InvalidLinePart)`) and an old file simply
+// never contains one. That is *not* the same as the `VAL_VEC2`/
+// `VAL_WEIGHTED` no-`VERSION`-bump precedent, though: those value tags sit
+// in the v4 RFC's pre-reserved, frozen tag inventory (`docs/format-v4-rfc.md`,
+// the §9 one-bump rule), so materializing their encoding was already paid
+// for by v4's bump. `PART_SPAN` was never part of that reservation — issue
+// #1716 rules it explicitly as **"a v6 payload"**, coordinated with #1683
+// (the v6 bump manifest). It IS its own one-bump event: `VERSION` bumped to
+// 6 (see `VERSION`'s doc comment). `.inkl` shares this encoder/decoder
+// (`inkl::{read,write}` call straight through to
+// `encode_line_content`/`decode_line_content`), so both formats gain the
+// tag from this one bump.
+pub(crate) const PART_SPAN: u8 = 0x03;
 
 // SelectKey tags
 pub(crate) const KEY_CARDINAL: u8 = 0x00;

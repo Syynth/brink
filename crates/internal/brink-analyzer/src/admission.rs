@@ -319,6 +319,15 @@ impl Collector {
             ContentPart::Interpolation(e) => self.walk_expr(e),
             ContentPart::InlineConditional(c) => self.walk_conditional(c, prefix),
             ContentPart::InlineSequence(s) => self.walk_sequence(s, prefix),
+            // A span is presentational (§4.3) — admission must still see
+            // any reference living inside it, same as every other walker
+            // that recurses through `ContentPart` (`hir::visit`,
+            // `symbols::project`).
+            ContentPart::Span(span) => {
+                for child in &span.children {
+                    self.walk_content_part(child, prefix);
+                }
+            }
             ContentPart::Text(_) | ContentPart::Glue | ContentPart::Spring => {}
         }
     }

@@ -993,6 +993,7 @@ export interface LineSource {
 export type LinePart =
   | { slot: number }
   | { select: LineSelect }
+  | { span: LineSpan }
   | string;
 
 /** A plural/keyword select over a slot value. Each `variants` entry is a
@@ -1002,6 +1003,22 @@ export interface LineSelect {
   slot: number;
   variants: Record<string, string>[];
   default: string;
+}
+
+/** One `name="value"` attribute on a {@link LineSpan}. */
+export interface LineAttr {
+  name: string;
+  value: string;
+}
+
+/** An inline markup span (#1716, `docs/prose-dialect-spec.md` §4.4) —
+ *  mirrors the Rust `SpanJson` field-for-field. `attrs`/`children` are
+ *  omitted entirely (not just empty) when there are none, matching the
+ *  Rust side's `skip_serializing_if = "Vec::is_empty"`. */
+export interface LineSpan {
+  name: string;
+  attrs?: LineAttr[];
+  children?: LinePart[];
 }
 
 /** A line's content — a plain string, or a template (literal/slot/select parts). */

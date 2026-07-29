@@ -146,8 +146,20 @@ fn content_parts_heap(parts: &[ContentPart]) -> usize {
                 ContentPart::Glue | ContentPart::Spring | ContentPart::Interpolation(_) => 0,
                 ContentPart::InlineConditional(c) => conditional_heap(c),
                 ContentPart::InlineSequence(s) => sequence_heap(s),
+                ContentPart::Span(span) => span_heap(span),
             })
             .sum::<usize>()
+}
+
+fn span_heap(span: &brink_ir::SpanPart) -> usize {
+    string_heap(&span.name)
+        + vec_heap(&span.attrs)
+        + span
+            .attrs
+            .iter()
+            .map(|(k, v)| string_heap(k) + string_heap(v))
+            .sum::<usize>()
+        + content_parts_heap(&span.children)
 }
 
 fn tag_heap(t: &Tag) -> usize {

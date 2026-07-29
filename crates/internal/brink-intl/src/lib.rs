@@ -29,7 +29,9 @@ mod xliff_ops;
 pub use compile::compile_locale;
 pub use error::IntlError;
 pub use export::export_lines;
-pub use json_model::{ContentJson, LineJson, LinesJson, PartJson, ScopeJson, SelectJson};
+pub use json_model::{
+    AttrJson, ContentJson, LineJson, LinesJson, PartJson, ScopeJson, SelectJson, SpanJson,
+};
 pub use plural::{DefaultPluralResolver, IcuPluralResolver};
 pub use regenerate::regenerate_lines;
 pub use scope_alias::ScopeAliasIndex;

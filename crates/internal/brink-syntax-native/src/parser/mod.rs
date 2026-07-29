@@ -10,6 +10,7 @@ mod doc_comment;
 mod element;
 mod expr;
 mod family;
+mod markup;
 mod source_file;
 mod stmt;
 #[cfg(test)]

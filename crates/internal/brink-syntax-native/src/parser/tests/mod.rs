@@ -6,6 +6,7 @@ mod declaration;
 mod divert;
 mod element;
 mod expression;
+mod markup;
 mod statement;
 mod trivia;
 

@@ -317,14 +317,29 @@ fn walk_target(target: &DivertTarget, v: &mut impl HirVisitor) {
 fn walk_content(content: &Content, ctx: ContentContext, v: &mut impl HirVisitor) {
     v.enter_content(content, ctx);
     for part in &content.parts {
-        match part {
-            ContentPart::Interpolation(e) => walk_expr(e, v),
-            // Content nested inside an inline conditional/sequence keeps the
-            // enclosing `ctx` — so a choice slot's position stays transitive.
-            ContentPart::InlineConditional(c) => walk_conditional(c, ctx, v),
-            ContentPart::InlineSequence(s) => walk_sequence(s, ctx, v),
-            ContentPart::Text(_) | ContentPart::Glue | ContentPart::Spring => {}
+        walk_content_part(part, ctx, v);
+    }
+}
+
+/// One [`ContentPart`], dispatched the same way regardless of whether it
+/// sits directly in a [`Content`]'s own `parts` or nested inside a
+/// [`ContentPart::Span`]'s `children` — a span is presentational (§4.3);
+/// it must never become a blind spot for reference-tracking visitors
+/// (rename, unused-variable, the symbol index) just because a word inside
+/// it happens to be bolded.
+fn walk_content_part(part: &ContentPart, ctx: ContentContext, v: &mut impl HirVisitor) {
+    match part {
+        ContentPart::Interpolation(e) => walk_expr(e, v),
+        // Content nested inside an inline conditional/sequence keeps the
+        // enclosing `ctx` — so a choice slot's position stays transitive.
+        ContentPart::InlineConditional(c) => walk_conditional(c, ctx, v),
+        ContentPart::InlineSequence(s) => walk_sequence(s, ctx, v),
+        ContentPart::Span(span) => {
+            for child in &span.children {
+                walk_content_part(child, ctx, v);
+            }
         }
+        ContentPart::Text(_) | ContentPart::Glue | ContentPart::Spring => {}
     }
 }
 

@@ -136,18 +136,36 @@ fn check_stmt(stmt: &Stmt, file: FileId, ctx: &MistypeCtx<'_>, out: &mut Vec<Dia
 
 fn check_content(c: &Content, file: FileId, ctx: &MistypeCtx<'_>, out: &mut Vec<Diagnostic>) {
     for part in &c.parts {
-        match part {
-            ContentPart::InlineConditional(cond) => check_conditional(cond, file, ctx, out),
-            ContentPart::InlineSequence(s) => {
-                for branch in &s.branches {
-                    check_block(&branch.body, file, ctx, out);
-                }
+        check_content_part(part, file, ctx, out);
+    }
+}
+
+fn check_content_part(
+    part: &ContentPart,
+    file: FileId,
+    ctx: &MistypeCtx<'_>,
+    out: &mut Vec<Diagnostic>,
+) {
+    match part {
+        ContentPart::InlineConditional(cond) => check_conditional(cond, file, ctx, out),
+        ContentPart::InlineSequence(s) => {
+            for branch in &s.branches {
+                check_block(&branch.body, file, ctx, out);
             }
-            ContentPart::Interpolation(_)
-            | ContentPart::Text(_)
-            | ContentPart::Glue
-            | ContentPart::Spring => {}
         }
+        // A span can nest a conditional (§4.3's nesting doctrine — markup
+        // and logic nest freely inside each other), so a mistyped
+        // condition inside one is still reachable and must still be
+        // checked.
+        ContentPart::Span(span) => {
+            for child in &span.children {
+                check_content_part(child, file, ctx, out);
+            }
+        }
+        ContentPart::Interpolation(_)
+        | ContentPart::Text(_)
+        | ContentPart::Glue
+        | ContentPart::Spring => {}
     }
 }
 

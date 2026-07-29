@@ -749,37 +749,29 @@ fn adversarial_brace_soup_never_panics_and_roundtrips() {
 }
 
 #[test]
-fn backslash_does_not_escape_hash_no_escape_mechanism_yet() {
-    // charter §8.2 lists "Interleaving escapes, full inventory" as an OPEN
-    // item — B0.5 has no escape grammar at all yet. `BACKSLASH` has no
-    // case in `content_items_until`'s dispatch, so it falls through to
-    // plain `TEXT`, and a `#` right after it still opens a real `TAG` —
-    // the backslash does NOT suppress it (unlike the brink-syntax parity
-    // target's `ESCAPE` node, which does). Locking in current (pre-design)
-    // behavior, not asserting it as the intended final surface.
+fn backslash_escapes_hash_no_tag_opens() {
+    // The escape set landed (§8d.6, issue #1716 — `parser::markup::escape`):
+    // `\#` is now a real `ESCAPE` node producing a literal `#`, and no
+    // `TAG` opens. This test used to lock in the pre-design "no escape
+    // mechanism yet" behavior (`\#` opening a real `TAG`); the escape set
+    // is final now, so it locks in the opposite.
     let src = "\\# not a tag\n";
     let p = assert_lossless(src);
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
-    assert!(
-        has_node_kind(&p.syntax(), SyntaxKind::TAG),
-        "no escape mechanism yet: \\# still opens a TAG"
-    );
+    assert!(!has_node_kind(&p.syntax(), SyntaxKind::TAG));
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::ESCAPE));
 }
 
 #[test]
-fn backslash_does_not_escape_open_brace_no_escape_mechanism_yet() {
-    // Same open item as above, for `{`: the backslash doesn't suppress
-    // interpolation dispatch either.
+fn backslash_escapes_open_brace_no_interpolation_opens() {
+    // Same landing as above, for `{` (§8d.6): `\{` is a literal `{`, and
+    // no `INTERPOLATION` opens (so "not logic" is ordinary trailing prose,
+    // not a parse error).
     let src = "\\{ not logic\n";
     let p = assert_lossless(src);
-    // The `{` still attempts interpolation; `not` parses as a PATH_EXPR
-    // and then `logic` (a second IDENT with no operator between) is left
-    // over, which is a real parse error — not a panic, still lossless.
-    assert!(!p.errors().is_empty(), "errors: {:?}", p.errors());
-    assert!(
-        has_node_kind(&p.syntax(), SyntaxKind::INTERPOLATION),
-        "no escape mechanism yet: \\{{ still opens an INTERPOLATION"
-    );
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(!has_node_kind(&p.syntax(), SyntaxKind::INTERPOLATION));
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::ESCAPE));
 }
 
 // ── Section G: negative space — lines that are NOT a CONTENT_LINE ──────
