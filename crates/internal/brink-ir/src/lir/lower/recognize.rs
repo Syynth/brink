@@ -267,7 +267,24 @@ fn build_source_location(content: &hir::Content, ctx: &LowerCtx<'_>) -> Option<S
 /// <wave>world</wave>` still needs admission even with zero
 /// interpolations: once a Span splits the text into more than one
 /// top-level part, it is no longer Phase 1's single-Text-part `Plain`
-/// shape either) and ≥1 non-whitespace Text part somewhere in the tree.
+/// shape either) and (≥1 non-whitespace Text part somewhere in the tree,
+/// **or** ≥1 `Span` present at all).
+///
+/// The `Span`-present escape hatch matters for a point-marker-only line
+/// (§8b.11 — `<pause/>` alone, with no surrounding text): the
+/// non-whitespace-text requirement (`d7058cd2d`, "skip template
+/// recognition for whitespace-only text between slots" — deliberately
+/// keeps a bare `{f()} {g()}` off the `Template` path, since the
+/// whitespace there is structural glue, not translatable content) would
+/// otherwise decline a line whose *entire* content is a childless span,
+/// sending it to `EmitContent`'s flattening — which for a span with no
+/// children drops `name`/`attrs` and emits **nothing**, silently, with no
+/// diagnostic (unlike the interior-`InlineConditional`/`InlineSequence`
+/// case below, that flattening loses real data, not just the
+/// presentational boundary). A `Span` occupying a content-part slot is
+/// never itself whitespace glue — even self-closing, its `name`/`attrs`
+/// are the translatable content — so its mere presence satisfies the
+/// "real content" requirement the whitespace-glue guard exists for.
 ///
 /// A Span containing something this doesn't admit (a `DIVERT`-adjacent
 /// shape has none — `Span`'s HIR children can only ever be
@@ -280,7 +297,7 @@ fn build_source_location(content: &hir::Content, ctx: &LowerCtx<'_>) -> Option<S
 fn try_recognize_template(content: &hir::Content, _ctx: &LowerCtx<'_>) -> bool {
     is_template_admissible(&content.parts)
         && content_has_span_or_interpolation(&content.parts)
-        && content_has_nonempty_text(&content.parts)
+        && (content_has_nonempty_text(&content.parts) || content_has_span(&content.parts))
 }
 
 fn is_template_admissible(parts: &[hir::ContentPart]) -> bool {
@@ -301,6 +318,13 @@ fn content_has_span_or_interpolation(parts: &[hir::ContentPart]) -> bool {
             hir::ContentPart::Interpolation(_) | hir::ContentPart::Span(_)
         )
     })
+}
+
+/// Whether any top-level part is a `Span` (self-closing or not). Doesn't need
+/// to recurse — a nested `Span` always has a top-level `Span` ancestor here,
+/// since `ContentPart` children only ever live inside another `Span`.
+fn content_has_span(parts: &[hir::ContentPart]) -> bool {
+    parts.iter().any(|p| matches!(p, hir::ContentPart::Span(_)))
 }
 
 fn content_has_nonempty_text(parts: &[hir::ContentPart]) -> bool {

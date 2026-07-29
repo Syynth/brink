@@ -158,3 +158,30 @@ fn a_span_may_contain_interpolation_and_still_recognizes_as_template() {
     assert!(matches!(&children[0], brink_format::LinePart::Literal(s) if s == "hello "));
     assert!(matches!(&children[1], brink_format::LinePart::Slot(0)));
 }
+
+/// Reviewer finding on #1732 (issue #1716): a line whose *entire* content is
+/// a childless, point-marker span (§8b.11's `<pause/>` shape) with no
+/// surrounding text used to be silently declined by `try_recognize_template`
+/// (it requires ≥1 non-whitespace `Text` part, which a bare `<pause/>` line
+/// has none of) and fall to `EmitContent`'s flattening path, which for a
+/// childless span drops `name`/`attrs` and appends nothing — the whole line
+/// vanished with no diagnostic. A `Span`'s mere presence must count as real
+/// content, the same way `content_has_nonempty_text` already does, so this
+/// now recognizes as a real wire `LinePart::Template` carrying the span.
+#[test]
+fn a_lone_point_marker_span_is_admitted_to_template_recognition() {
+    let program = lower_native_to_program("flow f() {\n  <pause/>\n}\n");
+    let (parts, _hash) = find_root_template(&program);
+    assert_eq!(parts.len(), 1, "expected exactly one LinePart, got {parts:?}");
+    let brink_format::LinePart::Span {
+        name,
+        attrs,
+        children,
+    } = &parts[0]
+    else {
+        panic!("expected LinePart::Span, got {:?}", parts[0]);
+    };
+    assert_eq!(name, "pause");
+    assert!(attrs.is_empty());
+    assert!(children.is_empty());
+}
