@@ -334,6 +334,76 @@ fn opaque_row_exceeds_both_silent_and_total() {
     );
 }
 
+// ── Fork A (docs/decision-log.md 2026-07-28, issue #1726): the opaque
+// floor collapses to a real row when every reaching fn value was created
+// in-project ─────────────────────────────────────────────────────────────
+//
+// These are the end-to-end proof that the analyzer-level narrowing reaches a
+// *user* through the real salsa pipeline: the row is what `E103` judges an
+// `@[effects(…)]` bound against, so a collapsed row is directly visible as a
+// diagnostic that no longer fires.
+
+#[test]
+fn two_known_fn_origins_collapse_to_the_joined_row_instead_of_the_opaque_floor() {
+    // `f` is written twice, each write a known `#fn` creation site. Before
+    // Fork A the write-once rule refused to narrow a twice-written local, so
+    // the row was the pessimal floor and *every* bound was exceeded. Now the
+    // row is the join over both targets — `bar`'s (total) and `baz`'s
+    // (extra) — which this bound declares exactly, so the check is silent.
+    //
+    // The two origins touch *different* globals on purpose: a shared global
+    // would still pass if only one edge were followed, proving nothing about
+    // the join.
+    let diags = analyze(
+        "VAR total = 0\nVAR extra = 0\n\
+         === function bar(): int ===\n~ total = total + 1\n~ return total\n\
+         === function baz(): int ===\n~ extra = extra + 100\n~ return extra\n\
+         === function user(cond: int): int ===\n\
+         @[effects(reads(total), reads(extra), writes(total), writes(extra))]\n\
+         ~ temp f = #fn(bar)\n{cond:\n  ~ f = #fn(baz)\n}\n~ return f()\n",
+    );
+    assert_eq!(codes(&diags), Vec::<DiagnosticCode>::new(), "{diags:?}");
+}
+
+#[test]
+fn the_joined_row_still_reports_a_bound_that_names_only_one_origin() {
+    // The collapse is not a free pass: narrowing to the join means the bound
+    // must cover *both* targets. Declaring only `bar`'s cell leaves `baz`'s
+    // write uncovered — still an exceedance, and the message names the atom
+    // the join contributed, not a generic "calls through a function value".
+    let diags = analyze(
+        "VAR total = 0\nVAR extra = 0\n\
+         === function bar(): int ===\n~ total = total + 1\n~ return total\n\
+         === function baz(): int ===\n~ extra = extra + 100\n~ return extra\n\
+         === function user(cond: int): int ===\n\
+         @[effects(reads(total), writes(total))]\n\
+         ~ temp f = #fn(bar)\n{cond:\n  ~ f = #fn(baz)\n}\n~ return f()\n",
+    );
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E103], "{diags:?}");
+    assert!(diags[0].message.contains("extra"), "{diags:?}");
+}
+
+#[test]
+fn one_untraced_write_keeps_the_opaque_floor_end_to_end() {
+    // The guard Fork A keeps. `f`'s second write comes from a parameter, so
+    // the reaching value could have been created anywhere — including a host
+    // callback (docs/effects-spec.md §6.2). The row stays pessimal, and the
+    // `silent`/`total` dimensions it is unbounded on still report, exactly
+    // as `opaque_row_exceeds_both_silent_and_total` pins for the plain case.
+    let diags = analyze(
+        "VAR total = 0\n\
+         === function bar(): int ===\n~ total = total + 1\n~ return total\n\
+         === function user(cond: int, cb: fn(): int): int ===\n\
+         @[effects(silent, total)]\n\
+         ~ temp f = #fn(bar)\n{cond:\n  ~ f = cb\n}\n~ return f()\n",
+    );
+    assert_eq!(
+        codes(&diags),
+        vec![DiagnosticCode::E108, DiagnosticCode::E109],
+        "{diags:?}"
+    );
+}
+
 #[test]
 fn deprecated_hash_spelling_reaches_per_file_diagnostics_as_e110_warning() {
     // E110 is a *lowering* diagnostic (the directive recognizer), so it

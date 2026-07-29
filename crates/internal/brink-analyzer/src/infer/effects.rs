@@ -14,11 +14,16 @@
 //!   through a function value as **opaque** (the conservative floor — see
 //!   [`EffectRow::opaque`]), which is sound. Issue #872 (§8's "read the
 //!   concrete row off a stored `Ty::Fn`" precision rung) narrows this for the
-//!   provably-known case — a call through a write-once local whose value
-//!   traces to a single `#fn(target, …)`/`bind(…)`-chain origin
+//!   provably-known case — a call through a local whose every write traces to
+//!   a `#fn(target, …)`/`bind(…)`-chain origin
 //!   (`InferPass::resolve_pending_value_calls` in `infer::body`) — while
 //!   leaving the heap (VAR/CONST cells joined project-wide, §5's "sound,
-//!   coarse, improvable") pessimal still.
+//!   coarse, improvable") pessimal still. Fork A (`docs/decision-log.md`
+//!   2026-07-28, issue #1726) widened that rung from a single write-once
+//!   origin to the **join over every traced write**, and added
+//!   [`EffectAtoms::creates_fn_values`] — the structural record of which
+//!   targets a body creates fn values for, harvested by the same walk with
+//!   empty globals and empty sigs, so the call graph stays row-independent.
 //!
 //! **Soundness direction (spec §3, conservative-total)**: rows may over-report,
 //! never under-report. Over-report costs parallelism or a spurious wakeup;
@@ -177,8 +182,11 @@ impl EffectRow {
 /// [`solve_scc_effects`] fixpoint closes over. `reads`/`writes`/`calls` are the
 /// direct atoms this body emits; `direct_calls` are the inferable
 /// (knot/stitch) callees whose rows must be joined in transitively;
-/// `opaque` records that the body performed a call through a function value
-/// (or another effects-opaque construct), forcing the pessimal floor.
+/// `creates_fn_values` are the targets this body creates fn values for
+/// (Fork A, issue #1726 — structural, fed into the call graph alongside
+/// `direct_calls`); `opaque` records that the body performed a call through a
+/// function value whose reaching values were not all created in-project (or
+/// another effects-opaque construct), forcing the pessimal floor.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[expect(
     clippy::struct_excessive_bools,
@@ -192,8 +200,40 @@ pub struct EffectAtoms {
     /// Inferable (knot/stitch) call targets — the edges the fixpoint follows.
     /// A superset shape of FG-2.1's `call_edges`, harvested from the same walk.
     pub direct_calls: BTreeSet<DefinitionId>,
-    /// This body calls through a function value (or otherwise escapes the
-    /// static call graph) — its row is pessimal (spec §3/§4).
+    /// Fork A (`docs/decision-log.md` 2026-07-28 "Fork A — fn-value
+    /// call-graph edges are harvested STRUCTURALLY", issue #1726): the
+    /// inferable targets whose **fn values this body creates** — every
+    /// `#fn(target, …)` literal in the body, whether or not the value is ever
+    /// called here.
+    ///
+    /// **Structural, never row-derived.** The target of a `#fn` literal is a
+    /// syntactic name, so deciding membership never consults an inferred row
+    /// or signature — which is exactly what keeps `call_graph_query →
+    /// scc_membership_query → solve_scc_query → call_graph_query` acyclic
+    /// (§6.1 fixes every fn value's row at its creation site, and creation
+    /// sites are syntactic). `bind(f, …)` adds nothing of its own: it copies
+    /// an existing value rather than naming a new target.
+    ///
+    /// A **subset of [`Self::direct_calls`]** by construction — the same walk
+    /// records a `#fn` target as a call-graph edge too, which is how these
+    /// edges reach the SCC batching and [`solve_scc_effects`] with no change
+    /// to either. Kept as its own set because "creates a value for `g`" and
+    /// "calls `g`" are different facts: spec §7's token table and §8 rung 1's
+    /// reachability slicing both need the creation sites specifically.
+    ///
+    /// **Lambda literals are out of scope** (issue #1727): their
+    /// `DefinitionId` is minted during LIR lowering
+    /// (`lir::lower::lambda::alloc_lambda_address`), downstream of HIR
+    /// inference, so there is no index symbol to record here at all.
+    pub creates_fn_values: BTreeSet<DefinitionId>,
+    /// This body calls through a function value whose reaching values were
+    /// not all created in-project (or otherwise escapes the static call
+    /// graph) — its row is pessimal (spec §3/§4). Fork A (issue #1726)
+    /// collapsed this to a real row for the in-project case: a call through a
+    /// local whose *every* write traced to a `#fn`/`bind` creation site
+    /// narrows to the join over those targets instead. It stays pessimal for
+    /// genuinely unknown sources — host callbacks (§6.2) and values loaded
+    /// from the heap (§6.3).
     pub opaque: bool,
     /// NS-A2: this body directly contains a content-producing construct
     /// (see [`EffectRow::emits`]).
@@ -212,8 +252,8 @@ pub struct EffectAtoms {
 
 impl EffectAtoms {
     /// The base row before transitive closure — just this body's own atoms,
-    /// excluding the `direct_calls` edges (which the fixpoint resolves to
-    /// their callees' rows).
+    /// excluding the `direct_calls`/`creates_fn_values` edges (which the
+    /// fixpoint resolves to their callees' rows).
     #[must_use]
     pub fn base_row(&self) -> EffectRow {
         EffectRow {
