@@ -49,7 +49,7 @@ fn arb_select_key() -> impl Strategy<Value = SelectKey> {
     ]
 }
 
-fn arb_line_part() -> impl Strategy<Value = LinePart> {
+fn arb_line_part_leaf() -> impl Strategy<Value = LinePart> {
     prop_oneof![
         "[^\"\\\\\x00]*".prop_map(LinePart::Literal),
         any::<u8>().prop_map(LinePart::Slot),
@@ -64,6 +64,29 @@ fn arb_line_part() -> impl Strategy<Value = LinePart> {
                 default,
             }),
     ]
+}
+
+/// `LinePart::Span` (#1716, `docs/prose-dialect-spec.md` §4.4) — nested,
+/// like `proptest_inkb.rs`'s mirror of this same strategy. Bounded via
+/// `prop_recursive` (depth 3, up to 16 total nodes, width 3 per span) so
+/// generated cases stay small and shrinkable. Names/attr values are drawn
+/// from the same `[^\"\\\\\x00]*` domain the other `.inkt` string leaves use
+/// — this exercises `escape_string`/`unescape_string` over span names and
+/// attr values through `inkt`'s reader/writer (`inkt/read/lines.rs`'s
+/// `parse_span_part`), which was previously untested by this fuzzer.
+fn arb_line_part() -> impl Strategy<Value = LinePart> {
+    arb_line_part_leaf().prop_recursive(3, 16, 3, |inner| {
+        (
+            "[^\"\\\\\x00]*",
+            prop::collection::vec(("[^\"\\\\\x00]*", "[^\"\\\\\x00]*"), 0..3),
+            prop::collection::vec(inner, 0..3),
+        )
+            .prop_map(|(name, attrs, children)| LinePart::Span {
+                name,
+                attrs,
+                children,
+            })
+    })
 }
 
 fn arb_line_content() -> impl Strategy<Value = LineContent> {

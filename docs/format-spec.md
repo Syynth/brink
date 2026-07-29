@@ -10,7 +10,7 @@ The `.inkb` and `.inkl` formats carry a `(MAGIC, VERSION)` header; the reader **
 
 Today these are **regenerable build artifacts** — produced from `.ink` on every compile, never decoupled from the compiler that made them — so the policy is deliberately simple: **regenerate on mismatch; no multi-version readers.** Maintaining back-compat parsers for bytes nobody persists would be premature complexity.
 
-**`.inkb` version history:** v2 added `ContainerDef::param_count`; v3 added the `local` scope bit to variables and containers; **v4** added the collection value tags `Array`/`Map` (tree encoding) and froze the reserved Tier-1 value-tag/section/opcode surface in a single planned bump (the §9 one-bump rule of `docs/value-model-spec.md`; RFC `docs/format-v4-rfc.md`). Per that rule, the remaining Tier-1 milestones (function values, handles, projections) add data using encodings already specified at v4 and do **not** bump the version — the writer and reader evolve together within VERSION 4 as each milestone's compiler surface begins emitting the reserved tags. (The optional `Visibility` section, M-2b, also landed on the v4 line — it is omitted entirely when empty, so it needed no bump of its own.) **v5** added the mandatory `AliasTable` section (M-3, `docs/modules-spec.md` §5): unlike `Visibility`, it is always present (possibly empty) and was not part of the v4 RFC's pre-reserved inventory, so its introduction is its own one-bump event.
+**`.inkb` version history:** v2 added `ContainerDef::param_count`; v3 added the `local` scope bit to variables and containers; **v4** added the collection value tags `Array`/`Map` (tree encoding) and froze the reserved Tier-1 value-tag/section/opcode surface in a single planned bump (the §9 one-bump rule of `docs/value-model-spec.md`; RFC `docs/format-v4-rfc.md`). Per that rule, the remaining Tier-1 milestones (function values, handles, projections) add data using encodings already specified at v4 and do **not** bump the version — the writer and reader evolve together within VERSION 4 as each milestone's compiler surface begins emitting the reserved tags. (The optional `Visibility` section, M-2b, also landed on the v4 line — it is omitted entirely when empty, so it needed no bump of its own.) **v5** added the mandatory `AliasTable` section (M-3, `docs/modules-spec.md` §5): unlike `Visibility`, it is always present (possibly empty) and was not part of the v4 RFC's pre-reserved inventory, so its introduction is its own one-bump event. **v6** added the `PART_SPAN` `LinePart` tag (#1716, inline markup spans — `docs/prose-dialect-spec.md` §4.4/§4.5): a `LinePart` tag was never part of the v4 RFC's pre-reserved inventory either (that inventory reserved *value* tags and whole sections, not `LinePart` variants), so — like `AliasTable` — this is its own one-bump event, not a free ride on the `Array`/`Map`-style no-bump precedent. Ruled directly by issue #1716 ("`LinePart::Span` is a v6 payload") and coordinated with #1683, the v6 bump manifest for the full markup-wire batch (spans, element data, universal block id, choice captured environment); this PR lands only the `Span` payload, and `VERSION` 6 stays open to absorb #1683's remaining payloads without a further bump, one batched break rather than a bump per payload. `.inkl` bumped its own header version in lockstep (1 → 2) — see `.inkl` header layout below — since `.inkl` shares the same `encode_line_content`/`decode_line_content` dispatch and an old `.inkl` reader is just as unable to decode `PART_SPAN` as an old `.inkb` reader.
 
 This is distinct from the **save format** (`SAVE_FORMAT_VERSION`, `save.rs`), which *is* durable — written by players and expected to survive runtime updates — and is therefore *tolerant* by design (`LoadReport` reports what it couldn't apply rather than failing). Program metadata such as container layout does not affect save compatibility: saves reference visit counts and variables by `DefinitionId`, not by container byte layout.
 
@@ -694,6 +694,19 @@ enum LinePart {
         variants: Vec<(SelectKey, String)>,
         default: String,
     },
+    // `<name attr="v">…</name>` — an inline markup span (#1716,
+    // `docs/prose-dialect-spec.md` §4.4). Genuinely nested: `children` is
+    // itself a `Vec<LinePart>`, so a span can contain literals, slots,
+    // other spans, or (structurally, though the compiler never emits it —
+    // §4.4/§4.5) a select. Empty `children` is the self-closing /
+    // point-marker shape (`<pause/>`, `<sfx name="bell"/>`, §8b.11).
+    // Hash-transparent: `name`/`attrs` never contribute to `source_hash`,
+    // only `children`'s own text/slots do, recursively.
+    Span {
+        name: String,
+        attrs: Vec<(String, String)>,
+        children: Vec<LinePart>,
+    },
 }
 
 enum SelectKey {
@@ -706,7 +719,18 @@ enum SelectKey {
 enum PluralCategory { Zero, One, Two, Few, Many, Other }
 ```
 
-A line's content is either plain text (`Plain`) or a `LineTemplate` with slots and selectors. The runtime's line resolver walks the `LinePart` tree, reads slot values from the VM stack, picks select variants (using the `PluralResolver` trait for plural categories), and appends formatted text to the output buffer. Select variants and defaults are flat `String` values — not nested `LinePart` trees.
+A line's content is either plain text (`Plain`) or a `LineTemplate` with slots, selectors, and spans. The runtime's line resolver walks the `LinePart` tree, reads slot values from the VM stack, picks select variants (using the `PluralResolver` trait for plural categories), recurses into `Span` children the same way, and appends formatted text to the output buffer. Select variants and defaults are flat `String` values — not nested `LinePart` trees. `Span` is the one variant that *is* nested (`children: Vec<LinePart>`) — see its doc comment above.
+
+#### `LinePart` wire tags
+
+| Tag | Variant | Encoding |
+|-----|---------|----------|
+| `0x00` | `Literal` | length-prefixed UTF-8 string |
+| `0x01` | `Slot` | `u8` slot index |
+| `0x02` | `Select` | `u8` slot, then variant count + `(SelectKey, String)` pairs, then default `String` |
+| `0x03` | `Span` | name `String`, attr count + `(String, String)` pairs, then child count + that many recursively-encoded `LinePart`s (v6, #1716) |
+
+`Span` was introduced at `.inkb` `VERSION` 6 / `.inkl` version 2 (see Versioning above) — unlike a *reserved* tag materializing an already-frozen slot, `0x03` was a genuinely new tag on the `LinePart` dispatch, so its addition is its own one-bump event, not a free ride on the v4 reserved-tag precedent. An old reader hard-rejects `0x03` via the same unrecognized-tag path every out-of-range tag already takes (`InvalidLinePart`).
 
 ### Plural resolution
 

@@ -370,6 +370,10 @@ exactly the externals-manifest pattern.
   the splice seam (`normalize.rs::extend_merging_text`), a pure HIR-level
   fix. This span work is still the next thing that would need a real
   format bump.
+  **RESOLVED by #1716** — this claim was correct and stands, despite
+  §4.5's implementation note below having briefly claimed otherwise: the
+  bump landed for real, `.inkb` `VERSION` 5 → 6 and `.inkl` version
+  1 → 2 (`docs/format-spec.md` § Versioning). See §4.5.
 - **The recognizer is the chokepoint**: marked-up lines must be
   *admitted to line recognition* or they shred into per-run entries and
   stop being single translation units. (Inline conditionals/sequences
@@ -380,9 +384,17 @@ exactly the externals-manifest pattern.
   Choice display/bracket/inner text with an inline conditional/sequence
   is a related gap #1667 did *not* fix — `normalize_file` never walks
   choice display text, only choice bodies — filed as a follow-up.)
+  **Partially closed by #1716** — a span whose descendants are only
+  Text/Interpolation/Span is now admitted; a span nesting an inline
+  conditional/sequence still falls back to the flattening path (no data
+  loss, just no wire `LinePart::Span` for that shape). See §4.5.
 - **Public API**: `Line` grows a structured span surface (additive).
   Prefer structural parts over byte-range offsets — the runtime trims
   and collapses whitespace after assembly, so ranges are a trap.
+  **Not yet landed by #1716** — `Line::Text` still resolves a span to
+  its children's concatenated text with the tag stripped; the
+  structured surface this bullet describes is still deferred to the
+  §7/§9.1 `Step`/`Part` redesign. See §4.5.
 
 ### 4.5 Implementation status (#1716, 2026-07-29)
 
@@ -407,15 +419,21 @@ error, violating the superset doctrine, §1). What shipped:
   heap-size estimator, the editor's HIR projection) recurses into a span's
   children instead of treating it as opaque.
 - **Wire + hash-transparency** (`brink-format`, `brink-ir`'s
-  `lir::lower::recognize`): `LinePart::Span` landed as an **additive**
-  `u8` part-tag (`PART_SPAN`), *not* a `.inkb` version bump — this
-  section's earlier "a new `LinePart` tag is a version bump (v6)" claim
-  was superseded by the #1519 "one-bump rule" precedent
-  (`VAL_VEC2`/`VAL_WEIGHTED` et al. already established it for exactly
-  this situation: an old reader hard-rejects the unknown tag via the
-  existing `_ => Err(InvalidLinePart)`, no bump needed). Hash-transparency
-  is proven end-to-end (native source → HIR → LIR → `source_hash`), not
-  merely asserted.
+  `lir::lower::recognize`): `LinePart::Span` landed as a new `u8`
+  part-tag (`PART_SPAN`) **and a real `.inkb`/`.inkl` version bump** —
+  `.inkb` `VERSION` 5 → 6, `.inkl` version 1 → 2
+  (`docs/format-spec.md` § Versioning). This section's earlier "a new
+  `LinePart` tag is a version bump (v6)" claim was correct; an
+  intermediate draft of this note wrongly claimed the #1519 "one-bump
+  rule" precedent (`VAL_VEC2`/`VAL_WEIGHTED`) covered `PART_SPAN` too,
+  but that precedent only excuses materializing a tag the v4 RFC had
+  already *pre-reserved* — `PART_SPAN` was never reserved, so
+  introducing it is its own one-bump event, same as v5's `AliasTable`.
+  Coordinated with #1683 (the v6 bump manifest): this PR lands only the
+  `Span` payload, and `VERSION` 6 stays open to absorb #1683's remaining
+  payloads (element data, block id, choice captured environment)
+  without a further bump. Hash-transparency is proven end-to-end
+  (native source → HIR → LIR → `source_hash`), not merely asserted.
 - **Span admission, partially closed**: a span whose descendants
   (recursively) are only Text/Interpolation/Span *is* admitted to line
   recognition — a markup-only line with zero interpolations

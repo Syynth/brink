@@ -20,9 +20,13 @@ story playback runs through `brink-runtime`, both of which changed:
   tag stripped (`brink-runtime`'s `Line::Text` has no structured span
   surface yet — that's a separate, later ruling, §7/§9.1) — so
   `<b>bold</b>` now plays back as `bold`, not `<b>bold</b>`.
-- **Wire**: `LinePart::Span` is additive on the existing `.inkb`/`.inkl`
-  part-tag dispatch (no format version bump — the #1519 "one-bump rule"
-  precedent). Hash-transparent (§4.4): markup normalizes out of
+- **Wire**: `LinePart::Span` adds the `PART_SPAN` tag to the existing
+  `.inkb`/`.inkl` part-tag dispatch. `PART_SPAN` was never part of the v4
+  RFC's pre-reserved tag inventory (unlike `VAL_VEC2`/`VAL_WEIGHTED`, which
+  needed no bump because materializing them just filled in an
+  already-reserved slot), so its introduction is its own one-bump event:
+  `.inkb` `VERSION` 5 → 6, `.inkl` version 1 → 2 (`docs/format-spec.md` §
+  Versioning). Hash-transparent (§4.4): markup normalizes out of
   `source_hash`, so `Hello <wave>world</wave>` and `Hello world` hash
   identically — a translated line does not re-key when an author bolds a
   word.
