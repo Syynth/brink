@@ -2903,11 +2903,21 @@ mod tests {
         );
     }
 
-    /// The creation edge is load-bearing on its own: a def that creates a fn
-    /// value and hands it out without ever calling it still carries the
-    /// target's row, because §6.1 fixes the value's row at its creation site.
-    /// This is what makes a downstream `opaque` collapse worth having — the
-    /// effects are already attributed where the value was born.
+    /// A def that creates a fn value and hands it out without ever calling it
+    /// still carries the target's row, because §6.1 fixes the value's row at
+    /// its creation site. This is what makes a downstream `opaque` collapse
+    /// worth having — the effects are already attributed where the value was
+    /// born.
+    ///
+    /// **This behavior predates #1726** and is pinned here, not introduced:
+    /// `infer_fn_literal` already routed every `#fn` target through
+    /// [`InferPass::record_call_edge`], so the graph edge existed before the
+    /// creation atom did. `creates_fn_values` is therefore a strict subset of
+    /// `direct_calls` and adds no new edge today — its value is making the
+    /// creation fact *addressable* (spec §7's token table, §8 rung 1's
+    /// reachability slicing) and guaranteeing the property stays true. The
+    /// guard is `every_fn_value_creation_target_is_also_a_call_graph_edge`;
+    /// this test pins that the atom did not disturb the row it rides on.
     #[test]
     fn creating_a_fn_value_joins_the_targets_row_even_without_a_call() {
         let src = "VAR total = 0\n\
