@@ -659,7 +659,11 @@ fn push_literal(parts: &mut Vec<ContentPart>, s: &str) {
 /// it: loud `E129`, the same posture `lower_choice_region`'s own fallback
 /// arm takes for a nested `{?}` it cannot represent either — never a
 /// silent drop.
-pub(super) fn lower_span(file_id: FileId, node: &SyntaxNode, diags: &mut Vec<Diagnostic>) -> ContentPart {
+pub(super) fn lower_span(
+    file_id: FileId,
+    node: &SyntaxNode,
+    diags: &mut Vec<Diagnostic>,
+) -> ContentPart {
     let mut name = String::new();
     let mut attrs = Vec::new();
     let mut children: Vec<ContentPart> = Vec::new();

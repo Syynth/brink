@@ -98,8 +98,7 @@ fn span_hash_transparency_markup_normalizes_out_of_source_hash() {
     // The ⚠⚠-ruled precondition (§4.4): `Hello <wave>world</wave>` hashes
     // identically to `Hello world` — a translated line must not re-key the
     // moment an author bolds a word.
-    let with_span =
-        lower_native_to_program("flow f() {\n  Hello <wave>world</wave>\n}\n");
+    let with_span = lower_native_to_program("flow f() {\n  Hello <wave>world</wave>\n}\n");
     let without_span = lower_native_to_program("flow f() {\n  Hello world\n}\n");
 
     let (_parts, hash_with_span) = find_root_template(&with_span);
@@ -123,8 +122,7 @@ fn span_hash_transparency_markup_normalizes_out_of_source_hash() {
 
 #[test]
 fn a_point_marker_span_lowers_with_empty_children() {
-    let program =
-        lower_native_to_program("flow f() {\n  Bell tolls. <pause/> Door slams.\n}\n");
+    let program = lower_native_to_program("flow f() {\n  Bell tolls. <pause/> Door slams.\n}\n");
     let (parts, _hash) = find_root_template(&program);
     let span = parts
         .iter()

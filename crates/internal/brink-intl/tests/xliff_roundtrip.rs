@@ -214,9 +214,7 @@ fn span_flattens_through_xliff_but_loses_no_text_or_slots() {
     // limitation), but every literal and the slot are still present, in
     // order, with the span's own text intact.
     assert!(
-        !template
-            .iter()
-            .any(|p| matches!(p, PartJson::Span { .. })),
+        !template.iter().any(|p| matches!(p, PartJson::Span { .. })),
         "span structure is not (yet) preserved through XLIFF: {template:?}"
     );
     // Adjacent literal parts may merge across the XML round trip (XML text
@@ -235,7 +233,9 @@ fn span_flattens_through_xliff_but_loses_no_text_or_slots() {
         "no text lost by flattening"
     );
     assert!(
-        template.iter().any(|p| matches!(p, PartJson::Slot { slot: 0 })),
+        template
+            .iter()
+            .any(|p| matches!(p, PartJson::Slot { slot: 0 })),
         "the slot inside the span must survive"
     );
 }

@@ -61,13 +61,19 @@ pub enum ContentJson {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum PartJson {
-    Slot { slot: u8 },
-    Select { select: SelectJson },
+    Slot {
+        slot: u8,
+    },
+    Select {
+        select: SelectJson,
+    },
     /// An inline markup span (#1716, `docs/prose-dialect-spec.md` §4.4) —
     /// mirrors `brink_format::LinePart::Span` field-for-field. The
     /// `{"span": {...}}` shape is structurally distinct from every other
     /// variant here, so `#[serde(untagged)]` never confuses it with them.
-    Span { span: SpanJson },
+    Span {
+        span: SpanJson,
+    },
     Literal(String),
 }
 

@@ -1227,8 +1227,8 @@ fn roundtrip_line_entry_with_audio_ref() {
 #[test]
 fn roundtrip_line_part_span() {
     use brink_format::{
-        ContainerDef, CountingFlags, DefinitionId, DefinitionTag, LineContent, LineEntry,
-        LinePart, NameId, ScopeLineTable, StoryData,
+        ContainerDef, CountingFlags, DefinitionId, DefinitionTag, LineContent, LineEntry, LinePart,
+        NameId, ScopeLineTable, StoryData,
     };
 
     let scope_id = DefinitionId::new(DefinitionTag::Address, 1);

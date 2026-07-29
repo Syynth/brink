@@ -212,7 +212,12 @@ fn validate_slot_indices_in_parts(
             PartJson::Slot { slot } => *slot,
             PartJson::Select { select } => select.slot,
             PartJson::Span { span } => {
-                validate_slot_indices_in_parts(&span.children, base_slot_count, scope_id, line_index)?;
+                validate_slot_indices_in_parts(
+                    &span.children,
+                    base_slot_count,
+                    scope_id,
+                    line_index,
+                )?;
                 continue;
             }
             PartJson::Literal(_) => continue,

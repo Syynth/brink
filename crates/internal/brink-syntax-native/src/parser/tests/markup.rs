@@ -221,7 +221,8 @@ fn an_unknown_tag_name_is_not_a_parse_error() {
     // No manifest exists at the parser level — freeform by default means
     // an arbitrary tag name is only ever a grammar question here, never a
     // vocabulary question. Manifest validation is a separate, later pass.
-    let src = "flow f() {\n  <totally_unrecognised_tag_name>text</totally_unrecognised_tag_name>\n}\n";
+    let src =
+        "flow f() {\n  <totally_unrecognised_tag_name>text</totally_unrecognised_tag_name>\n}\n";
     let p = assert_lossless(src);
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
     assert!(has_node_kind(&p.syntax(), SyntaxKind::SPAN));

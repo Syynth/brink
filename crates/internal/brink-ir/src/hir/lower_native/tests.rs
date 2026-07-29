@@ -637,18 +637,14 @@ fn a_backslash_before_anything_else_is_a_parse_error_not_a_hir_diagnostic() {
 
 #[test]
 fn a_conditional_branch_may_contain_a_fully_closed_span() {
-    let (hir, _m, diags) =
-        lower_src("flow a() {\n  {if hp > 0: <i>yawn</i> else: Ready.}\n}\n");
+    let (hir, _m, diags) = lower_src("flow a() {\n  {if hp > 0: <i>yawn</i> else: Ready.}\n}\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     let body = only_knot_body(&hir);
     let Stmt::Conditional(cond) = &body.stmts[0] else {
         panic!("expected Conditional, got {:?}", body.stmts[0]);
     };
     let Stmt::Content(c) = &cond.branches[0].body.stmts[0] else {
-        panic!(
-            "expected Content, got {:?}",
-            cond.branches[0].body.stmts[0]
-        );
+        panic!("expected Content, got {:?}", cond.branches[0].body.stmts[0]);
     };
     assert!(matches!(&c.parts[0], ContentPart::Span(s) if s.name == "i"));
 }

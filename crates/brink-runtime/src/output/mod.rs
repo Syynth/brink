@@ -199,7 +199,13 @@ fn resolve_line_parts(
                         Value::FragmentRef(idx) => {
                             let idx = *idx as usize;
                             fragments.get(idx).map_or_else(String::new, |frag| {
-                                resolve_parts(&frag.parts, program, line_tables, resolver, fragments)
+                                resolve_parts(
+                                    &frag.parts,
+                                    program,
+                                    line_tables,
+                                    resolver,
+                                    fragments,
+                                )
                             })
                         }
                         // B4 (`docs/stdlib-spec.md` §1.6b) — same
@@ -1437,13 +1443,11 @@ mod tests {
     #[test]
     fn a_span_containing_a_slot_resolves_the_slot() {
         let result = resolve_template(
-            vec![
-                LinePart::Span {
-                    name: "b".into(),
-                    attrs: vec![],
-                    children: vec![LinePart::Literal("hello ".into()), LinePart::Slot(0)],
-                },
-            ],
+            vec![LinePart::Span {
+                name: "b".into(),
+                attrs: vec![],
+                children: vec![LinePart::Literal("hello ".into()), LinePart::Slot(0)],
+            }],
             &[Value::String("Fogg".into())],
         );
         assert_eq!(result, "hello Fogg");

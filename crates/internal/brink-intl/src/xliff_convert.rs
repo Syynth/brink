@@ -257,7 +257,13 @@ pub(crate) fn content_to_inline(
             let mut select_counter: usize = 0;
 
             for part in template {
-                push_part_inline(part, slots, &mut elements, &mut data_entries, &mut select_counter);
+                push_part_inline(
+                    part,
+                    slots,
+                    &mut elements,
+                    &mut data_entries,
+                    &mut select_counter,
+                );
             }
 
             let original_data = if data_entries.is_empty() {
@@ -299,7 +305,10 @@ fn push_part_inline(
             elements.push(InlineElement::Text(s.clone()));
         }
         PartJson::Slot { slot } => {
-            let disp = slots.iter().find(|s| s.index == *slot).map(|s| s.name.clone());
+            let disp = slots
+                .iter()
+                .find(|s| s.index == *slot)
+                .map(|s| s.name.clone());
             elements.push(InlineElement::Ph(Ph {
                 id: format!("s{slot}"),
                 data_ref: None,
