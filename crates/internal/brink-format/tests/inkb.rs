@@ -1219,6 +1219,92 @@ fn roundtrip_line_entry_with_audio_ref() {
     );
 }
 
+/// `LinePart::Span` (#1716, `docs/prose-dialect-spec.md` §4.4) round-trips
+/// through `.inkb` — nested, with attrs, and with a self-closing
+/// (empty-children, the point-marker shape) sibling — proving the additive
+/// `PART_SPAN` tag decodes back to the exact structure it encoded, with no
+/// `VERSION` bump (the #1519 "one-bump rule" precedent).
+#[test]
+fn roundtrip_line_part_span() {
+    use brink_format::{
+        ContainerDef, CountingFlags, DefinitionId, DefinitionTag, LineContent, LineEntry,
+        LinePart, NameId, ScopeLineTable, StoryData,
+    };
+
+    let scope_id = DefinitionId::new(DefinitionTag::Address, 1);
+    let parts = vec![
+        LinePart::Literal("He hands you ".to_string()),
+        LinePart::Span {
+            name: "item".to_string(),
+            attrs: vec![("id".to_string(), "lantern".to_string())],
+            children: vec![
+                LinePart::Literal("the ".to_string()),
+                LinePart::Span {
+                    name: "b".to_string(),
+                    attrs: vec![],
+                    children: vec![LinePart::Literal("old".to_string())],
+                },
+                LinePart::Literal(" lantern".to_string()),
+            ],
+        },
+        LinePart::Literal(". ".to_string()),
+        LinePart::Span {
+            name: "pause".to_string(),
+            attrs: vec![],
+            children: vec![],
+        },
+    ];
+    let content = LineContent::Template(parts);
+    let flags = brink_format::LineFlags::from_content(&content);
+
+    let data = StoryData {
+        containers: vec![ContainerDef {
+            id: scope_id,
+            scope_id,
+            name: Some(NameId(0)),
+            bytecode: vec![],
+            counting_flags: CountingFlags::empty(),
+            path_hash: 0,
+            param_count: 0,
+            params: vec![],
+            local: false,
+        }],
+        line_tables: vec![ScopeLineTable {
+            scope_id,
+            lines: vec![LineEntry {
+                content,
+                flags,
+                source_hash: 0xF00D,
+                audio_ref: None,
+                slot_info: Vec::new(),
+                source_location: None,
+            }],
+        }],
+        variables: vec![],
+        list_defs: vec![],
+        list_items: vec![],
+        externals: vec![],
+        addresses: vec![],
+        address_paths: vec![],
+        name_table: vec!["root".to_string()],
+        list_literals: vec![],
+        literal_pool: vec![],
+        struct_shapes: vec![],
+        private_defs: vec![],
+        alias_table: vec![],
+        effect_rows: vec![],
+        frame_shapes: Vec::new(),
+        source_checksum: 0,
+    };
+
+    let mut buf = Vec::new();
+    write_inkb(&data, &mut buf);
+    let mut recovered = read_inkb(&buf).unwrap();
+    recovered.source_checksum = data.source_checksum;
+
+    assert_eq!(data, recovered);
+}
+
 // `LineFlags` is derived, not stored — `.inkb` decoding recomputes it from
 // the decoded `LineContent` via `LineFlags::from_content` (see
 // `decode_line_entry`). Round-trip templates whose first/last part is an

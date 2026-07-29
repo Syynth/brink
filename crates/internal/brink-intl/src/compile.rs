@@ -192,10 +192,29 @@ fn validate_slot_indices(
         return Ok(());
     };
 
-    for part in template {
+    validate_slot_indices_in_parts(template, base_slot_count, scope_id, line_index)
+}
+
+/// [`validate_slot_indices`]'s per-part check, recursing into a
+/// [`PartJson::Span`]'s `children` — a span can carry a real interpolation
+/// slot (`<b>{name}</b>`), so a mangled index inside one must be caught
+/// exactly like a top-level one is; skipping span children here would let
+/// a corrupted translation through with a silently-ignored bad slot
+/// reference.
+fn validate_slot_indices_in_parts(
+    parts: &[PartJson],
+    base_slot_count: usize,
+    scope_id: &str,
+    line_index: u16,
+) -> Result<(), IntlError> {
+    for part in parts {
         let slot = match part {
             PartJson::Slot { slot } => *slot,
             PartJson::Select { select } => select.slot,
+            PartJson::Span { span } => {
+                validate_slot_indices_in_parts(&span.children, base_slot_count, scope_id, line_index)?;
+                continue;
+            }
             PartJson::Literal(_) => continue,
         };
         if slot as usize >= base_slot_count {
@@ -207,7 +226,6 @@ fn validate_slot_indices(
             });
         }
     }
-
     Ok(())
 }
 
@@ -250,6 +268,21 @@ fn convert_part_json(part: &PartJson) -> Result<LinePart, IntlError> {
                 slot: select.slot,
                 variants,
                 default: select.default.clone(),
+            })
+        }
+        PartJson::Span { span } => {
+            let mut children = Vec::with_capacity(span.children.len());
+            for child in &span.children {
+                children.push(convert_part_json(child)?);
+            }
+            Ok(LinePart::Span {
+                name: span.name.clone(),
+                attrs: span
+                    .attrs
+                    .iter()
+                    .map(|a| (a.name.clone(), a.value.clone()))
+                    .collect(),
+                children,
             })
         }
     }

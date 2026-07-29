@@ -2658,39 +2658,58 @@ fn resolve_line(
 
     match &entry.content {
         LineContent::Plain(s) => Ok(s.clone()),
-        LineContent::Template(parts) => {
-            let mut result = String::new();
-            for part in parts {
-                match part {
-                    LinePart::Literal(s) => result.push_str(s),
-                    LinePart::Slot(n) => {
-                        if let Some(val) = slots.get(*n as usize) {
-                            // B4 (`docs/stdlib-spec.md` §1.6b): this is a
-                            // template-slot display boundary — same
-                            // forgiveness as `output/mod.rs`'s
-                            // `resolve_line_ref`. Currently unreachable in
-                            // production (`lir::Stmt::EvalLine`, this
-                            // function's only caller, is never constructed
-                            // by any lowering path — choice display goes
-                            // through `EmitLine` + `Fragment` instead), but
-                            // routed through the same seam so it can't
-                            // silently diverge if that ever changes.
-                            result.push_str(&value_ops::stringify_display(val, program));
-                        }
-                    }
-                    LinePart::Select {
-                        slot,
-                        variants,
-                        default,
-                    } => {
-                        let text = resolve_select(*slot, variants, default, &slots, resolver);
-                        result.push_str(text);
-                    }
+        LineContent::Template(parts) => Ok(resolve_line_parts(parts, program, &slots, resolver)),
+    }
+}
+
+/// Resolve a sequence of `LinePart`s to flat text — shared by
+/// `resolve_line` (a `Template`'s own parts) and recursively by a
+/// [`LinePart::Span`]'s `children`.
+///
+/// A span is presentational (§4.3) and this runtime's current public API
+/// has no structured span surface yet (`docs/prose-dialect-spec.md`
+/// §7/§9.1 ⏳) — same posture `output/mod.rs`'s twin
+/// `resolve_line_parts` documents — so it resolves to its children's
+/// concatenated text, tag name/attrs stripped.
+fn resolve_line_parts(
+    parts: &[LinePart],
+    program: &Program,
+    slots: &[Value],
+    resolver: Option<&dyn PluralResolver>,
+) -> String {
+    let mut result = String::new();
+    for part in parts {
+        match part {
+            LinePart::Literal(s) => result.push_str(s),
+            LinePart::Slot(n) => {
+                if let Some(val) = slots.get(*n as usize) {
+                    // B4 (`docs/stdlib-spec.md` §1.6b): this is a
+                    // template-slot display boundary — same
+                    // forgiveness as `output/mod.rs`'s
+                    // `resolve_line_ref`. Currently unreachable in
+                    // production (`lir::Stmt::EvalLine`, this
+                    // function's only caller, is never constructed
+                    // by any lowering path — choice display goes
+                    // through `EmitLine` + `Fragment` instead), but
+                    // routed through the same seam so it can't
+                    // silently diverge if that ever changes.
+                    result.push_str(&value_ops::stringify_display(val, program));
                 }
             }
-            Ok(result)
+            LinePart::Select {
+                slot,
+                variants,
+                default,
+            } => {
+                let text = resolve_select(*slot, variants, default, slots, resolver);
+                result.push_str(text);
+            }
+            LinePart::Span { children, .. } => {
+                result.push_str(&resolve_line_parts(children, program, slots, resolver));
+            }
         }
     }
+    result
 }
 
 /// Resolve a Select part against its slot value.

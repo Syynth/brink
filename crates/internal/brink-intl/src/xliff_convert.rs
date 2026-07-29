@@ -257,48 +257,7 @@ pub(crate) fn content_to_inline(
             let mut select_counter: usize = 0;
 
             for part in template {
-                match part {
-                    PartJson::Literal(s) => {
-                        elements.push(InlineElement::Text(s.clone()));
-                    }
-                    PartJson::Slot { slot } => {
-                        let disp = slots
-                            .iter()
-                            .find(|s| s.index == *slot)
-                            .map(|s| s.name.clone());
-                        elements.push(InlineElement::Ph(Ph {
-                            id: format!("s{slot}"),
-                            data_ref: None,
-                            equiv: Some(format!("{{slot {slot}}}")),
-                            disp,
-                            sub_type: None,
-                            extensions: Extensions::default(),
-                        }));
-                    }
-                    PartJson::Select { select } => {
-                        let data_id = format!("dsel{select_counter}");
-                        let ph_id = format!("sel{select_counter}");
-                        select_counter += 1;
-
-                        // Serialize the SelectJson to JSON for originalData.
-                        // This is safe — SelectJson is always serializable.
-                        let json = serde_json::to_string(select).unwrap_or_default();
-
-                        data_entries.push(DataEntry {
-                            id: data_id.clone(),
-                            content: json,
-                        });
-
-                        elements.push(InlineElement::Ph(Ph {
-                            id: ph_id,
-                            data_ref: Some(data_id),
-                            equiv: None,
-                            disp: None,
-                            sub_type: None,
-                            extensions: Extensions::default(),
-                        }));
-                    }
-                }
+                push_part_inline(part, slots, &mut elements, &mut data_entries, &mut select_counter);
             }
 
             let original_data = if data_entries.is_empty() {
@@ -310,6 +269,73 @@ pub(crate) fn content_to_inline(
             };
 
             (elements, original_data)
+        }
+    }
+}
+
+/// One [`PartJson`] → zero-or-more [`InlineElement`]s, appended to
+/// `elements`.
+///
+/// [`PartJson::Span`] (#1716) is **flattened**: its `children` recurse
+/// into this same function and splice directly into the surrounding
+/// stream — `name`/`attrs` are not represented as an XLIFF inline code
+/// (a paired `<pc>`, in the real XLIFF 2.0 vocabulary) yet. This is a
+/// documented v1 limitation, not a silent drop: every word and every
+/// `Slot`/`Select` inside a span still round-trips through translation
+/// correctly, only the span's own presentational boundary does not survive
+/// an XLIFF export/import round-trip. Real inline-code support for spans
+/// is "Translation, round 2" (`docs/prose-dialect-spec.md` §9, open
+/// thread 2 — "element data in XLIFF" already named there), not this
+/// issue's scope.
+fn push_part_inline(
+    part: &PartJson,
+    slots: &[crate::json_model::SlotJson],
+    elements: &mut Vec<InlineElement>,
+    data_entries: &mut Vec<DataEntry>,
+    select_counter: &mut usize,
+) {
+    match part {
+        PartJson::Literal(s) => {
+            elements.push(InlineElement::Text(s.clone()));
+        }
+        PartJson::Slot { slot } => {
+            let disp = slots.iter().find(|s| s.index == *slot).map(|s| s.name.clone());
+            elements.push(InlineElement::Ph(Ph {
+                id: format!("s{slot}"),
+                data_ref: None,
+                equiv: Some(format!("{{slot {slot}}}")),
+                disp,
+                sub_type: None,
+                extensions: Extensions::default(),
+            }));
+        }
+        PartJson::Select { select } => {
+            let data_id = format!("dsel{select_counter}");
+            let ph_id = format!("sel{select_counter}");
+            *select_counter += 1;
+
+            // Serialize the SelectJson to JSON for originalData.
+            // This is safe — SelectJson is always serializable.
+            let json = serde_json::to_string(select).unwrap_or_default();
+
+            data_entries.push(DataEntry {
+                id: data_id.clone(),
+                content: json,
+            });
+
+            elements.push(InlineElement::Ph(Ph {
+                id: ph_id,
+                data_ref: Some(data_id),
+                equiv: None,
+                disp: None,
+                sub_type: None,
+                extensions: Extensions::default(),
+            }));
+        }
+        PartJson::Span { span } => {
+            for child in &span.children {
+                push_part_inline(child, slots, elements, data_entries, select_counter);
+            }
         }
     }
 }
