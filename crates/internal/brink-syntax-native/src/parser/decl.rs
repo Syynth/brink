@@ -50,8 +50,16 @@ pub(crate) fn at_flow_decl(p: &Parser<'_, '_>) -> bool {
 }
 
 /// True when a body opener (`{`, including the `~{`/`>{` body-dialect
-/// selectors' brace) appears on the same line as the `#`-tag run starting
-/// at non-trivia lookahead offset `n`.
+/// selectors' brace) is the last non-trivia token on the same line as the
+/// `#`-tag run starting at non-trivia lookahead offset `n`.
+///
+/// The brace must be the *last* token on the line, not merely present
+/// somewhere on it: a prose line can contain an interpolation or
+/// alternation (`flow gently #1 and {gold} coins.`, `{river|stream}`)
+/// whose own `{`/`}` pair would otherwise satisfy a bare "any brace on the
+/// line" check and misparse the prose as a declaration header. No `.brink`
+/// fixture in the repo uses a one-line `flow x { … }` body, so requiring
+/// the brace to trail the line costs nothing real.
 ///
 /// Bounded by the physical line: the scan stops at the first `NEWLINE` or
 /// EOF, which also matches the grammar — `nth` skips trivia but never a
@@ -59,11 +67,14 @@ pub(crate) fn at_flow_decl(p: &Parser<'_, '_>) -> bool {
 /// (`flow x\n{ }` was never a declaration either).
 fn header_tags_precede_a_body(p: &Parser<'_, '_>, n: usize) -> bool {
     let mut i = n;
+    let mut last = None;
     loop {
         match p.nth(i) {
-            NEWLINE | EOF => return false,
-            L_BRACE => return true,
-            _ => i += 1,
+            NEWLINE | EOF => return last == Some(L_BRACE),
+            kind => {
+                last = Some(kind);
+                i += 1;
+            }
         }
     }
 }
