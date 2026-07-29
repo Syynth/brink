@@ -824,7 +824,7 @@ fn emit_content_parts(parts: &[ContentPart], context: &str) -> Result<String, Em
     let mut s = String::new();
     for part in parts {
         match part {
-            ContentPart::Text(t) => s.push_str(t),
+            ContentPart::Text(t) => s.push_str(&escape_content_text(t)),
             ContentPart::Glue => s.push_str("<>"),
             ContentPart::Interpolation(e) => {
                 let _ = write!(s, "{{{}}}", emit_expr(e, context)?);
@@ -848,7 +848,7 @@ fn emit_content_parts(parts: &[ContentPart], context: &str) -> Result<String, Em
 fn emit_span(span: &crate::hir::SpanPart, context: &str) -> Result<String, EmitError> {
     let mut s = format!("<{}", span.name);
     for (name, value) in &span.attrs {
-        let _ = write!(s, " {name}=\"{value}\"");
+        let _ = write!(s, " {name}=\"{}\"", escape_attr_value(value));
     }
     if span.children.is_empty() {
         s.push_str("/>");
@@ -858,6 +858,47 @@ fn emit_span(span: &crate::hir::SpanPart, context: &str) -> Result<String, EmitE
     s.push_str(&emit_content_parts(&span.children, context)?);
     let _ = write!(s, "</{}>", span.name);
     Ok(s)
+}
+
+/// Escape a content-line literal for round-trip through native `.brink`
+/// source. `\` `<` `{` `#` are exactly the escape set §8d.6 rules final
+/// (`parser::markup::escape`'s `is_escapable`) — each would otherwise
+/// reopen a real construct on re-parse (`<b>` a span, `{name}` an
+/// interpolation, `#tag` a tag, a bare `\` an invalid escape sequence).
+/// This is the emit-side inverse: a HIR `Text` containing e.g. `<b>` used
+/// to round-trip as literal text before the markup grammar existed (#1716)
+/// — now it must be escaped, or it silently re-parses as a `SPAN`.
+fn escape_content_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if matches!(c, '\\' | '<' | '{' | '#') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Escape a span attribute value for round-trip. `SPAN_ATTR_VALUE` shares
+/// the lexer's string-mode token pair (`STRING_TEXT`/`STRING_ESCAPE`) with
+/// ordinary string literals, whose only recognized escapes are `\n` `\t`
+/// `\\` `\"` (`lexer::lex_string_token`) — and a raw, unescaped newline or
+/// carriage return inside a quoted string terminates it early (the
+/// lexer's unterminated-string recovery emits `NEWLINE` and closes the
+/// string), so this escapes those too, not just the structurally-required
+/// `"`/`\`.
+fn escape_attr_value(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\t' => out.push_str("\\t"),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 // ─── Choices ─────────────────────────────────────────────────────────

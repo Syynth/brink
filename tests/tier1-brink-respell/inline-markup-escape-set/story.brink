@@ -1,0 +1,4 @@
+flow main() {
+  He hands you <item id="the \"old\" lantern">the lantern</item>.
+  Escaped literals: a \< b \{ c \# d \\ e.
+}

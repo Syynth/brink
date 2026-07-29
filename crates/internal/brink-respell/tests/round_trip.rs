@@ -141,3 +141,20 @@ fn weave_options() {
 fn typed_annotations() {
     round_trip_case("typed-annotations");
 }
+
+/// Reviewer finding on #1732 (issue #1716): `emit_content_parts`'
+/// `ContentPart::Text(t) => s.push_str(t)` used to push literal text
+/// unescaped — safe before the markup grammar existed, but now a `Text`
+/// containing e.g. `<b>` re-parses as a real `SPAN` on the way back in.
+/// Likewise `emit_span` wrote attribute values raw, so a `"` or `\` in a
+/// value emitted malformed source. This fixture exercises both: a span
+/// attribute value containing an escaped quote (`the \"old\" lantern`) and
+/// a content line containing every character in the escape set as a
+/// literal (`\< \{ \# \\`, none of them opening a real span/interpolation/
+/// tag/escape on the original parse) — proving `emit_native` escapes them
+/// back out symmetrically rather than let any of them re-parse as live
+/// syntax.
+#[test]
+fn inline_markup_escape_set() {
+    round_trip_case("inline-markup-escape-set");
+}
