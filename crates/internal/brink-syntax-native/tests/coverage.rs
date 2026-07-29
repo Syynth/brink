@@ -224,6 +224,13 @@ fn classify(kind: SyntaxKind) -> Coverage {
         | SyntaxKind::COMPACT_CUE
         | SyntaxKind::PARENTHETICAL => Exercised,
 
+        // ── Node kinds — inline markup (§4, issue #1716) ───────────
+        SyntaxKind::SPAN
+        | SyntaxKind::SPAN_NAME
+        | SyntaxKind::SPAN_ATTR
+        | SyntaxKind::SPAN_ATTR_VALUE
+        | SyntaxKind::ESCAPE => Exercised,
+
         // ── Node kinds — choice points ─────────────────────────────
         SyntaxKind::CHOICE_POINT
         | SyntaxKind::CHOICE

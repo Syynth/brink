@@ -413,6 +413,48 @@ pub enum SyntaxKind {
     /// content-line spelling is untouched everywhere else.
     PARENTHETICAL,
 
+    // ── Node kinds — inline markup (docs/prose-dialect-spec.md §4, ──────
+    // ── RULED 2026-07-25, issue #1716) ───────────────────────────────────
+    //
+    // XML-shaped spans (§4.1): `<name attr="v">content</name>`, self-
+    // closing allowed (`<pause/>`, `<sfx name="bell"/>` — the point-marker
+    // use case, §8b.11). Recognition is "blunt lexing" at the *parser*
+    // level over already-existing tokens — no new lexer tokens: `LT`
+    // immediately (no trivia) followed by `IDENT` opens a span
+    // (`markup::at_span_open`), `LT SLASH IDENT` immediately closes one
+    // (`markup::at_span_close`); `GLUE` (`<>`) and `THREAD` (`<-`) are
+    // already distinct compound tokens at the lexer, so a bare `<` never
+    // competes with either. Freeform by default (§4.2): an unknown tag
+    // name is not a parse-time concern at all — manifest validation is a
+    // separate, later compiler pass over the same tree, exactly the
+    // externals-manifest pattern. `<center>` (§8d.3) is ordinary markup;
+    // nothing here special-cases it.
+    /// One inline span: the open tag (name + attrs), its content (when not
+    /// self-closing — recursively any content-item shape, including a
+    /// nested `SPAN`), and the matching close tag. Self-closing spans (no
+    /// content, no close tag) are the point-marker shape (§8b.11).
+    SPAN,
+    /// The `IDENT` naming a [`Self::SPAN`]'s open tag. Wrapped (rather than
+    /// a bare token) so lowering can find *this* identifier unambiguously
+    /// among the attr names and the close tag's own (unwrapped) name token
+    /// that also live under `SPAN`.
+    SPAN_NAME,
+    /// One `name="value"` attribute inside a [`Self::SPAN`]'s open tag.
+    SPAN_ATTR,
+    /// An attribute's quoted value. Deliberately **not** [`Self::STRING_LIT`]
+    /// — attribute values are static text only (§4.1's worked examples are
+    /// all static: `<sfx name="bell"/>`, `<item id="lantern">`); nothing in
+    /// the ruling asks for `{expr}` interpolation inside an attribute, and
+    /// reusing `STRING_LIT` would silently admit it. Uses the same
+    /// `STRING_TEXT`/`STRING_ESCAPE` token pair as `STRING_LIT`, just
+    /// without the `INTERPOLATION` child arm.
+    SPAN_ATTR_VALUE,
+    /// One escape sequence: `BACKSLASH` plus the one escaped token — `\<`
+    /// `\{` `\#` `\\`, and *only* those four (§8d.6: "the escape set is
+    /// final... do not extend it"). A `BACKSLASH` before anything else is a
+    /// parse error, not this node — see `markup::escape`.
+    ESCAPE,
+
     // ── Node kinds — choice points (charter §5) ─────────────────
     /// `{? … }` — an explicit choice point.
     CHOICE_POINT,

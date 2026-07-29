@@ -59,6 +59,13 @@ ast_node!(CueName, CUE_NAME);
 ast_node!(CompactCue, COMPACT_CUE);
 ast_node!(Parenthetical, PARENTHETICAL);
 
+// ── Inline markup (docs/prose-dialect-spec.md §4, issue #1716) ──────
+ast_node!(Span, SPAN);
+ast_node!(SpanName, SPAN_NAME);
+ast_node!(SpanAttr, SPAN_ATTR);
+ast_node!(SpanAttrValue, SPAN_ATTR_VALUE);
+ast_node!(Escape, ESCAPE);
+
 // ── Choice points ────────────────────────────────────────────────────
 
 ast_node!(ChoicePoint, CHOICE_POINT);

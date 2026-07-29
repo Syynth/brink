@@ -1,0 +1,21 @@
+// Inline markup (#1716) - docs/prose-dialect-spec.md 4/8b.11/8d.3/8d.6.
+// XML-shaped spans, attributes, point markers (self-closing spans),
+// `<center>` as ordinary markup, the nesting doctrine, and the final
+// escape set.
+
+flow market() {
+  He hands you <item id="lantern">the old lantern</item>.
+  It'll cost you <price>{gold_cost} coins</price>.
+
+  var haggled = true
+  {if haggled: You get a <b>discount</b>. else: Full price, then.}
+
+  The bell tolls again. <pause/> Somewhere above, a door slams.
+  <sfx name="bell"/> That.
+
+  <b><i>nested spans close in reverse order</i></b>
+
+  <center>LATER</center>
+
+  Escapes stay literal: \< \{ \# \\ and an escaped open bracket \<b> is not a span.
+}
