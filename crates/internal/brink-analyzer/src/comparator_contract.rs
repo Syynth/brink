@@ -339,16 +339,27 @@ fn collect_conditional(c: &brink_ir::Conditional, out: &mut Vec<ComparatorSite>)
 
 fn collect_content(content: &Content, out: &mut Vec<ComparatorSite>) {
     for part in &content.parts {
-        match part {
-            ContentPart::Interpolation(e) => collect_expr(e, out),
-            ContentPart::InlineConditional(c) => collect_conditional(c, out),
-            ContentPart::InlineSequence(s) => {
-                for branch in &s.branches {
-                    collect_block(&branch.body, out);
-                }
+        collect_content_part(part, out);
+    }
+}
+
+fn collect_content_part(part: &ContentPart, out: &mut Vec<ComparatorSite>) {
+    match part {
+        ContentPart::Interpolation(e) => collect_expr(e, out),
+        ContentPart::InlineConditional(c) => collect_conditional(c, out),
+        ContentPart::InlineSequence(s) => {
+            for branch in &s.branches {
+                collect_block(&branch.body, out);
             }
-            ContentPart::Text(_) | ContentPart::Glue | ContentPart::Spring => {}
         }
+        // Presentational, not opaque (§4.3) — an interpolation inside a
+        // span is still a real comparator site.
+        ContentPart::Span(span) => {
+            for child in &span.children {
+                collect_content_part(child, out);
+            }
+        }
+        ContentPart::Text(_) | ContentPart::Glue | ContentPart::Spring => {}
     }
 }
 

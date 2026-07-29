@@ -2228,18 +2228,31 @@ impl InferPass<'_, '_> {
             self.effect_tags = true;
         }
         for part in &content.parts {
-            match part {
-                ContentPart::Interpolation(e) => {
-                    self.infer_expr(e);
-                }
-                ContentPart::InlineConditional(c) => self.infer_conditional(c),
-                ContentPart::InlineSequence(s) => {
-                    for branch in &s.branches {
-                        self.infer_block(&branch.body);
-                    }
-                }
-                ContentPart::Text(_) | ContentPart::Glue | ContentPart::Spring => {}
+            self.infer_content_part(part);
+        }
+    }
+
+    fn infer_content_part(&mut self, part: &ContentPart) {
+        match part {
+            ContentPart::Interpolation(e) => {
+                self.infer_expr(e);
             }
+            ContentPart::InlineConditional(c) => self.infer_conditional(c),
+            ContentPart::InlineSequence(s) => {
+                for branch in &s.branches {
+                    self.infer_block(&branch.body);
+                }
+            }
+            // A span is presentational (§4.3), not opaque — an
+            // interpolation inside `<b>{expr}</b>` still needs its
+            // expression type-inferred (and a real type error inside one
+            // still needs to be caught).
+            ContentPart::Span(span) => {
+                for child in &span.children {
+                    self.infer_content_part(child);
+                }
+            }
+            ContentPart::Text(_) | ContentPart::Glue | ContentPart::Spring => {}
         }
     }
 

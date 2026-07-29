@@ -442,31 +442,45 @@ impl ProjectionVisitor<'_> {
     fn project_content_extras(&mut self, content: &Content, ctx: brink_ir::hir::ContentContext) {
         let in_body = ctx == brink_ir::hir::ContentContext::Body;
         for part in &content.parts {
-            match part {
-                ContentPart::InlineConditional(cond) => {
-                    if in_body {
-                        self.push_inline(cond.ptr.text_range(), SpanKind::Conditional);
-                    } else {
-                        self.slot_construct_ranges.push(cond.ptr.text_range());
-                    }
-                    self.push_container(cond.ptr.text_range(), SpanKind::ConditionalBranch, None);
-                }
-                ContentPart::InlineSequence(seq) => {
-                    if in_body {
-                        self.push_inline(seq.ptr.text_range(), SpanKind::Sequence);
-                    } else {
-                        self.slot_construct_ranges.push(seq.ptr.text_range());
-                    }
-                    self.push_container(seq.ptr.text_range(), SpanKind::SequenceBranch, None);
-                }
-                ContentPart::Text(_)
-                | ContentPart::Glue
-                | ContentPart::Spring
-                | ContentPart::Interpolation(_) => {}
-            }
+            self.project_content_part_extras(part, in_body);
         }
         for tag in &content.tags {
             self.push_inline(tag.ptr.text_range(), SpanKind::Tag);
+        }
+    }
+
+    /// One [`ContentPart`], recursing into a [`ContentPart::Span`]'s
+    /// children — a span nesting a conditional/sequence (§4.3's nesting
+    /// doctrine) still needs its container spans projected for the editor,
+    /// the same reasoning `hir::visit::walk_content_part` documents for
+    /// reference-tracking.
+    fn project_content_part_extras(&mut self, part: &ContentPart, in_body: bool) {
+        match part {
+            ContentPart::InlineConditional(cond) => {
+                if in_body {
+                    self.push_inline(cond.ptr.text_range(), SpanKind::Conditional);
+                } else {
+                    self.slot_construct_ranges.push(cond.ptr.text_range());
+                }
+                self.push_container(cond.ptr.text_range(), SpanKind::ConditionalBranch, None);
+            }
+            ContentPart::InlineSequence(seq) => {
+                if in_body {
+                    self.push_inline(seq.ptr.text_range(), SpanKind::Sequence);
+                } else {
+                    self.slot_construct_ranges.push(seq.ptr.text_range());
+                }
+                self.push_container(seq.ptr.text_range(), SpanKind::SequenceBranch, None);
+            }
+            ContentPart::Span(span) => {
+                for child in &span.children {
+                    self.project_content_part_extras(child, in_body);
+                }
+            }
+            ContentPart::Text(_)
+            | ContentPart::Glue
+            | ContentPart::Spring
+            | ContentPart::Interpolation(_) => {}
         }
     }
 }

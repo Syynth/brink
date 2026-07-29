@@ -483,6 +483,15 @@ fn garble_content_part(part: &mut hir::ContentPart) {
         hir::ContentPart::Interpolation(e) => garble_expr(e),
         hir::ContentPart::InlineConditional(c) => garble_conditional(c),
         hir::ContentPart::InlineSequence(s) => garble_sequence(s),
+        // `SpanPart` carries no `Provenance` of its own (v1 — a plain
+        // inline content fragment, like `Text`/`Glue`, not a re-lowered
+        // statement-level construct like `Conditional`/`Sequence`); its
+        // children still need the same recursive treatment.
+        hir::ContentPart::Span(span) => {
+            for child in &mut span.children {
+                garble_content_part(child);
+            }
+        }
     }
 }
 

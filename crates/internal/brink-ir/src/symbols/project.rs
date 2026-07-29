@@ -448,6 +448,15 @@ impl Projector {
             ContentPart::Interpolation(e) => self.walk_expr(e, knot, stitch),
             ContentPart::InlineConditional(c) => self.walk_conditional(c, knot, stitch),
             ContentPart::InlineSequence(s) => self.walk_sequence(s, knot, stitch),
+            // A span is presentational (§4.3) — its children still carry
+            // real references (an interpolation may sit inside `<b>…</b>`),
+            // so the symbol index must see into it, same reasoning as
+            // `hir::visit::walk_content_part`.
+            ContentPart::Span(span) => {
+                for child in &span.children {
+                    self.walk_content_part(child, knot, stitch);
+                }
+            }
             ContentPart::Text(_) | ContentPart::Glue | ContentPart::Spring => {}
         }
     }

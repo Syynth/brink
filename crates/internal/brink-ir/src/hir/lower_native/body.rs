@@ -39,8 +39,8 @@ use crate::hir::FileId;
 use crate::provenance::NodeClass;
 use crate::{
     Block, BlockStmt, Content, ContentPart, Diagnostic, DiagnosticCode, Divert, DivertPath,
-    DivertTarget, ElseBranch, Expr, IfStmt, LogicBlock, Name, Return, ReturnKind, Stmt, Tag,
-    TunnelCall,
+    DivertTarget, ElseBranch, Expr, IfStmt, LogicBlock, Name, Return, ReturnKind, SpanPart, Stmt,
+    Tag, TunnelCall,
 };
 
 use super::choice::lower_choice_point;
@@ -513,8 +513,16 @@ pub(super) fn lower_content_run(
                 push_text(&mut parts, node);
                 i += 1;
             }
+            N::ESCAPE => {
+                push_escape(&mut parts, node);
+                i += 1;
+            }
             N::INTERPOLATION => {
                 parts.push(lower_interpolation(file_id, node, diags));
+                i += 1;
+            }
+            N::SPAN => {
+                parts.push(lower_span(file_id, node, diags));
                 i += 1;
             }
             N::GLUE_NODE => {
@@ -599,10 +607,131 @@ fn flush_content(
 }
 
 pub(super) fn push_text(parts: &mut Vec<ContentPart>, node: &SyntaxNode) {
-    let text = node.text().to_string();
-    if !text.is_empty() {
-        parts.push(ContentPart::Text(text));
+    push_literal(parts, &node.text().to_string());
+}
+
+/// `ESCAPE` (`BACKSLASH` + the one escaped token, §8d.6) → the literal
+/// character it produces. No unescape table needed the way
+/// `expr::unescape_string_token` needs one for `STRING_ESCAPE`'s `\n`/`\t`:
+/// every token this escape set can carry (`LT`/`L_BRACE`/`HASH`/
+/// `BACKSLASH`) already spells exactly the one character it produces —
+/// `<`/`{`/`#`/`\` respectively — as its own source text.
+pub(super) fn push_escape(parts: &mut Vec<ContentPart>, node: &SyntaxNode) {
+    if let Some(escaped) = node
+        .children_with_tokens()
+        .filter_map(rowan::NodeOrToken::into_token)
+        .nth(1)
+    {
+        push_literal(parts, escaped.text());
     }
+}
+
+/// Append literal text to `parts`, merging into a trailing `Text` part
+/// instead of always starting a new one. Before `ESCAPE`/`SPAN` existed,
+/// `content_items_until`'s CST-level scanner only ever produced one maximal
+/// `TEXT` run per structural gap, so two adjacent `ContentPart::Text`s were
+/// never possible and this merge was a no-op by construction; `Hello \<
+/// world` (`TEXT`, `ESCAPE`, `TEXT`) is now a real case where NOT merging
+/// would fragment one plain line into three parts, defeating
+/// `try_recognize`'s Phase-1 "exactly one `Text` part" `Plain` recognition
+/// for no reason (the line has no actual dynamic content).
+fn push_literal(parts: &mut Vec<ContentPart>, s: &str) {
+    if s.is_empty() {
+        return;
+    }
+    if let Some(ContentPart::Text(last)) = parts.last_mut() {
+        last.push_str(s);
+    } else {
+        parts.push(ContentPart::Text(s.to_string()));
+    }
+}
+
+/// Lower a `SPAN` node (§4, issue #1716) into `ContentPart::Span`,
+/// recursively. Shared by [`lower_content_run`] (a span at content-line top
+/// level or nested inside another span) and `choice::lower_choice_region`
+/// (a span inside a choice's display/bracket/inner text) — one lowering,
+/// every content-scanning context.
+///
+/// A span's own fragment scope (§4.3) admits text, interpolation, glue,
+/// escapes, nested spans, and — logic nesting freely inside markup —
+/// conditional/alternation blocks. A `DIVERT_STMT`/`TUNNEL_CALL`/
+/// `CHOICE_POINT`/`TAG` inside a span has no `ContentPart` shape to hold
+/// it: loud `E129`, the same posture `lower_choice_region`'s own fallback
+/// arm takes for a nested `{?}` it cannot represent either — never a
+/// silent drop.
+pub(super) fn lower_span(file_id: FileId, node: &SyntaxNode, diags: &mut Vec<Diagnostic>) -> ContentPart {
+    let mut name = String::new();
+    let mut attrs = Vec::new();
+    let mut children: Vec<ContentPart> = Vec::new();
+    for child in node.children() {
+        match child.kind() {
+            N::SPAN_NAME => name = child.text().to_string(),
+            N::SPAN_ATTR => attrs.push(lower_span_attr(&child)),
+            N::TEXT => push_text(&mut children, &child),
+            N::ESCAPE => push_escape(&mut children, &child),
+            N::INTERPOLATION => children.push(lower_interpolation(file_id, &child, diags)),
+            N::GLUE_NODE => children.push(ContentPart::Glue),
+            N::SPAN => children.push(lower_span(file_id, &child, diags)),
+            N::CONDITIONAL_BLOCK => {
+                if let Some(cb) = ast::ConditionalBlock::cast(child) {
+                    children.push(ContentPart::InlineConditional(lower_conditional(
+                        file_id, &cb, diags,
+                    )));
+                }
+            }
+            N::ALTERNATION_BLOCK => {
+                if let Some(ab) = ast::AlternationBlock::cast(child) {
+                    children.push(ContentPart::InlineSequence(lower_alternation(
+                        file_id, &ab, diags, false,
+                    )));
+                }
+            }
+            N::ERROR => {}
+            _ => diags.push(diag(file_id, child.text_range(), DiagnosticCode::E129)),
+        }
+    }
+    ContentPart::Span(SpanPart {
+        name,
+        attrs,
+        children,
+    })
+}
+
+/// One `SPAN_ATTR` (`name="value"`, static text only — see
+/// `SyntaxKind::SPAN_ATTR_VALUE`'s doc) → `(name, value)`.
+fn lower_span_attr(node: &SyntaxNode) -> (String, String) {
+    let mut name = String::new();
+    let mut value = String::new();
+    for el in node.children_with_tokens() {
+        match el {
+            rowan::NodeOrToken::Token(t) if t.kind() == N::IDENT => {
+                name = t.text().to_string();
+            }
+            rowan::NodeOrToken::Node(n) if n.kind() == N::SPAN_ATTR_VALUE => {
+                value = attr_value_text(&n);
+            }
+            _ => {}
+        }
+    }
+    (name, value)
+}
+
+/// A `SPAN_ATTR_VALUE`'s decoded text — reuses `expr::unescape_string_token`
+/// for `STRING_ESCAPE`, exactly `expr::lower_string_lit`'s own decode loop
+/// minus the `INTERPOLATION` arm (attribute values don't support it).
+fn attr_value_text(node: &SyntaxNode) -> String {
+    let mut s = String::new();
+    for tok in node
+        .children_with_tokens()
+        .filter_map(rowan::NodeOrToken::into_token)
+    {
+        match tok.kind() {
+            N::STRING_TEXT => s.push_str(tok.text()),
+            N::STRING_ESCAPE => s.push_str(super::expr::unescape_string_token(tok.text())),
+            _ => {}
+        }
+    }
+    s
 }
 
 pub(super) fn lower_interpolation(

@@ -810,6 +810,33 @@ pub enum ContentPart {
     InlineConditional(Conditional),
     /// `{&a|b|c}` — inline sequence.
     InlineSequence(Sequence),
+    /// `<name attr="v">…</name>` — an inline markup span
+    /// (`docs/prose-dialect-spec.md` §4, issue #1716). Genuinely nested —
+    /// `children` is the span's own content run, which may itself contain
+    /// another `Span`, `Interpolation`, or (per the nesting doctrine, §4.3)
+    /// a fully-closed `InlineConditional`/`InlineSequence`. Presentational
+    /// only: `attrs` and `name` are never part of a line's translation
+    /// identity (§4.4's hash-transparency ruling — see
+    /// `lir::lower::recognize`, the one place that matters).
+    Span(SpanPart),
+}
+
+/// The payload of a [`ContentPart::Span`] — also the shape
+/// `lir::lower::recognize` mirrors onto the wire `LinePart::Span` when a
+/// span is admitted to line recognition (§4.4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpanPart {
+    /// The tag name — freeform (§4.2): never validated against a fixed set
+    /// at this layer. Manifest validation, when a host declares one, is a
+    /// separate, later pass over the same tree.
+    pub name: String,
+    /// `name="value"` pairs, in source order. Static text only — see
+    /// `SyntaxKind::SPAN_ATTR_VALUE`'s doc for why attribute values don't
+    /// support `{expr}` interpolation.
+    pub attrs: Vec<(String, String)>,
+    /// The span's content — empty for a self-closing / point-marker span
+    /// (`<pause/>`, `<sfx name="bell"/>`, §8b.11).
+    pub children: Vec<ContentPart>,
 }
 
 // ─── Sequence types ─────────────────────────────────────────────────

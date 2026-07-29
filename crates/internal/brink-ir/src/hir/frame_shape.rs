@@ -391,12 +391,25 @@ impl Analyzer {
 
     fn walk_content(&mut self, content: &Content, pos: usize) {
         for part in &content.parts {
-            match part {
-                ContentPart::Interpolation(e) => self.record_reads(e, pos),
-                ContentPart::InlineConditional(c) => self.walk_conditional_at(c, pos),
-                ContentPart::InlineSequence(s) => self.walk_sequence(s),
-                ContentPart::Text(_) | ContentPart::Glue | ContentPart::Spring => {}
+            self.walk_content_part(part, pos);
+        }
+    }
+
+    fn walk_content_part(&mut self, part: &ContentPart, pos: usize) {
+        match part {
+            ContentPart::Interpolation(e) => self.record_reads(e, pos),
+            ContentPart::InlineConditional(c) => self.walk_conditional_at(c, pos),
+            ContentPart::InlineSequence(s) => self.walk_sequence(s),
+            // Presentational, not opaque (§4.3) — a variable read inside a
+            // span (`<b>{name}</b>`) must still be recorded, or this frame-
+            // shape analysis would under-report captures for any line an
+            // author bolds a word in.
+            ContentPart::Span(span) => {
+                for child in &span.children {
+                    self.walk_content_part(child, pos);
+                }
             }
+            ContentPart::Text(_) | ContentPart::Glue | ContentPart::Spring => {}
         }
     }
 

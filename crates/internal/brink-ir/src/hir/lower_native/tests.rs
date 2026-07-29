@@ -524,6 +524,135 @@ fn content_without_glue_gets_end_of_line() {
     ));
 }
 
+// ── Inline markup (#1716; docs/prose-dialect-spec.md §4) ─────────────
+
+#[test]
+fn a_span_lowers_to_content_part_span_with_name_attrs_and_children() {
+    let (hir, _m, diags) =
+        lower_src("flow a() {\n  He hands you <item id=\"lantern\">the lantern</item>.\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = only_knot_body(&hir);
+    let Stmt::Content(c) = &body.stmts[0] else {
+        panic!("expected Content, got {:?}", body.stmts[0]);
+    };
+    assert!(matches!(&c.parts[0], ContentPart::Text(t) if t == "He hands you "));
+    let ContentPart::Span(span) = &c.parts[1] else {
+        panic!("expected Span, got {:?}", c.parts[1]);
+    };
+    assert_eq!(span.name, "item");
+    assert_eq!(span.attrs, vec![("id".to_string(), "lantern".to_string())]);
+    assert_eq!(span.children.len(), 1);
+    assert!(matches!(&span.children[0], ContentPart::Text(t) if t == "the lantern"));
+    assert!(matches!(&c.parts[2], ContentPart::Text(t) if t == "."));
+}
+
+#[test]
+fn a_self_closing_span_lowers_with_no_children_no_attrs() {
+    // The point-marker shape (§8b.11).
+    let (hir, _m, diags) = lower_src("flow a() {\n  Bell tolls. <pause/> Door slams.\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = only_knot_body(&hir);
+    let Stmt::Content(c) = &body.stmts[0] else {
+        panic!("expected Content, got {:?}", body.stmts[0]);
+    };
+    let span = c
+        .parts
+        .iter()
+        .find_map(|p| match p {
+            ContentPart::Span(s) => Some(s),
+            _ => None,
+        })
+        .expect("expected a Span part");
+    assert_eq!(span.name, "pause");
+    assert!(span.attrs.is_empty());
+    assert!(span.children.is_empty());
+}
+
+#[test]
+fn nested_spans_lower_to_nested_span_parts() {
+    let (hir, _m, diags) = lower_src("flow a() {\n  <b><i>hi</i></b>\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = only_knot_body(&hir);
+    let Stmt::Content(c) = &body.stmts[0] else {
+        panic!("expected Content, got {:?}", body.stmts[0]);
+    };
+    let ContentPart::Span(outer) = &c.parts[0] else {
+        panic!("expected Span, got {:?}", c.parts[0]);
+    };
+    assert_eq!(outer.name, "b");
+    let ContentPart::Span(inner) = &outer.children[0] else {
+        panic!("expected nested Span, got {:?}", outer.children[0]);
+    };
+    assert_eq!(inner.name, "i");
+    assert!(matches!(&inner.children[0], ContentPart::Text(t) if t == "hi"));
+}
+
+#[test]
+fn a_span_may_contain_interpolation() {
+    let (hir, _m, diags) = lower_src("flow a(name) {\n  <b>hello {name}</b>\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = only_knot_body(&hir);
+    let Stmt::Content(c) = &body.stmts[0] else {
+        panic!("expected Content, got {:?}", body.stmts[0]);
+    };
+    let ContentPart::Span(span) = &c.parts[0] else {
+        panic!("expected Span, got {:?}", c.parts[0]);
+    };
+    assert!(matches!(&span.children[0], ContentPart::Text(t) if t == "hello "));
+    assert!(matches!(
+        &span.children[1],
+        ContentPart::Interpolation(Expr::Path(_))
+    ));
+}
+
+#[test]
+fn all_four_escapes_lower_to_literal_text_merged_into_one_part() {
+    let (hir, _m, diags) = lower_src("flow a() {\n  \\< \\{ \\# \\\\\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = only_knot_body(&hir);
+    let Stmt::Content(c) = &body.stmts[0] else {
+        panic!("expected Content, got {:?}", body.stmts[0]);
+    };
+    // Merged into a single Text part (push_literal's whole point) — not
+    // four separate Text parts around three escapes, which would defeat
+    // `try_recognize`'s Phase-1 "exactly one Text part" Plain recognition
+    // for a line with no actual dynamic content.
+    assert_eq!(c.parts.len(), 1, "expected one merged Text part: {c:?}");
+    let ContentPart::Text(t) = &c.parts[0] else {
+        panic!("expected Text, got {:?}", c.parts[0]);
+    };
+    assert_eq!(t.as_str(), "< { # \\");
+}
+
+#[test]
+fn a_backslash_before_anything_else_is_a_parse_error_not_a_hir_diagnostic() {
+    // The escape set is validated by the parser (§8d.6); a bad escape is a
+    // `ParseError`, never reaches `hir::lower_native` at all as a node —
+    // `\n` (not in the four-item escape set) recovers as an `ERROR` node
+    // the parser already wraps, which `lower_content_run`'s `N::ERROR` arm
+    // silently skips (matching every other parse-error recovery site).
+    let parse = brink_syntax_native::parse("flow a() {\n  \\n not an escape\n}\n");
+    assert!(!parse.errors().is_empty());
+}
+
+#[test]
+fn a_conditional_branch_may_contain_a_fully_closed_span() {
+    let (hir, _m, diags) =
+        lower_src("flow a() {\n  {if hp > 0: <i>yawn</i> else: Ready.}\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = only_knot_body(&hir);
+    let Stmt::Conditional(cond) = &body.stmts[0] else {
+        panic!("expected Conditional, got {:?}", body.stmts[0]);
+    };
+    let Stmt::Content(c) = &cond.branches[0].body.stmts[0] else {
+        panic!(
+            "expected Content, got {:?}",
+            cond.branches[0].body.stmts[0]
+        );
+    };
+    assert!(matches!(&c.parts[0], ContentPart::Span(s) if s.name == "i"));
+}
+
 #[test]
 fn if_else_conditional_lowers_to_if_else_branches() {
     // Braced-arm form, not the single-line colon form

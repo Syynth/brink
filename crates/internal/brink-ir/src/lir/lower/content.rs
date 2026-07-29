@@ -26,11 +26,47 @@ pub fn lower_content_parts_pub(
     lower_content_parts(parts, ctx)
 }
 
+/// This is the **general/unrecognized-content** fallback path (`EmitContent`
+/// — runtime instructions, not a translatable line-table entry). A
+/// [`hir::ContentPart::Span`] here gets *flattened*: its `children` splice
+/// directly into the surrounding stream, one level up, and its `name`/
+/// `attrs` are dropped. That is a deliberate, documented degradation, not a
+/// silent data loss — see [`lower_content_part_into`]'s doc.
+///
+/// The path that actually preserves span structure is
+/// `lir::lower::recognize::try_recognize`, which builds a real wire
+/// `LinePart::Span` directly from `hir::Content` *before* a line ever
+/// reaches this fallback (§4.4). Content only lands here when recognition
+/// declines it — e.g. a span nesting something the recognizer doesn't admit
+/// (§4.4's still-open "span admission" note) — and even then no text or
+/// dynamic content is lost, only the span's presentational boundary is.
 fn lower_content_parts(
     parts: &[hir::ContentPart],
     ctx: &mut LowerCtx<'_>,
 ) -> Vec<lir::ContentPart> {
-    parts.iter().map(|p| lower_content_part(p, ctx)).collect()
+    let mut out = Vec::with_capacity(parts.len());
+    for part in parts {
+        lower_content_part_into(part, ctx, &mut out);
+    }
+    out
+}
+
+/// Lower one part, appending its result(s) to `out`. A plain part appends
+/// exactly one; [`hir::ContentPart::Span`] appends its (recursively
+/// lowered) children instead of itself — see [`lower_content_parts`]'s doc
+/// for why flattening here is safe and deliberate.
+fn lower_content_part_into(
+    part: &hir::ContentPart,
+    ctx: &mut LowerCtx<'_>,
+    out: &mut Vec<lir::ContentPart>,
+) {
+    if let hir::ContentPart::Span(span) = part {
+        for child in &span.children {
+            lower_content_part_into(child, ctx, out);
+        }
+        return;
+    }
+    out.push(lower_content_part(part, ctx));
 }
 
 fn lower_content_part(part: &hir::ContentPart, ctx: &mut LowerCtx<'_>) -> lir::ContentPart {
@@ -72,6 +108,12 @@ fn lower_content_part(part: &hir::ContentPart, ctx: &mut LowerCtx<'_>) -> lir::C
             })
         }
         hir::ContentPart::InlineSequence(seq) => lower_inline_sequence(seq, ctx),
+        // `lower_content_part_into` intercepts every `Span` before it
+        // reaches here (flattening it into `out` directly, since a span
+        // lowers to zero-or-many parts, not exactly one) — this function's
+        // only caller. Mirrors `try_recognize_template`'s own
+        // already-validated `unreachable!` a few files over.
+        hir::ContentPart::Span(_) => unreachable!("Span is intercepted by lower_content_part_into"),
     }
 }
 

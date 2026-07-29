@@ -836,8 +836,27 @@ fn emit_content_parts(parts: &[ContentPart], context: &str) -> Result<String, Em
             ContentPart::InlineSequence(_) => {
                 return Err(unsupported("inline sequence in content", context));
             }
+            ContentPart::Span(span) => s.push_str(&emit_span(span, context)?),
         }
     }
+    Ok(s)
+}
+
+/// `<name attr="v">…</name>`, or the self-closing `<name attr="v"/>` shape
+/// when `children` is empty (the point-marker case, §8b.11) — the exact
+/// inverse of `hir::lower_native::body::lower_span`.
+fn emit_span(span: &crate::hir::SpanPart, context: &str) -> Result<String, EmitError> {
+    let mut s = format!("<{}", span.name);
+    for (name, value) in &span.attrs {
+        let _ = write!(s, " {name}=\"{value}\"");
+    }
+    if span.children.is_empty() {
+        s.push_str("/>");
+        return Ok(s);
+    }
+    s.push('>');
+    s.push_str(&emit_content_parts(&span.children, context)?);
+    let _ = write!(s, "</{}>", span.name);
     Ok(s)
 }
 
