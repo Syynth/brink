@@ -172,7 +172,11 @@ fn a_span_may_contain_interpolation_and_still_recognizes_as_template() {
 fn a_lone_point_marker_span_is_admitted_to_template_recognition() {
     let program = lower_native_to_program("flow f() {\n  <pause/>\n}\n");
     let (parts, _hash) = find_root_template(&program);
-    assert_eq!(parts.len(), 1, "expected exactly one LinePart, got {parts:?}");
+    assert_eq!(
+        parts.len(),
+        1,
+        "expected exactly one LinePart, got {parts:?}"
+    );
     let brink_format::LinePart::Span {
         name,
         attrs,

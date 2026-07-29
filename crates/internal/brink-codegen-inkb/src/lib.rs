@@ -371,10 +371,7 @@ impl<'a> ContainerEmitter<'a> {
         source_location: Option<brink_format::SourceLocation>,
     ) -> u16 {
         let idx = self.scope_line_table.len() as u16;
-        let parts = parts
-            .into_iter()
-            .map(collapse_whitespace_in_part)
-            .collect();
+        let parts = parts.into_iter().map(collapse_whitespace_in_part).collect();
         let content = LineContent::Template(parts);
         let flags = brink_format::LineFlags::from_content(&content);
         self.scope_line_table.push(LineEntry {
