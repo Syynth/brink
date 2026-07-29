@@ -423,13 +423,22 @@ struct InferPass<'a, 'b> {
 ///
 /// The soundness argument is the join: a Temp cannot be read before its
 /// defining `TempDecl`, so every value a read can observe was written by one
-/// of the writes folded in here. If *every* one of those writes traced to a
-/// known creation target, the call reaches one of `targets` and joining all of
-/// them over-reports at worst — the conservative-total direction (spec §3).
-/// A single write that did not trace (an aliased local, a call's return value,
-/// a param read, a heap load) sets `untraced`, and the whole name falls back
-/// to the pessimal floor: the reaching value could have been created anywhere,
-/// including outside the project.
+/// of the writes folded in here — **provided every write site actually folds
+/// its write in**. That is not automatic from the Temp/`TempDecl` ordering
+/// argument alone: a `ref`-param call-site rebind (`~ poke(f, cb)` where a
+/// `ref` parameter reassigns the caller's `f`) mutates the local exactly like
+/// an in-body assignment does, but it happens at the *call site*, not inside
+/// `f`'s own definition, so it only lands in this summary because
+/// [`InferPass::record_ref_param_writes`] explicitly folds it in (as an
+/// untraced write — the callee could reassign `f` to any argument it was
+/// passed). If *every* one of the folded writes traced to a known creation
+/// target, the call reaches one of `targets` and joining all of them
+/// over-reports at worst — the conservative-total direction (spec §3). A
+/// single write that did not trace (an aliased local, a call's return value,
+/// a param read, a heap load, or the `ref`-rebind case above) sets
+/// `untraced`, and the whole name falls back to the pessimal floor: the
+/// reaching value could have been created anywhere, including outside the
+/// project.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct LocalFnOrigins {
     /// The creation targets this name's writes traced to, sorted.
@@ -838,6 +847,19 @@ impl InferPass<'_, '_> {
     /// explicit `ref` sigil (T1e, docs/t1e-spec.md §2 — `ref npc.hp`, `ref
     /// inventory[idx]`) is unwrapped down to its root path first: mutating a
     /// projection still writes through the root global's own cell.
+    ///
+    /// Fork A conservative-total fix (review finding on issue #1726's PR): a
+    /// `ref` slot can just as well be handed a *Temp* local (`~ poke(f, cb)`
+    /// where `f` is `~ temp f = #fn(bar)`) — the callee can reassign it to
+    /// the caller's arbitrary argument (here `h`, which could hold anything),
+    /// so from this call site's perspective `root`'s value after the call is
+    /// untraced. `record_write` alone only folds VAR/CONST globals
+    /// (`local_fn_origins` never sees it), so under Fork A's join-over-writes
+    /// rule an all-traced Temp summary would silently narrow a call through
+    /// `f` post-`poke` to the pre-`poke` targets only — an under-report. The
+    /// old write-*once* rule accidentally covered this (two writes already
+    /// forced the pessimal floor); joining removes that incidental cover, so
+    /// the untraced write has to be recorded explicitly here too.
     fn record_ref_param_writes(&mut self, def: DefinitionId, args: &[Expr]) {
         let Some(info) = self.ctx.index.symbols.get(&def) else {
             return;
@@ -846,6 +868,7 @@ impl InferPass<'_, '_> {
             if info.params.get(i).is_some_and(|p| p.is_ref) {
                 let root = ref_arg_root(arg);
                 self.record_write(root);
+                self.record_fn_write(root, None);
             }
         }
     }

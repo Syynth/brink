@@ -951,8 +951,14 @@ pub fn effects_project(
         // alongside the direct calls — structurally harvested, so no row is
         // ever consulted to build this graph. `creates_fn_values` is a subset
         // of `direct_calls` today (the same walk records both at a `#fn`
-        // literal), but the graph names it explicitly so batching does not
-        // silently depend on that coincidence.
+        // literal), but *this monolithic path* (`effects_project`, not the
+        // salsa `call_graph_query` the IDE/`brink check`/@brink-lang/web
+        // actually run — that graph is built from `call_edges_query`/
+        // `direct_calls` alone and never reads `creates_fn_values`) names it
+        // explicitly so batching here does not silently depend on that
+        // coincidence. The salsa path deliberately still relies on the
+        // subset property; `every_fn_value_creation_target_is_also_a_call_graph_edge`
+        // (below) is its guard.
         for &callee in a.direct_calls.iter().chain(&a.creates_fn_values) {
             graph.add_edge(id, callee);
         }
@@ -2795,6 +2801,35 @@ mod tests {
         assert!(
             rows[&user].opaque,
             "a write from an untraceable source must keep the pessimal floor"
+        );
+    }
+
+    /// Review-finding regression (Fork A, issue #1726): a Temp local passed
+    /// into a `ref` parameter slot is rebound by the *callee* to whatever the
+    /// caller passed for that other position — `poke(f, cb)` below can leave
+    /// `f` holding `cb`, an arbitrary caller-supplied value, exactly like the
+    /// param-assignment case `a_local_with_one_untraced_write_stays_pessimal`
+    /// covers. Before `record_ref_param_writes` folded this into
+    /// `local_fn_origins` too, `f`'s summary saw only its one traced
+    /// `#fn(bar)` write and Fork A's join-over-writes rule narrowed `user`'s
+    /// row to `bar`'s alone — silently dropping the fact that `f` could also
+    /// be `cb` after the `poke` call. The row must stay pessimal instead.
+    #[test]
+    fn a_ref_param_rebind_through_a_call_site_stays_pessimal() {
+        let src = "VAR total = 0\n\
+                   === function bar() ===\n~ total = total + 1\n~ return total\n\
+                   === function poke(ref g, h) ===\n~ g = h\n\
+                   === function user(cond, cb) ===\n~ temp f = #fn(bar)\n\
+                   {cond:\n  ~ poke(f, cb)\n}\n~ return f()\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let user = id_of(&index, "user");
+        assert!(
+            rows[&user].opaque,
+            "a ref-param rebind at a call site is an untraced write to the \
+             local — narrowing through it under-reports whatever the caller \
+             actually passed"
         );
     }
 

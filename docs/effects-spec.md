@@ -113,8 +113,15 @@ never a row-derived one. `EffectAtoms.creates_fn_values` is the per-def
 set of targets whose fn values a body **creates**, harvested by the same
 body walk that already produces `direct_calls`/`referenced_globals` —
 run with **empty globals and empty sigs**, keeping only structural id
-sets. It is fed into the existing call graph alongside `direct_calls`;
-SCC batching and the `solve_scc_effects` fixpoint are unchanged.
+sets. In the monolithic `effects_project` path it is fed into that
+function's call graph explicitly, alongside `direct_calls`. The salsa
+path (`call_graph_query` → `call_edges_query`/`direct_calls`, what the
+IDE, `brink check`, and `@brink-lang/web` actually run) does **not**
+read `creates_fn_values` at all; it relies instead on the fact that
+`creates_fn_values` is a subset of `direct_calls` by construction (the
+same walk records a `#fn` target as both), a property pinned by the
+`every_fn_value_creation_target_is_also_a_call_graph_edge` test. Either
+way, SCC batching and the `solve_scc_effects` fixpoint are unchanged.
 
 **No inferred row or signature may ever be consulted to decide an edge.**
 That is what keeps `call_graph → scc_membership → solve_scc →
@@ -133,9 +140,11 @@ narrows to the **join over those targets** — joining over-reports at
 worst, so conservative-total (§3) is preserved without having to pick
 one origin. The floor survives exactly where the source is genuinely
 unknown: a single untraced write (a param, a call's return, a heap
-load) poisons the name, and those cases belong to §6.2
-(manifest-declared host callbacks) and §6.3 / §5 (the heap's type-row
-join).
+load, or a `ref`-parameter call-site rebind — passing the local into a
+`ref` slot lets the callee reassign it to whatever the caller passed
+in, so that write is recorded as untraced too) poisons the name, and
+those cases belong to §6.2 (manifest-declared host callbacks) and §6.3
+/ §5 (the heap's type-row join).
 
 **Known gap — lambda literals.** A lambda's `DefinitionId` is minted
 during LIR lowering (`lir::lower::lambda`), downstream of HIR
