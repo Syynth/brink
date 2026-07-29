@@ -19,7 +19,8 @@ use crate::value::{ListValue, MapKey, ProjSegment, Value, ValueType};
 use super::{
     CAP_PARAM_ANY, CAT_FEW, CAT_MANY, CAT_ONE, CAT_OTHER, CAT_TWO, CAT_ZERO, HANDLE_PARAM_NONE,
     HEADER_PREAMBLE, KEY_CARDINAL, KEY_EXACT, KEY_KEYWORD, KEY_ORDINAL, LINE_PLAIN, LINE_TEMPLATE,
-    MAGIC, PART_LITERAL, PART_SELECT, PART_SLOT, PROJ_SEG_INDEX, PROJ_SEG_KEY, SECTION_COUNT,
+    MAGIC, PART_LITERAL, PART_SELECT, PART_SLOT, PART_SPAN, PROJ_SEG_INDEX, PROJ_SEG_KEY,
+    SECTION_COUNT,
     SECTION_ENTRY_SIZE, SectionKind, VAL_ARRAY, VAL_BOOL, VAL_CLOSURE, VAL_DIVERT_TARGET,
     VAL_FLOAT, VAL_FN_REF, VAL_FRAGMENT_REF, VAL_HANDLE, VAL_INT, VAL_LIST, VAL_MAP, VAL_MAT2,
     VAL_MAT3, VAL_MAT4, VAL_NULL, VAL_OPTION, VAL_PROJECTION, VAL_QUAT, VAL_RANGE, VAL_RECORD,
@@ -932,6 +933,23 @@ fn encode_line_part(part: &LinePart, buf: &mut Vec<u8>) {
                 write_str(buf, text);
             }
             write_str(buf, default);
+        }
+        LinePart::Span {
+            name,
+            attrs,
+            children,
+        } => {
+            write_u8(buf, PART_SPAN);
+            write_str(buf, name);
+            write_u32(buf, attrs.len() as u32);
+            for (k, v) in attrs {
+                write_str(buf, k);
+                write_str(buf, v);
+            }
+            write_u32(buf, children.len() as u32);
+            for child in children {
+                encode_line_part(child, buf);
+            }
         }
     }
 }

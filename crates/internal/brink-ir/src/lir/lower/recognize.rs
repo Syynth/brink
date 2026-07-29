@@ -104,34 +104,25 @@ pub fn try_recognize(
         });
     }
 
-    // Phase 3: template — all parts are Text or Interpolation, ≥1 Interpolation.
+    // Phase 3: template — all parts are Text/Interpolation/Span
+    // (recursively, for Span), with ≥1 Interpolation-or-Span and ≥1
+    // non-whitespace Text somewhere in the tree.
     if try_recognize_template(content, ctx) {
-        // All parts are Text or Interpolation — build template.
         let mut template_parts = Vec::new();
         let mut slot_exprs = Vec::new();
         let mut slot_info = Vec::new();
         let mut hash_source = String::new();
         let mut slot_idx: u8 = 0;
 
-        for part in &content.parts {
-            match part {
-                hir::ContentPart::Text(s) => {
-                    template_parts.push(LinePart::Literal(s.clone()));
-                    hash_source.push_str(s);
-                }
-                hir::ContentPart::Interpolation(expr) => {
-                    template_parts.push(LinePart::Slot(slot_idx));
-                    slot_exprs.push(lower_expr(expr, ctx));
-                    slot_info.push(SlotInfo {
-                        index: slot_idx,
-                        name: display_expr(expr),
-                    });
-                    hash_source.push_str("{…}");
-                    slot_idx = slot_idx.saturating_add(1);
-                }
-                _ => unreachable!("try_recognize_template already validated"),
-            }
-        }
+        build_recognized_parts(
+            &content.parts,
+            ctx,
+            &mut template_parts,
+            &mut hash_source,
+            &mut slot_exprs,
+            &mut slot_info,
+            &mut slot_idx,
+        );
 
         let source_hash = brink_format::content_hash(&hash_source);
         let source_location = build_source_location(content, ctx);
@@ -269,25 +260,121 @@ fn build_source_location(content: &hir::Content, ctx: &LowerCtx<'_>) -> Option<S
     })
 }
 
-/// Check if all content parts are Text or Interpolation, with ≥1 Interpolation.
+/// Check if all content parts are admissible for `Template`/`Span` wire
+/// recognition — Text, Interpolation, or (§4.4) a Span whose own
+/// `children` are, recursively, the same three shapes — with ≥1
+/// Interpolation-or-Span (the reason a markup-only line like `Hello
+/// <wave>world</wave>` still needs admission even with zero
+/// interpolations: once a Span splits the text into more than one
+/// top-level part, it is no longer Phase 1's single-Text-part `Plain`
+/// shape either) and ≥1 non-whitespace Text part somewhere in the tree.
+///
+/// A Span containing something this doesn't admit (a `DIVERT`-adjacent
+/// shape has none — `Span`'s HIR children can only ever be
+/// Text/Interpolation/Span/InlineConditional/InlineSequence by
+/// construction — but an `InlineConditional`/`InlineSequence` nested in a
+/// Span is exactly that "something else": §4.4's still-open "span
+/// admission" note) declines the *whole* line, which falls back to
+/// `EmitContent`'s flattening (`lir::lower::content`'s own doc) — not a
+/// silent drop, just not a translation-table entry yet.
 fn try_recognize_template(content: &hir::Content, _ctx: &LowerCtx<'_>) -> bool {
-    let mut has_interpolation = false;
-    let mut has_text = false;
-    for part in &content.parts {
+    is_template_admissible(&content.parts)
+        && content_has_span_or_interpolation(&content.parts)
+        && content_has_nonempty_text(&content.parts)
+}
+
+fn is_template_admissible(parts: &[hir::ContentPart]) -> bool {
+    parts.iter().all(|p| match p {
+        hir::ContentPart::Text(_) | hir::ContentPart::Interpolation(_) => true,
+        hir::ContentPart::Span(span) => is_template_admissible(&span.children),
+        hir::ContentPart::Glue
+        | hir::ContentPart::Spring
+        | hir::ContentPart::InlineConditional(_)
+        | hir::ContentPart::InlineSequence(_) => false,
+    })
+}
+
+fn content_has_span_or_interpolation(parts: &[hir::ContentPart]) -> bool {
+    parts.iter().any(|p| {
+        matches!(
+            p,
+            hir::ContentPart::Interpolation(_) | hir::ContentPart::Span(_)
+        )
+    })
+}
+
+fn content_has_nonempty_text(parts: &[hir::ContentPart]) -> bool {
+    parts.iter().any(|p| match p {
+        hir::ContentPart::Text(s) => !s.trim().is_empty(),
+        hir::ContentPart::Span(span) => content_has_nonempty_text(&span.children),
+        _ => false,
+    })
+}
+
+/// Recursively build wire `LinePart`s from admitted `hir::ContentPart`s
+/// (`try_recognize_template` already validated the shape — the `_ =>
+/// unreachable!` arm mirrors that same validated-shape invariant this
+/// function's caller has always relied on).
+///
+/// Accumulates the flat `hash_source` string `source_hash` is computed
+/// from — **hash-transparency** (§4.4, RULED before any markup ships)
+/// means a `Span`'s `name`/`attrs` never touch it, only its `children`'s
+/// own text/interpolation-placeholders do, exactly the way a bare
+/// `Interpolation` already contributes the placeholder `"{…}"` rather than
+/// its resolved value: `Hello <wave>world</wave>` and `Hello world` hash
+/// identically. Also accumulates `slot_exprs`/`slot_info` flatly and
+/// `slot_idx` globally across the *whole* line, spans included — a
+/// `<b>{x}</b>` inside `…{y}…` numbers `x`/`y` in the one left-to-right
+/// order `emit_slot_expr` will later push them onto the evaluation stack
+/// in, span boundaries notwithstanding.
+fn build_recognized_parts(
+    parts: &[hir::ContentPart],
+    ctx: &mut LowerCtx<'_>,
+    out: &mut Vec<LinePart>,
+    hash_source: &mut String,
+    slot_exprs: &mut Vec<lir::Expr>,
+    slot_info: &mut Vec<SlotInfo>,
+    slot_idx: &mut u8,
+) {
+    for part in parts {
         match part {
             hir::ContentPart::Text(s) => {
-                if !s.trim().is_empty() {
-                    has_text = true;
-                }
+                out.push(LinePart::Literal(s.clone()));
+                hash_source.push_str(s);
             }
-            hir::ContentPart::Interpolation(_) => {
-                has_interpolation = true;
+            hir::ContentPart::Interpolation(expr) => {
+                out.push(LinePart::Slot(*slot_idx));
+                slot_exprs.push(lower_expr(expr, ctx));
+                slot_info.push(SlotInfo {
+                    index: *slot_idx,
+                    name: display_expr(expr),
+                });
+                hash_source.push_str("{…}");
+                *slot_idx = slot_idx.saturating_add(1);
             }
-            _ => return false,
+            hir::ContentPart::Span(span) => {
+                let mut children = Vec::with_capacity(span.children.len());
+                build_recognized_parts(
+                    &span.children,
+                    ctx,
+                    &mut children,
+                    hash_source,
+                    slot_exprs,
+                    slot_info,
+                    slot_idx,
+                );
+                out.push(LinePart::Span {
+                    name: span.name.clone(),
+                    attrs: span.attrs.clone(),
+                    children,
+                });
+            }
+            hir::ContentPart::Glue
+            | hir::ContentPart::Spring
+            | hir::ContentPart::InlineConditional(_)
+            | hir::ContentPart::InlineSequence(_) => {
+                unreachable!("try_recognize_template already validated")
+            }
         }
     }
-    // Require at least one Text part — a template with only slots has no
-    // translatable source text and should fall through to EmitContent,
-    // which uses EmitValue (correctly suppresses null/void results).
-    has_interpolation && has_text
 }

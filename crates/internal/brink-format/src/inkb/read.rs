@@ -24,7 +24,8 @@ use super::write::{
 use super::{
     CAP_PARAM_ANY, CAT_FEW, CAT_MANY, CAT_ONE, CAT_OTHER, CAT_TWO, CAT_ZERO, HANDLE_PARAM_NONE,
     HEADER_PREAMBLE, InkbIndex, KEY_CARDINAL, KEY_EXACT, KEY_KEYWORD, KEY_ORDINAL, LINE_PLAIN,
-    LINE_TEMPLATE, MAGIC, PART_LITERAL, PART_SELECT, PART_SLOT, PROJ_SEG_INDEX, PROJ_SEG_KEY,
+    LINE_TEMPLATE, MAGIC, PART_LITERAL, PART_SELECT, PART_SLOT, PART_SPAN, PROJ_SEG_INDEX,
+    PROJ_SEG_KEY,
     SECTION_ENTRY_SIZE, SectionEntry, SectionKind, VAL_ARRAY, VAL_BOOL, VAL_CLOSURE,
     VAL_DIVERT_TARGET, VAL_FLOAT, VAL_FN_REF, VAL_FRAGMENT_REF, VAL_HANDLE, VAL_INT, VAL_LIST,
     VAL_MAP, VAL_MAT2, VAL_MAT3, VAL_MAT4, VAL_NULL, VAL_OPTION, VAL_PROJECTION, VAL_QUAT,
@@ -1056,7 +1057,7 @@ pub(crate) fn decode_line_content(buf: &[u8], off: &mut usize) -> Result<LineCon
             let part_count = read_u32(buf, off)? as usize;
             let mut parts = Vec::with_capacity(safe_capacity(part_count, buf.len(), *off, 2));
             for _ in 0..part_count {
-                parts.push(decode_line_part(buf, off)?);
+                parts.push(decode_line_part(buf, off, 0)?);
             }
             Ok(LineContent::Template(parts))
         }
@@ -1064,7 +1065,14 @@ pub(crate) fn decode_line_content(buf: &[u8], off: &mut usize) -> Result<LineCon
     }
 }
 
-fn decode_line_part(buf: &[u8], off: &mut usize) -> Result<LinePart, DecodeError> {
+/// `depth` guards against a crafted file of deeply nested `LinePart::Span`s
+/// (#1716) blowing the stack — the same `MAX_DECODE_DEPTH` cap
+/// `decode_value` enforces for `VAL_ARRAY`/`VAL_MAP`/etc., since `Span` is
+/// now the one `LinePart` shape that recurses.
+fn decode_line_part(buf: &[u8], off: &mut usize, depth: usize) -> Result<LinePart, DecodeError> {
+    if depth > MAX_DECODE_DEPTH {
+        return Err(DecodeError::MaxDepthExceeded(MAX_DECODE_DEPTH));
+    }
     let tag = read_u8(buf, off)?;
     match tag {
         PART_LITERAL => Ok(LinePart::Literal(read_str(buf, off)?)),
@@ -1083,6 +1091,29 @@ fn decode_line_part(buf: &[u8], off: &mut usize) -> Result<LinePart, DecodeError
                 slot,
                 variants,
                 default,
+            })
+        }
+        PART_SPAN => {
+            let name = read_str(buf, off)?;
+            let attr_count = read_u32(buf, off)? as usize;
+            // Each attr is two `write_str`-encoded strings, minimum 4 bytes
+            // (an empty string's length prefix) apiece.
+            let attrs_cap = safe_capacity(attr_count, buf.len(), *off, 8);
+            let mut attrs = Vec::with_capacity(attrs_cap);
+            for _ in 0..attr_count {
+                let k = read_str(buf, off)?;
+                let v = read_str(buf, off)?;
+                attrs.push((k, v));
+            }
+            let child_count = read_u32(buf, off)? as usize;
+            let mut children = Vec::with_capacity(safe_capacity(child_count, buf.len(), *off, 2));
+            for _ in 0..child_count {
+                children.push(decode_line_part(buf, off, depth + 1)?);
+            }
+            Ok(LinePart::Span {
+                name,
+                attrs,
+                children,
             })
         }
         _ => Err(DecodeError::InvalidLinePart(tag)),

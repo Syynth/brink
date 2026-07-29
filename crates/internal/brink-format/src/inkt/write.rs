@@ -481,23 +481,47 @@ fn write_line_content(w: &mut dyn fmt::Write, content: &LineContent) -> fmt::Res
             write!(w, "(template")?;
             for part in parts {
                 write!(w, " ")?;
-                match part {
-                    LinePart::Literal(s) => write!(w, "(lit \"{}\")", escape_string(s))?,
-                    LinePart::Slot(idx) => write!(w, "(slot {idx})")?,
-                    LinePart::Select {
-                        slot,
-                        variants,
-                        default,
-                    } => {
-                        write!(w, "(select slot={slot}")?;
-                        for (key, text) in variants {
-                            write!(w, " (")?;
-                            write_select_key(w, key)?;
-                            write!(w, " \"{}\")", escape_string(text))?;
-                        }
-                        write!(w, " (default \"{}\"))", escape_string(default))?;
-                    }
-                }
+                write_line_part(w, part)?;
+            }
+            write!(w, ")")
+        }
+    }
+}
+
+fn write_line_part(w: &mut dyn fmt::Write, part: &LinePart) -> fmt::Result {
+    match part {
+        LinePart::Literal(s) => write!(w, "(lit \"{}\")", escape_string(s)),
+        LinePart::Slot(idx) => write!(w, "(slot {idx})"),
+        LinePart::Select {
+            slot,
+            variants,
+            default,
+        } => {
+            write!(w, "(select slot={slot}")?;
+            for (key, text) in variants {
+                write!(w, " (")?;
+                write_select_key(w, key)?;
+                write!(w, " \"{}\")", escape_string(text))?;
+            }
+            write!(w, " (default \"{}\"))", escape_string(default))
+        }
+        LinePart::Span {
+            name,
+            attrs,
+            children,
+        } => {
+            write!(w, "(span \"{}\"", escape_string(name))?;
+            for (k, v) in attrs {
+                write!(
+                    w,
+                    " (attr \"{}\" \"{}\")",
+                    escape_string(k),
+                    escape_string(v)
+                )?;
+            }
+            for child in children {
+                write!(w, " ")?;
+                write_line_part(w, child)?;
             }
             write!(w, ")")
         }

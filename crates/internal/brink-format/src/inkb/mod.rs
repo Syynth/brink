@@ -201,6 +201,17 @@ pub(crate) const LINE_TEMPLATE: u8 = 0x01;
 pub(crate) const PART_LITERAL: u8 = 0x00;
 pub(crate) const PART_SLOT: u8 = 0x01;
 pub(crate) const PART_SELECT: u8 = 0x02;
+// #1716 (`docs/prose-dialect-spec.md` §4.4): the inline markup span. Purely
+// additive on the existing `u8` part-tag dispatch (the #1519 ruling #1683
+// names — "a new LinePart variant is one match arm") — an old reader
+// hard-rejects the unknown tag (`decode_line_part`'s `_ =>
+// Err(InvalidLinePart)`) and an old file simply never contains one, the
+// same no-`VERSION`-bump precedent `VAL_VEC2`/`VAL_WEIGHTED` above already
+// establish for additive tags on an existing dispatch. `.inkl` shares this
+// encoder/decoder (`inkl::{read,write}` call straight through to
+// `encode_line_content`/`decode_line_content`), so both formats gain the
+// tag from this one addition.
+pub(crate) const PART_SPAN: u8 = 0x03;
 
 // SelectKey tags
 pub(crate) const KEY_CARDINAL: u8 = 0x00;

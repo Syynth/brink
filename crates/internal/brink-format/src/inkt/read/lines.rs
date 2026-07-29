@@ -319,11 +319,51 @@ fn parse_template_part(pair: P<'_>) -> Result<LinePart, InktParseError> {
             Ok(LinePart::Slot(n))
         }
         Rule::select_part => parse_select_part(inner),
+        Rule::span_part => parse_span_part(inner),
         _ => Err(err(
             &inner,
             format!("unexpected template part: {:?}", inner.as_rule()),
         )),
     }
+}
+
+fn parse_span_part(pair: P<'_>) -> Result<LinePart, InktParseError> {
+    let mut inner = pair.into_inner();
+    let name_pair = inner.next().ok_or_else(|| InktParseError {
+        message: "expected name in span".into(),
+        line: 0,
+        col: 0,
+    })?;
+    let name = unescape_string(name_pair.as_str());
+
+    let mut attrs = Vec::new();
+    let mut children = Vec::new();
+    for child in inner {
+        match child.as_rule() {
+            Rule::span_attr => {
+                let mut ai = child.into_inner();
+                let k = ai.next().ok_or_else(|| InktParseError {
+                    message: "expected attr name".into(),
+                    line: 0,
+                    col: 0,
+                })?;
+                let v = ai.next().ok_or_else(|| InktParseError {
+                    message: "expected attr value".into(),
+                    line: 0,
+                    col: 0,
+                })?;
+                attrs.push((unescape_string(k.as_str()), unescape_string(v.as_str())));
+            }
+            Rule::template_part => children.push(parse_template_part(child)?),
+            _ => {}
+        }
+    }
+
+    Ok(LinePart::Span {
+        name,
+        attrs,
+        children,
+    })
 }
 
 fn parse_select_part(pair: P<'_>) -> Result<LinePart, InktParseError> {
