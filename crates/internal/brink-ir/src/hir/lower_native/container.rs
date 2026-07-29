@@ -23,6 +23,27 @@ use crate::{Block, Diagnostic, DiagnosticCode, DocBlock, Knot, Name, Param, Stit
 use super::doc_comment::lower_doc_comment;
 use super::provenance::native_provenance;
 
+/// Trailing `#tag`s on a `flow` header line — **container-level per-flow
+/// tags** (`docs/prose-dialect-spec.md` §8b.4, issue #1715). The native
+/// grammar captures them; nothing in the HIR receives them yet, because
+/// neither [`Knot`] nor [`Stitch`] has a tags field and the per-flow tag
+/// *API* is issue #474's own (iceboxed) work — this issue delivers only
+/// the authoring surface #474 was waiting for.
+///
+/// So report each tag loudly (`E129`, "parses cleanly but has no HIR
+/// lowering yet in this slice") instead of dropping authored metadata on
+/// the floor. Called from **both** container paths — the top-level `Knot`
+/// and the nested `Stitch` — since a stitch header takes the same tags.
+fn report_header_tags(file_id: FileId, node: &ast::FlowDecl, diags: &mut Vec<Diagnostic>) {
+    for tag in node.tags() {
+        diags.push(diag(
+            file_id,
+            tag.syntax().text_range(),
+            DiagnosticCode::E129,
+        ));
+    }
+}
+
 /// A `flow`/`fn`'s doc comment: the leading `///` form if present, else the
 /// body's inner `//!` form (B0.6b judgment call — the two forms are not
 /// merged; the outer form wins when both are somehow present, since it's
@@ -127,6 +148,9 @@ pub(super) fn lower_top_level_container(
         return None;
     };
     let params = lower_params(node.param_list());
+    if let super::FlowOrFn::Flow(flow) = node {
+        report_header_tags(file_id, flow, diags);
+    }
     // `fn probability(g: Guest): float { … }` (NG-C, issue #1489, RULED
     // 2026-07-26). Declaring a return type is also the ruled
     // **coroutine-vs-state toggle** — see the implicit-`-> DONE` guard
@@ -245,6 +269,7 @@ fn lower_stitch(
         return None;
     };
     let params = lower_params(node.param_list());
+    report_header_tags(file_id, node, diags);
 
     // `flow gate(): int { … }` (NG-C, issue #1489; widened to stitches by
     // #1509, RULED 2026-07-26): a nested flow's return type carries the

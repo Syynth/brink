@@ -4,6 +4,7 @@ mod choice;
 mod content;
 mod declaration;
 mod divert;
+mod element;
 mod expression;
 mod statement;
 mod trivia;

@@ -557,10 +557,19 @@ fn lone_at_outside_bracket_is_plain_text_not_error_token() {
     // expected text — the absence check alone can't tell "no ERROR_TOKEN
     // because it's an AT token" from "no ERROR_TOKEN because nothing was
     // lexed at all".
-    let src = "@name\n";
+    //
+    // **Narrowed by #1715**: `@NAME` (sigil directly against the name) is
+    // now the ruled block-cue spelling (`docs/prose-dialect-spec.md`
+    // §8b.9), so the "stays plain text" promise holds for every *other*
+    // `@` — a detached one, as here, and any `@` reached mid-line. See
+    // `parser::tests::element::a_lone_at_in_prose_is_still_plain_text`
+    // for the adjacency guard, and the cue tests beside it for the
+    // claimed shape.
+    let src = "@ name\n";
     let p = assert_lossless(src);
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
     assert!(!has_node_kind(&p.syntax(), SyntaxKind::ANNOTATION_LINE));
+    assert!(!has_node_kind(&p.syntax(), SyntaxKind::CUE));
     assert!(!has_token_kind(&p.syntax(), SyntaxKind::ERROR_TOKEN));
     let at_token = p
         .syntax()
@@ -569,15 +578,19 @@ fn lone_at_outside_bracket_is_plain_text_not_error_token() {
         .find(|t| t.kind() == SyntaxKind::AT)
         .expect("AT token");
     assert_eq!(at_token.text(), "@");
-    assert_eq!(text_run_concat(&p.syntax()), "@name");
+    assert_eq!(text_run_concat(&p.syntax()), "@ name");
 }
 
 #[test]
 fn lone_at_inside_flow_body_is_plain_text() {
-    let src = "flow f() {\n  @oops\n}\n";
+    // An `@` reached mid-line is prose, not a cue: only an `@` at
+    // body-item position, directly against its name, claims a line
+    // (#1715, see the test above).
+    let src = "flow f() {\n  meet me @ dawn\n}\n";
     let p = assert_lossless(src);
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
     assert!(!has_node_kind(&p.syntax(), SyntaxKind::ANNOTATION_LINE));
+    assert!(!has_node_kind(&p.syntax(), SyntaxKind::CUE));
     assert!(!has_token_kind(&p.syntax(), SyntaxKind::ERROR_TOKEN));
     let at_token = p
         .syntax()
@@ -586,7 +599,7 @@ fn lone_at_inside_flow_body_is_plain_text() {
         .find(|t| t.kind() == SyntaxKind::AT)
         .expect("AT token");
     assert_eq!(at_token.text(), "@");
-    assert!(text_run_concat(&p.syntax()).contains("@oops"));
+    assert!(text_run_concat(&p.syntax()).contains("@ dawn"));
 }
 
 /// `annotation_line` is reached only via `block::body_line`

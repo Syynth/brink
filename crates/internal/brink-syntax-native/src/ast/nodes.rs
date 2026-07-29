@@ -47,6 +47,18 @@ ast_node!(GlueNode, GLUE_NODE);
 ast_node!(TagLine, TAG_LINE);
 ast_node!(Tag, TAG);
 
+// ── Prose block elements (docs/prose-dialect-spec.md §8b/§8d) ────────
+
+ast_node!(SceneStitch, SCENE_STITCH);
+ast_node!(SceneHeading, SCENE_HEADING);
+ast_node!(SceneTitle, SCENE_TITLE);
+ast_node!(SceneSlug, SCENE_SLUG);
+ast_node!(SceneBody, SCENE_BODY);
+ast_node!(Cue, CUE);
+ast_node!(CueName, CUE_NAME);
+ast_node!(CompactCue, COMPACT_CUE);
+ast_node!(Parenthetical, PARENTHETICAL);
+
 // ── Choice points ────────────────────────────────────────────────────
 
 ast_node!(ChoicePoint, CHOICE_POINT);
@@ -1506,5 +1518,128 @@ impl UntilStmt {
     /// The park condition — `UNTIL_STMT`'s only child node.
     pub fn condition(&self) -> Option<SyntaxNode> {
         self.syntax.children().next()
+    }
+}
+
+// ── Prose block elements (#1715; docs/prose-dialect-spec.md §8b/§8d) ──
+//
+// Accessors for the ruled screenplay-preset shapes. Nothing here lowers —
+// `hir::lower_native` meets these nodes at its loud-`E129` arm until the
+// attachment/`lower:` slice (issue #1717) lands; these exist so that slice,
+// the formatter and the editor read the shapes through one typed surface
+// rather than each re-deriving them from raw `SyntaxKind`s.
+
+impl SceneStitch {
+    /// The heading line that opens this header-scoped stitch.
+    pub fn heading(&self) -> Option<SceneHeading> {
+        support::child(&self.syntax)
+    }
+
+    /// The braceless body the heading scopes — every item up to the next
+    /// heading or the enclosing close (§8b.2).
+    pub fn body(&self) -> Option<SceneBody> {
+        support::child(&self.syntax)
+    }
+
+    /// The leading `///` run documenting this stitch, if any (B0.6b — a
+    /// heading declares a stitch, so it documents like one).
+    pub fn doc(&self) -> Option<DocComment> {
+        support::child(&self.syntax)
+    }
+}
+
+impl SceneHeading {
+    /// The title run — the scene's **display name** (§3.3).
+    pub fn title(&self) -> Option<SceneTitle> {
+        support::child(&self.syntax)
+    }
+
+    /// The explicit `[slug]`, if the heading spells its address (§8b.3).
+    /// `None` means the address is inferred from the title, which makes
+    /// the title load-bearing for `DefinitionId` (§3.3's save-key note).
+    pub fn slug(&self) -> Option<SceneSlug> {
+        support::child(&self.syntax)
+    }
+
+    /// Trailing `#tag`s — container-level per-flow tags (§8b.4).
+    pub fn tags(&self) -> impl Iterator<Item = Tag> {
+        support::children(&self.syntax)
+    }
+}
+
+impl SceneTitle {
+    /// The title text, with the surrounding source whitespace trimmed.
+    pub fn text(&self) -> String {
+        self.syntax.text().to_string().trim().to_owned()
+    }
+}
+
+impl SceneSlug {
+    pub fn name_token(&self) -> Option<SyntaxToken> {
+        support::token(&self.syntax, IDENT)
+    }
+}
+
+impl SceneBody {
+    /// The body's items, in source order.
+    pub fn items(&self) -> impl Iterator<Item = SyntaxNode> {
+        self.syntax.children()
+    }
+}
+
+impl Cue {
+    /// The speaker name after the `@` sigil.
+    pub fn name(&self) -> Option<CueName> {
+        support::child(&self.syntax)
+    }
+
+    /// The cue's trailing tags — the ruled home for cue *extensions*
+    /// (§8d.4: `@VENDOR #(v.o.)`, no parsed `ext` capture).
+    pub fn tags(&self) -> impl Iterator<Item = Tag> {
+        support::children(&self.syntax)
+    }
+}
+
+impl CueName {
+    /// The speaker name, with the surrounding source whitespace trimmed.
+    pub fn text(&self) -> String {
+        self.syntax.text().to_string().trim().to_owned()
+    }
+}
+
+impl CompactCue {
+    /// The speaker name before the `:`.
+    pub fn name(&self) -> Option<CueName> {
+        support::child(&self.syntax)
+    }
+
+    /// The fused dialogue line after the `:` (§8b.9).
+    pub fn line(&self) -> Option<ContentLine> {
+        support::child(&self.syntax)
+    }
+}
+
+impl Parenthetical {
+    /// The delivery text between the parentheses, trimmed.
+    pub fn text(&self) -> String {
+        support::child::<Text>(&self.syntax)
+            .map(|t| t.syntax().text().to_string().trim().to_owned())
+            .unwrap_or_default()
+    }
+
+    /// Trailing `#tag`s on the parenthetical line, if any.
+    pub fn tags(&self) -> impl Iterator<Item = Tag> {
+        support::children(&self.syntax)
+    }
+}
+
+impl FlowDecl {
+    /// Trailing `#tag`s on the `flow` header line — container-level
+    /// per-flow tags (§8b.4, the authoring surface issue #474's per-flow
+    /// tag APIs were iceboxed waiting for). Parsed here; the runtime-side
+    /// API is #474's own work, so `hir::lower_native` reports them as
+    /// not-yet-lowered rather than dropping them.
+    pub fn tags(&self) -> impl Iterator<Item = Tag> {
+        support::children(&self.syntax)
     }
 }

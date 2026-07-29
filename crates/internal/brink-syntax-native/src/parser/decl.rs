@@ -15,18 +15,68 @@
 //! residual risk in the same finding).
 
 use crate::SyntaxKind::{
-    COLON, COMMA, CONST_DECL, EQ, EXTERN_DECL, FLAGS_DECL, FLAGS_MEMBER, FLAGS_MEMBER_LIST,
-    FLOW_DECL, FN_DECL, GT, IDENT, IMPORT_DECL, KW_AS, KW_EXTERN, KW_FLAGS, KW_FLOW, KW_FN,
-    KW_MODULE, KW_REF, KW_STRUCT, L_BRACE, L_PAREN, MODULE_DECL, PARAM, PARAM_LIST, R_BRACE,
-    R_PAREN, STRUCT_DECL, STRUCT_FIELD, TILDE, USE_DECL, USE_TREE, USE_TREE_LIST, VAR_DECL,
+    COLON, COMMA, CONST_DECL, EOF, EQ, EXTERN_DECL, FLAGS_DECL, FLAGS_MEMBER, FLAGS_MEMBER_LIST,
+    FLOW_DECL, FN_DECL, GT, HASH, IDENT, IMPORT_DECL, KW_AS, KW_EXTERN, KW_FLAGS, KW_FLOW, KW_FN,
+    KW_MODULE, KW_REF, KW_STRUCT, L_BRACE, L_PAREN, MODULE_DECL, NEWLINE, PARAM, PARAM_LIST,
+    R_BRACE, R_PAREN, STRUCT_DECL, STRUCT_FIELD, TILDE, USE_DECL, USE_TREE, USE_TREE_LIST,
+    VAR_DECL,
 };
 
 use super::Parser;
 
 // ── Lookahead guards ─────────────────────────────────────────────────
 
+/// `HASH` joins `L_PAREN`/`L_BRACE` as an accepted third token (§8b.4,
+/// issue #1715): a `flow` header may carry trailing `#tag`s
+/// (`flow market #act1 { … }`) — container-level per-flow tags — and those
+/// tags sit exactly where the body brace used to be the only legal
+/// continuation.
+///
+/// The `#` alone is **not** enough evidence, and this is Finding #5's
+/// firewall doing its job rather than a theoretical worry: a prose line
+/// like `flow gently #1 and the river bends.` matches `KW_FLOW IDENT HASH`
+/// exactly. So the tag form additionally requires a body opener later on
+/// the same line ([`header_tags_precede_a_body`]) before committing —
+/// the same "positive lookahead all the way to the token that must
+/// follow" discipline the paren/brace forms already get for free.
 pub(crate) fn at_flow_decl(p: &Parser<'_, '_>) -> bool {
-    p.at(KW_FLOW) && p.nth(1) == IDENT && matches!(p.nth(2), L_PAREN | L_BRACE)
+    p.at(KW_FLOW)
+        && p.nth(1) == IDENT
+        && match p.nth(2) {
+            L_PAREN | L_BRACE => true,
+            HASH => header_tags_precede_a_body(p, 2),
+            _ => false,
+        }
+}
+
+/// True when a body opener (`{`, including the `~{`/`>{` body-dialect
+/// selectors' brace) is the last non-trivia token on the same line as the
+/// `#`-tag run starting at non-trivia lookahead offset `n`.
+///
+/// The brace must be the *last* token on the line, not merely present
+/// somewhere on it: a prose line can contain an interpolation or
+/// alternation (`flow gently #1 and {gold} coins.`, `{river|stream}`)
+/// whose own `{`/`}` pair would otherwise satisfy a bare "any brace on the
+/// line" check and misparse the prose as a declaration header. No `.brink`
+/// fixture in the repo uses a one-line `flow x { … }` body, so requiring
+/// the brace to trail the line costs nothing real.
+///
+/// Bounded by the physical line: the scan stops at the first `NEWLINE` or
+/// EOF, which also matches the grammar — `nth` skips trivia but never a
+/// `NEWLINE`, so a declaration header has always been a single-line shape
+/// (`flow x\n{ }` was never a declaration either).
+fn header_tags_precede_a_body(p: &Parser<'_, '_>, n: usize) -> bool {
+    let mut i = n;
+    let mut last = None;
+    loop {
+        match p.nth(i) {
+            NEWLINE | EOF => return last == Some(L_BRACE),
+            kind => {
+                last = Some(kind);
+                i += 1;
+            }
+        }
+    }
 }
 
 pub(crate) fn at_fn_decl(p: &Parser<'_, '_>) -> bool {
@@ -94,8 +144,29 @@ pub(crate) fn flow_decl(p: &mut Parser<'_, '_>, doc: Option<rowan::Checkpoint>) 
         param_list(p);
     }
     return_type_clause(p);
+    header_tags(p);
     decl_body(p, false, "expected a braced body after the flow header");
     p.finish_node();
+}
+
+/// Trailing `#tag`s on a `flow` header line — **container-level per-flow
+/// tags** (`docs/prose-dialect-spec.md` §8b.4, RULED 2026-07-25):
+/// `flow market #act1 #tense { … }`. The scene-heading spelling
+/// (`parser::element`) is the other half of the same ruling; both produce
+/// ordinary `TAG` children of the declaring node.
+///
+/// Only `flow` carries them: the ruling names *per-flow* tags, and `fn` is
+/// an expression-time container with no story-time identity to tag.
+///
+/// The tags run through `content::header_tag_tail`, not the plain
+/// `tag_line_tail` a content line uses: an ordinary tag's text runs to the
+/// end of its line, but a header's body opener (`{`, or a `~`/`>`
+/// body-dialect selector) follows the tags on that same line and must not
+/// be swallowed into the last tag's text.
+fn header_tags(p: &mut Parser<'_, '_>) {
+    if p.at(HASH) {
+        super::content::header_tag_tail(p);
+    }
 }
 
 /// `fn name(params) { … }`. See [`flow_decl`]'s doc comment for `doc`.

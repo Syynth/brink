@@ -74,8 +74,12 @@ combination is honestly spellable.
 - Declarations: `flow garden(mood) { … }`, `fn heal(hp) { … }` —
   keyword + name/params + braced body. No tags, no name-as-attribute
   (the SFC lesson: tags suit anonymous facets; named things deserve
-  declarations). No one-flow-per-file constraint — files hold many
-  declarations (RULED: hard requirement).
+  declarations). **(Amended 2026-07-25, prose sitting 4: a header line
+  may carry trailing `#tag`s — `flow market #act1 { … }` — captured as
+  container-level per-flow *metadata*. Identity is still the
+  declaration's name, never a tag, so the SFC lesson stands;
+  docs/prose-dialect-spec.md §8b.4.)** No one-flow-per-file constraint —
+  files hold many declarations (RULED: hard requirement).
 - **Stitches are nested `flow`s** — `garden.gate` because addressing
   is nesting. (Depth >2 = watch list.)
 - Braces are the universal body delimiter — "solid" — for

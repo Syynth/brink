@@ -213,6 +213,17 @@ fn classify(kind: SyntaxKind) -> Coverage {
         | SyntaxKind::TAG_LINE
         | SyntaxKind::TAG => Exercised,
 
+        // ── Node kinds — prose block elements ─────────────────────
+        SyntaxKind::SCENE_STITCH
+        | SyntaxKind::SCENE_HEADING
+        | SyntaxKind::SCENE_TITLE
+        | SyntaxKind::SCENE_SLUG
+        | SyntaxKind::SCENE_BODY
+        | SyntaxKind::CUE
+        | SyntaxKind::CUE_NAME
+        | SyntaxKind::COMPACT_CUE
+        | SyntaxKind::PARENTHETICAL => Exercised,
+
         // ── Node kinds — choice points ─────────────────────────────
         SyntaxKind::CHOICE_POINT
         | SyntaxKind::CHOICE
