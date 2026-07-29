@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::panic)]
 
 use brink_intl::{
     ContentJson, LineJson, LinesJson, PartJson, ScopeJson, SelectJson, compile_locale_xliff,
@@ -204,11 +204,12 @@ fn span_flattens_through_xliff_but_loses_no_text_or_slots() {
     let translated = fill_targets(parsed);
     let recovered = xliff_to_lines_json(&translated).unwrap();
 
-    let Some(ContentJson::Template { template }) = &recovered.scopes[0].lines[0].content else {
-        panic!(
-            "expected a Template, got {:?}",
-            recovered.scopes[0].lines[0].content
-        );
+    let content = recovered.scopes[0].lines[0]
+        .content
+        .as_ref()
+        .expect("content present");
+    let ContentJson::Template { template } = content else {
+        panic!("expected a Template, got {content:?}");
     };
     // Flattened: no PartJson::Span survives the round trip (documented v1
     // limitation), but every literal and the slot are still present, in

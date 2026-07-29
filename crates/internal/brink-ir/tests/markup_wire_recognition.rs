@@ -12,6 +12,18 @@
 //! one content line produces.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+// Issue #801: this crate's `clippy.toml` disallows bare `HashMap`/`HashSet`
+// so an iteration-order leak into codegen output can't ship quietly. This
+// file's one use (an always-empty `file_paths` map handed to
+// `lower_to_program_with_type_mode` — this test never populates
+// `SourceLocation`) has no order to leak; `crate::determinism::LookupMap`
+// is `pub(crate)` and invisible to this external test-binary crate, so a
+// file-level allow is the narrower fix — same precedent
+// `tests/lir_lowering.rs` already established for the identical parameter.
+#![allow(
+    clippy::disallowed_types,
+    reason = "always-empty file_paths map, no order to leak — see file doc"
+)]
 
 use brink_ir::{FileId, HirFile, SymbolManifest, hir::lower_native, lir};
 
