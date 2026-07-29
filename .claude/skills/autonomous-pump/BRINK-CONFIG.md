@@ -220,5 +220,20 @@ to it, and a read-side check leaves the next reader to pay the same cost again.
   delivering PR, and close the issue if nothing remains. Reporting it only to
   the pump means the next wave rediscovers it.
 
-The read-side check still belongs in the build prompt as a backstop, because
-these rules will be violated sometimes. It is a backstop, not the fix.
+**These rules are per-agent discipline, and per-agent discipline gets violated.**
+So the structural fix is that **scope reconciliation owns this** — it runs once
+per wave, terminal, with every item's issue/PR/merge state in hand and `gh`
+access already. It was only ever pointed *forward* ("did building reveal work
+the plan didn't capture?"), which is why six write-side failures walked past a
+phase built to catch exactly them. `pump.js`'s reconciliation prompt now has two
+parts: **Part 1 reconciles the record backward and ACTS**, Part 2 is the
+existing forward-looking scope proposal.
+
+The distinction that makes acting safe: **proposing new scope or milestone
+structure is a human call; recording what already happened is bookkeeping.**
+Closing an issue whose PR merged, or commenting the remainder on a `Part of`,
+does not restructure the plan — it stops the plan from lying. Reconciliation
+returns `trackerActions` (what it changed) alongside its proposal.
+
+The read-side premise check stays in the build prompt as a backstop. It is a
+backstop, not the fix.
