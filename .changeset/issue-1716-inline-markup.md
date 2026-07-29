@@ -1,0 +1,28 @@
+---
+"@brink-lang/web": patch
+---
+
+Track 1 step 5b of #1351 (issue #1716) — the inline markup layer, native
+`.brink` dialect only. `.brink` files compile through the wasm package's
+native path (`brink-db`'s `Language::Native => lower_native_file`), and
+story playback runs through `brink-runtime`, both of which changed:
+
+- **XML-shaped inline spans** (`docs/prose-dialect-spec.md` §4.1):
+  `<name attr="v">content</name>`, self-closing allowed (`<pause/>`,
+  `<sfx name="bell"/>` — the point-marker shape, §8b.11). Freeform by
+  default (§4.2): an unrecognized tag name is not a parse error.
+- **Nesting doctrine** (§4.3), enforced structurally, and the **final
+  escape set** (§8d.6): `\<` `\{` `\#` `\\`, a `\` before anything else is
+  now a compile error (previously a bare backslash did nothing).
+- **Behavior change**: a `.brink` line containing `<...>`-shaped markup
+  previously rendered as literal text (no grammar recognized it). It now
+  parses as a real span; story playback renders the span's text with the
+  tag stripped (`brink-runtime`'s `Line::Text` has no structured span
+  surface yet — that's a separate, later ruling, §7/§9.1) — so
+  `<b>bold</b>` now plays back as `bold`, not `<b>bold</b>`.
+- **Wire**: `LinePart::Span` is additive on the existing `.inkb`/`.inkl`
+  part-tag dispatch (no format version bump — the #1519 "one-bump rule"
+  precedent). Hash-transparent (§4.4): markup normalizes out of
+  `source_hash`, so `Hello <wave>world</wave>` and `Hello world` hash
+  identically — a translated line does not re-key when an author bolds a
+  word.

@@ -384,6 +384,66 @@ exactly the externals-manifest pattern.
   Prefer structural parts over byte-range offsets — the runtime trims
   and collapses whitespace after assembly, so ranges are a trap.
 
+### 4.5 Implementation status (#1716, 2026-07-29)
+
+§4/§8b.11/§8d.3/§8d.6 landed, matching #1715's block-element grammar's
+staging shape but going further — not "grammar only, everything E129": a
+span in ordinary prose lowers and ships, because a grammar-only landing
+here would have *regressed* previously-accepted content (any existing line
+containing a bare `<letter…` sequence used to compile as literal text; a
+grammar addition without lowering would have turned it into a hard parse
+error, violating the superset doctrine, §1). What shipped:
+
+- **Grammar** (`brink-syntax-native`): blunt lexing (§4.1) reuses existing
+  tokens (`LT`/`SLASH`/`IDENT`) — no new lexer tokens, since `GLUE`/
+  `THREAD` are already distinct compound tokens. Nesting doctrine (§4.3)
+  enforced structurally: `span`'s recursive body scan is handed the exact
+  `stop` set its caller was given, so a fragment-scope boundary reached
+  before the matching close tag makes the span unrepresentable as closed,
+  not merely checked. Escape set (§8d.6) final.
+- **HIR** (`brink-ir`): `hir::ContentPart::Span { name, attrs, children }`,
+  recursive. Every `ContentPart` consumer (reference-tracking walkers,
+  type inference, the symbol index, several `brink-analyzer` passes, the
+  heap-size estimator, the editor's HIR projection) recurses into a span's
+  children instead of treating it as opaque.
+- **Wire + hash-transparency** (`brink-format`, `brink-ir`'s
+  `lir::lower::recognize`): `LinePart::Span` landed as an **additive**
+  `u8` part-tag (`PART_SPAN`), *not* a `.inkb` version bump — this
+  section's earlier "a new `LinePart` tag is a version bump (v6)" claim
+  was superseded by the #1519 "one-bump rule" precedent
+  (`VAL_VEC2`/`VAL_WEIGHTED` et al. already established it for exactly
+  this situation: an old reader hard-rejects the unknown tag via the
+  existing `_ => Err(InvalidLinePart)`, no bump needed). Hash-transparency
+  is proven end-to-end (native source → HIR → LIR → `source_hash`), not
+  merely asserted.
+- **Span admission, partially closed**: a span whose descendants
+  (recursively) are only Text/Interpolation/Span *is* admitted to line
+  recognition — a markup-only line with zero interpolations
+  (`Hello <wave>world</wave>`) is a single translation-unit `Template`
+  line, not shredded. What's still open, per this section's own prior
+  note: a span nesting an inline conditional/sequence is *not* admitted
+  (falls back to the flattening `EmitContent` path — no data loss, just
+  no wire `LinePart::Span` for that one shape) — a narrower remainder of
+  the "span admission… separate, still-open concern" bullet above, not
+  the whole thing.
+- **Runtime**: `Line::Text`'s current flat-string shape resolves a span to
+  its children's concatenated text, tag stripped — correct for today's
+  API, and additive groundwork for the structured `Part::Span` surface
+  this section's last bullet still wants once §7/§9.1's `Step`/`Part`
+  redesign lands.
+- **Intl**: `lines.json` (`PartJson::Span`) round-trips a span fully.
+  XLIFF export (`xliff_convert.rs`) flattens a span's children into the
+  surrounding inline-element stream rather than emitting a real `<pc>`
+  paired inline code — no text or slot is lost, only the presentational
+  boundary doesn't survive an XLIFF round-trip yet. Real inline-code
+  support is "Translation, round 2" (§9, open thread 2), not this slice.
+
+Deliberately not attempted: manifest validation of markup vocabulary
+(§4.2's second half — "the host manifest declares a markup vocabulary…
+the compiler validates" needs the host capability manifest facility,
+which is a separate track); the `Step`/`Part` structured runtime surface
+(§7/§9.1); a real XLIFF `<pc>`/`<x/>` inline-code mapping for spans.
+
 ## 5. Tooling: completions & succession (RULED doctrine)
 
 **Harvest by default, declaration upgrades** — the freeform/manifest
