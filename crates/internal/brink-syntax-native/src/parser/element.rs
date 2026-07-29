@@ -41,9 +41,9 @@
 //! element. There is deliberately no `LYRICS` shape here.
 
 use crate::SyntaxKind::{
-    AT, COLON, COMPACT_CUE, CUE, CUE_NAME, DOT, EOF, HASH, IDENT, L_BRACKET, L_PAREN, NEWLINE,
-    PARENTHETICAL, R_BRACE, R_BRACKET, R_PAREN, SCENE_BODY, SCENE_HEADING, SCENE_SLUG,
-    SCENE_STITCH, SCENE_TITLE, TEXT,
+    AT, COLON, COMPACT_CUE, CUE, CUE_NAME, DOC_COMMENT_OUTER, DOT, EOF, HASH, IDENT, L_BRACKET,
+    L_PAREN, NEWLINE, PARENTHETICAL, R_BRACE, R_BRACKET, R_PAREN, SCENE_BODY, SCENE_HEADING,
+    SCENE_SLUG, SCENE_STITCH, SCENE_TITLE, TEXT,
 };
 
 use super::Parser;
@@ -61,7 +61,43 @@ use super::Parser;
 /// followed by a `.` at item position claims a line, which is the
 /// explicit-format posture — the preset never guesses from ALL-CAPS shape.
 pub(crate) fn at_scene_heading(p: &Parser<'_, '_>) -> bool {
-    p.at(IDENT) && matches!(p.nth_text(0), "INT" | "EXT") && p.nth(1) == DOT
+    at_scene_heading_at(p, 0)
+}
+
+/// [`at_scene_heading`], checked at non-trivia lookahead offset `n` instead
+/// of the current position — the shared core [`at_scene_heading_past_leading_doc`]
+/// reuses after skipping past a `///` run.
+fn at_scene_heading_at(p: &Parser<'_, '_>, n: usize) -> bool {
+    p.nth(n) == IDENT && matches!(p.nth_text(n), "INT" | "EXT") && p.nth(n + 1) == DOT
+}
+
+/// True when a scene heading is at the current position, **or** follows a
+/// leading `///` doc-comment run (review finding on #1715): `scene_stitch`'s
+/// body loop calls this, not the bare [`at_scene_heading`], as its
+/// terminator check.
+///
+/// Without this, a documented second heading wasn't recognized as ending
+/// the current stitch's body: `DOC_COMMENT_OUTER` is not trivia
+/// (`SyntaxKind::is_trivia` = `WHITESPACE`/`LINE_COMMENT`/`BLOCK_COMMENT`
+/// only), so [`at_scene_heading`]'s `p.at(IDENT)` check failed on the `///`
+/// token, the loop did not break, and `block::item` went on to consume the
+/// doc run and recurse into a *nested* `scene_stitch` — silently violating
+/// §8b.2's "heading-stitches are flat siblings, scenes do not nest" for any
+/// heading past the first that carries a doc comment.
+///
+/// Mirrors `doc_comment::consume_doc_run`'s "one or more `///` lines, each
+/// terminated by a `NEWLINE`" shape closely enough for a lookahead (not a
+/// consumer): it does not special-case a blank line ending the run early,
+/// because over-breaking on that rare shape is harmless here — the loop
+/// would stop one iteration sooner than strictly necessary, and the
+/// dispatcher it hands off to (`block::item`) still resolves the
+/// doc-attachment question exactly the same way it always does.
+fn at_scene_heading_past_leading_doc(p: &Parser<'_, '_>) -> bool {
+    let mut n = 0;
+    while p.nth(n) == DOC_COMMENT_OUTER && p.nth(n + 1) == NEWLINE {
+        n += 2;
+    }
+    at_scene_heading_at(p, n)
 }
 
 /// `INT. TITLE [slug] #tags` followed by every item up to the next heading
@@ -88,7 +124,7 @@ pub(crate) fn scene_stitch(p: &mut Parser<'_, '_>, doc: Option<rowan::Checkpoint
     let outer_chain = p.set_cue_chain(false);
     loop {
         p.skip_ws();
-        if p.at_eof() || p.at(R_BRACE) || at_scene_heading(p) {
+        if p.at_eof() || p.at(R_BRACE) || at_scene_heading_past_leading_doc(p) {
             break;
         }
         let before = p.pos();

@@ -137,6 +137,40 @@ fn consecutive_headings_are_flat_siblings_never_nested() {
 }
 
 #[test]
+fn a_doc_comment_above_the_second_heading_keeps_flat_siblings() {
+    // Review finding on #1715: `scene_stitch`'s body loop checked
+    // `at_scene_heading` directly, which fails on a leading `///` token
+    // (`DOC_COMMENT_OUTER` is not trivia), so the loop never broke and
+    // `block::item` recursed into a *nested* stitch instead of the outer
+    // dispatcher opening a flat sibling with its doc attached. Same
+    // fixture as `consecutive_headings_are_flat_siblings_never_nested`,
+    // with a `///` run above the second heading only.
+    let src = "INT. A [a]\nOne.\n/// doc\nEXT. B [b]\nTwo.\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+
+    let root = p.syntax();
+    let stitches: Vec<_> = root
+        .children()
+        .filter(|n| n.kind() == SyntaxKind::SCENE_STITCH)
+        .collect();
+    assert_eq!(stitches.len(), 2, "two sibling stitches under SOURCE_FILE");
+    for stitch in &stitches {
+        let nested = stitch
+            .descendants()
+            .filter(|n| n.kind() == SyntaxKind::SCENE_STITCH)
+            .count();
+        assert_eq!(nested, 1, "a scene stitch never contains another");
+    }
+
+    let second = ast::SceneStitch::cast(stitches[1].clone()).expect("SCENE_STITCH");
+    assert!(
+        second.doc().is_some(),
+        "the `///` run attaches to the second (documented) heading, not the first"
+    );
+}
+
+#[test]
 fn a_heading_body_ends_at_the_enclosing_close() {
     // The other delimiter the ruling names: the enclosing close. The
     // `after` line must land back in the flow's own BLOCK, not the scene.
