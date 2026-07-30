@@ -984,16 +984,21 @@ asserts that the **statically-inferred** `effects(def)` row covers every
 atom actually observed at runtime. It is the independent oracle for
 effect-row completeness (§2/§3) — complementary to the snapshot-based
 oracle-episode tests but testing a different invariant (static precision,
-not behavioral conformance). Unlike the oracle-episode snapshots, which
-check whole-program reachability, this harness can isolate effect-inference
-bugs in callees even if the caller's row accidentally masks the
-under-report through structural over-reporting.
+not behavioral conformance). The oracle-episode snapshots check
+behavioral conformance against the C# ink runtime; the structural
+`conservative_total_*` tests below check only inter-row ⊇-consistency,
+which a shared under-report (#866) satisfies. This harness is what
+isolates effect-inference bugs in callees even when the caller's row
+accidentally masks the under-report through structural over-reporting.
 
 The test is feature-gated `required-features = ["effect-trace"]` so that
-`cargo test --workspace` (the main gate) never builds or runs it; only
-this explicit command exercises it. A similar pattern to `bench-counters`
-(issue #821), this cost-nothing approach keeps effect-row correctness in
-scope without slowing the critical path or requiring a separate CI job.
+`cargo test --workspace` (the default gate) never builds or runs it. CI
+covers it through the `Test (all features)` job (`cargo test --workspace
+--all-features --exclude bevy-brink`), which builds and runs this
+harness on every PR; the explicit command above gives the same signal
+locally, before pushing. A similar pattern to `bench-counters` (issue
+#821), this keeps effect-row correctness in scope without slowing the
+default/critical-path gate.
 
 Structural tests (`brink-analyzer::infer::effects::conservative_total_*`)
 check inter-row consistency (a caller's row ⊇ its callees' rows); do not
