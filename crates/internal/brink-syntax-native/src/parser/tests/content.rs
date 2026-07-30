@@ -587,6 +587,59 @@ fn tag_text_runs_raw_to_end_of_line() {
 }
 
 #[test]
+fn a_tag_containing_a_balanced_interpolation_brace_does_not_end_early() {
+    // #1728: `tag()`'s free-text scan used to stop at the FIRST literal
+    // `}`, even one that only closes a `{…}` the tag's own raw text had
+    // already echoed open. The `}` matching that `{` must not be mistaken
+    // for the tag's terminator — the tag keeps scanning past it to the
+    // real end of line, and the enclosing flow's own closing `}` is never
+    // fooled into closing early.
+    let src = "flow f() {\n  Hello #tag {gold} coins.\n  The river bends.\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::FLOW_DECL), 1);
+    assert_eq!(
+        count_node_kind(&p.syntax(), SyntaxKind::CONTENT_LINE),
+        2,
+        "both prose lines must parse as CONTENT_LINEs inside the one flow"
+    );
+}
+
+#[test]
+fn a_tag_containing_a_balanced_alternation_brace_does_not_end_early() {
+    // Same defect, alternation-shaped brace instead of interpolation.
+    let src = "flow f() {\n  Hello #tag {gold|silver} coins.\n  The river bends.\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::FLOW_DECL), 1);
+    assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::CONTENT_LINE), 2);
+}
+
+#[test]
+fn a_tag_immediately_followed_by_the_enclosing_blocks_own_closer_still_stops_there() {
+    // Guard against over-correcting: with no `{` opened inside the tag's
+    // own text, depth stays zero and the very first `}` — here the flow
+    // body's own closer — must still terminate the tag, exactly as
+    // before this fix.
+    let src = "flow f() { Hello #tag }\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::FLOW_DECL), 1);
+}
+
+#[test]
+fn a_top_level_tag_with_an_embedded_brace_reproduces_with_no_flow_or_tag_guard_involved() {
+    // #1728: the defect is in the free-text scan itself, not anything
+    // specific to being inside a flow body or interacting with the
+    // header/tag guard (`decl::header_tags_precede_a_body`) — it
+    // reproduces identically for a bare top-level content line.
+    let src = "Hello #tag {gold} coins.\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::TAG), 1);
+}
+
+#[test]
 fn tag_on_a_labeled_content_line() {
     // G-1 (label) and tags composed on the same line.
     let p = assert_lossless("(start) Hello #tag\n");

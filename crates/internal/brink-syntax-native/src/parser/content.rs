@@ -481,12 +481,42 @@ pub(crate) fn header_tag_tail(p: &mut Parser<'_, '_>) {
     }
 }
 
+/// #1728: a tag's body is raw text (`tag_text_runs_raw_to_end_of_line`) —
+/// it never re-parses `{…}` as a real interpolation/alternation/choice
+/// node — but it still must not mistake a `}` that merely *echoes* a `{`
+/// the tag's own text already contains for its own terminator. `depth`
+/// counts literal, unpaired `{`s bumped so far: a `}` only stops the scan
+/// when depth is back to zero, i.e. it isn't balanced by an earlier `{`
+/// within this same tag. This is pure raw-character balancing, not
+/// interpolation awareness — `#tag {gold` (never closed) still runs to
+/// end of line exactly as before, and a `\{`/`\}` inside a tag counts the
+/// same as an unescaped one, since escapes are never interpreted in a
+/// tag's raw scan (mirrors the pre-existing backslash-is-just-a-character
+/// behavior this function already had).
 fn tag(p: &mut Parser<'_, '_>, extra_stop: &[SyntaxKind]) {
     p.start_node(TAG);
     p.expect(HASH);
-    while !matches!(p.current(), NEWLINE | EOF | HASH | R_BRACE)
-        && !extra_stop.contains(&p.current())
-    {
+    let mut depth: u32 = 0;
+    loop {
+        let cur = p.current();
+        if matches!(cur, NEWLINE | EOF | HASH) || extra_stop.contains(&cur) {
+            break;
+        }
+        if cur == R_BRACE && depth == 0 {
+            break;
+        }
+        // `nth_raw(0)`, not `cur`: `cur` (`current()`) looks past pending
+        // trivia to the next real token, so it can report the same
+        // upcoming `{`/`}` on several iterations in a row while this loop
+        // bumps the whitespace ahead of it one raw token at a time.
+        // `nth_raw(0)` is the exact raw token this iteration is about to
+        // bump, so depth changes exactly once per brace, never double- or
+        // zero-counted.
+        match p.nth_raw(0) {
+            L_BRACE => depth += 1,
+            R_BRACE => depth = depth.saturating_sub(1),
+            _ => {}
+        }
         p.bump();
     }
     p.finish_node();
