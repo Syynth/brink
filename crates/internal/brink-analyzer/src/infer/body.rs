@@ -1446,8 +1446,35 @@ impl InferPass<'_, '_> {
     /// resolves, an unannotated one stays `Unknown` (mono-HM narrowing of a
     /// lambda's own params from its concrete call sites is not modeled in
     /// this slice, and inventing a type here would be worse than an honest
-    /// `Unknown`). The body's value expression is inferred for its side
-    /// effects (nested calls, uses) exactly like an interpolation's is.
+    /// `Unknown`). The whole body is inferred for its side effects (nested
+    /// calls, uses) exactly like an interpolation's value expression is —
+    /// for a `LambdaBody::Block`, that means every `stmts` entry
+    /// (`self.infer_block_stmt`) as well as the tail, not the tail alone:
+    /// `value_exprs()` only ever yields the tail, so a block-bodied
+    /// lambda's own temp-decls and assignments would otherwise never be
+    /// visited by this pass at all (issue #1749 — a conservative-total,
+    /// spec §3, violation; an expression-bodied lambda has no `stmts` to
+    /// miss, which is why only the block form under-reported).
+    ///
+    /// `infer_block_stmt` is the ENCLOSING def's own per-statement walker,
+    /// though, not a lambda-scoped one — left unchanged, it also mutates
+    /// frame-scoped bookkeeping that belongs to the lambda's own
+    /// (unmodeled) frame: `BlockStmt::Return` flips `return_ty`/
+    /// `has_value_return`, and `BlockStmt::TempDecl`'s `bind_local` *unifies
+    /// into* `locals` (so even a same-named enclosing local gets corrupted,
+    /// not just a fresh key added). `annotated` and `local_fn_origins` are
+    /// the same shape of leak for ascriptions and write-narrowing. So the
+    /// `stmts` walk below snapshots and restores all five frame-scoped
+    /// fields — only the effect-atom accumulators (`referenced_globals`,
+    /// `effect_writes`, `calls`, `external_calls`, `effect_opaque`,
+    /// `effect_emits`, `effect_tags`, `effect_faults`,
+    /// `effect_faults_refined`) are meant to survive the walk into the
+    /// enclosing frame. `admission.rs`'s `Expr::Lambda` walk visits `stmts`
+    /// then `value_exprs()` in the same order, for its own, unrelated
+    /// provenance-range check — but that walk is a pure `check_range`
+    /// traversal accumulating no per-def frame state, so it is not the same
+    /// kind of walker and is not, on its own, evidence that reusing
+    /// `infer_block_stmt` unguarded here would have been safe.
     ///
     /// The row carries no effects: `Ty::Fn` has nowhere to put one (#1680),
     /// which is precisely the coordination issue #1685 flagged. When
@@ -1475,6 +1502,25 @@ impl InferPass<'_, '_> {
     /// #1680's own analyzer-side work. Pinned by
     /// `brink-db/tests/issue_1680_lambda_effect_row_gap.rs`.
     fn infer_lambda(&mut self, l: &brink_ir::LambdaExpr) -> Ty {
+        if let brink_ir::LambdaBody::Block { stmts, .. } = &l.body {
+            // Wholesale snapshot/restore (not a "remove newly-inserted
+            // keys" diff) — `bind_local` unifies into a pre-existing entry
+            // of the same name, so a diff-based undo would still leak a
+            // same-named outer local's corrupted type.
+            let saved_return_ty = self.return_ty.clone();
+            let saved_has_value_return = self.has_value_return;
+            let saved_locals = self.locals.clone();
+            let saved_annotated = self.annotated.clone();
+            let saved_local_fn_origins = self.local_fn_origins.clone();
+            for s in stmts {
+                self.infer_block_stmt(s);
+            }
+            self.return_ty = saved_return_ty;
+            self.has_value_return = saved_has_value_return;
+            self.locals = saved_locals;
+            self.annotated = saved_annotated;
+            self.local_fn_origins = saved_local_fn_origins;
+        }
         for e in l.body.value_exprs() {
             self.infer_expr(e);
         }

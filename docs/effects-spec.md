@@ -199,6 +199,91 @@ inference, so it has **no index symbol** to harvest and is out of scope
 for this mechanism. The obstacle is keyspace (no index symbol → no
 `DefKey`/SCC membership), not timing. Tracked separately (#1727).
 
+**Aliasing channel enumeration — DRAFTED 2026-07-29, PENDING
+RATIFICATION (issue #1735).** Filed from the #1726/PR #1731 retro:
+does `local_fn_origins` need to learn any more aliasing channels, or
+does the untraced-write guard already cover them? #1735 carries
+`needs-design`; this enumeration is traced against the existing code
+(not new architecture), but per the repo's `needs-design` posture it
+is recorded here as a draft awaiting maintainer ratification, not
+folded into `docs/decision-log.md` as a settled ruling. Enumerated:
+
+1. **A bare Temp write** (`TempDecl` initializer or `Assignment` to a
+   single-segment `Path` resolving to `Temp`) — the one channel this
+   rung actually narrows, joined over every write (Fork A above).
+2. **A Param write or read** — never narrowed (never classified as
+   `Local`, see the soundness argument on `local_call_origin`); a
+   fn-typed param instead gets its own row-variable treatment (§6.1b).
+3. **A `ref`-parameter call-site *rebind*** (`poke(f, cb)` where
+   `poke`'s first param is `ref` — the callee can reassign `f` to
+   whatever the caller passed for `cb`) — explicitly folded in as
+   untraced by `record_ref_param_writes`, covered above and pinned by
+   `a_ref_param_rebind_through_a_call_site_stays_pessimal`.
+4. **A `ref` *projection* onto a field/index** (`ref npc.hp`, T1e) as a
+   `ref`-slot argument at a **call** (not creation) site — unwrapped to
+   its root path first (mutating a projection writes through the
+   root's own cell); if the root is a Temp this is channel 3 again, if
+   the root is a global it is channel 6 and out of
+   `local_fn_origins`'s keyspace entirely (a documented no-op in
+   `record_fn_write`, pinned by
+   `a_ref_param_write_to_an_unrelated_global_root_does_not_poison_a_traced_local`
+   — see that test's own doc comment for what it does and does not
+   pin). `ref` also binds at a **second, distinct** grammar position —
+   channel 5 below — so this channel's own root-unwrapping is the only
+   reduction it performs.
+5. **A `#fn`-creation-site `ref`-binding** (`#fn(heal, player_hp)` —
+   binding `heal`'s `ref hp` param at creation, docs/t1c-spec.md §1:
+   `~ temp heal_player = #fn(heal, player_hp)   // binds ref hp := cell
+   player_hp`) — a grammar position distinct from channel 4's
+   *call*-site projection argument. A Temp/Param bound here is refused
+   outright by `fn_values.rs`'s E080 check (`check_ref_arg`) — the
+   creation itself is a diagnostic, so there is no fn-value alias left
+   to trace (accepted-VAR / refused-temp fixtures at
+   `fn_values.rs::ref_param_bound_to_var_is_clean`/
+   `val_params_never_require_binding` and
+   `ref_param_bound_to_temp_is_e080`). docs/t1c-spec.md §2 and
+   `docs/decision-log.md`'s t1e ratification entry ("projections exist
+   only in ref-argument position (`heal(ref npc.hp, 5)`, `#fn`
+   binding)") both name this position explicitly — it is not absent
+   from the grammar. **Known gap (not modelled, not sound-pessimal):**
+   when the bound cell is a valid `VAR` (accepted, not refused),
+   nothing in this pass records the write that happens when the
+   created value is later called — `infer_fn_literal` never calls
+   `record_ref_param_writes`, and the callee's own body write (e.g.
+   `heal`'s `hp = hp + amount`) resolves `hp` as a `Param` and can't
+   see which caller cell it is bound to. This is a genuine
+   conservative-total (§3) under-report, tracked as #1755 (parent:
+   #1680, the row-polymorphism gap this most naturally belongs to) —
+   not fixed by this pass.
+6. **The heap** (a fn value read out of a `VAR`/`CONST` cell, or a
+   collection element) — never classified as `Local` in the first
+   place (`local_call_origin` only recognizes `Temp`/`Param`), so it is
+   not merely untraced, it is outside this mechanism's keyspace by
+   construction. §5 rules the answer for this channel: the cell's
+   element *type* accumulates the join of every fn value assigned into
+   it, because *typing already follows values* — "no separate
+   points-to machinery exists or is planned." Pinned by
+   `a_call_through_a_heap_stored_fn_value_stays_pessimal`.
+7. **A call's return value, or any other non-`#fn`/non-`bind` RHS** —
+   `fn_literal_write_origin` returns `None`, folded in as untraced by
+   `bump_local_write` (channel 1's own fallback).
+
+**Draft ruling:** channels 1–3 are **modelled** (1 narrows, 2 defers to
+§6.1b's separate mechanism, 3 floors); channels 4, 6, and 7 are
+**permanently opaque at this rung by design**, not a gap — channel 4
+reduces to 3 or 6, and channel 6 is §5's job, a type-level join that is
+deliberately *not* a second points-to system. Channel 5 is **mixed**:
+its Temp/Param case is refused at the checker (no alias survives to
+trace), but its VAR case is a real, currently-unmodelled under-report
+(#1755) — not a deliberate pessimal fallback like every other channel
+here. A future precision rung may narrow channel 6 further (§8 style —
+e.g. reachability-sliced per-cell join), but that is a §8 refinement to
+the heap answer, not a new `local_fn_origins` aliasing channel. This
+enumeration is otherwise complete against the traced code, but it does
+**not** support a claim that nothing is left unmodelled — channel 5's
+VAR case is a known, tracked exception, and this whole enumeration
+awaits maintainer ratification before it can be treated as settled.
+
 ### 6.1b Row variables on fn-typed params — SHIPPED (issue #1680)
 
 Mechanism 1 above, as built. A definition whose body calls through one
