@@ -367,6 +367,49 @@ fn compile_path_native_lambda_self_reference_is_e158() {
     );
 }
 
+/// Review finding on #1764: a lambda-valued `VAR`/`CONST` default is
+/// *already* a hard compile error today, independently of this PR —
+/// `decls.rs`'s `is_const_foldable_decl_default` has treated every
+/// `hir::Expr::Lambda` as never constant-foldable (by design, since #1685)
+/// well before the seven analyzer passes audited here existed. So the
+/// per-pass fixes landed alongside this test do not unlock any new
+/// compiling program; they add an *extra* diagnostic (here, `E106`) to a
+/// file that was already refused. Pinned so the day a lambda default
+/// legally folds is the day this test — not just prose — goes red.
+#[test]
+fn compile_path_native_lambda_valued_var_default_is_e083_with_map_keys_warning_alongside() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-native-lambda-var-default-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("main.brink"),
+        "var f = ||: int {\n  let m = Map { 3.5: 1 };\n  0\n};\n\n\
+         flow main() {\n  Hello. -> END\n}\n",
+    )
+    .unwrap();
+
+    let result = brink_compiler::compile_path(&dir.join("main.brink"));
+    std::fs::remove_dir_all(&dir).ok();
+
+    let err = result.expect_err(
+        "a lambda-valued VAR default must refuse to compile (E083) — it never legally \
+         constant-folds, before or after #1764's analyzer-pass fixes",
+    );
+    let codes = diagnostic_codes(&err);
+    assert!(
+        codes.contains(&"E083"),
+        "expected E083 (non-constant-foldable declaration default), got: {codes:?}"
+    );
+    assert!(
+        codes.contains(&"E106"),
+        "expected E106 (bad map key inside the lambda's statements) to still fire \
+         alongside E083, got: {codes:?}"
+    );
+}
+
 /// A `target/` subdirectory sitting next to a valid `.brink` entry, holding
 /// a file that is not valid brink source at all: native discovery must
 /// never walk into `target/` in the first place (issue #1381), so the

@@ -497,10 +497,15 @@ fn expr_children(expr: &Expr) -> Vec<&Expr> {
         Expr::RefArg(ra) => vec![&ra.operand],
         // A lambda's whole body (issue #1685, #1764). A coalescing chain is
         // one wherever it sits, and this module's output is not only the
-        // `E066` diagnostic: the same recursion feeds `project_has_coalesce`
-        // (the gate on building a `CoalesceTable` at all) and the
-        // `CoalesceLookup` LIR lowering reads, so stopping at the tail
-        // dropped a chain's *shape* as well as its diagnostic. See
+        // `E066` diagnostic: the same recursion also feeds
+        // `project_has_coalesce` (the gate on building a `CoalesceTable` at
+        // all), so stopping at the tail dropped a chain's recorded *shape*
+        // from the table as well as its diagnostic — for a lambda in a
+        // VAR/CONST initializer specifically, that position is a hard
+        // `E083` (`lir::lower::decls::is_const_foldable_decl_default`
+        // rejects every `Expr::Lambda` default), so the `CoalesceLookup`
+        // LIR lowering this table would otherwise feed never actually runs
+        // there — same unreachability as the other six passes. See
         // `LambdaBody::all_exprs`.
         Expr::Lambda(l) => l.body.all_exprs(),
         Expr::Range(r) => vec![&r.start, &r.end],
@@ -845,9 +850,12 @@ mod tests {
     }
 
     /// The same walk answers "does this project coalesce at all?", the gate
-    /// on building a `CoalesceTable` — and so on `CoalesceLookup` reaching
-    /// LIR. Missing the chain there dropped its *shape*, not just its
-    /// diagnostic.
+    /// on building a `CoalesceTable` at all. Missing the chain there dropped
+    /// its *shape* from the table, not just its diagnostic — though for a
+    /// lambda in a VAR/CONST initializer specifically, that table never
+    /// actually reaches `CoalesceLookup` in LIR: the position is already a
+    /// hard `E083` (see `expr_children`'s `Expr::Lambda` arm above), so this
+    /// pins the analyzer-layer shape, not an LIR-reachable one.
     #[test]
     fn a_chain_in_a_lambda_statement_of_a_var_initializer_trips_the_project_gate() {
         let (hir, _index, _res, _inf) =
