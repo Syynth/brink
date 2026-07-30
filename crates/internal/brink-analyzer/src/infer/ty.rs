@@ -165,6 +165,13 @@ pub enum Ty {
 /// pointer wider rather than three words wider — `Ty` is copied constantly
 /// through the join.
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[expect(
+    clippy::box_collection,
+    reason = "the box is the point: it keeps `Ty::Fn` one pointer wider \
+              instead of three words wider, and the unknown top element — \
+              which is what almost every `Ty::Fn` carries — costs nothing \
+              at all through the `Option` niche"
+)]
 pub struct FnRow(Option<Box<BTreeSet<DefinitionId>>>);
 
 impl FnRow {
@@ -787,7 +794,7 @@ mod tests {
         let b = FnRow::of_target(def(2));
         let ab = a.join(&b);
         assert_eq!(
-            ab.targets().map(|t| t.len()),
+            ab.targets().map(BTreeSet::len),
             Some(2),
             "two creation sites union"
         );

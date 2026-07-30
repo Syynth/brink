@@ -1949,12 +1949,12 @@ mod tests {
                 .get(name)
                 .and_then(|ids| ids.first())
                 .copied()
-                .unwrap_or_else(|| panic!("{name}"))
+                .unwrap_or_else(|| unreachable!("no symbol named {name}"))
         };
         let body = result.bodies.get(&id_of("main")).expect("main body");
         let f = body.locals.get("f").expect("f");
         let Ty::Fn(_, _, row) = f else {
-            panic!("expected a fn type, got {f:?}")
+            unreachable!("expected a fn type, got {f:?}")
         };
         assert_eq!(
             row.targets(),
@@ -1988,7 +1988,7 @@ mod tests {
             let body = result.bodies.get(&main_id).expect("main body");
             let f = body.locals.get("f").expect("f");
             let Ty::Fn(_, _, row) = f else {
-                panic!("expected a fn type for {order:?}, got {f:?}")
+                unreachable!("expected a fn type for {order:?}, got {f:?}")
             };
             assert!(row.is_unknown(), "order {order:?} must poison the row");
         }
@@ -2016,13 +2016,13 @@ mod tests {
                 .get(name)
                 .and_then(|ids| ids.first())
                 .copied()
-                .unwrap_or_else(|| panic!("{name}"))
+                .unwrap_or_else(|| unreachable!("no symbol named {name}"))
         };
         let sig = crate::signature::signature(id_of("healer"), &index, &files, None)
             .expect("healer signature");
         let ty = sig.value_ty.clone().expect("healer value_ty");
         let Ty::Fn(params, _, row) = &ty else {
-            panic!("expected a fn type, got {ty:?}")
+            unreachable!("expected a fn type, got {ty:?}")
         };
         assert_eq!(params.len(), 1, "the `ref hp` prefix is bound away");
         assert_eq!(row.targets(), Some(&BTreeSet::from([id_of("heal")])));
@@ -2043,12 +2043,12 @@ mod tests {
                 .get(name)
                 .and_then(|ids| ids.first())
                 .copied()
-                .unwrap_or_else(|| panic!("{name}"))
+                .unwrap_or_else(|| unreachable!("no symbol named {name}"))
         };
         let body = result.bodies.get(&id_of("main")).expect("main body");
         let g = body.locals.get("g").expect("g");
         let Ty::Fn(params, _, row) = g else {
-            panic!("expected a fn type, got {g:?}")
+            unreachable!("expected a fn type, got {g:?}")
         };
         assert_eq!(params.len(), 1, "one param remains after binding one");
         assert_eq!(row.targets(), Some(&BTreeSet::from([id_of("add")])));
@@ -2088,7 +2088,7 @@ mod tests {
         // Issue #1680 step 3: the `#fn` literal is the creation site, so
         // the slot's type carries `heal` as its effect row.
         let Ty::Fn(_, _, row) = cb else {
-            panic!("expected a fn type, got {cb:?}")
+            unreachable!("expected a fn type, got {cb:?}")
         };
         assert_eq!(row.targets(), Some(&BTreeSet::from([heal_id])));
     }
