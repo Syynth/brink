@@ -78,6 +78,89 @@ Gradual mode: an `Unknown`-typed callee slot has no row to read →
 pessimal row. Corollary on the record: **strict mode buys scheduler
 precision**, not just error-catching.
 
+### 4.1 `InferPass`'s lambda-body frame boundary — implementation contract (issue #1762)
+
+`InferPass` (`crates/internal/brink-analyzer/src/infer/body.rs`) is one
+struct that walks **one enclosing definition's** body. A lambda literal
+has no `BodyResult`/`BodyTypes` of its own (no `DefinitionId` exists for
+it at inference time — see `infer_lambda`'s doc comment) and a lambda's
+own `stmts` still need visiting for their side effects (§2's atom
+absorption; issue #1749), so `infer_lambda` re-enters the *same*
+`InferPass` via `infer_block_stmt`/`infer_expr` rather than spinning up a
+nested pass. That reuse is exactly where PR #1750's first attempt leaked:
+`infer_block_stmt` mutates several fields that are conceptually the
+**lambda's own frame**, not the enclosing def's, because ink's `return`
+"leaves the lambda, not the enclosing function"
+(`crates/internal/brink-ir/src/hir/lower_native/lambda.rs` module doc).
+
+**The rule.** Every `InferPass` field falls into exactly one of two
+buckets. Get a lambda-body walk on the wrong side of this split and
+either a lambda's own `return`/locals corrupt the enclosing def's state,
+or (the #1763-shaped mirror problem) atoms that are supposed to be
+absorbed into the enclosing row get lost because they were wrongly
+snapshotted away.
+
+- **Frame-scoped — snapshot before the walk, restore after it.** These
+  describe *this one lambda body's own, unmodeled frame*; nothing about
+  them is meant to be visible to the enclosing def once the lambda
+  returns:
+  - `return_ty`, `has_value_return` — a lambda's `return` resolves the
+    lambda's own (unmodeled) return type, never the enclosing def's.
+  - `locals` — a lambda's `TempDecl`s and param bindings are scoped to
+    the lambda's own block, not hoisted into the enclosing def's locals.
+  - `annotated` — the lambda's own ascription fallbacks; same scoping
+    argument as `locals`.
+  - `local_fn_origins` — write-narrowing summaries keyed by local name;
+    a lambda-local write must not narrow a same-named enclosing local
+    (or vice versa).
+
+  As of this writing that is exactly the five fields PR #1750 identified
+  and `infer_lambda` snapshots/restores (`body.rs`, `infer_lambda`) — if
+  a future change adds a sixth field to `InferPass` that holds
+  per-name-scoped or per-body-scoped state (anything keyed or valid only
+  within one body's locals, not accumulated across the whole
+  definition), it joins this bucket and this list must grow with it.
+
+- **Cumulative — never snapshotted; left to accumulate straight through
+  the walk.** These are the **effect-atom accumulators**, and letting a
+  lambda body's contribution to them survive into the enclosing frame is
+  the entire *point* of walking the lambda's `stmts` in the first place
+  (§2/§3: every atom is absorbed into the enclosing definition's row,
+  and a lambda has no row of its own to absorb into instead — see
+  `infer_lambda`'s doc comment on the keyspace gap). This bucket is
+  everything else `InferPass` carries: `calls`, `referenced_globals`,
+  `effect_writes`, `external_calls`, `effect_opaque`, `effect_emits`,
+  `effect_tags`, `effect_faults`, `effect_faults_refined`, `value_calls`,
+  `array_remove_calls`, `created_fn_values`, `pending_value_calls`,
+  `param_index`, `param_writes`, `param_holes`, `pending_call_fn_args`,
+  `call_fn_args`. (The `param_*` fields describe the *enclosing* def's
+  own params — a lambda closing over and writing an enclosing param is a
+  real write to that param, so it must land here, not be scoped away.)
+
+**Why the fix is a wholesale snapshot/restore, not a diff-based undo.**
+The tempting shortcut — record which keys `locals`/`annotated`/
+`local_fn_origins` gained during the lambda walk and remove just those
+afterward — is unsound, because `bind_local` **unifies into a
+pre-existing entry of the same name** rather than only ever inserting a
+fresh key (`Self::bind_local`, `body.rs`). If the lambda shadows an
+enclosing local (or writes to an enclosing param's narrowing summary
+under the same name), the "new key" diff is empty — nothing was
+*added* — yet the existing entry's *value* was still mutated in place by
+the unify. A diff-based undo would see no key to remove and leave that
+corrupted value behind. Only a snapshot of the whole map's prior value,
+restored wholesale, undoes a same-key mutation as well as an added key.
+
+**Cross-references.** The worked example lives in code:
+`InferPass::infer_lambda`'s doc comment
+(`crates/internal/brink-analyzer/src/infer/body.rs`) states the five
+frame-scoped fields and points back to this section; keep both in sync
+if the field list changes. The adjacent hazard from the other side —
+`strict::collect_temps` deliberately *not* descending into
+`Expr::Lambda`, because a lambda-local temp can never survive into the
+enclosing def's `BodyTypes.locals` for this same frame-scoping reason —
+is documented at its own call site in
+`crates/internal/brink-analyzer/src/strict.rs` (issue #1763, PR #1766).
+
 ## 5. Rows ride the unifier (the heap answer) — RULED
 
 Rows are joined by the same unifier that joins types: a cell or
