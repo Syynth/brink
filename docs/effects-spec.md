@@ -967,3 +967,41 @@ writes / calls / emits / suspend defeat fusion).
   format, `@[effects(…)]` assertions) is reused unchanged; this amendment
   ADDS the two dimensions and the "one canonical signature" framing, and
   wires row inference to the native-lowered HIR.
+
+## 15. Testing Guidance — Effect-Row Semantics
+
+Any PR touching effect-row inference, inference soundness, or effect-row
+narrowing / dimensions must run the independent ground-truth harness
+**before** merging:
+
+```sh
+cargo test -p brink-test-harness --test t2_ground_truth_effects --features effect-trace -- --nocapture
+```
+
+This harness (`crates/internal/brink-test-harness/tests/t2_ground_truth_effects.rs`)
+traces actual bytecode execution through the instrumented runtime and
+asserts that the **statically-inferred** `effects(def)` row covers every
+atom actually observed at runtime. It is the independent oracle for
+effect-row completeness (§2/§3) — complementary to the snapshot-based
+oracle-episode tests but testing a different invariant (static precision,
+not behavioral conformance). The oracle-episode snapshots check
+behavioral conformance against the C# ink runtime; the structural
+`conservative_total_*` tests below check only inter-row ⊇-consistency,
+which a shared under-report (#866) satisfies. This harness is what
+isolates effect-inference bugs in callees even when the caller's row
+accidentally masks the under-report through structural over-reporting.
+
+The test is feature-gated `required-features = ["effect-trace"]` so that
+`cargo test --workspace` (the default gate) never builds or runs it. CI
+covers it through the `Test (all features)` job (`cargo test --workspace
+--all-features --exclude bevy-brink`), which builds and runs this
+harness on every PR; the explicit command above gives the same signal
+locally, before pushing. A similar pattern to `bench-counters` (issue
+#821), this keeps effect-row correctness in scope without slowing the
+default/critical-path gate.
+
+Structural tests (`brink-analyzer::infer::effects::conservative_total_*`)
+check inter-row consistency (a caller's row ⊇ its callees' rows); do not
+mistake that for completeness (the #866 ref-param-write bug passed every
+structural test while *both* rows silently under-reported the same real
+write). Always run the ground-truth harness before shipping effect changes.
