@@ -80,7 +80,12 @@ function value*. When you dispatch through a `#fn` value — `~ temp x = f()` �
 compiler generally can't see which concrete function `f` holds at that moment,
 so the row becomes **opaque**: the conservative "touches everything" row. That
 is always sound (it can never *under*-report), just coarse. Concrete functions
-called directly stay fully precise; only the indirect hop widens.
+called directly stay fully precise; only the indirect hop widens. A **traced**
+callback is the exception: a `#fn` literal passed straight into a fn-typed
+parameter, or a local whose every write traces back to one, is followed
+through instead — only dispatch through something genuinely untraceable (a
+host callback, a value loaded from the heap, or a param forwarded on into
+another higher-order call) still widens to opaque.
 
 ## Boundaries: what ships in a row
 
