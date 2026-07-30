@@ -489,13 +489,32 @@ fn collect_expr(expr: &Expr, out: &mut Vec<ComparatorSite>) {
             }
         }
         Expr::RefArg(r) => collect_expr(&r.operand, out),
-        // A lambda's value expression (issue #1685) — its braced body's
-        // statements are not expressions; see `LambdaBody::value_exprs`.
-        Expr::Lambda(l) => {
-            for e in l.body.value_exprs() {
-                collect_expr(e, out);
+        // A lambda's whole body (issue #1685, #1764). Unlike the sibling
+        // initializer walks this collector *has* a statement vocabulary, so
+        // a braced body's statements go through `collect_block_stmt` — the
+        // same arm every code-ground block gets — rather than the flattened
+        // `LambdaBody::all_exprs`.
+        //
+        // **No reachable case today, and so no regression test** (audited
+        // under #1764, same finding as `range_refinement`): this gate fires
+        // only on an *inline* `#fn(target)` callback, and the two shapes are
+        // surface-disjoint. `Expr::Lambda` is minted only by
+        // `hir::lower_native`, `Expr::FnLiteral` only by `hir::lower` (the
+        // native surface has no `#fn` grammar; the ink/brink surface has no
+        // lambda grammar), so a `#fn` literal cannot occur inside a lambda
+        // body at all. This descends anyway so the gap cannot silently
+        // reopen the day the surfaces converge; it is a no-op until then.
+        Expr::Lambda(l) => match &l.body {
+            brink_ir::LambdaBody::Expr(e) => collect_expr(e, out),
+            brink_ir::LambdaBody::Block { stmts, tail } => {
+                for s in stmts {
+                    collect_block_stmt(s, out);
+                }
+                if let Some(t) = tail {
+                    collect_expr(t, out);
+                }
             }
-        }
+        },
         Expr::Int(_)
         | Expr::Float(_)
         | Expr::Bool(_)
