@@ -269,13 +269,23 @@ fn analysis_matches_with_host_manifest_and_external_checks() {
 /// `two_known_fn_origins_collapse_to_the_joined_row_instead_of_the_opaque_floor`
 /// fixture, reused here for cross-path parity rather than single-path
 /// correctness). The `@[effects(…)]` bound is declared exactly wide
-/// enough to cover the joined row `solve_scc_effects` computes today —
-/// if a future change ever made the two call-graph constructions
-/// disagree on this def's edge set, one path would place `user` in a
-/// different SCC batch (or drop an edge outright) than the other, and
-/// the resulting exceedance diagnostic (or its absence) would differ
-/// between `query.diagnostics` and `monolithic.diagnostics` below —
-/// exactly the divergence this test exists to catch.
+/// enough to cover the joined row `solve_scc_effects` computes today.
+///
+/// What this actually guards: the two pipelines' *outputs* — including
+/// the `@[effects(…)]` exceedance diagnostic — stay byte-identical on a
+/// fixture that exercises `creates_fn_values` non-trivially, not just on
+/// a trivial one. It is **not** a test of the two call-graph
+/// constructions' edge sets directly, and while
+/// `creates_fn_values` remains a strict subset of `direct_calls` by
+/// construction (see `every_fn_value_creation_target_is_also_a_call_graph_edge`
+/// in `brink-analyzer`'s `infer::mod` tests), the two constructions
+/// cannot actually disagree here — `resolve_pending_value_calls`'s
+/// call-through-a-local narrowing re-records `bar`/`baz` as
+/// `direct_calls` at the `f()` call site regardless, so this fixture
+/// cannot exercise a `creates_fn_values`-outside-`direct_calls` shape.
+/// A future divergence in the two constructions' edge sets would need a
+/// dedicated edge-set assertion (see the `call_graph_covers_effect_atoms`
+/// unit test in `brink-db/src/queries/mod.rs`) to be caught at all.
 #[test]
 fn analysis_matches_with_fn_value_creation_and_effects_assertion() {
     let files: &[(&str, &str)] = &[(

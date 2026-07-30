@@ -788,6 +788,17 @@ impl ProjectDb {
     fn include_graph(&self) -> &crate::include_graph::IncludeGraph {
         include_graph_query(&self.salsa, self.project)
     }
+
+    /// Test-only escape hatch: hand out the raw salsa handle and project
+    /// input so crate-internal `#[cfg(test)]` code elsewhere (e.g.
+    /// `queries::tests`) can call `pub(crate)` queries — `call_graph_query`,
+    /// `def_effect_atoms_query` — directly instead of only through this
+    /// façade's own accessors (issue #1736 finding: a direct edge-set
+    /// parity guard needs both raw pieces).
+    #[cfg(test)]
+    pub(crate) fn salsa_and_project(&self) -> (&BrinkDatabase, ProjectInput) {
+        (&self.salsa, self.project)
+    }
 }
 
 impl Default for ProjectDb {
