@@ -34,6 +34,7 @@ fn strict_opts(manifest: HostManifest) -> AnalysisOptions {
 
 fn manifest_with_scalar_type_and_toggle() -> HostManifest {
     HostManifest {
+        markup: Vec::new(),
         types: vec![SemanticTypeDef {
             name: "switch_id".to_string(),
             base: BaseType::Int,
@@ -106,6 +107,7 @@ fn external_call_scalar_semantic_type_match_reaches_no_diagnostics_under_strict(
 /// @param` doc comment.
 fn manifest_with_only_handle_vocabulary() -> HostManifest {
     HostManifest {
+        markup: Vec::new(),
         types: vec![
             SemanticTypeDef {
                 name: "AudioInstance".to_string(),
@@ -191,6 +193,7 @@ fn inline_only_external_same_kind_argument_reaches_no_diagnostics_under_strict()
 
 fn manifest_with_play_sound_and_spawn_timer() -> HostManifest {
     HostManifest {
+        markup: Vec::new(),
         types: vec![
             SemanticTypeDef {
                 name: "AudioInstance".to_string(),

@@ -326,6 +326,20 @@ host manifest declares a markup vocabulary (span kinds + attributes),
 the compiler validates tags against it with configurable severity —
 exactly the externals-manifest pattern.
 
+**Both halves landed** — freeform in PR #1732, manifest validation in
+issue #1733. The vocabulary is the host capability manifest's `markup`
+key (`docs/host-capability-manifest.md` § "Markup vocabulary"), an array
+of `{ name, attrs }` span kinds. An empty/absent `markup` section leaves
+markup freeform, including for a project whose manifest declares only
+`externals`/`types` — declaring a span kind is the *only* thing that
+turns checking on. An undeclared tag is `E164`, an undeclared attribute
+on a declared kind is `E165`; both default to `Warning`, which is what
+makes them `[lints]`-configurable and `@[allow(…)]`-suppressible (only
+`Warning`-base codes are — a hard-error code can be neither). Attribute
+*values* are unchecked: they are static text by construction, so only
+the attribute name is vocabulary. Implemented in
+`brink_analyzer::markup_check`, wired into `per_file_diagnostics`.
+
 ### 4.3 Nesting doctrine (RULED)
 - **A tag must close in the same fragment scope it opened in.** Markup
   and logic nest freely inside each other; they can never partially
@@ -456,11 +470,21 @@ error, violating the superset doctrine, §1). What shipped:
   boundary doesn't survive an XLIFF round-trip yet. Real inline-code
   support is "Translation, round 2" (§9, open thread 2), not this slice.
 
-Deliberately not attempted: manifest validation of markup vocabulary
-(§4.2's second half — "the host manifest declares a markup vocabulary…
-the compiler validates" needs the host capability manifest facility,
-which is a separate track); the `Step`/`Part` structured runtime surface
-(§7/§9.1); a real XLIFF `<pc>`/`<x/>` inline-code mapping for spans.
+Deliberately not attempted **by #1716/#1732**: manifest validation of
+markup vocabulary (§4.2's second half); the `Step`/`Part` structured
+runtime surface (§7/§9.1); a real XLIFF `<pc>`/`<x/>` inline-code mapping
+for spans.
+
+**Manifest validation has since landed** (issue #1733) — that item's
+stated blocker ("needs the host capability manifest facility, which is a
+separate track") was already stale when written: `brink_ir::HostManifest`
+and its `AnalysisOptions`/`IdeSession`/`EditorHandle.setHostManifest`
+registration path shipped with the Tier 1 + closed Tier 2 MVP
+(`docs/host-capability-manifest.md` § "Implementation status"), so the
+`markup` section layered onto an existing facility rather than waiting on
+one. See §4.2 above. The other two items remain open: the `Step`/`Part`
+runtime surface (§7/§9.1) and the XLIFF inline-code mapping (issue
+#1734).
 
 ## 5. Tooling: completions & succession (RULED doctrine)
 

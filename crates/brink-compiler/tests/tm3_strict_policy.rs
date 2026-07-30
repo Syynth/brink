@@ -77,6 +77,7 @@ fn compile_mem_manifest(
 /// unresolvable declared type.
 fn get_thing_manifest(ty: &str) -> brink_ir::HostManifest {
     brink_ir::HostManifest {
+        markup: Vec::new(),
         types: vec![brink_ir::SemanticTypeDef {
             name: "thing_id".to_string(),
             base: brink_ir::BaseType::Int,

@@ -104,6 +104,7 @@ fn type_inference_memo_survives_diagnostics_only_analysis_options_edit() {
     // `analysis_query`'s diagnostics but neither the symbol index nor any
     // resolution (the manifest never touches ink source).
     let manifest = HostManifest {
+        markup: Vec::new(),
         externals: vec![ManifestExternal {
             name: "foo".to_string(),
             params: vec![

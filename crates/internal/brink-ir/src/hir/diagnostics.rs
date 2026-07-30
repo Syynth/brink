@@ -1280,6 +1280,26 @@ pub enum DiagnosticCode {
     /// `dispatch`), so a style declaration with nothing to style against
     /// is malformed rather than silently inert.
     E163,
+
+    // ── Host manifest (inline-markup vocabulary, issue #1733,
+    //    `docs/prose-dialect-spec.md` §4.2) ──────────────────────────────
+    /// An inline markup span (`<name>…</name>`) whose tag name is not
+    /// declared in the host manifest's markup vocabulary.
+    ///
+    /// Only ever reachable once a host *declares* a vocabulary: markup is
+    /// freeform by default (§4.2), so with no declared span kinds this code
+    /// cannot fire at all. `Warning` by default and therefore
+    /// `[lints]`-configurable and `@[allow(E164)]`-suppressible — the
+    /// "configurable severity" half of §4.2's ruling.
+    E164,
+    /// An inline markup span carries an attribute the host manifest does not
+    /// declare for that span kind.
+    ///
+    /// The per-kind counterpart of `E164`, and gated the same way: it fires
+    /// only for a span whose *name* the manifest does declare (an undeclared
+    /// name reports `E164` alone rather than cascading one report per
+    /// attribute).
+    E165,
 }
 
 impl DiagnosticCode {
@@ -1454,6 +1474,8 @@ impl DiagnosticCode {
             Self::E161 => "E161",
             Self::E162 => "E162",
             Self::E163 => "E163",
+            Self::E164 => "E164",
+            Self::E165 => "E165",
         }
     }
 
@@ -1712,6 +1734,12 @@ impl DiagnosticCode {
                 "`@[style(…)]` names a key that is neither `line`, `dispatch`, nor a capture declared by the paired `@[element(…)]`"
             }
             Self::E163 => "`@[style(…)]` needs a paired `@[element(…)]` on the same declaration",
+            Self::E164 => {
+                "inline markup tag is not declared in the host manifest's markup vocabulary"
+            }
+            Self::E165 => {
+                "inline markup attribute is not declared for this span kind in the host manifest"
+            }
         }
     }
 
@@ -1739,7 +1767,15 @@ impl DiagnosticCode {
             | Self::E131
             | Self::E132
             | Self::E151
-            | Self::E152 => Severity::Warning,
+            | Self::E152
+            // Issue #1733 / §4.2: markup vocabulary checks are `Warning` by
+            // default so they stay `[lints]`-configurable and
+            // `@[allow(…)]`-suppressible (only `Warning`-base codes are —
+            // see `crate::suppressions`). A host that wants a declared
+            // vocabulary to be binding raises them with
+            // `[lints] E164 = "deny"`.
+            | Self::E164
+            | Self::E165 => Severity::Warning,
             // Issue #1674: the one code whose *default* is the `Info`
             // advisory tier rather than `Warning` — RULED "off or info by
             // default" (a single-shot project should not be nagged) while
@@ -1923,6 +1959,8 @@ impl DiagnosticCode {
             "E161" => Some(Self::E161),
             "E162" => Some(Self::E162),
             "E163" => Some(Self::E163),
+            "E164" => Some(Self::E164),
+            "E165" => Some(Self::E165),
             _ => None,
         }
     }

@@ -123,6 +123,7 @@ mod tests {
         let mut session = IdeSession::new();
         session.update_and_analyze("test.ink", src.to_string());
         session.set_host_manifest(HostManifest {
+            markup: Vec::new(),
             externals: vec![ManifestExternal {
                 name: "set_tint".into(),
                 params: vec![ManifestParam {

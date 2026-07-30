@@ -21,6 +21,7 @@ mod fn_values;
 mod infer;
 mod manifest;
 mod map_keys;
+mod markup_check;
 mod modules;
 mod native_admission;
 mod native_choice_dead_end;
@@ -689,6 +690,16 @@ pub fn per_file_diagnostics(
         // cascade ruling (A)).
         out.extend(map_keys::check_duplicate_keys(&files));
     }
+    // Inline-markup vocabulary checks (E164/E165, issue #1733,
+    // docs/prose-dialect-spec.md §4.2). Wired *outside* every dialect
+    // branch above on purpose: markup spans are a native-grammar
+    // construct, so the ink-only `dialect` axis has nothing to say about
+    // them, and the pass is inert for ink source by construction (no
+    // `ContentPart::Span` can exist there). Inert for native source too
+    // unless the host manifest actually declares a markup vocabulary —
+    // freeform is the default (§4.2), and `markup_check::check` returns
+    // before touching the HIR when nothing is declared.
+    out.extend(markup_check::check(&[(file, hir)], host_manifest));
     out
 }
 
@@ -1466,6 +1477,7 @@ EXTERNAL add_state(who)
     fn host_semantic_type_still_checked_once_manifest_registered() {
         let (hir, manifest) = lower(SRC);
         let host_manifest = HostManifest {
+            markup: Vec::new(),
             externals: Vec::new(),
             types: vec![SemanticTypeDef {
                 name: "actor_id".to_string(),
@@ -1556,6 +1568,7 @@ EXTERNAL add_state(who)
     fn semantic_type_check_error_with_known_type_in_manifest_is_clean() {
         let (hir, manifest) = lower(SRC);
         let host_manifest = HostManifest {
+            markup: Vec::new(),
             externals: Vec::new(),
             types: vec![SemanticTypeDef {
                 name: "actor_id".to_string(),

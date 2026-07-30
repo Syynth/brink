@@ -158,6 +158,7 @@ fn analysis_matches_with_host_manifest_and_external_checks() {
     ];
     let opts = AnalysisOptions {
         host_manifest: Some(HostManifest {
+            markup: Vec::new(),
             externals: vec![
                 ManifestExternal {
                     name: "play_sound".to_owned(),
