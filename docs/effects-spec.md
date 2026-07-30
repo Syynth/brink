@@ -89,9 +89,12 @@ absorption; issue #1749), so `infer_lambda` re-enters the *same*
 `InferPass` via `infer_block_stmt`/`infer_expr` rather than spinning up a
 nested pass. That reuse is exactly where PR #1750's first attempt leaked:
 `infer_block_stmt` mutates several fields that are conceptually the
-**lambda's own frame**, not the enclosing def's, because ink's `return`
-"leaves the lambda, not the enclosing function"
-(`crates/internal/brink-ir/src/hir/lower_native/lambda.rs` module doc).
+**lambda's own frame**, not the enclosing def's — the module doc's own
+words are "`return` leaves the lambda"
+(`crates/internal/brink-ir/src/hir/lower_native/lambda.rs`), and the very
+next clause is the reason a lambda-body walk needs a frame boundary at
+all: "*which* frame it returns from is a resolution fact for the layer
+that gives the lambda a frame, not a shape this lowering can express".
 
 **The rule.** Every `InferPass` field falls into exactly one of two
 buckets. Get a lambda-body walk on the wrong side of this split and
@@ -99,6 +102,28 @@ either a lambda's own `return`/locals corrupt the enclosing def's state,
 or (the #1763-shaped mirror problem) atoms that are supposed to be
 absorbed into the enclosing row get lost because they were wrongly
 snapshotted away.
+
+There is a third hazard the two-bucket split does not, by itself, make
+safe: a field can be **cumulative** (never snapshotted) yet still refer
+to *frame-scoped* state **by name** rather than by `DefinitionId`. When
+that happens, the cumulative field's post-walk resolution can read a
+name that meant something different inside the lambda than it means
+once the lambda's own frame is gone, because what survives the restore
+is the enclosing def's local of that same name. `pending_value_calls` is
+exactly this: cumulative (never snapshotted), but it stores
+`ValueCallOrigin::Local(name)` entries resolved only after the whole
+walk finishes (`InferPass::resolve_pending_value_calls`) against
+`local_fn_origins` — which *is* frame-scoped, keyed by that same flat
+name, and by then restored to the enclosing def's own summary. Lambda
+params are indexed as `SymbolKind::Temp` in the same project-wide name
+keyspace (`walk_lambda`,
+`crates/internal/brink-ir/src/symbols/project.rs`), so a lambda param
+can collide by name with an unrelated enclosing Temp, and a value call
+made through the lambda's own param can resolve — silently and
+incorrectly — against whatever the enclosing def's same-named Temp
+traced to instead, an under-report of the direction §3 forbids. This is
+a live gap in the current split, not a hypothetical one; tracked as
+issue #1779.
 
 - **Frame-scoped — snapshot before the walk, restore after it.** These
   describe *this one lambda body's own, unmodeled frame*; nothing about
@@ -121,6 +146,21 @@ snapshotted away.
   within one body's locals, not accumulated across the whole
   definition), it joins this bucket and this list must grow with it.
 
+  **Scope of the restore, precisely.** `infer_lambda` only ever
+  snapshots before, and restores immediately after, walking a block
+  body's `stmts` (`LambdaBody::Block { stmts, .. }`) — the walk that
+  visits `TempDecl`s, assignments, and nested `return`s where these
+  fields get mutated. It does **not** wrap the lambda's own tail
+  expression: for a block body, `LambdaBody::value_exprs()` yields only
+  the tail (`crates/internal/brink-ir/src/hir/types.rs`), and
+  `infer_lambda` walks it *after* the restore — so a block-bodied
+  lambda's own tail expression is inferred with the lambda's `locals`/
+  `annotated`/`local_fn_origins` already discarded; the enclosing def's
+  is what's live for it. (A single-expression body, `LambdaBody::Expr`,
+  has no `stmts` to snapshot around in the first place — its one
+  expression walks under whatever frame was already live when
+  `infer_lambda` was entered.)
+
 - **Cumulative — never snapshotted; left to accumulate straight through
   the walk.** These are the **effect-atom accumulators**, and letting a
   lambda body's contribution to them survive into the enclosing frame is
@@ -133,22 +173,32 @@ snapshotted away.
   `effect_tags`, `effect_faults`, `effect_faults_refined`, `value_calls`,
   `array_remove_calls`, `created_fn_values`, `pending_value_calls`,
   `param_index`, `param_writes`, `param_holes`, `pending_call_fn_args`,
-  `call_fn_args`. (The `param_*` fields describe the *enclosing* def's
-  own params — a lambda closing over and writing an enclosing param is a
-  real write to that param, so it must land here, not be scoped away.)
+  `call_fn_args`. (`param_index` is built once from the enclosing def's
+  own signature before the walk starts and is only ever *read* during
+  it — never mutated (`InferPass::new`; every other use is a `.get`).
+  `param_writes`, `param_holes`, `pending_call_fn_args`, and
+  `call_fn_args` are the enclosing def's own §6.1 caller/callee-side
+  row-variable bookkeeping — cumulative for the same reason as the rest
+  of this bucket: a call or a `ref`-argument write made from inside a
+  lambda body is absorbed into it exactly like any other atom, per the
+  absorption rule stated above.)
 
 **Why the fix is a wholesale snapshot/restore, not a diff-based undo.**
 The tempting shortcut — record which keys `locals`/`annotated`/
 `local_fn_origins` gained during the lambda walk and remove just those
 afterward — is unsound, because `bind_local` **unifies into a
 pre-existing entry of the same name** rather than only ever inserting a
-fresh key (`Self::bind_local`, `body.rs`). If the lambda shadows an
-enclosing local (or writes to an enclosing param's narrowing summary
-under the same name), the "new key" diff is empty — nothing was
-*added* — yet the existing entry's *value* was still mutated in place by
-the unify. A diff-based undo would see no key to remove and leave that
-corrupted value behind. Only a snapshot of the whole map's prior value,
-restored wholesale, undoes a same-key mutation as well as an added key.
+fresh key (`Self::bind_local`, `body.rs`), and `local_fn_origins` has
+the same shape of hazard through `bump_local_write`'s
+`entry(name).or_default()`: a lambda-local write folds into a
+*pre-existing* same-named enclosing Temp's summary rather than minting
+a new key. If the lambda shadows an enclosing local this way, the "new
+key" diff is empty — nothing was *added* — yet the existing entry's
+*value* was still mutated in place by the unify/fold. A diff-based undo
+would see no key to remove and leave that corrupted value behind (it
+misses this case exactly as it misses an added key). Only a snapshot of
+the whole map's prior value, restored wholesale, undoes a same-key
+mutation as well as an added key.
 
 **Cross-references.** The worked example lives in code:
 `InferPass::infer_lambda`'s doc comment
