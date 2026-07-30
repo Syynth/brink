@@ -237,10 +237,11 @@ fn expr_children(expr: &Expr) -> Vec<&Expr> {
         Expr::FnLiteral(fl) => fl.args.iter().collect(),
         // T1e `ref lvalue-path`: only the operand is a child expression.
         Expr::RefArg(ra) => vec![&ra.operand],
-        // A lambda's value expression (issue #1685). A braced body's
-        // *statements* are not expressions and cannot be handed to an
-        // expression-only walker — see `LambdaBody::value_exprs`.
-        Expr::Lambda(l) => l.body.value_exprs(),
+        // A lambda's whole body (issue #1685, #1764). An `int(…)`/`float(…)`
+        // call's argument domain is the same question in a braced body's
+        // statement position as in its tail, so both are reached — see
+        // `LambdaBody::all_exprs`.
+        Expr::Lambda(l) => l.body.all_exprs(),
         Expr::Range(r) => vec![&r.start, &r.end],
         Expr::String(s) => s
             .parts
@@ -405,6 +406,46 @@ mod tests {
     fn check_all(src: &str) -> Vec<Diagnostic> {
         let (hir, index, resolutions, inference) = build_with_inference(src);
         check(&[(FileId(0), &hir)], &index, &inference, &resolutions)
+    }
+
+    /// [`check_all`]'s native-surface twin — lambdas exist only on the
+    /// native surface, so the #1764 fixtures below need `lower_native`.
+    fn check_all_native(src: &str) -> Vec<Diagnostic> {
+        let parsed = brink_syntax_native::parse(src);
+        assert!(parsed.errors().is_empty(), "{:?}", parsed.errors());
+        let (hir, manifest, _diag) = brink_ir::hir::lower_native::lower(FileId(0), &parsed.tree());
+        let (index, _diag) = crate::symbol_index(&[(FileId(0), &manifest)]);
+        let (resolutions, _diag) =
+            crate::resolve(FileId(0), &manifest, &index, &crate::ImportScope::default());
+        let inference = crate::infer_project(
+            &[(FileId(0), &hir)],
+            &index,
+            &resolutions,
+            None,
+            &BTreeMap::new(),
+        );
+        check(&[(FileId(0), &hir)], &index, &inference, &resolutions)
+    }
+
+    /// Issue #1764: the VAR/CONST-initializer recursion is the one walk that
+    /// isn't `visit::visit`'s (which already descends a lambda's statements),
+    /// so it has to descend them itself.
+    #[test]
+    fn a_bad_conversion_in_a_lambda_statement_of_a_var_initializer_is_e078() {
+        let diags =
+            check_all_native("var f = ||: int {\n  let x = int(Map { 1: 2 });\n  0\n};\n");
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E078);
+        assert!(diags[0].message.contains("map"), "{:?}", diags[0].message);
+    }
+
+    /// The tail position was already covered — pinned so a later refactor
+    /// can't trade one half of the body for the other.
+    #[test]
+    fn a_bad_conversion_in_a_lambda_tail_of_a_var_initializer_is_still_e078() {
+        let diags = check_all_native("var f = ||: int {\n  let a = 1;\n  int(Map { 1: 2 })\n};\n");
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E078);
     }
 
     #[test]
