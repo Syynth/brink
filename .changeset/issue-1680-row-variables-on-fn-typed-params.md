@@ -32,6 +32,10 @@ The conservative direction is preserved on every fallback: a param the body
 reassigns or that is declared `ref`, an argument that did not trace to an
 in-project creation site, a second call site passing something untraceable in
 the same position, or a callback whose own row is still parametric all keep the
-pessimal floor. The `.inkb` `EffectRows` section is unchanged — a row still
-carrying a hole is closed to opaque on the way out, so emitted bytes are
-identical to before.
+pessimal floor. The `.inkb` `EffectRows` section's **encoding** is unchanged —
+a row still carrying a hole is closed to opaque on the way out, using the same
+`EffectRowEntry` shape as before this change. But a caller whose row now
+*instantiates* a filled hole emits real, non-opaque `reads`/`writes`/`calls`
+where it previously emitted the pessimal placeholder, so the emitted bytes for
+those definitions differ from `main` — that is this change's headline payoff,
+not a wire-format no-op.
