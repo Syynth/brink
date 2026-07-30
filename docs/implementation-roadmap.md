@@ -10,6 +10,7 @@
 > and what gates what* — not because it is being worked. It is deliberately
 > placed after the compiler tracks it depends on.
 >
+> **Refreshed 2026-07-30** after pump waves 84–92 (28 of 32 items landed).
 > Standing constraints: the oracle ratchet holds (**5,607 episodes / 365 of 396
 > cases**) unless a line item says otherwise **in-PR**; one fix per commit;
 > decline-don't-invent on anything unruled; and **search the decision log before
@@ -43,7 +44,11 @@ fallback); import aliases honored (#1590).
 
 The dominant chain. Strictly ordered; each step gates the next.
 
-1. ~~**Harness terminal fold (#1449)**~~ — **DONE** (PR #1513).
+1. **Harness terminal fold (#1449)** — **PARTIAL, still open.** PR #1513 landed
+   the harness-side half and *explicitly declined* the runtime-side classifier
+   collapse, which is now **#1520** (`needs-design`). An earlier revision of this
+   doc recorded this as DONE; that was wrong — it read the PR title, not the
+   outcome.
 2. ~~**Transcript codec dedupe (#1443)**~~ — **DONE** (PR #1512).
 3. **The v6 bump — now writable.** Both prerequisites cleared 2026-07-27, and
    the payload list shrank:
@@ -68,14 +73,21 @@ The dominant chain. Strictly ordered; each step gates the next.
    variants frozen (Done = flow persists/parks; End = host despawns the entity).
    Touches the bevy consumer — coordinate the `Line`→`Step` rename there.
    ⚠ *Owed: its issue.*
-5. **Native prose grammar** — block elements (scene headings with `[slug]`,
+5. ~~**Native prose grammar**~~ — **LANDED 2026-07-28** (#1715 / PR #1725):
+   scene headings with trailing `[slug]` + tags, block cues, parentheticals,
+   the compact `@NAME: text` form, and header-scoped stitches (flat siblings).
+   The inline **markup layer** landed alongside it (#1716 / PR #1732) and forced
+   a real **`.inkb` v6 / `.inkl` v2 bump** for `PART_SPAN` — spans did *not*
+   ride the existing part-tag dispatch for free, as this doc previously assumed.
+   Manifest validation followed in #1733 / PR #1778. Original scope was: block elements (scene headings with `[slug]`,
    cues `@NAME`, parentheticals, compact `@NAME: text`) + inline XML markup with
    the ruled escape set + per-flow trailing tags (#474).
 6. **Attachment + lowering** — compile-baked cue/parenthetical attachment;
    transitions/scene-entry lowered to non-blocking host calls via the
    conventions `lower` column; header-scoped scene stitches; **slug
    materialization** (fmt writes `[slug]`; warn-tier lint for unmaterialized).
-7. **`@[element]` annotations + `!name` dispatch** — ⚠ **newly unblocked**:
+7. ~~**`@[element]` annotations + `!name` dispatch**~~ — **LANDED 2026-07-28**
+   (#1719 / PR #1724), including the `@[style]` declaration surface. Original note: ⚠ **newly unblocked**:
    per-declaration annotations only started lowering on 2026-07-27 (#1563); the
    whole dispatch design assumed a mechanism that did not exist.
 8. **Built-in screenplay preset** + XLIFF v1 element rules (content-typed
@@ -86,7 +98,9 @@ The dominant chain. Strictly ordered; each step gates the next.
 ## Track 2 — code dialect / stdlib
 
 **Ruled 2026-07-27, build-ready:**
-- **#1490** array literals `[1, 2, 3]` · **#1592** dual-reading `use`
+- ~~**#1490** array literals `[1, 2, 3]`~~ **CLOSED** · ~~**#1592** dual-reading
+  `use`~~ **CLOSED** (delivered by PR #1686 on 2026-07-27 — this list carried it
+  as build-ready after it had already shipped)
 - **#1552** type-name conformance sweep — angle brackets + Uppercase
   non-primitives (`Array<T>`, `Option<T>`, `List<T>`, `Handle<T>`); primitives
   stay lowercase. **Not a new decision** — enforcement of the 2026-07-19 casing
@@ -94,9 +108,11 @@ The dominant chain. Strictly ordered; each step gates the next.
 - **#1541** flags verbs → each flags type's **companion module** (`Mood::all()`,
   `s.count()` via companion-first UFCS lookup), riding the ruled 2026-07-19
   companion-module design; check whether that machinery exists before building.
-- **#1531** frame-local projection receivers legal (rows are durable-only)
+- ~~**#1531** frame-local projection receivers legal~~ **CLOSED**
 - **#1549** annotation-first global typing
-- **#1471** `or` short-circuit · **#1667** branch expansion
+- ~~**#1471** `or` short-circuit~~ **CLOSED** · ~~**#1667** branch expansion~~
+  **CLOSED** — delivered by PR #1694 *before* this list was written; the issue's
+  "never built" premise was already false when filed
 
 **Design-gated:** protocol impl spelling + compare/equality coherence (§9.6 —
 retires three deferrals) · syntax-in-value-position · numeric tower (§2b) ·
@@ -235,3 +251,42 @@ statecharts · #591/#592 fmt config.
 
 Chapter issues (#1181–#1184, #1292) proceed as their subject areas stabilize;
 the prose dialect gets its chapter after the Track 1 spine lands.
+
+## Addendum — what landed in waves 84–92 (2026-07-28 → 2026-07-30)
+
+Recorded here rather than woven in, so the sequencing above stays readable and
+this stays honestly dated.
+
+**The effect system closed out.** `Ty::Fn` now carries a `FnRow` (#1680,
+PR #1754) — an orphaned ruling from 2026-07-13, re-ruled 2026-07-21, declined
+twice for five unruled decisions, all five of which were ruled on 2026-07-28
+(decision log: *"Effect-row wire semantics under row-polymorphism"* and
+*"Fork A — fn-value call-graph edges are harvested STRUCTURALLY"*). With it:
+lambda lifting (#1709), the full stdlib verb layer (#1679), the Fork A
+structural atom (#1726), a real soundness bug in effect inference (#1749) and
+its seven-sibling audit (#1764).
+
+**Track 1 step 5 is done**; step 6 is *not*, and the reason is specific:
+
+- **§9.1 — the `std::conventions` types design pass — is the live blocker.**
+  It gates **#1717** (step 6a/6b) and **#1720** (step 8's preset). Two build
+  agents independently declined on it without seeing each other's analysis.
+  The three decisions it owes: the concrete `Conventions` schema type + v1 file
+  format, the `brink.toml` pointer/load path, and — not in §9.1's own list —
+  what a synthesized `scene_entered`/transition call does when no matching
+  `EXTERNAL` was authored.
+- **#1737** (span nesting an inline conditional) is blocked by
+  `prose-dialect-spec` §4.4/§4.5, which label that interaction still-open.
+- **#1727** (HIR-time index symbol for lifted lambdas) is blocked by a real
+  sequencing conflict: `stamp_container_ids` runs *after* `symbol_index_query`,
+  but the lambda's index entry must exist *before* `inferable_defs_query`.
+- **#1774** — may a native `var`/`const` hold a fn value? — decides whether
+  #1764's seven analyzer walks are live at all.
+- **#1730** (native `fmt` has no `.brink` pipeline) blocks **#1718**;
+  `brink-fmt` has no `brink-syntax-native` dependency at all.
+
+**Standing caution this doc earned:** two entries above were wrong for the same
+reason — they recorded a PR's *title* rather than its *outcome*, and an issue's
+*existence* rather than whether its premise was still true. Six issues in July
+had tracker state that contradicted the code. The retro phase now trues that up
+per wave (PR #1729).
