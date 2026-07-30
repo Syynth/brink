@@ -38,8 +38,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use brink_ir::hir::{Content, ContentContext, ContentPart, HirFile, HirVisitor, SpanPart};
-use brink_ir::{Diagnostic, DiagnosticCode, FileId, HostManifest};
+use brink_ir::hir::{Choice, Content, ContentContext, ContentPart, HirFile, HirVisitor, SpanPart};
+use brink_ir::{Diagnostic, DiagnosticCode, FileId, HostManifest, Provenance};
 
 /// Check every inline markup span in `files` against the manifest's declared
 /// markup vocabulary.
@@ -71,6 +71,7 @@ pub fn check(files: &[(FileId, &HirFile)], manifest: Option<&HostManifest>) -> V
             file,
             vocab: &vocab,
             out: &mut out,
+            choice_stack: Vec::new(),
         };
         brink_ir::hir::visit::visit(hir, &mut walker);
     }
@@ -88,23 +89,46 @@ struct SpanWalker<'a> {
     file: FileId,
     vocab: &'a BTreeMap<&'a str, BTreeSet<&'a str>>,
     out: &'a mut Vec<Diagnostic>,
+    /// Provenance of every choice currently being walked, innermost last.
+    ///
+    /// A choice's three content regions (`start_content`/`bracket_content`/
+    /// `inner_content`) are always built with `Content { ptr: None, .. }` —
+    /// `lower_choice_region` has no per-region syntax node to point at, only
+    /// the whole `text[bracket]inner` choice line — so [`report`](Self::report)
+    /// needs a fallback range when it is inside one. `Choice::ptr` is not
+    /// `Option`, so once this stack is non-empty a diagnostic always has
+    /// somewhere to point. A `Vec` (not a single field) because choice
+    /// points can nest inside a choice's own body.
+    choice_stack: Vec<Provenance>,
 }
 
 impl SpanWalker<'_> {
-    /// Report against the enclosing content line's range.
+    /// Report against the enclosing content line's range, falling back to
+    /// the innermost enclosing choice's range when the content line itself
+    /// carries no provenance (choice display-slot content — see
+    /// `choice_stack`).
     ///
-    /// A [`SpanPart`] carries no [`Provenance`](brink_ir::Provenance) of its
-    /// own (v1: it is a plain inline content fragment, like `Text`/`Glue`),
-    /// so the line is the narrowest range available. Every diagnostic here
-    /// names the offending tag/attribute in its message, so a line carrying
-    /// several spans stays unambiguous.
+    /// A [`SpanPart`] carries no [`Provenance`] of its own (v1: it is a
+    /// plain inline content fragment, like `Text`/`Glue`), so the enclosing
+    /// line — or, failing that, the enclosing choice — is the narrowest
+    /// range available. Every diagnostic here names the offending
+    /// tag/attribute in its message, so a line carrying several spans stays
+    /// unambiguous. A diagnostic must never be silently discarded for want
+    /// of a range (silent-drop rule): a body-level `Content` always has a
+    /// `ptr` and a choice-region `Content` is always covered by
+    /// `choice_stack`, so this never falls through both.
     fn report(&mut self, content: &Content, code: DiagnosticCode, message: String) {
-        let Some(ptr) = content.ptr.as_ref() else {
+        let Some(range) = content
+            .ptr
+            .as_ref()
+            .map(Provenance::text_range)
+            .or_else(|| self.choice_stack.last().map(Provenance::text_range))
+        else {
             return;
         };
         self.out.push(Diagnostic {
             file: self.file,
-            range: ptr.text_range(),
+            range,
             message,
             code,
         });
@@ -159,6 +183,14 @@ impl SpanWalker<'_> {
 }
 
 impl HirVisitor for SpanWalker<'_> {
+    fn enter_choice(&mut self, choice: &Choice) {
+        self.choice_stack.push(choice.ptr);
+    }
+
+    fn exit_choice(&mut self, _choice: &Choice) {
+        self.choice_stack.pop();
+    }
+
     fn enter_content(&mut self, content: &Content, _ctx: ContentContext) {
         // `content.parts` only — deliberately *not* `content.tags`, even
         // though a `Tag` structurally owns a `Vec<ContentPart>` too. The
@@ -348,15 +380,32 @@ mod tests {
     }
 
     #[test]
-    fn a_span_in_a_choice_display_line_is_checked() {
-        // A choice's inline slots are `Content` nodes the shared walker
-        // delivers under a different `ContentContext` — markup there must not
-        // be a blind spot just because it isn't a body line.
+    fn a_span_in_a_real_choice_point_is_checked_in_every_display_region() {
+        // A real `{? … }` choice point, not a bare bullet — native has no
+        // bare knot-level `*`/`+` (`brink-syntax-native/src/parser/choice.rs`:
+        // "All choices live inside a point"). `lower_choice_region` builds
+        // all three of a choice's display regions
+        // (start/bracket/inner) with `Content { ptr: None, .. }` — there is
+        // no per-region syntax node, only the whole `text[bracket]inner`
+        // choice line — so this pins that a span in each of the three still
+        // gets diagnosed via `SpanWalker`'s choice-provenance fallback
+        // rather than being silently dropped.
         let diags = run(
-            "flow a() {\n  * <glitch>Take it</glitch>\n    Done.\n}\n",
+            "flow a() {\n  {?\n    * <glitch>start</glitch>[<shake>bracket</shake>]<wobble>inner</wobble>\n  }\n}\n",
             Some(&wave_manifest()),
         );
-        assert_eq!(codes(&diags), ["E164"], "{diags:?}");
+        assert_eq!(codes(&diags), ["E164", "E164", "E164"], "{diags:?}");
+        assert!(
+            diags[0].message.contains("<glitch>"),
+            "{}",
+            diags[0].message
+        );
+        assert!(diags[1].message.contains("<shake>"), "{}", diags[1].message);
+        assert!(
+            diags[2].message.contains("<wobble>"),
+            "{}",
+            diags[2].message
+        );
     }
 
     #[test]
@@ -379,10 +428,13 @@ mod tests {
             .collect();
         assert!(!tags.is_empty(), "fixture must produce a tag: {hir:?}");
         for tag in tags {
-            assert!(
-                tag.parts.iter().all(|p| matches!(p, ContentPart::Text(_))),
-                "a tag must lower to Text only, never a Span: {:?}",
-                tag.parts
+            // Asserts the content, not just that every part happens to be
+            // `Text` — that predicate is vacuously true on an empty `parts`,
+            // exactly the state a future grammar change (a `Span` nested
+            // inside `TAG`) would produce silently through this guard.
+            assert_eq!(
+                tag.parts,
+                vec![ContentPart::Text("<glitch>loud</glitch>".to_string())]
             );
         }
     }
