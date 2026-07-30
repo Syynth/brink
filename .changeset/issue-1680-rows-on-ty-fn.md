@@ -12,8 +12,11 @@ creation sites (a `#fn(target, …)` literal, and a global cell's `#fn`
 initializer through the declaration-derived signature path), carried through
 `bind` unchanged, and joined by `unify` as set union with an absorbing
 `unknown` top element — so a slot accumulates every fn value assigned into it
-"through copies, parameters, returns, and nesting", and a single untraceable
-source keeps the slot conservative.
+"through copies, parameters, returns, and nesting", and a single source
+typed `unknown` keeps the slot conservative (a write typed plain
+`Ty::Unknown` — an unresolved reference, or an unregistered `EXTERNAL`'s
+return — is the unifier's identity instead, and leaves the other operand's
+row untouched).
 
 **The diagnostic surface is deliberately unchanged.** Effect rows are inferred
 provenance, never part of the written type language, so they must not decide

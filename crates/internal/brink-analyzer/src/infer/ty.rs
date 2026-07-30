@@ -151,7 +151,12 @@ pub enum Ty {
 /// reach here"*. [`FnRow::join`] is set union with `unknown` absorbing, which
 /// is exactly §5's *"a cell or collection's element type accumulates the join
 /// of every fn value assigned into it, through copies, parameters, returns,
-/// and nesting"*.
+/// and nesting"*. That absorption is on the `unknown` **row**, not on every
+/// untraceable-looking write: a write typed plain `Ty::Unknown` (an
+/// unresolved reference, or an unregistered `EXTERNAL`'s return) unifies
+/// through `Ty::Unknown`'s own identity arm, not through this lattice at
+/// all, and so leaves the other operand's row untouched rather than
+/// poisoning it to `unknown`.
 ///
 /// **Not yet read by the effect walk.** `def_effect_atoms` deliberately runs
 /// the body walk with empty globals and empty signatures (§6.1a's acyclicity
