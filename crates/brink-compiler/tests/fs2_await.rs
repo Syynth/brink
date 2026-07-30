@@ -336,33 +336,71 @@ fn brink_await_purity_gate_rejects_higher_order_call_with_fn_param() {
     let err = compile_mem_with_dialect(source, Dialect::Brink).unwrap_err();
     let diags = diagnostics_of(err);
     // A function calling through an fn-typed parameter is pessimal (has a hole
-    // in its row). The purity gate correctly rejects it with E105, even though
-    // `pure_fn` itself is pure — the gate sees only `apply_fn`'s pessimal row,
-    // not the instantiated row at the specific call site. This is by design:
-    // `is_pessimal()` (opaque || !holes.is_empty()) still rejects pessimal rows.
+    // in its row, per `EffectRow::holes` — crates/internal/brink-analyzer/src/
+    // infer/effects.rs:141: "a higher-order definition read on its own is
+    // still pessimal"). The purity gate correctly rejects it with E105, even
+    // though `pure_fn` itself is pure — the gate sees only `apply_fn`'s
+    // pessimal row, not the instantiated row at the specific call site. This
+    // is by design (docs/effects-spec.md §6.1b, "Row variables on fn-typed
+    // params"): precision only arrives one hop up, in `solve_scc_effects`,
+    // which is not consulted at an `await` call site.
     assert!(
         diags.iter().any(|d| d.code == DiagnosticCode::E105),
         "a higher-order call site is pessimal and must trip the purity gate: {diags:?}"
     );
 }
 
-/// Issue #1748: The sister scenario — calling a pure function directly in an
-/// await condition (no higher-order call) stays read-only. This proves the
-/// E105 gate from the previous test fires *because* of the fn-param pessimality,
-/// not because of some other effect.
+/// Issue #1748, the impure higher-order variant: passing an *effectful*
+/// function (`raise_alarm`, which writes a VAR) through the same fn-typed
+/// parameter is also rejected. Paired with the pure variant above so both
+/// higher-order purity outcomes are covered, matching the pure/impure
+/// pairing convention every other purity scenario in this file follows.
 #[test]
-fn brink_await_purity_gate_passes_pure_function_call() {
+fn brink_await_purity_gate_rejects_higher_order_call_with_impure_fn_param() {
     let source = concat!(
-        "=== function pure_check() ===\n",
+        "VAR alarm = false\n",
+        "=== function raise_alarm() ===\n",
+        "~ alarm = true\n",
+        "~ return true\n",
+        "=== function apply_fn(callback: fn(): bool) ===\n",
+        "~ return callback()\n",
+        "=== start ===\n",
+        "~ await apply_fn(raise_alarm)\n",
+        "-> END\n",
+    );
+    let err = compile_mem_with_dialect(source, Dialect::Brink).unwrap_err();
+    let diags = diagnostics_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E105),
+        "a higher-order call site with an effectful argument must trip the \
+         purity gate: {diags:?}"
+    );
+}
+
+/// Issue #1748: a real control for the two tests above. `holds_fn` takes a
+/// fn-typed parameter (so it is the same *shape* as `apply_fn`) but never
+/// calls through it — a hole is only inserted on call-through
+/// (`crates/internal/brink-analyzer/src/infer/body.rs:882`,
+/// `resolve_pending_value_calls`'s `ValueCallOrigin::Param` arm), so
+/// `holds_fn`'s row stays ground and total. This proves the E105 rejection
+/// above is specific to call-through pessimality, not merely to a def
+/// having a fn-typed parameter in its signature.
+#[test]
+fn brink_await_purity_gate_passes_fn_param_never_called_through() {
+    let source = concat!(
+        "=== function holds_fn(callback: fn(): bool) ===\n",
+        "~ return true\n",
+        "=== function pure_fn() ===\n",
         "~ return true\n",
         "=== start ===\n",
-        "~ await pure_check()\n",
+        "~ await holds_fn(pure_fn)\n",
         "-> END\n",
     );
     let err = compile_mem_with_dialect(source, Dialect::Brink).unwrap_err();
     let diags = diagnostics_of(err);
     assert!(
         !has_code(&diags, DiagnosticCode::E105),
-        "a direct pure function call must not trip the purity gate: {diags:?}"
+        "a fn-typed parameter that is never called through must not trip the \
+         purity gate: {diags:?}"
     );
 }
