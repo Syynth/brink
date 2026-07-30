@@ -3059,16 +3059,25 @@ mod tests {
 
     /// A `ref`-param write whose root is a *global* (not a Temp) — the same
     /// call-site mechanism `a_ref_param_rebind_through_a_call_site_stays_pessimal`
-    /// exercises, but aimed at an unrelated `VAR` root instead of the Temp
-    /// being narrowed. [`InferPass::record_fn_write`] only folds a write into
-    /// `local_fn_origins` for a `Temp`/`Param` target — a `Variable` target
-    /// is a documented no-op there (the heap case is §5's job, not this
-    /// rung's). This pins that the no-op is real: `f`'s own single, fully
-    /// traced `#fn(bar)` write is untouched by a sibling ref-write to `npc`,
-    /// so `user`'s row narrows instead of spuriously falling to the pessimal
-    /// floor — proving the two channels (local write-set vs. heap) stay
-    /// independent in both directions, exactly as §5's "no separate
-    /// points-to machinery" design implies.
+    /// exercises, but aimed at a differently-named `VAR` root (`npc`)
+    /// instead of the Temp being narrowed (`f`). [`InferPass::record_fn_write`]
+    /// only folds a write into `local_fn_origins` for a `Temp`/`Param`
+    /// target — a `Variable` target is a documented no-op there (the heap
+    /// case is §5's job, not this rung's). This pins the common case: `f`'s
+    /// own single, fully traced `#fn(bar)` write is untouched by a sibling
+    /// ref-write to `npc`, so `user`'s row narrows instead of spuriously
+    /// falling to the pessimal floor.
+    ///
+    /// This does **not** pin the no-op's load-bearing case. `local_fn_origins`
+    /// is keyed by `String` name, and `npc`/`f` are different names, so they
+    /// can never collide in that map regardless of whether `record_fn_write`'s
+    /// `Variable` arm is a no-op or is folded into `bump_local_write` —
+    /// deleting the guard leaves this exact test green. A genuine collision
+    /// needs a global root that resolves under the *same* name key as the
+    /// traced local (the hazard `record_fn_write`'s own doc comment calls
+    /// out for its `Param` arm, by the same reasoning). No such fixture is
+    /// pinned here; this is a known gap in this pinning pass, not a claim
+    /// that the guard is unnecessary.
     #[test]
     fn a_ref_param_write_to_an_unrelated_global_root_does_not_poison_a_traced_local() {
         let src = "VAR total = 0\nVAR npc = 5\n\
