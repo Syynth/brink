@@ -240,6 +240,30 @@ fn satisfied_effects_assertion_compiles_and_runs_inert() {
 }
 
 #[test]
+fn a_bound_on_a_higher_order_call_site_is_satisfiable() {
+    // §6.1b (issue #1680), the author-visible payoff: `go` calls the
+    // higher-order `apply` with a callback it names literally. `apply`'s own
+    // row is parametric (it calls through its `cb` param), but `go` knows what
+    // it passed, so `apply`'s row variable instantiates to `bump`'s real row
+    // and the concrete `@[effects(…)]` bound covers it.
+    //
+    // Before #1680 this was the `a_bound_cannot_cover_an_opaque_row_e103`
+    // shape: `apply`'s pessimal floor propagated into `go`, and *no* concrete
+    // bound could cover it.
+    let source = "VAR total = 0\n-> go\n\
+         === function bump(): int ===\n~ total = total + 1\n~ return total\n\
+         === function apply(cb: fn(): int): int ===\n~ return cb()\n\
+         === go ===\n@[effects(reads(total), writes(total))]\n\
+         ~ temp x = apply(#fn(bump))\nTotal {x}.\n-> END\n";
+    assert!(
+        error_codes(source).is_empty(),
+        "an instantiated row variable must be coverable by a concrete bound: {:?}",
+        error_codes(source)
+    );
+    assert_eq!(run_brink(source).trim(), "Total 1.");
+}
+
+#[test]
 fn pure_sugar_satisfied_by_a_pure_knot_runs() {
     let source = "-> go\n=== go ===\n@[effects(pure)]\nHello.\n-> END\n";
     assert!(error_codes(source).is_empty(), "{:?}", error_codes(source));
