@@ -147,10 +147,12 @@ fn expr_children(expr: &Expr) -> Vec<&Expr> {
         Expr::FnLiteral(fl) => fl.args.iter().collect(),
         // T1e `ref lvalue-path`: only the operand is a child expression.
         Expr::RefArg(ra) => vec![&ra.operand],
-        // A lambda's value expression (issue #1685). A braced body's
-        // *statements* are not expressions and cannot be handed to an
-        // expression-only walker — see `LambdaBody::value_exprs`.
-        Expr::Lambda(l) => l.body.value_exprs(),
+        // A lambda's whole body (issue #1685, #1764). A map literal is a
+        // map literal wherever it sits, so this walk must reach a braced
+        // body's *statements* too, not just its trailing value expression —
+        // `#{3.5: 1}` bound to a `let` inside the body is exactly as wrong
+        // as one in tail position. See `LambdaBody::all_exprs`.
+        Expr::Lambda(l) => l.body.all_exprs(),
         Expr::Range(r) => vec![&r.start, &r.end],
         Expr::String(s) => s
             .parts
@@ -317,6 +319,16 @@ mod tests {
         check(&[(FileId(0), &hir)])
     }
 
+    /// Native-lowered HIR — lambdas exist only on the native surface, so the
+    /// #1764 fixtures below must go through `lower_native` (the same reason
+    /// `coalesce`'s own `build_native` helper exists).
+    fn build_native(src: &str) -> HirFile {
+        let parsed = brink_syntax_native::parse(src);
+        assert!(parsed.errors().is_empty(), "{:?}", parsed.errors());
+        let (hir, _manifest, _diag) = brink_ir::hir::lower_native::lower(FileId(0), &parsed.tree());
+        hir
+    }
+
     #[test]
     fn clean_int_string_bool_keys_produce_no_diagnostics() {
         let diags = check_src("=== main ===\n~ temp m = #{1: \"a\", \"k\": 2, true: 3}\n-> DONE\n");
@@ -427,6 +439,38 @@ mod tests {
     #[test]
     fn var_decl_initializer_map_literal_is_checked() {
         let diags = check_src("VAR m = #{3.5: 1}\n=== main ===\n-> DONE\n");
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E106);
+    }
+
+    /// Issue #1764: the VAR/CONST-initializer recursion is the one walk that
+    /// isn't `visit::visit`'s (which already descends a lambda's statements),
+    /// so it has to descend them itself. A block-bodied lambda's `let` is a
+    /// statement, not the body's value expression.
+    #[test]
+    fn a_bad_key_in_a_lambda_statement_of_a_var_initializer_is_reported() {
+        let hir = build_native("var f = ||: int {\n  let m = Map { 3.5: 1 };\n  0\n};\n");
+        let diags = check(&[(FileId(0), &hir)]);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E106);
+        assert!(diags[0].message.contains("float"), "{:?}", diags[0].message);
+    }
+
+    /// The same gap for the duplicate-key rule — one walk, two checks.
+    #[test]
+    fn a_duplicate_key_in_a_lambda_statement_of_a_var_initializer_is_reported() {
+        let hir = build_native("var f = ||: int {\n  let m = Map { 1: 2, 1: 3 };\n  0\n};\n");
+        let diags = check_duplicate_keys(&[(FileId(0), &hir)]);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E138);
+    }
+
+    /// The tail position was already covered — pinned so a later refactor
+    /// can't trade one half of the body for the other.
+    #[test]
+    fn a_bad_key_in_a_lambda_tail_of_a_var_initializer_is_still_reported() {
+        let hir = build_native("var f = ||: int {\n  let a = 1;\n  Map { 3.5: 1 }\n};\n");
+        let diags = check(&[(FileId(0), &hir)]);
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E106);
     }
