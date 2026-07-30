@@ -2397,7 +2397,16 @@ fn populate_effect_rows(db: &dyn salsa::Database, project: ProjectInput, story: 
                 reads: row.reads.iter().copied().collect(),
                 writes: row.writes.iter().copied().collect(),
                 calls,
-                opaque: row.opaque,
+                // §6.1 (issue #1680): the wire's `EffectRows` section stays
+                // one **ground** row per def, so a row still carrying a row
+                // variable is *closed* to opaque here — the conservative
+                // direction, and byte-identical to what shipped before holes
+                // existed. Fork C's ruled encoding (an explicit hole slot,
+                // filled by §7's token lookup) is the remaining wire half and
+                // lands with runtime narrowing (#1723); the section is
+                // section-locally versioned so it can grow without a format
+                // bump.
+                opaque: row.is_pessimal(),
                 // NS-A2 (issue #1108): the three new row dimensions ship
                 // straight from the analyzer's inferred row.
                 emits: row.emits,

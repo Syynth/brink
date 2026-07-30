@@ -177,9 +177,12 @@ fn transitive_call_effects_flow_through_inference() {
 
 #[test]
 fn call_through_a_function_value_is_opaque() {
-    // Dispatch through a `#fn` value escapes the static call graph — the row
-    // degrades to the pessimal `opaque` top element (spec §3/§4), the sound
-    // floor.
+    // Dispatch through a `#fn` value escapes the static call graph — the
+    // higher-order definition's own row is the pessimal top element (spec
+    // §3/§4), the sound floor. Since #1680 that floor is a §6.1 **row
+    // variable** rather than the intrinsic `opaque` bit, which is why the
+    // assertion reads `is_pessimal()` — the bit every consumer of a row
+    // reads.
     let db = build_db(
         "VAR total = 0\n\
          === function apply(cb) ===\n~ return cb()\n\
@@ -190,9 +193,21 @@ fn call_through_a_function_value_is_opaque() {
         .effects(callable_id(&db, "apply"))
         .expect("apply has a row");
     assert!(
-        row.opaque,
+        row.is_pessimal(),
         "call through a fn value must be opaque: {row:?}"
     );
+
+    // …and the point of the row variable: `main`, which *does* know what it
+    // passed, instantiates the hole with `bump`'s real row and so is not
+    // pessimal at all. Before #1680 it inherited `apply`'s floor.
+    let caller = db
+        .effects(callable_id(&db, "main"))
+        .expect("main has a row");
+    assert!(
+        !caller.is_pessimal(),
+        "a fully-traced higher-order call site must escape the floor: {caller:?}"
+    );
+    assert_eq!(cell_names(&db, &caller.writes), vec!["total"]);
 }
 
 // ── The `#@effects` contract (spec §10) ─────────────────────────────────
@@ -222,6 +237,77 @@ fn satisfied_effects_assertion_compiles_and_runs_inert() {
         "the #@effects directive must not change runtime behavior"
     );
     assert_eq!(run_brink(annotated).trim(), "Gold is 7.");
+}
+
+#[test]
+fn a_bound_on_a_higher_order_call_site_is_satisfiable() {
+    // §6.1b (issue #1680), the author-visible payoff: `go` calls the
+    // higher-order `apply` with a callback it names literally. `apply`'s own
+    // row is parametric (it calls through its `cb` param), but `go` knows what
+    // it passed, so `apply`'s row variable instantiates to `bump`'s real row
+    // and the concrete `@[effects(…)]` bound covers it.
+    //
+    // Before #1680 this was the `a_bound_cannot_cover_an_opaque_row_e103`
+    // shape: `apply`'s pessimal floor propagated into `go`, and *no* concrete
+    // bound could cover it.
+    let source = "VAR total = 0\n-> go\n\
+         === function bump(): int ===\n~ total = total + 1\n~ return total\n\
+         === function apply(cb: fn(): int): int ===\n~ return cb()\n\
+         === go ===\n@[effects(reads(total), writes(total))]\n\
+         ~ temp x = apply(#fn(bump))\nTotal {x}.\n-> END\n";
+    assert!(
+        error_codes(source).is_empty(),
+        "an instantiated row variable must be coverable by a concrete bound: {:?}",
+        error_codes(source)
+    );
+    assert_eq!(run_brink(source).trim(), "Total 1.");
+}
+
+#[test]
+fn a_bound_on_a_higher_order_call_site_at_a_non_zero_position_is_satisfiable() {
+    // Review finding (issue #1680, PR #1743): every prior fill-path test —
+    // the `infer::effects` unit tests, `infer::mod`'s
+    // `a_caller_instantiates_the_callees_row_variable` and siblings, and
+    // `a_bound_on_a_higher_order_call_site_is_satisfiable` above — put the
+    // callback at param index 0. The callee's hole key is a *declaration*
+    // index (`def.params`, callee side) while the caller's fill key is an
+    // *argument-position* index (`args.iter().enumerate()`, caller side);
+    // index 0 is the one value where drift between those two keyspaces would
+    // be invisible. `apply2`'s callback sits at position 1.
+    let source = "VAR total = 0\n-> go\n\
+         === function bump(): int ===\n~ total = total + 1\n~ return total\n\
+         === function apply2(a: int, cb: fn(): int): int ===\n~ return cb() + a\n\
+         === go ===\n@[effects(reads(total), writes(total))]\n\
+         ~ temp x = apply2(1, #fn(bump))\nTotal {x}.\n-> END\n";
+    assert!(
+        error_codes(source).is_empty(),
+        "a row variable at a non-zero declaration index must instantiate too: {:?}",
+        error_codes(source)
+    );
+    assert_eq!(run_brink(source).trim(), "Total 2.");
+}
+
+#[test]
+fn a_bound_on_a_higher_order_call_site_after_a_leading_ref_param_is_satisfiable() {
+    // Review finding (issue #1680, PR #1743), the sharper form of the case
+    // above: `param_index` (`infer::body::infer_def_body`) deliberately
+    // enumerates `def.params` *before* filtering out `ref` params, so a
+    // fn-typed param declared after a leading `ref` one keeps its true,
+    // pre-filter declaration index rather than being shifted down. `apply3`'s
+    // callback is declared at index 1, right after the `ref` param at index 0.
+    let source = "VAR total = 0\nVAR counter = 0\n-> go\n\
+         === function bump(): int ===\n~ total = total + 1\n~ return total\n\
+         === function apply3(ref r: int, cb: fn(): int): int ===\n\
+         ~ r = r + 1\n~ return cb() + r\n\
+         === go ===\n\
+         @[effects(reads(total), writes(total), reads(counter), writes(counter))]\n\
+         ~ temp x = apply3(counter, #fn(bump))\nTotal {x}.\n-> END\n";
+    assert!(
+        error_codes(source).is_empty(),
+        "a row variable declared after a leading ref param must still instantiate: {:?}",
+        error_codes(source)
+    );
+    assert_eq!(run_brink(source).trim(), "Total 2.");
 }
 
 #[test]

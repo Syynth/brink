@@ -12,6 +12,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::collections::BTreeSet;
+
 use brink_db::ProjectDb;
 
 fn def_named(db: &ProjectDb, name: &str) -> brink_format::DefinitionId {
@@ -82,9 +84,13 @@ fn effects_query_is_pessimal_for_a_call_through_a_function_value() {
     let apply = def_named(&db, "apply");
     let row = db.effects(apply).expect("apply has an effect row");
     assert!(
-        row.opaque,
+        row.is_pessimal(),
         "a call through a function value must be pessimal (spec §3/§4)"
     );
+    // §6.1 (issue #1680) changed *how*: the param is a row variable, which is
+    // the pessimal floor until a caller instantiates it — but not the
+    // intrinsic `opaque` bit any more.
+    assert_eq!(row.holes, [0].into_iter().collect::<BTreeSet<u32>>());
 }
 
 #[test]
