@@ -132,6 +132,9 @@ BRINK_CASE=I002 cargo test -p brink-test-harness --test oracle_snapshots -- --no
 
 # Accept snapshot changes after intentional behavioral changes
 INSTA_UPDATE=always cargo test -p brink-test-harness --test oracle_snapshots
+
+# Effect-row ground-truth harness (required for PRs touching effects)
+cargo test -p brink-test-harness --test t2_ground_truth_effects --features effect-trace -- --nocapture
 ```
 
 ## Crate layout
