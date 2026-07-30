@@ -259,6 +259,7 @@ pub(super) fn infer_def_body(def: &super::Def<'_>, ctx: &BodyCtx<'_>) -> BodyRes
         created_fn_values: BTreeSet::new(),
         local_fn_origins: BTreeMap::new(),
         pending_value_calls: Vec::new(),
+        lambda_param_names: BTreeMap::new(),
         // §6.1 (issue #1680): `ref` params are excluded — see the field doc.
         param_index: def
             .params
@@ -438,6 +439,38 @@ struct InferPass<'a, 'b> {
     /// and resolved once by [`InferPass::resolve_pending_value_calls`] after
     /// the whole body (and therefore `local_fn_origins`) is final.
     pending_value_calls: Vec<ValueCallOrigin>,
+    /// Issue #1779: a reference count, by name, of every param belonging to
+    /// a lambda we are *currently* walking the body of (any depth of
+    /// nesting). Non-empty for a name for as long as
+    /// [`InferPass::infer_lambda`] is walking that lambda's `stmts` **and**
+    /// its tail/expr value — see that function's doc for why the count must
+    /// bracket both.
+    ///
+    /// A lambda's own params are recorded as `SymbolKind::Temp`, the exact
+    /// same project-wide, flat, by-*name* keyspace an enclosing `~ temp` (or
+    /// a `for` binding) gets (`symbols/project.rs::walk_lambda`) — so a
+    /// lambda param can collide by name with an unrelated enclosing Temp.
+    /// Unlike a genuine `~ temp`, though, a lambda param is never written by
+    /// a `TempDecl`/`Assignment` this pass observes — it is bound
+    /// implicitly by whatever the caller passes at the call site, exactly
+    /// like one of *this* definition's own declared params
+    /// ([`InferPass::local_call_origin`]'s `SymbolKind::Param` arm already
+    /// refuses to trust those as `Local`, for the identical reason: "carries
+    /// an implicit caller-provided initial value [the local write summary]
+    /// never sees"). `local_call_origin` consults this map to apply the same
+    /// refusal to a lambda's own param, for as long as we are inside that
+    /// lambda (or a lambda nested within it) — whatever
+    /// `self.local_fn_origins[name]` currently holds could be an unrelated
+    /// enclosing local's own summary (inherited, unmodified, from before we
+    /// ever entered this lambda) or a join corrupted by a write this
+    /// lambda made to its *own* same-named param; neither bounds what this
+    /// lambda's param can actually hold.
+    ///
+    /// A reference count, not a flat set, so two sibling lambdas that reuse
+    /// the same param name don't leak into each other (each push/pop pair
+    /// is exactly balanced), and a nested lambda re-using an enclosing
+    /// lambda's own param name still counts once per active frame.
+    lambda_param_names: BTreeMap<String, u32>,
     /// §6.1 (issue #1680): this definition's own params by name → declaration
     /// index, restricted to the params a row variable may legally be minted
     /// for. `ref` params are excluded at construction: the slot aliases the
@@ -753,8 +786,19 @@ impl InferPass<'_, '_> {
     /// [`Self::resolve_pending_value_calls`] enforces.
     fn local_call_origin(&self, def: DefinitionId) -> ValueCallOrigin {
         match self.ctx.index.symbols.get(&def) {
+            // Issue #1779: a Temp whose name is currently shadowed by an
+            // active lambda's own param (`self.lambda_param_names`) must not
+            // trust `local_fn_origins[name]` — see that field's doc. This
+            // check is by *name*, matching the map's own keying, and is
+            // strictly more conservative than the pre-fix behavior (it only
+            // ever turns a `Local` into an `Unknown`, never the reverse), so
+            // it cannot introduce a new under-report of its own.
             Some(info) if info.kind == SymbolKind::Temp => {
-                ValueCallOrigin::Local(info.name.clone())
+                if self.lambda_param_names.contains_key(&info.name) {
+                    ValueCallOrigin::Unknown
+                } else {
+                    ValueCallOrigin::Local(info.name.clone())
+                }
             }
             Some(info) if info.kind == SymbolKind::Param => self
                 .param_index
@@ -1495,6 +1539,15 @@ impl InferPass<'_, '_> {
     /// `docs/effects-spec.md` §4.1 (issue #1762). Keep both in sync if the
     /// field list ever changes.
     ///
+    /// A snapshot/restore of these five is not, by itself, enough: a
+    /// cumulative field can still refer to frame-scoped state *by name*
+    /// rather than by `DefinitionId`, and a lambda param collides with an
+    /// enclosing local exactly that way (issue #1779, `docs/effects-spec.md`
+    /// §4.1's "third hazard"). `Self::lambda_param_names` guards that
+    /// separately, by shadowing this lambda's own param names for the
+    /// duration of the whole body walk below (both branches) — see its own
+    /// field doc.
+    ///
     /// The effect row is the unknown top element. `Ty::Fn` does carry a
     /// [`FnRow`] since #1680 step 3, but a `FnRow` names **creation
     /// targets** by `DefinitionId` (the keys §7's row table is looked up
@@ -1524,6 +1577,19 @@ impl InferPass<'_, '_> {
     /// landed (Fork D retired T1c item 4's row field outright). Pinned by
     /// `brink-db/tests/issue_1680_lambda_effect_row_gap.rs`.
     fn infer_lambda(&mut self, l: &brink_ir::LambdaExpr) -> Ty {
+        // Issue #1779: shadow this lambda's own param names for the whole
+        // duration of walking its body — `stmts` *and* the tail/expr value
+        // below, an expression-bodied lambda has no `stmts` to bracket at
+        // all, so the shadow must cover both branches uniformly. Balanced
+        // with the matching decrement after the tail walk, regardless of
+        // which branch ran. See `Self::lambda_param_names`'s field doc for
+        // why `local_call_origin` needs this.
+        for p in &l.params {
+            *self
+                .lambda_param_names
+                .entry(p.name.text.clone())
+                .or_insert(0) += 1;
+        }
         match &l.body {
             brink_ir::LambdaBody::Block { stmts, tail } => {
                 // Wholesale snapshot/restore (not a "remove newly-inserted
@@ -1565,6 +1631,16 @@ impl InferPass<'_, '_> {
             // live when `infer_lambda` was entered, unchanged by #1789.
             brink_ir::LambdaBody::Expr(e) => {
                 self.infer_expr(e);
+            }
+        }
+        for p in &l.params {
+            if let std::collections::btree_map::Entry::Occupied(mut o) =
+                self.lambda_param_names.entry(p.name.text.clone())
+            {
+                *o.get_mut() -= 1;
+                if *o.get() == 0 {
+                    o.remove();
+                }
             }
         }
         let names = self.ctx.type_names();
@@ -2810,5 +2886,347 @@ impl InferPass<'_, '_> {
             }
             None => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use brink_format::DefinitionTag;
+    use brink_ir::{FileId, NodeClass, Provenance, Scope, SymbolInfo, Visibility};
+
+    use super::*;
+
+    fn range(start: u32, end: u32) -> TextRange {
+        TextRange::new(start.into(), end.into())
+    }
+
+    fn temp_symbol(id: DefinitionId, name: &str, decl_range: TextRange) -> SymbolInfo {
+        SymbolInfo {
+            kind: SymbolKind::Temp,
+            file: FileId(0),
+            range: decl_range,
+            id,
+            name: name.to_string(),
+            params: Vec::new(),
+            detail: None,
+            scope: Some(Scope::default()),
+            param_detail: None,
+            module: None,
+            visibility: Visibility::Public,
+        }
+    }
+
+    fn knot_symbol(id: DefinitionId, name: &str) -> SymbolInfo {
+        SymbolInfo {
+            kind: SymbolKind::Knot,
+            file: FileId(0),
+            range: range(0, 1),
+            id,
+            name: name.to_string(),
+            params: Vec::new(),
+            detail: None,
+            scope: None,
+            param_detail: None,
+            module: None,
+            visibility: Visibility::Public,
+        }
+    }
+
+    /// A minimal, empty [`InferPass`] over `ctx` — every field literal
+    /// [`infer_def_body`]'s own constructor uses, mechanically emptied.
+    ///
+    /// Reproducing issue #1779's exact hazard requires combining a fn-value
+    /// *creation* site (`#fn(target)`, produced only by the ink frontend's
+    /// `hir::lower::expr::sigils`) with a lambda (`|…| …`, produced only by
+    /// the native frontend's `hir::lower_native::lambda`) in the same body —
+    /// no single frontend can parse both together today (confirmed against
+    /// `origin/main`: `brink_syntax_native::parse` rejects `#fn(...)` with a
+    /// `HASH`-unexpected parse error, and `brink-syntax`'s ink grammar has
+    /// no lambda production at all). `InferPass` itself is HIR-shaped and
+    /// frontend-agnostic, so a hand-built HIR fragment is the only way to
+    /// pin this analyzer-level invariant directly; see the tests below for
+    /// why that is still a real, if not-yet-source-reachable, soundness gap
+    /// rather than a purely hypothetical one.
+    fn empty_pass<'a, 'b>(ctx: &'a BodyCtx<'b>) -> InferPass<'a, 'b> {
+        InferPass {
+            ctx,
+            locals: BTreeMap::new(),
+            return_ty: Ty::Unknown,
+            has_value_return: false,
+            calls: BTreeSet::new(),
+            referenced_globals: BTreeSet::new(),
+            effect_writes: BTreeSet::new(),
+            external_calls: BTreeSet::new(),
+            effect_opaque: false,
+            effect_emits: false,
+            effect_tags: false,
+            effect_faults: false,
+            effect_faults_refined: false,
+            annotated: BTreeMap::new(),
+            value_calls: Vec::new(),
+            array_remove_calls: Vec::new(),
+            created_fn_values: BTreeSet::new(),
+            local_fn_origins: BTreeMap::new(),
+            pending_value_calls: Vec::new(),
+            lambda_param_names: BTreeMap::new(),
+            param_index: BTreeMap::new(),
+            param_writes: BTreeSet::new(),
+            param_holes: BTreeSet::new(),
+            pending_call_fn_args: Vec::new(),
+            call_fn_args: BTreeMap::new(),
+        }
+    }
+
+    /// Direct, white-box pin on the classification guard itself: a Temp
+    /// resolution named "f" narrows normally when nothing shadows it, and
+    /// stops narrowing the instant an active lambda's own param claims that
+    /// name — regardless of what `local_fn_origins["f"]` says.
+    #[test]
+    fn lambda_param_shadow_forces_local_call_origin_to_unknown() {
+        let f_id = DefinitionId::new(DefinitionTag::LocalVar, 1);
+        let mut index = SymbolIndex::default();
+        index
+            .symbols
+            .insert(f_id, temp_symbol(f_id, "f", range(0, 1)));
+
+        let resolution_by_range = BTreeMap::new();
+        let globals = BTreeMap::new();
+        let known_sigs = BTreeMap::new();
+        let inferable = BTreeSet::new();
+        let list_names = BTreeSet::new();
+        let struct_names = BTreeSet::new();
+        let handle_names = BTreeSet::new();
+        let ctx = BodyCtx {
+            resolution_by_range: &resolution_by_range,
+            index: &index,
+            globals: &globals,
+            known_sigs: &known_sigs,
+            inferable: &inferable,
+            list_names: &list_names,
+            struct_names: &struct_names,
+            handle_names: &handle_names,
+        };
+        let mut pass = empty_pass(&ctx);
+
+        assert_eq!(
+            pass.local_call_origin(f_id),
+            ValueCallOrigin::Local("f".to_string()),
+            "outside any lambda, a bare Temp reference narrows normally"
+        );
+
+        pass.lambda_param_names.insert("f".to_string(), 1);
+        assert_eq!(
+            pass.local_call_origin(f_id),
+            ValueCallOrigin::Unknown,
+            "issue #1779: a name shadowed by an active lambda param must \
+             never be trusted as Local, regardless of what local_fn_origins \
+             holds for that name"
+        );
+    }
+
+    /// End-to-end regression pin for the issue's own suspected repro shape:
+    ///
+    /// ```text
+    /// ~ temp f = #fn(bar)
+    /// ~ temp result = (|f| { ~ f() })(something)
+    /// ```
+    ///
+    /// The enclosing `f` traces to `bar` (seeded into `local_fn_origins`
+    /// directly, standing in for the `#fn(bar)` write `record_fn_write`
+    /// would otherwise perform). The lambda's *own* param, also named `f`,
+    /// is a structurally different `DefinitionId` (real name resolution
+    /// disambiguates the two correctly by scope) but the exact same bare
+    /// name `local_call_origin`/`local_fn_origins` key on.
+    ///
+    /// Before the fix: `infer_lambda` walks the lambda's `~ f()`, classifies
+    /// it `ValueCallOrigin::Local("f")`, and `resolve_pending_value_calls`
+    /// (run after `infer_lambda` returns, exactly as `infer_def_body` always
+    /// does) resolves that name against `local_fn_origins["f"]` — which
+    /// still holds the *enclosing* `f`'s summary, since nothing inside this
+    /// lambda ever writes "f" (a pure read never touches
+    /// `local_fn_origins` at all, so no snapshot/restore timing would have
+    /// changed this). The call is spuriously narrowed to `bar`: `calls`
+    /// gains `bar` and `effect_opaque` stays `false` — an under-report, the
+    /// exact direction spec §3 forbids.
+    ///
+    /// After the fix: the lambda's own param name is shadowed for the
+    /// duration of the walk, `local_call_origin` refuses to classify the
+    /// call as `Local` at all, and it correctly falls back to the pessimal
+    /// floor.
+    #[test]
+    fn lambda_param_collision_with_a_traced_enclosing_local_stays_pessimal() {
+        let bar_id = DefinitionId::new(DefinitionTag::Address, 2);
+        let lambda_f_id = DefinitionId::new(DefinitionTag::LocalVar, 3);
+
+        let mut index = SymbolIndex::default();
+        index.symbols.insert(bar_id, knot_symbol(bar_id, "bar"));
+        index
+            .symbols
+            .insert(lambda_f_id, temp_symbol(lambda_f_id, "f", range(10, 11)));
+
+        let call_range = range(20, 23);
+        let mut resolution_by_range = BTreeMap::new();
+        resolution_by_range.insert(range_key(call_range), lambda_f_id);
+
+        let globals = BTreeMap::new();
+        let known_sigs = BTreeMap::new();
+        let inferable: BTreeSet<DefinitionId> = [bar_id].into_iter().collect();
+        let list_names = BTreeSet::new();
+        let struct_names = BTreeSet::new();
+        let handle_names = BTreeSet::new();
+        let ctx = BodyCtx {
+            resolution_by_range: &resolution_by_range,
+            index: &index,
+            globals: &globals,
+            known_sigs: &known_sigs,
+            inferable: &inferable,
+            list_names: &list_names,
+            struct_names: &struct_names,
+            handle_names: &handle_names,
+        };
+        let mut pass = empty_pass(&ctx);
+        // Stands in for the enclosing `~ temp f = #fn(bar)` this pass would
+        // already have walked by the time it reaches the lambda.
+        pass.local_fn_origins.insert(
+            "f".to_string(),
+            LocalFnOrigins {
+                targets: [bar_id].into_iter().collect(),
+                untraced: false,
+            },
+        );
+
+        let lambda = brink_ir::LambdaExpr {
+            ptr: Provenance::synthetic(NodeClass::Lambda, range(5, 30)),
+            params: vec![brink_ir::Param {
+                name: Name {
+                    text: "f".to_string(),
+                    range: range(10, 11),
+                },
+                is_ref: false,
+                is_divert: false,
+                annotation: None,
+            }],
+            return_type: None,
+            body: brink_ir::LambdaBody::Block {
+                stmts: vec![BlockStmt::ExprStmt(Expr::Call(
+                    HirPath {
+                        segments: vec![Name {
+                            text: "f".to_string(),
+                            range: call_range,
+                        }],
+                        range: call_range,
+                    },
+                    Vec::new(),
+                ))],
+                tail: None,
+            },
+        };
+
+        pass.infer_lambda(&lambda);
+        pass.resolve_pending_value_calls();
+
+        assert!(
+            pass.effect_opaque,
+            "issue #1779: a call through a lambda's own param must fall back \
+             to the pessimal floor, not silently narrow against an \
+             unrelated enclosing local's summary"
+        );
+        assert!(
+            !pass.calls.contains(&bar_id),
+            "the lambda's own (unrelated, unmodeled) call must never be \
+             attributed to the enclosing local's traced target"
+        );
+    }
+
+    /// Positive control (PR #1731's review lesson: a fixture that already
+    /// hit the safe floor — here, a fixture that already narrowed
+    /// correctly — must keep doing so). Same enclosing `f` traced to `bar`,
+    /// but the lambda's own param is named `g`, not `f`: the `~ f()` call
+    /// inside genuinely captures the *enclosing* local (a legitimate,
+    /// non-colliding capture), so it must still narrow to `bar` exactly as
+    /// it did before this fix — the guard is by-name and must not fire for
+    /// a name it was never asked to shadow.
+    #[test]
+    fn lambda_capturing_a_non_colliding_enclosing_local_still_narrows() {
+        let bar_id = DefinitionId::new(DefinitionTag::Address, 12);
+        let enclosing_f_id = DefinitionId::new(DefinitionTag::LocalVar, 13);
+
+        let mut index = SymbolIndex::default();
+        index.symbols.insert(bar_id, knot_symbol(bar_id, "bar"));
+        index.symbols.insert(
+            enclosing_f_id,
+            temp_symbol(enclosing_f_id, "f", range(0, 1)),
+        );
+
+        let call_range = range(20, 23);
+        let mut resolution_by_range = BTreeMap::new();
+        resolution_by_range.insert(range_key(call_range), enclosing_f_id);
+
+        let globals = BTreeMap::new();
+        let known_sigs = BTreeMap::new();
+        let inferable: BTreeSet<DefinitionId> = [bar_id].into_iter().collect();
+        let list_names = BTreeSet::new();
+        let struct_names = BTreeSet::new();
+        let handle_names = BTreeSet::new();
+        let ctx = BodyCtx {
+            resolution_by_range: &resolution_by_range,
+            index: &index,
+            globals: &globals,
+            known_sigs: &known_sigs,
+            inferable: &inferable,
+            list_names: &list_names,
+            struct_names: &struct_names,
+            handle_names: &handle_names,
+        };
+        let mut pass = empty_pass(&ctx);
+        pass.local_fn_origins.insert(
+            "f".to_string(),
+            LocalFnOrigins {
+                targets: [bar_id].into_iter().collect(),
+                untraced: false,
+            },
+        );
+
+        let lambda = brink_ir::LambdaExpr {
+            ptr: Provenance::synthetic(NodeClass::Lambda, range(5, 30)),
+            params: vec![brink_ir::Param {
+                name: Name {
+                    text: "g".to_string(),
+                    range: range(10, 11),
+                },
+                is_ref: false,
+                is_divert: false,
+                annotation: None,
+            }],
+            return_type: None,
+            body: brink_ir::LambdaBody::Block {
+                stmts: vec![BlockStmt::ExprStmt(Expr::Call(
+                    HirPath {
+                        segments: vec![Name {
+                            text: "f".to_string(),
+                            range: call_range,
+                        }],
+                        range: call_range,
+                    },
+                    Vec::new(),
+                ))],
+                tail: None,
+            },
+        };
+
+        pass.infer_lambda(&lambda);
+        pass.resolve_pending_value_calls();
+
+        assert!(
+            !pass.effect_opaque,
+            "a legitimate capture of a non-colliding enclosing local must \
+             still narrow — the fix must not widen the pessimal floor \
+             beyond the actual collision case"
+        );
+        assert!(
+            pass.calls.contains(&bar_id),
+            "the captured enclosing local's own traced target must still \
+             be recorded"
+        );
     }
 }
