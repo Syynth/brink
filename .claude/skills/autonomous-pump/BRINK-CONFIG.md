@@ -186,3 +186,54 @@ the config above as follows:
   under them (auto-merges land between your commands); branching from a
   stale ref silently resurrects old file states. (Caught in the act while
   writing this section.)
+
+## Keeping the tracker honest (2026-07-29 — six stale-issue incidents in one month)
+
+Six issues in July had tracker state that lied about the code: #1592 and #1667
+were already fully implemented; #1449 was recorded DONE having delivered half;
+#1211 and #1213 presented as open north-star design questions a week after a
+ruling settled both; companion modules got re-derived from scratch against an
+existing ruling. Each one burned a build agent to rediscover.
+
+**Every one was a WRITE-side failure.** The instinct is to add a read-side
+check ("verify the premise before building"), and that check is worth having —
+but it treats the symptom. The tracker is unreliable because we are not writing
+to it, and a read-side check leaves the next reader to pay the same cost again.
+
+- **A `Part of #N` owes a tracked remainder.** House rule 19e correctly stopped
+  agents writing false `Closes`. But an honest `Part of` with nothing tracking
+  the undelivered half reads *identically to "not started"* — that is exactly
+  how #1592, #1679 and #1449 went stale. So: in the same session, either file
+  the follow-up issue or name the existing one that covers the remainder, AND
+  comment on #N stating what is left and what blocks it. Honest partial
+  delivery is fine; **untracked** partial delivery is not.
+- **A PR or ruling that supersedes an issue's premise updates that issue in the
+  same PR.** This is the tracker-facing twin of "a ruling lands in a spec, not
+  only in the decision log." #1211/#1213 had their premise superseded on
+  2026-07-21 by a ruling that updated `block-effect-model.md` §11 — and nothing
+  pointed back at the issues, so the question got re-opened twice.
+- **Verify the merge actually completed.** Auto-merge armed on a PR that later
+  conflicts leaves the work *looking* landed while its issue stays open. #1659
+  and #1666 were both lost this way and surfaced only by an audit. Poll until
+  the PR reports MERGED, or say plainly that it did not.
+- **If you find a premise already false, fix the tracker** — comment naming the
+  delivering PR, and close the issue if nothing remains. Reporting it only to
+  the pump means the next wave rediscovers it.
+
+**These rules are per-agent discipline, and per-agent discipline gets violated.**
+So the structural fix is that **scope reconciliation owns this** — it runs once
+per wave, terminal, with every item's issue/PR/merge state in hand and `gh`
+access already. It was only ever pointed *forward* ("did building reveal work
+the plan didn't capture?"), which is why six write-side failures walked past a
+phase built to catch exactly them. `pump.js`'s reconciliation prompt now has two
+parts: **Part 1 reconciles the record backward and ACTS**, Part 2 is the
+existing forward-looking scope proposal.
+
+The distinction that makes acting safe: **proposing new scope or milestone
+structure is a human call; recording what already happened is bookkeeping.**
+Closing an issue whose PR merged, or commenting the remainder on a `Part of`,
+does not restructure the plan — it stops the plan from lying. Reconciliation
+returns `trackerActions` (what it changed) alongside its proposal.
+
+The read-side premise check stays in the build prompt as a backstop. It is a
+backstop, not the fix.
