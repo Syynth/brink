@@ -2727,3 +2727,62 @@ fn lower_native_file(file_id: FileId, parse: &NativeParse) -> LoweredFile {
         admission,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{DefKey, call_graph_query, def_effect_atoms_query, inferable_defs_query};
+    use crate::db::ProjectDb;
+
+    /// Issue #1736 finding (BLOCKING): the parity tests in
+    /// `crates/internal/brink-db/tests/query_equivalence.rs` compare the two
+    /// call-graph constructions' *outputs* on a fixture where they provably
+    /// cannot disagree — `resolve_pending_value_calls` re-records every
+    /// traced `#fn`/`bind` target as a `direct_calls` edge at its call site,
+    /// so a fixture that ever calls what it creates can't exercise a
+    /// `creates_fn_values`-outside-`direct_calls` shape. This test instead
+    /// asserts the *edge set* directly: for every def, `call_graph_query`'s
+    /// outgoing edges must cover `EffectAtoms.direct_calls ∪
+    /// EffectAtoms.creates_fn_values` — the subset property
+    /// `docs/effects-spec.md` §6.1a documents and
+    /// `every_fn_value_creation_target_is_also_a_call_graph_edge`
+    /// (`brink-analyzer`'s `infer::mod` tests) pins from the atom side.
+    /// Unlike the output-parity tests, this goes red the day #1727 (lambda
+    /// literals) breaks that subset property, independent of whether any
+    /// particular fixture's diagnostics happen to still agree.
+    #[test]
+    fn call_graph_covers_direct_calls_and_creates_fn_values() {
+        let mut db = ProjectDb::new();
+        db.set_file(
+            "main.ink",
+            "VAR total = 0\nVAR extra = 0\n\
+             === function bar(): int ===\n~ total = total + 1\n~ return total\n\
+             === function baz(): int ===\n~ extra = extra + 100\n~ return extra\n\
+             === function user(cond: int): int ===\n\
+             ~ temp f = #fn(bar)\n{cond:\n  ~ f = #fn(baz)\n}\n~ return f()\n"
+                .to_owned(),
+        );
+
+        let (salsa, project) = db.salsa_and_project();
+        let graph = call_graph_query(salsa, project);
+
+        for &def in inferable_defs_query(salsa, project) {
+            let atoms = def_effect_atoms_query(salsa, project, DefKey::new(salsa, def));
+            let outgoing = graph.edges.get(&def).cloned().unwrap_or_default();
+            for &callee in atoms
+                .direct_calls
+                .iter()
+                .chain(atoms.creates_fn_values.iter())
+            {
+                assert!(
+                    outgoing.contains(&callee),
+                    "call_graph_query's edges for {def:?} do not cover \
+                     direct_calls ∪ creates_fn_values: missing edge to \
+                     {callee:?} (direct_calls={:?}, creates_fn_values={:?}, \
+                     graph edges={outgoing:?})",
+                    atoms.direct_calls,
+                    atoms.creates_fn_values,
+                );
+            }
+        }
+    }
+}
