@@ -500,7 +500,7 @@ For professional translation workflows, `brink-intl` supports XLIFF 2.0 import/e
 
 A general-purpose Rust XLIFF 2.0 crate (`crates/internal/xliff2/`). Provides:
 
-- **Data model:** `Document`, `File`, `Unit`, `Segment`, `Source`, `Target`, inline elements (`Ph`, `Sc`, `Ec`, `Mrk`)
+- **Data model:** `Document`, `File`, `Unit`, `Segment`, `Source`, `Target`, inline elements (`Ph`, `Pc`, `Sc`, `Ec`, `Mrk`)
 - **Write:** serialize data model to XLIFF 2.0 XML
 - **Read:** parse XLIFF 2.0 XML to data model
 - **Round-trip:** preserve unknown extensions and attributes through read/write cycles
@@ -520,6 +520,8 @@ Built on `quick-xml`. No brink-specific types or logic.
 | `LineId` | `<unit id="scope_id:line_idx">` |
 | `LineContent::Plain` | `<source>` with text content |
 | `LineContent::Template` | `<source>` with inline `<ph>` elements for slots |
+| `PartJson::Span` (non-empty `children`, #1734) | paired `<pc>` inline code, `dataRefStart` -> `<data>` carrying `{name, attrs}` |
+| `PartJson::Span` (empty `children`, point marker, #1734) | standalone `<ph subType="brink:x">`, `dataRef` -> `<data>` carrying `{name, attrs}` |
 | `source_hash` | `brink:hash` extension attribute on `<unit>` |
 | `audio_ref` | `brink:audio` extension attribute on `<unit>` |
 | Translation status | XLIFF `state` attribute (`initial`/`translated`/`reviewed`/`final`) |

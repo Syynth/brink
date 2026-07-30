@@ -1494,11 +1494,16 @@ impl InferPass<'_, '_> {
     /// calls, uses) exactly like an interpolation's value expression is —
     /// for a `LambdaBody::Block`, that means every `stmts` entry
     /// (`self.infer_block_stmt`) as well as the tail, not the tail alone:
-    /// `value_exprs()` only ever yields the tail, so a block-bodied
-    /// lambda's own temp-decls and assignments would otherwise never be
-    /// visited by this pass at all (issue #1749 — a conservative-total,
-    /// spec §3, violation; an expression-bodied lambda has no `stmts` to
-    /// miss, which is why only the block form under-reported).
+    /// `LambdaBody::value_exprs()` only ever yields the tail, so the
+    /// original `value_exprs()`-only walk left a block-bodied lambda's own
+    /// temp-decls and assignments unvisited by this pass entirely (issue
+    /// #1749 — a conservative-total, spec §3, violation; an
+    /// expression-bodied lambda has no `stmts` to miss, which is why only
+    /// the block form under-reported). The walk below matches on
+    /// `LambdaBody` and takes `stmts`/`tail` directly rather than going
+    /// back through `value_exprs()`, so the frame window can wrap both
+    /// (#1789) and a future `LambdaBody` variant is a compile error here
+    /// rather than a silently unwalked body.
     ///
     /// `infer_block_stmt` is the ENCLOSING def's own per-statement walker,
     /// though, not a lambda-scoped one — left unchanged, it also mutates
@@ -1508,8 +1513,15 @@ impl InferPass<'_, '_> {
     /// into* `locals` (so even a same-named enclosing local gets corrupted,
     /// not just a fresh key added). `annotated` and `local_fn_origins` are
     /// the same shape of leak for ascriptions and write-narrowing. So the
-    /// `stmts` walk below snapshots and restores all five frame-scoped
-    /// fields — only the effect-atom accumulators (`referenced_globals`,
+    /// block-body walk below snapshots and restores all five frame-scoped
+    /// fields around **both** the `stmts` and the tail (issue #1789 — the
+    /// tail is the block's value position and reads, and via `observe`
+    /// writes, the locals those statements just bound, so restoring
+    /// between the two inferred it against the enclosing def's `locals`
+    /// instead; `locals` is keyed by bare name, so on a shadowed name that
+    /// both hid the lambda's own temp from its tail and leaked the tail's
+    /// `observe` into the enclosing local). Only the effect-atom
+    /// accumulators (`referenced_globals`,
     /// `effect_writes`, `calls`, `external_calls`, `effect_opaque`,
     /// `effect_emits`, `effect_tags`, `effect_faults`,
     /// `effect_faults_refined`) are meant to survive the walk into the
@@ -1578,27 +1590,48 @@ impl InferPass<'_, '_> {
                 .entry(p.name.text.clone())
                 .or_insert(0) += 1;
         }
-        if let brink_ir::LambdaBody::Block { stmts, .. } = &l.body {
-            // Wholesale snapshot/restore (not a "remove newly-inserted
-            // keys" diff) — `bind_local` unifies into a pre-existing entry
-            // of the same name, so a diff-based undo would still leak a
-            // same-named outer local's corrupted type.
-            let saved_return_ty = self.return_ty.clone();
-            let saved_has_value_return = self.has_value_return;
-            let saved_locals = self.locals.clone();
-            let saved_annotated = self.annotated.clone();
-            let saved_local_fn_origins = self.local_fn_origins.clone();
-            for s in stmts {
-                self.infer_block_stmt(s);
+        match &l.body {
+            brink_ir::LambdaBody::Block { stmts, tail } => {
+                // Wholesale snapshot/restore (not a "remove newly-inserted
+                // keys" diff) — `bind_local` unifies into a pre-existing entry
+                // of the same name, so a diff-based undo would still leak a
+                // same-named outer local's corrupted type.
+                let saved_return_ty = self.return_ty.clone();
+                let saved_has_value_return = self.has_value_return;
+                let saved_locals = self.locals.clone();
+                let saved_annotated = self.annotated.clone();
+                let saved_local_fn_origins = self.local_fn_origins.clone();
+                for s in stmts {
+                    self.infer_block_stmt(s);
+                }
+                // The tail is part of the *same* frame as the `stmts` above
+                // (issue #1789): it is the block's value position, and it
+                // reads — and, through `observe`, writes — the very locals
+                // those statements just bound. Walking it after the restore
+                // inferred it against the *enclosing* def's `locals`, which
+                // is wrong in both directions on a shadowed name: a
+                // lambda-local temp read in tail position saw the enclosing
+                // def's same-named local, and an `observe` from the tail
+                // (e.g. an argument-position use) unified the lambda's type
+                // into the enclosing local — manufacturing a spurious
+                // `Conflicted` escape (`E066`) on a temp the enclosing body
+                // never misuses. Inside the window, both directions stay in
+                // the lambda's own frame and are discarded by the restore.
+                if let Some(tail) = tail {
+                    self.infer_expr(tail);
+                }
+                self.return_ty = saved_return_ty;
+                self.has_value_return = saved_has_value_return;
+                self.locals = saved_locals;
+                self.annotated = saved_annotated;
+                self.local_fn_origins = saved_local_fn_origins;
             }
-            self.return_ty = saved_return_ty;
-            self.has_value_return = saved_has_value_return;
-            self.locals = saved_locals;
-            self.annotated = saved_annotated;
-            self.local_fn_origins = saved_local_fn_origins;
-        }
-        for e in l.body.value_exprs() {
-            self.infer_expr(e);
+            // A single-expression body has no `stmts`, so there is no frame
+            // to open around it — it walks under whatever frame was already
+            // live when `infer_lambda` was entered, unchanged by #1789.
+            brink_ir::LambdaBody::Expr(e) => {
+                self.infer_expr(e);
+            }
         }
         for p in &l.params {
             if let std::collections::btree_map::Entry::Occupied(mut o) =
