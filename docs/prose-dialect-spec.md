@@ -784,3 +784,40 @@ grace.
 6. **Editor implications (NS-T)** — #1350/#1131 stay held; the bridge
    features (§2b.3), the park decoration (§8c), the built-in token
    vocabulary (§3.5b) are their incoming scope.
+
+## Migration notes — breaking changes for authors
+
+### Escape sequences in inline markup (§8d.6, landed PR #1732)
+
+**Status:** Breaking change, effective immediately on 2026-07-29 with PR
+#1732 (implements #1716). The ruling is permanent per §8d.6.
+
+**What changed:** The escape set for inline markup is now **strictly finite**:
+`\<` `\{` `\#` `\\` are the only valid escape sequences. A backslash before
+any other character — including spaces, punctuation, emoticons, path
+separators — is now a compile error.
+
+**Who is affected:** Authors with existing `.brink` prose files containing a
+bare backslash where inline markup grammar applies (inside flow bodies,
+inside prose blocks, inside choice text, inside block elements). Common
+patterns that now fail:
+
+- Windows paths: `C:\Users\Documents` → compile error
+- Emoticons: `\o/` or `¯\_(ツ)_/¯` → compile error (the middle backslash)
+- Escaped punctuation outside the four-char set: `\-` or `\.` or `\;` → compile error
+
+**How to fix:** Double the backslash. The doubled backslash becomes a valid
+escape sequence `\\`, which renders as a single backslash in output:
+
+```brink
+C:\Users\Documents  → C:\\Users\\Documents  (renders as C:\Users\Documents)
+\o/                 → \\o/                  (renders as \o/)
+\-(dash)            → \\-(dash)             (renders as \-(dash))
+```
+
+**Rationale:** The final escape set (§8d.6) is ruled to prevent silent
+data loss. A backslash before an unrecognized character used to silently
+drop both the backslash and the following character. The superset doctrine
+(§1) forbids silent drops. Making the sequence a hard error ensures
+authors notice and fix it correctly, rather than discovering the data loss
+at runtime.
