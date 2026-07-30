@@ -121,9 +121,34 @@ keyspace (`walk_lambda`,
 can collide by name with an unrelated enclosing Temp, and a value call
 made through the lambda's own param can resolve — silently and
 incorrectly — against whatever the enclosing def's same-named Temp
-traced to instead, an under-report of the direction §3 forbids. This is
-a live gap in the current split, not a hypothetical one; tracked as
-issue #1779.
+traced to instead, an under-report of the direction §3 forbids.
+
+**Fixed (issue #1779).** A snapshot/restore of `local_fn_origins` around
+the lambda's `stmts` does not, by itself, close this — a lambda param
+that is only ever *read* (never itself written inside the lambda) never
+touches `local_fn_origins` at all, so the map an early, in-lambda
+resolution would consult is byte-identical to the one the deferred,
+post-restore resolution consults today; timing was never the load-bearing
+variable. The actual defect is that a lambda's own param is classified
+`ValueCallOrigin::Local` in the first place — the same mistake
+`local_call_origin`'s `SymbolKind::Param` arm already refuses to make for
+one of *this* definition's own declared params, for the identical reason
+("carries an implicit caller-provided initial value the local write
+summary never sees"). The fix is a third, classification-time guard,
+`InferPass::lambda_param_names` — a by-name reference count of every
+param belonging to a lambda currently being walked (any nesting depth),
+live for the lambda's `stmts` **and** its tail/expr value alike (an
+expression-bodied lambda has no `stmts` to bracket at all).
+`local_call_origin` classifies a `SymbolKind::Temp` def as `Unknown`
+instead of `Local` whenever its name is shadowed this way — regardless of
+what `local_fn_origins[name]` currently holds, since that entry (if any)
+can only ever be an unrelated enclosing local's own summary or a join
+corrupted by this lambda's own same-named write, and neither bounds what
+the lambda's param can actually hold. This is strictly more conservative
+than the pre-fix behavior (`Local` → `Unknown` only, never the reverse),
+so it cannot introduce a new under-report of its own — see the pinning
+test `crates/internal/brink-analyzer/src/infer/body.rs`
+(`lambda_param_shadows_a_traced_enclosing_local_and_stays_pessimal`).
 
 - **Frame-scoped — snapshot before the walk, restore after it.** These
   describe *this one lambda body's own, unmodeled frame*; nothing about
@@ -182,6 +207,19 @@ issue #1779.
   of this bucket: a call or a `ref`-argument write made from inside a
   lambda body is absorbed into it exactly like any other atom, per the
   absorption rule stated above.)
+
+- **Name-shadowed — push before the walk, pop after it, by reference
+  count.** `lambda_param_names` (issue #1779) is neither of the above: it
+  is not restored to a prior *value* (nothing meaningful precedes it —
+  entering a lambda only ever adds shadows, never removes one that was
+  already there) and it is not left to accumulate forever either — a
+  shadow must not outlive the lambda that introduced it, or an unrelated,
+  later, non-lambda reference to the same bare name would be wrongly
+  de-narrowed too. So each of a lambda's own param names is
+  incremented on entry and decremented (removed at zero) after that
+  lambda's whole body — `stmts` and the tail/expr value both — has been
+  walked. Consulted only by `local_call_origin`, purely as a classification
+  guard; it names no targets and joins nothing.
 
 **Why the fix is a wholesale snapshot/restore, not a diff-based undo.**
 The tempting shortcut — record which keys `locals`/`annotated`/
