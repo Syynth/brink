@@ -517,7 +517,7 @@ pub fn erase_fn_rows(ty: &Ty) -> Ty {
 /// The one assignability predicate every "does this argument fit this
 /// parameter" check shares — `annotations::report_if_mismatched` (`E063`),
 /// the two `ValueCallKind::ArgMismatch` sites in [`super::body`], and the
-/// `E068` struct-field check. It is [`unify`] plus the directional reading
+/// `E071` struct-field check. It is [`unify`] plus the directional reading
 /// *"the join must not widen the target"*, which is what makes the one legal
 /// numeric coercion (`int` into a `float` slot) pass while `float` into an
 /// `int` slot fails.
