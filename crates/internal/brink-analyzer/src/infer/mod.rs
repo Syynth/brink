@@ -2366,7 +2366,10 @@ mod tests {
     /// atoms *and* every direct callee's finalized row — the no-under-report
     /// invariant. Exercised over a mutually-recursive fixture (`ping <-> pong`)
     /// so the check runs against a real multi-round SCC fixpoint, plus a
-    /// higher-order value-call (`apply`) so the pessimal floor is in the mix.
+    /// higher-order value-call (`apply`) so the pessimal floor is in the mix,
+    /// plus a caller (`hocaller`) that **instantiates** `apply`'s §6.1 row
+    /// variable (issue #1680, Fork C) so check (2) below has to reason about a
+    /// holed callee, not only ground ones.
     #[test]
     fn conservative_total_no_under_report_over_mutual_recursion() {
         let src = "VAR gold = 0\nVAR hp = 10\nEXTERNAL play_sfx(x)\n\
@@ -2374,7 +2377,8 @@ mod tests {
                    {n == 0:\n  ~ return 0\n}\n~ play_sfx(n)\n~ return pong(n - 1)\n\
                    === function pong(n) ===\n~ hp = hp - 1\n~ return ping(n)\n\
                    === function apply(cb) ===\n~ return cb(1)\n\
-                   === caller ===\n~ temp x = ping(3)\n-> DONE\n";
+                   === caller ===\n~ temp x = ping(3)\n-> DONE\n\
+                   === hocaller ===\n~ temp y = apply(#fn(pong))\n-> DONE\n";
         let (hir, index, res) = build(src);
         let files = [(FileId(0), &hir)];
         let inferable = inferable_defs(&files, &index);
@@ -2391,12 +2395,34 @@ mod tests {
                 "def {def:?} row must cover its own body atoms"
             );
 
-            // (2) covers every direct callee's finalized row.
+            // (2) covers every direct callee's finalized row —
+            // instantiation-aware for a holed callee (issue #1680 review
+            // finding). A callee row still carrying a §6.1 hole is itself
+            // pessimal by construction (`is_pessimal`), so it is never a
+            // meaningful target for `covers`: no non-opaque caller could ever
+            // cover it, which would make this gate reject exactly the rows
+            // #1680 ships as sound. What the caller actually owes is the
+            // callee's *instantiated* row — its ground atoms joined with
+            // whatever this call site traced into each hole — the same
+            // computation `solve_scc_effects` folds into `row` itself via
+            // `instantiate_hole`.
             for callee in &atoms.direct_calls {
                 let callee_row = rows.get(callee).cloned().unwrap_or_default();
+                let mut effective = EffectRow {
+                    holes: BTreeSet::new(),
+                    ..callee_row.clone()
+                };
+                for &hole in &callee_row.holes {
+                    effects::instantiate_hole(
+                        &mut effective,
+                        atoms.call_fn_args.get(&(*callee, hole)),
+                        &rows,
+                        &BTreeMap::new(),
+                    );
+                }
                 assert!(
-                    row.covers(&callee_row),
-                    "def {def:?} row must cover callee {callee:?} row"
+                    row.covers(&effective),
+                    "def {def:?} row must cover callee {callee:?}'s instantiated row"
                 );
             }
         }

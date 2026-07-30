@@ -503,7 +503,13 @@ pub fn solve_scc_effects(
 /// Any other case takes the pessimal floor, which is exactly the pre-#1680
 /// behavior for a call through a fn-typed param. Every branch either narrows
 /// or degrades to `opaque` — never silently drops the callee's effects.
-fn instantiate_hole(
+///
+/// `pub(crate)`: also reused by `infer::mod`'s
+/// `conservative_total_no_under_report_over_mutual_recursion` property test,
+/// which must instantiate a holed callee's row the same way this fixpoint
+/// does before comparing it against a caller's row with `covers` — the raw,
+/// still-parametric callee row is never itself a coverable target.
+pub(crate) fn instantiate_hole(
     next: &mut EffectRow,
     origins: Option<&FnArgOrigins>,
     rows: &BTreeMap<DefinitionId, EffectRow>,
