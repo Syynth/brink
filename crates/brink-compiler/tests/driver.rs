@@ -386,7 +386,7 @@ fn compile_path_native_lambda_valued_var_default_is_e083_with_map_keys_warning_a
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
         dir.join("main.brink"),
-        "var f = ||: int {\n  let m = Map { 3.5: 1 };\n  0\n};\n\n\
+        "var f = ||: int {\n  let m = Map { 3.5: 1 };\n  0\n}\n\n\
          flow main() {\n  Hello. -> END\n}\n",
     )
     .unwrap();
