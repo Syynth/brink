@@ -369,7 +369,7 @@ Key semantics from the reference C# ink implementation relevant to compilation:
 Every diagnostic the compiler can emit has a stable code (`E001`–`E165`) and a
 per-code reference file under [`docs/diagnostics/`](diagnostics/) with a summary,
 explanation, minimal repro, and fix guidance. `DiagnosticCode::as_str` /
-`DiagnosticCode::from_str_code` (`crates/internal/brink-ir/src/hir/types.rs`) are the
+`DiagnosticCode::from_str_code` (`crates/internal/brink-ir/src/hir/diagnostics.rs`) are the
 source of truth for the code set; `crates/internal/brink-test-harness/tests/diagnostic_docs_validation.rs`
 asserts every variant has a corresponding doc file and that no orphaned doc files exist.
 
