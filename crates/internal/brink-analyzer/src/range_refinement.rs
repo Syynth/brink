@@ -229,10 +229,23 @@ fn expr_children(expr: &Expr) -> Vec<&Expr> {
         Expr::StructLiteral(sl) => sl.fields.iter().map(|(_, v)| v).collect(),
         Expr::Index(idx) => vec![&idx.base, &idx.index],
         Expr::RefArg(ra) => vec![&ra.operand],
-        // A lambda's value expression (issue #1685). A braced body's
-        // *statements* are not expressions and cannot be handed to an
-        // expression-only walker — see `LambdaBody::value_exprs`.
-        Expr::Lambda(l) => l.body.value_exprs(),
+        // A lambda's whole body (issue #1685, #1764), kept uniform with the
+        // sibling initializer walks (`conversions`, `contains_domain`,
+        // `structs`, `map_keys`) — see `LambdaBody::all_exprs`.
+        //
+        // Unlike those four, this one has **no reachable case today**, and
+        // so no regression test: `Expr::Lambda` is produced only by
+        // `hir::lower_native`, and the native surface has no range grammar
+        // at all (no `..` token, no `RANGE_EXPR`, and `lower_native` never
+        // mints an `Expr::Range`). Both legs of `check_call` need a range —
+        // leg (a) a literal `Expr::Range` in argument position, leg (b) an
+        // argument classifying to `Ty::Range`, which at file scope
+        // (`MistypeCtx::locals = None`) could only come from a global whose
+        // own initializer is a range literal — so neither can occur inside a
+        // lambda body while the surfaces stay disjoint. This descends anyway
+        // so the gap cannot silently reopen the day NS-A5 range syntax lands
+        // natively; it is a no-op until then, not a fix.
+        Expr::Lambda(l) => l.body.all_exprs(),
         Expr::Range(r) => vec![&r.start, &r.end],
         Expr::String(s) => s
             .parts
