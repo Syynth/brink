@@ -448,10 +448,16 @@ fn expr_children(expr: &Expr) -> Vec<&Expr> {
         Expr::FnLiteral(fl) => fl.args.iter().collect(),
         // T1e `ref lvalue-path`: only the operand is a child expression.
         Expr::RefArg(ra) => vec![&ra.operand],
-        // A lambda's value expression (issue #1685). A braced body's
-        // *statements* are not expressions and cannot be handed to an
-        // expression-only walker — see `LambdaBody::value_exprs`.
-        Expr::Lambda(l) => l.body.value_exprs(),
+        // A lambda's whole body (issue #1685, #1764). A construction
+        // literal's shape agreement doesn't depend on where the literal
+        // sits, so this walk must reach a braced body's *statements* too,
+        // not just its trailing value expression — see
+        // `LambdaBody::all_exprs`. (Locals declared inside the body are not
+        // in `MistypeCtx::locals`, which is `None` at file scope anyway, so
+        // an initializer naming one classifies `Unknown` and stays silent:
+        // "Unknown never disagrees", the same posture as every other
+        // unclassifiable initializer here.)
+        Expr::Lambda(l) => l.body.all_exprs(),
         Expr::Range(r) => vec![&r.start, &r.end],
         Expr::String(s) => s
             .parts
@@ -696,6 +702,32 @@ mod tests {
     /// every non-literal-classification test below shares.
     fn check_all(src: &str) -> Vec<Diagnostic> {
         let (hir, index, resolutions, inference) = build_with_inference(src);
+        check(&[(FileId(0), &hir)], &index, &inference, &resolutions)
+    }
+
+    /// [`build_with_inference`]'s native-surface twin. Lambdas exist only on
+    /// the native surface, so the #1764 fixtures below must go through
+    /// `lower_native` (the same reason `coalesce`'s `build_native` exists).
+    fn build_native(src: &str) -> (HirFile, SymbolIndex, ResolutionMap, InferenceResult) {
+        let parsed = brink_syntax_native::parse(src);
+        assert!(parsed.errors().is_empty(), "{:?}", parsed.errors());
+        let (hir, manifest, _diag) = brink_ir::hir::lower_native::lower(FileId(0), &parsed.tree());
+        let (index, _diag) = crate::symbol_index(&[(FileId(0), &manifest)]);
+        let (resolutions, _diag) =
+            crate::resolve(FileId(0), &manifest, &index, &crate::ImportScope::default());
+        let inference = crate::infer_project(
+            &[(FileId(0), &hir)],
+            &index,
+            &resolutions,
+            None,
+            &BTreeMap::new(),
+        );
+        (hir, (*index).clone(), (*resolutions).clone(), inference)
+    }
+
+    /// [`check`] over native source — [`check_all`]'s native twin.
+    fn check_all_native(src: &str) -> Vec<Diagnostic> {
+        let (hir, index, resolutions, inference) = build_native(src);
         check(&[(FileId(0), &hir)], &index, &inference, &resolutions)
     }
 
@@ -1002,6 +1034,46 @@ mod tests {
         let diags = check_duplicates(&[(FileId(0), &hir)]);
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E084);
+    }
+
+    // ─── issue #1764: a lambda's statements in a VAR/CONST initializer ──
+
+    /// The VAR/CONST-initializer recursion is the one walk that isn't
+    /// `visit::visit`'s (which already descends a lambda's statements), so it
+    /// has to descend them itself. A block-bodied lambda's `let` is a
+    /// statement, not the body's value expression.
+    #[test]
+    fn a_duplicate_field_in_a_lambda_statement_of_a_var_initializer_is_reported() {
+        let (hir, _index, _res, _inf) = build_native(
+            "struct Point { x: float }\nvar f = ||: int {\n  let p = Point { x: 1.0, x: 2.0 };\n  0\n};\n",
+        );
+        let diags = check_duplicates(&[(FileId(0), &hir)]);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E084);
+    }
+
+    /// The shape-agreement trio reaches the same position — a literal-valued
+    /// initializer classifies without any locals, so `MistypeCtx::locals =
+    /// None` is no obstacle here.
+    #[test]
+    fn a_mistyped_field_in_a_lambda_statement_of_a_var_initializer_is_reported() {
+        let diags = check_all_native(
+            "struct Point { x: float }\nvar f = ||: int {\n  let p = Point { x: \"hi\" };\n  0\n};\n",
+        );
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E071);
+        assert!(diags[0].message.contains('x'), "{:?}", diags[0].message);
+    }
+
+    /// The tail position was already covered — pinned so a later refactor
+    /// can't trade one half of the body for the other.
+    #[test]
+    fn a_mistyped_field_in_a_lambda_tail_of_a_var_initializer_is_still_reported() {
+        let diags = check_all_native(
+            "struct Point { x: float }\nvar f = ||: Point {\n  let a = 1;\n  Point { x: \"hi\" }\n};\n",
+        );
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E071);
     }
 
     #[test]
