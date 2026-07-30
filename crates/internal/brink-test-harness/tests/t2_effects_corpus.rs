@@ -264,6 +264,53 @@ fn a_bound_on_a_higher_order_call_site_is_satisfiable() {
 }
 
 #[test]
+fn a_bound_on_a_higher_order_call_site_at_a_non_zero_position_is_satisfiable() {
+    // Review finding (issue #1680, PR #1743): every prior fill-path test —
+    // the `infer::effects` unit tests, `infer::mod`'s
+    // `a_caller_instantiates_the_callees_row_variable` and siblings, and
+    // `a_bound_on_a_higher_order_call_site_is_satisfiable` above — put the
+    // callback at param index 0. The callee's hole key is a *declaration*
+    // index (`def.params`, callee side) while the caller's fill key is an
+    // *argument-position* index (`args.iter().enumerate()`, caller side);
+    // index 0 is the one value where drift between those two keyspaces would
+    // be invisible. `apply2`'s callback sits at position 1.
+    let source = "VAR total = 0\n-> go\n\
+         === function bump(): int ===\n~ total = total + 1\n~ return total\n\
+         === function apply2(a: int, cb: fn(): int): int ===\n~ return cb() + a\n\
+         === go ===\n@[effects(reads(total), writes(total))]\n\
+         ~ temp x = apply2(1, #fn(bump))\nTotal {x}.\n-> END\n";
+    assert!(
+        error_codes(source).is_empty(),
+        "a row variable at a non-zero declaration index must instantiate too: {:?}",
+        error_codes(source)
+    );
+    assert_eq!(run_brink(source).trim(), "Total 2.");
+}
+
+#[test]
+fn a_bound_on_a_higher_order_call_site_after_a_leading_ref_param_is_satisfiable() {
+    // Review finding (issue #1680, PR #1743), the sharper form of the case
+    // above: `param_index` (`infer::body::infer_def_body`) deliberately
+    // enumerates `def.params` *before* filtering out `ref` params, so a
+    // fn-typed param declared after a leading `ref` one keeps its true,
+    // pre-filter declaration index rather than being shifted down. `apply3`'s
+    // callback is declared at index 1, right after the `ref` param at index 0.
+    let source = "VAR total = 0\nVAR counter = 0\n-> go\n\
+         === function bump(): int ===\n~ total = total + 1\n~ return total\n\
+         === function apply3(ref r: int, cb: fn(): int): int ===\n\
+         ~ r = r + 1\n~ return cb() + r\n\
+         === go ===\n\
+         @[effects(reads(total), writes(total), reads(counter), writes(counter))]\n\
+         ~ temp x = apply3(counter, #fn(bump))\nTotal {x}.\n-> END\n";
+    assert!(
+        error_codes(source).is_empty(),
+        "a row variable declared after a leading ref param must still instantiate: {:?}",
+        error_codes(source)
+    );
+    assert_eq!(run_brink(source).trim(), "Total 2.");
+}
+
+#[test]
 fn pure_sugar_satisfied_by_a_pure_knot_runs() {
     let source = "-> go\n=== go ===\n@[effects(pure)]\nHello.\n-> END\n";
     assert!(error_codes(source).is_empty(), "{:?}", error_codes(source));
