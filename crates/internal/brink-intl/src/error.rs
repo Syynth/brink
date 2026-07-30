@@ -41,6 +41,10 @@ pub enum IntlError {
     MissingSelectData(String),
     #[error("invalid select JSON in originalData: {0}")]
     InvalidSelectJson(String),
+    #[error("span metadata not found for dataRef `{0}`")]
+    MissingSpanData(String),
+    #[error("invalid span JSON in originalData: {0}")]
+    InvalidSpanJson(String),
     #[error(
         "slot index {slot} out of range for scope {scope_id} line {line_index}: \
          base line has {slot_count} slot(s) (valid indices: 0..{slot_count})"

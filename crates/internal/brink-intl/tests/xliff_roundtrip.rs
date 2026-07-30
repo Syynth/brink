@@ -157,17 +157,14 @@ fn full_roundtrip_through_xml() {
     assert_eq!(recovered.scopes[1].name, Some("knot_a".to_string()));
 }
 
-// ── Inline markup spans through XLIFF (#1716) — documented v1 flattening ──
+// ── Inline markup spans through XLIFF (#1716, real mapping #1734) ──
 
-/// `PartJson::Span` (#1716) round-trips through XLIFF as flattened text: the
-/// span's `children` splice into the surrounding element stream (no `<pc>`
-/// paired inline code yet — "Translation, round 2",
-/// `docs/prose-dialect-spec.md` §9), but every word and slot inside it
-/// still survives the export → XML → parse → import round trip correctly.
-/// This proves the *documented* v1 limitation is exactly what's documented
-/// — the text is not lost, only the span boundary doesn't survive.
+/// A non-empty [`PartJson::Span`] round-trips through XLIFF as a real paired
+/// `<pc>` inline code — `name`/`attrs`/`children` (including the slot inside
+/// it) all survive the export → XML → parse → import round trip, not merely
+/// the flattened text.
 #[test]
-fn span_flattens_through_xliff_but_loses_no_text_or_slots() {
+fn span_with_children_roundtrips_as_pc_through_xliff() {
     let lines = make_lines_json(vec![make_scope(
         "0x0100000000000001",
         Some("root"),
@@ -199,46 +196,127 @@ fn span_flattens_through_xliff_but_loses_no_text_or_slots() {
     )]);
 
     let doc = lines_json_to_xliff(&lines, "en", None);
+
+    // The exported XML must actually contain a real `<pc>` element, not
+    // just round-trip correctly through the in-memory Document — otherwise
+    // a bug that only shows up in the XML writer/reader wouldn't be caught.
+    let xml = xliff2::write::to_string(&doc).unwrap();
+    assert!(
+        xml.contains("<pc "),
+        "expected a <pc> paired inline code in the exported XML, got:\n{xml}"
+    );
+
+    let parsed = xliff2::read::read_xliff(&xml).unwrap();
+    let translated = fill_targets(parsed);
+    let recovered = xliff_to_lines_json(&translated).unwrap();
+
+    assert_eq!(
+        recovered.scopes[0].lines[0].content, lines.scopes[0].lines[0].content,
+        "span name/attrs/children must round-trip exactly, not just its \
+         flattened text"
+    );
+}
+
+/// A childless (point-marker, §8b.11 — `<pause/>`, `<sfx name="bell"/>`)
+/// [`PartJson::Span`] round-trips through XLIFF as a standalone inline
+/// code. Under the pre-#1734 flattening path this span vanished entirely
+/// (its empty `children` loop pushed nothing) — a silent drop, not merely a
+/// lost boundary.
+#[test]
+fn point_marker_span_roundtrips_through_xliff() {
+    let lines = make_lines_json(vec![make_scope(
+        "0x0100000000000001",
+        Some("root"),
+        vec![make_line(
+            0,
+            "aaaa",
+            Some(ContentJson::Template {
+                template: vec![
+                    PartJson::Literal("Wait...".to_string()),
+                    PartJson::Span {
+                        span: brink_intl::SpanJson {
+                            name: "pause".to_string(),
+                            attrs: Vec::new(),
+                            children: Vec::new(),
+                        },
+                    },
+                    PartJson::Literal(" now.".to_string()),
+                ],
+            }),
+            None,
+        )],
+    )]);
+
+    let doc = lines_json_to_xliff(&lines, "en", None);
     let xml = xliff2::write::to_string(&doc).unwrap();
     let parsed = xliff2::read::read_xliff(&xml).unwrap();
     let translated = fill_targets(parsed);
     let recovered = xliff_to_lines_json(&translated).unwrap();
 
-    let content = recovered.scopes[0].lines[0]
-        .content
-        .as_ref()
-        .expect("content present");
-    let ContentJson::Template { template } = content else {
-        panic!("expected a Template, got {content:?}");
-    };
-    // Flattened: no PartJson::Span survives the round trip (documented v1
-    // limitation), but every literal and the slot are still present, in
-    // order, with the span's own text intact.
-    assert!(
-        !template.iter().any(|p| matches!(p, PartJson::Span { .. })),
-        "span structure is not (yet) preserved through XLIFF: {template:?}"
-    );
-    // Adjacent literal parts may merge across the XML round trip (XML text
-    // nodes don't preserve arbitrary split boundaries between adjacent
-    // `InlineElement::Text`s) — what matters is the *concatenated* text is
-    // unchanged, not the exact segmentation.
-    let concatenated: String = template
-        .iter()
-        .filter_map(|p| match p {
-            PartJson::Literal(s) => Some(s.as_str()),
-            _ => None,
-        })
-        .collect();
     assert_eq!(
-        concatenated, "He hands you the  lantern.",
-        "no text lost by flattening"
+        recovered.scopes[0].lines[0].content, lines.scopes[0].lines[0].content,
+        "the point-marker span must survive, not just adjacent text"
     );
-    assert!(
-        template
-            .iter()
-            .any(|p| matches!(p, PartJson::Slot { slot: 0 })),
-        "the slot inside the span must survive"
-    );
+}
+
+/// Span hash-transparency (`docs/prose-dialect-spec.md` §4.4) is a
+/// compile-time property of `source_hash` — markup is normalized out
+/// before hashing, so `Hello <wave>world</wave>` hashes identically to
+/// `Hello world`. This module never re-derives that hash: `LineJson.hash`
+/// is carried through as an opaque field regardless of what shape the
+/// line's content takes. This test proves the new `<pc>`/`<ph>` span
+/// mapping doesn't change that — the same externally-assigned hash comes
+/// back unchanged whether the line's content is bare text or the same text
+/// wrapped in a span, so a translator's TMS key for this line never moves
+/// just because markup was added around already-translated words.
+#[test]
+fn span_mapping_does_not_disturb_line_hash() {
+    const SHARED_HASH: &str = "abcd1234ef";
+
+    let bare = make_lines_json(vec![make_scope(
+        "0x01",
+        None,
+        vec![make_line(
+            0,
+            SHARED_HASH,
+            Some(ContentJson::Plain("Hello world".to_string())),
+            None,
+        )],
+    )]);
+    let marked_up = make_lines_json(vec![make_scope(
+        "0x01",
+        None,
+        vec![make_line(
+            0,
+            SHARED_HASH,
+            Some(ContentJson::Template {
+                template: vec![
+                    PartJson::Literal("Hello ".to_string()),
+                    PartJson::Span {
+                        span: brink_intl::SpanJson {
+                            name: "wave".to_string(),
+                            attrs: Vec::new(),
+                            children: vec![PartJson::Literal("world".to_string())],
+                        },
+                    },
+                ],
+            }),
+            None,
+        )],
+    )]);
+
+    for lines in [&bare, &marked_up] {
+        let doc = lines_json_to_xliff(lines, "en", None);
+        let xml = xliff2::write::to_string(&doc).unwrap();
+        let parsed = xliff2::read::read_xliff(&xml).unwrap();
+        let translated = fill_targets(parsed);
+        let recovered = xliff_to_lines_json(&translated).unwrap();
+        assert_eq!(
+            recovered.scopes[0].lines[0].hash, SHARED_HASH,
+            "hash must survive the XLIFF round trip unchanged regardless \
+             of markup content: {lines:?}"
+        );
+    }
 }
 
 // ── generate_locale → fill targets → compile_locale_xliff ──
