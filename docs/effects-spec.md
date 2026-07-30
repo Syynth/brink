@@ -96,8 +96,8 @@ next clause is the reason a lambda-body walk needs a frame boundary at
 all: "*which* frame it returns from is a resolution fact for the layer
 that gives the lambda a frame, not a shape this lowering can express".
 
-**The rule.** Every `InferPass` field falls into exactly one of two
-buckets. Get a lambda-body walk on the wrong side of this split and
+**The rule.** Every `InferPass` field falls into exactly one of the
+buckets below. Get a lambda-body walk on the wrong side of this split and
 either a lambda's own `return`/locals corrupt the enclosing def's state,
 or (the #1763-shaped mirror problem) atoms that are supposed to be
 absorbed into the enclosing row get lost because they were wrongly
@@ -133,8 +133,8 @@ variable. The actual defect is that a lambda's own param is classified
 `ValueCallOrigin::Local` in the first place — the same mistake
 `local_call_origin`'s `SymbolKind::Param` arm already refuses to make for
 one of *this* definition's own declared params, for the identical reason
-("carries an implicit caller-provided initial value the local write
-summary never sees"). The fix is a third, classification-time guard,
+("carries an implicit caller-provided initial value [the local write
+summary] never sees"). The fix is a third, classification-time guard,
 `InferPass::lambda_param_names` — a by-name reference count of every
 param belonging to a lambda currently being walked (any nesting depth),
 live for the lambda's `stmts` **and** its tail/expr value alike (an
@@ -147,8 +147,11 @@ corrupted by this lambda's own same-named write, and neither bounds what
 the lambda's param can actually hold. This is strictly more conservative
 than the pre-fix behavior (`Local` → `Unknown` only, never the reverse),
 so it cannot introduce a new under-report of its own — see the pinning
-test `crates/internal/brink-analyzer/src/infer/body.rs`
-(`lambda_param_shadows_a_traced_enclosing_local_and_stays_pessimal`).
+tests in `crates/internal/brink-analyzer/src/infer/body.rs`:
+`lambda_param_shadow_forces_local_call_origin_to_unknown`,
+`lambda_param_collision_with_a_traced_enclosing_local_stays_pessimal`, and
+the positive control
+`lambda_capturing_a_non_colliding_enclosing_local_still_narrows`.
 
 - **Frame-scoped — snapshot before the walk, restore after it.** These
   describe *this one lambda body's own, unmodeled frame*; nothing about
@@ -166,10 +169,16 @@ test `crates/internal/brink-analyzer/src/infer/body.rs`
 
   As of this writing that is exactly the five fields PR #1750 identified
   and `infer_lambda` snapshots/restores (`body.rs`, `infer_lambda`) — if
-  a future change adds a sixth field to `InferPass` that holds
-  per-name-scoped or per-body-scoped state (anything keyed or valid only
-  within one body's locals, not accumulated across the whole
-  definition), it joins this bucket and this list must grow with it.
+  a future change adds a sixth field to `InferPass` that holds state
+  restored to a prior *value* on exit from the lambda (a snapshot taken
+  before the walk and written back after it, the way `locals` or
+  `local_fn_origins` are), it joins this bucket and this list must grow
+  with it. A field that instead needs a push/pop shadow that must not
+  outlive the lambda — nothing meaningful precedes it, and it is removed
+  rather than restored to some prior value — belongs in the
+  **Name-shadowed** bucket below instead; `lambda_param_names` is exactly
+  that shape, which is why issue #1779 added a third bucket rather than
+  extending this one.
 
   **Scope of the restore, precisely.** `infer_lambda` snapshots before,
   and restores after, the **whole** of a block body — both its `stmts`
@@ -228,8 +237,8 @@ test `crates/internal/brink-analyzer/src/infer/body.rs`
   the entire *point* of walking the lambda's `stmts` in the first place
   (§2/§3: every atom is absorbed into the enclosing definition's row,
   and a lambda has no row of its own to absorb into instead — see
-  `infer_lambda`'s doc comment on the keyspace gap). This bucket is
-  everything else `InferPass` carries: `calls`, `referenced_globals`,
+  `infer_lambda`'s doc comment on the keyspace gap). This bucket holds
+  the remaining effect-atom accumulators: `calls`, `referenced_globals`,
   `effect_writes`, `external_calls`, `effect_opaque`, `effect_emits`,
   `effect_tags`, `effect_faults`, `effect_faults_refined`, `value_calls`,
   `array_remove_calls`, `created_fn_values`, `pending_value_calls`,
