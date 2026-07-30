@@ -447,16 +447,17 @@ fn a_prose_line_with_an_interpolation_brace_is_still_prose() {
     // body opener. `header_tags_precede_a_body` must require the `{` to
     // be the *last* non-trivia token on the header line.
     //
-    // Not `assert_lossless` + zero-errors here: once this line correctly
-    // falls through to prose, its `#1` becomes an ordinary content-line
-    // tag, and `content::tag()`'s free-text scan unconditionally stops at
-    // the first literal `}` it meets — including the interpolation's own
-    // closer — which is a separate, pre-existing tag/brace interaction
-    // bug, not something this fix touches. What this fix guarantees, and
-    // all this test checks, is that the line is never silently swallowed
-    // into a second `FLOW_DECL`.
+    // Tightened for #1728: this used to stop short of `assert_lossless` +
+    // zero-errors because falling through to prose meant the line's `#1`
+    // became an ordinary content-line tag, and `content::tag()`'s
+    // free-text scan unconditionally stopped at the first literal `}` it
+    // met — including the interpolation's own closer — fooling the
+    // enclosing flow's own closing brace. #1728 fixed that scan (it now
+    // tracks brace depth so a balanced `}` never terminates the tag
+    // early), so this line must now parse completely clean.
     let src = "flow f() {\n  flow gently #1 and {gold} coins.\n  The river bends.\n}\n";
-    let p = parse(src);
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
     let inner = p
         .syntax()
         .descendants()
@@ -468,9 +469,10 @@ fn a_prose_line_with_an_interpolation_brace_is_still_prose() {
 #[test]
 fn a_prose_line_with_an_alternation_brace_is_still_prose() {
     // Same firewall, alternation form of the same review finding. See the
-    // interpolation test above for why this doesn't assert zero errors.
+    // interpolation test above — tightened for #1728 the same way.
     let src = "flow f() {\n  flow gently #1 and {river|stream} bends.\n}\n";
-    let p = parse(src);
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
     let inner = p
         .syntax()
         .descendants()
