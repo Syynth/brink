@@ -495,10 +495,14 @@ fn expr_children(expr: &Expr) -> Vec<&Expr> {
         Expr::StructLiteral(sl) => sl.fields.iter().map(|(_, v)| v).collect(),
         Expr::FnLiteral(fl) => fl.args.iter().collect(),
         Expr::RefArg(ra) => vec![&ra.operand],
-        // A lambda's value expression (issue #1685). A braced body's
-        // *statements* are not expressions and cannot be handed to an
-        // expression-only walker — see `LambdaBody::value_exprs`.
-        Expr::Lambda(l) => l.body.value_exprs(),
+        // A lambda's whole body (issue #1685, #1764). A coalescing chain is
+        // one wherever it sits, and this module's output is not only the
+        // `E066` diagnostic: the same recursion feeds `project_has_coalesce`
+        // (the gate on building a `CoalesceTable` at all) and the
+        // `CoalesceLookup` LIR lowering reads, so stopping at the tail
+        // dropped a chain's *shape* as well as its diagnostic. See
+        // `LambdaBody::all_exprs`.
+        Expr::Lambda(l) => l.body.all_exprs(),
         Expr::Range(r) => vec![&r.start, &r.end],
         Expr::String(s) => s
             .parts
@@ -826,6 +830,37 @@ mod tests {
     fn check_all(src: &str) -> Vec<Diagnostic> {
         let (hir, index, resolutions, inference) = build_native(src);
         check(&[(HirFileId(0), &hir)], &index, &inference, &resolutions)
+    }
+
+    // ── issue #1764: a lambda's statements in a VAR/CONST initializer ────
+
+    /// The VAR/CONST-initializer recursion is the one walk that isn't
+    /// `visit::visit`'s (which already descends a lambda's statements), so it
+    /// has to descend them itself.
+    #[test]
+    fn a_bad_chain_in_a_lambda_statement_of_a_var_initializer_is_e066() {
+        let diags = check_all("var f = ||: int {\n  let x = 5 or 9;\n  0\n};\n");
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E066);
+    }
+
+    /// The same walk answers "does this project coalesce at all?", the gate
+    /// on building a `CoalesceTable` — and so on `CoalesceLookup` reaching
+    /// LIR. Missing the chain there dropped its *shape*, not just its
+    /// diagnostic.
+    #[test]
+    fn a_chain_in_a_lambda_statement_of_a_var_initializer_trips_the_project_gate() {
+        let (hir, _index, _res, _inf) =
+            build_native("var f = ||: int {\n  let x = some(1) or 2;\n  0\n};\n");
+        assert!(project_has_coalesce(&hir));
+    }
+
+    /// …and is recorded in the table with its real collapsed shape.
+    #[test]
+    fn a_chain_in_a_lambda_statement_of_a_var_initializer_is_recorded_in_the_table() {
+        let chain = only_chain("var f = ||: int {\n  let x = some(1) or 2;\n  0\n};\n");
+        assert_eq!(chain.steps.len(), 1, "{chain:?}");
+        assert_eq!(chain.steps[0].rhs, Ty::Int);
     }
 
     #[test]
