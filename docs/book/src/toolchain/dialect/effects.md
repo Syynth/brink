@@ -201,8 +201,14 @@ Two tools surface inferred rows so you don't have to guess.
 
 **Hover** over a knot or stitch (in the editor, or `brink ide hover NAME -e
 main.ink`) shows its effect row on a stable line — `reads: …; writes: …; calls:
-…`, or `pure`, or `opaque` for a definition that dispatches through a function
-value.
+…`, or `pure`. If a definition calls through a **fn-typed parameter** without a traced
+callback, or dispatches through a value that cannot be traced (a host callback,
+a value loaded from the heap, or a param forwarded on into another
+higher-order call), its row is `opaque` — the conservative floor. But if you're
+looking at a **call site** where a fn-typed parameter receives a traced callback —
+a `#fn` literal or a local whose every write traces back to one — the caller's
+row instantiates the parameter's row variable to the callback's real row, and
+hover shows the concrete effects instead.
 
 **`brink ide effects-diff`** compares every row against a baseline — a git
 revision (`--rev HEAD` for working-tree-vs-HEAD) or a second entry file
