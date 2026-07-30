@@ -784,3 +784,46 @@ grace.
 6. **Editor implications (NS-T)** — #1350/#1131 stay held; the bridge
    features (§2b.3), the park decoration (§8c), the built-in token
    vocabulary (§3.5b) are their incoming scope.
+
+## Migration notes — breaking changes for authors
+
+### Escape sequences in inline markup (§8d.6, landed PR #1732)
+
+**Status:** Breaking change, effective immediately on 2026-07-29, landed via
+PR #1732 (part of #1716). The ruling is permanent per §8d.6, applied here as
+a sanctioned exception to §1's superset doctrine (§8d.6 explicitly sanctions
+it).
+
+**What changed:** The **inline** escape set is now **strictly finite**:
+`\<` `\{` `\#` `\\` are the only valid inline escape sequences. A backslash
+before any other character in inline position — including spaces,
+punctuation, emoticons, path separators — is now a compile error. §8d.6 also
+rules `\!` and `\@` as line-start escapes, but those are not yet
+implemented: a leading `\!` or `\@` currently errors too (tracked in
+#1733/#1734).
+
+**Who is affected:** Authors with existing `.brink` prose files containing a
+bare backslash where inline markup grammar applies (inside flow bodies,
+inside prose blocks, inside choice text, inside block elements). Common
+patterns that now fail:
+
+- Windows paths: `C:\Users\Documents` → compile error
+- Emoticons: `\o/` → compile error
+- Escaped punctuation outside the four-char set: `\-` or `\.` or `\;` → compile error
+
+**How to fix:** Double the backslash. The doubled backslash becomes a valid
+escape sequence `\\`, which renders as a single backslash in output:
+
+```brink
+C:\Users\Documents  → C:\\Users\\Documents  (renders as C:\Users\Documents)
+\o/                 → \\o/                  (renders as \o/)
+\-(dash)            → \\-(dash)             (renders as \-(dash))
+```
+
+**Rationale:** The final escape set (§8d.6) is ruled to prevent silent
+data loss. A backslash before an unrecognized character was previously
+ordinary literal text (and a following `#` or `{` was still parsed as a
+tag or interpolation) — a real, ruled superset-doctrine exception (§8d.6
+explicitly sanctions it), not a consequence of §1. Making the sequence a
+hard error ensures authors notice and fix it correctly, rather than
+discovering the surprising split at runtime.

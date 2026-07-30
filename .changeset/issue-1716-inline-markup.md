@@ -14,6 +14,10 @@ story playback runs through `brink-runtime`, both of which changed:
 - **Nesting doctrine** (§4.3), enforced structurally, and the **final
   escape set** (§8d.6): `\<` `\{` `\#` `\\`, a `\` before anything else is
   now a compile error (previously a bare backslash did nothing).
+  **Breaking change for authors:** any existing `.brink` prose containing a
+  bare backslash — Windows paths like `C:\Users\`, emoticons like `\o/`,
+  or any other unescaped backslash — will now fail to compile. Fix by
+  doubling the backslash: `C:\\Users\\`, `\\o/`.
 - **Behavior change**: a `.brink` line containing `<...>`-shaped markup
   previously rendered as literal text (no grammar recognized it). It now
   parses as a real span; story playback renders the span's text with the
