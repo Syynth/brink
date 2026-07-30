@@ -19,7 +19,9 @@ The practical consequence is that a lambda literal is now a legal callback
 for the pure verb trio `map`/`filter`/`fold` (#1679); before this, `#fn(named
 function)` was the only fn-value spelling those verbs could be handed. Note
 that "pure-required" still cannot be checked through a lambda callback:
-`Ty::Fn` carries no effect rows (#1680), so the E119 gate continues to judge
-only inline `#fn(target)` callbacks, and the dev-mode world-write guard
-remains the runtime residual. Ink sources are entirely unaffected — ink's
-grammar cannot spell a lambda — and the oracle corpus is unchanged.
+`Ty::Fn` carries an effect row since #1680 step 3, but no inferred type is
+threaded into the E119 gate (`docs/effects-spec.md` §6.1c's stratum question
+is open), so it continues to judge only inline `#fn(target)` callbacks, and
+the dev-mode world-write guard remains the runtime residual. Ink sources are
+entirely unaffected — ink's grammar cannot spell a lambda — and the oracle
+corpus is unchanged.
