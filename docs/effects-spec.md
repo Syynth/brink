@@ -123,6 +123,53 @@ same walk records a `#fn` target as both), a property pinned by the
 `every_fn_value_creation_target_is_also_a_call_graph_edge` test. Either
 way, SCC batching and the `solve_scc_effects` fixpoint are unchanged.
 
+**Parity test (issue #1736).** `crates/internal/brink-db/tests/
+query_equivalence.rs` now carries
+`analysis_matches_with_fn_value_creation_and_effects_assertion` and its
+`…_exceedance` companion: fixtures where a def creates (but never
+directly calls) two fn values pointing at different globals, asserting
+that `db.analysis()` (the salsa path) and `brink_analyzer::
+analyze_with_options` (the monolithic `effects_project` path) produce
+byte-identical `AnalysisResult`s, including the `@[effects(…)]`
+exceedance diagnostic. Tracing why a divergence would (or currently
+cannot) surface here matters more than the test itself: `EffectAtoms.
+direct_calls`/`creates_fn_values` are computed by the *one* shared
+`infer_def_body` walk both paths call into — `call_edges_query`
+(salsa) and `def_effect_atoms_query`/`effects_project` (both paths)
+each invoke it fresh on the same inputs and get the same `.calls` set,
+so `direct_calls` itself can never differ between the two paths.
+The only place `creates_fn_values` is actually read at all is the
+`.chain(&a.creates_fn_values)` in `effects_project`'s local graph
+builder (`infer/mod.rs`), and that graph feeds `topo_order`/SCC
+batching *only* — `solve_scc_effects`'s row-join loop (`infer/
+effects.rs`) iterates `member_atoms.direct_calls` exclusively and never
+reads `creates_fn_values`. A `creates_fn_values` entry that is *not*
+also a `direct_calls` entry (the shape #1727's lambda-literal plan
+would introduce — a lambda has no named target for `record_call_edge`
+to route through) therefore cannot currently become load-bearing for
+any computed `EffectRow` on **either** path, batching differences
+included: nothing ever asks `solve_scc_effects` to join over it. Confirmed
+empirically by temporarily disabling `record_call_edge` at the `#fn`
+creation site alone (simulating exactly that superset shape) and
+re-running the parity tests above — both paths stayed identical, because
+`resolve_pending_value_calls`'s call-through-a-local narrowing
+(`body.rs`) independently calls `record_call_edge` for every traced
+`#fn`/`bind` origin at the *call* site, so a target that is ever actually
+invoked through the local still lands in `direct_calls` regardless of
+the creation site. **Consequence for #1727:** when lambda literals gain
+index symbols and a body creates one without ever calling it,
+`call_graph_query` reading `creates_fn_values` (closing this issue's
+literal ask) will not by itself make the lambda's row reach its
+creator — `solve_scc_effects`'s own join loop will *also* need to fold
+in `creates_fn_values`, not just `direct_calls`, or the created-but-
+uncalled case (exactly what `creating_a_fn_value_joins_the_targets_row_
+even_without_a_call` in `infer/mod.rs` pins today only because the
+creation site's `record_call_edge` happens to also fire) will silently
+under-report once that dual-recording coincidence is gone. Filed as a
+scope note on #1736 for #1727 to pick up, not fixed here — no code
+today constructs a `creates_fn_values` superset for this analysis to be
+tested against.
+
 **No inferred row or signature may ever be consulted to decide an edge.**
 That is what keeps `call_graph → scc_membership → solve_scc →
 call_graph` acyclic, and it costs nothing, because §6.1 fixes every fn
