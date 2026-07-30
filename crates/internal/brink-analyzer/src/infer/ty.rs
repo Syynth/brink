@@ -501,6 +501,17 @@ pub fn unify_all(tys: impl IntoIterator<Item = Ty>) -> Ty {
 /// [`FnRow`] — the canonical form used to compare two types *modulo* their
 /// effect rows. Recurses through every structural variant so a row nested
 /// inside `array<fn(): int>` or `fn(fn(): int): int` is erased too.
+///
+/// **No wildcard arm** (issue #1758). `Option`, `Weighted`, and `Tower` were
+/// each added to [`Ty`] over time, and any of them (or a future variant)
+/// could nest a `Ty` the way `Array`/`Map`/`Fn` do — a `_ => ty.clone()`
+/// catch-all would let such an addition silently fall through as a no-op
+/// erasure instead of failing to compile, reintroducing the exact
+/// spurious-`E063` class #1754 fixed (a nested [`FnRow`] surviving erasure
+/// and then getting compared structurally by [`assignable`]'s callers).
+/// Every nominal leaf is therefore listed explicitly: adding a new variant
+/// that nests a `Ty` is a compile error here until someone decides whether
+/// it needs an erasing arm.
 #[must_use]
 pub fn erase_fn_rows(ty: &Ty) -> Ty {
     match ty {
@@ -513,7 +524,18 @@ pub fn erase_fn_rows(ty: &Ty) -> Ty {
         Ty::Option(elem) => Ty::Option(Box::new(erase_fn_rows(elem))),
         Ty::Weighted(elem) => Ty::Weighted(Box::new(erase_fn_rows(elem))),
         Ty::Map(k, v) => Ty::Map(Box::new(erase_fn_rows(k)), Box::new(erase_fn_rows(v))),
-        _ => ty.clone(),
+        Ty::Int
+        | Ty::Float
+        | Ty::Bool
+        | Ty::String
+        | Ty::Divert
+        | Ty::List(_)
+        | Ty::Struct(_)
+        | Ty::Handle(_)
+        | Ty::Range { .. }
+        | Ty::Tower(_)
+        | Ty::Unknown
+        | Ty::Conflicted => ty.clone(),
     }
 }
 
@@ -874,6 +896,79 @@ mod tests {
         )));
         assert_eq!(erase_fn_rows(&nested), erased);
         assert_eq!(erase_fn_rows(&erased), erased, "erasure is idempotent");
+    }
+
+    /// Whether a `Ty` variant nests another `Ty` — and so needs an erasing
+    /// arm in [`erase_fn_rows`] — or is a nominal leaf that erasure must
+    /// leave untouched.
+    enum ErasureShape {
+        NestsTy,
+        Leaf,
+    }
+
+    /// Structural exhaustiveness guard (issue #1758), the same idiom as
+    /// `brink-format`'s `assert_value_variants_exhaustive` (issue #883) and
+    /// `brink-syntax-native`'s `coverage.rs` `classify`: an *exhaustive*
+    /// match over every current [`Ty`] variant with **no wildcard arm**, so
+    /// this — and therefore `cargo test` for this crate — fails to compile
+    /// the moment a new variant lands on `Ty`, until it is explicitly
+    /// classified here (and in `erase_fn_rows` itself, which mirrors this
+    /// classification one-for-one). `Option`, `Weighted`, and `Tower` were
+    /// each added to `Ty` over time carrying exactly this risk; a `_ =>`
+    /// wildcard here would let the next one slip past unnoticed the way
+    /// `erase_fn_rows`'s old wildcard would have.
+    fn classify_erasure_shape(ty: &Ty) -> ErasureShape {
+        match ty {
+            Ty::Fn(..) | Ty::Array(_) | Ty::Map(_, _) | Ty::Option(_) | Ty::Weighted(_) => {
+                ErasureShape::NestsTy
+            }
+            Ty::Int
+            | Ty::Float
+            | Ty::Bool
+            | Ty::String
+            | Ty::Divert
+            | Ty::List(_)
+            | Ty::Struct(_)
+            | Ty::Handle(_)
+            | Ty::Range { .. }
+            | Ty::Tower(_)
+            | Ty::Unknown
+            | Ty::Conflicted => ErasureShape::Leaf,
+        }
+    }
+
+    #[test]
+    fn erase_fn_rows_leaves_every_nominal_leaf_untouched() {
+        // Every variant `classify_erasure_shape` calls `Leaf`, exercised
+        // through `erase_fn_rows` directly: proves the leaf arms really are
+        // no-ops, not just that the guard match above compiles. If a
+        // future `Ty` variant is added and mis-classified as `Leaf` when it
+        // actually nests a `Ty`, this test's job is done by the guard
+        // failing to compile before this even runs — this loop just pins
+        // today's leaves so a leaf accidentally gaining mutation logic
+        // later is also caught.
+        let leaves = [
+            Ty::Int,
+            Ty::Float,
+            Ty::Bool,
+            Ty::String,
+            Ty::Divert,
+            Ty::List("Weathers".into()),
+            Ty::Struct("Vec2".into()),
+            Ty::Handle("AudioInstance".into()),
+            Ty::Range { non_empty: true },
+            Ty::Range { non_empty: false },
+            Ty::Tower(TowerTy::Vec2),
+            Ty::Unknown,
+            Ty::Conflicted,
+        ];
+        for leaf in leaves {
+            assert!(
+                matches!(classify_erasure_shape(&leaf), ErasureShape::Leaf),
+                "expected {leaf:?} to classify as a nominal leaf"
+            );
+            assert_eq!(erase_fn_rows(&leaf), leaf, "leaf erasure must be a no-op");
+        }
     }
 
     #[test]
