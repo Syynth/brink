@@ -1423,8 +1423,9 @@ struct TempDecl {
 /// **enclosing** def's own locals. After #1750's frame-boundary fix,
 /// `InferPass::infer_lambda` snapshots `locals` (plus `annotated` /
 /// `return_ty` / `has_value_return` / `local_fn_origins`) before walking a
-/// block-bodied lambda's own `stmts` through `infer_block_stmt`, and
-/// restores the snapshot wholesale afterward — so a name declared only
+/// block-bodied lambda's own body — its `stmts` through `infer_block_stmt`
+/// and, since #1789, its tail expression too — and restores the snapshot
+/// wholesale afterward, so a name declared only
 /// inside a lambda body can **never** end up as a key in the enclosing
 /// def's `body_types.locals`. On an *unshadowed* name that just means a
 /// naive `Expr::Lambda` arm here would populate `TempDecl` entries this
@@ -2040,6 +2041,87 @@ mod tests {
              bare name with its own ascription — a naive `Expr::Lambda` arm \
              in `collect_temps` would overwrite the enclosing `TempDecl` \
              and silently swallow this: {diags:?}"
+        );
+    }
+
+    /// Issue #1789, the **read** direction of the tail-ordering bug: a
+    /// block-bodied lambda's tail expression must be inferred while the
+    /// lambda's own `locals` frame is still live, so a temp declared by the
+    /// lambda's own `stmts` is visible to it.
+    ///
+    /// `h` is a lambda-local `fn(int): int` referenced *only* in tail
+    /// position. Before the fix, `infer_lambda` walked the tail after
+    /// restoring the enclosing def's `locals`, so `ty_of_def` (which keys
+    /// `locals` by bare name) found nothing and typed the callee `Unknown`
+    /// — `infer_value_call`'s arity check is skipped entirely on an
+    /// `Unknown` callee, so the over-applied `h(1, 2)` reported *nothing*.
+    /// An under-report, the direction `docs/effects-spec.md` §3 forbids.
+    ///
+    /// The `stmt_position` half is the discriminator: the identical
+    /// over-application written as a `;`-terminated statement inside the
+    /// same block has always been caught (it is walked inside the frame,
+    /// per #1750), so this pins the *tail* as the thing that was broken
+    /// rather than the arity check generally.
+    #[test]
+    fn native_lambda_tail_sees_its_own_block_locals() {
+        let stmt_position = native_strict_diags(
+            "fn f(n: int): int {\n  let g = |x: int|: int {\n    let h = |y: int|: int { y };\n    h(1, 2);\n    x\n  };\n  return n;\n}\n",
+        );
+        assert!(
+            stmt_position.iter().any(|d| d.code == DiagnosticCode::E063),
+            "baseline: an over-applied call to a lambda-local fn temp in \
+             *statement* position is inside the #1750 frame window and has \
+             always been checked: {stmt_position:?}"
+        );
+
+        let tail_position = native_strict_diags(
+            "fn f(n: int): int {\n  let g = |x: int|: int {\n    let h = |y: int|: int { y };\n    h(1, 2)\n  };\n  return n;\n}\n",
+        );
+        assert!(
+            tail_position.iter().any(|d| d.code == DiagnosticCode::E063),
+            "the very same over-application in *tail* position must be \
+             checked too — the tail is the block's value position and reads \
+             the locals its own statements bound (#1789): {tail_position:?}"
+        );
+    }
+
+    /// Issue #1789, the **write** direction — the leak #1750 closed for a
+    /// lambda's `stmts` but left open for its tail.
+    ///
+    /// `observe` (see `infer::body`) keys `locals` by bare name, so a use in
+    /// argument position unifies the parameter's type into whatever local
+    /// carries that name *right now*. With the tail walked after the
+    /// restore, the lambda's own `let t = "hi"` was gone and `takes_string(t)`
+    /// unified `string` into the **enclosing** `f`'s `let t = 1` —
+    /// `unify(int, string) == Conflicted` — reporting a spurious `E066` on a
+    /// temp `f`'s own body never misuses. A false positive on user code.
+    ///
+    /// The `stmt_position` half is again the discriminator: the same
+    /// argument-position use written as a statement never leaked, because
+    /// #1750's snapshot/restore already wrapped it.
+    #[test]
+    fn native_lambda_tail_does_not_corrupt_a_shadowed_enclosing_local() {
+        const TAKES_STRING: &str = "fn takes_string(s: string): string {\n  return s;\n}\n";
+
+        let stmt_position = native_strict_diags(&format!(
+            "{TAKES_STRING}fn f(n: int): int {{\n  let t = 1;\n  let g = |x: int|: int {{\n    let t = \"hi\";\n    takes_string(t);\n    x\n  }};\n  return n;\n}}\n"
+        ));
+        assert!(
+            stmt_position.is_empty(),
+            "baseline: a lambda-local `t` used in argument position from a \
+             *statement* is confined by #1750's snapshot/restore, so the \
+             enclosing `let t = 1` stays `int`: {stmt_position:?}"
+        );
+
+        let tail_position = native_strict_diags(&format!(
+            "{TAKES_STRING}fn f(n: int): int {{\n  let t = 1;\n  let g = |x: int|: string {{\n    let t = \"hi\";\n    takes_string(t)\n  }};\n  return n;\n}}\n"
+        ));
+        assert!(
+            tail_position.is_empty(),
+            "the same use in *tail* position must be confined the same way — \
+             before #1789 it unified `string` into the enclosing `f`'s own \
+             `t: int` and reported a spurious E066 Conflicted-escape on it: \
+             {tail_position:?}"
         );
     }
 
