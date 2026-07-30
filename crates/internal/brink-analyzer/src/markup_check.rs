@@ -160,16 +160,16 @@ impl SpanWalker<'_> {
 
 impl HirVisitor for SpanWalker<'_> {
     fn enter_content(&mut self, content: &Content, _ctx: ContentContext) {
+        // `content.parts` only — deliberately *not* `content.tags`, even
+        // though a `Tag` structurally owns a `Vec<ContentPart>` too. The
+        // native frontend's `lower_tag` concatenates a tag's raw token text
+        // into exactly one `ContentPart::Text`, so no `Span` can ever appear
+        // under a tag; descending there would be unreachable code. (A `#`
+        // tag written with markup in it keeps the angle brackets as literal
+        // tag text — tags are metadata, not prose.) If tag lowering ever
+        // gains real content parts, this is the line that has to change.
         for part in &content.parts {
             self.check_part(content, part);
-        }
-        // Tags carry their own content run and the shared walker deliberately
-        // does not descend into them, so a `# <wave>loud</wave>` tag would
-        // otherwise be a blind spot.
-        for tag in &content.tags {
-            for part in &tag.parts {
-                self.check_part(content, part);
-            }
         }
     }
 }
@@ -345,6 +345,46 @@ mod tests {
             Some(&wave_manifest()),
         );
         assert_eq!(codes(&diags), ["E164"], "{diags:?}");
+    }
+
+    #[test]
+    fn a_span_in_a_choice_display_line_is_checked() {
+        // A choice's inline slots are `Content` nodes the shared walker
+        // delivers under a different `ContentContext` — markup there must not
+        // be a blind spot just because it isn't a body line.
+        let diags = run(
+            "flow a() {\n  * <glitch>Take it</glitch>\n    Done.\n}\n",
+            Some(&wave_manifest()),
+        );
+        assert_eq!(codes(&diags), ["E164"], "{diags:?}");
+    }
+
+    #[test]
+    fn markup_written_inside_a_tag_is_tag_text_not_a_span() {
+        // Pins `enter_content`'s reason for skipping `content.tags`: native
+        // `lower_tag` flattens a tag's raw tokens into one `Text` part, so
+        // there is no `Span` under a tag to check. Guards the skip — if tag
+        // lowering ever produces real content parts, this goes red and the
+        // walker has to grow a tag descent.
+        let hir = lower("flow a() {\n  Hello. # <glitch>loud</glitch>\n}\n");
+        let tags: Vec<_> = hir
+            .knots
+            .iter()
+            .flat_map(|k| &k.body.stmts)
+            .filter_map(|s| match s {
+                brink_ir::hir::Stmt::Content(c) => Some(&c.tags),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        assert!(!tags.is_empty(), "fixture must produce a tag: {hir:?}");
+        for tag in tags {
+            assert!(
+                tag.parts.iter().all(|p| matches!(p, ContentPart::Text(_))),
+                "a tag must lower to Text only, never a Span: {:?}",
+                tag.parts
+            );
+        }
     }
 
     #[test]
