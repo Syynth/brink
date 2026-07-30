@@ -941,12 +941,15 @@ mod tests {
     fn erase_fn_rows_leaves_every_nominal_leaf_untouched() {
         // Every variant `classify_erasure_shape` calls `Leaf`, exercised
         // through `erase_fn_rows` directly: proves the leaf arms really are
-        // no-ops, not just that the guard match above compiles. If a
-        // future `Ty` variant is added and mis-classified as `Leaf` when it
-        // actually nests a `Ty`, this test's job is done by the guard
-        // failing to compile before this even runs — this loop just pins
-        // today's leaves so a leaf accidentally gaining mutation logic
-        // later is also caught.
+        // no-ops, not just that the guard match above compiles. The
+        // exhaustive-match guard (both here and in `erase_fn_rows` itself)
+        // only forces an explicit DECISION when a new `Ty` variant lands —
+        // it cannot detect a WRONG decision: a future variant that nests a
+        // `Ty` but gets placed in the `Leaf` arm of *both* matches compiles
+        // cleanly and this loop would not catch it (the new variant would
+        // need to be added to this list by hand). This loop only pins
+        // today's leaves so an existing leaf accidentally gaining mutation
+        // logic later is caught.
         let leaves = [
             Ty::Int,
             Ty::Float,
@@ -969,6 +972,35 @@ mod tests {
             );
             assert_eq!(erase_fn_rows(&leaf), leaf, "leaf erasure must be a no-op");
         }
+    }
+
+    #[test]
+    fn erase_fn_rows_reaches_option_and_weighted_nesting() {
+        // `erase_fn_rows_reaches_nested_positions` above only exercises
+        // `Array`/`Map`/`Fn` nesting at runtime — `classify_erasure_shape`'s
+        // `NestsTy` arm also names `Option` and `Weighted`, but neither had
+        // a test actually erasing a row through it. Mirror the same check
+        // for both, so the classification and the real erasure agree on
+        // every `NestsTy` variant, not just three of the five.
+        let rowed = fn_ty_from(&[], Ty::Int, &[1]);
+        let erased = fn_ty(&[], Ty::Int);
+
+        let via_option = Ty::Option(Box::new(rowed.clone()));
+        assert!(matches!(
+            classify_erasure_shape(&via_option),
+            ErasureShape::NestsTy
+        ));
+        assert_eq!(
+            erase_fn_rows(&via_option),
+            Ty::Option(Box::new(erased.clone()))
+        );
+
+        let via_weighted = Ty::Weighted(Box::new(rowed));
+        assert!(matches!(
+            classify_erasure_shape(&via_weighted),
+            ErasureShape::NestsTy
+        ));
+        assert_eq!(erase_fn_rows(&via_weighted), Ty::Weighted(Box::new(erased)));
     }
 
     #[test]
