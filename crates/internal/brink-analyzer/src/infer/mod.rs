@@ -911,6 +911,8 @@ pub fn def_effect_atoms(
         tags: result.effect_tags,
         faults: result.effect_faults,
         faults_refined: result.effect_faults_refined,
+        param_holes: result.param_holes,
+        call_fn_args: result.call_fn_args,
     }
 }
 
@@ -2595,14 +2597,170 @@ mod tests {
         // docs/effects-spec.md §4 gradual corollary: an `Unknown`-typed callee
         // slot (here a `cb` param called as `cb(1)`) has no row to read → the
         // enclosing def's row is pessimal.
+        //
+        // §6.1 (issue #1680) changed *how* it is pessimal, not *that* it is:
+        // the param is now a row variable rather than the intrinsic opaque
+        // floor, so the assertion reads `is_pessimal()` — which is what every
+        // consumer of a row reads.
         let src = "=== function apply(cb) ===\n~ return cb(1)\n";
         let (hir, index, res) = build(src);
         let files = [(FileId(0), &hir)];
         let rows = effects_project(&files, &index, &res, None);
         let apply = id_of(&index, "apply");
         assert!(
-            rows[&apply].opaque,
+            rows[&apply].is_pessimal(),
             "a call through a function value must be pessimal"
+        );
+    }
+
+    /// §6.1 mechanism 1 (issue #1680): a call through an unwritten, non-`ref`
+    /// fn-typed param mints a **row variable** at that param's declaration
+    /// index instead of the intrinsic opaque floor. Read on its own the row
+    /// is still pessimal — that is `is_pessimal`'s whole job — but the hole
+    /// is what lets a caller do better (see the instantiation tests below).
+    #[test]
+    fn a_call_through_a_fn_typed_param_mints_a_row_variable() {
+        let src = "=== function apply(a, cb) ===\n~ return cb(a)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let apply = id_of(&index, "apply");
+        assert_eq!(
+            rows[&apply].holes,
+            [1].into_iter().collect::<BTreeSet<u32>>(),
+            "the hole is keyed by the called param's declaration index"
+        );
+        assert!(
+            !rows[&apply].opaque,
+            "the floor is the hole, not intrinsic opacity"
+        );
+        assert!(
+            rows[&apply].is_pessimal(),
+            "an uninstantiated row variable still tops the lattice"
+        );
+    }
+
+    /// §6.1's payoff: the caller passes a traceable `#fn` value, so the
+    /// higher-order callee's row variable is **instantiated** with that
+    /// target's real row and the caller escapes the pessimal floor entirely.
+    #[test]
+    fn a_caller_instantiates_the_callees_row_variable() {
+        let src = "VAR gold = 0\n\
+                   === function writer(n) ===\n~ gold = gold + n\n~ return gold\n\
+                   === function apply(cb) ===\n~ return cb(1)\n\
+                   === function main() ===\n~ return apply(#fn(writer))\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let main = id_of(&index, "main");
+        let gold = id_of(&index, "gold");
+        assert!(
+            !rows[&main].is_pessimal(),
+            "a fully-traced higher-order call is not pessimal"
+        );
+        assert!(
+            rows[&main].holes.is_empty(),
+            "a discharged hole belongs to the callee's param space, never the caller's"
+        );
+        assert!(
+            rows[&main].writes.contains(&gold),
+            "the instantiated row must carry the callback's own write"
+        );
+    }
+
+    /// Two call sites, two different callbacks in the same position: the fill
+    /// is the **join** over both (Fork A's join-over-writes rule applied to
+    /// arguments), never a pick.
+    #[test]
+    fn two_call_sites_join_both_callbacks_into_the_hole() {
+        let src = "VAR gold = 0\nVAR hp = 10\n\
+                   === function pays(n) ===\n~ gold = gold + n\n~ return gold\n\
+                   === function hurts(n) ===\n~ hp = hp - n\n~ return hp\n\
+                   === function apply(cb) ===\n~ return cb(1)\n\
+                   === function main() ===\n\
+                   ~ temp a = apply(#fn(pays))\n~ temp b = apply(#fn(hurts))\n~ return a + b\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let main = id_of(&index, "main");
+        assert!(!rows[&main].is_pessimal());
+        assert!(rows[&main].writes.contains(&id_of(&index, "gold")));
+        assert!(rows[&main].writes.contains(&id_of(&index, "hp")));
+    }
+
+    /// The soundness guard on the join above: the summary is keyed by
+    /// `(callee, position)` and folded over *every* call site, so one site
+    /// passing something untraceable poisons the position for all of them.
+    /// Were it not, this caller's row would claim to be bounded by `pays`
+    /// while `outside` could hold any fn value the caller was handed.
+    #[test]
+    fn one_untraced_call_site_poisons_the_whole_position() {
+        let src = "VAR gold = 0\n\
+                   === function pays(n) ===\n~ gold = gold + n\n~ return gold\n\
+                   === function apply(cb) ===\n~ return cb(1)\n\
+                   === function main(outside) ===\n\
+                   ~ temp a = apply(#fn(pays))\n~ temp b = apply(outside)\n~ return a + b\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let main = id_of(&index, "main");
+        assert!(
+            rows[&main].is_pessimal(),
+            "an untraced argument in a holed position must keep the floor"
+        );
+    }
+
+    /// A param the body **reassigns** no longer holds what the caller passed,
+    /// so it must not carry a row variable — the same soundness argument that
+    /// keeps a Param out of `ValueCallOrigin::Local`.
+    #[test]
+    fn a_reassigned_param_carries_no_row_variable() {
+        let src = "VAR gold = 0\n\
+                   === function pays(n) ===\n~ gold = gold + n\n~ return gold\n\
+                   === function apply(cb) ===\n~ cb = #fn(pays)\n~ return cb(1)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let apply = id_of(&index, "apply");
+        assert!(
+            rows[&apply].holes.is_empty(),
+            "a written param is not a row variable"
+        );
+        assert!(
+            rows[&apply].opaque,
+            "it keeps the intrinsic pessimal floor instead"
+        );
+    }
+
+    /// A `ref` param aliases the caller's own storage, so what it holds at
+    /// the call-through site is not pinned by the argument expression — it is
+    /// excluded from row variables at construction.
+    #[test]
+    fn a_ref_param_carries_no_row_variable() {
+        let src = "=== function apply(ref cb) ===\n~ return cb(1)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let apply = id_of(&index, "apply");
+        assert!(rows[&apply].holes.is_empty(), "`ref` params are excluded");
+        assert!(rows[&apply].opaque, "so the call keeps the intrinsic floor");
+    }
+
+    /// §6.1 is shallow by ruling ("every value's row is fixed at its creation
+    /// site"): passing one's *own* fn-typed param straight through to another
+    /// higher-order callee would chain a hole into a hole, which is not
+    /// attempted — the forwarding definition takes the floor.
+    #[test]
+    fn forwarding_a_param_into_another_hole_does_not_chain() {
+        let src = "=== function apply(cb) ===\n~ return cb(1)\n\
+                   === function forward(cb) ===\n~ return apply(cb)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let forward = id_of(&index, "forward");
+        assert!(
+            rows[&forward].is_pessimal(),
+            "a forwarded row variable is not chained — the floor stands"
         );
     }
 
@@ -3002,9 +3160,13 @@ mod tests {
 
     /// The pre-existing pessimal-floor regression must hold unchanged: an
     /// `Unknown`-typed callee (a param with no traceable origin at all) still
-    /// gets no narrowing — `local_call_origin` only recognizes a bare `Temp`
-    /// name, and a param is never classified as `Local` at all now, so the
+    /// gets no narrowing — `local_call_origin` never classifies a param as
+    /// `Local`, so #872's write-summary rung does not apply to it and the
     /// floor holds regardless of write count.
+    ///
+    /// §6.1 (issue #1680) added the *other* way out — a row variable the
+    /// caller instantiates — which is why the assertion is `is_pessimal()`:
+    /// the definition read on its own is exactly as unbounded as it was.
     #[test]
     fn a_call_through_an_unresolvable_param_stays_pessimal() {
         let src = "=== function apply(cb) ===\n~ return cb(1)\n";
@@ -3013,7 +3175,7 @@ mod tests {
         let rows = effects_project(&files, &index, &res, None);
         let apply = id_of(&index, "apply");
         assert!(
-            rows[&apply].opaque,
+            rows[&apply].is_pessimal(),
             "a call through a function value with no known origin must stay pessimal"
         );
     }

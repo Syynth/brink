@@ -30,6 +30,7 @@ use brink_ir::{
 };
 use rowan::TextRange;
 
+use super::effects::FnArgOrigins;
 use super::ty::{TowerTy, Ty, coalesce, unify, unify_all};
 use super::{InferredSig, ValueCallFact, ValueCallKind, range_key};
 
@@ -199,6 +200,15 @@ pub(super) struct BodyResult {
     /// are different facts — spec §7's token table and §8 rung 1's
     /// reachability slicing both need the creation sites specifically.
     pub created_fn_values: BTreeSet<DefinitionId>,
+    /// §6.1 (issue #1680): the declaration indices of this body's own
+    /// `fn`-typed params it **calls through** — the row variables its effect
+    /// row is parametric in. See `EffectAtoms::param_holes`.
+    pub param_holes: BTreeSet<u32>,
+    /// §6.1 (issue #1680): per `(inferable callee, param index)`, what this
+    /// body's arguments in that position can hold — the caller-side material
+    /// the effect fixpoint instantiates a callee's row variables from. See
+    /// `EffectAtoms::call_fn_args`.
+    pub call_fn_args: BTreeMap<(DefinitionId, u32), FnArgOrigins>,
 }
 
 /// Infer one definition's body against `ctx`. `def.params` are the declared
@@ -249,6 +259,18 @@ pub(super) fn infer_def_body(def: &super::Def<'_>, ctx: &BodyCtx<'_>) -> BodyRes
         created_fn_values: BTreeSet::new(),
         local_fn_origins: BTreeMap::new(),
         pending_value_calls: Vec::new(),
+        // §6.1 (issue #1680): `ref` params are excluded — see the field doc.
+        param_index: def
+            .params
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| !p.is_ref)
+            .filter_map(|(i, p)| u32::try_from(i).ok().map(|i| (p.name.text.clone(), i)))
+            .collect(),
+        param_writes: BTreeSet::new(),
+        param_holes: BTreeSet::new(),
+        pending_call_fn_args: Vec::new(),
+        call_fn_args: BTreeMap::new(),
     };
     // NS-A2 fault dimension (issue #1108, from #1097): a `ref` parameter's
     // dereference inside this body goes through a pointer/projection whose
@@ -312,6 +334,8 @@ pub(super) fn infer_def_body(def: &super::Def<'_>, ctx: &BodyCtx<'_>) -> BodyRes
         value_calls: pass.value_calls,
         array_remove_calls: pass.array_remove_calls,
         created_fn_values: pass.created_fn_values,
+        param_holes: pass.param_holes,
+        call_fn_args: pass.call_fn_args,
     }
 }
 
@@ -414,6 +438,30 @@ struct InferPass<'a, 'b> {
     /// and resolved once by [`InferPass::resolve_pending_value_calls`] after
     /// the whole body (and therefore `local_fn_origins`) is final.
     pending_value_calls: Vec<ValueCallOrigin>,
+    /// §6.1 (issue #1680): this definition's own params by name → declaration
+    /// index, restricted to the params a row variable may legally be minted
+    /// for. `ref` params are excluded at construction: the slot aliases the
+    /// caller's storage, so what it holds at the call-through site is not
+    /// pinned by the argument the caller passed.
+    param_index: BTreeMap<String, u32>,
+    /// §6.1: the indices in [`Self::param_index`] the body **writes** —
+    /// assigns to directly, or hands to a `ref` slot. A written param no
+    /// longer holds the caller's argument at every read, so it cannot carry a
+    /// row variable (the same soundness argument that keeps a Param out of
+    /// [`ValueCallOrigin::Local`]); calls through it keep the pessimal floor.
+    param_writes: BTreeSet<u32>,
+    /// §6.1: the row variables this body ended up minting — the indices of
+    /// fn-typed params it calls through, resolved post-walk against
+    /// [`Self::param_writes`]. Becomes `EffectAtoms::param_holes`.
+    param_holes: BTreeSet<u32>,
+    /// §6.1: one `(inferable callee, argument index, origin)` observation per
+    /// argument of every direct call to an inferable target, recorded during
+    /// the walk and folded post-walk (alongside the value calls, against the
+    /// same whole-body-final `local_fn_origins`) into [`Self::call_fn_args`].
+    pending_call_fn_args: Vec<(DefinitionId, u32, ValueCallOrigin)>,
+    /// §6.1: the folded caller-side row-variable material — see
+    /// `EffectAtoms::call_fn_args`.
+    call_fn_args: BTreeMap<(DefinitionId, u32), FnArgOrigins>,
 }
 
 /// Fork A (issue #1726): what one Temp local can hold, summarized over every
@@ -467,6 +515,17 @@ enum ValueCallOrigin {
     /// site — no stored value, so no write-count question applies; always
     /// narrowable.
     Inline(DefinitionId),
+    /// §6.1 (issue #1680): the callee is one of *this* definition's own
+    /// non-`ref` params, at the carried declaration index. Resolved post-walk
+    /// to a **row variable** ([`EffectRow::holes`](super::EffectRow::holes))
+    /// — the enclosing row stays parametric in it and each caller
+    /// instantiates it — unless the body writes that param, in which case it
+    /// keeps the pessimal floor.
+    ///
+    /// In *argument* position this arm never fills anything: passing a param
+    /// along would chain one hole into another, which §6.1's shallow
+    /// polymorphism deliberately does not do, so it is treated as untraced.
+    Param(u32),
     /// Anything else (a VAR/CONST global — the heap case, still coarse per
     /// spec §5/§8 — an index, a direct call's return value, a param with no
     /// further trace, …): the pessimal floor, unchanged from today.
@@ -667,12 +726,14 @@ impl InferPass<'_, '_> {
 
     /// Classify a resolved call-through-value target for narrowing: a bare
     /// Temp local (checked post-walk against its whole-body write summary) is
-    /// [`ValueCallOrigin::Local`]; anything else (a VAR/CONST global — the
-    /// heap case, still coarse per spec §5/§8 — a Param, or an
-    /// unresolvable/non-local kind) is [`ValueCallOrigin::Unknown`].
+    /// [`ValueCallOrigin::Local`]; one of this definition's own non-`ref`
+    /// params is [`ValueCallOrigin::Param`] (§6.1's row variable, issue
+    /// #1680); anything else (a VAR/CONST global — the heap case, still
+    /// coarse per spec §5/§8 — or an unresolvable/non-local kind) is
+    /// [`ValueCallOrigin::Unknown`].
     ///
-    /// **Param is deliberately excluded** (soundness, not a missed
-    /// optimization): a Temp cannot be referenced before its defining
+    /// **A Param is never narrowed to a write summary** (soundness, not a
+    /// missed optimization): a Temp cannot be referenced before its defining
     /// `TempDecl`, so the join over its whole-body writes really does bound
     /// its value at every read. A Param, by contrast, carries an implicit
     /// caller-provided initial value that [`Self::local_fn_origins`] never
@@ -682,11 +743,24 @@ impl InferPass<'_, '_> {
     /// reassignment, where the param still holds the caller's arbitrary
     /// (unknown) fn value. That would violate the conservative-total
     /// invariant this rung promises to preserve.
+    ///
+    /// §6.1's row variable answers the *same* question from the other end —
+    /// don't narrow at the callee, defer to the call site — so it is not
+    /// subject to that hazard: the hole is filled with what a caller actually
+    /// passed. The caller-provided initial value is precisely the thing being
+    /// substituted. What it *does* need is that the body never replaces it,
+    /// which [`Self::param_writes`] tracks and
+    /// [`Self::resolve_pending_value_calls`] enforces.
     fn local_call_origin(&self, def: DefinitionId) -> ValueCallOrigin {
         match self.ctx.index.symbols.get(&def) {
             Some(info) if info.kind == SymbolKind::Temp => {
                 ValueCallOrigin::Local(info.name.clone())
             }
+            Some(info) if info.kind == SymbolKind::Param => self
+                .param_index
+                .get(&info.name)
+                .copied()
+                .map_or(ValueCallOrigin::Unknown, ValueCallOrigin::Param),
             _ => ValueCallOrigin::Unknown,
         }
     }
@@ -732,13 +806,17 @@ impl InferPass<'_, '_> {
     /// Temp counts (a dotted/indexed target reassigns a *nested* slot, not
     /// the local's own value, same guard [`Self::observe`] applies).
     ///
-    /// Param is excluded here too — not for soundness (folding a param write
+    /// A Param write is deliberately *not* folded into
+    /// [`Self::local_fn_origins`] — not for soundness (folding a param write
     /// in can only ever *add* to a name's summary, and a Param is never
     /// classified as [`ValueCallOrigin::Local`] in the first place, so this
     /// can't under-report), but to avoid contaminating a same-named Temp
     /// elsewhere in the body: without this guard, a Param write would land
     /// under that param's name, and if a Temp happens to share the name the
-    /// two summaries would collide in the same map entry.
+    /// two summaries would collide in the same map entry. It is instead
+    /// recorded in [`Self::param_writes`], which §6.1 (issue #1680) needs to
+    /// know about: a param the body reassigns no longer holds the caller's
+    /// argument, so it must not carry a row variable.
     fn record_fn_write(&mut self, target: &Expr, origin: Option<DefinitionId>) {
         let Expr::Path(p) = target else { return };
         if p.segments.len() != 1 {
@@ -750,11 +828,18 @@ impl InferPass<'_, '_> {
         let Some(info) = self.ctx.index.symbols.get(&def) else {
             return;
         };
-        if info.kind != SymbolKind::Temp {
-            return;
+        match info.kind {
+            SymbolKind::Temp => {
+                let name = info.name.clone();
+                self.bump_local_write(&name, origin);
+            }
+            SymbolKind::Param => {
+                if let Some(&idx) = self.param_index.get(&info.name) {
+                    self.param_writes.insert(idx);
+                }
+            }
+            _ => {}
         }
-        let name = info.name.clone();
-        self.bump_local_write(&name, origin);
     }
 
     /// Resolve every value-call site recorded during the walk
@@ -786,13 +871,25 @@ impl InferPass<'_, '_> {
     fn resolve_pending_value_calls(&mut self) {
         let pending = std::mem::take(&mut self.pending_value_calls);
         for origin in pending {
+            // §6.1 (issue #1680): a call through an unwritten non-`ref` param
+            // is a *row variable*, not an edge — this body's row stays
+            // parametric in it and each caller instantiates it. A param the
+            // body writes keeps the pre-#1680 pessimal floor.
+            if let ValueCallOrigin::Param(idx) = origin {
+                if self.param_writes.contains(&idx) {
+                    self.effect_opaque = true;
+                } else {
+                    self.param_holes.insert(idx);
+                }
+                continue;
+            }
             let narrowed: BTreeSet<DefinitionId> = match origin {
                 ValueCallOrigin::Inline(def) => BTreeSet::from([def]),
                 ValueCallOrigin::Local(name) => match self.local_fn_origins.get(&name) {
                     Some(summary) if !summary.untraced => summary.targets.clone(),
                     _ => BTreeSet::new(),
                 },
-                ValueCallOrigin::Unknown => BTreeSet::new(),
+                ValueCallOrigin::Param(_) | ValueCallOrigin::Unknown => BTreeSet::new(),
             };
             if narrowed.is_empty() {
                 self.effect_opaque = true;
@@ -801,6 +898,64 @@ impl InferPass<'_, '_> {
                     self.record_call_edge(def);
                 }
             }
+        }
+        self.resolve_pending_call_fn_args();
+    }
+
+    /// §6.1 caller half (issue #1680): record what this call site passes in
+    /// each argument position of a direct call to an **inferable** target, so
+    /// the effect fixpoint can fill that callee's row variables.
+    ///
+    /// Only inferable (knot/stitch) callees have a row with holes, so nothing
+    /// else is recorded — and an *absent* entry already reads as "cannot
+    /// fill", which is why a call site this is never invoked from degrades
+    /// safely rather than silently narrowing.
+    ///
+    /// Every argument is recorded, including the ones that classify to
+    /// nothing: the map is keyed by `(callee, position)` and joined over all
+    /// of this body's call sites, so a second site passing an untraced value
+    /// in a position a first site passed `#fn(g)` in **must** poison that
+    /// position. Skipping the unclassifiable case would leave the position
+    /// looking fillable and under-report the second site's callback.
+    ///
+    /// Purely structural (a `#fn` target is a syntactic name, a Temp's origin
+    /// summary is a syntactic write set), so this never makes a call-graph
+    /// edge depend on an inferred row — §6.1a's acyclicity requirement.
+    fn record_call_arg_fn_origins(&mut self, def: DefinitionId, args: &[Expr]) {
+        if !self.ctx.inferable.contains(&def) {
+            return;
+        }
+        for (i, arg) in args.iter().enumerate() {
+            let Ok(idx) = u32::try_from(i) else { continue };
+            let origin = self.value_call_origin(arg);
+            self.pending_call_fn_args.push((def, idx, origin));
+        }
+    }
+
+    /// Fold every recorded call-site argument observation into
+    /// [`Self::call_fn_args`], against the now-final `local_fn_origins` — the
+    /// same post-walk timing (and for the same loop-carried-reassignment
+    /// reason) as [`Self::resolve_pending_value_calls`].
+    ///
+    /// An `Inline` argument contributes its creation target; a `Local` one
+    /// contributes its whole-body write summary, and poisons the position if
+    /// any of those writes was untraced; a `Param` argument would chain one
+    /// row variable into another, which §6.1's shallow polymorphism does not
+    /// do, so it poisons the position too.
+    fn resolve_pending_call_fn_args(&mut self) {
+        let pending = std::mem::take(&mut self.pending_call_fn_args);
+        for (def, idx, origin) in pending {
+            let (targets, untraced) = match origin {
+                ValueCallOrigin::Inline(target) => (BTreeSet::from([target]), false),
+                ValueCallOrigin::Local(name) => match self.local_fn_origins.get(&name) {
+                    Some(summary) => (summary.targets.clone(), summary.untraced),
+                    None => (BTreeSet::new(), true),
+                },
+                ValueCallOrigin::Param(_) | ValueCallOrigin::Unknown => (BTreeSet::new(), true),
+            };
+            let entry = self.call_fn_args.entry((def, idx)).or_default();
+            entry.targets.extend(targets);
+            entry.untraced |= untraced;
         }
     }
 
@@ -1193,6 +1348,7 @@ impl InferPass<'_, '_> {
             }
             self.record_call_edge(def);
             self.record_ref_param_writes(def, args);
+            self.record_call_arg_fn_origins(def, args);
             return self.ctx.known_sigs.get(&def).map_or(Ty::Unknown, |sig| {
                 for (i, arg) in args.iter().enumerate() {
                     if let Some(param_ty) = sig.params.get(i) {
@@ -2234,6 +2390,12 @@ impl InferPass<'_, '_> {
         };
         self.record_call_edge(def);
         self.record_ref_param_writes(def, &target.args);
+        // §6.1 (issue #1680): a divert with arguments reaches the target's
+        // params exactly like a call does, so its argument origins have to
+        // join the same `(callee, position)` summary — recording only the
+        // `infer_call` half would let a call site's `#fn(g)` look like the
+        // *only* thing that position ever receives.
+        self.record_call_arg_fn_origins(def, &target.args);
         if let Some(sig) = self.ctx.known_sigs.get(&def) {
             for (i, arg) in target.args.iter().enumerate() {
                 if let Some(param_ty) = sig.params.get(i) {

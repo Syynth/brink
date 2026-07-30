@@ -617,7 +617,7 @@ fn contract_error(
     // applies only when the impl's own row is opaque (already a contract
     // violation above) or genuinely fault-bearing.
     let faults_exceed = row.faults_refined && !matches!(proto, Protocol::Iterate);
-    if !row.opaque
+    if !row.is_pessimal()
         && row.reads.is_empty()
         && row.writes.is_empty()
         && row.calls.is_empty()
@@ -628,7 +628,7 @@ fn contract_error(
         return None;
     }
     let mut parts = Vec::new();
-    if row.opaque {
+    if row.is_pessimal() {
         parts.push(
             "calls through a function value or unresolved callee (unbounded row)".to_string(),
         );

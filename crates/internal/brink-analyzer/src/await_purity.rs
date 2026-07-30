@@ -336,7 +336,9 @@ impl Ctx<'_> {
             return false;
         };
         if let Some(row) = self.rows.get(&def) {
-            return row.opaque || !row.writes.is_empty() || !row.calls.is_empty();
+            // `is_pessimal`, not the intrinsic `opaque` bit: a row still
+            // carrying a §6.1 row variable (issue #1680) is unbounded too.
+            return row.is_pessimal() || !row.writes.is_empty() || !row.calls.is_empty();
         }
         // Not an inferable knot/stitch — is it a declared EXTERNAL?
         matches!(
