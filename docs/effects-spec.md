@@ -345,15 +345,31 @@ joins it alongside the params and the return.
   element, and its join is set union with `unknown` absorbing — exactly
   §5's *"a cell or collection's element type accumulates the join of
   every fn value assigned into it, through copies, parameters, returns,
-  and nesting"*, and §3's conservative direction (one untraceable source
-  poisons the slot for good).
-- **Minted at creation sites only.** A `#fn(target, …)` literal in a body
-  (`infer::body::infer_fn_literal`) and a global cell's `#fn` initializer
-  (`signature::declared_fn_type`, declaration-derived) mint a concrete
-  row; `bind` carries the callee's row through unchanged, since partial
-  application never changes which def eventually runs. Everything else —
-  a written `fn(T…): R` annotation, a lambda (no `DefinitionId` before
-  LIR, #1727) — is the top element.
+  and nesting"*, and §3's conservative direction (one untraceable
+  *typed* source poisons the slot for good). The absorption is on
+  `unknown` specifically, not on any write that merely fails to resolve
+  a target: a write typed `Ty::Unknown` (an unresolved reference, or an
+  unregistered `EXTERNAL`'s return) unifies against `Ty::Unknown` — the
+  join *identity*, not `unknown`'s top — so it leaves the other operand's
+  row untouched rather than poisoning it. `unify_joins_the_effect_row_alongside_params_and_return`
+  (`infer/ty.rs`) enshrines exactly this: an unobserved slot must not
+  poison a traced one.
+- **Minted at creation sites only, and fixed there.** A `#fn(target, …)`
+  literal in a body (`infer::body::infer_fn_literal`) and a global cell's
+  `#fn` initializer (`signature::declared_fn_type`, declaration-derived)
+  mint a concrete row; `bind` carries the callee's row through unchanged,
+  since partial application never changes which def eventually runs.
+  Everything else — a written `fn(T…): R` annotation, a lambda (no
+  `DefinitionId` before LIR, #1727) — is the top element. A global cell's
+  row is minted **once**, at `collect_globals` (`infer/mod.rs`), from
+  `declared_fn_type`'s declaration-derived read alone; `BodyCtx::globals`
+  (`infer/body.rs`) is a read-only map that body inference only ever
+  reads from (`ty_of_def`) — a later `~ cell = #fn(other)` write is
+  folded into the effect walk's *write set*, never back into the cell's
+  type. So a global's row under-approximates any cell that is ever
+  reassigned to a different fn value after its declaration; it is not
+  widened by later assignments the way a local's row is. This is the
+  same under-approximation the heap rung (below) is meant to read.
 - **Rows never decide assignability.** `unify(param, arg) == param` was a
   *structural* test at both `ValueCallKind::ArgMismatch` sites, and
   `strict.rs` promotes that mismatch to an `E063` **error** under
