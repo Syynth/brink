@@ -489,14 +489,32 @@ pub(crate) fn header_tag_tail(p: &mut Parser<'_, '_>) {
 /// when depth is back to zero, i.e. it isn't balanced by an earlier `{`
 /// within this same tag. This is pure raw-character balancing, not
 /// interpolation awareness — `#tag {gold` (never closed) still runs to
-/// end of line exactly as before, and a `\{`/`\}` inside a tag counts the
-/// same as an unescaped one, since escapes are never interpreted in a
-/// tag's raw scan (mirrors the pre-existing backslash-is-just-a-character
-/// behavior this function already had).
+/// end of line exactly as before.
+///
+/// The real tradeoff, stated plainly (review of #1728, not "no
+/// regression"): a *balanced* brace inside a tag no longer terminates it
+/// early (the bug this fixes), but a genuinely *unbalanced*, unescaped `{`
+/// left open inside a tag now eats the enclosing single-line block's own
+/// same-line `}` closer instead of stopping there — the mirror image of
+/// the original bug, inherent to depth-based balancing over raw text with
+/// no real grammar to bound it. Pinned by
+/// `an_unbalanced_open_brace_in_a_tag_eats_the_enclosing_blocks_own_closer`.
+///
+/// `\{` is different: #1716/PR #1732 made it the literal-brace escape, so
+/// it is text, not a metacharacter, and counting it as a depth-opener
+/// would be the surprising reading — a `\{` with no real interpolation
+/// nearby would then let a later unescaped `}` swallow the enclosing
+/// closer, converting previously clean source into a parse error. So an
+/// `L_BRACE` immediately preceded by a raw `BACKSLASH` is excluded from
+/// the counter (an `R_BRACE` is still unconditionally significant to the
+/// depth check either way — `\}` alone, with no preceding unescaped `{`,
+/// already terminated a tag before this fix and still does). Pinned by
+/// `a_tag_with_an_escaped_open_brace_does_not_swallow_the_enclosing_blocks_own_closer`.
 fn tag(p: &mut Parser<'_, '_>, extra_stop: &[SyntaxKind]) {
     p.start_node(TAG);
     p.expect(HASH);
     let mut depth: u32 = 0;
+    let mut prev_raw_was_backslash = false;
     loop {
         let cur = p.current();
         if matches!(cur, NEWLINE | EOF | HASH) || extra_stop.contains(&cur) {
@@ -511,12 +529,17 @@ fn tag(p: &mut Parser<'_, '_>, extra_stop: &[SyntaxKind]) {
         // bumps the whitespace ahead of it one raw token at a time.
         // `nth_raw(0)` is the exact raw token this iteration is about to
         // bump, so depth changes exactly once per brace, never double- or
-        // zero-counted.
-        match p.nth_raw(0) {
-            L_BRACE => depth += 1,
+        // zero-counted. Tracked in lockstep with `prev_raw_was_backslash`,
+        // which likewise reflects the previous iteration's raw token, not
+        // `cur` — an escape is only ever adjacent raw tokens, never
+        // separated by trivia.
+        let raw = p.nth_raw(0);
+        match raw {
+            L_BRACE if !prev_raw_was_backslash => depth += 1,
             R_BRACE => depth = depth.saturating_sub(1),
             _ => {}
         }
+        prev_raw_was_backslash = raw == BACKSLASH;
         p.bump();
     }
     p.finish_node();
