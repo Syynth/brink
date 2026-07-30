@@ -432,8 +432,7 @@ mod tests {
     /// so it has to descend them itself.
     #[test]
     fn a_bad_conversion_in_a_lambda_statement_of_a_var_initializer_is_e078() {
-        let diags =
-            check_all_native("var f = ||: int {\n  let x = int(Map { 1: 2 });\n  0\n};\n");
+        let diags = check_all_native("var f = ||: int {\n  let x = int(Map { 1: 2 });\n  0\n};\n");
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E078);
         assert!(diags[0].message.contains("map"), "{:?}", diags[0].message);
