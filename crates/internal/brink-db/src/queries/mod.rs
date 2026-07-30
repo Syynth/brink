@@ -2765,7 +2765,7 @@ mod tests {
         let (salsa, project) = db.salsa_and_project();
         let graph = call_graph_query(salsa, project);
 
-        for &def in inferable_defs_query(salsa, project).iter() {
+        for &def in inferable_defs_query(salsa, project) {
             let atoms = def_effect_atoms_query(salsa, project, DefKey::new(salsa, def));
             let outgoing = graph.edges.get(&def).cloned().unwrap_or_default();
             for &callee in atoms
