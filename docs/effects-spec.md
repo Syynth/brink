@@ -146,20 +146,56 @@ issue #1779.
   within one body's locals, not accumulated across the whole
   definition), it joins this bucket and this list must grow with it.
 
-  **Scope of the restore, precisely.** `infer_lambda` only ever
-  snapshots before, and restores immediately after, walking a block
-  body's `stmts` (`LambdaBody::Block { stmts, .. }`) — the walk that
-  visits `TempDecl`s, assignments, and nested `return`s where these
-  fields get mutated. It does **not** wrap the lambda's own tail
-  expression: for a block body, `LambdaBody::value_exprs()` yields only
-  the tail (`crates/internal/brink-ir/src/hir/types.rs`), and
-  `infer_lambda` walks it *after* the restore — so a block-bodied
-  lambda's own tail expression is inferred with the lambda's `locals`/
-  `annotated`/`local_fn_origins` already discarded; the enclosing def's
-  is what's live for it. (A single-expression body, `LambdaBody::Expr`,
-  has no `stmts` to snapshot around in the first place — its one
-  expression walks under whatever frame was already live when
-  `infer_lambda` was entered.)
+  **Scope of the restore, precisely.** `infer_lambda` snapshots before,
+  and restores after, the **whole** of a block body — both its `stmts`
+  *and* its trailing tail expression (`LambdaBody::Block { stmts, tail
+  }`). The `stmts` walk is where `TempDecl`s, assignments and nested
+  `return`s mutate these fields; the tail is the block's *value*
+  position, and it both reads and (through `observe`) writes the very
+  locals those statements just bound. Both therefore belong to the same
+  frame, and the restore point is after the tail, not between the two.
+  (A single-expression body, `LambdaBody::Expr`, has no `stmts` to
+  snapshot around in the first place — its one expression walks under
+  whatever frame was already live when `infer_lambda` was entered.)
+
+  This ordering was itself a bug, fixed by issue #1789: until then the
+  restore landed *between* the `stmts` and the tail, because the tail was
+  reached through `LambdaBody::value_exprs()` (which, for a block body,
+  yields only the tail —
+  `crates/internal/brink-ir/src/hir/types.rs`) in a loop that sat after
+  the restore. A block-bodied lambda's tail was consequently inferred
+  against the **enclosing** def's restored `locals`, and since `locals`
+  is keyed by *bare name* the failure was two-directional on a shadowed
+  name, plus one further direction on a merely *captured* (not shadowed)
+  name:
+
+  - **Read** — a temp the lambda's own `stmts` declared was invisible to
+    the lambda's own tail (`ty_of_def` found no entry → `Unknown`), so the
+    `E063` arity check (which requires a known callee type) was skipped
+    entirely there; an over-applied call through a lambda-local `fn` temp
+    in tail position was never checked for arity. A spurious `E065`
+    Unknown-escape fired in its place — the wrong diagnostic, not silence.
+  - **Write (shadowed)** — `observe` from the tail unified the lambda's
+    own type into whatever *enclosing* local carried that bare name, e.g.
+    making an enclosing `int` temp `Conflicted` and firing a spurious
+    `E066` on a temp the enclosing body never misuses. A false positive
+    on user code, and the same class of leak PR #1750 closed for `stmts`.
+  - **Write (captured, incidental)** — the fix's frame window has the
+    inverse effect on a *captured*, unshadowed enclosing temp: a
+    tail-only capturing use's `observe` is now confined to the lambda's
+    own frame and discarded by the restore, so it no longer narrows the
+    enclosing temp the way it used to. The enclosing temp is left exactly
+    as unannotated as the identical use already was from statement
+    position under #1750 — a consistency fix, not a new failure mode,
+    but reaching `types = strict` diagnostics like the other two.
+
+  All three are pinned by `native_lambda_tail_sees_its_own_block_locals`,
+  `native_lambda_tail_does_not_corrupt_a_shadowed_enclosing_local`, and
+  `native_lambda_tail_capture_use_no_longer_narrows_enclosing_capture`
+  (`crates/internal/brink-analyzer/src/strict.rs`), each of which pairs
+  the tail-position fixture with the identical shape written as a
+  statement — the statement half was already correct under #1750, so it
+  is the tail, not the check, that the fixtures discriminate on.
 
 - **Cumulative — never snapshotted; left to accumulate straight through
   the walk.** These are the **effect-atom accumulators**, and letting a
