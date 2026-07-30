@@ -3017,6 +3017,84 @@ mod tests {
         );
     }
 
+    // ─── Issue #1735: the fn-value aliasing channel enumeration ──────────
+    //
+    // Filed from the #1726/PR #1731 retro to check whether `ref` projections
+    // and the heap are a genuine gap in `local_fn_origins` or a case
+    // docs/effects-spec.md §5/§6.1a/§6.3 already rules coarse-but-sound. They
+    // are the latter: §5 rules that a cell/collection's element *type*
+    // accumulates the join of every fn value assigned into it — a
+    // completely separate mechanism from this per-local write-set rung, and
+    // "no separate points-to machinery exists or is planned". These two
+    // tests pin that: a heap-sourced call never narrows, and a `ref`-param
+    // write through a *global* root never leaks into (or out of) a Temp's
+    // own write summary. No production change accompanies these — see
+    // docs/effects-spec.md §6.1a's "Aliasing channel enumeration" addendum
+    // for the ruling this pins.
+
+    /// The heap channel (§5/§6.3): a fn value read out of a `VAR`/`CONST`
+    /// cell is never classified as [`ValueCallOrigin::Local`] —
+    /// [`InferPass::local_call_origin`] only recognizes `Temp`/`Param`
+    /// symbol kinds, so a `Variable` falls straight to `Unknown`. Calling
+    /// through it must stay pessimal unconditionally; narrowing it would
+    /// require the points-to machinery §5 rules out, and reading it through
+    /// the type-row join instead is a completely different (type-level, not
+    /// call-graph-level) mechanism from what this test checks.
+    #[test]
+    fn a_call_through_a_heap_stored_fn_value_stays_pessimal() {
+        let src = "VAR cb = #fn(bar)\n\
+                   === function bar() ===\n~ return 1\n\
+                   === function user() ===\n~ return cb()\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let user = id_of(&index, "user");
+        assert!(
+            rows[&user].opaque,
+            "a call through a VAR-held fn value is the heap channel — \
+             local_fn_origins never sees VAR/CONST writes at all, so it \
+             must stay pessimal rather than attempt to narrow"
+        );
+    }
+
+    /// A `ref`-param write whose root is a *global* (not a Temp) — the same
+    /// call-site mechanism `a_ref_param_rebind_through_a_call_site_stays_pessimal`
+    /// exercises, but aimed at an unrelated `VAR` root instead of the Temp
+    /// being narrowed. [`InferPass::record_fn_write`] only folds a write into
+    /// `local_fn_origins` for a `Temp`/`Param` target — a `Variable` target
+    /// is a documented no-op there (the heap case is §5's job, not this
+    /// rung's). This pins that the no-op is real: `f`'s own single, fully
+    /// traced `#fn(bar)` write is untouched by a sibling ref-write to `npc`,
+    /// so `user`'s row narrows instead of spuriously falling to the pessimal
+    /// floor — proving the two channels (local write-set vs. heap) stay
+    /// independent in both directions, exactly as §5's "no separate
+    /// points-to machinery" design implies.
+    #[test]
+    fn a_ref_param_write_to_an_unrelated_global_root_does_not_poison_a_traced_local() {
+        let src = "VAR total = 0\nVAR npc = 5\n\
+                   === function bar() ===\n~ total = total + 1\n~ return total\n\
+                   === function poke(ref g, h) ===\n~ g = h\n\
+                   === function user(cond, new_cb) ===\n~ temp f = #fn(bar)\n\
+                   {cond:\n  ~ poke(npc, new_cb)\n}\n~ return f()\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let user = id_of(&index, "user");
+        let total = id_of(&index, "total");
+        assert!(
+            !rows[&user].opaque,
+            "a ref-param write to an unrelated global root must not poison \
+             `f`'s own fully traced write set: {:?}",
+            rows[&user]
+        );
+        assert!(
+            rows[&user].writes.contains(&total),
+            "the narrowed call through f must still join bar's own write to \
+             total: {:?}",
+            rows[&user]
+        );
+    }
+
     // ─── Fork A (docs/decision-log.md 2026-07-28, issue #1726): the
     // structural fn-value creation atom ─────────────────────────────────
 
