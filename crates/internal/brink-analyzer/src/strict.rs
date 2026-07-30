@@ -2053,9 +2053,10 @@ mod tests {
     /// position. Before the fix, `infer_lambda` walked the tail after
     /// restoring the enclosing def's `locals`, so `ty_of_def` (which keys
     /// `locals` by bare name) found nothing and typed the callee `Unknown`
-    /// — `infer_value_call`'s arity check is skipped entirely on an
-    /// `Unknown` callee, so the over-applied `h(1, 2)` reported *nothing*.
-    /// An under-report, the direction `docs/effects-spec.md` §3 forbids.
+    /// — `infer_value_call`'s `E063` arity check is skipped entirely on an
+    /// `Unknown` callee, so the over-applied `h(1, 2)` was never checked
+    /// for arity at all. A spurious `E065` Unknown-escape fired in its
+    /// place instead — the wrong diagnostic, not silence.
     ///
     /// The `stmt_position` half is the discriminator: the identical
     /// over-application written as a `;`-terminated statement inside the
@@ -2122,6 +2123,50 @@ mod tests {
              before #1789 it unified `string` into the enclosing `f`'s own \
              `t: int` and reported a spurious E066 Conflicted-escape on it: \
              {tail_position:?}"
+        );
+    }
+
+    /// Issue #1789, a third direction discovered during review: opening the
+    /// frame *around* the tail (not just restoring after it) also changes
+    /// where `observe` lands for a *captured* (not shadowed) enclosing
+    /// temp used from tail position — `f`'s own `let c;` no longer narrows
+    /// from a use inside `g`'s tail, because that use's `observe` now runs
+    /// and is undone inside the lambda's frame before `f`'s frame sees it.
+    ///
+    /// This is not a regression: the statement-position twin already
+    /// reported the same `E065` on both sides of this PR (`c` is
+    /// unannotated and untouched at every one of `f`'s own use sites
+    /// either way, per #1750), so the tail case is now merely consistent
+    /// with it rather than an outlier. It reaches
+    /// `types = strict` diagnostics same as the other two directions, so
+    /// it is pinned here rather than left as an incidental side effect.
+    #[test]
+    fn native_lambda_tail_capture_use_no_longer_narrows_enclosing_capture() {
+        const TAKES_STRING: &str = "fn takes_string(s: string): string {\n  return s;\n}\n";
+
+        let stmt_position = native_strict_diags(&format!(
+            "{TAKES_STRING}fn f(n: int): int {{\n  let c;\n  let g = ||: int {{ takes_string(c); 1 }};\n  return n;\n}}\n"
+        ));
+        assert!(
+            stmt_position.iter().any(|d| d.code == DiagnosticCode::E065),
+            "baseline: `f`'s own unannotated `let c;` still E065-escapes \
+             when the capturing use is in *statement* position, on both \
+             sides of #1789 — the use is never enough to narrow it: \
+             {stmt_position:?}"
+        );
+
+        let tail_position = native_strict_diags(&format!(
+            "{TAKES_STRING}fn f(n: int): int {{\n  let c;\n  let g = ||: string {{ takes_string(c) }};\n  return n;\n}}\n"
+        ));
+        assert!(
+            tail_position.iter().any(|d| d.code == DiagnosticCode::E065),
+            "the same capturing use from *tail* position must escape the \
+             same way — before #1789 the tail's `observe` ran against \
+             whatever frame was live *after* the restore and could narrow \
+             `f`'s own `c`; opening the frame around the tail keys that \
+             `observe` to the lambda's own (discarded) frame instead, so \
+             `c` is left exactly as unannotated as the statement-position \
+             twin: {tail_position:?}"
         );
     }
 

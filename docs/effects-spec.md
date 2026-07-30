@@ -166,21 +166,32 @@ issue #1779.
   the restore. A block-bodied lambda's tail was consequently inferred
   against the **enclosing** def's restored `locals`, and since `locals`
   is keyed by *bare name* the failure was two-directional on a shadowed
+  name, plus one further direction on a merely *captured* (not shadowed)
   name:
 
   - **Read** — a temp the lambda's own `stmts` declared was invisible to
-    the lambda's own tail (`ty_of_def` found no entry → `Unknown`), so
-    checks that key off a known type were skipped there; an over-applied
-    call through a lambda-local `fn` temp in tail position reported
-    nothing at all. An under-report, the direction §3 forbids.
-  - **Write** — `observe` from the tail unified the lambda's own type
-    into whatever *enclosing* local carried that bare name, e.g. making
-    an enclosing `int` temp `Conflicted` and firing a spurious `E066` on
-    a temp the enclosing body never misuses. A false positive on user
-    code, and the same class of leak PR #1750 closed for `stmts`.
+    the lambda's own tail (`ty_of_def` found no entry → `Unknown`), so the
+    `E063` arity check (which requires a known callee type) was skipped
+    entirely there; an over-applied call through a lambda-local `fn` temp
+    in tail position was never checked for arity. A spurious `E065`
+    Unknown-escape fired in its place — the wrong diagnostic, not silence.
+  - **Write (shadowed)** — `observe` from the tail unified the lambda's
+    own type into whatever *enclosing* local carried that bare name, e.g.
+    making an enclosing `int` temp `Conflicted` and firing a spurious
+    `E066` on a temp the enclosing body never misuses. A false positive
+    on user code, and the same class of leak PR #1750 closed for `stmts`.
+  - **Write (captured, incidental)** — the fix's frame window has the
+    inverse effect on a *captured*, unshadowed enclosing temp: a
+    tail-only capturing use's `observe` is now confined to the lambda's
+    own frame and discarded by the restore, so it no longer narrows the
+    enclosing temp the way it used to. The enclosing temp is left exactly
+    as unannotated as the identical use already was from statement
+    position under #1750 — a consistency fix, not a new failure mode,
+    but reaching `types = strict` diagnostics like the other two.
 
-  Both are pinned by `native_lambda_tail_sees_its_own_block_locals` and
-  `native_lambda_tail_does_not_corrupt_a_shadowed_enclosing_local`
+  All three are pinned by `native_lambda_tail_sees_its_own_block_locals`,
+  `native_lambda_tail_does_not_corrupt_a_shadowed_enclosing_local`, and
+  `native_lambda_tail_capture_use_no_longer_narrows_enclosing_capture`
   (`crates/internal/brink-analyzer/src/strict.rs`), each of which pairs
   the tail-position fixture with the identical shape written as a
   statement — the statement half was already correct under #1750, so it
