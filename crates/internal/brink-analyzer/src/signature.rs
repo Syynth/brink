@@ -312,9 +312,14 @@ fn declared_fn_type(
     // `docs/effects-spec.md` §5): this cell's initializer *is* a `#fn`
     // creation site, and `target_def` is the target it names — syntactic
     // evidence, resolved above by name lookup, never an inferred row
-    // (§6.1a). A later assignment of some other fn value into the same cell
-    // joins its own row in through `unify`, widening this one rather than
-    // replacing it.
+    // (§6.1a). This is the row `collect_globals` inserts once and
+    // `BodyCtx::globals` only ever reads (`infer/mod.rs`'s
+    // `collect_globals`, `infer/body.rs`'s `ty_of_def`) — a later
+    // `~ cell = #fn(other)` write is folded into the effect walk's write
+    // set, never back into this cell's type, so the row stays fixed at
+    // this declaration's target and under-approximates any cell reassigned
+    // to a different fn value (`docs/effects-spec.md` §6.1c, filed against
+    // #1753).
     Some(Ty::Fn(
         remaining,
         Box::new(ret),
