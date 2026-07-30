@@ -765,7 +765,7 @@ fn struct_decl_generic_field_type() {
         .type_expr()
         .expect("type expr");
     let g = expect_type_generic(&ty);
-    assert_eq!(g.name().as_deref(), Some("list"));
+    assert_eq!(g.name().as_deref(), Some("List"));
     let arg_names: Vec<_> = g.args().map(|a| expect_type_name(&a)).collect();
     assert_eq!(arg_names, vec!["int".to_string()]);
 }
@@ -785,7 +785,7 @@ fn struct_decl_map_field_type() {
         .type_expr()
         .expect("type expr");
     let g = expect_type_generic(&ty);
-    assert_eq!(g.name().as_deref(), Some("map"));
+    assert_eq!(g.name().as_deref(), Some("Map"));
     let arg_names: Vec<_> = g.args().map(|a| expect_type_name(&a)).collect();
     assert_eq!(arg_names, vec!["string".to_string(), "int".to_string()]);
 }
@@ -1378,9 +1378,9 @@ fn generic_and_nested_generic_type_arguments_parse() {
     assert_eq!(
         type_heads(annotation.syntax()),
         vec![
-            "map".to_string(),
+            "Map".to_string(),
             "string".to_string(),
-            "list".to_string(),
+            "List".to_string(),
             "int".to_string()
         ]
     );
