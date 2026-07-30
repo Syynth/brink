@@ -534,8 +534,11 @@ fn check_literal(
         let Some(actual_ty) = classify_expr_ty(value, ctx) else {
             continue; // not classifiable — see module doc
         };
-        if &actual_ty != declared_ty && crate::infer::unify(declared_ty, &actual_ty) != *declared_ty
-        {
+        // Row-insensitive (issue #1680): a `fn`-typed field's declared type
+        // carries the top effect row and the initializer's carries its real
+        // creation target, so rows must not decide this comparison — see
+        // `infer::assignable`.
+        if !crate::infer::assignable(declared_ty, &actual_ty) {
             out.push(Diagnostic {
                 file,
                 range: name.range,

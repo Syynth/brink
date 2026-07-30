@@ -173,7 +173,15 @@ pub fn resolve(te: &brink_ir::TypeExpr, names: &TypeNames) -> Option<Ty> {
         brink_ir::TypeExpr::Fn { params, ret, .. } => {
             let params: Option<Vec<Ty>> = params.iter().map(|p| resolve(p, names)).collect();
             let ret = resolve(ret, names)?;
-            Some(Ty::Fn(params?, Box::new(ret)))
+            // The effect row is the top element: a written `fn(T…): R`
+            // annotation names no creation target, so it carries no evidence
+            // about where the values reaching the slot were made (issue
+            // #1680, `docs/effects-spec.md` §6.1a — creation sites are
+            // syntactic `#fn` literals, never annotations). Conservative by
+            // construction, and the reason assignability has to ignore rows:
+            // an annotated param's top row would otherwise never equal the
+            // join with a real argument's row (see `infer::assignable`).
+            Some(Ty::Fn(params?, Box::new(ret), crate::infer::FnRow::unknown()))
         }
     }
 }
@@ -497,10 +505,15 @@ fn report_if_mismatched(
     file: FileId,
     out: &mut Vec<Diagnostic>,
 ) {
-    if body_ty.is_unresolved() || body_ty == ann_ty {
+    if body_ty.is_unresolved() {
         return;
     }
-    if &crate::infer::unify(ann_ty, body_ty) == ann_ty {
+    // Row-insensitive (issue #1680): an annotation's `Ty::Fn` carries the
+    // top effect row while a body-derived one carries its real creation
+    // targets, so a structural `unify(ann, body) == ann` would call every
+    // correctly-annotated fn-typed slot a mismatch. `assignable` erases
+    // rows on both sides — see `infer::assignable`.
+    if crate::infer::assignable(ann_ty, body_ty) {
         return;
     }
     out.push(Diagnostic {
@@ -621,11 +634,19 @@ mod tests {
         let z = hir.variables[1].annotation.as_ref().expect("z");
         assert_eq!(
             resolve(cb, &tn(&empty, &empty)),
-            Some(Ty::Fn(vec![Ty::Int, Ty::String], Box::new(Ty::Bool)))
+            Some(Ty::Fn(
+                vec![Ty::Int, Ty::String],
+                Box::new(Ty::Bool),
+                crate::infer::FnRow::unknown()
+            ))
         );
         assert_eq!(
             resolve(z, &tn(&empty, &empty)),
-            Some(Ty::Fn(Vec::new(), Box::new(Ty::Int)))
+            Some(Ty::Fn(
+                Vec::new(),
+                Box::new(Ty::Int),
+                crate::infer::FnRow::unknown()
+            ))
         );
     }
 
@@ -641,14 +662,20 @@ mod tests {
             resolve(a, &tn(&empty, &empty)),
             Some(Ty::Array(Box::new(Ty::Fn(
                 vec![Ty::Int],
-                Box::new(Ty::Int)
+                Box::new(Ty::Int),
+                crate::infer::FnRow::unknown()
             ))))
         );
         assert_eq!(
             resolve(b, &tn(&empty, &empty)),
             Some(Ty::Fn(
                 vec![Ty::Array(Box::new(Ty::Int))],
-                Box::new(Ty::Fn(vec![Ty::Int], Box::new(Ty::Bool)))
+                Box::new(Ty::Fn(
+                    vec![Ty::Int],
+                    Box::new(Ty::Bool),
+                    crate::infer::FnRow::unknown()
+                )),
+                crate::infer::FnRow::unknown()
             ))
         );
     }

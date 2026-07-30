@@ -308,7 +308,18 @@ fn declared_fn_type(
         .map(|a| a.clone().unwrap_or(Ty::Unknown))
         .collect();
     let ret = target_sig.return_annotation.clone().unwrap_or(Ty::Unknown);
-    Some(Ty::Fn(remaining, Box::new(ret)))
+    // The declaration-derived effect row (issue #1680,
+    // `docs/effects-spec.md` §5): this cell's initializer *is* a `#fn`
+    // creation site, and `target_def` is the target it names — syntactic
+    // evidence, resolved above by name lookup, never an inferred row
+    // (§6.1a). A later assignment of some other fn value into the same cell
+    // joins its own row in through `unify`, widening this one rather than
+    // replacing it.
+    Some(Ty::Fn(
+        remaining,
+        Box::new(ret),
+        crate::infer::FnRow::of_target(target_def),
+    ))
 }
 
 /// Compute the signature stub for one definition.

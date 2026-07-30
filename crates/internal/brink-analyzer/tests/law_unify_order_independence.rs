@@ -34,8 +34,26 @@
 
 #![allow(clippy::unwrap_used)]
 
-use brink_analyzer::{Ty, unify, unify_all};
+use brink_analyzer::{FnRow, Ty, unify, unify_all};
+use brink_format::{DefinitionId, DefinitionTag};
 use proptest::prelude::*;
+
+/// A [`FnRow`] — the effect row riding `Ty::Fn` (issue #1680): either the
+/// unknown top element or a small, concrete creation-target set. Generated
+/// so the laws below cover `FnRow::join` (union with `unknown` absorbing),
+/// not just the param/return components of the `Ty::Fn` arm.
+fn arb_fn_row() -> impl Strategy<Value = FnRow> {
+    prop_oneof![
+        Just(FnRow::unknown()),
+        prop::collection::vec(0u64..4, 0..3).prop_map(|ids| ids.into_iter().fold(
+            FnRow::empty(),
+            |acc, id| acc.join(&FnRow::of_target(DefinitionId::new(
+                DefinitionTag::Address,
+                id
+            )))
+        )),
+    ]
+}
 
 /// A [`Ty`] value, bounded recursion (typed-mode-spec §2/§4): scalars plus
 /// nominal `list`/`struct`/`handle` (string-keyed) leaves, `Unknown` and
@@ -60,8 +78,12 @@ fn arb_ty() -> impl Strategy<Value = Ty> {
         prop_oneof![
             inner.clone().prop_map(|t| Ty::Array(Box::new(t))),
             (inner.clone(), inner.clone()).prop_map(|(k, v)| Ty::Map(Box::new(k), Box::new(v))),
-            (prop::collection::vec(inner.clone(), 0..3), inner)
-                .prop_map(|(params, ret)| Ty::Fn(params, Box::new(ret))),
+            (
+                prop::collection::vec(inner.clone(), 0..3),
+                inner,
+                arb_fn_row()
+            )
+                .prop_map(|(params, ret, row)| Ty::Fn(params, Box::new(ret), row)),
         ]
     })
 }

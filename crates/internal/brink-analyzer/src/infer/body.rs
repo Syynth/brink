@@ -31,7 +31,7 @@ use brink_ir::{
 use rowan::TextRange;
 
 use super::effects::FnArgOrigins;
-use super::ty::{TowerTy, Ty, coalesce, unify, unify_all};
+use super::ty::{FnRow, TowerTy, Ty, assignable, coalesce, unify, unify_all};
 use super::{InferredSig, ValueCallFact, ValueCallKind, range_key};
 
 /// Read-only context shared by every body inferred in the same SCC round.
@@ -1494,7 +1494,13 @@ impl InferPass<'_, '_> {
             .as_ref()
             .and_then(|te| crate::annotations::resolve(te, &names))
             .unwrap_or(Ty::Unknown);
-        Ty::Fn(params, Box::new(ret))
+        // The effect row stays at the top element. A lambda's lifted
+        // `DefinitionId` is minted in LIR (`alloc_lambda_address`), so it has
+        // no id at inference time to *name* as a creation target — the
+        // keyspace gap #1727 tracks. `FnRow` keys the shipped
+        // `DefinitionId → row` table (§7), so an honest "unknown" is the only
+        // sound row a lambda can carry until that gap closes.
+        Ty::Fn(params, Box::new(ret), FnRow::unknown())
     }
 
     /// `#fn(target, args…)` — docs/t1c-spec.md §4: consume the bound prefix
@@ -1519,7 +1525,13 @@ impl InferPass<'_, '_> {
             }
         }
         let remaining: Vec<Ty> = sig.params.iter().skip(fl.args.len()).cloned().collect();
-        Ty::Fn(remaining, Box::new(sig.return_ty.clone()))
+        // §5/§6.1a (issue #1680): this literal **is** the creation site, and
+        // `def` is the target it names syntactically — the one place a
+        // non-top [`FnRow`] is minted inside a body. Every later join
+        // (`observe`, `bind_local`, a collection literal's element fold)
+        // carries it along, which is what makes the row follow the value
+        // "through copies, parameters, returns, and nesting".
+        Ty::Fn(remaining, Box::new(sig.return_ty.clone()), FnRow::of_target(def))
     }
 
     /// A call whose callee resolved to a param/temp/VAR/CONST — a call
@@ -1638,7 +1650,7 @@ impl InferPass<'_, '_> {
         self.effect_faults = true;
         self.effect_faults_refined = true;
         match callee_ty {
-            Ty::Fn(params, ret) => {
+            Ty::Fn(params, ret, _) => {
                 if args.len() != params.len() {
                     self.push_value_call(
                         range,
@@ -1653,7 +1665,7 @@ impl InferPass<'_, '_> {
                     if let Some(arg_ty) = arg_tys.get(i)
                         && !param_ty.is_unresolved()
                         && !arg_ty.is_unresolved()
-                        && &unify(param_ty, arg_ty) != param_ty
+                        && !assignable(param_ty, arg_ty)
                     {
                         self.push_value_call(
                             range,
@@ -1711,7 +1723,7 @@ impl InferPass<'_, '_> {
         self.effect_faults = true;
         self.effect_faults_refined = true;
         match callee_ty {
-            Ty::Fn(params, ret) => {
+            Ty::Fn(params, ret, row) => {
                 if args.len() > params.len() {
                     self.push_value_call(
                         range,
@@ -1729,7 +1741,7 @@ impl InferPass<'_, '_> {
                     if let Some(arg_ty) = arg_tys.get(i)
                         && !param_ty.is_unresolved()
                         && !arg_ty.is_unresolved()
-                        && &unify(param_ty, arg_ty) != param_ty
+                        && !assignable(param_ty, arg_ty)
                     {
                         self.push_value_call(
                             range,
@@ -1746,7 +1758,12 @@ impl InferPass<'_, '_> {
                     }
                 }
                 let remaining: Vec<Ty> = params.into_iter().skip(args.len()).collect();
-                Ty::Fn(remaining, ret)
+                // The effect row rides through unchanged: partial
+                // application never changes *which* def eventually runs
+                // (§6.1a — "`bind` copies from an already-known value rather
+                // than naming a new target"), which is the same reason
+                // `fn_literal_write_origin` traces through `bind` chains.
+                Ty::Fn(remaining, ret, row)
             }
             Ty::Divert => Ty::Unknown,
             Ty::Unknown => {
@@ -2256,7 +2273,7 @@ impl InferPass<'_, '_> {
                     self.pending_value_calls.push(hint);
                 }
                 match (arg_tys.first(), arg_tys.get(1)) {
-                    (Some(Ty::Array(_)), Some(Ty::Fn(_, ret))) => Ty::Array(ret.clone()),
+                    (Some(Ty::Array(_)), Some(Ty::Fn(_, ret, _))) => Ty::Array(ret.clone()),
                     _ => Ty::Unknown,
                 }
             }
@@ -2270,7 +2287,7 @@ impl InferPass<'_, '_> {
                     self.pending_value_calls.push(hint);
                 }
                 match arg_tys.get(2) {
-                    Some(Ty::Fn(_, ret)) => (**ret).clone(),
+                    Some(Ty::Fn(_, ret, _)) => (**ret).clone(),
                     _ => arg_tys.get(1).cloned().unwrap_or(Ty::Unknown),
                 }
             }
@@ -2286,7 +2303,7 @@ impl InferPass<'_, '_> {
                     self.pending_value_calls.push(hint);
                 }
                 match (arg_tys.first(), arg_tys.get(1)) {
-                    (Some(Ty::Array(_)), Some(Ty::Fn(_, ret))) => match ret.as_ref() {
+                    (Some(Ty::Array(_)), Some(Ty::Fn(_, ret, _))) => match ret.as_ref() {
                         Ty::Option(inner) => Ty::Array(inner.clone()),
                         _ => Ty::Unknown,
                     },

@@ -68,7 +68,9 @@ use rowan::TextRange;
 
 pub use effects::{EffectAtoms, EffectRow, solve_scc_effects};
 pub use graph::{CallGraph, SccGraph, scc_graph};
-pub use ty::{CoalesceError, TowerTy, Ty, coalesce, unify, unify_all};
+pub use ty::{
+    CoalesceError, FnRow, TowerTy, Ty, assignable, coalesce, erase_fn_rows, unify, unify_all,
+};
 
 use body::{BodyCtx, infer_def_body};
 use graph::topo_order;
@@ -1947,10 +1949,23 @@ mod tests {
             .copied()
             .expect("main");
         let body = result.bodies.get(&main_id).expect("main body");
+        let heal_id = index
+            .by_name
+            .get("heal")
+            .and_then(|ids| ids.first())
+            .copied()
+            .expect("heal");
+        let cb = body.locals.get("heal_player").expect("heal_player");
         assert_eq!(
-            body.locals.get("heal_player"),
-            Some(&Ty::Fn(vec![Ty::Int], Box::new(Ty::Int)))
+            crate::infer::erase_fn_rows(cb),
+            Ty::Fn(vec![Ty::Int], Box::new(Ty::Int), FnRow::unknown())
         );
+        // Issue #1680 step 3: the `#fn` literal is the creation site, so
+        // the slot's type carries `heal` as its effect row.
+        let Ty::Fn(_, _, row) = cb else {
+            panic!("expected a fn type, got {cb:?}")
+        };
+        assert_eq!(row.targets(), Some(&BTreeSet::from([heal_id])));
     }
 
     #[test]
@@ -1968,9 +1983,10 @@ mod tests {
             .copied()
             .expect("main");
         let body = result.bodies.get(&main_id).expect("main body");
+        let f = body.locals.get("f").expect("f");
         assert_eq!(
-            body.locals.get("f"),
-            Some(&Ty::Fn(vec![Ty::Int], Box::new(Ty::Int)))
+            crate::infer::erase_fn_rows(f),
+            Ty::Fn(vec![Ty::Int], Box::new(Ty::Int), FnRow::unknown())
         );
     }
 
