@@ -1142,10 +1142,10 @@ impl InferPass<'_, '_> {
             // expression is inferred for its side effects (nested calls,
             // uses) exactly like an interpolation's is.
             //
-            // The row carries no effects: `Ty::Fn` has nowhere to put one
-            // (#1680), which is precisely the coordination issue #1685
-            // flagged. When `Ty::Fn` grows rows, a lambda's row is composed
-            // here from its body and its captures (#872).
+            // `Ty::Fn` has carried an effect row since #1680 step 3, but a
+            // lambda's is the unknown top element: composing one would mean
+            // naming a creation target, and a lambda has no `DefinitionId`
+            // until LIR mints it (#1727). See `infer_lambda`.
             Expr::Lambda(l) => self.infer_lambda(l),
             // NS-A5 range literals (docs/stdlib-spec.md §7, F7): both
             // bounds are ints (`observe` narrows int-typed slots used as
@@ -1449,16 +1449,19 @@ impl InferPass<'_, '_> {
     /// `Unknown`). The body's value expression is inferred for its side
     /// effects (nested calls, uses) exactly like an interpolation's is.
     ///
-    /// The row carries no effects: `Ty::Fn` has nowhere to put one (#1680),
-    /// which is precisely the coordination issue #1685 flagged. When
-    /// `Ty::Fn` grows rows, a lambda's row is composed here from its body
-    /// and its captures (#872).
+    /// The effect row is the unknown top element. `Ty::Fn` does carry a
+    /// [`FnRow`] since #1680 step 3, but a `FnRow` names **creation
+    /// targets** by `DefinitionId` (the keys §7's row table is looked up
+    /// by), and a lambda has no such id at inference time — it is minted in
+    /// LIR by `IdAllocator::alloc_lambda_address` (#1727). Until that
+    /// keyspace gap closes, an honest "unknown" is the only sound row a
+    /// lambda can carry — which is precisely the coordination issue #1685
+    /// flagged.
     ///
-    /// Composing it here is **necessary but not sufficient** to make a
-    /// lambda's row reachable through a live fn value — the missing half is
-    /// a structural gap in the shipped table, not a follow-on to this
-    /// function's own analyzer-side work (rows on `Ty::Fn`, the unifier row
-    /// join, and §6.1 row-polymorphism all land regardless). Walking the
+    /// Composing a real row here would be **necessary but not sufficient**
+    /// to make a lambda's row reachable through a live fn value — the
+    /// missing half is a structural gap in the shipped table, not a
+    /// follow-on to this function's own analyzer-side work. Walking the
     /// body inside *this* pass absorbs its atoms into the **enclosing**
     /// definition's row — sound (spec §3 allows over-reporting) but it
     /// gives the lambda no row of its own, and nothing downstream can mint
@@ -1471,8 +1474,8 @@ impl InferPass<'_, '_> {
     /// effects-spec §7's "a live fn value is a token; its row is a table
     /// lookup" currently *misses* for every lambda token, which blocks the
     /// shipped-table/§7-narrowing path (§6 item 4, an optional host
-    /// optimization) and, conditionally, T1c item 4's row field — not
-    /// #1680's own analyzer-side work. Pinned by
+    /// optimization) — not #1680's own analyzer-side work, which has
+    /// landed (Fork D retired T1c item 4's row field outright). Pinned by
     /// `brink-db/tests/issue_1680_lambda_effect_row_gap.rs`.
     fn infer_lambda(&mut self, l: &brink_ir::LambdaExpr) -> Ty {
         for e in l.body.value_exprs() {
@@ -1531,7 +1534,11 @@ impl InferPass<'_, '_> {
         // (`observe`, `bind_local`, a collection literal's element fold)
         // carries it along, which is what makes the row follow the value
         // "through copies, parameters, returns, and nesting".
-        Ty::Fn(remaining, Box::new(sig.return_ty.clone()), FnRow::of_target(def))
+        Ty::Fn(
+            remaining,
+            Box::new(sig.return_ty.clone()),
+            FnRow::of_target(def),
+        )
     }
 
     /// A call whose callee resolved to a param/temp/VAR/CONST — a call

@@ -558,7 +558,11 @@ mod tests {
                 vec![Ty::Int, Ty::String],
                 Box::new(Ty::Bool),
                 brink_analyzer::FnRow::unknown()
-            )) > ty_heap(&Ty::Fn(vec![], Box::new(Ty::Bool), brink_analyzer::FnRow::unknown()))
+            )) > ty_heap(&Ty::Fn(
+                vec![],
+                Box::new(Ty::Bool),
+                brink_analyzer::FnRow::unknown()
+            ))
         );
     }
 

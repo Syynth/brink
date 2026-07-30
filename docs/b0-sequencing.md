@@ -371,8 +371,9 @@ path.
   `lir::lower::lambda` lifts the body into a synthesized top-level function
   and creates an ordinary T1c fn value over it (`PushFnRef` with no
   captures, `MakeClosure` with them), retiring the `E052` fence. Still
-  open: the lifted function's **effect row**, which `Ty::Fn` cannot carry
-  (#1680).
+  open: the lifted function's **effect row** — `Ty::Fn` carries one since
+  #1680 step 3, but it names creation targets by `DefinitionId` and a
+  lambda has none until LIR mints it (#1727).
 - **Enums** — ruled (§13.1) but no HIR node exists; the contract reserves
   the `HirFile.enums` channel; the node + exhaustive `match` land with the
   enum feature, not B0.

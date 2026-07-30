@@ -281,7 +281,9 @@ happy path is: native constructs lower to *existing* HIR nodes. Where they do:
    synthesizes a top-level function from the lambda body and creates an
    ordinary fn value over it (`lir::lower::lambda`), so the targeted `E052`
    codegen fence that stood here is retired. Still unrepresentable: the
-   lifted function's **effect row**, because `Ty::Fn` carries none (#1680).
+   lifted function's **effect row**: `Ty::Fn` carries one since #1680 step
+   3, but that row names creation targets by `DefinitionId` and a lambda
+   has none until LIR mints it (#1727).
 5. **blocks-as-values** (watch list). No HIR support; `Stmt`/`Expr` are separated
    (F-K). *Defer to a semantics round (parking-lot); it is not same-semantics.*
 6. **Deep container nesting >2** (watch list). No HIR support; the model,

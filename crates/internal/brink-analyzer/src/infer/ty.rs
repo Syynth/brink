@@ -715,9 +715,9 @@ mod tests {
 
     /// A `Ty::Fn` carrying a concrete creation-target row (issue #1680).
     fn fn_ty_from(params: &[Ty], ret: Ty, targets: &[u64]) -> Ty {
-        let row = targets
-            .iter()
-            .fold(FnRow::empty(), |acc, &t| acc.join(&FnRow::of_target(def(t))));
+        let row = targets.iter().fold(FnRow::empty(), |acc, &t| {
+            acc.join(&FnRow::of_target(def(t)))
+        });
         Ty::Fn(params.to_vec(), Box::new(ret), row)
     }
 
@@ -823,7 +823,10 @@ mod tests {
         assert_eq!(joined, fn_ty_from(&[Ty::Int], Ty::Int, &[1, 2]));
         // A traced row joined with an unknown one stays unknown.
         assert_eq!(
-            unify(&fn_ty_from(&[Ty::Int], Ty::Int, &[1]), &fn_ty(&[Ty::Int], Ty::Int)),
+            unify(
+                &fn_ty_from(&[Ty::Int], Ty::Int, &[1]),
+                &fn_ty(&[Ty::Int], Ty::Int)
+            ),
             fn_ty(&[Ty::Int], Ty::Int)
         );
         // `Ty::Unknown` is still the identity — it carries no row at all,
@@ -868,7 +871,10 @@ mod tests {
         // (an annotation's row is always the top element). A structural
         // `unify(param, arg) == param` test fails all three of these.
         let declared = fn_ty(&[Ty::Int], Ty::Int);
-        assert!(assignable(&declared, &fn_ty_from(&[Ty::Int], Ty::Int, &[1])));
+        assert!(assignable(
+            &declared,
+            &fn_ty_from(&[Ty::Int], Ty::Int, &[1])
+        ));
         assert!(assignable(
             &fn_ty_from(&[Ty::Int], Ty::Int, &[1]),
             &fn_ty_from(&[Ty::Int], Ty::Int, &[2])

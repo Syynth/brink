@@ -294,10 +294,11 @@ scope (`PureCallbackState.effectful`). Two as-built notes:
   value over it (`lir::lower::lambda`) — no captures ⇒ `PushFnRef`, captures
   ⇒ `MakeClosure`, with capture by value always per the 2026-07-19 ruling.
 - **"Pure-required" is only enforceable where the callback's origin is
-  syntactically visible** — an inline `#fn(target)`. `Ty::Fn` carries no
-  effect rows (#1680), so a callback routed through a variable is
-  unjudgeable; the dev-mode world-write guard and the ops' output isolation
-  are the runtime residual.
+  syntactically visible** — an inline `#fn(target)`. `Ty::Fn` carries an
+  effect row since #1680 step 3, but nothing threads inferred types into
+  the gate (effects-spec §6.1c), so a callback routed through a variable is
+  still unjudgeable; the dev-mode world-write guard and the ops' output
+  isolation are the runtime residual.
 
 **🔶 `for ref m in maps { m[k] = v }`** — mutating iteration (loop form,
 not a verb; index-desugar over RMW; #829 projections stay icebox).

@@ -33,8 +33,10 @@
 //!   snapshot write is always a lost write — is [`check_capture_writes`]
 //!   below (`E156`).
 //! - **Lambdas are fn-colored always** and rows compose through captures
-//!   (#872), but `Ty::Fn` carries no effect rows at all today (#1680) — so
-//!   nothing here records one. See issue #1685's coordination note.
+//!   (#872). `Ty::Fn` carries an effect row since #1680 step 3, but it
+//!   names creation targets by `DefinitionId` and a lambda has none before
+//!   LIR (#1727) — so nothing here records one. See issue #1685's
+//!   coordination note.
 
 use brink_syntax_native::SyntaxKind as N;
 use brink_syntax_native::ast::{self, AstNode as _};

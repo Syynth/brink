@@ -279,10 +279,12 @@ fn pure_callbacks_pass_the_gate() {
     compile_brink(source, None).expect("pure callbacks must pass E119 under the strict default");
 }
 
-/// The #1680 gap made concrete: routed through a variable, the very same
+/// The #1679 gap made concrete: routed through a variable, the very same
 /// impure callback is no longer *provable*, so the gate cannot fire. This
 /// is the exceedance-only posture, not an oversight — and it is exactly why
-/// "pure-required" is not enforceable through a fn value today.
+/// "pure-required" is not enforceable through a fn value today. #1680 step
+/// 3 put the substrate in place (`Ty::Fn` carries a creation-target row),
+/// but this gate is handed no inferred types; see effects-spec §6.1c.
 #[test]
 fn opaque_callback_is_not_proven_and_passes() {
     let source = "VAR seen = 0\n~ temp a = #[1]\n~ temp f = #fn(spy)\n~ temp b = map(a, f)\n{b}\n-> END\n\n=== function spy(n: int): int ===\n~ seen = seen + 1\n~ return n\n";

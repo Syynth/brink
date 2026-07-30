@@ -181,7 +181,11 @@ pub fn resolve(te: &brink_ir::TypeExpr, names: &TypeNames) -> Option<Ty> {
             // construction, and the reason assignability has to ignore rows:
             // an annotated param's top row would otherwise never equal the
             // join with a real argument's row (see `infer::assignable`).
-            Some(Ty::Fn(params?, Box::new(ret), crate::infer::FnRow::unknown()))
+            Some(Ty::Fn(
+                params?,
+                Box::new(ret),
+                crate::infer::FnRow::unknown(),
+            ))
         }
     }
 }
@@ -886,6 +890,32 @@ mod tests {
     }
 
     // ── mismatches() ────────────────────────────────────────────────
+
+    /// Issue #1680: an annotated `fn(T…): R` return type carries the
+    /// *unknown* effect row while the body's `#fn(target)` return carries a
+    /// concrete one. `report_if_mismatched` compares them through
+    /// `infer::assignable`, which erases rows on both sides — the two are
+    /// the same type and must not be reported.
+    ///
+    /// The unknown row is the join's top element and therefore absorbing,
+    /// so this direction was already safe under the old structural test;
+    /// the assertion pins it against a future change to where an annotation
+    /// gets its row from, and keeps all four assignability sites on one
+    /// predicate.
+    #[test]
+    fn a_fn_typed_annotation_does_not_disagree_with_its_body_derived_row() {
+        let (hir, index, res) = build_with_resolutions(
+            "=== function bump(n: int): int ===\n~ return n + 1\n\
+             === function pick(): fn(int): int ===\n~ return #fn(bump)\n",
+        );
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let diags = mismatches(&[(FileId(0), &hir)], &index, &inference, None);
+        assert!(
+            !diags.iter().any(|d| d.code == DiagnosticCode::E063),
+            "{diags:?}"
+        );
+    }
 
     #[test]
     fn mismatches_flags_annotation_disagreeing_with_body_inference() {
