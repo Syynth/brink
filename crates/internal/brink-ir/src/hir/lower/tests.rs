@@ -1068,18 +1068,18 @@ fn generic_list_and_map_annotations_lower_with_args() {
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     match &hir.variables[0].annotation {
         Some(TypeExpr::Generic { name, args, .. }) => {
-            assert_eq!(name, "list");
+            assert_eq!(name, "List");
             assert_eq!(args.len(), 1);
             assert!(matches!(&args[0], TypeExpr::Named { name, .. } if name == "Weathers"));
         }
-        other => panic!("expected Generic(\"list\", ...), got {other:?}"),
+        other => panic!("expected Generic(\"List\", ...), got {other:?}"),
     }
     match &hir.variables[1].annotation {
         Some(TypeExpr::Generic { name, args, .. }) => {
-            assert_eq!(name, "map");
+            assert_eq!(name, "Map");
             assert_eq!(args.len(), 2);
         }
-        other => panic!("expected Generic(\"map\", ...), got {other:?}"),
+        other => panic!("expected Generic(\"Map\", ...), got {other:?}"),
     }
 }
 

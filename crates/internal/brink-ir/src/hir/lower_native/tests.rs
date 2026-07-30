@@ -1597,7 +1597,7 @@ fn generic_param_annotation_lowers_with_its_arguments() {
     else {
         unreachable!("expected a generic annotation: {:?}", hir.knots[0].params);
     };
-    assert_eq!(name, "map");
+    assert_eq!(name, "Map");
     let arg_names: Vec<Option<&str>> = args.iter().map(|a| named(Some(a))).collect();
     assert_eq!(arg_names, vec![Some("string"), Some("int")]);
 }
