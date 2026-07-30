@@ -177,9 +177,12 @@ fn transitive_call_effects_flow_through_inference() {
 
 #[test]
 fn call_through_a_function_value_is_opaque() {
-    // Dispatch through a `#fn` value escapes the static call graph — the row
-    // degrades to the pessimal `opaque` top element (spec §3/§4), the sound
-    // floor.
+    // Dispatch through a `#fn` value escapes the static call graph — the
+    // higher-order definition's own row is the pessimal top element (spec
+    // §3/§4), the sound floor. Since #1680 that floor is a §6.1 **row
+    // variable** rather than the intrinsic `opaque` bit, which is why the
+    // assertion reads `is_pessimal()` — the bit every consumer of a row
+    // reads.
     let db = build_db(
         "VAR total = 0\n\
          === function apply(cb) ===\n~ return cb()\n\
@@ -190,9 +193,21 @@ fn call_through_a_function_value_is_opaque() {
         .effects(callable_id(&db, "apply"))
         .expect("apply has a row");
     assert!(
-        row.opaque,
+        row.is_pessimal(),
         "call through a fn value must be opaque: {row:?}"
     );
+
+    // …and the point of the row variable: `main`, which *does* know what it
+    // passed, instantiates the hole with `bump`'s real row and so is not
+    // pessimal at all. Before #1680 it inherited `apply`'s floor.
+    let caller = db
+        .effects(callable_id(&db, "main"))
+        .expect("main has a row");
+    assert!(
+        !caller.is_pessimal(),
+        "a fully-traced higher-order call site must escape the floor: {caller:?}"
+    );
+    assert_eq!(cell_names(&db, &caller.writes), vec!["total"]);
 }
 
 // ── The `#@effects` contract (spec §10) ─────────────────────────────────

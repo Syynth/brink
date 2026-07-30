@@ -152,6 +152,55 @@ inference, so it has **no index symbol** to harvest and is out of scope
 for this mechanism. The obstacle is keyspace (no index symbol → no
 `DefKey`/SCC membership), not timing. Tracked separately (#1727).
 
+### 6.1b Row variables on fn-typed params — SHIPPED (issue #1680)
+
+Mechanism 1 above, as built. A definition whose body calls through one
+of its own `fn`-typed params does **not** take the opaque floor for
+that call: its row carries a **hole** at the param's declaration index
+(`EffectRow::holes`), which is Fork C's *"row with a hole"* in the
+inference layer. The row is therefore parametric — its true effects are
+the listed atoms ⊔ the row of whatever fn value the caller passes.
+
+- **The definition read on its own is unchanged.** `EffectRow::opaque`
+  now means *intrinsic* opacity; `EffectRow::is_pessimal()` — `opaque ||
+  !holes.is_empty()` — is the effective floor, and every consumer of a
+  row reads it (assertions, protocol contracts, await purity, IDE
+  hover, the `.inkb` writer). An uninstantiated row variable tops the
+  lattice exactly like `opaque`, so §3's conservative-total direction is
+  untouched.
+- **The caller instantiates.** The body walk records, per `(inferable
+  callee, argument position)`, the creation targets that position's
+  arguments traced to (`EffectAtoms::call_fn_args`) — joined over every
+  call site *and* every argument-bearing divert to that callee, so one
+  untraceable site poisons the position for all of them. The per-SCC
+  fixpoint folds a callee's row in with `join_atoms` (which leaves the
+  callee's holes behind — they index the *callee's* param space) and
+  discharges each hole from that summary.
+- **Structural, so still acyclic.** Both halves are decided
+  syntactically, exactly as §6.1a requires: a `#fn` target is a name, a
+  local's origin summary is a write set. No inferred row or signature
+  is consulted.
+- **Fallbacks, all to the floor.** A `ref` param (it aliases the
+  caller's storage); a param the body assigns to or hands to a `ref`
+  slot (it no longer holds the caller's argument); an argument that did
+  not trace; a fill target with no row; and a fill target whose own row
+  still holes — §6.1's shallow polymorphism fixes every value's row at
+  its creation site, so a hole is filled with **ground** rows and never
+  chained into another hole.
+- **The wire is unchanged.** The `EffectRows` section stays one ground
+  row per def: a row still carrying a hole is *closed* to opaque on the
+  way out. Fork C's ruled encoding — an explicit hole slot filled by
+  §7's token lookup — is the remaining half and lands with runtime
+  narrowing (#1723); the section is section-locally versioned so it can
+  grow without a format bump.
+
+Still outstanding on #1680: a row on `Ty::Fn` itself (with the
+unifier's row join, and the row-insensitive equality at the two
+`ValueCallKind::ArgMismatch` sites that would otherwise fire a spurious
+`E063` under `types = strict`), which is what §6 mechanism 3 — the heap
+— needs. A call through a fn value loaded out of a VAR/CONST cell is
+still pessimal.
+
 ## 7. Runtime narrowing: selection, not inference — RULED
 
 The runtime never computes a row. Every row that can exist is
@@ -576,13 +625,15 @@ writes / calls / emits / suspend defeat fusion).
   fn-value iteration) — precise only for first-order code. It builds as
   part of the effect-system work (tractable: substitution over
   creation-fixed rows, riding the SCC fixpoint), off the "author a scene"
-  critical path but not deferred. **Partially landed** by §6.1a's
-  structural creation-site atom (#1726): a call through a *local* whose
-  every write traced to an in-project `#fn`/`bind` creation site already
-  narrows to the join over those targets. What still needs row variables
-  is the case the atom cannot reach — a call through a fn-typed
-  **param**, whose value the caller supplies (and whose lambda origins
-  await #1727's index symbols).
+  critical path but not deferred. **Landed in two steps.** §6.1a's
+  structural creation-site atom (#1726) narrows a call through a *local*
+  whose every write traced to an in-project `#fn`/`bind` creation site to
+  the join over those targets; §6.1b's row variables (#1680) cover the
+  case that atom cannot reach — a call through a fn-typed **param**,
+  whose value the caller supplies. What remains pessimal is a call
+  through a value loaded out of the **heap** (§6 mechanism 3), which
+  needs a row on `Ty::Fn`, and a call through a **lambda**, which awaits
+  #1727's index symbols.
 - The shipped core (set-based row, per-SCC fixpoint, `EffectRows` wire
   format, `@[effects(…)]` assertions) is reused unchanged; this amendment
   ADDS the two dimensions and the "one canonical signature" framing, and
