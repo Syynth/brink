@@ -47,8 +47,10 @@
 //! ## What lifting still cannot express
 //!
 //! Effect rows. Lambdas are fn-colored always and rows compose through
-//! captures (#872), but `Ty::Fn` carries no rows at all today (#1680) — so
-//! a lifted lambda's row is unrepresentable, and the pure trio's
+//! captures (#872). `Ty::Fn` has carried an effect row since #1680 step 3,
+//! but that row names **creation targets** by `DefinitionId`, and a
+//! lambda's id is minted right here in LIR — after inference — so a lifted
+//! lambda's row is still unrepresentable (#1727), and the pure trio's
 //! pure-required contract (`brink_analyzer::comparator_contract`'s E119)
 //! stays unable to see through a fn value. That gate checks inline
 //! `#fn(target)` callbacks only; a lambda callback is residual, exactly as
@@ -72,9 +74,10 @@
 //! lambda token — that blocks the shipped-table/§7-narrowing path for
 //! lambda tokens (§6 item 4, an optional host optimization) and,
 //! conditionally, T1c item 4's row field if that is ruled to be an id
-//! reference rather than an inline row. It does not block #1680's own
+//! reference rather than an inline row. It did not block #1680's own
 //! analyzer-side work (rows on `Ty::Fn`, the unifier row join, §6.1
-//! row-polymorphism). Sound today only because `InferPass::infer_lambda`
+//! row-polymorphism), all of which has landed. Sound today only because
+//! `InferPass::infer_lambda`
 //! absorbs the body's atoms into the enclosing definition's row
 //! (over-reporting, spec §3). Pinned by
 //! `brink-db/tests/issue_1680_lambda_effect_row_gap.rs`.

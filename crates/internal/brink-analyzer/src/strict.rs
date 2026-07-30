@@ -842,7 +842,7 @@ fn classify(ty: &Ty) -> Escape {
         // other nesting. (In practice the row comes from the target's own
         // inferred signature, so the target def carries the root-cause
         // E065/E066 too.)
-        Ty::Fn(params, ret) => {
+        Ty::Fn(params, ret, _) => {
             params
                 .iter()
                 .chain(std::iter::once(ret.as_ref()))
@@ -3536,6 +3536,68 @@ mod tests {
             crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
         let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
         assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    /// Issue #1680 step 2 — the regression this whole step exists for.
+    ///
+    /// `apply`'s unannotated `cb` param is reassigned to `#fn(bump)` inside
+    /// the body, so its *inferred* type carries `bump` as its effect row
+    /// (issue #1680 step 3). A caller that passes `#fn(twice)` in that
+    /// position is passing a perfectly well-typed `fn(int): int` — but the
+    /// two rows differ, so a **structural** `unify(param, arg) == param`
+    /// test sees the join widen and reports `ValueCallKind::ArgMismatch`,
+    /// which `effective_severity` promotes to an `E063` **error** under
+    /// `types = strict`. The message is self-refuting ("expected
+    /// `fn(int): int`, found `fn(int): int`") because rows are not part of
+    /// `Ty::display`.
+    ///
+    /// `infer::assignable` erases rows on both sides, which is what keeps
+    /// this clean.
+    #[test]
+    fn differing_effect_rows_are_not_an_argument_mismatch() {
+        let (hir, index, res) = build(
+            "=== function bump(n: int): int ===\n~ return n + 1\n\
+             === function twice(n: int): int ===\n~ return n * 2\n\
+             === function apply(cb, x: int): int ===\n\
+             ~ cb = #fn(bump)\n~ return cb(x)\n\
+             === main ===\n~ temp a = #fn(apply)\n\
+             ~ temp r: int = a(#fn(twice), 1)\n-> DONE\n",
+        );
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E063 && d.message.contains("argument 1")),
+            "a differing effect row is not a type mismatch: {diags:?}"
+        );
+    }
+
+    /// The second `ValueCallKind::ArgMismatch` site — `check_bind_value`,
+    /// the `bind(f, args…)` form. Same fixture shape as
+    /// [`differing_effect_rows_are_not_an_argument_mismatch`], routed
+    /// through partial application instead of a direct value call, because
+    /// the two sites carry independent copies of the assignability test.
+    #[test]
+    fn differing_effect_rows_are_not_a_bind_argument_mismatch() {
+        let (hir, index, res) = build(
+            "=== function bump(n: int): int ===\n~ return n + 1\n\
+             === function twice(n: int): int ===\n~ return n * 2\n\
+             === function apply(cb, x: int): int ===\n\
+             ~ cb = #fn(bump)\n~ return cb(x)\n\
+             === main ===\n~ temp a = #fn(apply)\n\
+             ~ temp p = bind(a, #fn(twice))\n~ temp r: int = p(1)\n-> DONE\n",
+        );
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E063 && d.message.contains("argument 1")),
+            "a differing effect row is not a bind mismatch: {diags:?}"
+        );
     }
 
     #[test]

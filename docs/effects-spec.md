@@ -100,6 +100,8 @@ is the exact and only home of §8's refinements.
    callback's) capability row. Symmetric with layer 2 of §9.
 3. **The heap** (SHIPS): calls through stored values read the
    cell/element *type's* row — §5. Sound, coarse, improvable (§8).
+   The row substrate landed with §6.1c; the *reading* half is still
+   open on the stratum question named there.
 4. **Runtime narrowing** (SPECIFIED; optional host optimization) —
    §7.
 
@@ -328,12 +330,71 @@ the listed atoms ⊔ the row of whatever fn value the caller passes.
   narrowing (#1723); the section is section-locally versioned so it can
   grow without a format bump.
 
-Still outstanding on #1680: a row on `Ty::Fn` itself (with the
-unifier's row join, and the row-insensitive equality at the two
-`ValueCallKind::ArgMismatch` sites that would otherwise fire a spurious
-`E063` under `types = strict`), which is what §6 mechanism 3 — the heap
-— needs. A call through a fn value loaded out of a VAR/CONST cell is
-still pessimal.
+### 6.1c The row on `Ty::Fn` — SHIPPED substrate (issue #1680)
+
+Steps 2 and 3 of #1680's ruled build order, as built. `Ty::Fn` now
+carries a third component, `FnRow` — the effect row of §5 — and `unify`
+joins it alongside the params and the return.
+
+- **What the type carries is the creation-target set, not a computed
+  row.** §7 rules that a row is a `DefinitionId → row` **table lookup**,
+  so the thing a *type* has to carry is the lookup keys; and §6.1a
+  requires that evidence be structural, since `#fn(g)` names `g`
+  syntactically and `bind` copies from an already-known value. `FnRow`
+  is therefore a set of in-project targets with an `unknown` **top**
+  element, and its join is set union with `unknown` absorbing — exactly
+  §5's *"a cell or collection's element type accumulates the join of
+  every fn value assigned into it, through copies, parameters, returns,
+  and nesting"*, and §3's conservative direction (one untraceable
+  *typed* source poisons the slot for good). The absorption is on
+  `unknown` specifically, not on any write that merely fails to resolve
+  a target: a write typed `Ty::Unknown` (an unresolved reference, or an
+  unregistered `EXTERNAL`'s return) unifies against `Ty::Unknown` — the
+  join *identity*, not `unknown`'s top — so it leaves the other operand's
+  row untouched rather than poisoning it. `unify_joins_the_effect_row_alongside_params_and_return`
+  (`infer/ty.rs`) enshrines exactly this: an unobserved slot must not
+  poison a traced one.
+- **Minted at creation sites only, and fixed there.** A `#fn(target, …)`
+  literal in a body (`infer::body::infer_fn_literal`) and a global cell's
+  `#fn` initializer (`signature::declared_fn_type`, declaration-derived)
+  mint a concrete row; `bind` carries the callee's row through unchanged,
+  since partial application never changes which def eventually runs.
+  Everything else — a written `fn(T…): R` annotation, a lambda (no
+  `DefinitionId` before LIR, #1727) — is the top element. A global cell's
+  row is minted **once**, at `collect_globals` (`infer/mod.rs`), from
+  `declared_fn_type`'s declaration-derived read alone; `BodyCtx::globals`
+  (`infer/body.rs`) is a read-only map that body inference only ever
+  reads from (`ty_of_def`) — a later `~ cell = #fn(other)` write is
+  folded into the effect walk's *write set*, never back into the cell's
+  type. So a global's row under-approximates any cell that is ever
+  reassigned to a different fn value after its declaration; it is not
+  widened by later assignments the way a local's row is. This is the
+  same under-approximation the heap rung (below) is meant to read.
+- **Rows never decide assignability.** `unify(param, arg) == param` was a
+  *structural* test at both `ValueCallKind::ArgMismatch` sites, and
+  `strict.rs` promotes that mismatch to an `E063` **error** under
+  `types = strict`. Two `fn(int): int` values born at different targets
+  join to a third row, so the structural test reports a mismatch whose
+  own message is self-refuting ("expected `fn(int): int`, found
+  `fn(int): int`" — rows are not part of the written type language and
+  never render). `infer::assignable` erases rows on both sides and is
+  now the single predicate behind all four assignability checks: the two
+  value-call sites, `annotations`' `E063`, and `structs`' `E071`.
+
+**What this does NOT yet do — the open stratum question.** §6 mechanism
+3 (the heap) is still pessimal. `def_effect_atoms` deliberately runs the
+body walk with **empty globals and empty signatures**, which is
+load-bearing for §6.1a's acyclicity, and a `#fn` literal types as
+`Unknown` under empty signatures — so the type-carried row is invisible
+to effect inference *as currently constructed*. Consuming it means
+deciding **which stratum reads the type-carried row**, which the
+2026-07-28 sitting did not settle. It is a smaller question than Fork A
+was (types depending on already-computed effects is acyclic in the
+current query graph, since effects never read types), but §6.1a's
+prohibition is written as *"no inferred row **or signature** may ever be
+consulted to decide an edge"*, and a global cell's declaration-derived
+`Ty::Fn` is reached through `signature()`. That decision is what the
+heap rung needs next, and it is the whole of what remains on #1680.
 
 ## 7. Runtime narrowing: selection, not inference — RULED
 
@@ -765,9 +826,10 @@ writes / calls / emits / suspend defeat fusion).
   the join over those targets; §6.1b's row variables (#1680) cover the
   case that atom cannot reach — a call through a fn-typed **param**,
   whose value the caller supplies. What remains pessimal is a call
-  through a value loaded out of the **heap** (§6 mechanism 3), which
-  needs a row on `Ty::Fn`, and a call through a **lambda**, which awaits
-  #1727's index symbols.
+  through a value loaded out of the **heap** (§6 mechanism 3) and a call
+  through a **lambda**, which awaits #1727's index symbols. The heap's
+  `Ty::Fn` row substrate landed with §6.1c; what it still needs is the
+  stratum decision named there, not more type machinery.
 - The shipped core (set-based row, per-SCC fixpoint, `EffectRows` wire
   format, `@[effects(…)]` assertions) is reused unchanged; this amendment
   ADDS the two dimensions and the "one canonical signature" framing, and

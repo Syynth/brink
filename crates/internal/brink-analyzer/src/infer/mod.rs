@@ -68,7 +68,9 @@ use rowan::TextRange;
 
 pub use effects::{EffectAtoms, EffectRow, solve_scc_effects};
 pub use graph::{CallGraph, SccGraph, scc_graph};
-pub use ty::{CoalesceError, TowerTy, Ty, coalesce, unify, unify_all};
+pub use ty::{
+    CoalesceError, FnRow, TowerTy, Ty, assignable, coalesce, erase_fn_rows, unify, unify_all,
+};
 
 use body::{BodyCtx, infer_def_body};
 use graph::topo_order;
@@ -1927,6 +1929,131 @@ mod tests {
         assert_eq!(pong_sig.return_ty, Ty::Conflicted);
     }
 
+    // ─── Issue #1680 step 3: the effect row riding `Ty::Fn` ────────────
+    //     (`docs/effects-spec.md` §5/§6.1c)
+
+    /// §5: "a cell accumulates the join of every fn value assigned into it".
+    /// Two `#fn` literals written to one slot leave **both** targets on the
+    /// slot's type — the join is set union, not last-write-wins.
+    #[test]
+    fn a_slot_written_from_two_creation_sites_carries_both_targets() {
+        let (hir, index, res) = build(
+            "=== function bump(n: int): int ===\n~ return n + 1\n\
+             === function twice(n: int): int ===\n~ return n * 2\n\
+             === main ===\n~ temp f = #fn(bump)\n~ f = #fn(twice)\n-> DONE\n",
+        );
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let id_of = |name: &str| {
+            index
+                .by_name
+                .get(name)
+                .and_then(|ids| ids.first())
+                .copied()
+                .unwrap_or_else(|| unreachable!("no symbol named {name}"))
+        };
+        let body = result.bodies.get(&id_of("main")).expect("main body");
+        let f = body.locals.get("f").expect("f");
+        let Ty::Fn(_, _, row) = f else {
+            unreachable!("expected a fn type, got {f:?}")
+        };
+        assert_eq!(
+            row.targets(),
+            Some(&BTreeSet::from([id_of("bump"), id_of("twice")]))
+        );
+    }
+
+    /// The top element absorbs (§3): one write whose source the type layer
+    /// cannot name — here a call's return, whose declared `fn(int): int`
+    /// names no creation target — poisons the slot's row for good, in
+    /// either write order. This is the type-layer twin of §6.1a's "a single
+    /// untraced write poisons the name".
+    #[test]
+    fn one_unnameable_creation_site_poisons_the_row() {
+        for order in [
+            "~ temp f = #fn(bump)\n~ f = pick(#fn(bump))\n",
+            "~ temp f = pick(#fn(bump))\n~ f = #fn(bump)\n",
+        ] {
+            let (hir, index, res) = build(&format!(
+                "=== function bump(n: int): int ===\n~ return n + 1\n\
+                 === function pick(cb: fn(int): int): fn(int): int ===\n~ return cb\n\
+                 === main ===\n{order}-> DONE\n"
+            ));
+            let result = infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+            let main_id = index
+                .by_name
+                .get("main")
+                .and_then(|ids| ids.first())
+                .copied()
+                .expect("main");
+            let body = result.bodies.get(&main_id).expect("main body");
+            let f = body.locals.get("f").expect("f");
+            let Ty::Fn(_, _, row) = f else {
+                unreachable!("expected a fn type for {order:?}, got {f:?}")
+            };
+            assert!(row.is_unknown(), "order {order:?} must poison the row");
+        }
+    }
+
+    /// The second minter: a global cell whose initializer is a `#fn`
+    /// literal gets its `Ty::Fn` from `signature::declared_fn_type`, so its
+    /// row must name the target too — declaration-derived, resolved by name
+    /// lookup, never from an inferred row (§6.1a). This is the shape §6
+    /// mechanism 3 (the heap) will read once effects-spec §6.1c's stratum
+    /// question is answered.
+    #[test]
+    fn a_global_fn_cell_carries_its_declared_creation_target() {
+        let (hir, index, res) = build(
+            "=== function heal(ref hp: int, amount: int): int ===\n~ hp = hp + amount\n~ return hp\n\
+             VAR player_hp = 10\n\
+             VAR healer = #fn(heal, player_hp)\n\
+             === main ===\n-> DONE\n",
+        );
+        let _ = &res;
+        let files = [(FileId(0), &hir)];
+        let id_of = |name: &str| {
+            index
+                .by_name
+                .get(name)
+                .and_then(|ids| ids.first())
+                .copied()
+                .unwrap_or_else(|| unreachable!("no symbol named {name}"))
+        };
+        let sig = crate::signature::signature(id_of("healer"), &index, &files, None)
+            .expect("healer signature");
+        let ty = sig.value_ty.clone().expect("healer value_ty");
+        let Ty::Fn(params, _, row) = &ty else {
+            unreachable!("expected a fn type, got {ty:?}")
+        };
+        assert_eq!(params.len(), 1, "the `ref hp` prefix is bound away");
+        assert_eq!(row.targets(), Some(&BTreeSet::from([id_of("heal")])));
+    }
+
+    /// `bind` carries the row through unchanged: partial application never
+    /// changes *which* def eventually runs (§6.1a).
+    #[test]
+    fn bind_preserves_the_creation_target_row() {
+        let (hir, index, res) = build(
+            "=== function add(a: int, b: int): int ===\n~ return a + b\n\
+             === main ===\n~ temp f = #fn(add)\n~ temp g = bind(f, 1)\n-> DONE\n",
+        );
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let id_of = |name: &str| {
+            index
+                .by_name
+                .get(name)
+                .and_then(|ids| ids.first())
+                .copied()
+                .unwrap_or_else(|| unreachable!("no symbol named {name}"))
+        };
+        let body = result.bodies.get(&id_of("main")).expect("main body");
+        let g = body.locals.get("g").expect("g");
+        let Ty::Fn(params, _, row) = g else {
+            unreachable!("expected a fn type, got {g:?}")
+        };
+        assert_eq!(params.len(), 1, "one param remains after binding one");
+        assert_eq!(row.targets(), Some(&BTreeSet::from([id_of("add")])));
+    }
+
     // ─── T1c: #fn typing + the annotation-firewall overlay ─────────────
 
     /// The spec's own worked example (docs/t1c-spec.md §2/§4): with the
@@ -1947,10 +2074,23 @@ mod tests {
             .copied()
             .expect("main");
         let body = result.bodies.get(&main_id).expect("main body");
+        let heal_id = index
+            .by_name
+            .get("heal")
+            .and_then(|ids| ids.first())
+            .copied()
+            .expect("heal");
+        let cb = body.locals.get("heal_player").expect("heal_player");
         assert_eq!(
-            body.locals.get("heal_player"),
-            Some(&Ty::Fn(vec![Ty::Int], Box::new(Ty::Int)))
+            crate::infer::erase_fn_rows(cb),
+            Ty::Fn(vec![Ty::Int], Box::new(Ty::Int), FnRow::unknown())
         );
+        // Issue #1680 step 3: the `#fn` literal is the creation site, so
+        // the slot's type carries `heal` as its effect row.
+        let Ty::Fn(_, _, row) = cb else {
+            unreachable!("expected a fn type, got {cb:?}")
+        };
+        assert_eq!(row.targets(), Some(&BTreeSet::from([heal_id])));
     }
 
     #[test]
@@ -1968,9 +2108,10 @@ mod tests {
             .copied()
             .expect("main");
         let body = result.bodies.get(&main_id).expect("main body");
+        let f = body.locals.get("f").expect("f");
         assert_eq!(
-            body.locals.get("f"),
-            Some(&Ty::Fn(vec![Ty::Int], Box::new(Ty::Int)))
+            crate::infer::erase_fn_rows(f),
+            Ty::Fn(vec![Ty::Int], Box::new(Ty::Int), FnRow::unknown())
         );
     }
 

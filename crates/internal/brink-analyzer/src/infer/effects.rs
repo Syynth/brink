@@ -9,11 +9,17 @@
 //!   `{reads, writes, calls}` as **unordered sets** (ordering is the journal's
 //!   contract, not the row's). Every atom is absorbed into the enclosing
 //!   definition's row, and a direct call pulls in the callee's whole row.
-//! - **Types**: rows conceptually ride `Ty::Fn` (spec §5, the heap answer);
-//!   `Ty::Fn` itself still carries no row, so a call through a value stored
-//!   in a VAR/CONST cell (§6 mechanism 3, the heap) stays **opaque** — the
-//!   conservative floor, see [`EffectRow::opaque`] — which is sound. Three
-//!   rungs narrow that floor, each structural (no inferred row or signature
+//! - **Types**: rows ride `Ty::Fn` (spec §5, the heap answer). Since issue
+//!   #1680 step 3 the type does carry one — [`super::FnRow`], the structural
+//!   set of creation targets §7's token lookup keys on — but **this walk
+//!   cannot read it**: `def_effect_atoms` runs the body pass with empty
+//!   globals and empty signatures (load-bearing for §6.1a's acyclicity), and
+//!   a `#fn` literal types as `Unknown` under empty signatures. So a call
+//!   through a value stored in a VAR/CONST cell (§6 mechanism 3, the heap)
+//!   still stays **opaque** — the conservative floor, see
+//!   [`EffectRow::opaque`] — which is sound. Wiring that rung means deciding
+//!   which stratum reads the type-carried row (spec §6.1c). Three rungs
+//!   narrow the floor today, each structural (no inferred row or signature
 //!   ever decides a call-graph edge, §6.1a):
 //!
 //!   1. Issue #872: a call through a **local** whose every write traces to a
@@ -31,8 +37,9 @@
 //!      from its structurally-traced argument
 //!      ([`EffectAtoms::call_fn_args`]) and so escapes the floor.
 //!   3. The heap (VAR/CONST cells joined project-wide, §5's "sound, coarse,
-//!      improvable") is still pessimal — that rung needs a row on `Ty::Fn`,
-//!      which does not exist yet (issue #1680's remaining scope).
+//!      improvable") is still pessimal. The `Ty::Fn` row it needs now
+//!      exists; what is missing is a stratum that can read it — see the
+//!      **Types** bullet above and spec §6.1c (issue #1680's remainder).
 //!
 //! **Soundness direction (spec §3, conservative-total)**: rows may over-report,
 //! never under-report. Over-report costs parallelism or a spurious wakeup;

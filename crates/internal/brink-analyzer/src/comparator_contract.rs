@@ -37,12 +37,15 @@
 //! (F14: `sort_by`'s row is `⊕cmp` + the inconsistency fault; a comparator
 //! may fault, and that fault is honest — §4 says the same of the trio).
 //!
-//! **The known hole (#1680):** `Ty::Fn` carries no effect rows, so an
-//! opaque function *value* is unjudgeable — "pure-required" cannot be
-//! enforced *through* a fn value today, only at the one site where the
-//! callback's origin is syntactically visible. That is a real gap in the
-//! ruling's coverage, not a design choice of this gate; it is recorded on
-//! issue #1679 rather than papered over.
+//! **The known hole (#1679/#1680):** an opaque function *value* is
+//! unjudgeable here — "pure-required" is enforced only at the one site
+//! where the callback's origin is syntactically visible. `Ty::Fn` does
+//! carry an effect row since #1680 step 3 (`FnRow`, the creation-target
+//! set §7's row table is keyed by), which is the substrate this gate would
+//! need; what is missing is that no inferred type is threaded into this
+//! pass, and effects-spec §6.1c's stratum question is unanswered. Still a
+//! real gap in the ruling's coverage, not a design choice of this gate; it
+//! is recorded on issue #1679 rather than papered over.
 //!
 //! Brink-only, same posture as the other effect passes: under strict-ink
 //! the `#fn(…)` literal (and the verbs themselves) are already rejected by

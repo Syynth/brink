@@ -7,8 +7,10 @@
 //! today so the next attempt at the shipped-table/§7-narrowing path (§6
 //! item 4, an optional host optimization, and conditionally T1c item 4's
 //! row field) finds the gap already measured instead of rediscovering it.
-//! It does not block #1680's own analyzer-side work (rows on `Ty::Fn`, the
-//! unifier row join, §6.1 row-polymorphism). It is the same discipline
+//! It did not block #1680's own analyzer-side work (rows on `Ty::Fn`, the
+//! unifier row join, §6.1 row-polymorphism), all of which has since
+//! landed — a lambda still gets the *unknown* row because a `FnRow` names
+//! creation targets by `DefinitionId` and a lambda has none (#1727). It is the same discipline
 //! #1685 (flipped by #1709) used for its `E052` fence, and it must
 //! **flip** when the row table is made to reach lifted lambdas.
 //!

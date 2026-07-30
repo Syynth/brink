@@ -186,10 +186,12 @@ cross-referenced so views ≠ projections.
   roster — their whole purpose is to be the legal home for the effects
   the gate rejects. The rejection message now names the effectful exit
   as real advice, not a pending one. The gate still cannot see through
-  an opaque fn value at all — `Ty::Fn` carries no effect rows, issue
-  #1680 — so "pure-required" (for the four verbs it still gates) is
-  enforced only at syntactically-visible callback origins today; that
-  gap is unchanged by this slice.)*
+  an opaque fn value at all — `Ty::Fn` carries an effect row since
+  #1680 step 3, but the gate is handed no inferred types and
+  effects-spec §6.1c's stratum question is open — so "pure-required"
+  (for the four verbs it still gates) is enforced only at
+  syntactically-visible callback origins today; that gap is unchanged
+  by this slice.)*
 - 🔶 **Mutating iteration — `for ref m in maps { m[k] = v }`**
   (proposed; arose from the §5 array-of-maps case): a ref-binding
   in `for` over arrays, desugaring to index-based access so

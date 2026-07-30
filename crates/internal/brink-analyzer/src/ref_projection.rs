@@ -451,7 +451,7 @@ fn ty_label(ty: &Ty) -> String {
         Ty::Array(_) => "array".to_string(),
         Ty::Map(_, _) => "map".to_string(),
         Ty::Struct(name) => name.clone(),
-        Ty::Fn(_, _) => "fn".to_string(),
+        Ty::Fn(..) => "fn".to_string(),
         Ty::Unknown => "Unknown".to_string(),
         _ => "?".to_string(),
     }

@@ -107,13 +107,26 @@ fn ty_heap(ty: &Ty) -> usize {
             size_of::<Ty>() + ty_heap(inner)
         }
         Ty::Map(key, value) => size_of::<Ty>() * 2 + ty_heap(key) + ty_heap(value),
-        Ty::Fn(params, ret) => {
+        Ty::Fn(params, ret, row) => {
             vec_heap(params)
                 + params.iter().map(ty_heap).sum::<usize>()
                 + size_of::<Ty>()
                 + ty_heap(ret)
+                + fn_row_heap(row)
         }
     }
+}
+
+/// The effect row riding `Ty::Fn` (issue #1680). The unknown top element is
+/// a niche-optimized `None` and costs nothing; a concrete target set costs
+/// the boxed `BTreeSet` header plus one id per member. Same
+/// per-element-only approximation direction as every other estimate here —
+/// the tree's internal node padding is not modeled.
+fn fn_row_heap(row: &brink_analyzer::FnRow) -> usize {
+    row.targets().map_or(0, |targets| {
+        size_of::<std::collections::BTreeSet<DefinitionId>>()
+            + targets.len() * size_of::<DefinitionId>()
+    })
 }
 
 fn type_expr_heap(te: &TypeExpr) -> usize {
@@ -541,9 +554,39 @@ mod tests {
         assert!(ty_heap(&Ty::List("Inventory".to_string())) > 0);
         assert!(ty_heap(&Ty::Array(Box::new(Ty::Int))) > 0);
         assert!(
-            ty_heap(&Ty::Fn(vec![Ty::Int, Ty::String], Box::new(Ty::Bool)))
-                > ty_heap(&Ty::Fn(vec![], Box::new(Ty::Bool)))
+            ty_heap(&Ty::Fn(
+                vec![Ty::Int, Ty::String],
+                Box::new(Ty::Bool),
+                brink_analyzer::FnRow::unknown()
+            )) > ty_heap(&Ty::Fn(
+                vec![],
+                Box::new(Ty::Bool),
+                brink_analyzer::FnRow::unknown()
+            ))
         );
+    }
+
+    #[test]
+    fn ty_heap_accounts_for_a_concrete_fn_row() {
+        // `fn_row_heap` (issue #1680) must actually contribute: a `Ty::Fn`
+        // carrying a concrete creation-target row estimates strictly larger
+        // than the same shape carrying the unknown top element, which is a
+        // niche-optimized `None` and costs nothing. Deleting the
+        // `+ fn_row_heap(row)` term in `ty_heap` must turn this red.
+        let unknown = Ty::Fn(
+            vec![Ty::Int],
+            Box::new(Ty::Bool),
+            brink_analyzer::FnRow::unknown(),
+        );
+        let traced = Ty::Fn(
+            vec![Ty::Int],
+            Box::new(Ty::Bool),
+            brink_analyzer::FnRow::of_target(DefinitionId::new(
+                brink_format::DefinitionTag::Address,
+                1,
+            )),
+        );
+        assert!(ty_heap(&traced) > ty_heap(&unknown));
     }
 
     #[test]

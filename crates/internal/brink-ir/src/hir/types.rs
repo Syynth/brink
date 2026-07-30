@@ -1125,10 +1125,11 @@ pub struct FnLiteral {
 ///   error, since a snapshot write is always a lost write — is enforced at
 ///   lowering (`hir::lower_native::lambda`, `E156`).
 /// - **An effect row.** Lambdas are fn-colored always, and rows compose
-///   through captures (#872) — but `Ty::Fn` carries no rows at all today
-///   (#1680), so there is nothing here to put one in. Recording an
-///   invented row would be worse than recording none; see issue #1685's
-///   coordination note.
+///   through captures (#872). `Ty::Fn` carries an effect row since #1680
+///   step 3, but that row names creation targets by `DefinitionId` and a
+///   lambda has none until LIR mints it (#1727) — so there is still
+///   nothing here to put one in. Recording an invented row would be worse
+///   than recording none; see issue #1685's coordination note.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LambdaExpr {
     /// The whole `|…| …` expression's own source range — the identity key a
