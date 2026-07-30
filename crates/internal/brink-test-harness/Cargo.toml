@@ -52,7 +52,9 @@ regex = { workspace = true }
 # `brink-runtime`'s bench/test-only `effect-trace` recorder. Not part of
 # `default` — `cargo test --workspace` never builds
 # `tests/t2_ground_truth_effects.rs` (see that file's `required-features`);
-# CI runs it as its own job with `--features effect-trace`.
+# CI exercises it via the `Test (all features)` job's
+# `cargo test --workspace --all-features --exclude bevy-brink`, not a
+# dedicated job.
 effect-trace = ["brink-runtime/effect-trace"]
 
 [[test]]
