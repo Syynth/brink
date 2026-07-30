@@ -1476,6 +1476,13 @@ impl InferPass<'_, '_> {
     /// kind of walker and is not, on its own, evidence that reusing
     /// `infer_block_stmt` unguarded here would have been safe.
     ///
+    /// This is the worked example of a general rule — the full
+    /// frame-scoped-vs-cumulative field split for every `InferPass` field
+    /// (not just these five), and why the fix below is a wholesale
+    /// snapshot/restore rather than a diff-based undo — is written up in
+    /// `docs/effects-spec.md` §4.1 (issue #1762). Keep both in sync if the
+    /// field list ever changes.
+    ///
     /// The effect row is the unknown top element. `Ty::Fn` does carry a
     /// [`FnRow`] since #1680 step 3, but a `FnRow` names **creation
     /// targets** by `DefinitionId` (the keys §7's row table is looked up

@@ -1453,6 +1453,11 @@ struct TempDecl {
 /// lambda's temps into the enclosing def's map, the way a naive
 /// `Expr::Lambda` arm added directly to *this* walker would, is exactly
 /// the hazard to avoid.
+///
+/// See `docs/effects-spec.md` §4.1 (issue #1762) for the general
+/// frame-scoped-vs-cumulative `InferPass` field rule this is the mirror
+/// case of: `locals` is frame-scoped and must not leak a lambda-local
+/// name out into the enclosing def, from either direction.
 fn collect_temps(body: &Block, names: &annotations::TypeNames) -> BTreeMap<String, TempDecl> {
     let mut out = BTreeMap::new();
     collect_temps_block(body, names, &mut out);
