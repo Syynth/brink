@@ -345,9 +345,7 @@ pub struct EffectAtoms {
     /// pessimal floor instead.
     ///
     /// Recorded only for **inferable** (knot/stitch) callees — the only
-    /// definitions that have a row with holes to fill — and only for argument
-    /// positions whose expression classifies to a creation site, so the map
-    /// stays small.
+    /// definitions that have a row with holes to fill.
     pub call_fn_args: BTreeMap<(DefinitionId, u32), FnArgOrigins>,
 }
 
