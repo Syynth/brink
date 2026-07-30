@@ -567,6 +567,29 @@ mod tests {
     }
 
     #[test]
+    fn ty_heap_accounts_for_a_concrete_fn_row() {
+        // `fn_row_heap` (issue #1680) must actually contribute: a `Ty::Fn`
+        // carrying a concrete creation-target row estimates strictly larger
+        // than the same shape carrying the unknown top element, which is a
+        // niche-optimized `None` and costs nothing. Deleting the
+        // `+ fn_row_heap(row)` term in `ty_heap` must turn this red.
+        let unknown = Ty::Fn(
+            vec![Ty::Int],
+            Box::new(Ty::Bool),
+            brink_analyzer::FnRow::unknown(),
+        );
+        let traced = Ty::Fn(
+            vec![Ty::Int],
+            Box::new(Ty::Bool),
+            brink_analyzer::FnRow::of_target(DefinitionId::new(
+                brink_format::DefinitionTag::Address,
+                1,
+            )),
+        );
+        assert!(ty_heap(&traced) > ty_heap(&unknown));
+    }
+
+    #[test]
     fn def_body_heap_size_is_zero_for_none() {
         assert_eq!(def_body_heap_size(&None), 0);
     }
