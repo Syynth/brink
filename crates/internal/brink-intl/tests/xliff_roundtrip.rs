@@ -305,9 +305,7 @@ fn nested_span_roundtrips_through_xliff() {
                                             name: "id".to_string(),
                                             value: "lantern".to_string(),
                                         }],
-                                        children: vec![PartJson::Literal(
-                                            "lantern".to_string(),
-                                        )],
+                                        children: vec![PartJson::Literal("lantern".to_string())],
                                     },
                                 },
                                 PartJson::Literal(", quickly".to_string()),

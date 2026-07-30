@@ -614,9 +614,7 @@ fn elements_to_parts(
                     .unwrap_or_default();
                 return Err(IntlError::UnsupportedSpanSplit(id));
             }
-            InlineElement::Mrk(mrk)
-                if looks_like_span_marker(mrk.mrk_type.as_deref(), None) =>
-            {
+            InlineElement::Mrk(mrk) if looks_like_span_marker(mrk.mrk_type.as_deref(), None) => {
                 return Err(IntlError::UnsupportedSpanSplit(mrk.id.clone()));
             }
             // Other inline elements — and Sc/Ec/Mrk without a brink marker —
