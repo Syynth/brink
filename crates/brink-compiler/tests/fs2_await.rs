@@ -309,3 +309,60 @@ fn regression_1128_total_intrinsic_condition_still_passes() {
          gate: {diags:?}"
     );
 }
+
+// ── higher-order call sites (issue #1748, post-#1680 hole instantiation) ──
+
+/// Issue #1748: A function that calls through a fn-typed parameter has a
+/// pessimal row (one with a hole, post-#1680). When that function is called
+/// in an await condition, the purity gate checks whether the call is
+/// effectful. This test captures the higher-order call-site scenario where
+/// the callee (`apply_fn`) itself is pessimal due to the fn parameter's row
+/// variable, proving that the gate correctly rejects pessimal rows even after
+/// the `is_pessimal()` change from opaque-only checking.
+///
+/// This was entirely untested before — the suite had direct calls to effects
+/// but no higher-order scenarios mixing functions and await.
+#[test]
+fn brink_await_purity_gate_rejects_higher_order_call_with_fn_param() {
+    let source = concat!(
+        "=== function pure_fn() ===\n",
+        "~ return true\n",
+        "=== function apply_fn(callback: fn(): bool) ===\n",
+        "~ return callback()\n",
+        "=== start ===\n",
+        "~ await apply_fn(pure_fn)\n",
+        "-> END\n",
+    );
+    let err = compile_mem_with_dialect(source, Dialect::Brink).unwrap_err();
+    let diags = diagnostics_of(err);
+    // A function calling through an fn-typed parameter is pessimal (has a hole
+    // in its row). The purity gate correctly rejects it with E105, even though
+    // `pure_fn` itself is pure — the gate sees only `apply_fn`'s pessimal row,
+    // not the instantiated row at the specific call site. This is by design:
+    // `is_pessimal()` (opaque || !holes.is_empty()) still rejects pessimal rows.
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E105),
+        "a higher-order call site is pessimal and must trip the purity gate: {diags:?}"
+    );
+}
+
+/// Issue #1748: The sister scenario — calling a pure function directly in an
+/// await condition (no higher-order call) stays read-only. This proves the
+/// E105 gate from the previous test fires *because* of the fn-param pessimality,
+/// not because of some other effect.
+#[test]
+fn brink_await_purity_gate_passes_pure_function_call() {
+    let source = concat!(
+        "=== function pure_check() ===\n",
+        "~ return true\n",
+        "=== start ===\n",
+        "~ await pure_check()\n",
+        "-> END\n",
+    );
+    let err = compile_mem_with_dialect(source, Dialect::Brink).unwrap_err();
+    let diags = diagnostics_of(err);
+    assert!(
+        !has_code(&diags, DiagnosticCode::E105),
+        "a direct pure function call must not trip the purity gate: {diags:?}"
+    );
+}
