@@ -222,6 +222,13 @@ fn span_with_children_roundtrips_as_pc_through_xliff() {
 /// code. Under the pre-#1734 flattening path this span vanished entirely
 /// (its empty `children` loop pushed nothing) — a silent drop, not merely a
 /// lost boundary.
+///
+/// Uses a non-empty `attrs` (mirroring the motivating `<sfx name="bell"/>`
+/// example in `push_part_inline`'s doc comment) — `SpanMetaJson.attrs` is
+/// `#[serde(skip_serializing_if = "Vec::is_empty")]`, so an empty-attrs
+/// fixture would never exercise the attrs decode path on the `<ph>` branch
+/// (the sibling `span_with_children_roundtrips_as_pc_through_xliff` already
+/// covers attrs on the `<pc>` branch).
 #[test]
 fn point_marker_span_roundtrips_through_xliff() {
     let lines = make_lines_json(vec![make_scope(
@@ -235,8 +242,11 @@ fn point_marker_span_roundtrips_through_xliff() {
                     PartJson::Literal("Wait...".to_string()),
                     PartJson::Span {
                         span: brink_intl::SpanJson {
-                            name: "pause".to_string(),
-                            attrs: Vec::new(),
+                            name: "sfx".to_string(),
+                            attrs: vec![brink_intl::AttrJson {
+                                name: "name".to_string(),
+                                value: "bell".to_string(),
+                            }],
                             children: Vec::new(),
                         },
                     },
@@ -256,6 +266,172 @@ fn point_marker_span_roundtrips_through_xliff() {
     assert_eq!(
         recovered.scopes[0].lines[0].content, lines.scopes[0].lines[0].content,
         "the point-marker span must survive, not just adjacent text"
+    );
+}
+
+/// A [`PartJson::Span`] nested inside another span (recursive nesting is
+/// the RULED doctrine of `docs/prose-dialect-spec.md` §4.4) round-trips
+/// through XLIFF as a `<pc>` nested inside a `<pc>`. The shared
+/// `span_counter` in `push_part_inline`/`content_to_inline` drives both the
+/// `pc{n}`/`x{n}` element ids and the `dspan{n}` `originalData` ids across
+/// the recursion — this is exactly where an id collision or a mis-paired
+/// `dataRefStart` would surface, so both the outer and inner span's
+/// `name`/`attrs`/`children` (and the plain text on either side of the
+/// inner span) must survive intact.
+#[test]
+fn nested_span_roundtrips_through_xliff() {
+    let lines = make_lines_json(vec![make_scope(
+        "0x0100000000000001",
+        Some("root"),
+        vec![make_line(
+            0,
+            "aaaa",
+            Some(ContentJson::Template {
+                template: vec![
+                    PartJson::Literal("He says, ".to_string()),
+                    PartJson::Span {
+                        span: brink_intl::SpanJson {
+                            name: "quote".to_string(),
+                            attrs: vec![brink_intl::AttrJson {
+                                name: "speaker".to_string(),
+                                value: "narrator".to_string(),
+                            }],
+                            children: vec![
+                                PartJson::Literal("take the ".to_string()),
+                                PartJson::Span {
+                                    span: brink_intl::SpanJson {
+                                        name: "item".to_string(),
+                                        attrs: vec![brink_intl::AttrJson {
+                                            name: "id".to_string(),
+                                            value: "lantern".to_string(),
+                                        }],
+                                        children: vec![PartJson::Literal(
+                                            "lantern".to_string(),
+                                        )],
+                                    },
+                                },
+                                PartJson::Literal(", quickly".to_string()),
+                            ],
+                        },
+                    },
+                    PartJson::Literal(".".to_string()),
+                ],
+            }),
+            None,
+        )],
+    )]);
+
+    let doc = lines_json_to_xliff(&lines, "en", None);
+    let xml = xliff2::write::to_string(&doc).unwrap();
+    assert!(
+        xml.matches("<pc ").count() >= 2,
+        "expected two nested <pc> elements in the exported XML, got:\n{xml}"
+    );
+
+    let parsed = xliff2::read::read_xliff(&xml).unwrap();
+    let translated = fill_targets(parsed);
+    let recovered = xliff_to_lines_json(&translated).unwrap();
+
+    assert_eq!(
+        recovered.scopes[0].lines[0].content, lines.scopes[0].lines[0].content,
+        "a span nested inside another span must round-trip exactly, \
+         including the outer/inner name/attrs and the id-generation \
+         sequence shared across the recursion"
+    );
+}
+
+/// A translation tool that re-expresses a brink-exported `<pc>` as an
+/// `<sc>`/`<ec>` pair (XLIFF 2.0 allows this when a paired code is split
+/// across a segment boundary) must not decode as silently-dropped content —
+/// this is the same silent-drop failure class #1734 fixed on export, moved
+/// to import. `elements_to_parts` must reject it explicitly instead of
+/// falling into the inline-elements catch-all.
+#[test]
+fn split_pc_as_sc_ec_is_rejected_not_silently_dropped() {
+    let mut doc = Document {
+        version: "2.0".to_string(),
+        src_lang: "en".to_string(),
+        trg_lang: None,
+        files: vec![File {
+            id: "root".to_string(),
+            original: None,
+            notes: Vec::new(),
+            skeleton: None,
+            groups: Vec::new(),
+            units: vec![Unit {
+                id: "0x01:0".to_string(),
+                name: None,
+                translate: None,
+                notes: Vec::new(),
+                sub_units: vec![SubUnit::Segment(Segment {
+                    id: None,
+                    state: Some(State::Translated),
+                    sub_state: None,
+                    source: Content {
+                        lang: None,
+                        elements: vec![InlineElement::Text("x".to_string())],
+                    },
+                    target: Some(Content {
+                        lang: None,
+                        elements: vec![
+                            InlineElement::Sc(xliff2::Sc {
+                                id: "pc0".to_string(),
+                                data_ref: Some("dspan0".to_string()),
+                                sub_type: Some("brink:pc".to_string()),
+                                can_copy: None,
+                                can_delete: None,
+                                can_overlap: None,
+                                can_reorder: None,
+                                extensions: Extensions::default(),
+                            }),
+                            InlineElement::Text("bold".to_string()),
+                            InlineElement::Ec(xliff2::Ec {
+                                start_ref: Some("pc0".to_string()),
+                                id: None,
+                                isolated: None,
+                                data_ref: None,
+                                sub_type: None,
+                                can_copy: None,
+                                can_delete: None,
+                                can_overlap: None,
+                                can_reorder: None,
+                                extensions: Extensions::default(),
+                            }),
+                        ],
+                    }),
+                })],
+                original_data: Some(xliff2::OriginalData {
+                    entries: vec![xliff2::DataEntry {
+                        id: "dspan0".to_string(),
+                        content: "{\"name\":\"b\"}".to_string(),
+                    }],
+                }),
+                extensions: Extensions {
+                    elements: Vec::new(),
+                    attributes: vec![ExtensionAttribute {
+                        namespace: "brink".to_string(),
+                        local_name: "hash".to_string(),
+                        value: "aaaa".to_string(),
+                    }],
+                },
+            }],
+            extensions: Extensions {
+                elements: Vec::new(),
+                attributes: vec![ExtensionAttribute {
+                    namespace: "brink".to_string(),
+                    local_name: "scope-id".to_string(),
+                    value: "0x01".to_string(),
+                }],
+            },
+        }],
+        extensions: Extensions::default(),
+    };
+    doc.trg_lang = Some("es".to_string());
+
+    let err = xliff_to_lines_json(&doc).unwrap_err();
+    assert!(
+        matches!(err, brink_intl::IntlError::UnsupportedSpanSplit(ref id) if id == "pc0"),
+        "expected UnsupportedSpanSplit(\"pc0\"), got: {err:?}"
     );
 }
 

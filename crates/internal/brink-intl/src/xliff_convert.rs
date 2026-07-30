@@ -522,10 +522,31 @@ fn inline_to_content(
     Ok(ContentJson::Template { template: parts })
 }
 
+/// True if a `subType` or `dataRef` attribute looks like it originated from
+/// a brink [`PartJson::Span`] export (`SPAN_MARKER_SUBTYPE`/
+/// `SPAN_PAIRED_SUBTYPE`, or a `dspan{n}` `originalData` id). Shared by the
+/// `<sc>`/`<ec>`/`<mrk>` decode guards below.
+fn looks_like_span_marker(sub_type: Option<&str>, data_ref: Option<&str>) -> bool {
+    sub_type.is_some_and(|s| s.starts_with("brink:"))
+        || data_ref.is_some_and(|r| r.starts_with("dspan"))
+}
+
 /// [`inline_to_content`]'s per-element reconstruction, factored out so it
 /// can recurse into a `<pc>`'s own `content` — a paired span's children are
 /// themselves [`InlineElement`]s that need the exact same Text/Ph/Pc
 /// handling as the top-level stream.
+///
+/// A brink-exported paired span always round-trips as `<pc>` (see
+/// [`push_part_inline`]) — but XLIFF 2.0 lets a translation tool
+/// re-express a `<pc>` that spans a segment split as an `<sc>`/`<ec>` pair,
+/// or wrap it in `<mrk>`, while preserving `subType`/`dataRef`. Silently
+/// falling through the catch-all below for those shapes would decode as a
+/// span that quietly lost its content — the same "silent drop" failure
+/// class this module fixes on export (#1734), just moved to import. When
+/// the `subType`/`dataRef` marks the element as brink-authored, this is an
+/// explicit decode error instead. `<sc>`/`<ec>`/`<mrk>` reconstruction is a
+/// known limitation (`docs/prose-dialect-spec.md` §4.4); genuinely foreign
+/// codes (no brink marker) are still ignored, same as before.
 fn elements_to_parts(
     elements: &[InlineElement],
     data_map: &HashMap<&str, &str>,
@@ -578,7 +599,28 @@ fn elements_to_parts(
                     },
                 });
             }
-            // Other inline elements are not produced by brink, ignore.
+            InlineElement::Sc(sc)
+                if looks_like_span_marker(sc.sub_type.as_deref(), sc.data_ref.as_deref()) =>
+            {
+                return Err(IntlError::UnsupportedSpanSplit(sc.id.clone()));
+            }
+            InlineElement::Ec(ec)
+                if looks_like_span_marker(ec.sub_type.as_deref(), ec.data_ref.as_deref()) =>
+            {
+                let id = ec
+                    .id
+                    .clone()
+                    .or_else(|| ec.start_ref.clone())
+                    .unwrap_or_default();
+                return Err(IntlError::UnsupportedSpanSplit(id));
+            }
+            InlineElement::Mrk(mrk)
+                if looks_like_span_marker(mrk.mrk_type.as_deref(), None) =>
+            {
+                return Err(IntlError::UnsupportedSpanSplit(mrk.id.clone()));
+            }
+            // Other inline elements — and Sc/Ec/Mrk without a brink marker —
+            // are not produced by brink, ignore.
             _ => {}
         }
     }

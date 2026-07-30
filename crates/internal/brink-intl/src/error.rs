@@ -46,6 +46,13 @@ pub enum IntlError {
     #[error("invalid span JSON in originalData: {0}")]
     InvalidSpanJson(String),
     #[error(
+        "inline code `{0}` looks like a brink span (`<pc>`) that a translation tool \
+         re-expressed as `<sc>`/`<ec>`/`<mrk>`, likely by splitting it across a segment \
+         boundary; brink does not support reconstructing a span from that shape \
+         (see docs/prose-dialect-spec.md §4.4)"
+    )]
+    UnsupportedSpanSplit(String),
+    #[error(
         "slot index {slot} out of range for scope {scope_id} line {line_index}: \
          base line has {slot_count} slot(s) (valid indices: 0..{slot_count})"
     )]

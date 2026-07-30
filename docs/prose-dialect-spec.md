@@ -663,6 +663,9 @@ unless marked:
     cue. The quote-based lean (c) is superseded.
 11. **Point markers** (`<pause/>`, `<sfx name="bell"/>`) named as an
     explicit span use case — in-text events, mapping to XLIFF `<x/>`.
+    **Superseded by #1734/§4.5** — XLIFF 2.0 core has no literal `<x/>`;
+    point markers map to a standalone `<ph subType="brink:x">` instead
+    (`<pc>` is the mapping for non-empty spans). See §4.5.
 12. **Parking is not a Step** (the questline case, §8c): `until`
     parks surface at the `FlowInstance::advance` layer
     (`AwaitingExternal`-family), never as a `Step` variant.
@@ -791,9 +794,9 @@ grace.
 1. **The `std::conventions` types** design pass (the later-stage
    module-authoring surface, §3.5) — the last substantial prose-round
    design item.
-2. **Translation, round 2** — element data in XLIFF, per-locale
-   budgets, the bump batching, scene-title localization under
-   call-lowering, the Yarn persisted-line-ID fork.
+2. **Translation, round 2** — ~~element data in XLIFF~~ (delivered by
+   #1734, §4.5), per-locale budgets, the bump batching, scene-title
+   localization under call-lowering, the Yarn persisted-line-ID fork.
 3. **Per-path export design** (§2b.4) — Fountain/FDX/VO-sheet
    renderers; export mapping incl. tag→extension translation (§8d.4).
 4. **Terminal cluster**: #1450 closed (PR #1468); #1448 landed
