@@ -1176,19 +1176,113 @@ impl LambdaBody {
     /// is the value"). Empty for a braced body that ends in a statement.
     ///
     /// A braced body's *statements* are deliberately not exposed here —
-    /// they are statements, not expressions, and there is no honest way to
-    /// hand them to an expression-only walker. Consumers that can handle
+    /// they are statements, not expressions. Consumers that can handle
     /// statements descend into [`LambdaBody::Block`]'s `stmts` explicitly
     /// (see [`crate::hir::visit`]'s `walk_expr`, which walks them with the
     /// same `walk_block_stmt` every code-ground block gets). This helper
-    /// exists so the many expression-only walkers spell "the lambda's value
-    /// expression" one way instead of eleven.
+    /// exists so the many walkers that genuinely want only the *value*
+    /// position — a return-type/tail question — spell it one way instead of
+    /// eleven.
+    ///
+    /// **This is not the right helper for a walker that is looking for a
+    /// construct *anywhere* in the body** (issue #1749, #1764). Such a
+    /// walker under-reports on every block-bodied lambda if it stops at the
+    /// tail; [`Self::all_exprs`] is its helper.
     #[must_use]
     pub fn value_exprs(&self) -> Vec<&Expr> {
         match self {
             Self::Expr(e) => vec![e],
             Self::Block { tail, .. } => tail.as_deref().into_iter().collect(),
         }
+    }
+
+    /// Every expression reachable from the body, in source order: a braced
+    /// body's statement-embedded expressions first, then its trailing value
+    /// expression — or, for a single-expression body, just that expression.
+    ///
+    /// This is [`Self::value_exprs`]'s counterpart for the walkers that ask
+    /// "does this construct occur *anywhere* inside?" rather than "what is
+    /// the body's value?". Statements are flattened to the expressions they
+    /// contain (recursively through `if`/`while`/`for` bodies, mirroring
+    /// [`crate::hir::visit`]'s `walk_block_stmt` seam for seam), so an
+    /// expression-only walker can consume them without growing a statement
+    /// vocabulary: an expression does not change meaning for such a walker
+    /// because it sits in statement rather than tail position.
+    ///
+    /// Issue #1764 (the audit umbrella) and #1749 (the effect-row instance
+    /// that proved the shape unsound) are why this exists: eight walkers had
+    /// independently stopped at [`Self::value_exprs`] and so silently skipped
+    /// everything a block-bodied lambda does before its last expression.
+    ///
+    /// The returned expressions are *roots* to recurse from, exactly like
+    /// [`Self::value_exprs`]' — nothing here descends into a nested
+    /// [`Expr`]'s own children.
+    #[must_use]
+    pub fn all_exprs(&self) -> Vec<&Expr> {
+        match self {
+            Self::Expr(e) => vec![e],
+            Self::Block { stmts, tail } => {
+                let mut out = Vec::new();
+                for s in stmts {
+                    push_block_stmt_exprs(s, &mut out);
+                }
+                out.extend(tail.as_deref());
+                out
+            }
+        }
+    }
+}
+
+/// Append every expression `bs` directly contains, descending through nested
+/// statement bodies but not into an [`Expr`]'s own children — the flattening
+/// [`LambdaBody::all_exprs`] hands to expression-only walkers. Mirrors
+/// [`crate::hir::visit`]'s `walk_block_stmt`/`walk_if_stmt` arm for arm; a new
+/// [`BlockStmt`] variant must be added to both.
+fn push_block_stmt_exprs<'a>(bs: &'a BlockStmt, out: &mut Vec<&'a Expr>) {
+    match bs {
+        BlockStmt::TempDecl(t) => out.extend(t.value.as_ref()),
+        BlockStmt::Assignment(a) => {
+            out.push(&a.target);
+            out.push(&a.value);
+        }
+        BlockStmt::Return(r) => {
+            out.extend(r.value.as_ref());
+            out.extend(r.onwards_args.iter());
+        }
+        BlockStmt::If(i) => push_if_stmt_exprs(i, out),
+        BlockStmt::While(w) => {
+            out.push(&w.condition);
+            for s in &w.body {
+                push_block_stmt_exprs(s, out);
+            }
+        }
+        BlockStmt::For(f) => {
+            out.push(&f.iterable);
+            for s in &f.body {
+                push_block_stmt_exprs(s, out);
+            }
+        }
+        BlockStmt::Break(_) | BlockStmt::Continue(_) => {}
+        BlockStmt::ExprStmt(e) => out.push(e),
+        BlockStmt::Await(a) => out.extend(a.condition.as_ref()),
+    }
+}
+
+/// [`push_block_stmt_exprs`]' `if`/`else if`/`else` arm, split out so the
+/// `else if` chain recurses the same way `visit::walk_if_stmt` does.
+fn push_if_stmt_exprs<'a>(i: &'a IfStmt, out: &mut Vec<&'a Expr>) {
+    out.push(&i.condition);
+    for s in &i.body {
+        push_block_stmt_exprs(s, out);
+    }
+    match &i.else_branch {
+        Some(ElseBranch::ElseIf(inner)) => push_if_stmt_exprs(inner, out),
+        Some(ElseBranch::Else(stmts)) => {
+            for s in stmts {
+                push_block_stmt_exprs(s, out);
+            }
+        }
+        None => {}
     }
 }
 
@@ -1680,4 +1774,62 @@ pub struct ExternalDecl {
 pub struct IncludeSite {
     pub file_path: String,
     pub ptr: Provenance,
+}
+
+#[cfg(test)]
+mod lambda_body_tests {
+    use super::*;
+    use crate::FileId;
+
+    /// The lambda in `src`'s first `var` initializer. Lambdas exist only on
+    /// the native surface, so this goes through `lower_native`.
+    fn lambda_body_of(src: &str) -> LambdaBody {
+        let parsed = brink_syntax_native::parse(src);
+        assert!(parsed.errors().is_empty(), "{:?}", parsed.errors());
+        let tree = parsed.tree();
+        let (hir, _manifest, _diag) = crate::hir::lower_native::lower(FileId(0), &tree);
+        let Expr::Lambda(l) = &hir.variables[0].value else {
+            unreachable!("fixture's initializer is a lambda: {:?}", hir.variables[0]);
+        };
+        l.body.clone()
+    }
+
+    #[test]
+    fn a_single_expression_body_yields_the_same_one_expression_either_way() {
+        let body = lambda_body_of("var f = |x| x + 1\n");
+        assert_eq!(body.value_exprs().len(), 1);
+        assert_eq!(body.all_exprs().len(), 1);
+    }
+
+    /// The #1749/#1764 shape: `value_exprs` sees only the tail; `all_exprs`
+    /// sees the statements too, statements first and the tail last.
+    #[test]
+    fn a_braced_body_hides_its_statements_from_value_exprs_but_not_all_exprs() {
+        let body = lambda_body_of("var f = ||: int {\n  let a = 1;\n  let b = 2;\n  3\n};\n");
+        assert_eq!(body.value_exprs().len(), 1, "just the `3` tail");
+        let all = body.all_exprs();
+        assert_eq!(all.len(), 3, "{all:?}");
+        assert_eq!(all[2], &Expr::Int(3), "the tail comes last: {all:?}");
+    }
+
+    /// A statement-terminated body has no value expression at all, so
+    /// `value_exprs` is empty — the worst case for a walker that stops there.
+    #[test]
+    fn a_statement_terminated_body_yields_nothing_from_value_exprs() {
+        let body = lambda_body_of("var f = ||: int {\n  return 7;\n};\n");
+        assert!(body.value_exprs().is_empty());
+        assert_eq!(body.all_exprs().len(), 1, "the `return`'s operand");
+    }
+
+    /// Nested statement bodies are flattened too — `walk_block_stmt`'s own
+    /// recursion, which is what makes this safe to hand an expression walker.
+    #[test]
+    fn nested_statement_bodies_are_flattened() {
+        let body = lambda_body_of(
+            "var f = ||: int {\n  if 1 == 1 {\n    let a = 2;\n  } else {\n    let b = 3;\n  }\n  4\n};\n",
+        );
+        let all = body.all_exprs();
+        // the `if` condition, the two branch initializers, and the tail.
+        assert_eq!(all.len(), 4, "{all:?}");
+    }
 }
