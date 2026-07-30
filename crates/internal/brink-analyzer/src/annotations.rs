@@ -719,6 +719,7 @@ mod tests {
     /// A `HostManifest` declaring one handle kind, `AudioInstance`.
     fn audio_instance_manifest() -> HostManifest {
         HostManifest {
+            markup: Vec::new(),
             types: vec![brink_ir::SemanticTypeDef {
                 name: "AudioInstance".to_string(),
                 base: BaseType::Handle,
@@ -733,6 +734,7 @@ mod tests {
     #[test]
     fn declared_handle_kinds_reads_only_handle_based_semantic_types() {
         let manifest = HostManifest {
+            markup: Vec::new(),
             types: vec![
                 brink_ir::SemanticTypeDef {
                     name: "AudioInstance".to_string(),

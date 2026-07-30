@@ -1296,6 +1296,7 @@ mod tests {
 
     fn audio_manifest_with_external(param_kind: &str) -> brink_ir::HostManifest {
         brink_ir::HostManifest {
+            markup: Vec::new(),
             types: vec![
                 brink_ir::SemanticTypeDef {
                     name: "AudioInstance".to_string(),
@@ -1571,6 +1572,7 @@ mod tests {
              === function get_sound(id): handle<AudioInstance> ===\n~ return id\n",
         );
         let manifest = brink_ir::HostManifest {
+            markup: Vec::new(),
             types: vec![
                 brink_ir::SemanticTypeDef {
                     name: "AudioInstance".to_string(),
@@ -1623,6 +1625,7 @@ mod tests {
              === function get_timer(id): handle<Timer> ===\n~ return id\n",
         );
         let manifest = brink_ir::HostManifest {
+            markup: Vec::new(),
             types: vec![
                 brink_ir::SemanticTypeDef {
                     name: "AudioInstance".to_string(),
@@ -3486,6 +3489,7 @@ mod tests {
         let (_hir, index, _res, inline_docs) =
             build_with_docs("/// @param id {var_id}\nEXTERNAL get_variable(id)\n-> DONE\n");
         let manifest = brink_ir::HostManifest {
+            markup: Vec::new(),
             types: vec![brink_ir::SemanticTypeDef {
                 name: "actor_id".to_string(),
                 base: brink_ir::BaseType::String,

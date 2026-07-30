@@ -37,6 +37,7 @@ const SAME_KIND_SRC: &str = "\
 
 fn two_kind_manifest() -> HostManifest {
     HostManifest {
+        markup: Vec::new(),
         types: vec![
             SemanticTypeDef {
                 name: "AudioInstance".to_string(),

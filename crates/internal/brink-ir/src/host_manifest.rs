@@ -42,6 +42,41 @@ pub struct HostManifest {
     /// tags and manifest entries reference by name.
     #[serde(default)]
     pub types: Vec<SemanticTypeDef>,
+    /// The host's **inline markup vocabulary** (`docs/prose-dialect-spec.md`
+    /// §4.2, issue #1733): the span kinds `<name attr="v">…</name>` may use,
+    /// and the attributes each kind allows.
+    ///
+    /// Host-authored and co-located with [`Self::externals`] by the §3.4
+    /// authorship test — a text-effect plugin can generate its tag
+    /// declarations the same way bindings generate externals. (Element
+    /// conventions are *project*-authored and live elsewhere, in the
+    /// `brink.toml`-referenced conventions module; the two must not be
+    /// conflated.)
+    ///
+    /// **Empty means freeform**, which is the default: markup is freeform by
+    /// default (§4.2's first half, landed in PR #1732) and a manifest is what
+    /// *tightens* it. A project that declares no vocabulary — including one
+    /// that registers a manifest for its externals alone — is never diagnosed
+    /// for a markup tag. See `brink_analyzer::markup_check`.
+    #[serde(default)]
+    pub markup: Vec<ManifestSpanKind>,
+}
+
+/// One declared inline-markup span kind (`docs/prose-dialect-spec.md` §4.2).
+///
+/// Deliberately flat: a tag name plus the attribute names that tag accepts.
+/// Attribute *types* are not modelled — span attributes are static text by
+/// construction (see `SyntaxKind::SPAN_ATTR_VALUE`), so there is nothing to
+/// type-check against, and the flat-nominal scope guardrail that governs
+/// [`SemanticTypeDef`] applies here for the same reason.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManifestSpanKind {
+    /// The tag name as written in source, e.g. `wave` for `<wave>…</wave>`.
+    pub name: String,
+    /// The attribute names this kind accepts, e.g. `["amount"]` for
+    /// `<wave amount="3">`. Empty means the kind takes no attributes.
+    #[serde(default)]
+    pub attrs: Vec<String>,
 }
 
 /// A registered external-function signature.
@@ -293,6 +328,7 @@ mod manifest_field_name_tests {
     #[test]
     fn serialized_wire_keys_match_the_shared_field_name_constants() {
         let manifest = HostManifest {
+            markup: Vec::new(),
             externals: vec![ManifestExternal {
                 name: "has".to_string(),
                 params: vec![],
@@ -453,5 +489,37 @@ mod doc_example_tests {
             set_move_route.path,
             vec!["Map".to_string(), "Movement".to_string()]
         );
+    }
+
+    #[test]
+    fn markup_vocabulary_doc_example_roundtrips() {
+        // Verbatim (minus jsonc comments) from the "Markup vocabulary"
+        // section of docs/host-capability-manifest.md — same guard as the
+        // Tier-1 example above: the doc's JSON is the shape hosts copy, so a
+        // drift between it and `ManifestSpanKind`'s serde derive fails here.
+        let json = r#"
+        { "markup": [
+            { "name": "wave", "attrs": ["amount"] },
+            { "name": "b" },
+            { "name": "sfx", "attrs": ["name", "volume"] }
+        ] }
+        "#;
+
+        let manifest: super::HostManifest = serde_json::from_str(json).expect("parse doc example");
+        assert_eq!(manifest.markup.len(), 3);
+        assert_eq!(manifest.markup[0].name, "wave");
+        assert_eq!(manifest.markup[0].attrs, vec!["amount".to_string()]);
+        // Omitted `attrs` defaults to empty — a tag that takes none.
+        assert!(manifest.markup[1].attrs.is_empty());
+        // A manifest carrying only `markup` leaves the other sections empty,
+        // which is what makes markup declarable independently of externals.
+        assert!(manifest.externals.is_empty());
+        assert!(manifest.types.is_empty());
+
+        let serialized = serde_json::to_string(&manifest).expect("serialize");
+        let round_tripped: super::HostManifest =
+            serde_json::from_str(&serialized).expect("re-parse serialized manifest");
+        assert_eq!(manifest, round_tripped);
+        assert!(serialized.contains(r#""markup":[{"name":"wave","attrs":["amount"]}"#));
     }
 }

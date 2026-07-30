@@ -42,6 +42,7 @@ EXTERNAL play_sound(inst)\n\
 
 fn two_kind_manifest_with_play_sound() -> HostManifest {
     HostManifest {
+        markup: Vec::new(),
         types: vec![
             SemanticTypeDef {
                 name: "AudioInstance".to_string(),

@@ -656,6 +656,7 @@ Spent.
         let mut session = IdeSession::new();
         let file_id = session.update_and_analyze("test.ink", src.to_string());
         session.set_host_manifest(brink_ir::HostManifest {
+            markup: Vec::new(),
             externals: vec![],
             types: vec![actor_id_type()],
         });
@@ -700,6 +701,7 @@ Spent.
         let mut session = IdeSession::new();
         let file_id = session.update_and_analyze("test.ink", src.to_string());
         session.set_host_manifest(brink_ir::HostManifest {
+            markup: Vec::new(),
             externals: vec![],
             types: vec![actor_id_type()],
         });

@@ -765,6 +765,7 @@ mod tests {
 
     fn color_manifest() -> HostManifest {
         HostManifest {
+            markup: Vec::new(),
             externals: vec![ManifestExternal {
                 name: "tint".into(),
                 params: vec![ManifestParam {
@@ -835,6 +836,148 @@ mod tests {
         );
         // ...but enrichment is still built.
         assert!(!analysis.symbol_meta.is_empty(), "meta built even when Off");
+    }
+
+    // ── Markup vocabulary (#1733, docs/prose-dialect-spec.md §4.2) ──────
+    //
+    // End-to-end through the surface a host actually drives: register a
+    // manifest on a live session (the same call `@brink-lang/web`'s
+    // `EditorHandle::set_host_manifest` makes) and read the diagnostics the
+    // editor renders. Nothing below reaches into the analyzer pass directly.
+
+    /// Native prose with one declared tag and one undeclared one.
+    const MARKUP_SRC: &str =
+        "flow a() {\n  <wave amount=\"3\">shimmer</wave> <glitch>zap</glitch>\n}\n";
+
+    fn markup_manifest() -> HostManifest {
+        HostManifest {
+            markup: vec![brink_ir::ManifestSpanKind {
+                name: "wave".into(),
+                attrs: vec!["amount".into()],
+            }],
+            ..HostManifest::default()
+        }
+    }
+
+    #[test]
+    fn markup_is_freeform_with_no_manifest_registered() {
+        let mut session = IdeSession::new();
+        session.update_and_analyze("t.brink", MARKUP_SRC.to_string());
+        let analysis = session.analysis().expect("analysis");
+
+        assert!(
+            !analysis
+                .diagnostics
+                .iter()
+                .any(|d| matches!(d.code, DiagnosticCode::E164 | DiagnosticCode::E165)),
+            "freeform-by-default: undeclared markup must not be diagnosed: {:?}",
+            analysis.diagnostics
+        );
+    }
+
+    #[test]
+    fn markup_is_still_freeform_under_an_externals_only_manifest() {
+        // A host that registers a manifest for its *externals* has not opted
+        // into markup checking — `markup` is the only key that tightens.
+        let mut session = IdeSession::new();
+        session.update_and_analyze("t.brink", MARKUP_SRC.to_string());
+        session.set_host_manifest(color_manifest());
+        let analysis = session.analysis().expect("analysis");
+
+        assert!(
+            !analysis
+                .diagnostics
+                .iter()
+                .any(|d| matches!(d.code, DiagnosticCode::E164 | DiagnosticCode::E165)),
+            "an externals-only manifest must not enable markup checking: {:?}",
+            analysis.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_declared_markup_vocabulary_diagnoses_the_undeclared_tag_only() {
+        let mut session = IdeSession::new();
+        session.update_and_analyze("t.brink", MARKUP_SRC.to_string());
+        session.set_host_manifest(markup_manifest());
+        let analysis = session.analysis().expect("analysis");
+
+        let markup: Vec<_> = analysis
+            .diagnostics
+            .iter()
+            .filter(|d| matches!(d.code, DiagnosticCode::E164 | DiagnosticCode::E165))
+            .collect();
+        assert_eq!(
+            markup.len(),
+            1,
+            "exactly the undeclared `<glitch>` should be flagged: {:?}",
+            analysis.diagnostics
+        );
+        assert_eq!(markup[0].code, DiagnosticCode::E164);
+        assert!(
+            markup[0].message.contains("<glitch>"),
+            "message must name the tag: {}",
+            markup[0].message
+        );
+    }
+
+    #[test]
+    fn clearing_the_manifest_returns_markup_to_freeform() {
+        let mut session = IdeSession::new();
+        session.update_and_analyze("t.brink", MARKUP_SRC.to_string());
+        session.set_host_manifest(markup_manifest());
+        session.clear_host_manifest();
+        let analysis = session.analysis().expect("analysis");
+
+        assert!(
+            !analysis
+                .diagnostics
+                .iter()
+                .any(|d| matches!(d.code, DiagnosticCode::E164 | DiagnosticCode::E165)),
+            "clearing the manifest must restore the freeform default: {:?}",
+            analysis.diagnostics
+        );
+    }
+
+    #[test]
+    fn the_salsa_compile_path_also_reports_markup_diagnostics_as_warnings() {
+        // The three tests above read the off-db background analysis (what the
+        // editor squiggles). This one drives `compile`, the *other* consumer
+        // — `brink-web`'s `EditorSession::compile` returns `product.warnings`
+        // to JS as its `warnings` array — so the db's
+        // `per_file_diagnostics_query` reaches the check too, and a project
+        // compiling with a declared vocabulary really does see it.
+        let mut session = IdeSession::new();
+        session.update_and_analyze(
+            "main.brink",
+            "flow main() {\n  <glitch>zap</glitch>\n  -> END\n}\n".to_string(),
+        );
+        let options = AnalysisOptions {
+            dialect: Dialect::Brink,
+            types: Some(TypePolicy::Strict),
+            host_manifest: Some(markup_manifest()),
+            ..Default::default()
+        };
+        let product = session
+            .compile("main.brink", &options)
+            .expect("entry file is loaded");
+
+        assert!(
+            product
+                .warnings
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E164),
+            "expected E164 in compile warnings: errors={:?} warnings={:?}",
+            product.errors,
+            product.warnings
+        );
+        // A `Warning` never blocks the artifact — freeform-by-default's
+        // sibling guarantee: tightening the vocabulary reports, it does not
+        // stop a project from compiling until `[lints]` says so.
+        assert!(
+            product.story.is_some(),
+            "a markup warning must not block the story: {:?}",
+            product.errors
+        );
     }
 
     /// #532: ink with a host semantic type param and no registered manifest.

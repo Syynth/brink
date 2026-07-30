@@ -591,6 +591,7 @@ fn e039_manifest_arity_mismatch() {
     // ink declares 1 param; the registered manifest lists 2.
     let options = AnalysisOptions {
         host_manifest: Some(HostManifest {
+            markup: Vec::new(),
             externals: vec![manifest_external("ping", &[("a", "string"), ("b", "int")])],
             types: vec![],
         }),
@@ -622,6 +623,7 @@ fn e040_unknown_semantic_type() {
 
 fn direction_manifest() -> HostManifest {
     HostManifest {
+        markup: Vec::new(),
         externals: vec![manifest_external("walk", &[("dir", "direction")])],
         types: vec![SemanticTypeDef {
             name: "direction".to_string(),

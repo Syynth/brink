@@ -1870,6 +1870,7 @@ mod tests {
         let inference =
             crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
         let manifest = brink_ir::HostManifest {
+            markup: Vec::new(),
             types: vec![brink_ir::SemanticTypeDef {
                 name: "AudioInstance".to_string(),
                 base: brink_ir::BaseType::Handle,
@@ -2218,6 +2219,7 @@ mod tests {
 === main ===\n~ temp a = get_audio(1)\n~ temp b = get_timer(1)\n{a == b:\n  ok\n}\n-> DONE\n";
         let (hir, index, res) = build(src);
         let manifest = brink_ir::HostManifest {
+            markup: Vec::new(),
             types: vec![
                 brink_ir::SemanticTypeDef {
                     name: "AudioInstance".to_string(),
@@ -2279,6 +2281,7 @@ mod tests {
 === main ===\n~ temp a = get_audio(1)\n~ temp c = get_audio2(1)\n{a == c:\n  ok\n}\n-> DONE\n";
         let (hir, index, res) = build(src);
         let manifest = brink_ir::HostManifest {
+            markup: Vec::new(),
             types: vec![brink_ir::SemanticTypeDef {
                 name: "AudioInstance".to_string(),
                 base: brink_ir::BaseType::Handle,
@@ -2368,6 +2371,7 @@ mod tests {
 === main ===\n~ temp a = get_audio(1)\n~ temp b = get_timer(1)\n{a == b:\n  ok\n}\n-> DONE\n";
         let (hir, index, res) = build(src);
         let manifest = brink_ir::HostManifest {
+            markup: Vec::new(),
             types: vec![
                 brink_ir::SemanticTypeDef {
                     name: "AudioInstance".to_string(),
@@ -2429,6 +2433,7 @@ mod tests {
 
     fn audio_and_timer_manifest(play_sound_param_kind: &str) -> brink_ir::HostManifest {
         brink_ir::HostManifest {
+            markup: Vec::new(),
             types: vec![
                 brink_ir::SemanticTypeDef {
                     name: "AudioInstance".to_string(),
@@ -2607,6 +2612,7 @@ mod tests {
 
     fn get_thing_manifest(ty: &str) -> brink_ir::HostManifest {
         brink_ir::HostManifest {
+            markup: Vec::new(),
             types: vec![brink_ir::SemanticTypeDef {
                 name: "thing_id".to_string(),
                 base: brink_ir::BaseType::Int,
@@ -2844,6 +2850,7 @@ mod tests {
 
     fn notify_manifest() -> brink_ir::HostManifest {
         brink_ir::HostManifest {
+            markup: Vec::new(),
             types: Vec::new(),
             externals: vec![brink_ir::ManifestExternal {
                 name: "notify".to_string(),
