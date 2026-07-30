@@ -21,7 +21,7 @@
 // RNG's determinism is sufficient for reshuffling it. Choosing the
 // simpler tool deliberately, not an oversight, is itself the finding.
 //
-// TYPES POLICY: gradual (default). `array<string>` (the bag/pull-log),
+// TYPES POLICY: gradual (default). `Array<string>` (the bag/pull-log),
 // `int` (bag position); gradual inference resolves everything.
 //
 // ERGONOMICS-FINDINGS:

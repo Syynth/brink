@@ -301,7 +301,7 @@ pub enum SyntaxKind {
     /// `void`, or an unrecognized identifier — semantic validity is an
     /// analyzer concern, not a grammar one).
     TYPE_NAME,
-    /// `name<type_expr, …>` — `list<L>`, `array<T>`, `map<K, V>`.
+    /// `name<type_expr, …>` — `List<L>`, `Array<T>`, `Map<K, V>`.
     TYPE_GENERIC,
     /// `fn(type_expr, …): type_expr` — function type. Parses in T1b/TM-2;
     /// types as reserved until T1c.

@@ -1,5 +1,5 @@
 //! Issue #786 (docs/t1d-spec.md §3): `EXTERNAL` call-site argument checking
-//! against a manifest-declared `handle<K>` param, exercised through the
+//! against a manifest-declared `Handle<K>` param, exercised through the
 //! *production* `db.diagnostics(file)` seam (`diagnostics_query` ->
 //! `analysis_query` -> `finish_analysis`, which reads `solve_scc_query`),
 //! not just the pure `crate::infer_project` + `crate::strict::check` path
@@ -22,22 +22,22 @@ use brink_ir::{
 };
 
 /// `play_sound` is a manifest-registered `EXTERNAL` declared to take
-/// `handle<AudioInstance>`. `get_timer`'s return is annotated
-/// `handle<Timer>`, so `t`'s declared kind flows into `main` purely through
+/// `Handle<AudioInstance>`. `get_timer`'s return is annotated
+/// `Handle<Timer>`, so `t`'s declared kind flows into `main` purely through
 /// call-site inference — never an annotation of its own — then gets passed
 /// as `play_sound`'s argument, a cross-kind mismatch detectable only once
 /// `collect_external_sigs`'s declaration-derived signature is seeded into
 /// `known_sigs` ahead of `main`'s SCC solve.
 const CROSS_KIND_SRC: &str = "\
 EXTERNAL play_sound(inst)\n\
-=== function get_timer(id: int): handle<Timer> ===\n~ return id\n\
+=== function get_timer(id: int): Handle<Timer> ===\n~ return id\n\
 === main ===\n~ temp t = get_timer(1)\n~ play_sound(t)\n-> DONE\n";
 
 /// Same shape, but the argument is already the binding's own declared kind
 /// (`AudioInstance`) — must unify cleanly, no escape.
 const SAME_KIND_SRC: &str = "\
 EXTERNAL play_sound(inst)\n\
-=== function get_audio(id: int): handle<AudioInstance> ===\n~ return id\n\
+=== function get_audio(id: int): Handle<AudioInstance> ===\n~ return id\n\
 === main ===\n~ temp a = get_audio(1)\n~ play_sound(a)\n-> DONE\n";
 
 fn two_kind_manifest_with_play_sound() -> HostManifest {
@@ -83,8 +83,8 @@ fn strict_opts(manifest: HostManifest) -> AnalysisOptions {
     }
 }
 
-/// Positive case, through the real salsa pipeline: a `handle<Timer>`
-/// argument to a binding whose manifest entry declares `handle<AudioInstance>`
+/// Positive case, through the real salsa pipeline: a `Handle<Timer>`
+/// argument to a binding whose manifest entry declares `Handle<AudioInstance>`
 /// must escape with `E066` for the caller's `temp t`, reached via
 /// `solve_scc_query` (not the pure `infer_project` fallback —
 /// `db.diagnostics` always goes through `analysis_query`'s FG-narrowed

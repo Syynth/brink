@@ -18,8 +18,8 @@ surface) waits on the prototype parser (the season's next artifact).
 **Why the current brink dialect is the early host (load-bearing).** The
 oracle/test-harness machinery (`brink-test-harness`, the 5,598-episode
 ratchet, insta snapshots) already covers the brink dialect end-to-end. A
-verb implemented as a brink-dialect intrinsic — `Option[T]`, the
-heap verbs, `Weighted[T]`, the effect-row extensions — gets **oracle and
+verb implemented as a brink-dialect intrinsic — `Option<T>`, the
+heap verbs, `Weighted<T>`, the effect-row extensions — gets **oracle and
 snapshot coverage the day it lands**, years before the native parser can
 exercise it. Every Track A wave should ship its verbs/machinery gated to
 the brink dialect (the T1b stdlib-slice-1 precedent: lowercase free
@@ -34,13 +34,13 @@ behavior rather than co-developing it.
 ```mermaid
 graph TD
   subgraph TrackA["TRACK A — substrate (pump now, brink-dialect-hosted)"]
-    A1["A1: Option[T] builtin<br/>checker enum + wire + or-coalescing typing"]
+    A1["A1: Option<T> builtin<br/>checker enum + wire + or-coalescing typing"]
     A2["A2: effect-row extension wave<br/>emits+tags+faults (#1087/#1097) — one PR wave"]
     A3["A3: protocol registry machinery<br/>display / compare / iterate + contracts"]
     A4["A4: ordering doctrine in the VM<br/>NaN dev-fault / prod pinned order + dev/prod plumbing"]
     A5["A5: inhabited-range refinement<br/>+ nonempty() validator + gradual residual"]
     A6["A6: rng-as-cell formalization<br/>state cell + draw=write + determinism/save"]
-    A7["A7: Weighted[T] + heap verbs<br/>brink-dialect intrinsics"]
+    A7["A7: Weighted<T> + heap verbs<br/>brink-dialect intrinsics"]
     A8["A8: numeric tower value kinds<br/>(mini-spec prerequisite)"]
   end
 
@@ -98,12 +98,12 @@ Sized to the repo's pump conventions (single reviewed, oracle-gated
 PRs; spine slices serial, tails as pump waves — the T1b/FS-3 method).
 Each wave is issue-shaped with an explicit scope and a green gate.
 
-### Wave A1 — `Option[T]` as the third parameterized builtin
+### Wave A1 — `Option<T>` as the third parameterized builtin
 **Scope.** Compiler-owned enum type; checker-known polymorphic
-signatures; wire form (V4 section, `none` + `some(T)`); the `Option[T] ≠
+signatures; wire form (V4 section, `none` + `some(T)`); the `Option<T> ≠
 T` strictness everywhere except the display boundary; bare-`none`-needs-
-context rule; the `or`-coalescing **typing** rule (`(Option[T],T)→T` and
-`(Option[T],Option[T])→Option[T]` — F19). **Excludes** the surface
+context rule; the `or`-coalescing **typing** rule (`(Option<T>,T)→T` and
+`(Option<T>,Option<T>)→Option<T>` — F19). **Excludes** the surface
 *spelling* of `or` and `as` (Track B). **Host dialect:** brink dialect —
 `get`/`find`/`index_of` flips land here as intrinsics returning `Option`,
 immediately oracle-covered. **Gate:** oracle byte-identical (Option is
@@ -159,7 +159,7 @@ F15 (compare/equality coherence).
 ### Wave A5 — the inhabited-range refinement
 **Scope.** The refinement type; literal-bounds free coercion (const-fold);
 statically-empty literal = compile error; `(a..b).nonempty() →
-Option[<inhabited range>]` validator; **the gradual-mode runtime residual
+Option<<inhabited range>>` validator; **the gradual-mode runtime residual
 (F8)** — `rand::int` faults on empty in gradual, inert under strict;
 recorded as the general refinement→gradual rule. **Depends:** A1 (Option
 return of nonempty), A6 (rand::int is the consumer). **Blocks:** B5
@@ -183,8 +183,8 @@ visible). Verbs `int`/`float`/`chance`/`pick`/`shuffle`/`shuffled`/`seed`.
 verb specifically; the rest of A6 can proceed without it), F4 (float name
 disambiguation — trivial, resolve in-wave).
 
-### Wave A7 — `Weighted[T]` + heap verbs
-**Scope.** `Weighted[T]` parameterized builtin; `Weighted { weight:
+### Wave A7 — `Weighted<T>` + heap verbs
+**Scope.** `Weighted<T>` parameterized builtin; `Weighted { weight:
 value }` literal (**multiset** duplicate policy — F17); evidence-by-
 construction refusal of empty/zero/negative (compile error where
 classifiable, **NEW construction-fault diagnostic** for computed weights —
@@ -237,7 +237,7 @@ spelling") and built as **B1b (#1475)** — one grammar rule
 (`AS_BINDING`) serving the statement condition position (`if`/`while`)
 and the template one (`{if EXPR as NAME: … else: …}`), lowered to one
 fused test-and-bind opcode (`Opcode::OptionBind`). Binding immutable
-(**E148**), typed `T` from `Option[T]`, scoped strictly to the success
+(**E148**), typed `T` from `Option<T>`, scoped strictly to the success
 arm, rebinding per iteration in `while`; whole-condition-only for v1
 (**E145** — let-chains stay additively available later); a non-Option
 condition is **E147** (runtime residual:
@@ -302,9 +302,9 @@ coverage in `brink-ir/tests/ufcs_auto_ref.rs`.
 
 ### Wave B4 — display-boundary None-render in interpolation (SHIPPED, issue #1463)
 The §1.6b forgiveness: a final-None interpolation renders as nothing;
-everywhere else `Option[T] ≠ T` strict; nested compositions never
+everywhere else `Option<T> ≠ T` strict; nested compositions never
 forgiven; the traceability rider (transcript/debug records None-renders).
-**Turned out not to depend on B0** — `{…}` interpolation and `Option[T]`
+**Turned out not to depend on B0** — `{…}` interpolation and `Option<T>`
 already exist on the current brink dialect (the same "early host" pattern
 §0's opening note argues for), so the boundary shipped as a
 `brink-runtime` value-display change (`value_ops::stringify_display`),

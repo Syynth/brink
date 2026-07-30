@@ -115,7 +115,7 @@ contract everything else obeys.
 The loop variable is a fresh, block-scoped binding — it exists only
 inside the body, takes the iterable's element type under strict
 (`for coins in tab` makes `coins` an `int` when `tab` is an
-`array<int>`), and does not leak. It may share a name with an outer
+`Array<int>`), and does not leak. It may share a name with an outer
 `temp`; that's shadowing, and it's legal but flagged with the `E054`
 warning ("shadows an already-visible temp"), because it is almost always
 either deliberate or a bug — never innocuous:
@@ -404,7 +404,7 @@ First night over 5 coins: {first_over(#[4, 7, 2, 9], 5)}.
 First night over 10: {string(first_over(#[4, 7, 2, 9], 10))}.
 -> END
 
-=== function first_over(tab: array<int>, floor: int) ===
+=== function first_over(tab: Array<int>, floor: int) ===
 ~ {
     for coins in tab {
         if coins > floor {
@@ -423,7 +423,7 @@ First night over 10: none.
 The shape earns its keep three ways: the `return` inside the loop is the
 cleanest multi-level exit the language has; the two returns hand
 inference everything it needs (`first_over` settles as
-`(array<int>, int) -> Option[int]`, no annotation); and the caller gets
+`(Array<int>, int) -> Option<int>`, no annotation); and the caller gets
 a value in the full absence doctrine — testable with `== none`, equal to
 `some(7)` exactly when the world had one. The fn-value verbs below
 collapse a loop shaped exactly like this one into a single `filter_map`
@@ -441,7 +441,7 @@ This section is posture, not practice — flagged honestly as such.
 
 The design has already been settled *for* that future, though, and it
 explains a choice you can otherwise only take on faith: the iterate
-protocol is ruled **pull-shaped** (a `next(ref Self): Option[T]` step,
+protocol is ruled **pull-shaped** (a `next(ref Self): Option<T>` step,
 "every element exactly once; `none` is terminal and sticky") precisely
 so that `for` desugars inline and an in-flight iteration can park inside
 a suspended flow and resume after it wakes. Ranges became real,
@@ -472,7 +472,7 @@ argument — a pure quartet plus a deliberately-ugly effectful pair:
   construction* — the eager-versus-lazy question is dissolved, not
   deferred, and the implementation may fuse freely, forever.
 - **`filter_map(a, f)`** — the Option-aware mapper: `f` returns
-  `Option[U]`, `some(v)` is kept and unwrapped, `none` drops the element.
+  `Option<U>`, `some(v)` is kept and unwrapped, `none` drops the element.
   It is the ruled bridge to the [Option chapter](option.md), and the
   one-line form of the find-shaped loop above:
   `filter_map(coins, #fn(over_amount))` in place of the hand-rolled loop,

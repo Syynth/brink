@@ -1,6 +1,6 @@
 //! Issue #805 (PR #794 / issue #786 lineage, docs/t1d-spec.md §3): extends
 //! `EXTERNAL` call-site checking to (1) scalar semantic types from the
-//! manifest vocabulary (not just `handle<K>` kinds), (2) inline-doc-only
+//! manifest vocabulary (not just `Handle<K>` kinds), (2) inline-doc-only
 //! externals (no matching `ManifestExternal` entry), and (3) return-position
 //! kind checking. Exercised through the *production* `db.diagnostics(file)`
 //! seam (`diagnostics_query` -> `analysis_query` -> `whole_project_diagnostics_query`,
@@ -58,7 +58,7 @@ fn manifest_with_scalar_type_and_toggle() -> HostManifest {
 }
 
 /// `toggle` declares `id: switch_id` (a scalar semantic type, `base: int`,
-/// not a `handle<K>` kind). A string-literal-derived local passed as the
+/// not a `Handle<K>` kind). A string-literal-derived local passed as the
 /// argument is a genuine `int` vs `string` conflict, reachable only once
 /// the binding's declared *scalar* type is seeded into `known_sigs`.
 #[test]
@@ -131,7 +131,7 @@ fn manifest_with_only_handle_vocabulary() -> HostManifest {
 const INLINE_ONLY_CROSS_KIND_SRC: &str = "\
 /// @param inst {AudioInstance}
 EXTERNAL play_sound(inst)
-=== function get_timer(id: int): handle<Timer> ===
+=== function get_timer(id: int): Handle<Timer> ===
 ~ return id
 === main ===
 ~ temp t = get_timer(1)
@@ -163,7 +163,7 @@ fn inline_only_external_cross_kind_argument_reaches_production_diagnostics_under
 const INLINE_ONLY_SAME_KIND_SRC: &str = "\
 /// @param inst {AudioInstance}
 EXTERNAL play_sound(inst)
-=== function get_audio(id: int): handle<AudioInstance> ===
+=== function get_audio(id: int): Handle<AudioInstance> ===
 ~ return id
 === main ===
 ~ temp a = get_audio(1)
@@ -237,9 +237,9 @@ fn manifest_with_play_sound_and_spawn_timer() -> HostManifest {
 }
 
 /// `spawn_timer` is a manifest-registered `EXTERNAL` with no params and a
-/// *declared return type* of `handle<Timer>`. Its return value, assigned
+/// *declared return type* of `Handle<Timer>`. Its return value, assigned
 /// straight into a temp then passed to `play_sound` (declared
-/// `handle<AudioInstance>`), is a cross-kind mismatch detectable only once
+/// `Handle<AudioInstance>`), is a cross-kind mismatch detectable only once
 /// an `EXTERNAL`'s own declared *return* kind — not just its params — is
 /// seeded into `known_sigs`.
 const RETURN_POSITION_CROSS_KIND_SRC: &str = "\

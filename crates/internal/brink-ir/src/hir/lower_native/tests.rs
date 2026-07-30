@@ -1590,14 +1590,14 @@ fn unannotated_param_still_lowers_with_none() {
 
 #[test]
 fn generic_param_annotation_lowers_with_its_arguments() {
-    let (hir, _m, diags) = lower_src("fn tally(m: map<string, int>) {\n  return 1;\n}\n");
+    let (hir, _m, diags) = lower_src("fn tally(m: Map<string, int>) {\n  return 1;\n}\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     let Some(crate::TypeExpr::Generic { name, args, .. }) =
         hir.knots[0].params[0].annotation.as_ref()
     else {
         unreachable!("expected a generic annotation: {:?}", hir.knots[0].params);
     };
-    assert_eq!(name, "map");
+    assert_eq!(name, "Map");
     let arg_names: Vec<Option<&str>> = args.iter().map(|a| named(Some(a))).collect();
     assert_eq!(arg_names, vec![Some("string"), Some("int")]);
 }

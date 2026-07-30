@@ -5,7 +5,7 @@
 //
 // TYPES POLICY: gradual (default). Indices/lengths are `int`, sequence
 // elements and the LCS result are single-character `string`s (see the
-// no-string-indexing finding below), the memo is `map<int, map<int,
+// no-string-indexing finding below), the memo is `Map<int, Map<int,
 // int>>`; gradual inference handles all of it without ambiguity.
 //
 // ERGONOMICS-FINDINGS:

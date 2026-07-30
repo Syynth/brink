@@ -28,7 +28,7 @@
 // no ambiguity worth strict's escape-checking ceremony.
 //
 // ERGONOMICS-FINDINGS:
-// - `split` is written FUNCTIONALLY (returns a fresh `array<Rect>` of
+// - `split` is written FUNCTIONALLY (returns a fresh `Array<Rect>` of
 //   leaves rather than mutating a shared `rooms` accumulator via a `ref`
 //   param) — same "arrays are copy-on-write values, functional
 //   partition-and-recombine reads closer to the textbook description"

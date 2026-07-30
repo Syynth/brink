@@ -360,7 +360,7 @@ mod tests {
             // Temp without spaces after colon
             "=== knot ===\n~temp name:string=who\n",
             // Complex types
-            "VAR w: list<Weathers> = 0\nVAR m: map<string,int> = 0\n",
+            "VAR w: List<Weathers> = 0\nVAR m: Map<string,int> = 0\n",
             // Function type
             "VAR cb: fn(int,int): bool = 0\n",
             // CONST
@@ -957,9 +957,9 @@ STRUCT Point=#{x:int,y: float}
     fn struct_decl_multiline_with_complex_types() {
         // Fields with complex types (arrays, maps, nested generics) should
         // format correctly with proper type text reconstruction.
-        let input = "STRUCT Data = #{\nvalues: array<int>,\nmapping: map<string, float>,\n}\n";
+        let input = "STRUCT Data = #{\nvalues: Array<int>,\nmapping: Map<string, float>,\n}\n";
         let expected =
-            "STRUCT Data = #{\n  values: array<int>,\n  mapping: map<string, float>,\n}\n";
+            "STRUCT Data = #{\n  values: Array<int>,\n  mapping: Map<string, float>,\n}\n";
         let once = fmt(input);
         assert_eq!(once, expected);
         assert_eq!(fmt(&once), once, "formatting is idempotent");

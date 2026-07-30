@@ -64,16 +64,16 @@ pub struct Sig {
     /// initializer:
     /// - an explicit `: type` annotation on the VAR/CONST, resolved by
     ///   [`crate::annotations::resolve`] with **no downcast** (so
-    ///   `array<int>`, `map<string, int>`, a declared `STRUCT` name,
-    ///   `fn(T…): R` and `handle<K>` all survive — this is the
-    ///   `ty_to_inferred_type` gap issue #1540 closes). `option<T>` and
-    ///   `range` have **no annotation grammar at all**
-    ///   ([`crate::annotations::resolve`] has no arm for either), so a
-    ///   `Ty::Option`/`Ty::Range` value can never actually reach this
-    ///   field yet;
+    ///   `Array<int>`, `Map<string, int>`, a declared `STRUCT` name,
+    ///   `fn(T…): R`, `Handle<K>` and (since issue #1552) `Option<T>`/
+    ///   `Weighted<T>` all survive — this is the `ty_to_inferred_type` gap
+    ///   issue #1540 closes. `range` still has **no annotation grammar at
+    ///   all** ([`crate::annotations::resolve`] has no arm for it — deferred
+    ///   pending demonstrated demand, `docs/decision-log.md` 2026-07-27), so
+    ///   a `Ty::Range` value can never actually reach this field yet;
     /// - else the initializer literal, at the same fidelity
     ///   ([`literal_ty`]): `#[…]` → `Ty::Array`, `#{…}` → `Ty::Map`,
-    ///   `Name#{…}` → `Ty::Struct`, plus every scalar/`list<L>` form
+    ///   `Name#{…}` → `Ty::Struct`, plus every scalar/`List<L>` form
     ///   `infer_literal_type` already covered;
     /// - else a bare `#fn(target, args…)` initializer (T1c follow-up, issue
     ///   #712, docs/t1c-spec.md §4), in which case the type is the bound
@@ -100,13 +100,13 @@ pub struct Sig {
 }
 
 /// Downcast a resolved [`Ty`] to [`InferredType`] where the two universes
-/// overlap (`Ty`'s scalar leaves plus nominal `list<L>`) — the annotation-
+/// overlap (`Ty`'s scalar leaves plus nominal `List<L>`) — the annotation-
 /// wins substitution for `Sig::value_type`, which predates TM-2 and only
 /// has room for `InferredType`'s narrower domain (hover + the `@brink-lang/web`
 /// program model read it; widening it would change that schema).
 ///
-/// Every `Ty` outside that overlap — `array<T>`, `map<K, V>`, a nominal
-/// `STRUCT`, `fn(T…): R`, `handle<K>`, `option<T>`, `range`, `weighted<T>`,
+/// Every `Ty` outside that overlap — `Array<T>`, `Map<K, V>`, a nominal
+/// `STRUCT`, `fn(T…): R`, `Handle<K>`, `Option<T>`, `range`, `Weighted<T>`,
 /// a tower kind — is **not** dropped: since issue #1540 it is carried at
 /// full fidelity on [`Sig::value_ty`], which is what `infer::collect_globals`
 /// (and `brink-db`'s narrowed mirror of it) reads to give a global its static
@@ -162,7 +162,7 @@ fn value_type_with_annotation_override(
 /// A VAR/CONST initializer literal's type at full [`Ty`] fidelity (issue
 /// #1540) — the collection-aware sibling of
 /// [`infer_literal_type`](crate::external_check::infer_literal_type), which
-/// stops at [`InferredType`]'s scalar/`list<L>` domain.
+/// stops at [`InferredType`]'s scalar/`List<L>` domain.
 ///
 /// Policy parity with `infer::body`'s own per-body literal arms is
 /// deliberate and load-bearing: this declaration-derived stub and the real
@@ -358,16 +358,16 @@ pub fn signature(
     let mut param_annotations = Vec::new();
     let mut return_annotation = None;
     if let Some(hir) = hir {
-        // `list<L>`/declared-struct annotations resolve nominally against
+        // `List<L>`/declared-struct annotations resolve nominally against
         // every declared `LIST`/`STRUCT` in the project (spec §2/§3, TM-4b
         // §6) — computed lazily, only when this def actually has a
         // knot/stitch/var to annotate below. T1d-2b (issue #774): the
         // registered `HostManifest` now reaches `signature()` too (threaded
         // by `brink-db`'s per-def `signature_query`, the same coarse
         // project-wide dependency shape `per_file_diagnostics_query` already
-        // reads `host_manifest` at), so `handle<K>` annotations resolve
+        // reads `host_manifest` at), so `Handle<K>` annotations resolve
         // against the manifest's declared kind vocabulary here exactly like
-        // `list<L>`/`STRUCT` resolve against the project's declared names —
+        // `List<L>`/`STRUCT` resolve against the project's declared names —
         // `None` (no manifest registered) still degrades to an empty
         // handle-kind set, same "unresolved -> silent" contract every other
         // unrecognized name already gets.

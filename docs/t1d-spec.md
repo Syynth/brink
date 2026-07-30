@@ -37,12 +37,13 @@ semantic-type vocabulary the analyzer already polices — not in the
 format. This gives the capability manifest its nouns (effects-spec
 §9) and the typed dialect its checking surface.
 
-**PROPOSED**: the type form is spelled `handle<AudioInstance>`
-(lowercase `handle`, manifest-declared kind name as the parameter) —
-this extends typed-mode-spec §3's type-name list and should be
-ratified as that spec's first amendment. Under `types = strict`, a
-binding declared to take `handle<AudioInstance>` rejects a
-`handle<Timer>` argument at compile time; under gradual, kind
+**RATIFIED** (issue #1552, `docs/decision-log.md` 2026-07-27 "Type-name
+surface ruled"): the type form is spelled `Handle<AudioInstance>`
+(Uppercase `Handle`, manifest-declared kind name as the parameter) —
+this extends typed-mode-spec §3's type-name list as that spec's first
+amendment. Under `types = strict`, a
+binding declared to take `Handle<AudioInstance>` rejects a
+`Handle<Timer>` argument at compile time; under gradual, kind
 mismatch is a runtime fault at the binding boundary (the §11c
 posture).
 
@@ -153,7 +154,7 @@ diagnostics feature, not a semantic.
    `.inkt` atom, equality/display, wasm marshal leg (exhaustiveness —
    the #667 wildcard-arm hazard applies verbatim).
 2. **T1d-2 manifest kinds + analyzer**: kind vocabulary in the
-   manifest, `handle<K>` type form (typed-mode amendment), strict
+   manifest, `Handle<K>` type form (typed-mode amendment), strict
    kind-checking + gradual fault.
 3. **T1d-3 bevy-brink**: rehydrator registration + EntityMapper
    implementation, dead-handle failure values, `is_valid` binding,

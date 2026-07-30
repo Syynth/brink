@@ -85,9 +85,9 @@ in the [Option chapter's](option.md) sense — a turn-terminating fault
 guessed order:
 
 - **maps** — no defined order between entries;
-- **`Option[T]`** — `some`/`none` don't order (ch. 14 drew this line);
+- **`Option<T>`** — `some`/`none` don't order (ch. 14 drew this line);
 - **flags subsets** — a partial order, deliberately not forced total;
-- **divert targets**, function values, ranges, `Weighted[T]` tables;
+- **divert targets**, function values, ranges, `Weighted<T>` tables;
 - **the numeric tower** (`vec2`…`mat4`) — vectors have no one honest
   lexicographic order, so tower kinds are not orderable, and the
   compiler refuses even a `compare` protocol registration for them
@@ -332,8 +332,8 @@ paid first. The language's priority queue is deliberately humble —
 | Verb | Signature | Notes |
 |---|---|---|
 | `heap_push` | `heap_push(a: [T], x: T)` | statement-only mutator; add `x`, restore the invariant |
-| `heap_pop` | `heap_pop(a: [T]): Option[T]` | remove and return the minimum; `none` on empty |
-| `heap_peek` | `heap_peek(a: [T]): Option[T]` | read the minimum without removing; `none` on empty |
+| `heap_pop` | `heap_pop(a: [T]): Option<T>` | remove and return the minimum; `none` on empty |
+| `heap_peek` | `heap_peek(a: [T]): Option<T>` | read the minimum without removing; `none` on empty |
 
 The heap is a **min-heap over the doctrine order** — the same
 comparison core as `sort` and `min`, one order for the whole language —
@@ -359,7 +359,7 @@ drain: some(7) some(8) some(9) none
 ```
 
 Everything in that transcript is doctrine you've already met. The pops
-come back as `Option[T]` because an empty heap is *absence*, not a bug
+come back as `Option<T>` because an empty heap is *absence*, not a bug
 — the [Option chapter's](option.md) line verbatim, and the final `none`
 is the drain loop's natural stopping signal (spelled `string(…)` on that
 last pop only, so the signal stays *visible* on the page — a bare
@@ -377,7 +377,7 @@ clean by induction — `heap_pop` and `heap_peek` never re-scan.
 The bounded-priority-queue loop, today's spelling:
 
 ```ink
-~ temp bell: array<int> = #[]
+~ temp bell: Array<int> = #[]
 ~ heap_push(bell, 12)
 ~ heap_push(bell, 3)
 ~ heap_push(bell, 7)
@@ -411,11 +411,11 @@ of a heap array is *not* sorted — only the root is special — so read
 it only through `heap_peek`/`heap_pop`, and build it only through
 `heap_push` (starting from empty, or from an array you know satisfies
 the invariant). If real projects show this shape-confusion biting, a
-sealed `Heap[T]` type is the recorded upgrade path — designed, not
+sealed `Heap<T>` type is the recorded upgrade path — designed, not
 built, waiting on evidence.
 
 One neighbor deliberately *not* in this chapter: the dice corner's
-weighted table. `Weighted[T]` and `roll` live with the randomness
+weighted table. `Weighted<T>` and `roll` live with the randomness
 story — a draw writes the RNG cell, and the table's
 evidence-by-construction contract belongs beside seeds and replay in
 the Randomness chapter. The heap lives here because ordering is its
@@ -511,7 +511,7 @@ an *empty array* are none of these — that's absence, and it answers
   ruled by delegation 2026-07-19 (not fully reviewed).
 - **The humble heap** (verbs over plain arrays in `std::collections`;
   min-heap on the doctrine order; entry check at `heap_push`;
-  `Option` on empty; sealed `Heap[T]` recorded as the upgrade path) —
+  `Option` on empty; sealed `Heap<T>` recorded as the upgrade path) —
   `docs/stdlib-spec.md` §8; decision log 2026-07-18 ("Collections+
   ruled"). Implementation NS-A7 (#1113, PR #1156). The bevy-facing
   `ExecMode` default is the docket's F35 — pending.

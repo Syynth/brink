@@ -161,7 +161,7 @@ breaking change forever. This is the first ruling to ratify.
     boundary.
   - *Kinds* live in the external manifest (the existing host
     semantic-type vocabulary the analyzer already polices), giving the
-    future type checker `handle<AudioInstance>`-level checking, and
+    future type checker `Handle<AudioInstance>`-level checking, and
     giving the Track-B capability manifest its nouns.
 - **Snapshot economics** (ratified with the contract): a snapshot is an
   Arc bump — O(1) in time regardless of size. Transient bindings retain

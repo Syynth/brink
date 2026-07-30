@@ -1408,11 +1408,11 @@ fn e149_remove_on_a_statically_known_global_array() {
 }
 
 /// E149 — the annotated spelling of the same global (`ty_to_inferred_type`'s
-/// gap proper: an `array<T>` annotation had no `InferredType` form, so it
+/// gap proper: an `Array<T>` annotation had no `InferredType` form, so it
 /// was dropped and the *initializer* decided the global's static type).
 #[test]
 fn e149_remove_on_an_array_annotated_global() {
-    let source = "VAR arr: array<int> = #[1, 2, 3]\n=== main ===\n~ remove(arr, 0)\n-> DONE\n";
+    let source = "VAR arr: Array<int> = #[1, 2, 3]\n=== main ===\n~ remove(arr, 0)\n-> DONE\n";
     assert_error_at(
         source,
         brink_options(),

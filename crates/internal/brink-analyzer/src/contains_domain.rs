@@ -80,7 +80,7 @@
 //!   code. Only a **provably** map-typed first argument is in scope.
 //! - **A needle whose type is int/string/bool but disagrees with the
 //!   map's own declared key type** (e.g. a `string` needle against a
-//!   statically `map<int, _>` receiver) is deliberately **not** flagged.
+//!   statically `Map<int, _>` receiver) is deliberately **not** flagged.
 //!   #580's ruling — and this companion — is about the *general* runtime
 //!   key domain (`MapKey`'s three variants), not a specific map's declared
 //!   `K`; a mismatch there is a different, narrower claim (it depends on

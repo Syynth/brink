@@ -13,7 +13,7 @@
 // ERGONOMICS-FINDINGS:
 //
 // 1. SELF-REFERENTIAL STRUCTS WORK, ARENA PATTERN IS MANDATORY. MCTSNode with
-//    children: array<int> compiles and runs. However, brink's value semantics
+//    children: Array<int> compiles and runs. However, brink's value semantics
 //    (each assignment copies deeply) make it impossible to hold a reference to
 //    a node and mutate it across function calls. The backpropagation phase of
 //    MCTS (update ancestor visits) normally walks parent pointers; here, we must
@@ -39,12 +39,12 @@
 //    pattern scales past toy examples and is idiomatic for tree structures.
 
 STRUCT MCTSNode = #{
-    children: array<int>,
+    children: Array<int>,
     visits: int,
     value_sum: float
 }
 
-VAR arena: array<MCTSNode> = #[]
+VAR arena: Array<MCTSNode> = #[]
 VAR v0 = 0
 VAR v1 = 0
 VAR v2 = 0

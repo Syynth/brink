@@ -4,7 +4,7 @@
 // map-memo ports.
 //
 // TYPES POLICY: gradual (default). Every value is an `int`, a single-
-// character `string`, or an `array<array<int>>` table; gradual inference
+// character `string`, or an `Array<Array<int>>` table; gradual inference
 // resolves the whole file with no ambiguity.
 //
 // ERGONOMICS-FINDINGS:

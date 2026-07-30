@@ -1,3 +1,3 @@
-fn dispatch(cb: fn(int): bool): list<int> {
+fn dispatch(cb: fn(int): bool): List<int> {
   cb
 }

@@ -279,7 +279,7 @@ fn tag_only_line_does_not_exceed_silent() {
 #[test]
 fn total_exceedance_on_an_indexing_construct_is_e109() {
     let diags = analyze(
-        "=== function pick_first(a: array<int>): int ===\n@[effects(total)]\n~ return a[0]\n",
+        "=== function pick_first(a: Array<int>): int ===\n@[effects(total)]\n~ return a[0]\n",
     );
     assert_eq!(codes(&diags), vec![DiagnosticCode::E109], "{diags:?}");
 }
@@ -296,7 +296,7 @@ fn total_exceedance_on_a_faulting_stdlib_verb_is_e109() {
     // `min` carries `NotOrderable`/`StdlibWrongType` fault paths — §4b's
     // "orderings carry faults unconditionally" (mode-independent rows).
     let diags = analyze(
-        "=== function lowest(a: array<int>) ===\n@[effects(total)]\n~ return min(a) or 0\n",
+        "=== function lowest(a: Array<int>) ===\n@[effects(total)]\n~ return min(a) or 0\n",
     );
     assert_eq!(codes(&diags), vec![DiagnosticCode::E109], "{diags:?}");
 }

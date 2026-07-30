@@ -8,11 +8,11 @@
 //! hover read.
 //!
 //! Every declared field *type* is real source too, including the
-//! function-typed and generic (`array<int>`) shapes NG-E (issue #1505)
+//! function-typed and generic (`Array<int>`) shapes NG-E (issue #1505)
 //! unblocked by widening `brink-syntax-native`'s `struct_field` grammar from
 //! a bare `PATH` to the real `type_expr` production. The one remaining
 //! device is [`array_receiver_fixture`]'s field *value* (`items: 0` for a
-//! declared `array<int>`) — the native surface still has no array-literal
+//! declared `Array<int>`) — the native surface still has no array-literal
 //! grammar to construct a real value of that type with, so only the
 //! receiver's declared type is trustworthy there, never its value.
 
@@ -183,11 +183,11 @@ fn main() {
 
 // ─── Step 3: the T1b/NS stdlib prelude fallback (D4) ──────────────────
 
-/// A receiver typed `array<int>` — NG-E (issue #1505) means this is now
-/// spelled directly (`items: array<int>`), no more HIR-patching the
+/// A receiver typed `Array<int>` — NG-E (issue #1505) means this is now
+/// spelled directly (`items: Array<int>`), no more HIR-patching the
 /// `TypeExpr` after the fact. The field's *value* (`items: 0`) still doesn't
 /// match its declared type — the native surface has no array-literal
-/// grammar yet to construct a real `array<int>` *value* with — but that's
+/// grammar yet to construct a real `Array<int>` *value* with — but that's
 /// harmless here: the field's declared type (read straight from
 /// `structs::declared_shapes`, not from inference) is all a receiver's type
 /// needs, and the shape backing it is otherwise inert.
@@ -195,7 +195,7 @@ fn array_receiver_fixture(call_expr: &str) -> (HirFile, SymbolManifest) {
     lower(&format!(
         "\
 struct Bag {{
-  items: array<int>
+  items: Array<int>
 }}
 
 fn main() {{

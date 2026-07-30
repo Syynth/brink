@@ -8,7 +8,7 @@
 // TYPES POLICY: strict. Unlike behavior-tree/utility-ai next door (which
 // stayed gradual specifically to isolate the fn-values-as-values
 // question), this file has no fn-value indirection at all — board state
-// is a plain `array<int>`, every function boundary is a small closed set
+// is a plain `Array<int>`, every function boundary is a small closed set
 // of `int`/`bool` params, and the recursion is genuinely tree-shaped
 // (`minimax` calling itself twice per non-terminal node). That is exactly
 // dijkstra-grid's "strict earns its keep" shape, not its "three
@@ -18,7 +18,7 @@
 // ERGONOMICS-FINDINGS:
 // - Strict mode cost here was genuinely small, unlike dijkstra-grid: every
 //   helper (`check_winner`, `minimax`, `best_move`, `board_to_string`,
-//   `cell_char`) only ever operates on `array<int>`/`int`/`bool` — there
+//   `cell_char`) only ever operates on `Array<int>`/`int`/`bool` — there
 //   is no "one generic helper reused at three element types" shape for
 //   strict's monomorphism rule to split apart, because this file never
 //   needed a generic container helper in the first place. Every function
@@ -26,7 +26,7 @@
 //   the start (this corpus's convention regardless of policy), so the
 //   ONLY strict-specific fix this file actually needed was three `temp`
 //   annotations inside `check_winner` (`temp a: int = line[0]`, `b`, `c`
-//   — reading three `int` elements out of an already-`array<int>`-typed
+//   — reading three `int` elements out of an already-`Array<int>`-typed
 //   `line`). That is the identical gap dijkstra-grid's header documents
 //   at length (indexing a known-element-type array into a `temp` doesn't
 //   propagate the element type on its own; the annotation has to be
@@ -40,7 +40,7 @@
 //   be three one-word annotations, not a design-level tax.
 // - Array **value semantics were verified empirically before writing the
 //   backtracking search**, not assumed from the spec: `temp b = a; b[0]
-//   = 99` leaves `a[0]` unchanged, and mutating an `array<int>` parameter
+//   = 99` leaves `a[0]` unchanged, and mutating an `Array<int>` parameter
 //   inside a callee never reaches the caller's copy (confirmed with a
 //   throwaway two-line repro of each before committing to this file's
 //   design). That is what makes classic minimax backtracking — "place a
@@ -81,24 +81,24 @@ CONST X = 1
 CONST O = 2
 CONST DRAW = 3
 
-VAR win_lines: array<array<int>> = #[#[0, 1, 2], #[3, 4, 5], #[6, 7, 8], #[0, 3, 6], #[1, 4, 7], #[2, 5, 8], #[0, 4, 8], #[2, 4, 6]]
+VAR win_lines: Array<Array<int>> = #[#[0, 1, 2], #[3, 4, 5], #[6, 7, 8], #[0, 3, 6], #[1, 4, 7], #[2, 5, 8], #[0, 4, 8], #[2, 4, 6]]
 
-VAR reports: array<string> = #[]
+VAR reports: Array<string> = #[]
 
 ~ {
     // Position 1: X completes column (0, 3, 6) — an immediate win is on
     // the board for X to take.
-    temp board1: array<int> = #[X, EMPTY, EMPTY, X, EMPTY, EMPTY, EMPTY, EMPTY, O]
+    temp board1: Array<int> = #[X, EMPTY, EMPTY, X, EMPTY, EMPTY, EMPTY, EMPTY, O]
     push(reports, describe(board1, X, "Position 1 (X can win now)"))
 
     // Position 2: O threatens column (0, 3, 6) — X must block at 6 or
     // lose next turn.
-    temp board2: array<int> = #[O, EMPTY, EMPTY, O, X, EMPTY, EMPTY, EMPTY, X]
+    temp board2: Array<int> = #[O, EMPTY, EMPTY, O, X, EMPTY, EMPTY, EMPTY, X]
     push(reports, describe(board2, X, "Position 2 (X must block O)"))
 
     // Position 3: exactly one empty cell left, no winner yet — the only
     // legal move finishes the board in a draw.
-    temp board3: array<int> = #[X, O, X, X, O, O, O, X, EMPTY]
+    temp board3: Array<int> = #[X, O, X, X, O, O, O, X, EMPTY]
     push(reports, describe(board3, X, "Position 3 (one cell left, drawn finish)"))
 }
 
@@ -107,11 +107,11 @@ VAR reports: array<string> = #[]
 {reports[2]}
 -> END
 
-=== function check_winner(board: array<int>): int ===
+=== function check_winner(board: Array<int>): int ===
 ~ {
     temp i = 0
     while i < len(win_lines) {
-        temp line: array<int> = win_lines[i]
+        temp line: Array<int> = win_lines[i]
         temp a: int = line[0]
         temp b: int = line[1]
         temp c: int = line[2]
@@ -138,7 +138,7 @@ VAR reports: array<string> = #[]
     return DRAW
 }
 
-=== function minimax(board: array<int>, depth: int, maximizing: bool, alpha: int, beta: int): int ===
+=== function minimax(board: Array<int>, depth: int, maximizing: bool, alpha: int, beta: int): int ===
 ~ {
     temp winner = check_winner(board)
     if winner == X {
@@ -198,7 +198,7 @@ VAR reports: array<string> = #[]
     return best
 }
 
-=== function best_move(board: array<int>, player: int): int ===
+=== function best_move(board: Array<int>, player: int): int ===
 ~ {
     temp best_idx = -1
     temp best_score = -1000
@@ -243,7 +243,7 @@ VAR reports: array<string> = #[]
     return "."
 }
 
-=== function board_to_string(board: array<int>): string ===
+=== function board_to_string(board: Array<int>): string ===
 ~ {
     temp out = ""
     temp i = 0
@@ -260,7 +260,7 @@ VAR reports: array<string> = #[]
     return out
 }
 
-=== function describe(board: array<int>, player: int, label: string): string ===
+=== function describe(board: Array<int>, player: int, label: string): string ===
 ~ {
     temp before = board_to_string(board)
     temp move = best_move(board, player)

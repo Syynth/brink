@@ -255,11 +255,11 @@ impl Program {
     ///
     /// Public (T1d-3, `docs/t1d-spec.md` §4): a host minting a
     /// [`brink_format::Value::Handle`] from a binding (e.g. `spawn_timer()`
-    /// returning a fresh `handle<Timer>`) needs the compiled program's
+    /// returning a fresh `Handle<Timer>`) needs the compiled program's
     /// `NameId` for the manifest-declared kind name (`"Timer"`) to build the
     /// token — the wire form carries only the interned id, never the string.
     /// `None` means this compile never interned that name (e.g. no
-    /// `handle<Timer>`-typed signature or annotation anywhere in the source
+    /// `Handle<Timer>`-typed signature or annotation anywhere in the source
     /// graph), so no token of that kind can be minted against this program.
     /// Linear scan, same cost class as [`global_index`](Self::global_index).
     #[must_use]

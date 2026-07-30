@@ -1,7 +1,7 @@
 //! The type universe (typed-mode-spec §2/§4) and its unification rule.
 //!
 //! `Ty` is deliberately small: `int`, `float`, `bool`, `string`, `divert`,
-//! nominal `list<L>`, `array<T>`, `map<K, V>`, nominal structs (TM-4),
+//! nominal `List<L>`, `Array<T>`, `Map<K, V>`, nominal structs (TM-4),
 //! structural `fn(T…): R` function-value types (T1c), plus `Unknown` — no
 //! unions. v1 is monomorphic and
 //! unification-free of overloading/typeclasses, so the constraint lattice is
@@ -65,21 +65,21 @@ pub enum Ty {
     /// is deliberately **not** part of assignability: see [`assignable`].
     Fn(Vec<Ty>, Box<Ty>, FnRow),
     /// A host-resource handle value, nominal per its manifest-declared kind
-    /// name (T1d-2, docs/t1d-spec.md §3: `handle<K>` — mirrors `List`'s
+    /// name (T1d-2, docs/t1d-spec.md §3: `Handle<K>` — mirrors `List`'s
     /// "nominal per LIST declaration" precedent, but the vocabulary lives in
     /// the external manifest, not ink source). Two handle types unify only
     /// when the kind names match exactly; a cross-kind pair is a genuine
     /// structural mismatch and joins to `Conflicted` (#627 lattice) — a
-    /// binding declared `handle<AudioInstance>` and one declared
-    /// `handle<Timer>` are as incompatible as `int` and `string`.
+    /// binding declared `Handle<AudioInstance>` and one declared
+    /// `Handle<Timer>` are as incompatible as `int` and `string`.
     Handle(String),
-    /// `Option[T]` — the third compiler-known parameterized builtin
+    /// `Option<T>` — the third compiler-known parameterized builtin
     /// (NS-A1, `docs/stdlib-spec.md` §1.4, ruled 2026-07-18), joining
     /// `Array`/`Map` in the static type language. A compiler-owned enum
     /// shape (`none` / `some(T)`), NOT user generics (#1090's door stays
     /// shut). Unifies pointwise on the element like `Array`; against any
     /// non-Option concrete type it is a genuine structural mismatch —
-    /// the ruled `Option[T] ≠ T` strictness IS the `Conflicted` join
+    /// the ruled `Option<T> ≠ T` strictness IS the `Conflicted` join
     /// (display-boundary forgiveness is Track B4 and deliberately absent
     /// from this lattice).
     Option(Box<Ty>),
@@ -100,7 +100,7 @@ pub enum Ty {
         non_empty: bool,
     },
     /// Not (yet) resolved to a concrete type — legal in this slice (spec
-    /// `Weighted[T]` — the weighted table builtin (NS-A7,
+    /// `Weighted<T>` — the weighted table builtin (NS-A7,
     /// `docs/stdlib-spec.md` §8): compiler-known and parameterized like
     /// `Option`/`Array`, NOT user generics. Unifies pointwise on the value
     /// element; against any other concrete type it is a genuine structural
@@ -292,9 +292,9 @@ impl Ty {
             Ty::Bool => "bool".to_string(),
             Ty::String => "string".to_string(),
             Ty::Divert => "divert".to_string(),
-            Ty::List(name) => format!("list<{name}>"),
-            Ty::Array(elem) => format!("array<{}>", elem.display()),
-            Ty::Map(k, v) => format!("map<{}, {}>", k.display(), v.display()),
+            Ty::List(name) => format!("List<{name}>"),
+            Ty::Array(elem) => format!("Array<{}>", elem.display()),
+            Ty::Map(k, v) => format!("Map<{}, {}>", k.display(), v.display()),
             Ty::Struct(name) => name.clone(),
             // The effect row is deliberately absent: `display` renders the
             // *written* type language (what an annotation can spell, what a
@@ -309,12 +309,12 @@ impl Ty {
                     .join(", ");
                 format!("fn({row}): {}", ret.display())
             }
-            Ty::Handle(kind) => format!("handle<{kind}>"),
-            Ty::Option(elem) => format!("Option[{}]", elem.display()),
+            Ty::Handle(kind) => format!("Handle<{kind}>"),
+            Ty::Option(elem) => format!("Option<{}>", elem.display()),
             Ty::Range { non_empty: false } => "range".to_string(),
             Ty::Range { non_empty: true } => "NonEmptyRange".to_string(),
             Ty::Tower(kind) => kind.name().to_string(),
-            Ty::Weighted(elem) => format!("Weighted[{}]", elem.display()),
+            Ty::Weighted(elem) => format!("Weighted<{}>", elem.display()),
             Ty::Unknown => "Unknown".to_string(),
             Ty::Conflicted => "Conflicted".to_string(),
         }
@@ -415,8 +415,8 @@ impl Ord for Ty {
 /// - `int -> float` is the one directional numeric coercion ink allows
 ///   (spec §4): joining `Int` and `Float` in either order produces `Float`.
 /// - Two structurally equal types join to themselves (including recursively
-///   for `array<T>`/`map<K, V>`, so `array<int>` joined with `array<float>`
-///   is `array<float>`, not a hard mismatch).
+///   for `Array<T>`/`Map<K, V>`, so `Array<int>` joined with `Array<float>`
+///   is `Array<float>`, not a hard mismatch).
 /// - `Conflicted` is absorbing: joining it with anything (including
 ///   `Unknown`) stays `Conflicted` (#627 ruling). This is what makes
 ///   conflict detection order-independent — once a slot has seen a genuine
@@ -442,7 +442,7 @@ pub fn unify(a: &Ty, b: &Ty) -> Ty {
         // Option unifies pointwise on the element, exactly like Array
         // (NS-A1, docs/stdlib-spec.md §1.4). Option vs any non-Option
         // concrete type falls through to `Conflicted` below — the ruled
-        // `Option[T] ≠ T` strictness lives in the lattice itself.
+        // `Option<T> ≠ T` strictness lives in the lattice itself.
         (Ty::Option(x), Ty::Option(y)) => Ty::Option(Box::new(unify(x, y))),
         // Weighted unifies pointwise on the value element, exactly like
         // Array/Option (NS-A7, docs/stdlib-spec.md §8); against any other
@@ -490,7 +490,7 @@ pub fn unify(a: &Ty, b: &Ty) -> Ty {
 
 /// Fold `unify` over an iterator of observed types, starting from
 /// `Ty::Unknown` (the identity). Used for collection-literal element joins
-/// (spec §5: `#[1, 2.0]` is `array<float>`) and for folding multiple
+/// (spec §5: `#[1, 2.0]` is `Array<float>`) and for folding multiple
 /// observations of the same local/return slot across a body.
 #[must_use]
 pub fn unify_all(tys: impl IntoIterator<Item = Ty>) -> Ty {
@@ -566,10 +566,10 @@ pub fn assignable(target: &Ty, source: &Ty) -> bool {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CoalesceError {
     /// The left operand is a concrete non-Option type — coalescing is only
-    /// defined over an optional left-hand side (`Option[T] or …`).
+    /// defined over an optional left-hand side (`Option<T> or …`).
     LeftNotOption(Ty),
     /// The element/right types are structurally irreconcilable
-    /// (`Option[int] or "text"` — the join of `int` and `string` is
+    /// (`Option<int> or "text"` — the join of `int` and `string` is
     /// `Conflicted`).
     Mismatch { element: Ty, fallback: Ty },
 }
@@ -577,14 +577,14 @@ pub enum CoalesceError {
 /// The `or`-coalescing TYPING rule (NS-A1; `docs/stdlib-phase-c-findings.md`
 /// F19's recommendation, implemented as ruled by wave A1's scope):
 ///
-/// - `(Option[T], T') → join(T, T')` — the Option-then-value form collapses
+/// - `(Option<T>, T') → join(T, T')` — the Option-then-value form collapses
 ///   to the value type (the `x or default` 90% case; the `int -> float`
 ///   directional coercion applies inside the join, so
-///   `Option[int] or 1.5` is `float`).
-/// - `(Option[T], Option[U]) → Option[join(T, U)]` — the two-Option form
+///   `Option<int> or 1.5` is `float`).
+/// - `(Option<T>, Option<U>) → Option<join(T, U)>` — the two-Option form
 ///   keeps optionality, which is what makes chaining work:
 ///   `a.get(k) or a.get(k2) or default` associates left, staying
-///   `Option[V]` until the final non-Option fallback collapses it.
+///   `Option<V>` until the final non-Option fallback collapses it.
 /// - Left-associative by construction: a chain is just repeated
 ///   application, so no explicit associativity machinery is needed.
 /// - Gradual escape hatches: an `Unknown` left operand yields `Unknown`
@@ -1134,7 +1134,7 @@ mod tests {
     fn handle_display_carries_the_kind_name() {
         assert_eq!(
             Ty::Handle("AudioInstance".to_string()).display(),
-            "handle<AudioInstance>"
+            "Handle<AudioInstance>"
         );
     }
 
@@ -1146,7 +1146,7 @@ mod tests {
 
     #[test]
     fn option_unifies_pointwise_like_array() {
-        assert_eq!(opt(Ty::Int).display(), "Option[int]");
+        assert_eq!(opt(Ty::Int).display(), "Option<int>");
         assert_eq!(unify(&opt(Ty::Int), &opt(Ty::Int)), opt(Ty::Int));
         // The int -> float directional join applies inside the element.
         assert_eq!(unify(&opt(Ty::Int), &opt(Ty::Float)), opt(Ty::Float));
@@ -1157,7 +1157,7 @@ mod tests {
 
     #[test]
     fn option_vs_bare_type_is_conflicted_the_ruled_strictness() {
-        // `Option[T] ≠ T` — everywhere, no display-boundary forgiveness in
+        // `Option<T> ≠ T` — everywhere, no display-boundary forgiveness in
         // the lattice (that's Track B4, cut by position at a later layer).
         assert_eq!(unify(&opt(Ty::Int), &Ty::Int), Ty::Conflicted);
         assert_eq!(unify(&Ty::Int, &opt(Ty::Int)), Ty::Conflicted);
@@ -1170,10 +1170,10 @@ mod tests {
 
     #[test]
     fn option_nests_like_any_parameterized_builtin() {
-        // Option[Option[int]] is a real type; joining it with Option[int]
+        // Option<Option<int>> is a real type; joining it with Option<int>
         // conflicts pointwise in the element slot.
         let nested = opt(opt(Ty::Int));
-        assert_eq!(nested.display(), "Option[Option[int]]");
+        assert_eq!(nested.display(), "Option<Option<int>>");
         assert_eq!(unify(&nested, &nested), nested);
         assert_eq!(unify(&nested, &opt(Ty::Int)), opt(Ty::Conflicted));
     }
@@ -1195,7 +1195,7 @@ mod tests {
     fn range_display_names_the_refinement() {
         assert_eq!(range(false).display(), "range");
         assert_eq!(range(true).display(), "NonEmptyRange");
-        assert_eq!(opt(range(true)).display(), "Option[NonEmptyRange]");
+        assert_eq!(opt(range(true)).display(), "Option<NonEmptyRange>");
     }
 
     #[test]
@@ -1212,7 +1212,7 @@ mod tests {
 
     #[test]
     fn range_vs_other_concrete_is_conflicted() {
-        // A range never coerces — not to int, not to array<int>, and the
+        // A range never coerces — not to int, not to Array<int>, and the
         // refinement is a view over Range, never a separate kind.
         assert_eq!(unify(&range(false), &Ty::Int), Ty::Conflicted);
         assert_eq!(
@@ -1266,7 +1266,7 @@ mod tests {
 
     #[test]
     fn coalesce_chains_left_associatively() {
-        // a.get(k) or a.get(k2) or 0  ⟶  ((Option[int] or Option[int]) or int)
+        // a.get(k) or a.get(k2) or 0  ⟶  ((Option<int> or Option<int>) or int)
         let step1 = coalesce(&opt(Ty::Int), &opt(Ty::Int)).expect("chain step");
         assert_eq!(step1, opt(Ty::Int));
         assert_eq!(coalesce(&step1, &Ty::Int), Ok(Ty::Int));
