@@ -1148,10 +1148,39 @@ export interface ManifestExternal {
   path?: string[];
 }
 
+/**
+ * One declared inline-markup span kind (docs/prose-dialect-spec.md §4.2,
+ * issue #1733). Flat by design: a tag name plus the attribute names that
+ * tag accepts. Attribute *values* are static text by construction, so they
+ * are never type-checked — only the attribute name is vocabulary.
+ */
+export interface ManifestSpanKind {
+  /** The tag name as written in source, e.g. "wave" for `<wave>…</wave>`. */
+  name: string;
+  /** Attribute names this kind accepts, e.g. ["amount"] for
+   *  `<wave amount="3">`. Empty/absent = the kind takes no attributes. */
+  attrs?: string[];
+}
+
 /** The host-owned, project-wide external vocabulary. */
 export interface HostManifest {
   externals?: ManifestExternal[];
   types?: SemanticTypeDef[];
+  /**
+   * The host's inline markup vocabulary (docs/prose-dialect-spec.md §4.2).
+   * Host-authored and co-located with `externals` by §3.4's authorship test
+   * — a text-effect plugin can generate its tag declarations the way
+   * bindings generate externals. Element conventions are project-authored
+   * and live on a different surface; do not conflate them.
+   *
+   * **Empty/absent means freeform**, which is the default: markup passes
+   * through unchecked unless at least one span kind is declared here — an
+   * externals-only manifest never enables markup checking. Once declared,
+   * an undeclared tag reports `E164` and an undeclared attribute on a
+   * declared kind reports `E165`; both are warnings by default, so a host
+   * tightens them with `[lints] E164 = "deny"`.
+   */
+  markup?: ManifestSpanKind[];
 }
 
 // ── Dialogue dialect (#368, tooling / author-time) ──────────────
