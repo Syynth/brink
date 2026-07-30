@@ -1426,17 +1426,33 @@ struct TempDecl {
 /// block-bodied lambda's own `stmts` through `infer_block_stmt`, and
 /// restores the snapshot wholesale afterward — so a name declared only
 /// inside a lambda body can **never** end up as a key in the enclosing
-/// def's `body_types.locals`. There is therefore no lookup this walker's
-/// output could ever satisfy for a lambda-local temp, ascribed or not:
-/// adding an `Expr::Lambda` arm here would populate `TempDecl` entries this
-/// module's one consumer structurally cannot look up. Pinned by
+/// def's `body_types.locals`. On an *unshadowed* name that just means a
+/// naive `Expr::Lambda` arm here would populate `TempDecl` entries this
+/// module's one consumer structurally cannot look up — a dead entry,
+/// nothing more. But on a *shadowed* name (the enclosing def declares the
+/// same bare name the lambda does), `collect_temps`'s own last-write-wins
+/// insert (see this fn's doc above) means a naive `Expr::Lambda` arm would
+/// not stay dead: it would overwrite the enclosing declaration's
+/// `TempDecl` — both `range` and `annotation_ty` — with the lambda's,
+/// silently exempting the outer temp from `E065` and mis-spanning any
+/// `E066` that does fire. That shadowing collision, not the harmlessness
+/// of a dead entry on the unshadowed case, is the load-bearing reason not
+/// to descend. Pinned by
 /// `native_lambda_local_temp_ascription_is_invisible_to_enclosing_escape_check`
-/// below, which shows an unascribed and an ascribed lambda-local temp
-/// producing the identical (empty) diagnostic set. If a future change ever
-/// gives a lambda its own strict-checked frame (its own `BodyTypes`, run
-/// through `check_def` in its own right rather than folded into the
-/// enclosing def's), this walker would need its own `Expr::Lambda` arm at
-/// that point — until then there is nothing for one to exempt.
+/// (the unshadowed case, showing an unascribed and an ascribed
+/// lambda-local temp producing the identical empty diagnostic set) and
+/// `native_shadowed_lambda_local_temp_does_not_exempt_enclosing_temp`
+/// (the shadowed case, proving the enclosing temp still `E065`-escapes
+/// despite the lambda-local ascription), both below. If a future change
+/// ever gives a lambda its own strict-checked frame (its own `BodyTypes`,
+/// run through `check_def` in its own right rather than folded into the
+/// enclosing def's), that frame's own `collect_temps` call over the
+/// lambda's own body would populate the lambda's own frame-local map,
+/// never merged into the enclosing def's `body_types.locals` —
+/// sidestepping the shadowing collision above entirely. Flattening a
+/// lambda's temps into the enclosing def's map, the way a naive
+/// `Expr::Lambda` arm added directly to *this* walker would, is exactly
+/// the hazard to avoid.
 fn collect_temps(body: &Block, names: &annotations::TypeNames) -> BTreeMap<String, TempDecl> {
     let mut out = BTreeMap::new();
     collect_temps_block(body, names, &mut out);
@@ -1989,6 +2005,35 @@ mod tests {
             ascribed, unannotated,
             "an ascription on a lambda-local temp changes nothing observable — \
              the temp is invisible to this check either way: {ascribed:?}"
+        );
+    }
+
+    /// Guards the shadowing hazard the `collect_temps` doc comment calls
+    /// out: on a shadowed name, `collect_temps`'s last-write-wins insert
+    /// means a naive `Expr::Lambda` arm would overwrite the *enclosing*
+    /// `let t;`'s `TempDecl` with the lambda-local `let t: string;`'s
+    /// ascribed one, silently exempting the outer temp from `E065`. This
+    /// fixture pins the enclosing temp's escape independent of the
+    /// lambda's own (differently ascribed) shadow of the same bare name —
+    /// it is green today, undescended, and would fail the moment a naive
+    /// `Expr::Lambda` arm is added to `collect_temps_stmt` /
+    /// `collect_temps_block_stmt`. (Shadowing itself is legal here:
+    /// `check_capture_writes`
+    /// (`crates/internal/brink-ir/src/hir/lower_native/lambda.rs`) fires
+    /// `E156` only on writes to *captured* outers, never on a lambda-local
+    /// re-declaration of the same name.)
+    #[test]
+    fn native_shadowed_lambda_local_temp_does_not_exempt_enclosing_temp() {
+        let diags = native_strict_diags(
+            "fn f(n: int): int {\n  let t;\n  let g = |x: int|: int {\n    let t: string;\n    x\n  };\n  return n;\n}\n",
+        );
+        assert!(
+            diags.iter().any(|d| d.code == DiagnosticCode::E065),
+            "the enclosing, unannotated `let t;` must still escape as E065 \
+             even though a lambda-local `let t: string;` shadows the same \
+             bare name with its own ascription — a naive `Expr::Lambda` arm \
+             in `collect_temps` would overwrite the enclosing `TempDecl` \
+             and silently swallow this: {diags:?}"
         );
     }
 
