@@ -199,10 +199,16 @@ exact same output as the same program without it.
 
 Two tools surface inferred rows so you don't have to guess.
 
-**Hover** over a knot or stitch (in the editor, or `brink ide hover NAME -e
-main.ink`) shows its effect row on a stable line — `reads: …; writes: …; calls:
-…`, or `pure`, or `opaque` for a definition that dispatches through a function
-value.
+**Hover** is keyed to a definition, not a call site: hovering a reference
+resolves it to its target and shows that target's effect row on a stable
+line — `reads: …; writes: …; calls: …`, or `pure`. If a definition calls
+through a **fn-typed parameter**, its own row is `opaque` — the conservative
+floor — regardless of what any caller passes in; a hole is only discharged in
+the caller, never in the callee's own row. So if a fn-typed parameter
+receives a traced callback — a `#fn` literal or a local whose every write
+traces back to one — the concrete effects show up folded into the
+**enclosing caller's** row, not at the call site itself. To see them, hover
+the caller knot or stitch's own name.
 
 **`brink ide effects-diff`** compares every row against a baseline — a git
 revision (`--rev HEAD` for working-tree-vs-HEAD) or a second entry file

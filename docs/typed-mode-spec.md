@@ -63,6 +63,18 @@ helpers never require an annotation. Accepted cost, on the record:
 inferred signatures ripple to callers on body edits (salsa early-cutoff
 contains no-change), and a body bug can surface at a caller.
 
+**RULED (issue #1763): a block-bodied lambda's own locals are outside
+the enclosing def's strict frame** — neither `Unknown`-escape-checked
+against it nor ascription-exemptable there. This falls out of #1750's
+frame-boundary fix: `InferPass::infer_lambda` snapshots and restores
+the enclosing def's `locals` around a lambda body, so a name declared
+only inside a lambda never becomes a key in the enclosing def's
+`body_types.locals` — there is nothing for the enclosing frame's
+`Unknown`-escape check to see, ascribed or not. A lambda gets its own
+strict-checked frame only if/when a future change gives it one (its
+own `BodyTypes`, run through the checker in its own right rather than
+folded into the enclosing def's).
+
 ## 3. Annotation syntax — RULED
 
 **Inline types, brink-dialect-gated.** This revises the #473 ruling: the
