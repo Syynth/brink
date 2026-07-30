@@ -1446,8 +1446,18 @@ impl InferPass<'_, '_> {
     /// resolves, an unannotated one stays `Unknown` (mono-HM narrowing of a
     /// lambda's own params from its concrete call sites is not modeled in
     /// this slice, and inventing a type here would be worse than an honest
-    /// `Unknown`). The body's value expression is inferred for its side
-    /// effects (nested calls, uses) exactly like an interpolation's is.
+    /// `Unknown`). The whole body is inferred for its side effects (nested
+    /// calls, uses) exactly like an interpolation's value expression is —
+    /// for a `LambdaBody::Block`, that means every `stmts` entry
+    /// (`self.infer_block_stmt`, the same walk a top-level knot/stitch body
+    /// uses) as well as the tail, not the tail alone: `value_exprs()` only
+    /// ever yields the tail, so a block-bodied lambda's own temp-decls and
+    /// assignments would otherwise never be visited by this pass at all
+    /// (issue #1749 — a conservative-total, spec §3, violation; an
+    /// expression-bodied lambda has no `stmts` to miss, which is why only
+    /// the block form under-reported). `admission.rs`'s `Expr::Lambda` walk
+    /// establishes the same stmts-then-value_exprs shape for its own,
+    /// unrelated provenance check.
     ///
     /// The row carries no effects: `Ty::Fn` has nowhere to put one (#1680),
     /// which is precisely the coordination issue #1685 flagged. When
@@ -1475,6 +1485,11 @@ impl InferPass<'_, '_> {
     /// #1680's own analyzer-side work. Pinned by
     /// `brink-db/tests/issue_1680_lambda_effect_row_gap.rs`.
     fn infer_lambda(&mut self, l: &brink_ir::LambdaExpr) -> Ty {
+        if let brink_ir::LambdaBody::Block { stmts, .. } = &l.body {
+            for s in stmts {
+                self.infer_block_stmt(s);
+            }
+        }
         for e in l.body.value_exprs() {
             self.infer_expr(e);
         }

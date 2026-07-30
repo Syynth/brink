@@ -41,11 +41,17 @@
 //! ## What is *not* broken
 //!
 //! Soundness. `InferPass::infer_lambda` (`brink-analyzer/src/infer/body.rs`)
-//! walks the lambda body's expressions inside the **enclosing** definition's
-//! pass, so every atom the body performs is absorbed into the enclosing
-//! def's row. That over-reports (spec §3's conservative-total direction —
-//! over-report is always allowed) rather than under-reporting. The second
-//! test below pins exactly that, so a future precision change cannot quietly
+//! walks the lambda body's statements and value expression inside the
+//! **enclosing** definition's pass, so every atom the body performs is
+//! absorbed into the enclosing def's row. That over-reports (spec §3's
+//! conservative-total direction — over-report is always allowed) rather
+//! than under-reporting. The second test below pins that for an
+//! expression-bodied lambda (`|x| expr`); the third pins the same claim for
+//! a **block**-bodied lambda (`|x|: T { stmts…; tail }`) whose read lives in
+//! `stmts`, not `tail` — issue #1749 found that `infer_lambda` originally
+//! walked only `LambdaBody::value_exprs()` (the tail alone), so a
+//! block-bodied lambda's own statements were silently never absorbed. Both
+//! tests must keep passing, so a future precision change cannot quietly
 //! drop the absorption while making the first test pass.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -166,6 +172,72 @@ fn the_enclosing_def_absorbs_the_lambda_bodys_atoms() {
         row.direct.reads.contains(&counter),
         "the lambda body's read of `counter` must be absorbed into the \
          enclosing def's row — reads = {:?}",
+        row.direct.reads
+    );
+}
+
+/// A native project whose block-bodied lambda's *statement* (not its tail)
+/// reads `counter` — the exact shape issue #1749 found `infer_lambda`
+/// dropping. `infer_lambda` originally called only
+/// `LambdaBody::value_exprs()`, which for `LambdaBody::Block` yields the
+/// tail alone, so this statement's read was silently never absorbed into
+/// the enclosing def's row.
+const SOURCE_BLOCK_BODY: &str = "\
+var counter = 7
+
+fn bumped_block(n: int): int {
+  let f = |x|: int {
+    let a = x + counter;
+    a
+  };
+  return f(n);
+}
+
+flow main() {
+  BumpedBlock: {bumped_block(3)}
+  -> END
+}
+";
+
+/// The block-bodied twin of
+/// `the_enclosing_def_absorbs_the_lambda_bodys_atoms` (issue #1749): the
+/// read of `counter` lives in the lambda's `stmts`, not its `tail`, so this
+/// is the one shape `value_exprs()` alone could never surface — the
+/// narrower assertion the original characterization test carried only
+/// proved the expression-bodied case.
+#[test]
+fn the_enclosing_def_absorbs_a_block_bodied_lambdas_stmt_atoms() {
+    let mut db = ProjectDb::new();
+    db.set_file("main.brink", SOURCE_BLOCK_BODY.to_owned());
+    db.set_entry("main.brink");
+
+    let index = db.symbol_index();
+    let bumped = *index
+        .by_name
+        .get("bumped_block")
+        .expect("`bumped_block` is indexed")
+        .first()
+        .expect("indexed name has at least one def");
+    let counter = *index
+        .by_name
+        .get("counter")
+        .expect("`counter` is indexed")
+        .first()
+        .expect("indexed name has at least one def");
+
+    let product = db.story_data().expect("entry is set");
+    let story = product.story.as_ref().expect("story compiles cleanly");
+
+    let row = story
+        .effect_rows
+        .iter()
+        .find(|r| r.def == bumped)
+        .expect("`bumped_block` ships a container row");
+
+    assert!(
+        row.direct.reads.contains(&counter),
+        "the block-bodied lambda's *stmt* read of `counter` (not its tail) \
+         must be absorbed into the enclosing def's row — reads = {:?}",
         row.direct.reads
     );
 }
