@@ -464,11 +464,13 @@ error, violating the superset doctrine, §1). What shipped:
   this section's last bullet still wants once §7/§9.1's `Step`/`Part`
   redesign lands.
 - **Intl**: `lines.json` (`PartJson::Span`) round-trips a span fully.
-  XLIFF export (`xliff_convert.rs`) flattens a span's children into the
-  surrounding inline-element stream rather than emitting a real `<pc>`
-  paired inline code — no text or slot is lost, only the presentational
-  boundary doesn't survive an XLIFF round-trip yet. Real inline-code
-  support is "Translation, round 2" (§9, open thread 2), not this slice.
+  XLIFF export (`xliff_convert.rs`) maps a span to a real inline code —
+  non-empty `children` → a paired `<pc>`, the childless point-marker
+  shape (§8b.11) → a standalone `<ph>` (XLIFF 2.0 core has no literal
+  `<x/>`; `<ph>` is its standalone-code element) — with `name`/`attrs`
+  carried in `originalData`, so a translated `.xlf` reconstructs the
+  exact span structure on import, not just its flattened text.
+  **Resolved by #1734** — see below.
 
 Deliberately not attempted **by #1716/#1732**: manifest validation of
 markup vocabulary (§4.2's second half); the `Step`/`Part` structured
@@ -482,9 +484,12 @@ and its `AnalysisOptions`/`IdeSession`/`EditorHandle.setHostManifest`
 registration path shipped with the Tier 1 + closed Tier 2 MVP
 (`docs/host-capability-manifest.md` § "Implementation status"), so the
 `markup` section layered onto an existing facility rather than waiting on
-one. See §4.2 above. The other two items remain open: the `Step`/`Part`
-runtime surface (§7/§9.1) and the XLIFF inline-code mapping (issue
-#1734).
+one. See §4.2 above.
+
+**The XLIFF inline-code mapping has since landed too** (issue #1734,
+`xliff_convert.rs`'s `push_part_inline`/`elements_to_parts`) — real
+`<pc>`/`<ph>` mapping, described above. The only item still open is the
+`Step`/`Part` structured runtime surface (§7/§9.1).
 
 ## 5. Tooling: completions & succession (RULED doctrine)
 
@@ -658,6 +663,9 @@ unless marked:
     cue. The quote-based lean (c) is superseded.
 11. **Point markers** (`<pause/>`, `<sfx name="bell"/>`) named as an
     explicit span use case — in-text events, mapping to XLIFF `<x/>`.
+    **Superseded by #1734/§4.5** — XLIFF 2.0 core has no literal `<x/>`;
+    point markers map to a standalone `<ph subType="brink:x">` instead
+    (`<pc>` is the mapping for non-empty spans). See §4.5.
 12. **Parking is not a Step** (the questline case, §8c): `until`
     parks surface at the `FlowInstance::advance` layer
     (`AwaitingExternal`-family), never as a `Step` variant.
@@ -786,9 +794,9 @@ grace.
 1. **The `std::conventions` types** design pass (the later-stage
    module-authoring surface, §3.5) — the last substantial prose-round
    design item.
-2. **Translation, round 2** — element data in XLIFF, per-locale
-   budgets, the bump batching, scene-title localization under
-   call-lowering, the Yarn persisted-line-ID fork.
+2. **Translation, round 2** — ~~element data in XLIFF~~ (delivered by
+   #1734, §4.5), per-locale budgets, the bump batching, scene-title
+   localization under call-lowering, the Yarn persisted-line-ID fork.
 3. **Per-path export design** (§2b.4) — Fountain/FDX/VO-sheet
    renderers; export mapping incl. tag→extension translation (§8d.4).
 4. **Terminal cluster**: #1450 closed (PR #1468); #1448 landed

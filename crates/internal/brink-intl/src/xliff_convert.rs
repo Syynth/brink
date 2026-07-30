@@ -4,11 +4,36 @@ use std::collections::HashMap;
 
 use xliff2::{
     Content, DataEntry, Document, ExtensionAttribute, Extensions, File, InlineElement,
-    OriginalData, Ph, Segment, State, SubUnit, Unit,
+    OriginalData, Pc, Ph, Segment, State, SubUnit, Unit,
 };
 
 use crate::error::IntlError;
-use crate::json_model::{ContentJson, LineJson, LinesJson, PartJson, ScopeJson, SelectJson};
+use crate::json_model::{
+    AttrJson, ContentJson, LineJson, LinesJson, PartJson, ScopeJson, SelectJson, SpanJson,
+};
+
+/// `subType` marking a childless [`PartJson::Span`] (the point-marker shape,
+/// §8b.11 — `<pause/>`, `<sfx name="bell"/>`) mapped to a standalone `<ph>`
+/// inline code. XLIFF 2.0 core has no literal `<x/>` element — that's an
+/// XLIFF 1.2-ism; `<ph>` is the 2.0 standalone-code element, the same one
+/// [`PartJson::Slot`] already maps to. The `subType` token is what lets
+/// decode tell a span-marker `<ph>` apart from a slot/select `<ph>`.
+const SPAN_MARKER_SUBTYPE: &str = "brink:x";
+
+/// `subType` marking a non-empty [`PartJson::Span`] mapped to a paired
+/// `<pc>` inline code.
+const SPAN_PAIRED_SUBTYPE: &str = "brink:pc";
+
+/// Wire-only companion to [`SpanJson`] carried in XLIFF `originalData`:
+/// `name`/`attrs` only. `children` is never part of this payload — for a
+/// paired `<pc>` the children live structurally as the `<pc>`'s own
+/// `content`; for a childless point-marker `<ph>` there are none.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct SpanMetaJson {
+    name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    attrs: Vec<AttrJson>,
+}
 
 /// Brink XLIFF extension namespace URI.
 pub const BRINK_NS: &str = "urn:brink:xliff:extensions:1.0";
@@ -255,6 +280,7 @@ pub(crate) fn content_to_inline(
             let mut elements = Vec::new();
             let mut data_entries = Vec::new();
             let mut select_counter: usize = 0;
+            let mut span_counter: usize = 0;
 
             for part in template {
                 push_part_inline(
@@ -263,6 +289,7 @@ pub(crate) fn content_to_inline(
                     &mut elements,
                     &mut data_entries,
                     &mut select_counter,
+                    &mut span_counter,
                 );
             }
 
@@ -282,23 +309,34 @@ pub(crate) fn content_to_inline(
 /// One [`PartJson`] → zero-or-more [`InlineElement`]s, appended to
 /// `elements`.
 ///
-/// [`PartJson::Span`] (#1716) is **flattened**: its `children` recurse
-/// into this same function and splice directly into the surrounding
-/// stream — `name`/`attrs` are not represented as an XLIFF inline code
-/// (a paired `<pc>`, in the real XLIFF 2.0 vocabulary) yet. This is a
-/// documented v1 limitation, not a silent drop: every word and every
-/// `Slot`/`Select` inside a span still round-trips through translation
-/// correctly, only the span's own presentational boundary does not survive
-/// an XLIFF export/import round-trip. Real inline-code support for spans
-/// is "Translation, round 2" (`docs/prose-dialect-spec.md` §9, open
-/// thread 2 — "element data in XLIFF" already named there), not this
-/// issue's scope.
+/// [`PartJson::Span`] (#1716, real inline-code mapping #1734) maps to a
+/// genuine XLIFF inline code, keyed on whether it has children:
+///
+/// - Non-empty `children` (the ordinary paired shape, e.g. `<b>bold</b>`)
+///   → a paired `<pc>` inline code, recursively containing the mapped
+///   children.
+/// - Empty `children` (the point-marker shape, §8b.11 — `<pause/>`,
+///   `<sfx name="bell"/>`) → a standalone `<ph>` inline code (XLIFF 2.0
+///   core has no literal `<x/>`; `<ph>` is its standalone-code element).
+///
+/// Either way `name`/`attrs` ride along in `originalData` (mirroring how
+/// [`PartJson::Select`] already stashes its structured payload there),
+/// referenced by `dataRefStart`/`dataRef` — so a translated XLIFF file
+/// round-trips the exact span structure back, not just its flattened text.
+///
+/// This does **not** touch `line.hash` — the wire-level "span
+/// hash-transparency" ruling (`docs/prose-dialect-spec.md` §4.4) that keeps
+/// `Hello <wave>world</wave>` keyed identically to `Hello world` is
+/// computed upstream, at compile time, before `LineJson.hash` ever reaches
+/// this module; this function only ever reads `hash` as an opaque
+/// passthrough field on [`LineJson`], never derives from span content.
 fn push_part_inline(
     part: &PartJson,
     slots: &[crate::json_model::SlotJson],
     elements: &mut Vec<InlineElement>,
     data_entries: &mut Vec<DataEntry>,
     select_counter: &mut usize,
+    span_counter: &mut usize,
 ) {
     match part {
         PartJson::Literal(s) => {
@@ -342,8 +380,52 @@ fn push_part_inline(
             }));
         }
         PartJson::Span { span } => {
-            for child in &span.children {
-                push_part_inline(child, slots, elements, data_entries, select_counter);
+            let n = *span_counter;
+            *span_counter += 1;
+
+            let meta = SpanMetaJson {
+                name: span.name.clone(),
+                attrs: span.attrs.clone(),
+            };
+            // Safe — `SpanMetaJson` is always serializable.
+            let json = serde_json::to_string(&meta).unwrap_or_default();
+            let data_id = format!("dspan{n}");
+            data_entries.push(DataEntry {
+                id: data_id.clone(),
+                content: json,
+            });
+
+            if span.children.is_empty() {
+                // Point marker (§8b.11): no text to carry, so a standalone
+                // code — mapped to `<ph>` (see this function's doc comment).
+                elements.push(InlineElement::Ph(Ph {
+                    id: format!("x{n}"),
+                    data_ref: Some(data_id),
+                    equiv: None,
+                    disp: None,
+                    sub_type: Some(SPAN_MARKER_SUBTYPE.to_string()),
+                    extensions: Extensions::default(),
+                }));
+            } else {
+                let mut content = Vec::new();
+                for child in &span.children {
+                    push_part_inline(
+                        child,
+                        slots,
+                        &mut content,
+                        data_entries,
+                        select_counter,
+                        span_counter,
+                    );
+                }
+                elements.push(InlineElement::Pc(Pc {
+                    id: format!("pc{n}"),
+                    data_ref_start: Some(data_id),
+                    data_ref_end: None,
+                    sub_type: Some(SPAN_PAIRED_SUBTYPE.to_string()),
+                    content,
+                    extensions: Extensions::default(),
+                }));
             }
         }
     }
@@ -436,7 +518,39 @@ fn inline_to_content(
         return Ok(ContentJson::Plain(s.clone()));
     }
 
-    // Template reconstruction.
+    let parts = elements_to_parts(elements, data_map)?;
+    Ok(ContentJson::Template { template: parts })
+}
+
+/// True if a `subType` or `dataRef` attribute looks like it originated from
+/// a brink [`PartJson::Span`] export (`SPAN_MARKER_SUBTYPE`/
+/// `SPAN_PAIRED_SUBTYPE`, or a `dspan{n}` `originalData` id). Shared by the
+/// `<sc>`/`<ec>`/`<mrk>` decode guards below.
+fn looks_like_span_marker(sub_type: Option<&str>, data_ref: Option<&str>) -> bool {
+    sub_type.is_some_and(|s| s.starts_with("brink:"))
+        || data_ref.is_some_and(|r| r.starts_with("dspan"))
+}
+
+/// [`inline_to_content`]'s per-element reconstruction, factored out so it
+/// can recurse into a `<pc>`'s own `content` — a paired span's children are
+/// themselves [`InlineElement`]s that need the exact same Text/Ph/Pc
+/// handling as the top-level stream.
+///
+/// A brink-exported paired span always round-trips as `<pc>` (see
+/// [`push_part_inline`]) — but XLIFF 2.0 lets a translation tool
+/// re-express a `<pc>` that spans a segment split as an `<sc>`/`<ec>` pair,
+/// or wrap it in `<mrk>`, while preserving `subType`/`dataRef`. Silently
+/// falling through the catch-all below for those shapes would decode as a
+/// span that quietly lost its content — the same "silent drop" failure
+/// class this module fixes on export (#1734), just moved to import. When
+/// the `subType`/`dataRef` marks the element as brink-authored, this is an
+/// explicit decode error instead. `<sc>`/`<ec>`/`<mrk>` reconstruction is a
+/// known limitation (`docs/prose-dialect-spec.md` §4.4); genuinely foreign
+/// codes (no brink marker) are still ignored, same as before.
+fn elements_to_parts(
+    elements: &[InlineElement],
+    data_map: &HashMap<&str, &str>,
+) -> Result<Vec<PartJson>, IntlError> {
     let mut parts = Vec::new();
     for elem in elements {
         match elem {
@@ -444,7 +558,18 @@ fn inline_to_content(
                 parts.push(PartJson::Literal(s.clone()));
             }
             InlineElement::Ph(ph) => {
-                if let Some(ref data_ref) = ph.data_ref {
+                if ph.sub_type.as_deref() == Some(SPAN_MARKER_SUBTYPE) {
+                    // Point-marker span (§8b.11): reconstruct name/attrs
+                    // from originalData, no children.
+                    let meta = decode_span_meta(ph.data_ref.as_deref(), data_map)?;
+                    parts.push(PartJson::Span {
+                        span: SpanJson {
+                            name: meta.name,
+                            attrs: meta.attrs,
+                            children: Vec::new(),
+                        },
+                    });
+                } else if let Some(ref data_ref) = ph.data_ref {
                     // Select: look up in originalData.
                     let json_str = data_map
                         .get(data_ref.as_str())
@@ -461,12 +586,59 @@ fn inline_to_content(
                     parts.push(PartJson::Slot { slot });
                 }
             }
-            // Other inline elements are not produced by brink, ignore.
+            InlineElement::Pc(pc) => {
+                // Paired span: reconstruct name/attrs from originalData,
+                // children by recursing into the `<pc>`'s own content.
+                let meta = decode_span_meta(pc.data_ref_start.as_deref(), data_map)?;
+                let children = elements_to_parts(&pc.content, data_map)?;
+                parts.push(PartJson::Span {
+                    span: SpanJson {
+                        name: meta.name,
+                        attrs: meta.attrs,
+                        children,
+                    },
+                });
+            }
+            InlineElement::Sc(sc)
+                if looks_like_span_marker(sc.sub_type.as_deref(), sc.data_ref.as_deref()) =>
+            {
+                return Err(IntlError::UnsupportedSpanSplit(sc.id.clone()));
+            }
+            InlineElement::Ec(ec)
+                if looks_like_span_marker(ec.sub_type.as_deref(), ec.data_ref.as_deref()) =>
+            {
+                let id = ec
+                    .id
+                    .clone()
+                    .or_else(|| ec.start_ref.clone())
+                    .unwrap_or_default();
+                return Err(IntlError::UnsupportedSpanSplit(id));
+            }
+            InlineElement::Mrk(mrk) if looks_like_span_marker(mrk.mrk_type.as_deref(), None) => {
+                return Err(IntlError::UnsupportedSpanSplit(mrk.id.clone()));
+            }
+            // Other inline elements — and Sc/Ec/Mrk without a brink marker —
+            // are not produced by brink, ignore.
             _ => {}
         }
     }
 
-    Ok(ContentJson::Template { template: parts })
+    Ok(parts)
+}
+
+/// Look up and deserialize a [`SpanMetaJson`] from `originalData` by
+/// `dataRef`/`dataRefStart`. Shared by the point-marker `<ph>` and paired
+/// `<pc>` decode paths.
+fn decode_span_meta(
+    data_ref: Option<&str>,
+    data_map: &HashMap<&str, &str>,
+) -> Result<SpanMetaJson, IntlError> {
+    let data_ref =
+        data_ref.ok_or_else(|| IntlError::MissingSpanData("<no dataRef>".to_string()))?;
+    let json_str = data_map
+        .get(data_ref)
+        .ok_or_else(|| IntlError::MissingSpanData(data_ref.to_string()))?;
+    serde_json::from_str(json_str).map_err(|e| IntlError::InvalidSpanJson(e.to_string()))
 }
 
 fn ext_attr_value<'a>(ext: &'a Extensions, local_name: &str) -> Option<&'a str> {
