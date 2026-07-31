@@ -1333,6 +1333,30 @@ fn element_annotation_block_content_param_matching_a_capture_diagnoses_e166() {
 
 #[test]
 fn element_annotation_duplicate_block_flag_diagnoses_e159() {
+    // A single bare `block` in this exact argument position (trailing,
+    // after `args`) must be accepted on its own — proven in the same test
+    // as the duplicate, not just elsewhere in this file — so the E159
+    // below is pinned to the *second* `block` specifically, not to `block`
+    // being unrecognized in general (a bare, non-`key = "value"` arg was
+    // already E159 before this PR's `ELEMENT_BLOCK` handling existed, so
+    // an assertion against only the doubled form passes for the wrong
+    // reason and does not guard the new duplicate-flag branch at all).
+    let (single_hir, _m, single_diags) = lower_src(
+        "@[element(args = \"^@(?<name>[A-Z]+)$\", block)]\nflow cue(name, body: content) {\n  Hi, {name}!\n}\n",
+    );
+    assert!(
+        single_diags.is_empty(),
+        "a lone `block` in this position must not raise a diagnostic: {single_diags:?}"
+    );
+    let single_element = single_hir.knots[0]
+        .element_annotation
+        .as_ref()
+        .expect("a lone `block` must still lower to an ElementAnnotation");
+    assert!(
+        single_element.block,
+        "the lone `block` flag must be recorded"
+    );
+
     let (hir, _m, diags) = lower_src(
         "@[element(args = \"^@(?<name>[A-Z]+)$\", block, block)]\nflow cue(name, body: content) {\n  Hi, {name}!\n}\n",
     );

@@ -540,7 +540,7 @@ asserts every variant has a corresponding doc file and that no orphaned doc file
 | [`E163`](diagnostics/E163.md) | An `@[style(…)]` annotation with no paired `@[element(…)]` on the same declaration. |
 | [`E164`](diagnostics/E164.md) | An inline markup span (`<name>…</name>`) whose tag name is not declared in the host manifest's markup vocabulary. |
 | [`E165`](diagnostics/E165.md) | An inline markup span carries an attribute the host manifest does not declare for that span kind. |
-| [`E166`](diagnostics/E166.md) | A `block`-flagged `@[element(…, block)]` annotation whose declaration has no trailing `content`-typed... |
+| [`E166`](diagnostics/E166.md) | A `block`-flagged `@[element(…, block)]` annotation whose declaration has no trailing `content`-typed parameter to receive the captured run, or whose would-be receiver is also one of the pattern's own named captures. |
 
 ## Known limitations
 
