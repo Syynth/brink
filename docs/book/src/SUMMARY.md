@@ -35,6 +35,7 @@
   - [Effects](./toolchain/dialect/effects.md)
   - [Path Projections](./toolchain/dialect/path-projections.md)
   - [Modules](./toolchain/dialect/modules.md)
+  - [Inline Markup](./toolchain/dialect/markup.md)
   - [Conformance](./toolchain/dialect/conformance.md)
 - [Concepts](./toolchain/concepts/index.md)
   - [The Execution Model](./toolchain/concepts/execution-model.md)
