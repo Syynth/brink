@@ -497,6 +497,42 @@ struct InferPass<'a, 'b> {
     call_fn_args: BTreeMap<(DefinitionId, u32), FnArgOrigins>,
 }
 
+/// The `InferPass` fields scoped to a single lambda-body frame — see
+/// `infer_lambda`'s doc for the full hazard writeup and
+/// `docs/effects-spec.md` §4.1 for the written-up rule.
+///
+/// This type is deliberately **not** a subset carved out ad hoc at each call
+/// site. It, together with [`InferPass::frame_snapshot`] and
+/// [`InferPass::restore_frame`] below, is issue #1816's compile-time guard:
+///
+/// - [`InferPass::frame_snapshot`] destructures `&InferPass` field-by-field
+///   with **no `..` rest pattern**. Adding a field to `InferPass` makes that
+///   destructuring non-exhaustive — a compile error — until a decision is
+///   made about the new field: either fold it in as frame-scoped (add it
+///   here and to both destructurings) or explicitly ignore it as cumulative
+///   (add `new_field: _` with a comment explaining why it must survive into
+///   the enclosing frame). Silence is not an option; the code will not build.
+/// - [`InferPass::restore_frame`] destructures `FrameSnapshot` itself the
+///   same way, so a field added here but never written back in
+///   `restore_frame` is equally a compile error.
+///
+/// A field-count `const _: () = assert!(...)` was considered instead
+/// (issue #1816's ask) and rejected: `std::mem::size_of` counts bytes, not
+/// fields, so it cannot pin a field *count*, and there is no stable
+/// `std::mem::variant_count`-style field-count reflection for structs. An
+/// exhaustive-destructure helper achieves the same "compiler forces an
+/// explicit decision" property without needing one, and unlike a bare count
+/// it also forces the *restore* side to stay in lockstep, not just the
+/// snapshot side.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FrameSnapshot {
+    return_ty: Ty,
+    has_value_return: bool,
+    locals: BTreeMap<String, Ty>,
+    annotated: BTreeMap<String, Ty>,
+    local_fn_origins: BTreeMap<String, LocalFnOrigins>,
+}
+
 /// Fork A (issue #1726): what one Temp local can hold, summarized over every
 /// write to it in the whole body — the structural fact
 /// [`InferPass::resolve_pending_value_calls`] narrows a call through that
@@ -1521,6 +1557,67 @@ impl InferPass<'_, '_> {
         }
     }
 
+    /// Capture the current value of every frame-scoped field (issue #1816)
+    /// — see [`FrameSnapshot`]'s doc for why the exhaustive destructuring
+    /// below (no `..` rest pattern) is the point, not an incidental style
+    /// choice.
+    fn frame_snapshot(&self) -> FrameSnapshot {
+        let InferPass {
+            ctx: _,
+            locals,
+            return_ty,
+            has_value_return,
+            calls: _,
+            referenced_globals: _,
+            effect_writes: _,
+            external_calls: _,
+            effect_opaque: _,
+            effect_emits: _,
+            effect_tags: _,
+            effect_faults: _,
+            effect_faults_refined: _,
+            annotated,
+            value_calls: _,
+            array_remove_calls: _,
+            created_fn_values: _,
+            local_fn_origins,
+            pending_value_calls: _,
+            lambda_param_names: _,
+            param_index: _,
+            param_writes: _,
+            param_holes: _,
+            pending_call_fn_args: _,
+            call_fn_args: _,
+        } = self;
+        FrameSnapshot {
+            return_ty: return_ty.clone(),
+            has_value_return: *has_value_return,
+            locals: locals.clone(),
+            annotated: annotated.clone(),
+            local_fn_origins: local_fn_origins.clone(),
+        }
+    }
+
+    /// Write a [`FrameSnapshot`] back over every frame-scoped field (issue
+    /// #1816) — the other half of [`Self::frame_snapshot`]'s guard. The
+    /// exhaustive destructure of `snapshot` (no `..`) means a field added to
+    /// [`FrameSnapshot`] but never assigned back here is also a compile
+    /// error, not just a field added to `InferPass` and never captured.
+    fn restore_frame(&mut self, snapshot: FrameSnapshot) {
+        let FrameSnapshot {
+            return_ty,
+            has_value_return,
+            locals,
+            annotated,
+            local_fn_origins,
+        } = snapshot;
+        self.return_ty = return_ty;
+        self.has_value_return = has_value_return;
+        self.locals = locals;
+        self.annotated = annotated;
+        self.local_fn_origins = local_fn_origins;
+    }
+
     /// `|x| …` — a lambda (issue #1685) is fn-colored always, so its type is
     /// a `Ty::Fn` row built from what is *written*: an annotated param
     /// resolves, an unannotated one stays `Unknown` (mono-HM narrowing of a
@@ -1631,12 +1728,12 @@ impl InferPass<'_, '_> {
                 // Wholesale snapshot/restore (not a "remove newly-inserted
                 // keys" diff) — `bind_local` unifies into a pre-existing entry
                 // of the same name, so a diff-based undo would still leak a
-                // same-named outer local's corrupted type.
-                let saved_return_ty = self.return_ty.clone();
-                let saved_has_value_return = self.has_value_return;
-                let saved_locals = self.locals.clone();
-                let saved_annotated = self.annotated.clone();
-                let saved_local_fn_origins = self.local_fn_origins.clone();
+                // same-named outer local's corrupted type. `frame_snapshot`/
+                // `restore_frame` (issue #1816) are what make this wholesale
+                // set mechanically enforced rather than a five-line list a
+                // future field can silently fall off of — see
+                // `FrameSnapshot`'s doc.
+                let snapshot = self.frame_snapshot();
                 for s in stmts {
                     self.infer_block_stmt(s);
                 }
@@ -1656,11 +1753,7 @@ impl InferPass<'_, '_> {
                 if let Some(tail) = tail {
                     self.infer_expr(tail);
                 }
-                self.return_ty = saved_return_ty;
-                self.has_value_return = saved_has_value_return;
-                self.locals = saved_locals;
-                self.annotated = saved_annotated;
-                self.local_fn_origins = saved_local_fn_origins;
+                self.restore_frame(snapshot);
             }
             // A single-expression body has no `stmts`, so there is no frame
             // to open around it — it walks under whatever frame was already
@@ -2978,6 +3071,20 @@ mod tests {
         }
     }
 
+    /// [`knot_symbol`] with a single declared `ref` param — the shape
+    /// [`record_ref_param_writes`] needs to fold a call-site argument's
+    /// write into [`InferPass::local_fn_origins`].
+    fn knot_symbol_with_ref_param(id: DefinitionId, name: &str, param_name: &str) -> SymbolInfo {
+        SymbolInfo {
+            params: vec![brink_ir::ParamInfo {
+                name: param_name.to_string(),
+                is_ref: true,
+                is_divert: false,
+            }],
+            ..knot_symbol(id, name)
+        }
+    }
+
     /// A minimal, empty [`InferPass`] over `ctx` — every field literal
     /// [`infer_def_body`]'s own constructor uses, mechanically emptied.
     ///
@@ -3434,6 +3541,116 @@ mod tests {
             !pass.has_value_return,
             "issue #1790: the lambda's own `has_value_return` must not \
              leak into the enclosing def's `has_value_return`"
+        );
+    }
+
+    /// Pins the `LambdaBody::Expr` asymmetry (issue #1816): an
+    /// expression-bodied lambda opens **no** frame at all — unlike
+    /// `LambdaBody::Block`, whose frame-scoped fields are snapshotted before
+    /// the walk and restored after (see `infer_lambda`'s doc, and
+    /// `docs/effects-spec.md` §4.1). This is a deliberate design choice
+    /// (`Expr` has no `TempDecl`/`Assignment`/`Return` of its own to leak),
+    /// not an oversight — but nothing pinned it, so a future "fix" that adds
+    /// a snapshot/restore around the `Expr` arm to match `Block` would
+    /// silently change this behavior with no test to catch it.
+    ///
+    /// `LambdaBody::Expr` genuinely cannot write `locals`/`annotated`/
+    /// `return_ty`/`has_value_return` directly — those are only ever
+    /// mutated by `BlockStmt` variants, which an expression body has none
+    /// of. But it *can* still reach `local_fn_origins` — a frame-scoped
+    /// field — indirectly: a call inside the expression body that passes an
+    /// **enclosing** `Temp` local through a `ref` parameter records an
+    /// untraced write against that name via `record_ref_param_writes` →
+    /// `record_fn_write` → `bump_local_write`, exactly as it would in an
+    /// enclosing (non-lambda) call. Because `LambdaBody::Expr` opens no
+    /// frame, this write must be **visible after** `infer_lambda` returns —
+    /// if a future change wraps the `Expr` arm in a snapshot/restore, this
+    /// write would be silently discarded and this assertion would fail.
+    #[test]
+    fn lambda_expr_body_opens_no_frame_for_ref_param_write() {
+        let poke_id = DefinitionId::new(DefinitionTag::Address, 21);
+        let x_id = DefinitionId::new(DefinitionTag::LocalVar, 22);
+
+        let mut index = SymbolIndex::default();
+        index
+            .symbols
+            .insert(poke_id, knot_symbol_with_ref_param(poke_id, "poke", "p"));
+        index
+            .symbols
+            .insert(x_id, temp_symbol(x_id, "x", range(0, 1)));
+
+        let call_range = range(20, 24);
+        let x_arg_range = range(25, 26);
+        let mut resolution_by_range = BTreeMap::new();
+        resolution_by_range.insert(range_key(call_range), poke_id);
+        resolution_by_range.insert(range_key(x_arg_range), x_id);
+
+        let globals = BTreeMap::new();
+        let known_sigs = BTreeMap::new();
+        let inferable = BTreeSet::new();
+        let list_names = BTreeSet::new();
+        let struct_names = BTreeSet::new();
+        let handle_names = BTreeSet::new();
+        let ctx = BodyCtx {
+            resolution_by_range: &resolution_by_range,
+            index: &index,
+            globals: &globals,
+            known_sigs: &known_sigs,
+            inferable: &inferable,
+            list_names: &list_names,
+            struct_names: &struct_names,
+            handle_names: &handle_names,
+        };
+        let mut pass = empty_pass(&ctx);
+        // Enclosing def state before the lambda walk: `x` already traced to
+        // no targets, `untraced: false` — distinguishable from the
+        // `untraced: true` a ref-param write sets via `bump_local_write`.
+        pass.local_fn_origins.insert(
+            "x".to_string(),
+            LocalFnOrigins {
+                targets: BTreeSet::new(),
+                untraced: false,
+            },
+        );
+
+        // `|| poke(ref x)` — an expression-bodied lambda whose sole
+        // expression is a call passing the enclosing `x` through `poke`'s
+        // `ref` param.
+        let lambda = brink_ir::LambdaExpr {
+            ptr: Provenance::synthetic(NodeClass::Lambda, range(5, 30)),
+            params: Vec::new(),
+            return_type: None,
+            body: brink_ir::LambdaBody::Expr(Box::new(Expr::Call(
+                HirPath {
+                    segments: vec![Name {
+                        text: "poke".to_string(),
+                        range: call_range,
+                    }],
+                    range: call_range,
+                },
+                vec![Expr::Path(HirPath {
+                    segments: vec![Name {
+                        text: "x".to_string(),
+                        range: x_arg_range,
+                    }],
+                    range: x_arg_range,
+                })],
+            ))),
+        };
+
+        pass.infer_lambda(&lambda);
+
+        assert_eq!(
+            pass.local_fn_origins.get("x"),
+            Some(&LocalFnOrigins {
+                targets: BTreeSet::new(),
+                untraced: true,
+            }),
+            "issue #1816: a `LambdaBody::Expr` opens no frame, so a \
+             ref-param write reaching an enclosing local from inside the \
+             lambda's own expression must be visible in the enclosing \
+             def's `local_fn_origins` after the walk, not swallowed by a \
+             (would-be, and wrong) frame restore"
         );
     }
 }
