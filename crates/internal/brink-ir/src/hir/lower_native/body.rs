@@ -43,9 +43,9 @@ use crate::{
     Tag, TunnelCall,
 };
 
-use super::element::Elements;
 use super::choice::lower_choice_point;
 use super::cond::{lower_alternation, lower_conditional};
+use super::element::Elements;
 use super::expr::lower_expr;
 use super::provenance::native_provenance;
 
@@ -168,7 +168,13 @@ pub(super) fn lower_items(
         if node.kind() == N::CHOICE_POINT {
             if let Some(cp) = ast::ChoicePoint::cast(node.clone()) {
                 let continuation = lower_continuation(file_id, items, i + 1, elements, diags);
-                stmts.extend(lower_choice_point(file_id, &cp, continuation, elements, diags));
+                stmts.extend(lower_choice_point(
+                    file_id,
+                    &cp,
+                    continuation,
+                    elements,
+                    diags,
+                ));
             }
             return stmts;
         }
@@ -584,7 +590,14 @@ pub(super) fn lower_content_run(
             N::CHOICE_POINT => {
                 flush_content(&mut parts, &mut tags, &mut out, None, false);
                 if let Some(cp) = ast::ChoicePoint::cast(node.clone()) {
-                    let stmts = lower_content_run(file_id, &items[i + 1..], line_prov, elements, diags, true);
+                    let stmts = lower_content_run(
+                        file_id,
+                        &items[i + 1..],
+                        line_prov,
+                        elements,
+                        diags,
+                        true,
+                    );
                     let tail = crate::tail_from_stmts(&stmts);
                     let continuation = Block {
                         label: None,
@@ -592,7 +605,13 @@ pub(super) fn lower_content_run(
                         container_id: None,
                         tail,
                     };
-                    out.extend(lower_choice_point(file_id, &cp, continuation, elements, diags));
+                    out.extend(lower_choice_point(
+                        file_id,
+                        &cp,
+                        continuation,
+                        elements,
+                        diags,
+                    ));
                 }
                 return out;
             }

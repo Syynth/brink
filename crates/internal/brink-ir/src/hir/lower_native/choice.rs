@@ -23,8 +23,8 @@ use crate::{
 };
 
 use super::body::{lower_divert_like, lower_items, lower_span, push_escape, push_text};
-use super::element::Elements;
 use super::cond::{lower_alternation, lower_conditional};
+use super::element::Elements;
 use super::expr::lower_path;
 use super::provenance::native_provenance;
 

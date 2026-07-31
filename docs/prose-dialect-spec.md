@@ -244,9 +244,22 @@ fn radio(chan: string, text: content) {
   married to it.")
 - **Pattern power proportional to auditability.** Natural-notation
   pattern claiming (lines that don't announce themselves — `INT.`
-  headings, `@` cues) is reserved for the **declarative side**: one
-  centralized, auditable place. The scattered annotation surface gets
-  name dispatch.
+  headings, `@` cues) is *confined*, not banned: the declarative side it
+  was originally reserved for is **dissolved** (`docs/decision-log.md`
+  2026-07-31), so a claim is now an ordinary annotated handler spelled
+  `@[element(claims = "…")]` — still one centralized, auditable place,
+  now readable source rather than an interpreted table. **Landed by issue
+  #1838**: a claimed line is matched, its named captures bind the
+  handler's params by name (checked in *both* directions — `E160` for a
+  capture with no param, `E166` for a param with no capture, since every
+  argument of the rewrite comes from a capture), and the line lowers to
+  exactly one call. Only a **top-level `fn`** may claim (the rewrite is an
+  expression call; `E112` otherwise), only a wholly literal prose line or
+  scene heading is a candidate, and a claiming handler never claims inside
+  its own body (§3.5's staging rule). Confinement to the
+  `brink.toml`-named conventions module is not yet enforced — single-file
+  lowering has no project identity to check against, and v1 dispatch is
+  file-local, so a claim is visible in the file it affects.
 - **Zero comptime** / the rewrite is exactly **one call** / the body
   is arbitrary *runtime* code within its declared effect row —
   unchanged (addendum 2).
@@ -280,11 +293,15 @@ fn radio(chan: string, text: content) {
   decoration, firmly distinct from the runtime markup layer (output
   styling = the handler emits markup spans). Considered-deferred:
   indent-level tokens.
-- **Tooling transparency (no invisible expansion)** — unchanged:
-  `LineContext` carries the matched handler (fn + source location)
-  and capture bindings as spans (now with their style hooks); hover
-  shows the handler's signature and body; the explain-match query
-  answers is/isn't-matched + what bound.
+- **Tooling transparency (no invisible expansion)** — unchanged, and
+  half-landed by #1838: `brink_ir::HirFile::element_matches` records
+  every claimed line as `(line range, matched kind, handler name + its
+  declaration range, the claiming annotation's range, captures as spans,
+  disposition)`. `LineContext` carries the matched handler (fn + source
+  location) and capture bindings as spans (now with their style hooks);
+  hover shows the handler's signature and body; the explain-match query
+  answers is/isn't-matched + what bound — those consumers ride the held
+  editor track and read this record rather than re-running the match.
 - **Deferred**: numeric capture coercion; context injection (handlers
   reading attachment data); `Option` params for optional captures;
   `content`-typed captures (the type does not exist in the native type
@@ -296,7 +313,9 @@ fn radio(chan: string, text: content) {
   captures-bind-params-by-name compile check, all in
   `brink_ir::hir::lower_native::annotation`; nothing dispatches yet);
   cross-file dispatch-name resolution and the duplicate-dispatch-name
-  check (v1 validates one declaration at a time); **multi-token style
+  check (v1 validates one declaration at a time — and #1838's claiming
+  dispatch is file-local for the same reason); block capture (issue
+  #1839) and `fn conventions()` registration + comptime (issue #1840); **multi-token style
   values** — issue #1719's `@[style(key = "value")]` value is a single
   presentation token today (one `StyleToken` per key), not the
   space-separated list this section's own screenplay preset describes
@@ -690,12 +709,17 @@ The *grammar* half of §8b/§8d is built, in `brink-syntax-native`
   content-line spelling is untouched outside dialogue;
 - trailing `#tag`s on a `flow` header line (§8b.4).
 
-**Nothing lowers yet, deliberately.** Element roles/attachment and the
-conventions `lower:` column are §3.6/§8b.7–8 → issue #1717; the built-in
-preset is #1720; per-flow tag *APIs* are #474, whose iceboxed authoring
-surface this grammar supplies. Until those land, `hir::lower_native`
-reports every one of these shapes as not-yet-lowered (`E129`) rather than
-reading them as ordinary prose or dropping them.
+**One shape lowers; the rest deliberately do not.** Issue #1838 landed
+natural-notation dispatch, so a **scene heading** whose text an
+`@[element(claims = "…")]` handler matches lowers to exactly one call on
+that handler (`brink_ir::hir::lower_native::element`) — the first time any
+of this grammar reaches output. Everything else stays staged: element
+roles/attachment are §3.6/§8b.7–8 → issue #1717; the built-in preset is
+#1720; per-flow tag *APIs* are #474, whose iceboxed authoring surface this
+grammar supplies. (The conventions `lower:` column this paragraph used to
+name is **dissolved** — see `docs/decision-log.md` 2026-07-31.) Until those
+land, `hir::lower_native` reports every unclaimed shape as not-yet-lowered
+(`E129`) rather than reading it as ordinary prose or dropping it.
 
 The **lyrics element stays dropped** (§8b.1): there is no `LYRICS` shape
 in the grammar, and the `~` conflict died with it.

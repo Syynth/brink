@@ -76,10 +76,13 @@
 //!    block elements the grammar gained in issue #1715 — scene headings
 //!    and their header-scoped stitch bodies, cues, compact cues,
 //!    parentheticals, and a `flow` header's trailing per-flow `#tag`s
-//!    (`container::report_header_tags`). Their attachment and `lower:`
-//!    column are issue #1717's slice and the per-flow tag API is #474's,
-//!    so every one of these shapes parses cleanly and is reported here
-//!    rather than being read as ordinary prose or dropped.
+//!    (`container::report_header_tags`). Their attachment is issue
+//!    #1717's slice and the per-flow tag API is #474's, so every one of
+//!    these shapes parses cleanly and is reported here rather than being
+//!    read as ordinary prose or dropped. **One exception since issue
+//!    #1838**: a scene heading claimed by a natural-notation
+//!    `@[element(claims = "…")]` handler lowers to one call on it
+//!    ([`element`]); an *unclaimed* heading still reports.
 //! 5. **Decl-level directive/annotation channel — the annotation half is
 //!    now wired.** `@[effects(…)]` above a `flow`/`fn` populates
 //!    `effects_assertion` on the resulting `Knot`/`Stitch` (issue #1563,
@@ -347,26 +350,24 @@ fn walk_top_level(
         match child.kind() {
             N::FLOW_DECL => {
                 if let Some(f) = ast::FlowDecl::cast(child)
-                    && let Some(k) =
-                        container::lower_top_level_container(
-                            file_id,
-                            &FlowOrFn::Flow(f),
-                            elements,
-                            diags,
-                        )
+                    && let Some(k) = container::lower_top_level_container(
+                        file_id,
+                        &FlowOrFn::Flow(f),
+                        elements,
+                        diags,
+                    )
                 {
                     out.knots.push(k);
                 }
             }
             N::FN_DECL => {
                 if let Some(f) = ast::FnDecl::cast(child)
-                    && let Some(k) =
-                        container::lower_top_level_container(
-                            file_id,
-                            &FlowOrFn::Fn(f),
-                            elements,
-                            diags,
-                        )
+                    && let Some(k) = container::lower_top_level_container(
+                        file_id,
+                        &FlowOrFn::Fn(f),
+                        elements,
+                        diags,
+                    )
                 {
                     out.knots.push(k);
                 }

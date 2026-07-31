@@ -20,8 +20,8 @@ use crate::hir::doc_block::DocPolicy;
 use crate::provenance::NodeClass;
 use crate::{Block, Diagnostic, DiagnosticCode, DocBlock, Knot, Name, Param, Stitch};
 
-use super::element::Elements;
 use super::doc_comment::lower_doc_comment;
+use super::element::Elements;
 use super::provenance::native_provenance;
 
 /// Trailing `#tag`s on a `flow` header line — **container-level per-flow

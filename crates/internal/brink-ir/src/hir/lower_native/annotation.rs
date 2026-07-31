@@ -38,10 +38,15 @@
 //!   parses the `args`/`name` clauses, validates the pattern compiles as a
 //!   portable regex (`E159`), and validates its named captures against the
 //!   declaration's own params (`E160`, the spec's "compile-checked" capture
-//!   contract). The `!name` sigil dispatch rewrite the annotation exists to
-//!   drive — matching a content line, binding captures, and lowering to a
-//!   call — is **not** implemented here; see [`ElementAnnotation`]'s own
-//!   doc for why, and `docs/prose-dialect-spec.md` §3.5b's Deferred list.
+//!   contract). Issue #1838 added the **natural-notation** spelling
+//!   `claims = "…"` beside `args = "…"` — a pattern that claims a prose
+//!   line carrying no `!name` sigil. A claim is validated in both
+//!   directions (`E160` *and* `E166`: params ≡ captures, since every
+//!   argument of the rewritten call comes from a capture) and is legal
+//!   only above a top-level `fn` (`E112` otherwise — see
+//!   [`is_consumed_position`]). The dispatch itself lives in
+//!   [`super::element`]. The `!name` *sigil* rewrite remains
+//!   unimplemented; see `docs/prose-dialect-spec.md` §3.5b's Deferred list.
 //! - **`style`** — `@[style(…)]`, the companion editor-presentation
 //!   annotation (same spec section, addenda 3–4). **This module delivers
 //!   it** as a pure declaration surface — [`style_annotation`] requires a
@@ -216,6 +221,14 @@ fn container_nesting_depth(decl: &SyntaxNode) -> usize {
 /// not waved through as "consumed" only to be read by nothing.
 fn is_consumed_position(name: &str, line: &SyntaxNode) -> bool {
     match name {
+        // A *claiming* `@[element(claims = "…")]` (issue #1838) is narrower
+        // than its `args` sibling: the rewrite is an expression call, and
+        // only a top-level `fn` is callable as one. A claim on a `flow`, or
+        // on a nested `fn`, would parse and validate and then claim
+        // nothing — exactly the silent no-op the `@`-namespace rule exists
+        // to prevent — so it is reported misplaced (`E112`) instead.
+        ELEMENT if declares_claim(line) => attached_declaration(line)
+            .is_some_and(|d| d.kind() == N::FN_DECL && container_nesting_depth(&d) == 0),
         // The module-rename record is a *file-level* fact — `module::
         // lower_file_module` scans `SOURCE_FILE`'s own children for it.
         WAS => line.parent().is_some_and(|p| p.kind() == N::SOURCE_FILE),
@@ -245,6 +258,23 @@ fn is_consumed_position(name: &str, line: &SyntaxNode) -> bool {
         ALLOW => attached_declaration(line).is_some(),
         _ => false,
     }
+}
+
+/// `true` when `line` is an `@[element(…)]` carrying a `claims = "…"`
+/// clause — the natural-notation spelling (issue #1838), which has a
+/// narrower legal placement than `args = "…"`.
+///
+/// A syntactic read of the clause *key* only: whether the value is a valid
+/// pattern, and whether its captures line up with the declaration's params,
+/// stays [`parse_element`]'s job. Placement must be decidable before any of
+/// that, so a malformed claim is still reported at the right position.
+fn declares_claim(line: &SyntaxNode) -> bool {
+    ast::AnnotationLine::cast(line.clone())
+        .and_then(|l| l.args())
+        .is_some_and(|args| {
+            args.args()
+                .any(|a| a.name_token().is_some_and(|t| t.text() == ELEMENT_CLAIMS))
+        })
 }
 
 /// The erasure chokepoint: called for every `ANNOTATION_LINE` a body or

@@ -17,13 +17,19 @@
 //!
 //! # What this module is *not*
 //!
-//! Classification only. Element **roles** (attached-forward vs content vs
-//! structural), compile-time attachment, the conventions schema's `lower:`
-//! column (`scene_entered(title, slug)`, transitions as host calls) and the
-//! preset's data payloads are issues #1717/#1720 — nothing here lowers.
-//! `hir::lower_native` therefore meets these nodes at its loud-`E129`
-//! default arm ("parses cleanly but has no HIR lowering yet in this
-//! slice"), which is the deliberate staging, not a silent drop.
+//! Classification only — nothing here lowers. Element **roles**
+//! (attached-forward vs content vs structural), compile-time attachment
+//! and the preset's data payloads are issues #1717/#1720. (The conventions
+//! schema's `lower:` column this doc used to name is **dissolved** —
+//! `docs/decision-log.md` 2026-07-31, "Conventions are annotated
+//! handlers": there is a handler or there isn't.)
+//!
+//! Downstream, `hir::lower_native::element` (issue #1838) now claims a
+//! heading whose text a natural-notation `@[element(claims = "…")]`
+//! handler matches, rewriting it to one call. Every *other* shape here —
+//! and any heading nothing claims — still meets `hir::lower_native`'s
+//! loud-`E129` default arm ("parses cleanly but has no HIR lowering yet in
+//! this slice"), which is the deliberate staging, not a silent drop.
 //!
 //! # Two rulings this module implements literally
 //!

@@ -327,7 +327,8 @@ fn lower_inline_alternation_branches(
                     file_id,
                     ab_syntax,
                     &current,
-                    elements, diags,
+                    elements,
+                    diags,
                     is_block_level,
                 ));
                 current.clear();
@@ -339,7 +340,8 @@ fn lower_inline_alternation_branches(
         file_id,
         ab_syntax,
         &current,
-        elements, diags,
+        elements,
+        diags,
         is_block_level,
     ));
     branches
