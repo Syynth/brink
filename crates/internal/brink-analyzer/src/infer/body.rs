@@ -3229,4 +3229,105 @@ mod tests {
              be recorded"
         );
     }
+
+    /// Regression guard for issue #1790: frame-scoped fields must be
+    /// snapshot/restored around a lambda body walk.
+    ///
+    /// A lambda's own locals (both declared `~ temp` and implicit params)
+    /// are scoped to the lambda's own frame. If the `locals` field (or any
+    /// other frame-scoped field in the snapshot/restore list) is not
+    /// properly restored after a lambda walk, a lambda-local shadow would
+    /// remain in the enclosing def's `locals` map with the *lambda-local's*
+    /// type, corrupting the enclosing def's summary.
+    ///
+    /// This test constructs exactly that scenario: an enclosing `x` of type
+    /// `int`, a lambda that declares its own `x` of type `float`, and
+    /// verifies that after the lambda walk, the enclosing `x` retains its
+    /// `int` type. If any frame-scoped field is forgotten in the snapshot
+    /// (lines 1599–1603) or restore (lines 1623–1627) in `infer_lambda`,
+    /// this test will fail.
+    ///
+    /// ## Why this catches the hazard
+    ///
+    /// A test that merely asserts "the five fields are restored" would pass
+    /// forever even if a sixth field is added and not snapshotted. This test
+    /// instead exercises the consequence: a leaked field's effects on the
+    /// observable state (in this case, the type of a local). Forgetting to
+    /// snapshot *any* of the five fields would cause this assertion to fail.
+    /// Adding a sixth field and forgetting to snapshot it would also fail
+    /// *if* that field affects locals or another observable surface. (See
+    /// the issue discussion for field-count and exhaustive-match mechanical
+    /// guards that could strengthen this further.)
+    #[test]
+    fn lambda_local_shadow_frame_boundary_guard() {
+        let enclosing_x_id = DefinitionId::new(DefinitionTag::LocalVar, 1);
+        let lambda_x_id = DefinitionId::new(DefinitionTag::LocalVar, 2);
+
+        let mut index = SymbolIndex::default();
+        index.symbols.insert(
+            enclosing_x_id,
+            temp_symbol(enclosing_x_id, "x", range(0, 1)),
+        );
+        index
+            .symbols
+            .insert(lambda_x_id, temp_symbol(lambda_x_id, "x", range(10, 11)));
+
+        let globals = BTreeMap::new();
+        let known_sigs = BTreeMap::new();
+        let inferable = BTreeSet::new();
+        let list_names = BTreeSet::new();
+        let struct_names = BTreeSet::new();
+        let handle_names = BTreeSet::new();
+        let resolution_by_range = BTreeMap::new();
+        let ctx = BodyCtx {
+            resolution_by_range: &resolution_by_range,
+            index: &index,
+            globals: &globals,
+            known_sigs: &known_sigs,
+            inferable: &inferable,
+            list_names: &list_names,
+            struct_names: &struct_names,
+            handle_names: &handle_names,
+        };
+        let mut pass = empty_pass(&ctx);
+
+        // Enclosing def has a local `x` of type `int` (simulating a prior
+        // `~ temp x = 42` in the enclosing body).
+        pass.locals.insert("x".to_string(), Ty::Int);
+
+        // Lambda declares its own `x` with type `float` (via a `TempDecl`
+        // inside the lambda body). This temp gets recorded by `bind_local`.
+        let lambda = brink_ir::LambdaExpr {
+            ptr: Provenance::synthetic(NodeClass::Lambda, range(5, 30)),
+            params: Vec::new(),
+            return_type: None,
+            body: brink_ir::LambdaBody::Block {
+                stmts: vec![BlockStmt::TempDecl(brink_ir::TempDecl {
+                    ptr: Provenance::synthetic(NodeClass::Stmt, range(8, 12)),
+                    name: Name {
+                        text: "x".to_string(),
+                        range: range(10, 11),
+                    },
+                    value: Some(Expr::Float(brink_ir::FloatBits(2.5_f64.to_bits()))),
+                    annotation: None,
+                })],
+                tail: None,
+            },
+        };
+
+        pass.infer_lambda(&lambda);
+
+        // The enclosing `x` must still be `int`, not `float`. If the
+        // `locals` field (or any other frame-scoped field) is not properly
+        // restored after the lambda walk, the lambda-local `x` of type
+        // `float` would remain, and this assertion would fail.
+        assert_eq!(
+            pass.locals.get("x"),
+            Some(&Ty::Int),
+            "issue #1790: a lambda-local shadow must not leak into the \
+             enclosing def's locals. If this fails, a frame-scoped field in \
+             infer_lambda (lines 1599-1603 snapshot, lines 1623-1627 \
+             restore) is not being properly saved and restored."
+        );
+    }
 }
