@@ -1227,6 +1227,64 @@ fn tms_returned_doc(
     }
 }
 
+/// `decode_cp`'s export inverse: a literal string containing a scalar XML
+/// 1.0 text cannot carry — here U+0001, a C0 control character — must be
+/// exported as a real `<cp hex="0001"/>` code point, not as a raw byte
+/// inside a `<target>`/`<source>` text node. `quick_xml`'s text escaper
+/// only escapes `< > & ' "`, so before this fix the byte reached the XML
+/// unescaped: not well-formed XML 1.0, even though `quick_xml`'s own
+/// non-validating reader parses it back (#1811 follow-up).
+///
+/// The single literal `"a\u{0001}b"` must split into `Text("a")`,
+/// `Cp("0001")`, `Text("b")` — proving `push_literal_inline` splits a run
+/// of characters around the illegal scalar rather than only handling a
+/// lone one. Goes through the real XML writer and reader so the on-wire
+/// `<cp/>` shape is proved, not just the in-memory `InlineElement`.
+#[test]
+fn control_character_literal_exports_as_cp_not_raw_bytes() {
+    let lines = make_lines_json(vec![make_scope(
+        "0x0100000000000001",
+        Some("root"),
+        vec![make_line(
+            0,
+            "aaaa",
+            Some(ContentJson::Template {
+                template: vec![PartJson::Literal("a\u{0001}b".to_string())],
+            }),
+            None,
+        )],
+    )]);
+
+    let doc = lines_json_to_xliff(&lines, "en", None);
+    let xml = xliff2::write::to_string(&doc).unwrap();
+    assert!(
+        xml.contains("<cp hex=\"0001\"/>"),
+        "expected the illegal control character to export as a real <cp/> \
+         element, got:\n{xml}"
+    );
+    assert!(
+        !xml.as_bytes().contains(&0x01),
+        "the raw control byte must not appear anywhere in the exported \
+         XML — it must only appear encoded inside <cp hex=\"0001\"/>, got:\n{xml:?}"
+    );
+
+    let parsed = xliff2::read::read_xliff(&xml).unwrap();
+    let translated = fill_targets(parsed);
+    let recovered = xliff_to_lines_json(&translated).unwrap();
+
+    assert_eq!(
+        recovered.scopes[0].lines[0].content,
+        Some(ContentJson::Template {
+            template: vec![
+                PartJson::Literal("a".to_string()),
+                PartJson::Literal("\u{0001}".to_string()),
+                PartJson::Literal("b".to_string()),
+            ],
+        }),
+        "the control character must survive export -> XML -> import intact"
+    );
+}
+
 /// `<cp hex="…"/>` is XLIFF 2.0's way of writing a character by its Unicode
 /// code point, used when the producing tool cannot or will not emit the
 /// character literally. It is the exact sibling of the `<![CDATA[...]]>`
@@ -1277,6 +1335,12 @@ fn translator_authored_cp_survives_export_import_roundtrip() {
 /// `<pc>`'s own content goes through the same recursive `elements_to_parts`
 /// call that reconstructs the span's children, mirroring
 /// `cdata_inside_pc_content_is_recovered_by_elements_to_parts`.
+///
+/// Also goes through the real XML writer and reader (unlike the other
+/// hand-built-`Document` characterization tests in this file) so a bug
+/// that only shows up in the writer/reader round trip — e.g. a `<cp/>`
+/// nested inside a `<pc>` losing its `dataRefStart` sibling attribute, or
+/// the reader mis-nesting the `<cp/>` — would be caught here too.
 #[test]
 fn cp_inside_pc_content_is_recovered_by_elements_to_parts() {
     let doc = tms_returned_doc(
@@ -1299,6 +1363,13 @@ fn cp_inside_pc_content_is_recovered_by_elements_to_parts() {
             }],
         }),
     );
+
+    let xml = xliff2::write::to_string(&doc).unwrap();
+    assert!(
+        xml.contains("<cp hex=\"00E8\"/>"),
+        "expected a real <cp/> element nested in the <pc> in the serialized XLIFF, got: {xml}"
+    );
+    let doc = xliff2::read::read_xliff(&xml).unwrap();
 
     let recovered = xliff_to_lines_json(&doc).unwrap();
 
@@ -1526,5 +1597,64 @@ fn foreign_pc_without_span_data_errors_not_silently_dropped() {
     assert!(
         matches!(err, brink_intl::IntlError::MissingSpanData(_)),
         "expected MissingSpanData for a foreign <pc>, got: {err:?}"
+    );
+}
+
+/// Characterization test for the `<ph>` arm's foreign, `dataRef`-bearing
+/// case. This is the *canonical* foreign `<ph>` shape — a native code plus
+/// its `<data>` payload, e.g. `<ph id="ph1" dataRef="d1"/>` with
+/// `<data id="d1">&lt;b&gt;</data>` — and it is **not** the empty,
+/// content-free placeholder the `Ph` arm's doc comment describes as
+/// "ignored". Every `dataRef`-bearing `<ph>` is read as brink
+/// `originalData`, so a foreign one fails loudly instead of decoding or
+/// being silently skipped: `InvalidSelectJson` when the referenced entry
+/// exists but is not brink's `SelectJson` shape, `MissingSelectData` when
+/// the `dataRef` names no entry at all. Pinned here, mirroring
+/// `foreign_pc_without_span_data_errors_not_silently_dropped`, so a future
+/// change cannot quietly turn either failure into a drop.
+#[test]
+fn foreign_ph_with_data_ref_errors_not_silently_dropped() {
+    // A `<data>` entry exists, but its content is a host format's native
+    // code payload, not brink `SelectJson`.
+    let doc = tms_returned_doc(
+        vec![InlineElement::Ph(xliff2::Ph {
+            id: "ph1".to_string(),
+            data_ref: Some("d1".to_string()),
+            equiv: None,
+            disp: None,
+            sub_type: None,
+            extensions: Extensions::default(),
+        })],
+        Some(xliff2::OriginalData {
+            entries: vec![xliff2::DataEntry {
+                id: "d1".to_string(),
+                content: "<b>".to_string(),
+            }],
+        }),
+    );
+    let err = xliff_to_lines_json(&doc).unwrap_err();
+    assert!(
+        matches!(err, brink_intl::IntlError::InvalidSelectJson(_)),
+        "expected InvalidSelectJson for a foreign <ph dataRef> whose entry \
+         is not SelectJson, got: {err:?}"
+    );
+
+    // The `dataRef` names no entry at all.
+    let doc = tms_returned_doc(
+        vec![InlineElement::Ph(xliff2::Ph {
+            id: "ph1".to_string(),
+            data_ref: Some("d1".to_string()),
+            equiv: None,
+            disp: None,
+            sub_type: None,
+            extensions: Extensions::default(),
+        })],
+        None,
+    );
+    let err = xliff_to_lines_json(&doc).unwrap_err();
+    assert!(
+        matches!(err, brink_intl::IntlError::MissingSelectData(ref id) if id == "d1"),
+        "expected MissingSelectData(\"d1\") for a foreign <ph dataRef> with \
+         no matching <data> entry, got: {err:?}"
     );
 }

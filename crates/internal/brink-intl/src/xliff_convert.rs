@@ -330,6 +330,46 @@ pub(crate) fn content_to_inline(
 /// computed upstream, at compile time, before `LineJson.hash` ever reaches
 /// this module; this function only ever reads `hash` as an opaque
 /// passthrough field on [`LineJson`], never derives from span content.
+/// Append a [`PartJson::Literal`] string as inline elements, escaping any
+/// scalar value XML 1.0 text cannot carry as a `<cp hex="…"/>` code point.
+///
+/// This is [`decode_cp`]'s export inverse. Without it, a literal recovered
+/// *from* a `<cp>` on import (or any other literal that happens to contain
+/// one of these scalars, e.g. a translator-authored C0 control character)
+/// would round-trip back out through `InlineElement::Text` — and
+/// `quick_xml`'s text escaper only escapes `< > & ' "`, so a character like
+/// U+0001 would be written as a raw byte, producing a `<target>` that is
+/// not well-formed XML 1.0 even though `quick_xml`'s own non-validating
+/// reader will parse it back (#1811 follow-up).
+///
+/// XML 1.0's `Char` production forbids C0 controls other than tab/LF/CR
+/// (`< '\u{20}'`, excluding `\t`/`\n`/`\r`) and the two noncharacters
+/// U+FFFE/U+FFFF; every other scalar `char` can reach here because
+/// `PartJson::Literal` is a `String`, which is already valid UTF-8 and
+/// cannot hold an unpaired surrogate.
+fn push_literal_inline(s: &str, elements: &mut Vec<InlineElement>) {
+    let mut run = String::new();
+    for c in s.chars() {
+        if is_xml_illegal_char(c) {
+            if !run.is_empty() {
+                elements.push(InlineElement::Text(std::mem::take(&mut run)));
+            }
+            elements.push(InlineElement::Cp(format!("{:04X}", c as u32)));
+        } else {
+            run.push(c);
+        }
+    }
+    if !run.is_empty() {
+        elements.push(InlineElement::Text(run));
+    }
+}
+
+/// True for a Unicode scalar value XML 1.0 text content cannot carry
+/// literally — see [`push_literal_inline`].
+fn is_xml_illegal_char(c: char) -> bool {
+    (c < '\u{20}' && !matches!(c, '\t' | '\n' | '\r')) || matches!(c, '\u{FFFE}' | '\u{FFFF}')
+}
+
 fn push_part_inline(
     part: &PartJson,
     slots: &[crate::json_model::SlotJson],
@@ -340,7 +380,7 @@ fn push_part_inline(
 ) {
     match part {
         PartJson::Literal(s) => {
-            elements.push(InlineElement::Text(s.clone()));
+            push_literal_inline(s, elements);
         }
         PartJson::Slot { slot } => {
             let disp = slots
@@ -549,7 +589,7 @@ fn looks_like_span_marker(sub_type: Option<&str>, data_ref: Option<&str>) -> boo
 /// |---|---|---|
 /// | `Text`, `CData` | **decoded** as [`PartJson::Literal`] | CDATA is plain character data spelled with a different XML quoting mechanism — no structural ambiguity, nothing to lose (#1799, and #765 on the sibling `xliff2` metadata path) |
 /// | `Cp` | **decoded** as [`PartJson::Literal`] | `<cp hex="…"/>` is XLIFF's escape hatch for a character its producer could not or would not write literally; decoding the code point restores exactly the character the translator meant, with no structure to reconstruct (#1811) |
-/// | `Ph` | **decoded** as a span point marker, [`PartJson::Select`] or [`PartJson::Slot`]; a `<ph>` matching none of those is **ignored** | a foreign `<ph>` is an empty standalone-code placeholder for the *host* format's native code — it has no character content, so nothing translator-authored is lost |
+/// | `Ph` | **decoded** as a span point marker when `subType` is the brink marker; **decoded** (or explicitly errors) as [`PartJson::Select`] when it carries *any* `dataRef` — a non-brink `dataRef` is not ignored, it fails as [`IntlError::MissingSelectData`]/[`IntlError::InvalidSelectJson`]; **decoded** as [`PartJson::Slot`] when its `id` starts with `s`; **ignored** only otherwise — a bare `<ph>` with no `dataRef` and a non-slot `id` | that bare shape is the only one that is a genuinely empty standalone-code placeholder for the *host* format's native code with no character content; every `dataRef`-bearing `<ph>` is read as brink `originalData`, so a foreign `dataRef` (a real XLIFF 2.0 shape: a native code plus its `<data>` payload) is not silently dropped, it is a loud decode failure |
 /// | `Pc` | **decoded** as [`PartJson::Span`], recursing into its children | brink's own paired-span shape |
 /// | `Sc`, `Ec`, `Mrk` *with* a brink marker | **explicit [`IntlError::UnsupportedSpanSplit`]** | a brink `<pc>` that a tool re-expressed as a split pair or a wrapping mark: the structure cannot be reconstructed, so failing loudly beats decoding a span that quietly lost its content — the same failure class fixed on export by #1734 |
 /// | `Mrk` *without* a brink marker | **decoded** by splicing its children in place | a TMS `<mrk>` (terminology, comment, QA flag) wraps a *span of translated text*; the annotation's own `id`/`type`/`ref`/`value` are not brink content and are dropped, but the text it marks is translator work and must survive (#1812) |
@@ -676,6 +716,11 @@ fn elements_to_parts(
 /// range, or a surrogate) is malformed XLIFF: it is reported as
 /// [`IntlError::InvalidCodePoint`] rather than skipped, because silently
 /// dropping it is the very failure this arm exists to prevent.
+///
+/// [`push_literal_inline`] is this function's export inverse — a decoded
+/// literal that is re-serialized (e.g. by `regenerate-xliff`) writes the
+/// same illegal scalar back out as `<cp>` rather than as raw text, so the
+/// round trip stays well-formed XML 1.0.
 fn decode_cp(hex: &str) -> Result<char, IntlError> {
     u32::from_str_radix(hex, 16)
         .ok()
