@@ -175,27 +175,41 @@ fn perf_scales_linearly_with_file_size() {
     for &n in &sizes {
         let (micros, bytes) = timed_admission_micros(n);
         results.push((n, bytes, micros));
+        let us_per_byte = f64::from(u32::try_from(micros).unwrap_or(u32::MAX)) / bytes as f64;
         eprintln!(
             "B0.3 perf: {n} knots, {bytes} bytes source -> validate_admission {micros} us \
-             ({:.3} us/byte)",
-            f64::from(u32::try_from(micros).unwrap_or(u32::MAX)) / bytes as f64
+             ({us_per_byte:.6} us/byte)"
         );
     }
 
-    // O(n)/O(n log n) budget check: from the smallest to the largest size
-    // (64x more knots), wall-clock time must not grow super-linearly beyond
-    // a generous constant-factor allowance for noise/log-linear terms
-    // (BTreeSet/HashSet-free — this pass has no sorting step at all, so
-    // linear is the honest expectation; the multiplier just absorbs
-    // measurement jitter on a shared/virtualized CI box).
-    let (small_n, _small_bytes, small_us) = results[0];
-    let (large_n, _large_bytes, large_us) = results[results.len() - 1];
-    let size_ratio = large_n as f64 / small_n as f64;
-    let time_ratio = (large_us.max(1)) as f64 / (small_us.max(1)) as f64;
+    // O(n)/O(n log n) budget check: per-byte cost must not grow with input
+    // size, proving linear (or log-linear) scaling. Measured as a ratio of
+    // per-byte costs (small to large) rather than absolute time — but this
+    // was ALREADY true before this budget existed, and the ratio alone does
+    // not make the check load-independent: the small measurement (~460us,
+    // 5 iterations) is short enough to slip through unpreempted, while the
+    // large measurement (~33ms, 5 iterations) spends far longer exposed to
+    // the scheduler under a fully-parallel nextest run, so a single
+    // preemption skews its per-byte cost upward regardless of how the ratio
+    // is normalized. The #1810 flake measured cost_ratio 4.55x under load.
+    // An 8x budget absorbs that asymmetry while still catching genuine
+    // superlinear behavior (BTreeSet/HashSet-free — this pass has no
+    // sorting step at all, so linear is the honest expectation; a true
+    // O(n^2) pass would show ~66x growth over this byte range).
+    let (small_n, small_bytes, small_us) = results[0];
+    let (large_n, large_bytes, large_us) = results[results.len() - 1];
+    // Floor the raw microsecond counts (not the derived per-byte float) so a
+    // fast box that rounds a real measurement down to 0us via `as_micros()`
+    // truncation can't manufacture a near-zero denominator and an inflated
+    // ratio.
+    let small_us_per_byte = small_us.max(1) as f64 / small_bytes as f64;
+    let large_us_per_byte = large_us.max(1) as f64 / large_bytes as f64;
+    let cost_ratio = large_us_per_byte / small_us_per_byte;
     assert!(
-        time_ratio < size_ratio * 4.0,
-        "validate_admission does not look linear: {size_ratio:.1}x the input took \
-         {time_ratio:.1}x the time (small={small_us}us large={large_us}us) — \
-         budget is a 4x allowance over linear"
+        cost_ratio < 8.0,
+        "validate_admission does not look linear: per-byte cost grew from \
+         {small_us_per_byte:.6} to {large_us_per_byte:.6} us/byte (ratio {cost_ratio:.2}x) — \
+         over {small_n} to {large_n} knots — \
+         budget is 8x growth (linear allowance + variance under load)"
     );
 }
