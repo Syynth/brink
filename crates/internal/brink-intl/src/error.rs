@@ -45,6 +45,8 @@ pub enum IntlError {
     MissingSpanData(String),
     #[error("invalid span JSON in originalData: {0}")]
     InvalidSpanJson(String),
+    #[error("invalid XLIFF `<cp hex=\"{0}\"/>`: `{0}` is not a hexadecimal Unicode scalar value")]
+    InvalidCodePoint(String),
     #[error(
         "inline code `{0}` looks like a brink span (`<pc>`) that a translation tool \
          re-expressed as `<sc>`/`<ec>`/`<mrk>`, likely by splitting it across a segment \
