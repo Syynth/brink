@@ -1085,7 +1085,7 @@ impl InferPass<'_, '_> {
     /// `ref` params their own row-variable/hole treatment analogous to
     /// §6.1b's non-`ref` `param_holes`, resolved against the concrete cell
     /// bound at each creation site — remains open as a §8 precision rung
-    /// under #1680, not a soundness question.
+    /// under #1809, not a soundness question.
     ///
     /// Nothing about this second call path is frame-scoped: the fields it
     /// touches (`effect_writes`, `param_writes` via `record_fn_write`) are

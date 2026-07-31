@@ -498,7 +498,7 @@ folded into `docs/decision-log.md` as a settled ruling. Enumerated:
    params their own row-variable/hole treatment analogous to §6.1b's
    non-`ref` `param_holes`, resolved against the concrete cell bound at
    each creation site — #1755's option (b), a §8 refinement rung under
-   #1680.
+   #1809.
 6. **The heap** (a fn value read out of a `VAR`/`CONST` cell, or a
    collection element) — never classified as `Local` in the first
    place (`local_call_origin` only recognizes `Temp`/`Param`), so it is
@@ -530,7 +530,9 @@ join), but that is a §8 refinement to the heap answer, not a new
 is complete against the traced code, with every channel either modelled,
 deliberately floored, or ruled out of this mechanism's keyspace by
 construction; the enumeration itself still awaits maintainer
-ratification before it can be treated as settled.
+ratification before it can be treated as settled. Channel 5's precision
+remainder is tracked as #1809, not #1680 (§6.1c below), which closed
+COMPLETED before this pass landed.
 
 ### 6.1b Row variables on fn-typed params — SHIPPED (issue #1680)
 
@@ -638,7 +640,10 @@ current query graph, since effects never read types), but §6.1a's
 prohibition is written as *"no inferred row **or signature** may ever be
 consulted to decide an edge"*, and a global cell's declaration-derived
 `Ty::Fn` is reached through `signature()`. That decision is what the
-heap rung needs next, and it is the whole of what remains on #1680.
+heap rung needs next, and it is now tracked as #1753 (#1680 itself
+closed COMPLETED once steps (2)–(3) landed; #1753 is the live tracker
+for this remainder, distinct from #1809's channel-5 `ref`-param
+precision rung above).
 
 ## 7. Runtime narrowing: selection, not inference — RULED
 
