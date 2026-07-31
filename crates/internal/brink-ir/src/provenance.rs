@@ -165,6 +165,11 @@ pub enum NodeClass {
     /// value (RULED 2026-07-19, issue #1685). Native-only: ink's grammar
     /// cannot spell a lambda.
     Lambda = 53,
+    /// An inline markup span (`<name attr="v">…</name>`, issue #1716).
+    /// Native-only: ink's grammar cannot spell markup. Stamped per-span so
+    /// diagnostics (`E164`/`E165`, issue #1782) can point at the exact span
+    /// rather than its enclosing content line.
+    Span = 54,
 }
 
 impl NodeClass {
@@ -220,6 +225,7 @@ impl NodeClass {
             51 => Self::ConditionalBranch,
             52 => Self::SequenceBranch,
             53 => Self::Lambda,
+            54 => Self::Span,
             _ => return None,
         })
     }
@@ -388,7 +394,7 @@ mod tests {
         // to the enum means bumping this name to the new last variant —
         // otherwise the sentinel starts naming an assigned value and this
         // assertion fails.
-        assert_eq!(NodeClass::from_u16(NodeClass::Lambda.as_u16() + 1), None);
+        assert_eq!(NodeClass::from_u16(NodeClass::Span.as_u16() + 1), None);
         assert_eq!(NodeClass::from_u16(2), None, "generic range is reserved");
     }
 

@@ -38,7 +38,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use brink_ir::hir::{Choice, Content, ContentContext, ContentPart, HirFile, HirVisitor, SpanPart};
+use brink_ir::hir::{Content, ContentContext, ContentPart, HirFile, HirVisitor, SpanPart};
 use brink_ir::{Diagnostic, DiagnosticCode, FileId, HostManifest, Provenance};
 
 /// Check every inline markup span in `files` against the manifest's declared
@@ -71,7 +71,6 @@ pub fn check(files: &[(FileId, &HirFile)], manifest: Option<&HostManifest>) -> V
             file,
             vocab: &vocab,
             out: &mut out,
-            choice_stack: Vec::new(),
         };
         brink_ir::hir::visit::visit(hir, &mut walker);
     }
@@ -89,55 +88,30 @@ struct SpanWalker<'a> {
     file: FileId,
     vocab: &'a BTreeMap<&'a str, BTreeSet<&'a str>>,
     out: &'a mut Vec<Diagnostic>,
-    /// Provenance of every choice currently being walked, innermost last.
-    ///
-    /// A choice's three content regions (`start_content`/`bracket_content`/
-    /// `inner_content`) are always built with `Content { ptr: None, .. }` —
-    /// `lower_choice_region` has no per-region syntax node to point at, only
-    /// the whole `text[bracket]inner` choice line — so [`report`](Self::report)
-    /// needs a fallback range when it is inside one. `Choice::ptr` is not
-    /// `Option`, so once this stack is non-empty a diagnostic always has
-    /// somewhere to point. A `Vec` (not a single field) because choice
-    /// points can nest inside a choice's own body.
-    choice_stack: Vec<Provenance>,
 }
 
 impl SpanWalker<'_> {
-    /// Report against the enclosing content line's range, falling back to
-    /// the innermost enclosing choice's range when the content line itself
-    /// carries no provenance (choice display-slot content — see
-    /// `choice_stack`).
+    /// Report against the span's own range (issue #1782: `SpanPart::ptr`).
     ///
-    /// A [`SpanPart`] carries no [`Provenance`] of its own (v1: it is a
-    /// plain inline content fragment, like `Text`/`Glue`), so the enclosing
-    /// line — or, failing that, the enclosing choice — is the narrowest
-    /// range available. Every diagnostic here names the offending
-    /// tag/attribute in its message, so a line carrying several spans stays
-    /// unambiguous. A diagnostic must never be silently discarded for want
-    /// of a range (silent-drop rule): a body-level `Content` always has a
-    /// `ptr` and a choice-region `Content` is always covered by
-    /// `choice_stack`, so this never falls through both.
-    fn report(&mut self, content: &Content, code: DiagnosticCode, message: String) {
-        let Some(range) = content
-            .ptr
-            .as_ref()
-            .map(Provenance::text_range)
-            .or_else(|| self.choice_stack.last().map(Provenance::text_range))
-        else {
-            return;
-        };
+    /// Every `SpanPart` is lowered from a real `SPAN` syntax node (native is
+    /// the only frontend that can spell markup), so this always has
+    /// somewhere precise to point — no enclosing-line or enclosing-choice
+    /// fallback needed. This is what makes several spans on one line, even
+    /// repeats of the same undeclared tag, distinguishable: each gets its
+    /// own range instead of sharing the whole content line's.
+    fn report(&mut self, span: &SpanPart, code: DiagnosticCode, message: String) {
         self.out.push(Diagnostic {
             file: self.file,
-            range,
+            range: Provenance::text_range(&span.ptr),
             message,
             code,
         });
     }
 
-    fn check_span(&mut self, content: &Content, span: &SpanPart) {
+    fn check_span(&mut self, span: &SpanPart) {
         match self.vocab.get(span.name.as_str()) {
             None => self.report(
-                content,
+                span,
                 DiagnosticCode::E164,
                 format!(
                     "unknown markup tag `<{}>`: the host manifest's markup vocabulary does not declare it",
@@ -148,7 +122,7 @@ impl SpanWalker<'_> {
                 for (attr, _value) in &span.attrs {
                     if !allowed.contains(attr.as_str()) {
                         self.report(
-                            content,
+                            span,
                             DiagnosticCode::E165,
                             format!(
                                 "unknown attribute `{attr}` on markup tag `<{}>`: the host manifest does not declare it for this span kind",
@@ -160,13 +134,13 @@ impl SpanWalker<'_> {
             }
         }
         for child in &span.children {
-            self.check_part(content, child);
+            self.check_part(child);
         }
     }
 
-    fn check_part(&mut self, content: &Content, part: &ContentPart) {
+    fn check_part(&mut self, part: &ContentPart) {
         match part {
-            ContentPart::Span(span) => self.check_span(content, span),
+            ContentPart::Span(span) => self.check_span(span),
             // Logic nests freely inside markup and vice versa (§4.3), so a
             // span can hide inside an inline conditional's or sequence's
             // branch content. Those branches are `Content` nodes of their
@@ -183,14 +157,6 @@ impl SpanWalker<'_> {
 }
 
 impl HirVisitor for SpanWalker<'_> {
-    fn enter_choice(&mut self, choice: &Choice) {
-        self.choice_stack.push(choice.ptr);
-    }
-
-    fn exit_choice(&mut self, _choice: &Choice) {
-        self.choice_stack.pop();
-    }
-
     fn enter_content(&mut self, content: &Content, _ctx: ContentContext) {
         // `content.parts` only — deliberately *not* `content.tags`, even
         // though a `Tag` structurally owns a `Vec<ContentPart>` too. The
@@ -201,7 +167,7 @@ impl HirVisitor for SpanWalker<'_> {
         // tag text — tags are metadata, not prose.) If tag lowering ever
         // gains real content parts, this is the line that has to change.
         for part in &content.parts {
-            self.check_part(content, part);
+            self.check_part(part);
         }
     }
 }
@@ -384,12 +350,12 @@ mod tests {
         // A real `{? … }` choice point, not a bare bullet — native has no
         // bare knot-level `*`/`+` (`brink-syntax-native/src/parser/choice.rs`:
         // "All choices live inside a point"). `lower_choice_region` builds
-        // all three of a choice's display regions
-        // (start/bracket/inner) with `Content { ptr: None, .. }` — there is
-        // no per-region syntax node, only the whole `text[bracket]inner`
-        // choice line — so this pins that a span in each of the three still
-        // gets diagnosed via `SpanWalker`'s choice-provenance fallback
-        // rather than being silently dropped.
+        // all three of a choice's display regions (start/bracket/inner) with
+        // `Content { ptr: None, .. }` — there is no per-region syntax node,
+        // only the whole `text[bracket]inner` choice line — so this pins
+        // that a span in each of the three still gets diagnosed via its own
+        // `SpanPart::ptr` (issue #1782) rather than needing the enclosing
+        // `Content`'s (absent) provenance at all.
         let diags = run(
             "flow a() {\n  {?\n    * <glitch>start</glitch>[<shake>bracket</shake>]<wobble>inner</wobble>\n  }\n}\n",
             Some(&wave_manifest()),
@@ -446,6 +412,60 @@ mod tests {
             Some(&wave_manifest()),
         );
         assert_eq!(codes(&diags), ["E164", "E164"], "{diags:?}");
+    }
+
+    // ── Per-span provenance (issue #1782) ────────────────────────────────
+
+    #[test]
+    fn two_different_undeclared_tags_on_one_line_get_distinct_squiggle_ranges() {
+        // Before #1782, `SpanPart` carried no `Provenance` of its own, so
+        // both diagnostics pointed at the *whole content line* — a consumer
+        // saw two identical-range squiggles instead of one per tag.
+        let src = "flow a() {\n  <glitch>a</glitch> and <shake>b</shake>\n}\n";
+        let diags = run(src, Some(&wave_manifest()));
+        assert_eq!(codes(&diags), ["E164", "E164"], "{diags:?}");
+        assert_ne!(
+            diags[0].range, diags[1].range,
+            "two spans on one line must not share a range: {diags:?}"
+        );
+        assert_eq!(
+            &src[usize::from(diags[0].range.start())..usize::from(diags[0].range.end())],
+            "<glitch>a</glitch>",
+            "range must cover only the offending span, not the whole line"
+        );
+        assert_eq!(
+            &src[usize::from(diags[1].range.start())..usize::from(diags[1].range.end())],
+            "<shake>b</shake>",
+            "range must cover only the offending span, not the whole line"
+        );
+    }
+
+    #[test]
+    fn repeated_undeclared_tag_on_one_line_still_gets_per_occurrence_ranges() {
+        // The sharper case from #1782: the *same* undeclared tag twice on
+        // one line used to produce two byte-identical diagnostics (same
+        // code, same line-wide range, same message) — indistinguishable to
+        // a consumer. Message text is still identical (both name `<pulse>`),
+        // but the range must now single out each occurrence.
+        let src = "flow a() {\n  <pulse>a</pulse> <pulse>b</pulse>\n}\n";
+        let diags = run(src, Some(&wave_manifest()));
+        assert_eq!(codes(&diags), ["E164", "E164"], "{diags:?}");
+        assert_eq!(
+            diags[0].message, diags[1].message,
+            "same undeclared tag name -> same message text: {diags:?}"
+        );
+        assert_ne!(
+            diags[0].range, diags[1].range,
+            "repeated undeclared tag must still get per-occurrence ranges: {diags:?}"
+        );
+        assert_eq!(
+            &src[usize::from(diags[0].range.start())..usize::from(diags[0].range.end())],
+            "<pulse>a</pulse>"
+        );
+        assert_eq!(
+            &src[usize::from(diags[1].range.start())..usize::from(diags[1].range.end())],
+            "<pulse>b</pulse>"
+        );
     }
 
     // ── Severity is configurable, which needs a `Warning` base ──────────

@@ -826,6 +826,14 @@ pub enum ContentPart {
 /// span is admitted to line recognition (§4.4).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpanPart {
+    /// This span's own provenance (issue #1782) — the whole `<name …>…
+    /// </name>` (or self-closing `<name …/>`) node's range, `NodeClass::Span`.
+    /// Lets a diagnostic (`E164`/`E165`) anchor to the exact span instead of
+    /// its enclosing content line, so several spans on one line — even
+    /// repeats of the same undeclared tag — each get their own,
+    /// distinguishable range. Never resolved outside IDE tooling (contract
+    /// §4.3): analysis/LIR/codegen consume it as plain range data.
+    pub ptr: Provenance,
     /// The tag name — freeform (§4.2): never validated against a fixed set
     /// at this layer. Manifest validation, when a host declares one, is a
     /// separate, later pass over the same tree.
