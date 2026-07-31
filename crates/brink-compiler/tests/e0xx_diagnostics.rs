@@ -2099,3 +2099,48 @@ fn e157_denied_through_the_lints_control_plane_becomes_an_error() {
         "expected E157 among errors, got: {diags:?}"
     );
 }
+
+// ─── E166 `@[element(…, block)]` declaration surface: `content` is not yet
+// a resolvable annotation type name (review finding on PR #1842/#1839) ────
+//
+// `has_block_content_param` (`hir::lower_native::annotation`) requires the
+// trailing param's `TypeExpr` text to read `content`, but
+// `annotations::is_known_leaf` — the E061 vocabulary `per_file_diagnostics`
+// consults whenever `dialect == Dialect::Brink` (the exact dialect
+// brink-lsp's and brink-web's `"brink" => Dialect::Brink` mapping resolves
+// from a project's `brink.toml`, independently of `is_native`) — has no
+// `content` entry. This crosses HIR lowering (which validates the `block`
+// declaration surface and finds nothing wrong with it) into the analyzer
+// (which then rejects the very param `block` requires) on the identical
+// pipeline pass a real editor runs. So a conforming `block` declaration
+// parses and validates cleanly at the declaration-surface level, but is
+// **not usable end-to-end today** — see docs/diagnostics/E166.md's note
+// and docs/prose-dialect-spec.md §3.5b's Deferred list, both of which
+// state this plainly rather than leaving it to be re-discovered.
+
+/// The `element_annotation_block_flag_lowers_with_trailing_content_param`
+/// fixture (`hir::lower_native::tests`) proves this same source lowers with
+/// zero diagnostics *in isolation* — no `E166`, `block` recorded, captures
+/// intact. Run through the full pipeline under `Dialect::Brink`, the block
+/// declaration still raises no `E166`, but `body`'s `content` annotation
+/// now raises `E061` — the annotator layer knows nothing about `content`.
+#[test]
+fn e166_block_declaration_surface_parses_but_content_param_still_trips_e061() {
+    let source = "@[element(args = \"^@(?<name>[A-Z]+)$\", block)]\nflow cue(name, body: content) {\n  Hi, {name}!\n}\n";
+    let err = compile_native("e166-content-not-known-leaf", source, brink_options())
+        .map(|_| ())
+        .expect_err(
+            "`content` is not a recognized annotation type name yet, so this must fail \
+             the compile even though the block declaration surface itself is well-formed",
+        );
+    let diags = errors_of(err);
+    assert!(
+        diags.iter().all(|d| d.code != DiagnosticCode::E166),
+        "the block declaration is structurally well-formed — E166 must not fire: {diags:?}"
+    );
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E061),
+        "`content` is not yet in `annotations::is_known_leaf`'s vocabulary, so its own \
+         param annotation must raise E061: {diags:?}"
+    );
+}
