@@ -532,30 +532,31 @@ fn looks_like_span_marker(sub_type: Option<&str>, data_ref: Option<&str>) -> boo
 }
 
 /// [`inline_to_content`]'s per-element reconstruction, factored out so it
-/// can recurse into a `<pc>`'s own `content` — a paired span's children are
-/// themselves [`InlineElement`]s that need the exact same Text/CData/Ph/Pc
-/// handling as the top-level stream.
+/// can recurse into the child content of a `<pc>` (a paired span) or a
+/// foreign `<mrk>` (a TMS annotation) — those children are themselves
+/// [`InlineElement`]s that need the exact same handling as the top-level
+/// stream.
 ///
-/// `<![CDATA[...]]>` decodes exactly like plain character data (#1799): a
-/// TMS is free to return translated text wrapped in a CDATA section — it's
-/// legal XLIFF content with no structural ambiguity, unlike a re-expressed
-/// span (below), so there is no reason to reject it. The alternative of
-/// treating it as an error was considered and rejected: CDATA carries no
-/// span markers to lose, so an error would only punish translators for a
-/// no-op XML quoting choice. This is the same class of bug already fixed on
-/// the sibling `xliff2`-crate metadata-extraction path (#765).
+/// # Disposition of every [`InlineElement`] variant
 ///
-/// A brink-exported paired span always round-trips as `<pc>` (see
-/// [`push_part_inline`]) — but XLIFF 2.0 lets a translation tool
-/// re-express a `<pc>` that spans a segment split as an `<sc>`/`<ec>` pair,
-/// or wrap it in `<mrk>`, while preserving `subType`/`dataRef`. Silently
-/// falling through the catch-all below for those shapes would decode as a
-/// span that quietly lost its content — the same "silent drop" failure
-/// class this module fixes on export (#1734), just moved to import. When
-/// the `subType`/`dataRef` marks the element as brink-authored, this is an
-/// explicit decode error instead. `<sc>`/`<ec>`/`<mrk>` reconstruction is a
-/// known limitation (`docs/prose-dialect-spec.md` §4.4); genuinely foreign
-/// codes (no brink marker) are still ignored, same as before.
+/// Translator work that reaches this function and is not decoded is
+/// *unrecoverable* — there is no second copy of a TMS-returned target — so
+/// the match below is **exhaustive on purpose**: there is no `_` catch-all,
+/// and a new variant in the `xliff2` model is a compile error here rather
+/// than another silent drop. Every arm is one of three dispositions:
+///
+/// | element | disposition | rationale |
+/// |---|---|---|
+/// | `Text`, `CData` | **decoded** as [`PartJson::Literal`] | CDATA is plain character data spelled with a different XML quoting mechanism — no structural ambiguity, nothing to lose (#1799, and #765 on the sibling `xliff2` metadata path) |
+/// | `Cp` | **decoded** as [`PartJson::Literal`] | `<cp hex="…"/>` is XLIFF's escape hatch for a character its producer could not or would not write literally; decoding the code point restores exactly the character the translator meant, with no structure to reconstruct (#1811) |
+/// | `Ph` | **decoded** as a span point marker, [`PartJson::Select`] or [`PartJson::Slot`]; a `<ph>` matching none of those is **ignored** | a foreign `<ph>` is an empty standalone-code placeholder for the *host* format's native code — it has no character content, so nothing translator-authored is lost |
+/// | `Pc` | **decoded** as [`PartJson::Span`], recursing into its children | brink's own paired-span shape |
+/// | `Sc`, `Ec`, `Mrk` *with* a brink marker | **explicit [`IntlError::UnsupportedSpanSplit`]** | a brink `<pc>` that a tool re-expressed as a split pair or a wrapping mark: the structure cannot be reconstructed, so failing loudly beats decoding a span that quietly lost its content — the same failure class fixed on export by #1734 |
+/// | `Mrk` *without* a brink marker | **decoded** by splicing its children in place | a TMS `<mrk>` (terminology, comment, QA flag) wraps a *span of translated text*; the annotation's own `id`/`type`/`ref`/`value` are not brink content and are dropped, but the text it marks is translator work and must survive (#1812) |
+/// | `Sc`, `Ec` *without* a brink marker, `Sm`, `Em` | **ignored** | these are empty elements carrying attributes only — they never hold character data. The text a foreign `<sc>`/`<ec>` or `<sm>`/`<em>` pair *spans* is not nested inside them; the reader emits it as sibling `Text` elements that the `Text`/`CData` arm already recovers (proved by `foreign_sm_em_spanned_text_survives_export_import_roundtrip`) |
+///
+/// `<sc>`/`<ec>`/`<mrk>` reconstruction of a brink span remains a known
+/// limitation (`docs/prose-dialect-spec.md` §4.4).
 fn elements_to_parts(
     elements: &[InlineElement],
     data_map: &HashMap<&str, &str>,
@@ -565,6 +566,9 @@ fn elements_to_parts(
         match elem {
             InlineElement::Text(s) | InlineElement::CData(s) => {
                 parts.push(PartJson::Literal(s.clone()));
+            }
+            InlineElement::Cp(hex) => {
+                parts.push(PartJson::Literal(decode_cp(hex)?.to_string()));
             }
             InlineElement::Ph(ph) => {
                 if ph.sub_type.as_deref() == Some(SPAN_MARKER_SUBTYPE) {
@@ -594,6 +598,11 @@ fn elements_to_parts(
                     })?;
                     parts.push(PartJson::Slot { slot });
                 }
+                // No trailing `else`: a `<ph>` that is neither a span point
+                // marker nor a select nor a slot is a foreign standalone
+                // code placeholder. `<ph>` is an empty element — it holds
+                // attributes only, never character data — so ignoring it
+                // cannot lose translator work.
             }
             InlineElement::Pc(pc) => {
                 // Paired span: reconstruct name/attrs from originalData,
@@ -626,13 +635,52 @@ fn elements_to_parts(
             InlineElement::Mrk(mrk) if looks_like_span_marker(mrk.mrk_type.as_deref(), None) => {
                 return Err(IntlError::UnsupportedSpanSplit(mrk.id.clone()));
             }
-            // Other inline elements — and Sc/Ec/Mrk without a brink marker —
-            // are not produced by brink, ignore.
-            _ => {}
+            InlineElement::Mrk(mrk) => {
+                // Foreign `<mrk>` (#1812): a TMS annotation — terminology,
+                // a reviewer comment, a QA flag — wrapping a span of
+                // *translated text*. The annotation itself is not brink
+                // content and is discarded, but the text it marks is
+                // translator work: splice the children in place so the
+                // marked substring survives instead of vanishing with the
+                // mark. Recursing (rather than pulling out `Text` nodes)
+                // keeps any brink inline codes inside the mark working.
+                parts.extend(elements_to_parts(&mrk.content, data_map)?);
+            }
+            // Foreign `<sc>`/`<ec>` and every `<sm>`/`<em>`: empty elements
+            // that carry attributes only and never hold character data.
+            // The text such a pair *spans* is a sibling of the marker, not
+            // a child of it, so it is already recovered by the
+            // `Text`/`CData` arm above — ignoring the markers themselves
+            // drops annotation metadata, never translator work.
+            InlineElement::Sc(_)
+            | InlineElement::Ec(_)
+            | InlineElement::Sm(_)
+            | InlineElement::Em(_) => {}
         }
     }
 
     Ok(parts)
+}
+
+/// Decode an XLIFF `<cp hex="…"/>` element's `hex` attribute into the
+/// character it stands for.
+///
+/// `<cp>` is XLIFF 2.0's representation of a character by its Unicode code
+/// point, used when a producer cannot (or will not) write the character
+/// literally — typically C0 control characters, which are illegal in XML
+/// text, but also anything a tool's encoding could not carry. Decoding
+/// yields exactly the character the translator meant, so the caller treats
+/// the result as ordinary literal text (#1811).
+///
+/// A `hex` that is not a valid Unicode scalar value (unparseable, out of
+/// range, or a surrogate) is malformed XLIFF: it is reported as
+/// [`IntlError::InvalidCodePoint`] rather than skipped, because silently
+/// dropping it is the very failure this arm exists to prevent.
+fn decode_cp(hex: &str) -> Result<char, IntlError> {
+    u32::from_str_radix(hex, 16)
+        .ok()
+        .and_then(char::from_u32)
+        .ok_or_else(|| IntlError::InvalidCodePoint(hex.to_owned()))
 }
 
 /// Look up and deserialize a [`SpanMetaJson`] from `originalData` by

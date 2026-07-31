@@ -528,7 +528,21 @@ Built on `quick-xml`. No brink-specific types or logic.
 
 Brink-specific metadata uses XLIFF's custom namespace extension mechanism (`xmlns:brink="urn:brink:xliff:extensions:1.0"`). The XLIFF spec requires conformant tools to preserve unknown extensions, so brink metadata survives round-trips through translation management systems.
 
-The table above is export-direction (brink → XLIFF). On import (`xliff_to_lines_json`), a translator-authored `<![CDATA[...]]>` section in a `<source>`/`<target>` — brink's own exporter never emits one, but a TMS is free to return one — decodes as plain character data, the same as ordinary text content. Unlike a `<pc>` re-expressed as a split `<sc>`/`<ec>` pair (which loses structure and is rejected with `IntlError::UnsupportedSpanSplit`, see `elements_to_parts`), CDATA is just a different XML quoting mechanism with no structural ambiguity, so there is nothing to reject (#1799).
+#### Import direction: disposition of every inline element
+
+The table above is export-direction (brink → XLIFF). The import direction (`xliff_to_lines_json` → `elements_to_parts`) must also handle everything a *translation management system* may put in a `<source>`/`<target>` that brink's own exporter never emits. Translator work that reaches import and is not decoded is unrecoverable — there is no second copy — so `elements_to_parts` matches every `xliff2::InlineElement` variant explicitly (no `_` catch-all: a new variant is a compile error, not a silent drop). Each element is **decoded**, **explicitly rejected**, or **ignored**:
+
+| XLIFF element | disposition | rationale |
+|---------------|-------------|-----------|
+| text, `<![CDATA[...]]>` | decoded as literal text | CDATA is plain character data spelled with a different XML quoting mechanism — no structural ambiguity, nothing to lose (#1799) |
+| `<cp hex="…"/>` | decoded to the character it names | XLIFF's escape hatch for a character its producer could not or would not write literally; the code point *is* the content, and there is no structure to reconstruct (#1811). An out-of-range or unparseable `hex` is `IntlError::InvalidCodePoint` |
+| `<ph>` (brink span marker / select / slot) | decoded to `Span`/`Select`/`Slot` | brink's own standalone-code shapes |
+| `<ph>` (foreign) | ignored | an empty placeholder for the host format's native code; carries no character data, so nothing translator-authored is lost |
+| `<pc>` (brink) | decoded as a span, recursing into its children | brink's own paired-span shape |
+| `<pc>` (foreign, no brink `dataRefStart`) | explicitly rejected — `IntlError::MissingSpanData` | a paired code with no span identity cannot be reconstructed; failing loudly beats decoding a span that lost its name |
+| `<sc>`/`<ec>`/`<mrk>` carrying a brink `subType`/`dataRef` | explicitly rejected — `IntlError::UnsupportedSpanSplit` | a brink `<pc>` a tool re-expressed as a split pair or a wrapping mark: structure is lost and cannot be rebuilt (#1734) |
+| `<mrk>` (foreign) | children spliced in place | a TMS annotation — terminology, reviewer comment, QA flag — wraps a *span of translated text*. Its `id`/`type`/`ref`/`value` are not brink content and are dropped, but the marked text is translator work and must survive (#1812) |
+| `<sc>`/`<ec>` (foreign), `<sm>`, `<em>` | ignored | empty elements carrying attributes only. The text such a pair *spans* is a sibling of the markers, not a child, so it is already recovered as ordinary text; ignoring the markers drops annotation metadata, never translator work |
 
 ### XLIFF generation
 

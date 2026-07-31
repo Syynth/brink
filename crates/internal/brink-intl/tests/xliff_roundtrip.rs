@@ -1160,3 +1160,371 @@ fn regenerate_locale_rebinds_a_declared_rename_through_real_xml() {
         .collect();
     assert_eq!(states, [Some(State::Translated)]);
 }
+
+// ---------------------------------------------------------------------------
+// `elements_to_parts` inline-element dispositions (#1811, #1812)
+//
+// These cover the shapes a *translation management system* hands back that
+// brink's own exporter never emits, so each `Document` is built directly
+// rather than by exporting a `LinesJson` first.
+// ---------------------------------------------------------------------------
+
+/// Build a one-scope/one-line `Document` whose `<target>` is exactly
+/// `target`, with the `brink:hash`/`brink:scope-id` extension attributes
+/// `xliff_to_lines_json` requires.
+fn tms_returned_doc(
+    target: Vec<InlineElement>,
+    original_data: Option<xliff2::OriginalData>,
+) -> Document {
+    Document {
+        version: "2.0".to_string(),
+        src_lang: "en".to_string(),
+        trg_lang: Some("fr".to_string()),
+        files: vec![File {
+            id: "root".to_string(),
+            original: None,
+            notes: Vec::new(),
+            skeleton: None,
+            groups: Vec::new(),
+            units: vec![Unit {
+                id: "0x01:0".to_string(),
+                name: None,
+                translate: None,
+                notes: Vec::new(),
+                sub_units: vec![SubUnit::Segment(Segment {
+                    id: None,
+                    state: Some(State::Translated),
+                    sub_state: None,
+                    source: Content {
+                        lang: None,
+                        elements: vec![InlineElement::Text("Hello world".to_string())],
+                    },
+                    target: Some(Content {
+                        lang: None,
+                        elements: target,
+                    }),
+                })],
+                original_data,
+                extensions: Extensions {
+                    elements: Vec::new(),
+                    attributes: vec![ExtensionAttribute {
+                        namespace: "brink".to_string(),
+                        local_name: "hash".to_string(),
+                        value: "aaaa".to_string(),
+                    }],
+                },
+            }],
+            extensions: Extensions {
+                elements: Vec::new(),
+                attributes: vec![ExtensionAttribute {
+                    namespace: "brink".to_string(),
+                    local_name: "scope-id".to_string(),
+                    value: "0x01".to_string(),
+                }],
+            },
+        }],
+        extensions: Extensions::default(),
+    }
+}
+
+/// `<cp hex="…"/>` is XLIFF 2.0's way of writing a character by its Unicode
+/// code point, used when the producing tool cannot or will not emit the
+/// character literally. It is the exact sibling of the `<![CDATA[...]]>`
+/// silent drop fixed in #1799 — same function, same catch-all — and the
+/// same rule applies: `<cp>` carries no structure to reconstruct, only a
+/// character, so it decodes as literal text rather than erroring (#1811).
+///
+/// Goes through the real XML writer and reader so the on-wire `<cp/>` shape
+/// is proved, and surrounds it with text so the decode happens in
+/// `elements_to_parts` proper — `inline_to_content`'s single-element fast
+/// path would otherwise mask it.
+#[test]
+fn translator_authored_cp_survives_export_import_roundtrip() {
+    // U+2028 LINE SEPARATOR — a real case for `<cp>`: legal in XML, but
+    // routinely escaped by tooling that will not put it in a text node.
+    let doc = tms_returned_doc(
+        vec![
+            InlineElement::Text("Bonjour".to_string()),
+            InlineElement::Cp("2028".to_string()),
+            InlineElement::Text("le monde".to_string()),
+        ],
+        None,
+    );
+
+    let xml = xliff2::write::to_string(&doc).unwrap();
+    assert!(
+        xml.contains("<cp hex=\"2028\"/>"),
+        "expected a real <cp/> element in the serialized XLIFF, got: {xml}"
+    );
+    let parsed = xliff2::read::read_xliff(&xml).unwrap();
+
+    let recovered = xliff_to_lines_json(&parsed).unwrap();
+
+    assert_eq!(
+        recovered.scopes[0].lines[0].content,
+        Some(ContentJson::Template {
+            template: vec![
+                PartJson::Literal("Bonjour".to_string()),
+                PartJson::Literal("\u{2028}".to_string()),
+                PartJson::Literal("le monde".to_string()),
+            ],
+        }),
+        "a <cp/> code point must decode to its character, not be silently dropped"
+    );
+}
+
+/// The recursive half of the `<cp>` fix: a `<cp/>` nested inside a brink
+/// `<pc>`'s own content goes through the same recursive `elements_to_parts`
+/// call that reconstructs the span's children, mirroring
+/// `cdata_inside_pc_content_is_recovered_by_elements_to_parts`.
+#[test]
+fn cp_inside_pc_content_is_recovered_by_elements_to_parts() {
+    let doc = tms_returned_doc(
+        vec![InlineElement::Pc(xliff2::Pc {
+            id: "pc0".to_string(),
+            data_ref_start: Some("dspan0".to_string()),
+            data_ref_end: None,
+            sub_type: Some("brink:pc".to_string()),
+            content: vec![
+                InlineElement::Text("gr".to_string()),
+                InlineElement::Cp("00E8".to_string()),
+                InlineElement::Text("s".to_string()),
+            ],
+            extensions: Extensions::default(),
+        })],
+        Some(xliff2::OriginalData {
+            entries: vec![xliff2::DataEntry {
+                id: "dspan0".to_string(),
+                content: "{\"name\":\"b\"}".to_string(),
+            }],
+        }),
+    );
+
+    let recovered = xliff_to_lines_json(&doc).unwrap();
+
+    assert_eq!(
+        recovered.scopes[0].lines[0].content,
+        Some(ContentJson::Template {
+            template: vec![PartJson::Span {
+                span: SpanJson {
+                    name: "b".to_string(),
+                    attrs: Vec::new(),
+                    children: vec![
+                        PartJson::Literal("gr".to_string()),
+                        PartJson::Literal("\u{00E8}".to_string()),
+                        PartJson::Literal("s".to_string()),
+                    ],
+                },
+            }],
+        }),
+        "a <cp/> inside a <pc>'s content must decode via the recursive \
+         elements_to_parts call, not be silently dropped"
+    );
+}
+
+/// A `hex` attribute that is not a Unicode scalar value is malformed XLIFF.
+/// Skipping it would reintroduce exactly the silent drop #1811 is about, so
+/// it is an explicit `IntlError::InvalidCodePoint`. All three failure modes
+/// are covered: an unparseable hex string, a well-formed hex number in the
+/// surrogate range, and one past the last code point.
+#[test]
+fn invalid_cp_hex_is_rejected_not_silently_dropped() {
+    for bad_hex in ["zzzz", "D800", "110000"] {
+        let doc = tms_returned_doc(
+            vec![
+                InlineElement::Text("Bonjour".to_string()),
+                InlineElement::Cp(bad_hex.to_string()),
+            ],
+            None,
+        );
+
+        let err = xliff_to_lines_json(&doc).unwrap_err();
+        assert!(
+            matches!(err, brink_intl::IntlError::InvalidCodePoint(ref h) if h == bad_hex),
+            "expected InvalidCodePoint({bad_hex:?}), got: {err:?}"
+        );
+    }
+}
+
+/// A **non-brink** `<mrk>` — the annotation a commercial TMS injects for
+/// terminology, reviewer comments or QA flags — wraps a *span of text*, so
+/// falling through the old catch-all lost the whole marked substring, not
+/// just one character (#1812). The mark's own `id`/`type` are not brink
+/// content and are still discarded, but the text it spans is translator
+/// work and must survive.
+///
+/// Note the `type="term"` here does not start with `brink:`, so this is not
+/// the brink-authored shape that
+/// `split_pc_as_sc_ec_is_rejected_not_silently_dropped` covers — that one
+/// still errors, because a brink span re-expressed as a mark has lost
+/// structure that cannot be reconstructed.
+#[test]
+fn foreign_mrk_spanned_text_survives_export_import_roundtrip() {
+    let doc = tms_returned_doc(
+        vec![
+            InlineElement::Text("Bonjour ".to_string()),
+            InlineElement::Mrk(xliff2::Mrk {
+                id: "m1".to_string(),
+                translate: None,
+                mrk_type: Some("term".to_string()),
+                ref_: None,
+                value: None,
+                content: vec![InlineElement::Text("le monde".to_string())],
+                extensions: Extensions::default(),
+            }),
+        ],
+        None,
+    );
+
+    let xml = xliff2::write::to_string(&doc).unwrap();
+    assert!(
+        xml.contains("<mrk id=\"m1\" type=\"term\">le monde</mrk>"),
+        "expected a real foreign <mrk> in the serialized XLIFF, got: {xml}"
+    );
+    let parsed = xliff2::read::read_xliff(&xml).unwrap();
+
+    let recovered = xliff_to_lines_json(&parsed).unwrap();
+
+    assert_eq!(
+        recovered.scopes[0].lines[0].content,
+        Some(ContentJson::Template {
+            template: vec![
+                PartJson::Literal("Bonjour ".to_string()),
+                PartJson::Literal("le monde".to_string()),
+            ],
+        }),
+        "the text spanned by a foreign <mrk> must survive import; \
+         dropping it destroys translator work that cannot be regenerated"
+    );
+}
+
+/// The foreign-`<mrk>` arm recurses through `elements_to_parts` rather than
+/// pulling out the mark's `Text` nodes, so brink's own inline codes keep
+/// working when a TMS wraps an annotation *around* them: here a `<mrk>`
+/// encloses a brink `<pc>` span, which must still reconstruct as a
+/// `PartJson::Span` with its children intact.
+#[test]
+fn foreign_mrk_wrapping_a_brink_span_preserves_the_span() {
+    let doc = tms_returned_doc(
+        vec![InlineElement::Mrk(xliff2::Mrk {
+            id: "m1".to_string(),
+            translate: None,
+            mrk_type: Some("comment".to_string()),
+            ref_: None,
+            value: None,
+            content: vec![InlineElement::Pc(xliff2::Pc {
+                id: "pc0".to_string(),
+                data_ref_start: Some("dspan0".to_string()),
+                data_ref_end: None,
+                sub_type: Some("brink:pc".to_string()),
+                content: vec![InlineElement::Text("gras".to_string())],
+                extensions: Extensions::default(),
+            })],
+            extensions: Extensions::default(),
+        })],
+        Some(xliff2::OriginalData {
+            entries: vec![xliff2::DataEntry {
+                id: "dspan0".to_string(),
+                content: "{\"name\":\"b\"}".to_string(),
+            }],
+        }),
+    );
+
+    let recovered = xliff_to_lines_json(&doc).unwrap();
+
+    assert_eq!(
+        recovered.scopes[0].lines[0].content,
+        Some(ContentJson::Template {
+            template: vec![PartJson::Span {
+                span: SpanJson {
+                    name: "b".to_string(),
+                    attrs: Vec::new(),
+                    children: vec![PartJson::Literal("gras".to_string())],
+                },
+            }],
+        }),
+        "a brink <pc> wrapped in a foreign <mrk> must still reconstruct as \
+         a span — the mrk arm recurses, it does not just harvest text"
+    );
+}
+
+/// Characterization test for the `<sm>`/`<em>` half of #1812, which turned
+/// out **not** to be a silent drop: unlike `<mrk>`, an `<sm>`/`<em>` pair
+/// is two *empty* elements, and the text between them is a sibling of the
+/// markers rather than a child, so it already decodes through the ordinary
+/// text arm. This pins that down — the `Sm`/`Em` arms may keep ignoring the
+/// markers themselves precisely because doing so cannot lose any text.
+///
+/// Unlike the tests above, this one passes both with and without this PR's
+/// change; it exists to guard the reasoning the `Sm`/`Em` ignore arm
+/// documents, not to prove a fix.
+#[test]
+fn foreign_sm_em_spanned_text_survives_export_import_roundtrip() {
+    let doc = tms_returned_doc(
+        vec![
+            InlineElement::Text("Bonjour ".to_string()),
+            InlineElement::Sm(xliff2::Sm {
+                id: "a1".to_string(),
+                translate: None,
+                sm_type: Some("term".to_string()),
+                ref_: None,
+                value: None,
+                extensions: Extensions::default(),
+            }),
+            InlineElement::Text("le monde".to_string()),
+            InlineElement::Em(xliff2::Em {
+                start_ref: "a1".to_string(),
+            }),
+            InlineElement::Text("!".to_string()),
+        ],
+        None,
+    );
+
+    let xml = xliff2::write::to_string(&doc).unwrap();
+    assert!(
+        xml.contains("<sm id=\"a1\" type=\"term\"/>") && xml.contains("<em startRef=\"a1\"/>"),
+        "expected real <sm/>/<em/> markers in the serialized XLIFF, got: {xml}"
+    );
+    let parsed = xliff2::read::read_xliff(&xml).unwrap();
+
+    let recovered = xliff_to_lines_json(&parsed).unwrap();
+
+    assert_eq!(
+        recovered.scopes[0].lines[0].content,
+        Some(ContentJson::Template {
+            template: vec![
+                PartJson::Literal("Bonjour ".to_string()),
+                PartJson::Literal("le monde".to_string()),
+                PartJson::Literal("!".to_string()),
+            ],
+        }),
+        "text spanned by an <sm>/<em> pair is a sibling of the markers and \
+         must survive import even though the markers are ignored"
+    );
+}
+
+/// Characterization test for the `<pc>` arm's foreign case, the one shape
+/// in this match that is neither decoded nor ignored: a `<pc>` with no
+/// brink `dataRefStart` cannot name a span, so it fails loudly with
+/// `MissingSpanData` instead of decoding as a span that lost its identity.
+/// Pinned here so a future change cannot quietly turn it into a drop.
+#[test]
+fn foreign_pc_without_span_data_errors_not_silently_dropped() {
+    let doc = tms_returned_doc(
+        vec![InlineElement::Pc(xliff2::Pc {
+            id: "pc0".to_string(),
+            data_ref_start: None,
+            data_ref_end: None,
+            sub_type: None,
+            content: vec![InlineElement::Text("le monde".to_string())],
+            extensions: Extensions::default(),
+        })],
+        None,
+    );
+
+    let err = xliff_to_lines_json(&doc).unwrap_err();
+    assert!(
+        matches!(err, brink_intl::IntlError::MissingSpanData(_)),
+        "expected MissingSpanData for a foreign <pc>, got: {err:?}"
+    );
+}
