@@ -243,6 +243,87 @@ fn a_multi_word_cue_name_is_one_name() {
 }
 
 #[test]
+fn a_balanced_brace_in_a_cue_name_does_not_swallow_the_enclosing_blocks_own_closer() {
+    // #1786: `cue_name()` shared `content::tag()`'s pre-#1728 shape — an
+    // unconditional stop at the first raw `R_BRACE`, regardless of an
+    // earlier unpaired `{` in the same scan. Confirmed reachable exactly
+    // like the `tag()` case: without the fix, this source's `}` (closing
+    // the balanced `{gold}`) was mistaken for the flow's own closer, so
+    // the flow's `BLOCK` ended right there, "coins." fell out to the top
+    // level, and the flow's real closing `}` became a stray top-level
+    // token — a parse error. Depth-tracking the same way `tag()` does
+    // fixes it.
+    let src = "flow f() {\n  @NAME {gold} coins.\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+
+    let decl =
+        ast::FlowDecl::cast(first_node(&p.syntax(), SyntaxKind::FLOW_DECL)).expect("FLOW_DECL");
+    assert!(
+        decl.body().is_some(),
+        "the cue name's balanced brace must not swallow the flow's own body closer"
+    );
+    let cue = ast::Cue::cast(first_node(&p.syntax(), SyntaxKind::CUE)).expect("CUE");
+    assert_eq!(cue.name().expect("name").text(), "NAME {gold} coins.");
+}
+
+#[test]
+fn an_unbalanced_open_brace_in_a_cue_name_eats_the_enclosing_blocks_own_closer() {
+    // The accepted tradeoff, pinned the same way #1728 pinned it for
+    // `tag()` (`content.rs`'s
+    // `an_unbalanced_open_brace_in_a_tag_eats_the_enclosing_blocks_own_closer`):
+    // a raw, unescaped `{` left open inside a cue name is depth-balanced
+    // the same as a matched one — the scan can't tell "unbalanced" from
+    // "matches the closer" without a real grammar. So this fails to
+    // parse: the name's `{` is counted, the very next `}` is consumed as
+    // its match instead of stopping the name, and the flow body's own
+    // closer is gone by the time EOF is reached.
+    let src = "flow f() { @NAME { }\n";
+    let p = assert_lossless(src);
+    assert!(
+        !p.errors().is_empty(),
+        "expected the unbalanced `{{` to consume the flow's own closer and error, got: {:?}",
+        p.errors()
+    );
+}
+
+#[test]
+fn a_cue_name_with_an_escaped_open_brace_does_not_swallow_the_enclosing_blocks_own_closer() {
+    // `\{` is the literal-brace escape (#1716/PR #1732), not a
+    // metacharacter, so it must not count as a depth-opener — otherwise
+    // the escaped brace would swallow the enclosing flow's own same-line
+    // closer exactly like the unbalanced-raw-brace case above.
+    let src = "flow f() { @NAME \\{ }\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::FLOW_DECL), 1);
+}
+
+#[test]
+fn a_cue_immediately_followed_by_the_enclosing_blocks_own_closer_still_stops_there() {
+    // Guard against over-correcting, the same way `content.rs`'s
+    // `a_tag_immediately_followed_by_the_enclosing_blocks_own_closer_still_stops_there`
+    // guards `tag()`: with no `{` opened inside the cue name's own text,
+    // depth stays zero and the very first `}` — here the flow body's own
+    // closer — must still terminate the name, exactly as before this fix.
+    let src = "flow f() { @NAME }\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::FLOW_DECL), 1);
+}
+
+#[test]
+fn a_cue_name_containing_a_balanced_alternation_brace_does_not_end_early() {
+    // Same defect as `a_balanced_brace_in_a_cue_name_does_not_swallow_the_enclosing_blocks_own_closer`,
+    // alternation-shaped brace instead of interpolation — parity with
+    // `content.rs`'s `a_tag_containing_a_balanced_alternation_brace_does_not_end_early`.
+    let src = "flow f() {\n  @NAME {gold|silver} coins.\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::FLOW_DECL), 1);
+}
+
+#[test]
 fn the_compact_cue_fuses_a_name_and_one_dialogue_line() {
     // Spec 8b.9: a SECOND declared pattern beside the block cue, not a
     // rewrite of it - so it gets its own node kind.
