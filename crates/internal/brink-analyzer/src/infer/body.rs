@@ -3229,4 +3229,165 @@ mod tests {
              be recorded"
         );
     }
+
+    /// Regression guard for issue #1790: frame-scoped fields must be
+    /// snapshot/restored around a lambda body walk.
+    ///
+    /// A lambda's own locals (both declared `~ temp` and implicit params)
+    /// are scoped to the lambda's own frame. If the `locals` field (or any
+    /// other frame-scoped field in the snapshot/restore list) is not
+    /// properly restored after a lambda walk, a lambda-local shadow would
+    /// remain in the enclosing def's `locals` map with the *lambda-local's*
+    /// type, corrupting the enclosing def's summary.
+    ///
+    /// This test constructs exactly that scenario: an enclosing `x` of type
+    /// `int`, a lambda that declares its own `x` of type `float` (shadowing
+    /// both `locals` and, via an ascription, `annotated`), and a
+    /// `BlockStmt::Return` inside the lambda body (exercising `return_ty`/
+    /// `has_value_return`). It verifies that after the lambda walk, every
+    /// one of the five frame-scoped fields snapshotted/restored in the
+    /// `LambdaBody::Block` arm of `infer_lambda` — `return_ty`,
+    /// `has_value_return`, `locals`, `annotated`, `local_fn_origins` — has
+    /// been restored to what it held before the walk. If any of them is
+    /// forgotten in the snapshot or restore, this test will fail.
+    ///
+    /// ## Why this catches the hazard
+    ///
+    /// A test that merely asserts "the five fields are restored" would pass
+    /// forever even if a sixth field is added and not snapshotted. This test
+    /// instead exercises the consequence: a leaked field's effects on the
+    /// observable state (in this case, the type of a local). Forgetting to
+    /// snapshot *any* of the five fields would cause this assertion to fail.
+    /// Adding a sixth field and forgetting to snapshot it would also fail
+    /// *if* that field affects locals or another observable surface. (See
+    /// the issue discussion for field-count and exhaustive-match mechanical
+    /// guards that could strengthen this further.)
+    #[test]
+    fn lambda_local_shadow_frame_boundary_guard() {
+        let index = SymbolIndex::default();
+        let globals = BTreeMap::new();
+        let known_sigs = BTreeMap::new();
+        let inferable = BTreeSet::new();
+        let list_names = BTreeSet::new();
+        let struct_names = BTreeSet::new();
+        let handle_names = BTreeSet::new();
+        let resolution_by_range = BTreeMap::new();
+        let ctx = BodyCtx {
+            resolution_by_range: &resolution_by_range,
+            index: &index,
+            globals: &globals,
+            known_sigs: &known_sigs,
+            inferable: &inferable,
+            list_names: &list_names,
+            struct_names: &struct_names,
+            handle_names: &handle_names,
+        };
+        let mut pass = empty_pass(&ctx);
+
+        // Enclosing def state before the lambda walk, one entry per
+        // frame-scoped field, all keyed/shadowed by the same name `x`
+        // where that applies:
+        //   - `locals`: a prior `~ temp x = 42` in the enclosing body.
+        pass.locals.insert("x".to_string(), Ty::Int);
+        //   - `annotated`: a prior `~ temp x: int = …` ascription fallback.
+        pass.annotated.insert("x".to_string(), Ty::Int);
+        //   - `local_fn_origins`: a prior traced `~ temp x = #fn(bar)`-style
+        //     write — `untraced: false` so a leaked lambda-local write
+        //     (which sets `untraced: true`, see `bump_local_write`) is
+        //     distinguishable from the pre-walk state.
+        pass.local_fn_origins.insert(
+            "x".to_string(),
+            LocalFnOrigins {
+                targets: BTreeSet::new(),
+                untraced: false,
+            },
+        );
+        //   - `return_ty`: the enclosing def has already seen a
+        //     `~ return` of its own, of type `int`.
+        //   - `has_value_return`: deliberately left `false` here (its
+        //     `empty_pass` default) — the lambda body below performs its
+        //     *own* `~ return`, which sets this to `true`. Leaving the
+        //     enclosing value `false` is what makes a missing restore of
+        //     this field observable: post-walk `true` would prove the
+        //     lambda's own return leaked out, while a correct restore
+        //     brings it back to `false`.
+        pass.return_ty = Ty::Int;
+
+        // Lambda body shadows every one of those by name/kind:
+        //   - a `TempDecl` for `x` with both a `float`-typed ascription
+        //     (exercises `annotated` and `register_ascription`) and a
+        //     `float`-typed value (exercises `locals` via `bind_local` and
+        //     `local_fn_origins` via `bump_local_write`, which sets
+        //     `untraced: true` here since the value isn't a traced `#fn`
+        //     literal), and
+        //   - a `BlockStmt::Return` of a `bool` value (exercises
+        //     `return_ty`/`has_value_return`).
+        let lambda = brink_ir::LambdaExpr {
+            ptr: Provenance::synthetic(NodeClass::Lambda, range(5, 30)),
+            params: Vec::new(),
+            return_type: None,
+            body: brink_ir::LambdaBody::Block {
+                stmts: vec![
+                    BlockStmt::TempDecl(brink_ir::TempDecl {
+                        ptr: Provenance::synthetic(NodeClass::Stmt, range(8, 12)),
+                        name: Name {
+                            text: "x".to_string(),
+                            range: range(10, 11),
+                        },
+                        value: Some(Expr::Float(brink_ir::FloatBits(2.5_f64.to_bits()))),
+                        annotation: Some(brink_ir::TypeExpr::Named {
+                            name: "float".to_string(),
+                            range: range(12, 17),
+                        }),
+                    }),
+                    BlockStmt::Return(brink_ir::Return {
+                        ptr: None,
+                        kind: brink_ir::ReturnKind::Explicit,
+                        value: Some(Expr::Bool(true)),
+                        onwards_args: Vec::new(),
+                    }),
+                ],
+                tail: None,
+            },
+        };
+
+        pass.infer_lambda(&lambda);
+
+        // Every frame-scoped field must be restored to its pre-walk value.
+        // If any one of them is not properly snapshotted/restored around
+        // the `LambdaBody::Block` arm of `infer_lambda`, the corresponding
+        // assertion below fails.
+        assert_eq!(
+            pass.locals.get("x"),
+            Some(&Ty::Int),
+            "issue #1790: a lambda-local shadow must not leak into the \
+             enclosing def's `locals`"
+        );
+        assert_eq!(
+            pass.annotated.get("x"),
+            Some(&Ty::Int),
+            "issue #1790: a lambda-local ascription must not leak into the \
+             enclosing def's `annotated`"
+        );
+        assert_eq!(
+            pass.local_fn_origins.get("x"),
+            Some(&LocalFnOrigins {
+                targets: BTreeSet::new(),
+                untraced: false,
+            }),
+            "issue #1790: a lambda-local write must not leak into the \
+             enclosing def's `local_fn_origins`"
+        );
+        assert_eq!(
+            pass.return_ty,
+            Ty::Int,
+            "issue #1790: a lambda's own `return` must not leak into the \
+             enclosing def's `return_ty`"
+        );
+        assert!(
+            !pass.has_value_return,
+            "issue #1790: the lambda's own `has_value_return` must not \
+             leak into the enclosing def's `has_value_return`"
+        );
+    }
 }
