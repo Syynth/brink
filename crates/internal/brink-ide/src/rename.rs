@@ -73,18 +73,47 @@ pub fn prepare_rename(
     // the whole path, contradicting the range `rename` then actually edits.
     // The same composed narrowing `rename` and `find_references` apply is
     // applied here, so the highlighted range and the edited range agree.
+    //
+    // Review finding on #1838 (blocking): a `ResolvedRef` may instead be a
+    // natural-notation element dispatch's compiler-*synthesized* call
+    // (issue #1838), whose range is the **entire claimed prose line**, not
+    // any real occurrence of the handler's name — narrowing has nothing to
+    // narrow it down to, so the unfiltered lookup below would offer the
+    // whole prose line as renameable and a subsequent `rename` would
+    // corrupt it. `ufcs_hover::is_synthesized_element_ref` excludes it from
+    // the candidate search entirely, the same exclusion `rename` and
+    // `find_references` apply.
+    let hir = db.hir(file_id);
     analysis
         .resolutions
         .iter()
-        .find(|r| r.file == file_id && (r.range.contains(offset) || r.range.start() == offset))
+        .find(|r| {
+            r.file == file_id
+                && (r.range.contains(offset) || r.range.start() == offset)
+                && hir.is_none_or(|h| !crate::ufcs_hover::is_synthesized_element_ref(h, r.range))
+        })
         .map(|r| {
-            db.hir(file_id)
-                .and_then(|hir| {
-                    crate::ufcs_hover::narrowed_reference_range(hir, r.range, info.kind)
-                })
+            hir.and_then(|h| crate::ufcs_hover::narrowed_reference_range(h, r.range, info.kind))
                 .unwrap_or(r.range)
         })
-        .or_else(|| (info.file == file_id).then_some(info.range))
+        // The declaration-site fallback: reached only when no `ResolvedRef`
+        // covers `offset` at all, which (`find_def_at_offset`'s own two-step
+        // lookup) means `info` was found via its *declaration* site, not a
+        // reference — so `info.range` legitimately contains `offset` there.
+        // Review finding on #1838: with the synthesized-ref exclusion above,
+        // that invariant can break — a claimed prose line's `ResolvedRef`
+        // does cover `offset`, `find_def_at_offset`'s own unfiltered lookup
+        // resolves `info` through it, but the filtered search above (rightly)
+        // excludes it and finds nothing. Without the `info.range.contains`
+        // guard, this fallback would still fire on `info.file == file_id`
+        // alone and offer the handler's *declaration* range as renameable
+        // from a cursor sitting on an unrelated claimed prose line elsewhere
+        // in the file — not a source corruption, but a bogus renameable
+        // answer with no relation to the cursor.
+        .or_else(|| {
+            (info.file == file_id && (info.range.contains(offset) || info.range.start() == offset))
+                .then_some(info.range)
+        })
 }
 
 /// Compute a rename of the symbol at `offset` to `new_name`.
@@ -181,12 +210,27 @@ pub fn rename(
     // All three narrowings are composed by
     // `ufcs_hover::narrowed_reference_range`, shared with `find_references`
     // and `prepare_rename`.
+    //
+    // Review finding on #1838 (blocking): a `ResolvedRef` targeting a
+    // natural-notation element-dispatch handler may be the compiler's own
+    // *synthesized* call (issue #1838) — `hir::lower_native::element::
+    // try_claim` stamps the call's `Path`/`Name` range to the entire
+    // claimed prose line, not any real occurrence of the handler's name.
+    // Unfiltered, this loop would emit an edit replacing that whole prose
+    // line's bytes with `new_name` — source corruption through a shipped
+    // CLI (`brink ide rename` on a claiming handler). Skip it: it resolves
+    // correctly (the call does target this handler), but there is no real
+    // identifier occurrence here to rewrite.
     for resolved in &analysis.resolutions {
         if resolved.target == analysis_def_id {
-            let range = db
-                .hir(resolved.file)
-                .and_then(|hir| {
-                    crate::ufcs_hover::narrowed_reference_range(hir, resolved.range, target_kind)
+            let hir = db.hir(resolved.file);
+            if hir.is_some_and(|h| crate::ufcs_hover::is_synthesized_element_ref(h, resolved.range))
+            {
+                continue;
+            }
+            let range = hir
+                .and_then(|h| {
+                    crate::ufcs_hover::narrowed_reference_range(h, resolved.range, target_kind)
                 })
                 .unwrap_or(resolved.range);
             edits.push(FileEdit {
@@ -1534,6 +1578,89 @@ fn main() {
                 .iter()
                 .map(|e| e.new_text.as_str())
                 .collect::<Vec<_>>()
+        );
+    }
+
+    // ── Issue #1838 review finding (blocking, correctness): a
+    // natural-notation `@[element(claims = "…")]` handler's dispatch is a
+    // compiler-*synthesized* call whose `Path`/`Name` range is the entire
+    // claimed prose line, not any real occurrence of the handler's name.
+    // Unfiltered, `rename`/`prepare_rename` treated it like any other
+    // reference and rewrote the claimed line's bytes — `brink ide rename`
+    // on a claiming handler corrupted its own claimed prose lines. ───────
+
+    const CLAIMING_HANDLER_SRC: &str = "\
+@[element(claims = \"^INT\\\\. (?<place>.+)$\")]
+fn interior(place) {
+  return place;
+}
+
+flow main() {
+  INT. MARKET SQUARE
+}
+";
+
+    #[test]
+    fn renaming_a_claiming_handler_does_not_corrupt_the_claimed_prose_line() {
+        // Regression test for the review finding: verified red without the
+        // fix — before `is_synthesized_element_ref` gated this loop, an
+        // edit at `heading_pos` was present in `result.edits`, rewriting
+        // `INT. MARKET SQUARE` to `exterior`.
+        let (s, id) = native_session(CLAIMING_HANDLER_SRC);
+        let decl_pos = u32::try_from(CLAIMING_HANDLER_SRC.find("interior(place)").expect("decl"))
+            .expect("offset");
+        let analysis = s.analysis().expect("analysis");
+
+        let result =
+            rename(s.db(), analysis, id, TextSize::from(decl_pos), "exterior").expect("rename");
+
+        let heading_pos = u32::try_from(
+            CLAIMING_HANDLER_SRC
+                .find("INT. MARKET SQUARE")
+                .expect("heading"),
+        )
+        .expect("offset");
+        assert!(
+            result
+                .edits
+                .iter()
+                .all(|e| e.range.start() != TextSize::from(heading_pos)),
+            "the claimed prose line must never be an edit target, got {:?}",
+            result
+                .edits
+                .iter()
+                .map(|e| (e.range, e.new_text.as_str()))
+                .collect::<Vec<_>>()
+        );
+
+        // End-to-end: applying every edit must leave the claimed line
+        // byte-identical, and still rename the declaration.
+        let res = rename_safe(&s, id, TextSize::from(decl_pos), "exterior").expect("rename_safe");
+        let new_source = res.new_source.as_deref().expect("new_source");
+        assert!(
+            new_source.contains("INT. MARKET SQUARE"),
+            "the claimed scene heading must survive byte-identical: {new_source}"
+        );
+        assert!(
+            new_source.contains("fn exterior(place)"),
+            "the handler declaration itself must still be renamed: {new_source}"
+        );
+    }
+
+    #[test]
+    fn prepare_rename_over_a_claimed_prose_line_is_not_renameable() {
+        let (s, id) = native_session(CLAIMING_HANDLER_SRC);
+        let heading_pos = u32::try_from(
+            CLAIMING_HANDLER_SRC
+                .find("INT. MARKET SQUARE")
+                .expect("heading"),
+        )
+        .expect("offset");
+        let analysis = s.analysis().expect("analysis");
+
+        assert!(
+            prepare_rename(s.db(), analysis, id, TextSize::from(heading_pos)).is_none(),
+            "a compiler-synthesized claim reference is not a real identifier to rename"
         );
     }
 }

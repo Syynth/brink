@@ -1,7 +1,10 @@
 //! The prose block elements the native grammar gained in issue #1715
 //! (`docs/prose-dialect-spec.md` §8b/§8d) parse cleanly but have **no HIR
-//! lowering yet** — attachment and the conventions `lower:` column are
-//! issue #1717's slice, and the per-flow tag API is #474's.
+//! lowering yet** — attachment is issue #1717's slice, and the per-flow
+//! tag API is #474's. (Issue #1838 made *one* of these shapes reachable: a
+//! scene heading a natural-notation `@[element(claims = "…")]` handler
+//! matches now lowers to a call. Every fixture below deliberately declares
+//! no such handler, so each shape still falls to the loud default.)
 //!
 //! That staging is only defensible if the gap is *loud*. This file is the
 //! guard: every shape the grammar now recognizes must reach a diagnostic

@@ -205,6 +205,11 @@ fn refuse_unsupported_file_channels(hir: &HirFile) -> Result<(), EmitError> {
     if !hir.allow_scopes.is_empty() {
         return Err(unsupported("@[allow(…)] suppression scopes", "file"));
     }
+    // `HirFile::element_matches` (issue #1838) needs no guard of its own:
+    // it is *derived* from a claiming `@[element(claims = "…")]`, and
+    // `emit_knot`/`emit_stitch` already refuse any container carrying an
+    // `element_annotation`, so a file with matches can never reach a
+    // successful emit in the first place.
     Ok(())
 }
 

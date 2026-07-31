@@ -366,7 +366,7 @@ Key semantics from the reference C# ink implementation relevant to compilation:
 
 ## Diagnostic Codes
 
-Every diagnostic the compiler can emit has a stable code (`E001`–`E166`) and a
+Every diagnostic the compiler can emit has a stable code (`E001`–`E167`) and a
 per-code reference file under [`docs/diagnostics/`](diagnostics/) with a summary,
 explanation, minimal repro, and fix guidance. `DiagnosticCode::as_str` /
 `DiagnosticCode::from_str_code` (`crates/internal/brink-ir/src/hir/diagnostics.rs`) are the
@@ -541,6 +541,7 @@ asserts every variant has a corresponding doc file and that no orphaned doc file
 | [`E164`](diagnostics/E164.md) | An inline markup span (`<name>…</name>`) whose tag name is not declared in the host manifest's markup vocabulary. |
 | [`E165`](diagnostics/E165.md) | An inline markup span carries an attribute the host manifest does not declare for that span kind. |
 | [`E166`](diagnostics/E166.md) | A `block`-flagged `@[element(…, block)]` annotation whose declaration has no trailing `content`-typed parameter to receive the captured run, or whose would-be receiver is also one of the pattern's own named captures. |
+| [`E167`](diagnostics/E167.md) | A natural-notation `@[element(claims = "…")]` handler declares a parameter that its pattern never captures, so a claimed line has nothing to bind it to. |
 
 ## Known limitations
 

@@ -25,6 +25,7 @@ use crate::{
 };
 
 use super::body::{lower_block, lower_items};
+use super::element::Elements;
 use super::expr::lower_expr;
 use super::provenance::native_provenance;
 
@@ -59,6 +60,7 @@ fn diag(file: FileId, range: rowan::TextRange, code: DiagnosticCode) -> Diagnost
 pub(super) fn lower_conditional(
     file_id: FileId,
     cb: &ast::ConditionalBlock,
+    elements: &mut Elements,
     diags: &mut Vec<Diagnostic>,
 ) -> Conditional {
     let ptr = native_provenance(file_id, NodeClass::Conditional, cb.syntax());
@@ -95,7 +97,7 @@ pub(super) fn lower_conditional(
             native_provenance(file_id, NodeClass::ConditionalBranch, arm.syntax())
         });
         let if_body = if_arm.map_or_else(Block::default, |arm| {
-            lower_arm_items(file_id, arm.syntax(), diags)
+            lower_arm_items(file_id, arm.syntax(), elements, diags)
         });
         branches.push(CondBranch {
             ptr: if_ptr,
@@ -106,7 +108,7 @@ pub(super) fn lower_conditional(
         });
         if let Some(eb) = cb.else_arm() {
             let else_ptr = native_provenance(file_id, NodeClass::ConditionalBranch, eb.syntax());
-            let else_body = lower_arm_items(file_id, eb.syntax(), diags);
+            let else_body = lower_arm_items(file_id, eb.syntax(), elements, diags);
             branches.push(CondBranch {
                 ptr: else_ptr,
                 // Scoped strictly to the success arm — the `else` never
@@ -137,7 +139,7 @@ pub(super) fn lower_conditional(
         };
         let branches: Vec<CondBranch> = cb
             .match_arms()
-            .map(|arm| lower_match_arm(file_id, &arm, diags))
+            .map(|arm| lower_match_arm(file_id, &arm, elements, diags))
             .collect();
         return Conditional {
             ptr,
@@ -159,11 +161,12 @@ pub(super) fn lower_conditional(
 fn lower_match_arm(
     file_id: FileId,
     arm: &ast::MatchArm,
+    elements: &mut Elements,
     diags: &mut Vec<Diagnostic>,
 ) -> CondBranch {
     let condition = arm.pattern_expr().map(|n| lower_expr(file_id, &n, diags));
     let body = if let Some(block) = arm.block() {
-        lower_block(file_id, &block, diags)
+        lower_block(file_id, &block, elements, diags)
     } else if let Some(expr_node) = arm.bare_expr() {
         // `pattern => expr` with no braces: the arm's "body" is a single
         // expression, not prose. `Stmt::ExprStmt` is the closest existing
@@ -202,10 +205,15 @@ fn lower_match_arm(
 /// Lower an `IF_ARM`/`ELSE_BRANCH` (conditional-family flavor)'s body: a
 /// nested `BLOCK` (braced-arm form) or the node's own direct children
 /// (colon form — `family.rs::colon_body` opens no wrapper node).
-fn lower_arm_items(file_id: FileId, arm_syntax: &SyntaxNode, diags: &mut Vec<Diagnostic>) -> Block {
+fn lower_arm_items(
+    file_id: FileId,
+    arm_syntax: &SyntaxNode,
+    elements: &mut Elements,
+    diags: &mut Vec<Diagnostic>,
+) -> Block {
     if let Some(block_node) = arm_syntax.children().find(|n| n.kind() == N::BLOCK) {
         let items: Vec<SyntaxNode> = block_node.children().collect();
-        let stmts = lower_items(file_id, &items, 0, diags);
+        let stmts = lower_items(file_id, &items, 0, elements, diags);
         let tail = crate::tail_from_stmts(&stmts);
         Block {
             label: None,
@@ -215,7 +223,7 @@ fn lower_arm_items(file_id: FileId, arm_syntax: &SyntaxNode, diags: &mut Vec<Dia
         }
     } else {
         let items: Vec<SyntaxNode> = arm_syntax.children().collect();
-        let stmts = lower_items(file_id, &items, 0, diags);
+        let stmts = lower_items(file_id, &items, 0, elements, diags);
         let tail = crate::tail_from_stmts(&stmts);
         Block {
             label: None,
@@ -237,6 +245,7 @@ fn lower_arm_items(file_id: FileId, arm_syntax: &SyntaxNode, diags: &mut Vec<Dia
 pub(super) fn lower_alternation(
     file_id: FileId,
     ab: &ast::AlternationBlock,
+    elements: &mut Elements,
     diags: &mut Vec<Diagnostic>,
     is_block_level: bool,
 ) -> Sequence {
@@ -245,14 +254,14 @@ pub(super) fn lower_alternation(
     let entries: Vec<ast::Entry> = ab.entries().collect();
 
     let branches: Vec<SequenceBranch> = if entries.is_empty() {
-        lower_inline_alternation_branches(file_id, ab.syntax(), diags, is_block_level)
+        lower_inline_alternation_branches(file_id, ab.syntax(), elements, diags, is_block_level)
     } else {
         entries
             .iter()
             .map(|e| {
                 let branch_ptr = native_provenance(file_id, NodeClass::SequenceBranch, e.syntax());
                 let items: Vec<SyntaxNode> = e.items().collect();
-                let mut stmts = lower_items(file_id, &items, 0, diags);
+                let mut stmts = lower_items(file_id, &items, 0, elements, diags);
                 if is_block_level {
                     stmts.insert(0, Stmt::EndOfLine);
                 }
@@ -299,6 +308,7 @@ fn sequence_type(ab: &ast::AlternationBlock) -> SequenceType {
 fn lower_inline_alternation_branches(
     file_id: FileId,
     ab_syntax: &SyntaxNode,
+    elements: &mut Elements,
     diags: &mut Vec<Diagnostic>,
     is_block_level: bool,
 ) -> Vec<SequenceBranch> {
@@ -317,6 +327,7 @@ fn lower_inline_alternation_branches(
                     file_id,
                     ab_syntax,
                     &current,
+                    elements,
                     diags,
                     is_block_level,
                 ));
@@ -329,6 +340,7 @@ fn lower_inline_alternation_branches(
         file_id,
         ab_syntax,
         &current,
+        elements,
         diags,
         is_block_level,
     ));
@@ -361,6 +373,7 @@ fn finish_inline_branch(
     file_id: FileId,
     ab_syntax: &SyntaxNode,
     items: &[SyntaxNode],
+    elements: &mut Elements,
     diags: &mut Vec<Diagnostic>,
     is_block_level: bool,
 ) -> SequenceBranch {
@@ -369,7 +382,7 @@ fn finish_inline_branch(
     // whole line (see `body::lower_content_run`'s doc). Only the leading
     // `EndOfLine` (added below, for the block-level case) marks a line
     // boundary here.
-    let mut stmts = super::body::lower_content_run(file_id, items, None, diags, false);
+    let mut stmts = super::body::lower_content_run(file_id, items, None, elements, diags, false);
     if is_block_level {
         stmts.insert(0, Stmt::EndOfLine);
     }

@@ -48,6 +48,15 @@
 //!   line, binding captures, finding a block's terminator, and lowering to
 //!   a call — is **not** implemented here; see [`ElementAnnotation`]'s own
 //!   doc for why, and `docs/prose-dialect-spec.md` §3.5b's Deferred list.
+//!   Issue #1838 added the **other** natural-notation spelling, `claims =
+//!   "…"` beside `args = "…"` — a pattern that claims a prose line
+//!   carrying no `!name` sigil. A claim is validated in both directions
+//!   (`E160` *and* `E167`: params ≡ captures, since every argument of the
+//!   rewritten call comes from a capture) and is legal only above a
+//!   top-level `fn` (`E112` otherwise — see [`is_consumed_position`]). The
+//!   dispatch itself lives in [`super::element`]; the `!name` *sigil*
+//!   rewrite remains unimplemented for both spellings, per the deferred
+//!   list above.
 //! - **`style`** — `@[style(…)]`, the companion editor-presentation
 //!   annotation (same spec section, addenda 3–4). **This module delivers
 //!   it** as a pure declaration surface — [`style_annotation`] requires a
@@ -222,6 +231,14 @@ fn container_nesting_depth(decl: &SyntaxNode) -> usize {
 /// not waved through as "consumed" only to be read by nothing.
 fn is_consumed_position(name: &str, line: &SyntaxNode) -> bool {
     match name {
+        // A *claiming* `@[element(claims = "…")]` (issue #1838) is narrower
+        // than its `args` sibling: the rewrite is an expression call, and
+        // only a top-level `fn` is callable as one. A claim on a `flow`, or
+        // on a nested `fn`, would parse and validate and then claim
+        // nothing — exactly the silent no-op the `@`-namespace rule exists
+        // to prevent — so it is reported misplaced (`E112`) instead.
+        ELEMENT if declares_claim(line) => attached_declaration(line)
+            .is_some_and(|d| d.kind() == N::FN_DECL && container_nesting_depth(&d) == 0),
         // The module-rename record is a *file-level* fact — `module::
         // lower_file_module` scans `SOURCE_FILE`'s own children for it.
         WAS => line.parent().is_some_and(|p| p.kind() == N::SOURCE_FILE),
@@ -251,6 +268,23 @@ fn is_consumed_position(name: &str, line: &SyntaxNode) -> bool {
         ALLOW => attached_declaration(line).is_some(),
         _ => false,
     }
+}
+
+/// `true` when `line` is an `@[element(…)]` carrying a `claims = "…"`
+/// clause — the natural-notation spelling (issue #1838), which has a
+/// narrower legal placement than `args = "…"`.
+///
+/// A syntactic read of the clause *key* only: whether the value is a valid
+/// pattern, and whether its captures line up with the declaration's params,
+/// stays [`parse_element`]'s job. Placement must be decidable before any of
+/// that, so a malformed claim is still reported at the right position.
+fn declares_claim(line: &SyntaxNode) -> bool {
+    ast::AnnotationLine::cast(line.clone())
+        .and_then(|l| l.args())
+        .is_some_and(|args| {
+            args.args()
+                .any(|a| a.name_token().is_some_and(|t| t.text() == ELEMENT_CLAIMS))
+        })
 }
 
 /// The erasure chokepoint: called for every `ANNOTATION_LINE` a body or
@@ -511,9 +545,12 @@ fn parse_effects(
 // NOT implemented here — only the declaration surface is (parse, validate,
 // store on the `Knot`/`Stitch`). See this module's doc comment for why.
 
-/// The `@[element(…)]` clause keys: `args = "…"` (required, the portable-
-/// regex pattern) and `name = "…"` (optional, the dispatch-name alias).
+/// The `@[element(…)]` clause keys. Exactly one of `args = "…"` (the
+/// `!name`-dispatched remainder pattern) and `claims = "…"` (the
+/// natural-notation whole-line claim, issue #1838) is required; `name =
+/// "…"` is the optional dispatch-name alias.
 const ELEMENT_ARGS: &str = "args";
+const ELEMENT_CLAIMS: &str = "claims";
 const ELEMENT_NAME: &str = "name";
 
 /// The `@[element(…)]` bare `block` clause (issue #1839, `docs/decision-
@@ -577,7 +614,10 @@ fn eq_value_text(arg: &ast::AnnotationArg) -> Option<String> {
 /// declaration. A bare `block` clause (issue #1839) with no qualifying
 /// trailing `content`-typed parameter on `decl` is `E166` — the same
 /// static-defect-in-the-declaration posture `E160` already takes, widened
-/// to the block capture contract.
+/// to the block capture contract. A `claims = "…"` pattern (issue #1838)
+/// naming a parameter no capture matches is the converse check, `E167` —
+/// the rewritten call has no other source of arguments, so every parameter
+/// must come from a capture.
 pub(super) fn element_annotation(
     file_id: FileId,
     decl: &SyntaxNode,
@@ -615,6 +655,7 @@ fn parse_element(
     };
 
     let mut pattern: Option<String> = None;
+    let mut claims = false;
     let mut alias: Option<String> = None;
     let mut block = false;
     let mut ok = true;
@@ -639,7 +680,14 @@ fn parse_element(
             continue;
         };
         match key.text() {
+            // `args` and `claims` are two spellings of the same slot, and
+            // the slot fills at most once — a declaration carrying both is
+            // asking to be dispatched two incompatible ways.
             ELEMENT_ARGS if pattern.is_none() => pattern = Some(value),
+            ELEMENT_CLAIMS if pattern.is_none() => {
+                pattern = Some(value);
+                claims = true;
+            }
             ELEMENT_NAME if alias.is_none() => alias = Some(value),
             _ => ok = false,
         }
@@ -676,8 +724,19 @@ fn parse_element(
         return None;
     }
 
+    // The claiming half needs the *converse* check too (`E167`, issue
+    // #1838): a claimed line is rewritten to exactly one call whose every
+    // argument comes from a named capture, so a parameter no capture names
+    // has nothing to bind it to. A `!name` handler is exempt — it stays
+    // callable by hand with ordinary arguments.
+    if claims && let Some(p) = params.iter().find(|p| !captures.contains(&p.name.text)) {
+        diags.push(diag(file_id, p.name.range, DiagnosticCode::E167));
+        return None;
+    }
+
     Some(ElementAnnotation {
         pattern,
+        claims,
         captures,
         alias,
         block,

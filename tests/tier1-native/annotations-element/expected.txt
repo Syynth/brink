@@ -1,2 +1,4 @@
 Feed: come in.
+-- inside MARKET SQUARE --
+The stalls are shuttered.
 Channel ready

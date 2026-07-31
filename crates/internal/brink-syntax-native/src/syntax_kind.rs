@@ -362,8 +362,9 @@ pub enum SyntaxKind {
     //
     // The built-in screenplay preset's *grammar*. Recognition is
     // line-shape-static (spec §3.1) and lives in `parser/element.rs`;
-    // attachment, the `lower:` column and the preset's data schema are
-    // deliberately elsewhere (issues #1717/#1720) — this enum only names
+    // attachment and the preset's data schema are deliberately elsewhere
+    // (issues #1717/#1720), and dispatch to an annotated handler is
+    // `hir::lower_native::element` (issue #1838) — this enum only names
     // the shapes the parser can see. `LYRICS` is absent on purpose: the
     // lyrics element was **dropped** (§8b.1) because Fountain's `~`
     // force-marker collides with the logic-line escape.

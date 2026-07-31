@@ -1500,6 +1500,246 @@ fn element_and_style_annotation_on_a_nested_fn_is_diagnosed_not_silently_dropped
     );
 }
 
+// ─── Natural-notation element dispatch (issue #1838) ────────────────
+//
+// The `claims = "…"` half of `@[element(…)]`: a pattern claiming a prose
+// line that carries no `!name` sigil, rewritten to exactly one call with
+// the pattern's named captures bound to the handler's params by name.
+
+/// The single `Stmt::Content` a claimed line lowers to, or `None`.
+fn only_claimed_call(block: &crate::Block) -> Option<(&str, Vec<String>)> {
+    block.stmts.iter().find_map(|s| match s {
+        Stmt::Content(c) => match c.parts.as_slice() {
+            [ContentPart::Interpolation(Expr::Call(path, args))] => Some((
+                path.segments[0].text.as_str(),
+                args.iter()
+                    .map(|a| match a {
+                        Expr::String(se) => match se.parts.as_slice() {
+                            [crate::StringPart::Literal(t)] => t.clone(),
+                            other => panic!("expected a literal argument, got {other:?}"),
+                        },
+                        other => panic!("expected a string argument, got {other:?}"),
+                    })
+                    .collect(),
+            )),
+            _ => None,
+        },
+        _ => None,
+    })
+}
+
+#[test]
+fn a_claimed_content_line_lowers_to_exactly_one_call() {
+    let (hir, _m, diags) = lower_src(
+        "@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival(who) {\n  return who;\n}\n\nflow main() {\n  VENDOR enters\n}\n",
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let main = hir
+        .knots
+        .iter()
+        .find(|k| k.name.text == "main")
+        .expect("main");
+    let (callee, args) =
+        only_claimed_call(&main.body).expect("the claimed line must lower to one call");
+    assert_eq!(callee, "arrival");
+    assert_eq!(args, vec!["VENDOR".to_string()]);
+}
+
+#[test]
+fn a_claimed_scene_heading_lowers_to_a_call_and_keeps_its_body() {
+    let (hir, _m, diags) = lower_src(
+        "@[element(claims = \"^INT\\\\. (?<place>.+)$\")]\nfn interior(place) {\n  return place;\n}\n\nflow main() {\n  INT. MARKET SQUARE\n  The stalls are shuttered.\n}\n",
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let main = hir
+        .knots
+        .iter()
+        .find(|k| k.name.text == "main")
+        .expect("main");
+    let (callee, args) = only_claimed_call(&main.body).expect("the heading must lower to one call");
+    assert_eq!(callee, "interior");
+    assert_eq!(args, vec!["MARKET SQUARE".to_string()]);
+    // The header-scoped body still lowers in place — the heading claims
+    // only the heading line, never the run beneath it (block capture is
+    // its own slice).
+    let rendered = format!("{:?}", main.body.stmts);
+    assert!(
+        rendered.contains("The stalls are shuttered."),
+        "the scene body's own lines must survive: {rendered}"
+    );
+}
+
+#[test]
+fn an_unclaimed_scene_heading_is_still_loudly_unlowered() {
+    // The pre-#1838 baseline the dispatch must not disturb: with no
+    // claiming handler in the file, a heading is still `E129`, never
+    // silently read as ordinary prose.
+    let (_hir, _m, diags) = lower_src("flow main() {\n  INT. MARKET SQUARE\n}\n");
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E129),
+        "an unclaimed heading must stay loud: {diags:?}"
+    );
+}
+
+#[test]
+fn a_claim_records_handler_and_capture_spans() {
+    let src = "@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival(who) {\n  return who;\n}\n\nflow main() {\n  VENDOR enters\n}\n";
+    let (hir, _m, diags) = lower_src(src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(hir.element_matches.len(), 1);
+    let m = &hir.element_matches[0];
+    assert_eq!(m.kind, crate::ElementKind::ContentLine);
+    assert_eq!(m.disposition, crate::ElementDisposition::Call);
+    assert_eq!(m.handler.text, "arrival");
+    // Every recorded coordinate must point at the real bytes it claims to
+    // — the no-invisible-expansion guard is worthless if the spans drift.
+    assert_eq!(
+        &src[usize::from(m.handler.range.start())..usize::from(m.handler.range.end())],
+        "arrival"
+    );
+    assert_eq!(m.captures.len(), 1);
+    let c = &m.captures[0];
+    assert_eq!(c.name, "who");
+    assert_eq!(c.text, "VENDOR");
+    assert_eq!(
+        &src[usize::from(c.range.start())..usize::from(c.range.end())],
+        "VENDOR"
+    );
+    assert!(
+        src[usize::from(m.annotation.start())..usize::from(m.annotation.end())]
+            .starts_with("@[element(claims"),
+        "the annotation range must land on the claiming declaration"
+    );
+}
+
+#[test]
+fn a_claiming_handler_does_not_claim_lines_in_its_own_body() {
+    // The staging rule §3.5 states for the conventions module ("it cannot
+    // use the conventions it defines"): without this the handler's own
+    // prose would rewrite into a call on itself.
+    let (hir, _m, diags) = lower_src(
+        "@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival(who) >{\n  VENDOR enters\n}\n",
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert!(
+        hir.element_matches.is_empty(),
+        "a handler must not claim its own body: {:?}",
+        hir.element_matches
+    );
+}
+
+#[test]
+fn a_claiming_pattern_declaring_both_args_and_claims_diagnoses_e159() {
+    let (hir, _m, diags) =
+        lower_src("@[element(args = \"^a$\", claims = \"^b$\")]\nfn one() {\n  return 1;\n}\n");
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E159),
+        "two spellings of the same slot must raise E159: {diags:?}"
+    );
+    assert!(hir.knots[0].element_annotation.is_none());
+}
+
+#[test]
+fn a_claiming_handler_param_with_no_capture_diagnoses_e167() {
+    let (hir, _m, diags) = lower_src(
+        "@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival(who, mood) {\n  return who;\n}\n",
+    );
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E167),
+        "a param no capture binds must raise E167: {diags:?}"
+    );
+    assert!(hir.knots[0].element_annotation.is_none());
+}
+
+#[test]
+fn a_non_claiming_handler_may_have_params_beyond_its_captures() {
+    // The asymmetry E167 exists for: a `!name` handler stays callable by
+    // hand, so an uncaptured param is not an error there.
+    let (hir, _m, diags) = lower_src(
+        "@[element(args = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival(who, mood) {\n  return who;\n}\n",
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let element = hir.knots[0].element_annotation.as_ref().expect("present");
+    assert!(!element.claims);
+}
+
+#[test]
+fn a_claim_on_a_flow_is_misplaced_e112() {
+    // Only a top-level `fn` is callable as an expression, so only a
+    // top-level `fn` may claim — and a claim that could never fire must be
+    // loud, not inert.
+    let (_hir, _m, diags) = lower_src(
+        "@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nflow arrival(who) {\n  Hi, {who}!\n}\n",
+    );
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E112),
+        "a claim on a flow must be diagnosed misplaced: {diags:?}"
+    );
+}
+
+#[test]
+fn a_claim_on_a_nested_fn_is_misplaced_e112() {
+    let (_hir, _m, diags) = lower_src(
+        "flow outer() {\n  @[element(claims = \"^(?<who>[A-Z]+) enters$\")]\n  fn arrival(who) {\n    return who;\n  }\n}\n",
+    );
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E112),
+        "a claim on a nested fn must be diagnosed misplaced: {diags:?}"
+    );
+}
+
+#[test]
+fn a_line_carrying_interpolation_is_never_claimed() {
+    // A claiming pattern matches literal source text; a line with dynamic
+    // parts has no fixed text to match and no honest capture spans.
+    let (hir, _m, diags) = lower_src(
+        "var who = \"VENDOR\"\n\n@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival(who) {\n  return who;\n}\n\nflow main() {\n  {who} enters\n}\n",
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert!(
+        hir.element_matches.is_empty(),
+        "an interpolated line must not be claimed: {:?}",
+        hir.element_matches
+    );
+}
+
+#[test]
+fn element_matches_are_recorded_in_source_order_across_a_choice_point() {
+    // DOCS/CONSISTENCY review finding on this PR: `body::lower_items`
+    // lowers a `CHOICE_POINT`'s continuation (source-*later*, via
+    // `lower_continuation`) before it lowers the choice's own bodies
+    // (source-*earlier*, via `lower_choice_point`) — so a claimed line
+    // after a choice point is reached, and pushed onto `Elements::matches`,
+    // before a claimed line inside the choice body that precedes it in
+    // source. `HirFile::element_matches`'s own doc promises source order;
+    // `hir::lower_native::lower` must restore it by sorting on `line`
+    // before storing the field.
+    let src = "@[element(claims = \"^SIGNAL (?<sound>.+)$\")]\nfn effect(sound) {\n  return sound;\n}\n\nflow main() {\n  {?\n    * Option. {\n      SIGNAL EARLY\n    }\n  }\n  SIGNAL LATE\n}\n";
+    let (hir, _m, diags) = lower_src(src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(hir.element_matches.len(), 2, "{:?}", hir.element_matches);
+
+    let early_pos = src.find("SIGNAL EARLY").expect("EARLY in fixture");
+    let late_pos = src.find("SIGNAL LATE").expect("LATE in fixture");
+    assert!(
+        early_pos < late_pos,
+        "fixture sanity: EARLY must precede LATE in source"
+    );
+
+    assert_eq!(
+        usize::from(hir.element_matches[0].line.start()),
+        early_pos,
+        "the choice-body claim (source-earlier) must sort first: {:?}",
+        hir.element_matches
+    );
+    assert_eq!(
+        usize::from(hir.element_matches[1].line.start()),
+        late_pos,
+        "the continuation claim (source-later) must sort second: {:?}",
+        hir.element_matches
+    );
+}
+
 // ─── Block::tail (S1, docs/block-effect-model.md §10 row j) ────────
 //
 // Expand-phase groundwork only: `tail` is populated from `stmts`' final

@@ -167,18 +167,27 @@ fn annotations_effects() {
     assert_case("annotations-effects");
 }
 
-/// The `@[element(args = "…")]` declaration surface (issue #1719) at the
-/// same three attachment points `annotations_effects` covers: a top-level
-/// `fn` (captures binding both its params), a top-level `flow` (a
-/// capture-free pattern), and a nested `flow` (the `Stitch` level, with
-/// the optional `name = "…"` alias clause). Until this landed, every one
-/// of these lines hard-failed the compile with `E129`, so the signal here
-/// is exactly that: an annotated `.brink` story compiles and runs. The
-/// `!name` sigil dispatch rewrite the annotation exists to eventually
-/// drive is not implemented — see `docs/prose-dialect-spec.md` §3.5b's
-/// Deferred list — so this only pins that the declaration surface itself
-/// never regresses a clean compile, the same narrow signal
-/// `annotations_was`/`annotations_effects` pin for their own tenants.
+/// The `@[element(…)]` surface, in both its spellings.
+///
+/// The `args = "…"` declaration half (issue #1719) sits at the same three
+/// attachment points `annotations_effects` covers: a top-level `fn`
+/// (captures binding both its params), a top-level `flow` (a capture-free
+/// pattern), and a nested `flow` (the `Stitch` level, with the optional
+/// `name = "…"` alias clause). Until that landed, every one of these lines
+/// hard-failed the compile with `E129`, so its signal is narrow: an
+/// annotated `.brink` story compiles and runs. The `!name` sigil dispatch
+/// rewrite `args` exists to eventually drive is still not implemented —
+/// see `docs/prose-dialect-spec.md` §3.5b's Deferred list.
+///
+/// The `claims = "…"` half (issue #1838) is the part with a *behavioral*
+/// signal, and it is this corpus's proof that natural-notation dispatch
+/// actually reaches a reader: `interior` claims the `INT. MARKET SQUARE`
+/// line, binds `place` to `MARKET SQUARE`, and the line lowers to one call
+/// whose value is the transcript's second line. Before #1838 that same
+/// line was a scene heading with no HIR lowering at all (`E129`, a failed
+/// compile) — so `expected.txt`'s `-- inside MARKET SQUARE --` cannot be
+/// produced by any other path, and the line beneath it pins that the
+/// heading claimed only its own line, never the header-scoped run below.
 #[test]
 fn annotations_element() {
     assert_case("annotations-element");

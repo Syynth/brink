@@ -76,10 +76,13 @@
 //!    block elements the grammar gained in issue #1715 — scene headings
 //!    and their header-scoped stitch bodies, cues, compact cues,
 //!    parentheticals, and a `flow` header's trailing per-flow `#tag`s
-//!    (`container::report_header_tags`). Their attachment and `lower:`
-//!    column are issue #1717's slice and the per-flow tag API is #474's,
-//!    so every one of these shapes parses cleanly and is reported here
-//!    rather than being read as ordinary prose or dropped.
+//!    (`container::report_header_tags`). Their attachment is issue
+//!    #1717's slice and the per-flow tag API is #474's, so every one of
+//!    these shapes parses cleanly and is reported here rather than being
+//!    read as ordinary prose or dropped. **One exception since issue
+//!    #1838**: a scene heading claimed by a natural-notation
+//!    `@[element(claims = "…")]` handler lowers to one call on it
+//!    ([`element`]); an *unclaimed* heading still reports.
 //! 5. **Decl-level directive/annotation channel — the annotation half is
 //!    now wired.** `@[effects(…)]` above a `flow`/`fn` populates
 //!    `effects_assertion` on the resulting `Knot`/`Stitch` (issue #1563,
@@ -130,6 +133,7 @@ mod container;
 pub mod control_flow;
 mod decl;
 mod doc_comment;
+mod element;
 mod expr;
 mod lambda;
 mod module;
@@ -166,7 +170,18 @@ pub fn lower(
     let mut diags: Vec<Diagnostic> = Vec::new();
     let mut top = TopLevel::default();
 
-    walk_top_level(file.syntax_children(), file_id, &mut top, &mut diags);
+    // The file's natural-notation element handlers, collected before any
+    // body is lowered so a claiming `@[element(claims = "…")]` declared
+    // *below* the prose it claims still claims it (issue #1838).
+    let mut elements = element::collect(file_id, file.syntax());
+
+    walk_top_level(
+        file.syntax_children(),
+        file_id,
+        &mut top,
+        &mut elements,
+        &mut diags,
+    );
 
     // `var`/`const`/`flags` are hoisted flat regardless of nesting — a
     // whole-tree walk, same posture ink's D6 ruling requires of every
@@ -251,6 +266,18 @@ pub fn lower(
         visibility: Vec::new(),
         was_directives: Vec::new(),
         allow_scopes,
+        // `elements.matches` accumulates in the order body lowering *reaches*
+        // each claimed line, not necessarily source order — a `CHOICE_POINT`
+        // lowers its (source-later) continuation before its (source-earlier)
+        // choice bodies (`body::lower_items`), so a claim after a choice can
+        // be recorded before a claim inside it. `HirFile::element_matches`'s
+        // own doc promises source order — sorting here is what keeps that
+        // promise true rather than merely usually true.
+        element_matches: {
+            let mut matches = elements.matches;
+            matches.sort_by_key(|m| m.line.start());
+            matches
+        },
     };
     let manifest = project_manifest(&hir);
     (hir, manifest, diags)
@@ -327,22 +354,31 @@ fn walk_top_level(
     items: impl Iterator<Item = SyntaxNode>,
     file_id: FileId,
     out: &mut TopLevel,
+    elements: &mut element::Elements,
     diags: &mut Vec<Diagnostic>,
 ) {
     for child in items {
         match child.kind() {
             N::FLOW_DECL => {
                 if let Some(f) = ast::FlowDecl::cast(child)
-                    && let Some(k) =
-                        container::lower_top_level_container(file_id, &FlowOrFn::Flow(f), diags)
+                    && let Some(k) = container::lower_top_level_container(
+                        file_id,
+                        &FlowOrFn::Flow(f),
+                        elements,
+                        diags,
+                    )
                 {
                     out.knots.push(k);
                 }
             }
             N::FN_DECL => {
                 if let Some(f) = ast::FnDecl::cast(child)
-                    && let Some(k) =
-                        container::lower_top_level_container(file_id, &FlowOrFn::Fn(f), diags)
+                    && let Some(k) = container::lower_top_level_container(
+                        file_id,
+                        &FlowOrFn::Fn(f),
+                        elements,
+                        diags,
+                    )
                 {
                     out.knots.push(k);
                 }
@@ -382,7 +418,7 @@ fn walk_top_level(
                         .map_or_else(|| child.text_range(), |t| t.text_range());
                     diags.push(diagnostic(file_id, name_range, DiagnosticCode::E129));
                     if let Some(body) = md.body() {
-                        walk_top_level(body.items(), file_id, out, diags);
+                        walk_top_level(body.items(), file_id, out, elements, diags);
                     }
                 }
             }

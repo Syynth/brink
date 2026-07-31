@@ -581,6 +581,7 @@ mod tests {
             visibility: Vec::new(),
             was_directives: Vec::new(),
             allow_scopes: Vec::new(),
+            element_matches: Vec::new(),
         }
     }
 
