@@ -510,6 +510,31 @@ pub(crate) fn header_tag_tail(p: &mut Parser<'_, '_>) {
 /// depth check either way — `\}` alone, with no preceding unescaped `{`,
 /// already terminated a tag before this fix and still does). Pinned by
 /// `a_tag_with_an_escaped_open_brace_does_not_swallow_the_enclosing_blocks_own_closer`.
+///
+/// **RULED (review of #1777, issue #1787): `depth` is scoped per-tag, not
+/// per-line, and that is the intended contract, not a gap.** `tag_line_tail`
+/// calls this function fresh for each `HASH` it sees, so `depth` always
+/// starts at zero for a new tag regardless of what an earlier sibling tag
+/// on the same line left unbalanced. In `#a {x #b}` (two trailing tags,
+/// charter §5/§6/§11 — a content line's tags are always trailing, so this
+/// shape only ever arises between *sibling* tags, never between a tag and
+/// following prose), tag `a`'s scan is cut short by the `HASH` starting
+/// `b` — unconditionally, before the brace-depth check ever runs, exactly
+/// like `NEWLINE`/`EOF` — so `a`'s in-progress depth of 1 is simply
+/// discarded, not carried into `b`'s scan. `b` starts its own scan at
+/// depth zero and immediately meets the `}`, stopping there without
+/// consuming it, so that brace is left for whatever the line's own
+/// enclosing block expects it to close. Carrying depth across the `HASH`
+/// boundary instead (a per-line scope) would make one tag's own unbalanced
+/// text reach *through* a syntactically distinct sibling tag and swallow
+/// that sibling's — or the enclosing block's — own closer, a strictly
+/// worse and less local failure mode than today's already-accepted
+/// per-tag tradeoff above: a `HASH` is a real, tokenized boundary (each one
+/// starts its own `TAG` node), unlike the raw, grammar-blind `{`/`}`
+/// characters this scan balances, so treating it as anything other than a
+/// hard reset would blur a structural boundary the CST already treats as
+/// absolute. Pinned by
+/// `a_tags_own_unbalanced_brace_does_not_leak_depth_into_a_sibling_tag`.
 fn tag(p: &mut Parser<'_, '_>, extra_stop: &[SyntaxKind]) {
     p.start_node(TAG);
     p.expect(HASH);

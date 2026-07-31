@@ -239,6 +239,33 @@ fn inline_markup_point_marker() {
     assert_case("inline-markup-point-marker");
 }
 
+/// A `#`-tag whose own raw text embeds a balanced `{…}` brace pair,
+/// end-to-end (issue #1787 — filed from review of #1728/PR #1777, whose fix
+/// to `content::tag()`'s brace-depth counter had only parser-unit coverage,
+/// `crates/internal/brink-syntax-native/src/parser/tests/content.rs`, never
+/// a fixture pinning it at the level a writer actually experiences).
+/// `#sound {clang} in the tower.` is entirely the tag's own raw text (a
+/// content line's tags are always trailing, so nothing on that source line
+/// re-enters real prose grammar after the `#`) — before #1777, `tag()`
+/// stopped unconditionally at the *first* `}`, leaving `in the tower.` and
+/// the rest of the source unconsumed at the point the flow body expected
+/// its own closer, which hard-fails compilation (reproduced locally against
+/// this exact fixture: 4 diagnostics, "prevented compilation"). With the
+/// fix, the balanced brace doesn't end the tag early, the line finishes
+/// normally, and the following `Door creaks.` content line — proof the rest
+/// of the flow's body was never swallowed — plays untouched. This is a
+/// choice-free straight-line story, so the tag's own text isn't observable
+/// in `run_native_transcript`'s output (`Line::Text`'s `tags` field is
+/// dropped by that helper — only the printed prose is), but a story that
+/// merely *compiles* clean here already isn't proof enough by itself
+/// (`assert_case` alone is only half the guard); the discriminating signal
+/// is the *second* line's text surviving intact, which is exactly what the
+/// pre-fix unconditional-first-`}` stop would have destroyed.
+#[test]
+fn inline_tag_embedded_brace() {
+    assert_case("inline-tag-embedded-brace");
+}
+
 /// Every `tests/tier1-native/` case directory is exercised by a `#[test]`
 /// above — a directory with no matching test would silently never run.
 #[test]
@@ -256,6 +283,7 @@ fn every_case_directory_has_a_test() {
         "array-literal",
         "lambda-verbs",
         "inline-markup-point-marker",
+        "inline-tag-embedded-brace",
     ];
     let mut found: Vec<String> = std::fs::read_dir(corpus_dir())
         .expect("read tests/tier1-native")

@@ -665,6 +665,50 @@ fn a_tag_with_an_escaped_open_brace_does_not_swallow_the_enclosing_blocks_own_cl
 }
 
 #[test]
+fn a_tags_own_unbalanced_brace_does_not_leak_depth_into_a_sibling_tag() {
+    // #1787: `tag()`'s `depth` counter is scoped per-TAG, not per-line —
+    // ruled correct, not a gap (see `tag()`'s doc comment). `#a {x #b}`
+    // (two trailing tags, the only shape this question can arise in, since
+    // a content line's tags are always trailing — `content_line`'s own doc
+    // comment): tag `a`'s scan is cut short by the `HASH` that starts `b`
+    // — unconditionally, before depth is even consulted — so `a`'s
+    // in-progress depth of 1 (from its own unmatched `{`) is discarded,
+    // never carried into `b`'s scan. `b` starts fresh at depth zero and
+    // immediately meets the `}`, stopping there without consuming it, so
+    // that brace is left for the enclosing flow body's own closer — this
+    // parses with zero errors, exactly like the single-tag sibling test
+    // above (`a_tag_immediately_followed_by_the_enclosing_blocks_own_closer_still_stops_there`),
+    // not like the per-line-carried-depth reading, which would instead
+    // consume that `}` as `a`'s belated match and run off looking for a
+    // SECOND `}` to close the flow body, failing to parse (the same
+    // "eats the enclosing closer" tradeoff the sibling `an_unbalanced_open_brace_…`
+    // test pins for the single-tag case, but reached across a tag boundary
+    // instead of within one tag).
+    let src = "flow f() { Hello #a {x #b}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::FLOW_DECL), 1);
+
+    let tags: Vec<String> = p
+        .syntax()
+        .descendants()
+        .filter(|n| n.kind() == SyntaxKind::TAG)
+        .map(|n| n.text().to_string())
+        .collect();
+    assert_eq!(tags.len(), 2, "expected two sibling TAG nodes: {tags:?}");
+    assert_eq!(
+        tags[0], "#a {x",
+        "tag `a` keeps its own unmatched `{{` — HASH cut its scan short \
+         before depth was ever consulted"
+    );
+    assert_eq!(
+        tags[1], " #b",
+        "tag `b` starts at depth zero and stops at the very first `}}` — \
+         it never inherits `a`'s leftover unmatched depth"
+    );
+}
+
+#[test]
 fn a_top_level_tag_with_an_embedded_brace_reproduces_with_no_flow_or_tag_guard_involved() {
     // #1728: the defect is in the free-text scan itself, not anything
     // specific to being inside a flow body or interacting with the
