@@ -183,6 +183,30 @@ the positive control
   regression guard — it must be extended, not just re-asserted, whenever this
   list grows.
 
+  **Compile-time guard (issue #1816).** #1790's regression test is a
+  runtime assertion: it fails if any of the five fields above is dropped
+  from the snapshot/restore, but it cannot fail on a *sixth* field being
+  added to `InferPass` and never classified into a bucket at all — the
+  test simply keeps passing, unaware the field exists. The mechanical fix
+  is `InferPass::frame_snapshot` / `InferPass::restore_frame`
+  (`body.rs`), which replace the five-line manual clone/restore with a
+  `FrameSnapshot` type and a pair of **exhaustive struct destructurings**
+  (no `..` rest pattern) — one over `InferPass` in `frame_snapshot`, one
+  over `FrameSnapshot` itself in `restore_frame`. Adding a field to
+  `InferPass` makes `frame_snapshot`'s destructuring non-exhaustive — a
+  compile error — until the new field is explicitly folded in (frame-scoped)
+  or explicitly ignored with a `field: _` binding (cumulative or
+  name-shadowed, with a comment explaining why); `restore_frame`'s own
+  exhaustive destructuring of `FrameSnapshot` gives the same guarantee on
+  the write-back side, so a field added to `FrameSnapshot` but never
+  assigned back is equally a compile error. A field-count `const`
+  assertion was considered and rejected — there is no stable field-count
+  reflection for structs in Rust, only byte-size (`size_of`), which
+  cannot pin a field *count*. `infer_lambda`'s `LambdaBody::Block` arm now
+  calls `frame_snapshot`/`restore_frame` instead of the inline five-field
+  clone/restore; #1790's own test is unchanged and still passes — it is
+  the *sixth-field* case the exhaustive destructure additionally closes.
+
   **Scope of the restore, precisely.** `infer_lambda` snapshots before,
   and restores after, the **whole** of a block body — both its `stmts`
   *and* its trailing tail expression (`LambdaBody::Block { stmts, tail
@@ -193,7 +217,21 @@ the positive control
   frame, and the restore point is after the tail, not between the two.
   (A single-expression body, `LambdaBody::Expr`, has no `stmts` to
   snapshot around in the first place — its one expression walks under
-  whatever frame was already live when `infer_lambda` was entered.)
+  whatever frame was already live when `infer_lambda` was entered. This
+  is a deliberate asymmetry, not an oversight it would be safe to "fix"
+  by adding a matching snapshot/restore: an `Expr` body has no
+  `TempDecl`/`Assignment`/`Return` of its own — those are `BlockStmt`
+  variants — so it cannot write `locals`/`annotated`/`return_ty`/
+  `has_value_return` directly. It *can* still reach the frame-scoped
+  `local_fn_origins` indirectly, through a call that passes an enclosing
+  `Temp` local into a `ref` parameter (`record_ref_param_writes`), and
+  that write is required to survive into the enclosing def exactly as it
+  would from a non-lambda call, precisely because no frame is opened here.
+  Pinned by issue #1816's
+  `lambda_expr_body_opens_no_frame_for_ref_param_write`
+  (`crates/internal/brink-analyzer/src/infer/body.rs`) — it fails if a
+  future change wraps the `Expr` arm in `frame_snapshot`/`restore_frame`
+  to match `Block`.)
 
   This ordering was itself a bug, fixed by issue #1789: until then the
   restore landed *between* the `stmts` and the tail, because the tail was
@@ -290,7 +328,10 @@ mutation as well as an added key.
 `InferPass::infer_lambda`'s doc comment
 (`crates/internal/brink-analyzer/src/infer/body.rs`) states the five
 frame-scoped fields and points back to this section; keep both in sync
-if the field list changes. The adjacent hazard from the other side —
+if the field list changes. `FrameSnapshot`, `InferPass::frame_snapshot`,
+and `InferPass::restore_frame` (same file) are the compile-time guard
+described above; their own doc comments carry the same
+"keep in sync" pointer. The adjacent hazard from the other side —
 `strict::collect_temps` deliberately *not* descending into
 `Expr::Lambda`, because a lambda-local temp can never survive into the
 enclosing def's `BodyTypes.locals` for this same frame-scoping reason —
