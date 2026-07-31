@@ -463,14 +463,22 @@ inference, so it has **no index symbol** to harvest and is out of scope
 for this mechanism. The obstacle is keyspace (no index symbol → no
 `DefKey`/SCC membership), not timing. Tracked separately (#1727).
 
-**Aliasing channel enumeration — DRAFTED 2026-07-29, PENDING
-RATIFICATION (issue #1735).** Filed from the #1726/PR #1731 retro:
-does `local_fn_origins` need to learn any more aliasing channels, or
-does the untraced-write guard already cover them? #1735 carries
-`needs-design`; this enumeration is traced against the existing code
-(not new architecture), but per the repo's `needs-design` posture it
-is recorded here as a draft awaiting maintainer ratification, not
-folded into `docs/decision-log.md` as a settled ruling. Enumerated:
+**Aliasing channel enumeration — RATIFIED 2026-07-31 (issues #1735,
+#1817; `docs/decision-log.md` "Fn-value aliasing-channel enumeration
+ratified").** Filed from the #1726/PR #1731 retro: does
+`local_fn_origins` need to learn any more aliasing channels, or does
+the untraced-write guard already cover them? It drafted on 2026-07-29
+naming its own blocker — it could not claim completeness while a
+channel remained open. Channel 5 was that channel; issue #1755 /
+PR #1808 closed it, and the enumeration is now settled.
+
+⚠ **Standing condition on this ruling.** Completeness is claimed over
+the channels **today's grammar has**, not in the abstract. Channel 5
+existed precisely because `ref` binds at two syntactically distinct
+positions (call-site argument and `#fn`-creation-site binding) and one
+of them was missed. **Any new binding or aliasing position added to the
+grammar reopens this enumeration** — adding one without revisiting §6.1a
+is how the next under-report gets introduced. Enumerated:
 
 1. **A bare Temp write** (`TempDecl` initializer or `Assignment` to a
    single-segment `Path` resolving to `Temp`) — the one channel this

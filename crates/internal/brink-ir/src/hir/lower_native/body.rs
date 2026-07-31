@@ -695,6 +695,7 @@ pub(super) fn lower_span(
         }
     }
     ContentPart::Span(SpanPart {
+        ptr: native_provenance(file_id, NodeClass::Span, node),
         name,
         attrs,
         children,
