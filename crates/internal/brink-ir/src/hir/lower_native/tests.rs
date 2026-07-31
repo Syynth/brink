@@ -1262,6 +1262,109 @@ fn element_annotation_capture_without_matching_param_diagnoses_e160() {
     assert!(hir.knots[0].element_annotation.is_none());
 }
 
+// ─── `@[element(…, block)]` declaration surface (issue #1839,
+// `docs/decision-log.md` 2026-07-31 "Conventions are annotated handlers")
+// ───────────────────────────────────────────────────────────────────
+//
+// This is the declaration-surface slice only, matching the precedent
+// #1719 already set for `element`/`style`: parse and validate the `block`
+// clause's structural contract (a qualifying trailing `content`-typed
+// param). The `!name`/natural-notation dispatch rewrite that would
+// actually match a line, find the block's terminator, capture the
+// following run as a `Value::FragmentRef`, and call the handler is issue
+// #1838's scope and is not implemented here — so there is no dispatch
+// pipeline yet to prove `content`'s interior lines keep producing their
+// own translatable line entries; that test belongs with #1838's landing.
+
+#[test]
+fn element_annotation_block_flag_lowers_with_trailing_content_param() {
+    let (hir, _m, diags) = lower_src(
+        "@[element(args = \"^@(?<name>[A-Z]+)$\", block)]\nflow cue(name, body: content) {\n  Hi, {name}!\n}\n",
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let element = hir.knots[0]
+        .element_annotation
+        .as_ref()
+        .expect("@[element(…, block)] must still lower to an ElementAnnotation");
+    assert!(element.block, "the `block` flag must be recorded");
+    assert_eq!(element.captures, vec!["name".to_string()]);
+}
+
+#[test]
+fn element_annotation_block_without_content_param_diagnoses_e166() {
+    let (hir, _m, diags) = lower_src(
+        "@[element(args = \"^@(?<name>[A-Z]+)$\", block)]\nflow cue(name) {\n  Hi, {name}!\n}\n",
+    );
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E166),
+        "a `block` element with no content-typed param must raise E166: {diags:?}"
+    );
+    assert!(hir.knots[0].element_annotation.is_none());
+}
+
+#[test]
+fn element_annotation_block_content_param_not_last_diagnoses_e166() {
+    let (hir, _m, diags) = lower_src(
+        "@[element(args = \"^@(?<name>[A-Z]+)$\", block)]\nflow cue(body: content, name) {\n  Hi, {name}!\n}\n",
+    );
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E166),
+        "the content-typed param must be trailing — E166 when it isn't last: {diags:?}"
+    );
+    assert!(hir.knots[0].element_annotation.is_none());
+}
+
+#[test]
+fn element_annotation_block_content_param_matching_a_capture_diagnoses_e166() {
+    // `body` is both the pattern's own named capture and the trailing
+    // content-typed param — E160's "does the capture have a matching
+    // param" check is satisfied by name alone, so this must be caught by
+    // the block contract instead: a capture and the block receiver cannot
+    // be the same parameter.
+    let (hir, _m, diags) = lower_src(
+        "@[element(args = \"^@(?<body>[A-Z]+)$\", block)]\nflow cue(body: content) {\n  Hi, {body}!\n}\n",
+    );
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E166),
+        "a content param that is also a named capture must raise E166: {diags:?}"
+    );
+    assert!(hir.knots[0].element_annotation.is_none());
+}
+
+#[test]
+fn element_annotation_duplicate_block_flag_diagnoses_e159() {
+    let (hir, _m, diags) = lower_src(
+        "@[element(args = \"^@(?<name>[A-Z]+)$\", block, block)]\nflow cue(name, body: content) {\n  Hi, {name}!\n}\n",
+    );
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E159),
+        "a repeated bare `block` clause must raise E159: {diags:?}"
+    );
+    assert!(hir.knots[0].element_annotation.is_none());
+}
+
+#[test]
+fn element_annotation_block_with_assigned_value_diagnoses_e159() {
+    let (hir, _m, diags) = lower_src(
+        "@[element(args = \"^@(?<name>[A-Z]+)$\", block = \"true\")]\nflow cue(name, body: content) {\n  Hi, {name}!\n}\n",
+    );
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E159),
+        "`block` is a bare flag, not a `key = \"value\"` clause: {diags:?}"
+    );
+    assert!(hir.knots[0].element_annotation.is_none());
+}
+
+#[test]
+fn element_annotation_without_block_flag_defaults_false() {
+    let (hir, _m, diags) = lower_src(
+        "@[element(args = \"^(?<chan>\\\\w+)$\")]\nflow radio(chan) {\n  Hi, {chan}!\n}\n",
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let element = hir.knots[0].element_annotation.as_ref().expect("present");
+    assert!(!element.block, "no `block` clause must leave block false");
+}
+
 #[test]
 fn style_annotation_lowers_with_paired_element() {
     let (hir, _m, diags) = lower_src(

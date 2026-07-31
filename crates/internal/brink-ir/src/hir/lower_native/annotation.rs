@@ -38,9 +38,15 @@
 //!   parses the `args`/`name` clauses, validates the pattern compiles as a
 //!   portable regex (`E159`), and validates its named captures against the
 //!   declaration's own params (`E160`, the spec's "compile-checked" capture
-//!   contract). The `!name` sigil dispatch rewrite the annotation exists to
-//!   drive — matching a content line, binding captures, and lowering to a
-//!   call — is **not** implemented here; see [`ElementAnnotation`]'s own
+//!   contract). Also parses the bare `block` clause (issue #1839,
+//!   `docs/decision-log.md` 2026-07-31 "Conventions are annotated
+//!   handlers"): `@[element(args = "…", block)]` declares that the handler
+//!   captures the run *following* its matched line into a trailing
+//!   `content`-typed param, and this module validates that receiver exists
+//!   (`E166`) — see [`ElementAnnotation::block`]'s doc. The `!name` sigil
+//!   dispatch rewrite the annotation exists to drive — matching a content
+//!   line, binding captures, finding a block's terminator, and lowering to
+//!   a call — is **not** implemented here; see [`ElementAnnotation`]'s own
 //!   doc for why, and `docs/prose-dialect-spec.md` §3.5b's Deferred list.
 //! - **`style`** — `@[style(…)]`, the companion editor-presentation
 //!   annotation (same spec section, addenda 3–4). **This module delivers
@@ -93,7 +99,7 @@ use crate::hir::FileId;
 use crate::suppressions::AllowScope;
 use crate::{
     Diagnostic, DiagnosticCode, EffectsAssertion, ElementAnnotation, Param, Severity,
-    StyleAnnotation, StyleEntry, StyleToken,
+    StyleAnnotation, StyleEntry, StyleToken, TypeExpr,
 };
 
 use super::SyntaxNode;
@@ -510,6 +516,22 @@ fn parse_effects(
 const ELEMENT_ARGS: &str = "args";
 const ELEMENT_NAME: &str = "name";
 
+/// The `@[element(…)]` bare `block` clause (issue #1839, `docs/decision-
+/// log.md` 2026-07-31): a flag, not a `key = "value"` pair — present or
+/// absent, never assigned. See [`ElementAnnotation::block`]'s doc for what
+/// it declares.
+const ELEMENT_BLOCK: &str = "block";
+
+/// The native-type-system spelling `@[element(…, block)]`'s trailing
+/// capture parameter must carry (`text: content`, per the ruled example).
+/// Checked as plain annotation text here, at the declaration surface —
+/// this module never calls into the type checker, and `content` is not a
+/// resolvable native type yet either (`docs/prose-dialect-spec.md` §3.5b's
+/// own Deferred list); the check below is deliberately shallow, exactly
+/// the "declared, not resolved" posture the rest of this file's `element`/
+/// `style` surface already takes.
+const ELEMENT_CONTENT_TYPE: &str = "content";
+
 /// The two `@[style(…)]` keys that name the whole line rather than a
 /// capture: the dispatched line's full text, and the `!name` prefix itself
 /// (§3.5b addendum 4).
@@ -552,7 +574,10 @@ fn eq_value_text(arg: &ast::AnnotationArg) -> Option<String> {
 /// (never a partial one). A named capture group that doesn't match any
 /// parameter on `decl` is `E160` — the capture contract (§3.5b: "named
 /// captures bind params by name (compile-checked)") enforced at the
-/// declaration.
+/// declaration. A bare `block` clause (issue #1839) with no qualifying
+/// trailing `content`-typed parameter on `decl` is `E166` — the same
+/// static-defect-in-the-declaration posture `E160` already takes, widened
+/// to the block capture contract.
 pub(super) fn element_annotation(
     file_id: FileId,
     decl: &SyntaxNode,
@@ -591,12 +616,24 @@ fn parse_element(
 
     let mut pattern: Option<String> = None;
     let mut alias: Option<String> = None;
+    let mut block = false;
     let mut ok = true;
     for arg in args.args() {
         let Some(key) = arg.name_token() else {
             ok = false;
             continue;
         };
+        if key.text() == ELEMENT_BLOCK {
+            // A flag, not a `key = "value"` pair: no `eq_value`, no nested
+            // clause. `!block` guards the duplicate-`block` case the same
+            // way `pattern.is_none()`/`alias.is_none()` guard theirs below.
+            if !block && arg.eq_value().is_none() && arg.nested_args().is_none() {
+                block = true;
+            } else {
+                ok = false;
+            }
+            continue;
+        }
         let Some(value) = eq_value_text(&arg) else {
             ok = false;
             continue;
@@ -634,12 +671,35 @@ fn parse_element(
         }
     }
 
+    if block && !has_block_content_param(params, &captures) {
+        diags.push(diag(file_id, range, DiagnosticCode::E166));
+        return None;
+    }
+
     Some(ElementAnnotation {
         pattern,
         captures,
         alias,
+        block,
         range,
     })
+}
+
+/// `true` when `params` ends with a `content`-typed parameter that is not
+/// one of `captures` — the structural shape `block` requires (`E166`
+/// otherwise). Declaration-surface-only, like the rest of this module: this
+/// checks the raw `TypeExpr` text, not a resolved type, because `content`
+/// is not a resolvable native type yet (see [`ELEMENT_CONTENT_TYPE`]'s
+/// doc).
+fn has_block_content_param(params: &[Param], captures: &[String]) -> bool {
+    let Some(last) = params.last() else {
+        return false;
+    };
+    let is_content_typed = matches!(
+        &last.annotation,
+        Some(TypeExpr::Named { name, .. }) if name == ELEMENT_CONTENT_TYPE
+    );
+    is_content_typed && !captures.contains(&last.name.text)
 }
 
 /// Read the `@[style(…)]` annotation attached to `decl`, if it declares
