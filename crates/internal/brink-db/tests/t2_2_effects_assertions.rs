@@ -86,6 +86,30 @@ fn exceedance_via_ref_param_indirect_write() {
     assert!(diags[0].message.contains("writes val"), "{diags:?}");
 }
 
+/// Issue #1755 — the sibling of the test above, one grammar position over.
+/// `ref` binds at a `#fn` **creation** site's bound prefix as well as at a
+/// call's argument list (docs/t1c-spec.md §2, docs/effects-spec.md §6.1a
+/// channel 5), and until #1755 only the call site recorded the write. The
+/// assertion here declares only `reads: player_hp`, so the write `heal`
+/// performs through its `ref hp` param — bound to the cell `player_hp` at
+/// the creation site — must exceed it. Before the fix this fixture was
+/// silently *clean*: a false negative on the one diagnostic this whole
+/// surface exists to produce, reached through exactly the `db.analysis()`
+/// salsa path the IDE, `brink check`, and `@brink-lang/web` run.
+#[test]
+fn exceedance_via_a_fn_creation_site_ref_binding() {
+    let diags = analyze(
+        "VAR player_hp = 10\n\
+         === knot ===\n@[effects(reads(player_hp))]\n\
+         ~ temp f: fn(int): int = #fn(heal, player_hp)\n\
+         ~ temp x: int = f(5)\n{player_hp}\n->->\n\
+         === function heal(ref hp: int, amount: int): int ===\n\
+         ~ hp = hp + amount\n~ return hp\n",
+    );
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E103], "{diags:?}");
+    assert!(diags[0].message.contains("writes player_hp"), "{diags:?}");
+}
+
 #[test]
 fn pure_sugar_is_satisfied_by_a_genuinely_pure_body() {
     let diags = analyze("=== function double(x) ===\n@[effects(pure)]\n~ return x * 2\n");

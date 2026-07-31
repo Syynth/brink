@@ -1059,6 +1059,42 @@ impl InferPass<'_, '_> {
     /// old write-*once* rule accidentally covered this (two writes already
     /// forced the pessimal floor); joining removes that incidental cover, so
     /// the untraced write has to be recorded explicitly here too.
+    ///
+    /// **Creation sites too (issue #1755).** `ref` binds at two distinct
+    /// grammar positions, not one: a *call*'s argument list
+    /// ([`Self::infer_call`], [`Self::infer_target`]) and a `#fn`
+    /// **creation** site's bound prefix ([`Self::infer_fn_literal`] —
+    /// `#fn(heal, player_hp)` binds `heal`'s `ref hp` to the cell
+    /// `player_hp`, docs/t1c-spec.md §2). Only the first was recorded until
+    /// #1755, and the write a creation-site binding causes was consequently
+    /// recorded **nowhere**: not here, not in the callee's own body (where the
+    /// target resolves as a `Param`, never a `Variable`/`Constant`, exactly as
+    /// the first paragraph explains), and not at the eventual `f(5)` call site
+    /// (which narrows through `local_fn_origins` to the target def but carries
+    /// no record of which cell that value was *created* against). That was a
+    /// conservative-total (docs/effects-spec.md §3) under-report — the
+    /// direction the row is never allowed to move — so the creation site
+    /// charges it, adopting #1755's option (a).
+    ///
+    /// Charging it at creation is **coarse but sound**: the write lands in the
+    /// creating body's row whether or not that body ever calls the value it
+    /// made (it may return it, store it, or drop it). Over-reporting is the
+    /// permitted direction, and creation is the only site that can still see
+    /// the binding — a value handed out carries its bound cell with it and no
+    /// later call site names that cell again. The precise alternative — giving
+    /// `ref` params their own row-variable/hole treatment analogous to
+    /// §6.1b's non-`ref` `param_holes`, resolved against the concrete cell
+    /// bound at each creation site — remains open as a §8 precision rung
+    /// under #1680, not a soundness question.
+    ///
+    /// Nothing about this second call path is frame-scoped: the fields it
+    /// touches (`effect_writes`, `param_writes` via `record_fn_write`) are
+    /// §4.1's *cumulative* bucket, and `local_fn_origins` is reached through
+    /// the same `record_fn_write` the call-site path already used, under
+    /// whatever frame is live. A `#fn` literal inside a lambda body therefore
+    /// absorbs into the enclosing def's row exactly like every other atom,
+    /// per §4.1's absorption rule — no new field, and no change to
+    /// `infer_lambda`'s snapshot set.
     fn record_ref_param_writes(&mut self, def: DefinitionId, args: &[Expr]) {
         let Some(info) = self.ctx.index.symbols.get(&def) else {
             return;
@@ -1672,6 +1708,15 @@ impl InferPass<'_, '_> {
     /// from the target's signature. An unresolved target or a target with
     /// no known signature (a variable, an external, an E079 case) types as
     /// `Unknown` — the creation-site diagnostics own the error reporting.
+    ///
+    /// The [`Self::record_ref_param_writes`] call below is the *creation*-site
+    /// half of that mechanism (issue #1755, docs/effects-spec.md §6.1a
+    /// channel 5) — see its own doc for why the bound cell has to be charged
+    /// here. It sits **before** the `known_sigs` early return deliberately:
+    /// `def_effect_atoms` runs this walk with an empty `known_sigs` (see
+    /// [`Self::fn_literal_write_origin`]'s doc for that posture), so anything
+    /// placed after the return would be dead code in the one pass that
+    /// harvests effect atoms.
     fn infer_fn_literal(&mut self, fl: &brink_ir::FnLiteral) -> Ty {
         for arg in &fl.args {
             self.infer_expr(arg);
@@ -1681,6 +1726,7 @@ impl InferPass<'_, '_> {
         };
         self.record_call_edge(def);
         self.record_fn_value_creation(def);
+        self.record_ref_param_writes(def, &fl.args);
         let Some(sig) = self.ctx.known_sigs.get(&def) else {
             return Ty::Unknown;
         };
