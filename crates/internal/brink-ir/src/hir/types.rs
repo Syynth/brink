@@ -226,6 +226,26 @@ pub struct ElementAnnotation {
     /// dispatch key. `None` when the declaration's own name is the
     /// dispatch name.
     pub alias: Option<String>,
+    /// The bare `block` clause (issue #1839, `docs/decision-log.md`
+    /// 2026-07-31 "Conventions are annotated handlers"): `@[element(args =
+    /// "…", block)]` declares that the handler captures the **following
+    /// run** — terminated by a blank line or any element-level line — into
+    /// a trailing `content`-typed parameter, the same first-class
+    /// fragment-capture path (`BeginFragment`…`EndFragment` →
+    /// `Value::FragmentRef`, `brink_format::Opcode`) an ordinary call
+    /// expression already uses, widened in scope rather than a new
+    /// mechanism. The handler **wraps** the block (receives the content,
+    /// decides emission) and does not tag it — an ambient "current
+    /// speaker" was considered and rejected as implicit state.
+    ///
+    /// `true` only when the declaration also has a qualifying trailing
+    /// `content`-typed parameter (`E166` otherwise — see
+    /// [`crate::hir::lower_native::annotation::parse_element`]). Like the
+    /// rest of this struct, this is the **declaration surface only**: the
+    /// terminator search, the fragment capture itself, and the dispatch
+    /// call are issue #1838's natural-notation dispatch rewrite, not
+    /// implemented here.
+    pub block: bool,
     /// Source range of the whole `@[element(…)]` annotation line.
     pub range: TextRange,
 }
