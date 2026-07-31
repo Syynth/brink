@@ -266,6 +266,34 @@ fn inline_tag_embedded_brace() {
     assert_case("inline-tag-embedded-brace");
 }
 
+/// Compile-level sibling to `inline_tag_embedded_brace` (review of #1787):
+/// `assert_case` runs through `run_native_transcript`, whose `Line::Text {
+/// text, .. }` arm discards the `tags` field entirely — so that golden
+/// fixture only pins that the *following* content line survives, never that
+/// the tag's own text (braces included) actually reached `StoryData`. This
+/// asserts that directly, compiling the exact same fixture through
+/// `brink_compiler::compile_path` and linking it, then checking the tag's
+/// full raw text for the whole string, unbroken by the embedded brace.
+/// Precedent: `crates/brink-compiler/tests/driver.rs`'s
+/// `local_directive_reaches_story_data`, which pins a different tag's text
+/// the same way (`format!("{:?}", story.line_tables)`, `.contains(..)`).
+#[test]
+fn inline_tag_embedded_brace_reaches_story_data() {
+    let path = corpus_dir()
+        .join("inline-tag-embedded-brace")
+        .join("story.brink");
+    let output = brink_compiler::compile_path(&path)
+        .unwrap_or_else(|e| panic!("compile inline-tag-embedded-brace: {e:?}"));
+    let (_program, line_tables) =
+        brink_runtime::link(&output.data).expect("link inline-tag-embedded-brace");
+    let all_lines = format!("{line_tables:?}");
+    assert!(
+        all_lines.contains("sound {clang} in the tower."),
+        "tag's own raw text, embedded brace included, must reach StoryData's \
+         line tables intact: {all_lines}"
+    );
+}
+
 /// Every `tests/tier1-native/` case directory is exercised by a `#[test]`
 /// above — a directory with no matching test would silently never run.
 #[test]

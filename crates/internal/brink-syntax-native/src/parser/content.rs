@@ -515,10 +515,11 @@ pub(crate) fn header_tag_tail(p: &mut Parser<'_, '_>) {
 /// per-line, and that is the intended contract, not a gap.** `tag_line_tail`
 /// calls this function fresh for each `HASH` it sees, so `depth` always
 /// starts at zero for a new tag regardless of what an earlier sibling tag
-/// on the same line left unbalanced. In `#a {x #b}` (two trailing tags,
-/// charter §5/§6/§11 — a content line's tags are always trailing, so this
-/// shape only ever arises between *sibling* tags, never between a tag and
-/// following prose), tag `a`'s scan is cut short by the `HASH` starting
+/// on the same line left unbalanced. In `#a {x #b}` (two trailing tags —
+/// `content_line`'s own doc comment: "Trailing `#tag`s are folded in
+/// before the line ends", so this shape only ever arises between
+/// *sibling* tags, never between a tag and following prose), tag `a`'s
+/// scan is cut short by the `HASH` starting
 /// `b` — unconditionally, before the brace-depth check ever runs, exactly
 /// like `NEWLINE`/`EOF` — so `a`'s in-progress depth of 1 is simply
 /// discarded, not carried into `b`'s scan. `b` starts its own scan at
