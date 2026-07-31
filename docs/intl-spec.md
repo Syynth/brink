@@ -528,6 +528,8 @@ Built on `quick-xml`. No brink-specific types or logic.
 
 Brink-specific metadata uses XLIFF's custom namespace extension mechanism (`xmlns:brink="urn:brink:xliff:extensions:1.0"`). The XLIFF spec requires conformant tools to preserve unknown extensions, so brink metadata survives round-trips through translation management systems.
 
+The table above is export-direction (brink → XLIFF). On import (`xliff_to_lines_json`), a translator-authored `<![CDATA[...]]>` section in a `<source>`/`<target>` — brink's own exporter never emits one, but a TMS is free to return one — decodes as plain character data, the same as ordinary text content. Unlike a `<pc>` re-expressed as a split `<sc>`/`<ec>` pair (which loses structure and is rejected with `IntlError::UnsupportedSpanSplit`, see `elements_to_parts`), CDATA is just a different XML quoting mechanism with no structural ambiguity, so there is nothing to reject (#1799).
+
 ### XLIFF generation
 
 ```
