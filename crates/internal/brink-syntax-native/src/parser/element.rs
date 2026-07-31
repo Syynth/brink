@@ -41,9 +41,9 @@
 //! element. There is deliberately no `LYRICS` shape here.
 
 use crate::SyntaxKind::{
-    AT, COLON, COMPACT_CUE, CUE, CUE_NAME, DOC_COMMENT_OUTER, DOT, EOF, HASH, IDENT, L_BRACKET,
-    L_PAREN, NEWLINE, PARENTHETICAL, R_BRACE, R_BRACKET, R_PAREN, SCENE_BODY, SCENE_HEADING,
-    SCENE_SLUG, SCENE_STITCH, SCENE_TITLE, TEXT,
+    AT, BACKSLASH, COLON, COMPACT_CUE, CUE, CUE_NAME, DOC_COMMENT_OUTER, DOT, EOF, HASH, IDENT,
+    L_BRACE, L_BRACKET, L_PAREN, NEWLINE, PARENTHETICAL, R_BRACE, R_BRACKET, R_PAREN, SCENE_BODY,
+    SCENE_HEADING, SCENE_SLUG, SCENE_STITCH, SCENE_TITLE, TEXT,
 };
 
 use super::Parser;
@@ -250,9 +250,45 @@ pub(crate) fn cue_line(p: &mut Parser<'_, '_>) {
 /// The name run after the `@` sigil. Raw-bumped up to `:`/tags/line end,
 /// so a multi-word character name (`@MARKET VENDOR`) is one name rather
 /// than a name plus stray text.
+///
+/// #1786: confirmed to share `content::tag()`'s pre-#1728 shape — an
+/// unconditional stop at the first raw `R_BRACE` mistook a `}` that merely
+/// *echoed* a `{` already inside the name (e.g. `@NAME {gold} coins.`
+/// inside a `flow f() { … }` body) for the enclosing block's own closer,
+/// ending the name — and the flow's `BLOCK` — early. Fixed the same way
+/// `tag()` was: `depth` counts literal, unpaired `{`s bumped so far, and a
+/// `}` only stops the scan once depth is back to zero. An `L_BRACE`
+/// immediately preceded by a raw `BACKSLASH` is excluded from the counter
+/// — `\{` is the literal-brace escape (#1716/PR #1732), not a
+/// metacharacter, so counting it as a depth-opener would let a later
+/// unescaped `}` swallow the enclosing closer on perfectly ordinary
+/// escaped text.
+///
+/// Same tradeoff as `tag()`, stated the same way: a *balanced* brace in a
+/// cue name no longer terminates it early (the bug this fixes), but a
+/// genuinely *unbalanced*, unescaped `{` left open in a name now eats the
+/// enclosing single-line block's own same-line `}` closer instead of
+/// stopping there — inherent to depth-based balancing over raw text with
+/// no real grammar to bound it. Pinned by
+/// `an_unbalanced_open_brace_in_a_cue_name_eats_the_enclosing_blocks_own_closer`.
 fn cue_name(p: &mut Parser<'_, '_>) {
     p.start_node(CUE_NAME);
-    while !matches!(p.nth_raw(0), EOF | NEWLINE | HASH | COLON | R_BRACE) {
+    let mut depth: u32 = 0;
+    let mut prev_raw_was_backslash = false;
+    loop {
+        let raw = p.nth_raw(0);
+        if matches!(raw, EOF | NEWLINE | HASH | COLON) {
+            break;
+        }
+        if raw == R_BRACE && depth == 0 {
+            break;
+        }
+        match raw {
+            L_BRACE if !prev_raw_was_backslash => depth += 1,
+            R_BRACE => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        prev_raw_was_backslash = raw == BACKSLASH;
         p.bump();
     }
     p.finish_node();
