@@ -1,8 +1,9 @@
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use brink_intl::{
-    ContentJson, LineJson, LinesJson, PartJson, ScopeJson, SelectJson, compile_locale_xliff,
-    generate_locale, lines_json_to_xliff, migrate_unit_ids, regenerate_locale, xliff_to_lines_json,
+    ContentJson, LineJson, LinesJson, PartJson, ScopeJson, SelectJson, SpanJson,
+    compile_locale_xliff, generate_locale, lines_json_to_xliff, migrate_unit_ids,
+    regenerate_locale, xliff_to_lines_json,
 };
 use xliff2::{
     Content, Document, ExtensionAttribute, Extensions, File, InlineElement, Segment, State,
@@ -430,6 +431,257 @@ fn split_pc_as_sc_ec_is_rejected_not_silently_dropped() {
     assert!(
         matches!(err, brink_intl::IntlError::UnsupportedSpanSplit(ref id) if id == "pc0"),
         "expected UnsupportedSpanSplit(\"pc0\"), got: {err:?}"
+    );
+}
+
+/// A TMS is free to return translated text wrapped in a `<![CDATA[...]]>`
+/// section — legal XLIFF content, and the same shape #765 already found and
+/// fixed on the sibling `xliff2`-crate metadata-extraction path. Unlike the
+/// `<sc>`/`<ec>` split above, CDATA carries no structural ambiguity — it's
+/// just character data spelled with a different XML quoting mechanism — so
+/// `elements_to_parts` decodes it exactly like `<mrk>`-free plain text
+/// instead of erroring. This proves it survives the full wire round trip: a
+/// translator-authored `<target><![CDATA[...]]></target>` (built directly
+/// as the `InlineElement::CData` a TMS would produce, since brink's own
+/// exporter never emits CDATA) serializes through the real XML writer,
+/// re-parses through the real XML reader, and decodes back to the original
+/// text — not silently dropped, per #1799.
+#[test]
+fn translator_authored_cdata_survives_export_import_roundtrip() {
+    let doc = Document {
+        version: "2.0".to_string(),
+        src_lang: "en".to_string(),
+        trg_lang: Some("fr".to_string()),
+        files: vec![File {
+            id: "root".to_string(),
+            original: None,
+            notes: Vec::new(),
+            skeleton: None,
+            groups: Vec::new(),
+            units: vec![Unit {
+                id: "0x01:0".to_string(),
+                name: None,
+                translate: None,
+                notes: Vec::new(),
+                sub_units: vec![SubUnit::Segment(Segment {
+                    id: None,
+                    state: Some(State::Translated),
+                    sub_state: None,
+                    source: Content {
+                        lang: None,
+                        elements: vec![InlineElement::Text("Hello world".to_string())],
+                    },
+                    target: Some(Content {
+                        lang: None,
+                        elements: vec![InlineElement::CData("Bonjour le monde".to_string())],
+                    }),
+                })],
+                original_data: None,
+                extensions: Extensions {
+                    elements: Vec::new(),
+                    attributes: vec![ExtensionAttribute {
+                        namespace: "brink".to_string(),
+                        local_name: "hash".to_string(),
+                        value: "aaaa".to_string(),
+                    }],
+                },
+            }],
+            extensions: Extensions {
+                elements: Vec::new(),
+                attributes: vec![ExtensionAttribute {
+                    namespace: "brink".to_string(),
+                    local_name: "scope-id".to_string(),
+                    value: "0x01".to_string(),
+                }],
+            },
+        }],
+        extensions: Extensions::default(),
+    };
+
+    // Round-trip through the real XML writer/reader, not just the parsed
+    // AST — proves the on-wire `<![CDATA[...]]>` shape survives, not merely
+    // that `elements_to_parts` handles a hand-built `InlineElement::CData`.
+    let xml = xliff2::write::to_string(&doc).unwrap();
+    assert!(
+        xml.contains("<![CDATA[Bonjour le monde]]>"),
+        "expected a real CDATA section in the serialized XLIFF, got: {xml}"
+    );
+    let parsed = xliff2::read::read_xliff(&xml).unwrap();
+
+    let recovered = xliff_to_lines_json(&parsed).unwrap();
+
+    assert_eq!(
+        recovered.scopes[0].lines[0].content,
+        Some(ContentJson::Plain("Bonjour le monde".to_string())),
+        "translator-authored CDATA target text must decode like plain \
+         text, not be silently dropped"
+    );
+}
+
+/// The single-CDATA-element test above only proves the `inline_to_content`
+/// plain-text fast path handles CDATA: `elements_to_parts`'s own output is
+/// always wrapped in `ContentJson::Template` (never `Plain`), so a `Plain`
+/// result can only ever come from that fast path, and reverting the
+/// `elements_to_parts` decode arm alone would leave that test green. This
+/// forces the multi-element path instead: the reader does not coalesce
+/// CDATA into adjacent text (`push_text` only merges into a trailing
+/// `InlineElement::Text`, `xliff2::read::inline`), so a translator-authored
+/// target that mixes plain text with a CDATA section survives as two
+/// separate inline elements and must go through `elements_to_parts`'s own
+/// `Text | CData` match arm to avoid being silently dropped.
+#[test]
+fn cdata_mixed_with_text_is_recovered_by_elements_to_parts() {
+    let doc = Document {
+        version: "2.0".to_string(),
+        src_lang: "en".to_string(),
+        trg_lang: Some("fr".to_string()),
+        files: vec![File {
+            id: "root".to_string(),
+            original: None,
+            notes: Vec::new(),
+            skeleton: None,
+            groups: Vec::new(),
+            units: vec![Unit {
+                id: "0x01:0".to_string(),
+                name: None,
+                translate: None,
+                notes: Vec::new(),
+                sub_units: vec![SubUnit::Segment(Segment {
+                    id: None,
+                    state: Some(State::Translated),
+                    sub_state: None,
+                    source: Content {
+                        lang: None,
+                        elements: vec![InlineElement::Text("Hello world".to_string())],
+                    },
+                    target: Some(Content {
+                        lang: None,
+                        elements: vec![
+                            InlineElement::Text("Bonjour ".to_string()),
+                            InlineElement::CData("le monde".to_string()),
+                        ],
+                    }),
+                })],
+                original_data: None,
+                extensions: Extensions {
+                    elements: Vec::new(),
+                    attributes: vec![ExtensionAttribute {
+                        namespace: "brink".to_string(),
+                        local_name: "hash".to_string(),
+                        value: "aaaa".to_string(),
+                    }],
+                },
+            }],
+            extensions: Extensions {
+                elements: Vec::new(),
+                attributes: vec![ExtensionAttribute {
+                    namespace: "brink".to_string(),
+                    local_name: "scope-id".to_string(),
+                    value: "0x01".to_string(),
+                }],
+            },
+        }],
+        extensions: Extensions::default(),
+    };
+
+    let recovered = xliff_to_lines_json(&doc).unwrap();
+
+    assert_eq!(
+        recovered.scopes[0].lines[0].content,
+        Some(ContentJson::Template {
+            template: vec![
+                PartJson::Literal("Bonjour ".to_string()),
+                PartJson::Literal("le monde".to_string()),
+            ],
+        }),
+        "a CDATA section mixed with plain text must decode via \
+         elements_to_parts's Text | CData arm, not be silently dropped"
+    );
+}
+
+/// Covers the recursive path the `elements_to_parts` doc comment claims: a
+/// CDATA node nested inside a brink `<pc>`'s own content must decode via
+/// the same recursive call to `elements_to_parts` that reconstructs the
+/// `<pc>`'s children, not just the top-level element stream.
+#[test]
+fn cdata_inside_pc_content_is_recovered_by_elements_to_parts() {
+    let doc = Document {
+        version: "2.0".to_string(),
+        src_lang: "en".to_string(),
+        trg_lang: Some("fr".to_string()),
+        files: vec![File {
+            id: "root".to_string(),
+            original: None,
+            notes: Vec::new(),
+            skeleton: None,
+            groups: Vec::new(),
+            units: vec![Unit {
+                id: "0x01:0".to_string(),
+                name: None,
+                translate: None,
+                notes: Vec::new(),
+                sub_units: vec![SubUnit::Segment(Segment {
+                    id: None,
+                    state: Some(State::Translated),
+                    sub_state: None,
+                    source: Content {
+                        lang: None,
+                        elements: vec![InlineElement::Text("bold".to_string())],
+                    },
+                    target: Some(Content {
+                        lang: None,
+                        elements: vec![InlineElement::Pc(xliff2::Pc {
+                            id: "pc0".to_string(),
+                            data_ref_start: Some("dspan0".to_string()),
+                            data_ref_end: None,
+                            sub_type: Some("brink:pc".to_string()),
+                            content: vec![InlineElement::CData("gras".to_string())],
+                            extensions: Extensions::default(),
+                        })],
+                    }),
+                })],
+                original_data: Some(xliff2::OriginalData {
+                    entries: vec![xliff2::DataEntry {
+                        id: "dspan0".to_string(),
+                        content: "{\"name\":\"b\"}".to_string(),
+                    }],
+                }),
+                extensions: Extensions {
+                    elements: Vec::new(),
+                    attributes: vec![ExtensionAttribute {
+                        namespace: "brink".to_string(),
+                        local_name: "hash".to_string(),
+                        value: "aaaa".to_string(),
+                    }],
+                },
+            }],
+            extensions: Extensions {
+                elements: Vec::new(),
+                attributes: vec![ExtensionAttribute {
+                    namespace: "brink".to_string(),
+                    local_name: "scope-id".to_string(),
+                    value: "0x01".to_string(),
+                }],
+            },
+        }],
+        extensions: Extensions::default(),
+    };
+
+    let recovered = xliff_to_lines_json(&doc).unwrap();
+
+    assert_eq!(
+        recovered.scopes[0].lines[0].content,
+        Some(ContentJson::Template {
+            template: vec![PartJson::Span {
+                span: SpanJson {
+                    name: "b".to_string(),
+                    attrs: Vec::new(),
+                    children: vec![PartJson::Literal("gras".to_string())],
+                },
+            }],
+        }),
+        "a CDATA node inside a <pc>'s content must decode via the \
+         recursive elements_to_parts call, not be silently dropped"
     );
 }
 

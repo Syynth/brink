@@ -178,7 +178,10 @@ the positive control
   rather than restored to some prior value — belongs in the
   **Name-shadowed** bucket below instead; `lambda_param_names` is exactly
   that shape, which is why issue #1779 added a third bucket rather than
-  extending this one.
+  extending this one. Issue #1790's `lambda_local_shadow_frame_boundary_guard`
+  (`crates/internal/brink-analyzer/src/infer/body.rs`) is this bucket's own
+  regression guard — it must be extended, not just re-asserted, whenever this
+  list grows.
 
   **Scope of the restore, precisely.** `infer_lambda` snapshots before,
   and restores after, the **whole** of a block body — both its `stmts`
