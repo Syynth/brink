@@ -269,7 +269,7 @@ fn radio(chan: string, text: content) {
   now readable source rather than an interpreted table. **Landed by issue
   #1838**: a claimed line is matched, its named captures bind the
   handler's params by name (checked in *both* directions — `E160` for a
-  capture with no param, `E166` for a param with no capture, since every
+  capture with no param, `E167` for a param with no capture, since every
   argument of the rewrite comes from a capture), and the line lowers to
   exactly one call. Only a **top-level `fn`** may claim (the rewrite is an
   expression call; `E112` otherwise), only a wholly literal prose line or
@@ -288,6 +288,28 @@ fn radio(chan: string, text: content) {
   **`content`** = first-class value via the existing fragment-capture
   path, **translation-resident and measurable**; prose-bodied
   handlers (`>{ }`) are once-translated parameterized templates.
+- **`block` capture (RULED, 2026-07-31 sitting, issue #1839).**
+  `@[element(args = "…", block)]` declares that the handler captures the
+  run **following** its matched line into a trailing `content`-typed
+  param, terminated by a blank line or any element-level line — the
+  handler WRAPS the captured run. That is the whole of what the ruling
+  itself says. `E166`, the declaration surface's own static check, adds
+  two implementation-level requirements the ruling's own wording does not
+  state — recorded here so they live somewhere other than a private
+  helper's doc comment: the qualifying `content`-typed parameter must be
+  the declaration's **last** parameter, and its name must not collide
+  with one of `args`' own named capture groups (a capture and the block
+  receiver cannot be the same param) —
+  `crates/internal/brink-ir/src/hir/lower_native/annotation.rs`'s
+  `has_block_content_param`. Declaration-surface only, matching #1719's
+  own scope for `element`/`style`: the `!name`/natural-notation dispatch
+  rewrite that would actually match a line, find the block's terminator,
+  and call the handler with the captured run is issue #1838's scope, not
+  delivered here. **Not usable end-to-end yet even at the declaration
+  level** — `content` is not itself a resolvable annotation type name
+  (see the Deferred bullet below), so a conforming `block` declaration
+  parses cleanly but still fails to compile under `dialect = brink` on
+  its own `content`-typed parameter (`E061`) until that lands.
 - **`@[style]` — declared editor presentation (RULED, addenda 3–4).**
   A companion annotation mapping captures (and `line` = the whole
   line; `dispatch` = the `!name` prefix) to style values, drawn from
@@ -324,12 +346,17 @@ fn radio(chan: string, text: content) {
   reading attachment data); `Option` params for optional captures;
   `content`-typed captures (the type does not exist in the native type
   system yet — the ruled `fn radio(chan: string, text: content)` example's
-  `text` param is out of reach until it lands); the `!name` sigil dispatch
-  rewrite itself (matching a content line, binding captures, lowering to a
-  call — issue #1719 delivered the `@[element]`/`@[style]` **declaration
-  surface** only: parsing, portable-regex validation, and the
-  captures-bind-params-by-name compile check, all in
-  `brink_ir::hir::lower_native::annotation`; nothing dispatches yet);
+  `text` param, and `block`'s own trailing receiver param, are both out of
+  reach until it lands; admitting `content` needs its own ruling, native-
+  type-system scope); the `!name` sigil dispatch rewrite itself (matching
+  a content line, binding captures, lowering to a call — issue #1719
+  delivered the `@[element]`/`@[style]` **declaration surface**, and issue
+  #1839 widened it with the `block` clause's own declaration-surface
+  contract (`E166`, see the bullet above): parsing, portable-regex
+  validation, the captures-bind-params-by-name compile check, and the
+  block-receiver structural check, all in
+  `brink_ir::hir::lower_native::annotation`; nothing dispatches yet, for
+  either);
   cross-file dispatch-name resolution and the duplicate-dispatch-name
   check (v1 validates one declaration at a time — and #1838's claiming
   dispatch is file-local for the same reason); block capture (issue

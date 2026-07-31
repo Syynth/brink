@@ -1301,6 +1301,27 @@ pub enum DiagnosticCode {
     /// attribute).
     E165,
 
+    // ── `@[element(…, block)]` declaration surface (issue #1839,
+    //    `docs/decision-log.md` 2026-07-31 "Conventions are annotated
+    //    handlers") ──────────────────────────────────────────────────────
+    /// A `block`-flagged `@[element(…)]` annotation whose declaration has
+    /// no trailing `content`-typed parameter to receive the captured run,
+    /// or whose would-be receiver is also one of the pattern's own named
+    /// captures.
+    ///
+    /// `block` widens the same capture contract [`Self::E160`] enforces
+    /// for `args`' named captures — the ruling's `content` param ("the
+    /// following run … the same first-class fragment-capture path `!radio`
+    /// uses for the rest of its line") is a *structural* requirement on
+    /// the declaration, checked here rather than deferred to dispatch: a
+    /// `block` annotation with nothing to bind the captured run to is a
+    /// static defect in the declaration, not a per-call-site concern. The
+    /// dispatch and capture rewrite itself — matching the terminator,
+    /// building the `FragmentRef`, calling the handler — is issue #1838's
+    /// natural-notation dispatch, not yet implemented; see
+    /// [`crate::ElementAnnotation::block`]'s own doc.
+    E166,
+
     // ── Natural-notation element dispatch (issue #1838,
     //    `docs/decision-log.md` 2026-07-31 "Conventions are annotated
     //    handlers") ───────────────────────────────────────────────────────
@@ -1314,7 +1335,11 @@ pub enum DiagnosticCode {
     /// one call whose every argument comes from a named capture — so the
     /// pattern's capture set and the handler's parameter list must match
     /// exactly, not merely one-way.
-    E166,
+    ///
+    /// Renumbered to `E167` (from a since-vacated `E166`) when this landed
+    /// alongside issue #1839's `block` declaration surface, which claimed
+    /// `E166` first (merged into `main` first) — see that code's own doc.
+    E167,
 }
 
 impl DiagnosticCode {
@@ -1492,6 +1517,7 @@ impl DiagnosticCode {
             Self::E164 => "E164",
             Self::E165 => "E165",
             Self::E166 => "E166",
+            Self::E167 => "E167",
         }
     }
 
@@ -1757,6 +1783,9 @@ impl DiagnosticCode {
                 "inline markup attribute is not declared for this span kind in the host manifest"
             }
             Self::E166 => {
+                "a block `@[element(…, block)]` needs a trailing `content`-typed parameter that is not one of its own named captures"
+            }
+            Self::E167 => {
                 "a natural-notation `@[element(claims = \"…\")]` handler declares a parameter its pattern never captures"
             }
         }
@@ -1981,6 +2010,7 @@ impl DiagnosticCode {
             "E164" => Some(Self::E164),
             "E165" => Some(Self::E165),
             "E166" => Some(Self::E166),
+            "E167" => Some(Self::E167),
             _ => None,
         }
     }

@@ -22,7 +22,7 @@ dispatch.
 Web-observable through the compile-diagnostics surface and through compiled
 output for `.brink` sources:
 
-- a new diagnostic `E166` — a claiming handler declaring a parameter its
+- a new diagnostic `E167` — a claiming handler declaring a parameter its
   pattern never captures (the converse of `E159`'s existing capture check,
   needed because every argument of the rewrite comes from a capture);
 - `E159`'s message widened to name both clause spellings, and an

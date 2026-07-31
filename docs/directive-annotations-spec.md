@@ -237,26 +237,39 @@ following from native having real declaration nodes:
   ink assertions. `@[was("old::module::path")]` is the **file-level**
   module-rename record (§5 of `modules-spec`, issues #1286/#1355) and is
   recognized only as a direct child of the file. `@[allow(…)]` is
-  source-level diagnostic suppression — §5d. `@[element(args = "…")]`
-  (issue #1719) declares the prose-dispatch pattern on a `flow`/`fn`
-  head — the pattern must compile as a portable regex (`E159`) and its
-  named captures must each bind a real parameter on the declaration
-  (`E160`). `@[style(key = "value", …)]` (same issue) is a companion
-  annotation requiring a paired `@[element]` on the same declaration
-  (`E163`); each key must be `line`, `dispatch`, or one of `element`'s
-  captures (`E162`), and a malformed clause list is `E161`. Both attach
-  and lower at either container level, the same as `effects`.
+  source-level diagnostic suppression — §5d. `@[element(…)]` (issue
+  #1719) declares the prose-dispatch pattern on a `flow`/`fn` head, in one
+  of two spellings that fill the same slot: `args = "…"` (the `!name`-
+  dispatched form) or `claims = "…"` (issue #1838's natural-notation form —
+  a pattern that claims a prose line carrying no `!name` sigil). Either
+  spelling must compile as a portable regex (`E159`), and its named
+  captures must each bind a real parameter on the declaration (`E160`); a
+  `claims` pattern additionally requires the *converse* — every parameter
+  must be bound by some named capture (`E167`), since a claimed line's
+  rewritten call has no other source of arguments. `@[style(key =
+  "value", …)]` (issue #1719) is a companion annotation requiring a
+  paired `@[element]` on the same declaration (`E163`); each key must be
+  `line`, `dispatch`, or one of `element`'s captures (`E162`), and a
+  malformed clause list is `E161`. `@[effects]`, `@[style]`, and the
+  `args`-spelled `@[element]` attach and lower at either container level,
+  the same as each other — but a `claims`-spelled `@[element]` is legal
+  only above a **top-level `fn`** (`E112` otherwise): the rewrite is an
+  expression call, and a `flow`/nested `Stitch` is not callable as one.
 
 Everything else is the reserved-namespace rule (§1.1) doing its job: an
 unknown name is `E111`, a recognized name out of placement is `E112`, and
 the grammar codes are shared with the ink recognizer (`E100` empty
-assertion, `E101` malformed argument, `E048` duplicate). `@[element]`/
-`@[style]` deliver only the declaration surface — parse, validate, store
-on the `Knot`/`Stitch`. The `!name` sigil dispatch rewrite these
-annotations exist to drive (matching a content line, binding captures,
-lowering to a call) is **not** wired yet, nor is a per-*declaration*
-`@[was(old_name)]` rename: both are ruled features awaiting their own
-slices, not annotation names this channel may guess at.
+assertion, `E101` malformed argument, `E048` duplicate). `@[style]` and
+the `args`-spelled `@[element]` deliver only the declaration surface —
+parse, validate, store on the `Knot`/`Stitch`. The `claims`-spelled
+`@[element]` is different: issue #1838 delivers its dispatch too — a
+claimed line is matched, its captures bind the handler's parameters by
+name, and the line is rewritten in place to exactly one call on the
+handler. The `!name` sigil dispatch rewrite the `args` spelling exists to
+drive (matching a content line, binding captures, lowering to a call) is
+**not** wired yet, nor is a per-*declaration* `@[was(old_name)]` rename:
+both are ruled features awaiting their own slices, not annotation names
+this channel may guess at.
 
 ### 5d. `@[allow(Exxx, …)]` — source-level suppression (issue #1161)
 

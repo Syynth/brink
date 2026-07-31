@@ -80,7 +80,7 @@ struct ClaimHandler {
     /// The handler's own name, carrying its declaration-site range.
     name: Name,
     /// Parameter names in declaration order — the argument order the
-    /// rewritten call uses. Guaranteed by `E160`/`E166` to be exactly the
+    /// rewritten call uses. Guaranteed by `E160`/`E167` to be exactly the
     /// pattern's named-capture set.
     params: Vec<String>,
     /// The compiled claiming pattern.
@@ -100,7 +100,13 @@ struct ClaimHandler {
 /// lowering quadratic in file size.
 pub(super) struct Elements {
     handlers: Vec<ClaimHandler>,
-    /// Every claimed line, in the order lowering reached it.
+    /// Every claimed line, in the order lowering *reached* it — not
+    /// necessarily source order (a `CHOICE_POINT` lowers its source-later
+    /// continuation before its source-earlier choice bodies). [`super::lower`]
+    /// sorts this by line start before storing it as
+    /// `HirFile::element_matches`, whose own doc promises source order; this
+    /// field is the pre-sort accumulation, an implementation detail of how
+    /// body lowering visits nodes.
     pub(super) matches: Vec<ElementMatch>,
 }
 
@@ -118,7 +124,7 @@ impl Elements {
 /// validated exactly once, by `container.rs`, when the annotated
 /// declaration is lowered. This re-reads the same lines into a dispatch
 /// table and drops anything that did not validate — reporting here as well
-/// would double every `E159`/`E160`/`E166`.
+/// would double every `E159`/`E160`/`E167`.
 pub(super) fn collect(file_id: FileId, root: &SyntaxNode) -> Elements {
     let mut handlers = Vec::new();
     for node in root.children() {
@@ -194,7 +200,7 @@ pub(super) fn try_claim(
     let caps = handler.pattern.captures(trimmed)?;
     let mut captures = Vec::with_capacity(handler.params.len());
     for param in &handler.params {
-        // `E160`/`E166` already pinned params ≡ named captures at the
+        // `E160`/`E167` already pinned params ≡ named captures at the
         // declaration, so a miss here means the group did not participate
         // in this particular match (an alternation branch). Declining the
         // claim is the honest answer: a call with a missing argument is

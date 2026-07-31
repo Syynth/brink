@@ -266,7 +266,18 @@ pub fn lower(
         visibility: Vec::new(),
         was_directives: Vec::new(),
         allow_scopes,
-        element_matches: elements.matches,
+        // `elements.matches` accumulates in the order body lowering *reaches*
+        // each claimed line, not necessarily source order — a `CHOICE_POINT`
+        // lowers its (source-later) continuation before its (source-earlier)
+        // choice bodies (`body::lower_items`), so a claim after a choice can
+        // be recorded before a claim inside it. `HirFile::element_matches`'s
+        // own doc promises source order — sorting here is what keeps that
+        // promise true rather than merely usually true.
+        element_matches: {
+            let mut matches = elements.matches;
+            matches.sort_by_key(|m| m.line.start());
+            matches
+        },
     };
     let manifest = project_manifest(&hir);
     (hir, manifest, diags)

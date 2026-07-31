@@ -278,12 +278,24 @@ pub fn find_references(
     // All three narrowings are composed by
     // `ufcs_hover::narrowed_reference_range`, shared with `rename` and
     // `prepare_rename`.
+    //
+    // Review finding on #1838 (blocking): a `ResolvedRef` targeting a
+    // natural-notation element-dispatch handler may be the compiler's own
+    // *synthesized* call (issue #1838), whose range is the entire claimed
+    // prose line rather than any real occurrence of the handler's name —
+    // reporting it as a reference location would highlight that whole
+    // prose line. `ufcs_hover::is_synthesized_element_ref` excludes it, the
+    // same exclusion `rename`/`prepare_rename` apply.
     for resolved in &analysis.resolutions {
         if resolved.target == analysis_def_id {
-            let range = db
-                .hir(resolved.file)
-                .and_then(|hir| {
-                    crate::ufcs_hover::narrowed_reference_range(hir, resolved.range, target_kind)
+            let hir = db.hir(resolved.file);
+            if hir.is_some_and(|h| crate::ufcs_hover::is_synthesized_element_ref(h, resolved.range))
+            {
+                continue;
+            }
+            let range = hir
+                .and_then(|h| {
+                    crate::ufcs_hover::narrowed_reference_range(h, resolved.range, target_kind)
                 })
                 .unwrap_or(resolved.range);
             locations.push(LocationResult {
@@ -704,6 +716,39 @@ fn main() {
             "market".len(),
             "the reported reference must span only the `market` segment, not the whole \
              `hub.market` path — got {range:?}"
+        );
+    }
+
+    #[test]
+    fn find_references_from_a_claiming_handler_does_not_report_the_claimed_prose_line() {
+        // Issue #1838 review finding (blocking, correctness) — the third
+        // (`find_references`) surface of the pair check alongside
+        // `rename`/`prepare_rename` in `crate::rename`'s tests: a claiming
+        // handler's compiler-synthesized call has a `ResolvedRef` whose
+        // range is the entire claimed prose line, not a real occurrence of
+        // the handler's name. Reporting it as a reference location would
+        // highlight that whole prose line rather than any identifier.
+        let src = "@[element(claims = \"^INT\\\\. (?<place>.+)$\")]\nfn interior(place) {\n  return place;\n}\n\nflow main() {\n  INT. MARKET SQUARE\n}\n";
+        let mut session = IdeSession::new();
+        let file_id = session.update_and_analyze("test.brink", src.to_string());
+        let analysis = session.analysis().expect("analysis");
+        let decl_pos = u32::try_from(src.find("interior(place)").expect("decl")).expect("offset");
+
+        let refs = find_references(
+            session.db(),
+            analysis,
+            file_id,
+            TextSize::from(decl_pos),
+            false,
+        );
+
+        let heading_pos =
+            u32::try_from(src.find("INT. MARKET SQUARE").expect("heading")).expect("offset");
+        assert!(
+            refs.iter()
+                .all(|loc| loc.range.start() != TextSize::from(heading_pos)),
+            "the claimed prose line must never be reported as a reference location, got {:?}",
+            refs.iter().map(|l| l.range).collect::<Vec<_>>()
         );
     }
 }

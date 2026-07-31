@@ -497,6 +497,34 @@ pub fn narrowed_reference_range(
         .or_else(|| qualified_tail_range_at_path(hir, ref_range, target_kind))
 }
 
+/// `true` when `range` is a compiler-*synthesized* reference from
+/// natural-notation element dispatch (issue #1838), not real identifier
+/// source at all.
+///
+/// `hir::lower_native::element::try_claim` rewrites a claimed prose line
+/// into a call whose `Path`/`Name` range is stamped to the **entire claimed
+/// line** — `element.rs`'s own doc: "written at the claimed line … the
+/// range a reader clicking the rewritten call should land on" — not to any
+/// occurrence of the handler's name in source. [`narrowed_reference_range`]
+/// only *narrows* a whole-path range down to a real segment; it has nothing
+/// to narrow a claimed line down to, so it correctly returns `None` for one
+/// — and a caller that then falls back to the unnarrowed range would
+/// rewrite or report the claimed prose line itself as if it were the
+/// identifier's own text (the source-corruption bug this function exists to
+/// stop).
+///
+/// Every consumer of `analysis.resolutions` that rewrites or reports a
+/// reference range must check this **before** falling back to the
+/// unnarrowed range — the same three surfaces [`narrowed_reference_range`]
+/// itself serves: `rename`, `prepare_rename`, `find_references`. A
+/// synthesized ref still resolves correctly (the call does target the real
+/// handler `fn`); it is only unsafe to *rewrite or highlight*, so the
+/// caller's answer is to skip it entirely, not merely leave it unnarrowed.
+#[must_use]
+pub fn is_synthesized_element_ref(hir: &HirFile, range: TextRange) -> bool {
+    hir.element_matches.iter().any(|m| m.line == range)
+}
+
 /// The method-segment range of the UFCS call site at `offset` in `hir`, if
 /// any — `prepare_rename`'s narrow-span need (issue #1539): the cursor's
 /// own reference range under the cursor, not the resolved target's

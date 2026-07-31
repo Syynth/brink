@@ -1262,6 +1262,133 @@ fn element_annotation_capture_without_matching_param_diagnoses_e160() {
     assert!(hir.knots[0].element_annotation.is_none());
 }
 
+// ─── `@[element(…, block)]` declaration surface (issue #1839,
+// `docs/decision-log.md` 2026-07-31 "Conventions are annotated handlers")
+// ───────────────────────────────────────────────────────────────────
+//
+// This is the declaration-surface slice only, matching the precedent
+// #1719 already set for `element`/`style`: parse and validate the `block`
+// clause's structural contract (a qualifying trailing `content`-typed
+// param). The `!name`/natural-notation dispatch rewrite that would
+// actually match a line, find the block's terminator, capture the
+// following run as a `Value::FragmentRef`, and call the handler is issue
+// #1838's scope and is not implemented here — so there is no dispatch
+// pipeline yet to prove `content`'s interior lines keep producing their
+// own translatable line entries; that test belongs with #1838's landing.
+
+#[test]
+fn element_annotation_block_flag_lowers_with_trailing_content_param() {
+    let (hir, _m, diags) = lower_src(
+        "@[element(args = \"^@(?<name>[A-Z]+)$\", block)]\nflow cue(name, body: content) {\n  Hi, {name}!\n}\n",
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let element = hir.knots[0]
+        .element_annotation
+        .as_ref()
+        .expect("@[element(…, block)] must still lower to an ElementAnnotation");
+    assert!(element.block, "the `block` flag must be recorded");
+    assert_eq!(element.captures, vec!["name".to_string()]);
+}
+
+#[test]
+fn element_annotation_block_without_content_param_diagnoses_e166() {
+    let (hir, _m, diags) = lower_src(
+        "@[element(args = \"^@(?<name>[A-Z]+)$\", block)]\nflow cue(name) {\n  Hi, {name}!\n}\n",
+    );
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E166),
+        "a `block` element with no content-typed param must raise E166: {diags:?}"
+    );
+    assert!(hir.knots[0].element_annotation.is_none());
+}
+
+#[test]
+fn element_annotation_block_content_param_not_last_diagnoses_e166() {
+    let (hir, _m, diags) = lower_src(
+        "@[element(args = \"^@(?<name>[A-Z]+)$\", block)]\nflow cue(body: content, name) {\n  Hi, {name}!\n}\n",
+    );
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E166),
+        "the content-typed param must be trailing — E166 when it isn't last: {diags:?}"
+    );
+    assert!(hir.knots[0].element_annotation.is_none());
+}
+
+#[test]
+fn element_annotation_block_content_param_matching_a_capture_diagnoses_e166() {
+    // `body` is both the pattern's own named capture and the trailing
+    // content-typed param — E160's "does the capture have a matching
+    // param" check is satisfied by name alone, so this must be caught by
+    // the block contract instead: a capture and the block receiver cannot
+    // be the same parameter.
+    let (hir, _m, diags) = lower_src(
+        "@[element(args = \"^@(?<body>[A-Z]+)$\", block)]\nflow cue(body: content) {\n  Hi, {body}!\n}\n",
+    );
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E166),
+        "a content param that is also a named capture must raise E166: {diags:?}"
+    );
+    assert!(hir.knots[0].element_annotation.is_none());
+}
+
+#[test]
+fn element_annotation_duplicate_block_flag_diagnoses_e159() {
+    // A single bare `block` in this exact argument position (trailing,
+    // after `args`) must be accepted on its own — proven in the same test
+    // as the duplicate, not just elsewhere in this file — so the E159
+    // below is pinned to the *second* `block` specifically, not to `block`
+    // being unrecognized in general (a bare, non-`key = "value"` arg was
+    // already E159 before this PR's `ELEMENT_BLOCK` handling existed, so
+    // an assertion against only the doubled form passes for the wrong
+    // reason and does not guard the new duplicate-flag branch at all).
+    let (single_hir, _m, single_diags) = lower_src(
+        "@[element(args = \"^@(?<name>[A-Z]+)$\", block)]\nflow cue(name, body: content) {\n  Hi, {name}!\n}\n",
+    );
+    assert!(
+        single_diags.is_empty(),
+        "a lone `block` in this position must not raise a diagnostic: {single_diags:?}"
+    );
+    let single_element = single_hir.knots[0]
+        .element_annotation
+        .as_ref()
+        .expect("a lone `block` must still lower to an ElementAnnotation");
+    assert!(
+        single_element.block,
+        "the lone `block` flag must be recorded"
+    );
+
+    let (hir, _m, diags) = lower_src(
+        "@[element(args = \"^@(?<name>[A-Z]+)$\", block, block)]\nflow cue(name, body: content) {\n  Hi, {name}!\n}\n",
+    );
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E159),
+        "a repeated bare `block` clause must raise E159: {diags:?}"
+    );
+    assert!(hir.knots[0].element_annotation.is_none());
+}
+
+#[test]
+fn element_annotation_block_with_assigned_value_diagnoses_e159() {
+    let (hir, _m, diags) = lower_src(
+        "@[element(args = \"^@(?<name>[A-Z]+)$\", block = \"true\")]\nflow cue(name, body: content) {\n  Hi, {name}!\n}\n",
+    );
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E159),
+        "`block` is a bare flag, not a `key = \"value\"` clause: {diags:?}"
+    );
+    assert!(hir.knots[0].element_annotation.is_none());
+}
+
+#[test]
+fn element_annotation_without_block_flag_defaults_false() {
+    let (hir, _m, diags) = lower_src(
+        "@[element(args = \"^(?<chan>\\\\w+)$\")]\nflow radio(chan) {\n  Hi, {chan}!\n}\n",
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let element = hir.knots[0].element_annotation.as_ref().expect("present");
+    assert!(!element.block, "no `block` clause must leave block false");
+}
+
 #[test]
 fn style_annotation_lowers_with_paired_element() {
     let (hir, _m, diags) = lower_src(
@@ -1513,20 +1640,20 @@ fn a_claiming_pattern_declaring_both_args_and_claims_diagnoses_e159() {
 }
 
 #[test]
-fn a_claiming_handler_param_with_no_capture_diagnoses_e166() {
+fn a_claiming_handler_param_with_no_capture_diagnoses_e167() {
     let (hir, _m, diags) = lower_src(
         "@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival(who, mood) {\n  return who;\n}\n",
     );
     assert!(
-        diags.iter().any(|d| d.code == DiagnosticCode::E166),
-        "a param no capture binds must raise E166: {diags:?}"
+        diags.iter().any(|d| d.code == DiagnosticCode::E167),
+        "a param no capture binds must raise E167: {diags:?}"
     );
     assert!(hir.knots[0].element_annotation.is_none());
 }
 
 #[test]
 fn a_non_claiming_handler_may_have_params_beyond_its_captures() {
-    // The asymmetry E166 exists for: a `!name` handler stays callable by
+    // The asymmetry E167 exists for: a `!name` handler stays callable by
     // hand, so an uncaptured param is not an error there.
     let (hir, _m, diags) = lower_src(
         "@[element(args = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival(who, mood) {\n  return who;\n}\n",
@@ -1572,6 +1699,43 @@ fn a_line_carrying_interpolation_is_never_claimed() {
     assert!(
         hir.element_matches.is_empty(),
         "an interpolated line must not be claimed: {:?}",
+        hir.element_matches
+    );
+}
+
+#[test]
+fn element_matches_are_recorded_in_source_order_across_a_choice_point() {
+    // DOCS/CONSISTENCY review finding on this PR: `body::lower_items`
+    // lowers a `CHOICE_POINT`'s continuation (source-*later*, via
+    // `lower_continuation`) before it lowers the choice's own bodies
+    // (source-*earlier*, via `lower_choice_point`) — so a claimed line
+    // after a choice point is reached, and pushed onto `Elements::matches`,
+    // before a claimed line inside the choice body that precedes it in
+    // source. `HirFile::element_matches`'s own doc promises source order;
+    // `hir::lower_native::lower` must restore it by sorting on `line`
+    // before storing the field.
+    let src = "@[element(claims = \"^SIGNAL (?<sound>.+)$\")]\nfn effect(sound) {\n  return sound;\n}\n\nflow main() {\n  {?\n    * Option. {\n      SIGNAL EARLY\n    }\n  }\n  SIGNAL LATE\n}\n";
+    let (hir, _m, diags) = lower_src(src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(hir.element_matches.len(), 2, "{:?}", hir.element_matches);
+
+    let early_pos = src.find("SIGNAL EARLY").expect("EARLY in fixture");
+    let late_pos = src.find("SIGNAL LATE").expect("LATE in fixture");
+    assert!(
+        early_pos < late_pos,
+        "fixture sanity: EARLY must precede LATE in source"
+    );
+
+    assert_eq!(
+        usize::from(hir.element_matches[0].line.start()),
+        early_pos,
+        "the choice-body claim (source-earlier) must sort first: {:?}",
+        hir.element_matches
+    );
+    assert_eq!(
+        usize::from(hir.element_matches[1].line.start()),
+        late_pos,
+        "the continuation claim (source-later) must sort second: {:?}",
         hir.element_matches
     );
 }
