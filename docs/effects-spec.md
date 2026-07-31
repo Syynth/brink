@@ -468,16 +468,37 @@ folded into `docs/decision-log.md` as a settled ruling. Enumerated:
    `docs/decision-log.md`'s t1e ratification entry ("projections exist
    only in ref-argument position (`heal(ref npc.hp, 5)`, `#fn`
    binding)") both name this position explicitly — it is not absent
-   from the grammar. **Known gap (not modelled, not sound-pessimal):**
-   when the bound cell is a valid `VAR` (accepted, not refused),
-   nothing in this pass records the write that happens when the
-   created value is later called — `infer_fn_literal` never calls
-   `record_ref_param_writes`, and the callee's own body write (e.g.
-   `heal`'s `hp = hp + amount`) resolves `hp` as a `Param` and can't
-   see which caller cell it is bound to. This is a genuine
-   conservative-total (§3) under-report, tracked as #1755 (parent:
-   #1680, the row-polymorphism gap this most naturally belongs to) —
-   not fixed by this pass.
+   from the grammar. **Formerly a genuine under-report; RULED and fixed
+   by issue #1755 (option (a)).** When the bound cell is a valid `VAR`
+   (accepted, not refused), the write that happens once the created
+   value is called used to be recorded *nowhere*: `infer_fn_literal`
+   never called `record_ref_param_writes`, the callee's own body write
+   (e.g. `heal`'s `hp = hp + amount`) resolves `hp` as a `Param` and
+   cannot see which caller cell it is bound to, and the eventual `f(5)`
+   call site narrows to the target def but carries no record of the
+   cell the value was *created* against. That was a conservative-total
+   (§3) violation, the one direction the row may never move.
+   `infer_fn_literal` now calls `record_ref_param_writes` on its bound
+   prefix, folding the bound cell into the **creating** body's own write
+   set (and unwrapping a `ref` projection to its root exactly as channel
+   4 does). Coarse but sound: the write is charged whether or not the
+   creating body ever calls the value it made, because creation is the
+   only site that can still see the binding — a value handed out carries
+   its bound cell with it and no later call site names that cell again.
+   Over-reporting is the permitted direction. Pinned by
+   `a_fn_creation_site_ref_binding_records_the_bound_cell_as_a_write`,
+   `…_records_the_write_even_when_never_called`,
+   `a_fn_creation_site_ref_projection_records_its_root_cell`, and the
+   negative control `a_fn_creation_site_without_a_ref_param_still_narrows`
+   (`crates/internal/brink-analyzer/src/infer/mod.rs`), plus the
+   end-to-end `fn_creation_site_ref_binding_ground_truth`
+   (`crates/internal/brink-test-harness/tests/t2_ground_truth_effects.rs`),
+   which runs the bytecode and observes the write the static row now
+   admits. **Still open as precision, not soundness:** giving `ref`
+   params their own row-variable/hole treatment analogous to §6.1b's
+   non-`ref` `param_holes`, resolved against the concrete cell bound at
+   each creation site — #1755's option (b), a §8 refinement rung under
+   #1809.
 6. **The heap** (a fn value read out of a `VAR`/`CONST` cell, or a
    collection element) — never classified as `Local` in the first
    place (`local_call_origin` only recognizes `Temp`/`Param`), so it is
@@ -495,17 +516,23 @@ folded into `docs/decision-log.md` as a settled ruling. Enumerated:
 §6.1b's separate mechanism, 3 floors); channels 4, 6, and 7 are
 **permanently opaque at this rung by design**, not a gap — channel 4
 reduces to 3 or 6, and channel 6 is §5's job, a type-level join that is
-deliberately *not* a second points-to system. Channel 5 is **mixed**:
-its Temp/Param case is refused at the checker (no alias survives to
-trace), but its VAR case is a real, currently-unmodelled under-report
-(#1755) — not a deliberate pessimal fallback like every other channel
-here. A future precision rung may narrow channel 6 further (§8 style —
-e.g. reachability-sliced per-cell join), but that is a §8 refinement to
-the heap answer, not a new `local_fn_origins` aliasing channel. This
-enumeration is otherwise complete against the traced code, but it does
-**not** support a claim that nothing is left unmodelled — channel 5's
-VAR case is a known, tracked exception, and this whole enumeration
-awaits maintainer ratification before it can be treated as settled.
+deliberately *not* a second points-to system. Channel 5 is **mixed but
+now sound**: its Temp/Param case is refused at the checker (no alias
+survives to trace), and its VAR case — the one genuine under-report this
+enumeration found — is fixed by #1755, which charges the bound cell's
+write to the creating body. It is coarse (charged at creation, not at
+the eventual call) rather than unmodelled; the precise treatment is a §8
+rung under #1680, so channel 5 now sits alongside the deliberate
+pessimal fallbacks rather than outside them. A future precision rung may
+narrow channel 6 further (§8 style — e.g. reachability-sliced per-cell
+join), but that is a §8 refinement to the heap answer, not a new
+`local_fn_origins` aliasing channel. With #1755 landed this enumeration
+is complete against the traced code, with every channel either modelled,
+deliberately floored, or ruled out of this mechanism's keyspace by
+construction; the enumeration itself still awaits maintainer
+ratification before it can be treated as settled. Channel 5's precision
+remainder is tracked as #1809, not #1680 (§6.1c below), which closed
+COMPLETED before this pass landed.
 
 ### 6.1b Row variables on fn-typed params — SHIPPED (issue #1680)
 
@@ -613,7 +640,10 @@ current query graph, since effects never read types), but §6.1a's
 prohibition is written as *"no inferred row **or signature** may ever be
 consulted to decide an edge"*, and a global cell's declaration-derived
 `Ty::Fn` is reached through `signature()`. That decision is what the
-heap rung needs next, and it is the whole of what remains on #1680.
+heap rung needs next, and it is now tracked as #1753 (#1680 itself
+closed COMPLETED once steps (2)–(3) landed; #1753 is the live tracker
+for this remainder, distinct from #1809's channel-5 `ref`-param
+precision rung above).
 
 ## 7. Runtime narrowing: selection, not inference — RULED
 

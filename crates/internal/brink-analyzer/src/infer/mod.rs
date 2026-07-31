@@ -3248,6 +3248,119 @@ mod tests {
         );
     }
 
+    // ─── Issue #1755: channel 5's VAR case — the `#fn`-creation-site
+    // `ref` binding ──────────────────────────────────────────────────────
+    //
+    // docs/effects-spec.md §6.1a enumerated this as the one aliasing channel
+    // that was a genuine conservative-total (§3) *under*-report rather than a
+    // deliberate pessimal fallback: `#fn(heal, player_hp)` binds `heal`'s
+    // `ref hp` param to the cell `player_hp` at the **creation** site, a
+    // grammar position distinct from a call site's `ref` argument, and
+    // `infer_fn_literal` never called `record_ref_param_writes`. The write
+    // was therefore recorded nowhere — not at the creation site, not in
+    // `heal`'s own body (where `hp` resolves as a `Param`, never a
+    // `Variable`), and not at the eventual `f(5)` call site (which carries no
+    // record of which cell `heal` was created against).
+
+    /// The under-report itself: creating a fn value that binds a `ref` param
+    /// to a `VAR` must fold that cell into the *creating* body's own write
+    /// set. Option (a) of #1755's ask — sound (the write genuinely happens
+    /// when the value is called) though coarse (it is charged at the creation
+    /// site whether or not the value is ever called). Over-reporting is the
+    /// permitted direction (§3).
+    #[test]
+    fn a_fn_creation_site_ref_binding_records_the_bound_cell_as_a_write() {
+        let src = "VAR player_hp = 10\n\
+                   === function heal(ref hp, amount) ===\n~ hp = hp + amount\n\
+                   === function user() ===\n~ temp f = #fn(heal, player_hp)\n\
+                   ~ return f(5)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let user = id_of(&index, "user");
+        let player_hp = id_of(&index, "player_hp");
+        assert!(
+            rows[&user].writes.contains(&player_hp),
+            "the cell bound into `heal`'s ref param at the `#fn` creation site \
+             is genuinely written when the created value runs — omitting it \
+             from `user`'s row is the under-report §3 forbids: {:?}",
+            rows[&user]
+        );
+    }
+
+    /// The same recording must happen even when the created value is never
+    /// called from the creating body at all — the bound cell escapes with the
+    /// value (returned here), so the creating body is the only place that can
+    /// still see which cell was bound. Charging the write at the creation
+    /// site is exactly what makes that possible.
+    #[test]
+    fn a_fn_creation_site_ref_binding_records_the_write_even_when_never_called() {
+        let src = "VAR player_hp = 10\n\
+                   === function heal(ref hp, amount) ===\n~ hp = hp + amount\n\
+                   === function user() ===\n~ return #fn(heal, player_hp)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let user = id_of(&index, "user");
+        let player_hp = id_of(&index, "player_hp");
+        assert!(
+            rows[&user].writes.contains(&player_hp),
+            "a created-but-uncalled `#fn` still binds the cell — the creation \
+             site is the only place the binding is visible: {:?}",
+            rows[&user]
+        );
+    }
+
+    /// Channel 4's root-unwrapping applies at this grammar position too: an
+    /// explicit `ref` projection (`ref npc.hp`, T1e) bound at a creation site
+    /// writes through the **root** global's own cell, exactly as
+    /// `record_ref_param_writes` already unwraps it at a call site.
+    #[test]
+    fn a_fn_creation_site_ref_projection_records_its_root_cell() {
+        let src = "VAR npc = 0\n\
+                   === function heal(ref hp, amount) ===\n~ hp = hp + amount\n\
+                   === function user() ===\n~ temp f = #fn(heal, ref npc.hp)\n\
+                   ~ return f(5)\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let user = id_of(&index, "user");
+        let npc = id_of(&index, "npc");
+        assert!(
+            rows[&user].writes.contains(&npc),
+            "mutating a projection writes through the root global's own cell: \
+             {:?}",
+            rows[&user]
+        );
+    }
+
+    /// The pessimal floor must not *widen* on the way through (the PR #1731
+    /// review lesson): a `#fn` creation site whose bound prefix contains no
+    /// `ref` param at all is untouched by this fix — the local still narrows
+    /// to its traced target rather than falling to `opaque`.
+    #[test]
+    fn a_fn_creation_site_without_a_ref_param_still_narrows() {
+        let src = "VAR total = 0\n\
+                   === function bar(n) ===\n~ total = total + n\n~ return total\n\
+                   === function user() ===\n~ temp f = #fn(bar, 1)\n~ return f()\n";
+        let (hir, index, res) = build(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let user = id_of(&index, "user");
+        let total = id_of(&index, "total");
+        assert!(
+            !rows[&user].opaque,
+            "a non-`ref` bound prefix must not be charged as an untraced \
+             write — the local still narrows to `bar`: {:?}",
+            rows[&user]
+        );
+        assert!(
+            rows[&user].writes.contains(&total),
+            "the narrowed call through f still joins bar's own write: {:?}",
+            rows[&user]
+        );
+    }
+
     // ─── Fork A (docs/decision-log.md 2026-07-28, issue #1726): the
     // structural fn-value creation atom ─────────────────────────────────
 
