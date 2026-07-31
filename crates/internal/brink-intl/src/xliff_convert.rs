@@ -511,9 +511,9 @@ fn inline_to_content(
     elements: &[InlineElement],
     data_map: &HashMap<&str, &str>,
 ) -> Result<ContentJson, IntlError> {
-    // Check if this is a simple plain text (single Text element).
+    // Check if this is a simple plain text (single Text or CData element).
     if elements.len() == 1
-        && let InlineElement::Text(s) = &elements[0]
+        && let InlineElement::Text(s) | InlineElement::CData(s) = &elements[0]
     {
         return Ok(ContentJson::Plain(s.clone()));
     }
@@ -533,8 +533,17 @@ fn looks_like_span_marker(sub_type: Option<&str>, data_ref: Option<&str>) -> boo
 
 /// [`inline_to_content`]'s per-element reconstruction, factored out so it
 /// can recurse into a `<pc>`'s own `content` — a paired span's children are
-/// themselves [`InlineElement`]s that need the exact same Text/Ph/Pc
+/// themselves [`InlineElement`]s that need the exact same Text/CData/Ph/Pc
 /// handling as the top-level stream.
+///
+/// `<![CDATA[...]]>` decodes exactly like plain character data (#1799): a
+/// TMS is free to return translated text wrapped in a CDATA section — it's
+/// legal XLIFF content with no structural ambiguity, unlike a re-expressed
+/// span (below), so there is no reason to reject it. The alternative of
+/// treating it as an error was considered and rejected: CDATA carries no
+/// span markers to lose, so an error would only punish translators for a
+/// no-op XML quoting choice. This is the same class of bug already fixed on
+/// the sibling `xliff2`-crate metadata-extraction path (#765).
 ///
 /// A brink-exported paired span always round-trips as `<pc>` (see
 /// [`push_part_inline`]) — but XLIFF 2.0 lets a translation tool
@@ -554,7 +563,7 @@ fn elements_to_parts(
     let mut parts = Vec::new();
     for elem in elements {
         match elem {
-            InlineElement::Text(s) => {
+            InlineElement::Text(s) | InlineElement::CData(s) => {
                 parts.push(PartJson::Literal(s.clone()));
             }
             InlineElement::Ph(ph) => {

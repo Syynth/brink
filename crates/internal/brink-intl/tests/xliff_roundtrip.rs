@@ -433,6 +433,91 @@ fn split_pc_as_sc_ec_is_rejected_not_silently_dropped() {
     );
 }
 
+/// A TMS is free to return translated text wrapped in a `<![CDATA[...]]>`
+/// section — legal XLIFF content, and the same shape #765 already found and
+/// fixed on the sibling `xliff2`-crate metadata-extraction path. Unlike the
+/// `<sc>`/`<ec>` split above, CDATA carries no structural ambiguity — it's
+/// just character data spelled with a different XML quoting mechanism — so
+/// `elements_to_parts` decodes it exactly like `<mrk>`-free plain text
+/// instead of erroring. This proves it survives the full wire round trip: a
+/// translator-authored `<target><![CDATA[...]]></target>` (built directly
+/// as the `InlineElement::CData` a TMS would produce, since brink's own
+/// exporter never emits CDATA) serializes through the real XML writer,
+/// re-parses through the real XML reader, and decodes back to the original
+/// text — not silently dropped, per #1799.
+#[test]
+fn translator_authored_cdata_survives_export_import_roundtrip() {
+    let mut doc = Document {
+        version: "2.0".to_string(),
+        src_lang: "en".to_string(),
+        trg_lang: Some("fr".to_string()),
+        files: vec![File {
+            id: "root".to_string(),
+            original: None,
+            notes: Vec::new(),
+            skeleton: None,
+            groups: Vec::new(),
+            units: vec![Unit {
+                id: "0x01:0".to_string(),
+                name: None,
+                translate: None,
+                notes: Vec::new(),
+                sub_units: vec![SubUnit::Segment(Segment {
+                    id: None,
+                    state: Some(State::Translated),
+                    sub_state: None,
+                    source: Content {
+                        lang: None,
+                        elements: vec![InlineElement::Text("Hello world".to_string())],
+                    },
+                    target: Some(Content {
+                        lang: None,
+                        elements: vec![InlineElement::CData("Bonjour le monde".to_string())],
+                    }),
+                })],
+                original_data: None,
+                extensions: Extensions {
+                    elements: Vec::new(),
+                    attributes: vec![ExtensionAttribute {
+                        namespace: "brink".to_string(),
+                        local_name: "hash".to_string(),
+                        value: "aaaa".to_string(),
+                    }],
+                },
+            }],
+            extensions: Extensions {
+                elements: Vec::new(),
+                attributes: vec![ExtensionAttribute {
+                    namespace: "brink".to_string(),
+                    local_name: "scope-id".to_string(),
+                    value: "0x01".to_string(),
+                }],
+            },
+        }],
+        extensions: Extensions::default(),
+    };
+    doc.trg_lang = Some("fr".to_string());
+
+    // Round-trip through the real XML writer/reader, not just the parsed
+    // AST — proves the on-wire `<![CDATA[...]]>` shape survives, not merely
+    // that `elements_to_parts` handles a hand-built `InlineElement::CData`.
+    let xml = xliff2::write::to_string(&doc).unwrap();
+    assert!(
+        xml.contains("<![CDATA[Bonjour le monde]]>"),
+        "expected a real CDATA section in the serialized XLIFF, got: {xml}"
+    );
+    let parsed = xliff2::read::read_xliff(&xml).unwrap();
+
+    let recovered = xliff_to_lines_json(&parsed).unwrap();
+
+    assert_eq!(
+        recovered.scopes[0].lines[0].content,
+        Some(ContentJson::Plain("Bonjour le monde".to_string())),
+        "translator-authored CDATA target text must decode like plain \
+         text, not be silently dropped"
+    );
+}
+
 /// Span hash-transparency (`docs/prose-dialect-spec.md` §4.4) is a
 /// compile-time property of `source_hash` — markup is normalized out
 /// before hashing, so `Hello <wave>world</wave>` hashes identically to
