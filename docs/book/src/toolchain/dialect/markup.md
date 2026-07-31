@@ -13,6 +13,10 @@ what was freeform into a tightly-checked surface.
 This chapter covers both sides: the syntax story authors write, and how integrators
 declare and validate a markup vocabulary.
 
+Inline markup is a **native `.brink`-surface feature**. It is not available on the
+ink surface, even with `dialect = "brink"` enabled on an `.ink` source: writing
+`<wave>x</wave>` in an `.ink` file produces literal text, with no diagnostic.
+
 ## Author syntax
 
 ### Basic spans
@@ -54,10 +58,10 @@ flow dialogue() {
 **Important:** A tag must open and close in the same scope. You can't have a tag open
 in one branch of a conditional and close in another:
 
-```brink
-{if tired: <i>yawn</i> else: ready} ✓   Correct: span is entirely in the branch
+```text
+{if tired: <i>yawn</i> else: ready}          // Correct: span is entirely in the branch
 
-<i>hello {if tired: world</i> else: friend}  ✗ Nesting violation
+<i>hello {if tired: world</i> else: friend}  // Nesting violation
 ```
 
 This constraint is enforced by the compiler. It exists because markup is
@@ -71,14 +75,14 @@ Four characters have special meaning in markup and interpolation:
 | Character | Escape | When to use |
 |-----------|--------|------------|
 | `<` | `\<` | When you need a literal `<` (e.g., `\<3`) |
-| `{` | `\{` | When you need a literal `{` in prose (e.g., `\{HP: 5\}`) |
+| `{` | `\{` | When you need a literal `{` in prose (e.g., `\{HP: 5}`) |
 | `#` | `\#` | When you need a literal `#` as line-start text |
 | `\` | `\\` | When you need a literal backslash |
 
 ```brink
 flow scene() {
-  The code is: `\<vector\>` to declare a pointer.
-  Health: \{HP\}
+  The code is: `\<vector>` to declare a pointer.
+  Health: \{HP}
 }
 ```
 
@@ -128,9 +132,9 @@ Once the manifest declares at least one span kind, the compiler validates all ma
 in the project:
 
 - An **undeclared tag** (e.g., `<glitch>` when only `wave` is declared) reports
-  [`E164`](../reference/errors.md#E164).
+  `E164`.
 - An **undeclared attribute** on a declared kind (e.g., `<wave speed="2">` when only
-  `amount` is declared) reports [`E165`](../reference/errors.md#E165).
+  `amount` is declared) reports `E165`.
 
 Attribute **values** are never checked — they are always plain text, so there is
 nothing to type-check. Only the attribute *name* is part of the declared vocabulary.
@@ -144,8 +148,8 @@ To go back to freeform markup:
 
 ```toml
 [lints]
-E164 = "off"
-E165 = "off"
+E164 = "allow"
+E165 = "allow"
 ```
 
 You can also suppress markup validation for a single tag or line:
