@@ -271,6 +271,14 @@ pub(crate) fn cue_line(p: &mut Parser<'_, '_>) {
 /// stopping there — inherent to depth-based balancing over raw text with
 /// no real grammar to bound it. Pinned by
 /// `an_unbalanced_open_brace_in_a_cue_name_eats_the_enclosing_blocks_own_closer`.
+///
+/// This is not full parity with `tag()`, though: `cue_name`'s stop set has
+/// two members `tag()`'s does not, `COLON` and `HASH`, and both are
+/// checked *before* the depth guard, exactly like `NEWLINE`/`EOF` — so a
+/// `:` or `#` still cuts a name short even while a brace is open,
+/// unconditionally consuming neither into the balanced scan. A name like
+/// `@NAME {a:b} c.` still stops at the `:` inside the unclosed `{`, well
+/// short of the cascade this fix removes for a `}`-only case.
 fn cue_name(p: &mut Parser<'_, '_>) {
     p.start_node(CUE_NAME);
     let mut depth: u32 = 0;

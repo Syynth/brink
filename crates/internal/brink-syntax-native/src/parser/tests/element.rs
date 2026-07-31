@@ -300,6 +300,30 @@ fn a_cue_name_with_an_escaped_open_brace_does_not_swallow_the_enclosing_blocks_o
 }
 
 #[test]
+fn a_cue_immediately_followed_by_the_enclosing_blocks_own_closer_still_stops_there() {
+    // Guard against over-correcting, the same way `content.rs`'s
+    // `a_tag_immediately_followed_by_the_enclosing_blocks_own_closer_still_stops_there`
+    // guards `tag()`: with no `{` opened inside the cue name's own text,
+    // depth stays zero and the very first `}` — here the flow body's own
+    // closer — must still terminate the name, exactly as before this fix.
+    let src = "flow f() { @NAME }\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::FLOW_DECL), 1);
+}
+
+#[test]
+fn a_cue_name_containing_a_balanced_alternation_brace_does_not_end_early() {
+    // Same defect as `a_balanced_brace_in_a_cue_name_does_not_swallow_the_enclosing_blocks_own_closer`,
+    // alternation-shaped brace instead of interpolation — parity with
+    // `content.rs`'s `a_tag_containing_a_balanced_alternation_brace_does_not_end_early`.
+    let src = "flow f() {\n  @NAME {gold|silver} coins.\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::FLOW_DECL), 1);
+}
+
+#[test]
 fn the_compact_cue_fuses_a_name_and_one_dialogue_line() {
     // Spec 8b.9: a SECOND declared pattern beside the block cue, not a
     // rewrite of it - so it gets its own node kind.
