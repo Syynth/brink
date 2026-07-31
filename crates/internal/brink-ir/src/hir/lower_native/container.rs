@@ -20,6 +20,7 @@ use crate::hir::doc_block::DocPolicy;
 use crate::provenance::NodeClass;
 use crate::{Block, Diagnostic, DiagnosticCode, DocBlock, Knot, Name, Param, Stitch};
 
+use super::element::Elements;
 use super::doc_comment::lower_doc_comment;
 use super::provenance::native_provenance;
 
@@ -81,9 +82,14 @@ fn container_doc(
 /// block already produces (`hir::lower::content::logic_line`). No new HIR
 /// node: NF-2's existing-HIR-only fence, and the differential partner this
 /// reuses is already fully wired to LIR (`lir::lower::blocks`).
-fn lower_body(file_id: FileId, body: &ast::Body, diags: &mut Vec<Diagnostic>) -> Block {
+fn lower_body(
+    file_id: FileId,
+    body: &ast::Body,
+    elements: &mut Elements,
+    diags: &mut Vec<Diagnostic>,
+) -> Block {
     match body {
-        ast::Body::Prose(b) => super::body::lower_block(file_id, b, diags),
+        ast::Body::Prose(b) => super::body::lower_block(file_id, b, elements, diags),
         ast::Body::Code(sb) => super::body::lower_stmt_block_as_body(file_id, sb, diags),
     }
 }
@@ -97,14 +103,14 @@ fn diag(file: FileId, range: rowan::TextRange, code: DiagnosticCode) -> Diagnost
     }
 }
 
-fn name_from(tok: Option<brink_syntax_native::SyntaxToken>) -> Option<Name> {
+pub(super) fn name_from(tok: Option<brink_syntax_native::SyntaxToken>) -> Option<Name> {
     tok.map(|t| Name {
         text: t.text().to_string(),
         range: t.text_range(),
     })
 }
 
-fn lower_params(param_list: Option<ast::ParamList>) -> Vec<Param> {
+pub(super) fn lower_params(param_list: Option<ast::ParamList>) -> Vec<Param> {
     param_list
         .into_iter()
         .flat_map(|pl| pl.params().collect::<Vec<_>>())
@@ -136,6 +142,7 @@ fn lower_params(param_list: Option<ast::ParamList>) -> Vec<Param> {
 pub(super) fn lower_top_level_container(
     file_id: FileId,
     node: &super::FlowOrFn,
+    elements: &mut Elements,
     diags: &mut Vec<Diagnostic>,
 ) -> Option<Knot> {
     let syntax = node.syntax();
@@ -170,7 +177,8 @@ pub(super) fn lower_top_level_container(
             match child.kind() {
                 brink_syntax_native::SyntaxKind::FLOW_DECL => {
                     if let Some(nested) = ast::FlowDecl::cast(child.clone())
-                        && let Some(stitch) = lower_stitch(file_id, &nested, &name.text, diags)
+                        && let Some(stitch) =
+                            lower_stitch(file_id, &nested, &name.text, elements, diags)
                     {
                         stitches.push(stitch);
                     }
@@ -201,7 +209,7 @@ pub(super) fn lower_top_level_container(
     );
     let mut body_block = node
         .body()
-        .map_or_else(Block::default, |b| lower_body(file_id, &b, diags));
+        .map_or_else(Block::default, |b| lower_body(file_id, &b, elements, diags));
     super::body::fixup_return_kind(node.is_function(), &mut body_block);
     // Non-function flows inherit ink's root-content implicit-end grace
     // (RULED 2026-07-22; charter §15): a body falling off the end gets a
@@ -260,6 +268,7 @@ fn lower_stitch(
     file_id: FileId,
     node: &ast::FlowDecl,
     enclosing_knot_name: &str,
+    elements: &mut Elements,
     diags: &mut Vec<Diagnostic>,
 ) -> Option<Stitch> {
     let syntax = node.syntax();
@@ -308,7 +317,7 @@ fn lower_stitch(
     );
     let mut body_block = node
         .body()
-        .map_or_else(Block::default, |b| lower_body(file_id, &b, diags));
+        .map_or_else(Block::default, |b| lower_body(file_id, &b, elements, diags));
     // Stitches never carry `is_function` (no HIR container below `Knot`
     // does — module doc judgment call #4), so a bare `return` inside a
     // stitch is always the tunnel-return spelling, never an explicit

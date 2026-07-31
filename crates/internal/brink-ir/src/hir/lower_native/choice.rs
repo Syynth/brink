@@ -23,6 +23,7 @@ use crate::{
 };
 
 use super::body::{lower_divert_like, lower_items, lower_span, push_escape, push_text};
+use super::element::Elements;
 use super::cond::{lower_alternation, lower_conditional};
 use super::expr::lower_path;
 use super::provenance::native_provenance;
@@ -51,6 +52,7 @@ pub(super) fn lower_choice_point(
     file_id: FileId,
     cp: &ast::ChoicePoint,
     continuation: Block,
+    elements: &mut Elements,
     diags: &mut Vec<Diagnostic>,
 ) -> Vec<Stmt> {
     let mut preamble: Vec<Stmt> = Vec::new();
@@ -60,12 +62,12 @@ pub(super) fn lower_choice_point(
         match child.kind() {
             N::CHOICE => {
                 if let Some(c) = ast::Choice::cast(child) {
-                    choices.push(lower_choice(file_id, &c, diags));
+                    choices.push(lower_choice(file_id, &c, elements, diags));
                 }
             }
             N::ELSE_BRANCH => {
                 if let Some(eb) = ast::ElseBranch::cast(child) {
-                    choices.push(lower_fallback_choice(file_id, &eb, diags));
+                    choices.push(lower_fallback_choice(file_id, &eb, elements, diags));
                 }
             }
             N::SPLICE => {
@@ -102,7 +104,12 @@ pub(super) fn lower_choice_point(
     out
 }
 
-fn lower_choice(file_id: FileId, c: &ast::Choice, diags: &mut Vec<Diagnostic>) -> Choice {
+fn lower_choice(
+    file_id: FileId,
+    c: &ast::Choice,
+    elements: &mut Elements,
+    diags: &mut Vec<Diagnostic>,
+) -> Choice {
     let is_sticky = c.is_sticky();
     let label = c.label().and_then(|l| name_from(l.name_token()));
     let condition = c
@@ -125,16 +132,19 @@ fn lower_choice(file_id: FileId, c: &ast::Choice, diags: &mut Vec<Diagnostic>) -
     let (start_content, start_divert) = lower_choice_region(
         file_id,
         c.start_content().map(|n| n.syntax().clone()),
+        elements,
         diags,
     );
     let (bracket_content, bracket_divert) = lower_choice_region(
         file_id,
         c.bracket_content().map(|n| n.syntax().clone()),
+        elements,
         diags,
     );
     let (inner_content, inner_divert) = lower_choice_region(
         file_id,
         c.inner_content().map(|n| n.syntax().clone()),
+        elements,
         diags,
     );
     // At most one region carries a divert in well-formed input (a choice
@@ -160,7 +170,7 @@ fn lower_choice(file_id: FileId, c: &ast::Choice, diags: &mut Vec<Diagnostic>) -
     stmts.push(Stmt::EndOfLine);
     if let Some(body) = c.body() {
         let items: Vec<SyntaxNode> = body.items().collect();
-        stmts.extend(lower_items(file_id, &items, 0, diags));
+        stmts.extend(lower_items(file_id, &items, 0, elements, diags));
     }
 
     Choice {
@@ -199,12 +209,13 @@ fn lower_choice(file_id: FileId, c: &ast::Choice, diags: &mut Vec<Diagnostic>) -
 fn lower_fallback_choice(
     file_id: FileId,
     eb: &ast::ElseBranch,
+    elements: &mut Elements,
     diags: &mut Vec<Diagnostic>,
 ) -> Choice {
     let mut stmts = vec![Stmt::EndOfLine];
     if let Some(body) = eb.choice_body() {
         let items: Vec<SyntaxNode> = body.items().collect();
-        stmts.extend(lower_items(file_id, &items, 0, diags));
+        stmts.extend(lower_items(file_id, &items, 0, elements, diags));
     }
     Choice {
         ptr: native_provenance(file_id, NodeClass::Choice, eb.syntax()),
@@ -241,6 +252,7 @@ fn lower_fallback_choice(
 fn lower_choice_region(
     file_id: FileId,
     node: Option<SyntaxNode>,
+    elements: &mut Elements,
     diags: &mut Vec<Diagnostic>,
 ) -> (Option<Content>, Option<Stmt>) {
     let Some(node) = node else {
@@ -255,7 +267,7 @@ fn lower_choice_region(
             N::INTERPOLATION => {
                 parts.push(super::body::lower_interpolation(file_id, &child, diags));
             }
-            N::SPAN => parts.push(lower_span(file_id, &child, diags)),
+            N::SPAN => parts.push(lower_span(file_id, &child, elements, diags)),
             N::GLUE_NODE => parts.push(ContentPart::Glue),
             N::DIVERT_STMT | N::TUNNEL_CALL => {
                 if divert.is_none() {
@@ -267,14 +279,14 @@ fn lower_choice_region(
             N::CONDITIONAL_BLOCK => {
                 if let Some(cb) = ast::ConditionalBlock::cast(child) {
                     parts.push(ContentPart::InlineConditional(lower_conditional(
-                        file_id, &cb, diags,
+                        file_id, &cb, elements, diags,
                     )));
                 }
             }
             N::ALTERNATION_BLOCK => {
                 if let Some(ab) = ast::AlternationBlock::cast(child) {
                     parts.push(ContentPart::InlineSequence(lower_alternation(
-                        file_id, &ab, diags, false,
+                        file_id, &ab, elements, diags, false,
                     )));
                 }
             }

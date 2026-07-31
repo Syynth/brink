@@ -130,6 +130,7 @@ mod container;
 pub mod control_flow;
 mod decl;
 mod doc_comment;
+mod element;
 mod expr;
 mod lambda;
 mod module;
@@ -166,7 +167,18 @@ pub fn lower(
     let mut diags: Vec<Diagnostic> = Vec::new();
     let mut top = TopLevel::default();
 
-    walk_top_level(file.syntax_children(), file_id, &mut top, &mut diags);
+    // The file's natural-notation element handlers, collected before any
+    // body is lowered so a claiming `@[element(claims = "…")]` declared
+    // *below* the prose it claims still claims it (issue #1838).
+    let mut elements = element::collect(file_id, file.syntax());
+
+    walk_top_level(
+        file.syntax_children(),
+        file_id,
+        &mut top,
+        &mut elements,
+        &mut diags,
+    );
 
     // `var`/`const`/`flags` are hoisted flat regardless of nesting — a
     // whole-tree walk, same posture ink's D6 ruling requires of every
@@ -251,6 +263,7 @@ pub fn lower(
         visibility: Vec::new(),
         was_directives: Vec::new(),
         allow_scopes,
+        element_matches: elements.matches,
     };
     let manifest = project_manifest(&hir);
     (hir, manifest, diags)
@@ -327,6 +340,7 @@ fn walk_top_level(
     items: impl Iterator<Item = SyntaxNode>,
     file_id: FileId,
     out: &mut TopLevel,
+    elements: &mut element::Elements,
     diags: &mut Vec<Diagnostic>,
 ) {
     for child in items {
@@ -334,7 +348,12 @@ fn walk_top_level(
             N::FLOW_DECL => {
                 if let Some(f) = ast::FlowDecl::cast(child)
                     && let Some(k) =
-                        container::lower_top_level_container(file_id, &FlowOrFn::Flow(f), diags)
+                        container::lower_top_level_container(
+                            file_id,
+                            &FlowOrFn::Flow(f),
+                            elements,
+                            diags,
+                        )
                 {
                     out.knots.push(k);
                 }
@@ -342,7 +361,12 @@ fn walk_top_level(
             N::FN_DECL => {
                 if let Some(f) = ast::FnDecl::cast(child)
                     && let Some(k) =
-                        container::lower_top_level_container(file_id, &FlowOrFn::Fn(f), diags)
+                        container::lower_top_level_container(
+                            file_id,
+                            &FlowOrFn::Fn(f),
+                            elements,
+                            diags,
+                        )
                 {
                     out.knots.push(k);
                 }
@@ -382,7 +406,7 @@ fn walk_top_level(
                         .map_or_else(|| child.text_range(), |t| t.text_range());
                     diags.push(diagnostic(file_id, name_range, DiagnosticCode::E129));
                     if let Some(body) = md.body() {
-                        walk_top_level(body.items(), file_id, out, diags);
+                        walk_top_level(body.items(), file_id, out, elements, diags);
                     }
                 }
             }

@@ -93,6 +93,12 @@ pub struct HirFile {
     /// — via `brink-db`'s `suppressions_query`, so every diagnostic
     /// consumer (CLI, LSP, wasm) gets the filtering from one seam.
     pub allow_scopes: Vec<crate::suppressions::AllowScope>,
+    /// Every prose line the natural-notation element dispatcher claimed
+    /// (issue #1838), in source order — the per-line classification record
+    /// the no-invisible-expansion ruling requires. Populated by the native
+    /// frontend (`hir::lower_native::element`); always empty for the ink
+    /// frontend, whose grammar has no `@[element]` channel.
+    pub element_matches: Vec<ElementMatch>,
 }
 
 /// A file's explicit `#@module(name)` declaration (M-1, modules-spec §1).
@@ -201,20 +207,35 @@ pub struct EffectsAssertion {
 /// content line rewrites to a call on the annotated `fn`/`flow`, with the
 /// pattern's named captures binding params by name.
 ///
-/// This struct carries only what the annotation *declares*; the `!name`
-/// dispatch rewrite itself (matching a content line against `pattern`,
-/// binding captures, and lowering to a call) is not implemented by this
-/// slice — see the module doc on [`crate::hir::lower_native::annotation`]
-/// for why, and `docs/prose-dialect-spec.md` §3.5b's Deferred list, which
-/// this issue adds to.
+/// Two spellings share this struct, distinguished by [`Self::claims`]
+/// (issue #1838, `docs/decision-log.md` 2026-07-31 "Conventions are
+/// annotated handlers"): `args = "…"` declares a `!name`-dispatched
+/// handler, whose pattern parses only the remainder after the sigil;
+/// `claims = "…"` declares a **natural-notation** handler, whose pattern
+/// claims a whole prose line that announces nothing. The ruling collapsed
+/// the old declarative element table into this one surface, so a preset
+/// element (a scene heading, a transition) is literally an annotated
+/// handler with a claiming pattern.
+///
+/// The `!name` sigil dispatch rewrite is still not implemented — only the
+/// claiming half dispatches today (`crate::hir::lower_native::element`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ElementAnnotation {
-    /// The portable-regex source text of the `args = "…"` clause, anchored
-    /// against the dispatched line's remainder (after the `!name ` prefix
-    /// is stripped). Not yet compiled here — `regex::Regex::new` is only
-    /// used to *validate* the pattern at lowering time (`E159`); nothing
-    /// downstream of this struct owns a live `Regex` yet.
+    /// The portable-regex source text of the `args = "…"`/`claims = "…"`
+    /// clause. For `args`, anchored against the dispatched line's
+    /// remainder (after the `!name ` prefix is stripped); for `claims`,
+    /// against the claimed line's whole text.
     pub pattern: String,
+    /// `true` when the pattern was spelled `claims = "…"` — a
+    /// natural-notation claim over prose that carries no `!name` sigil.
+    /// `false` for the self-announcing `args = "…"` form.
+    ///
+    /// The asymmetry is ruled, not incidental: a claiming pattern can take
+    /// a line that looks like ordinary prose, so it is confined to the
+    /// project's conventions module, while `!name` handlers stay legal
+    /// anywhere precisely because the sigil makes every rewritten line
+    /// self-announcing.
+    pub claims: bool,
     /// `pattern`'s named capture groups, in the order `regex::Regex::
     /// capture_names` yields them — the set a paired `@[style(…)]`'s keys
     /// are validated against (`E162`), and (once the `!name` dispatch
@@ -228,6 +249,78 @@ pub struct ElementAnnotation {
     pub alias: Option<String>,
     /// Source range of the whole `@[element(…)]` annotation line.
     pub range: TextRange,
+}
+
+/// The prose shape a claimed line was written as — the "matched kind" half
+/// of the per-line classification record (issue #1838).
+///
+/// Deliberately structural, not a preset vocabulary: it names the *grammar*
+/// node the line came from, so an editor can say "this is a scene heading
+/// that matched handler `scene`" without the compiler owning a closed list
+/// of element names. The element's *name* is the handler's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ElementKind {
+    /// An ordinary prose line (`CONTENT_LINE`) with no structural sigil.
+    ContentLine,
+    /// A scene heading (`SCENE_HEADING`, `docs/prose-dialect-spec.md`
+    /// §8b.2/.3) — the `INT.`/`EXT.` prefixed header line.
+    SceneHeading,
+}
+
+/// One named capture bound by a claimed line, as a **span into real
+/// source** rather than a copied string alone (issue #1838's
+/// no-invisible-expansion guard).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ElementCapture {
+    /// The capture group's name — also the handler parameter it binds.
+    pub name: String,
+    /// The captured text.
+    pub text: String,
+    /// Where in the claimed line the capture came from.
+    pub range: TextRange,
+}
+
+/// What the compiler did with a claimed line — the "disposition" column of
+/// the classification record.
+///
+/// One variant today: the ruled rewrite is *exactly one call*. It is an
+/// enum rather than a bare marker because the ruling names the other
+/// dispositions a handler expresses by what its body does ("content" is a
+/// line with no handler; "nothing" is a handler that emits nothing), and a
+/// tooling consumer reading this record should not have to re-derive which
+/// of those it is looking at from the absence of a field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ElementDisposition {
+    /// The line was rewritten to exactly one call on the matched handler,
+    /// emitted in the line's own position.
+    Call,
+}
+
+/// One line the natural-notation element dispatcher claimed, recorded so
+/// nothing the compiler rewrote is invisible to tooling (issue #1838; the
+/// no-invisible-expansion guard, `docs/prose-dialect-spec.md` §3.5b
+/// "Tooling transparency").
+///
+/// Every field points at real source: the claimed line's own range, the
+/// handler's name *and the range of its declaration*, and each capture as a
+/// span. That is what lets `LineContext`/the IDE query family answer "what
+/// happened to this line, and where is the code that did it" without
+/// re-running the match.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ElementMatch {
+    /// The claimed line's own source range.
+    pub line: TextRange,
+    /// The prose shape the line was written as.
+    pub kind: ElementKind,
+    /// The matched handler's name, carrying its own declaration-site range.
+    pub handler: Name,
+    /// The range of the `@[element(claims = "…")]` annotation that claimed
+    /// the line — the declaration a hover jumps to.
+    pub annotation: TextRange,
+    /// The captures bound into the call, in parameter order.
+    pub captures: Vec<ElementCapture>,
+    /// What the compiler did with the line.
+    pub disposition: ElementDisposition,
 }
 
 /// A built-in editor-presentation token (`docs/prose-dialect-spec.md`

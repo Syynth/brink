@@ -482,6 +482,23 @@ fn hir_file_heap(hir: &HirFile) -> usize {
             .iter()
             .map(|s| vec_heap(&s.codes))
             .sum::<usize>()
+        // Natural-notation element matches (issue #1838): the vec itself
+        // plus each record's own owned strings — the handler's name and
+        // every capture's name/text, none of which the flat `vec_heap`
+        // above can see.
+        + vec_heap(&hir.element_matches)
+        + hir
+            .element_matches
+            .iter()
+            .map(|m| {
+                m.handler.text.capacity()
+                    + vec_heap(&m.captures)
+                    + m.captures
+                        .iter()
+                        .map(|c| c.name.capacity() + c.text.capacity())
+                        .sum::<usize>()
+            })
+            .sum::<usize>()
 }
 
 pub(crate) fn lowered_file_heap_size(value: &LoweredFile) -> usize {

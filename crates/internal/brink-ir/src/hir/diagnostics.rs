@@ -1300,6 +1300,21 @@ pub enum DiagnosticCode {
     /// name reports `E164` alone rather than cascading one report per
     /// attribute).
     E165,
+
+    // ── Natural-notation element dispatch (issue #1838,
+    //    `docs/decision-log.md` 2026-07-31 "Conventions are annotated
+    //    handlers") ───────────────────────────────────────────────────────
+    /// A natural-notation `@[element(claims = "…")]` handler declares a
+    /// parameter that its pattern never captures, so a claimed line has
+    /// nothing to bind it to.
+    ///
+    /// The other half of `E160`'s contract, and the half only *claiming*
+    /// handlers need: a `!name`-dispatched handler can be called by hand
+    /// with ordinary arguments, but a claimed line is rewritten to exactly
+    /// one call whose every argument comes from a named capture — so the
+    /// pattern's capture set and the handler's parameter list must match
+    /// exactly, not merely one-way.
+    E166,
 }
 
 impl DiagnosticCode {
@@ -1476,6 +1491,7 @@ impl DiagnosticCode {
             Self::E163 => "E163",
             Self::E164 => "E164",
             Self::E165 => "E165",
+            Self::E166 => "E166",
         }
     }
 
@@ -1722,7 +1738,7 @@ impl DiagnosticCode {
                 "a lambda cannot capture this local here — most likely its own `let` name read recursively, before the `let` finishes binding"
             }
             Self::E159 => {
-                "`@[element(…)]` needs an `args = \"…\"` clause whose value compiles as a portable-regex pattern"
+                "`@[element(…)]` needs exactly one of `args = \"…\"` / `claims = \"…\"`, whose value compiles as a portable-regex pattern"
             }
             Self::E160 => {
                 "`@[element(…)]`'s pattern names a capture group that does not match any parameter on the annotated declaration"
@@ -1739,6 +1755,9 @@ impl DiagnosticCode {
             }
             Self::E165 => {
                 "inline markup attribute is not declared for this span kind in the host manifest"
+            }
+            Self::E166 => {
+                "a natural-notation `@[element(claims = \"…\")]` handler declares a parameter its pattern never captures"
             }
         }
     }
@@ -1961,6 +1980,7 @@ impl DiagnosticCode {
             "E163" => Some(Self::E163),
             "E164" => Some(Self::E164),
             "E165" => Some(Self::E165),
+            "E166" => Some(Self::E166),
             _ => None,
         }
     }

@@ -340,6 +340,8 @@ fn garble_file(hir: &mut HirFile) {
         was_directives: _,
         // Ranges into the file, not provenance — nothing to garble.
         allow_scopes: _,
+        // Likewise: source ranges and captured text, no `Provenance`.
+        element_matches: _,
     } = hir;
     garble_block(root_content);
     for knot in knots {

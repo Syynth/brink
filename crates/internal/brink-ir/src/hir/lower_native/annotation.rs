@@ -505,9 +505,12 @@ fn parse_effects(
 // NOT implemented here — only the declaration surface is (parse, validate,
 // store on the `Knot`/`Stitch`). See this module's doc comment for why.
 
-/// The `@[element(…)]` clause keys: `args = "…"` (required, the portable-
-/// regex pattern) and `name = "…"` (optional, the dispatch-name alias).
+/// The `@[element(…)]` clause keys. Exactly one of `args = "…"` (the
+/// `!name`-dispatched remainder pattern) and `claims = "…"` (the
+/// natural-notation whole-line claim, issue #1838) is required; `name =
+/// "…"` is the optional dispatch-name alias.
 const ELEMENT_ARGS: &str = "args";
+const ELEMENT_CLAIMS: &str = "claims";
 const ELEMENT_NAME: &str = "name";
 
 /// The two `@[style(…)]` keys that name the whole line rather than a
@@ -590,6 +593,7 @@ fn parse_element(
     };
 
     let mut pattern: Option<String> = None;
+    let mut claims = false;
     let mut alias: Option<String> = None;
     let mut ok = true;
     for arg in args.args() {
@@ -602,7 +606,14 @@ fn parse_element(
             continue;
         };
         match key.text() {
+            // `args` and `claims` are two spellings of the same slot, and
+            // the slot fills at most once — a declaration carrying both is
+            // asking to be dispatched two incompatible ways.
             ELEMENT_ARGS if pattern.is_none() => pattern = Some(value),
+            ELEMENT_CLAIMS if pattern.is_none() => {
+                pattern = Some(value);
+                claims = true;
+            }
             ELEMENT_NAME if alias.is_none() => alias = Some(value),
             _ => ok = false,
         }
@@ -634,8 +645,19 @@ fn parse_element(
         }
     }
 
+    // The claiming half needs the *converse* check too (`E166`, issue
+    // #1838): a claimed line is rewritten to exactly one call whose every
+    // argument comes from a named capture, so a parameter no capture names
+    // has nothing to bind it to. A `!name` handler is exempt — it stays
+    // callable by hand with ordinary arguments.
+    if claims && let Some(p) = params.iter().find(|p| !captures.contains(&p.name.text)) {
+        diags.push(diag(file_id, p.name.range, DiagnosticCode::E166));
+        return None;
+    }
+
     Some(ElementAnnotation {
         pattern,
+        claims,
         captures,
         alias,
         range,

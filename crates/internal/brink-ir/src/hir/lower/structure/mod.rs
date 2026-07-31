@@ -225,5 +225,9 @@ fn lower_source_file(
         // has no ruled `allow` tenant. Ink authors keep the line-scoped
         // `//brink-disable` comment channel and the project `[lints]` table.
         allow_scopes: Vec::new(),
+        // Natural-notation element dispatch (issue #1838) is native-only for
+        // the same reason: ink's grammar has no `@[element(claims = "…")]`
+        // channel to claim a line with.
+        element_matches: Vec::new(),
     }
 }

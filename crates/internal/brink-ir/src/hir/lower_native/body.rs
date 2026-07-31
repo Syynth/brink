@@ -43,6 +43,7 @@ use crate::{
     Tag, TunnelCall,
 };
 
+use super::element::Elements;
 use super::choice::lower_choice_point;
 use super::cond::{lower_alternation, lower_conditional};
 use super::expr::lower_expr;
@@ -69,10 +70,11 @@ fn name_from(tok: Option<brink_syntax_native::SyntaxToken>) -> Option<Name> {
 pub(super) fn lower_block(
     file_id: FileId,
     block: &ast::Block,
+    elements: &mut Elements,
     diags: &mut Vec<Diagnostic>,
 ) -> Block {
     let items: Vec<SyntaxNode> = block.items().collect();
-    let stmts = lower_items(file_id, &items, 0, diags);
+    let stmts = lower_items(file_id, &items, 0, elements, diags);
     let tail = crate::tail_from_stmts(&stmts);
     Block {
         label: None,
@@ -139,6 +141,7 @@ pub(super) fn lower_items(
     file_id: FileId,
     items: &[SyntaxNode],
     start: usize,
+    elements: &mut Elements,
     diags: &mut Vec<Diagnostic>,
 ) -> Vec<Stmt> {
     let mut stmts = Vec::new();
@@ -150,8 +153,8 @@ pub(super) fn lower_items(
             && let Some(cl) = ast::ContentLine::cast(node.clone())
             && let Some(label) = cl.label().and_then(|l| name_from(l.name_token()))
         {
-            let mut inner = lower_content_line_body(file_id, &cl, diags);
-            inner.extend(lower_items(file_id, items, i + 1, diags));
+            let mut inner = lower_content_line_body(file_id, &cl, elements, diags);
+            inner.extend(lower_items(file_id, items, i + 1, elements, diags));
             let inner_tail = crate::tail_from_stmts(&inner);
             stmts.push(Stmt::LabeledBlock(Box::new(Block {
                 label: Some(label),
@@ -164,13 +167,13 @@ pub(super) fn lower_items(
 
         if node.kind() == N::CHOICE_POINT {
             if let Some(cp) = ast::ChoicePoint::cast(node.clone()) {
-                let continuation = lower_continuation(file_id, items, i + 1, diags);
-                stmts.extend(lower_choice_point(file_id, &cp, continuation, diags));
+                let continuation = lower_continuation(file_id, items, i + 1, elements, diags);
+                stmts.extend(lower_choice_point(file_id, &cp, continuation, elements, diags));
             }
             return stmts;
         }
 
-        stmts.extend(lower_one_item(file_id, node, diags));
+        stmts.extend(lower_one_item(file_id, node, elements, diags));
         i += 1;
     }
     stmts
@@ -185,6 +188,7 @@ fn lower_continuation(
     file_id: FileId,
     items: &[SyntaxNode],
     start: usize,
+    elements: &mut Elements,
     diags: &mut Vec<Diagnostic>,
 ) -> Block {
     if let Some(node) = items.get(start)
@@ -192,8 +196,8 @@ fn lower_continuation(
         && let Some(cl) = ast::ContentLine::cast(node.clone())
         && let Some(label) = cl.label().and_then(|l| name_from(l.name_token()))
     {
-        let mut stmts = lower_content_line_body(file_id, &cl, diags);
-        stmts.extend(lower_items(file_id, items, start + 1, diags));
+        let mut stmts = lower_content_line_body(file_id, &cl, elements, diags);
+        stmts.extend(lower_items(file_id, items, start + 1, elements, diags));
         let tail = crate::tail_from_stmts(&stmts);
         return Block {
             label: Some(label),
@@ -202,7 +206,7 @@ fn lower_continuation(
             tail,
         };
     }
-    let stmts = lower_items(file_id, items, start, diags);
+    let stmts = lower_items(file_id, items, start, elements, diags);
     let tail = crate::tail_from_stmts(&stmts);
     Block {
         label: None,
@@ -215,13 +219,48 @@ fn lower_continuation(
 /// Dispatch a single body item that is neither a labeled content line nor a
 /// choice point (both handled by [`lower_items`] itself, since they can
 /// absorb the rest of the stream).
-fn lower_one_item(file_id: FileId, node: &SyntaxNode, diags: &mut Vec<Diagnostic>) -> Vec<Stmt> {
+fn lower_one_item(
+    file_id: FileId,
+    node: &SyntaxNode,
+    elements: &mut Elements,
+    diags: &mut Vec<Diagnostic>,
+) -> Vec<Stmt> {
+    // Natural-notation element dispatch (issue #1838): a claiming
+    // `@[element(claims = "…")]` handler takes the line before any ordinary
+    // reading of it. Declines for every file with no claiming handler and
+    // for every line no pattern matches, so the fall-through below is the
+    // pre-#1838 behavior byte for byte.
+    if let Some(claimed) = super::element::try_claim(file_id, node, elements) {
+        return claimed;
+    }
     match node.kind() {
         N::CONTENT_LINE => {
             let Some(cl) = ast::ContentLine::cast(node.clone()) else {
                 return Vec::new();
             };
-            lower_content_line_body(file_id, &cl, diags)
+            lower_content_line_body(file_id, &cl, elements, diags)
+        }
+        // A header-scoped scene stitch (§8b.2): the heading line is offered
+        // to the dispatcher, and the braceless body it opens lowers in
+        // place. Only reachable once something claims the heading — an
+        // unclaimed heading falls to the loud-`E129` arm below exactly as
+        // it did before, since promoting a heading to a real HIR stitch is
+        // issue #1717's slice, not this one's.
+        N::SCENE_STITCH => {
+            let heading = node.children().find(|n| n.kind() == N::SCENE_HEADING);
+            let Some(claimed) = heading
+                .as_ref()
+                .and_then(|h| super::element::try_claim(file_id, h, elements))
+            else {
+                diags.push(diag(file_id, node.text_range(), DiagnosticCode::E129));
+                return Vec::new();
+            };
+            let mut stmts = claimed;
+            if let Some(body) = node.children().find(|n| n.kind() == N::SCENE_BODY) {
+                let items: Vec<SyntaxNode> = body.children().collect();
+                stmts.extend(lower_items(file_id, &items, 0, elements, diags));
+            }
+            stmts
         }
         N::TAG_LINE => {
             let Some(tl) = ast::TagLine::cast(node.clone()) else {
@@ -255,13 +294,13 @@ fn lower_one_item(file_id: FileId, node: &SyntaxNode, diags: &mut Vec<Diagnostic
             let Some(cb) = ast::ConditionalBlock::cast(node.clone()) else {
                 return Vec::new();
             };
-            vec![Stmt::Conditional(lower_conditional(file_id, &cb, diags))]
+            vec![Stmt::Conditional(lower_conditional(file_id, &cb, elements, diags))]
         }
         N::ALTERNATION_BLOCK => {
             let Some(ab) = ast::AlternationBlock::cast(node.clone()) else {
                 return Vec::new();
             };
-            vec![Stmt::Sequence(lower_alternation(file_id, &ab, diags, true))]
+            vec![Stmt::Sequence(lower_alternation(file_id, &ab, elements, diags, true))]
         }
         // Declarations reachable at body position are handled by other
         // passes: `flow`/`fn` become stitches (`container.rs`), `var`/
@@ -460,6 +499,7 @@ pub(super) fn apply_implicit_done(block: &mut Block) {
 fn lower_content_line_body(
     file_id: FileId,
     cl: &ast::ContentLine,
+    elements: &mut Elements,
     diags: &mut Vec<Diagnostic>,
 ) -> Vec<Stmt> {
     let line_prov = native_provenance(file_id, NodeClass::Content, cl.syntax());
@@ -468,7 +508,7 @@ fn lower_content_line_body(
         .children()
         .filter(|n| n.kind() != N::LABEL)
         .collect();
-    lower_content_run(file_id, &children, Some(line_prov), diags, true)
+    lower_content_run(file_id, &children, Some(line_prov), elements, diags, true)
 }
 
 /// The shared "run of content-shaped items" lowering engine — used for a
@@ -498,6 +538,7 @@ pub(super) fn lower_content_run(
     file_id: FileId,
     items: &[SyntaxNode],
     line_prov: Option<Provenance>,
+    elements: &mut Elements,
     diags: &mut Vec<Diagnostic>,
     trailing_eol: bool,
 ) -> Vec<Stmt> {
@@ -522,7 +563,7 @@ pub(super) fn lower_content_run(
                 i += 1;
             }
             N::SPAN => {
-                parts.push(lower_span(file_id, node, diags));
+                parts.push(lower_span(file_id, node, elements, diags));
                 i += 1;
             }
             N::GLUE_NODE => {
@@ -543,7 +584,7 @@ pub(super) fn lower_content_run(
             N::CHOICE_POINT => {
                 flush_content(&mut parts, &mut tags, &mut out, None, false);
                 if let Some(cp) = ast::ChoicePoint::cast(node.clone()) {
-                    let stmts = lower_content_run(file_id, &items[i + 1..], line_prov, diags, true);
+                    let stmts = lower_content_run(file_id, &items[i + 1..], line_prov, elements, diags, true);
                     let tail = crate::tail_from_stmts(&stmts);
                     let continuation = Block {
                         label: None,
@@ -551,14 +592,14 @@ pub(super) fn lower_content_run(
                         container_id: None,
                         tail,
                     };
-                    out.extend(lower_choice_point(file_id, &cp, continuation, diags));
+                    out.extend(lower_choice_point(file_id, &cp, continuation, elements, diags));
                 }
                 return out;
             }
             N::CONDITIONAL_BLOCK => {
                 if let Some(cb) = ast::ConditionalBlock::cast(node.clone()) {
                     parts.push(ContentPart::InlineConditional(lower_conditional(
-                        file_id, &cb, diags,
+                        file_id, &cb, elements, diags,
                     )));
                 }
                 i += 1;
@@ -566,7 +607,7 @@ pub(super) fn lower_content_run(
             N::ALTERNATION_BLOCK => {
                 if let Some(ab) = ast::AlternationBlock::cast(node.clone()) {
                     parts.push(ContentPart::InlineSequence(lower_alternation(
-                        file_id, &ab, diags, false,
+                        file_id, &ab, elements, diags, false,
                     )));
                 }
                 i += 1;
@@ -662,6 +703,7 @@ fn push_literal(parts: &mut Vec<ContentPart>, s: &str) {
 pub(super) fn lower_span(
     file_id: FileId,
     node: &SyntaxNode,
+    elements: &mut Elements,
     diags: &mut Vec<Diagnostic>,
 ) -> ContentPart {
     let mut name = String::new();
@@ -675,18 +717,18 @@ pub(super) fn lower_span(
             N::ESCAPE => push_escape(&mut children, &child),
             N::INTERPOLATION => children.push(lower_interpolation(file_id, &child, diags)),
             N::GLUE_NODE => children.push(ContentPart::Glue),
-            N::SPAN => children.push(lower_span(file_id, &child, diags)),
+            N::SPAN => children.push(lower_span(file_id, &child, elements, diags)),
             N::CONDITIONAL_BLOCK => {
                 if let Some(cb) = ast::ConditionalBlock::cast(child) {
                     children.push(ContentPart::InlineConditional(lower_conditional(
-                        file_id, &cb, diags,
+                        file_id, &cb, elements, diags,
                     )));
                 }
             }
             N::ALTERNATION_BLOCK => {
                 if let Some(ab) = ast::AlternationBlock::cast(child) {
                     children.push(ContentPart::InlineSequence(lower_alternation(
-                        file_id, &ab, diags, false,
+                        file_id, &ab, elements, diags, false,
                     )));
                 }
             }
