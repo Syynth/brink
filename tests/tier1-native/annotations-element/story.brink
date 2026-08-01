@@ -1,12 +1,12 @@
 var call_sign = "HQ"
 
 @[element(args = "^(?<chan>[A-Z0-9-]+): (?<text>.+)$")]
-fn radio(chan, text) {
+fn radio(chan: string, text: content) {
   return text;
 }
 
 @[element(claims = "^INT\\. (?<place>.+)$")]
-fn interior(place) {
+fn interior(place: content) {
   return "-- inside {place} --";
 }
 
@@ -19,5 +19,6 @@ flow main() {
   }
   INT. MARKET SQUARE
   The stalls are shuttered.
+  INT. OLD MILL
   -> tally
 }

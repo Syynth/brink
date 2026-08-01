@@ -97,6 +97,10 @@ fn ty_heap(ty: &Ty) -> usize {
         | Ty::Float
         | Ty::Bool
         | Ty::String
+        // issue #1846: `Ty::Content` carries no payload of its own (unlike
+        // `Ty::List`/`Struct`/`Handle`'s nominal name) — zero heap cost,
+        // same as every other unit-payload leaf here.
+        | Ty::Content
         | Ty::Divert
         | Ty::Range { .. }
         | Ty::Tower(_)

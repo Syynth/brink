@@ -35,6 +35,22 @@ pub enum Ty {
     Float,
     Bool,
     String,
+    /// A first-class content value (issue #1846, `docs/prose-dialect-spec.md`
+    /// §3.5b's capture contract): the type of a `content`-typed parameter,
+    /// e.g. `fn radio(chan: string, text: content)`. Backed by the existing
+    /// fragment-capture path (`BeginFragment`…`EndFragment` →
+    /// `Value::FragmentRef`, `brink_format::Opcode`) — the same machinery an
+    /// ordinary call embedded in display position already composes through
+    /// (`brink-codegen-inkb::content::emit_slot_expr`). Deliberately a
+    /// distinct nominal leaf, **not** unified or coerced with [`Ty::String`]:
+    /// the whole reason `content` exists is that a captured prose run stays
+    /// translation-resident and measurable through the normal line path
+    /// (`docs/decision-log.md` 2026-07-31 ruling) — silently flattening it to
+    /// a plain string would defeat that. This variant is the type-resolution
+    /// prerequisite only; the dispatch mechanism that actually binds a
+    /// captured run to a `content` param (`@[element(args = "…", block)]`'s
+    /// block capture) is issue #1839's scope, not this one's.
+    Content,
     /// A divert target value (`-> knot` used as a value, not a jump).
     Divert,
     /// A LIST value, nominal per the declaring `LIST` name (spec §2: "nominal
@@ -291,6 +307,7 @@ impl Ty {
             Ty::Float => "float".to_string(),
             Ty::Bool => "bool".to_string(),
             Ty::String => "string".to_string(),
+            Ty::Content => "content".to_string(),
             Ty::Divert => "divert".to_string(),
             Ty::List(name) => format!("List<{name}>"),
             Ty::Array(elem) => format!("Array<{}>", elem.display()),
@@ -377,8 +394,9 @@ impl Ord for Ty {
                 Ty::Range { .. } => 12,
                 Ty::Tower(_) => 13,
                 Ty::Weighted(_) => 14,
-                Ty::Unknown => 15,
-                Ty::Conflicted => 16,
+                Ty::Content => 15,
+                Ty::Unknown => 16,
+                Ty::Conflicted => 17,
             }
         }
         match (self, other) {
@@ -528,6 +546,7 @@ pub fn erase_fn_rows(ty: &Ty) -> Ty {
         | Ty::Float
         | Ty::Bool
         | Ty::String
+        | Ty::Content
         | Ty::Divert
         | Ty::List(_)
         | Ty::Struct(_)
@@ -648,6 +667,33 @@ mod tests {
             unify(&Ty::List("Weathers".into()), &Ty::List("Weathers".into())),
             Ty::List("Weathers".into())
         );
+    }
+
+    // ─── #1846 `Ty::Content` ───────────────────────────────────────────
+
+    #[test]
+    fn content_joins_with_itself() {
+        assert_eq!(unify(&Ty::Content, &Ty::Content), Ty::Content);
+    }
+
+    #[test]
+    fn content_never_coerces_to_or_from_string() {
+        // The whole reason `content` is a distinct leaf (docs/decision-
+        // log.md 2026-07-31 ruling, `docs/prose-dialect-spec.md` §3.5b's
+        // capture contract): a content value must never silently flatten to
+        // a plain string, which would defeat its translation-residency
+        // guarantee. Unlike `int -> float`, there is no directional
+        // coercion here — the pair is a genuine structural mismatch, same
+        // as `int` vs `string`.
+        assert_eq!(unify(&Ty::Content, &Ty::String), Ty::Conflicted);
+        assert_eq!(unify(&Ty::String, &Ty::Content), Ty::Conflicted);
+    }
+
+    #[test]
+    fn content_is_assignable_only_to_content() {
+        assert!(assignable(&Ty::Content, &Ty::Content));
+        assert!(!assignable(&Ty::Content, &Ty::String));
+        assert!(!assignable(&Ty::String, &Ty::Content));
     }
 
     #[test]
@@ -926,6 +972,7 @@ mod tests {
             | Ty::Float
             | Ty::Bool
             | Ty::String
+            | Ty::Content
             | Ty::Divert
             | Ty::List(_)
             | Ty::Struct(_)

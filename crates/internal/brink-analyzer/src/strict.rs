@@ -867,10 +867,14 @@ fn classify(ty: &Ty) -> Escape {
         // refinement is E117's business (range_refinement), never an
         // Unknown-escape.
         // (NS-A8 tower kinds are concrete leaves — clean, like scalars.)
+        // A resolved `Ty::Content` (issue #1846) is equally concrete —
+        // fragment-backed, not an openness axis; strict escape-checking
+        // treats it exactly like any other nominal leaf.
         Ty::Int
         | Ty::Float
         | Ty::Bool
         | Ty::String
+        | Ty::Content
         | Ty::Divert
         | Ty::List(_)
         | Ty::Struct(_)

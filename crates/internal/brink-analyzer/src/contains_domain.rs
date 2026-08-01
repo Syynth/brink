@@ -415,6 +415,10 @@ fn non_key_domain_kind_for_ty(ty: &Ty) -> Option<&'static str> {
         Ty::Range { .. } => Some("range"),
         Ty::Weighted(_) => Some("weighted"),
         Ty::Tower(_) => Some("tower"),
+        // Content (issue #1846) is as far outside `MapKey::from_value`'s
+        // domain as any other non-scalar leaf — a fragment-backed value has
+        // no map-key representation.
+        Ty::Content => Some("content"),
         // The permitted key domain itself (`Int`/`String`/`Bool`) and
         // "not statically classifiable at all" (`Unknown`/`Conflicted`)
         // both resolve to "don't flag" — distinct *reasons*, identical

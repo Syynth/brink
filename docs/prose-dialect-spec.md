@@ -305,11 +305,13 @@ fn radio(chan: string, text: content) {
   own scope for `element`/`style`: the `!name`/natural-notation dispatch
   rewrite that would actually match a line, find the block's terminator,
   and call the handler with the captured run is issue #1838's scope, not
-  delivered here. **Not usable end-to-end yet even at the declaration
-  level** — `content` is not itself a resolvable annotation type name
-  (see the Deferred bullet below), so a conforming `block` declaration
-  parses cleanly but still fails to compile under `dialect = brink` on
-  its own `content`-typed parameter (`E061`) until that lands.
+  delivered here. `content` is now a resolvable annotation type name
+  (`Ty::Content`, issue #1846 — see the Deferred bullet below), so a
+  conforming `block` declaration compiles cleanly under `dialect = brink`
+  on its own `content`-typed parameter; it is still **not usable
+  end-to-end** — nothing dispatches to it yet, since the `!name` sigil
+  rewrite that would actually bind a captured run to that param remains
+  issue #1839's scope.
 - **`@[style]` — declared editor presentation (RULED, addenda 3–4).**
   A companion annotation mapping captures (and `line` = the whole
   line; `dispatch` = the `!name` prefix) to style values, drawn from
@@ -344,11 +346,13 @@ fn radio(chan: string, text: content) {
   editor track and read this record rather than re-running the match.
 - **Deferred**: numeric capture coercion; context injection (handlers
   reading attachment data); `Option` params for optional captures;
-  `content`-typed captures (the type does not exist in the native type
-  system yet — the ruled `fn radio(chan: string, text: content)` example's
-  `text` param, and `block`'s own trailing receiver param, are both out of
-  reach until it lands; admitting `content` needs its own ruling, native-
-  type-system scope); the `!name` sigil dispatch rewrite itself (matching
+  binding a `content`-typed param to an actual captured `FragmentRef`/prose
+  block (issue #1846 gave `content` a resolvable `Ty` in the native type
+  system — the ruled `fn radio(chan: string, text: content)` example's
+  `text` param, and `block`'s own trailing receiver param, now compile —
+  but nothing yet *dispatches* a captured run into one; that binding rides
+  the `!name` sigil rewrite below, issue #1839's scope); the `!name` sigil
+  dispatch rewrite itself (matching
   a content line, binding captures, lowering to a call — issue #1719
   delivered the `@[element]`/`@[style]` **declaration surface**, and issue
   #1839 widened it with the `block` clause's own declaration-surface
