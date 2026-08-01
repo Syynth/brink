@@ -218,10 +218,20 @@ channel's:
 
 ### 5c. The channel on the native `.brink` surface (issue #1563)
 
-The `@[…]` line is the native surface's *only* annotation channel (there
-is no tag-directive spelling to alias — `#` is the tag sigil there too,
-but `#@name` has no native recognizer). Two differences from §5b, both
-following from native having real declaration nodes:
+The `@[…]` line is the native surface's *only* annotation channel — there
+is no tag-directive spelling to alias, since `#` is the tag sigil there
+too, so a native `#@name` tag is never consumed as a directive and never
+erases: it always lowers as ordinary runtime tag content. That silence
+used to be total (issue #1835): before `E172` (`hir::lower_native::
+body::lower_tag`), a `#@name` tag compiled clean with no signal at all,
+so an author porting a line from ink's tag-directive spelling got no hint
+their `#@was(…)`/`#@local`/… had quietly become inert content. `E172` is
+diagnostic only, never a recognizer in the ink sense — it does not
+consume or erase the tag, only warns, naming the `@[name(…)]` annotation
+equivalent when one exists (`was`, `allow`, `effects`) and saying plainly
+when it does not (`module`, `public`, `private`, `local`). Two
+differences from §5b, both following from native having real declaration
+nodes:
 
 - **Placement is Rust's**, not ink's: an annotation attaches to the
   declaration it immediately precedes (`@[effects(pure)]` on the line

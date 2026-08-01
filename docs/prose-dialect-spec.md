@@ -937,9 +937,16 @@ grace.
 1. **The `std::conventions` types** design pass (the later-stage
    module-authoring surface, §3.5) — the last substantial prose-round
    design item.
-2. **Translation, round 2** — ~~element data in XLIFF~~ (delivered by
-   #1734, §4.5), per-locale budgets, the bump batching, scene-title
-   localization under call-lowering, the Yarn persisted-line-ID fork.
+2. **Translation, round 2** — ~~element data in XLIFF~~ (**closed by
+   ruling, not by delivery** — decision-log 2026-07-26: v1 XLIFF export
+   carries content and markup spans only; element kind and data are
+   *never* exported, living in the base `.inkb` shared across every
+   locale. What #1734 delivered is the `<pc>`/`<x/>` inline-code mapping
+   for `LinePart::Span`, §4.5 — the span round-trip, not element data.
+   An earlier phrasing here credited #1734 in a way that read as
+   "element data shipped"), per-locale budgets, the bump batching,
+   scene-title localization under call-lowering, the Yarn
+   persisted-line-ID fork.
 3. **Per-path export design** (§2b.4) — Fountain/FDX/VO-sheet
    renderers; export mapping incl. tag→extension translation (§8d.4).
 4. **Terminal cluster**: #1450 closed (PR #1468); #1448 landed
@@ -948,17 +955,49 @@ grace.
    classifier; the Step/OutputLine runtime redesign itself remains).
    The runtime half is #1520, written up in
    `docs/design/yield-time-terminal-classifier.md` — it needs two
-   rulings before code moves: **where the classification surfaces**
+   rulings before code moves: **R1, where the classification surfaces**
    (a `Line`-shaped change now vs. folding into `Step`, per §7/§8d.7)
-   and **whether the `RanOutOfContent` fault moves to the same
+   and **R2, whether the `RanOutOfContent` fault moves to the same
    `continue`** (a ratchet-moving change that would retire #1522's
    extra-step allowance).
+
+   ⚠ **Updated 2026-08-01.** **R2 was split out to #1574** on 2026-07-26,
+   so this is no longer "two rulings on one issue" — #1520 owns R1, #1574
+   owns R2, and **neither is ruled** (no decision-log entry touches this
+   cluster after 2026-07-25). Note also that **#1573/PR #1577 shipped a
+   weak form of R1 option (b)** unruled, promoting `did_safe_exit` to
+   production API; the design doc pre-empts the misreading — that exposes
+   today's already-computed bit as-is and is *not* the R1 ruling. R1
+   option (c) — fold #1520 into #1684 — would leave zero rulings
+   outstanding on this cluster. Separately: **#1684 itself is blocked on
+   implementation only, not on either ruling**, and carries its own
+   ratchet hazard (see #1684).
 5. **Deferred details**: context injection; numeric capture coercion;
    fused-`until` sugar; indent-level style tokens; which-blocks
    question closed by §8d.2.
 6. **Editor implications (NS-T)** — #1350/#1131 stay held; the bridge
    features (§2b.3), the park decoration (§8c), the built-in token
    vocabulary (§3.5b) are their incoming scope.
+
+   ⚠ **Why they are held, restated 2026-08-01 (maintainer).** The hold is
+   **deliberate sequencing — the compiler work finishes before the editor
+   work starts** — *not* an unlifted blocker waiting on this document. The
+   original 2026-07-25 rationale ("don't classify tokens against a surface
+   that will shift") has in fact been overtaken: that surface landed
+   2026-07-28 (#1715 closed, #1716 landed, #1717 closed, escape set final
+   per §8d.6). A review on 2026-08-01 read the bare "stay held" above as
+   stale and concluded the hold should be lifted. It should not. This note
+   exists so the next reader does not repeat that inference.
+
+   **Also ruled 2026-08-01: take the free part now.** Register `.brink`
+   *and* gate `semantic_tokens_full`/`_range` on `db.is_native` in the same
+   change — switching on the native diagnostics, hover, go-to-definition,
+   rename and cross-file scope that **already work** and that no client
+   currently requests. Real native token classification stays held. The two
+   halves must ship together: `parse_query` is unconditionally the *ink*
+   parser with no dialect gate, so registering alone would light up a live
+   bug (the server emitting ink-misclassified tokens over native source),
+   latent today only because nothing asks.
 
 ## Migration notes — breaking changes for authors
 

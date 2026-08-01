@@ -1468,6 +1468,40 @@ pub enum DiagnosticCode {
     /// param that can never receive a value of its declared type, not a
     /// stylistic ambiguity.
     E171,
+    /// A native tag (`#…`) whose text begins with `@` — the shape of an
+    /// ink-dialect compiler directive (`#@private`, `#@was(…)`,
+    /// `#@local`, `#@module(…)`, `#@effects(…)`) — is lowered by a `.brink`
+    /// file (issue #1835).
+    ///
+    /// `#@…` is not its own grammar production in either dialect: it is an
+    /// ordinary tag (`HASH` + free text), and only ink's HIR lowerer
+    /// (`hir::lower::directive::parse_directive_tag`) gives a leading `@`
+    /// special, compile-time-consumed meaning. `#` is already the runtime-
+    /// tag sigil in native content position (that is exactly *why* `#@…`
+    /// parses as a tag rather than a directive there too), and
+    /// `hir::lower_native` has no matching check — so before this code, an
+    /// author porting a file from ink, or splitting time between the two
+    /// dialects, got no error and no warning: the directive text became
+    /// ordinary tag content on the compiled story, silently, which is worse
+    /// than a plain no-op because it surfaces as mysterious runtime output
+    /// rather than a compile-time failure.
+    ///
+    /// `Warning` by default, not `Error`: a literal `@`-led tag can be a
+    /// deliberate runtime convention for a host that wants one (the issue's
+    /// own caution), so the diagnostic is `[lints]`-configurable and
+    /// `@[allow(E172)]`-suppressible rather than blocking, the same posture
+    /// as `E132`/`E168`/`E170`. `hir::lower_native::body::lower_tag` raises
+    /// it, naming the native spelling to use instead when the tag names a
+    /// real ink directive that has one (`@[was(…)]`, `@[effects(…)]`) and
+    /// saying so plainly when it does not (`module`, `public`, `private`,
+    /// `local` have no native annotation counterpart yet). `#@allow` is
+    /// its own case — ink's directive recognizer does not know `allow`
+    /// either, so the message never calls it an ink-dialect spelling; it
+    /// only notes that native's own `@[allow(…)]` annotation (an unrelated
+    /// diagnostic-suppression channel) happens to share the name. Any other
+    /// unrecognized name gets a shape-only wording that never asserts ink
+    /// membership.
+    E172,
 }
 
 impl DiagnosticCode {
@@ -1652,6 +1686,7 @@ impl DiagnosticCode {
         Self::E169,
         Self::E170,
         Self::E171,
+        Self::E172,
     ];
 
     /// The stable string representation (e.g., `"E001"`).
@@ -1833,6 +1868,7 @@ impl DiagnosticCode {
             Self::E169 => "E169",
             Self::E170 => "E170",
             Self::E171 => "E171",
+            Self::E172 => "E172",
         }
     }
 
@@ -2115,6 +2151,9 @@ impl DiagnosticCode {
             Self::E171 => {
                 "a natural-notation `@[element(claims = \"…\")]` handler's captured parameter is declared `string`-incompatible — every capture binds as a plain string literal until numeric coercion lands"
             }
+            Self::E172 => {
+                "native: a `#…` tag beginning with `@` is the ink-dialect compiler-directive shape (`#@private`/`#@was`/`#@local`/…) — native has no such directive channel, so it lowers as an ordinary runtime tag"
+            }
         }
     }
 
@@ -2157,7 +2196,12 @@ impl DiagnosticCode {
             // `@[allow(E168)]`-suppressible, same posture as E164/E165.
             | Self::E168
             // Non-identical patterns that can overlap: same rationale as E168.
-            | Self::E170 => Severity::Warning,
+            | Self::E170
+            // Issue #1835: a project may legitimately want a literal
+            // `@`-led runtime tag (the issue's own caution) — `Warning`
+            // plus `@[allow(E172)]` is the escape valve, same posture as
+            // E132's malformed-directive-tag report.
+            | Self::E172 => Severity::Warning,
             // Issue #1674: the one code whose *default* is the `Info`
             // advisory tier rather than `Warning` — RULED "off or info by
             // default" (a single-shot project should not be nagged) while
@@ -2349,6 +2393,7 @@ impl DiagnosticCode {
             "E169" => Some(Self::E169),
             "E170" => Some(Self::E170),
             "E171" => Some(Self::E171),
+            "E172" => Some(Self::E172),
             _ => None,
         }
     }
