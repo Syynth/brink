@@ -1340,9 +1340,223 @@ pub enum DiagnosticCode {
     /// alongside issue #1839's `block` declaration surface, which claimed
     /// `E166` first (merged into `main` first) — see that code's own doc.
     E167,
+    /// Two `@[element(claims = "…")]` handlers declare byte-identical
+    /// patterns, and the later-declared one never actually won a claim in
+    /// this file — so it is dead code.
+    ///
+    /// Issue #1848: the interim (pre-#1840) dispatch order is top-level
+    /// declaration order with first-match-wins (`hir::lower_native::
+    /// element::try_claim`'s own doc) — an undocumented rule until this
+    /// issue, and one with no diagnostic when two patterns can both claim
+    /// the same line. This is the *sound*,
+    /// narrow slice of that check: identical patterns provably match
+    /// identical inputs, so the overlap is certain, not merely possible.
+    ///
+    /// A byte-identical twin is not *unconditionally* dead, though:
+    /// `try_claim` excludes a handler from claiming lines inside its own
+    /// declaration (the staging rule), and that exclusion does not extend
+    /// to a later twin — the later twin is exactly the handler that *can*
+    /// claim a line living inside the earlier one's own body. So this
+    /// diagnosis runs after the whole file is lowered and only fires when
+    /// the later twin produced zero actual claims
+    /// (`hir::lower_native::element::diagnose_duplicate_patterns`'s own
+    /// doc) — a later twin that is live for even one line is not flagged.
+    ///
+    /// General overlap between two *different* patterns (e.g. one whose
+    /// matches are a strict subset of the other's) is real and valuable —
+    /// the issue's own framing calls it "the genuinely valuable half" —
+    /// but is **not** detected here: proving it soundly needs either a
+    /// witness string both patterns can be shown to accept or a full
+    /// regex-intersection analysis, neither of which this slice builds.
+    /// Tracked as a follow-up, not silently out of scope — see the
+    /// issue thread. `Warning` by default (`@[allow(E168)]`-suppressible,
+    /// like every other `Warning`-tier code) since a duplicate claim is
+    /// dead code, not a hard error the way an unregistered claim (`E112`)
+    /// is.
+    E168,
 }
 
 impl DiagnosticCode {
+    /// Every `DiagnosticCode` variant, in declaration order.
+    ///
+    /// Kept in sync with the enum by hand (there is no derive-based
+    /// enumeration here), but exercised by
+    /// `brink-test-harness/tests/diagnostic_docs_validation.rs`'s
+    /// `diagnostic_codes_are_unique` test: that test asserts `ALL.len()`
+    /// matches the number of code strings `from_str_code` recognizes, so a
+    /// variant added to the enum but missed here fails CI immediately
+    /// instead of silently under-covering the uniqueness/round-trip checks.
+    pub const ALL: &'static [Self] = &[
+        Self::E001,
+        Self::E002,
+        Self::E003,
+        Self::E004,
+        Self::E005,
+        Self::E006,
+        Self::E007,
+        Self::E008,
+        Self::E009,
+        Self::E010,
+        Self::E011,
+        Self::E012,
+        Self::E013,
+        Self::E014,
+        Self::E015,
+        Self::E016,
+        Self::E017,
+        Self::E018,
+        Self::E019,
+        Self::E020,
+        Self::E021,
+        Self::E022,
+        Self::E023,
+        Self::E024,
+        Self::E025,
+        Self::E026,
+        Self::E027,
+        Self::E028,
+        Self::E029,
+        Self::E030,
+        Self::E031,
+        Self::E032,
+        Self::E033,
+        Self::E034,
+        Self::E035,
+        Self::E036,
+        Self::E037,
+        Self::E038,
+        Self::E039,
+        Self::E040,
+        Self::E041,
+        Self::E042,
+        Self::E043,
+        Self::E044,
+        Self::E045,
+        Self::E046,
+        Self::E047,
+        Self::E048,
+        Self::E049,
+        Self::E050,
+        Self::E051,
+        Self::E052,
+        Self::E053,
+        Self::E054,
+        Self::E055,
+        Self::E056,
+        Self::E057,
+        Self::E058,
+        Self::E059,
+        Self::E060,
+        Self::E061,
+        Self::E062,
+        Self::E063,
+        Self::E064,
+        Self::E065,
+        Self::E066,
+        Self::E067,
+        Self::E068,
+        Self::E069,
+        Self::E070,
+        Self::E071,
+        Self::E072,
+        Self::E073,
+        Self::E074,
+        Self::E075,
+        Self::E076,
+        Self::E077,
+        Self::E078,
+        Self::E079,
+        Self::E080,
+        Self::E081,
+        Self::E082,
+        Self::E083,
+        Self::E084,
+        Self::E085,
+        Self::E086,
+        Self::E087,
+        Self::E088,
+        Self::E089,
+        Self::E090,
+        Self::E091,
+        Self::E092,
+        Self::E093,
+        Self::E094,
+        Self::E095,
+        Self::E096,
+        Self::E097,
+        Self::E098,
+        Self::E099,
+        Self::E100,
+        Self::E101,
+        Self::E102,
+        Self::E103,
+        Self::E104,
+        Self::E105,
+        Self::E106,
+        Self::E107,
+        Self::E108,
+        Self::E109,
+        Self::E110,
+        Self::E111,
+        Self::E112,
+        Self::E113,
+        Self::E114,
+        Self::E115,
+        Self::E116,
+        Self::E117,
+        Self::E118,
+        Self::E119,
+        Self::E120,
+        Self::E121,
+        Self::E122,
+        Self::E123,
+        Self::E124,
+        Self::E125,
+        Self::E126,
+        Self::E127,
+        Self::E128,
+        Self::E129,
+        Self::E130,
+        Self::E131,
+        Self::E132,
+        Self::E133,
+        Self::E134,
+        Self::E135,
+        Self::E136,
+        Self::E137,
+        Self::E138,
+        Self::E139,
+        Self::E140,
+        Self::E141,
+        Self::E142,
+        Self::E143,
+        Self::E144,
+        Self::E145,
+        Self::E146,
+        Self::E147,
+        Self::E148,
+        Self::E149,
+        Self::E150,
+        Self::E151,
+        Self::E152,
+        Self::E153,
+        Self::E154,
+        Self::E155,
+        Self::E156,
+        Self::E157,
+        Self::E158,
+        Self::E159,
+        Self::E160,
+        Self::E161,
+        Self::E162,
+        Self::E163,
+        Self::E164,
+        Self::E165,
+        Self::E166,
+        Self::E167,
+        Self::E168,
+    ];
+
     /// The stable string representation (e.g., `"E001"`).
     #[must_use]
     #[expect(
@@ -1518,6 +1732,7 @@ impl DiagnosticCode {
             Self::E165 => "E165",
             Self::E166 => "E166",
             Self::E167 => "E167",
+            Self::E168 => "E168",
         }
     }
 
@@ -1788,6 +2003,9 @@ impl DiagnosticCode {
             Self::E167 => {
                 "a natural-notation `@[element(claims = \"…\")]` handler declares a parameter its pattern never captures"
             }
+            Self::E168 => {
+                "this `@[element(claims = \"…\")]` pattern is byte-identical to an earlier-declared handler's, and never won a claim of its own — it is dead code"
+            }
         }
     }
 
@@ -1823,7 +2041,12 @@ impl DiagnosticCode {
             // vocabulary to be binding raises them with
             // `[lints] E164 = "deny"`.
             | Self::E164
-            | Self::E165 => Severity::Warning,
+            | Self::E165
+            // Issue #1848: a duplicate claiming pattern is dead code (the
+            // earlier-declared handler always wins first), not a hard
+            // error — `Warning`-tier so it stays `[lints]`-configurable and
+            // `@[allow(E168)]`-suppressible, same posture as E164/E165.
+            | Self::E168 => Severity::Warning,
             // Issue #1674: the one code whose *default* is the `Info`
             // advisory tier rather than `Warning` — RULED "off or info by
             // default" (a single-shot project should not be nagged) while
@@ -2011,6 +2234,7 @@ impl DiagnosticCode {
             "E165" => Some(Self::E165),
             "E166" => Some(Self::E166),
             "E167" => Some(Self::E167),
+            "E168" => Some(Self::E168),
             _ => None,
         }
     }

@@ -272,12 +272,34 @@ fn radio(chan: string, text: content) {
   capture with no param, `E167` for a param with no capture, since every
   argument of the rewrite comes from a capture), and the line lowers to
   exactly one call. Only a **top-level `fn`** may claim (the rewrite is an
-  expression call; `E112` otherwise), only a wholly literal prose line or
-  scene heading is a candidate, and a claiming handler never claims inside
-  its own body (§3.5's staging rule). Confinement to the
+  expression call; `E112` otherwise — including a `fn` declared inside a
+  `module { … }` block, issue #1847: it reads as un-nested by
+  `flow`/`fn`-depth alone, but the dispatch table only ever scans the
+  file's direct declarations, so admitting it would silently register
+  nothing to claim with), only a wholly literal prose line or scene
+  heading is a candidate, and a claiming handler never claims inside its
+  own body (§3.5's staging rule). Confinement to the
   `brink.toml`-named conventions module is not yet enforced — single-file
   lowering has no project identity to check against, and v1 dispatch is
   file-local, so a claim is visible in the file it affects.
+- **Dispatch order (interim, issue #1848).** When a file declares more
+  than one claiming handler and more than one could match the same line,
+  the earlier-declared one wins: top-level declaration order,
+  first-match-wins. **This is explicitly not the permanent rule** — item
+  (5) of the ruling above says a `fn conventions()` well-known entry will
+  eventually *register* handlers in order (issue #1840), and that
+  registration order, not a claiming `fn`'s textual position in the file,
+  becomes authoritative once it lands. Two claiming patterns that can
+  both match the same line get no diagnostic today except the narrowest
+  provable case — `E168` fires when two patterns are byte-identical (an
+  identical pattern matches an identical input set, so the later one is
+  certainly dead). A genuine overlap between two *different* patterns
+  (one a strict subset of the other, a shared alternation branch, …) is
+  real and more common, and is the case "pattern power proportional to
+  auditability" above most wants surfaced — but it is **not** detected;
+  proving it soundly needs a witness string or a full regex-intersection
+  analysis, and this slice built neither. Tracked as a follow-up on the
+  issue thread, not silently out of scope.
 - **Zero comptime** / the rewrite is exactly **one call** / the body
   is arbitrary *runtime* code within its declared effect row —
   unchanged (addendum 2).
@@ -364,7 +386,15 @@ fn radio(chan: string, text: content) {
   cross-file dispatch-name resolution and the duplicate-dispatch-name
   check (v1 validates one declaration at a time — and #1838's claiming
   dispatch is file-local for the same reason); block capture (issue
-  #1839) and `fn conventions()` registration + comptime (issue #1840); **multi-token style
+  #1839) and `fn conventions()` registration + comptime (issue #1840 —
+  **blocked on four rulings**, sized in
+  `docs/conventions-comptime-sizing.md`: the identity a registered handler
+  carries across the comptime boundary, whether a comptime fault fails the
+  build or degrades to an empty convention set, the diagnostic floor while
+  epic #452's instruction→range carrier stays `needs-design`, and — sharpest
+  — what `register`'s own effect row is, since an `EXTERNAL` `register` lands
+  in `EffectRow.calls` and makes the ruling's canonical `@[effects(pure)] fn
+  conventions()` fail its own fence with `E103`); **multi-token style
   values** — issue #1719's `@[style(key = "value")]` value is a single
   presentation token today (one `StyleToken` per key), not the
   space-separated list this section's own screenplay preset describes
