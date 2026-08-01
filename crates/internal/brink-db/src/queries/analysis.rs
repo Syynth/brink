@@ -397,6 +397,82 @@ pub(crate) fn await_purity_diagnostics_query(
     ))
 }
 
+/// One file's conventions-module confinement diagnostics (`E169`, issue
+/// #1844 — the MODULE half of the 2026-07-31 §9.1 ruling's item (4); #1838/
+/// #1847 cover the *placement* half, `E112`). A pattern-claiming
+/// `@[element(claims = "…")]` handler is legal only in the project's
+/// configured conventions module (`brink.toml`'s `[project] elements`);
+/// this is the one seam that has both a file's real module identity
+/// ([`module_map_query`]'s native branch, `crate::modules::
+/// native_module_path`) and the resolved `AnalysisOptions` the pointer
+/// travels on — `brink_analyzer::analyze_with_modules` is not it, since
+/// `brink-db` never calls that path (issue #1863's own finding).
+///
+/// Lazy in the same shape as [`await_purity_diagnostics_query`]/
+/// [`comparator_contract_diagnostics_query`]: a file with no declared claim
+/// handler never even reads [`module_map_query`]. Two more cases are
+/// intentionally silent, not merely lazy — see
+/// `brink_analyzer::conventions_module_diagnostics`'s own module doc for
+/// why: an unset `elements` key (nothing configured to confine against
+/// yet), and a bare preset name (`elements = "screenplay"`, which names a
+/// `std::conventions::*` module rather than a project file — no path in
+/// the tree to compare against without a preset registry this slice
+/// doesn't build).
+///
+/// `lru = 4096`: per-file runaway-guard ceiling (issue #647), matching
+/// every other per-file diagnostic query in this module.
+#[salsa::tracked(lru = 4096)]
+pub(crate) fn conventions_confinement_diagnostics_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+    file: SourceFile,
+) -> Arc<Vec<Diagnostic>> {
+    let hir = &lowered_query(db, file).hir;
+    if hir.claim_handlers.is_empty() {
+        return Arc::new(Vec::new());
+    }
+    let opts = project.analysis_options(db);
+    let Some(pointer) = opts.elements.as_deref() else {
+        return Arc::new(Vec::new());
+    };
+    if !is_path_shaped_elements_pointer(pointer) {
+        return Arc::new(Vec::new());
+    }
+    let file_id = file.file_id(db);
+    let (module_map, _module_diags) = module_map_query(db, project);
+    let Some(this_module) = module_map.get(&file_id).map(|m| m.name.as_str()) else {
+        return Arc::new(Vec::new());
+    };
+    let native_root = project.native_root(db).as_deref();
+    let expected_module =
+        crate::modules::native_module_path(&crate::modules::root_relative_key(
+            native_root,
+            pointer,
+        ));
+    let is_conventions_module = this_module == expected_module;
+    Arc::new(brink_analyzer::conventions_module_diagnostics(
+        file_id,
+        hir,
+        is_conventions_module,
+        pointer,
+    ))
+}
+
+/// Whether a `[project] elements` pointer names a project-relative `.brink`
+/// path, as opposed to a bare built-in preset name (`"screenplay"`) — the
+/// same heuristic [`conventions_confinement_diagnostics_query`]'s own doc
+/// explains: a preset has no project file to compare a claiming handler's
+/// own module against. A path either contains a directory separator or
+/// ends in the `.brink` extension; a bare word (no separator, no
+/// extension) is treated as a preset name.
+fn is_path_shaped_elements_pointer(pointer: &str) -> bool {
+    pointer.contains('/')
+        || pointer.contains('\\')
+        || std::path::Path::new(pointer)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("brink"))
+}
+
 /// One file's NS-A4 comparator-contract diagnostics (E119,
 /// docs/stdlib-spec.md §4b, issue #1110 — extended to the fn-value verb
 /// trio `map`/`filter`/`fold` by issue #1679, §4): `sort_by`/`sorted_by`/
@@ -567,6 +643,16 @@ pub(crate) fn whole_project_diagnostics_query(
     for file in project.files(db) {
         diagnostics.extend(
             comparator_contract_diagnostics_query(db, project, *file)
+                .iter()
+                .cloned(),
+        );
+    }
+    // Conventions-module confinement gate (E169, issue #1844) — per-file,
+    // lazy (see `conventions_confinement_diagnostics_query`'s doc): a file
+    // with no declared claim handler never even reads `module_map_query`.
+    for file in project.files(db) {
+        diagnostics.extend(
+            conventions_confinement_diagnostics_query(db, project, *file)
                 .iter()
                 .cloned(),
         );

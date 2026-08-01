@@ -1542,6 +1542,7 @@ mod tests {
             was_directives: Vec::new(),
             allow_scopes: Vec::new(),
             element_matches: Vec::new(),
+            claim_handlers: Vec::new(),
         }
     }
 

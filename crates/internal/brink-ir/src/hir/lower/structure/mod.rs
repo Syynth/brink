@@ -229,5 +229,8 @@ fn lower_source_file(
         // the same reason: ink's grammar has no `@[element(claims = "…")]`
         // channel to claim a line with.
         element_matches: Vec::new(),
+        // Same reason, extended to the declaration record (issue #1844):
+        // ink has no claiming handlers to declare.
+        claim_handlers: Vec::new(),
     }
 }
