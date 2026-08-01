@@ -292,6 +292,121 @@ fn opaque_callback_is_not_proven_and_passes() {
         .expect("an opaque callback is not provably in violation");
 }
 
+// ── E119 on the native bare-name spelling (issue #1887) ──────────────
+//
+// `comparator_contract::collect_expr` recognized a pure-callback site only
+// when the callback argument was structurally `Expr::FnLiteral` — the
+// ink/brink `#fn(target)` literal. `#` is already the tag sigil in native
+// content position (issue #1862's 2026-08-01 ruling), so the native
+// surface spells the identical callback as a bare name — `map(items,
+// double)` — which never matched that structural gate at all: the site
+// was never collected, `comparator_callees` never returned the target, and
+// no effect row was ever compared against the pure·silent contract. These
+// tests use a real disk-resident `.brink` entry (mirroring
+// `e0xx_diagnostics.rs`'s own `compile_native` helper) because native
+// discovery reads straight off disk, bypassing this file's in-memory
+// `compile_brink`/`compile_in` harness entirely.
+
+/// Compile a native `.brink` entry from disk — mirrors
+/// `crates/brink-compiler/tests/e0xx_diagnostics.rs`'s `compile_native`.
+/// Native compiles are strict-only (`docs/decision-log.md` "Typing posture
+/// ruled", 2026-07-19 — `E137` otherwise), so this leaves `types` at its
+/// native default rather than requesting `Gradual` the way the ink-surface
+/// helpers above do. `dialect` does NOT default to `Brink` just because
+/// the source is native (`brink-test-harness::corpus`'s own doc: "a native
+/// project carries no dialect opinion unless it explicitly opts in") — the
+/// whole E119 gate is `dialect == Brink`-only (see `check`'s module doc),
+/// so it must be requested explicitly, exactly the combination issue
+/// #1887 is about: brink-dialect analysis over native-surface source.
+fn compile_native(
+    dir_suffix: &str,
+    source: &str,
+) -> Result<brink_compiler::CompileOutput, brink_compiler::CompileError> {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-seq-verbs-native-{dir_suffix}-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create temp dir");
+    std::fs::write(dir.join("main.brink"), source).expect("write main.brink");
+    let options = AnalysisOptions {
+        dialect: Dialect::Brink,
+        ..AnalysisOptions::default()
+    };
+    let result = brink_compiler::compile_path_with_options(&dir.join("main.brink"), options);
+    std::fs::remove_dir_all(&dir).ok();
+    result
+}
+
+/// The red case: a native bare-name callback that writes a global must be
+/// rejected exactly like its `#fn(target)` counterpart. Before the fix,
+/// this compiled clean — `collect_expr`'s `Expr::Call` arm never matched a
+/// bare `Expr::Path` argument, so `spy` was never a collected comparator
+/// site and no row was ever compared.
+#[test]
+fn native_bare_name_writing_map_callback_is_e119() {
+    let source = "\
+var seen = 0
+
+fn spy(n) {
+  seen = seen + n;
+  return n;
+}
+
+flow main() {
+  Result: {map([1, 2], spy)} -> END
+}
+";
+    let diags = diagnostics_of(compile_native("write", source).unwrap_err());
+    assert!(has_code(&diags, DiagnosticCode::E119), "{diags:?}");
+}
+
+/// The companion positive: a *pure* native bare-name callback must compile
+/// clean — the fix must not over-trigger on every bare-name callback
+/// argument, only on ones whose row provably exceeds pure·silent.
+#[test]
+fn native_bare_name_pure_callback_passes() {
+    let source = "\
+fn double(n) {
+  return n * 2;
+}
+
+flow main() {
+  Result: {map([1, 2], double)} -> END
+}
+";
+    compile_native("pure", source)
+        .expect("a pure native bare-name callback must pass E119");
+}
+
+/// The opaque leg, native-surface twin of `opaque_callback_is_not_proven_
+/// and_passes`: routed through a parameter, `spy` is no longer a
+/// statically-named reference at the call site — `is_fn_target_ref`
+/// resolves the argument's range to a `Param`, not a function definition,
+/// so the site is correctly NOT collected and the impure callback is not
+/// proven (the exceedance-only posture, unaffected by this fix).
+#[test]
+fn native_bare_name_opaque_callback_is_not_proven_and_passes() {
+    let source = "\
+var seen = 0
+
+fn spy(n) {
+  seen = seen + n;
+  return n;
+}
+
+fn indirectly(f: fn(int): int): Array<int> {
+  return map([1, 2], f);
+}
+
+flow main() {
+  Result: {indirectly(spy)} -> END
+}
+";
+    compile_native("opaque", source)
+        .expect("an opaque callback reached through a param is not provably in violation");
+}
+
 // ── the ops execute (reachability from real author-facing source) ────
 
 #[test]

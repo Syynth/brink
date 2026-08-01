@@ -527,7 +527,7 @@ pub(crate) fn comparator_contract_diagnostics_query(
     }
     let (file_resolutions, _diags) = resolve_query(db, project, file);
     let index = resolution_index_query(db, project);
-    let callee_defs = brink_analyzer::comparator_callees(file_id, hir, file_resolutions);
+    let callee_defs = brink_analyzer::comparator_callees(file_id, hir, index, file_resolutions);
     let mut rows = BTreeMap::new();
     for id in callee_defs {
         if let Some(row) = effects_query(db, project, DefKey::new(db, id)) {
