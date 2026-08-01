@@ -1432,6 +1432,42 @@ pub enum DiagnosticCode {
     /// See also: `E168` (byte-identical patterns), `docs/prose-dialect-
     /// spec.md` §3.5b ("pattern power proportional to auditability").
     E170,
+    /// A natural-notation `@[element(claims = "…")]` handler declares a
+    /// parameter, bound by a named capture, whose declared type is neither
+    /// `string` nor absent nor `content` — `int`, `float`, `bool`, a
+    /// struct name, a generic, or a `fn` type.
+    ///
+    /// Filed from adversarial review of PR #1845 (issue #1849, itself
+    /// closing part of #1838): `hir::lower_native::element::try_claim`
+    /// binds **every** matched capture as a plain `Expr::String` literal,
+    /// unconditionally, regardless of the receiving parameter's declared
+    /// type — so `@[element(claims = "^Take (?<n>\\d+)$")] fn take(n:
+    /// int)` could never actually receive an `int`. Numeric capture
+    /// coercion is `docs/prose-dialect-spec.md` §3.5b's own Deferred list
+    /// — the underlying gap is ruled-deferred, not itself a bug — but
+    /// leaving the mismatch silent is: without this check it was, and
+    /// remains, silent — nothing checks a direct call's arguments against
+    /// the callee's declared parameter types yet. That generic check
+    /// (`E063` for this shape) is exactly what open issue #1864 asks to
+    /// build.
+    ///
+    /// `content` is deliberately **not** in this code's target set even
+    /// though a capture can no more produce a `FragmentRef` than an `int`
+    /// — it already has an established, ruled, and tested story of its
+    /// own (the spec's own `fn radio(chan: string, text: content)`
+    /// example, and the `tier1-native/annotations-element` golden
+    /// fixture, both compile clean today); see `hir::lower_native::
+    /// annotation::is_satisfiable_by_a_string_capture`'s own doc for why.
+    ///
+    /// Reported at the declaration — the same static-defect-in-the-
+    /// declaration posture `E160`/`E166`/`E167` already take — pointing
+    /// at the offending param's own type annotation range (an untyped or
+    /// `content`-typed param never triggers this code, so the annotation
+    /// is always present and non-`content` when it fires). `Error` by
+    /// default: unlike `E168`/`E170`'s "silent race" posture, this is a
+    /// param that can never receive a value of its declared type, not a
+    /// stylistic ambiguity.
+    E171,
 }
 
 impl DiagnosticCode {
@@ -1615,6 +1651,7 @@ impl DiagnosticCode {
         Self::E168,
         Self::E169,
         Self::E170,
+        Self::E171,
     ];
 
     /// The stable string representation (e.g., `"E001"`).
@@ -1795,6 +1832,7 @@ impl DiagnosticCode {
             Self::E168 => "E168",
             Self::E169 => "E169",
             Self::E170 => "E170",
+            Self::E171 => "E171",
         }
     }
 
@@ -2074,6 +2112,9 @@ impl DiagnosticCode {
             Self::E170 => {
                 "this `@[element(claims = \"…\")]` pattern can overlap with an earlier-declared handler's pattern — they silently race, with the earlier one winning"
             }
+            Self::E171 => {
+                "a natural-notation `@[element(claims = \"…\")]` handler's captured parameter is declared `string`-incompatible — every capture binds as a plain string literal until numeric coercion lands"
+            }
         }
     }
 
@@ -2307,6 +2348,7 @@ impl DiagnosticCode {
             "E168" => Some(Self::E168),
             "E169" => Some(Self::E169),
             "E170" => Some(Self::E170),
+            "E171" => Some(Self::E171),
             _ => None,
         }
     }

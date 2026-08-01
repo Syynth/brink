@@ -334,7 +334,18 @@ fn radio(chan: string, text: content) {
   name (compile-checked); `string` = literal/stringified;
   **`content`** = first-class value via the existing fragment-capture
   path, **translation-resident and measurable**; prose-bodied
-  handlers (`>{ }`) are once-translated parameterized templates.
+  handlers (`>{ }`) are once-translated parameterized templates. A
+  `claims = "…"` handler's captured param declaring a numeric/struct/
+  generic/`fn` type (anything a plain string capture could never
+  satisfy, `content` excepted — see `E171`'s own doc for why `content`
+  stays exempt) is now a targeted diagnostic (`E171`, issue #1849) at
+  the declaration, naming the deferred-coercion reason, rather than
+  silence — the pre-#1849 state. The generic form of this mismatch
+  (an ordinary direct call's arguments checked against the callee's
+  declared parameter types) only appears once #1864 lands direct-call
+  argument type-checking, which does not exist yet; the coercion gap
+  itself stays deferred (see below), only the silence around it is
+  closed.
 - **`block` capture (RULED, 2026-07-31 sitting, issue #1839).**
   `@[element(args = "…", block)]` declares that the handler captures the
   run **following** its matched line into a trailing `content`-typed
@@ -391,7 +402,11 @@ fn radio(chan: string, text: content) {
   hover shows the handler's signature and body; the explain-match query
   answers is/isn't-matched + what bound — those consumers ride the held
   editor track and read this record rather than re-running the match.
-- **Deferred**: numeric capture coercion; context injection (handlers
+- **Deferred**: numeric capture coercion (issue #1849 added `E171`, a
+  declaration-time diagnostic for a `claims` handler's non-`string`
+  captured param, so the gap is loud rather than silent — the coercion
+  itself, and binding a non-`string` capture to a real typed value,
+  remain unbuilt); context injection (handlers
   reading attachment data); `Option` params for optional captures;
   binding a `content`-typed param to an actual captured `FragmentRef`/prose
   block (issue #1846 gave `content` a resolvable `Ty` in the native type
