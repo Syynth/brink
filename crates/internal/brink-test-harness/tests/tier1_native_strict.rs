@@ -91,12 +91,27 @@ fn corpus_dir() -> PathBuf {
 /// - The `radio` row is the same mismatch written by hand — a `string`
 ///   literal passed to a `content` parameter. Whether `string` should widen
 ///   to `content` at all is the open half of that question.
-/// - `radio`'s **return type** escaping as `Unknown` is a **checker gap**:
-///   `radio`'s body is `return text;` where `text: content`, so the return
-///   type is exactly the annotated parameter type. Reading a `content`-typed
-///   binding as a value yields `Unknown` rather than `content` (reduced:
-///   `fn passthru(t: content) { return t; }` reports the same, while
-///   `fn passthru(t: content): content { return t; }` is clean).
+/// - `radio`'s **return type** escaping as `Unknown` was a **checker gap**,
+///   and is **FIXED** — its row is gone. `radio`'s body is `return text;`
+///   where `text: content`, so the return type is exactly the annotated
+///   parameter type, yet handing a parameter straight back out yielded
+///   `Unknown` (reduced: `fn passthru(t: content) { return t; }` reported
+///   the same, while `fn passthru(t: content): content { return t; }` was
+///   clean). Fixed in `infer::body::InferPass::infer_return`, which now
+///   runs the returned value through `or_own_annotation` — #1168's
+///   read-site annotation fallback, whose whole contract is "safe at read
+///   sites that don't themselves produce counter-evidence", and a `return`
+///   value is joined into `return_ty` without ever being `observe`d back.
+///   The gap was never `content`-specific: `int`, `bool` and every other
+///   resolvable annotation lost the same way (`strict::tests::
+///   native_returning_an_annotated_param_is_not_content_specific`).
+///
+///   Note what did **not** move: the three `E063` rows above are unchanged.
+///   Fixing the return-type read could in principle have made the
+///   synthesized-argument half fire *more* (a now-correctly-typed slot
+///   visibly rejecting a synthesized `string`); it did not, because those
+///   rows were already firing off `interior`/`radio`'s own *parameter*
+///   annotations, which the T1c signature overlay already resolved.
 ///
 /// **Group B — UFCS method-call results (`ufcs`, and `lambda-verbs`'s
 /// `ufcs_through_capture`), tracked by issue #1909.**
@@ -258,11 +273,12 @@ const BASELINE: &[(&str, &str, &str)] = &[
         "E063",
         "argument 2 of call to `radio` has type `string` but its known type expects `content`",
     ),
-    (
-        "annotations-element",
-        "E065",
-        "`radio`'s return type escapes strict inference as Unknown — annotate or restructure",
-    ),
+    // `radio`'s **return type** row is GONE — issue #1912's checker-gap
+    // half, FIXED: `infer::body::InferPass::infer_return` now runs the
+    // returned value through `or_own_annotation`, so `return text` with
+    // `text: content` exports `content` instead of `Unknown`. The three
+    // `E063` rows above are the *other* half of #1912 and are untouched by
+    // it — see the module doc's Group A.
     // Group E (array-literal)
     (
         "array-literal",
