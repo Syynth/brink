@@ -340,28 +340,76 @@ fn run_command(command: Commands) -> ExitCode {
     }
 }
 
-/// Log one non-fatal compile diagnostic at the `tracing` level matching its
-/// actual resolved severity (`ResolvedDiagnostic::severity`, issue #1162) —
-/// a `[lints]` code down-leveled to `info`/`hint` must render at the
-/// matching tier here rather than every `CompileOutput::warnings` entry
-/// printing as `warn!` regardless of what it actually resolved to.
-/// `Severity::Error` doesn't occur in practice (`CompileOutput::warnings`
-/// never carries an error-severity entry — those fail the compile via
-/// `CompileError::Diagnostics` instead), but the match stays exhaustive
-/// rather than assuming that invariant here too.
+/// Log one compile diagnostic at the `tracing` level matching its actual
+/// resolved severity (`ResolvedDiagnostic::severity`, issue #1162) — a
+/// `[lints]` code down-leveled to `info`/`hint` must render at the matching
+/// tier here rather than every `CompileOutput::warnings` entry printing as
+/// `warn!` regardless of what it actually resolved to. Used for both the
+/// non-fatal `CompileOutput::warnings` set and — since #1957 — the fatal
+/// `CompileError::Diagnostics` payload (see [`render_fatal_compile_error`]),
+/// so `Severity::Error` is a real, common case here now, not the dead arm
+/// the match used to carry defensively.
+///
+/// Renders `path:start..end [CODE] message`. `ResolvedDiagnostic` carries a
+/// byte-offset `range` and the file's `path`, but not a resolved line/column
+/// or the quoted source line — `range` is deliberately left as raw byte
+/// offsets (see its doc comment) because column units are consumer-specific
+/// and the consumer already holds the source text to resolve them in the
+/// unit it needs. A terminal-friendly line:column + source-quoting
+/// presentation is possible (the CLI does still hold the source text at the
+/// `compile_entry` call site) but is a follow-up, not this fix — this is the
+/// "at least tell me the code, message, and where" bar, not a rustc-style
+/// renderer.
 fn log_diagnostic(d: &brink_compiler::ResolvedDiagnostic) {
+    let start = u32::from(d.range.start());
+    let end = u32::from(d.range.end());
     match d.severity {
-        brink_ir::Severity::Error => tracing::error!("[{}] {}", d.code.as_str(), d.message),
-        brink_ir::Severity::Warning => tracing::warn!("[{}] {}", d.code.as_str(), d.message),
-        brink_ir::Severity::Info => tracing::info!("[{}] {}", d.code.as_str(), d.message),
-        brink_ir::Severity::Hint => tracing::debug!("[{}] {}", d.code.as_str(), d.message),
+        brink_ir::Severity::Error => {
+            tracing::error!("{}:{start}..{end} [{}] {}", d.path, d.code.as_str(), d.message);
+        }
+        brink_ir::Severity::Warning => {
+            tracing::warn!("{}:{start}..{end} [{}] {}", d.path, d.code.as_str(), d.message);
+        }
+        brink_ir::Severity::Info => {
+            tracing::info!("{}:{start}..{end} [{}] {}", d.path, d.code.as_str(), d.message);
+        }
+        brink_ir::Severity::Hint => {
+            tracing::debug!("{}:{start}..{end} [{}] {}", d.path, d.code.as_str(), d.message);
+        }
     }
+}
+
+/// Render a fatal [`brink_compiler::CompileError::Diagnostics`] payload
+/// through [`log_diagnostic`] before it is boxed and bubbles up through
+/// [`compile_entry`] to `report_result`/`run_compile_command`'s generic
+/// `tracing::error!("{e}")` (issue #1957).
+///
+/// Without this, every caller only ever sees `CompileError`'s `Display` —
+/// `"N diagnostic(s) prevented compilation"`, the count and nothing else —
+/// even though the fully-resolved diagnostic set (code, message, severity,
+/// path, byte range) already exists on the error value. `compile_entry` is
+/// the one seam every `brink compile`/`convert`/`play`/`replay`/
+/// `export-xliff` invocation flows through (see its own doc comment), so
+/// wiring the render in here — rather than in each subcommand — covers all
+/// of them at once. The count line still prints afterward, now as a
+/// trailing summary under the individual `[CODE] message` lines instead of
+/// the only thing printed.
+fn render_fatal_compile_error(err: brink_compiler::CompileError) -> Box<dyn std::error::Error> {
+    if let brink_compiler::CompileError::Diagnostics(diags) = &err {
+        for d in diags {
+            log_diagnostic(d);
+        }
+    }
+    Box::new(err)
 }
 
 /// Build the #1306 [`Environment`](brink_environment::Environment) for `entry`
 /// and run the pure compile over it — `Project::load` → `compile(&env)`, the
 /// one path every `brink compile`/`convert`/`play`/`replay`/`export-xliff`
-/// invocation flows through now.
+/// invocation flows through now. A fatal `CompileError::Diagnostics` is
+/// routed through [`render_fatal_compile_error`] here — the shared seam —
+/// so every one of those subcommands renders the resolved diagnostic set
+/// instead of only the bare count (issue #1957).
 ///
 /// The CLI mounts a [`RealFs::new`](brink_driver::RealFs::new) tree
 /// rooted at [`native_source_root`] — a lazy real-filesystem `SourceTree`, not
@@ -409,7 +457,7 @@ fn compile_entry(
         deny_warnings,
     };
     let env = brink_environment::Project::load(&tree, &entry_key, &overrides)?;
-    Ok(brink_environment::compile(&env)?)
+    brink_environment::compile(&env).map_err(render_fatal_compile_error)
 }
 
 /// `Commands::Compile`'s dispatch, factored out of [`run_command`] (matching
