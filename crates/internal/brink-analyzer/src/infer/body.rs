@@ -1818,13 +1818,24 @@ impl InferPass<'_, '_> {
     ///   the desugar's own `E031` uses). A wrong-arity call is a hard error
     ///   one pass later; typing it would be typing a program that does not
     ///   compile.
-    /// - **A `Ty::Struct` receiver is declined outright.** D1 says field
-    ///   access *wins* over a same-named free function, and deciding that
-    ///   needs the declared-shape table (`structs::declared_shapes`), which
-    ///   is not threaded into inference. Declining keeps this from ever
-    ///   contradicting the verdict `ufcs` will reach; a struct receiver's
-    ///   `FieldCall` result type stays `Unknown` (tracked separately), it
-    ///   does not silently become the free function's.
+    /// - **A `Ty::Struct` receiver's *result type* is declined outright.**
+    ///   D1 says field access *wins* over a same-named free function, and
+    ///   deciding that needs the declared-shape table
+    ///   (`structs::declared_shapes`), which is not threaded into inference.
+    ///   Declining keeps the *result type* from ever contradicting the
+    ///   verdict `ufcs` will reach; a struct receiver's `FieldCall` result
+    ///   type stays `Unknown` (tracked separately), it does not silently
+    ///   become the free function's. This says nothing about the call-graph
+    ///   **edge**, which is already recorded above by the time this gate
+    ///   runs — see "Why the edge is recorded before the receiver is even
+    ///   typed" below. A struct receiver whose shape declares an `Fn`-typed
+    ///   field of the called name still gets an edge to a same-named,
+    ///   matching-arity free function that D1 never actually invokes. That
+    ///   is a deliberate over-approximation, not a bug: the recorded call
+    ///   graph is always a *superset* of the real one, so a spurious edge
+    ///   can at worst pull two unrelated defs into the same SCC or union an
+    ///   unrelated effect row — never miss a real call. Narrowing it needs
+    ///   the same shape table the result-type gate is missing.
     /// - A **prelude verb** (`m.len()`, `UfcsVerdict::PreludeDesugar`) has
     ///   no index symbol, so it never resolves here and keeps typing
     ///   `Unknown`. Typing it means running [`Self::infer_intrinsic`] on
