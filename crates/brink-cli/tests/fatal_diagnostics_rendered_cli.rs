@@ -59,7 +59,8 @@ fn project_dir(tag: &str) -> PathBuf {
 fn compile_renders_fatal_diagnostic_codes_for_native_entry() {
     let dir = project_dir("native-compile");
     let entry = dir.join("main.brink");
-    fs::write(&entry, "flow main() {\n  -> nonexistent_knot\n}\n").unwrap();
+    let source = "flow main() {\n  -> nonexistent_knot\n}\n";
+    fs::write(&entry, source).unwrap();
 
     let output = brink()
         .arg("compile")
@@ -87,6 +88,26 @@ fn compile_renders_fatal_diagnostic_codes_for_native_entry() {
         logs.contains("diagnostic(s) prevented compilation"),
         "the summary count line should still print, as a trailer under \
          the individual diagnostics rather than the only output: {logs}"
+    );
+
+    // The path+byte-range prefix (`log_diagnostic`'s
+    // `"{path}:{start}..{end} [{code}] "`) is asserted here explicitly —
+    // deleting it from all four `log_diagnostic` severity arms would still
+    // leave the two assertions above green. `uref.range` (resolve.rs's
+    // `resolve_divert`) points at exactly the divert-target identifier's own
+    // span, so the expected offsets are derived from the fixture source
+    // itself rather than hardcoded, and the path is the entry's own
+    // filename — native source-tree discovery keys/reports `.brink` files
+    // root-relative to the single-file root, not by absolute CLI-arg
+    // spelling (see CLAUDE.md's path-key-normalization rule).
+    let ident = "nonexistent_knot";
+    let start = source.find(ident).unwrap();
+    let end = start + ident.len();
+    let expected_location = format!("main.brink:{start}..{end} [E024]");
+    assert!(
+        logs.contains(&expected_location),
+        "expected the path+byte-range prefix `{expected_location}` \
+         immediately preceding the diagnostic code, got: {logs}"
     );
 }
 
