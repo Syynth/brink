@@ -3,14 +3,16 @@
 //!
 //! These compile small ink stories with the brink compiler, link them, and
 //! evaluate functions out-of-band — exercising argument order, return
-//! values, output isolation, the `AwaitingExternal` pause/resume cycle, and
-//! the guard against functions that try to yield.
+//! values, output isolation, the `AwaitingExternal` pause/resume cycle, the
+//! guard against functions that try to yield, and (#1868) a caller-supplied
+//! step budget via `begin_function_eval_with_limit`.
 
 use std::cell::RefCell;
 
 use brink_format::Value;
 use brink_runtime::{
-    ExternalFnHandler, ExternalResult, FastRng, FlowInstance, FunctionEval, Program, StoryStatus,
+    ExternalFnHandler, ExternalResult, FastRng, FlowInstance, FunctionEval, Program, RuntimeError,
+    StoryStatus,
 };
 
 type LineTables = Vec<Vec<brink_format::LineEntry>>;
@@ -245,4 +247,36 @@ fn resume_without_begin_errors() {
     let result =
         flow.resume_function_eval::<FastRng>(&program, &tables, &mut ctx, &fallback(), None);
     assert!(result.is_err());
+}
+
+/// A tiny caller-supplied `step_limit` on `begin_function_eval_with_limit`
+/// must stop an infinitely (tail-)recursive function quickly, reporting
+/// *that* limit — not the hardcoded 1,000,000-step default `begin_function_eval`
+/// uses (#1868 regression: before this fix, there was no way to give a
+/// function evaluation its own, smaller budget at all).
+#[test]
+fn begin_function_eval_with_limit_honors_caller_supplied_budget() {
+    let (program, tables) =
+        compile("-> END\n=== function spin_forever(x) ===\n~ return spin_forever(x)\n");
+    let (mut flow, mut ctx) = FlowInstance::new_at_root(&program);
+    let idx = func_idx(&program, "spin_forever");
+
+    let result = flow.begin_function_eval_with_limit::<FastRng>(
+        &program,
+        &tables,
+        &mut ctx,
+        &fallback(),
+        idx,
+        &[Value::Int(1)],
+        None,
+        32,
+    );
+    assert!(
+        matches!(result, Err(RuntimeError::StepLimitExceeded(32))),
+        "expected StepLimitExceeded(32), got {result:?}"
+    );
+    assert!(
+        !flow.is_evaluating_function(),
+        "eval state cleaned up on step-limit error"
+    );
 }

@@ -59,7 +59,8 @@ flow-level constructor `speculate()` wraps.
 A production story runs under generous hardcoded ceilings — a million VM steps,
 ten thousand lines a turn. A speculative probe should fail *fast* on
 possibly-malformed or adversarial content instead of burning the full production
-budget before giving up, so every `advance` takes an explicit `Budget`:
+budget before giving up, so every `advance`, `eval_function`, and
+`resume_function_eval` call takes an explicit `Budget`:
 
 ```rust
 # extern crate brink_runtime;
@@ -69,7 +70,8 @@ let budget = Budget { steps: 10_000, lines: 50 };
 # let _ = budget;
 ```
 
-`steps` caps a single `advance` call's inner VM loop; `lines` caps the total
+`steps` caps a single call's inner VM loop — `advance`, `eval_function`, and
+`resume_function_eval` each get their own fresh allowance; `lines` caps the total
 lines the speculation may ever produce across all its `advance` calls. The
 `Default` (100,000 steps, 1,000 lines) sits well under the production ceilings.
 Exhausting either is an `Err` (`StepLimitExceeded` / `LineLimitExceeded`), not a

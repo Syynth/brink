@@ -114,15 +114,30 @@ frozen editor projection.
 
 ### Q2 — What happens on a comptime fault?
 
-Mechanically, today: the function-eval loop is `drive_function_eval`
-(`flow_instance.rs:1071`). It counts steps at `:1081` and fails at `:1082-84`
-with `RuntimeError::StepLimitExceeded(Self::STEP_LIMIT)`, where
-`STEP_LIMIT: u64 = 1_000_000` (`flow_instance.rs:194`) is **hardcoded** —
-unlike the line-stepping path, which takes a caller-supplied `step_limit`
-parameter (`flow_instance.rs:387`). So a comptime evaluation currently
-cannot be given its own budget without a signature change, and
-`RuntimeError::StepLimitExceeded(u64)` (`crates/brink-runtime/src/error.rs:65`)
-carries only the limit — no definition, no offset, no range.
+**Update (#1868):** the mechanical prerequisite this section originally
+flagged — `drive_function_eval` hardcoding `STEP_LIMIT` with no
+caller-supplied budget — is fixed. `begin_function_eval`,
+`begin_function_value_eval`, and `resume_function_eval` each gained a
+`*_with_limit` sibling taking an explicit `step_limit: u64`, mirroring the
+line-stepping path's own `advance`/`advance_with_limit` split
+(`flow_instance.rs`); `drive_function_eval` itself now takes `step_limit` as
+a parameter rather than reading `Self::STEP_LIMIT` directly. A future
+comptime evaluator can call `begin_function_eval_with_limit` with its own,
+smaller ceiling instead of sharing the 1,000,000-step production default.
+This is a mechanical unblock only — it does not answer Q2 itself (the
+fault-*policy* ruling below is still open), and
+`RuntimeError::StepLimitExceeded(u64)` still carries only the limit, no
+definition/offset/range (Q3's diagnostic-floor gap, unchanged by this fix).
+
+Mechanically, before this fix: the function-eval loop was
+`drive_function_eval` (`flow_instance.rs:1071` at the time). It counted
+steps and failed with `RuntimeError::StepLimitExceeded(Self::STEP_LIMIT)`,
+where `STEP_LIMIT: u64 = 1_000_000` was **hardcoded** — unlike the
+line-stepping path, which took a caller-supplied `step_limit` parameter.
+So a comptime evaluation could not be given its own budget without a
+signature change, and `RuntimeError::StepLimitExceeded(u64)`
+(`crates/brink-runtime/src/error.rs:65`) carries only the limit — no
+definition, no offset, no range.
 
 Two sub-decisions here are ordinary implementation choices with obvious
 defaults (a distinct comptime step budget; a cap on the registration list,
