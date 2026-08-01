@@ -423,6 +423,22 @@ fn fold_literal_int_bound(expr: &Expr) -> Option<i64> {
     }
 }
 
+/// Whether `(l, r)` is the `string`/numeric display-concatenation shape
+/// `+` accepts under strict types (issue #1911, spec §4): a `string` paired
+/// with an `int` or `float`, in either operand order. Mirrors
+/// `value_ops::binary_op`'s `String`/`Int` and `String`/`Float` `Add`
+/// arms exactly — the runtime is the compatibility floor, so this stays a
+/// straight port of which pairs it accepts, not a broader "string + T"
+/// rule. `Bool` is deliberately excluded: the runtime has no
+/// `String`/`Bool` `Add` arm, so that pair still falls through to the
+/// general same-type unify and reports `E066` as before.
+fn is_string_numeric_concat(l: &Ty, r: &Ty) -> bool {
+    matches!(
+        (l, r),
+        (Ty::String, Ty::Int | Ty::Float) | (Ty::Int | Ty::Float, Ty::String)
+    )
+}
+
 #[expect(
     clippy::struct_excessive_bools,
     reason = "accumulator for the same independent facts BodyResult carries"
@@ -1683,6 +1699,26 @@ impl InferPass<'_, '_> {
             }
         }
         match op {
+            // String-numeric display concatenation (issue #1911, spec §4):
+            // `+` between a `string` and an `int`/`float`, either operand
+            // order, is ink's core display-concat idiom ("t:" + total`,
+            // `keys + ":" + total`) — the runtime already defines it
+            // (`value_ops::binary_op`'s `String`/`Int` and `String`/`Float`
+            // `Add` arms stringify the numeric side and produce `string`;
+            // it never faults). Treating `+` as a same-type operator here
+            // marked the numeric operand `Conflicted` on code that
+            // compiles, runs, and is in the golden corpus today
+            // (`tests/tier1-native/for-k-v`) — the compatibility floor is
+            // "don't reject what the runtime accepts". Scoped narrowly to
+            // match that floor exactly: `Add` only (the runtime defines no
+            // string-numeric `Sub`/`Mul`/`Div`/`Mod`), and `Int`/`Float`
+            // only (there is no `String`/`Bool` `Add` arm, so that
+            // combination still falls through to the general same-type
+            // unify below and reports `E066` as before). Neither operand's
+            // own type is unified with the other's — concatenation
+            // observes nothing new about either side, unlike the general
+            // arithmetic arm's cross-side `observe` calls.
+            InfixOp::Add if is_string_numeric_concat(&l, &r) => Ty::String,
             InfixOp::Add
             | InfixOp::Sub
             | InfixOp::Mul

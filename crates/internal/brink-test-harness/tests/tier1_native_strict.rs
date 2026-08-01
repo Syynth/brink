@@ -126,15 +126,18 @@ fn corpus_dir() -> PathBuf {
 /// same shape: the binding escapes as `Unknown` instead of taking the
 /// lambda's own `fn(T…): R` type.
 ///
-/// **Group D — string concatenation (`for-k-v`), tracked by issue #1911.**
-/// A **checker gap**:
-/// `keys + ":" + total` marks the `int` local `total` as `Conflicted`
-/// (`E066`), because `+` is unified as a same-type operator. `"t:" + total`
-/// on a plain `int` reproduces it with no map or loop involved. This is
-/// legal, running ink — the fixture's golden transcript proves it — so
-/// either the operator's typing rule needs a `string + T` display-concat
-/// case or `docs/typed-mode-spec.md` §4 needs to rule that concatenation is
-/// not a coercion.
+/// **Group D — string concatenation (`for-k-v`), issue #1911, FIXED.**
+/// `keys + ":" + total` used to mark the `int` local `total` as
+/// `Conflicted` (`E066`), because `+` was unified as a same-type operator
+/// with no exception for display concatenation. `"t:" + total` on a plain
+/// `int` reproduced it with no map or loop involved. This was legal,
+/// running ink — the fixture's golden transcript proves it — and the
+/// runtime's own `Add` arms (`value_ops::binary_op`) already stringify a
+/// `string`/`int`-or-`float` pair unconditionally. `docs/typed-mode-spec.md`
+/// §4 now rules `string + int`/`string + float` (either operand order) as
+/// display-concat, typing to `string`; `infer_infix`
+/// (`brink-analyzer/src/infer/body.rs`) carries the rule. `for-k-v` no
+/// longer produces any strict finding — it is no longer in `BASELINE`.
 ///
 /// **Group E — genuinely unconstrained bindings (`array-literal`,
 /// `as-binding`).** **Expected**, and specified: §5's empty-literal rule
@@ -229,19 +232,9 @@ const BASELINE: &[(&str, &str, &str)] = &[
         "E065",
         "`mixed`'s return type escapes strict inference as Unknown — annotate or restructure",
     ),
-    // Group D
-    (
-        "for-k-v",
-        "E066",
-        "`sum_and_keys`'s return type is Conflicted under strict types — its uses disagree \
-         on its type (observed as `Conflicted`)",
-    ),
-    (
-        "for-k-v",
-        "E066",
-        "`sum_and_keys`'s temp `total` is Conflicted under strict types — its uses disagree \
-         on its type (observed as `Conflicted`)",
-    ),
+    // Group D (for-k-v) — issue #1911, FIXED: string+int/string+float
+    // display-concat no longer marks `total` Conflicted, so `for-k-v`
+    // produces no strict findings at all and has no rows here.
     // Group C (lambda-verbs)
     (
         "lambda-verbs",
