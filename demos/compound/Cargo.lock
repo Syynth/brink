@@ -2029,6 +2029,7 @@ dependencies = [
  "brink-syntax",
  "brink-syntax-native",
  "regex",
+ "regex-syntax",
  "rowan",
  "serde",
  "thiserror 2.0.18",
