@@ -1102,6 +1102,105 @@ fn native_bare_name_fn_value_without_ref_params_compiles_and_runs() {
     );
 }
 
+// ── Native bare-name fn-value typing (issue #1876) ──────────────────
+//
+// #1862 landed the lowering; the reference still inferred as `Ty::Unknown`,
+// so the type checker could not catch the very typo hazard the 2026-08-01
+// ruling accepted an unsigilled spelling *because* it catches. These two
+// tests are the compile-time halves of that claim — the type now exists
+// (so a real mismatch is a diagnostic) and it is the *right* type (so a
+// legitimate callback is not a false positive). The runtime half stays in
+// the `tests/tier1-native/fn-value-bare-name/` golden case.
+
+/// Compile one `.brink` source under the strict typed posture a real
+/// native project runs in — `dialect = "brink"` in `brink.toml`, whose
+/// `types` default is [`TypePolicy::Strict`] (`resolve_type_policy`) and
+/// which is what makes `strict::check`'s inference-driven codes (`E063`
+/// among them) fire at all.
+fn compile_native_strict(
+    dir_suffix: &str,
+    source: &str,
+) -> Result<brink_compiler::CompileOutput, brink_compiler::CompileError> {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-native-1876-{dir_suffix}-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("main.brink"), source).unwrap();
+    let result = brink_compiler::compile_path_with_options(
+        &dir.join("main.brink"),
+        brink_compiler::AnalysisOptions {
+            dialect: brink_compiler::Dialect::Brink,
+            types: Some(brink_compiler::TypePolicy::Strict),
+            ..brink_compiler::AnalysisOptions::default()
+        },
+    );
+    std::fs::remove_dir_all(&dir).ok();
+    result
+}
+
+/// The typo hazard, caught statically: `total(double)` passes a fn value
+/// where the callee declares `int`. Before #1876 the argument typed
+/// `Unknown`, `DirectCallArgMismatch` skipped it as unresolved, and this
+/// fixture compiled clean — the obligation fell all the way to a runtime
+/// fault, even though the 2026-08-01 ruling accepted the unsigilled
+/// spelling *on the grounds* that the type checker catches this.
+#[test]
+fn native_bare_name_fn_value_passed_where_an_int_is_expected_is_e063() {
+    let err = compile_native_strict(
+        "mismatch",
+        "fn double(x: int): int {\n\
+         \x20 return x * 2;\n}\n\
+         fn total(n: int): int {\n\
+         \x20 return n + 1;\n}\n\
+         flow main() {\n  Bad: {total(double)} -> END\n}\n",
+    )
+    .expect_err("passing a bare-name fn value where an `int` is declared must fail compilation");
+    let codes = diagnostic_codes(&err);
+    assert!(
+        codes.contains(&"E063"),
+        "expected the ordinary typed-mismatch code at the argument, got: {codes:?}"
+    );
+}
+
+/// The other direction — no false positive, under the *same* strict
+/// posture. The same bare name handed to a parameter *declared*
+/// `fn(int): int` is assignable (annotation rows are the unknown top
+/// element and `assignable` is row-insensitive, issue #1680), so the
+/// fixture compiles and runs. A rule that typed the reference as anything
+/// but the target's own signature would break every legitimate callback.
+#[test]
+fn native_bare_name_fn_value_satisfies_a_declared_fn_parameter() {
+    let data = compile_native_strict(
+        "annotated-param",
+        "fn double(x: int): int {\n\
+         \x20 return x * 2;\n}\n\
+         fn apply(g: fn(int): int, v: int): int {\n\
+         \x20 return g(v);\n}\n\
+         flow main() {\n  Applied: {apply(double, 21)} -> END\n}\n",
+    )
+    .unwrap_or_else(|err| {
+        panic!(
+            "a bare name must satisfy a declared `fn(int): int` parameter: {:?}",
+            diagnostic_codes(&err)
+        )
+    })
+    .data;
+    let (program, line_tables) = brink_runtime::link(&data).unwrap();
+    let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
+    let output: String = story
+        .continue_maximally()
+        .unwrap()
+        .iter()
+        .map(Line::text)
+        .collect();
+    assert!(
+        output.contains("Applied: 42"),
+        "the fn value must still reach `apply` and be callable there, got: {output:?}"
+    );
+}
+
 // ── compile_path (disk-based) ───────────────────────────────────────
 
 #[test]
