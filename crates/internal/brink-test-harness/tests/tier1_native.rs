@@ -206,37 +206,41 @@ fn annotations_element() {
     assert_case("annotations-element");
 }
 
-/// Compile-level sibling to `annotations_element` (issue #1846), mirroring
+/// Compile-level sibling to `annotations_element`, mirroring
 /// `inline_tag_embedded_brace_reaches_story_data`'s pattern: `assert_case`
 /// only proves the *transcript* matches, which can't distinguish "this text
 /// reached `StoryData`'s line table" from "this text was computed some
 /// other way at runtime". This compiles+links the same fixture directly and
-/// inspects `line_tables`, pinning two things a `content`-typed param must
-/// not regress:
+/// inspects `line_tables` to pin that reachability directly, independent of
+/// transcript equality.
 ///
-/// - ordinary, unclaimed content lines that sit alongside the two
-///   `content`-typed handlers (`"The stalls are shuttered."`) still reach
-///   their own translatable `LineEntry` with a real `SourceLocation` —
-///   `content` typing a claim handler's param must not disturb sibling
-///   lines' normal line-table residency;
-/// - the claim-dispatched call embedding a `content`-typed handler's
-///   return value (`radio(...)`, composed via `Feed: {radio(...)}.`) still
-///   reaches its own `Template` line entry with its `SlotInfo` intact —
-///   the existing display-position fragment-composition machinery
-///   (`brink-codegen-inkb::content::emit_slot_expr`) is untouched by
-///   `content` becoming a resolvable param type.
+/// Note this is **not** a regression test for `content`-typed params
+/// specifically: `hir::lower_native::element::try_claim` binds every
+/// capture as a plain `Expr::String` literal regardless of the receiving
+/// param's declared type (issue #1846 only made `content` a resolvable
+/// `Ty`, it did not change how captures are bound), so both assertions
+/// below hold identically whether `radio`/`interior`'s params are typed
+/// `content` or left untyped. What this pins is StoryData/line-table
+/// reachability for a claim-dispatched fixture in general:
+///
+/// - an ordinary, unclaimed content line that sits alongside the claimed
+///   headings (`"The stalls are shuttered."`) still reaches its own
+///   translatable `LineEntry` with a real `SourceLocation`;
+/// - the claim-dispatched call embedding a handler's return value
+///   (`radio(...)`, composed via `Feed: {radio(...)}.`) still reaches its
+///   own `Template` line entry with its `SlotInfo` intact — the existing
+///   display-position fragment-composition machinery
+///   (`brink-codegen-inkb::content::emit_slot_expr`) is untouched.
 ///
 /// What this does **not** prove: that the captured span itself (`"MARKET
 /// SQUARE"`, `"OLD MILL"`) becomes its own line-table entry — today
-/// `hir::lower_native::element::try_claim` binds every capture as a plain
-/// `Expr::String` literal regardless of the receiving param's declared
-/// type, so a `content`-typed capture is not yet translation-resident the
-/// way the capture contract ultimately requires. Closing that gap needs a
-/// captured-run-to-`FragmentRef` binding this issue explicitly leaves to
-/// #1839 ("the dispatch mechanism") — flagged on that issue's thread
-/// rather than built here.
+/// `try_claim`'s plain-`Expr::String` binding means a `content`-typed
+/// capture is not yet translation-resident the way the capture contract
+/// ultimately requires. Closing that gap needs a captured-run-to-
+/// `FragmentRef` binding, issue #1838's dispatch-mechanism scope, not
+/// delivered here.
 #[test]
-fn annotations_element_content_param_reaches_story_data() {
+fn annotations_element_reaches_story_data() {
     let path = corpus_dir().join("annotations-element").join("story.brink");
     let output = brink_compiler::compile_path(&path)
         .unwrap_or_else(|e| panic!("compile annotations-element: {e:?}"));
@@ -245,13 +249,13 @@ fn annotations_element_content_param_reaches_story_data() {
     let all_lines = format!("{line_tables:?}");
     assert!(
         all_lines.contains("The stalls are shuttered."),
-        "an ordinary content line beside the content-typed handlers must \
+        "an ordinary content line beside the claimed headings must \
          still reach its own line-table entry: {all_lines}"
     );
     assert!(
         all_lines.contains(r#"name: "radio(...)""#),
-        "the display-position call composing a content-typed handler's \
-         return value must still carry its slot info: {all_lines}"
+        "the display-position call composing a claim handler's return \
+         value must still carry its slot info: {all_lines}"
     );
 }
 
