@@ -1,0 +1,68 @@
+// Native bare-name fn values (RULED 2026-08-01, issue #1862,
+// `docs/t1c-spec.md` §2a): on the `.brink` surface a statically-named
+// function in expression position **is** a fn value, with no sigil —
+// `map(items, double)`, not `map(items, #fn(double))`. A call keeps its
+// parentheses (`double(4)`), so reference-vs-call is unambiguous the same
+// way Rust's function-item model makes it unambiguous.
+//
+// Before this landed, every bare name below compiled clean and lowered to
+// the knot's *visit count* — an `int` — so `map(items, double)` reached
+// the runtime as `map` over `0` and faulted with "callback must be a
+// function value `fn(T): U`, got int". Silently wrong at compile time,
+// which is why this case pins both halves: that a reference *is* a fn
+// value, and that a call still is not one.
+//
+// The partial-application (binding) form `#fn(f, a)` deliberately gets no
+// native spelling and stays ink-only, so a bare name always binds zero
+// arguments.
+
+fn double(x) {
+  return x * 2;
+}
+
+fn is_even(x) {
+  return x % 2 == 0;
+}
+
+fn add(acc, x) {
+  return acc + x;
+}
+
+// The reference crosses a call boundary and is invoked through a plain
+// (unannotated) parameter — the fn value survives being passed like any
+// other value.
+fn apply(g, v) {
+  return g(v);
+}
+
+// A reference bound to a local, then called through that local: the
+// `let` binding holds a fn value, and `f(7)` calls through it.
+fn through_local() {
+  let f = double;
+  return f(7);
+}
+
+// A local of the same name still wins: name resolution reaches the local
+// binding before it ever reaches the function definition, so this is the
+// `int` 5, not a fn value.
+fn shadowed() {
+  let double = 5;
+  return double;
+}
+
+// Named references and lambda literals are the same kind of value and mix
+// freely in one expression.
+fn mixed() {
+  return fold(map([1, 2, 3], double), 0, |acc, x| acc + x);
+}
+
+flow main() {
+  Call: {double(4)}
+  Mapped: {map([1, 2, 3], double)}
+  Filtered: {filter([1, 2, 3, 4, 5, 6], is_even)}
+  Folded: {fold([1, 2, 3, 4], 0, add)}
+  Applied: {apply(double, 21)}
+  ThroughLocal: {through_local()}
+  Shadowed: {shadowed()}
+  Mixed: {mixed()} -> END
+}

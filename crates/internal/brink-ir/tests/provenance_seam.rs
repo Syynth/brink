@@ -342,6 +342,8 @@ fn garble_file(hir: &mut HirFile) {
         allow_scopes: _,
         // Likewise: source ranges and captured text, no `Provenance`.
         element_matches: _,
+        // A frontend-provenance flag, not a source `Provenance`.
+        native: _,
     } = hir;
     garble_block(root_content);
     for knot in knots {

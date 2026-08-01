@@ -229,5 +229,7 @@ fn lower_source_file(
         // the same reason: ink's grammar has no `@[element(claims = "…")]`
         // channel to claim a line with.
         element_matches: Vec::new(),
+        // This module *is* the ink frontend — see `HirFile::native`.
+        native: false,
     }
 }

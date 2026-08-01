@@ -629,8 +629,23 @@ impl InferPass<'_, '_> {
                 .name
                 .split_once('.')
                 .map_or(Ty::Unknown, |(list, _)| Ty::List(list.to_string())),
-            // Knot/Stitch/External/Label referenced as a bare value: no
-            // function-value type exists in this slice (T1c fence).
+            // Knot/Stitch/External/Label referenced as a bare value.
+            //
+            // In **ink** that is a visit count, and no function-value type
+            // exists for it (the original T1c fence): `#fn(f)` is ink's
+            // only fn-value spelling and it types through
+            // `infer_fn_literal`, never here.
+            //
+            // On the **native** surface the same bare name resolving to a
+            // function definition *is* a fn value since issue #1862 — it
+            // lowers to `MakeFnValue`/`PushFnRef` in
+            // `brink_ir::lir::lower::expr::lower_path`. Inference does not
+            // yet distinguish the two surfaces here (`BodyCtx` carries no
+            // per-file frontend flag), so such a reference still types
+            // `Unknown` — the documented "opaque callback" degrade, whose
+            // purity obligation falls to the runtime's dev-mode fault
+            // instead of a compile-time `E119`. Tracked as the typing/
+            // effects follow-up on #1862.
             SymbolKind::Knot | SymbolKind::Stitch | SymbolKind::External | SymbolKind::Label => {
                 Ty::Unknown
             }

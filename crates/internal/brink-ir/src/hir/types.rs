@@ -99,6 +99,23 @@ pub struct HirFile {
     /// frontend (`hir::lower_native::element`); always empty for the ink
     /// frontend, whose grammar has no `@[element]` channel.
     pub element_matches: Vec<ElementMatch>,
+    /// Which frontend produced this file: `true` for the native (`.brink`)
+    /// surface (`hir::lower_native`), `false` for the ink one
+    /// (`hir::lower::structure`).
+    ///
+    /// The two surfaces share every HIR shape below this struct, so a
+    /// downstream pass that must decide a question the *surface* answers
+    /// differently has nowhere else to ask. Today that is exactly one
+    /// question — the 2026-08-01 ruling that a statically-named function in
+    /// expression position **is** a fn value in native (`register(scene)`,
+    /// no sigil) while the same bare name in ink is a knot's visit count
+    /// (`docs/t1c-spec.md` §2a). `lir::lower::expr::lower_path` and
+    /// `brink-analyzer`'s `fn_values`/`infer` read this flag; see those
+    /// sites for why a per-*file* answer (rather than the project-wide
+    /// `is_native` flag `brink_analyzer::analyze_with_modules` takes) is the
+    /// right granularity: the fact travels with the HIR it describes, so
+    /// every pass that already holds an `HirFile` gets it for free.
+    pub native: bool,
 }
 
 /// A file's explicit `#@module(name)` declaration (M-1, modules-spec §1).

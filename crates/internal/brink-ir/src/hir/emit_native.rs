@@ -68,7 +68,10 @@
 //! has no `else if` chain and `RETURN_STMT` never carries a value at body
 //! position, see `lower_native::cond`'s and `lower_native::body`'s own
 //! findings); most `Expr` variants beyond literals/paths/operators/calls
-//! (collections, structs, refs, `#fn`, a divert target used as a value);
+//! (collections, structs, refs, a divert target used as a value, and
+//! `#fn(f, a)` — the *binding* form, which by the 2026-08-01 ruling has no
+//! native spelling at all; a **zero-bound** `#fn(f)` does respell, as the
+//! bare name `f`, issue #1862);
 //! any knot/stitch/decl directive channel (`is_local`, `#@effects`,
 //! `#@was`, visibility, doc comments); `IncludeSite`, `ModuleDecl`,
 //! file-level `VisibilityDirective`/`was_directives`; `@[allow(…)]`
@@ -1215,7 +1218,20 @@ fn emit_expr(e: &Expr, context: &str) -> Result<String, EmitError> {
         Expr::Range(_) => Err(unsupported("range literal", context)),
         Expr::StructLiteral(_) => Err(unsupported("struct construction literal", context)),
         Expr::FieldAccess(_) => Err(unsupported("field access expression", context)),
-        Expr::FnLiteral(_) => Err(unsupported("`#fn` literal", context)),
+        // `#fn(target)` — a **zero-bound** ink fn literal respells as the
+        // bare target name, the native surface's fn-value spelling (RULED
+        // 2026-08-01, `docs/t1c-spec.md` §2a, issue #1862): `#fn(scene)`
+        // becomes `scene`, and a native call stays `scene()`, so the
+        // respelling is unambiguous.
+        //
+        // `#fn(f, a)` — the *binding* (partial-application) form — is a
+        // different story and still refuses: the ruling deliberately gave
+        // it no native spelling, because for a `ref` param it binds a
+        // durable **cell** and a lambda (`|x| f(a, x)`) captures by value
+        // only. Emitting a lambda here would silently change that
+        // semantics, so this errors rather than inventing one.
+        Expr::FnLiteral(fl) if fl.args.is_empty() => Ok(emit_path(&fl.target)),
+        Expr::FnLiteral(_) => Err(unsupported("`#fn` literal with bound arguments", context)),
         Expr::RefArg(_) => Err(unsupported("`ref` argument expression", context)),
         // Lambdas (issue #1685): the expression-body form respells exactly
         // — pipes, optional param annotations, the ruled `:` return clause.

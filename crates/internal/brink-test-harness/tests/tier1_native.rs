@@ -293,6 +293,23 @@ fn lambda_verbs() {
     assert_case("lambda-verbs");
 }
 
+/// Native bare-name fn values (RULED 2026-08-01, issue #1862): a
+/// statically-named function in expression position **is** a fn value on
+/// the `.brink` surface, with no sigil (`map(items, double)`), while a call
+/// keeps its parentheses (`double(4)`).
+///
+/// Before this landed the bare name lowered to the knot's **visit count**,
+/// so every reference below compiled clean and reached the runtime as an
+/// `int` — the case therefore pins a silent mis-compile, not just a missing
+/// feature. Covers the reference reaching `map`/`filter`/`fold`, crossing a
+/// call boundary into a plain parameter and being invoked there, held in a
+/// `let` and called through it, losing to a same-named local (shadowing),
+/// and mixing with a lambda literal in one expression.
+#[test]
+fn fn_value_bare_name() {
+    assert_case("fn-value-bare-name");
+}
+
 /// Reviewer finding on #1732 (issue #1716): a line whose *entire* content is
 /// a childless, point-marker inline-markup span (§8b.11's `<pause/>` shape)
 /// on its own, with no surrounding text, used to be declined by
@@ -387,6 +404,7 @@ fn every_case_directory_has_a_test() {
         "lambda-verbs",
         "inline-markup-point-marker",
         "inline-tag-embedded-brace",
+        "fn-value-bare-name",
     ];
     let mut found: Vec<String> = std::fs::read_dir(corpus_dir())
         .expect("read tests/tier1-native")
