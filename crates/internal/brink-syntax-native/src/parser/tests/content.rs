@@ -673,7 +673,7 @@ fn a_tag_with_an_escaped_backslash_before_a_real_brace_counts_the_brace() {
     // immediately preceding raw token to detect that the backslash is not
     // the escaper. Without the fix, the brace is not counted, so the
     // matching `}` ends the tag prematurely, leaving ` coins` as plain text
-    // and the flow body's own closer unconsurmed — this fails to parse.
+    // and the flow body's own closer unconsumed — this fails to parse.
     let src = "flow f() { Hello #tag \\\\{ } coins. }\n";
     let p = assert_lossless(src);
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());

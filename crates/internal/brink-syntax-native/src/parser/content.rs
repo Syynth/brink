@@ -505,10 +505,14 @@ pub(crate) fn header_tag_tail(p: &mut Parser<'_, '_>) {
 /// would be the surprising reading — a `\{` with no real interpolation
 /// nearby would then let a later unescaped `}` swallow the enclosing
 /// closer, converting previously clean source into a parse error. So an
-/// `L_BRACE` immediately preceded by a raw `BACKSLASH` is excluded from
-/// the counter (an `R_BRACE` is still unconditionally significant to the
-/// depth check either way — `\}` alone, with no preceding unescaped `{`,
-/// already terminated a tag before this fix and still does). Pinned by
+/// `L_BRACE` is excluded from the counter when it is preceded by an *odd*
+/// number of consecutive raw `BACKSLASH`es (#1852: `\\{` is an escaped
+/// backslash followed by a real, depth-counted brace, not an escaped
+/// brace — an even backslash count means the backslashes escape each
+/// other and the brace stands unescaped) (an `R_BRACE` is still
+/// unconditionally significant to the depth check either way — `\}` alone,
+/// with no preceding unescaped `{`, already terminated a tag before this
+/// fix and still does). Pinned by
 /// `a_tag_with_an_escaped_open_brace_does_not_swallow_the_enclosing_blocks_own_closer`.
 ///
 /// **RULED (review of #1777, issue #1787): `depth` is scoped per-tag, not

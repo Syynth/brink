@@ -288,6 +288,28 @@ fn an_unbalanced_open_brace_in_a_cue_name_eats_the_enclosing_blocks_own_closer()
 }
 
 #[test]
+fn an_unbalanced_open_brace_in_a_cue_name_with_a_colon_inside_it_eats_the_enclosing_blocks_own_closer()
+ {
+    // #1851 widens the same accepted tradeoff pinned just above by
+    // `an_unbalanced_open_brace_in_a_cue_name_eats_the_enclosing_blocks_own_closer`
+    // from R_BRACE to COLON: once COLON is depth-guarded like R_BRACE, a
+    // genuinely unbalanced, unescaped `{` left open in a name swallows not
+    // just a later `}` but a later `:` too, along with everything after it
+    // up to EOF, since nothing at depth > 0 can stop the scan anymore. So
+    // this — balanced-looking at a glance, but the name's own `{` is never
+    // closed — fails to parse: the R_BRACE that would close the block is
+    // consumed as part of the still-open name scan, and the scan runs off
+    // the end of input looking for a match.
+    let src = "flow f() { @NAME {x: y }\n";
+    let p = assert_lossless(src);
+    assert!(
+        !p.errors().is_empty(),
+        "expected the unbalanced `{{` to swallow the `:` and the flow's own closer, got: {:?}",
+        p.errors()
+    );
+}
+
+#[test]
 fn a_cue_name_with_an_escaped_open_brace_does_not_swallow_the_enclosing_blocks_own_closer() {
     // `\{` is the literal-brace escape (#1716/PR #1732), not a
     // metacharacter, so it must not count as a depth-opener — otherwise
