@@ -42,7 +42,13 @@
 //! - Only a **top-level `fn`** may claim: the rewrite is an expression
 //!   call, and a `flow` is not callable as one. A `claims` annotation
 //!   anywhere else is `E112` (misplaced), enforced by
-//!   [`super::annotation::handle_line`]'s placement rule.
+//!   [`super::annotation::handle_line`]'s placement rule. "Top-level"
+//!   means a direct child of the file, matching exactly what [`collect`]
+//!   scans — a `fn` declared inside a `module { … }` block is *also*
+//!   misplaced (issue #1847), even though it is otherwise un-nested in
+//!   any `flow`/`fn`: `collect` never looks inside a `MODULE_DECL`, so a
+//!   claim admitted there would validate and then silently never
+//!   dispatch to anything.
 //! - Only a **wholly literal** prose line is a candidate — one with no
 //!   interpolation, glue, markup, tags, label or embedded divert. A line
 //!   carrying dynamic parts has no fixed text for a pattern to match, and
@@ -66,8 +72,8 @@ use rowan::{TextRange, TextSize};
 
 use crate::hir::FileId;
 use crate::{
-    Content, ContentPart, Diagnostic, ElementCapture, ElementDisposition, ElementKind,
-    ElementMatch, Expr, Name, Path, Stmt, StringExpr, StringPart,
+    Content, ContentPart, Diagnostic, DiagnosticCode, ElementCapture, ElementDisposition,
+    ElementKind, ElementMatch, Expr, Name, Path, Stmt, StringExpr, StringPart,
 };
 
 use super::SyntaxNode;
@@ -120,11 +126,15 @@ impl Elements {
 
 /// Collect every claiming handler declared in `root`.
 ///
-/// Diagnostic-free by construction: each `@[element(…)]` line is parsed and
-/// validated exactly once, by `container.rs`, when the annotated
-/// declaration is lowered. This re-reads the same lines into a dispatch
-/// table and drops anything that did not validate — reporting here as well
-/// would double every `E159`/`E160`/`E167`.
+/// Silent on everything `container.rs` already validated: each
+/// `@[element(…)]` line is parsed and checked against its own declaration
+/// exactly once there — that validation pass's own diagnostics are
+/// discarded here (into a throwaway `scratch` vec) rather than threaded
+/// through, since re-reporting would double every `E159`/`E160`/`E167`.
+/// Duplicate-pattern diagnosis ([`diagnose_duplicate_patterns`]) does
+/// *not* happen here either: it needs to see which handlers actually
+/// fired during body lowering, which hasn't happened yet at collection
+/// time — see that function's doc.
 pub(super) fn collect(file_id: FileId, root: &SyntaxNode) -> Elements {
     let mut handlers = Vec::new();
     for node in root.children() {
@@ -167,11 +177,108 @@ pub(super) fn collect(file_id: FileId, root: &SyntaxNode) -> Elements {
     }
 }
 
+/// `E168` (issue #1848): flag every claiming handler whose pattern is
+/// byte-identical to an earlier-declared one's *and never actually won a
+/// claim*.
+///
+/// `elements.handlers` is in declaration order (the order `collect` pushed
+/// them, itself `root.children()`'s source order), which is also
+/// [`try_claim`]'s dispatch order — see that function's doc for why
+/// "earlier-declared" is the same as "wins". An identical pattern
+/// *provably* matches the identical set of lines — but "the earlier one
+/// always wins" is not quite the same claim as "the later one is dead
+/// code". `try_claim` excludes a handler from claiming lines inside its
+/// **own** declaration (the staging rule), and that exclusion does not
+/// extend to a later, byte-identical twin: a twin is exactly the handler
+/// that *can* claim a line living inside the earlier one's own body, since
+/// the earlier one is barred from claiming there. So a later twin is
+/// genuinely live, not dead code, for precisely those lines.
+///
+/// Must therefore run **after** the whole file has been lowered
+/// ([`super::lower`] calls this once `walk_top_level` has returned), not
+/// from [`collect`] before any body is lowered — `elements.matches` is the
+/// only ground truth for "did this handler ever actually win a claim",
+/// and it does not exist yet at collection time. A later twin that
+/// produced at least one entry there is live and is not diagnosed; one
+/// that produced none is provably dead, exactly as the identical-pattern
+/// argument claims.
+///
+/// Two *different* patterns whose matched-line sets merely overlap (one a
+/// strict subset of the other, an alternation sharing a branch, …) are
+/// exactly the more valuable and more common case, and are **not**
+/// detected here — see the issue thread for why, and for the tracked
+/// follow-up.
+///
+/// Each later handler is reported **at most once**, against the first
+/// (source-order) earlier twin it has — a handler with two or more
+/// earlier identical twins is not re-reported once per twin.
+///
+/// `O(n²)` over a file's claiming handlers, which in practice number in
+/// the single digits (one project's worth of prose conventions, not a
+/// generated table) — a sorted/hashed pass would trade clarity for
+/// headroom this call site doesn't need.
+pub(super) fn diagnose_duplicate_patterns(
+    file_id: FileId,
+    elements: &Elements,
+    diags: &mut Vec<Diagnostic>,
+) {
+    let handlers = &elements.handlers;
+    for (later_idx, later) in handlers.iter().enumerate().skip(1) {
+        let has_earlier_twin = handlers[..later_idx]
+            .iter()
+            .any(|earlier| earlier.pattern.as_str() == later.pattern.as_str());
+        if !has_earlier_twin {
+            continue;
+        }
+        // Ground truth, not assumption: did `later` ever actually win a
+        // claim (necessarily for a line inside some earlier twin's own
+        // body — see the doc above)? If so it is live, not dead code.
+        let fired = elements
+            .matches
+            .iter()
+            .any(|m| m.handler.range == later.name.range);
+        if fired {
+            continue;
+        }
+        diags.push(Diagnostic {
+            file: file_id,
+            // Inside `later`'s own declaration span (its name token), not
+            // the `@[element(…)]` annotation line — `AllowScope::range`
+            // covers the annotated declaration but explicitly excludes the
+            // annotation line itself (`crate::suppressions`'s module doc),
+            // so emitting on the annotation would make `@[allow(E168)]`
+            // above `later` unable to ever suppress this diagnostic.
+            range: later.name.range,
+            message: DiagnosticCode::E168.title().to_string(),
+            code: DiagnosticCode::E168,
+        });
+    }
+}
+
 /// Try to claim one body item, returning the statements that replace it.
 ///
 /// `None` means "nothing claimed this" and the caller lowers the item the
 /// way it always did — the fall-through that keeps every unclaimed line,
 /// and every file with no claiming handler, byte-identical.
+///
+/// # Dispatch order (interim)
+///
+/// When more than one handler's pattern matches a line, the first one in
+/// `elements.handlers` wins — [`Iterator::find`] below, over a `Vec` built
+/// by `collect` in top-level declaration order. **This is an interim rule,
+/// not a permanent one.** Issue #1848: the 2026-07-31 §9.1 ruling's item
+/// (5) says `fn conventions()` will *register* handlers in order once
+/// issue #1840 lands, and statement order in that registering function —
+/// not a claiming `fn`'s textual position in the file — becomes the
+/// authoritative resolution order then. Until #1840 lands, declaration
+/// order is the only order there is, so it is what this dispatches on; do
+/// not treat it as a rule worth entrenching or optimizing around. Two
+/// patterns that can both claim one line get no diagnostic today except
+/// the narrow byte-identical case ([`diagnose_duplicate_patterns`], issue
+/// #1848) — a genuinely overlapping (non-identical) pair silently
+/// prefers the earlier one, exactly the failure mode "pattern power
+/// proportional to auditability" (`docs/prose-dialect-spec.md` §3.5b)
+/// exists to keep visible, not eliminate outright.
 pub(super) fn try_claim(
     file_id: FileId,
     node: &SyntaxNode,

@@ -246,7 +246,11 @@ following from native having real declaration nodes:
   captures must each bind a real parameter on the declaration (`E160`); a
   `claims` pattern additionally requires the *converse* — every parameter
   must be bound by some named capture (`E167`), since a claimed line's
-  rewritten call has no other source of arguments. `@[style(key =
+  rewritten call has no other source of arguments. Two claiming handlers
+  declaring byte-identical `claims` patterns is `E168` (issue #1848) — the
+  narrow, sound slice of "these two patterns compete for the same line"
+  this surface detects; see that code's own doc for what it does and does
+  not catch. `@[style(key =
   "value", …)]` (issue #1719) is a companion annotation requiring a
   paired `@[element]` on the same declaration (`E163`); each key must be
   `line`, `dispatch`, or one of `element`'s captures (`E162`), and a
@@ -255,6 +259,12 @@ following from native having real declaration nodes:
   the same as each other — but a `claims`-spelled `@[element]` is legal
   only above a **top-level `fn`** (`E112` otherwise): the rewrite is an
   expression call, and a `flow`/nested `Stitch` is not callable as one.
+  "Top-level" means a direct child of the file — a `fn` declared inside a
+  `module { … }` block is **also** `E112` (issue #1847), even though it
+  reads as un-nested by `flow`/`fn`-depth alone: the handler-collection
+  pass that builds the claim dispatch table only ever scans the file's
+  direct declarations, so admitting a module-nested claim there would
+  validate and then silently register nothing to claim with.
 
 Everything else is the reserved-namespace rule (§1.1) doing its job: an
 unknown name is `E111`, a recognized name out of placement is `E112`, and

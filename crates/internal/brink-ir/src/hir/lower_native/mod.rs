@@ -183,6 +183,14 @@ pub fn lower(
         &mut diags,
     );
 
+    // `E168` (issue #1848): only after the whole file is lowered, since it
+    // needs `elements.matches` — the ground truth for which handlers
+    // actually won a claim — to tell a genuinely dead byte-identical twin
+    // from one that is live for lines inside an earlier twin's own body
+    // (`try_claim`'s own-declaration exclusion). See
+    // `element::diagnose_duplicate_patterns`'s doc.
+    element::diagnose_duplicate_patterns(file_id, &elements, &mut diags);
+
     // `var`/`const`/`flags` are hoisted flat regardless of nesting — a
     // whole-tree walk, same posture ink's D6 ruling requires of every
     // frontend (`docs/hir-admission-contract.md` D6: "the global vecs are

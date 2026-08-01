@@ -1340,6 +1340,40 @@ pub enum DiagnosticCode {
     /// alongside issue #1839's `block` declaration surface, which claimed
     /// `E166` first (merged into `main` first) — see that code's own doc.
     E167,
+    /// Two `@[element(claims = "…")]` handlers declare byte-identical
+    /// patterns, and the later-declared one never actually won a claim in
+    /// this file — so it is dead code.
+    ///
+    /// Issue #1848: the interim (pre-#1840) dispatch order is top-level
+    /// declaration order with first-match-wins (`hir::lower_native::
+    /// element::try_claim`'s own doc) — an undocumented rule until this
+    /// issue, and one with no diagnostic when two patterns can both claim
+    /// the same line. This is the *sound*,
+    /// narrow slice of that check: identical patterns provably match
+    /// identical inputs, so the overlap is certain, not merely possible.
+    ///
+    /// A byte-identical twin is not *unconditionally* dead, though:
+    /// `try_claim` excludes a handler from claiming lines inside its own
+    /// declaration (the staging rule), and that exclusion does not extend
+    /// to a later twin — the later twin is exactly the handler that *can*
+    /// claim a line living inside the earlier one's own body. So this
+    /// diagnosis runs after the whole file is lowered and only fires when
+    /// the later twin produced zero actual claims
+    /// (`hir::lower_native::element::diagnose_duplicate_patterns`'s own
+    /// doc) — a later twin that is live for even one line is not flagged.
+    ///
+    /// General overlap between two *different* patterns (e.g. one whose
+    /// matches are a strict subset of the other's) is real and valuable —
+    /// the issue's own framing calls it "the genuinely valuable half" —
+    /// but is **not** detected here: proving it soundly needs either a
+    /// witness string both patterns can be shown to accept or a full
+    /// regex-intersection analysis, neither of which this slice builds.
+    /// Tracked as a follow-up, not silently out of scope — see the
+    /// issue thread. `Warning` by default (`@[allow(E168)]`-suppressible,
+    /// like every other `Warning`-tier code) since a duplicate claim is
+    /// dead code, not a hard error the way an unregistered claim (`E112`)
+    /// is.
+    E168,
 }
 
 impl DiagnosticCode {
@@ -1520,6 +1554,7 @@ impl DiagnosticCode {
         Self::E165,
         Self::E166,
         Self::E167,
+        Self::E168,
     ];
 
     /// The stable string representation (e.g., `"E001"`).
@@ -1697,6 +1732,7 @@ impl DiagnosticCode {
             Self::E165 => "E165",
             Self::E166 => "E166",
             Self::E167 => "E167",
+            Self::E168 => "E168",
         }
     }
 
@@ -1967,6 +2003,9 @@ impl DiagnosticCode {
             Self::E167 => {
                 "a natural-notation `@[element(claims = \"…\")]` handler declares a parameter its pattern never captures"
             }
+            Self::E168 => {
+                "this `@[element(claims = \"…\")]` pattern is byte-identical to an earlier-declared handler's, and never won a claim of its own — it is dead code"
+            }
         }
     }
 
@@ -2002,7 +2041,12 @@ impl DiagnosticCode {
             // vocabulary to be binding raises them with
             // `[lints] E164 = "deny"`.
             | Self::E164
-            | Self::E165 => Severity::Warning,
+            | Self::E165
+            // Issue #1848: a duplicate claiming pattern is dead code (the
+            // earlier-declared handler always wins first), not a hard
+            // error — `Warning`-tier so it stays `[lints]`-configurable and
+            // `@[allow(E168)]`-suppressible, same posture as E164/E165.
+            | Self::E168 => Severity::Warning,
             // Issue #1674: the one code whose *default* is the `Info`
             // advisory tier rather than `Warning` — RULED "off or info by
             // default" (a single-shot project should not be nagged) while
@@ -2190,6 +2234,7 @@ impl DiagnosticCode {
             "E165" => Some(Self::E165),
             "E166" => Some(Self::E166),
             "E167" => Some(Self::E167),
+            "E168" => Some(Self::E168),
             _ => None,
         }
     }

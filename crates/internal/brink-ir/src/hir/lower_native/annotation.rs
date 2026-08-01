@@ -237,8 +237,24 @@ fn is_consumed_position(name: &str, line: &SyntaxNode) -> bool {
         // on a nested `fn`, would parse and validate and then claim
         // nothing — exactly the silent no-op the `@`-namespace rule exists
         // to prevent — so it is reported misplaced (`E112`) instead.
-        ELEMENT if declares_claim(line) => attached_declaration(line)
-            .is_some_and(|d| d.kind() == N::FN_DECL && container_nesting_depth(&d) == 0),
+        //
+        // "Top-level" here means exactly what [`super::element::collect`]
+        // scans: a direct child of the file's `SOURCE_FILE` node, not
+        // merely `container_nesting_depth == 0`. A `fn` declared inside a
+        // `module { … }` block also has depth `0` — a `MODULE_DECL`
+        // ancestor is not a `FLOW_DECL`/`FN_DECL`, so it does not count as
+        // a nesting level (see `container_nesting_depth`'s own doc) — but
+        // `collect` only iterates `root.children()`, so a claim nested in
+        // a module would validate here and then never be registered as a
+        // handler at all: a silent drop (issue #1847). `walk_top_level`
+        // already recurses into a module's body and lowers its `fn`s to
+        // ordinary `Knot`s (`module_block_is_flagged_and_flattened`), so
+        // this is reachable *today*, not only once module lowering "lands"
+        // — it is misplaced now, until claiming inside a module is a
+        // designed, registered mechanism of its own.
+        ELEMENT if declares_claim(line) => attached_declaration(line).is_some_and(|d| {
+            d.kind() == N::FN_DECL && d.parent().is_some_and(|p| p.kind() == N::SOURCE_FILE)
+        }),
         // The module-rename record is a *file-level* fact — `module::
         // lower_file_module` scans `SOURCE_FILE`'s own children for it.
         WAS => line.parent().is_some_and(|p| p.kind() == N::SOURCE_FILE),
