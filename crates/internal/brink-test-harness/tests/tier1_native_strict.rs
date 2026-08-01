@@ -72,8 +72,9 @@ fn corpus_dir() -> PathBuf {
 /// `(case, code, message)` — sorted, exactly as [`strict_findings`] returns
 /// them. Grouped by root cause, each group carrying its classification and —
 /// where the classification is "defect" rather than "expected" — the issue
-/// that tracks it (#1909, #1910, #1911, #1912, all filed from #1882's first
-/// sweep).
+/// that tracks it (#1909, #1910, #1912, all filed from #1882's first
+/// sweep; #1911 is FIXED — see Group D — and no `BASELINE` row references
+/// it any more).
 ///
 /// **Group A — `content`-typed parameters (`annotations-element`), tracked
 /// by issue #1912.** This is the fixture issue #1864 named when it filed the

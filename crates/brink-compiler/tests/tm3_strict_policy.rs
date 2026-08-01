@@ -991,6 +991,26 @@ fn strict_string_plus_float_concat_compiles_clean() {
 }
 
 #[test]
+fn strict_float_plus_string_concat_compiles_clean() {
+    // Missing-coverage review finding: the both-orders precedent is set by
+    // `strict_string_plus_int_concat_compiles_clean`/
+    // `strict_int_plus_string_concat_compiles_clean` above for the `int`
+    // pairing, but `float + string` (as opposed to `string + float`) was
+    // never exercised — `is_string_numeric_concat` covers it (`(Ty::Int |
+    // Ty::Float, Ty::String)`), so this is a coverage gap only, not a
+    // production fix.
+    let result = compile_mem(
+        "=== function concat_float(): string ===\n\
+         ~ temp total: float = 0.0\n\
+         ~ total = total + 1.0\n\
+         ~ return total + \":t\"\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    );
+    assert!(result.is_ok(), "{result:?}");
+}
+
+#[test]
 fn strict_chained_string_int_concat_compiles_clean() {
     // Mirrors the native corpus fixture exactly: `keys + ":" + total` is
     // `(string + string) + int`, left-associative.
@@ -1001,6 +1021,57 @@ fn strict_chained_string_int_concat_compiles_clean() {
          ~ total = total + 1\n\
          ~ keys = keys + \"a\"\n\
          ~ return keys + \":\" + total\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    );
+    assert!(result.is_ok(), "{result:?}");
+}
+
+// ── Review finding (BLOCKING): `+=` reaches the same string-numeric shape
+// as infix `+` through a completely different pipeline seam — `Stmt::
+// Assignment`/`BlockStmt::Assignment`'s `AssignOp::Add`, not `infer_infix`
+// — and was still falsely rejecting under strict. `+=` desugars to the same
+// runtime `Add` arm as `x = x + y` (`value_ops::binary_op`), so it must
+// carry the identical string-numeric carve-out. Covers all three assignable
+// target kinds `check_declared_assign_target`/`observe` distinguish: an
+// unannotated `~ temp`, an annotated `~ temp: T`, and a global `VAR`.
+
+#[test]
+fn strict_temp_plus_eq_string_int_concat_compiles_clean() {
+    let result = compile_mem(
+        "=== function concat_temp(): string ===\n\
+         ~ temp keys = \"k:\"\n\
+         ~ temp total = 5\n\
+         ~ keys += total\n\
+         ~ return keys\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    );
+    assert!(result.is_ok(), "{result:?}");
+}
+
+#[test]
+fn strict_annotated_temp_plus_eq_string_int_concat_compiles_clean() {
+    let result = compile_mem(
+        "=== function concat_annotated_temp(): string ===\n\
+         ~ temp keys: string = \"k:\"\n\
+         ~ temp total = 5\n\
+         ~ keys += total\n\
+         ~ return keys\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    );
+    assert!(result.is_ok(), "{result:?}");
+}
+
+#[test]
+fn strict_var_plus_eq_string_int_concat_compiles_clean() {
+    let result = compile_mem(
+        "VAR keys = \"k:\"\n\
+         === function concat_var(): string ===\n\
+         ~ temp total = 5\n\
+         ~ keys += total\n\
+         ~ return keys\n",
         Dialect::Brink,
         TypePolicy::Strict,
     );

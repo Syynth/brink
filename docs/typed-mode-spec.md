@@ -135,7 +135,13 @@ is part of the same definition's execution, not a separate callable.
   `Sub`/`Mul`/`Div`/`Mod` at runtime — those keep the same-type unify and
   still report `E066`), and `Int`/`Float` only (`Bool` has no
   `String`/`Bool` `Add` arm at runtime either, so `"x" + true` is still a
-  genuine `E066` conflict, not display concatenation).
+  genuine `E066` conflict, not display concatenation). The rule covers
+  `+=` too, not just infix `+`: `keys += total` is the same runtime `Add`
+  arm as `keys = keys + total` (review finding on this issue's own PR —
+  `Stmt::Assignment`/`BlockStmt::Assignment`'s `AssignOp::Add` is a
+  separate inference seam from `infer_infix` and needed the identical
+  carve-out to avoid rejecting the same legal code under a different
+  spelling).
 
 ## 5. Collections and the empty-literal rule — PROPOSED
 

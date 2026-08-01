@@ -18,4 +18,7 @@ runtime's own `Add` behavior (`value_ops::binary_op`'s `String`/`Int` and
 unconditionally). The carve-out is scoped exactly to that runtime
 behavior: `Add` only, and `Int`/`Float` only — `string + bool` and
 string-numeric `-`/`*`/`/`/`%` still report `E066`, since the runtime
-defines no such operation.
+defines no such operation. Covers the `+=` compound-assignment spelling
+too (`keys += total`), not just infix `+` — it reaches the runtime's same
+`Add` arm through a separate inference seam (`Stmt::Assignment`/
+`BlockStmt::Assignment`) that needed the identical carve-out.

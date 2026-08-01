@@ -24,9 +24,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use brink_format::DefinitionId;
 use brink_ir::{
-    Block, BlockStmt, Choice, ChoiceSet, CondKind, Conditional, Content, ContentPart, DivertPath,
-    DivertTarget, ElseBranch, Expr, IfStmt, InfixOp, LogicBlock, Name, Path as HirPath, PrefixOp,
-    Stmt, StringPart, SymbolIndex, SymbolKind,
+    AssignOp, Block, BlockStmt, Choice, ChoiceSet, CondKind, Conditional, Content, ContentPart,
+    DivertPath, DivertTarget, ElseBranch, Expr, IfStmt, InfixOp, LogicBlock, Name, Path as HirPath,
+    PrefixOp, Stmt, StringPart, SymbolIndex, SymbolKind,
 };
 use rowan::TextRange;
 
@@ -3186,14 +3186,30 @@ impl InferPass<'_, '_> {
                 self.bump_local_write(&t.name.text, origin);
             }
             Stmt::Assignment(a) => {
-                self.infer_expr(&a.target);
+                let target_ty = self.infer_expr(&a.target);
                 let ty = self.infer_expr(&a.value);
-                // Issue #1877: the RHS type checked against the target's
-                // already-known declared type — must run *before* `observe`
-                // below, which is what may drive the target Conflicted (see
-                // `check_declared_assign_target`'s doc for the ordering).
-                self.check_declared_assign_target(&a.target, &ty);
-                self.observe(&a.target, &ty);
+                // Issue #1911 review finding: `+=` reaches the exact same
+                // string-numeric display-concat shape as infix `+`
+                // (`infer_infix`'s `is_string_numeric_concat` arm, spec §4)
+                // — `keys += total` desugars to the same runtime
+                // `String`/`Int`|`Float` `Add` arm as `keys = keys + total`,
+                // so it must skip the same-type declared-check/observe pair
+                // below exactly like that arm skips unify: `check_declared_
+                // assign_target` would otherwise report `keys`'s declared
+                // `string` vs the numeric RHS as E063, and `observe`'s join
+                // would otherwise drive `keys` to `Ty::Conflicted` (E066) —
+                // both false positives on legal, running ink.
+                let is_string_numeric_concat_add =
+                    a.op == AssignOp::Add && is_string_numeric_concat(&target_ty, &ty);
+                if !is_string_numeric_concat_add {
+                    // Issue #1877: the RHS type checked against the target's
+                    // already-known declared type — must run *before*
+                    // `observe` below, which is what may drive the target
+                    // Conflicted (see `check_declared_assign_target`'s doc
+                    // for the ordering).
+                    self.check_declared_assign_target(&a.target, &ty);
+                    self.observe(&a.target, &ty);
+                }
                 self.record_write(&a.target);
                 // T2 §8 (issue #872): see `record_fn_write`.
                 let origin = self.fn_literal_write_origin(&a.value);
@@ -3363,11 +3379,17 @@ impl InferPass<'_, '_> {
                 self.bump_local_write(&t.name.text, origin);
             }
             BlockStmt::Assignment(a) => {
-                self.infer_expr(&a.target);
+                let target_ty = self.infer_expr(&a.target);
                 let ty = self.infer_expr(&a.value);
-                // Issue #1877: see `Stmt::Assignment`'s twin above.
-                self.check_declared_assign_target(&a.target, &ty);
-                self.observe(&a.target, &ty);
+                // Issue #1911: see `Stmt::Assignment`'s twin above — the
+                // string-numeric `+=` display-concat carve-out.
+                let is_string_numeric_concat_add =
+                    a.op == AssignOp::Add && is_string_numeric_concat(&target_ty, &ty);
+                if !is_string_numeric_concat_add {
+                    // Issue #1877: see `Stmt::Assignment`'s twin above.
+                    self.check_declared_assign_target(&a.target, &ty);
+                    self.observe(&a.target, &ty);
+                }
                 self.record_write(&a.target);
                 // T2 §8 (issue #872): see `Stmt::Assignment`'s twin above.
                 let origin = self.fn_literal_write_origin(&a.value);
