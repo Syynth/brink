@@ -117,6 +117,31 @@ is part of the same definition's execution, not a separate callable.
   `float(x)`, `string(x)` (typing rules per the doctrine).
 - Interpolation/printing (`{x}`) accepts every type — display is
   universal, not a coercion.
+- **`string + T` display-concatenation (RULED 2026-08-01, issue #1911):**
+  `+` between a `string` and an `int`/`float`, in either operand order,
+  types as `string` — not the same-type unify every other arithmetic use
+  of `+` gets. This is not a design choice so much as a description of
+  what the runtime has always done: `value_ops::binary_op`'s
+  `String`/`Int` and `String`/`Float` `Add` arms already stringify the
+  numeric operand unconditionally, with no fault path, so a stricter
+  compile-time rule would reject code the interpreter accepts and runs
+  correctly — the worst class of diagnostic bug on a checker whose whole
+  purpose is to be turned on over real stories. `"score: " + points` and
+  ink's chained-concat idiom (`keys + ":" + total`) are exactly this
+  shape and are common in real `.brink`/`.ink` source (see
+  `tests/tier1-native/for-k-v`'s `sum_and_keys`). The carve-out is
+  intentionally narrow, matching the runtime exactly rather than
+  generalizing to "string + T": `Add` only (there is no string-numeric
+  `Sub`/`Mul`/`Div`/`Mod` at runtime — those keep the same-type unify and
+  still report `E066`), and `Int`/`Float` only (`Bool` has no
+  `String`/`Bool` `Add` arm at runtime either, so `"x" + true` is still a
+  genuine `E066` conflict, not display concatenation). The rule covers
+  `+=` too, not just infix `+`: `keys += total` is the same runtime `Add`
+  arm as `keys = keys + total` (review finding on this issue's own PR —
+  `Stmt::Assignment`/`BlockStmt::Assignment`'s `AssignOp::Add` is a
+  separate inference seam from `infer_infix` and needed the identical
+  carve-out to avoid rejecting the same legal code under a different
+  spelling).
 
 ## 5. Collections and the empty-literal rule — PROPOSED
 
@@ -292,3 +317,10 @@ amount; }`) is an `Unknown` escape — correct under "call-site-driven
 inference is forbidden", but not what that sentence leads a writer to
 expect. §2 is RULED, so its wording is not re-struck here; the
 discrepancy is filed as #1915 for sign-off on the replacement text.
+
+**#1911 is now fixed** (this PR): §4's new `string + T` display-concat
+ruling above closes the spec gap this paragraph identifies, and the
+`for-k-v` case's two `E066` rows are gone from `tier1_native_strict.rs`'s
+`BASELINE` — the sweep's finding count drops from 37 to 35, and `for-k-v`
+now produces no strict finding at all, so the case count drops from 7 of
+14 to 6 of 14.

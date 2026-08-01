@@ -1237,6 +1237,40 @@ fn a_well_typed_coalescing_chain_still_compiles_under_strict() {
     );
 }
 
+// ─── Issue #1911 review finding (BLOCKING): `+=` reaches the same
+// string-numeric display-concat shape as infix `+`, but through a
+// different HIR seam — `Assignment { op: AssignOp::Add }`, built by both
+// `hir::lower_native::control_flow::lower_assignment` (this file's native
+// `.brink` path) and `hir::lower::content::logic_line` (the ink-syntax
+// path already covered by `tm3_strict_policy.rs`). Both `InferPass::
+// infer_stmt`'s `Stmt::Assignment`/`BlockStmt::Assignment` arms needed the
+// carve-out, not just `infer_infix`. This exercises the native code-ground
+// `let`/`+=` forms (`parser/stmt.rs`'s `LET_STMT`/`ASSIGN_STMT`), which
+// `tm3_strict_policy.rs`'s in-memory `main.ink` harness can never reach.
+
+/// `keys += total` (`string += int`) inside a native `fn` body must type as
+/// `string`, matching `value_ops::binary_op`'s runtime `Add` arm exactly —
+/// mirrors the golden `tests/tier1-native/for-k-v` fixture's `keys = keys +
+/// k` shape, just through the compound-assignment operator instead.
+#[test]
+fn e066_native_string_plus_eq_int_concat_compiles_clean() {
+    let source = concat!(
+        "fn concat_temp() {\n",
+        "  let keys = \"k:\";\n",
+        "  let total = 5;\n",
+        "  keys += total;\n",
+        "  return keys;\n",
+        "}\n",
+        "flow main() {\n  {concat_temp()}\n  -> END\n}\n",
+    );
+    let result = compile_native("plus-eq-string-int", source, native_strict_options());
+    assert!(
+        result.is_ok(),
+        "native `string += int` must compile clean under strict, matching infix `+`: {:?}",
+        result.map(|_| ()).err()
+    );
+}
+
 // ─── B1b the `as` binding (issue #1475): E145/E146/E147 ────────────────
 //
 // Native-only, same reasoning as the E066 block above — an `AS_BINDING`

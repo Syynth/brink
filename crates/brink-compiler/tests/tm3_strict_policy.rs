@@ -852,14 +852,21 @@ fn strict_temp_later_read_conflict_reports_only_e066_not_e063() {
     // a *later* read that independently conflicts the same local further
     // down the body. Here `t`'s initializer (an unregistered external call)
     // infers `Unknown`, so `~ t = "hi"` is not itself a same-write conflict
-    // and used to record an `E063` fact; the subsequent `t + 1` then joins
-    // `int` against the temp's now-`string` type, driving it `Conflicted`
-    // and independently reporting `E066` — double-reporting the same
-    // disagreement. `infer_def_body`'s post-walk filter drops any fact
-    // whose target's *final* whole-body type is `Conflicted`.
+    // and used to record an `E063` fact; the subsequent `t + true` then
+    // joins `bool` against the temp's now-`string` type, driving it
+    // `Conflicted` and independently reporting `E066` — double-reporting
+    // the same disagreement. `infer_def_body`'s post-walk filter drops any
+    // fact whose target's *final* whole-body type is `Conflicted`.
+    //
+    // Deliberately `t + true`, not `t + 1` (issue #1911): `string + int`
+    // is now the display-concat carve-out this PR adds — a `string`/`int`
+    // pairing here would leave `t` typed `string` (not `Conflicted`),
+    // proving nothing about this double-reporting guard. `bool` stays
+    // outside the carve-out (no `String`/`Bool` `Add` arm in
+    // `value_ops::binary_op`), so it still drives a genuine `Conflicted`.
     let err = compile_mem(
         "EXTERNAL foo()\n=== function f() ===\n~ temp t: int = foo()\n~ t = \"hi\"\n\
-         ~ return t + 1\n",
+         ~ return t + true\n",
         Dialect::Brink,
         TypePolicy::Strict,
     )
@@ -930,4 +937,166 @@ fn gradual_var_assignment_mismatch_still_compiles() {
         TypePolicy::default(),
     );
     assert!(result.is_ok(), "{result:?}");
+}
+
+// ── Issue #1911: `string + int`/`string + float` concatenation must not
+// report E066 under strict types — this is ink's core display-concat
+// idiom (spec §4, amended by this PR), and the runtime already accepts it
+// unconditionally (`value_ops::binary_op`'s String/Int and String/Float
+// `Add` arms). Reduced from the issue's own repro and from the native
+// golden corpus fixture `tests/tier1-native/for-k-v/story.brink`
+// (`sum_and_keys`, `keys + ":" + total`), which runs correctly today and
+// must keep compiling clean under strict too.
+
+#[test]
+fn strict_string_plus_int_concat_compiles_clean() {
+    let result = compile_mem(
+        "=== function concat_int(): string ===\n\
+         ~ temp total = 0\n\
+         ~ total = total + 1\n\
+         ~ return \"t:\" + total\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    );
+    assert!(result.is_ok(), "{result:?}");
+}
+
+#[test]
+fn strict_int_plus_string_concat_compiles_clean() {
+    // Same rule, reversed operand order (`int + string`, not just
+    // `string + int`) — the runtime's `Add` arms are symmetric
+    // (`value_ops::binary_op`), so the checker must be too.
+    let result = compile_mem(
+        "=== function concat_int(): string ===\n\
+         ~ temp total = 0\n\
+         ~ total = total + 1\n\
+         ~ return total + \":t\"\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    );
+    assert!(result.is_ok(), "{result:?}");
+}
+
+#[test]
+fn strict_string_plus_float_concat_compiles_clean() {
+    let result = compile_mem(
+        "=== function concat_float(): string ===\n\
+         ~ temp total: float = 0.0\n\
+         ~ total = total + 1.0\n\
+         ~ return \"t:\" + total\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    );
+    assert!(result.is_ok(), "{result:?}");
+}
+
+#[test]
+fn strict_float_plus_string_concat_compiles_clean() {
+    // Missing-coverage review finding: the both-orders precedent is set by
+    // `strict_string_plus_int_concat_compiles_clean`/
+    // `strict_int_plus_string_concat_compiles_clean` above for the `int`
+    // pairing, but `float + string` (as opposed to `string + float`) was
+    // never exercised — `is_string_numeric_concat` covers it (`(Ty::Int |
+    // Ty::Float, Ty::String)`), so this is a coverage gap only, not a
+    // production fix.
+    let result = compile_mem(
+        "=== function concat_float(): string ===\n\
+         ~ temp total: float = 0.0\n\
+         ~ total = total + 1.0\n\
+         ~ return total + \":t\"\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    );
+    assert!(result.is_ok(), "{result:?}");
+}
+
+#[test]
+fn strict_chained_string_int_concat_compiles_clean() {
+    // Mirrors the native corpus fixture exactly: `keys + ":" + total` is
+    // `(string + string) + int`, left-associative.
+    let result = compile_mem(
+        "=== function sum_and_keys(): string ===\n\
+         ~ temp total = 0\n\
+         ~ temp keys = \"\"\n\
+         ~ total = total + 1\n\
+         ~ keys = keys + \"a\"\n\
+         ~ return keys + \":\" + total\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    );
+    assert!(result.is_ok(), "{result:?}");
+}
+
+// ── Review finding (BLOCKING): `+=` reaches the same string-numeric shape
+// as infix `+` through a completely different pipeline seam — `Stmt::
+// Assignment`/`BlockStmt::Assignment`'s `AssignOp::Add`, not `infer_infix`
+// — and was still falsely rejecting under strict. `+=` desugars to the same
+// runtime `Add` arm as `x = x + y` (`value_ops::binary_op`), so it must
+// carry the identical string-numeric carve-out. Covers all three assignable
+// target kinds `check_declared_assign_target`/`observe` distinguish: an
+// unannotated `~ temp`, an annotated `~ temp: T`, and a global `VAR`.
+
+#[test]
+fn strict_temp_plus_eq_string_int_concat_compiles_clean() {
+    let result = compile_mem(
+        "=== function concat_temp(): string ===\n\
+         ~ temp keys = \"k:\"\n\
+         ~ temp total = 5\n\
+         ~ keys += total\n\
+         ~ return keys\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    );
+    assert!(result.is_ok(), "{result:?}");
+}
+
+#[test]
+fn strict_annotated_temp_plus_eq_string_int_concat_compiles_clean() {
+    let result = compile_mem(
+        "=== function concat_annotated_temp(): string ===\n\
+         ~ temp keys: string = \"k:\"\n\
+         ~ temp total = 5\n\
+         ~ keys += total\n\
+         ~ return keys\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    );
+    assert!(result.is_ok(), "{result:?}");
+}
+
+#[test]
+fn strict_var_plus_eq_string_int_concat_compiles_clean() {
+    let result = compile_mem(
+        "VAR keys = \"k:\"\n\
+         === function concat_var(): string ===\n\
+         ~ temp total = 5\n\
+         ~ keys += total\n\
+         ~ return keys\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    );
+    assert!(result.is_ok(), "{result:?}");
+}
+
+#[test]
+fn strict_string_plus_bool_still_blocks_compilation_with_e066() {
+    // The display-concat carve-out is scoped to `Int`/`Float` only,
+    // matching the runtime exactly: `value_ops::binary_op` has no
+    // `String`/`Bool` `Add` arm, so this combination must still be a
+    // genuine same-type conflict, not silently accepted.
+    let err = compile_mem(
+        "=== function concat_bool(): string ===\n\
+         ~ temp flag = true\n\
+         ~ return \"t:\" + flag\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    )
+    .expect_err(
+        "string + bool concatenation has no runtime support and must fail strict compilation",
+    );
+    let diags = diagnostics_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E066),
+        "{diags:?}"
+    );
 }
