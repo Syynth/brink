@@ -288,21 +288,39 @@ pub(crate) fn cue_line(p: &mut Parser<'_, '_>) {
 fn cue_name(p: &mut Parser<'_, '_>) {
     p.start_node(CUE_NAME);
     let mut depth: u32 = 0;
-    let mut prev_raw_was_backslash = false;
+    let mut backslash_count: u32 = 0;
     loop {
         let raw = p.nth_raw(0);
-        if matches!(raw, EOF | NEWLINE | HASH | COLON) {
+        if matches!(raw, EOF | NEWLINE | HASH) {
+            break;
+        }
+        // COLON is a stop only at depth zero: a colon inside braces (e.g.
+        // `{a:b}`) is part of an interpolation, not the cue's terminator.
+        if raw == COLON && depth == 0 {
             break;
         }
         if raw == R_BRACE && depth == 0 {
             break;
         }
+        // Track consecutive backslashes before a brace to detect escaped
+        // braces correctly (#1852: `\\{` should count the brace, not escape
+        // it). An L_BRACE is only excluded from depth counting if preceded
+        // by an odd number of backslashes; an even number means the
+        // backslashes themselves are escaped.
         match raw {
-            L_BRACE if !prev_raw_was_backslash => depth += 1,
-            R_BRACE => depth = depth.saturating_sub(1),
-            _ => {}
+            L_BRACE if backslash_count % 2 == 0 => {
+                depth += 1;
+                backslash_count = 0;
+            }
+            R_BRACE => {
+                depth = depth.saturating_sub(1);
+                backslash_count = 0;
+            }
+            BACKSLASH => backslash_count += 1,
+            _ => {
+                backslash_count = 0;
+            }
         }
-        prev_raw_was_backslash = raw == BACKSLASH;
         p.bump();
     }
     p.finish_node();

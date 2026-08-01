@@ -300,6 +300,34 @@ fn a_cue_name_with_an_escaped_open_brace_does_not_swallow_the_enclosing_blocks_o
 }
 
 #[test]
+fn a_cue_name_with_an_escaped_backslash_before_a_real_brace_counts_the_brace() {
+    // #1852: `\\{` is an escaped backslash (producing literal `\`), followed
+    // by a real interpolation-opening brace. The carve-out that excludes
+    // `\{` from the depth counter must not fire for `\\{`, because the
+    // backslash is itself escaped. Without the fix, the brace is not counted,
+    // so the matching `}` ends the cue name prematurely, and the text after
+    // it becomes stray content — a parse error.
+    let src = "flow f() { @NAME \\\\{ } coins. }\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::FLOW_DECL), 1);
+}
+
+#[test]
+fn a_cue_name_with_a_colon_inside_braces_does_not_terminate_the_name() {
+    // #1851: `cue_name()` has a COLON stop that mis-parses `@NAME {a:b}`
+    // — the colon inside the braces should not terminate the cue name
+    // because the braces create an interpolation context. The depth counter
+    // should guard the COLON check the same way it guards the R_BRACE check.
+    // Without the fix, the cue name ends at the colon, and the text after
+    // it becomes stray content — a parse error.
+    let src = "flow f() { @NAME {a:b} }\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::FLOW_DECL), 1);
+}
+
+#[test]
 fn a_cue_immediately_followed_by_the_enclosing_blocks_own_closer_still_stops_there() {
     // Guard against over-correcting, the same way `content.rs`'s
     // `a_tag_immediately_followed_by_the_enclosing_blocks_own_closer_still_stops_there`
