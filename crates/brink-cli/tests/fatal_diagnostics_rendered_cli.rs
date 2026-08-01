@@ -13,12 +13,18 @@
 //! through it) — the native (`.brink`) path via `compile_entry` directly,
 //! and the ink (`.ink`) path via `load_story_data` — and assert the
 //! resolved diagnostic code and message both appear in the process's
-//! `tracing`-rendered log output. Both runs set `RUST_LOG=error` (`main`'s
+//! `tracing`-rendered log output, and read `output.stdout` —
+//! `tracing_subscriber::fmt()`'s default writer, confirmed by direct run, is
+//! stdout, not stderr. `main`'s
 //! `tracing_subscriber::fmt().with_env_filter(EnvFilter::from_default_env())`
-//! emits nothing without it, the same convention
-//! `directory_prune_escape_hatch_cli.rs` uses for its own `RUST_LOG=warn`
-//! assertions) and read `output.stdout` — `tracing_subscriber::fmt()`'s
-//! default writer, confirmed by direct run, is stdout, not stderr.
+//! defaults to `LevelFilter::ERROR` with no `RUST_LOG` set at all (see
+//! `project_config_cli.rs`'s `compile_unknown_config_key_is_a_warning_not_a_compile_failure`,
+//! which documents the same default for its own filter check) — this is why
+//! `compile_renders_fatal_diagnostic_codes_for_native_entry` below runs with
+//! no `RUST_LOG` override at all, proving the default path the issue was
+//! actually filed about. `convert_renders_fatal_diagnostic_codes_for_ink_entry`
+//! still sets `RUST_LOG=error` explicitly, which is redundant with the
+//! default but harmless, to keep the two tests visibly symmetric.
 
 use std::fs;
 use std::path::PathBuf;
@@ -43,7 +49,12 @@ fn project_dir(tag: &str) -> PathBuf {
 /// `brink compile` on a native (`.brink`) entry with an unresolved divert
 /// target must print the resolved `[E024]` code and message, not only the
 /// bare count — exercises `compile_entry`'s own error path directly
-/// (`Commands::Compile` -> `run_compile` -> `compile_entry`).
+/// (`Commands::Compile` -> `run_compile` -> `compile_entry`). Deliberately
+/// runs with **no `RUST_LOG` override**: `tracing_subscriber`'s
+/// `EnvFilter::from_default_env()` defaults to `LevelFilter::ERROR` with
+/// nothing set, so this proves the default invocation path — the one
+/// `brink compile <broken-entry>` the issue was actually filed about, not
+/// just a `RUST_LOG=error`-assisted run.
 #[test]
 fn compile_renders_fatal_diagnostic_codes_for_native_entry() {
     let dir = project_dir("native-compile");
@@ -55,7 +66,6 @@ fn compile_renders_fatal_diagnostic_codes_for_native_entry() {
         .arg(&entry)
         .arg("-o")
         .arg(dir.join("main.inkb"))
-        .env("RUST_LOG", "error")
         .output()
         .unwrap();
 
