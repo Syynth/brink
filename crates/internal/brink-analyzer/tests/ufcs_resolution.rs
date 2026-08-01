@@ -409,6 +409,101 @@ fn main() {
     );
 }
 
+/// Review finding on issue #1909: `infer_ufcs_free_fn_result` records its
+/// call-graph edge ([`Self::record_call_edge`] in `infer/body.rs`) *before*
+/// the struct-receiver gate that declines a field-call site's result type —
+/// see that function's own "Why the edge is recorded before the receiver is
+/// even typed" doc. This pins the consequence directly: a struct receiver
+/// whose shape declares an `Fn`-typed field of the called name (so D1 says
+/// field access wins outright, and [`UfcsVerdict::FieldCall`] is the real
+/// verdict) still records a call-graph edge to a same-named, matching-arity
+/// free function that is never actually invoked. That is a deliberate,
+/// safe-direction over-approximation — the recorded call graph is a
+/// *superset* of the real one, never a subset — and this test pins both
+/// halves: the result type stays `Unknown` (the free function's return type
+/// never leaks into the field-call site), and the edge is recorded anyway.
+#[test]
+fn a_shadowed_free_function_still_gets_a_call_edge_despite_the_field_winning() {
+    let source = "\
+struct Guest {
+  greet: fn(int): int
+}
+
+fn greet(g, loudness) {
+  return loudness;
+}
+
+fn caller() {
+  let g = Guest { greet: \"hi\" };
+  return g.greet(3);
+}
+";
+    let (hir, manifest) = lower(source);
+
+    // The verdict is FieldCall, not a free-fn desugar — D1 field access wins.
+    let vs = verdicts(&hir, &manifest);
+    assert_eq!(vs.len(), 1, "one UFCS site: {vs:?}");
+    assert!(
+        matches!(vs[0], UfcsVerdict::FieldCall { .. }),
+        "field access must win over the same-named free function: {:?}",
+        vs[0]
+    );
+
+    let files = vec![(FileId(0), &hir, &manifest)];
+    let analysis = brink_analyzer::analyze(&files);
+
+    let hir_inputs = vec![(FileId(0), &hir)];
+    let manifest_inputs = vec![(FileId(0), &manifest)];
+    let inline_docs = brink_analyzer::project_inline_docs(&manifest_inputs);
+    let inference = brink_analyzer::infer_project(
+        &hir_inputs,
+        &analysis.index,
+        &analysis.resolutions,
+        None,
+        &inline_docs,
+    );
+
+    let caller_id = analysis
+        .index
+        .by_name
+        .get("caller")
+        .and_then(|ids| ids.first())
+        .copied()
+        .expect("caller");
+    let greet_fn_id = analysis
+        .index
+        .by_name
+        .get("greet")
+        .and_then(|ids| ids.first())
+        .copied()
+        .expect("free fn greet");
+
+    // The result type does NOT leak the free function's return type: the
+    // struct-receiver gate declines, so `caller`'s inferred return stays
+    // Unknown, never `int` (`greet`'s declared return type).
+    let caller_body = inference.bodies.get(&caller_id).expect("caller body");
+    assert_eq!(
+        caller_body.return_ty,
+        brink_analyzer::Ty::Unknown,
+        "the struct-receiver gate must decline the result type"
+    );
+
+    // The call edge IS recorded anyway — the documented over-approximation.
+    let inferable = brink_analyzer::inferable_defs_from_index(&analysis.index);
+    let edges = brink_analyzer::call_edges(
+        caller_id,
+        &hir_inputs,
+        &analysis.index,
+        &analysis.resolutions,
+        &inferable,
+        None,
+    );
+    assert!(
+        edges.contains(&greet_fn_id),
+        "the edge to the shadowed free function must still be recorded: {edges:?}"
+    );
+}
+
 // ─── Step 4: neither attempt succeeded ───────────────────────────────
 
 #[test]

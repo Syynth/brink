@@ -1237,6 +1237,40 @@ fn a_well_typed_coalescing_chain_still_compiles_under_strict() {
     );
 }
 
+// ─── Issue #1911 review finding (BLOCKING): `+=` reaches the same
+// string-numeric display-concat shape as infix `+`, but through a
+// different HIR seam — `Assignment { op: AssignOp::Add }`, built by both
+// `hir::lower_native::control_flow::lower_assignment` (this file's native
+// `.brink` path) and `hir::lower::content::logic_line` (the ink-syntax
+// path already covered by `tm3_strict_policy.rs`). Both `InferPass::
+// infer_stmt`'s `Stmt::Assignment`/`BlockStmt::Assignment` arms needed the
+// carve-out, not just `infer_infix`. This exercises the native code-ground
+// `let`/`+=` forms (`parser/stmt.rs`'s `LET_STMT`/`ASSIGN_STMT`), which
+// `tm3_strict_policy.rs`'s in-memory `main.ink` harness can never reach.
+
+/// `keys += total` (`string += int`) inside a native `fn` body must type as
+/// `string`, matching `value_ops::binary_op`'s runtime `Add` arm exactly —
+/// mirrors the golden `tests/tier1-native/for-k-v` fixture's `keys = keys +
+/// k` shape, just through the compound-assignment operator instead.
+#[test]
+fn e066_native_string_plus_eq_int_concat_compiles_clean() {
+    let source = concat!(
+        "fn concat_temp() {\n",
+        "  let keys = \"k:\";\n",
+        "  let total = 5;\n",
+        "  keys += total;\n",
+        "  return keys;\n",
+        "}\n",
+        "flow main() {\n  {concat_temp()}\n  -> END\n}\n",
+    );
+    let result = compile_native("plus-eq-string-int", source, native_strict_options());
+    assert!(
+        result.is_ok(),
+        "native `string += int` must compile clean under strict, matching infix `+`: {:?}",
+        result.map(|_| ()).err()
+    );
+}
+
 // ─── B1b the `as` binding (issue #1475): E145/E146/E147 ────────────────
 //
 // Native-only, same reasoning as the E066 block above — an `AS_BINDING`
@@ -2302,5 +2336,98 @@ fn e166_block_declaration_surface_and_content_param_both_compile_clean() {
         "`content` is now in `annotations::is_known_leaf`'s vocabulary, so its own \
          param annotation must not raise E061: {:?}",
         out.warnings
+    );
+}
+
+// ─── E065 through the UFCS spelling (issue #1909) ──────────────────────
+//
+// A UFCS-desugared call's *result type* escaped strict inference as
+// `Unknown` where the byte-equivalent direct-call spelling inferred
+// cleanly: `infer::body::infer_call`'s multi-segment branch returned
+// `Ty::Unknown` outright, because `brink-analyzer::ufcs` — the pass that
+// knows what the call desugars to — is type-directed and runs *after*
+// inference. `infer::body::InferPass::infer_ufcs_free_fn_result` re-derives
+// the free-function half of that verdict inline (see its own doc for what
+// it deliberately declines), so the desugar target's return type reaches
+// the call expression.
+//
+// Native (`.brink`) fixtures, same reasoning as the E063/E149-through-UFCS
+// blocks above: UFCS is native-only by construction.
+
+/// The issue's own reduced repro, both spellings in one file: `double(n)`
+/// was already clean and `n.double()` reported `E065` on the enclosing
+/// function's return type. Neither may now.
+#[test]
+fn e065_ufcs_call_result_types_like_the_direct_call_spelling() {
+    let source = "fn double(x) {\n  return x * 2;\n}\n\nfn direct_call() {\n  \
+                  let n = 21;\n  return double(n);\n}\n\nfn ufcs_call() {\n  \
+                  let n = 21;\n  return n.double();\n}\n";
+    let out = compile_native("ufcs-result-ty", source, native_strict_options())
+        .unwrap_or_else(|e| panic!("both call spellings must infer cleanly: {e:?}"));
+    assert!(
+        out.warnings.iter().all(|d| d.code != DiagnosticCode::E065),
+        "the UFCS spelling must carry `double`'s own return type: {:?}",
+        out.warnings
+    );
+}
+
+/// **D5 auto-ref** (`UfcsVerdict::FreeFnAutoRef`) is the other desugar
+/// shape and must type its result the same way — the receiver being passed
+/// by reference changes how the argument is *bound*, never what the
+/// function returns. Covered alongside the by-value shape because the
+/// E063-through-UFCS block above covers both variants too.
+#[test]
+fn e065_ufcs_auto_ref_call_result_types_like_the_direct_call_spelling() {
+    let source = "fn bump(ref n: int, amount: int): int {\n  n = n + amount;\n  return n;\n}\n\n\
+                  fn ufcs_auto_ref() {\n  let n = 21;\n  return n.bump(1);\n}\n";
+    let out = compile_native("ufcs-result-ty-auto-ref", source, native_strict_options())
+        .unwrap_or_else(|e| panic!("the auto-ref desugar must infer cleanly too: {e:?}"));
+    assert!(
+        out.warnings.iter().all(|d| d.code != DiagnosticCode::E065),
+        "the auto-ref UFCS spelling must carry `bump`'s own return type: {:?}",
+        out.warnings
+    );
+}
+
+/// The result type is the *target's*, not a blanket suppression of `E065`
+/// at UFCS call sites: a desugar target that genuinely returns nothing
+/// still hands its caller an `Unknown` return, and that still escapes.
+#[test]
+fn e065_still_escapes_when_the_ufcs_target_returns_nothing() {
+    let source = "fn touch(x: int) {\n  hp = x;\n}\n\nvar hp: int = 0\n\nfn caller() {\n  \
+                  let n = 21;\n  return n.touch();\n}\n";
+    let err = compile_native("ufcs-result-ty-void", source, native_strict_options())
+        .map(|_| ())
+        .expect_err("a void desugar target leaves the caller's return type Unknown");
+    let diags = errors_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E065),
+        "expected E065 on `caller`'s return type, got: {diags:?}"
+    );
+}
+
+/// A wrong-arity UFCS call is `E031` one pass later, so it is a program
+/// that does not compile — its result type is deliberately *not* derived
+/// from the same-named target.
+#[test]
+fn ufcs_result_ty_is_not_derived_for_a_wrong_arity_desugar() {
+    let source = "fn double(x: int): int {\n  return x * 2;\n}\n\nfn caller() {\n  \
+                  let n = 21;\n  return n.double(7);\n}\n";
+    let err = compile_native("ufcs-result-ty-arity", source, native_strict_options())
+        .map(|_| ())
+        .expect_err("`n.double(7)` desugars to a 2-argument call to a 1-param function");
+    let diags = errors_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E031),
+        "expected the desugar's own arity error, got: {diags:?}"
+    );
+    // The arity gate in `infer_ufcs_free_fn_result` is what this test is
+    // actually named for: without it, `n.double(7)` would still type as
+    // `int` (arity mismatches aside) and `caller`'s return type would infer
+    // cleanly, leaving only the desugar's own `E031` — this assertion is
+    // what distinguishes that from the gate doing its job.
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E065),
+        "expected E065 on `caller`'s return type (the arity gate must leave it Unknown), got: {diags:?}"
     );
 }

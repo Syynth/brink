@@ -72,8 +72,9 @@ fn corpus_dir() -> PathBuf {
 /// `(case, code, message)` — sorted, exactly as [`strict_findings`] returns
 /// them. Grouped by root cause, each group carrying its classification and —
 /// where the classification is "defect" rather than "expected" — the issue
-/// that tracks it (#1909, #1910, #1911, #1912, all filed from #1882's first
-/// sweep).
+/// that tracks it (#1909, #1910, #1912, all filed from #1882's first
+/// sweep; #1911 is FIXED — see Group D — and no `BASELINE` row references
+/// it any more).
 ///
 /// **Group A — `content`-typed parameters (`annotations-element`), tracked
 /// by issue #1912.** This is the fixture issue #1864 named when it filed the
@@ -104,13 +105,25 @@ fn corpus_dir() -> PathBuf {
 /// `fn f() { let n = 21; return double(n); }` is clean while
 /// `fn f() { let n = 21; return n.double(); }` reports `E065` — identical
 /// bodies, only the call spelling differs. `describe_double`
-/// (`FreeFnDesugar`) and `tally` (`m.len()`, `PreludeDesugar`) are the two
+/// (`FreeFnDesugar`) and `tally` (`m.len()`, `PreludeDesugar`) were the two
 /// forms of it here; `ufcs_through_capture`'s lambda-bound `f` (`items.len() + k`)
 /// is a third — issue #1910 fixed a lambda-bound local to take its own
 /// body-derived `Ty::Fn` type (see Group C below), but `items.len()`'s own
 /// result still types `Unknown` regardless (this group's own gap), so `f`'s
 /// inferred return stays `Unknown` too and both of its rows are unmoved by
-/// issue #1910.
+/// issue #1910. Distinct from issue #1483, which is the receiver-type-unknown
+/// direction; here the receiver's type is known and resolution succeeds.
+///
+/// **`describe_double`'s row is gone** — the free-function half landed
+/// (`infer::body::InferPass::infer_ufcs_free_fn_result`), so a UFCS call
+/// desugaring to a free function now carries that function's own return
+/// type. `tally`'s row stays: `m.len()` is a `PreludeDesugar`, whose result
+/// type would have to come from `infer::body`'s `infer_intrinsic`, and that
+/// function's arms `observe` operands and record `array_remove_calls` —
+/// running it on a desugared UFCS argument list would double-report `E149`
+/// against `ufcs::strict_verdict_diagnostics`' own copy. That is issue
+/// #1540's second symptom and is tracked separately (see #1909's own
+/// scope comment); it is deliberately not folded in here.
 ///
 /// `bump`/`heal`'s parameters are a different, **expected** row: their
 /// bodies genuinely place no constraint on the parameters (`n = n +
@@ -151,18 +164,22 @@ fn corpus_dir() -> PathBuf {
 ///   concrete call sites is not modeled in this slice") applied one level
 ///   up — §2 forbids call-site-driven inference, so `Unknown` is the
 ///   specified outcome here, the same as `bump`/`heal`'s params in Group B.
-/// - `field_through_capture`'s row changed shape rather than disappearing:
-///   see Group G below (issue #1924, discovered while implementing #1910).
+/// - `field_through_capture`'s rows are back to two ordinary `E065` Unknown-
+///   escapes, exactly the pre-#1910 shape: see Group G below (issue #1924,
+///   discovered while implementing #1910).
 ///
-/// **Group D — string concatenation (`for-k-v`), tracked by issue #1911.**
-/// A **checker gap**:
-/// `keys + ":" + total` marks the `int` local `total` as `Conflicted`
-/// (`E066`), because `+` is unified as a same-type operator. `"t:" + total`
-/// on a plain `int` reproduces it with no map or loop involved. This is
-/// legal, running ink — the fixture's golden transcript proves it — so
-/// either the operator's typing rule needs a `string + T` display-concat
-/// case or `docs/typed-mode-spec.md` §4 needs to rule that concatenation is
-/// not a coercion.
+/// **Group D — string concatenation (`for-k-v`), issue #1911, FIXED.**
+/// `keys + ":" + total` used to mark the `int` local `total` as
+/// `Conflicted` (`E066`), because `+` was unified as a same-type operator
+/// with no exception for display concatenation. `"t:" + total` on a plain
+/// `int` reproduced it with no map or loop involved. This was legal,
+/// running ink — the fixture's golden transcript proves it — and the
+/// runtime's own `Add` arms (`value_ops::binary_op`) already stringify a
+/// `string`/`int`-or-`float` pair unconditionally. `docs/typed-mode-spec.md`
+/// §4 now rules `string + int`/`string + float` (either operand order) as
+/// display-concat, typing to `string`; `infer_infix`
+/// (`brink-analyzer/src/infer/body.rs`) carries the rule. `for-k-v` no
+/// longer produces any strict finding — it is no longer in `BASELINE`.
 ///
 /// **Group E — genuinely unconstrained bindings (`array-literal`,
 /// `as-binding`).** **Expected**, and specified: §5's empty-literal rule
@@ -193,14 +210,37 @@ fn corpus_dir() -> PathBuf {
 /// corrupt_the_temp_s_own_type`). Before #1910 this was unobservable: a
 /// lambda's signature was always rebuilt from written annotations only, so
 /// a mistyped field read inside a lambda body never reached its own
-/// `Ty::Fn`. #1910 made a lambda take its own body-derived signature, so
-/// `field_through_capture`'s `let f = |k| p.x + k;` now infers `f: fn(Point):
-/// Point` (the field read's wrong type dominates the `unify(Struct(Point),
-/// Unknown)` join, `Unknown` being the identity, and `k` gets `observe`d
-/// against that same wrong type) — clean of `E065` (the type is no longer
-/// `Unknown`!) but wrong, and the call site `f(1)` now reports a misleading
-/// `E063` blaming the literal `1` rather than the actual bug, `p.x`'s own
-/// mistyped read.
+/// `Ty::Fn`.
+///
+/// #1910 first made a lambda take its own body-derived signature
+/// unconditionally, so `field_through_capture`'s `let f = |k| p.x + k;`
+/// inferred `f: fn(Point): Point` (the field read's wrong type dominates the
+/// `unify(Struct(Point), Unknown)` join, `Unknown` being the identity, and
+/// `k` got `observe`d against that same wrong type) — clean of `E065` (the
+/// type is no longer `Unknown`!) but wrong, and the call site `f(1)`
+/// reported a misleading `E063` blaming the literal `1` rather than the
+/// actual bug, `p.x`'s own mistyped read. Worse, that same corruption
+/// wasn't confined to `field_through_capture`'s own return position — a
+/// dotted field read *anywhere* in a lambda body could poison a completely
+/// unrelated param or return through an ordinary `unify`/`observe` (e.g.
+/// `fold(items, 0, |a, b| p.x + a + b)`, where `p.x`'s mistyped `Struct`
+/// joins with `a`, corrupting the fold accumulator's own type and
+/// regressing previously-clean strict code with no source-level
+/// workaround — a second review finding on #1910).
+///
+/// Fixed (still within #1910's own PR, as a follow-up review fix, pending
+/// #1924's real field-type table): `InferPass::infer_path` now flags a
+/// multi-segment path that resolves to a *value*-kind symbol (the "field
+/// access spelled as a path" shape) via `dotted_field_read_tainted`, and
+/// `infer_lambda`'s `body_ty`/`narrowed_params` overlay refuses to trust
+/// anything derived from a walk that hit it — falling back to the
+/// pre-#1910, annotation-only posture instead. `field_through_capture`'s
+/// `f` is back to two ordinary `E065` Unknown-escapes (its return type and
+/// its temp `f`), the same shape it had before #1910 ever read a lambda's
+/// own body back — an honest gap again, not a wrong type. `p.x` itself
+/// still (incorrectly) types as `Ty::Struct("Point")` at the `infer_path`
+/// level; only the lambda-signature overlay refuses to trust it. #1924
+/// remains open for the real fix (a static field-type table).
 const BASELINE: &[(&str, &str, &str)] = &[
     // Group A
     (
@@ -277,24 +317,25 @@ const BASELINE: &[(&str, &str, &str)] = &[
         "`g` is called as a function value but its type escapes strict inference as Unknown \
          — annotate (`fn(T…): R`) or restructure",
     ),
-    // Group D
-    (
-        "for-k-v",
-        "E066",
-        "`sum_and_keys`'s return type is Conflicted under strict types — its uses disagree \
-         on its type (observed as `Conflicted`)",
-    ),
-    (
-        "for-k-v",
-        "E066",
-        "`sum_and_keys`'s temp `total` is Conflicted under strict types — its uses disagree \
-         on its type (observed as `Conflicted`)",
-    ),
-    // Group G (lambda-verbs) — E063 sorts before E065 within this case
+    // Group D (for-k-v) — issue #1911, FIXED: string+int/string+float
+    // display-concat no longer marks `total` Conflicted, so `for-k-v`
+    // produces no strict findings at all and has no rows here.
+    // Group G (lambda-verbs) — `field_through_capture`: the #1924 dotted-
+    // field-read gap, back to its pre-#1910 shape (two honest E065 Unknown
+    // escapes) now that `infer_lambda`'s overlay refuses to trust a walk
+    // that hit the mistyped read, rather than the misleading single E063
+    // this PR's first commit produced (see the module doc's Group G).
     (
         "lambda-verbs",
-        "E063",
-        "argument 1 of call through `f` has type `int` but its known type expects `Point`",
+        "E065",
+        "`field_through_capture`'s return type escapes strict inference as Unknown \
+         — annotate or restructure",
+    ),
+    (
+        "lambda-verbs",
+        "E065",
+        "`field_through_capture`'s temp `f` escapes strict inference as Unknown \
+         — annotate or restructure",
     ),
     // Group C residual (lambda-verbs) — `scaled`: call-site-driven inference
     // is forbidden by §2, so `factor` (and so the return) stays Unknown; not
@@ -335,12 +376,6 @@ const BASELINE: &[(&str, &str, &str)] = &[
         "ufcs",
         "E065",
         "`bump`'s parameter `n` escapes strict inference as Unknown — annotate or restructure",
-    ),
-    (
-        "ufcs",
-        "E065",
-        "`describe_double`'s return type escapes strict inference as Unknown \
-         — annotate or restructure",
     ),
     (
         "ufcs",

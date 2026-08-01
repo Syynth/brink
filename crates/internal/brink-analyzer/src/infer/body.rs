@@ -24,9 +24,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use brink_format::DefinitionId;
 use brink_ir::{
-    Block, BlockStmt, Choice, ChoiceSet, CondKind, Conditional, Content, ContentPart, DivertPath,
-    DivertTarget, ElseBranch, Expr, IfStmt, InfixOp, LogicBlock, Name, Path as HirPath, PrefixOp,
-    Stmt, StringPart, SymbolIndex, SymbolKind,
+    AssignOp, Block, BlockStmt, Choice, ChoiceSet, CondKind, Conditional, Content, ContentPart,
+    DivertPath, DivertTarget, ElseBranch, Expr, IfStmt, InfixOp, LogicBlock, Name, Path as HirPath,
+    PrefixOp, Stmt, StringPart, SymbolIndex, SymbolKind,
 };
 use rowan::TextRange;
 
@@ -287,6 +287,7 @@ fn new_pass<'a, 'b>(
         param_holes: BTreeSet::new(),
         pending_call_fn_args: Vec::new(),
         call_fn_args: BTreeMap::new(),
+        dotted_field_read_tainted: false,
     }
 }
 
@@ -478,6 +479,22 @@ fn lambda_own_binding_names(stmts: &[brink_ir::BlockStmt], out: &mut BTreeSet<St
     }
 }
 
+/// Whether `(l, r)` is the `string`/numeric display-concatenation shape
+/// `+` accepts under strict types (issue #1911, spec §4): a `string` paired
+/// with an `int` or `float`, in either operand order. Mirrors
+/// `value_ops::binary_op`'s `String`/`Int` and `String`/`Float` `Add`
+/// arms exactly — the runtime is the compatibility floor, so this stays a
+/// straight port of which pairs it accepts, not a broader "string + T"
+/// rule. `Bool` is deliberately excluded: the runtime has no
+/// `String`/`Bool` `Add` arm, so that pair still falls through to the
+/// general same-type unify and reports `E066` as before.
+fn is_string_numeric_concat(l: &Ty, r: &Ty) -> bool {
+    matches!(
+        (l, r),
+        (Ty::String, Ty::Int | Ty::Float) | (Ty::Int | Ty::Float, Ty::String)
+    )
+}
+
 #[expect(
     clippy::struct_excessive_bools,
     reason = "accumulator for the same independent facts BodyResult carries"
@@ -604,6 +621,23 @@ struct InferPass<'a, 'b> {
     /// §6.1: the folded caller-side row-variable material — see
     /// `EffectAtoms::call_fn_args`.
     call_fn_args: BTreeMap<(DefinitionId, u32), FnArgOrigins>,
+    /// Issue #1924 follow-up review on #1910: set the moment [`Self::
+    /// infer_path`] resolves a multi-segment path to a *value*-kind symbol
+    /// (`Param`/`Temp`/`Variable`/`Constant`) — the "dotted field read
+    /// spelled as a path" shape (`p.x`) that, for lack of a static
+    /// field-type table (#1924), resolves to its *head* variable's own type
+    /// rather than the field's. `infer_lambda` resets this to `false`
+    /// before walking a lambda's body and consults it afterward: if the
+    /// walk ever hit that mistyped case, the lambda's own `body_ty`/
+    /// `narrowed_params` overlay is discarded in favor of the pre-#1910
+    /// annotation-only posture, because an ordinary `unify`/`observe`
+    /// reachable from that mistyped value can otherwise poison a
+    /// completely unrelated param or return (`fold(items, 0, |a, b| p.x +
+    /// a + b)`: `p.x`'s mistyped `Struct` joins with `a`, corrupting the
+    /// fold accumulator's own type). Not part of [`FrameSnapshot`] — see
+    /// `infer_lambda`'s own save/reset/restore of this field for why a
+    /// manual scope, not the frame-snapshot mechanism, is correct here.
+    dotted_field_read_tainted: bool,
 }
 
 /// The `InferPass` fields scoped to a single lambda-body frame — see
@@ -1637,13 +1671,19 @@ impl InferPass<'_, '_> {
                 Ty::Unknown
             }
             // A lambda (issue #1685) is fn-colored always, so its type is a
-            // `Ty::Fn` row — built from what is *written*: an annotated
-            // param resolves, an unannotated one stays `Unknown` (mono-HM
-            // narrowing of a lambda's own params from its concrete call
-            // sites is not modeled in this slice, and inventing a type here
-            // would be worse than an honest `Unknown`). The body's value
-            // expression is inferred for its side effects (nested calls,
-            // uses) exactly like an interpolation's is.
+            // `Ty::Fn` row — since #1910, built from what the lambda's own
+            // body infers (mono-HM narrowing read back from the walk, the
+            // same overlay a top-level `fn`'s own params/return already get
+            // via `infer_def_body`), with what is *written* only the
+            // fallback where the body-derived type is still `Unknown`. Mono-
+            // HM narrowing of a lambda's own params from its concrete *call
+            // sites* is still not modeled in this slice (`scaled`'s own
+            // doc, `infer_lambda`'s "boundary this fix does NOT cross") —
+            // inventing a type from a call site would be worse than an
+            // honest `Unknown`, unlike a type the body itself already pins.
+            // See `infer_lambda` for the full read-back mechanics. The
+            // body's value expression is inferred for its side effects
+            // (nested calls, uses) exactly like an interpolation's is.
             //
             // `Ty::Fn` has carried an effect row since #1680 step 3, but a
             // lambda's is the unknown top element: composing one would mean
@@ -1705,6 +1745,27 @@ impl InferPass<'_, '_> {
             }
             return Ty::Unknown;
         };
+        // Issue #1924 follow-up review on #1910: a multi-segment path can be
+        // a genuine dotted namespace reference (`knot.stitch`) or a field
+        // access spelled as a path (`p.x`) — the latter resolves `def` to
+        // its *head* variable, not the field, because no static field-type
+        // table exists yet (#1924, the read-side twin of #994's write-side
+        // fix). `ty_of_def` below can't tell the two apart and returns the
+        // head's own type either way; flag the value-symbol case so
+        // `infer_lambda`'s `body_ty`/`narrowed_params` overlay (#1910) knows
+        // not to trust anything derived from this walk — see
+        // `Self::dotted_field_read_tainted`'s own field doc. A namespace
+        // reference resolves to a symbol kind not in this set, so it is
+        // unaffected.
+        if p.segments.len() > 1
+            && let Some(info) = self.ctx.index.symbols.get(&def)
+            && matches!(
+                info.kind,
+                SymbolKind::Param | SymbolKind::Temp | SymbolKind::Variable | SymbolKind::Constant
+            )
+        {
+            self.dotted_field_read_tainted = true;
+        }
         self.ty_of_def(def)
     }
 
@@ -1738,6 +1799,26 @@ impl InferPass<'_, '_> {
             }
         }
         match op {
+            // String-numeric display concatenation (issue #1911, spec §4):
+            // `+` between a `string` and an `int`/`float`, either operand
+            // order, is ink's core display-concat idiom ("t:" + total`,
+            // `keys + ":" + total`) — the runtime already defines it
+            // (`value_ops::binary_op`'s `String`/`Int` and `String`/`Float`
+            // `Add` arms stringify the numeric side and produce `string`;
+            // it never faults). Treating `+` as a same-type operator here
+            // marked the numeric operand `Conflicted` on code that
+            // compiles, runs, and is in the golden corpus today
+            // (`tests/tier1-native/for-k-v`) — the compatibility floor is
+            // "don't reject what the runtime accepts". Scoped narrowly to
+            // match that floor exactly: `Add` only (the runtime defines no
+            // string-numeric `Sub`/`Mul`/`Div`/`Mod`), and `Int`/`Float`
+            // only (there is no `String`/`Bool` `Add` arm, so that
+            // combination still falls through to the general same-type
+            // unify below and reports `E066` as before). Neither operand's
+            // own type is unified with the other's — concatenation
+            // observes nothing new about either side, unlike the general
+            // arithmetic arm's cross-side `observe` calls.
+            InfixOp::Add if is_string_numeric_concat(&l, &r) => Ty::String,
             InfixOp::Add
             | InfixOp::Sub
             | InfixOp::Mul
@@ -1807,6 +1888,143 @@ impl InferPass<'_, '_> {
         }
     }
 
+    /// Issue #1909: the **result type** of a UFCS-shaped call
+    /// (`recv.name(args)`) that desugars to a free function
+    /// (`name(recv, args)`), plus the call-graph edge that desugar implies.
+    ///
+    /// `brink_analyzer::ufcs` owns the *verdict* — which of D1's four
+    /// outcomes a UFCS site is — but it runs strictly **after** inference
+    /// (it is type-directed: [`ufcs::resolve`] takes the finished
+    /// [`InferenceResult`] to type receivers with), so it can never be the
+    /// thing that hands this pass a result type. Before this, every UFCS
+    /// call expression therefore typed `Ty::Unknown`, and that `Unknown`
+    /// propagated: `fn f() { let n = 21; return n.double(); }` reported
+    /// `E065` on `f`'s *return type* while the byte-equivalent
+    /// `return double(n);` was clean, and an `Unknown` result reaching a
+    /// call position is what [`Self::check_value_call`]'s own `Unknown` arm
+    /// turns into a further diagnostic downstream (the #1895 precedent).
+    ///
+    /// This re-derives only the one outcome it can reach without any of
+    /// that pass's inputs, and refuses (staying `Unknown`, exactly as
+    /// before) everywhere else:
+    ///
+    /// - **The desugar target** is looked up with
+    ///   [`resolve::lookup_unique_by_name`], the scope-free subset of the
+    ///   [`resolve::lookup_by_name`] call `ufcs::try_free_fn_desugar` makes
+    ///   — a [`BodyCtx`] carries no file imports, so an *ambiguous*
+    ///   cross-module name is declined rather than guessed at.
+    /// - **The arity must already agree** (`params.len() == arg_count + 1`,
+    ///   counting the receiver as the first argument, the same convention
+    ///   the desugar's own `E031` uses). A wrong-arity call is a hard error
+    ///   one pass later; typing it would be typing a program that does not
+    ///   compile.
+    /// - **A `Ty::Struct` receiver's *result type* is declined outright.**
+    ///   D1 says field access *wins* over a same-named free function, and
+    ///   deciding that needs the declared-shape table
+    ///   (`structs::declared_shapes`), which is not threaded into inference.
+    ///   Declining keeps the *result type* from ever contradicting the
+    ///   verdict `ufcs` will reach; a struct receiver's `FieldCall` result
+    ///   type stays `Unknown` (tracked separately), it does not silently
+    ///   become the free function's. This says nothing about the call-graph
+    ///   **edge**, which is already recorded above by the time this gate
+    ///   runs — see "Why the edge is recorded before the receiver is even
+    ///   typed" below. A struct receiver whose shape declares an `Fn`-typed
+    ///   field of the called name still gets an edge to a same-named,
+    ///   matching-arity free function that D1 never actually invokes. That
+    ///   is a deliberate over-approximation, not a bug: the recorded call
+    ///   graph is always a *superset* of the real one, so a spurious edge
+    ///   can at worst pull two unrelated defs into the same SCC or union an
+    ///   unrelated effect row — never miss a real call. Narrowing it needs
+    ///   the same shape table the result-type gate is missing.
+    /// - A **prelude verb** (`m.len()`, `UfcsVerdict::PreludeDesugar`) has
+    ///   no index symbol, so it never resolves here and keeps typing
+    ///   `Unknown`. Typing it means running [`Self::infer_intrinsic`] on
+    ///   the desugared argument list, whose arms `observe` operands and
+    ///   record `array_remove_calls` — the latter would double-report
+    ///   `E149` against `ufcs::strict_verdict_diagnostics`' own copy. That
+    ///   is issue #1540's second symptom, deliberately left alone here.
+    /// - A **projected receiver** (`party.members.heal(5)`) needs the same
+    ///   shape table the struct case does, so only a single-segment
+    ///   receiver is typed.
+    ///
+    /// ## Why the edge is recorded before the receiver is even typed
+    ///
+    /// [`Self::record_call_edge`] is a *structural* fact, and the three
+    /// per-def entry points that harvest structural facts
+    /// ([`super::call_edges`], [`super::referenced_globals`],
+    /// [`super::def_effect_atoms`] — `brink-db`'s fine-grained salsa
+    /// queries) all run this walk with an **empty globals map** and discard
+    /// every computed type. Gating the edge on the receiver's type would
+    /// make a `VAR`-receiver call an edge in `infer_project`'s monolithic
+    /// walk and *not* an edge in the composed one, so the two would infer
+    /// different signatures. Everything above the receiver gate reads only
+    /// the symbol index, so the edge is identical in both. (The result type
+    /// below is free to read `ctx.globals`: it is discarded by exactly
+    /// those three callers, and `solve_scc` — the one caller whose types
+    /// survive — always gets a real globals map.)
+    fn infer_ufcs_free_fn_result(
+        &mut self,
+        path: &HirPath,
+        receiver_def: DefinitionId,
+        arg_count: usize,
+    ) -> Ty {
+        let Some((method, receiver_segs)) = path.segments.split_last() else {
+            return Ty::Unknown;
+        };
+        let Some(target) = crate::resolve::lookup_unique_by_name(
+            self.ctx.index,
+            &method.text,
+            &[SymbolKind::Knot, SymbolKind::External],
+        ) else {
+            return Ty::Unknown;
+        };
+        let Some(info) = self.ctx.index.symbols.get(&target) else {
+            return Ty::Unknown;
+        };
+        if info.params.len() != arg_count + 1 {
+            return Ty::Unknown;
+        }
+        self.record_call_edge(target);
+
+        if receiver_segs.len() != 1 {
+            return Ty::Unknown;
+        }
+        let receiver_ty = self.ufcs_receiver_ty(receiver_def);
+        if receiver_ty.is_unresolved() || matches!(receiver_ty, Ty::Struct(_)) {
+            return Ty::Unknown;
+        }
+        self.ctx
+            .known_sigs
+            .get(&target)
+            .map_or(Ty::Unknown, |sig| sig.return_ty.clone())
+    }
+
+    /// The UFCS receiver's own type, **read-only** — the deliberate
+    /// counterpart to [`Self::ty_of_def`], which additionally records a
+    /// `VAR`/`CONST` read into `referenced_globals`.
+    ///
+    /// A receiver is only inspected here to decide whether D1's
+    /// field-access-wins rule could possibly apply (see
+    /// [`Self::infer_ufcs_free_fn_result`]); it is not a *reference* this
+    /// pass newly discovered, and recording one would change
+    /// [`super::EffectAtoms::reads`] for every UFCS call on a global — an
+    /// effect-row change that has nothing to do with typing the call's
+    /// result.
+    fn ufcs_receiver_ty(&self, def: DefinitionId) -> Ty {
+        let Some(info) = self.ctx.index.symbols.get(&def) else {
+            return Ty::Unknown;
+        };
+        match info.kind {
+            SymbolKind::Param | SymbolKind::Temp => {
+                self.locals.get(&info.name).cloned().unwrap_or(Ty::Unknown)
+            }
+            SymbolKind::Variable | SymbolKind::Constant => {
+                self.ctx.globals.get(&def).cloned().unwrap_or(Ty::Unknown)
+            }
+            _ => Ty::Unknown,
+        }
+    }
+
     fn infer_call(&mut self, path: &HirPath, args: &[Expr]) -> Ty {
         let arg_tys: Vec<Ty> = args.iter().map(|a| self.infer_expr(a)).collect();
         // `path.range` here is the callee `Path`'s whole span — this
@@ -1840,10 +2058,9 @@ impl InferPass<'_, '_> {
                 // being called, so classifying it as a T1c call-through-a-
                 // value would report the receiver's own (non-`Fn`) type as
                 // "not callable" — a false `E066` on every legal method
-                // call. `brink-analyzer::ufcs` owns this site's checking;
-                // the call's own type stays `Unknown` here, the same
-                // posture `Expr::FieldAccess` already takes (no static
-                // field-type table is threaded through inference).
+                // call. `brink-analyzer::ufcs` owns this site's *checking*
+                // — but not, since issue #1909, the call's own **result
+                // type**: see [`Self::infer_ufcs_free_fn_result`].
                 if path.segments.len() > 1 {
                     // Issue #1881: this pass cannot check anything against
                     // a UFCS receiver directly (see the comment above), but
@@ -1864,7 +2081,7 @@ impl InferPass<'_, '_> {
                         range: path.range,
                         args: arg_tys.clone(),
                     });
-                    return Ty::Unknown;
+                    return self.infer_ufcs_free_fn_result(path, def, args.len());
                 }
                 return self.infer_value_call(path, def, args, &arg_tys);
             }
@@ -2028,6 +2245,12 @@ impl InferPass<'_, '_> {
             param_holes: _,
             pending_call_fn_args: _,
             call_fn_args: _,
+            // Deliberately cumulative, not frame-scoped: `infer_lambda`
+            // manages this field's lifetime itself (reset before, consulted
+            // and restored after each lambda's own body walk) — see its own
+            // field doc for why the frame-snapshot mechanism is the wrong
+            // tool here.
+            dotted_field_read_tainted: _,
         } = self;
         FrameSnapshot {
             return_ty: return_ty.clone(),
@@ -2059,11 +2282,14 @@ impl InferPass<'_, '_> {
     }
 
     /// `|x| …` — a lambda (issue #1685) is fn-colored always, so its type is
-    /// a `Ty::Fn` row built from what is *written*: an annotated param
-    /// resolves, an unannotated one stays `Unknown` (mono-HM narrowing of a
-    /// lambda's own params from its concrete call sites is not modeled in
-    /// this slice, and inventing a type here would be worse than an honest
-    /// `Unknown`). The whole body is inferred for its side effects (nested
+    /// a `Ty::Fn` row — since #1910, built from what the lambda's own body
+    /// infers (mono-HM narrowing read back from the walk below), with what
+    /// is *written* only the fallback where the body-derived type is still
+    /// `Unknown`. Mono-HM narrowing of a lambda's own params from its
+    /// concrete *call sites* is still not modeled in this slice (inventing a
+    /// type from a call site would be worse than an honest `Unknown`,
+    /// unlike a type the body itself already pins). The whole body is
+    /// inferred for its side effects (nested
     /// calls, uses) exactly like an interpolation's value expression is —
     /// for a `LambdaBody::Block`, that means every `stmts` entry
     /// (`self.infer_block_stmt`) as well as the tail, not the tail alone:
@@ -2149,6 +2375,15 @@ impl InferPass<'_, '_> {
     /// optimization) — not #1680's own analyzer-side work, which has
     /// landed (Fork D retired T1c item 4's row field outright). Pinned by
     /// `brink-db/tests/issue_1680_lambda_effect_row_gap.rs`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one lambda-body walk threading three independent bare-name \
+                  shadows (locals, annotated, the #1924 dotted-field-read \
+                  taint) through both the Block and Expr body shapes — \
+                  splitting the shadow save/restore pairs across helper \
+                  functions would scatter the exact frame-scoping hazards \
+                  this function's own doc walks through in order"
+    )]
     fn infer_lambda(&mut self, l: &brink_ir::LambdaExpr) -> Ty {
         // Issue #1779: shadow this lambda's own param names for the whole
         // duration of walking its body — `stmts` *and* the tail/expr value
@@ -2178,14 +2413,23 @@ impl InferPass<'_, '_> {
         // `Conflicted`-poison) the lambda's own fresh one the moment its
         // first `TempDecl` writes it, and — for a param specifically — an
         // enclosing same-named local's type would seed the param itself.
+        // `self.annotated` is a *second* bare-name-keyed map with the exact
+        // same hazard: it is read through `own_annotation`'s bare-single-
+        // segment fallback (used by `or_own_annotation` for every intrinsic
+        // argument, and by `annotated_callee_ty` for a direct-call callee)
+        // during the body walk below, so an enclosing same-named ANNOTATED
+        // local's `~ temp` ascription would otherwise leak into a lambda
+        // param or temp of the same name (issue #1910 follow-up review) —
+        // shadowed here for the identical reason and duration as `locals`.
         // `frame_snapshot`/`restore_frame` below (issue #1816) already keeps
         // this contamination from ever reaching the *enclosing* frame once
         // the walk finishes; what it does not do is stop this function's own
-        // `body_ty`/`narrowed_params` overlay from reading contaminated
-        // values *during* the walk, which is what made this shadow
-        // necessary the moment #1910 started reading them at all. `saved`
-        // records exactly what (if anything) occupied each name so it can be
-        // put back verbatim, `None` when nothing did.
+        // `body_ty`/`narrowed_params` overlay — or any `own_annotation` read
+        // *during* the walk — from reading contaminated values, which is
+        // what made this shadow necessary the moment #1910 started reading
+        // them at all. `saved`/`saved_annotated` record exactly what (if
+        // anything) occupied each name in each map so it can be put back
+        // verbatim, `None` when nothing did.
         let mut shadow_names: BTreeSet<String> =
             l.params.iter().map(|p| p.name.text.clone()).collect();
         if let brink_ir::LambdaBody::Block { stmts, .. } = &l.body {
@@ -2195,6 +2439,18 @@ impl InferPass<'_, '_> {
             .iter()
             .map(|name| (name.clone(), self.locals.remove(name)))
             .collect();
+        let saved_annotated: Vec<(String, Option<Ty>)> = shadow_names
+            .iter()
+            .map(|name| (name.clone(), self.annotated.remove(name)))
+            .collect();
+        // Issue #1924 follow-up review on #1910: reset the taint flag to a
+        // fresh baseline for this lambda's own walk (mirrors the
+        // `return_ty`/`has_value_return` reset below) and save whatever the
+        // enclosing frame's value was, so a NESTED lambda's own dotted-field
+        // read cannot spuriously taint the ENCLOSING lambda's overlay too —
+        // each `infer_lambda` call judges only what its *own* body walk hit.
+        let outer_dotted_field_read_tainted =
+            std::mem::replace(&mut self.dotted_field_read_tainted, false);
         // Issue #1910: capture the body's own derivation of the lambda's
         // return type and each param's type — read back from `self.locals`
         // *before* any restore below discards it, into plain local
@@ -2294,9 +2550,29 @@ impl InferPass<'_, '_> {
                 (ty, narrowed)
             }
         };
-        // Undo the `self.locals` shadow (mirrors the `lambda_param_names`
-        // decrement below): restore whatever an enclosing same-named local
-        // held, or leave the name absent if nothing did.
+        // Issue #1924 follow-up review on #1910: if anything during this
+        // lambda's own walk hit the mistyped dotted-field-read case (see
+        // `Self::dotted_field_read_tainted`'s field doc), the `body_ty`/
+        // `narrowed_params` just computed above may have been poisoned by an
+        // ordinary `unify`/`observe` reachable from that mistyped value —
+        // discard them in favor of the pre-#1910 posture (an honest
+        // `Unknown`, overlaid by the written annotation below exactly like
+        // it was before this lambda ever read its own body back). Restore
+        // the enclosing frame's own taint state — consumed here, not
+        // propagated outward, exactly like `saved`/`saved_annotated` above.
+        let tainted = std::mem::replace(
+            &mut self.dotted_field_read_tainted,
+            outer_dotted_field_read_tainted,
+        );
+        let (body_ty, narrowed_params) = if tainted {
+            (Ty::Unknown, vec![Ty::Unknown; l.params.len()])
+        } else {
+            (body_ty, narrowed_params)
+        };
+        // Undo the `self.locals` and `self.annotated` shadows (mirrors the
+        // `lambda_param_names` decrement below): restore whatever an
+        // enclosing same-named local/annotation held, or leave the name
+        // absent if nothing did.
         for (name, prior) in saved {
             match prior {
                 Some(ty) => {
@@ -2304,6 +2580,16 @@ impl InferPass<'_, '_> {
                 }
                 None => {
                     self.locals.remove(&name);
+                }
+            }
+        }
+        for (name, prior) in saved_annotated {
+            match prior {
+                Some(ty) => {
+                    self.annotated.insert(name, ty);
+                }
+                None => {
+                    self.annotated.remove(&name);
                 }
             }
         }
@@ -3127,10 +3413,17 @@ impl InferPass<'_, '_> {
             // (`crate::comparator_contract`), exceedance-only.
             //
             // Result typing reads the callback's own `Ty::Fn` return where
-            // one is known (an annotated target reached through an inline
-            // `#fn(…)` literal), and degrades to `Unknown` otherwise —
-            // never a guess: `Ty::Fn` is the only evidence there is, since
-            // the verb never sees the callback body.
+            // one is known, and degrades to `Unknown` otherwise — never a
+            // guess: `Ty::Fn` is the only evidence there is, this arm itself
+            // never walks the callback body. Since #1910, an inline
+            // `|x| …` lambda literal's own `Ty::Fn` is no longer
+            // annotation-only, though: `infer_lambda` already read that
+            // callback's body-derived return back (mono-HM narrowing) by
+            // the time `arg_tys` reaches this arm, so `map`'s own result
+            // can come from an unannotated callback's body just as well as
+            // from an annotated target reached through an inline `#fn(…)`
+            // literal — this arm's own job stays "read the ret field",
+            // just over a `Ty::Fn` that now carries more real information.
             // `map_each` (§4, issue #1679 slice 2) shares `map`'s exact
             // typing shape — the effectful/pure split is a runtime-contract
             // difference, not a typing one — merged per clippy
@@ -3175,8 +3468,11 @@ impl InferPass<'_, '_> {
             // issue #1679 slice 2) — the Option-mapper, dropping `none`.
             // Same shape as `map`: read the callback's `Ty::Fn` return, and
             // unwrap one layer of `Option` when it's known; degrade to
-            // `Unknown` otherwise (never a guess — the verb never sees the
-            // callback body, only its declared return shape).
+            // `Unknown` otherwise (never a guess: this arm itself never
+            // walks the callback body, only reads its `Ty::Fn`'s declared
+            // return shape — see `map`'s own arm comment above for why,
+            // since #1910, that shape is no longer annotation-only for an
+            // inline lambda literal).
             "filter_map" => {
                 if let Some(f) = args.get(1) {
                     let hint = self.value_call_origin(f);
@@ -3337,14 +3633,30 @@ impl InferPass<'_, '_> {
                 self.bump_local_write(&t.name.text, origin);
             }
             Stmt::Assignment(a) => {
-                self.infer_expr(&a.target);
+                let target_ty = self.infer_expr(&a.target);
                 let ty = self.infer_expr(&a.value);
-                // Issue #1877: the RHS type checked against the target's
-                // already-known declared type — must run *before* `observe`
-                // below, which is what may drive the target Conflicted (see
-                // `check_declared_assign_target`'s doc for the ordering).
-                self.check_declared_assign_target(&a.target, &ty);
-                self.observe(&a.target, &ty);
+                // Issue #1911 review finding: `+=` reaches the exact same
+                // string-numeric display-concat shape as infix `+`
+                // (`infer_infix`'s `is_string_numeric_concat` arm, spec §4)
+                // — `keys += total` desugars to the same runtime
+                // `String`/`Int`|`Float` `Add` arm as `keys = keys + total`,
+                // so it must skip the same-type declared-check/observe pair
+                // below exactly like that arm skips unify: `check_declared_
+                // assign_target` would otherwise report `keys`'s declared
+                // `string` vs the numeric RHS as E063, and `observe`'s join
+                // would otherwise drive `keys` to `Ty::Conflicted` (E066) —
+                // both false positives on legal, running ink.
+                let is_string_numeric_concat_add =
+                    a.op == AssignOp::Add && is_string_numeric_concat(&target_ty, &ty);
+                if !is_string_numeric_concat_add {
+                    // Issue #1877: the RHS type checked against the target's
+                    // already-known declared type — must run *before*
+                    // `observe` below, which is what may drive the target
+                    // Conflicted (see `check_declared_assign_target`'s doc
+                    // for the ordering).
+                    self.check_declared_assign_target(&a.target, &ty);
+                    self.observe(&a.target, &ty);
+                }
                 self.record_write(&a.target);
                 // T2 §8 (issue #872): see `record_fn_write`.
                 let origin = self.fn_literal_write_origin(&a.value);
@@ -3514,11 +3826,17 @@ impl InferPass<'_, '_> {
                 self.bump_local_write(&t.name.text, origin);
             }
             BlockStmt::Assignment(a) => {
-                self.infer_expr(&a.target);
+                let target_ty = self.infer_expr(&a.target);
                 let ty = self.infer_expr(&a.value);
-                // Issue #1877: see `Stmt::Assignment`'s twin above.
-                self.check_declared_assign_target(&a.target, &ty);
-                self.observe(&a.target, &ty);
+                // Issue #1911: see `Stmt::Assignment`'s twin above — the
+                // string-numeric `+=` display-concat carve-out.
+                let is_string_numeric_concat_add =
+                    a.op == AssignOp::Add && is_string_numeric_concat(&target_ty, &ty);
+                if !is_string_numeric_concat_add {
+                    // Issue #1877: see `Stmt::Assignment`'s twin above.
+                    self.check_declared_assign_target(&a.target, &ty);
+                    self.observe(&a.target, &ty);
+                }
                 self.record_write(&a.target);
                 // T2 §8 (issue #872): see `Stmt::Assignment`'s twin above.
                 let origin = self.fn_literal_write_origin(&a.value);
@@ -3714,6 +4032,7 @@ mod tests {
             param_holes: BTreeSet::new(),
             pending_call_fn_args: Vec::new(),
             call_fn_args: BTreeMap::new(),
+            dotted_field_read_tainted: false,
         }
     }
 

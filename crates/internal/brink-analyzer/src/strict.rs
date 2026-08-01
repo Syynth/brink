@@ -2463,13 +2463,18 @@ mod tests {
         // `fold`'s arm only falls back to the seed when the callback's own
         // return is `Unknown`, never when it is `Conflicted` (real
         // information: the body really did observe two disagreeing types).
+        // `-`, not `+`: issue #1911 (landed on `main` after this fixture was
+        // first written) rules `string + int`/`string + float` legal display
+        // concatenation, typing to `string` rather than `Conflicted` — `-`
+        // has no such carve-out (`is_string_numeric_concat` is scoped to
+        // `Add` only), so it still exercises a genuine same-type mismatch.
         let diags = native_strict_diags(
-            "fn fold_conflicted() {\n  let items = [1, 2, 3];\n  return fold(items, 0, |a, b| {\n    let t = a + 1;\n    let t2 = a + \"oops\";\n    t2\n  });\n}\n",
+            "fn fold_conflicted() {\n  let items = [1, 2, 3];\n  return fold(items, 0, |a, b| {\n    let t = a + 1;\n    let t2 = a - \"oops\";\n    t2\n  });\n}\n",
         );
         assert!(
             diags.iter().any(|d| d.code == DiagnosticCode::E066),
             "`a` is joined against `int` (`a + 1`) and then `string` \
-             (`a + \"oops\"`) inside the callback's own body — a genuine \
+             (`a - \"oops\"`) inside the callback's own body — a genuine \
              conflict that must surface as E066, not be silently replaced \
              by the seed's `int`: {diags:?}"
         );
@@ -2541,6 +2546,57 @@ mod tests {
              unrelated to the enclosing `let a = 1;` of the same name — it \
              must not corrupt the lambda's own inferred `string` return \
              into `Conflicted`: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn native_lambda_param_does_not_inherit_an_enclosing_annotated_local_of_the_same_name() {
+        // Regression (review follow-up on #1910): the `self.locals` shadow
+        // `infer_lambda` grew is not the only bare-name-keyed map read
+        // during the body walk — `self.annotated` is a second one, read
+        // through `own_annotation`'s bare-single-segment fallback (used by
+        // `or_own_annotation` for every intrinsic argument, and by
+        // `annotated_callee_ty` for a direct-call callee). The enclosing
+        // `let x: string = "s";` ascribes `x` in `self.annotated`; without
+        // shadowing that map too, the lambda's own unannotated param `x`
+        // (bound to an `int` from `items`) read the enclosing ascription
+        // back through `own_annotation` and disagreed with the annotated
+        // return type — `E063 annotated type Array<Option<int>> disagrees
+        // with the type inferred from usage (Array<Option<string>>)`.
+        let diags = native_strict_diags(
+            "fn f(): Array<Option<int>> {\n  let x: string = \"s\";\n  let items = [1, 2, 3];\n  return map(items, |x| some(x));\n}\n",
+        );
+        assert!(
+            diags.is_empty(),
+            "the lambda's own param `x` must not inherit the enclosing \
+             `let x: string`'s annotated type merely because they share a \
+             bare name: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn native_fold_accumulator_is_not_poisoned_by_an_unrelated_dotted_field_read() {
+        // Regression (second review follow-up on #1910, issue #1924's gap):
+        // `InferPass::infer_path` mistypes a captured struct's dotted field
+        // read (`p.x`) as the struct itself, for lack of a static
+        // field-type table (#1924). Before this guard, that wrong `Struct`
+        // value reached `fold`'s own accumulator through an ordinary
+        // `unify`/`observe` — `p.x + a` joins `Struct(Point)` with `a`
+        // (`Unknown`, the identity), so `a`'s own narrowed type became
+        // `Struct(Point)` too, and `fold`'s arm trusted it as the
+        // accumulator's real type (never `Unknown`, so no seed fallback).
+        // `g`'s own `: int` return annotation then disagreed with it —
+        // `E063 annotated type int disagrees with the type inferred from
+        // usage (Point)` — regressing code this exact shape compiled clean
+        // under `main` before #1910, with no source-level workaround.
+        let diags = native_strict_diags(
+            "struct Point {\n  x: int,\n  y: int\n}\n\nfn g(): int {\n  let p = Point { x: 3, y: 4 };\n  let items = [1, 2];\n  return fold(items, 0, |a, b| p.x + a + b);\n}\n",
+        );
+        assert!(
+            diags.is_empty(),
+            "`p.x`'s own mistyped read must not poison the fold callback's \
+             unrelated accumulator params `a`/`b`, which have nothing to do \
+             with `p`'s own struct type: {diags:?}"
         );
     }
 

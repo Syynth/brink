@@ -197,15 +197,22 @@ pub struct BodyTypes {
 /// *written*-argument types (issue #1881) — the receiver itself is not
 /// included here (its type is already known directly to
 /// `ufcs::UfcsVisitor`, this fact's sole consumer, from receiver-type
-/// resolution). Recorded unconditionally alongside every other
-/// multi-segment, value-resolving call this pass types `Ty::Unknown` (see
+/// resolution). Recorded unconditionally at every multi-segment,
+/// value-resolving call this pass walks (see
 /// `body::InferPass::infer_call`'s own doc for why it cannot check anything
 /// against a UFCS receiver directly) — this is the raw per-argument type
 /// data `brink_analyzer::ufcs`'s own resolution pass needs to complete its
 /// own argument-type check against the desugared free function's
 /// already-known declared param types (`InferenceResult::signatures`, keyed
-/// by the *target*, which this body-walk has no way to resolve on its own),
-/// without a second expression-type inference pass over the same body.
+/// by the *target*), without a second expression-type inference pass over
+/// the same body.
+///
+/// Issue #1909 gave `body::InferPass` a *narrow* target lookup of its own
+/// (`infer_ufcs_free_fn_result`, enough to type the call's **result**), but
+/// it deliberately declines the ambiguous, struct-receiver, projected-
+/// receiver and prelude cases this fact's consumer resolves properly — so
+/// the split stays: the result type is inference's, the argument-type
+/// *check* remains `ufcs`'s, fed by this fact.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UfcsCallArgs {
     /// The callee `Path`'s own source range (`recv.name`'s whole span) —
