@@ -1101,7 +1101,8 @@ pub fn whole_project_diagnostics(
     // issue #1110 — extended to the fn-value verb trio `map`/`filter`/
     // `fold` by issue #1679, §4) rides the same whole-project effect table
     // with the same brink-only + laziness posture: a project with no
-    // `sort_by`/`sorted_by`/`map`/`filter`/`fold`-with-inline-`#fn` site
+    // `sort_by`/`sorted_by`/`map`/`filter`/`fold` site whose callback is an
+    // inline `#fn` literal or (issue #1887) a native bare-name reference
     // never triggers effect inference for it.
     let needs_effects = hir_inputs.iter().any(|&(_, hir)| {
         hir_has_effects_assertion(hir)
@@ -1126,10 +1127,11 @@ pub fn whole_project_diagnostics(
             // provenance, filtered inside `await_purity::check`).
             diagnostics.extend(await_purity::check(file_id, hir, index, resolutions, &rows));
             // The NS-A4 comparator-contract gate (E119) — same resolution
-            // discipline, judging inline `#fn(target)` comparators of
-            // `sort_by`/`sorted_by` and the fn-value verb trio's callbacks
-            // (`map`/`filter`/`fold`, issue #1679) against their target's
-            // row.
+            // discipline, judging the comparators of `sort_by`/`sorted_by`
+            // and the fn-value verb trio's callbacks (`map`/`filter`/
+            // `fold`, issue #1679) — named by an inline `#fn(target)`
+            // literal or, since issue #1887, a native bare-name reference —
+            // against their target's row.
             diagnostics.extend(comparator_contract::check(
                 file_id,
                 hir,

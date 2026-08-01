@@ -6,8 +6,9 @@
 //! Covers, through `brink_compiler::compile_with_options` and then the VM:
 //! - the ruled arity of each verb (`E031` otherwise);
 //! - the E119 pure-callback contract gate, generalized off `sort_by` — a
-//!   provably impure/unsilent inline `#fn(target)` callback is rejected, a
-//!   pure one passes, and an opaque one is not *proven* and passes (the
+//!   provably impure/unsilent callback (an inline `#fn(target)` literal, or
+//!   since issue #1887 a native bare-name reference) is rejected, a pure
+//!   one passes, and an opaque one is not *proven* and passes (the
 //!   exceedance-only posture, whose runtime residual is the ops' isolation
 //!   and fault machinery);
 //! - the runtime dispatch faults (non-array receiver, non-function

@@ -28,7 +28,9 @@
 //!
 //! **Exceedance-only** (the E103/E108/E114 posture): the gate fires only on
 //! a *proven* violation — a callback written as an inline `#fn(target)`
-//! literal whose statically-named target's inferred row shows the effect.
+//! literal (ink/brink), or its native bare-name equivalent (issue #1887,
+//! #1862's 2026-08-01 ruling: `map(items, double)`, no sigil) — whose
+//! statically-named target's inferred row shows the effect.
 //! A callback that arrives as an opaque value (a variable, a parameter, a
 //! `bind(…)` result) is not provable here and passes; the VM's output
 //! isolation and the `ComparatorEscaped`/fault machinery are the runtime
@@ -47,9 +49,21 @@
 //! real gap in the ruling's coverage, not a design choice of this gate; it
 //! is recorded on issue #1679 rather than papered over.
 //!
+//! **A second known hole, deferred rather than fixed (issue #1887's own
+//! scope, bullet 2):** an inline lambda argument (`map(items, |x|
+//! impure())`) is also not collected as a comparator site, for a
+//! different, structural reason — a lambda literal has no `DefinitionId`
+//! until LIR lowering mints one (issue #1727, itself parked pending a
+//! design ruling), and this pass runs at HIR time, so there is nothing to
+//! resolve an effect row against yet. Recorded on #1709 and #1887; see the
+//! `_ => {}` arm in `collect_expr`'s `Expr::Call` match.
+//!
 //! Brink-only, same posture as the other effect passes: under strict-ink
 //! the `#fn(…)` literal (and the verbs themselves) are already rejected by
-//! the dialect gate.
+//! the dialect gate; the native bare-name spelling (issue #1887) simply
+//! does not arise on the ink surface at all — a bare name there is a
+//! visit count, never a fn value, so this gate's bare-name `collect_expr`
+//! arm is unreachable outside `ctx.native`.
 
 use std::collections::BTreeMap;
 
@@ -332,7 +346,8 @@ fn contract_exceedance(row: &EffectRow, index: &SymbolIndex) -> Option<String> {
 }
 
 /// One pure-callback site: the call's diagnostic anchor, the verb spelling,
-/// and the inline `#fn` literal's target.
+/// and the target of the callback — an inline `#fn` literal (ink/brink) or
+/// a native bare-name reference (issue #1887).
 struct ComparatorSite {
     call_range: TextRange,
     verb: &'static str,
@@ -553,6 +568,20 @@ fn collect_expr(expr: &Expr, ctx: &CollectCtx<'_>, out: &mut Vec<ComparatorSite>
                                 .join("::"),
                         });
                     }
+                    // Deliberately not collected — the known, DEFERRED
+                    // hole issue #1887 (§"Scope", bullet 2) asked to be
+                    // decided or explicitly deferred, not silently dropped:
+                    // an inline lambda argument (`map(items, |x| impure())`)
+                    // is *itself* a pure-callback candidate, structurally
+                    // parallel to the `#fn(target)`/bare-name arms above,
+                    // but a lambda literal has no `DefinitionId` until LIR
+                    // lowering mints one (issue #1727, itself parked
+                    // pending a design ruling) — so at HIR time, where this
+                    // pass runs, there is no def to resolve an effect row
+                    // against. Tracked on #1709 (the same structural gap
+                    // recorded for the creation-site atom) and #1887.
+                    // Not a regression: the pre-#1887 code dropped this
+                    // shape too, just without a comment saying so.
                     _ => {}
                 }
             }
