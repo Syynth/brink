@@ -97,16 +97,20 @@ fn corpus_dir() -> PathBuf {
 ///   `fn passthru(t: content) { return t; }` reports the same, while
 ///   `fn passthru(t: content): content { return t; }` is clean).
 ///
-/// **Group B — UFCS method-call results (`ufcs`), tracked by issue #1909.**
+/// **Group B — UFCS method-call results (`ufcs`, and `lambda-verbs`'s
+/// `ufcs_through_capture`), tracked by issue #1909.**
 /// A **checker gap**: the desugared method-call spelling loses its result
 /// type where the direct spelling keeps it. Reduced to a single file,
 /// `fn f() { let n = 21; return double(n); }` is clean while
 /// `fn f() { let n = 21; return n.double(); }` reports `E065` — identical
 /// bodies, only the call spelling differs. `describe_double`
 /// (`FreeFnDesugar`) and `tally` (`m.len()`, `PreludeDesugar`) are the two
-/// forms of it here. Distinct from issue #1483, which is the
-/// receiver-type-unknown direction; here the receiver's type is known and
-/// resolution succeeds.
+/// forms of it here; `ufcs_through_capture`'s lambda-bound `f` (`items.len() + k`)
+/// is a third — issue #1910 fixed a lambda-bound local to take its own
+/// body-derived `Ty::Fn` type (see Group C below), but `items.len()`'s own
+/// result still types `Unknown` regardless (this group's own gap), so `f`'s
+/// inferred return stays `Unknown` too and both of its rows are unmoved by
+/// issue #1910.
 ///
 /// `bump`/`heal`'s parameters are a different, **expected** row: their
 /// bodies genuinely place no constraint on the parameters (`n = n +
@@ -114,17 +118,41 @@ fn corpus_dir() -> PathBuf {
 /// inference, so `Unknown` is the specified outcome — the fixture is
 /// written in gradual style and would need annotations to be strict-clean.
 ///
-/// **Group C — pure verb-layer results (`lambda-verbs`,
-/// `fn-value-bare-name`), tracked by issue #1910.**
-/// A **checker gap**: `map`/`filter`/`fold`/`filter_map`/`map_each` results
-/// escape as `Unknown` when no surrounding annotation ascribes them, even
-/// where the element type is unambiguous (`fold(items, 0, |a, b| a + b)`
-/// over `Array<int>` with an `int` seed). Ascribing the enclosing return
-/// (`fn f(): Array<int>`) makes the same body clean, which is what isolates
-/// this to the intrinsic typing rules for the verb layer rather than to the
-/// lambdas. A lambda literal bound to a local (`let f = |x| x + 1;`) has the
-/// same shape: the binding escapes as `Unknown` instead of taking the
-/// lambda's own `fn(T…): R` type.
+/// **Group C — pure verb-layer results and lambda-bound locals
+/// (`lambda-verbs`, `fn-value-bare-name`), issue #1910 — FIXED.**
+/// `InferPass::infer_lambda` used to rebuild a lambda's own `Ty::Fn(params,
+/// ret, _)` from *written* annotations alone once its body walk finished,
+/// discarding everything the walk itself had learned (mono-HM narrowing:
+/// `observe`-driven param types, `return_ty`-driven return types) — the same
+/// overlay `infer_def_body` already runs for a top-level def's own
+/// params/return, just never wired up for a lambda's. That made
+/// `map`/`filter`/`fold`/`filter_map`/`map_each` results escape as `Unknown`
+/// whenever no surrounding annotation ascribed them, even where the element
+/// type was unambiguous from the callback's own body (`x * 2`, `fold`'s
+/// `acc + x` falling back to the seed's own type when the callback places no
+/// constraint on it), and made a lambda literal bound straight to a local
+/// (`let f = |x| x + 1;`) escape as `Unknown` instead of taking its own
+/// `fn(T…): R` type (`docs/typed-mode-spec.md` §3). Fixed by reading the
+/// walk's own `self.locals`/`self.return_ty` back (shadowed by param name
+/// for the walk's duration, the same hazard `lambda_param_names` already
+/// guards elsewhere) instead of discarding them, plus a matching `fold`
+/// fallback (prefer the seed's type over a callback whose own return is
+/// merely `Unknown` — never over one that is `Conflicted`, which is real
+/// information).
+///
+/// Two rows in `lambda-verbs` are **not** fixed by #1910 and stay recorded,
+/// each for its own reason:
+///
+/// - `scaled`'s parameter `factor` and return type remain `Unknown`: the
+///   callback `|x| x * factor` captures `factor`, itself `scaled`'s own
+///   unannotated parameter, which no use anywhere in `scaled`'s body ever
+///   constrains. This is the *other* half of `infer_lambda`'s own long-
+///   standing doc ("mono-HM narrowing of a lambda's own params from its
+///   concrete call sites is not modeled in this slice") applied one level
+///   up — §2 forbids call-site-driven inference, so `Unknown` is the
+///   specified outcome here, the same as `bump`/`heal`'s params in Group B.
+/// - `field_through_capture`'s row changed shape rather than disappearing:
+///   see Group G below (issue #1924, discovered while implementing #1910).
 ///
 /// **Group D — string concatenation (`for-k-v`), tracked by issue #1911.**
 /// A **checker gap**:
@@ -147,7 +175,32 @@ fn corpus_dir() -> PathBuf {
 /// **Group F — unannotated fn-value plumbing (`fn-value-bare-name`).**
 /// **Expected**, same reason as `bump`/`heal`: `add(acc, x)` and
 /// `apply(g, v)` are unannotated helpers whose bodies do not constrain
-/// their parameters, and call-site inference is forbidden by §2.
+/// their parameters, and call-site inference is forbidden by §2. `mixed`'s
+/// return type (`fold(map([1, 2, 3], double), 0, |acc, x| acc + x)`) used to
+/// be recorded here too — #1910's `fold` seed-fallback fix resolved it (the
+/// callback's own `acc + x` places no constraint on either param, so the
+/// accumulator now falls back to the seed `0`'s `int` instead of the
+/// callback's own `Unknown` return).
+///
+/// **Group G — a captured struct field read inside a lambda types as the
+/// struct, not the field (`lambda-verbs`' `field_through_capture`), tracked
+/// by issue #1924.** A **checker gap**, discovered while implementing
+/// #1910: `InferPass::infer_path` resolves a dotted `Expr::Path` (`p.x`) to
+/// its *head* variable's own type (`Ty::Struct("Point")`), not the field's
+/// (`Ty::Int`) — a long-standing, documented limitation ("no static
+/// field-type table exists yet", the read-side twin of issue #994's write-
+/// side fix, `strict.rs`'s `temp_headed_dotted_field_read_does_not_
+/// corrupt_the_temp_s_own_type`). Before #1910 this was unobservable: a
+/// lambda's signature was always rebuilt from written annotations only, so
+/// a mistyped field read inside a lambda body never reached its own
+/// `Ty::Fn`. #1910 made a lambda take its own body-derived signature, so
+/// `field_through_capture`'s `let f = |k| p.x + k;` now infers `f: fn(Point):
+/// Point` (the field read's wrong type dominates the `unify(Struct(Point),
+/// Unknown)` join, `Unknown` being the identity, and `k` gets `observe`d
+/// against that same wrong type) — clean of `E065` (the type is no longer
+/// `Unknown`!) but wrong, and the call site `f(1)` now reports a misleading
+/// `E063` blaming the literal `1` rather than the actual bug, `p.x`'s own
+/// mistyped read.
 const BASELINE: &[(&str, &str, &str)] = &[
     // Group A
     (
@@ -187,7 +240,7 @@ const BASELINE: &[(&str, &str, &str)] = &[
         "E065",
         "`absent`'s temp `n` escapes strict inference as Unknown — annotate or restructure",
     ),
-    // Group F + Group C (fn-value-bare-name)
+    // Group F (fn-value-bare-name)
     (
         "fn-value-bare-name",
         "E065",
@@ -224,11 +277,6 @@ const BASELINE: &[(&str, &str, &str)] = &[
         "`g` is called as a function value but its type escapes strict inference as Unknown \
          — annotate (`fn(T…): R`) or restructure",
     ),
-    (
-        "fn-value-bare-name",
-        "E065",
-        "`mixed`'s return type escapes strict inference as Unknown — annotate or restructure",
-    ),
     // Group D
     (
         "for-k-v",
@@ -242,63 +290,15 @@ const BASELINE: &[(&str, &str, &str)] = &[
         "`sum_and_keys`'s temp `total` is Conflicted under strict types — its uses disagree \
          on its type (observed as `Conflicted`)",
     ),
-    // Group C (lambda-verbs)
+    // Group G (lambda-verbs) — E063 sorts before E065 within this case
     (
         "lambda-verbs",
-        "E065",
-        "`braced`'s return type escapes strict inference as Unknown — annotate or restructure",
+        "E063",
+        "argument 1 of call through `f` has type `int` but its known type expects `Point`",
     ),
-    (
-        "lambda-verbs",
-        "E065",
-        "`call_through_capture`'s return type escapes strict inference as Unknown \
-         — annotate or restructure",
-    ),
-    (
-        "lambda-verbs",
-        "E065",
-        "`call_through_capture`'s temp `inc` escapes strict inference as Unknown \
-         — annotate or restructure",
-    ),
-    (
-        "lambda-verbs",
-        "E065",
-        "`call_through_capture`'s temp `twice` escapes strict inference as Unknown \
-         — annotate or restructure",
-    ),
-    (
-        "lambda-verbs",
-        "E065",
-        "`chained`'s return type escapes strict inference as Unknown — annotate or restructure",
-    ),
-    (
-        "lambda-verbs",
-        "E065",
-        "`doubled`'s return type escapes strict inference as Unknown — annotate or restructure",
-    ),
-    (
-        "lambda-verbs",
-        "E065",
-        "`field_through_capture`'s return type escapes strict inference as Unknown \
-         — annotate or restructure",
-    ),
-    (
-        "lambda-verbs",
-        "E065",
-        "`field_through_capture`'s temp `f` escapes strict inference as Unknown \
-         — annotate or restructure",
-    ),
-    (
-        "lambda-verbs",
-        "E065",
-        "`map_each_scaled`'s return type escapes strict inference as Unknown \
-         — annotate or restructure",
-    ),
-    (
-        "lambda-verbs",
-        "E065",
-        "`positives`'s return type escapes strict inference as Unknown — annotate or restructure",
-    ),
+    // Group C residual (lambda-verbs) — `scaled`: call-site-driven inference
+    // is forbidden by §2, so `factor` (and so the return) stays Unknown; not
+    // fixed by #1910, same reasoning as Group B's `bump`/`heal`.
     (
         "lambda-verbs",
         "E065",
@@ -310,11 +310,8 @@ const BASELINE: &[(&str, &str, &str)] = &[
         "E065",
         "`scaled`'s return type escapes strict inference as Unknown — annotate or restructure",
     ),
-    (
-        "lambda-verbs",
-        "E065",
-        "`total`'s return type escapes strict inference as Unknown — annotate or restructure",
-    ),
+    // Group B residual (lambda-verbs) — `ufcs_through_capture`: blocked on
+    // #1909 (the UFCS-desugar result-type gap), not #1910.
     (
         "lambda-verbs",
         "E065",

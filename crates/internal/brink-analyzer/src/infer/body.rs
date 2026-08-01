@@ -2108,7 +2108,41 @@ impl InferPass<'_, '_> {
                 .entry(p.name.text.clone())
                 .or_insert(0) += 1;
         }
-        match &l.body {
+        // Issue #1910: shadow each param's own entry in `self.locals` too,
+        // for the same duration — mirroring `infer_def_body`'s own params,
+        // which likewise start every walk with no seeded entry (`new_pass`'s
+        // `locals: BTreeMap::new()`) and gain a type only through the body's
+        // own `observe`/`bind_local` calls (the mono-HM narrowing this
+        // function used to throw away — see below). `self.locals` is keyed
+        // by bare *name* and shared with the enclosing frame, exactly the
+        // hazard `lambda_param_names` above already guards for narrowing
+        // purposes: without this shadow an enclosing same-named local's
+        // already-inferred type would silently seed this lambda's
+        // unconstrained param, and symmetrically whatever this lambda's body
+        // narrows its own param to would leak into the enclosing frame's
+        // binding of that name once the lambda is done. `saved_params`
+        // records exactly what (if anything) occupied each name so it can be
+        // put back verbatim, `None` when nothing did.
+        let saved_params: Vec<(String, Option<Ty>)> = l
+            .params
+            .iter()
+            .map(|p| (p.name.text.clone(), self.locals.remove(&p.name.text)))
+            .collect();
+        // Issue #1910: capture the body's own derivation of the lambda's
+        // return type and each param's type — read back from `self.locals`
+        // *before* any restore below discards it, into plain local
+        // variables rather than back into `self.locals`. This is the
+        // lambda's counterpart of `infer_def_body`'s own post-walk
+        // `param_types`/`return_ty` overlay (`pass.locals.get(&p.name.text)`
+        // preferred over the annotation, annotation only as the Unknown
+        // fallback) — previously this function walked the body purely for
+        // its side effects and then discarded everything it learned,
+        // rebuilding `params`/`ret` from written annotations alone, which is
+        // exactly what let a pure verb's callback (`|x| x * 2`) and a
+        // lambda-bound local (`let f = |x| x + 1;`) escape strict inference
+        // as `Unknown` even when the body unambiguously pins the type
+        // (issue #1910).
+        let (body_ty, narrowed_params): (Ty, Vec<Ty>) = match &l.body {
             brink_ir::LambdaBody::Block { stmts, tail } => {
                 // Wholesale snapshot/restore (not a "remove newly-inserted
                 // keys" diff) — `bind_local` unifies into a pre-existing entry
@@ -2119,6 +2153,19 @@ impl InferPass<'_, '_> {
                 // future field can silently fall off of — see
                 // `FrameSnapshot`'s doc.
                 let snapshot = self.frame_snapshot();
+                // #1910: reset `return_ty`/`has_value_return` to a fresh
+                // baseline for the lambda's own frame, mirroring `new_pass`'s
+                // fresh start for a top-level def — without this, an
+                // internal `return` below (see `LambdaBody::Block`'s own
+                // doc: "return leaves the lambda") would `unify` into
+                // whatever the *enclosing* def's `return_ty` already held
+                // (e.g. an earlier `return` in the enclosing body), which
+                // `restore_frame` only ever cleaned up *after* the fact —
+                // fine when the accumulated value was simply discarded (the
+                // pre-#1910 behavior), but wrong the moment it is read back
+                // below as this lambda's own signature.
+                self.return_ty = Ty::Unknown;
+                self.has_value_return = false;
                 for s in stmts {
                     self.infer_block_stmt(s);
                 }
@@ -2135,16 +2182,62 @@ impl InferPass<'_, '_> {
                 // `Conflicted` escape (`E066`) on a temp the enclosing body
                 // never misuses. Inside the window, both directions stay in
                 // the lambda's own frame and are discarded by the restore.
-                if let Some(tail) = tail {
-                    self.infer_expr(tail);
-                }
+                let tail_ty = tail.as_ref().map_or(Ty::Unknown, |t| self.infer_expr(t));
+                // #1910: the lambda's own return type is the join of its
+                // tail value (if any) and every internal `return <expr>;`
+                // this walk observed (`self.return_ty`, freshly reset above)
+                // — a block-bodied lambda that ends in a `return` rather
+                // than a trailing expression (`positives`'s `filter_map`
+                // callback: an `if`/`return` shape with no tail at all)
+                // still has a real signature, and previously this function
+                // never looked at `return_ty` here at all.
+                let ty = unify(&self.return_ty, &tail_ty);
+                // Read the params' narrowed types *before* `restore_frame`
+                // resets `self.locals` back to `snapshot` — after that call
+                // every name this walk touched, param or `TempDecl` alike,
+                // is gone.
+                let narrowed = l
+                    .params
+                    .iter()
+                    .map(|p| {
+                        self.locals
+                            .get(&p.name.text)
+                            .cloned()
+                            .unwrap_or(Ty::Unknown)
+                    })
+                    .collect();
                 self.restore_frame(snapshot);
+                (ty, narrowed)
             }
             // A single-expression body has no `stmts`, so there is no frame
             // to open around it — it walks under whatever frame was already
             // live when `infer_lambda` was entered, unchanged by #1789.
             brink_ir::LambdaBody::Expr(e) => {
-                self.infer_expr(e);
+                let ty = self.infer_expr(e);
+                let narrowed = l
+                    .params
+                    .iter()
+                    .map(|p| {
+                        self.locals
+                            .get(&p.name.text)
+                            .cloned()
+                            .unwrap_or(Ty::Unknown)
+                    })
+                    .collect();
+                (ty, narrowed)
+            }
+        };
+        // Undo the `self.locals` shadow (mirrors the `lambda_param_names`
+        // decrement below): restore whatever an enclosing same-named local
+        // held, or leave the name absent if nothing did.
+        for (name, prior) in saved_params {
+            match prior {
+                Some(ty) => {
+                    self.locals.insert(name, ty);
+                }
+                None => {
+                    self.locals.remove(&name);
+                }
             }
         }
         for p in &l.params {
@@ -2158,21 +2251,36 @@ impl InferPass<'_, '_> {
             }
         }
         let names = self.ctx.type_names();
+        // #1910: annotation-firewall overlay, same precedence as
+        // `infer_def_body`'s `param_types` — the body-derived type wins
+        // whenever it isn't `Unknown` (a use that *disagrees* with a written
+        // annotation still infers its own concrete/`Conflicted` type, which
+        // is what keeps `annotations::mismatches` (E063) comparing two
+        // independent derivations rather than one silently overlaying the
+        // other); the annotation is only the Unknown fallback.
         let params = l
             .params
             .iter()
-            .map(|p| {
-                p.annotation
-                    .as_ref()
-                    .and_then(|te| crate::annotations::resolve(te, &names))
-                    .unwrap_or(Ty::Unknown)
+            .zip(narrowed_params)
+            .map(|(p, inferred)| {
+                if inferred.is_unknown() {
+                    p.annotation
+                        .as_ref()
+                        .and_then(|te| crate::annotations::resolve(te, &names))
+                        .unwrap_or(inferred)
+                } else {
+                    inferred
+                }
             })
             .collect();
-        let ret = l
-            .return_type
-            .as_ref()
-            .and_then(|te| crate::annotations::resolve(te, &names))
-            .unwrap_or(Ty::Unknown);
+        let ret = if body_ty.is_unknown() {
+            l.return_type
+                .as_ref()
+                .and_then(|te| crate::annotations::resolve(te, &names))
+                .unwrap_or(body_ty)
+        } else {
+            body_ty
+        };
         // The effect row stays at the top element. A lambda's lifted
         // `DefinitionId` is minted in LIR (`alloc_lambda_address`), so it has
         // no id at inference time to *name* as a creation target — the
@@ -2974,13 +3082,25 @@ impl InferPass<'_, '_> {
             // the accumulator by signature, so prefer it when known and
             // fall back to `init`'s inferred type (which the mono-HM pass
             // usually has even when the callback is opaque).
+            //
+            // #1910: "known" means concretely known, not merely *present* —
+            // an inline lambda whose own body places no constraint on its
+            // params (`|a, b| a + b` with both params otherwise
+            // unconstrained) still types as `Ty::Fn(_, Ty::Unknown, _)`, and
+            // that `Unknown` used to win over `init`'s already-concrete type
+            // unconditionally, discarding real evidence the accumulator
+            // slot had. `Ty::Conflicted` is left out of this guard
+            // deliberately: unlike `Unknown` it is genuine information (the
+            // callback body really did observe two disagreeing types), so it
+            // must propagate rather than being masked by falling back to
+            // `init`.
             "fold" => {
                 if let Some(f) = args.get(2) {
                     let hint = self.value_call_origin(f);
                     self.pending_value_calls.push(hint);
                 }
                 match arg_tys.get(2) {
-                    Some(Ty::Fn(_, ret, _)) => (**ret).clone(),
+                    Some(Ty::Fn(_, ret, _)) if !ret.is_unknown() => (**ret).clone(),
                     _ => arg_tys.get(1).cloned().unwrap_or(Ty::Unknown),
                 }
             }

@@ -2419,6 +2419,130 @@ mod tests {
         );
     }
 
+    // ── issue #1910: pure verb results and lambda-bound locals ────────
+    //
+    // `infer::body::InferPass::infer_lambda` used to walk a lambda's body
+    // purely for its side effects and then throw away everything it
+    // learned, rebuilding the lambda's own `Ty::Fn(params, ret, _)` from
+    // *written* annotations alone — `Unknown` for every unannotated param,
+    // `Unknown` for an unannotated return regardless of what the body
+    // actually computed. That made a pure verb's inline callback
+    // (`map`/`filter`/`fold`/`filter_map`/`map_each`) and a lambda literal
+    // bound straight to a local escape strict inference as `Unknown` even
+    // when the body unambiguously pinned the type.
+
+    #[test]
+    fn native_map_result_infers_from_unannotated_lambda_body() {
+        let diags = native_strict_diags(
+            "fn doubled() {\n  let items = [1, 2, 3];\n  return map(items, |x| x * 2);\n}\n",
+        );
+        assert!(
+            diags.is_empty(),
+            "`x * 2` pins `x` (and so `map`'s result) to `int` from the \
+             callback's own body alone, with no surrounding annotation: \
+             {diags:?}"
+        );
+    }
+
+    #[test]
+    fn native_fold_result_falls_back_to_the_seed_when_the_callback_body_is_unconstrained() {
+        let diags = native_strict_diags(
+            "fn total() {\n  let items = [1, 2, 3, 4];\n  return fold(items, 0, |acc, x| acc + x);\n}\n",
+        );
+        assert!(
+            diags.is_empty(),
+            "neither `acc` nor `x` is pinned by the callback's own body \
+             (`acc + x` joins two `Unknown`s), so `fold`'s accumulator type \
+             must fall back to the seed `0`'s own `int`: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn native_fold_still_reports_conflicted_when_the_callback_body_genuinely_conflicts() {
+        // The seed fallback above must not paper over a genuine conflict —
+        // `fold`'s arm only falls back to the seed when the callback's own
+        // return is `Unknown`, never when it is `Conflicted` (real
+        // information: the body really did observe two disagreeing types).
+        let diags = native_strict_diags(
+            "fn fold_conflicted() {\n  let items = [1, 2, 3];\n  return fold(items, 0, |a, b| {\n    let t = a + 1;\n    let t2 = a + \"oops\";\n    t2\n  });\n}\n",
+        );
+        assert!(
+            diags.iter().any(|d| d.code == DiagnosticCode::E066),
+            "`a` is joined against `int` (`a + 1`) and then `string` \
+             (`a + \"oops\"`) inside the callback's own body — a genuine \
+             conflict that must surface as E066, not be silently replaced \
+             by the seed's `int`: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn native_verb_result_bound_to_a_let_is_not_unknown() {
+        let diags = native_strict_diags(
+            "fn let_map_then_len() {\n  let items = [1, 2, 3];\n  let out = map(items, |x| x * 2);\n  return len(out);\n}\n",
+        );
+        assert!(
+            diags.is_empty(),
+            "`out`'s type comes from `map`'s own now-concrete result, not \
+             just the return position — a genuinely intermediate binding \
+             must be just as clean: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn native_block_bodied_lambda_return_feeds_the_verb_result_too() {
+        // The block-bodied twin of `native_map_result_infers_from_
+        // unannotated_lambda_body`: the value comes from an internal
+        // `return`, not the block's tail — `LambdaBody::Block`'s own doc:
+        // "return leaves the lambda". Before #1910's `return_ty` reset this
+        // read `self.return_ty` contaminated by whatever the *enclosing*
+        // def's own return_ty already held, so `positives` (an `if`/`return`
+        // shaped `filter_map` callback, `tests/tier1-native/lambda-verbs/
+        // story.brink`) needed both fixes to resolve.
+        let diags = native_strict_diags(
+            "fn ret_from_block_lambda() {\n  let items = [1, 2, 3];\n  return map(items, |x| {\n    return x * 3;\n  });\n}\n",
+        );
+        assert!(
+            diags.is_empty(),
+            "the callback's `return x * 3;` pins its own return type to \
+             `int` exactly like a trailing tail expression would: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn native_lambda_bound_local_takes_its_own_fn_type() {
+        let diags = native_strict_diags(
+            "fn lambda_let(): int {\n  let f = |x| x + 1;\n  return f(1);\n}\n",
+        );
+        assert!(
+            diags.is_empty(),
+            "`f`'s own inferred type is `fn(int): int` (from `x + 1`'s body \
+             alone), not `Unknown` — `docs/typed-mode-spec.md` §3: a \
+             lambda-bound local takes the lambda's own `fn(T…): R` type: \
+             {diags:?}"
+        );
+    }
+
+    #[test]
+    fn native_verb_callback_param_still_escapes_when_the_body_places_no_constraint_on_it() {
+        // The boundary this fix does NOT cross: `infer_lambda`'s own doc
+        // ("mono-HM narrowing of a lambda's own params from its concrete
+        // call sites is not modeled in this slice") — `scaled`'s callback
+        // multiplies `x` by a captured, itself-unconstrained `factor`, so
+        // neither ever resolves. This is `tests/tier1-native/lambda-verbs/
+        // story.brink`'s `scaled` reduced to its essential shape, still an
+        // expected (not #1910-fixed) baseline row.
+        let diags = native_strict_diags(
+            "fn scaled(factor) {\n  let items = [1, 2, 3];\n  return map(items, |x| x * factor);\n}\n",
+        );
+        assert!(
+            diags.iter().any(|d| d.code == DiagnosticCode::E065),
+            "`factor` is never pinned by any use anywhere in `scaled`'s own \
+             body (call-site-driven inference is forbidden by \
+             `docs/typed-mode-spec.md` §2), so both `factor` and the return \
+             type must still escape: {diags:?}"
+        );
+    }
+
     // ── issue #1551: return-escape check extended past `is_function` ──
     //
     // `docs/decision-log.md` 2026-07-22 implicit-end ruling item 3: "a flow
