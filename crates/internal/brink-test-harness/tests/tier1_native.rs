@@ -400,20 +400,21 @@ fn inline_tag_embedded_brace_reaches_story_data() {
 #[test]
 fn every_case_directory_has_a_test() {
     let known = [
-        "or-coalescing",
-        "as-binding",
-        "ufcs",
-        "construction-literal",
-        "for-k-v",
-        "annotations-was",
-        "annotations-effects",
         "annotations-allow",
+        "annotations-effects",
         "annotations-element",
+        "annotations-was",
         "array-literal",
-        "lambda-verbs",
+        "as-binding",
+        "construction-literal",
+        "fn-value-bare-name",
+        "for-k-v",
         "inline-markup-point-marker",
         "inline-tag-embedded-brace",
-        "fn-value-bare-name",
+        "lambda-verbs",
+        "or-coalescing",
+        "root-content-typed-strict",
+        "ufcs",
     ];
     let mut found: Vec<String> = std::fs::read_dir(corpus_dir())
         .expect("read tests/tier1-native")
