@@ -196,3 +196,105 @@ fn diagnostic_codes_are_unique() {
         );
     }
 }
+
+/// Diagnostic codes whose defining mechanism is reachable **only** from the
+/// native `.brink` surface — never from ink source, under any dialect. An
+/// ```` ```ink ```` example fence on one of these docs is not merely
+/// mis-tagged: `book_fences.rs` (BW-5) and `mdbook test` both dispatch on
+/// exactly this info string, so the wrong tag would silently exempt the
+/// sample from ever being dialect-checked once someone fills it in with real
+/// content (issue #1836's own point: "the fence language is also
+/// load-bearing rather than cosmetic").
+///
+/// This list is re-derived from the enum's own doc comments and
+/// `docs/directive-annotations-spec.md` §5c/§5d directly — **not** carried
+/// over from issue #1836's filing-time list, which named nine codes
+/// (`E132`, `E153`–`E155`, `E159`–`E163`) and predates `E164`–`E172`, all of
+/// which landed native-only afterward:
+///
+/// - `E132` — the native file-level `@[was("…")]` rename record; ink's own
+///   `@[…]` channel recognizes only `effects` (§5b).
+/// - `E153`/`E154`/`E155` — the `@[allow(…)]` suppression channel: §5d says
+///   "Native surface only" in as many words.
+/// - `E159`/`E160` — `@[element(…)]`'s declaration-surface checks; `element`
+///   is one of the native-only recognized names §5c adds beyond `effects`.
+/// - `E161`/`E162`/`E163` — `@[style(…)]`, the same native-only channel as
+///   `element`.
+/// - `E164`/`E165` — the inline-markup vocabulary checks; wired outside the
+///   ink/brink dialect branch in `brink_analyzer::lib::per_file_diagnostics`
+///   with a doc comment saying markup spans are "a native-grammar
+///   construct" and the pass is "inert for ink source by construction (no
+///   `ContentPart::Span` can exist there)".
+/// - `E166`–`E171` — the `@[element(claims = "…")]` / `@[element(…,
+///   block)]` dispatch family, the same native-only annotation channel as
+///   `E159`/`E160`.
+/// - `E172` — raised only by `hir::lower_native::body::lower_tag`, i.e. only
+///   while lowering a `.brink` file.
+///
+/// Codes intentionally **excluded** despite living in the same numeric
+/// neighborhood: `E156`–`E158` (lambda diagnostics) are a *dialect* gate
+/// (`strict-ink` vs `brink`), not a *surface* one — reachable from ink
+/// source compiled under the brink dialect, which is exactly what
+/// `book_fences.rs`'s ` ```ink` ` ` fences do.
+const NATIVE_ONLY_CODES: &[&str] = &[
+    "E132", "E153", "E154", "E155", "E159", "E160", "E161", "E162", "E163", "E164", "E165", "E166",
+    "E167", "E168", "E169", "E170", "E171", "E172",
+];
+
+/// Every fenced code block's info string (the text right after the opening
+/// ` ``` `), in document order. Deliberately simpler than `book_fences.rs`'s
+/// extractor (no indent handling, no execution markers, no body capture) —
+/// this check only ever needs the tag, never the contents.
+fn fence_info_strings(markdown: &str) -> Vec<String> {
+    let mut infos = Vec::new();
+    let mut in_fence = false;
+    for line in markdown.lines() {
+        let trimmed = line.trim_start();
+        if let Some(info) = trimmed.strip_prefix("```") {
+            if in_fence {
+                in_fence = false;
+            } else {
+                infos.push(info.trim().to_owned());
+                in_fence = true;
+            }
+        }
+    }
+    infos
+}
+
+#[test]
+fn native_only_diagnostics_never_use_ink_fences() {
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let workspace_root = Path::new(manifest_dir)
+        .parent()
+        .and_then(|p| p.parent())
+        .and_then(|p| p.parent())
+        .expect("Could not find workspace root");
+    let docs_dir = workspace_root.join("docs/diagnostics");
+
+    let mut violations = Vec::new();
+    for code in NATIVE_ONLY_CODES {
+        assert!(
+            DiagnosticCode::from_str_code(code).is_some(),
+            "{code} in NATIVE_ONLY_CODES is not a real DiagnosticCode — fix the typo"
+        );
+
+        let doc_file = docs_dir.join(format!("{code}.md"));
+        let read_failure_msg = format!("failed to read {}", doc_file.display());
+        let markdown = std::fs::read_to_string(&doc_file).expect(&read_failure_msg);
+        for info in fence_info_strings(&markdown) {
+            if info == "ink" || info.starts_with("ink,") {
+                violations.push(format!(
+                    "{code}.md has a `{info}` fence, but {code} is native-only \
+                     (see NATIVE_ONLY_CODES's doc comment for why) — use `brink` instead"
+                ));
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "The following docs/diagnostics files use the wrong fence dialect:\n  {}",
+        violations.join("\n  ")
+    );
+}
