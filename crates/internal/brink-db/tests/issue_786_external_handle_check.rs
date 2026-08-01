@@ -28,16 +28,28 @@ use brink_ir::{
 /// as `play_sound`'s argument, a cross-kind mismatch detectable only once
 /// `collect_external_sigs`'s declaration-derived signature is seeded into
 /// `known_sigs` ahead of `main`'s SCC solve.
+///
+/// `opaque_handle` is an *unregistered* `EXTERNAL` (absent from the
+/// manifest below), so its result is untyped and its call sites are
+/// unchecked — the leaf's body-derived return therefore stays `Unknown` and
+/// the annotation firewall overlay supplies the concrete `Ty::Handle(K)`,
+/// which is what these fixtures need. It replaces a plain `~ return id`
+/// (issue #1912): a handle is an opaque `{kind, id}` scalar
+/// (docs/t1d-spec.md §3), not an `int`, so handing an `int`-annotated param
+/// back out of a `Handle<K>`-returning function was a real type error that
+/// only passed while reading an annotated param as a value typed `Unknown`.
 const CROSS_KIND_SRC: &str = "\
 EXTERNAL play_sound(inst)\n\
-=== function get_timer(id: int): Handle<Timer> ===\n~ return id\n\
+EXTERNAL opaque_handle(seed)\n\
+=== function get_timer(id: int): Handle<Timer> ===\n~ return opaque_handle(id)\n\
 === main ===\n~ temp t = get_timer(1)\n~ play_sound(t)\n-> DONE\n";
 
 /// Same shape, but the argument is already the binding's own declared kind
 /// (`AudioInstance`) — must unify cleanly, no escape.
 const SAME_KIND_SRC: &str = "\
 EXTERNAL play_sound(inst)\n\
-=== function get_audio(id: int): Handle<AudioInstance> ===\n~ return id\n\
+EXTERNAL opaque_handle(seed)\n\
+=== function get_audio(id: int): Handle<AudioInstance> ===\n~ return opaque_handle(id)\n\
 === main ===\n~ temp a = get_audio(1)\n~ play_sound(a)\n-> DONE\n";
 
 fn two_kind_manifest_with_play_sound() -> HostManifest {

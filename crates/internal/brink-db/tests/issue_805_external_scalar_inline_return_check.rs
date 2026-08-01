@@ -128,11 +128,21 @@ fn manifest_with_only_handle_vocabulary() -> HostManifest {
     }
 }
 
+/// `opaque_handle` is an *unregistered* `EXTERNAL` (no manifest entry, no
+/// inline doc), so its result is untyped and its call sites unchecked: the
+/// leaf's body-derived return stays `Unknown` and the annotation firewall
+/// overlay supplies the concrete `Ty::Handle(K)`, which is what these
+/// fixtures need. It replaces a plain `~ return id` (issue #1912): a handle
+/// is an opaque `{kind, id}` scalar (docs/t1d-spec.md §3), not an `int`, so
+/// handing an `int`-annotated param back out of a `Handle<K>`-returning
+/// function was a real type error that only passed while reading an
+/// annotated param as a value typed `Unknown`.
 const INLINE_ONLY_CROSS_KIND_SRC: &str = "\
 /// @param inst {AudioInstance}
 EXTERNAL play_sound(inst)
+EXTERNAL opaque_handle(seed)
 === function get_timer(id: int): Handle<Timer> ===
-~ return id
+~ return opaque_handle(id)
 === main ===
 ~ temp t = get_timer(1)
 ~ play_sound(t)
@@ -163,8 +173,9 @@ fn inline_only_external_cross_kind_argument_reaches_production_diagnostics_under
 const INLINE_ONLY_SAME_KIND_SRC: &str = "\
 /// @param inst {AudioInstance}
 EXTERNAL play_sound(inst)
+EXTERNAL opaque_handle(seed)
 === function get_audio(id: int): Handle<AudioInstance> ===
-~ return id
+~ return opaque_handle(id)
 === main ===
 ~ temp a = get_audio(1)
 ~ play_sound(a)
