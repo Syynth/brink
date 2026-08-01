@@ -29,28 +29,32 @@ use brink_ir::{
 /// `collect_external_sigs`'s declaration-derived signature is seeded into
 /// `known_sigs` ahead of `main`'s SCC solve.
 ///
-/// `opaque_handle` is an *unregistered* `EXTERNAL` (absent from the
-/// manifest below), so its result is untyped and its call sites are
-/// unchecked — the leaf's body-derived return therefore stays `Unknown` and
-/// the annotation firewall overlay supplies the concrete `Ty::Handle(K)`,
-/// which is what these fixtures need. It replaces a plain `~ return id`
+/// `spawn_timer`/`spawn_audio` are genuinely-registered `EXTERNAL`
+/// producers (issue #1942's Scope section proposes "a natively-registered
+/// producer" as one construction path): each declares a fixed `returns`
+/// naming its own `Handle`-based `SemanticTypeDef`, so the leaf's
+/// body-derived return resolves directly to the concrete `Ty::Handle(K)` —
+/// the annotation only confirms it. This replaces a plain `~ return id`
 /// (issue #1912): a handle is an opaque `{kind, id}` scalar
-/// (docs/t1d-spec.md §3), not an `int`, so handing an `int`-annotated param
-/// back out of a `Handle<K>`-returning function was a real type error that
-/// only passed while reading an annotated param as a value typed `Unknown`.
+/// (docs/t1d-spec.md §1), not an `int`, so
+/// handing an `int`-annotated param back out of a `Handle<K>`-returning
+/// function was a real type error that only passed while reading an
+/// annotated param as a value typed `Unknown`. It also replaces the earlier
+/// *unregistered* `opaque_handle` workaround (PR #1938), scaffolding issue
+/// #1942 asked not to let calcify.
 const CROSS_KIND_SRC: &str = "\
 EXTERNAL play_sound(inst)\n\
-EXTERNAL opaque_handle(seed)\n\
-=== function get_timer(id: int): Handle<Timer> ===\n~ return opaque_handle(id)\n\
-=== main ===\n~ temp t = get_timer(1)\n~ play_sound(t)\n-> DONE\n";
+EXTERNAL spawn_timer()\n\
+=== function get_timer(): Handle<Timer> ===\n~ return spawn_timer()\n\
+=== main ===\n~ temp t = get_timer()\n~ play_sound(t)\n-> DONE\n";
 
 /// Same shape, but the argument is already the binding's own declared kind
 /// (`AudioInstance`) — must unify cleanly, no escape.
 const SAME_KIND_SRC: &str = "\
 EXTERNAL play_sound(inst)\n\
-EXTERNAL opaque_handle(seed)\n\
-=== function get_audio(id: int): Handle<AudioInstance> ===\n~ return opaque_handle(id)\n\
-=== main ===\n~ temp a = get_audio(1)\n~ play_sound(a)\n-> DONE\n";
+EXTERNAL spawn_audio()\n\
+=== function get_audio(): Handle<AudioInstance> ===\n~ return spawn_audio()\n\
+=== main ===\n~ temp a = get_audio()\n~ play_sound(a)\n-> DONE\n";
 
 fn two_kind_manifest_with_play_sound() -> HostManifest {
     HostManifest {
@@ -71,18 +75,38 @@ fn two_kind_manifest_with_play_sound() -> HostManifest {
                 widget: None,
             },
         ],
-        externals: vec![ManifestExternal {
-            name: "play_sound".to_string(),
-            params: vec![ManifestParam {
-                name: "inst".to_string(),
-                ty: TypeRef("AudioInstance".to_string()),
-            }],
-            returns: TypeRef::default(),
-            kind: ExternalKind::default(),
-            doc: None,
-            widgets: Vec::new(),
-            path: Vec::new(),
-        }],
+        externals: vec![
+            ManifestExternal {
+                name: "play_sound".to_string(),
+                params: vec![ManifestParam {
+                    name: "inst".to_string(),
+                    ty: TypeRef("AudioInstance".to_string()),
+                }],
+                returns: TypeRef::default(),
+                kind: ExternalKind::default(),
+                doc: None,
+                widgets: Vec::new(),
+                path: Vec::new(),
+            },
+            ManifestExternal {
+                name: "spawn_audio".to_string(),
+                params: Vec::new(),
+                returns: TypeRef("AudioInstance".to_string()),
+                kind: ExternalKind::default(),
+                doc: None,
+                widgets: Vec::new(),
+                path: Vec::new(),
+            },
+            ManifestExternal {
+                name: "spawn_timer".to_string(),
+                params: Vec::new(),
+                returns: TypeRef("Timer".to_string()),
+                kind: ExternalKind::default(),
+                doc: None,
+                widgets: Vec::new(),
+                path: Vec::new(),
+            },
+        ],
     }
 }
 
