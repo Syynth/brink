@@ -138,3 +138,26 @@ fn a_nested_conventions_module_path_resolves_correctly() {
         "{diags:?}"
     );
 }
+
+/// A typo'd `elements` pointer (`"typo.brink"`, no such file in the
+/// project) must never flag the real `conventions.brink`'s own claiming
+/// handler — nor anyone else's. Before the fix, `expected_module` was
+/// compared against every file's module WITHOUT ever checking that some
+/// file in the project actually resolves to it, so a typo'd/moved/deleted
+/// pointer flagged every claiming handler in the project — including the
+/// one in the real conventions module — telling the author to move it into
+/// a file that does not exist.
+#[test]
+fn an_unresolvable_elements_pointer_never_fires_even_against_the_real_module() {
+    let mut db = ProjectDb::new();
+    db.set_analysis_options(opts_with_elements("typo.brink"));
+    db.set_file(
+        "conventions.brink",
+        format!("{CLAIMING_HANDLER}flow main() {{\n  INT. MARKET SQUARE\n}}\n"),
+    );
+    let diags = db.analysis().diagnostics.clone();
+    assert!(
+        diags.iter().all(|d| d.code != DiagnosticCode::E169),
+        "{diags:?}"
+    );
+}

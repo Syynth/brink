@@ -410,14 +410,22 @@ pub(crate) fn await_purity_diagnostics_query(
 ///
 /// Lazy in the same shape as [`await_purity_diagnostics_query`]/
 /// [`comparator_contract_diagnostics_query`]: a file with no declared claim
-/// handler never even reads [`module_map_query`]. Two more cases are
+/// handler never even reads [`module_map_query`]. Three more cases are
 /// intentionally silent, not merely lazy — see
 /// `brink_analyzer::conventions_module_diagnostics`'s own module doc for
 /// why: an unset `elements` key (nothing configured to confine against
-/// yet), and a bare preset name (`elements = "screenplay"`, which names a
+/// yet), a bare preset name (`elements = "screenplay"`, which names a
 /// `std::conventions::*` module rather than a project file — no path in
 /// the tree to compare against without a preset registry this slice
-/// doesn't build).
+/// doesn't build), and a path-shaped pointer that resolves to no file that
+/// actually exists in `project.files(db)` (a typo, a moved/deleted target,
+/// an `.ink`-suffixed path) — that last case is checked HERE, against
+/// [`module_map_query`]'s real module set, before any file is compared
+/// against it; otherwise every claiming handler in the project would be
+/// flagged for not living in a file that was never there to begin with.
+/// Reported via `tracing::warn!` (the same "warn, never silently drop"
+/// channel `resolve_options` uses for `ConfigWarning`s) rather than
+/// silently dropped.
 ///
 /// `lru = 4096`: per-file runaway-guard ceiling (issue #647), matching
 /// every other per-file diagnostic query in this module.
@@ -448,6 +456,27 @@ pub(crate) fn conventions_confinement_diagnostics_query(
         native_root,
         pointer,
     ));
+    // The pointer must resolve against a REAL file in the project before it
+    // can confine anything. A typo'd `elements` value, a moved/deleted
+    // target, or an `.ink`-suffixed path all produce an `expected_module`
+    // no file actually has — without this check, every claiming handler in
+    // the project (including the one in the real intended conventions
+    // module) would be flagged at `E169`, telling the author to move it
+    // into a file that does not exist, with no signal that the config
+    // itself is at fault. `module_map`'s iteration order can't affect this
+    // check: `any` only asks whether *some* file matches, never which one.
+    if !module_map.values().any(|m| m.name == expected_module) {
+        // Same "warn, never silently drop" channel `resolve_options` uses
+        // for `ConfigWarning`s (house rule) — the pointer problem is
+        // surfaced, just not as an `E169` storm against files that were
+        // never the ones at fault.
+        tracing::warn!(
+            "[project] elements = \"{pointer}\" does not match any file in the project \
+             (expected module `{expected_module}`) — conventions-module confinement (E169) \
+             is skipped until this is fixed"
+        );
+        return Arc::new(Vec::new());
+    }
     let is_conventions_module = this_module == expected_module;
     Arc::new(brink_analyzer::conventions_module_diagnostics(
         file_id,
