@@ -1694,6 +1694,134 @@ fn ufcs_call_with_matching_arg_types_is_unaffected_by_e063() {
 // this fix) is what keeps every strict-only code, `E063` included, from
 // ever firing under gradual in the first place.
 
+// ─── E063 through the PreludeDesugar UFCS spelling (issue #1919) ───────
+//
+// The E063-through-UFCS block above (issue #1881) only reaches a
+// `FreeFnDesugar`/`FreeFnAutoRef` verdict — a T1b/NS stdlib prelude verb
+// (`xs.push(v)`, `m.get(k)`, …) has no `DefinitionId`/declared param list to
+// compare against (`UfcsVerdict::PreludeDesugar`'s own doc), so it stayed
+// unchecked: `ufcs::UfcsVisitor::check_ufcs_prelude_arg_types` is the
+// missing piece, keying the expected argument type off the receiver's own
+// container type (an array's element type, a map's key/value types) instead
+// of a declared signature.
+//
+// Native (`.brink`) fixtures, same reasoning as every other UFCS block in
+// this file: UFCS is native-only by construction.
+
+/// `m.get(k)` where the receiver's statically-known map is keyed by
+/// `string` but the written key argument is `int`. Before this fix, this
+/// compiled with zero diagnostics.
+#[test]
+fn e063_ufcs_prelude_map_get_key_type_mismatch() {
+    let source = "fn main(): int {\n  let m = Map { \"a\": 1 };\n  let k = 5;\n  m.get(k);\n  \
+                  return 1;\n}\n";
+    let err = compile_native("ufcs-prelude-get-mismatch", source, native_strict_options())
+        .map(|_| ())
+        .unwrap_err();
+    let diags = errors_of(err);
+    assert_eq!(
+        diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![DiagnosticCode::E063],
+        "this fixture is deliberately clean of every other strict diagnostic so E063 alone \
+         proves the domain check: {diags:?}"
+    );
+    assert_code_at_nth(&diags, DiagnosticCode::E063, source, "m.get(k)", 0);
+}
+
+/// The matching-key-type case must stay completely clean.
+#[test]
+fn ufcs_prelude_map_get_matching_key_type_is_unaffected_by_e063() {
+    let source = "fn main(): int {\n  let m = Map { \"a\": 1 };\n  m.get(\"a\");\n  return 1;\n}\n";
+    let out = compile_native("ufcs-prelude-get-match", source, native_strict_options())
+        .unwrap_or_else(|e| panic!("a type-matching prelude UFCS call must compile clean: {e:?}"));
+    assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+}
+
+/// `xs.push(v)` where the receiver's statically-known array holds `string`
+/// (from `keys(m)` — the native surface has no array-literal grammar yet,
+/// same reasoning as the E149-through-UFCS block above) but the pushed
+/// value is `int`.
+#[test]
+fn e063_ufcs_prelude_array_push_item_type_mismatch() {
+    let source = "fn main(): int {\n  let m = Map { \"a\": 1 };\n  let ks = keys(m);\n  \
+                  ks.push(5);\n  return 1;\n}\n";
+    let err = compile_native(
+        "ufcs-prelude-push-mismatch",
+        source,
+        native_strict_options(),
+    )
+    .map(|_| ())
+    .unwrap_err();
+    let diags = errors_of(err);
+    assert_eq!(
+        diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![DiagnosticCode::E063],
+        "this fixture is deliberately clean of every other strict diagnostic so E063 alone \
+         proves the domain check: {diags:?}"
+    );
+    assert_code_at_nth(&diags, DiagnosticCode::E063, source, "ks.push(5)", 0);
+}
+
+/// The matching-element-type case must stay completely clean.
+#[test]
+fn ufcs_prelude_array_push_matching_item_type_is_unaffected_by_e063() {
+    let source = "fn main(): int {\n  let m = Map { \"a\": 1 };\n  let ks = keys(m);\n  \
+                  ks.push(\"b\");\n  return 1;\n}\n";
+    let out = compile_native("ufcs-prelude-push-match", source, native_strict_options())
+        .unwrap_or_else(|e| panic!("a type-matching prelude UFCS call must compile clean: {e:?}"));
+    assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+}
+
+/// `m.insert(k, v)`'s key half — the receiver's map is keyed by `string`,
+/// the written key is `int`; the value half agrees, so exactly one
+/// mismatch fires (at the key position, not the value position).
+#[test]
+fn e063_ufcs_prelude_map_insert_key_type_mismatch() {
+    let source = "fn main(): int {\n  let m = Map { \"a\": 1 };\n  m.insert(5, 2);\n  \
+                  return 1;\n}\n";
+    let err = compile_native(
+        "ufcs-prelude-insert-mismatch",
+        source,
+        native_strict_options(),
+    )
+    .map(|_| ())
+    .unwrap_err();
+    let diags = errors_of(err);
+    assert_eq!(
+        diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![DiagnosticCode::E063],
+        "this fixture is deliberately clean of every other strict diagnostic so E063 alone \
+         proves the domain check: {diags:?}"
+    );
+    assert_code_at_nth(&diags, DiagnosticCode::E063, source, "m.insert(5, 2)", 0);
+}
+
+/// `remove`'s *map* leg (the key-domain check this fix adds) is disjoint
+/// from `remove`'s *array* leg (`E149`, issue #1540, checked just above):
+/// a wrong-typed key on a map receiver must report `E063`, never `E149`.
+#[test]
+fn e063_ufcs_prelude_map_remove_key_type_mismatch() {
+    let source = "fn main(): int {\n  let m = Map { \"a\": 1 };\n  m.remove(5);\n  return 1;\n}\n";
+    let err = compile_native(
+        "ufcs-prelude-remove-mismatch",
+        source,
+        native_strict_options(),
+    )
+    .map(|_| ())
+    .unwrap_err();
+    let diags = errors_of(err);
+    assert_eq!(
+        diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![DiagnosticCode::E063],
+        "a map receiver's `remove` must report the key-domain E063, never the array-only E149: \
+         {diags:?}"
+    );
+}
+
+// No `types = gradual` UFCS-inert fixture here, same reasoning as the
+// E063-through-`FreeFnDesugar` block above: this check is UFCS-only by
+// construction and native compiles are strict-only.
+
 // ─── E150 (issue #1551): declared-return-value def falls through ───────
 //
 // Native-only, same reasoning as the E066/`as`-binding blocks above — a
