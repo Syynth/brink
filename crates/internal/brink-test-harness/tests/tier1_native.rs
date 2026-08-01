@@ -40,8 +40,17 @@
 //! why a hand-curated golden corpus is the right tool when there is no
 //! oracle to diff against). Every case is a straight-line, choice-free
 //! program — `compile_path` auto-detects the `.brink` extension and
-//! routes through the native pipeline with default `AnalysisOptions`
-//! (no `Dialect`/`TypePolicy` knob native cares about).
+//! routes through the native pipeline with default `AnalysisOptions`.
+//!
+//! **`TypePolicy` is not neutral here** (issue #1882): the default options
+//! above resolve to `TypePolicy::Gradual`, under which
+//! `brink_analyzer::strict_diagnostics` returns nothing — so none of the
+//! TM-3 strict pass runs against these fixtures, even though a real
+//! `.brink` project with `dialect = "brink"` compiles under `Strict`. That
+//! is deliberate for *this* file (a typing question must never fail a
+//! transcript golden), and `tier1_native_strict.rs` is the sibling that
+//! sweeps the same corpus under `types = strict` against a classified
+//! baseline of findings. Adding a case here automatically adds it there.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 

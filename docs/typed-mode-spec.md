@@ -230,3 +230,54 @@ between T1b and T1c:
 Then **T1c unfreezes** with `fn(T…): R` types from day one, then the
 T2 effects round. Spine slices run as single reviewed, oracle-gated
 agents; the tail as a pump wave — the T1b working method unchanged.
+
+## 10. Where the strict pass is exercised — RULED
+
+TM-3's checks only run where a corpus is actually compiled under
+`types = strict`, and until #1882 the **native** golden corpus was not
+one of those places. `tier1_native.rs` compiles every
+`tests/tier1-native/<case>/story.brink` with `AnalysisOptions::default()`
+(`dialect = StrictInk` → `Gradual`), so `strict::check` never saw
+`.brink` source — while a real `.brink` project that sets
+`dialect = "brink"` gets `Strict` from §1's dialect-keyed default. Every
+native strict-typing bug found between #1849 and #1902 was a question
+that corpus would have answered.
+
+**Ruled: the native corpus is swept under strict, against a recorded
+baseline** — `crates/internal/brink-test-harness/tests/
+tier1_native_strict.rs`. It compiles every case under
+`types = strict` and asserts the resulting `E063`/`E065`/`E066` set
+matches a hand-classified table, failing in **both** directions (a new
+finding needs triage; a finding that stops firing means a gap closed or
+a check regressed).
+
+Two things this deliberately is *not*:
+
+- It is **not** a flip of `tier1_native.rs`'s own posture. That file's
+  goldens stay on the default (gradual) compile, so the sweep can never
+  turn a typing question into a transcript failure. `tier1_native_
+  strict.rs` pins that separation with its own assertion.
+- It is **not** licence to edit fixtures until the sweep is green.
+  CLAUDE.md's rule stands: a check that trips on real corpus code means
+  the check is wrong, or reality differs from this spec — flag it. The
+  baseline is a worklist, and each row names whether it is a true
+  positive or a checker gap.
+
+The first sweep produced 37 findings across 7 of 14 cases, filed as
+#1909 (UFCS method-call results type as `Unknown` where the direct-call
+spelling is clean), #1910 (pure verb results and lambda-bound locals
+type as `Unknown`), #1911 (`string + int` concatenation reports `E066`
+on legal, running ink), and #1912 (`content`-typed parameters — value
+reads type as `Unknown`, and `try_claim` synthesizes `string`
+arguments the handler signature rejects). The rest are fixtures written
+in gradual style, expected under §2 and §5.
+
+Two findings land back on this spec rather than on the analyzer. §4's
+coercion lattice does not say what `string + T` concatenation does at
+all (#1911). And §2's "internal helpers never require an annotation"
+promise is not what the corpus experiences: a helper whose body
+genuinely constrains nothing (`fn bump(ref n, amount) { n = n +
+amount; }`) is an `Unknown` escape — correct under "call-site-driven
+inference is forbidden", but not what that sentence leads a writer to
+expect. §2 is RULED, so its wording is not re-struck here; the
+discrepancy is filed as #1915 for sign-off on the replacement text.
