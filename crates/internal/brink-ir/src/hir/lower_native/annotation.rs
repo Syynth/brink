@@ -589,6 +589,17 @@ const ELEMENT_BLOCK: &str = "block";
 /// handler) is still issue #1839's scope, not delivered here.
 const ELEMENT_CONTENT_TYPE: &str = "content";
 
+/// The native-type-system spelling a `claims = "…"` handler's captured
+/// param can declare and still type-check under the rewrite (`E171`,
+/// issue #1849) — `try_claim` binds every capture as a plain
+/// `Expr::String` literal, so `string` is the one declared type a
+/// captured param is actually, literally handed today (`content` also
+/// passes the same check, for a different reason — see
+/// [`is_satisfiable_by_a_string_capture`]'s own doc). Same shallow-text-
+/// check posture as [`ELEMENT_CONTENT_TYPE`]'s own doc: this module never
+/// calls into the type checker.
+const ELEMENT_STRING_TYPE: &str = "string";
+
 /// The two `@[style(…)]` keys that name the whole line rather than a
 /// capture: the dispatched line's full text, and the `!name` prefix itself
 /// (§3.5b addendum 4).
@@ -637,7 +648,12 @@ fn eq_value_text(arg: &ast::AnnotationArg) -> Option<String> {
 /// to the block capture contract. A `claims = "…"` pattern (issue #1838)
 /// naming a parameter no capture matches is the converse check, `E167` —
 /// the rewritten call has no other source of arguments, so every parameter
-/// must come from a capture.
+/// must come from a capture. A `claims = "…"` pattern whose captured param
+/// declares a type the rewrite could never satisfy (not `string`, not
+/// untyped, not `content`) is `E171` (issue #1849) — the rewrite binds
+/// every capture as a plain string literal, so any other declared type
+/// could never actually be satisfied; `content` is exempted, see
+/// [`is_satisfiable_by_a_string_capture`]'s own doc for why.
 pub(super) fn element_annotation(
     file_id: FileId,
     decl: &SyntaxNode,
@@ -754,6 +770,34 @@ fn parse_element(
         return None;
     }
 
+    // Issue #1849: a captured param's declared type must be satisfiable by
+    // a plain string capture — `super::element::try_claim` binds every
+    // capture as an `Expr::String` literal, unconditionally, regardless of
+    // the receiving parameter's declared type (see that function's own
+    // doc). Numeric capture coercion is `docs/prose-dialect-spec.md`
+    // §3.5b's own Deferred item — the gap itself is ruled-deferred, not a
+    // bug — but leaving the mismatch silent is: without this check it
+    // surfaces only once the rewritten call reaches direct-call-argument
+    // type-checking (`E063`, issue #1864), as a diagnostic spanning the
+    // *whole claimed prose line* and naming neither the capture nor the
+    // param. Checking it here, at the declaration, both narrows the span
+    // to the offending param's own type annotation and explains *why*
+    // (deferred coercion, not a defect) — the same static-defect-in-the-
+    // declaration posture `E160`/`E166`/`E167` already take just above.
+    // Declining the claim (`None`, so this `fn` is never registered as a
+    // claiming handler) leaves the line unclaimed rather than rewriting
+    // it to a call that could never type-check.
+    if claims
+        && let Some(p) = params.iter().find(|p| {
+            captures.contains(&p.name.text)
+                && !is_satisfiable_by_a_string_capture(p.annotation.as_ref())
+        })
+    {
+        let range = p.annotation.as_ref().map_or(p.name.range, TypeExpr::range);
+        diags.push(diag(file_id, range, DiagnosticCode::E171));
+        return None;
+    }
+
     Some(ElementAnnotation {
         pattern,
         claims,
@@ -779,6 +823,41 @@ fn has_block_content_param(params: &[Param], captures: &[String]) -> bool {
         Some(TypeExpr::Named { name, .. }) if name == ELEMENT_CONTENT_TYPE
     );
     is_content_typed && !captures.contains(&last.name.text)
+}
+
+/// `true` when a `claims = "…"` handler's captured param, declared with
+/// `annotation`, can accept the plain string literal [`super::element::
+/// try_claim`] actually binds every capture as.
+///
+/// Absent (no declared type — the param takes whatever the rewrite gives
+/// it, matching pre-typed-mode behavior) and exactly `string` both pass,
+/// unsurprisingly. `content` **also** passes, deliberately — not because
+/// a capture can actually produce a `FragmentRef` (it cannot; binding a
+/// `content`-typed param to one is `docs/prose-dialect-spec.md` §3.5b's
+/// own Deferred item, issue #1838/#1839's scope, not this check's), but
+/// because `content` already has an established, ruled, and *tested*
+/// story of its own: the spec's own worked example
+/// (`fn radio(chan: string, text: content)`) and this crate's
+/// `tier1-native/annotations-element` golden fixture both declare a
+/// captured `content` param today and both compile clean — T1c's
+/// signature inference (`infer::body::infer_def_body`'s own doc: "a body
+/// use that disagrees with the annotation still infers its own concrete
+/// type") derives the *body-observed* type for a param whose only use is
+/// interpolation into a string, which is `string`, not the declared
+/// `content` — so no `E063` mismatch actually fires for `content` in
+/// practice. Flagging it here would turn an already-shipped, already-
+/// tested, spec-ruled pattern into a fresh hard error. Every *other*
+/// declared type (`int`, `float`, `bool`, a struct name, a generic, a
+/// `fn` type) has no such precedent and no such rescue — those are
+/// `E171`'s actual target; see that code's own doc comment.
+fn is_satisfiable_by_a_string_capture(annotation: Option<&TypeExpr>) -> bool {
+    match annotation {
+        None => true,
+        Some(TypeExpr::Named { name, .. }) => {
+            name == ELEMENT_STRING_TYPE || name == ELEMENT_CONTENT_TYPE
+        }
+        Some(_) => false,
+    }
 }
 
 /// Read the `@[style(…)]` annotation attached to `decl`, if it declares

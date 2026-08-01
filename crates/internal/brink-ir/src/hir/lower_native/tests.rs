@@ -1652,6 +1652,89 @@ fn a_claiming_handler_param_with_no_capture_diagnoses_e167() {
     assert!(hir.knots[0].element_annotation.is_none());
 }
 
+// ─── Typed captured params on a claiming handler (issue #1849) ─────
+//
+// `try_claim` (`hir::lower_native::element`) binds every capture as a
+// plain `Expr::String` literal regardless of the receiving parameter's
+// declared type — numeric capture coercion does not exist. These tests
+// prove the resulting mismatch is now a targeted, declaration-pointed
+// diagnostic (`E171`) rather than silence (the pre-#1849 state) or a
+// generic whole-line `E063` reached only once the rewritten call is
+// type-checked.
+
+#[test]
+fn a_claiming_handler_numeric_typed_param_diagnoses_e171() {
+    let src = "@[element(claims = \"^Take (?<n>\\\\d+)$\")]\nfn take(n: int) {\n  return n;\n}\n";
+    let (hir, _m, diags) = lower_src(src);
+    let e171 = diags
+        .iter()
+        .find(|d| d.code == DiagnosticCode::E171)
+        .unwrap_or_else(|| panic!("a numeric captured param must raise E171: {diags:?}"));
+    // The span must land on `n`'s own type annotation (`int`), not the
+    // whole `@[element(…)]` line and not a claimed prose line — the exact
+    // complaint issue #1849 filed against the pre-existing `E063` path.
+    assert_eq!(
+        &src[usize::from(e171.range.start())..usize::from(e171.range.end())],
+        "int",
+        "E171 must point at the mismatched param's own type annotation"
+    );
+    // A handler that fails this check is never registered as a claiming
+    // handler at all — same posture as E160/E166/E167 above.
+    assert!(hir.knots[0].element_annotation.is_none());
+    // No claim happened, so no `E063` should ever reach here either —
+    // `try_claim` never got a chance to rewrite anything.
+    assert!(
+        !diags.iter().any(|d| d.code == DiagnosticCode::E063),
+        "a declined claim must never reach the generic call-arg-mismatch check: {diags:?}"
+    );
+}
+
+#[test]
+fn a_claiming_handler_string_typed_param_does_not_diagnose_e171() {
+    let (hir, _m, diags) = lower_src(
+        "@[element(claims = \"^Take (?<n>\\\\d+)$\")]\nfn take(n: string) {\n  return n;\n}\n",
+    );
+    assert!(
+        !diags.iter().any(|d| d.code == DiagnosticCode::E171),
+        "a string-typed captured param must not raise E171: {diags:?}"
+    );
+    let element = hir.knots[0].element_annotation.as_ref().expect("present");
+    assert!(element.claims);
+}
+
+#[test]
+fn a_claiming_handler_untyped_param_does_not_diagnose_e171() {
+    let (hir, _m, diags) =
+        lower_src("@[element(claims = \"^Take (?<n>\\\\d+)$\")]\nfn take(n) {\n  return n;\n}\n");
+    assert!(
+        !diags.iter().any(|d| d.code == DiagnosticCode::E171),
+        "an untyped captured param must not raise E171: {diags:?}"
+    );
+    let element = hir.knots[0].element_annotation.as_ref().expect("present");
+    assert!(element.claims);
+}
+
+#[test]
+fn a_claiming_handler_content_typed_param_does_not_diagnose_e171() {
+    // `content` is deliberately exempt (see `is_satisfiable_by_a_string_
+    // capture`'s own doc): the spec's own ruled `radio` example and the
+    // `tier1-native/annotations-element` golden fixture both declare a
+    // captured `content` param and compile clean today, since T1c's
+    // signature inference derives `place`'s *checked* type from its body
+    // use (interpolation into a string), not from the declared
+    // annotation. Flagging it here would break that already-shipped
+    // pattern for no compiler-observable reason.
+    let (hir, _m, diags) = lower_src(
+        "@[element(claims = \"^INT\\\\. (?<place>.+)$\")]\nfn interior(place: content) {\n  return \"-- inside {place} --\";\n}\n",
+    );
+    assert!(
+        !diags.iter().any(|d| d.code == DiagnosticCode::E171),
+        "a content-typed captured param must not raise E171: {diags:?}"
+    );
+    let element = hir.knots[0].element_annotation.as_ref().expect("present");
+    assert!(element.claims);
+}
+
 #[test]
 fn a_non_claiming_handler_may_have_params_beyond_its_captures() {
     // The asymmetry E167 exists for: a `!name` handler stays callable by
