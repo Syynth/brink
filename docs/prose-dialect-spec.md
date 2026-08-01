@@ -333,7 +333,7 @@ fn radio(chan: string, text: content) {
   on its own `content`-typed parameter; it is still **not usable
   end-to-end** — nothing dispatches to it yet, since the `!name` sigil
   rewrite that would actually bind a captured run to that param remains
-  issue #1839's scope.
+  issue #1838's scope.
 - **`@[style]` — declared editor presentation (RULED, addenda 3–4).**
   A companion annotation mapping captures (and `line` = the whole
   line; `dispatch` = the `!name` prefix) to style values, drawn from
@@ -373,7 +373,7 @@ fn radio(chan: string, text: content) {
   system — the ruled `fn radio(chan: string, text: content)` example's
   `text` param, and `block`'s own trailing receiver param, now compile —
   but nothing yet *dispatches* a captured run into one; that binding rides
-  the `!name` sigil rewrite below, issue #1839's scope); the `!name` sigil
+  the `!name` sigil rewrite below, issue #1838's scope); the `!name` sigil
   dispatch rewrite itself (matching
   a content line, binding captures, lowering to a call — issue #1719
   delivered the `@[element]`/`@[style]` **declaration surface**, and issue
