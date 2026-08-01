@@ -499,6 +499,7 @@ fn lower_root_content_chunks(
         let (stmts, mut block_children) = {
             let mut ctx = make_ctx(
                 file_id,
+                hir_file.native,
                 resolutions,
                 index,
                 &temp_map,
@@ -757,7 +758,7 @@ pub fn assemble_program(
 #[expect(clippy::too_many_arguments)]
 fn lower_knot(
     file_id: FileId,
-    _hir_file: &hir::HirFile,
+    hir_file: &hir::HirFile,
     knot: &hir::Knot,
     resolutions: &ResolutionLookup,
     index: &SymbolIndex,
@@ -788,6 +789,7 @@ fn lower_knot(
     let knot_param_names: Vec<&str> = knot.params.iter().map(|p| p.name.text.as_str()).collect();
     let mut ctx = make_ctx(
         file_id,
+        hir_file.native,
         resolutions,
         index,
         &temp_map,
@@ -814,6 +816,7 @@ fn lower_knot(
     for stitch in &knot.stitches {
         children.push(lower_stitch(
             file_id,
+            hir_file.native,
             knot,
             stitch,
             &temp_map,
@@ -864,6 +867,7 @@ fn lower_knot(
 #[expect(clippy::too_many_arguments)]
 fn lower_stitch(
     file_id: FileId,
+    native: bool,
     knot: &hir::Knot,
     stitch: &hir::Stitch,
     temp_map: &TempMap,
@@ -888,6 +892,7 @@ fn lower_stitch(
         stitch.params.iter().map(|p| p.name.text.as_str()).collect();
     let mut ctx = make_ctx(
         file_id,
+        native,
         resolutions,
         index,
         temp_map,
@@ -1592,6 +1597,7 @@ fn lower_choice_with_child(
 #[expect(clippy::too_many_arguments)]
 fn make_ctx<'a>(
     file: FileId,
+    native: bool,
     resolutions: &'a ResolutionLookup,
     index: &'a SymbolIndex,
     temps: &'a TempMap,
@@ -1610,6 +1616,7 @@ fn make_ctx<'a>(
 ) -> LowerCtx<'a> {
     LowerCtx {
         file,
+        native,
         resolutions,
         index,
         temps,

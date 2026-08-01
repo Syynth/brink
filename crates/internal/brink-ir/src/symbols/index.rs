@@ -88,6 +88,27 @@ pub struct SymbolInfo {
     pub visibility: Visibility,
 }
 
+impl SymbolInfo {
+    /// Whether this symbol is a statically-named **function definition** —
+    /// ink's `=== function name ===` / native's `fn name(…)`, the only
+    /// thing a function *value* can be taken of (`docs/t1c-spec.md` §2).
+    ///
+    /// A knot or stitch carrying the manifest's `"function"` sentinel in
+    /// [`detail`](Self::detail). Deliberately *not* an `External`: an
+    /// `EXTERNAL` has no body to address (see `brink-analyzer`'s `E079`,
+    /// which reports exactly that).
+    ///
+    /// Shared by the two creation-site surfaces so they can never drift:
+    /// `brink-analyzer`'s `#fn` creation-site check (`fn_values`) and
+    /// `brink-ir`'s native bare-name fn-value lowering
+    /// (`lir::lower::expr::lower_path`, issue #1862).
+    #[must_use]
+    pub fn is_function_definition(&self) -> bool {
+        matches!(self.kind, SymbolKind::Knot | SymbolKind::Stitch)
+            && self.detail.as_deref() == Some("function")
+    }
+}
+
 /// Parameter metadata for hover/signature help.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParamInfo {

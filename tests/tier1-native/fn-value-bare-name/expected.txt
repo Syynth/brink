@@ -1,0 +1,10 @@
+Call: 8
+Mapped: [2, 4, 6]
+Filtered: [2, 4, 6]
+Folded: 10
+Applied: 42
+ThroughLocal: 14
+Shadowed: 5
+Mixed: 12
+GlobalVarCall: 18
+GlobalVarMapped: [2, 4, 6]

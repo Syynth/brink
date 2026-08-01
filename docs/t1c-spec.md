@@ -67,6 +67,60 @@ VAR player_hp = 10
 sigil rule — `#` opens a tag in prose position). Diagnostics for the
 bullets above allocate from **E079** upward (next free after E078).
 
+## 2a. Creation on the native surface: the bare name — RULED 2026-08-01
+
+`#fn` is the **ink/brink-dialect** spelling and it is not retired. On the
+**native** (`.brink`) surface, creation has no sigil at all: a
+statically-named function in expression position **is** a fn value.
+
+```brink
+fn scene(x) {
+  return x + 1;
+}
+
+fn used() {
+  return map([1, 2, 3], scene);   // a reference — the fn value itself
+}
+
+fn called() {
+  return scene(1);                // a call — parentheses make it one
+}
+```
+
+Reference-vs-call is unambiguous because a call keeps its parentheses —
+Rust's function-item model. This is why `#fn` is the *wrong* spelling
+here rather than merely a redundant one: `#` is already the tag sigil in
+native content position (`brink-syntax-native`'s `parser/block.rs`), so
+`#fn` would collide with the one meaning `#` has on this surface. The
+ruling is a grammar fact, not a taste preference.
+
+Consequences that follow from "bare name, no sigil":
+
+- A **local of the same name wins.** Name resolution reaches a `let`
+  binding or parameter before it ever reaches the function definition,
+  so `let double = 5; double` is the `int` 5.
+- The reference binds **zero** arguments, always. The binding
+  (partial-application) form `#fn(f, a)` deliberately has **no** native
+  spelling: for a *value* parameter it is now redundant with lambdas
+  (`|x| f(a, x)`, since lambda lifting landed), and for a **`ref`**
+  parameter it is not redundant but is also not safely respellable —
+  lambda capture is by-value always, while `#fn(heal, player_hp)` binds
+  a `ref` param to a durable *cell*. Giving that a native spelling needs
+  its own ruling and is not blocked by anything today.
+- Therefore §2's `ref` obligation survives as an absolute: a target with
+  any `ref` parameter can never be referenced by bare name (E080 at the
+  reference site). §2's other two creation-site diagnostics do not
+  apply — there are no bound args to over-bind (E081), and a bare name
+  that resolves to something other than a function definition is simply
+  not a fn value at all (E079), it stays a variable read or a knot's
+  visit count.
+- **Ink is unchanged.** The same bare name in ink is still a knot's
+  visit count; only `#fn(f)` creates a fn value there.
+
+Respelling ink into native (`brink-respell`) follows the same split: a
+zero-bound `#fn(f)` emits as the bare name `f`; the binding form refuses
+loudly rather than emitting a lambda with different semantics.
+
 ## 3. Invocation and `bind` — RULED (typing rule details in §4)
 
 Both call forms ship:

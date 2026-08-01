@@ -712,6 +712,20 @@ pub fn per_file_diagnostics(
         // cascade ruling (A)).
         out.extend(map_keys::check_duplicate_keys(&files));
     }
+    // Native bare-name fn values (issue #1862): the `.brink` half of the
+    // T1c creation-site discipline. Keyed off `is_native` alone rather than
+    // the block above's `dialect == Brink || is_native`, because the rule
+    // it enforces only exists on the native surface — see
+    // [`fn_values::check_native_bare_refs`]'s own doc. (`check` above stays
+    // where it is: `#fn` is the brink-*dialect* spelling and is not
+    // reachable from `.brink` source at all.)
+    if is_native {
+        out.extend(fn_values::check_native_bare_refs(
+            &files,
+            file_resolutions,
+            index,
+        ));
+    }
     // Inline-markup vocabulary checks (E164/E165, issue #1733,
     // docs/prose-dialect-spec.md §4.2). Wired *outside* every dialect
     // branch above on purpose: markup spans are a native-grammar

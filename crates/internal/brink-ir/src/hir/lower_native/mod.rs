@@ -291,6 +291,8 @@ pub fn lower(
             matches.sort_by_key(|m| m.line.start());
             matches
         },
+        // This module *is* the native frontend — see `HirFile::native`.
+        native: true,
         claim_handlers,
     };
     let manifest = project_manifest(&hir);
