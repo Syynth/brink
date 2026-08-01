@@ -312,8 +312,8 @@ fn generate_witness_from_hir(hir: &Hir) -> Option<String> {
                     HirKind::Literal(lit) => {
                         witness.push_str(&String::from_utf8_lossy(&lit.0));
                     }
-                    HirKind::Look(_) => {
-                        // Anchors don't contribute text, skip them.
+                    HirKind::Look(_) | HirKind::Empty => {
+                        // Anchors and empty don't contribute text.
                     }
                     HirKind::Repetition(r) => {
                         // For repetitions, try to expand the inner part.
@@ -325,9 +325,6 @@ fn generate_witness_from_hir(hir: &Hir) -> Option<String> {
                     HirKind::Class(_) => {
                         // For character classes, pick a representative character.
                         witness.push('a');
-                    }
-                    HirKind::Empty => {
-                        // Empty doesn't contribute text.
                     }
                     _ => {
                         // For any other construct (groups with non-literals,
@@ -344,7 +341,6 @@ fn generate_witness_from_hir(hir: &Hir) -> Option<String> {
         }
         HirKind::Repetition(r) => generate_witness_from_hir(&r.sub),
         HirKind::Class(_) => Some("a".to_string()),
-        HirKind::Look(_) => None,
         HirKind::Empty => Some(String::new()),
         _ => None,
     }
