@@ -75,9 +75,13 @@ pub struct Sig {
     ///   ([`literal_ty`]): `#[…]` → `Ty::Array`, `#{…}` → `Ty::Map`,
     ///   `Name#{…}` → `Ty::Struct`, plus every scalar/`List<L>` form
     ///   `infer_literal_type` already covered;
-    /// - else a bare `#fn(target, args…)` initializer (T1c follow-up, issue
-    ///   #712, docs/t1c-spec.md §4), in which case the type is the bound
-    ///   prefix consumed from `target`'s *own* declaration-derived signature
+    /// - else a fn-value initializer ([`declared_fn_type`]) — a bare
+    ///   `#fn(target, args…)` literal (T1c follow-up, issue #712,
+    ///   docs/t1c-spec.md §4), or, on the **native** surface only, a bare
+    ///   name resolving to a function definition (docs/t1c-spec.md §2a,
+    ///   issue #1895; zero bound args, since the binding form has no native
+    ///   spelling). Either way the type is the bound prefix consumed from
+    ///   `target`'s *own* declaration-derived signature
     ///   (`param_annotations`/`return_annotation` — a second, single-level
     ///   `signature()` call, never the target's body). An unannotated target
     ///   param/return reads as `Ty::Unknown` in the row, the same
@@ -221,7 +225,11 @@ fn literal_ty(expr: &Expr, index: &SymbolIndex) -> Option<Ty> {
 /// A VAR/CONST's declaration-derived type at full [`Ty`] fidelity — the
 /// value behind [`Sig::value_ty`] (issue #1540). Resolution order is the
 /// TM-2 firewall's: an explicit annotation wins outright, then the
-/// initializer literal, then a `#fn(…)` initializer.
+/// initializer literal, then a fn-value initializer.
+///
+/// `native` is the declaring file's frontend flag ([`HirFile::native`]) —
+/// the one gate the native bare-name spelling needs (issue #1895); see
+/// [`declared_fn_type`].
 fn declared_value_ty(
     value: &Expr,
     annotation: Option<&brink_ir::TypeExpr>,
@@ -229,33 +237,47 @@ fn declared_value_ty(
     files: &[(FileId, &HirFile)],
     names: &crate::annotations::TypeNames,
     manifest: Option<&HostManifest>,
+    native: bool,
 ) -> Option<Ty> {
     if let Some(ty) = annotation.and_then(|ann| resolve_annotation(ann, names)) {
         return Some(ty);
     }
-    literal_ty(value, index).or_else(|| declared_fn_type(value, index, files, manifest))
+    literal_ty(value, index).or_else(|| declared_fn_type(value, index, files, manifest, native))
 }
 
-/// A VAR/CONST's declaration-derived `#fn(target, args…)` initializer type
-/// (T1c follow-up, issue #712) — `None` when the initializer isn't a
-/// `#fn(...)` literal. Feeds [`Sig::value_ty`]'s last fallback, after the
-/// annotation and the initializer-literal branches in
+/// A VAR/CONST's declaration-derived fn-value initializer type (T1c
+/// follow-up, issue #712) — `None` when the initializer is neither an ink
+/// `#fn(target, args…)` literal nor, on the native surface, a bare name
+/// resolving to a function definition. Feeds [`Sig::value_ty`]'s last
+/// fallback, after the annotation and the initializer-literal branches in
 /// [`declared_value_ty`] have both already come up empty — an `fn(...)`
 /// *annotation* is resolved and returned there directly (that call site's
 /// own `if let Some(ty) = annotation.and_then(...)` is strictly earlier in
 /// the firewall order and already covers it), so this function only ever
 /// needs to look at the initializer.
+///
+/// **Two spellings, one type** (`docs/t1c-spec.md` §2a). Issue #1895 closed
+/// the declaration-initializer half of the native bare-name rule: lowering
+/// has always minted the fn value here (`lir::lower::decls::fold_path_ref`
+/// → `ConstValue::FnRef`, gated on `native && is_function_definition`) and
+/// `fn_values::check_native_bare_refs` has always walked decl initializers
+/// for `E080`, but typing had no native arm at all — so `Sig::value_ty`
+/// stayed `None`, the global never reached `infer::collect_globals`,
+/// `ty_of_def` answered `Ty::Unknown`, and a later `f(3)` misfired `E065`
+/// on correct code. The bare-name arm below is gated on the *same* two
+/// conjuncts lowering uses, so the two can never disagree about which
+/// initializers are fn values. A bare name always binds **zero**
+/// arguments — the binding form `#fn(f, a)` has no native spelling (§2a) —
+/// so the value's parameter row is the target's whole signature.
 fn declared_fn_type(
     value: &Expr,
     index: &SymbolIndex,
     files: &[(FileId, &HirFile)],
     manifest: Option<&HostManifest>,
+    native: bool,
 ) -> Option<Ty> {
-    let Expr::FnLiteral(fl) = value else {
-        return None;
-    };
-    // `#fn` targets are always a single, statically-named function knot —
-    // never a stitch (T1c-1's own note: "every stitch target rejects until
+    // Targets are always a single, statically-named function knot — never
+    // a stitch (T1c-1's own note: "every stitch target rejects until
     // stitch-functions exist"), never a local (a global initializer has no
     // enclosing body to scope a temp/param against). This is exactly
     // `resolve::resolve_function`'s own first-tried bucket for a bare
@@ -263,13 +285,43 @@ fn declared_fn_type(
     // isn't already an E079 error; an E079 target (wrong kind, or no
     // "function" detail) falls through to `None` — the pre-existing
     // Unknown-escape fallback, not a new failure mode.
-    let target_name = fl
-        .target
+    let (target_path, bound_args) = match value {
+        Expr::FnLiteral(fl) => (&fl.target, fl.args.len()),
+        // Issue #1895: the sigil-free native spelling. Zero bound args,
+        // and only on the native surface — in ink the same bare name is a
+        // knot's visit count, never a fn value (§2a, "Ink is unchanged").
+        Expr::Path(path) if native => (path, 0),
+        _ => return None,
+    };
+    let target_name = target_path
         .segments
         .iter()
         .map(|s| s.text.as_str())
         .collect::<Vec<_>>()
         .join(".");
+    // A bare `Path` initializer is the one form whose *own* resolution is
+    // not decided here: `lower_path`/`fold_path_ref` consult the real
+    // resolution map, which reaches a same-named VAR/CONST/list item
+    // before it reaches a function knot. `signature()` has no resolution
+    // map (declaration-derived only), so rather than guess the wrong
+    // interpretation for a shadowed name, decline — `None` is the honest
+    // "can't determine" and leaves the pre-existing `Ty::Unknown`
+    // behaviour exactly as it was. The `#fn` literal form is unaffected:
+    // its target grammar admits nothing but a function name.
+    if matches!(value, Expr::Path(_))
+        && index.by_name.get(target_name.as_str()).is_some_and(|ids| {
+            ids.iter().any(|id| {
+                index.symbols.get(id).is_some_and(|i| {
+                    matches!(
+                        i.kind,
+                        SymbolKind::Variable | SymbolKind::Constant | SymbolKind::ListItem
+                    )
+                })
+            })
+        })
+    {
+        return None;
+    }
     // Signature typing of a global `#fn` initializer has no per-file import
     // context (no enclosing body), so it looks the target up flatly (M-2d
     // import scoping — issue #790 — is inert here: a single-candidate knot
@@ -306,7 +358,7 @@ fn declared_fn_type(
     let remaining: Vec<Ty> = target_sig
         .param_annotations
         .iter()
-        .skip(fl.args.len())
+        .skip(bound_args)
         .map(|a| a.clone().unwrap_or(Ty::Unknown))
         .collect();
     let ret = target_sig.return_annotation.clone().unwrap_or(Ty::Unknown);
@@ -395,6 +447,7 @@ pub fn signature(
                         files,
                         &names(),
                         manifest,
+                        hir.native,
                     );
                 }
             }
@@ -415,6 +468,7 @@ pub fn signature(
                         files,
                         &names(),
                         manifest,
+                        hir.native,
                     );
                 }
             }

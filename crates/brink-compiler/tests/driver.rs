@@ -1219,6 +1219,145 @@ fn native_bare_name_fn_value_satisfies_a_declared_fn_parameter() {
     );
 }
 
+// ── Native bare-name fn value in declaration-initializer position
+//    (issue #1895) ────────────────────────────────────────────────────
+//
+// #1876 typed the *expression* position only. Lowering has always minted
+// the fn value at a declaration initializer too
+// (`lir::lower::decls::fold_path_ref` → `ConstValue::FnRef`), and
+// `fn_values::check_native_bare_refs` already walks decl initializers for
+// E080 — so the typing side was the odd one out, leaving the global at
+// `Ty::Unknown` and turning a later call through it into `E065` on
+// perfectly valid code.
+
+/// The false positive itself: a file-level `var f = double` under
+/// `types = strict`, called as `f(3)`. With `signature::declared_fn_type`
+/// blind to the native bare-name spelling, `Sig::value_ty` is `None`, the
+/// global never lands in `collect_globals`, `ty_of_def` answers
+/// `Ty::Unknown`, and `check_value_call` classifies the call as
+/// `UnknownCallee` → E065 on correct code.
+#[test]
+fn native_bare_name_fn_value_decl_initializer_call_is_not_e065() {
+    let data = compile_native_strict(
+        "decl-init-call",
+        "fn double(x: int): int {\n\
+         \x20 return x * 2;\n}\n\
+         var f = double\n\
+         flow main() {\n  Doubled: {f(3)} -> END\n}\n",
+    )
+    .unwrap_or_else(|err| {
+        panic!(
+            "calling a global initialized to a native bare-name fn value must compile: {:?}",
+            diagnostic_codes(&err)
+        )
+    })
+    .data;
+    let (program, line_tables) = brink_runtime::link(&data).unwrap();
+    let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
+    let output: String = story
+        .continue_maximally()
+        .unwrap()
+        .iter()
+        .map(Line::text)
+        .collect();
+    assert!(
+        output.contains("Doubled: 6"),
+        "the global must still hold a callable fn value at runtime, got: {output:?}"
+    );
+}
+
+/// The other half of "the type exists": it is the *right* type, so a real
+/// mismatch through the same global is still caught. Typing the
+/// initializer as anything but `double`'s own signature would make this
+/// fixture compile clean again.
+#[test]
+fn native_bare_name_fn_value_decl_initializer_type_is_the_targets_signature() {
+    let err = compile_native_strict(
+        "decl-init-mismatch",
+        "fn double(x: int): int {\n\
+         \x20 return x * 2;\n}\n\
+         fn total(n: int): int {\n\
+         \x20 return n + 1;\n}\n\
+         var f = double\n\
+         flow main() {\n  Bad: {total(f)} -> END\n}\n",
+    )
+    .expect_err("passing the fn-valued global where an `int` is declared must fail compilation");
+    let brink_compiler::CompileError::Diagnostics(diags) = &err else {
+        panic!("expected a Diagnostics compile error, got: {err:?}");
+    };
+    assert_eq!(
+        diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![brink_ir::DiagnosticCode::E063],
+        "expected E063 alone, got: {diags:?}"
+    );
+    assert_eq!(
+        diags[0].message,
+        "argument 1 of call to `total` has type `fn(int): int` but its known type expects `int`",
+        "expected the `check_direct_call_args` message shape, got: {:?}",
+        diags[0].message
+    );
+}
+
+/// A same-named global shadows the function, exactly as it does at
+/// runtime: `lir::lower::decls::fold_path_ref` resolves the initializer
+/// through the real resolution map, which reaches a `const double` before
+/// it reaches `fn double` and folds the constant's value. The typing side
+/// has no resolution map — it is declaration-derived — so it declines
+/// rather than guessing the fn interpretation. Without that decline
+/// `alias` would type `fn(int): int` and this fixture would fail with a
+/// bogus E063 on the `total(alias)` call.
+#[test]
+fn native_bare_name_shadowed_by_a_same_named_global_is_not_typed_as_a_fn_value() {
+    let data = compile_native_strict(
+        "decl-init-shadowed",
+        "fn double(x: int): int {\n\
+         \x20 return x * 2;\n}\n\
+         fn total(n: int): int {\n\
+         \x20 return n + 1;\n}\n\
+         const double = 5\n\
+         var alias = double\n\
+         flow main() {\n  Val: {total(alias)} -> END\n}\n",
+    )
+    .unwrap_or_else(|err| {
+        panic!(
+            "a bare name shadowed by a same-named global is a constant read, not a fn value: {:?}",
+            diagnostic_codes(&err)
+        )
+    })
+    .data;
+    let (program, line_tables) = brink_runtime::link(&data).unwrap();
+    let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
+    let output: String = story
+        .continue_maximally()
+        .unwrap()
+        .iter()
+        .map(Line::text)
+        .collect();
+    assert!(
+        output.contains("Val: 6"),
+        "the shadowed bare name must fold to the constant's value, got: {output:?}"
+    );
+}
+
+/// The ink surface is untouched: `VAR f = double` in `.ink` has never been
+/// a fn value (a bare knot name there is a visit count), so the new arm
+/// must stay off unless the declaring file is native. Kept as a guard on
+/// the `hir.native` conjunct — dropping it would silently give every ink
+/// `VAR` initialized to a function knot's name a `Ty::Fn`.
+#[test]
+fn ink_var_initialized_to_a_function_name_is_not_typed_as_a_fn_value() {
+    let source = "Count: {f}\n\
+                  -> END\n\n\
+                  === function f ===\n\
+                  ~ return 1\n\n\
+                  VAR g = f\n";
+    let output = compile_and_run(source, &[]);
+    assert!(
+        output.contains("Count: 0"),
+        "an ink bare function-knot name must stay a visit count, got: {output:?}"
+    );
+}
+
 // ── compile_path (disk-based) ───────────────────────────────────────
 
 #[test]
