@@ -116,6 +116,13 @@ pub struct HirFile {
     /// right granularity: the fact travels with the HIR it describes, so
     /// every pass that already holds an `HirFile` gets it for free.
     pub native: bool,
+    /// Every natural-notation claiming handler *declared* in this file
+    /// (issue #1844), in source order — independent of whether it ever
+    /// claimed a line; see [`ClaimHandlerDecl`]'s own doc for why this is
+    /// not derivable from `element_matches`. Populated by the native
+    /// frontend (`hir::lower_native::element::collect`); always empty for
+    /// the ink frontend.
+    pub claim_handlers: Vec<ClaimHandlerDecl>,
 }
 
 /// A file's explicit `#@module(name)` declaration (M-1, modules-spec §1).
@@ -358,6 +365,25 @@ pub struct ElementMatch {
     pub captures: Vec<ElementCapture>,
     /// What the compiler did with the line.
     pub disposition: ElementDisposition,
+}
+
+/// One natural-notation claiming handler *declared* in a file — recorded
+/// regardless of whether it ever won a claim (issue #1844, the module half
+/// of the §9.1 confinement ruling: "pattern-claiming is confined to ONE
+/// module — the conventions module named in `brink.toml`"). [`ElementMatch`]
+/// only records lines a handler actually claimed, which is the wrong ground
+/// truth for this check — a claiming handler that matches nothing in its
+/// *own* file (because the lines it targets live elsewhere, or simply don't
+/// occur here) is still a declared claim, and still misplaced if this file
+/// isn't the configured conventions module.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaimHandlerDecl {
+    /// The handler's own name, carrying its declaration-site range.
+    pub name: Name,
+    /// Range of the `@[element(claims = "…")]` annotation line itself — the
+    /// confinement diagnostic's anchor, matching `E112`'s own placement
+    /// diagnostic (the annotation line, not the declaration body).
+    pub annotation: TextRange,
 }
 
 /// A built-in editor-presentation token (`docs/prose-dialect-spec.md`

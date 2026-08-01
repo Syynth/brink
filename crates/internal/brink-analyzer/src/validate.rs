@@ -336,6 +336,7 @@ mod tests {
             allow_scopes: Vec::new(),
             element_matches: Vec::new(),
             native: false,
+            claim_handlers: Vec::new(),
         }
     }
 

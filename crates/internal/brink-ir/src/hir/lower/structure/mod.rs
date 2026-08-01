@@ -231,5 +231,8 @@ fn lower_source_file(
         element_matches: Vec::new(),
         // This module *is* the ink frontend — see `HirFile::native`.
         native: false,
+        // Same reason, extended to the declaration record (issue #1844):
+        // ink has no claiming handlers to declare.
+        claim_handlers: Vec::new(),
     }
 }

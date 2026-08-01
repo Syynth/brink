@@ -12,6 +12,7 @@ mod await_purity;
 mod coalesce;
 mod comparator_contract;
 mod contains_domain;
+mod conventions_confinement;
 mod conversions;
 mod determinism;
 mod dialect_gate;
@@ -59,6 +60,7 @@ pub use coalesce::{
 pub use comparator_contract::{
     check as comparator_contract_diagnostics, comparator_callees, hir_has_comparator_site,
 };
+pub use conventions_confinement::conventions_module_diagnostics;
 pub use dialect_gate::Dialect;
 pub use effects_assertions::{
     assertion_defs as effects_assertion_defs, check as effects_assertion_diagnostics,
@@ -145,6 +147,19 @@ pub struct AnalysisOptions {
     /// [`AnalysisOptions::apply_project_config`] — read through
     /// [`effective_severity`], never this field directly.
     pub lints: LintPolicy,
+    /// `brink.toml`'s `[project] elements` pointer (docs/prose-dialect-spec.md
+    /// §3.4), if set: a built-in preset name or a project-relative path to
+    /// the project's conventions module. `None` means no conventions
+    /// module is configured. Consumed by the confinement check (issue
+    /// #1844, `E169`) that requires pattern-claiming `@[element(claims =
+    /// "…")]` handlers to live in the one file this names — resolving the
+    /// pointer against real project/module identity needs `brink-db`'s
+    /// path machinery, so this crate only carries the raw string through,
+    /// the same posture [`Self::types`]/[`Self::dialect`] have toward their
+    /// own project-file-authored values. Authoring-time/tooling input
+    /// only, mirroring every other `AnalysisOptions` field — never embedded
+    /// in `.inkb`.
+    pub elements: Option<String>,
 }
 
 impl AnalysisOptions {
@@ -274,6 +289,13 @@ impl AnalysisOptions {
         }
         if !types_overridden && let Some(types) = config.types {
             self.types = Some(types);
+        }
+        // `elements` (issue #1844) follows `dialect`/`types`' "unset means
+        // untouched" rule — no `_overridden` tier exists for it yet (no
+        // caller today sets it any way but through this file), so there is
+        // nothing for an explicit override to win over.
+        if config.elements.is_some() {
+            self.elements.clone_from(&config.elements);
         }
         let mut warnings = Vec::new();
         let mut overrides = BTreeMap::new();

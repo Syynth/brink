@@ -1374,6 +1374,30 @@ pub enum DiagnosticCode {
     /// dead code, not a hard error the way an unregistered claim (`E112`)
     /// is.
     E168,
+    /// A top-level `fn` carries an `@[element(claims = "…")]` pattern-
+    /// claiming annotation, but this file is not the project's configured
+    /// conventions module — the module half of the 2026-07-31 §9.1 ruling's
+    /// item (4) asymmetry (issue #1844; #1838 landed the *placement* half,
+    /// `E112`, and #1847 the module-nesting corner of it): "pattern-
+    /// claiming is confined to ONE module — the conventions module named in
+    /// `brink.toml`. `!name`-dispatched handlers stay legal anywhere
+    /// precisely because they self-announce." A sigil-dispatched line
+    /// announces itself at the call site; a claiming pattern can silently
+    /// reinterpret ordinary prose, so the auditability the ruling protects
+    /// depends on every claim living in the one file an author (or
+    /// reviewer) knows to open.
+    ///
+    /// Only fires when `brink.toml`'s `[project] elements` key names a
+    /// project-relative `.brink` path (`elements = "conventions.brink"`) —
+    /// a bare built-in preset name (`elements = "screenplay"`) points at a
+    /// `std::conventions::*` module with no project file to compare
+    /// against, and an unset `elements` key means no conventions module is
+    /// configured at all, so there is nothing to confine against yet
+    /// (`brink_db::queries::analysis::conventions_confinement_diagnostics_query`'s
+    /// own doc). `Error` by default, the same posture as `E112`: a
+    /// misplaced claim is not a style nit, it is a claim that violates the
+    /// one property the whole mechanism depends on.
+    E169,
 }
 
 impl DiagnosticCode {
@@ -1555,6 +1579,7 @@ impl DiagnosticCode {
         Self::E166,
         Self::E167,
         Self::E168,
+        Self::E169,
     ];
 
     /// The stable string representation (e.g., `"E001"`).
@@ -1733,6 +1758,7 @@ impl DiagnosticCode {
             Self::E166 => "E166",
             Self::E167 => "E167",
             Self::E168 => "E168",
+            Self::E169 => "E169",
         }
     }
 
@@ -2006,6 +2032,9 @@ impl DiagnosticCode {
             Self::E168 => {
                 "this `@[element(claims = \"…\")]` pattern is byte-identical to an earlier-declared handler's, and never won a claim of its own — it is dead code"
             }
+            Self::E169 => {
+                "a pattern-claiming `@[element(claims = \"…\")]` handler is legal only in the project's configured conventions module (`brink.toml`'s `[project] elements`)"
+            }
         }
     }
 
@@ -2235,6 +2264,7 @@ impl DiagnosticCode {
             "E166" => Some(Self::E166),
             "E167" => Some(Self::E167),
             "E168" => Some(Self::E168),
+            "E169" => Some(Self::E169),
             _ => None,
         }
     }

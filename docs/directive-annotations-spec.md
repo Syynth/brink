@@ -264,7 +264,13 @@ following from native having real declaration nodes:
   reads as un-nested by `flow`/`fn`-depth alone: the handler-collection
   pass that builds the claim dispatch table only ever scans the file's
   direct declarations, so admitting a module-nested claim there would
-  validate and then silently register nothing to claim with.
+  validate and then silently register nothing to claim with. Even a
+  validly-placed top-level `claims`-spelled handler is further confined to
+  **one file**: the conventions module `brink.toml`'s `[project] elements`
+  key names. A claiming handler declared anywhere else is `E169` (issue
+  #1844, the 2026-07-31 §9.1 ruling's item 4) — `!name`-dispatched
+  (`args`-spelled) handlers have no such restriction, since they
+  self-announce at the call site instead of silently reinterpreting prose.
 
 Everything else is the reserved-namespace rule (§1.1) doing its job: an
 unknown name is `E111`, a recognized name out of placement is `E112`, and

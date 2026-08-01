@@ -344,6 +344,9 @@ fn garble_file(hir: &mut HirFile) {
         element_matches: _,
         // A frontend-provenance flag, not a source `Provenance`.
         native: _,
+        // Likewise: a declaration record (name + annotation range), no
+        // `Provenance` (issue #1844).
+        claim_handlers: _,
     } = hir;
     garble_block(root_content);
     for knot in knots {
