@@ -75,6 +75,30 @@ strict-checked frame only if/when a future change gives it one (its
 own `BodyTypes`, run through the checker in its own right rather than
 folded into the enclosing def's).
 
+**RULED (issue #1912): a parameter's own annotation is visible to the
+body walk at *pure read sites*** — positions that consume the value and
+produce no counter-evidence about it. `return <param>` is one, joining
+the `infer::body::InferPass::or_own_annotation` fallback #1168 already
+applied to `some(x)`, `get(m, k)`'s return shape, and a `for` loop's
+iterable. So `fn passthru(t: content) { return t; }` exports `content`,
+not `Unknown` — the return type is exactly the annotated parameter type,
+and the annotated-return twin was already clean. The gap this closes was
+filed against `content` but was general to every resolvable annotation.
+
+The firewall this must not dissolve, and does not: the fallback overlays
+an `Unknown` **only**. A parameter the body genuinely constrains still
+exports its own independent derivation, so `annotations::mismatches`
+(`E063`) keeps comparing two derivations rather than the annotation
+against itself, and a contradictory body still comes out `Conflicted`
+(`E066`). Correspondingly, *evidence-producing* positions — `infer_infix`'s
+comparison and arithmetic operands, an intrinsic's sibling-argument
+`observe` (#1168's own w65 correction) — deliberately never consult the
+fallback: there, an annotation flowing into the walk would become body
+evidence for a *second* slot and silently discard that slot's own
+annotation. An unascribed temp merely copying an annotated parameter
+(`let v = t;`) likewise does **not** inherit the annotation transitively;
+the boundary is "annotated param / ascribed temp", read directly.
+
 ## 3. Annotation syntax — RULED
 
 **Inline types, brink-dialect-gated.** This revises the #473 ruling: the

@@ -2436,8 +2436,7 @@ mod tests {
     /// `string` — the annotation does not launder it back to `int`.
     #[test]
     fn a_concrete_body_derivation_still_beats_the_returned_params_annotation() {
-        let (hir, index, res) =
-            build("=== function passthru(hp: int) ===\n~ return hp + \"x\"\n");
+        let (hir, index, res) = build("=== function passthru(hp: int) ===\n~ return hp + \"x\"\n");
         let result = infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
         let sig = sig_of(&result, &index, "passthru");
         assert_eq!(sig.params, vec![Ty::String]);

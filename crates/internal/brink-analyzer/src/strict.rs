@@ -2234,7 +2234,10 @@ mod tests {
         for ty in ["int", "float", "bool", "string"] {
             let src = format!("fn passthru(t: {ty}) {{\n  return t;\n}}\n");
             let diags = native_strict_diags(&src);
-            assert!(diags.is_empty(), "`t: {ty}` supplies the return type: {diags:?}");
+            assert!(
+                diags.is_empty(),
+                "`t: {ty}` supplies the return type: {diags:?}"
+            );
         }
     }
 

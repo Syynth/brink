@@ -20,19 +20,26 @@ use brink_ir::{BaseType, DiagnosticCode, HostManifest, SemanticTypeDef};
 
 /// `get_audio`/`get_timer` are leaf functions whose return type is
 /// annotated with a distinct handle kind each; their body-derived return
-/// stays `Unknown` (`id` is never otherwise constrained), so the annotation
+/// stays `Unknown` (`opaque_handle` is an *unregistered* `EXTERNAL`, so its
+/// result is untyped and its call sites unchecked), so the annotation
 /// firewall overlay supplies the concrete `Ty::Handle(K)`. `main`'s temps
 /// `a`/`b` pick those types up purely through call-site inference — never an
 /// annotation of their own — then get compared, a genuine cross-kind handle
 /// mismatch detectable only from body-usage inference.
-const CROSS_KIND_SRC: &str = "\
-=== function get_audio(id: int): Handle<AudioInstance> ===\n~ return id\n\
-=== function get_timer(id: int): Handle<Timer> ===\n~ return id\n\
+///
+/// The opaque producer replaces a plain `~ return id` (issue #1912): a
+/// handle is an opaque `{kind, id}` scalar (docs/t1d-spec.md §3), not an
+/// `int`, so handing an `int`-annotated param back out of a
+/// `Handle<K>`-returning function was a real type error that only passed
+/// while reading an annotated param as a value typed `Unknown`.
+const CROSS_KIND_SRC: &str = "EXTERNAL opaque_handle(seed)\n\
+=== function get_audio(id: int): Handle<AudioInstance> ===\n~ return opaque_handle(id)\n\
+=== function get_timer(id: int): Handle<Timer> ===\n~ return opaque_handle(id)\n\
 === main ===\n~ temp a = get_audio(1)\n~ temp b = get_timer(1)\n{a == b:\n  ok\n}\n-> DONE\n";
 
-const SAME_KIND_SRC: &str = "\
-=== function get_audio(id: int): Handle<AudioInstance> ===\n~ return id\n\
-=== function get_audio2(id: int): Handle<AudioInstance> ===\n~ return id\n\
+const SAME_KIND_SRC: &str = "EXTERNAL opaque_handle(seed)\n\
+=== function get_audio(id: int): Handle<AudioInstance> ===\n~ return opaque_handle(id)\n\
+=== function get_audio2(id: int): Handle<AudioInstance> ===\n~ return opaque_handle(id)\n\
 === main ===\n~ temp a = get_audio(1)\n~ temp c = get_audio2(1)\n{a == c:\n  ok\n}\n-> DONE\n";
 
 fn two_kind_manifest() -> HostManifest {
