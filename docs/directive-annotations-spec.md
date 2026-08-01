@@ -246,11 +246,19 @@ following from native having real declaration nodes:
   captures must each bind a real parameter on the declaration (`E160`); a
   `claims` pattern additionally requires the *converse* — every parameter
   must be bound by some named capture (`E167`), since a claimed line's
-  rewritten call has no other source of arguments. Two claiming handlers
-  declaring byte-identical `claims` patterns is `E168` (issue #1848) — the
-  narrow, sound slice of "these two patterns compete for the same line"
-  this surface detects; see that code's own doc for what it does and does
-  not catch. `@[style(key =
+  rewritten call has no other source of arguments. A `claims` parameter's
+  declared type must be `string`, absent, or `content`, not `int`/`float`/
+  `bool` or a struct — claiming always binds captures as strings, so a
+  mismatched type makes the parameter unreachable (`E171`, issue #1849).
+  A `block`-flagged `@[element(…, block)]` annotation requires a trailing
+  `content`-typed parameter on the declaration to receive the captured run
+  (`E166`, issue #1839). Two claiming handlers declaring byte-identical
+  `claims` patterns is `E168` (issue #1848) — the narrow, sound slice of
+  "these two patterns compete for the same line" this surface detects; see
+  that code's own doc for what it does and does not catch. Two claiming
+  handlers' patterns overlap, with the later one provably subsumed by the
+  earlier, is `E170` (issue #1859) — a silent race where the earlier
+  pattern always wins, leaving the later handler dead code. `@[style(key =
   "value", …)]` (issue #1719) is a companion annotation requiring a
   paired `@[element]` on the same declaration (`E163`); each key must be
   `line`, `dispatch`, or one of `element`'s captures (`E162`), and a
