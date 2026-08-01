@@ -3549,35 +3549,57 @@ Quiet.
 // file's same-named global suppressing the typing of a local bare-name fn
 // value that lowering would actually still resolve to the local knot.
 //
-// It cannot. `lower_native::decl::{lower_var_decl, lower_const_decl,
-// lower_flags_decl}` hard-code `visibility: None` for every native
-// `VAR`/`CONST`/`LIST` — there is no annotation grammar that overrides it
-// (unlike ink's `#@public`/`#@private` tags) — and a native file is
-// unconditionally its own module (`brink_db::modules::native_module_path`,
-// decision-log 2026-07-22: "native module identity: pure function of the
-// path"). So a `VAR`/`CONST`/`LIST` declared in one `.brink` file can
-// *never* be legitimately referenced from another: `modules::check`'s
-// `E087` (private-cross-module) fires unconditionally the moment
-// resolution reaches it — confirmed below, where `unrelated.brink`'s
-// `double` isn't even imported by `main.brink`, yet still poisons the
-// bare-name reference (kind-priority — `Variable`/`Constant`/`ListItem`
-// over `Knot` — is checked project-wide, ahead of module scope) and the
-// whole compile fails on `E087` before `alias`'s type could ever matter.
-// Every case where the shadow guard's project-wide scan finds a
-// same-named global in a *different* file is exactly this case: the
-// compile fails outright, so `Sig::value_ty`'s imprecision (`Unknown`
-// instead of a real resolution) is unobservable — there is no successful
-// `StoryData` for it to be wrong about. Combined with the same-file case
-// (`native_bare_name_shadowed_by_a_same_named_global_is_not_typed_as_a_fn_value`
-// above, where the guard and lowering both agree the reference is *not* a
-// fn value), this closes #1901's own question empirically: the guard
-// cannot disagree with lowering in any project that compiles.
+// It cannot, for two independent reasons. First: `lower_native::decl::
+// {lower_var_decl, lower_const_decl, lower_flags_decl}` hard-code
+// `visibility: None` for every native `VAR`/`CONST`/`LIST` — there is no
+// annotation grammar that overrides it (unlike ink's `#@public`/
+// `#@private` tags) — and a native file is unconditionally its own module
+// (`brink_db::modules::native_module_path`, decision-log 2026-07-22:
+// "Native module identity: pure function of the root-relative path;
+// `FileId` never in `DefinitionId`"). So a `VAR`/`CONST`/`LIST` declared
+// in one `.brink` file can *never* be legitimately referenced from
+// another: `modules::check`'s `E087` (private-cross-module) fires
+// unconditionally the moment resolution reaches it — confirmed below,
+// where `unrelated.brink`'s `double` isn't even imported by `main.brink`,
+// yet still poisons the bare-name reference (kind-priority —
+// `Variable`/`Constant`/`ListItem` over `Knot` — is checked project-wide,
+// ahead of module scope) and the whole compile fails on `E087` before
+// `alias`'s type could ever matter.
 //
-// If native `VAR`/`CONST`/`LIST` ever gain a real publicity mechanism,
-// this test starts failing (the cross-file reference would newly
-// succeed) — that is the signal to revisit `declared_fn_type` and thread
-// a real resolution map through `signature()`, the fix #1901 itself
-// declined to build pre-emptively.
+// Second, independently of visibility: `resolve::lookup_by_name`'s own
+// `lookup_by_name_direct` fast path (`crates/internal/brink-analyzer/src/
+// resolve.rs:1194`, `if !multiple { return first_match; }`) returns the
+// *sole* candidate of the requested kinds without ever consulting the
+// `ImportScope` — so with `unrelated.brink`'s private `const double`
+// present, a direct call `{double(3)}` still resolves to `main.brink`'s
+// own `fn double` and compiles clean (only the *value* reference
+// `{double}` hits the `Variable`/`Constant`/`ListItem`-over-`Knot`
+// kind-priority ahead of that fast path and errors `E087`). Scoping that
+// fast path for native is a plausible standalone correctness change that
+// would remove this second trigger with no publicity mechanism involved —
+// tracked separately, not attempted here.
+//
+// Every case where the shadow guard's project-wide scan finds a
+// same-named global in a *different* file is exactly the first case
+// above: the compile fails outright, so `Sig::value_ty`'s imprecision
+// (`Unknown` instead of a real resolution) is unobservable — there is no
+// successful `StoryData` for it to be wrong about. Combined with the
+// same-file cases (`native_bare_name_shadowed_by_a_same_named_global_is_not_typed_as_a_fn_value`
+// for `Variable`/`Constant` and
+// `native_bare_name_shadowed_by_a_same_named_list_item_is_not_typed_as_a_fn_value`
+// for `ListItem`, both above — the latter added after review found the
+// guard's original `ListItem` arm was dead code for a bare-name reference,
+// since list items are indexed under their qualified `List.Item` name and
+// the guard now also runs `lookup_list_item_bare`), this closes #1901's
+// own question empirically: the guard cannot disagree with lowering in
+// any project that compiles.
+//
+// If native `VAR`/`CONST`/`LIST` ever gain a real publicity mechanism, or
+// `lookup_by_name_direct`'s fast path becomes `ImportScope`-aware, this
+// test starts failing (the cross-file reference would newly succeed) —
+// that is the signal to revisit `declared_fn_type` and thread a real
+// resolution map through `signature()`, the fix #1901 itself declined to
+// build pre-emptively.
 #[test]
 fn native_cross_file_global_shadow_of_a_fn_value_reference_fails_to_compile() {
     let dir = std::env::temp_dir().join(format!(

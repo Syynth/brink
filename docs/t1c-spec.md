@@ -152,14 +152,37 @@ Consequences that follow from "bare name, no sigil":
     resolves that name to the shadowing global. That guard is a
     project-wide scan (not scoped to what the declaration can actually
     see); issue #1901 asked whether the two could disagree in a
-    user-visible way through an unrelated file's same-named global, and
-    closed empirically: they cannot, because native `VAR`/`CONST`/`LIST`
-    have no publicity mechanism at all (`lower_native::decl` hard-codes
-    `visibility: None`), so a same-named global in a *different* file can
-    never be legitimately referenced — the cross-module privacy gate
-    (`E087`) fails the whole compile before the guard's decision could
-    matter. See `declared_fn_type`'s own doc for the full argument and the
-    regression test that pins it.
+    user-visible way through an unrelated file's same-named global.
+    **Review found they did**, for the `ListItem` case specifically: list
+    items are indexed under their *qualified* `List.Item` name
+    (`manifest.rs`), never the bare item name, so the guard's original
+    direct `index.by_name.get(bare_name)` lookup could never see a
+    bare-name list item — that arm was dead code for the exact form it
+    claimed to guard, and a same-file `flags Palette = double, other` /
+    `fn double(...)` / `var alias = double` reference typed `alias` as
+    `fn(int): int` regardless, misfiring `E063` against a caller that
+    declared an `int` parameter. Fixed by having the guard also run the
+    same bare-name suffix scan `lookup_variable` itself uses
+    (`resolve::lookup_list_item_bare`), ahead of the knot lookup — see
+    `declared_fn_type`'s own doc for the fix and
+    `native_bare_name_shadowed_by_a_same_named_list_item_is_not_typed_as_a_fn_value`
+    (`crates/brink-compiler/tests/driver.rs`) for the regression test.
+    With that fixed, the *cross-file* half of #1901's question still
+    closes empirically, for two independent reasons: native
+    `VAR`/`CONST`/`LIST` have no publicity mechanism at all
+    (`lower_native::decl` hard-codes `visibility: None`), so a same-named
+    global in a *different* file can never be legitimately referenced —
+    the cross-module privacy gate (`E087`) fails the whole compile before
+    the guard's decision could matter; and, independently,
+    `resolve::lookup_by_name`'s `lookup_by_name_direct` fast path
+    (`resolve.rs:1194`, `if !multiple { return first_match; }`) returns
+    the sole candidate of the requested kinds without consulting the
+    `ImportScope` at all, so a direct call to the local knot resolves
+    correctly regardless of an unrelated file's same-named global (only
+    the bare *value* reference hits the kind-priority ahead of that fast
+    path and triggers `E087`). See `declared_fn_type`'s own doc and the
+    `native_cross_file_global_shadow_of_a_fn_value_reference_fails_to_compile`
+    regression test for the full argument.
 
 Respelling ink into native (`brink-respell`) follows the same split: a
 zero-bound `#fn(f)` emits as the bare name `f`; the binding form refuses
