@@ -57,7 +57,7 @@
 
 use std::path::PathBuf;
 
-use brink_compiler::{AnalysisOptions, CompileError, Dialect, TypePolicy};
+use brink_compiler::{AnalysisOptions, CompileError, DiagnosticCode, Dialect, TypePolicy};
 
 fn corpus_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -416,9 +416,8 @@ fn strict_findings() -> Vec<(String, String, String)> {
             Err(e) => panic!("case {name}: unexpected compile failure: {e}"),
         };
         for d in diagnostics {
-            let code = format!("{:?}", d.code);
-            if is_strict_code(&code) {
-                found.push((name.clone(), code, d.message));
+            if is_strict_code(d.code) {
+                found.push((name.clone(), d.code.as_str().to_string(), d.message));
             }
         }
     }
@@ -428,13 +427,17 @@ fn strict_findings() -> Vec<(String, String, String)> {
 
 /// The TM-3 strict pass's own diagnostic codes (`brink_analyzer::strict`):
 /// `E063` annotation-vs-inference mismatch, `E065` `Unknown` escape, `E066`
-/// `Conflicted` escape. `E064` (the `types = strict` requires
-/// `dialect = brink` config error) is deliberately absent — issue #1348
-/// skips it for native sources, so its appearance here would itself be a
-/// bug, and this test's `BASELINE` would catch it as an unrecognized code
-/// rather than silently filtering it away.
-fn is_strict_code(code: &str) -> bool {
-    matches!(code, "E063" | "E065" | "E066")
+/// `Conflicted` escape — plus `E064` (the `types = strict` requires
+/// `dialect = brink` config error). Issue #1348 skips `E064` for native
+/// sources, so it is a no-op here today, but it stays in this set so that if
+/// it ever *did* fire, `BASELINE` would catch it as a new, unrecognized
+/// finding rather than this function silently filtering it away — which is
+/// what the previous stringly `"E063" | "E065" | "E066"` match actually did.
+fn is_strict_code(code: DiagnosticCode) -> bool {
+    matches!(
+        code,
+        DiagnosticCode::E063 | DiagnosticCode::E064 | DiagnosticCode::E065 | DiagnosticCode::E066
+    )
 }
 
 /// Render findings as a copy-pasteable list, so a triager reading a failure
