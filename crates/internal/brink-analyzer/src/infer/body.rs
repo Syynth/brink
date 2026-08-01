@@ -3692,6 +3692,31 @@ impl InferPass<'_, '_> {
         if let Some(v) = value {
             self.has_value_return = true;
             let ty = self.infer_expr(v);
+            // Issue #1912: `return <annotated param>` is a pure read — the
+            // returned value's type is joined into `self.return_ty`, never
+            // `observe`d back onto the expression, so this is exactly the
+            // "read site that doesn't itself produce counter-evidence"
+            // [`Self::or_own_annotation`] is safe at (its own doc names the
+            // #1168 siblings: `some(x)`, `get(m, k)`, a `for` iterable).
+            //
+            // Without it, handing a parameter straight back out lost its
+            // declared type: `fn passthru(t: content) { return t; }`
+            // reported `E065` on its return type while the annotated-return
+            // twin `fn passthru(t: content): content { return t; }` was
+            // clean, even though the return type is *exactly* the annotated
+            // parameter type. Filed against `content` (#1846 gave it a
+            // resolvable `Ty`; #1882's sweep caught the corpus row —
+            // `fn radio(chan: string, text: content) { return text; }`),
+            // but the gap was never `content`-specific: `int`, `bool` and
+            // every other annotation lost the same way.
+            //
+            // `or_own_annotation` only overlays an `Unknown` — a concrete
+            // *or* `Conflicted` body derivation still wins outright, so a
+            // body that contradicts the annotation keeps exporting its own
+            // type for `annotations::mismatches` (`E063`) to compare
+            // against, and `unify` above still drives two returns that
+            // disagree (`return t` / `return "x"`) to `Conflicted`.
+            let ty = self.or_own_annotation(v, ty);
             self.return_ty = unify(&self.return_ty, &ty);
         }
         for e in onwards {

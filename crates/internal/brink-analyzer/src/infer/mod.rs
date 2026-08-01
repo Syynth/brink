@@ -2413,6 +2413,36 @@ mod tests {
         assert_eq!(sig.return_ty, Ty::Int);
     }
 
+    /// Issue #1912: the *param*-annotation counterpart of the test above —
+    /// `~ return hp` with `hp: int` annotated and no return annotation at
+    /// all now exports `int` rather than `Unknown`, because
+    /// `infer_return` runs the returned value through `or_own_annotation`
+    /// (a pure read, no counter-evidence). The ink spelling is checked here
+    /// alongside the native one in `strict::tests` because the gap was in
+    /// `infer::body`, shared by both frontends.
+    #[test]
+    fn returning_an_annotated_param_exports_the_params_type() {
+        let (hir, index, res) = build("=== function passthru(hp: int) ===\n~ return hp\n");
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let sig = sig_of(&result, &index, "passthru");
+        assert_eq!(sig.return_ty, Ty::Int);
+    }
+
+    /// The boundary that stays put (issue #1912 must not widen into #1168's
+    /// w65 correction): `or_own_annotation` overlays an `Unknown` only, so
+    /// a *concrete* body derivation still wins outright and
+    /// `annotations::mismatches` keeps two independent derivations to
+    /// compare. `hp` is used as a `string` here, so the return type is
+    /// `string` — the annotation does not launder it back to `int`.
+    #[test]
+    fn a_concrete_body_derivation_still_beats_the_returned_params_annotation() {
+        let (hir, index, res) = build("=== function passthru(hp: int) ===\n~ return hp + \"x\"\n");
+        let result = infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let sig = sig_of(&result, &index, "passthru");
+        assert_eq!(sig.params, vec![Ty::String]);
+        assert_eq!(sig.return_ty, Ty::String);
+    }
+
     // ─── Per-def/per-SCC decomposition (FG-2, issue #631) ─────────────
 
     #[test]

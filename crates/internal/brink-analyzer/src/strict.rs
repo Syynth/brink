@@ -2200,6 +2200,73 @@ mod tests {
         );
     }
 
+    // ── Issue #1912(a): handing an annotated param straight back out ──
+    //
+    // `infer::body::InferPass::infer_return` applies `or_own_annotation` to
+    // the returned value, so `return <annotated param>` exports the
+    // parameter's declared type instead of `Unknown`. Filed against
+    // `content` (#1846 gave it a resolvable `Ty`; #1882's native strict
+    // sweep caught the corpus row) but never `content`-specific — the
+    // second test below is the proof of that.
+
+    #[test]
+    fn native_returning_a_content_param_takes_its_annotated_type() {
+        // Issue #1912's own reduction, both halves: the annotated-return
+        // twin was already clean, the bare one reported `E065` on a return
+        // type that is *exactly* the annotated parameter type.
+        let bare = native_strict_diags("fn passthru(t: content) {\n  return t;\n}\n");
+        assert!(
+            bare.is_empty(),
+            "`t: content` supplies the return type: {bare:?}"
+        );
+        let annotated = native_strict_diags("fn passthru(t: content): content {\n  return t;\n}\n");
+        assert!(
+            annotated.is_empty(),
+            "the annotated twin stays clean: {annotated:?}"
+        );
+    }
+
+    #[test]
+    fn native_returning_an_annotated_param_is_not_content_specific() {
+        // Issue #1912 framed the gap as a `content` one; it was general to
+        // every resolvable annotation. All four leaf spellings, so a fix
+        // that only special-cased `Ty::Content` would fail here.
+        for ty in ["int", "float", "bool", "string"] {
+            let src = format!("fn passthru(t: {ty}) {{\n  return t;\n}}\n");
+            let diags = native_strict_diags(&src);
+            assert!(
+                diags.is_empty(),
+                "`t: {ty}` supplies the return type: {diags:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn native_a_body_use_contradicting_the_annotation_still_reports_e063() {
+        // The TM-2 firewall #1912's fix must not dissolve: `or_own_annotation`
+        // overlays an `Unknown` only, so a param the body *does* constrain
+        // keeps exporting its own independent derivation and
+        // `annotations::mismatches` still has two things to compare.
+        let diags = native_strict_diags("fn f(a: int) {\n  return a + \"x\";\n}\n");
+        assert!(
+            diags.iter().any(|d| d.code == DiagnosticCode::E063),
+            "a body use disagreeing with the annotation still reports E063: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn native_returning_a_param_that_disagrees_with_the_return_annotation_reports_e063() {
+        // The other side of the same coin, and a diagnostic that could not
+        // fire before #1912: the body's return type used to escape as
+        // `Unknown` and get overlaid by the *return* annotation, so a
+        // handing-through that contradicts the declared return was silent.
+        let diags = native_strict_diags("fn f(t: content): string {\n  return t;\n}\n");
+        assert!(
+            diags.iter().any(|d| d.code == DiagnosticCode::E063),
+            "returning a `content` param from a `: string` fn disagrees: {diags:?}"
+        );
+    }
+
     #[test]
     fn native_unresolvable_param_annotation_still_escapes() {
         // The firewall exempts a *resolvable* annotation only
@@ -2781,9 +2848,16 @@ mod tests {
     /// criterion): "binding declared Handle<AudioInstance> rejects
     /// Handle<Timer> at compile time". `get_audio`/`get_timer` are leaf
     /// functions whose return type is annotated with a distinct handle
-    /// kind each — their body-derived return type stays `Unknown` (`id` is
-    /// never otherwise constrained), so the T1c annotation-firewall overlay
-    /// supplies the concrete `Ty::Handle(K)`. `main`'s temps `a`/`b` pick
+    /// kind each — their body-derived return type stays `Unknown` (an
+    /// unregistered `EXTERNAL`'s result is untyped and unchecked, see
+    /// [`external_binding_with_unregistered_name_is_unchecked`]), so the
+    /// T1c annotation-firewall overlay supplies the concrete
+    /// `Ty::Handle(K)`. That opaque producer is what these fixtures need:
+    /// a handle is an opaque `{kind, id}` scalar (docs/t1d-spec.md §3), not
+    /// an `int`, so the `~ return id` these bodies used to carry was a real
+    /// type error that only passed because reading an annotated param as a
+    /// value typed `Unknown` — the gap issue #1912 closed. `main`'s temps
+    /// `a`/`b` pick
     /// those return types up purely through call-site inference (never an
     /// annotation of their own), then get compared — a genuine cross-kind
     /// handle mismatch detected *purely from body-usage inference*, exactly
@@ -2796,9 +2870,9 @@ mod tests {
     /// it is now reachable end-to-end.
     #[test]
     fn cross_kind_handle_comparison_from_body_usage_is_conflicted_under_strict() {
-        let src = "\
-=== function get_audio(id: int): Handle<AudioInstance> ===\n~ return id\n\
-=== function get_timer(id: int): Handle<Timer> ===\n~ return id\n\
+        let src = "EXTERNAL opaque_handle(seed)\n\
+=== function get_audio(id: int): Handle<AudioInstance> ===\n~ return opaque_handle(id)\n\
+=== function get_timer(id: int): Handle<Timer> ===\n~ return opaque_handle(id)\n\
 === main ===\n~ temp a = get_audio(1)\n~ temp b = get_timer(1)\n{a == b:\n  ok\n}\n-> DONE\n";
         let (hir, index, res) = build(src);
         let manifest = brink_ir::HostManifest {
@@ -2858,9 +2932,9 @@ mod tests {
     /// Handle(k)) == Handle(k)`, the T1d-2 lattice ruling) — no escape.
     #[test]
     fn same_kind_handle_comparison_from_body_usage_is_clean_under_strict() {
-        let src = "\
-=== function get_audio(id: int): Handle<AudioInstance> ===\n~ return id\n\
-=== function get_audio2(id: int): Handle<AudioInstance> ===\n~ return id\n\
+        let src = "EXTERNAL opaque_handle(seed)\n\
+=== function get_audio(id: int): Handle<AudioInstance> ===\n~ return opaque_handle(id)\n\
+=== function get_audio2(id: int): Handle<AudioInstance> ===\n~ return opaque_handle(id)\n\
 === main ===\n~ temp a = get_audio(1)\n~ temp c = get_audio2(1)\n{a == c:\n  ok\n}\n-> DONE\n";
         let (hir, index, res) = build(src);
         let manifest = brink_ir::HostManifest {
@@ -2948,9 +3022,9 @@ mod tests {
     /// gap PR #769 disclosed.
     #[test]
     fn cross_kind_handle_mismatch_is_unreachable_without_manifest_reaching_inference() {
-        let src = "\
-=== function get_audio(id: int): Handle<AudioInstance> ===\n~ return id\n\
-=== function get_timer(id: int): Handle<Timer> ===\n~ return id\n\
+        let src = "EXTERNAL opaque_handle(seed)\n\
+=== function get_audio(id: int): Handle<AudioInstance> ===\n~ return opaque_handle(id)\n\
+=== function get_timer(id: int): Handle<Timer> ===\n~ return opaque_handle(id)\n\
 === main ===\n~ temp a = get_audio(1)\n~ temp b = get_timer(1)\n{a == b:\n  ok\n}\n-> DONE\n";
         let (hir, index, res) = build(src);
         let manifest = brink_ir::HostManifest {
@@ -3054,8 +3128,8 @@ mod tests {
     /// compile time under `types = strict`.
     #[test]
     fn external_binding_rejects_cross_kind_handle_argument_under_strict() {
-        let src = "EXTERNAL play_sound(inst)\n\
-=== function get_timer(id: int): Handle<Timer> ===\n~ return id\n\
+        let src = "EXTERNAL play_sound(inst)\nEXTERNAL opaque_handle(seed)\n\
+=== function get_timer(id: int): Handle<Timer> ===\n~ return opaque_handle(id)\n\
 === main ===\n~ temp t = get_timer(1)\n~ play_sound(t)\n-> DONE\n";
         let (hir, index, res) = build(src);
         let manifest = audio_and_timer_manifest("AudioInstance");
@@ -3091,8 +3165,8 @@ mod tests {
     /// Handle(k)`.
     #[test]
     fn external_binding_accepts_same_kind_handle_argument_under_strict() {
-        let src = "EXTERNAL play_sound(inst)\n\
-=== function get_audio(id: int): Handle<AudioInstance> ===\n~ return id\n\
+        let src = "EXTERNAL play_sound(inst)\nEXTERNAL opaque_handle(seed)\n\
+=== function get_audio(id: int): Handle<AudioInstance> ===\n~ return opaque_handle(id)\n\
 === main ===\n~ temp t = get_audio(1)\n~ play_sound(t)\n-> DONE\n";
         let (hir, index, res) = build(src);
         let manifest = audio_and_timer_manifest("AudioInstance");
@@ -3126,8 +3200,8 @@ mod tests {
     /// issue.
     #[test]
     fn external_binding_cross_kind_argument_is_not_checked_under_gradual() {
-        let src = "EXTERNAL play_sound(inst)\n\
-=== function get_timer(id: int): Handle<Timer> ===\n~ return id\n\
+        let src = "EXTERNAL play_sound(inst)\nEXTERNAL opaque_handle(seed)\n\
+=== function get_timer(id: int): Handle<Timer> ===\n~ return opaque_handle(id)\n\
 === main ===\n~ temp t = get_timer(1)\n~ play_sound(t)\n-> DONE\n";
         let (hir, index, res) = build(src);
         let manifest = audio_and_timer_manifest("AudioInstance");
@@ -3159,8 +3233,8 @@ mod tests {
     /// `infer::collect_external_sigs`'s doc names, not a regression).
     #[test]
     fn external_binding_with_unregistered_name_is_unchecked() {
-        let src = "EXTERNAL other_call(inst)\n\
-=== function get_timer(id: int): Handle<Timer> ===\n~ return id\n\
+        let src = "EXTERNAL other_call(inst)\nEXTERNAL opaque_handle(seed)\n\
+=== function get_timer(id: int): Handle<Timer> ===\n~ return opaque_handle(id)\n\
 === main ===\n~ temp t = get_timer(1)\n~ other_call(t)\n-> DONE\n";
         let (hir, index, res) = build(src);
         let manifest = audio_and_timer_manifest("AudioInstance");
