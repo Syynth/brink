@@ -1204,6 +1204,48 @@ fn lookup_by_name_direct(
     first_in_scope.or(first_imported).or(first_match)
 }
 
+/// The **scope-free** subset of [`lookup_by_name`]: the sole definition of
+/// `name` whose kind is in `kinds`, or `None` when there is no such
+/// definition **or more than one**.
+///
+/// This exists for callers that have no [`ImportScope`] to hand — issue
+/// #1909's UFCS-result typing runs inside `infer::body`, whose [`BodyCtx`]
+/// (`brink-db`'s narrowed per-def HIR projection never holds a whole
+/// `HirFile`) carries no file imports at all.
+///
+/// **It is a strict subset of what [`lookup_by_name`] answers, never a
+/// second resolution rule.** [`lookup_by_name_direct`]'s own "byte-identity
+/// guarantee" fast path returns the sole candidate of the requested kinds
+/// *unconditionally, ignoring the import scope*; the scope is consulted only
+/// once `multiple` is set. So whenever this function returns `Some(id)`,
+/// [`lookup_by_name`] returns the same `id` for any scope — pinned by
+/// `unique_lookup_agrees_with_scoped_lookup`. When it returns `None` on an
+/// ambiguous name, the caller must fall back to whatever it did before
+/// rather than guess.
+///
+/// [`BodyCtx`]: crate::infer
+pub(crate) fn lookup_unique_by_name(
+    index: &SymbolIndex,
+    name: &str,
+    kinds: &[SymbolKind],
+) -> Option<DefinitionId> {
+    let ids = index.by_name.get(name)?;
+    let mut sole = None;
+    for id in ids {
+        let Some(info) = index.symbols.get(id) else {
+            continue;
+        };
+        if !kinds.contains(&info.kind) {
+            continue;
+        }
+        if sole.is_some() {
+            return None;
+        }
+        sole = Some(*id);
+    }
+    sole
+}
+
 /// Result of a bare list item lookup.
 ///
 /// `pub(crate)` (issue #628): the phase-0 `Sig` stub's list-literal type
@@ -2090,6 +2132,62 @@ mod tests {
             lookup_by_name(&index, &scope_b, "ambush", &[SymbolKind::Knot]),
             Some(b),
             "a file importing quest_b binds quest_b's ambush — not the flat first-winner"
+        );
+    }
+
+    /// Issue #1909's fence: [`lookup_unique_by_name`] must only ever answer
+    /// where [`lookup_by_name`] would answer identically **for every
+    /// scope**, so the scope-free caller can never disagree with the scoped
+    /// one. Both halves are asserted — the sole-candidate name agrees with
+    /// two deliberately opposed scopes, and the ambiguous name declines.
+    #[test]
+    fn unique_lookup_agrees_with_scoped_lookup() {
+        let (index, a, b) = two_module_ambush_index();
+        assert_eq!(
+            lookup_unique_by_name(&index, "ambush", &[SymbolKind::Knot]),
+            None,
+            "two same-named candidates: only the scoped lookup can decide, so decline"
+        );
+        assert_ne!(a, b, "the fixture must really hold two distinct candidates");
+
+        // The same index, filtered to a kind exactly one candidate has:
+        // now `lookup_by_name`'s own byte-identity fast path returns it
+        // regardless of scope, so the scope-free answer must match both.
+        let mut single = SymbolIndex::default();
+        let (&only_id, only_info) = index
+            .symbols
+            .iter()
+            .find(|(id, _)| **id == a)
+            .expect("fixture id present");
+        single.symbols.insert(only_id, only_info.clone());
+        single.by_name.insert("ambush".to_string(), vec![only_id]);
+        let scope_a = ImportScope {
+            file_module: None,
+            qualified_modules: ["quest_a".to_string()].into_iter().collect(),
+            bare_imports: BTreeSet::new(),
+            aliases: BTreeMap::new(),
+        };
+        let scope_none = ImportScope {
+            file_module: None,
+            qualified_modules: BTreeSet::new(),
+            bare_imports: BTreeSet::new(),
+            aliases: BTreeMap::new(),
+        };
+        let unique = lookup_unique_by_name(&single, "ambush", &[SymbolKind::Knot]);
+        assert_eq!(unique, Some(a));
+        assert_eq!(
+            unique,
+            lookup_by_name(&single, &scope_a, "ambush", &[SymbolKind::Knot])
+        );
+        assert_eq!(
+            unique,
+            lookup_by_name(&single, &scope_none, "ambush", &[SymbolKind::Knot]),
+            "the sole-candidate answer must not depend on the scope at all"
+        );
+        assert_eq!(
+            lookup_unique_by_name(&single, "ambush", &[SymbolKind::External]),
+            None,
+            "the kind filter still gates the match"
         );
     }
 

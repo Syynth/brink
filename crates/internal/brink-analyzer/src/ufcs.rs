@@ -397,12 +397,18 @@ pub fn resolve(
 /// - Issue #1540 (second symptom): a typed check keyed on an intrinsic's
 ///   receiver must see the UFCS spelling of that intrinsic too.
 ///
-///   `infer::body::infer_call` deliberately returns `Ty::Unknown` for a
+///   `infer::body::infer_call` deliberately branches away for a
 ///   multi-segment callee *before* `infer_intrinsic` runs (a UFCS receiver
 ///   is not the thing being called, so classifying it as a
 ///   call-through-a-value would be a false `E066` on every legal method
-///   call — see that function's own note). The consequence is that
-///   `arr.remove(0)` records none of the facts `remove(arr, 0)` records, so
+///   call — see that function's own note). Issue #1909 later gave that
+///   branch a result type for the *free-function* desugar
+///   (`infer::body::InferPass::infer_ufcs_free_fn_result`), but
+///   deliberately not for a prelude verb, precisely because routing one
+///   through `infer_intrinsic` would record the `array_remove_calls` fact
+///   below a second time and double-report this very `E149`. The
+///   consequence stands: `arr.remove(0)` records none of the facts
+///   `remove(arr, 0)` records, so
 ///   every intrinsic-receiver diagnostic silently stopped at the free-call
 ///   spelling. This pass is where the UFCS spelling gets them back: the
 ///   verdict table already carries the receiver's resolved `Ty` next to the
@@ -895,8 +901,10 @@ impl UfcsVisitor<'_> {
     /// `Conflicted`) with one simplification: unlike a direct call's
     /// argument, nothing in `infer::body`'s own walk ever `observe`s a
     /// UFCS receiver or written argument against `target`'s declared param
-    /// type — the multi-segment bail-out in `infer_call` returns
-    /// `Ty::Unknown` immediately, before any `observe` call runs. So there
+    /// type — the multi-segment branch in `infer_call` runs no `observe`
+    /// call at all (issue #1909's `infer_ufcs_free_fn_result` gave that
+    /// branch a *result type*, deliberately read-only in the receiver and
+    /// silent on the arguments, exactly so this stays true). So there
     /// is no `arg_is_observed_local`-style double-report risk against
     /// `E066` to guard against here, unlike `DirectCallArgMismatch`'s own
     /// exclusion.
