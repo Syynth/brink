@@ -626,3 +626,308 @@ fn gradual_direct_call_arg_mismatch_still_compiles() {
     );
     assert!(result.is_ok(), "{result:?}");
 }
+
+// ── Issue #1877: VAR/CONST/temp initializers and assignments were never
+// checked against declared type annotations (the remainder of #1864 that
+// PR #1875's direct-call-argument check left) ──────────────────────────
+
+#[test]
+fn strict_var_initializer_annotation_mismatch_blocks_compilation_with_e063() {
+    // The issue's own repro: `VAR v: int = "hi"` compiled with zero
+    // diagnostics before this fix — the annotation *replaced* the
+    // initializer's inferred type in `Sig::value_ty` (TM-2's firewall) but
+    // was never checked against it.
+    let err = compile_mem(
+        "VAR v: int = \"hi\"\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    )
+    .expect_err(
+        "a VAR's string initializer disagreeing with its int annotation must fail \
+                     strict compilation",
+    );
+    let diags = diagnostics_of(err);
+    assert_eq!(
+        diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![DiagnosticCode::E063],
+        "this fixture is deliberately clean of every other strict diagnostic so E063 alone \
+         must be what fails compilation: {diags:?}"
+    );
+}
+
+#[test]
+fn strict_const_initializer_annotation_mismatch_blocks_compilation_with_e063() {
+    // CONST's own declaration site (`hir.constants`, a separate list from
+    // `hir.variables`) — proves the check reaches both, not just VAR.
+    let err = compile_mem(
+        "CONST RATE: int = \"hi\"\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    )
+    .expect_err(
+        "a CONST's string initializer disagreeing with its int annotation must fail strict \
+         compilation",
+    );
+    let diags = diagnostics_of(err);
+    assert_eq!(
+        diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![DiagnosticCode::E063],
+        "this fixture is deliberately clean of every other strict diagnostic so E063 alone \
+         must be what fails compilation: {diags:?}"
+    );
+}
+
+#[test]
+fn strict_content_var_initializer_never_coerces_from_string_with_e063() {
+    // #1846's "content never coerces to or from string" invariant — the
+    // original motivation named in #1877 — reaching a VAR initializer: a
+    // bare string literal assigned to a `content`-annotated VAR must not
+    // silently pass.
+    let err = compile_mem(
+        "VAR v: content = \"hi\"\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    )
+    .expect_err(
+        "a `content`-annotated VAR's string-literal initializer must fail strict compilation",
+    );
+    let diags = diagnostics_of(err);
+    assert_eq!(
+        diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![DiagnosticCode::E063],
+        "this fixture is deliberately clean of every other strict diagnostic so E063 alone \
+         must be what fails compilation: {diags:?}"
+    );
+}
+
+#[test]
+fn strict_temp_ascription_initializer_mismatch_blocks_compilation_with_e063() {
+    // `~ temp t: int = "hi"` — the issue's own repro. The ascription is
+    // recorded purely as an Unknown-escape fallback (never joined into the
+    // Conflicted lattice), so this single-write disagreement reached no
+    // other TM-3 check before this fix. Inside an explicit `=== main ===`
+    // knot — TM-3's inference walk (and every check keyed on `inference.
+    // bodies`) only ever reaches `hir.knots`, never `hir.root_content`
+    // (bare top-level content before the first knot), so a bare `~ temp`
+    // at file scope would never be inferred at all and this fixture would
+    // vacuously pass regardless of whether the check itself worked.
+    let err = compile_mem(
+        "=== main ===\n~ temp t: int = \"hi\"\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    )
+    .expect_err(
+        "a `~ temp` initializer disagreeing with its own ascription must fail strict \
+         compilation",
+    );
+    let diags = diagnostics_of(err);
+    assert_eq!(
+        diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![DiagnosticCode::E063],
+        "this fixture is deliberately clean of every other strict diagnostic so E063 alone \
+         must be what fails compilation: {diags:?}"
+    );
+}
+
+#[test]
+fn strict_var_assignment_mismatch_blocks_compilation_with_e063() {
+    // `~ v = "hi"` on a declared `VAR v: int` — the issue's own repro.
+    // Globals are never joined into the `Ty::Conflicted` lattice
+    // (`infer::body`'s own module doc), so this was — and, absent this
+    // check, would still be — entirely unchecked. The assignment itself
+    // must live inside an explicit `=== main ===` knot (see the `~ temp`
+    // test above's comment on why bare root content is never inferred);
+    // the `VAR` declaration itself stays file-level, as ink grammar
+    // requires.
+    let err = compile_mem(
+        "VAR v: int = 5\n=== main ===\n~ v = \"hi\"\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    )
+    .expect_err(
+        "a plain assignment disagreeing with a VAR's declared type must fail strict \
+                 compilation",
+    );
+    let diags = diagnostics_of(err);
+    assert_eq!(
+        diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![DiagnosticCode::E063],
+        "this fixture is deliberately clean of every other strict diagnostic so E063 alone \
+         must be what fails compilation: {diags:?}"
+    );
+}
+
+#[test]
+fn strict_temp_reassignment_conflicted_reports_only_e066_not_e063() {
+    // Companion/negative case, mirroring
+    // `strict_direct_call_arg_mismatch_via_conflicted_temp_reports_only_e066`:
+    // when a re-assignment to an annotated `~ temp` disagrees with a
+    // *concrete* type that temp already carries (from its own initializer),
+    // `InferPass::observe`'s join at this exact assignment already drives
+    // the local to `Ty::Conflicted` on its own — independently reported as
+    // `E066` by `strict::check_escapes`. `check_declared_assign_target`
+    // must skip this write rather than double-reporting the identical
+    // disagreement as `E063` too.
+    let err = compile_mem(
+        "=== main ===\n~ temp t: int = 5\n~ t = \"hi\"\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    )
+    .expect_err("a Conflicted-escaping temp reassignment must still fail strict compilation");
+    let diags = diagnostics_of(err);
+    assert_eq!(
+        diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![DiagnosticCode::E066],
+        "the temp's own Conflicted-escape must be the sole diagnostic here — no redundant \
+         E063 on top of it: {diags:?}"
+    );
+}
+
+#[test]
+fn strict_unannotated_var_assignment_mismatch_blocks_compilation_with_e063() {
+    // Review finding: `check_declared_assign_target`'s global arm reads
+    // `ctx.globals`, whose declared type for an **unannotated** `VAR v = 5`
+    // is still concrete — the initializer literal's own inferred type
+    // (`collect_globals` reads `Sig::value_ty` the same way regardless of
+    // whether an explicit `: type` annotation is present). So this check is
+    // broader than "declared type annotations": it enforces cross-type
+    // reassignment even on a `VAR` with no annotation at all.
+    let err = compile_mem(
+        "VAR v = 5\n=== main ===\n~ v = \"hi\"\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    )
+    .expect_err(
+        "a plain assignment disagreeing with an unannotated VAR's initializer-inferred type \
+         must fail strict compilation",
+    );
+    let diags = diagnostics_of(err);
+    assert_eq!(
+        diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![DiagnosticCode::E063],
+        "this fixture is deliberately clean of every other strict diagnostic so E063 alone \
+         must be what fails compilation: {diags:?}"
+    );
+}
+
+// ── Review findings on this issue's own PR ──────────────────────────────
+
+#[test]
+fn strict_param_assignment_mismatch_reports_only_one_e063() {
+    // Review finding: a Param assignment target used to *also* record a
+    // `TypedAssignMismatch` fact in `check_declared_assign_target`, on top
+    // of the `E063` `annotations::mismatches` already reports for the same
+    // disagreement (the def's declared param annotation vs. the body's
+    // *final* inferred param type — here, `p`'s single write makes its
+    // final inferred type `string`, disagreeing with the `int` annotation).
+    // Before the fix, this fixture reported the identical disagreement
+    // twice, at two different spans (the annotation's, and the write's).
+    // `check_declared_assign_target` now excludes `SymbolKind::Param`
+    // entirely — a param annotation is a signature-firewall slot
+    // `annotations::mismatches` already owns.
+    let err = compile_mem(
+        "=== function f(p: int) ===\n~ p = \"hi\"\n~ return 0\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    )
+    .expect_err(
+        "a param assignment disagreeing with its own annotation must fail strict \
+                 compilation",
+    );
+    let diags = diagnostics_of(err);
+    assert_eq!(
+        diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![DiagnosticCode::E063],
+        "exactly one E063 — the annotation-vs-final-inferred-type mismatch \
+         `annotations::mismatches` already reports — not a second one from a redundant \
+         per-write fact: {diags:?}"
+    );
+}
+
+#[test]
+fn strict_temp_later_read_conflict_reports_only_e066_not_e063() {
+    // Review finding: `check_declared_assign_target`'s (and
+    // `check_declared_temp_init`'s) per-write Conflicted guard only sees
+    // whether *this* write is about to conflict its target — it cannot see
+    // a *later* read that independently conflicts the same local further
+    // down the body. Here `t`'s initializer (an unregistered external call)
+    // infers `Unknown`, so `~ t = "hi"` is not itself a same-write conflict
+    // and used to record an `E063` fact; the subsequent `t + 1` then joins
+    // `int` against the temp's now-`string` type, driving it `Conflicted`
+    // and independently reporting `E066` — double-reporting the same
+    // disagreement. `infer_def_body`'s post-walk filter drops any fact
+    // whose target's *final* whole-body type is `Conflicted`.
+    let err = compile_mem(
+        "EXTERNAL foo()\n=== function f() ===\n~ temp t: int = foo()\n~ t = \"hi\"\n\
+         ~ return t + 1\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    )
+    .expect_err(
+        "a Conflicted-escaping temp reachable only via a later read must still fail \
+                 strict compilation",
+    );
+    let diags = diagnostics_of(err);
+    assert!(
+        diags.iter().all(|d| d.code == DiagnosticCode::E066),
+        "only the temp's (and the def's) own Conflicted-escapes may fire here — no redundant \
+         E063 alongside them: {diags:?}"
+    );
+}
+
+#[test]
+fn strict_temp_unknown_initializer_reassignment_blocks_compilation_with_e063() {
+    // The residual case that is the entire stated justification for
+    // `check_declared_assign_target`'s per-write guard on a Temp target
+    // rather than a blanket kind exclusion: a `~ temp` whose own
+    // initializer infers `Unknown` (here, an unregistered external call —
+    // ink's grammar requires a `~ temp` to have *some* initializer
+    // expression, so this is the reachable shape of "an as-yet-Unknown
+    // local", not a literally initializer-less declaration). The first
+    // write to `t` doesn't conflict on its own (`Unknown` unifies cleanly
+    // with anything), so absent this check it would go completely
+    // unchecked; with it, this is exactly the single-E063 case the guard is
+    // for.
+    let err = compile_mem(
+        "EXTERNAL foo()\n=== function f() ===\n~ temp t: int = foo()\n~ t = \"hi\"\n\
+         ~ return 0\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    )
+    .expect_err(
+        "a temp reassignment disagreeing with its own ascription, reached only via an \
+         Unknown-inferring initializer, must fail strict compilation",
+    );
+    let diags = diagnostics_of(err);
+    assert_eq!(
+        diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![DiagnosticCode::E063],
+        "this fixture is deliberately clean of every other strict diagnostic so E063 alone \
+         must be what fails compilation: {diags:?}"
+    );
+}
+
+#[test]
+fn gradual_var_initializer_annotation_mismatch_still_compiles() {
+    // Same fixture as the VAR-initializer test above, `types` left at its
+    // default (`Gradual`) — the new check stays advisory-only, same posture
+    // as every other TM-3 check.
+    let result = compile_mem(
+        "VAR v: int = \"hi\"\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::default(),
+    );
+    assert!(result.is_ok(), "{result:?}");
+}
+
+#[test]
+fn gradual_var_assignment_mismatch_still_compiles() {
+    // Same fixture as the VAR-assignment test above, under `types =
+    // gradual`.
+    let result = compile_mem(
+        "VAR v: int = 5\n=== main ===\n~ v = \"hi\"\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::default(),
+    );
+    assert!(result.is_ok(), "{result:?}");
+}

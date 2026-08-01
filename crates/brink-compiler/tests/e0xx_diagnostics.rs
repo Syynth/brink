@@ -786,8 +786,23 @@ fn e061_unknown_type_name_in_annotation() {
 fn e062_retired_fn_type_annotation_is_legal_since_t1c1() {
     // T1c-1 (#699, docs/t1c-spec.md §4): `fn(T…): R` is a legal type form —
     // E062 is retired (reserved, never reused) and must not fire anywhere.
-    let out = compile("VAR f: fn(int): int = 0\nHi\n", brink_options())
-        .expect("a fn-type annotation compiles cleanly since T1c-1");
+    //
+    // Issue #1877 (review correction): the original fixture initialized `f`
+    // with a bare `0` — a genuine, previously-uncaught `fn(int): int` vs
+    // `int` mismatch, incidental to what this test actually verifies (E062's
+    // retirement). Before #1877, strict mode never checked a VAR's
+    // initializer against its own annotation at all, so this went unnoticed.
+    // Fixed to a real `#fn(target)` value whose target's own signature
+    // matches the annotation — `signature::literal_ty` has no arm for a
+    // `#fn(...)` initializer (declaration-derived only, non-literal
+    // initializers are silently unchecked by design), so this is a clean
+    // no-op for #1877's own check, same as before, while now also being a
+    // genuinely well-typed fixture.
+    let out = compile(
+        "VAR f: fn(int): int = #fn(foo)\n=== function foo(x: int): int ===\n~ return x\nHi\n",
+        brink_options(),
+    )
+    .expect("a fn-type annotation compiles cleanly since T1c-1");
     assert!(
         !out.warnings.iter().any(|d| d.code == DiagnosticCode::E062),
         "E062 is retired and must never fire: {:?}",

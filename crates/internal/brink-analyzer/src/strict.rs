@@ -55,11 +55,7 @@
 //!
 //! ## Scope (see PR description for the full list)
 //!
-//! This slice does **not** implement: `VAR`/`CONST` cross-type-reassignment
-//! detection (the inference substrate never joins a global's declaration-
-//! derived type against its assignment sites — `infer::body`'s `observe`
-//! only accumulates for `Param`/`Temp` locals; extending it is a `BodyCtx`
-//! change, fenced off by #619 itself), or the boundary-annotation-*required*
+//! This slice does **not** implement: the boundary-annotation-*required*
 //! diagnostic (spec's "host-callable functions... and entry points require
 //! explicit annotations" has no ratified, mechanically-checkable definition
 //! of either term in the codebase today — inventing one here would be
@@ -67,6 +63,18 @@
 //! pure conversion intrinsics (TM-3 completion, issue #659) now exist —
 //! VM-native ops plus the `conversions` module's strict-mode domain check,
 //! wired in below alongside `structs::check`.
+//!
+//! Issue #1877 closed a gap this doc used to describe as out of scope:
+//! `VAR`/`CONST` cross-type-reassignment detection. `infer::body`'s
+//! `observe` still only accumulates for `Param`/`Temp` locals into the
+//! `Ty::Conflicted` lattice — that much is unchanged — but a global
+//! assignment target's already-known declaration-derived type
+//! (`BodyCtx::globals`) is now checked directly against the RHS's inferred
+//! type ([`check_typed_assign_mismatches`], `E063`), independently of that
+//! lattice. The same PR added [`check_global_initializers`] for the sibling
+//! declaration-initializer gap (a VAR/CONST's own explicit annotation
+//! disagreeing with its initializer literal) and a `~ temp` initializer's
+//! ascription check (`infer::body::InferPass::check_declared_temp_init`).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -333,6 +341,12 @@ pub fn check(
     // `check_value_calls` above deliberately never covered (that pass is
     // calls *through a value* specifically).
     out.extend(check_direct_call_args(files, index, inference));
+    // Issue #1877 (the remainder of #1864 that PR #1875 left): a `~ temp`
+    // initializer against its own ascription, and a plain assignment
+    // against its target's already-known declared type — direct-call
+    // arguments' sibling gap, same E063 machinery.
+    out.extend(check_typed_assign_mismatches(files, index, inference));
+    out.extend(check_global_initializers(files, index, manifest));
     // Issue #1532 (#1501 review, migration-tail finding 1): `remove`'s
     // pre-#1484 array leg has no compatibility shim — a statically-known
     // array receiver is caught here instead of only at the `MapRemove`
@@ -1057,6 +1071,168 @@ fn check_direct_call_args(
         }
     }
     out
+}
+
+// ── `~ temp` initializers + plain assignments (issue #1877) ───────────
+
+/// Report every [`crate::infer::TypedAssignMismatch`] inference recorded,
+/// per def, as `E063` — the same typed-mismatch code
+/// [`check_direct_call_args`] reports for a direct call's arguments. Issue
+/// #1877 is the remainder of #1864 that PR #1875 explicitly left: that PR
+/// checked direct-call arguments against a callee's declared param types;
+/// this checks a `~ temp name: T = expr` initializer against its own
+/// ascription, and a plain `~ name = expr` assignment against the target's
+/// already-known declared type (a VAR/CONST's declaration-derived type, or
+/// an annotated Param/Temp's ascription). Same shape as
+/// [`check_direct_call_args`]: walk every inferable def, read its recorded
+/// facts, map each straight onto one diagnostic.
+///
+/// `infer::body::InferPass::check_declared_assign_target` and
+/// `check_declared_temp_init` each exclude a Temp write whose own `observe`/
+/// `bind_local` join is about to drive it to `Ty::Conflicted` *on that exact
+/// write*; `infer::body::InferPass::
+/// drop_typed_assign_mismatches_conflicted_by_a_later_read` (run post-walk,
+/// from `infer_def_body` via `InferPass::finish_walk`) additionally drops
+/// any fact whose target's *final* whole-body type ends up `Conflicted` —
+/// the guard is per-write and order-sensitive, so a later read of the same
+/// local (not just the write that produced the fact) can also conflict it,
+/// and only the post-walk pass sees that. Between the two, every fact
+/// reaching here is disjoint from `check_escapes`'s own Conflicted-escape
+/// (`E066`) reporting for the same local, no dedup needed
+/// on this side (mirrors [`check_direct_call_args`]'s own doc on the
+/// identical point).
+fn check_typed_assign_mismatches(
+    files: &[(FileId, &HirFile)],
+    index: &SymbolIndex,
+    inference: &InferenceResult,
+) -> Vec<brink_ir::Diagnostic> {
+    let mut out = Vec::new();
+    for &(file, hir) in files {
+        let mut def_ids: Vec<DefinitionId> = Vec::new();
+        for knot in &hir.knots {
+            let kind = knot.symbol_kind();
+            if let Some(id) = annotations::def_id_for(index, file, kind, &knot.name.text) {
+                def_ids.push(id);
+            }
+            for stitch in &knot.stitches {
+                let qualified = format!("{}.{}", knot.name.text, stitch.name.text);
+                if let Some(id) =
+                    annotations::def_id_for(index, file, SymbolKind::Stitch, &qualified)
+                {
+                    def_ids.push(id);
+                }
+            }
+        }
+        for id in def_ids {
+            let Some(body) = inference.bodies.get(&id) else {
+                continue;
+            };
+            for fact in &body.typed_assign_mismatches {
+                out.push(brink_ir::Diagnostic {
+                    file,
+                    range: fact.range,
+                    message: format!(
+                        "`{}` has type `{}` but its declared type is `{}`",
+                        fact.target,
+                        fact.found.display(),
+                        fact.expected.display()
+                    ),
+                    code: brink_ir::DiagnosticCode::E063,
+                });
+            }
+        }
+    }
+    out
+}
+
+// ── VAR/CONST declaration initializers (issue #1877) ──────────────────
+
+/// Report a VAR/CONST declaration whose explicit `: type` annotation
+/// disagrees with its own initializer literal's independently-inferred
+/// type, as `E063` — the declaration-initializer sibling of
+/// [`check_typed_assign_mismatches`] above, for the one declaration shape
+/// that has no enclosing body to walk (`hir.variables`/`hir.constants` are
+/// file-level, not per-def facts inference records).
+///
+/// TM-2's firewall (`signature::declared_value_ty`'s own doc: "annotation
+/// *replaces* [the initializer-inferred type]") means `Sig::value_ty` for an
+/// annotated VAR/CONST is the annotation alone — the initializer's own
+/// independently-inferred type is computed and then silently discarded,
+/// never compared against it. This is that comparison, reusing
+/// `signature::literal_ty` (the same collection-aware literal-typing
+/// `Sig::value_ty`'s own fallback branch already calls) rather than
+/// re-deriving it.
+///
+/// Declaration-derived only, like the rest of `signature.rs`: a non-literal
+/// initializer (a call, an index, a reference to another global, `#fn(…)`)
+/// has no `literal_ty` here and is silently unchecked — the runtime
+/// type-mismatch fault (gradual) or a body-inference-driven check (were one
+/// to exist for globals — TM-3's module doc already notes cross-
+/// reassignment detection for globals is out of scope) is the backstop, not
+/// this stub.
+fn check_global_initializers(
+    files: &[(FileId, &HirFile)],
+    index: &SymbolIndex,
+    manifest: Option<&brink_ir::HostManifest>,
+) -> Vec<brink_ir::Diagnostic> {
+    let names = annotations::TypeNames::new(index, manifest);
+    let mut out = Vec::new();
+    for &(file, hir) in files {
+        for v in &hir.variables {
+            check_one_global_initializer(
+                &v.name.text,
+                &v.value,
+                v.annotation.as_ref(),
+                file,
+                index,
+                &names,
+                &mut out,
+            );
+        }
+        for c in &hir.constants {
+            check_one_global_initializer(
+                &c.name.text,
+                &c.value,
+                c.annotation.as_ref(),
+                file,
+                index,
+                &names,
+                &mut out,
+            );
+        }
+    }
+    out
+}
+
+fn check_one_global_initializer(
+    name: &str,
+    value: &Expr,
+    annotation: Option<&TypeExpr>,
+    file: FileId,
+    index: &SymbolIndex,
+    names: &annotations::TypeNames,
+    out: &mut Vec<brink_ir::Diagnostic>,
+) {
+    let Some(te) = annotation else { return };
+    let Some(ann_ty) = annotations::resolve(te, names) else {
+        return;
+    };
+    let Some(lit_ty) = crate::signature::literal_ty(value, index) else {
+        return;
+    };
+    if lit_ty.is_unresolved() || crate::infer::assignable(&ann_ty, &lit_ty) {
+        return;
+    }
+    out.push(brink_ir::Diagnostic {
+        file,
+        range: te.range(),
+        message: format!(
+            "`{name}`'s declared type `{}` disagrees with its initializer's type (`{}`)",
+            ann_ty.display(),
+            lit_ty.display()
+        ),
+        code: brink_ir::DiagnosticCode::E063,
+    });
 }
 
 // ── `remove`/`remove_at` migration tail (issue #1532, `E149`) ─────────

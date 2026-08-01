@@ -179,7 +179,7 @@ STRUCT Point = #{                          // decl body MIRRORS the literal:
   repeated occurrence's initializer, including any side effect, is not
   silently dropped (same ruling, issue #675).
 
-## 7. What strict mode checks in plain-ink content — PROPOSED
+## 7. What strict mode checks in plain-ink content — RULED
 
 A brink-dialect + strict project still contains ordinary ink (knots,
 choices, `~` one-liners). Strict typing covers all of it — VARs,
@@ -188,6 +188,14 @@ function calls, conditions, interpolations — under the same lattice
 switching to strict should expect errors only where types genuinely
 conflict (cross-type VAR reassignment, heterogeneous collections,
 `Unknown` escapes), not on idiomatic visit-count logic.
+
+All three named cases are now implemented and tested: heterogeneous
+collections and `Unknown`/`Conflicted` escapes since #619 (TM-3);
+cross-type VAR reassignment — including a plain `~ v = expr` against a
+`VAR`/`CONST`'s declared type, `~ temp` declaration initializers and
+ascriptions, and (issue #1877's own scope) an **unannotated** global's
+initializer-literal-inferred type, not only an explicit `: type`
+annotation — since #1877.
 
 ## 8. Effects touchpoint — RULED direction (T2 owns the detail)
 

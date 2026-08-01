@@ -42,7 +42,9 @@
 use std::mem::{size_of, size_of_val};
 use std::sync::Arc;
 
-use brink_analyzer::{BodyTypes, DirectCallArgMismatch, InferredSig, Sig, Ty, ValueCallFact};
+use brink_analyzer::{
+    BodyTypes, DirectCallArgMismatch, InferredSig, Sig, Ty, TypedAssignMismatch, ValueCallFact,
+};
 use brink_format::DefinitionId;
 use brink_ir::{
     Block, BlockStmt, Choice, ChoiceSet, CondBranch, Conditional, Content, ContentPart,
@@ -364,6 +366,13 @@ fn direct_call_arg_mismatch_heap(m: &DirectCallArgMismatch) -> usize {
     string_heap(&m.callee) + ty_heap(&m.expected) + ty_heap(&m.found)
 }
 
+/// Issue #1877: a `TypedAssignMismatch`'s own heap contribution — mirrors
+/// [`direct_call_arg_mismatch_heap`]'s shape (its `target` field plays the
+/// same role `callee` does there).
+fn typed_assign_mismatch_heap(m: &TypedAssignMismatch) -> usize {
+    string_heap(&m.target) + ty_heap(&m.expected) + ty_heap(&m.found)
+}
+
 fn body_types_heap(b: &BodyTypes) -> usize {
     let params_heap: usize = b
         .params
@@ -395,6 +404,11 @@ fn body_types_heap(b: &BodyTypes) -> usize {
         + b.direct_call_arg_mismatches
             .iter()
             .map(direct_call_arg_mismatch_heap)
+            .sum::<usize>()
+        + vec_heap(&b.typed_assign_mismatches)
+        + b.typed_assign_mismatches
+            .iter()
+            .map(typed_assign_mismatch_heap)
             .sum::<usize>()
 }
 
@@ -685,6 +699,7 @@ mod tests {
                 has_value_return: true,
                 value_calls: Vec::new(),
                 direct_call_arg_mismatches: Vec::new(),
+                typed_assign_mismatches: Vec::new(),
                 array_remove_calls: Vec::new(),
             },
         );
@@ -730,6 +745,25 @@ mod tests {
                 expected: Ty::Int,
                 found: Ty::String,
             });
+
+        let populated_size = infer_body_heap_size(&Some(Arc::new(populated)));
+        assert!(populated_size > empty);
+    }
+
+    /// Issue #1877: `typed_assign_mismatches` is a consumer
+    /// `body_types_heap` must walk too — same growth-proof shape as
+    /// [`infer_body_heap_size_grows_with_direct_call_arg_mismatches`].
+    #[test]
+    fn infer_body_heap_size_grows_with_typed_assign_mismatches() {
+        let empty = infer_body_heap_size(&Some(Arc::new(BodyTypes::default())));
+
+        let mut populated = BodyTypes::default();
+        populated.typed_assign_mismatches.push(TypedAssignMismatch {
+            range: rowan::TextRange::new(rowan::TextSize::new(0), rowan::TextSize::new(1)),
+            target: "very_long_target_name".to_string(),
+            expected: Ty::Int,
+            found: Ty::String,
+        });
 
         let populated_size = infer_body_heap_size(&Some(Arc::new(populated)));
         assert!(populated_size > empty);

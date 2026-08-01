@@ -151,6 +151,55 @@ pub struct BodyTypes {
     /// nested call's return value, a global `VAR`/`CONST`, an index
     /// expression, …) is unaffected by `observe` and stays fully checked.
     pub direct_call_arg_mismatches: Vec<DirectCallArgMismatch>,
+    /// Issue #1877 (the remainder of #1864 left after PR #1875's direct-
+    /// call-argument half): statically-checkable type mismatches at a `~
+    /// temp name: T = expr` declaration initializer (against its own
+    /// ascription) or a plain `~ name = expr` assignment (against the
+    /// target's already-known declared type — a VAR/CONST's declaration-
+    /// derived type, or an annotated `~ temp`'s ascription). A `Param`
+    /// assignment target never reaches this fact at all: a param
+    /// annotation is a signature-firewall slot `annotations::mismatches`
+    /// (E063) already owns (compared against the body's *final* inferred
+    /// param type), so checking it again here would double-report the
+    /// identical disagreement. Recorded unconditionally during inference,
+    /// like `direct_call_arg_mismatches`; reported only by strict mode.
+    ///
+    /// A `Temp` assignment target is excluded from this fact whenever
+    /// `InferPass::observe`'s own join (which runs right after, on every
+    /// assignment) is *already* about to drive that local to
+    /// `Ty::Conflicted` on its own — that disagreement is independently
+    /// reported as `E066` by `strict::check_escapes`, so recording a second
+    /// fact here for it would double-report (mirrors
+    /// `DirectCallArgMismatch`'s own `arg_is_observed_local` exclusion, but
+    /// computed per-write rather than a blanket kind exclusion, since an
+    /// assignment to an as-yet-`Unknown` local never goes `Conflicted` and
+    /// would otherwise go unchecked entirely). That per-write guard is
+    /// order-sensitive — a *later* read of the same temp can independently
+    /// conflict it after a fact was already recorded — so
+    /// `body::infer_def_body` also drops, post-walk, any fact whose
+    /// target's *final* type is `Conflicted`. See
+    /// `body::InferPass::check_declared_assign_target`'s doc.
+    pub typed_assign_mismatches: Vec<TypedAssignMismatch>,
+}
+
+/// One statically-checkable type mismatch at a **declaration-initializer or
+/// assignment** site against an already-known declared type (issue #1877) —
+/// the `~ temp`/plain-assignment sibling of [`DirectCallArgMismatch`], which
+/// covers only direct-call arguments.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypedAssignMismatch {
+    /// The diagnostic site: the temp's own name range for a `~ temp`
+    /// initializer (matching `strict::collect_temps`'s escape-check anchor),
+    /// or the assignment target `Path`'s own range for a plain assignment
+    /// (matching [`DirectCallArgMismatch::range`]'s callee-range
+    /// convention).
+    pub range: TextRange,
+    /// The declared local/global's bare name.
+    pub target: String,
+    /// The target's already-known declared type.
+    pub expected: Ty,
+    /// The initializer/RHS expression's statically classified type.
+    pub found: Ty,
 }
 
 /// One statically-checkable argument-type mismatch at a **direct** call
@@ -683,6 +732,7 @@ fn solve_one_batch(
                     value_calls: result.value_calls,
                     array_remove_calls: result.array_remove_calls,
                     direct_call_arg_mismatches: result.direct_call_arg_mismatches,
+                    typed_assign_mismatches: result.typed_assign_mismatches,
                 },
             )
         })

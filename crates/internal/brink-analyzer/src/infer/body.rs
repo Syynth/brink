@@ -32,7 +32,10 @@ use rowan::TextRange;
 
 use super::effects::FnArgOrigins;
 use super::ty::{FnRow, TowerTy, Ty, assignable, coalesce, unify, unify_all};
-use super::{DirectCallArgMismatch, InferredSig, ValueCallFact, ValueCallKind, range_key};
+use super::{
+    DirectCallArgMismatch, InferredSig, TypedAssignMismatch, ValueCallFact, ValueCallKind,
+    range_key,
+};
 
 /// Read-only context shared by every body inferred in the same SCC round.
 pub(super) struct BodyCtx<'a> {
@@ -184,6 +187,12 @@ pub(super) struct BodyResult {
     /// Recorded unconditionally, like `value_calls`; reported only by
     /// strict mode.
     pub direct_call_arg_mismatches: Vec<DirectCallArgMismatch>,
+    /// Issue #1877: statically-checkable type mismatches at a `~ temp name:
+    /// T = expr` initializer or a plain assignment against the target's
+    /// already-known declared type — see [`super::TypedAssignMismatch`].
+    /// Recorded unconditionally, like `direct_call_arg_mismatches`; reported
+    /// only by strict mode.
+    pub typed_assign_mismatches: Vec<TypedAssignMismatch>,
     /// Issue #1532 (the #1501 review's `remove`/`remove_at` migration-tail
     /// finding): every `remove(a, i)` call site in this body whose first
     /// argument is statically known to be `Ty::Array` — the pre-#1484 array
@@ -272,6 +281,7 @@ pub(super) fn infer_def_body(def: &super::Def<'_>, ctx: &BodyCtx<'_>) -> BodyRes
         annotated,
         value_calls: Vec::new(),
         direct_call_arg_mismatches: Vec::new(),
+        typed_assign_mismatches: Vec::new(),
         array_remove_calls: Vec::new(),
         created_fn_values: BTreeSet::new(),
         local_fn_origins: BTreeMap::new(),
@@ -301,11 +311,7 @@ pub(super) fn infer_def_body(def: &super::Def<'_>, ctx: &BodyCtx<'_>) -> BodyRes
         pass.effect_faults_refined = true;
     }
     pass.infer_block(def.body);
-    // T2 §8 precision rung (issue #872): resolve every value-call site now
-    // that the whole body's write counts are final — see
-    // `resolve_pending_value_calls`'s doc for why this must run post-walk.
-    pass.resolve_pending_value_calls();
-
+    pass.finish_walk();
     let param_types = def
         .params
         .iter()
@@ -351,6 +357,7 @@ pub(super) fn infer_def_body(def: &super::Def<'_>, ctx: &BodyCtx<'_>) -> BodyRes
         effect_faults_refined: pass.effect_faults_refined,
         value_calls: pass.value_calls,
         direct_call_arg_mismatches: pass.direct_call_arg_mismatches,
+        typed_assign_mismatches: pass.typed_assign_mismatches,
         array_remove_calls: pass.array_remove_calls,
         created_fn_values: pass.created_fn_values,
         param_holes: pass.param_holes,
@@ -433,6 +440,9 @@ struct InferPass<'a, 'b> {
     /// See [`BodyResult::direct_call_arg_mismatches`] — accumulated the
     /// same way `value_calls` is, during the one body walk.
     direct_call_arg_mismatches: Vec<DirectCallArgMismatch>,
+    /// See [`BodyResult::typed_assign_mismatches`] — accumulated the same
+    /// way `direct_call_arg_mismatches` is, during the one body walk.
+    typed_assign_mismatches: Vec<TypedAssignMismatch>,
     /// See [`BodyResult::array_remove_calls`] — accumulated the same way
     /// `value_calls` is, during the one body walk.
     array_remove_calls: Vec<TextRange>,
@@ -764,11 +774,14 @@ impl InferPass<'_, '_> {
     /// one of its fields' — and manufactures a spurious Conflicted-escape
     /// (`E066`) whenever they statically disagree, even though `t` itself is
     /// never actually misused. A dotted head resolving to a global
-    /// `VAR`/`CONST` never reaches this join at all (excluded by the
-    /// `kind` guard below, since cross-type-reassignment detection for
-    /// globals isn't implemented in this slice) — this segment-count guard
-    /// makes a `Param`/`Temp` head behave the same way: observed only for a
-    /// genuine bare reference, never for a dotted field read.
+    /// `VAR`/`CONST` never reaches this join at all (excluded by the `kind`
+    /// guard below) — globals are never accumulated into this `Ty::Conflicted`
+    /// lattice at all, dotted or bare (issue #1877's own `E063` check for a
+    /// *bare* global assignment target, `check_declared_assign_target`,
+    /// reads `ctx.globals` directly rather than joining through here) — this
+    /// segment-count guard makes a `Param`/`Temp` head behave the same way:
+    /// observed only for a genuine bare reference, never for a dotted field
+    /// read.
     fn observe(&mut self, expr: &Expr, ty: &Ty) {
         if ty.is_unknown() {
             return;
@@ -824,6 +837,144 @@ impl InferPass<'_, '_> {
         {
             self.annotated.insert(t.name.text.clone(), ty);
         }
+    }
+
+    /// Issue #1877 (the remainder of #1864 PR #1875 left): check a `~ temp
+    /// name: T = expr` initializer's own inferred type (`found`) against its
+    /// explicit ascription. Unlike a param/return annotation (`annotations::
+    /// mismatches`, E063, gradual/advisory only), this ascription is never
+    /// otherwise compared against its *own* initializer anywhere: it is
+    /// recorded into `self.annotated` purely as an Unknown-escape fallback
+    /// (see the field's doc — "consulted only... never joined into the
+    /// lattice"), and `bind_local`'s own `unify(Unknown, found)` join right
+    /// after this runs never disagrees with a *fresh* local on its first
+    /// write. So a single-write disagreement between an ascription and its
+    /// own initializer — `~ temp t: int = "hi"` — reaches no other TM-3
+    /// check today; no double-report risk *on this exact write* (unlike
+    /// `check_declared_assign_target`'s Temp case below), since this runs
+    /// once per declaration, before `bind_local` ever touches `self.locals`
+    /// for this name. A *later* read of the same temp can still
+    /// independently conflict it (e.g. `~ temp t: int = "hi"\n~ return t +
+    /// 1`), which `check_escapes` reports as `E066` for the same
+    /// disagreement —
+    /// [`Self::drop_typed_assign_mismatches_conflicted_by_a_later_read`]
+    /// (called post-walk, from `infer_def_body` via [`Self::finish_walk`])
+    /// is what actually prevents that double-report, not anything here.
+    fn check_declared_temp_init(&mut self, t: &brink_ir::TempDecl, found: &Ty) {
+        if found.is_unresolved() {
+            return;
+        }
+        let Some(te) = &t.annotation else { return };
+        let Some(declared) = crate::annotations::resolve(te, &self.ctx.type_names()) else {
+            return;
+        };
+        if declared.is_unresolved() || assignable(&declared, found) {
+            return;
+        }
+        self.typed_assign_mismatches.push(TypedAssignMismatch {
+            range: t.name.range,
+            target: t.name.text.clone(),
+            expected: declared,
+            found: found.clone(),
+        });
+    }
+
+    /// Issue #1877: check a plain assignment's RHS type (`found`) against
+    /// `target`'s already-known declared type — a VAR/CONST's declaration-
+    /// derived type (`ctx.globals`), or an annotated `~ temp`'s ascription
+    /// (`self.annotated`). Only a bare, single-segment `Path` is checked
+    /// (mirrors `observe`'s own guard — a dotted field-access target's
+    /// declared type is its root's shape, not the field's, so comparing
+    /// against it would be a category error).
+    ///
+    /// A `Param` target is deliberately **excluded** here (review finding on
+    /// this issue's own PR): a param annotation is a signature-firewall slot
+    /// `annotations::mismatches` (E063) already owns — that check compares
+    /// the def's declared param annotation against the body's *final*
+    /// inferred param type (the T1c overlay in [`infer_def_body`]), so any
+    /// disagreement a Param assignment could report here is either already
+    /// caught there (the common case: the write's type becomes the param's
+    /// final inferred type) or already caught as `E066` once a later use
+    /// conflicts it. Recording a fact here too double-reported the identical
+    /// disagreement as two separate `E063`s.
+    ///
+    /// **Must run before [`Self::observe`]** on the same assignment: for a
+    /// `Temp` target, `observe`'s join (`unify(cur, found)`) is what may
+    /// drive the local to `Ty::Conflicted`, independently reported as
+    /// `E066` by `strict::check_escapes`. This reads `cur` — the target's
+    /// accumulated type *before* that join — to check whether this exact
+    /// write is about to do that; if so, the disagreement is skipped here to
+    /// avoid double-reporting the same fact as both `E063` and `E066`
+    /// (mirrors [`DirectCallArgMismatch`]'s `arg_is_observed_local`
+    /// exclusion, computed per-write here rather than a blanket kind
+    /// exclusion — an assignment to an as-yet-`Unknown` local never goes
+    /// `Conflicted` on this join and would otherwise go completely
+    /// unchecked, e.g. a `~ temp t: int = expr` whose own initializer
+    /// infers `Unknown`, later `~ t = "hi"`). This per-write guard only
+    /// catches a disagreement that conflicts on *this* write — a later
+    /// *read* can still independently conflict the same local after a fact
+    /// was already recorded here;
+    /// [`Self::drop_typed_assign_mismatches_conflicted_by_a_later_read`]
+    /// drops that fact once the local's final type is known (see its own
+    /// doc). A
+    /// VAR/CONST target is never subject to either exclusion: globals are
+    /// never joined into `self.locals`/Conflicted tracking at all (this
+    /// module's own doc: "the inference substrate never joins a global's
+    /// declaration-derived type against its assignment sites").
+    fn check_declared_assign_target(&mut self, target: &Expr, found: &Ty) {
+        if found.is_unresolved() {
+            return;
+        }
+        let Expr::Path(p) = target else { return };
+        if p.segments.len() > 1 {
+            return;
+        }
+        let Some(def) = self.resolve(p.range) else {
+            return;
+        };
+        let Some(info) = self.ctx.index.symbols.get(&def) else {
+            return;
+        };
+        let declared = match info.kind {
+            SymbolKind::Variable | SymbolKind::Constant => self.ctx.globals.get(&def).cloned(),
+            SymbolKind::Temp => {
+                let cur = self.locals.get(&info.name).cloned().unwrap_or(Ty::Unknown);
+                if unify(&cur, found).is_conflicted() {
+                    return; // `check_escapes` (E066) already reports this write.
+                }
+                self.annotated.get(&info.name).cloned()
+            }
+            _ => None,
+        };
+        let Some(declared) = declared else { return };
+        if declared.is_unresolved() || assignable(&declared, found) {
+            return;
+        }
+        self.typed_assign_mismatches.push(TypedAssignMismatch {
+            range: p.range,
+            target: info.name.clone(),
+            expected: declared,
+            found: found.clone(),
+        });
+    }
+
+    /// Issue #1877 review finding: [`Self::check_declared_assign_target`]
+    /// and [`Self::check_declared_temp_init`]'s own per-write `Conflicted`
+    /// guards only see whether *this* write is about to conflict its
+    /// target — they cannot see a *later* read (e.g. `~ t = "hi"` then `~
+    /// return t + 1`) that independently drives the same local to
+    /// `Ty::Conflicted` further down the same body. That later join still
+    /// reports as `E066` via `strict::check_escapes`, which reads each
+    /// local's *final* whole-body type, not any single write. So a fact
+    /// recorded during the walk for a name whose final `locals` entry ends
+    /// up `Conflicted` would double-report the same disagreement as both
+    /// `E063` and `E066`. Called once, post-walk, once every local's final
+    /// type is known — the one point that actually matches what
+    /// `check_escapes` keys on. A VAR/CONST target is unaffected: it is
+    /// never joined into `locals` at all.
+    fn drop_typed_assign_mismatches_conflicted_by_a_later_read(&mut self) {
+        self.typed_assign_mismatches
+            .retain(|fact| !self.locals.get(&fact.target).is_some_and(Ty::is_conflicted));
     }
 
     fn bind_local(&mut self, name: &str, ty: &Ty) {
@@ -1065,6 +1216,19 @@ impl InferPass<'_, '_> {
             }
             _ => {}
         }
+    }
+
+    /// Every post-walk finalization step that needs the whole body's final
+    /// state (every local's accumulated type, every write counted) rather
+    /// than whatever was known mid-walk — called once, right after
+    /// [`InferPass::infer_block`] returns. Composes
+    /// [`Self::resolve_pending_value_calls`] (T2 §8 precision rung, issue
+    /// #872 — see its own doc for why a mid-walk read would be unsound) and
+    /// [`Self::drop_typed_assign_mismatches_conflicted_by_a_later_read`]
+    /// (issue #1877 review finding — see its own doc).
+    fn finish_walk(&mut self) {
+        self.resolve_pending_value_calls();
+        self.drop_typed_assign_mismatches_conflicted_by_a_later_read();
     }
 
     /// Resolve every value-call site recorded during the walk
@@ -1755,6 +1919,7 @@ impl InferPass<'_, '_> {
             annotated,
             value_calls: _,
             direct_call_arg_mismatches: _,
+            typed_assign_mismatches: _,
             array_remove_calls: _,
             created_fn_values: _,
             local_fn_origins,
@@ -2929,6 +3094,9 @@ impl InferPass<'_, '_> {
             Stmt::TempDecl(t) => {
                 self.register_ascription(t);
                 let ty = t.value.as_ref().map_or(Ty::Unknown, |e| self.infer_expr(e));
+                // Issue #1877: the initializer's own type checked against
+                // this `~ temp`'s explicit ascription, if any.
+                self.check_declared_temp_init(t, &ty);
                 self.bind_local(&t.name.text, &ty);
                 // T2 §8 (issue #872): track this write towards the local's
                 // whole-body write summary — see `bump_local_write`.
@@ -2941,6 +3109,11 @@ impl InferPass<'_, '_> {
             Stmt::Assignment(a) => {
                 self.infer_expr(&a.target);
                 let ty = self.infer_expr(&a.value);
+                // Issue #1877: the RHS type checked against the target's
+                // already-known declared type — must run *before* `observe`
+                // below, which is what may drive the target Conflicted (see
+                // `check_declared_assign_target`'s doc for the ordering).
+                self.check_declared_assign_target(&a.target, &ty);
                 self.observe(&a.target, &ty);
                 self.record_write(&a.target);
                 // T2 §8 (issue #872): see `record_fn_write`.
@@ -3100,6 +3273,8 @@ impl InferPass<'_, '_> {
             BlockStmt::TempDecl(t) => {
                 self.register_ascription(t);
                 let ty = t.value.as_ref().map_or(Ty::Unknown, |e| self.infer_expr(e));
+                // Issue #1877: see `Stmt::TempDecl`'s twin above.
+                self.check_declared_temp_init(t, &ty);
                 self.bind_local(&t.name.text, &ty);
                 // T2 §8 (issue #872): see `Stmt::TempDecl`'s twin above.
                 let origin = t
@@ -3111,6 +3286,8 @@ impl InferPass<'_, '_> {
             BlockStmt::Assignment(a) => {
                 self.infer_expr(&a.target);
                 let ty = self.infer_expr(&a.value);
+                // Issue #1877: see `Stmt::Assignment`'s twin above.
+                self.check_declared_assign_target(&a.target, &ty);
                 self.observe(&a.target, &ty);
                 self.record_write(&a.target);
                 // T2 §8 (issue #872): see `Stmt::Assignment`'s twin above.
@@ -3295,6 +3472,7 @@ mod tests {
             annotated: BTreeMap::new(),
             value_calls: Vec::new(),
             direct_call_arg_mismatches: Vec::new(),
+            typed_assign_mismatches: Vec::new(),
             array_remove_calls: Vec::new(),
             created_fn_values: BTreeSet::new(),
             local_fn_origins: BTreeMap::new(),
