@@ -1044,8 +1044,8 @@ fn check_direct_call_args(
                     file,
                     range: fact.range,
                     message: format!(
-                        "argument {} of call to `{}` has type `{}` but its declared \
-                         parameter type is `{}`",
+                        "argument {} of call to `{}` has type `{}` but its known \
+                         type expects `{}`",
                         fact.index + 1,
                         fact.callee,
                         fact.found.display(),

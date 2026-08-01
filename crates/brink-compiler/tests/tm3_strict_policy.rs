@@ -570,6 +570,47 @@ fn strict_direct_call_arg_mismatch_via_conflicted_temp_reports_only_e066() {
 }
 
 #[test]
+fn strict_direct_call_arg_mismatch_message_names_the_known_type_not_declared() {
+    // Regression for a reviewer finding on #1864's original PR: the
+    // diagnostic message said "its **declared** parameter type is `{}`",
+    // but `expected` is read from `known_sigs`'s `InferredSig::params` —
+    // the body-derived, *inferred* signature, not the annotation firewall.
+    // The two disagree whenever a callee's own body has already driven a
+    // param to a type its own annotation didn't say: here `outer(p:
+    // string)` calls `h(p)`, and `h`'s sole param is `int`, so inference
+    // widens `outer`'s *known* signature for `p` to `int` even though its
+    // declared annotation stays `string`. `outer("a")` then mismatches
+    // against the known (int) type, not the declared (string) one — the
+    // old wording would have blamed the wrong type at this call site.
+    let err = compile_mem(
+        "=== function outer(p: string) ===\n~ h(p)\n~ return\n\
+         === function h(x: int) ===\n~ return\n\
+         === main ===\n~ outer(\"a\")\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    )
+    .expect_err("a direct call whose known type disagrees with its declared annotation must \
+                 still fail strict compilation");
+    let diags = diagnostics_of(err);
+    let outer_call_diag = diags
+        .iter()
+        .find(|d| d.message.contains("call to `outer`"))
+        .unwrap_or_else(|| panic!("expected a diagnostic naming the `outer` call site: {diags:?}"));
+    assert!(
+        !outer_call_diag.message.contains("declared"),
+        "the message must not claim a specific *declared* type when `expected` is read from \
+         the body-derived known signature: {}",
+        outer_call_diag.message
+    );
+    assert!(
+        outer_call_diag.message.contains("known type expects `int`"),
+        "the message must name the known (inferred) type, matching check_value_calls's own \
+         wording: {}",
+        outer_call_diag.message
+    );
+}
+
+#[test]
 fn gradual_direct_call_arg_mismatch_still_compiles() {
     // Same fixture, `types` left at its default (`Gradual`) — the direct-
     // call check stays advisory-only and never blocks compilation, same
