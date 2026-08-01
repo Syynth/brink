@@ -1491,10 +1491,16 @@ pub enum DiagnosticCode {
     /// own caution), so the diagnostic is `[lints]`-configurable and
     /// `@[allow(E172)]`-suppressible rather than blocking, the same posture
     /// as `E132`/`E168`/`E170`. `hir::lower_native::body::lower_tag` raises
-    /// it, naming the native spelling to use instead when one exists
-    /// (`@[was(…)]`, `@[allow(…)]`, `@[effects(…)]`) and saying so plainly
-    /// when it does not (`module`, `public`, `private`, `local` have no
-    /// native annotation counterpart yet).
+    /// it, naming the native spelling to use instead when the tag names a
+    /// real ink directive that has one (`@[was(…)]`, `@[effects(…)]`) and
+    /// saying so plainly when it does not (`module`, `public`, `private`,
+    /// `local` have no native annotation counterpart yet). `#@allow` is
+    /// its own case — ink's directive recognizer does not know `allow`
+    /// either, so the message never calls it an ink-dialect spelling; it
+    /// only notes that native's own `@[allow(…)]` annotation (an unrelated
+    /// diagnostic-suppression channel) happens to share the name. Any other
+    /// unrecognized name gets a shape-only wording that never asserts ink
+    /// membership.
     E172,
 }
 

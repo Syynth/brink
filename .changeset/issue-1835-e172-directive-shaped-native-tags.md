@@ -19,8 +19,14 @@ became literal tag content on the compiled story.
 `Error` — a project may legitimately want a literal `@`-led runtime tag,
 so the diagnostic never blocks a compile that means it. The message
 names the native `@[name(…)]` annotation equivalent to switch to when
-one exists (`was`, `allow`, `effects`), and says plainly that there is
-none when there isn't (`module`, `public`, `private`, `local`).
+the tag names a real ink directive that has one (`was`, `effects`), and
+says plainly that there is none when it doesn't (`module`, `public`,
+`private`, `local`). `#@allow` gets its own wording — ink's directive
+recognizer doesn't know `allow` either, so the message never calls it an
+ink-dialect spelling, only notes that native's own `@[allow(…)]`
+annotation (an unrelated diagnostic-suppression channel) shares the
+name. Any other unrecognized name gets a shape-only wording that never
+asserts ink would recognize it.
 
 `brink-web` transitively depends on `brink-ir`'s native lowering
 (`brink-db::lowered_query` dispatches `.brink`-extension files to native

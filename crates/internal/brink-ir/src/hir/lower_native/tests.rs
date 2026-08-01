@@ -577,6 +577,57 @@ fn e172_says_no_native_meaning_when_no_annotation_equivalent_exists() {
 }
 
 #[test]
+fn e172_gives_allow_its_own_wording_rather_than_calling_it_an_ink_directive() {
+    // Review of #1953, finding (a): ink's own directive recognizer
+    // (`hir::lower::directive::apply_scope_directives`) does not know
+    // `allow` — only `module`/`public`/`private`/`local`/`was`/`effects`
+    // are recognized names, so `#@allow` is an *unknown* directive in ink
+    // too. The message must not claim `#@allow` "is the ink-dialect
+    // directive-tag spelling" (the `was`/`effects` wording) just because
+    // native happens to have an `@[allow(…)]` annotation of its own.
+    let (_hir, _m, diags) = lower_src("flow a() {\n  #@allow(E172)\n}\n");
+    let msg = &diags
+        .iter()
+        .find(|d| d.code == DiagnosticCode::E172)
+        .expect("E172 expected")
+        .message;
+    assert!(
+        msg.contains("no directive meaning in either dialect") && msg.contains("@[allow("),
+        "expected `#@allow`'s own wording (no ink meaning, names the unrelated native \
+         `@[allow(…)]` suppression channel), got: {msg}"
+    );
+    assert!(
+        !msg.contains("is the ink-dialect directive-tag spelling"),
+        "must not claim ink recognizes `allow` as a directive name: {msg}"
+    );
+}
+
+#[test]
+fn e172_does_not_assert_ink_membership_for_an_unrecognized_name() {
+    // Review of #1953, finding (b): the fallback branch must not tell
+    // every unmatched name it "is an ink-dialect compiler-directive
+    // spelling" — a project may deliberately tag content with its own
+    // `@`-led runtime convention (the issue's own caution, e.g.
+    // `#@narrator`), and that author's tag genuinely isn't an ink
+    // directive. The message may say the tag has directive *shape*, but
+    // must not assert ink membership.
+    let (_hir, _m, diags) = lower_src("flow a() {\n  #@narrator\n}\n");
+    let msg = &diags
+        .iter()
+        .find(|d| d.code == DiagnosticCode::E172)
+        .expect("E172 expected")
+        .message;
+    assert!(
+        msg.contains("has the shape of an ink-dialect compiler-directive tag"),
+        "expected the shape-only wording for an unrecognized name, got: {msg}"
+    );
+    assert!(
+        !msg.contains("is an ink-dialect compiler-directive spelling"),
+        "must not assert ink recognizes `narrator` as a directive name: {msg}"
+    );
+}
+
+#[test]
 fn an_ordinary_tag_without_a_leading_at_does_not_emit_e172() {
     let (_hir, _m, diags) = lower_src("flow a() {\n  Hi. #mood: happy\n}\n");
     assert!(
