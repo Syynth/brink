@@ -366,7 +366,7 @@ Key semantics from the reference C# ink implementation relevant to compilation:
 
 ## Diagnostic Codes
 
-Every diagnostic the compiler can emit has a stable code (`E001`–`E168`) and a
+Every diagnostic the compiler can emit has a stable code (`E001`–`E169`) and a
 per-code reference file under [`docs/diagnostics/`](diagnostics/) with a summary,
 explanation, minimal repro, and fix guidance. `DiagnosticCode::as_str` /
 `DiagnosticCode::from_str_code` (`crates/internal/brink-ir/src/hir/diagnostics.rs`) are the
@@ -543,6 +543,7 @@ asserts every variant has a corresponding doc file and that no orphaned doc file
 | [`E166`](diagnostics/E166.md) | A `block`-flagged `@[element(…, block)]` annotation whose declaration has no trailing `content`-typed parameter to receive the captured run, or whose would-be receiver is also one of the pattern's own named captures. |
 | [`E167`](diagnostics/E167.md) | A natural-notation `@[element(claims = "…")]` handler declares a parameter that its pattern never captures, so a claimed line has nothing to bind it to. |
 | [`E168`](diagnostics/E168.md) | Two `@[element(claims = "…")]` handlers declare byte-identical patterns, so the later-declared one can never claim anything the earlier one didn't already claim first. |
+| [`E169`](diagnostics/E169.md) | A top-level `fn` carries a pattern-claiming `@[element(claims = "…")]` annotation, but this file is not the project's configured conventions module (`brink.toml`'s `[project] elements`). |
 
 ## Known limitations
 

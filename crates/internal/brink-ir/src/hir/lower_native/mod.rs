@@ -191,6 +191,11 @@ pub fn lower(
     // `element::diagnose_duplicate_patterns`'s doc.
     element::diagnose_duplicate_patterns(file_id, &elements, &mut diags);
 
+    // The declared-handler record (issue #1844) — snapshot before
+    // `elements.matches` is moved out below, independent of whether any
+    // handler actually claimed a line in this file.
+    let claim_handlers = elements.handler_decls();
+
     // `var`/`const`/`flags` are hoisted flat regardless of nesting — a
     // whole-tree walk, same posture ink's D6 ruling requires of every
     // frontend (`docs/hir-admission-contract.md` D6: "the global vecs are
@@ -286,6 +291,7 @@ pub fn lower(
             matches.sort_by_key(|m| m.line.start());
             matches
         },
+        claim_handlers,
     };
     let manifest = project_manifest(&hir);
     (hir, manifest, diags)
