@@ -416,6 +416,56 @@ fn root_content_typed_strict() {
     assert_case("root-content-typed-strict");
 }
 
+/// Directive-shaped `#@…` tags (issue #1835): a `.brink` file with a
+/// `#@was("old_name")` trailing tag (a name with a native `@[was(…)]`
+/// annotation counterpart) and a `#@private` trailing tag (a name with no
+/// native equivalent) compiles and runs clean end to end — `E172` is
+/// `Warning`-severity and non-blocking (`DiagnosticCode::severity`), so
+/// neither line's compile fails and both still print as ordinary content.
+/// The diagnostic itself isn't observable through this transcript
+/// (`run_native_transcript`'s `Line::Text` arm drops the `tags` field
+/// entirely, the same reason `inline_tag_embedded_brace`'s module doc
+/// gives) — `directive_like_tag_warns_e172` immediately below is the
+/// compile-level sibling that inspects `CompileOutput::warnings` directly.
+#[test]
+fn directive_like_tag() {
+    assert_case("directive-like-tag");
+}
+
+/// Compile-level sibling to `directive_like_tag`: inspects
+/// `CompileOutput::warnings` directly to pin that both the recognized
+/// (`was`) and unrecognized (`private`) `#@…` names each raise their own
+/// `E172`, with the message naming the right guidance for each — the
+/// native `@[was(…)]` annotation equivalent for the first, and an explicit
+/// "no native equivalent" for the second.
+#[test]
+fn directive_like_tag_warns_e172() {
+    let path = corpus_dir().join("directive-like-tag").join("story.brink");
+    let output = brink_compiler::compile_path(&path)
+        .unwrap_or_else(|e| panic!("compile directive-like-tag: {e:?}"));
+    let e172s: Vec<_> = output
+        .warnings
+        .iter()
+        .filter(|w| w.code == brink_ir::DiagnosticCode::E172)
+        .collect();
+    assert_eq!(
+        e172s.len(),
+        2,
+        "expected exactly two E172 warnings: {:?}",
+        output.warnings
+    );
+    assert!(
+        e172s.iter().any(|w| w.message.contains("@[was(")),
+        "expected the `was` tag's message to name the native `@[was(…)]` equivalent: {e172s:?}"
+    );
+    assert!(
+        e172s
+            .iter()
+            .any(|w| w.message.contains("no `private` equivalent")),
+        "expected the `private` tag's message to say it has no native equivalent: {e172s:?}"
+    );
+}
+
 /// Every `tests/tier1-native/` case directory is exercised by a `#[test]`
 /// above — a directory with no matching test would silently never run.
 #[test]
@@ -428,6 +478,7 @@ fn every_case_directory_has_a_test() {
         "array-literal",
         "as-binding",
         "construction-literal",
+        "directive-like-tag",
         "fn-value-bare-name",
         "for-k-v",
         "inline-markup-point-marker",

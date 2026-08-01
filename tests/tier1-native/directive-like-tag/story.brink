@@ -1,0 +1,4 @@
+flow main() {
+  Hi there. #@was("old_name")
+  Bye. #@private -> END
+}

@@ -272,7 +272,10 @@ fn lower_one_item(
             let Some(tl) = ast::TagLine::cast(node.clone()) else {
                 return Vec::new();
             };
-            let tags: Vec<Tag> = tl.tags().map(|t| lower_tag(file_id, &t)).collect();
+            let tags: Vec<Tag> = tl
+                .tags()
+                .map(|t| lower_tag(file_id, &t, diags))
+                .collect();
             if tags.is_empty() {
                 Vec::new()
             } else {
@@ -578,7 +581,7 @@ pub(super) fn lower_content_run(
             }
             N::TAG => {
                 if let Some(t) = ast::Tag::cast(node.clone()) {
-                    tags.push(lower_tag(file_id, &t));
+                    tags.push(lower_tag(file_id, &t, diags));
                 }
                 i += 1;
             }
@@ -813,7 +816,7 @@ pub(super) fn lower_interpolation(
     }
 }
 
-fn lower_tag(file_id: FileId, t: &ast::Tag) -> Tag {
+fn lower_tag(file_id: FileId, t: &ast::Tag, diags: &mut Vec<Diagnostic>) -> Tag {
     let mut text = String::new();
     for tok in t
         .syntax()
@@ -826,6 +829,13 @@ fn lower_tag(file_id: FileId, t: &ast::Tag) -> Tag {
         text.push_str(tok.text());
     }
     let trimmed = text.trim().to_string();
+    if let Some(rest) = trimmed.strip_prefix('@') {
+        diags.push(directive_like_tag_diagnostic(
+            file_id,
+            t.syntax().text_range(),
+            rest,
+        ));
+    }
     let parts = if trimmed.is_empty() {
         Vec::new()
     } else {
@@ -834,6 +844,44 @@ fn lower_tag(file_id: FileId, t: &ast::Tag) -> Tag {
     Tag {
         parts,
         ptr: native_provenance(file_id, NodeClass::Tag, t.syntax()),
+    }
+}
+
+/// `E172` (issue #1835): a native tag whose text starts with `@` has the
+/// shape of an ink-dialect compiler directive (`#@private`, `#@was(…)`,
+/// `#@local`, `#@module(…)`, `#@effects(…)` —
+/// `hir::lower::directive::parse_directive_tag`'s own recognized set), but
+/// native's tag lowering has no directive channel: `#` is already the
+/// runtime-tag sigil in native content position, which is exactly why
+/// `#@…` parses as an ordinary tag rather than a directive here too. Names
+/// the native spelling to switch to when one exists (`was`, `allow`,
+/// `effects` all have a native `@[name(…)]` annotation counterpart —
+/// `hir::lower_native::annotation`), and says plainly that there is none
+/// when there isn't (`module`, `public`, `private`, `local` — native has no
+/// annotation-channel equivalent for any of them yet).
+fn directive_like_tag_diagnostic(file: FileId, range: rowan::TextRange, rest: &str) -> Diagnostic {
+    let name: String = rest
+        .chars()
+        .take_while(|c| *c != '(' && !c.is_whitespace())
+        .collect();
+    let message = match name.as_str() {
+        "was" | "allow" | "effects" => format!(
+            "`#@{name}` is the ink-dialect directive-tag spelling; native's equivalent is the \
+             `@[{name}(…)]` annotation — this tag has no directive effect here and compiles as \
+             literal runtime tag content"
+        ),
+        _ => format!(
+            "`#@{name}` is an ink-dialect compiler-directive spelling (`module`/`public`/\
+             `private`/`local`/`was`/`effects`); native has no directive channel and no \
+             `{name}` equivalent — this tag has no directive effect here and compiles as \
+             literal runtime tag content"
+        ),
+    };
+    Diagnostic {
+        file,
+        range,
+        message,
+        code: DiagnosticCode::E172,
     }
 }
 

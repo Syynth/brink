@@ -509,6 +509,76 @@ fn content_glue_interpolation_and_tags_lower() {
     assert!(matches!(c.parts[3], ContentPart::Glue));
 }
 
+// ── `#@…` directive-shaped tags (issue #1835) ────────────────────────
+
+#[test]
+fn a_tag_starting_with_at_on_a_trailing_tag_line_emits_e172() {
+    // A trailing tag on a content line — the `lower_content_run` TAG arm.
+    let (hir, _m, diags) = lower_src("flow a() {\n  Hi. #@was(\"old_name\")\n}\n");
+    assert_eq!(
+        diags.iter().filter(|d| d.code == DiagnosticCode::E172).count(),
+        1,
+        "expected exactly one E172, got: {diags:?}"
+    );
+    // It still lowers as an ordinary runtime tag — no directive effect —
+    // so the diagnostic is a warning, not a dropped statement.
+    let body = only_knot_body(&hir);
+    let Stmt::Content(c) = &body.stmts[0] else {
+        panic!("expected Content, got {:?}", body.stmts[0]);
+    };
+    assert_eq!(c.tags.len(), 1, "the tag still lowers as ordinary content");
+    assert!(matches!(&c.tags[0].parts[0], ContentPart::Text(t) if t == "@was(\"old_name\")"));
+}
+
+#[test]
+fn a_standalone_at_prefixed_tag_line_emits_e172() {
+    // A whole-line tag — the `TAG_LINE` arm of `lower_one_item`.
+    let (hir, _m, diags) = lower_src("flow a() {\n  #@private\n}\n");
+    assert_eq!(
+        diags.iter().filter(|d| d.code == DiagnosticCode::E172).count(),
+        1,
+        "expected exactly one E172, got: {diags:?}"
+    );
+    assert_eq!(hir.knots.len(), 1);
+}
+
+#[test]
+fn e172_names_the_native_annotation_equivalent_when_one_exists() {
+    let (_hir, _m, diags) = lower_src("flow a() {\n  #@was(\"old\")\n}\n");
+    let msg = &diags
+        .iter()
+        .find(|d| d.code == DiagnosticCode::E172)
+        .expect("E172 expected")
+        .message;
+    assert!(
+        msg.contains("@[was(") && msg.contains("was"),
+        "expected the native `@[was(…)]` spelling to be named, got: {msg}"
+    );
+}
+
+#[test]
+fn e172_says_no_native_meaning_when_no_annotation_equivalent_exists() {
+    let (_hir, _m, diags) = lower_src("flow a() {\n  #@local\n}\n");
+    let msg = &diags
+        .iter()
+        .find(|d| d.code == DiagnosticCode::E172)
+        .expect("E172 expected")
+        .message;
+    assert!(
+        msg.contains("no directive channel") && msg.contains("no `local` equivalent"),
+        "expected the no-native-meaning wording, got: {msg}"
+    );
+}
+
+#[test]
+fn an_ordinary_tag_without_a_leading_at_does_not_emit_e172() {
+    let (_hir, _m, diags) = lower_src("flow a() {\n  Hi. #mood: happy\n}\n");
+    assert!(
+        diags.iter().all(|d| d.code != DiagnosticCode::E172),
+        "unexpected E172 for a plain tag: {diags:?}"
+    );
+}
+
 #[test]
 fn content_without_glue_gets_end_of_line() {
     let (hir, _m, diags) = lower_src("flow a() {\n  Plain line.\n}\n");
