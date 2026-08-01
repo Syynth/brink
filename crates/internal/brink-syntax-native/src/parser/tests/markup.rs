@@ -9,6 +9,19 @@ fn first_node(root: &SyntaxNode, kind: SyntaxKind) -> SyntaxNode {
     found.expect("asserted present just above")
 }
 
+/// The literal character an `ESCAPE` node produces — its second token's
+/// text (mirrors `hir::lower_native::body::push_escape`'s own reading of
+/// the node, minus the `assert_lossless` ceremony this test module uses
+/// instead of full lowering).
+fn escape_literal(escape: &SyntaxNode) -> String {
+    escape
+        .children_with_tokens()
+        .filter_map(rowan::NodeOrToken::into_token)
+        .nth(1)
+        .map(|t| t.text().to_string())
+        .unwrap_or_default()
+}
+
 // ── Basic spans (§4.1) ───────────────────────────────────────────────
 
 #[test]
@@ -212,6 +225,89 @@ fn an_escaped_angle_bracket_does_not_open_a_span() {
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
     assert!(!has_node_kind(&p.syntax(), SyntaxKind::SPAN));
     assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::ESCAPE), 1);
+}
+
+// ── Line-start escapes `\!` `\@` (§8d.6, issue #1744) ────────────────
+
+#[test]
+fn a_leading_backslash_at_escapes_to_a_literal_at_not_a_cue() {
+    // Bare `@NAME` at item position opens a CUE (§8b.9); `\@NAME` must
+    // produce a literal `@NAME` text run instead — the line-start escape
+    // §8d.6 rules alongside the four inline ones.
+    let src = "flow f() {\n  \\@VENDOR is just a mention, not a cue.\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(!has_node_kind(&p.syntax(), SyntaxKind::CUE));
+    assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::ESCAPE), 1);
+    let escape = first_node(&p.syntax(), SyntaxKind::ESCAPE);
+    assert_eq!(escape_literal(&escape), "@");
+    assert!(text_run_concat(&p.syntax()).contains("VENDOR"));
+}
+
+#[test]
+fn a_leading_backslash_bang_escapes_to_a_literal_bang() {
+    // `\!` at line start produces a literal `!` (§8d.6's second line-start
+    // escape, reserved alongside `\@` for the annotation-element `!name`
+    // sigil, §3.5b).
+    let src = "flow f() {\n  \\!radio TAC-2: not a handler dispatch.\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::ESCAPE), 1);
+    let escape = first_node(&p.syntax(), SyntaxKind::ESCAPE);
+    assert_eq!(escape_literal(&escape), "!");
+    assert!(text_run_concat(&p.syntax()).contains("radio"));
+}
+
+#[test]
+fn a_compact_cue_dialogue_line_start_backslash_at_escapes_correctly() {
+    // Regression for the trivia-flush bug in `line_start_escape`: the
+    // fused dialogue line after `@KID:` (`COMPACT_CUE`, `element::cue_line`)
+    // reaches `content::content_line` via a *raw* `bump()` on `COLON` with
+    // no trivia flush in between, so the space after the colon is still
+    // pending in the raw token stream when `line_start_escape` opens its
+    // node. Before the fix, `line_start_escape`'s own raw `bump()` calls
+    // consumed that pending `WHITESPACE` as if it were the `\`, leaving the
+    // real `\` and `@` split across `ESCAPE[WHITESPACE, BACKSLASH]` +
+    // `TEXT[AT, IDENT "VENDOR", …]` — the escape did the opposite of its
+    // job and the `@` re-opened as a would-be cue sigil in the leftover
+    // text. `line_start_escape` now flushes trivia itself before opening
+    // the node, so the fix holds regardless of whether the caller already
+    // flushed.
+    let src = "flow f() {\n  @KID: \\@VENDOR waves.\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::COMPACT_CUE));
+    assert!(
+        !has_node_kind(&p.syntax(), SyntaxKind::CUE),
+        "the escaped @ must not open a second, nested cue"
+    );
+    assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::ESCAPE), 1);
+    let escape = first_node(&p.syntax(), SyntaxKind::ESCAPE);
+    assert_eq!(escape_literal(&escape), "@");
+    let escape_tokens: Vec<_> = escape
+        .children_with_tokens()
+        .filter_map(rowan::NodeOrToken::into_token)
+        .collect();
+    assert_eq!(
+        escape_tokens.len(),
+        2,
+        "ESCAPE must hold exactly `\\` + `@`, no leaked whitespace: {escape_tokens:?}"
+    );
+    assert_eq!(escape_tokens[0].text(), "\\");
+    assert!(text_run_concat(&p.syntax()).contains("VENDOR waves"));
+}
+
+#[test]
+fn a_mid_line_backslash_bang_or_at_is_still_a_compile_error() {
+    // The line-start escapes are exactly that — line-start only. A `\!`/
+    // `\@` anywhere else in a line is not in the four-char inline escape
+    // set and remains the ordinary "backslash before anything else" error.
+    let src = "flow f() {\n  text \\! and \\@ here\n}\n";
+    let p = assert_lossless(src);
+    assert!(
+        !p.errors().is_empty(),
+        "mid-line \\! / \\@ must still error — only line-start use is escaped"
+    );
 }
 
 // ── Freeform by default (§4.2) ────────────────────────────────────────

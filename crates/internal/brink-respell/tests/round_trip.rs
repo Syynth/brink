@@ -158,3 +158,12 @@ fn typed_annotations() {
 fn inline_markup_escape_set() {
     round_trip_case("inline-markup-escape-set");
 }
+
+/// Issue #1744 (§8d.6): `\!`/`\@` as line-start escapes, plus the emitter
+/// half — `emit_native::escape_leading_cue_sigil` must re-escape a
+/// literal leading `@`+identifier or a real `CUE` would open on the
+/// respelled source's next parse. See the fixture's own `manifest.toml`.
+#[test]
+fn line_start_cue_escape() {
+    round_trip_case("line-start-cue-escape");
+}
