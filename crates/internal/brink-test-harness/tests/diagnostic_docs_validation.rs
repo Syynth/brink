@@ -198,24 +198,46 @@ fn diagnostic_codes_are_unique() {
 }
 
 /// Diagnostic codes whose defining mechanism is reachable **only** from the
-/// native `.brink` surface — never from ink source, under any dialect. An
-/// ```` ```ink ```` example fence on one of these docs is not merely
-/// mis-tagged: `book_fences.rs` (BW-5) and `mdbook test` both dispatch on
-/// exactly this info string, so the wrong tag would silently exempt the
-/// sample from ever being dialect-checked once someone fills it in with real
-/// content (issue #1836's own point: "the fence language is also
-/// load-bearing rather than cosmetic").
+/// native `.brink` surface — never from ink source, under any dialect. The
+/// fence's info string names the surface a sample must be written in, and no
+/// existing gate checks that here: `docs/diagnostics/**/*.md` is not part of
+/// the mdBook book (it is absent from `docs/book/src/SUMMARY.md`), and
+/// `book_fences.rs` (BW-5) only walks `docs/book/src/**/*.md` — per its own
+/// taxonomy table, an ```` ```ink ```` fence there must compile and an
+/// ```` ```brink ```` fence is skipped as "unruled future syntax", but
+/// neither rule ever reaches this directory. This test is the only check
+/// over these docs' fence content. An ```` ```ink ```` fence on a
+/// native-only code's doc is still wrong on its own terms: it claims a
+/// surface the diagnostic can never actually be reached from, so once #1623
+/// fills the placeholder in with a real example, a stray `ink` tag would
+/// make the illustration lie about which surface it demonstrates.
 ///
 /// This list is re-derived from the enum's own doc comments and
 /// `docs/directive-annotations-spec.md` §5c/§5d directly — **not** carried
 /// over from issue #1836's filing-time list, which named nine codes
-/// (`E132`, `E153`–`E155`, `E159`–`E163`) and predates `E164`–`E172`, all of
-/// which landed native-only afterward:
+/// (`E132`, `E153`–`E155`, `E159`–`E163`) and predates `E130`, `E145`,
+/// `E146`, `E156`, `E158`, and `E164`–`E172`, all of which landed
+/// native-only afterward:
 ///
+/// - `E130` — a native `flow` nested more than two levels deep; raised only
+///   from `hir::lower_native::container`, whose `title()` reads "native:
+///   `flow` nested more than two levels deep is not yet supported" — `flow`
+///   is a native-surface container with no ink counterpart.
 /// - `E132` — the native file-level `@[was("…")]` rename record; ink's own
 ///   `@[…]` channel recognizes only `effects` (§5b).
+/// - `E145`/`E146` — the `as` binding channel (`if EXPR as name { … }` and
+///   the choice-guard form respectively); `AS_BINDING` is a
+///   `brink-syntax-native` grammar node with no counterpart in
+///   `brink-syntax`, and both are raised only from
+///   `hir::lower_native::control_flow` / `hir::lower_native::choice`.
 /// - `E153`/`E154`/`E155` — the `@[allow(…)]` suppression channel: §5d says
 ///   "Native surface only" in as many words.
+/// - `E156` — a lambda body assigning to a captured binding; `LAMBDA_EXPR`
+///   exists only in `brink-syntax-native` (zero occurrences anywhere in
+///   `brink-syntax`), and the check is raised only from
+///   `hir::lower_native::lambda::check_capture_writes`.
+/// - `E158` — a lambda recursing through its own not-yet-bound name, from
+///   the same native-only lambda-lifting pass as `E156`.
 /// - `E159`/`E160` — `@[element(…)]`'s declaration-surface checks; `element`
 ///   is one of the native-only recognized names §5c adds beyond `effects`.
 /// - `E161`/`E162`/`E163` — `@[style(…)]`, the same native-only channel as
@@ -232,13 +254,13 @@ fn diagnostic_codes_are_unique() {
 ///   while lowering a `.brink` file.
 ///
 /// Codes intentionally **excluded** despite living in the same numeric
-/// neighborhood: `E156`–`E158` (lambda diagnostics) are a *dialect* gate
-/// (`strict-ink` vs `brink`), not a *surface* one — reachable from ink
-/// source compiled under the brink dialect, which is exactly what
-/// `book_fences.rs`'s ` ```ink` ` ` fences do.
+/// neighborhood: `E157` (the unnamed-once-only-choice / unnamed-sequence
+/// visit-count lint) is a *dialect* concern, not a *surface* one — its
+/// knot/`*`-choice example is genuinely reachable from ink source, which is
+/// exactly what `E157.md`'s ```` ```ink ```` fences correctly demonstrate.
 const NATIVE_ONLY_CODES: &[&str] = &[
-    "E132", "E153", "E154", "E155", "E159", "E160", "E161", "E162", "E163", "E164", "E165", "E166",
-    "E167", "E168", "E169", "E170", "E171", "E172",
+    "E130", "E132", "E145", "E146", "E153", "E154", "E155", "E156", "E158", "E159", "E160", "E161",
+    "E162", "E163", "E164", "E165", "E166", "E167", "E168", "E169", "E170", "E171", "E172",
 ];
 
 /// Every fenced code block's info string (the text right after the opening
