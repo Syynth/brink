@@ -589,8 +589,10 @@ fn strict_direct_call_arg_mismatch_message_names_the_known_type_not_declared() {
         Dialect::Brink,
         TypePolicy::Strict,
     )
-    .expect_err("a direct call whose known type disagrees with its declared annotation must \
-                 still fail strict compilation");
+    .expect_err(
+        "a direct call whose known type disagrees with its declared annotation must \
+                 still fail strict compilation",
+    );
     let diags = diagnostics_of(err);
     let outer_call_diag = diags
         .iter()
