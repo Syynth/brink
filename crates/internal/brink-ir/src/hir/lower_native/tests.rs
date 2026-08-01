@@ -1695,6 +1695,88 @@ fn two_byte_identical_claim_patterns_diagnose_e168_on_the_later_one() {
 }
 
 #[test]
+fn a_byte_identical_twin_that_claims_the_earlier_handlers_own_body_is_not_e168() {
+    // Review finding on #1860: `diagnose_duplicate_patterns` must not run
+    // from `collect`, before any body is lowered — `try_claim` excludes a
+    // handler from claiming lines inside its own declaration (the staging
+    // rule), and that exclusion does not extend to a later byte-identical
+    // twin. `b` is the *only* handler that can claim the `SIGNAL` line
+    // inside `a`'s own body, since `a` is barred from claiming there. `b`
+    // is genuinely live for that line, so E168 must not fire on it.
+    let (hir, _m, diags) = lower_src(
+        "@[element(claims = \"^SIGNAL$\")]\nfn a() >{\n  SIGNAL\n}\n\n@[element(claims = \"^SIGNAL$\")]\nfn b() >{\n  ok\n}\n",
+    );
+    assert!(
+        !diags.iter().any(|d| d.code == DiagnosticCode::E168),
+        "b actually claimed a line (inside a's own body) — E168 is a false positive here: {diags:?}"
+    );
+    assert_eq!(
+        hir.element_matches.len(),
+        1,
+        "exactly one line (SIGNAL, inside a's body) is claimable, and only b can claim it: {:?}",
+        hir.element_matches
+    );
+    assert_eq!(
+        hir.element_matches[0].handler.text, "b",
+        "b must be the handler that actually claimed the line: {:?}",
+        hir.element_matches
+    );
+}
+
+#[test]
+fn three_byte_identical_claim_patterns_each_report_one_e168() {
+    // Review finding on #1860: the original nested-loop check had no
+    // `break`, so a later handler with two earlier identical twins was
+    // reported once per twin — a byte-identical duplicate diagnostic.
+    // With three identical patterns, exactly two later handlers (`c`,
+    // `b`) are dead, and each must be reported exactly once, not once per
+    // earlier twin it has.
+    let (_hir, _m, diags) = lower_src(
+        "@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn a(who) {\n  return who;\n}\n\n@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn b(who) {\n  return who;\n}\n\n@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn c(who) {\n  return who;\n}\n",
+    );
+    let e168_ranges: Vec<_> = diags
+        .iter()
+        .filter(|d| d.code == DiagnosticCode::E168)
+        .map(|d| d.range)
+        .collect();
+    assert_eq!(
+        e168_ranges.len(),
+        2,
+        "exactly one E168 per dead later handler (b, c) — not one per earlier twin: {diags:?}"
+    );
+    assert_ne!(
+        e168_ranges[0], e168_ranges[1],
+        "b and c are two distinct dead declarations and must not be reported at the same range twice: {e168_ranges:?}"
+    );
+}
+
+#[test]
+fn allow_e168_above_the_later_declaration_suppresses_it() {
+    // Review finding on #1860: E168 was emitted at the annotation's own
+    // range, which `AllowScope::range` explicitly excludes (`crate::
+    // suppressions`'s module doc: "The annotation line itself is
+    // therefore outside every scope it creates"), so `@[allow(E168)]`
+    // above the later declaration could never suppress it. Round-trips
+    // through `crate::suppressions::apply_suppressions`, the real
+    // consumer path every other suppressible code is checked against.
+    let src = "@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival(who) {\n  return who;\n}\n\n@[allow(E168)]\n@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival_again(who) {\n  return who;\n}\n";
+    let (hir, _m, diags) = lower_src(src);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E168),
+        "the fixture must still produce E168 before suppression: {diags:?}"
+    );
+    let suppressions = crate::suppressions::Suppressions {
+        allow_scopes: hir.allow_scopes.clone(),
+        ..Default::default()
+    };
+    let remaining = crate::suppressions::apply_suppressions(FileId(0), src, diags, &suppressions);
+    assert!(
+        !remaining.iter().any(|d| d.code == DiagnosticCode::E168),
+        "@[allow(E168)] above the later declaration must suppress its E168: {remaining:?}"
+    );
+}
+
+#[test]
 fn distinct_overlapping_claim_patterns_are_not_yet_diagnosed_but_pin_first_match_wins() {
     // Two *different* patterns that can both claim "VENDOR enters" — the
     // more valuable overlap case #1848 leaves undetected (see

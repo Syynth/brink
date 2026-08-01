@@ -128,13 +128,14 @@ impl Elements {
 ///
 /// Silent on everything `container.rs` already validated: each
 /// `@[element(…)]` line is parsed and checked against its own declaration
-/// exactly once there. This re-reads the same lines into a dispatch table
-/// and drops anything that did not validate — reporting here as well would
-/// double every `E159`/`E160`/`E167`. The one check that belongs here
-/// instead is [`diagnose_duplicate_patterns`] — whether two *different*
-/// declarations' patterns collide is not a fact `container.rs` can see one
-/// declaration at a time.
-pub(super) fn collect(file_id: FileId, root: &SyntaxNode, diags: &mut Vec<Diagnostic>) -> Elements {
+/// exactly once there — that validation pass's own diagnostics are
+/// discarded here (into a throwaway `scratch` vec) rather than threaded
+/// through, since re-reporting would double every `E159`/`E160`/`E167`.
+/// Duplicate-pattern diagnosis ([`diagnose_duplicate_patterns`]) does
+/// *not* happen here either: it needs to see which handlers actually
+/// fired during body lowering, which hasn't happened yet at collection
+/// time — see that function's doc.
+pub(super) fn collect(file_id: FileId, root: &SyntaxNode) -> Elements {
     let mut handlers = Vec::new();
     for node in root.children() {
         // Top-level `fn` only — see the module doc. `handle_line`'s
@@ -170,7 +171,6 @@ pub(super) fn collect(file_id: FileId, root: &SyntaxNode, diags: &mut Vec<Diagno
             decl: node.text_range(),
         });
     }
-    diagnose_duplicate_patterns(file_id, &handlers, diags);
     Elements {
         handlers,
         matches: Vec::new(),
@@ -178,41 +178,80 @@ pub(super) fn collect(file_id: FileId, root: &SyntaxNode, diags: &mut Vec<Diagno
 }
 
 /// `E168` (issue #1848): flag every claiming handler whose pattern is
-/// byte-identical to an earlier-declared one's.
+/// byte-identical to an earlier-declared one's *and never actually won a
+/// claim*.
 ///
-/// `handlers` is in declaration order (the order `collect` pushed them,
-/// itself `root.children()`'s source order), which is also
+/// `elements.handlers` is in declaration order (the order `collect` pushed
+/// them, itself `root.children()`'s source order), which is also
 /// [`try_claim`]'s dispatch order — see that function's doc for why
 /// "earlier-declared" is the same as "wins". An identical pattern
-/// *provably* matches the identical set of lines, so the later one is
-/// certainly unreachable, not merely suspected to be: the narrow, sound
-/// slice of "overlapping claim patterns" this issue could deliver without
-/// a real regex-intersection analysis. Two *different* patterns whose
-/// matched-line sets merely overlap (one a strict subset of the other, an
-/// alternation sharing a branch, …) are exactly the more valuable and
-/// more common case, and are **not** detected here — see the issue
-/// thread for why, and for the tracked follow-up.
+/// *provably* matches the identical set of lines — but "the earlier one
+/// always wins" is not quite the same claim as "the later one is dead
+/// code". `try_claim` excludes a handler from claiming lines inside its
+/// **own** declaration (the staging rule), and that exclusion does not
+/// extend to a later, byte-identical twin: a twin is exactly the handler
+/// that *can* claim a line living inside the earlier one's own body, since
+/// the earlier one is barred from claiming there. So a later twin is
+/// genuinely live, not dead code, for precisely those lines.
+///
+/// Must therefore run **after** the whole file has been lowered
+/// ([`super::lower`] calls this once `walk_top_level` has returned), not
+/// from [`collect`] before any body is lowered — `elements.matches` is the
+/// only ground truth for "did this handler ever actually win a claim",
+/// and it does not exist yet at collection time. A later twin that
+/// produced at least one entry there is live and is not diagnosed; one
+/// that produced none is provably dead, exactly as the identical-pattern
+/// argument claims.
+///
+/// Two *different* patterns whose matched-line sets merely overlap (one a
+/// strict subset of the other, an alternation sharing a branch, …) are
+/// exactly the more valuable and more common case, and are **not**
+/// detected here — see the issue thread for why, and for the tracked
+/// follow-up.
+///
+/// Each later handler is reported **at most once**, against the first
+/// (source-order) earlier twin it has — a handler with two or more
+/// earlier identical twins is not re-reported once per twin.
 ///
 /// `O(n²)` over a file's claiming handlers, which in practice number in
 /// the single digits (one project's worth of prose conventions, not a
 /// generated table) — a sorted/hashed pass would trade clarity for
 /// headroom this call site doesn't need.
-fn diagnose_duplicate_patterns(
+pub(super) fn diagnose_duplicate_patterns(
     file_id: FileId,
-    handlers: &[ClaimHandler],
+    elements: &Elements,
     diags: &mut Vec<Diagnostic>,
 ) {
-    for (i, earlier) in handlers.iter().enumerate() {
-        for later in &handlers[i + 1..] {
-            if earlier.pattern.as_str() == later.pattern.as_str() {
-                diags.push(Diagnostic {
-                    file: file_id,
-                    range: later.annotation,
-                    message: DiagnosticCode::E168.title().to_string(),
-                    code: DiagnosticCode::E168,
-                });
-            }
+    let handlers = &elements.handlers;
+    for (later_idx, later) in handlers.iter().enumerate().skip(1) {
+        let has_earlier_twin = handlers[..later_idx]
+            .iter()
+            .any(|earlier| earlier.pattern.as_str() == later.pattern.as_str());
+        if !has_earlier_twin {
+            continue;
         }
+        // Ground truth, not assumption: did `later` ever actually win a
+        // claim (necessarily for a line inside some earlier twin's own
+        // body — see the doc above)? If so it is live, not dead code.
+        let fired = elements
+            .matches
+            .iter()
+            .any(|m| m.handler.range == later.name.range);
+        if fired {
+            continue;
+        }
+        diags.push(Diagnostic {
+            file: file_id,
+            // Inside `later`'s own declaration span (its name token), not
+            // the `@[element(…)]` annotation line — `AllowScope::range`
+            // covers the annotated declaration but explicitly excludes the
+            // annotation line itself (`crate::suppressions`'s module doc),
+            // so emitting on the annotation would make `@[allow(E168)]`
+            // above `later` unable to ever suppress this diagnostic.
+            range: later.name.range,
+            message: DiagnosticCode::E168.title().to_string(),
+            code: DiagnosticCode::E168,
+        });
     }
 }
 

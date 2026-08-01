@@ -1341,8 +1341,8 @@ pub enum DiagnosticCode {
     /// `E166` first (merged into `main` first) — see that code's own doc.
     E167,
     /// Two `@[element(claims = "…")]` handlers declare byte-identical
-    /// patterns, so the later-declared one can never claim anything the
-    /// earlier one didn't already claim first.
+    /// patterns, and the later-declared one never actually won a claim in
+    /// this file — so it is dead code.
     ///
     /// Issue #1848: the interim (pre-#1840) dispatch order is top-level
     /// declaration order with first-match-wins (`hir::lower_native::
@@ -1351,6 +1351,17 @@ pub enum DiagnosticCode {
     /// the same line. This is the *sound*,
     /// narrow slice of that check: identical patterns provably match
     /// identical inputs, so the overlap is certain, not merely possible.
+    ///
+    /// A byte-identical twin is not *unconditionally* dead, though:
+    /// `try_claim` excludes a handler from claiming lines inside its own
+    /// declaration (the staging rule), and that exclusion does not extend
+    /// to a later twin — the later twin is exactly the handler that *can*
+    /// claim a line living inside the earlier one's own body. So this
+    /// diagnosis runs after the whole file is lowered and only fires when
+    /// the later twin produced zero actual claims
+    /// (`hir::lower_native::element::diagnose_duplicate_patterns`'s own
+    /// doc) — a later twin that is live for even one line is not flagged.
+    ///
     /// General overlap between two *different* patterns (e.g. one whose
     /// matches are a strict subset of the other's) is real and valuable —
     /// the issue's own framing calls it "the genuinely valuable half" —
@@ -1543,6 +1554,7 @@ impl DiagnosticCode {
         Self::E165,
         Self::E166,
         Self::E167,
+        Self::E168,
     ];
 
     /// The stable string representation (e.g., `"E001"`).
@@ -1992,7 +2004,7 @@ impl DiagnosticCode {
                 "a natural-notation `@[element(claims = \"…\")]` handler declares a parameter its pattern never captures"
             }
             Self::E168 => {
-                "this `@[element(claims = \"…\")]` pattern is byte-identical to an earlier-declared handler's, so it can never claim anything the earlier one didn't already claim first"
+                "this `@[element(claims = \"…\")]` pattern is byte-identical to an earlier-declared handler's, and never won a claim of its own — it is dead code"
             }
         }
     }
