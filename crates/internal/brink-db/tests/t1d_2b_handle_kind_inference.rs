@@ -16,31 +16,61 @@
 
 use brink_analyzer::{AnalysisOptions, Dialect, TypePolicy};
 use brink_db::ProjectDb;
-use brink_ir::{BaseType, DiagnosticCode, HostManifest, SemanticTypeDef};
+use brink_ir::{
+    BaseType, DiagnosticCode, HostManifest, ManifestExternal, SemanticTypeDef, TypeRef,
+};
 
 /// `get_audio`/`get_timer` are leaf functions whose return type is
-/// annotated with a distinct handle kind each; their body-derived return
-/// stays `Unknown` (`opaque_handle` is an *unregistered* `EXTERNAL`, so its
-/// result is untyped and its call sites unchecked), so the annotation
-/// firewall overlay supplies the concrete `Ty::Handle(K)`. `main`'s temps
-/// `a`/`b` pick those types up purely through call-site inference — never an
-/// annotation of their own — then get compared, a genuine cross-kind handle
-/// mismatch detectable only from body-usage inference.
+/// annotated with a distinct handle kind each. `spawn_audio`/`spawn_timer`
+/// are genuinely-registered `EXTERNAL` producers (issue #1942,
+/// docs/t1d-spec.md §3's own "a natively-registered producer" construction
+/// path) — each declares a fixed `returns` naming its own `Handle`-based
+/// `SemanticTypeDef`, so `collect_external_sigs` resolves the *body's own*
+/// return expression to the concrete `Ty::Handle(K)` directly; the
+/// annotation only has to confirm it, never manufacture it from `Unknown`.
+/// `main`'s temps `a`/`b` pick those types up purely through call-site
+/// inference — never an annotation of their own — then get compared, a
+/// genuine cross-kind handle mismatch detectable only from body-usage
+/// inference.
 ///
-/// The opaque producer replaces a plain `~ return id` (issue #1912): a
+/// A registered producer replaces a plain `~ return id` (issue #1912): a
 /// handle is an opaque `{kind, id}` scalar (docs/t1d-spec.md §3), not an
 /// `int`, so handing an `int`-annotated param back out of a
 /// `Handle<K>`-returning function was a real type error that only passed
-/// while reading an annotated param as a value typed `Unknown`.
-const CROSS_KIND_SRC: &str = "EXTERNAL opaque_handle(seed)\n\
-=== function get_audio(id: int): Handle<AudioInstance> ===\n~ return opaque_handle(id)\n\
-=== function get_timer(id: int): Handle<Timer> ===\n~ return opaque_handle(id)\n\
-=== main ===\n~ temp a = get_audio(1)\n~ temp b = get_timer(1)\n{a == b:\n  ok\n}\n-> DONE\n";
+/// while reading an annotated param as a value typed `Unknown`. It also
+/// replaces the earlier *unregistered* `opaque_handle` workaround (PR
+/// #1938): that made the return type-check pass only because an
+/// unregistered external's result is untyped, papered over by the
+/// annotation-firewall overlay — scaffolding issue #1942 asked not to let
+/// calcify. `spawn_audio`/`spawn_timer` are real, checked signatures
+/// instead.
+const CROSS_KIND_SRC: &str = "EXTERNAL spawn_audio()\nEXTERNAL spawn_timer()\n\
+=== function get_audio(): Handle<AudioInstance> ===\n~ return spawn_audio()\n\
+=== function get_timer(): Handle<Timer> ===\n~ return spawn_timer()\n\
+=== main ===\n~ temp a = get_audio()\n~ temp b = get_timer()\n{a == b:\n  ok\n}\n-> DONE\n";
 
-const SAME_KIND_SRC: &str = "EXTERNAL opaque_handle(seed)\n\
-=== function get_audio(id: int): Handle<AudioInstance> ===\n~ return opaque_handle(id)\n\
-=== function get_audio2(id: int): Handle<AudioInstance> ===\n~ return opaque_handle(id)\n\
-=== main ===\n~ temp a = get_audio(1)\n~ temp c = get_audio2(1)\n{a == c:\n  ok\n}\n-> DONE\n";
+const SAME_KIND_SRC: &str = "EXTERNAL spawn_audio()\n\
+=== function get_audio(): Handle<AudioInstance> ===\n~ return spawn_audio()\n\
+=== function get_audio2(): Handle<AudioInstance> ===\n~ return spawn_audio()\n\
+=== main ===\n~ temp a = get_audio()\n~ temp c = get_audio2()\n{a == c:\n  ok\n}\n-> DONE\n";
+
+/// A no-arg, manifest-registered producer whose declared `returns` names a
+/// `Handle`-based semantic type — the genuine construction path
+/// docs/t1d-spec.md §3 calls out ("a natively-registered producer ... that
+/// legitimately returns `Handle<K>`"), not a language literal (T1d spec §7
+/// rules out handle literal syntax entirely: "no literal syntax exists;
+/// only bindings mint them").
+fn handle_producer(name: &str, kind: &str) -> ManifestExternal {
+    ManifestExternal {
+        name: name.to_string(),
+        params: Vec::new(),
+        returns: TypeRef(kind.to_string()),
+        kind: brink_ir::ExternalKind::default(),
+        doc: None,
+        widgets: Vec::new(),
+        path: Vec::new(),
+    }
+}
 
 fn two_kind_manifest() -> HostManifest {
     HostManifest {
@@ -61,7 +91,10 @@ fn two_kind_manifest() -> HostManifest {
                 widget: None,
             },
         ],
-        ..Default::default()
+        externals: vec![
+            handle_producer("spawn_audio", "AudioInstance"),
+            handle_producer("spawn_timer", "Timer"),
+        ],
     }
 }
 

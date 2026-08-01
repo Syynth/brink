@@ -3002,10 +3002,18 @@ mod tests {
     /// it is now reachable end-to-end.
     #[test]
     fn cross_kind_handle_comparison_from_body_usage_is_conflicted_under_strict() {
-        let src = "EXTERNAL opaque_handle(seed)\n\
-=== function get_audio(id: int): Handle<AudioInstance> ===\n~ return opaque_handle(id)\n\
-=== function get_timer(id: int): Handle<Timer> ===\n~ return opaque_handle(id)\n\
-=== main ===\n~ temp a = get_audio(1)\n~ temp b = get_timer(1)\n{a == b:\n  ok\n}\n-> DONE\n";
+        // `spawn_audio`/`spawn_timer` are genuinely-registered `EXTERNAL`
+        // producers (issue #1942, docs/t1d-spec.md §3's "a
+        // natively-registered producer" construction path): each declares a
+        // fixed `returns` naming its own `Handle`-based `SemanticTypeDef`,
+        // so `get_audio`/`get_timer`'s body-derived return resolves
+        // directly to the concrete `Ty::Handle(K)` — replacing the earlier
+        // *unregistered* `opaque_handle` workaround (PR #1938) whose result
+        // was untyped and relied on the annotation-firewall overlay alone.
+        let src = "EXTERNAL spawn_audio()\nEXTERNAL spawn_timer()\n\
+=== function get_audio(): Handle<AudioInstance> ===\n~ return spawn_audio()\n\
+=== function get_timer(): Handle<Timer> ===\n~ return spawn_timer()\n\
+=== main ===\n~ temp a = get_audio()\n~ temp b = get_timer()\n{a == b:\n  ok\n}\n-> DONE\n";
         let (hir, index, res) = build(src);
         let manifest = brink_ir::HostManifest {
             markup: Vec::new(),
@@ -3025,7 +3033,26 @@ mod tests {
                     widget: None,
                 },
             ],
-            ..Default::default()
+            externals: vec![
+                brink_ir::ManifestExternal {
+                    name: "spawn_audio".to_string(),
+                    params: Vec::new(),
+                    returns: brink_ir::TypeRef("AudioInstance".to_string()),
+                    kind: brink_ir::ExternalKind::default(),
+                    doc: None,
+                    widgets: Vec::new(),
+                    path: Vec::new(),
+                },
+                brink_ir::ManifestExternal {
+                    name: "spawn_timer".to_string(),
+                    params: Vec::new(),
+                    returns: brink_ir::TypeRef("Timer".to_string()),
+                    kind: brink_ir::ExternalKind::default(),
+                    doc: None,
+                    widgets: Vec::new(),
+                    path: Vec::new(),
+                },
+            ],
         };
         let inference = crate::infer_project(
             &[(FileId(0), &hir)],
@@ -3064,10 +3091,13 @@ mod tests {
     /// Handle(k)) == Handle(k)`, the T1d-2 lattice ruling) — no escape.
     #[test]
     fn same_kind_handle_comparison_from_body_usage_is_clean_under_strict() {
-        let src = "EXTERNAL opaque_handle(seed)\n\
-=== function get_audio(id: int): Handle<AudioInstance> ===\n~ return opaque_handle(id)\n\
-=== function get_audio2(id: int): Handle<AudioInstance> ===\n~ return opaque_handle(id)\n\
-=== main ===\n~ temp a = get_audio(1)\n~ temp c = get_audio2(1)\n{a == c:\n  ok\n}\n-> DONE\n";
+        // `spawn_audio` is a genuinely-registered `EXTERNAL` producer
+        // (issue #1942) — see the sibling test above for the full
+        // rationale.
+        let src = "EXTERNAL spawn_audio()\n\
+=== function get_audio(): Handle<AudioInstance> ===\n~ return spawn_audio()\n\
+=== function get_audio2(): Handle<AudioInstance> ===\n~ return spawn_audio()\n\
+=== main ===\n~ temp a = get_audio()\n~ temp c = get_audio2()\n{a == c:\n  ok\n}\n-> DONE\n";
         let (hir, index, res) = build(src);
         let manifest = brink_ir::HostManifest {
             markup: Vec::new(),
@@ -3078,7 +3108,15 @@ mod tests {
                 values: None,
                 widget: None,
             }],
-            ..Default::default()
+            externals: vec![brink_ir::ManifestExternal {
+                name: "spawn_audio".to_string(),
+                params: Vec::new(),
+                returns: brink_ir::TypeRef("AudioInstance".to_string()),
+                kind: brink_ir::ExternalKind::default(),
+                doc: None,
+                widgets: Vec::new(),
+                path: Vec::new(),
+            }],
         };
         let inference = crate::infer_project(
             &[(FileId(0), &hir)],
@@ -3154,10 +3192,17 @@ mod tests {
     /// gap PR #769 disclosed.
     #[test]
     fn cross_kind_handle_mismatch_is_unreachable_without_manifest_reaching_inference() {
-        let src = "EXTERNAL opaque_handle(seed)\n\
-=== function get_audio(id: int): Handle<AudioInstance> ===\n~ return opaque_handle(id)\n\
-=== function get_timer(id: int): Handle<Timer> ===\n~ return opaque_handle(id)\n\
-=== main ===\n~ temp a = get_audio(1)\n~ temp b = get_timer(1)\n{a == b:\n  ok\n}\n-> DONE\n";
+        // `spawn_audio`/`spawn_timer` are genuinely-registered `EXTERNAL`
+        // producers (issue #1942) — but the point of *this* test is that
+        // `infer_project` below is handed `None`, so it never sees this
+        // manifest at all: a registered producer's declared `returns` is
+        // exactly as unresolvable as an unregistered external's absent one
+        // when the manifest never reaches `infer_project`'s own
+        // `ProjectCtx`. That is the pre-#774 gap this regression guards.
+        let src = "EXTERNAL spawn_audio()\nEXTERNAL spawn_timer()\n\
+=== function get_audio(): Handle<AudioInstance> ===\n~ return spawn_audio()\n\
+=== function get_timer(): Handle<Timer> ===\n~ return spawn_timer()\n\
+=== main ===\n~ temp a = get_audio()\n~ temp b = get_timer()\n{a == b:\n  ok\n}\n-> DONE\n";
         let (hir, index, res) = build(src);
         let manifest = brink_ir::HostManifest {
             markup: Vec::new(),
@@ -3177,7 +3222,26 @@ mod tests {
                     widget: None,
                 },
             ],
-            ..Default::default()
+            externals: vec![
+                brink_ir::ManifestExternal {
+                    name: "spawn_audio".to_string(),
+                    params: Vec::new(),
+                    returns: brink_ir::TypeRef("AudioInstance".to_string()),
+                    kind: brink_ir::ExternalKind::default(),
+                    doc: None,
+                    widgets: Vec::new(),
+                    path: Vec::new(),
+                },
+                brink_ir::ManifestExternal {
+                    name: "spawn_timer".to_string(),
+                    params: Vec::new(),
+                    returns: brink_ir::TypeRef("Timer".to_string()),
+                    kind: brink_ir::ExternalKind::default(),
+                    doc: None,
+                    widgets: Vec::new(),
+                    path: Vec::new(),
+                },
+            ],
         };
         // Manifest reaches `check()`'s own annotation resolution (the
         // pre-existing T1d-2 exemption seam), but `infer_project` here gets
@@ -3239,18 +3303,43 @@ mod tests {
                     widget: None,
                 },
             ],
-            externals: vec![brink_ir::ManifestExternal {
-                name: "play_sound".to_string(),
-                params: vec![brink_ir::ManifestParam {
-                    name: "inst".to_string(),
-                    ty: brink_ir::TypeRef(play_sound_param_kind.to_string()),
-                }],
-                returns: brink_ir::TypeRef::default(),
-                kind: brink_ir::ExternalKind::default(),
-                doc: None,
-                widgets: Vec::new(),
-                path: Vec::new(),
-            }],
+            externals: vec![
+                brink_ir::ManifestExternal {
+                    name: "play_sound".to_string(),
+                    params: vec![brink_ir::ManifestParam {
+                        name: "inst".to_string(),
+                        ty: brink_ir::TypeRef(play_sound_param_kind.to_string()),
+                    }],
+                    returns: brink_ir::TypeRef::default(),
+                    kind: brink_ir::ExternalKind::default(),
+                    doc: None,
+                    widgets: Vec::new(),
+                    path: Vec::new(),
+                },
+                // Genuinely-registered `EXTERNAL` producers (issue #1942,
+                // docs/t1d-spec.md §3's "a natively-registered producer"
+                // construction path), replacing the earlier *unregistered*
+                // `opaque_handle` workaround (PR #1938) the tests below used
+                // to manufacture a handle value.
+                brink_ir::ManifestExternal {
+                    name: "spawn_audio".to_string(),
+                    params: Vec::new(),
+                    returns: brink_ir::TypeRef("AudioInstance".to_string()),
+                    kind: brink_ir::ExternalKind::default(),
+                    doc: None,
+                    widgets: Vec::new(),
+                    path: Vec::new(),
+                },
+                brink_ir::ManifestExternal {
+                    name: "spawn_timer".to_string(),
+                    params: Vec::new(),
+                    returns: brink_ir::TypeRef("Timer".to_string()),
+                    kind: brink_ir::ExternalKind::default(),
+                    doc: None,
+                    widgets: Vec::new(),
+                    path: Vec::new(),
+                },
+            ],
         }
     }
 
@@ -3260,9 +3349,9 @@ mod tests {
     /// compile time under `types = strict`.
     #[test]
     fn external_binding_rejects_cross_kind_handle_argument_under_strict() {
-        let src = "EXTERNAL play_sound(inst)\nEXTERNAL opaque_handle(seed)\n\
-=== function get_timer(id: int): Handle<Timer> ===\n~ return opaque_handle(id)\n\
-=== main ===\n~ temp t = get_timer(1)\n~ play_sound(t)\n-> DONE\n";
+        let src = "EXTERNAL play_sound(inst)\nEXTERNAL spawn_timer()\n\
+=== function get_timer(): Handle<Timer> ===\n~ return spawn_timer()\n\
+=== main ===\n~ temp t = get_timer()\n~ play_sound(t)\n-> DONE\n";
         let (hir, index, res) = build(src);
         let manifest = audio_and_timer_manifest("AudioInstance");
         let inference = crate::infer_project(
@@ -3297,9 +3386,9 @@ mod tests {
     /// Handle(k)`.
     #[test]
     fn external_binding_accepts_same_kind_handle_argument_under_strict() {
-        let src = "EXTERNAL play_sound(inst)\nEXTERNAL opaque_handle(seed)\n\
-=== function get_audio(id: int): Handle<AudioInstance> ===\n~ return opaque_handle(id)\n\
-=== main ===\n~ temp t = get_audio(1)\n~ play_sound(t)\n-> DONE\n";
+        let src = "EXTERNAL play_sound(inst)\nEXTERNAL spawn_audio()\n\
+=== function get_audio(): Handle<AudioInstance> ===\n~ return spawn_audio()\n\
+=== main ===\n~ temp t = get_audio()\n~ play_sound(t)\n-> DONE\n";
         let (hir, index, res) = build(src);
         let manifest = audio_and_timer_manifest("AudioInstance");
         let inference = crate::infer_project(
@@ -3332,9 +3421,9 @@ mod tests {
     /// issue.
     #[test]
     fn external_binding_cross_kind_argument_is_not_checked_under_gradual() {
-        let src = "EXTERNAL play_sound(inst)\nEXTERNAL opaque_handle(seed)\n\
-=== function get_timer(id: int): Handle<Timer> ===\n~ return opaque_handle(id)\n\
-=== main ===\n~ temp t = get_timer(1)\n~ play_sound(t)\n-> DONE\n";
+        let src = "EXTERNAL play_sound(inst)\nEXTERNAL spawn_timer()\n\
+=== function get_timer(): Handle<Timer> ===\n~ return spawn_timer()\n\
+=== main ===\n~ temp t = get_timer()\n~ play_sound(t)\n-> DONE\n";
         let (hir, index, res) = build(src);
         let manifest = audio_and_timer_manifest("AudioInstance");
         let opts = crate::AnalysisOptions {
@@ -3365,9 +3454,9 @@ mod tests {
     /// `infer::collect_external_sigs`'s doc names, not a regression).
     #[test]
     fn external_binding_with_unregistered_name_is_unchecked() {
-        let src = "EXTERNAL other_call(inst)\nEXTERNAL opaque_handle(seed)\n\
-=== function get_timer(id: int): Handle<Timer> ===\n~ return opaque_handle(id)\n\
-=== main ===\n~ temp t = get_timer(1)\n~ other_call(t)\n-> DONE\n";
+        let src = "EXTERNAL other_call(inst)\nEXTERNAL spawn_timer()\n\
+=== function get_timer(): Handle<Timer> ===\n~ return spawn_timer()\n\
+=== main ===\n~ temp t = get_timer()\n~ other_call(t)\n-> DONE\n";
         let (hir, index, res) = build(src);
         let manifest = audio_and_timer_manifest("AudioInstance");
         let inference = crate::infer_project(
