@@ -2122,8 +2122,8 @@ fn e157_denied_through_the_lints_control_plane_becomes_an_error() {
 #[test]
 fn e166_block_declaration_surface_and_content_param_both_compile_clean() {
     let source = "@[element(args = \"^@(?<name>[A-Z]+)$\", block)]\nflow cue(name: string, body: content) {\n  Hi, {name}!\n}\n";
-    let out = compile_native("e166-content-known-leaf", source, brink_options())
-        .unwrap_or_else(|e| {
+    let out =
+        compile_native("e166-content-known-leaf", source, brink_options()).unwrap_or_else(|e| {
             panic!(
                 "a fully annotated `block` declaration with a `content` param must \
                  compile clean now that `content` is a resolvable Ty: {e:?}"
