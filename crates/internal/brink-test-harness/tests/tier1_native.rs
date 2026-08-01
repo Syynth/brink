@@ -395,6 +395,18 @@ fn inline_tag_embedded_brace_reaches_story_data() {
     );
 }
 
+/// Issue #1903: root_content statements in .brink files should be checked
+/// under strict types, applying the same typed-assign and temp-init checks
+/// that knot/stitch bodies receive. This case pairs a VAR declaration with
+/// an assignment in root_content that mismatches its declared type, so the
+/// compiler runs through the strict type checker and produces diagnostics.
+/// Unlike other cases, this one is intentionally structured to compile with
+/// strict types enabled (type mismatch is caught as expected).
+#[test]
+fn root_content_typed_strict() {
+    assert_case("root-content-typed-strict");
+}
+
 /// Every `tests/tier1-native/` case directory is exercised by a `#[test]`
 /// above — a directory with no matching test would silently never run.
 #[test]

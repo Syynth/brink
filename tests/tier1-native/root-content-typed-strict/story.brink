@@ -1,5 +1,4 @@
-VAR v: int = 42
-~ v = "should be int not string"
-
-=== knot
-~ x: int = 123
+flow main() {
+  Hello
+  -> END
+}
