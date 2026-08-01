@@ -879,6 +879,50 @@ impl FlowInstance {
         args: &[Value],
         resolver: Option<&dyn PluralResolver>,
     ) -> Result<FunctionEval, RuntimeError> {
+        self.begin_function_eval_with_limit::<R>(
+            program,
+            line_tables,
+            context,
+            handler,
+            container_idx,
+            args,
+            resolver,
+            Self::STEP_LIMIT,
+        )
+    }
+
+    /// Like [`begin_function_eval`](Self::begin_function_eval), but the VM
+    /// step budget for the whole evaluation is `step_limit` rather than the
+    /// hardcoded [`Self::STEP_LIMIT`] (#1868).
+    ///
+    /// This is what lets a caller give an engine→ink evaluation its own,
+    /// appropriately scoped budget — e.g. a compile-time registry walk,
+    /// which wants a small ceiling of its own rather than the 1,000,000-step
+    /// production default — mirroring how [`advance_with_limit`](Self::advance_with_limit)
+    /// already lets [`crate::Speculation`] cap the line-stepping path.
+    /// `begin_function_eval` itself is a thin wrapper over this with
+    /// `step_limit: Self::STEP_LIMIT` — every existing call site keeps its
+    /// exact prior behavior.
+    ///
+    /// # Errors
+    /// Same as [`begin_function_eval`](Self::begin_function_eval), plus
+    /// [`StepLimitExceeded`](RuntimeError::StepLimitExceeded) is now bounded
+    /// by the caller-supplied `step_limit` rather than the fixed default.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the VM environment (program, line tables, context, handler, resolver) plus the call target, args, and step_limit"
+    )]
+    pub fn begin_function_eval_with_limit<R: StoryRng>(
+        &mut self,
+        program: &Program,
+        line_tables: &[Vec<brink_format::LineEntry>],
+        context: &mut (impl ContextAccess + ?Sized),
+        handler: &dyn ExternalFnHandler,
+        container_idx: u32,
+        args: &[Value],
+        resolver: Option<&dyn PluralResolver>,
+        step_limit: u64,
+    ) -> Result<FunctionEval, RuntimeError> {
         // M-2b: refuse host-driven evaluation of a `#@private` function
         // while visibility enforcement is on (`docs/modules-spec.md` §4
         // boundary rule 2). Mirrors `Story::call_function`'s own check for
@@ -936,7 +980,7 @@ impl FlowInstance {
             value_floor,
             choice_floor,
         });
-        self.drive_function_eval::<R>(program, line_tables, context, handler, resolver)
+        self.drive_function_eval::<R>(program, line_tables, context, handler, resolver, step_limit)
     }
 
     /// Evaluate an ink **function value** (`FnRef`/`Closure`) from engine
@@ -979,6 +1023,43 @@ impl FlowInstance {
         callee: &Value,
         args: &[Value],
         resolver: Option<&dyn PluralResolver>,
+    ) -> Result<FunctionEval, RuntimeError> {
+        self.begin_function_value_eval_with_limit::<R>(
+            program,
+            line_tables,
+            context,
+            handler,
+            callee,
+            args,
+            resolver,
+            Self::STEP_LIMIT,
+        )
+    }
+
+    /// Like [`begin_function_value_eval`](Self::begin_function_value_eval),
+    /// but the VM step budget for the whole evaluation is `step_limit`
+    /// rather than the hardcoded [`Self::STEP_LIMIT`] (#1868) — the function-value
+    /// sibling of [`begin_function_eval_with_limit`](Self::begin_function_eval_with_limit).
+    ///
+    /// # Errors
+    /// Same as [`begin_function_value_eval`](Self::begin_function_value_eval),
+    /// plus [`StepLimitExceeded`](RuntimeError::StepLimitExceeded) is now
+    /// bounded by the caller-supplied `step_limit` rather than the fixed
+    /// default.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "mirrors begin_function_eval_with_limit: the VM environment plus the callee value, args, and step_limit"
+    )]
+    pub fn begin_function_value_eval_with_limit<R: StoryRng>(
+        &mut self,
+        program: &Program,
+        line_tables: &[Vec<brink_format::LineEntry>],
+        context: &mut (impl ContextAccess + ?Sized),
+        handler: &dyn ExternalFnHandler,
+        callee: &Value,
+        args: &[Value],
+        resolver: Option<&dyn PluralResolver>,
+        step_limit: u64,
     ) -> Result<FunctionEval, RuntimeError> {
         if self.eval.is_some() {
             return Err(RuntimeError::AlreadyEvaluatingFunction);
@@ -1033,7 +1114,7 @@ impl FlowInstance {
             value_floor,
             choice_floor,
         });
-        self.drive_function_eval::<R>(program, line_tables, context, handler, resolver)
+        self.drive_function_eval::<R>(program, line_tables, context, handler, resolver, step_limit)
     }
 
     /// Resume a function evaluation that paused on
@@ -1053,10 +1134,44 @@ impl FlowInstance {
         handler: &dyn ExternalFnHandler,
         resolver: Option<&dyn PluralResolver>,
     ) -> Result<FunctionEval, RuntimeError> {
+        self.resume_function_eval_with_limit::<R>(
+            program,
+            line_tables,
+            context,
+            handler,
+            resolver,
+            Self::STEP_LIMIT,
+        )
+    }
+
+    /// Like [`resume_function_eval`](Self::resume_function_eval), but the VM
+    /// step budget for the remainder of the evaluation is `step_limit`
+    /// rather than the hardcoded [`Self::STEP_LIMIT`] (#1868). A caller that
+    /// began the evaluation with
+    /// [`begin_function_eval_with_limit`](Self::begin_function_eval_with_limit)/
+    /// [`begin_function_value_eval_with_limit`](Self::begin_function_value_eval_with_limit)
+    /// should resume with the same `step_limit` to keep one consistent
+    /// budget across pauses — this call's step count starts fresh (mirrors
+    /// [`advance_with_limit`](Self::advance_with_limit): each call gets its
+    /// own `step_limit`-sized allowance, not a running total).
+    ///
+    /// # Errors
+    /// Same as [`resume_function_eval`](Self::resume_function_eval), plus
+    /// [`StepLimitExceeded`](RuntimeError::StepLimitExceeded) is now bounded
+    /// by the caller-supplied `step_limit` rather than the fixed default.
+    pub fn resume_function_eval_with_limit<R: StoryRng>(
+        &mut self,
+        program: &Program,
+        line_tables: &[Vec<brink_format::LineEntry>],
+        context: &mut (impl ContextAccess + ?Sized),
+        handler: &dyn ExternalFnHandler,
+        resolver: Option<&dyn PluralResolver>,
+        step_limit: u64,
+    ) -> Result<FunctionEval, RuntimeError> {
         if self.eval.is_none() {
             return Err(RuntimeError::NotEvaluatingFunction);
         }
-        self.drive_function_eval::<R>(program, line_tables, context, handler, resolver)
+        self.drive_function_eval::<R>(program, line_tables, context, handler, resolver, step_limit)
     }
 
     /// Returns `true` if a function evaluation is in progress (possibly
@@ -1067,7 +1182,10 @@ impl FlowInstance {
     }
 
     /// Step the VM until the in-progress function evaluation returns or
-    /// pauses on a pending external. Shared by `begin`/`resume`.
+    /// pauses on a pending external. Shared by `begin`/`resume`. `step_limit`
+    /// bounds this call's own step loop (#1868) — see
+    /// [`begin_function_eval_with_limit`](Self::begin_function_eval_with_limit)
+    /// for why a caller-supplied budget matters here.
     fn drive_function_eval<R: StoryRng>(
         &mut self,
         program: &Program,
@@ -1075,13 +1193,14 @@ impl FlowInstance {
         context: &mut (impl ContextAccess + ?Sized),
         handler: &dyn ExternalFnHandler,
         resolver: Option<&dyn PluralResolver>,
+        step_limit: u64,
     ) -> Result<FunctionEval, RuntimeError> {
         let step_start = self.stats.steps;
         loop {
             self.stats.steps += 1;
-            if self.stats.steps - step_start > Self::STEP_LIMIT {
+            if self.stats.steps - step_start > step_limit {
                 self.abort_eval(program, line_tables, resolver);
-                return Err(RuntimeError::StepLimitExceeded(Self::STEP_LIMIT));
+                return Err(RuntimeError::StepLimitExceeded(step_limit));
             }
 
             let stepped = vm::step::<R>(

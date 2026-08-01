@@ -227,15 +227,23 @@ impl<R: StoryRng> Speculation<R> {
     /// any engine→ink call) and, being on the sandboxed fork, can never
     /// escape to the live story either way.
     ///
+    /// `budget.steps` bounds this call's VM stepping (#1868) — until this
+    /// fix, function evaluation on a `Speculation` silently ran under the
+    /// runtime's hardcoded 1,000,000-step ceiling instead of the caller's
+    /// own `Budget`, unlike [`advance`](Self::advance). `budget.lines` is
+    /// not consulted here: a function evaluation never produces visible
+    /// lines (output is isolated), so there is nothing for it to bound.
+    ///
     /// # Errors
     /// [`RuntimeError::FunctionNotFound`] for an unknown name;
     /// [`RuntimeError::ArgCountMismatch`] if `args.len()` doesn't match the
     /// function's declared parameter count; any error
-    /// [`FlowInstance::begin_function_eval`] itself can produce.
+    /// [`FlowInstance::begin_function_eval_with_limit`] itself can produce.
     pub fn eval_function(
         &mut self,
         name: &str,
         args: &[Value],
+        budget: Budget,
         handler: &dyn ExternalFnHandler,
     ) -> Result<FunctionEval, RuntimeError> {
         let container_idx = self
@@ -252,7 +260,7 @@ impl<R: StoryRng> Speculation<R> {
             });
         }
         let mut view = ContextView::new(&mut self.world, &mut self.local);
-        self.flow.begin_function_eval::<R>(
+        self.flow.begin_function_eval_with_limit::<R>(
             &self.program,
             &self.line_tables,
             &mut view,
@@ -260,6 +268,7 @@ impl<R: StoryRng> Speculation<R> {
             container_idx,
             args,
             None,
+            budget.steps,
         )
     }
 
@@ -275,21 +284,28 @@ impl<R: StoryRng> Speculation<R> {
     /// `resolve_external(value)` → `resume_function_eval` →
     /// `Returned(value)`.
     ///
+    /// `budget.steps` bounds this resume call's own step loop, same as
+    /// [`eval_function`](Self::eval_function) — pass the same `Budget` used
+    /// to begin the evaluation to keep one consistent per-call allowance.
+    ///
     /// # Errors
     /// [`RuntimeError::NotEvaluatingFunction`] if no evaluation is in
     /// progress on this speculation; any error
-    /// [`FlowInstance::resume_function_eval`] itself can produce.
+    /// [`FlowInstance::resume_function_eval_with_limit`] itself can
+    /// produce.
     pub fn resume_function_eval(
         &mut self,
+        budget: Budget,
         handler: &dyn ExternalFnHandler,
     ) -> Result<FunctionEval, RuntimeError> {
         let mut view = ContextView::new(&mut self.world, &mut self.local);
-        self.flow.resume_function_eval::<R>(
+        self.flow.resume_function_eval_with_limit::<R>(
             &self.program,
             &self.line_tables,
             &mut view,
             handler,
             None,
+            budget.steps,
         )
     }
 

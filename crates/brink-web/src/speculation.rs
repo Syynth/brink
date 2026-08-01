@@ -183,7 +183,7 @@ impl WebSpeculation {
         );
         let mut speculation = self.speculation.borrow_mut();
         let outcome = speculation
-            .eval_function(name, &ink_args, &tiered)
+            .eval_function(name, &ink_args, self.budget, &tiered)
             .map_err(|e| JsError::new(&format!("eval_function error: {e}")))?;
         self.merge_report(&tiered);
         let resp = self.function_eval_to_js(outcome, &speculation);
@@ -211,7 +211,7 @@ impl WebSpeculation {
         );
         let mut speculation = self.speculation.borrow_mut();
         let outcome = speculation
-            .resume_function_eval(&tiered)
+            .resume_function_eval(self.budget, &tiered)
             .map_err(|e| JsError::new(&format!("resume_function_eval error: {e}")))?;
         self.merge_report(&tiered);
         let resp = self.function_eval_to_js(outcome, &speculation);

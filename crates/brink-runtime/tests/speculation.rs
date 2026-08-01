@@ -10,7 +10,11 @@
 //!   hanging or burning the production step/line ceilings;
 //! - `eval_function` evaluates a pure ink function without touching the
 //!   live story;
-//! - `go_to_path` jumps a speculation to an arbitrary knot and runs it.
+//! - `go_to_path` jumps a speculation to an arbitrary knot and runs it;
+//! - a caller-supplied `Budget` also stops a runaway `eval_function`/
+//!   `resume_function_eval` (#1868 — before this fix, function evaluation on
+//!   a `Speculation` silently ignored `budget.steps` and ran under the
+//!   runtime's hardcoded 1,000,000-step ceiling instead).
 
 #![expect(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -25,8 +29,9 @@ use brink_runtime::{
 
 /// A single program exercising everything these tests need: a mutated
 /// global, an RNG draw, a plain terminal knot (`shrine`), a pure function
-/// (`add`), and an infinitely-looping knot (`spin`) with no output — the
-/// runaway-probe fixture for the budget tests.
+/// (`add`), an infinitely-looping knot (`spin`) with no output, and an
+/// infinitely (tail-)recursive function (`spin_forever`) — the runaway-probe
+/// fixtures for the budget tests, one per VM-stepping surface.
 const SOURCE: &str = "\
 VAR gold = 0
 
@@ -48,6 +53,9 @@ At the shrine.
 
 === function add(x, y) ===
 ~ return x + y
+
+=== function spin_forever(x) ===
+~ return spin_forever(x)
 ";
 
 fn compile_and_link(src: &str) -> (Arc<Program>, Vec<Vec<brink_format::LineEntry>>) {
@@ -224,6 +232,30 @@ fn speculation_budget_caps_total_lines_produced() {
     );
 }
 
+/// A tiny step budget passed to `eval_function` must stop a runaway
+/// (infinitely tail-recursive) function evaluation quickly with a
+/// step-limit error reporting *that* budget — not hang, and not silently
+/// run under the production 1,000,000-step ceiling (#1868 regression: before
+/// the fix, `Speculation::eval_function` ignored `budget.steps` entirely).
+#[test]
+fn speculation_budget_caps_a_runaway_function_eval() {
+    let (program, line_tables) = compile_and_link(SOURCE);
+    let story = Story::<brink_runtime::DotNetRng>::new(program, line_tables);
+
+    let mut spec = story.speculate();
+    let tiny = Budget {
+        steps: 64,
+        lines: 1_000,
+    };
+    let err = spec
+        .eval_function("spin_forever", &[Value::Int(1)], tiny, &FallbackHandler)
+        .unwrap_err();
+    assert!(
+        matches!(err, RuntimeError::StepLimitExceeded(64)),
+        "expected a step-limit error at the tiny budget, got: {err:?}"
+    );
+}
+
 /// `eval_function` evaluates a pure ink function on the speculation and
 /// returns its value; the live story is untouched.
 #[test]
@@ -234,7 +266,12 @@ fn speculation_eval_function_returns_pure_value() {
 
     let mut spec = story.speculate();
     let result = spec
-        .eval_function("add", &[Value::Int(3), Value::Int(4)], &FallbackHandler)
+        .eval_function(
+            "add",
+            &[Value::Int(3), Value::Int(4)],
+            Budget::default(),
+            &FallbackHandler,
+        )
         .unwrap();
     match result {
         FunctionEval::Returned(value) => assert_eq!(value, Value::Int(7)),
@@ -326,7 +363,7 @@ fn speculation_resume_function_eval_completes_after_deferred_external() {
     };
 
     let outcome = spec
-        .eval_function("query", &[Value::Int(21)], &handler)
+        .eval_function("query", &[Value::Int(21)], Budget::default(), &handler)
         .unwrap();
     assert!(
         matches!(outcome, FunctionEval::AwaitingExternal),
@@ -334,7 +371,9 @@ fn speculation_resume_function_eval_completes_after_deferred_external() {
     );
 
     spec.resolve_external(Value::Int(42));
-    let outcome = spec.resume_function_eval(&handler).unwrap();
+    let outcome = spec
+        .resume_function_eval(Budget::default(), &handler)
+        .unwrap();
     match outcome {
         FunctionEval::Returned(value) => assert_eq!(value, Value::Int(42)),
         FunctionEval::AwaitingExternal => panic!("only one external call in `query`"),
@@ -356,7 +395,9 @@ fn speculation_resume_function_eval_errors_when_nothing_pending() {
     let story = Story::<brink_runtime::DotNetRng>::new(program, line_tables);
     let mut spec = story.speculate();
 
-    let err = spec.resume_function_eval(&FallbackHandler).unwrap_err();
+    let err = spec
+        .resume_function_eval(Budget::default(), &FallbackHandler)
+        .unwrap_err();
     assert!(
         matches!(err, RuntimeError::NotEvaluatingFunction),
         "expected NotEvaluatingFunction, got {err:?}"
