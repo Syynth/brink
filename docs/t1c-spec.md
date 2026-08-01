@@ -149,8 +149,17 @@ Consequences that follow from "bare name, no sigil":
     Declaration-derived typing has no resolution map, so a bare name
     shadowed by a same-named `VAR`/`CONST`/list item declines to
     `Unknown` rather than guessing the fn interpretation — lowering
-    resolves that name to the shadowing global, and the two must not
-    disagree.
+    resolves that name to the shadowing global. That guard is a
+    project-wide scan (not scoped to what the declaration can actually
+    see); issue #1901 asked whether the two could disagree in a
+    user-visible way through an unrelated file's same-named global, and
+    closed empirically: they cannot, because native `VAR`/`CONST`/`LIST`
+    have no publicity mechanism at all (`lower_native::decl` hard-codes
+    `visibility: None`), so a same-named global in a *different* file can
+    never be legitimately referenced — the cross-module privacy gate
+    (`E087`) fails the whole compile before the guard's decision could
+    matter. See `declared_fn_type`'s own doc for the full argument and the
+    regression test that pins it.
 
 Respelling ink into native (`brink-respell`) follows the same split: a
 zero-bound `#fn(f)` emits as the bare name `f`; the binding form refuses

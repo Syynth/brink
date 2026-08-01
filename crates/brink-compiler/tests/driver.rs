@@ -3487,3 +3487,90 @@ Quiet.
         "unmarked, unread knot keeps counting compiled out"
     );
 }
+
+// ── Native cross-file same-named shadow can never legitimately
+//    compile (issue #1901) ──────────────────────────────────────────────
+//
+// #1901 asked whether `declared_fn_type`'s shadow guard (issue #1895,
+// `crates/internal/brink-analyzer/src/signature.rs`) being an *index-wide*,
+// unscoped check — "does a `Variable`/`Constant`/`ListItem` named `double`
+// exist *anywhere in the project*", not "does one exist in a module this
+// declaration can actually see" — can disagree with
+// `lir::lower::decls::fold_path_ref`'s real, `ImportScope`-aware
+// resolution in a way that is user-visible: an unrelated, non-importing
+// file's same-named global suppressing the typing of a local bare-name fn
+// value that lowering would actually still resolve to the local knot.
+//
+// It cannot. `lower_native::decl::{lower_var_decl, lower_const_decl,
+// lower_flags_decl}` hard-code `visibility: None` for every native
+// `VAR`/`CONST`/`LIST` — there is no annotation grammar that overrides it
+// (unlike ink's `#@public`/`#@private` tags) — and a native file is
+// unconditionally its own module (`brink_db::modules::native_module_path`,
+// decision-log 2026-07-22: "native module identity: pure function of the
+// path"). So a `VAR`/`CONST`/`LIST` declared in one `.brink` file can
+// *never* be legitimately referenced from another: `modules::check`'s
+// `E087` (private-cross-module) fires unconditionally the moment
+// resolution reaches it — confirmed below, where `unrelated.brink`'s
+// `double` isn't even imported by `main.brink`, yet still poisons the
+// bare-name reference (kind-priority — `Variable`/`Constant`/`ListItem`
+// over `Knot` — is checked project-wide, ahead of module scope) and the
+// whole compile fails on `E087` before `alias`'s type could ever matter.
+// Every case where the shadow guard's project-wide scan finds a
+// same-named global in a *different* file is exactly this case: the
+// compile fails outright, so `Sig::value_ty`'s imprecision (`Unknown`
+// instead of a real resolution) is unobservable — there is no successful
+// `StoryData` for it to be wrong about. Combined with the same-file case
+// (`native_bare_name_shadowed_by_a_same_named_global_is_not_typed_as_a_fn_value`
+// above, where the guard and lowering both agree the reference is *not* a
+// fn value), this closes #1901's own question empirically: the guard
+// cannot disagree with lowering in any project that compiles.
+//
+// If native `VAR`/`CONST`/`LIST` ever gain a real publicity mechanism,
+// this test starts failing (the cross-file reference would newly
+// succeed) — that is the signal to revisit `declared_fn_type` and thread
+// a real resolution map through `signature()`, the fix #1901 itself
+// declined to build pre-emptively.
+#[test]
+fn native_cross_file_global_shadow_of_a_fn_value_reference_fails_to_compile() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-native-1901-cross-file-shadow-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("main.brink"),
+        "fn double(x: int): int {\n\
+         \x20 return x * 2;\n}\n\
+         fn total(n: int): int {\n\
+         \x20 return n + 1;\n}\n\
+         var alias = double\n\
+         flow main() {\n  Val: {total(alias)} -> END\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("unrelated.brink"),
+        "const double = \"unrelated shadow\"\n",
+    )
+    .unwrap();
+    let result = brink_compiler::compile_path_with_options(
+        &dir.join("main.brink"),
+        brink_compiler::AnalysisOptions {
+            dialect: brink_compiler::Dialect::Brink,
+            types: Some(brink_compiler::TypePolicy::Strict),
+            ..brink_compiler::AnalysisOptions::default()
+        },
+    );
+    std::fs::remove_dir_all(&dir).ok();
+    let err = result.expect_err(
+        "an unrelated file's same-named global must never be a legitimate reference target",
+    );
+    let brink_compiler::CompileError::Diagnostics(diags) = &err else {
+        panic!("expected a Diagnostics compile error, got: {err:?}");
+    };
+    assert_eq!(
+        diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![brink_ir::DiagnosticCode::E087],
+        "expected the cross-module privacy gate alone, got: {diags:?}"
+    );
+}

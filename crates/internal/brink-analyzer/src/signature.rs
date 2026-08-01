@@ -320,6 +320,33 @@ fn declared_fn_type(
     // "can't determine" and leaves the pre-existing `Ty::Unknown`
     // behaviour exactly as it was. The `#fn` literal form is unaffected:
     // its target grammar admits nothing but a function name.
+    //
+    // This check is **project index-wide**, not scoped to what this
+    // declaration can actually see — issue #1901 asked whether that could
+    // disagree with `fold_path_ref`'s real, `ImportScope`-aware
+    // resolution in a way that is user-visible: a same-named global in an
+    // unrelated, non-importing file suppressing this typing even though
+    // lowering would still resolve the bare name to the local knot.
+    // Empirically, it cannot. `lower_native::decl::{lower_var_decl,
+    // lower_const_decl, lower_flags_decl}` hard-code `visibility: None`
+    // for every native `VAR`/`CONST`/`LIST` (no annotation grammar
+    // overrides it, unlike ink's `#@public`/`#@private` tags), and a
+    // native file is unconditionally its own module
+    // (`brink_db::modules::native_module_path`), so a same-named
+    // `VAR`/`CONST`/`ListItem` declared in a *different* `.brink` file can
+    // never be legitimately referenced at all — `modules::check`'s `E087`
+    // fires unconditionally the moment resolution reaches it (confirmed
+    // by `native_cross_file_global_shadow_of_a_fn_value_reference_fails_to_compile`,
+    // `crates/brink-compiler/tests/driver.rs`), failing the whole compile
+    // before this decision could ever matter. So every match this check
+    // can find in a *different* file corresponds to a project that never
+    // successfully compiles, and every match in *this* declaration's own
+    // file is unconditionally in scope — there is no reachable state in
+    // which this index-wide scan disagrees with `fold_path_ref`'s scoped
+    // one. If native `VAR`/`CONST`/`LIST` ever gain a real publicity
+    // mechanism, that proof no longer holds and this guard needs a real
+    // `ImportScope` (the resolution-map seam #1901 declined to build
+    // pre-emptively).
     if matches!(value, Expr::Path(_))
         && index.by_name.get(target_name.as_str()).is_some_and(|ids| {
             ids.iter().any(|id| {
