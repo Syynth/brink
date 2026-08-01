@@ -74,8 +74,8 @@
 
 use brink_syntax_native::SyntaxKind as N;
 use brink_syntax_native::ast::{self, AstNode as _};
-use rowan::{TextRange, TextSize};
 use regex_syntax::hir::Hir;
+use rowan::{TextRange, TextSize};
 
 use crate::hir::FileId;
 use crate::{
@@ -244,9 +244,9 @@ fn patterns_have_provable_overlap(
     ]);
 
     // Test each witness: if both patterns match it, they provably overlap.
-    witnesses.into_iter().any(|witness| {
-        earlier_pattern.is_match(&witness) && later_pattern.is_match(&witness)
-    })
+    witnesses
+        .into_iter()
+        .any(|witness| earlier_pattern.is_match(&witness) && later_pattern.is_match(&witness))
 }
 
 /// Extract a shared literal prefix from two regex HIRs.
@@ -302,9 +302,7 @@ fn generate_witness_from_hir(hir: &Hir) -> Option<String> {
     use regex_syntax::hir::HirKind;
 
     match hir.kind() {
-        HirKind::Literal(lit) => {
-            Some(String::from_utf8_lossy(&lit.0).to_string())
-        }
+        HirKind::Literal(lit) => Some(String::from_utf8_lossy(&lit.0).to_string()),
         HirKind::Concat(parts) => {
             // For concatenation, try to build a witness from literals and
             // expand repetitions/classes to minimal examples.
