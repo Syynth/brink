@@ -365,16 +365,36 @@ fn log_diagnostic(d: &brink_compiler::ResolvedDiagnostic) {
     let end = u32::from(d.range.end());
     match d.severity {
         brink_ir::Severity::Error => {
-            tracing::error!("{}:{start}..{end} [{}] {}", d.path, d.code.as_str(), d.message);
+            tracing::error!(
+                "{}:{start}..{end} [{}] {}",
+                d.path,
+                d.code.as_str(),
+                d.message
+            );
         }
         brink_ir::Severity::Warning => {
-            tracing::warn!("{}:{start}..{end} [{}] {}", d.path, d.code.as_str(), d.message);
+            tracing::warn!(
+                "{}:{start}..{end} [{}] {}",
+                d.path,
+                d.code.as_str(),
+                d.message
+            );
         }
         brink_ir::Severity::Info => {
-            tracing::info!("{}:{start}..{end} [{}] {}", d.path, d.code.as_str(), d.message);
+            tracing::info!(
+                "{}:{start}..{end} [{}] {}",
+                d.path,
+                d.code.as_str(),
+                d.message
+            );
         }
         brink_ir::Severity::Hint => {
-            tracing::debug!("{}:{start}..{end} [{}] {}", d.path, d.code.as_str(), d.message);
+            tracing::debug!(
+                "{}:{start}..{end} [{}] {}",
+                d.path,
+                d.code.as_str(),
+                d.message
+            );
         }
     }
 }
