@@ -2700,6 +2700,126 @@ mod tests {
         );
     }
 
+    // ── issue #1941: a lambda's value-position read of an annotated ──
+    // param still typed Unknown — the structurally parallel gap #1938 left
+    // for `infer_return`'s fn-return position. `infer_lambda`'s tail
+    // (`LambdaBody::Block`) and sole expression (`LambdaBody::Expr`) are
+    // both a lambda's own value position, exactly like a `return`, and now
+    // run through the same `or_own_annotation` read-site fallback.
+
+    #[test]
+    fn native_lambda_tail_reading_a_content_param_takes_its_annotated_type() {
+        // Issue #1941's own reduction, both halves: the lambda-return-
+        // annotated twin was already clean (`infer_lambda`'s own
+        // `l.return_type` overlay — the same firewall shape the fn case had
+        // before #1938), the bare one let the lambda's own `Unknown` return
+        // type escape through the enclosing temp `g`.
+        let bare = native_strict_diags("fn f() {\n  let g = |t: content| {\n    t\n  };\n}\n");
+        assert!(
+            bare.is_empty(),
+            "`t: content`'s tail read supplies the lambda's own return type: {bare:?}"
+        );
+        let annotated =
+            native_strict_diags("fn f() {\n  let g = |t: content|: content {\n    t\n  };\n}\n");
+        assert!(
+            annotated.is_empty(),
+            "the lambda-return-annotated twin stays clean: {annotated:?}"
+        );
+    }
+
+    #[test]
+    fn native_lambda_tail_reading_an_annotated_param_is_not_content_specific() {
+        // All four leaf spellings, mirroring #1938's own
+        // `native_returning_an_annotated_param_is_not_content_specific` — a
+        // fix that only special-cased `Ty::Content` would fail here.
+        for ty in ["int", "float", "bool", "string"] {
+            let src = format!("fn f() {{\n  let g = |t: {ty}| {{\n    t\n  }};\n}}\n");
+            let diags = native_strict_diags(&src);
+            assert!(
+                diags.is_empty(),
+                "`t: {ty}`'s tail read supplies the lambda's own return type: {diags:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn native_lambda_expr_body_reading_an_annotated_param_exports_its_declared_type() {
+        // The expression-bodied twin (`|t: content| t`, no braces) — the
+        // *other* value-position read site #1941 fixed
+        // (`LambdaBody::Expr`), a structurally distinct code path from the
+        // block-tail arm above (`infer_lambda`'s own `match` on `l.body`).
+        let diags = native_strict_diags("fn f() {\n  let g = |t: content| t;\n}\n");
+        assert!(
+            diags.is_empty(),
+            "an expression-bodied lambda's sole expression is its value \
+             position, exactly like a block's tail: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn native_lambda_param_annotation_seed_does_not_leak_into_a_rebound_temp_of_the_same_name() {
+        // #1954 review finding (BLOCKING): `check_declared_assign_target`'s
+        // own `SymbolKind::Temp` arm reads the same bare-name-keyed
+        // `self.annotated` map the #1941 seed populates — it is a mismatch
+        // *reporter*, not a pure read site like `own_annotation`'s other
+        // consumers, and it cannot distinguish "the param's own annotation"
+        // from "a fresh same-named local's own (absent) annotation". Without
+        // excluding a body-rebound name from the seed, `t`'s param
+        // annotation (`int`) leaked into the *lambda-local* `t` this body
+        // re-declares, so assigning it a `string` falsely reported
+        // `` `t` has type `string` but its declared type is `int` ``
+        // (E063) even though the local `t` was never declared `: int` at
+        // all. Verified empirically before this fix: reverting the
+        // `body_bound_names` exclusion in `infer_lambda` reproduces this
+        // exact diagnostic on this exact snippet.
+        let diags = native_strict_diags(
+            "fn f() {\n  let g = |t: int| {\n    let t = \"a\";\n    t = \"b\";\n    t\n  };\n}\n",
+        );
+        assert!(
+            diags.is_empty(),
+            "the lambda body's own `t` re-declaration shadows the param \
+             entirely; it has no `int` annotation of its own to conflict \
+             with a `string` assignment: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn native_lambda_param_annotation_seed_reaches_every_own_annotation_read_site_in_the_body() {
+        // #1954 review finding: the #1941 seed's blast radius is wider than
+        // the PR's own description states — it is read by
+        // `own_annotation`'s bare-name fallback at *every*
+        // `or_own_annotation`/`annotated_callee_ty` consumer reachable
+        // during the body walk, not only the tail/expr value position. This
+        // mirrors a `fn`/`flow`'s own `new_pass`-time seed, which already
+        // covers its whole body, not only its `return`s — see
+        // `docs/typed-mode-spec.md` §2's #1941 paragraph for the recorded
+        // scope.
+        //
+        // `some(t)`: `t`'s annotated `int` reaches the intrinsic-argument
+        // overlay (`infer_intrinsic_call`'s `or_own_annotation` pass over
+        // each argument), which is what lets the tail's `Ty::Option(Int)`
+        // resolve at all instead of escaping as `Unknown`.
+        let via_intrinsic_arg =
+            native_strict_diags("fn f() {\n  let g = |t: int| {\n    some(t)\n  };\n}\n");
+        assert!(
+            via_intrinsic_arg.is_empty(),
+            "the seed reaches `some`'s argument-position read of `t`, not \
+             just the lambda's own tail: {via_intrinsic_arg:?}"
+        );
+
+        // `cb(1)`: `cb`'s annotated `fn(int): int` reaches
+        // `annotated_callee_ty`'s direct-call-callee read, which is what
+        // lets `cb` be called as a function value here rather than
+        // escaping strict inference.
+        let via_callee_ty =
+            native_strict_diags("fn f() {\n  let g = |cb: fn(int): int| {\n    cb(1)\n  };\n}\n");
+        assert!(
+            via_callee_ty.is_empty(),
+            "the seed reaches `annotated_callee_ty`'s direct-call read of \
+             `cb`, not just the lambda's own tail: {via_callee_ty:?}"
+        );
+    }
+
     // ── issue #1551: return-escape check extended past `is_function` ──
     //
     // `docs/decision-log.md` 2026-07-22 implicit-end ruling item 3: "a flow
