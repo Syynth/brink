@@ -366,6 +366,12 @@ pub fn check(
     // TM-4b (docs/typed-mode-spec.md §6): missing/extra/mistyped struct
     // construction-literal fields — strict-mode-only, per the crate doc.
     out.extend(crate::structs::check(files, index, inference, resolutions));
+    // Issue #1900 (split from #1864/#1877): a *plain* dotted struct-field
+    // assignment target (`~ p.x = expr`) checked against the field's
+    // declared type — the E063 sibling of `check_typed_assign_mismatches`
+    // above for a multi-segment assignment target, which that check's own
+    // `check_declared_assign_target` explicitly declines.
+    out.extend(crate::structs::check_assignments(files, index, inference));
     // T1e-1 (docs/t1e-spec.md §6, issue #831): a `ref lvalue-path`
     // projection's segments (dotted fields, `[…]` indices) checked against
     // the root's statically-known declared shape — strict-mode-only, same

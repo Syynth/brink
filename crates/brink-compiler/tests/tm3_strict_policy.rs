@@ -939,6 +939,87 @@ fn gradual_var_assignment_mismatch_still_compiles() {
     assert!(result.is_ok(), "{result:?}");
 }
 
+// ── Issue #1900: a *dotted* struct-field assignment target (`~ p.x =
+// expr`) was excluded by #1899's own `check_declared_assign_target`
+// (`p.segments.len() > 1` guard, this issue's split-off remainder) — the
+// field's own declared type was never checked against the RHS at all, on
+// either root source #1899's bare-name check covers (a global VAR/CONST or
+// an annotated Param/Temp).
+
+#[test]
+fn strict_struct_field_assignment_mismatch_blocks_compilation_with_e063() {
+    // The issue's own repro: `p.x`'s declared type (`float`, from `Point`'s
+    // shape) disagrees with the RHS `string`.
+    let err = compile_mem(
+        "STRUCT Point = #{x: float, y: float}\n\
+         VAR p: Point = Point#{x: 0.0, y: 0.0}\n\
+         === main ===\n~ p.x = \"wrong\"\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    )
+    .expect_err(
+        "a dotted struct-field assignment disagreeing with the field's declared type must \
+         fail strict compilation",
+    );
+    let diags = diagnostics_of(err);
+    assert_eq!(
+        diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![DiagnosticCode::E063],
+        "this fixture is deliberately clean of every other strict diagnostic so E063 alone \
+         must be what fails compilation: {diags:?}"
+    );
+}
+
+#[test]
+fn strict_struct_field_assignment_of_declared_type_compiles_clean() {
+    // Negative counterpart: the RHS's type agrees with `Point.x`'s declared
+    // `float` (via the legal directional `int -> float` coercion, spec §4,
+    // same as `structs::check`'s own E071 coercion test).
+    let result = compile_mem(
+        "STRUCT Point = #{x: float, y: float}\n\
+         VAR p: Point = Point#{x: 0.0, y: 0.0}\n\
+         === main ===\n~ p.x = 1\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    );
+    assert!(result.is_ok(), "{result:?}");
+}
+
+#[test]
+fn strict_struct_field_assignment_on_annotated_temp_blocks_compilation_with_e063() {
+    // The second of the issue's two named root sources: an annotated `~
+    // temp`'s own ascription, not a global.
+    let err = compile_mem(
+        "STRUCT Point = #{x: float}\n\
+         === main ===\n~ temp p: Point = Point#{x: 0.0}\n~ p.x = \"wrong\"\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    )
+    .expect_err("a dotted field assignment on an annotated temp must fail strict compilation");
+    let diags = diagnostics_of(err);
+    assert_eq!(
+        diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![DiagnosticCode::E063],
+        "this fixture is deliberately clean of every other strict diagnostic so E063 alone \
+         must be what fails compilation: {diags:?}"
+    );
+}
+
+#[test]
+fn gradual_struct_field_assignment_mismatch_still_compiles() {
+    // Same fixture as the struct-field-assignment test above, under `types
+    // = gradual` — the new check stays advisory-only, same posture as
+    // every other TM-3 check.
+    let result = compile_mem(
+        "STRUCT Point = #{x: float, y: float}\n\
+         VAR p: Point = Point#{x: 0.0, y: 0.0}\n\
+         === main ===\n~ p.x = \"wrong\"\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::default(),
+    );
+    assert!(result.is_ok(), "{result:?}");
+}
+
 // ── Issue #1911: `string + int`/`string + float` concatenation must not
 // report E066 under strict types — this is ink's core display-concat
 // idiom (spec §4, amended by this PR), and the runtime already accepts it
@@ -1076,6 +1157,76 @@ fn strict_var_plus_eq_string_int_concat_compiles_clean() {
         TypePolicy::Strict,
     );
     assert!(result.is_ok(), "{result:?}");
+}
+
+// ── BLOCKING review finding (issue #1900): the `+=` string-numeric
+// carve-out above must reach a *dotted* struct-field target too, not just a
+// bare local/global. `Stmt::Assignment`'s own `is_string_numeric_concat_add`
+// guard computes `target_ty` from `infer_expr(&a.target)`, which for a
+// multi-segment `Path` only ever returns the ROOT's type (`Ty::Struct`,
+// never the field's `string`/`int`) — so the guard can never trip for
+// exactly the targets this PR's `check_declared_field_assign_target` newly
+// checks. The carve-out has to be re-applied in
+// `structs::check_field_assign_mismatch`, the only place the field's
+// resolved declared type is ever known.
+
+#[test]
+fn strict_dotted_field_plus_eq_string_int_concat_compiles_clean() {
+    let result = compile_mem(
+        "STRUCT S = #{s: string}\n\
+         VAR v: S = S#{s: \"a\"}\n\
+         === main ===\n~ v.s += 5\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    );
+    assert!(result.is_ok(), "{result:?}");
+}
+
+#[test]
+fn strict_dotted_field_plus_eq_int_field_string_concat_compiles_clean() {
+    // Mirror case named in the same finding: an `int`-declared field with a
+    // `string` RHS under `+=` is the same carve-out in the other type
+    // direction.
+    let result = compile_mem(
+        "STRUCT S = #{n: int}\n\
+         VAR v: S = S#{n: 1}\n\
+         === main ===\n~ v.n += \"x\"\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    );
+    assert!(result.is_ok(), "{result:?}");
+}
+
+// ── Review finding (issue #1900): a chained target (`o.i.a = v`, 3+
+// segments) is unsupported at ANY RHS type — LIR's own
+// `try_lower_field_assignment` rejects it outright with the
+// non-suppressible `E074` regardless of whether the RHS's type agrees with
+// the field. `check_declared_field_assign_target` is fenced at exactly
+// `p.segments.len() == 2` (LIR's own single-level boundary) so a chained
+// target never gets a `FieldAssignMismatch` fact recorded at all — this
+// pins that a chained mistyped target reports `E074` alone, never a
+// shadowed `E063` first (the pre-fix behavior the finding flagged as
+// misleading: telling the author to fix a type on a construct that stays
+// rejected either way).
+
+#[test]
+fn strict_chained_field_assignment_reports_only_e074_not_e063() {
+    let err = compile_mem(
+        "STRUCT Inner = #{a: int}\n\
+         STRUCT Outer = #{i: Inner}\n\
+         VAR o: Outer = Outer#{i: Inner#{a: 0}}\n\
+         === main ===\n~ o.i.a = \"bad\"\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    )
+    .expect_err("a chained field-write target must fail strict compilation with E074");
+    let diags = diagnostics_of(err);
+    assert_eq!(
+        diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![DiagnosticCode::E074],
+        "the chained target is rejected outright regardless of type — this must never surface \
+         a shadowed E063 first: {diags:?}"
+    );
 }
 
 #[test]
