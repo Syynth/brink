@@ -382,7 +382,15 @@ fn radio(chan: string, text: content) {
   cross-file dispatch-name resolution and the duplicate-dispatch-name
   check (v1 validates one declaration at a time — and #1838's claiming
   dispatch is file-local for the same reason); block capture (issue
-  #1839) and `fn conventions()` registration + comptime (issue #1840); **multi-token style
+  #1839) and `fn conventions()` registration + comptime (issue #1840 —
+  **blocked on four rulings**, sized in
+  `docs/conventions-comptime-sizing.md`: the identity a registered handler
+  carries across the comptime boundary, whether a comptime fault fails the
+  build or degrades to an empty convention set, the diagnostic floor while
+  epic #452's instruction→range carrier stays `needs-design`, and — sharpest
+  — what `register`'s own effect row is, since an `EXTERNAL` `register` lands
+  in `EffectRow.calls` and makes the ruling's canonical `@[effects(pure)] fn
+  conventions()` fail its own fence with `E103`); **multi-token style
   values** — issue #1719's `@[style(key = "value")]` value is a single
   presentation token today (one `StyleToken` per key), not the
   space-separated list this section's own screenplay preset describes
