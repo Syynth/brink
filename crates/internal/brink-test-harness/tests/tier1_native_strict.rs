@@ -475,6 +475,12 @@ fn strict_findings_match_recorded_baseline() {
         "BASELINE must stay sorted so a diff against `strict_findings` is readable"
     );
 
+    // `new`/`gone` are set-difference only (via `Vec::contains`), so they
+    // exist purely to render a readable delta in the failure message below —
+    // a finding whose count shifts (e.g. 2 -> 1) while another's shifts the
+    // other way (1 -> 2) would leave both `new` and `gone` empty even though
+    // the corpus changed. `actual` and `expected` are both sorted, so the
+    // `assert_eq!` below is the authoritative, multiset-exact check.
     let new: Vec<_> = actual
         .iter()
         .filter(|f| !expected.contains(f))
@@ -485,19 +491,15 @@ fn strict_findings_match_recorded_baseline() {
         .filter(|f| !actual.contains(f))
         .cloned()
         .collect();
-    assert!(
-        new.is_empty() && gone.is_empty(),
+    assert_eq!(
+        actual,
+        expected,
         "tier1-native's strict findings drifted from the recorded baseline.\n\
          Do NOT edit the corpus to make this pass — triage each row and either \
          fix the checker or update BASELINE with a classification.\n\
          --- new findings ---\n{}--- findings that stopped firing ---\n{}",
         render(&new),
         render(&gone)
-    );
-    assert_eq!(
-        actual.len(),
-        expected.len(),
-        "duplicate-count drift: the same finding fires a different number of times"
     );
 }
 
