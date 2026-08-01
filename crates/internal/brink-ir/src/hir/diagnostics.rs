@@ -1445,11 +1445,11 @@ pub enum DiagnosticCode {
     /// int)` could never actually receive an `int`. Numeric capture
     /// coercion is `docs/prose-dialect-spec.md` §3.5b's own Deferred list
     /// — the underlying gap is ruled-deferred, not itself a bug — but
-    /// leaving the mismatch silent is: without this check it surfaced
-    /// only once the rewritten call reached direct-call-argument
-    /// type-checking (`E063`, issue #1864), as a diagnostic spanning the
-    /// **whole claimed prose line** and naming neither the capture nor
-    /// the param.
+    /// leaving the mismatch silent is: without this check it was, and
+    /// remains, silent — nothing checks a direct call's arguments against
+    /// the callee's declared parameter types yet. That generic check
+    /// (`E063` for this shape) is exactly what open issue #1864 asks to
+    /// build.
     ///
     /// `content` is deliberately **not** in this code's target set even
     /// though a capture can no more produce a `FragmentRef` than an `int`

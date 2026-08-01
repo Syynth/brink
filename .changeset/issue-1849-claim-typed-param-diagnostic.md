@@ -5,9 +5,11 @@
 Compiler: a `@[element(claims = "…")]` handler's captured parameter
 declaring a numeric/struct/generic/`fn` type now raises a targeted
 diagnostic (`E171`, issue #1849) at the declaration, instead of silently
-compiling and (depending on the handler's own body) either surfacing a
-confusing whole-line `E063` type mismatch once a line is claimed, or
-silently binding the wrong type.
+compiling and binding the wrong type. The generic form of this mismatch
+(an ordinary direct call's arguments checked against the callee's
+declared parameter types, `E063`) only appears once issue #1864 lands
+direct-call argument type-checking, which does not exist yet — today
+the mismatch is simply silent.
 
 `hir::lower_native::element::try_claim` binds every named capture as a
 plain `Expr::String` literal, unconditionally, regardless of the
@@ -32,4 +34,4 @@ and compile clean; see `E171`'s own doc
 parsing/lowering, non-optional), so this new diagnostic is wasm-observable
 for `.brink` projects — a claiming handler with a numeric/struct/generic/
 `fn`-typed captured param now reports `E171` in the editor instead of
-compiling silently wrong or reporting a whole-line `E063`.
+compiling silently wrong.

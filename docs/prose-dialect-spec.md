@@ -339,10 +339,13 @@ fn radio(chan: string, text: content) {
   generic/`fn` type (anything a plain string capture could never
   satisfy, `content` excepted — see `E171`'s own doc for why `content`
   stays exempt) is now a targeted diagnostic (`E171`, issue #1849) at
-  the declaration, naming the deferred-coercion reason, rather than a
-  whole-line `E063` type mismatch surfacing wherever a claimed line
-  happened to trigger it — the coercion gap itself stays deferred (see
-  below), only the silence around it is closed.
+  the declaration, naming the deferred-coercion reason, rather than
+  silence — the pre-#1849 state. The generic form of this mismatch
+  (an ordinary direct call's arguments checked against the callee's
+  declared parameter types) only appears once #1864 lands direct-call
+  argument type-checking, which does not exist yet; the coercion gap
+  itself stays deferred (see below), only the silence around it is
+  closed.
 - **`block` capture (RULED, 2026-07-31 sitting, issue #1839).**
   `@[element(args = "…", block)]` declares that the handler captures the
   run **following** its matched line into a trailing `content`-typed

@@ -1658,9 +1658,9 @@ fn a_claiming_handler_param_with_no_capture_diagnoses_e167() {
 // plain `Expr::String` literal regardless of the receiving parameter's
 // declared type — numeric capture coercion does not exist. These tests
 // prove the resulting mismatch is now a targeted, declaration-pointed
-// diagnostic (`E171`) rather than silence (the pre-#1849 state) or a
-// generic whole-line `E063` reached only once the rewritten call is
-// type-checked.
+// diagnostic (`E171`) rather than silence (the pre-#1849 state). Direct-call
+// argument type-checking (`E063` for this shape) does not exist yet — that
+// is what open issue #1864 asks to build.
 
 #[test]
 fn a_claiming_handler_numeric_typed_param_diagnoses_e171() {
@@ -1681,12 +1681,6 @@ fn a_claiming_handler_numeric_typed_param_diagnoses_e171() {
     // A handler that fails this check is never registered as a claiming
     // handler at all — same posture as E160/E166/E167 above.
     assert!(hir.knots[0].element_annotation.is_none());
-    // No claim happened, so no `E063` should ever reach here either —
-    // `try_claim` never got a chance to rewrite anything.
-    assert!(
-        !diags.iter().any(|d| d.code == DiagnosticCode::E063),
-        "a declined claim must never reach the generic call-arg-mismatch check: {diags:?}"
-    );
 }
 
 #[test]
@@ -1717,13 +1711,12 @@ fn a_claiming_handler_untyped_param_does_not_diagnose_e171() {
 #[test]
 fn a_claiming_handler_content_typed_param_does_not_diagnose_e171() {
     // `content` is deliberately exempt (see `is_satisfiable_by_a_string_
-    // capture`'s own doc): the spec's own ruled `radio` example and the
-    // `tier1-native/annotations-element` golden fixture both declare a
-    // captured `content` param and compile clean today, since T1c's
-    // signature inference derives `place`'s *checked* type from its body
-    // use (interpolation into a string), not from the declared
-    // annotation. Flagging it here would break that already-shipped
-    // pattern for no compiler-observable reason.
+    // capture`'s own doc): it is the spec-ruled capture annotation form
+    // (§3.5b, issue #1846/#1839) — the spec's own ruled `radio`/`interior`
+    // examples and the `tier1-native/annotations-element` golden fixture
+    // both declare a captured `content` param and compile clean today.
+    // Flagging it here would break that already-shipped, ruled pattern
+    // for no compiler-observable reason.
     let (hir, _m, diags) = lower_src(
         "@[element(claims = \"^INT\\\\. (?<place>.+)$\")]\nfn interior(place: content) {\n  return \"-- inside {place} --\";\n}\n",
     );

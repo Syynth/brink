@@ -776,17 +776,18 @@ fn parse_element(
     // the receiving parameter's declared type (see that function's own
     // doc). Numeric capture coercion is `docs/prose-dialect-spec.md`
     // §3.5b's own Deferred item — the gap itself is ruled-deferred, not a
-    // bug — but leaving the mismatch silent is: without this check it
-    // surfaces only once the rewritten call reaches direct-call-argument
-    // type-checking (`E063`, issue #1864), as a diagnostic spanning the
-    // *whole claimed prose line* and naming neither the capture nor the
-    // param. Checking it here, at the declaration, both narrows the span
-    // to the offending param's own type annotation and explains *why*
+    // bug — but leaving the mismatch silent is: without this check it is,
+    // and remains, silent — nothing checks a direct call's arguments
+    // against the callee's declared parameter types yet (that generic
+    // check, `E063` for this shape, is exactly what open issue #1864 asks
+    // to build). Checking it here, at the declaration, both narrows the
+    // span to the offending param's own type annotation and explains *why*
     // (deferred coercion, not a defect) — the same static-defect-in-the-
     // declaration posture `E160`/`E166`/`E167` already take just above.
     // Declining the claim (`None`, so this `fn` is never registered as a
     // claiming handler) leaves the line unclaimed rather than rewriting
-    // it to a call that could never type-check.
+    // it to a call with an argument that could never match its declared
+    // type.
     if claims
         && let Some(p) = params.iter().find(|p| {
             captures.contains(&p.name.text)
@@ -835,20 +836,14 @@ fn has_block_content_param(params: &[Param], captures: &[String]) -> bool {
 /// a capture can actually produce a `FragmentRef` (it cannot; binding a
 /// `content`-typed param to one is `docs/prose-dialect-spec.md` §3.5b's
 /// own Deferred item, issue #1838/#1839's scope, not this check's), but
-/// because `content` already has an established, ruled, and *tested*
-/// story of its own: the spec's own worked example
+/// because `content` is the spec-ruled capture annotation form (§3.5b,
+/// issue #1846/#1839): the spec's own worked example
 /// (`fn radio(chan: string, text: content)`) and this crate's
 /// `tier1-native/annotations-element` golden fixture both declare a
-/// captured `content` param today and both compile clean — T1c's
-/// signature inference (`infer::body::infer_def_body`'s own doc: "a body
-/// use that disagrees with the annotation still infers its own concrete
-/// type") derives the *body-observed* type for a param whose only use is
-/// interpolation into a string, which is `string`, not the declared
-/// `content` — so no `E063` mismatch actually fires for `content` in
-/// practice. Flagging it here would turn an already-shipped, already-
-/// tested, spec-ruled pattern into a fresh hard error. Every *other*
-/// declared type (`int`, `float`, `bool`, a struct name, a generic, a
-/// `fn` type) has no such precedent and no such rescue — those are
+/// captured `content` param today and both compile clean. Flagging it
+/// here would turn an already-shipped, spec-ruled pattern into a fresh
+/// hard error. Every *other* declared type (`int`, `float`, `bool`, a
+/// struct name, a generic, a `fn` type) has no such ruling — those are
 /// `E171`'s actual target; see that code's own doc comment.
 fn is_satisfiable_by_a_string_capture(annotation: Option<&TypeExpr>) -> bool {
     match annotation {
