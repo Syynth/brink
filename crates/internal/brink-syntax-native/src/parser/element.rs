@@ -263,12 +263,12 @@ pub(crate) fn cue_line(p: &mut Parser<'_, '_>) {
 /// inside a `flow f() { … }` body) for the enclosing block's own closer,
 /// ending the name — and the flow's `BLOCK` — early. Fixed the same way
 /// `tag()` was: `depth` counts literal, unpaired `{`s bumped so far, and a
-/// `}` only stops the scan once depth is back to zero. An `L_BRACE`
-/// immediately preceded by a raw `BACKSLASH` is excluded from the counter
-/// — `\{` is the literal-brace escape (#1716/PR #1732), not a
-/// metacharacter, so counting it as a depth-opener would let a later
-/// unescaped `}` swallow the enclosing closer on perfectly ordinary
-/// escaped text.
+/// `}` only stops the scan once depth is back to zero. An `L_BRACE` is
+/// excluded from the counter when it is preceded by an *odd* number of
+/// consecutive raw `BACKSLASH`es (#1852) — `\{` is the literal-brace escape
+/// (#1716/PR #1732), but `\\{` is an escaped backslash followed by a real,
+/// depth-counted brace, so counting consecutive backslashes (not just the
+/// immediately preceding token) is required to tell the two apart.
 ///
 /// Same tradeoff as `tag()`, stated the same way: a *balanced* brace in a
 /// cue name no longer terminates it early (the bug this fixes), but a
@@ -279,30 +279,50 @@ pub(crate) fn cue_line(p: &mut Parser<'_, '_>) {
 /// `an_unbalanced_open_brace_in_a_cue_name_eats_the_enclosing_blocks_own_closer`.
 ///
 /// This is not full parity with `tag()`, though: `cue_name`'s stop set has
-/// two members `tag()`'s does not, `COLON` and `HASH`, and both are
-/// checked *before* the depth guard, exactly like `NEWLINE`/`EOF` — so a
-/// `:` or `#` still cuts a name short even while a brace is open,
-/// unconditionally consuming neither into the balanced scan. A name like
-/// `@NAME {a:b} c.` still stops at the `:` inside the unclosed `{`, well
-/// short of the cascade this fix removes for a `}`-only case.
+/// one member `tag()`'s does not, `HASH`, checked *before* the depth guard,
+/// exactly like `NEWLINE`/`EOF` — so a `#` still cuts a name short even
+/// while a brace is open. `COLON`, unlike `HASH`, is now depth-guarded the
+/// same way `R_BRACE` is (#1851): a colon inside an unclosed `{` is part of
+/// an interpolation, not the cue's terminator, so `@NAME {a:b} c.` no
+/// longer stops at the `:` — it scans through to the balanced `}` like
+/// `tag()` does.
 fn cue_name(p: &mut Parser<'_, '_>) {
     p.start_node(CUE_NAME);
     let mut depth: u32 = 0;
-    let mut prev_raw_was_backslash = false;
+    let mut backslash_count: u32 = 0;
     loop {
         let raw = p.nth_raw(0);
-        if matches!(raw, EOF | NEWLINE | HASH | COLON) {
+        if matches!(raw, EOF | NEWLINE | HASH) {
+            break;
+        }
+        // COLON is a stop only at depth zero: a colon inside braces (e.g.
+        // `{a:b}`) is part of an interpolation, not the cue's terminator.
+        if raw == COLON && depth == 0 {
             break;
         }
         if raw == R_BRACE && depth == 0 {
             break;
         }
+        // Track consecutive backslashes before a brace to detect escaped
+        // braces correctly (#1852: `\\{` should count the brace, not escape
+        // it). An L_BRACE is only excluded from depth counting if preceded
+        // by an odd number of backslashes; an even number means the
+        // backslashes themselves are escaped. Use bitwise AND to check for
+        // even (lowest bit is 0).
         match raw {
-            L_BRACE if !prev_raw_was_backslash => depth += 1,
-            R_BRACE => depth = depth.saturating_sub(1),
-            _ => {}
+            L_BRACE if backslash_count & 1 == 0 => {
+                depth += 1;
+                backslash_count = 0;
+            }
+            R_BRACE => {
+                depth = depth.saturating_sub(1);
+                backslash_count = 0;
+            }
+            BACKSLASH => backslash_count += 1,
+            _ => {
+                backslash_count = 0;
+            }
         }
-        prev_raw_was_backslash = raw == BACKSLASH;
         p.bump();
     }
     p.finish_node();
