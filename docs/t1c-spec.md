@@ -116,18 +116,29 @@ Consequences that follow from "bare name, no sigil":
   visit count.
 - **Ink is unchanged.** The same bare name in ink is still a knot's
   visit count; only `#fn(f)` creates a fn value there.
-- **One spelling per surface, one type** (issue #1876). The reference
-  types exactly as the zero-bound `#fn` literal does: `§4`'s
-  `fn(T…): R` built from the target's signature, carrying the target's
-  own effect row (`FnRow::of_target`, effects-spec §5/§6.1a) — it *is*
-  a creation site, so it is harvested as one (a call-graph edge plus
-  the Fork A creation atom). That is what makes §4's static checking
-  apply to it: passing `f` where an `int` is declared is an ordinary
-  `E063`, not an opaque `Unknown` deferred to the runtime. Inference
-  keys this off the per-file frontend flag (`HirFile::native` →
-  `Def::native` → `BodyCtx::native`), the same flag lowering gates
-  `MakeFnValue` on, so typing and lowering cannot disagree about which
+- **One spelling per surface, one type, in body/expression position**
+  (issue #1876). A bare-name reference occurring in a body — an
+  argument, an operand, a call target — types exactly as the
+  zero-bound `#fn` literal does: `§4`'s `fn(T…): R` built from the
+  target's signature, carrying the target's own effect row
+  (`FnRow::of_target`, effects-spec §5/§6.1a) — it *is* a creation
+  site, so it is harvested as one (a call-graph edge plus the Fork A
+  creation atom). That is what makes §4's static checking apply to it:
+  passing `f` where an `int` is declared is an ordinary `E063`, not an
+  opaque `Unknown` deferred to the runtime. Inference keys this off the
+  per-file frontend flag (`HirFile::native` → `Def::native` →
+  `BodyCtx::native`), the same flag lowering gates `MakeFnValue` on, so
+  typing and lowering cannot disagree about which body-position
   references are fn values.
+  A **declaration initializer** (`var f = double;`) is a separate
+  position, not covered by the above: lowering already mints the fn
+  value there (`lir/lower/decls.rs`'s `fold_path_ref`,
+  `fn_values.rs`'s `visit_with_decl_initializers`), but
+  `signature.rs`'s `declared_fn_type` — the typing path for a
+  declaration's initializer — has no native/bare-name awareness yet,
+  so `f`'s static type is `Unknown` and a later `f(3)` mistypes as
+  `E065` rather than `E063`/a clean type. Typing and lowering *do*
+  disagree here; tracked at issue #1895, not fixed by this ruling.
 
 Respelling ink into native (`brink-respell`) follows the same split: a
 zero-bound `#fn(f)` emits as the bare name `f`; the binding form refuses
