@@ -1109,6 +1109,17 @@ writes / calls / emits / suspend defeat fusion).
    host-driven reactive sleep and in-language `await` are complementary.
    Folding `suspend(rung)` into the row rests on that (planned) suspension
    model, with no spec conflict.
+3. **OPEN — `register`'s effect row (#1840's comptime-conventions
+   fence).** `docs/conventions-comptime-sizing.md` §4 finds that
+   `@[effects(pure)] fn conventions()` — the ruled canonical spelling —
+   fails its own `E103` assertion under either obvious spelling of
+   `register` (an `EXTERNAL`, which lands in `EffectRow.calls`; or a
+   row-exempt intrinsic, which is the bespoke exemption this spec's own
+   rng-cell precedent, §10, rejected). Candidate answers: a `comptime` row
+   dimension `pure` permits; a named registry cell plus a redefinition of
+   what `pure` asserts inside a comptime frame; or a declared
+   `writes(conventions)` on the ruled example instead of `pure`. Unresolved
+   here, not #1840's.
 
 ### 14.6 Build posture
 

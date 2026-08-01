@@ -39,7 +39,7 @@ fn conventions() {
 Statement order is resolution order. The compiler evaluates this at build
 time, freezes the ordered result, and the editor reads the frozen
 projection without ever evaluating anything (§3.5's "the data form survives
-as generated interchange").
+only as generated interchange").
 
 ## 2. What exists today
 
@@ -53,7 +53,7 @@ Genuinely in place, and more than the issue's framing assumes:
 | `@[effects(pure)]` assertion + exceedance check | present | `crates/internal/brink-analyzer/src/effects_assertions.rs` (`E103` at `:256`) |
 | Function evaluation driver | present, **runtime-side** | `FlowInstance::begin_function_eval`, `crates/brink-runtime/src/story/flow_instance.rs:872` |
 | Natural-notation claim dispatch (#1838) | present, **file-local** | `crates/internal/brink-ir/src/hir/lower_native/element.rs` |
-| Per-definition source location | present | `brink_format::SourceLocation { file, range_start, range_end }`, `crates/internal/brink-format/src/definition.rs:73` |
+| Per-line-table-entry source location | present | `brink_format::SourceLocation { file, range_start, range_end }` on `LineEntry::source_location`, `crates/internal/brink-format/src/definition.rs:73,87` |
 
 Absent:
 
@@ -72,9 +72,16 @@ thing this slice actually has to move across the boundary.
 
 `begin_function_eval` (`flow_instance.rs:872`) takes a `&Program`, a
 `&dyn ExternalFnHandler`, a `container_idx` and `&[Value]`, and returns a
-`Value`. So the comptime frame is "a compiled `fn` body that does not emit
-content" — emission is refused as `RuntimeError::FunctionYielded`
-(`crates/brink-runtime/src/error.rs:82`).
+`Value`. Content emission during the call is legal, not refused: its own
+doc says "output is captured and discarded" (`flow_instance.rs:845-846`),
+and its `# Errors` block is explicit that `RuntimeError::FunctionYielded`
+(`crates/brink-runtime/src/error.rs:82`) fires only "if the function
+presents choices or ends the story" (`flow_instance.rs:864-865`) — the two
+raise sites confirm it: `Stepped::Done | Stepped::Ended`
+(`flow_instance.rs:1098-1101`) and a pending choice above the call's
+`choice_floor` (`flow_instance.rs:1132-1134`). So the comptime frame is "a
+compiled `fn` body whose content emission is captured and discarded;
+presenting choices or reaching `-> DONE` / `-> END` is refused."
 
 The unresolved part is **what the registry is made of**. `register` receives
 `Value::FnRef(DefinitionId)` — a fn token in the *conventions module's own
@@ -91,10 +98,19 @@ frozen editor projection.
 > fn token, or the module-qualified source name?** The token is stable
 > across body edits by construction (`value.rs:166`'s doc: the fn token
 > *"hashes from the target's name, so a saved token survives recompiles that
-> only edit the body"*) but is meaningless to an editor holding only source; the
-> name is what the editor can resolve but reintroduces cross-file name
-> resolution that #1838 explicitly deferred. This decision fixes the
-> projection's schema, so it cannot be made after the fact.
+> only edit the body"*). It is not opaque in the sense of unreachable:
+> `DefinitionId` is a deterministic 56-bit hash of the qualified name
+> (`hash_qualified_name`, `crates/internal/brink-analyzer/src/manifest.rs:512`;
+> layout at `crates/internal/brink-format/src/id.rs:52`), and anything that
+> can see the name and reach the analyzer — including the wasm editor — can
+> compute name → token the same way the compiler does. The real asymmetry:
+> the hash is not invertible back to a display name, and it carries none of
+> the `ClaimHandler` payload the editor actually needs — the compiled
+> `claims` pattern, parameter-name list, or the annotation's `TextRange`
+> (`element.rs:79-93`). The name is what the editor can display, and #1838
+> already resolves it within a file, but adopting it here reintroduces
+> cross-file name resolution that #1838 explicitly deferred. This decision
+> fixes the projection's schema, so it cannot be made after the fact.
 
 ### Q2 — What happens on a comptime fault?
 
@@ -123,17 +139,30 @@ not:
 
 ### Q3 — How do comptime errors map back to source? **Blocked.**
 
-There is **no bytecode → source mapping**. `Opcode::SourceLocation(u32, u32)`
-exists in the format (`crates/internal/brink-format/src/opcode.rs:1659`) but
-is dormant: the VM discards it in the same arm as `Nop`
-(`crates/brink-runtime/src/vm.rs:198`), and `brink-codegen-inkb` never emits
-it — its only two `SourceLocation` mentions (`lib.rs:349`, `:371`) are the
-unrelated per-*definition* `brink_format::SourceLocation` struct
-(`definition.rs:73`).
+There is **no bytecode → source mapping at instruction granularity**.
+`Opcode::SourceLocation(u32, u32)` exists in the format
+(`crates/internal/brink-format/src/opcode.rs:1659`) but is dormant: the VM
+discards it in the same arm as `Nop` (`crates/brink-runtime/src/vm.rs:198`).
 
-That per-definition struct is the *entire* mapping available: a comptime
-fault could be attributed to "somewhere inside `fn conventions()`", never to
-the statement that faulted. Building the real thing is epic **#452**
+The `brink_format::SourceLocation` struct (`definition.rs:73`) is real and
+*is* populated by codegen — but it is **per line-table entry**
+(`LineEntry::source_location`, `definition.rs:87`; `LineEntry` at `:81`),
+not per-definition: it is built per *content* node
+(`build_source_location`, `crates/internal/brink-ir/src/lir/lower/recognize.rs:252`),
+and `brink-codegen-inkb` populates it at every line-emission site
+(`content.rs:11,61,112`) — the `lib.rs:349,371` mentions are call sites of
+that same struct, not something unrelated. `ContainerDef`
+(`definition.rs:11-52`) — the actual per-*definition* record — carries
+**no source range field at all**, only `id`, `scope_id`, a `NameId`, and
+`bytecode`.
+
+That makes the available mapping narrower than it first looks, not wider:
+a `register(...)` call inside `fn conventions()`'s code-ground body is a
+call, not a content line, so it never gets a `LineEntry::source_location`,
+and its enclosing `ContainerDef` has no range to fall back to — only its
+own `NameId`. A comptime fault today cannot be attributed to "somewhere
+inside `fn conventions()`" with any range at all, only to the container's
+bare name. Building the real thing is epic **#452**
 (`instruction-level source mapping`), which is **OPEN** and labelled
 `needs-design` (verified via `gh issue view 452`), and whose pivotal
 decision is recorded as blocked on a maintainer ruling —
@@ -141,11 +170,13 @@ decision is recorded as blocked on a maintainer ruling —
 `brink-format` carrier) as **"blocked-on-ruling"**, question Q-R1.
 
 > **Q3 (ruling needed, and already open as #452's Q-R1): comptime errors
-> cannot point at a statement until the format carries an instruction →
-> range map.** Either #1840 accepts definition-granularity error reporting
-> as its v1 contract (a decision, because it is the diagnostic quality
-> authors will live with), or #1840 is downstream of an epic that has been
-> waiting on a format ruling since 2026-07-19.
+> cannot point at a statement, or even a range, until the format carries an
+> instruction → range map — today's per-line-table `SourceLocation` never
+> reaches a code-ground call in the first place.** Either #1840 accepts
+> definition-*name*-granularity error reporting (no range, just the
+> container's `NameId`) as its v1 contract — a decision, because it is the
+> diagnostic quality authors will live with — or #1840 is downstream of an
+> epic that has been waiting on a format ruling since 2026-07-19.
 
 ## 4. The fence contradicts its own example
 
@@ -208,8 +239,12 @@ tracked:
    (`crates/internal/brink-syntax-native/src/parser/block.rs:214`), so this
    is a real grammar addition, not a token reuse.
 2. **`std::conventions::screenplay` does not exist.** There are no stdlib
-   `.brink` module files in the tree at all — every `*.brink` file is a test
-   fixture under `tests/`.
+   `.brink` module files in the tree at all — the `.brink` files that do
+   exist are either test fixtures under `tests/` (top-level, e.g.
+   `tests/tier1-native/`, `tests/tier1-brink-respell/`, and crate-local,
+   `crates/internal/brink-syntax-native/tests/corpus/`) or fuzzer seed
+   corpus under `crates/internal/brink-syntax-native/fuzz/seeds/brink/` —
+   none of them is a stdlib module.
 3. **`brink.toml` has no conventions pointer.** `ProjectConfig`
    (`crates/internal/brink-project-config/src/lib.rs:192`) carries
    `dialect`, `types`, `lints`, `deny_warnings`, `unprune_dirs` — no
