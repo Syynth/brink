@@ -44,7 +44,6 @@ fn project_dir(tag: &str) -> PathBuf {
 /// target must print the resolved `[E024]` code and message, not only the
 /// bare count — exercises `compile_entry`'s own error path directly
 /// (`Commands::Compile` -> `run_compile` -> `compile_entry`).
-#[expect(clippy::unwrap_used, reason = "test assertions")]
 #[test]
 fn compile_renders_fatal_diagnostic_codes_for_native_entry() {
     let dir = project_dir("native-compile");
@@ -85,7 +84,6 @@ fn compile_renders_fatal_diagnostic_codes_for_native_entry() {
 /// also render the resolved diagnostic — proves the fix covers the shared
 /// seam (`load_story_data`), not just the `Commands::Compile` subcommand
 /// this issue was filed against.
-#[expect(clippy::unwrap_used, reason = "test assertions")]
 #[test]
 fn convert_renders_fatal_diagnostic_codes_for_ink_entry() {
     let dir = project_dir("ink-convert");
