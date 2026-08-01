@@ -223,10 +223,7 @@ fn a_prelude_verb_resolves_and_is_recorded_as_a_prelude_desugar() {
 
     let verdicts = verdicts(&hir, &manifest);
     assert_eq!(verdicts.len(), 1, "one UFCS site: {verdicts:?}");
-    let UfcsVerdict::PreludeDesugar {
-        receiver, name, ..
-    } = &verdicts[0]
-    else {
+    let UfcsVerdict::PreludeDesugar { receiver, name, .. } = &verdicts[0] else {
         panic!("expected a prelude-desugar verdict, got {:?}", verdicts[0]);
     };
     assert_eq!(name, "len");

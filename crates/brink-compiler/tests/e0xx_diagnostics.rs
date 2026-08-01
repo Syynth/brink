@@ -1731,8 +1731,7 @@ fn e063_ufcs_prelude_map_get_key_type_mismatch() {
 /// The matching-key-type case must stay completely clean.
 #[test]
 fn ufcs_prelude_map_get_matching_key_type_is_unaffected_by_e063() {
-    let source =
-        "fn main(): int {\n  let m = Map { \"a\": 1 };\n  m.get(\"a\");\n  return 1;\n}\n";
+    let source = "fn main(): int {\n  let m = Map { \"a\": 1 };\n  m.get(\"a\");\n  return 1;\n}\n";
     let out = compile_native("ufcs-prelude-get-match", source, native_strict_options())
         .unwrap_or_else(|e| panic!("a type-matching prelude UFCS call must compile clean: {e:?}"));
     assert!(out.warnings.is_empty(), "{:?}", out.warnings);
@@ -1746,9 +1745,13 @@ fn ufcs_prelude_map_get_matching_key_type_is_unaffected_by_e063() {
 fn e063_ufcs_prelude_array_push_item_type_mismatch() {
     let source = "fn main(): int {\n  let m = Map { \"a\": 1 };\n  let ks = keys(m);\n  \
                   ks.push(5);\n  return 1;\n}\n";
-    let err = compile_native("ufcs-prelude-push-mismatch", source, native_strict_options())
-        .map(|_| ())
-        .unwrap_err();
+    let err = compile_native(
+        "ufcs-prelude-push-mismatch",
+        source,
+        native_strict_options(),
+    )
+    .map(|_| ())
+    .unwrap_err();
     let diags = errors_of(err);
     assert_eq!(
         diags.iter().map(|d| d.code).collect::<Vec<_>>(),
@@ -1776,9 +1779,13 @@ fn ufcs_prelude_array_push_matching_item_type_is_unaffected_by_e063() {
 fn e063_ufcs_prelude_map_insert_key_type_mismatch() {
     let source = "fn main(): int {\n  let m = Map { \"a\": 1 };\n  m.insert(5, 2);\n  \
                   return 1;\n}\n";
-    let err = compile_native("ufcs-prelude-insert-mismatch", source, native_strict_options())
-        .map(|_| ())
-        .unwrap_err();
+    let err = compile_native(
+        "ufcs-prelude-insert-mismatch",
+        source,
+        native_strict_options(),
+    )
+    .map(|_| ())
+    .unwrap_err();
     let diags = errors_of(err);
     assert_eq!(
         diags.iter().map(|d| d.code).collect::<Vec<_>>(),
@@ -1795,9 +1802,13 @@ fn e063_ufcs_prelude_map_insert_key_type_mismatch() {
 #[test]
 fn e063_ufcs_prelude_map_remove_key_type_mismatch() {
     let source = "fn main(): int {\n  let m = Map { \"a\": 1 };\n  m.remove(5);\n  return 1;\n}\n";
-    let err = compile_native("ufcs-prelude-remove-mismatch", source, native_strict_options())
-        .map(|_| ())
-        .unwrap_err();
+    let err = compile_native(
+        "ufcs-prelude-remove-mismatch",
+        source,
+        native_strict_options(),
+    )
+    .map(|_| ())
+    .unwrap_err();
     let diags = errors_of(err);
     assert_eq!(
         diags.iter().map(|d| d.code).collect::<Vec<_>>(),

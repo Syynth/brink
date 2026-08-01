@@ -1050,10 +1050,10 @@ impl UfcsVisitor<'_> {
         name: &str,
     ) -> Vec<UfcsArgMismatch> {
         let expected: Vec<Ty> = match (name, receiver) {
-            ("push" | "heap_push" | "index_of", Ty::Array(elem)) => vec![(**elem).clone()],
-            ("contains", Ty::Array(elem)) => vec![(**elem).clone()],
-            ("contains", Ty::Map(k, _)) => vec![(**k).clone()],
-            ("get" | "remove", Ty::Map(k, _)) => vec![(**k).clone()],
+            ("push" | "heap_push" | "index_of" | "contains", Ty::Array(elem)) => {
+                vec![(**elem).clone()]
+            }
+            ("contains" | "get" | "remove", Ty::Map(k, _)) => vec![(**k).clone()],
             ("contains_value", Ty::Map(_, v)) => vec![(**v).clone()],
             ("insert", Ty::Map(k, v)) => vec![(**k).clone(), (**v).clone()],
             _ => return Vec::new(),
