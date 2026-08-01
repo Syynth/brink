@@ -332,9 +332,12 @@ flow elsewhere() {
 /// real writer authors for "if X then A else B" and what B0.8b's future
 /// mechanical converter would actually emit. That ink shape lowers to
 /// `CondKind::InitialCondition`, not `IfElse` (`IfElse` is reserved for
-/// ink's independently-chained 3+-condition form, which native's `if`/
-/// `else`-only grammar has no way to produce at all — no `else if`). This
-/// test is what caught that and pinned the corrected mapping.
+/// ink's independently-chained 3+-condition form — a *flat* multi-branch
+/// shape native's own lowering never constructs, since a native `else if`
+/// chain lowers through nesting instead, not because the grammar lacks
+/// `else if`: #1258/#1261 (2026-07-22) added it, and it works; see the
+/// correction on `cond::lower_conditional`'s doc, issue #1951). This test
+/// is what caught the `InitialCondition`-vs-`IfElse` mapping and pinned it.
 #[test]
 fn cross_frontend_conditional_shape_matches_ink() {
     let ink_src = "\

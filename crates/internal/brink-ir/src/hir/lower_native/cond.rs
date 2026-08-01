@@ -41,22 +41,35 @@ fn diag(file: FileId, range: rowan::TextRange, code: DiagnosticCode) -> Diagnost
 /// `{if cond {…} else {…}}` / `{if cond: … else: …}` / `{match subj {…}}`.
 ///
 /// **`CondKind` judgment call** (flagged for the coordinator — a likely
-/// D4-style tripwire): native `if`/`else` has exactly one condition and an
-/// optional else arm (the grammar has no `else if` chain — `syntax_kind.rs`'s
-/// `CONDITIONAL_BLOCK` doc). Cross-frontend differential testing
-/// (`crates/internal/brink-ir/tests/b07_native_body.rs`) found that ink's
-/// *own* natural spelling of this exact shape (`{cond: body - else: body2}`,
-/// `ConditionalWithExpr` plus a branchless first body) lowers to
-/// `CondKind::InitialCondition`, never `IfElse` — `IfElse` only appears for
-/// ink's independently-chained multi-condition form (three or more `- cond:`
-/// branches, no shared subject), a shape native's `if`/`else` grammar cannot
-/// produce at all (no `else if`; a nested `{if}` inside the `else` arm is a
-/// *different*, nested `Conditional`, not a flatter multi-branch one). So
+/// D4-style tripwire): a single `if`/`else` here has exactly one condition
+/// and an optional else arm. **Correction (issue #1951, 2026-08-01
+/// triage):** this comment used to claim "the grammar has no `else if`
+/// chain" — false since #1258/#1261 (2026-07-22) added a flat `else if
+/// <cond> { … }`/`else if <cond>: …` chain to `family.rs`'s
+/// `conditional_block`/`else_branch` (and `control_flow.rs`'s statement-form
+/// twin); it parses and executes correctly today. What that ruling did
+/// *not* change is this function's shape: a flat native chain still lowers
+/// through *nesting*, not a flat multi-branch list — the chain's `else`
+/// arm opens a brace-less `CONDITIONAL_BLOCK` of its own (`family.rs::
+/// else_branch`'s doc), which recurses back into this same function one
+/// level down, producing an `InitialCondition` whose `else` branch's body
+/// contains another, nested `Conditional`. Cross-frontend differential
+/// testing (`crates/internal/brink-ir/tests/b07_native_body.rs`) found that
+/// ink's *own* natural spelling of the simple 2-branch shape
+/// (`{cond: body - else: body2}`, `ConditionalWithExpr` plus a branchless
+/// first body) lowers the same way, to `CondKind::InitialCondition`, never
+/// `IfElse` — `IfElse` only appears for ink's independently-chained
+/// multi-condition form (three or more `- cond:` branches, no shared
+/// subject), a *flat* multi-branch shape native's own lowering never
+/// constructs (it always nests instead, per the paragraph above). So
 /// `InitialCondition` — not `IfElse` — is the faithful choice here: it is
 /// what the equivalent ink source actually compiles to, and `lir::CondKind`
 /// preserves the distinction all the way to codegen (`lir/lower/mod.rs`), so
 /// this is a real semantic choice, not cosmetic. (`match` still uses
-/// `Switch`, unaffected by this finding.)
+/// `Switch`, unaffected by this finding.) The practical fallout lands on
+/// `hir::emit_native` (the respell emitter), not here: it has no `emit_*`
+/// path that re-shapes an ink-sourced `CondKind::IfElse` into this nesting
+/// — see that module's doc for the corrected framing.
 pub(super) fn lower_conditional(
     file_id: FileId,
     cb: &ast::ConditionalBlock,
