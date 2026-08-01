@@ -24,9 +24,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use brink_format::DefinitionId;
 use brink_ir::{
-    Block, BlockStmt, Choice, ChoiceSet, CondKind, Conditional, Content, ContentPart, DivertPath,
-    DivertTarget, ElseBranch, Expr, IfStmt, InfixOp, LogicBlock, Name, Path as HirPath, PrefixOp,
-    Stmt, StringPart, SymbolIndex, SymbolKind,
+    AssignOp, Block, BlockStmt, Choice, ChoiceSet, CondKind, Conditional, Content, ContentPart,
+    DivertPath, DivertTarget, ElseBranch, Expr, IfStmt, InfixOp, LogicBlock, Name, Path as HirPath,
+    PrefixOp, Stmt, StringPart, SymbolIndex, SymbolKind,
 };
 use rowan::TextRange;
 
@@ -421,6 +421,22 @@ fn fold_literal_int_bound(expr: &Expr) -> Option<i64> {
         }
         _ => None,
     }
+}
+
+/// Whether `(l, r)` is the `string`/numeric display-concatenation shape
+/// `+` accepts under strict types (issue #1911, spec §4): a `string` paired
+/// with an `int` or `float`, in either operand order. Mirrors
+/// `value_ops::binary_op`'s `String`/`Int` and `String`/`Float` `Add`
+/// arms exactly — the runtime is the compatibility floor, so this stays a
+/// straight port of which pairs it accepts, not a broader "string + T"
+/// rule. `Bool` is deliberately excluded: the runtime has no
+/// `String`/`Bool` `Add` arm, so that pair still falls through to the
+/// general same-type unify and reports `E066` as before.
+fn is_string_numeric_concat(l: &Ty, r: &Ty) -> bool {
+    matches!(
+        (l, r),
+        (Ty::String, Ty::Int | Ty::Float) | (Ty::Int | Ty::Float, Ty::String)
+    )
 }
 
 #[expect(
@@ -1683,6 +1699,26 @@ impl InferPass<'_, '_> {
             }
         }
         match op {
+            // String-numeric display concatenation (issue #1911, spec §4):
+            // `+` between a `string` and an `int`/`float`, either operand
+            // order, is ink's core display-concat idiom ("t:" + total`,
+            // `keys + ":" + total`) — the runtime already defines it
+            // (`value_ops::binary_op`'s `String`/`Int` and `String`/`Float`
+            // `Add` arms stringify the numeric side and produce `string`;
+            // it never faults). Treating `+` as a same-type operator here
+            // marked the numeric operand `Conflicted` on code that
+            // compiles, runs, and is in the golden corpus today
+            // (`tests/tier1-native/for-k-v`) — the compatibility floor is
+            // "don't reject what the runtime accepts". Scoped narrowly to
+            // match that floor exactly: `Add` only (the runtime defines no
+            // string-numeric `Sub`/`Mul`/`Div`/`Mod`), and `Int`/`Float`
+            // only (there is no `String`/`Bool` `Add` arm, so that
+            // combination still falls through to the general same-type
+            // unify below and reports `E066` as before). Neither operand's
+            // own type is unified with the other's — concatenation
+            // observes nothing new about either side, unlike the general
+            // arithmetic arm's cross-side `observe` calls.
+            InfixOp::Add if is_string_numeric_concat(&l, &r) => Ty::String,
             InfixOp::Add
             | InfixOp::Sub
             | InfixOp::Mul
@@ -3150,14 +3186,30 @@ impl InferPass<'_, '_> {
                 self.bump_local_write(&t.name.text, origin);
             }
             Stmt::Assignment(a) => {
-                self.infer_expr(&a.target);
+                let target_ty = self.infer_expr(&a.target);
                 let ty = self.infer_expr(&a.value);
-                // Issue #1877: the RHS type checked against the target's
-                // already-known declared type — must run *before* `observe`
-                // below, which is what may drive the target Conflicted (see
-                // `check_declared_assign_target`'s doc for the ordering).
-                self.check_declared_assign_target(&a.target, &ty);
-                self.observe(&a.target, &ty);
+                // Issue #1911 review finding: `+=` reaches the exact same
+                // string-numeric display-concat shape as infix `+`
+                // (`infer_infix`'s `is_string_numeric_concat` arm, spec §4)
+                // — `keys += total` desugars to the same runtime
+                // `String`/`Int`|`Float` `Add` arm as `keys = keys + total`,
+                // so it must skip the same-type declared-check/observe pair
+                // below exactly like that arm skips unify: `check_declared_
+                // assign_target` would otherwise report `keys`'s declared
+                // `string` vs the numeric RHS as E063, and `observe`'s join
+                // would otherwise drive `keys` to `Ty::Conflicted` (E066) —
+                // both false positives on legal, running ink.
+                let is_string_numeric_concat_add =
+                    a.op == AssignOp::Add && is_string_numeric_concat(&target_ty, &ty);
+                if !is_string_numeric_concat_add {
+                    // Issue #1877: the RHS type checked against the target's
+                    // already-known declared type — must run *before*
+                    // `observe` below, which is what may drive the target
+                    // Conflicted (see `check_declared_assign_target`'s doc
+                    // for the ordering).
+                    self.check_declared_assign_target(&a.target, &ty);
+                    self.observe(&a.target, &ty);
+                }
                 self.record_write(&a.target);
                 // T2 §8 (issue #872): see `record_fn_write`.
                 let origin = self.fn_literal_write_origin(&a.value);
@@ -3327,11 +3379,17 @@ impl InferPass<'_, '_> {
                 self.bump_local_write(&t.name.text, origin);
             }
             BlockStmt::Assignment(a) => {
-                self.infer_expr(&a.target);
+                let target_ty = self.infer_expr(&a.target);
                 let ty = self.infer_expr(&a.value);
-                // Issue #1877: see `Stmt::Assignment`'s twin above.
-                self.check_declared_assign_target(&a.target, &ty);
-                self.observe(&a.target, &ty);
+                // Issue #1911: see `Stmt::Assignment`'s twin above — the
+                // string-numeric `+=` display-concat carve-out.
+                let is_string_numeric_concat_add =
+                    a.op == AssignOp::Add && is_string_numeric_concat(&target_ty, &ty);
+                if !is_string_numeric_concat_add {
+                    // Issue #1877: see `Stmt::Assignment`'s twin above.
+                    self.check_declared_assign_target(&a.target, &ty);
+                    self.observe(&a.target, &ty);
+                }
                 self.record_write(&a.target);
                 // T2 §8 (issue #872): see `Stmt::Assignment`'s twin above.
                 let origin = self.fn_literal_write_origin(&a.value);
