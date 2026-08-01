@@ -54,6 +54,7 @@ pub fn collect_globals(
                     file: file_id,
                     const_values: &const_values,
                     shapes,
+                    native: hir_file.native,
                 };
                 let default = eval_const_expr(&cst.value, env, diagnostics);
                 const_values.insert(id, default.clone());
@@ -89,6 +90,7 @@ pub fn collect_globals(
                     file: file_id,
                     const_values: &const_values,
                     shapes,
+                    native: hir_file.native,
                 };
                 let default = eval_const_expr(&var.value, env, diagnostics);
                 globals.push(lir::GlobalDef {
@@ -252,6 +254,16 @@ pub struct ConstEvalEnv<'a> {
     /// The project's struct shapes — a construction literal default needs
     /// its shape's id and declaration field order (issue #1530).
     pub shapes: &'a ShapeTable,
+    /// Whether the file the default being folded belongs to is the native
+    /// (`.brink`) frontend — [`hir::HirFile::native`]. Mirrors the gate
+    /// `lir::lower::expr::lower_path` applies to a bare function name in
+    /// expression position (issue #1862): a native declaration initializer
+    /// (`var f = double;`) must fold a bare reference to a function
+    /// definition to [`lir::ConstValue::FnRef`], the same value the `#fn`
+    /// literal arm below already produces, not the generic
+    /// [`lir::ConstValue::DivertTarget`] every other symbol kind falls
+    /// through to.
+    pub native: bool,
 }
 
 /// Evaluate a compile-time constant expression.
@@ -269,6 +281,7 @@ pub fn eval_const_expr(
         resolutions,
         file,
         const_values,
+        native,
         ..
     } = env;
     match expr {
@@ -300,17 +313,30 @@ pub fn eval_const_expr(
         hir::Expr::Path(path) => {
             if let Some(id) = resolutions.resolve(file, path.range) {
                 if let Some(info) = index.symbols.get(&id) {
-                    match info.kind {
-                        SymbolKind::ListItem => lir::ConstValue::List {
-                            items: vec![id],
-                            origins: vec![],
-                        },
-                        SymbolKind::Constant => const_values
-                            .get(&id)
-                            .cloned()
-                            .unwrap_or(lir::ConstValue::Null),
-                        SymbolKind::Variable => lir::ConstValue::Null,
-                        _ => lir::ConstValue::DivertTarget(id),
+                    // Native bare-name fn value in declaration-initializer
+                    // position (RULED 2026-08-01, `docs/t1c-spec.md` §2a,
+                    // issue #1862): `var f = double;` must fold the same way
+                    // the zero-bound `#fn(double)` literal arm
+                    // (`eval_const_fn_literal`) does — mirrors the gate
+                    // `lir::lower::expr::lower_path` applies in expression
+                    // position, so a native declaration default and a native
+                    // expression-position reference to the same function
+                    // never disagree on what value they produce.
+                    if native && info.is_function_definition() {
+                        lir::ConstValue::FnRef(id)
+                    } else {
+                        match info.kind {
+                            SymbolKind::ListItem => lir::ConstValue::List {
+                                items: vec![id],
+                                origins: vec![],
+                            },
+                            SymbolKind::Constant => const_values
+                                .get(&id)
+                                .cloned()
+                                .unwrap_or(lir::ConstValue::Null),
+                            SymbolKind::Variable => lir::ConstValue::Null,
+                            _ => lir::ConstValue::DivertTarget(id),
+                        }
                     }
                 } else {
                     lir::ConstValue::Null

@@ -15,6 +15,16 @@
 // The partial-application (binding) form `#fn(f, a)` deliberately gets no
 // native spelling and stays ink-only, so a bare name always binds zero
 // arguments.
+//
+// A **declaration initializer** is a second creation site for the same
+// bare-name reference, not just expression position: `var f_global =
+// double` must fold `double` to the same fn value `map(items, double)`
+// does, not the knot/stitch fallback (`ConstValue::DivertTarget`) every
+// other bare name in a `var`/`const` default folds to. Before the
+// const-eval fix this global compiled clean and baked a divert target into
+// `f_global`'s default, so calling or mapping through it faulted at
+// runtime instead of behaving like any other fn value.
+var f_global = double
 
 fn double(x) {
   return x * 2;
@@ -64,5 +74,7 @@ flow main() {
   Applied: {apply(double, 21)}
   ThroughLocal: {through_local()}
   Shadowed: {shadowed()}
-  Mixed: {mixed()} -> END
+  Mixed: {mixed()}
+  GlobalVarCall: {f_global(9)}
+  GlobalVarMapped: {map([1, 2, 3], f_global)} -> END
 }
