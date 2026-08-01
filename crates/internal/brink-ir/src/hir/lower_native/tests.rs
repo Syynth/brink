@@ -1800,16 +1800,88 @@ fn non_identical_overlapping_claim_patterns_that_never_win_are_e170() {
 }
 
 #[test]
+fn distinct_overlapping_claim_patterns_pin_first_match_wins() {
+    // Restores the dispatch-order pin the original
+    // `distinct_overlapping_claim_patterns_are_not_yet_diagnosed_but_pin_first_match_wins`
+    // test made (dropped when E170 was implemented): a non-identical
+    // overlap under the interim first-match-wins order is still resolved
+    // by declaring earlier — `arrival_general` is the handler that
+    // actually claims "VENDOR enters", not `arrival_vendor`, even though
+    // `arrival_vendor` is now also diagnosed E170 for never winning.
+    let (hir, _m, diags) = lower_src(
+        "@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival_general(who) {\n  return who;\n}\n\n@[element(claims = \"^(?<who>VENDOR) enters$\")]\nfn arrival_vendor(who) {\n  return who;\n}\n\nflow main() {\n  VENDOR enters\n}\n",
+    );
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E170),
+        "arrival_vendor never wins a claim in this file, so E170 must still fire: {diags:?}"
+    );
+    let main = hir
+        .knots
+        .iter()
+        .find(|k| k.name.text == "main")
+        .expect("main");
+    let (callee, _args) =
+        only_claimed_call(&main.body).expect("the claimed line must lower to one call");
+    assert_eq!(
+        callee, "arrival_general",
+        "first-declared handler wins under the interim dispatch order"
+    );
+}
+
+#[test]
+fn allow_e170_above_the_later_declaration_suppresses_it() {
+    // Parallel to `allow_e168_above_the_later_declaration_suppresses_it`:
+    // E170 is deliberately emitted at `later.name.range` so
+    // `@[allow(E170)]` can suppress it. Round-trips through
+    // `crate::suppressions::apply_suppressions`, the real consumer path
+    // every other suppressible code is checked against.
+    let src = "@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival_general(who) {\n  return who;\n}\n\n@[allow(E170)]\n@[element(claims = \"^(?<who>VENDOR) enters$\")]\nfn arrival_vendor(who) {\n  return who;\n}\n";
+    let (hir, _m, diags) = lower_src(src);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E170),
+        "the fixture must still produce E170 before suppression: {diags:?}"
+    );
+    let suppressions = crate::suppressions::Suppressions {
+        allow_scopes: hir.allow_scopes.clone(),
+        ..Default::default()
+    };
+    let remaining = crate::suppressions::apply_suppressions(FileId(0), src, diags, &suppressions);
+    assert!(
+        !remaining.iter().any(|d| d.code == DiagnosticCode::E170),
+        "@[allow(E170)] above the later declaration must suppress its E170: {remaining:?}"
+    );
+}
+
+#[test]
 fn overlapping_patterns_where_later_handler_actually_wins_are_not_e170() {
-    // If the later handler with an overlapping pattern actually wins a claim
-    // (necessarily for a line the earlier pattern couldn't match or where it
-    // was barred by the staging rule), it is live and must not be flagged.
-    let (_hir, _m, diags) = lower_src(
-        "@[element(claims = \"^INT\\\\. (?<p>.+)$\")]\nfn interior_full(p) {\n  return \"interior: \" + p;\n}\n\n@[element(claims = \"^INT\\\\. (?<p>.+) - DAY$\")]\nfn interior_daytime(p) {\n  return \"daytime interior: \" + p;\n}\n",
+    // Review finding on #1885: this fixture previously had no flow at all,
+    // so `interior_daytime` never won a single claim and the test was
+    // green only because the (then-broken) heuristic never proved overlap
+    // either — it did not exercise the `fired` early-return at all.
+    // `interior_daytime`'s pattern ("…- DAY$") is a strict subset of
+    // `interior_full`'s ("…(?<p>.+)$"), so under first-match-wins dispatch
+    // `interior_full` always wins first *except* inside its own
+    // declaration, where the staging rule bars it from claiming — the one
+    // place `interior_daytime` can actually win a claim of its own. Put
+    // exactly such a line inside `interior_full`'s own body so
+    // `interior_daytime` is genuinely live and must not be flagged.
+    let (hir, _m, diags) = lower_src(
+        "@[element(claims = \"^INT\\\\. (?<p>.+)$\")]\nfn interior_full(p) >{\n  INT. KITCHEN - DAY\n}\n\n@[element(claims = \"^INT\\\\. (?<p>.+) - DAY$\")]\nfn interior_daytime(p) >{\n  ok\n}\n",
     );
     assert!(
         !diags.iter().any(|d| d.code == DiagnosticCode::E170),
-        "both patterns are live (neither strictly subsumes the other): {diags:?}"
+        "interior_daytime actually claimed a line (inside interior_full's own body) — E170 is a false positive here: {diags:?}"
+    );
+    assert_eq!(
+        hir.element_matches.len(),
+        1,
+        "exactly one line (inside interior_full's body) is claimable, and only interior_daytime can claim it: {:?}",
+        hir.element_matches
+    );
+    assert_eq!(
+        hir.element_matches[0].handler.text, "interior_daytime",
+        "interior_daytime must be the handler that actually claimed the line: {:?}",
+        hir.element_matches
     );
 }
 

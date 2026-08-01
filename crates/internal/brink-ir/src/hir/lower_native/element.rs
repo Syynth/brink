@@ -199,150 +199,87 @@ pub(super) fn collect(file_id: FileId, root: &SyntaxNode) -> Elements {
     }
 }
 
-/// Try to find a witness string that both patterns match, proving they overlap.
+/// Cap on the number of witness strings [`generate_witnesses_from_hir`]
+/// expands a concatenation into, so an alternation-heavy pattern can't blow
+/// up the cartesian product it builds.
+const MAX_GENERATED_WITNESSES: usize = 16;
+
+/// Try to prove that every string `later_pattern` can match is also matched
+/// by `earlier_pattern` — i.e. `later_pattern`'s language is a subset of
+/// `earlier_pattern`'s, so under first-match-wins dispatch the later handler
+/// can never win a claim the earlier one doesn't already win first.
 ///
-/// Returns `true` if a common witness is found, `false` otherwise (which does
-/// not prove they never overlap, only that this heuristic couldn't find one).
-/// Tries several techniques:
-/// - Shared literal prefix: if both patterns start with the same fixed text
-/// - Generated test strings from pattern structure
-/// - Attempts to find a witness from one pattern and test against the other
-fn patterns_have_provable_overlap(
+/// Returns `true` if subsumption is proven, `false` otherwise (which does
+/// not prove the later pattern is *not* subsumed, only that this heuristic
+/// couldn't prove it). Mere overlap — some string both patterns match, but
+/// each also matches strings the other doesn't — is not enough: a later
+/// handler can still be genuinely useful (see `docs/diagnostics/E170.md`'s
+/// "What this does not catch"). Subsumption is proven by generating a set
+/// of candidate strings from `later_pattern`'s structure and checking that
+/// every one of them is also accepted by `earlier_pattern`.
+fn later_pattern_provably_subsumed(
     earlier_pattern: &regex::Regex,
     later_pattern: &regex::Regex,
 ) -> bool {
-    // List of candidate witness strings to test.
-    let mut witnesses = vec![];
-
-    // Try parsing both patterns to extract literal information.
-    if let (Ok(earlier_hir), Ok(later_hir)) = (
-        regex_syntax::Parser::new().parse(earlier_pattern.as_str()),
-        regex_syntax::Parser::new().parse(later_pattern.as_str()),
-    ) {
-        // Extract common literal prefixes.
-        if let Some(shared_prefix) = extract_shared_literal_prefix(&earlier_hir, &later_hir) {
-            witnesses.push(shared_prefix);
-        }
-        // Try to generate witness strings from the patterns' structure.
-        // Generate from the later (likely more specific) pattern first.
-        if let Some(generated) = generate_witness_from_hir(&later_hir) {
-            witnesses.push(generated.clone());
-        }
-        if let Some(generated) = generate_witness_from_hir(&earlier_hir) {
-            witnesses.push(generated);
-        }
-    }
-
-    // Fallback simple witnesses: try empty string and basic ones.
-    witnesses.extend(vec![
-        String::new(),
-        "a".to_string(),
-        "1".to_string(),
-        "A".to_string(),
-        "VENDOR enters".to_string(),
-        "enters".to_string(),
-    ]);
-
-    // Test each witness: if both patterns match it, they provably overlap.
-    witnesses
-        .into_iter()
-        .any(|witness| earlier_pattern.is_match(&witness) && later_pattern.is_match(&witness))
+    let Ok(later_hir) = regex_syntax::Parser::new().parse(later_pattern.as_str()) else {
+        return false;
+    };
+    let witnesses = generate_witnesses_from_hir(&later_hir);
+    !witnesses.is_empty()
+        && witnesses
+            .iter()
+            .all(|witness| earlier_pattern.is_match(witness))
 }
 
-/// Extract a shared literal prefix from two regex HIRs.
+/// Generate a set of candidate strings the regex HIR might match.
 ///
-/// Returns the prefix if both patterns start with the same literal sequence,
-/// `None` otherwise.
-fn extract_shared_literal_prefix(earlier: &Hir, later: &Hir) -> Option<String> {
-    let earlier_prefix = extract_literal_prefix(earlier)?;
-    let later_prefix = extract_literal_prefix(later)?;
-
-    if earlier_prefix == later_prefix {
-        Some(earlier_prefix)
-    } else {
-        None
-    }
-}
-
-/// Extract the leading literal prefix from a regex HIR, if any.
-///
-/// For example, `^(?<p>.+)$` has no literal prefix (starts with an anchor).
-/// `^INT\. (?<p>.+)$` has the prefix `"INT. "`.
-fn extract_literal_prefix(hir: &Hir) -> Option<String> {
+/// This is a best-effort heuristic: an empty result does not mean the regex
+/// matches nothing, only that this function couldn't construct an example.
+/// Unlike a single-witness generator, this expands **every** branch of an
+/// alternation and recurses into capture groups — skipping either would make
+/// [`later_pattern_provably_subsumed`] blind to every claim pattern with a
+/// named capture (which is all of them, per `E160`/`E167`) or an
+/// alternation (a very common way to spell "either of these branches").
+/// `Concat` builds its result as the cartesian product of its parts'
+/// witnesses, capped at [`MAX_GENERATED_WITNESSES`] so an alternation-heavy
+/// pattern can't blow this up.
+fn generate_witnesses_from_hir(hir: &Hir) -> Vec<String> {
     use regex_syntax::hir::HirKind;
 
     match hir.kind() {
-        HirKind::Literal(lit) => Some(String::from_utf8_lossy(&lit.0).to_string()),
+        HirKind::Literal(lit) => vec![String::from_utf8_lossy(&lit.0).to_string()],
+        HirKind::Capture(cap) => generate_witnesses_from_hir(&cap.sub),
+        HirKind::Repetition(r) => generate_witnesses_from_hir(&r.sub),
+        HirKind::Class(_) => vec!["a".to_string()],
+        HirKind::Empty | HirKind::Look(_) => vec![String::new()],
+        HirKind::Alternation(alts) => alts
+            .iter()
+            .flat_map(generate_witnesses_from_hir)
+            .take(MAX_GENERATED_WITNESSES)
+            .collect(),
         HirKind::Concat(parts) => {
-            let mut prefix = String::new();
+            let mut acc = vec![String::new()];
             for part in parts {
-                if let HirKind::Literal(lit) = part.kind() {
-                    prefix.push_str(&String::from_utf8_lossy(&lit.0));
-                } else {
-                    break;
+                let part_witnesses = generate_witnesses_from_hir(part);
+                if part_witnesses.is_empty() {
+                    // An unhandled construct contributes nothing provable;
+                    // stop here rather than silently dropping this part of
+                    // the pattern from every witness.
+                    return Vec::new();
                 }
-            }
-            if prefix.is_empty() {
-                None
-            } else {
-                Some(prefix)
-            }
-        }
-        _ => None,
-    }
-}
-
-/// Try to generate a simple witness string from a regex HIR.
-///
-/// Attempts to produce a minimal input that the regex might match.
-/// This is a best-effort heuristic; returning `None` does not mean the
-/// regex won't match anything. Conservative approach: only expand constructs
-/// we know how to handle (literals, repetitions, basic classes).
-fn generate_witness_from_hir(hir: &Hir) -> Option<String> {
-    use regex_syntax::hir::HirKind;
-
-    match hir.kind() {
-        HirKind::Literal(lit) => Some(String::from_utf8_lossy(&lit.0).to_string()),
-        HirKind::Concat(parts) => {
-            // For concatenation, try to build a witness from literals and
-            // expand repetitions/classes to minimal examples.
-            let mut witness = String::new();
-            for part in parts {
-                match part.kind() {
-                    HirKind::Literal(lit) => {
-                        witness.push_str(&String::from_utf8_lossy(&lit.0));
-                    }
-                    HirKind::Look(_) | HirKind::Empty => {
-                        // Anchors and empty don't contribute text.
-                    }
-                    HirKind::Repetition(r) => {
-                        // For repetitions, try to expand the inner part.
-                        if let Some(w) = generate_witness_from_hir(&r.sub) {
-                            // Add just one instance for minimal witness.
-                            witness.push_str(&w);
+                let mut next = Vec::with_capacity(acc.len() * part_witnesses.len());
+                'outer: for prefix in &acc {
+                    for suffix in &part_witnesses {
+                        next.push(format!("{prefix}{suffix}"));
+                        if next.len() >= MAX_GENERATED_WITNESSES {
+                            break 'outer;
                         }
                     }
-                    HirKind::Class(_) => {
-                        // For character classes, pick a representative character.
-                        witness.push('a');
-                    }
-                    _ => {
-                        // For any other construct (groups with non-literals,
-                        // alternations, etc), stop expanding here.
-                        break;
-                    }
                 }
+                acc = next;
             }
-            if witness.is_empty() {
-                None
-            } else {
-                Some(witness)
-            }
+            acc
         }
-        HirKind::Repetition(r) => generate_witness_from_hir(&r.sub),
-        HirKind::Class(_) => Some("a".to_string()),
-        HirKind::Empty => Some(String::new()),
-        _ => None,
     }
 }
 
@@ -406,13 +343,16 @@ pub(super) fn diagnose_duplicate_patterns(
             continue;
         }
 
-        // Look for an earlier handler that conflicts with `later`.
-        // Iterate backwards (from `later_idx - 1` down to 0) to find the
-        // first (textually earliest) conflicting handler, and stop there.
-        for earlier in handlers[..later_idx].iter().rev() {
+        // Look for an earlier handler that conflicts with `later`. Iterate
+        // forwards (from index 0 up to `later_idx - 1`) to find the first
+        // (textually earliest) conflicting handler, and stop there — a
+        // `.rev()` here would find the *nearest*, not the first, conflict,
+        // and could misclassify a byte-identical twin as a mere overlap if
+        // a between them a distinct overlapping handler was declared.
+        for earlier in &handlers[..later_idx] {
             let is_byte_identical = earlier.pattern.as_str() == later.pattern.as_str();
             let has_provable_overlap = is_byte_identical
-                || patterns_have_provable_overlap(&earlier.pattern, &later.pattern);
+                || later_pattern_provably_subsumed(&earlier.pattern, &later.pattern);
 
             if !has_provable_overlap {
                 continue;
