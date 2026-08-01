@@ -38,11 +38,14 @@ Internal crates have `publish = false` and are not published to crates.io.
 crates.io and ships no code. There is no facade re-exporting the compiler and
 runtime; depend on `brink-compiler` and `brink-runtime` directly.
 
-## Editor plugins
+## Editor support
 
-| Crate | Path | Purpose |
-|-------|------|---------|
-| `zed-brink` | `crates/zed-brink/` | Zed editor extension |
+Editor integration ships as the `brink-lsp` server (above), not as
+per-editor plugin crates. A Zed extension crate lived at `crates/zed-brink/`
+until 2026-08-01; it was ink-only, unpublished, and its tree-sitter grammar
+pointed at an absolute local path that never existed in the repo, so it could
+not be built. It was removed rather than carried. A future editor plugin
+should target the native (`.brink`) surface — see the NS-T track.
 
 ## Key dependency rules
 

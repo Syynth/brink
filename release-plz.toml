@@ -18,6 +18,5 @@ git_release_enable = true
 # Keep changelog noise down: dependency-only bumps don't warrant an entry.
 dependencies_update = false
 
-# Unpublished crates (brink, brink-web, zed-brink, brink-test-harness) are
-# skipped automatically via their `publish = false` — no per-package overrides
-# needed (and zed-brink isn't a workspace member, so an override would error).
+# Unpublished crates (brink, brink-web, brink-test-harness) are skipped
+# automatically via their `publish = false` — no per-package overrides needed.

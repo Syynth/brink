@@ -36,7 +36,7 @@ not on these directly.
 
 **Not published (`publish = false`):** `brink` (empty umbrella / name
 reservation), `brink-web` (WASM → npm/JSR, separate pipeline),
-`zed-brink` (editor extension), `brink-test-harness` (tests only).
+`brink-test-harness` (tests only).
 
 Versioning is **unified**: all crates inherit `version.workspace = true`, and
 internal deps are centralized in root `[workspace.dependencies]` with versions.
