@@ -375,8 +375,7 @@ flow main() {
   Result: {map([1, 2], double)} -> END
 }
 ";
-    compile_native("pure", source)
-        .expect("a pure native bare-name callback must pass E119");
+    compile_native("pure", source).expect("a pure native bare-name callback must pass E119");
 }
 
 /// The opaque leg, native-surface twin of `opaque_callback_is_not_proven_
