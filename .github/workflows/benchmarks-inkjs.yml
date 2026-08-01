@@ -2,9 +2,10 @@ name: Benchmarks (inkjs)
 
 on:
   schedule:
-    # Weekly schedule: Monday at 18:00 UTC (offset from demo.yml's 00:00,
-    # zed-brink.yml's 06:00, and benchmarks.yml's 12:00 runs so the
-    # workspace-excluded gates don't contend for the same runner window).
+    # Weekly schedule: Monday at 18:00 UTC (offset from demo.yml's 00:00
+    # and benchmarks.yml's 12:00 runs so the workspace-excluded gates don't
+    # contend for the same runner window). The 06:00 slot was zed-brink.yml's
+    # until that crate was removed (2026-08-01).
     # `npm ci` below is the node analogue of the other gates' `--locked`: a
     # dependency release cannot silently affect this build, only an
     # explicit change to package-lock.json can. The cron instead exists to

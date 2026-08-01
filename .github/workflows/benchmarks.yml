@@ -2,9 +2,10 @@ name: Benchmarks (gen-input, brink-loop)
 
 on:
   schedule:
-    # Weekly schedule: Monday at 12:00 UTC (offset from demo.yml's 00:00,
-    # zed-brink.yml's 06:00, and benchmarks-inkjs.yml's 18:00 runs so the
-    # workspace-excluded gates don't contend for the same runner window).
+    # Weekly schedule: Monday at 12:00 UTC (offset from demo.yml's 00:00
+    # and benchmarks-inkjs.yml's 18:00 runs so the workspace-excluded
+    # gates don't contend for the same runner window). The 06:00 slot was
+    # zed-brink.yml's until that crate was removed (2026-08-01).
     # Every step below passes `--locked`, so the committed Cargo.lock in
     # each crate pins the resolved dependency set — a dependency release
     # cannot silently affect this build, only an explicit `cargo update`
@@ -93,7 +94,7 @@ jobs:
         working-directory: benchmarks/tools/gen-input
         run: cargo clippy --locked --all-targets -- -D warnings
       # Build inside benchmarks/tools/gen-input (no tests exist today; kept
-      # for parity with the demo.yml/zed-brink.yml pattern and to catch a
+      # for parity with the demo.yml satellite pattern and to catch a
       # stale lockfile the same way if tests are ever added).
       - name: Build (gen-input)
         working-directory: benchmarks/tools/gen-input
@@ -130,7 +131,7 @@ jobs:
         working-directory: benchmarks/drivers/brink-loop
         run: cargo clippy --locked --all-targets -- -D warnings
       # Build inside benchmarks/drivers/brink-loop (no tests exist today;
-      # kept for parity with the demo.yml/zed-brink.yml pattern and to
+      # kept for parity with the demo.yml satellite pattern and to
       # catch a stale lockfile the same way if tests are ever added).
       - name: Build (brink-loop)
         working-directory: benchmarks/drivers/brink-loop
