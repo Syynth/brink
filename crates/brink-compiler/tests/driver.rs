@@ -1344,18 +1344,57 @@ fn native_bare_name_shadowed_by_a_same_named_global_is_not_typed_as_a_fn_value()
 /// must stay off unless the declaring file is native. Kept as a guard on
 /// the `hir.native` conjunct — dropping it would silently give every ink
 /// `VAR` initialized to a function knot's name a `Ty::Fn`.
+///
+/// Must actually be able to fail, so this compiles through
+/// `compile_path_with_options` with `dialect = Brink` + `types = Strict`
+/// (not `compile_and_run`'s bare `compile_mem`, which never turns strict
+/// typing on and so could never observe a false `E063` here — house rule
+/// 20a). `native` gates on which frontend parsed the file
+/// (`crate::driver::prepare_driver` dispatches on the entry's `.brink`
+/// extension), not on the `dialect` policy, so a *typed* function knot
+/// under the T1b brink-extension syntax (`=== function f(x: int): int
+/// ===`) is still parsed by the ink frontend here (`main.ink`) and stays
+/// `native == false`. `g` must therefore stay `Ty::Unknown` and
+/// `total(g)` must compile clean even under strict. With the `native`
+/// conjunct stubbed out this fails with exactly `["E063"]` — `g` would
+/// type as `fn(int): int` and mismatch `total`'s `int` parameter.
 #[test]
 fn ink_var_initialized_to_a_function_name_is_not_typed_as_a_fn_value() {
-    let source = "Count: {f}\n\
-                  -> END\n\n\
-                  === function f ===\n\
-                  ~ return 1\n\n\
-                  VAR g = f\n";
-    let output = compile_and_run(source, &[]);
-    assert!(
-        output.contains("Count: 0"),
-        "an ink bare function-knot name must stay a visit count, got: {output:?}"
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-ink-1895-decl-init-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("main.ink");
+    std::fs::write(
+        &path,
+        "VAR g = f\n\
+         === function f(x: int): int ===\n\
+         ~ return x\n\n\
+         === function total(n: int): int ===\n\
+         ~ return n + 1\n\n\
+         === main ===\n\
+         ~ total(g)\n\
+         -> DONE\n",
+    )
+    .unwrap();
+    let result = brink_compiler::compile_path_with_options(
+        &path,
+        brink_compiler::AnalysisOptions {
+            dialect: brink_compiler::Dialect::Brink,
+            types: Some(brink_compiler::TypePolicy::Strict),
+            ..brink_compiler::AnalysisOptions::default()
+        },
     );
+    std::fs::remove_dir_all(&dir).ok();
+    result.unwrap_or_else(|err| {
+        panic!(
+            "an ink bare function-knot name must stay Unknown and compile \
+             clean under strict typing, got: {:?}",
+            diagnostic_codes(&err)
+        )
+    });
 }
 
 // ── compile_path (disk-based) ───────────────────────────────────────
