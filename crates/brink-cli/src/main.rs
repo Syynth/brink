@@ -113,7 +113,7 @@ enum Commands {
     },
     /// Convert between ink formats (.inkb, .inkt)
     Convert {
-        /// Input file (.ink, .inkb, or .inkt)
+        /// Input file (.ink, .brink, .inkb, or .inkt)
         input: PathBuf,
         /// Output file (format inferred from extension, defaults to stdout as .inkt)
         #[arg(short, long)]
@@ -121,7 +121,7 @@ enum Commands {
     },
     /// Export line tables from a compiled story as XLIFF 2.0
     ExportXliff {
-        /// Input story file (.inkb, .ink, or .inkt)
+        /// Input story file (.inkb, .ink, .brink, or .inkt)
         input: PathBuf,
         /// BCP 47 source language tag (e.g. "en")
         #[arg(long, default_value = "en")]
@@ -189,7 +189,7 @@ enum Commands {
     },
     /// Play an ink story interactively
     Play {
-        /// Story file (.ink source, .inkb, or .inkt)
+        /// Story file (.ink or .brink source, .inkb, or .inkt)
         file: PathBuf,
         /// Read choice inputs from a file (one 1-indexed choice per line)
         #[arg(short, long)]
@@ -208,7 +208,7 @@ enum Commands {
     Replay {
         /// Transcript file (.brkt)
         transcript: PathBuf,
-        /// Story file (.ink source, .inkb, or .inkt)
+        /// Story file (.ink or .brink source, .inkb, or .inkt)
         #[arg(short, long)]
         story: PathBuf,
         /// Locale overlay file (.inkl) to apply before rendering
@@ -481,14 +481,31 @@ fn load_story_data(
     input: &std::path::Path,
 ) -> Result<brink_format::StoryData, Box<dyn std::error::Error>> {
     let ext = input.extension().and_then(|e| e.to_str()).unwrap_or("");
-    if ext == "ink" {
-        // Raw .ink source — compile in-memory via the native pipeline,
-        // discovering + applying a `brink.toml` (#1005) just like `brink
-        // compile` does. Every mount that compiles from source (`brink
-        // convert`, `brink play`, `brink replay`, `brink export-xliff`) reads
-        // the same file `brink compile` does, rather than silently falling
-        // back to `AnalysisOptions::default()` and rejecting extension
-        // syntax on a `dialect = "brink"` project.
+    if ext == "ink" || ext == "brink" {
+        // Raw .ink or .brink source — compile in-memory via the native
+        // pipeline (no temp artifact written to disk; the `StoryData` goes
+        // straight from `compile_entry` to the runtime, exactly like `brink
+        // compile -o -` piped into `brink play` would, minus the round
+        // trip), discovering + applying a `brink.toml` (#1005) just like
+        // `brink compile` does. Every mount that compiles from source
+        // (`brink convert`, `brink play`, `brink replay`, `brink
+        // export-xliff`) reads the same file `brink compile` does, rather
+        // than silently falling back to `AnalysisOptions::default()` and
+        // rejecting extension syntax on a `dialect = "brink"` project.
+        //
+        // A `.brink` entry is routed through the exact same `compile_entry`
+        // call as `.ink` (issue #1949) — `compile_entry` is already
+        // extension-agnostic: `native_source_root_with_warnings` discovers
+        // the project root + `brink.toml` from `entry`'s directory
+        // regardless of `entry`'s own extension, and
+        // `brink_environment::Project::load` dispatches on `entry`'s
+        // extension internally (`collect_sources`) to compile the *whole*
+        // native source tree under that root as one project (tree-is-
+        // universe, unlike `.ink`'s `INCLUDE`-reachable set) — the same
+        // discovery `brink compile scene.brink` already performs and that
+        // the respell fixtures oracle-verify. `play`/`replay`/`convert`/
+        // `export-xliff` on a `.brink` entry therefore get identical
+        // project discovery to `compile`, not a standalone-file compile.
         let output_result =
             compile_entry(input, None, None, std::collections::BTreeMap::new(), None)?;
         for w in &output_result.warnings {
@@ -503,7 +520,7 @@ fn load_story_data(
         Ok(brink_format::read_inkt(&text)?)
     } else {
         Err(format!(
-            "unsupported story format: {} (expected .ink, .inkb, or .inkt; \
+            "unsupported story format: {} (expected .ink, .brink, .inkb, or .inkt; \
              .ink.json ingestion was retired — compile the .ink source instead)",
             input.display()
         )
