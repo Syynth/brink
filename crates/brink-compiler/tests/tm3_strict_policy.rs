@@ -476,3 +476,153 @@ fn strict_accepts_explicit_option_comparisons_in_conditions() {
         .collect();
     assert_eq!(text, "at one.\n");
 }
+
+// ── Issue #1864: direct-call argument types were never checked ─────────
+
+#[test]
+fn strict_direct_call_arg_mismatch_blocks_compilation_with_e063() {
+    // `h`'s declared param `x` is `int`; the argument passed at the direct
+    // call site `h("hi")` is a string literal — a genuine, statically-
+    // provable disagreement, not an Unknown/Conflicted escape (those are
+    // `mismatches`.rs's affair, already covered by E065/E066). Before this
+    // fix (#1864), a direct call's arguments were only ever fed as
+    // *evidence* into the argument's own inference, never checked against
+    // the callee's already-known declared parameter type, so this fixture
+    // compiled with zero diagnostics.
+    let err = compile_mem(
+        "=== function h(x: int) ===\n~ return\n\
+         === main ===\n~ h(\"hi\")\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    )
+    .expect_err(
+        "a direct call passing a string argument to a declared-int parameter must fail strict \
+         compilation",
+    );
+    let diags = diagnostics_of(err);
+    assert_eq!(
+        diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![DiagnosticCode::E063],
+        "this fixture is deliberately clean of every other strict diagnostic so E063 alone \
+         must be what fails compilation: {diags:?}"
+    );
+}
+
+#[test]
+fn strict_direct_call_result_arg_mismatch_blocks_compilation_with_e063() {
+    // The issue's own `take(mk())` shape: the argument is itself a *call*
+    // result (`mk()` returns `string`), not a literal or a `~ temp`-backed
+    // variable — `take`'s declared param `x` is `int`. Proves the check
+    // reaches a call-valued argument too, via `structs::classify_expr_ty`'s
+    // existing `Expr::Call` arm (the resolved callee's `InferredSig::
+    // return_ty`), not just literal-shaped ones.
+    let err = compile_mem(
+        "=== function mk(): string ===\n~ return \"hi\"\n\
+         === function take(x: int) ===\n~ return\n\
+         === main ===\n~ take(mk())\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    )
+    .expect_err(
+        "a direct call passing a string-returning call result to a declared-int parameter must \
+         fail strict compilation",
+    );
+    let diags = diagnostics_of(err);
+    assert_eq!(
+        diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![DiagnosticCode::E063],
+        "this fixture is deliberately clean of every other strict diagnostic so E063 alone \
+         must be what fails compilation: {diags:?}"
+    );
+}
+
+#[test]
+fn strict_direct_call_arg_mismatch_via_conflicted_temp_reports_only_e066() {
+    // Companion/negative case: when the mismatched argument is a `~ temp`
+    // whose own type the call *itself* drives to `Ty::Conflicted` (the
+    // pre-existing `InferPass::observe` join at this exact call site — see
+    // `strict::check_escapes`'s Conflicted-escape, `E066`), this pass's own
+    // `classify_expr_ty` reads the *finalized* (post-observe) local type,
+    // sees `Conflicted`, and — matching the same "Unknown/Conflicted stays
+    // silently unchecked" posture every other TM-3 mismatch check in this
+    // crate follows — skips the argument rather than reporting a second,
+    // redundant `E063` on top of the `E066` that already names the same
+    // disagreement. A regression test for exactly this shape caught a
+    // pre-existing `external_binding_rejects_cross_kind_handle_argument_
+    // under_strict` unit test breaking during this fix's development (an
+    // inline mid-walk check, since replaced by this post-hoc pass, could
+    // observe the argument's type *before* that same call's own `observe`
+    // join poisoned it, double-reporting E063 alongside E066).
+    let err = compile_mem(
+        "=== function h(x: int) ===\n~ return\n\
+         === main ===\n~ temp s: string = \"hi\"\n~ h(s)\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    )
+    .expect_err("a Conflicted-escaping temp argument must still fail strict compilation");
+    let diags = diagnostics_of(err);
+    assert_eq!(
+        diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![DiagnosticCode::E066],
+        "the temp's own Conflicted-escape must be the sole diagnostic here — no redundant \
+         E063 on top of it: {diags:?}"
+    );
+}
+
+#[test]
+fn strict_direct_call_arg_mismatch_message_names_the_known_type_not_declared() {
+    // Regression for a reviewer finding on #1864's original PR: the
+    // diagnostic message said "its **declared** parameter type is `{}`",
+    // but `expected` is read from `known_sigs`'s `InferredSig::params` —
+    // the body-derived, *inferred* signature, not the annotation firewall.
+    // The two disagree whenever a callee's own body has already driven a
+    // param to a type its own annotation didn't say: here `outer(p:
+    // string)` calls `h(p)`, and `h`'s sole param is `int`, so inference
+    // widens `outer`'s *known* signature for `p` to `int` even though its
+    // declared annotation stays `string`. `outer("a")` then mismatches
+    // against the known (int) type, not the declared (string) one — the
+    // old wording would have blamed the wrong type at this call site.
+    let err = compile_mem(
+        "=== function outer(p: string) ===\n~ h(p)\n~ return\n\
+         === function h(x: int) ===\n~ return\n\
+         === main ===\n~ outer(\"a\")\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    )
+    .expect_err(
+        "a direct call whose known type disagrees with its declared annotation must \
+                 still fail strict compilation",
+    );
+    let diags = diagnostics_of(err);
+    let outer_call_diag = diags
+        .iter()
+        .find(|d| d.message.contains("call to `outer`"))
+        .unwrap_or_else(|| panic!("expected a diagnostic naming the `outer` call site: {diags:?}"));
+    assert!(
+        !outer_call_diag.message.contains("declared"),
+        "the message must not claim a specific *declared* type when `expected` is read from \
+         the body-derived known signature: {}",
+        outer_call_diag.message
+    );
+    assert!(
+        outer_call_diag.message.contains("known type expects `int`"),
+        "the message must name the known (inferred) type, matching check_value_calls's own \
+         wording: {}",
+        outer_call_diag.message
+    );
+}
+
+#[test]
+fn gradual_direct_call_arg_mismatch_still_compiles() {
+    // Same fixture, `types` left at its default (`Gradual`) — the direct-
+    // call check stays advisory-only and never blocks compilation, same
+    // posture as every other TM-3 check (the runtime type-mismatch fault
+    // is gradual mode's backstop).
+    let result = compile_mem(
+        "=== function h(x: int) ===\n~ return\n\
+         === main ===\n~ h(\"hi\")\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::default(),
+    );
+    assert!(result.is_ok(), "{result:?}");
+}

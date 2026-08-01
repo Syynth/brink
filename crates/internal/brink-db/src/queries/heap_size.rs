@@ -42,7 +42,7 @@
 use std::mem::{size_of, size_of_val};
 use std::sync::Arc;
 
-use brink_analyzer::{BodyTypes, InferredSig, Sig, Ty, ValueCallFact};
+use brink_analyzer::{BodyTypes, DirectCallArgMismatch, InferredSig, Sig, Ty, ValueCallFact};
 use brink_format::DefinitionId;
 use brink_ir::{
     Block, BlockStmt, Choice, ChoiceSet, CondBranch, Conditional, Content, ContentPart,
@@ -355,6 +355,15 @@ fn value_call_fact_heap(f: &ValueCallFact) -> usize {
     string_heap(&f.callee)
 }
 
+/// Issue #1864: a `DirectCallArgMismatch`'s own heap contribution — its
+/// `callee` string plus its two `Ty`s (`expected`/`found`), same shape as
+/// [`value_call_fact_heap`] extended for the two extra `Ty` fields a direct-
+/// call fact carries that a `ValueCallFact` doesn't (its `kind` enum holds
+/// those inline instead).
+fn direct_call_arg_mismatch_heap(m: &DirectCallArgMismatch) -> usize {
+    string_heap(&m.callee) + ty_heap(&m.expected) + ty_heap(&m.found)
+}
+
 fn body_types_heap(b: &BodyTypes) -> usize {
     let params_heap: usize = b
         .params
@@ -382,6 +391,11 @@ fn body_types_heap(b: &BodyTypes) -> usize {
         // inline), so the `Vec`'s own buffer is the whole contribution —
         // same posture as `divert_target_heap`'s `vec_heap(&dt.args)`.
         + vec_heap(&b.array_remove_calls)
+        + vec_heap(&b.direct_call_arg_mismatches)
+        + b.direct_call_arg_mismatches
+            .iter()
+            .map(direct_call_arg_mismatch_heap)
+            .sum::<usize>()
 }
 
 pub(crate) fn solve_scc_heap_size(value: &Arc<SolvedScc>) -> usize {
@@ -662,6 +676,7 @@ mod tests {
                 return_ty: Ty::Bool,
                 has_value_return: true,
                 value_calls: Vec::new(),
+                direct_call_arg_mismatches: Vec::new(),
                 array_remove_calls: Vec::new(),
             },
         );
@@ -683,6 +698,30 @@ mod tests {
         populated
             .locals
             .insert("very_long_local_variable_name".to_string(), Ty::Int);
+
+        let populated_size = infer_body_heap_size(&Some(Arc::new(populated)));
+        assert!(populated_size > empty);
+    }
+
+    /// Issue #1864: `direct_call_arg_mismatches` is a consumer
+    /// `body_types_heap` must walk too — same growth-proof shape as
+    /// [`infer_body_heap_size_grows_with_locals`], guarding against the
+    /// accumulator silently under-reporting a populated `Vec` the way
+    /// house rule 20b warns a structurally-ignoring consumer can.
+    #[test]
+    fn infer_body_heap_size_grows_with_direct_call_arg_mismatches() {
+        let empty = infer_body_heap_size(&Some(Arc::new(BodyTypes::default())));
+
+        let mut populated = BodyTypes::default();
+        populated
+            .direct_call_arg_mismatches
+            .push(DirectCallArgMismatch {
+                range: rowan::TextRange::new(rowan::TextSize::new(0), rowan::TextSize::new(1)),
+                callee: "very_long_callee_name".to_string(),
+                index: 0,
+                expected: Ty::Int,
+                found: Ty::String,
+            });
 
         let populated_size = infer_body_heap_size(&Some(Arc::new(populated)));
         assert!(populated_size > empty);

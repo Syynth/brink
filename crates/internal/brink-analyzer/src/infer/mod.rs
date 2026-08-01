@@ -131,6 +131,47 @@ pub struct BodyTypes {
     /// Reported only by strict mode (`strict::check_array_remove_calls`,
     /// `E149`), the same split as `value_calls`.
     pub array_remove_calls: Vec<TextRange>,
+    /// Issue #1864: statically-checkable argument-type mismatches at
+    /// **direct** call sites (`h("hi")`, resolving straight to a known
+    /// knot/stitch via `known_sigs` — never a call through a value, which
+    /// [`ValueCallFact`]/[`ValueCallKind::ArgMismatch`] already covers).
+    /// Recorded unconditionally during inference, like `value_calls`;
+    /// reported only by strict mode — gradual mode keeps deferring to the
+    /// existing runtime type-mismatch fault as its backstop.
+    ///
+    /// Deliberately **excludes** an argument that is a bare `Path`
+    /// resolving to a `Param`/`Temp` in the caller's own body — the exact
+    /// set `InferPass::observe` unconditionally joins the callee's declared
+    /// param type into, right after this check runs (see
+    /// `body::InferPass::infer_call`'s doc for why). A genuine disagreement
+    /// there drives that local to `Ty::Conflicted` on its own, which
+    /// `strict::check_escapes` already reports as `E066` — recording a
+    /// second fact here for the identical disagreement would double-report
+    /// it. A `Path` argument resolving to anything else (a literal, a
+    /// nested call's return value, a global `VAR`/`CONST`, an index
+    /// expression, …) is unaffected by `observe` and stays fully checked.
+    pub direct_call_arg_mismatches: Vec<DirectCallArgMismatch>,
+}
+
+/// One statically-checkable argument-type mismatch at a **direct** call
+/// site (issue #1864) — the callee resolves straight to a known def via
+/// `known_sigs`, so its declared parameter types are already fully known
+/// at the call site, unlike the T1c call-through-a-value case
+/// [`ValueCallFact`] exists for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectCallArgMismatch {
+    /// The callee `Path`'s own source range (the diagnostic site) — same
+    /// convention as [`ValueCallFact::range`].
+    pub range: TextRange,
+    /// The callee's display name (`h` in `h("hi")`; dotted if the resolved
+    /// path had multiple segments, e.g. `Knot.stitch`).
+    pub callee: String,
+    /// The mismatched argument's 0-based position.
+    pub index: usize,
+    /// The callee's declared parameter type at `index`.
+    pub expected: Ty,
+    /// The argument expression's statically classified type.
+    pub found: Ty,
 }
 
 /// One statically-checkable fact about a call through a function value
@@ -627,6 +668,7 @@ fn solve_one_batch(
                     has_value_return: result.has_value_return,
                     value_calls: result.value_calls,
                     array_remove_calls: result.array_remove_calls,
+                    direct_call_arg_mismatches: result.direct_call_arg_mismatches,
                 },
             )
         })
