@@ -272,7 +272,10 @@ fn lower_one_item(
             let Some(tl) = ast::TagLine::cast(node.clone()) else {
                 return Vec::new();
             };
-            let tags: Vec<Tag> = tl.tags().map(|t| lower_tag(file_id, &t)).collect();
+            let tags: Vec<Tag> = tl
+                .tags()
+                .map(|t| lower_tag(file_id, &t, diags))
+                .collect();
             if tags.is_empty() {
                 Vec::new()
             } else {
@@ -578,7 +581,7 @@ pub(super) fn lower_content_run(
             }
             N::TAG => {
                 if let Some(t) = ast::Tag::cast(node.clone()) {
-                    tags.push(lower_tag(file_id, &t));
+                    tags.push(lower_tag(file_id, &t, diags));
                 }
                 i += 1;
             }
@@ -813,7 +816,7 @@ pub(super) fn lower_interpolation(
     }
 }
 
-fn lower_tag(file_id: FileId, t: &ast::Tag) -> Tag {
+fn lower_tag(file_id: FileId, t: &ast::Tag, diags: &mut Vec<Diagnostic>) -> Tag {
     let mut text = String::new();
     for tok in t
         .syntax()
@@ -826,6 +829,13 @@ fn lower_tag(file_id: FileId, t: &ast::Tag) -> Tag {
         text.push_str(tok.text());
     }
     let trimmed = text.trim().to_string();
+    if let Some(rest) = trimmed.strip_prefix('@') {
+        diags.push(directive_like_tag_diagnostic(
+            file_id,
+            t.syntax().text_range(),
+            rest,
+        ));
+    }
     let parts = if trimmed.is_empty() {
         Vec::new()
     } else {
@@ -834,6 +844,65 @@ fn lower_tag(file_id: FileId, t: &ast::Tag) -> Tag {
     Tag {
         parts,
         ptr: native_provenance(file_id, NodeClass::Tag, t.syntax()),
+    }
+}
+
+/// `E172` (issue #1835): a native tag whose text starts with `@` has the
+/// *shape* of an ink-dialect compiler directive, but native's tag lowering
+/// has no directive channel: `#` is already the runtime-tag sigil in native
+/// content position, which is exactly why `#@…` parses as an ordinary tag
+/// rather than a directive here too. Four message shapes, by name:
+///
+/// - `was`/`effects` — real ink directive names
+///   (`hir::lower::directive::parse_directive_tag`'s recognized set) that
+///   *do* have a native `@[name(…)]` annotation counterpart
+///   (`hir::lower_native::annotation`) — the message names it directly.
+/// - `module`/`public`/`private`/`local` — real ink directive names with
+///   no native annotation-channel equivalent yet.
+/// - `allow` — not an ink directive name at all (ink's own recognizer
+///   only knows the six names above; `#@allow` is an *unknown* directive
+///   there too, per review of #1953). Gets its own wording naming the
+///   unrelated native `@[allow(…)]` diagnostic-suppression channel, rather
+///   than being folded in with `was`/`effects` as if ink recognized it.
+/// - anything else — an unrecognized name. The message only asserts the
+///   tag has the *shape* of a directive (leading `@`), never that ink
+///   itself would recognize it — a project may deliberately tag content
+///   with its own `@`-led runtime convention (e.g. `#@narrator`), and this
+///   arm must not tell that author their tag "is an ink compiler directive"
+///   when it verifiably isn't one.
+fn directive_like_tag_diagnostic(file: FileId, range: rowan::TextRange, rest: &str) -> Diagnostic {
+    let name: String = rest
+        .chars()
+        .take_while(|c| *c != '(' && !c.is_whitespace())
+        .collect();
+    let message = match name.as_str() {
+        "was" | "effects" => format!(
+            "`#@{name}` is the ink-dialect directive-tag spelling; native's equivalent is the \
+             `@[{name}(…)]` annotation — this tag has no directive effect here and compiles as \
+             literal runtime tag content"
+        ),
+        "module" | "public" | "private" | "local" => format!(
+            "`#@{name}` is an ink-dialect compiler-directive spelling (`module`/`public`/\
+             `private`/`local`/`was`/`effects`); native has no directive channel and no \
+             `{name}` equivalent — this tag has no directive effect here and compiles as \
+             literal runtime tag content"
+        ),
+        "allow" => "`#@allow` has no directive meaning in either dialect — ink's directive \
+             recognizer only knows `module`/`public`/`private`/`local`/`was`/`effects`; \
+             native's `@[allow(…)]` annotation is an unrelated diagnostic-suppression channel \
+             — this tag compiles as literal runtime tag content"
+            .to_string(),
+        _ => format!(
+            "`#@{name}` has the shape of an ink-dialect compiler-directive tag, but native has \
+             no directive channel and ink has no `{name}` directive either — this tag compiles \
+             as literal runtime tag content"
+        ),
+    };
+    Diagnostic {
+        file,
+        range,
+        message,
+        code: DiagnosticCode::E172,
     }
 }
 

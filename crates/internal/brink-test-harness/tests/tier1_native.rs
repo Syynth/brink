@@ -416,6 +416,108 @@ fn root_content_typed_strict() {
     assert_case("root-content-typed-strict");
 }
 
+/// Directive-shaped `#@…` tags (issue #1835): a `.brink` file with a
+/// `#@was("old_name")` trailing tag (a name with a native `@[was(…)]`
+/// annotation counterpart) and a `#@private` trailing tag (a name with no
+/// native equivalent) compiles and runs clean end to end — `E172` is
+/// `Warning`-severity and non-blocking (`DiagnosticCode::severity`), so
+/// neither line's compile fails and both still print as ordinary content.
+/// The diagnostic itself isn't observable through this transcript
+/// (`run_native_transcript`'s `Line::Text` arm drops the `tags` field
+/// entirely, the same reason `inline_tag_embedded_brace`'s module doc
+/// gives) — `directive_like_tag_warns_e172` immediately below is the
+/// compile-level sibling that inspects `CompileOutput::warnings` directly.
+#[test]
+fn directive_like_tag() {
+    assert_case("directive-like-tag");
+}
+
+/// Compile-level sibling to `directive_like_tag`: inspects
+/// `CompileOutput::warnings` directly to pin that both the recognized
+/// (`was`) and unrecognized (`private`) `#@…` names each raise their own
+/// `E172`, with the message naming the right guidance for each — the
+/// native `@[was(…)]` annotation equivalent for the first, and an explicit
+/// "no native equivalent" for the second.
+#[test]
+fn directive_like_tag_warns_e172() {
+    let path = corpus_dir().join("directive-like-tag").join("story.brink");
+    let output = brink_compiler::compile_path(&path)
+        .unwrap_or_else(|e| panic!("compile directive-like-tag: {e:?}"));
+    let e172s: Vec<_> = output
+        .warnings
+        .iter()
+        .filter(|w| w.code == brink_ir::DiagnosticCode::E172)
+        .collect();
+    assert_eq!(
+        e172s.len(),
+        2,
+        "expected exactly two E172 warnings: {:?}",
+        output.warnings
+    );
+    assert!(
+        e172s.iter().any(|w| w.message.contains("@[was(")),
+        "expected the `was` tag's message to name the native `@[was(…)]` equivalent: {e172s:?}"
+    );
+    assert!(
+        e172s
+            .iter()
+            .any(|w| w.message.contains("no `private` equivalent")),
+        "expected the `private` tag's message to say it has no native equivalent: {e172s:?}"
+    );
+}
+
+/// Review of #1953 ("DOCUMENTED CONTRACT WITH NO TEST"): `@[allow(E172)]`
+/// is the stated justification for `E172`'s `Warning` severity in
+/// `DiagnosticCode::E172`'s doc comment, in `severity()`'s comment, in the
+/// issue's changeset, and in `docs/diagnostics/E172.md`'s Fix section, but
+/// nothing exercised it — suppression is applied downstream of
+/// `hir::lower_native` (`brink_ir::suppressions::apply_suppressions` via
+/// `brink-db::partition_diagnostics` merging `HirFile::allow_scopes`),
+/// invisible to the `lower_native` unit tests, which only see diagnostics
+/// as raised, pre-suppression. Writes a scratch `.brink` file (not the
+/// on-disk `directive-like-tag` fixture, which has no `@[allow(…)]`) and
+/// compiles it through `compile_path`, the same entry point
+/// `directive_like_tag_warns_e172` above uses, asserting an
+/// `@[allow(E172)]` above the flow removes both tags' warnings from
+/// `CompileOutput::warnings`.
+#[test]
+fn directive_like_tag_allow_e172_suppresses_the_warning() {
+    // Native `.brink` discovery reads straight off disk
+    // (`brink_driver::Driver::discover_native` → `RealFs`), bypassing any
+    // in-memory `read_file` callback entirely (see
+    // `crates/brink-compiler/tests/e0xx_diagnostics.rs`'s `compile_native`
+    // doc comment for the same constraint) — so this needs a real scratch
+    // file on disk rather than `brink_compiler::compile`'s virtual-source
+    // entry point.
+    let src = "\
+@[allow(E172)]
+flow main() {
+  Hi there. #@was(\"old_name\")
+  Bye. #@private
+  -> END
+}
+";
+    let dir = std::env::temp_dir().join(format!(
+        "brink-tier1-native-e172-allow-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create scratch dir");
+    std::fs::write(dir.join("main.brink"), src).expect("write scratch story.brink");
+    let result = brink_compiler::compile_path(&dir.join("main.brink"));
+    std::fs::remove_dir_all(&dir).ok();
+    let output = result.unwrap_or_else(|e| panic!("compile directive-like-tag-allow: {e:?}"));
+    let e172s: Vec<_> = output
+        .warnings
+        .iter()
+        .filter(|w| w.code == brink_ir::DiagnosticCode::E172)
+        .collect();
+    assert!(
+        e172s.is_empty(),
+        "expected @[allow(E172)] above the flow to suppress both tags' warnings: {e172s:?}"
+    );
+}
+
 /// Every `tests/tier1-native/` case directory is exercised by a `#[test]`
 /// above — a directory with no matching test would silently never run.
 #[test]
@@ -428,6 +530,7 @@ fn every_case_directory_has_a_test() {
         "array-literal",
         "as-binding",
         "construction-literal",
+        "directive-like-tag",
         "fn-value-bare-name",
         "for-k-v",
         "inline-markup-point-marker",
