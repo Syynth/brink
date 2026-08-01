@@ -444,11 +444,10 @@ pub(crate) fn conventions_confinement_diagnostics_query(
         return Arc::new(Vec::new());
     };
     let native_root = project.native_root(db).as_deref();
-    let expected_module =
-        crate::modules::native_module_path(&crate::modules::root_relative_key(
-            native_root,
-            pointer,
-        ));
+    let expected_module = crate::modules::native_module_path(&crate::modules::root_relative_key(
+        native_root,
+        pointer,
+    ));
     let is_conventions_module = this_module == expected_module;
     Arc::new(brink_analyzer::conventions_module_diagnostics(
         file_id,

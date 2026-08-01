@@ -96,8 +96,12 @@ mod tests {
     #[test]
     fn no_claim_handlers_is_always_silent() {
         let hir = build_native("flow main() {\n  hi\n}\n");
-        let diags =
-            conventions_module_diagnostics(FileId(0), &hir, /* is_conventions_module */ false, "conventions.brink");
+        let diags = conventions_module_diagnostics(
+            FileId(0),
+            &hir,
+            /* is_conventions_module */ false,
+            "conventions.brink",
+        );
         assert!(diags.is_empty(), "{diags:?}");
     }
 
@@ -125,10 +129,7 @@ mod tests {
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E169);
         assert!(diags[0].message.contains("interior"), "{diags:?}");
-        assert!(
-            diags[0].message.contains("conventions.brink"),
-            "{diags:?}"
-        );
+        assert!(diags[0].message.contains("conventions.brink"), "{diags:?}");
         // Anchored on the `@[element(…)]` annotation line, matching E112's
         // own placement-diagnostic anchor — never the handler's `fn` body.
         assert_eq!(diags[0].range, hir.claim_handlers[0].annotation);
