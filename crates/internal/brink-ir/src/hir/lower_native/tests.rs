@@ -753,6 +753,26 @@ fn all_four_escapes_lower_to_literal_text_merged_into_one_part() {
 }
 
 #[test]
+fn a_leading_backslash_at_lowers_to_literal_text_not_a_cue() {
+    // §8d.6's line-start escape set (issue #1744): `\@VENDOR` must lower
+    // to a plain Content line, never claim `@NAME`'s CUE dispatch
+    // (§8b.9). `push_escape` is generic over any `ESCAPE` node, so this
+    // is the same merged-single-Text-part shape the four inline escapes
+    // get.
+    let (hir, _m, diags) = lower_src("flow a() {\n  \\@VENDOR waves.\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = only_knot_body(&hir);
+    let Stmt::Content(c) = &body.stmts[0] else {
+        panic!("expected Content (not a Cue), got {:?}", body.stmts[0]);
+    };
+    assert_eq!(c.parts.len(), 1, "expected one merged Text part: {c:?}");
+    let ContentPart::Text(t) = &c.parts[0] else {
+        panic!("expected Text, got {:?}", c.parts[0]);
+    };
+    assert_eq!(t.as_str(), "@VENDOR waves.");
+}
+
+#[test]
 fn a_backslash_before_anything_else_is_a_parse_error_not_a_hir_diagnostic() {
     // The escape set is validated by the parser (§8d.6); a bad escape is a
     // `ParseError`, never reaches `hir::lower_native` at all as a node —

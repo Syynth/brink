@@ -45,12 +45,21 @@
 //!
 //! # Escape set is final (§8d.6)
 //!
-//! `\<` `\{` `\#` `\\` — and only those four. A `BACKSLASH` before anything
-//! else is a compile error ([`escape`]), never silently swallowed as a
-//! literal backslash.
+//! `\<` `\{` `\#` `\\` — and only those four, **inline** (anywhere in a
+//! line). A `BACKSLASH` before anything else is a compile error
+//! ([`escape`]), never silently swallowed as a literal backslash.
+//!
+//! §8d.6 also rules a second, disjoint pair as **line-start** escapes —
+//! `\!` `\@`, legal only as the very first item of a content line
+//! ([`at_line_start_escape`]/[`line_start_escape`], issue #1744) —
+//! protecting a literal leading `!`/`@` from the sigils those characters
+//! carry there (`@NAME` cue dispatch, the reserved `!name` annotation
+//! sigil). A `\!`/`\@` anywhere else in a line is not part of the inline
+//! four and hits the same compile error as any other unrecognized
+//! backslash.
 
 use crate::SyntaxKind::{
-    BACKSLASH, EQ, ERROR, GT, HASH, IDENT, L_BRACE, LT, QUOTE, SLASH, SPAN, SPAN_ATTR,
+    AT, BACKSLASH, BANG, EQ, ERROR, GT, HASH, IDENT, L_BRACE, LT, QUOTE, SLASH, SPAN, SPAN_ATTR,
     SPAN_ATTR_VALUE, SPAN_NAME, STRING_ESCAPE, STRING_TEXT,
 };
 
@@ -216,4 +225,40 @@ pub(crate) fn escape(p: &mut Parser<'_, '_>) {
             "invalid escape sequence: `\\` must be immediately followed by one of `<`, `{`, `#`, `\\`",
         );
     }
+}
+
+// ── Line-start escapes `\!` `\@` (§8d.6, issue #1744) ─────────────────
+//
+// A second, disjoint escape set from [`is_escapable`]'s four inline
+// escapes — **not** an extension of it (§8d.6 rules that set final; see
+// its doc comment). `\!` and `\@` are legal only as the very first item
+// of a content line (`content::content_line`/`content_line_else_boundary`,
+// right after the optional `(label)` prefix), where a bare `!`/`@` would
+// otherwise carry sigil meaning: `@NAME` opens a `CUE`
+// (`element::at_cue`), and a bare line-start `!` is reserved for the
+// `!name` annotation-element dispatch (§3.5b) — implemented or not, an
+// author must be able to write a literal leading `!`/`@` without
+// colliding with either. Anywhere else in a line, `\!`/`\@` are not in
+// the inline set and remain the ordinary "backslash before anything
+// else" compile error [`escape`] already gives.
+
+/// True at `\!` or `\@`, immediately adjacent (no trivia) — the two
+/// line-start escapes. Only meaningful when checked at a content line's
+/// own start; the caller is responsible for that positioning (mirrors
+/// [`at_span_open`]'s "recognition only, not a claim about context").
+pub(crate) fn at_line_start_escape(p: &Parser<'_, '_>) -> bool {
+    p.at(BACKSLASH) && matches!(p.nth(1), BANG | AT) && p.nth_adjacent(0)
+}
+
+/// Consume a confirmed [`at_line_start_escape`] position into an `ESCAPE`
+/// node holding the literal `!`/`@`. Reuses [`escape`]'s exact node shape
+/// (`BACKSLASH` + the one escaped token) so lowering
+/// (`hir::lower_native::body::push_escape`) needs no change — it already
+/// takes any `ESCAPE` node's second token verbatim as the literal it
+/// produces.
+pub(crate) fn line_start_escape(p: &mut Parser<'_, '_>) {
+    p.start_node(crate::SyntaxKind::ESCAPE);
+    p.bump(); // `\`
+    p.bump(); // `!` or `@`
+    p.finish_node();
 }

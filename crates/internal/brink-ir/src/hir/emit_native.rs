@@ -596,7 +596,7 @@ fn emit_stmt_stream(
                     _ => None,
                 };
                 if let Some(divert_text) = same_line_divert {
-                    let text = emit_content_parts(&c.parts, context)?;
+                    let text = escape_leading_cue_sigil(&emit_content_parts(&c.parts, context)?);
                     if !c.tags.is_empty() {
                         return Err(unsupported(
                             "tags on a content line sharing its line with a divert",
@@ -815,7 +815,7 @@ fn emit_content_line(
     c: &Content,
     context: &str,
 ) -> Result<(), EmitError> {
-    let text = emit_content_parts(&c.parts, context)?;
+    let text = escape_leading_cue_sigil(&emit_content_parts(&c.parts, context)?);
     let mut line = format!("{indent}{text}");
     for tag in &c.tags {
         let _ = write!(line, " #{}", emit_tag(tag, context)?);
@@ -885,6 +885,47 @@ fn escape_content_text(s: &str) -> String {
         out.push(c);
     }
     out
+}
+
+/// Guard a real body-line-position `Content` emission against a hazard
+/// the four-char inline escape set never had to consider: `\@` (§8d.6's
+/// line-start escape, issue #1744) now legitimately produces a `Text`
+/// part whose literal content can begin with `@` immediately followed by
+/// an identifier — exactly the shape `parser::element::at_cue` triggers a
+/// `CUE` on when it is the very first thing on a physical body line.
+/// Emitted verbatim, that would silently re-parse as a cue instead of the
+/// literal text it started as. Only the one leading character needs
+/// escaping (mid-line `@` needs none — `SyntaxKind::AT`'s own doc: "reached
+/// mid-line — folds into plain TEXT"), and only when the adjacent char
+/// actually qualifies as an identifier start (`[A-Za-z_]`,
+/// `lexer::ident::is_ident_start_byte`) — `@ 5pm` or a bare trailing `@`
+/// never opened a cue in the first place and needs no escaping either.
+///
+/// `!` carries no equivalent hazard *today*: no parser dispatch reads a
+/// leading `!` at body-line position (the `!name` annotation-element
+/// sigil §3.5b reserves is unimplemented), so a literal leading `!` —
+/// whether authored directly or produced by `\!` — already round-trips
+/// unescaped. Revisit this function when that sigil lands.
+///
+/// Only called at genuine body-line-position emission
+/// (`emit_stmt_stream`'s `Stmt::Content` arm, `emit_content_line`) — a
+/// labeled line (`emit_labeled_stmt_stream`) already carries its own
+/// `(name) ` prefix ahead of the content, so on re-parse the line's first
+/// token is never `AT` there regardless of what the content says, and
+/// needs no equivalent guard.
+fn escape_leading_cue_sigil(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some('@') => {
+            let rest = chars.as_str();
+            if rest.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') {
+                format!("\\@{rest}")
+            } else {
+                text.to_string()
+            }
+        }
+        _ => text.to_string(),
+    }
 }
 
 /// Escape a span attribute value for round-trip. `SPAN_ATTR_VALUE` shares

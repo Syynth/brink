@@ -29,6 +29,16 @@ pub(crate) fn content_line(p: &mut Parser<'_, '_>) {
         label(p);
         p.skip_ws();
     }
+    // `\!` / `\@` — the line-start escape set (§8d.6, issue #1744),
+    // checked once, right here, before the general item scanner: a
+    // literal leading `!`/`@` would otherwise collide with the `@NAME`
+    // cue sigil (or, unimplemented today, the `!name` annotation sigil,
+    // §3.5b). Anywhere else in the line, `\!`/`\@` fall through to
+    // `content_items_until`'s generic `BACKSLASH` handling and remain the
+    // ordinary compile error (`markup::escape`'s four-char inline set).
+    if super::markup::at_line_start_escape(p) {
+        super::markup::line_start_escape(p);
+    }
     content_items_until(p, &[NEWLINE, R_BRACE, HASH]);
     if p.at(HASH) {
         tag_line_tail(p);
@@ -51,6 +61,11 @@ pub(crate) fn content_line_else_boundary(p: &mut Parser<'_, '_>) {
     if at_content_label(p) {
         label(p);
         p.skip_ws();
+    }
+    // Same line-start escape check as `content_line` above — kept in
+    // sync per this function's own "identical in every respect" doc.
+    if super::markup::at_line_start_escape(p) {
+        super::markup::line_start_escape(p);
     }
     content_items_until_else_boundary(p, &[NEWLINE, R_BRACE, HASH]);
     if p.at(HASH) {
