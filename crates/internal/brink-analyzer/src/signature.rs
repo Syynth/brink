@@ -16,7 +16,7 @@ use brink_ir::{FileId, HostManifest, ParamInfo, SymbolIndex, SymbolKind};
 use crate::annotations::resolve as resolve_annotation;
 use crate::external_check::{InferredType, infer_literal_type};
 use crate::infer::Ty;
-use crate::resolve::lookup_by_name;
+use crate::resolve::{BareItemResult, lookup_by_name, lookup_list_item_bare};
 
 /// Per-declaration signature summary (phase-0 stub).
 ///
@@ -326,8 +326,8 @@ fn declared_fn_type(
     // disagree with `fold_path_ref`'s real, `ImportScope`-aware
     // resolution in a way that is user-visible: a same-named global in an
     // unrelated, non-importing file suppressing this typing even though
-    // lowering would still resolve the bare name to the local knot.
-    // Empirically, it cannot. `lower_native::decl::{lower_var_decl,
+    // lowering would still resolve the bare name to the local knot. For
+    // the cross-file case it cannot: `lower_native::decl::{lower_var_decl,
     // lower_const_decl, lower_flags_decl}` hard-code `visibility: None`
     // for every native `VAR`/`CONST`/`LIST` (no annotation grammar
     // overrides it, unlike ink's `#@public`/`#@private` tags), and a
@@ -338,17 +338,29 @@ fn declared_fn_type(
     // fires unconditionally the moment resolution reaches it (confirmed
     // by `native_cross_file_global_shadow_of_a_fn_value_reference_fails_to_compile`,
     // `crates/brink-compiler/tests/driver.rs`), failing the whole compile
-    // before this decision could ever matter. So every match this check
-    // can find in a *different* file corresponds to a project that never
-    // successfully compiles, and every match in *this* declaration's own
-    // file is unconditionally in scope — there is no reachable state in
-    // which this index-wide scan disagrees with `fold_path_ref`'s scoped
-    // one. If native `VAR`/`CONST`/`LIST` ever gain a real publicity
-    // mechanism, that proof no longer holds and this guard needs a real
-    // `ImportScope` (the resolution-map seam #1901 declined to build
-    // pre-emptively).
+    // before this decision could ever matter.
+    //
+    // The **same-file** case is different, and matters: `ListItem`s are
+    // indexed under their *qualified* name (`List.Item`, `manifest.rs`'s
+    // `index.by_name.entry(sym.name.clone())`), never their bare item
+    // name, so a direct `index.by_name.get(target_name)` lookup can never
+    // find a bare-name list item — the `SymbolKind::ListItem` arm below
+    // only ever fires when `target_name` is already the qualified
+    // `List.Item` spelling. A bare reference to a list item's own name
+    // (`flags Palette = double, other` then `var alias = double`) needs
+    // the same suffix scan `lookup_variable` itself uses
+    // (`lookup_list_item_bare`, priority 3, strictly ahead of the knot
+    // lookup at priority 6) — without it this guard silently disagreed
+    // with `fold_path_ref` in exactly the same file, no cross-module
+    // privacy gate to save it: `alias` typed `Ty::Fn` from the knot
+    // `double` while lowering bound it to the list item, producing a
+    // bogus `E063` the moment a caller's declared parameter type didn't
+    // happen to admit `fn`. `native_bare_name_shadowed_by_a_same_named_list_item_is_not_typed_as_a_fn_value`
+    // (`crates/brink-compiler/tests/driver.rs`) is the regression test;
+    // reverting the `lookup_list_item_bare` call below reproduces the
+    // bogus `E063` it guards against.
     if matches!(value, Expr::Path(_))
-        && index.by_name.get(target_name.as_str()).is_some_and(|ids| {
+        && (index.by_name.get(target_name.as_str()).is_some_and(|ids| {
             ids.iter().any(|id| {
                 index.symbols.get(id).is_some_and(|i| {
                     matches!(
@@ -357,7 +369,10 @@ fn declared_fn_type(
                     )
                 })
             })
-        })
+        }) || !matches!(
+            lookup_list_item_bare(index, target_name.as_str()),
+            BareItemResult::NotFound
+        ))
     {
         return None;
     }

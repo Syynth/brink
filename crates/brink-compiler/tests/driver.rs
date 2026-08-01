@@ -1342,6 +1342,54 @@ fn native_bare_name_shadowed_by_a_same_named_global_is_not_typed_as_a_fn_value()
     );
 }
 
+/// The `ListItem` sibling of the test above: a bare name shadowed by a list
+/// item, in the *same* file. `ListItem`s are indexed under their qualified
+/// `List.Item` name (never the bare item name), so the direct
+/// `index.by_name.get(target_name)` lookup in `declared_fn_type`'s shadow
+/// guard can never see them — closing this gap needs the same bare-name
+/// suffix scan `lookup_variable` itself uses (`lookup_list_item_bare`),
+/// consulted ahead of the knot lookup exactly as `lookup_variable`'s own
+/// priority order does. Without it, `alias` was typed `fn(int): int` from
+/// the knot `double` while lowering actually bound it to the list item
+/// `Palette.double` — a same-file disagreement with no cross-module
+/// privacy gate (`E087`) to mask it, unlike the cross-file case
+/// (`native_cross_file_global_shadow_of_a_fn_value_reference_fails_to_compile`
+/// below). Revert the `lookup_list_item_bare` call in
+/// `crates/internal/brink-analyzer/src/signature.rs`'s `declared_fn_type`
+/// and this fails with a bogus `E063` alone (verified per house rule 20a).
+#[test]
+fn native_bare_name_shadowed_by_a_same_named_list_item_is_not_typed_as_a_fn_value() {
+    let data = compile_native_strict(
+        "decl-init-shadowed-by-list-item",
+        "flags Palette = double, other\n\
+         fn double(x: int): int {\n\
+         \x20 return x * 2;\n}\n\
+         fn total(n: int): int {\n\
+         \x20 return n + 1;\n}\n\
+         var alias = double\n\
+         flow main() {\n  Val: {total(alias)} -> END\n}\n",
+    )
+    .unwrap_or_else(|err| {
+        panic!(
+            "a bare name shadowed by a same-named list item is a list-item read, not a fn value: {:?}",
+            diagnostic_codes(&err)
+        )
+    })
+    .data;
+    let (program, line_tables) = brink_runtime::link(&data).unwrap();
+    let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
+    let output: String = story
+        .continue_maximally()
+        .unwrap()
+        .iter()
+        .map(Line::text)
+        .collect();
+    assert!(
+        output.contains("Val:"),
+        "the shadowed bare name must fold to the list item's value, got: {output:?}"
+    );
+}
+
 /// The ink surface is untouched: `VAR f = double` in `.ink` has never been
 /// a fn value (a bare knot name there is a visit count), so the new arm
 /// must stay off unless the declaring file is native. Kept as a guard on
