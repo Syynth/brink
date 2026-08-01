@@ -99,6 +99,33 @@ annotation. An unascribed temp merely copying an annotated parameter
 (`let v = t;`) likewise does **not** inherit the annotation transitively;
 the boundary is "annotated param / ascribed temp", read directly.
 
+**RULED (issue #1941): the same pure-read-site fallback extends to a
+lambda's own value position** — `infer::body::InferPass::infer_lambda`'s
+block-body tail (`LambdaBody::Block`) and sole expression
+(`LambdaBody::Expr`) are both structurally identical to `return <param>`
+above, one syntax form over: `|t: content| { t }` and `|t: content| t` now
+export `content`, not `Unknown`, exactly like `fn f(t: content) { return t; }`
+does. #1938 fixed only the `fn`/`flow` `return` position; the lambda's own
+value-position reads were the gap this closes.
+
+One wrinkle unique to a lambda: a plain `fn`/`flow` gets its `annotated`
+fallback map seeded from `def.params` for free at pass-creation time
+(`infer_def_body`'s `new_pass` call), but nothing ever seeded a *lambda's*
+own param annotations into that map at all — `infer_lambda` only ever
+*shadowed* (cleared) whatever an enclosing same-named local's annotation
+left behind, so `or_own_annotation` had nothing to fall back to even after
+being wired up at the read site. The fix seeds `self.annotated` with the
+lambda's own resolvable param annotations for the duration of its own body
+walk, restored via the same shadow/restore mechanism issue #1910 already
+uses for every other frame-scoped map this function touches — an enclosing
+same-named local's own annotation is exactly as protected as it was before.
+
+The firewall holds identically: the fallback overlays an `Unknown` only, so
+a lambda body that genuinely constrains its param still exports its own
+derivation, and a lambda's own explicit return annotation
+(`|t|: T { … }`) still overlays only when the tail/expr comes back
+`Unknown` — unchanged by this fix.
+
 ## 3. Annotation syntax — RULED
 
 **Inline types, brink-dialect-gated.** This revises the #473 ruling: the

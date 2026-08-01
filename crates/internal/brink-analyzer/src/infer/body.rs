@@ -2571,6 +2571,33 @@ impl InferPass<'_, '_> {
             .iter()
             .map(|name| (name.clone(), self.annotated.remove(name)))
             .collect();
+        // Issue #1941: seed `self.annotated` with *this* lambda's own
+        // resolvable param annotations before walking its body.
+        // `infer_def_body` gets this for free at pass-creation time — the
+        // `annotated` map handed to `new_pass` is built straight from
+        // `def.params` (see this module's top-level doc) — but a lambda
+        // opens no such seed anywhere: the shadow above only ever *clears*
+        // whatever an enclosing same-named local's annotation left behind,
+        // it never installs the lambda's own. Without this, `own_annotation`
+        // (consulted by `or_own_annotation` below) finds nothing for a
+        // lambda's own param even when that param carries a `: T`
+        // annotation, which is exactly what let `|t: content| { t }`'s tail
+        // read — and `|t: content| t`'s expression body — keep exporting
+        // `Unknown` after #1938 fixed the structurally identical `return t;`
+        // case for a plain `fn`. Scoped to this walk alone: every name here
+        // is one `saved_annotated` just recorded as `None` (nothing occupied
+        // it once shadowed), so the restore loop after the walk removes it
+        // again, cleanly — a body use that *disagrees* with the annotation
+        // still starts from this same seed and can still diverge from it via
+        // an ordinary `unify`, exactly like a `fn`/`flow` param's overlay.
+        let lambda_param_annotation_names = self.ctx.type_names();
+        for p in &l.params {
+            if let Some(te) = &p.annotation
+                && let Some(ty) = crate::annotations::resolve(te, &lambda_param_annotation_names)
+            {
+                self.annotated.insert(p.name.text.clone(), ty);
+            }
+        }
         // Issue #1924 follow-up review on #1910: reset the taint flag to a
         // fresh baseline for this lambda's own walk (mirrors the
         // `return_ty`/`has_value_return` reset below) and save whatever the
@@ -2633,7 +2660,21 @@ impl InferPass<'_, '_> {
                 // `Conflicted` escape (`E066`) on a temp the enclosing body
                 // never misuses. Inside the window, both directions stay in
                 // the lambda's own frame and are discarded by the restore.
-                let tail_ty = tail.as_ref().map_or(Ty::Unknown, |t| self.infer_expr(t));
+                // Issue #1941: the tail is this lambda's own value position —
+                // the exact structural counterpart of `return t;`, which
+                // #1938 already runs through `or_own_annotation` inside
+                // `infer_return`. A bare `|t: content| { t }` tail is a pure
+                // read of `t`, joined into `self.return_ty` below and never
+                // `observe`d back onto anything else, so it is precisely the
+                // "read site that doesn't itself produce counter-evidence"
+                // `or_own_annotation`'s own doc requires — a body use that
+                // *disagrees* with the annotation (`t + 1`, say) still infers
+                // its own concrete type here, since `or_own_annotation` only
+                // ever overlays an `Unknown`.
+                let tail_ty = tail.as_ref().map_or(Ty::Unknown, |t| {
+                    let ty = self.infer_expr(t);
+                    self.or_own_annotation(t, ty)
+                });
                 // #1910: the lambda's own return type is the join of its
                 // tail value (if any) and every internal `return <expr>;`
                 // this walk observed (`self.return_ty`, freshly reset above)
@@ -2664,7 +2705,12 @@ impl InferPass<'_, '_> {
             // to open around it — it walks under whatever frame was already
             // live when `infer_lambda` was entered, unchanged by #1789.
             brink_ir::LambdaBody::Expr(e) => {
+                // Issue #1941: same treatment as the `Block` arm's tail
+                // above — an expression-bodied lambda's sole expression
+                // *is* its value position (`|t: content| t`), the structural
+                // twin of `return t;` one syntax form over.
                 let ty = self.infer_expr(e);
+                let ty = self.or_own_annotation(e, ty);
                 let narrowed = l
                     .params
                     .iter()
@@ -4728,6 +4774,213 @@ mod tests {
              lambda's own expression must be visible in the enclosing \
              def's `local_fn_origins` after the walk, not swallowed by a \
              (would-be, and wrong) frame restore"
+        );
+    }
+
+    // ── Issue #1941: a lambda's value-position read of an annotated ──
+    // param still typed Unknown — the structurally parallel gap #1938 left
+    // for `infer_return`'s fn-return position. `infer_lambda`'s tail
+    // (`LambdaBody::Block`) and sole expression (`LambdaBody::Expr`) are
+    // both this lambda's own value position, exactly like a `return`, but
+    // neither ran the read through `or_own_annotation` — and, unlike a
+    // plain `fn`/`flow`, nothing ever seeded `self.annotated` with a
+    // lambda's own param annotations in the first place (see
+    // `infer_lambda`'s new seeding block for why a `fn`/`flow` gets this for
+    // free at `new_pass` time and a lambda did not).
+
+    #[test]
+    fn lambda_tail_expr_reading_an_annotated_param_exports_its_declared_type() {
+        let index = SymbolIndex::default();
+        let globals = BTreeMap::new();
+        let known_sigs = BTreeMap::new();
+        let inferable = BTreeSet::new();
+        let list_names = BTreeSet::new();
+        let struct_names = BTreeSet::new();
+        let handle_names = BTreeSet::new();
+        let resolution_by_range = BTreeMap::new();
+        let ctx = BodyCtx {
+            resolution_by_range: &resolution_by_range,
+            index: &index,
+            globals: &globals,
+            known_sigs: &known_sigs,
+            inferable: &inferable,
+            list_names: &list_names,
+            struct_names: &struct_names,
+            handle_names: &handle_names,
+            native: false,
+        };
+        let mut pass = empty_pass(&ctx);
+
+        // `|t: int| { t }` — a block-bodied lambda whose tail is a bare
+        // read of its own annotated param, no annotation-resolving
+        // `resolution_by_range` entry at all (mirrors `own_annotation`'s
+        // bare single-segment fallback, exercised the same way #1912's
+        // fixtures were).
+        let lambda = brink_ir::LambdaExpr {
+            ptr: Provenance::synthetic(NodeClass::Lambda, range(5, 30)),
+            params: vec![brink_ir::Param {
+                name: Name {
+                    text: "t".to_string(),
+                    range: range(10, 11),
+                },
+                is_ref: false,
+                is_divert: false,
+                annotation: Some(brink_ir::TypeExpr::Named {
+                    name: "int".to_string(),
+                    range: range(13, 16),
+                }),
+            }],
+            return_type: None,
+            body: brink_ir::LambdaBody::Block {
+                stmts: Vec::new(),
+                tail: Some(Box::new(Expr::Path(HirPath {
+                    segments: vec![Name {
+                        text: "t".to_string(),
+                        range: range(20, 21),
+                    }],
+                    range: range(20, 21),
+                }))),
+            },
+        };
+
+        let ty = pass.infer_lambda(&lambda);
+        assert_eq!(
+            ty,
+            Ty::Fn(vec![Ty::Int], Box::new(Ty::Int), FnRow::unknown()),
+            "issue #1941: `t`'s tail read is a pure value-position read of \
+             an annotated param — it must export `int`, not `Unknown`"
+        );
+    }
+
+    #[test]
+    fn lambda_expr_body_reading_an_annotated_param_exports_its_declared_type() {
+        let index = SymbolIndex::default();
+        let globals = BTreeMap::new();
+        let known_sigs = BTreeMap::new();
+        let inferable = BTreeSet::new();
+        let list_names = BTreeSet::new();
+        let struct_names = BTreeSet::new();
+        let handle_names = BTreeSet::new();
+        let resolution_by_range = BTreeMap::new();
+        let ctx = BodyCtx {
+            resolution_by_range: &resolution_by_range,
+            index: &index,
+            globals: &globals,
+            known_sigs: &known_sigs,
+            inferable: &inferable,
+            list_names: &list_names,
+            struct_names: &struct_names,
+            handle_names: &handle_names,
+            native: false,
+        };
+        let mut pass = empty_pass(&ctx);
+
+        // `|t: int| t` — the expression-bodied twin. `LambdaBody::Expr`
+        // opens no frame at all (issue #1816), so this exercises the exact
+        // same `or_own_annotation` call from the other arm of the `match`.
+        let lambda = brink_ir::LambdaExpr {
+            ptr: Provenance::synthetic(NodeClass::Lambda, range(5, 30)),
+            params: vec![brink_ir::Param {
+                name: Name {
+                    text: "t".to_string(),
+                    range: range(10, 11),
+                },
+                is_ref: false,
+                is_divert: false,
+                annotation: Some(brink_ir::TypeExpr::Named {
+                    name: "int".to_string(),
+                    range: range(13, 16),
+                }),
+            }],
+            return_type: None,
+            body: brink_ir::LambdaBody::Expr(Box::new(Expr::Path(HirPath {
+                segments: vec![Name {
+                    text: "t".to_string(),
+                    range: range(20, 21),
+                }],
+                range: range(20, 21),
+            }))),
+        };
+
+        let ty = pass.infer_lambda(&lambda);
+        assert_eq!(
+            ty,
+            Ty::Fn(vec![Ty::Int], Box::new(Ty::Int), FnRow::unknown()),
+            "issue #1941: an expression-bodied lambda's sole expression is \
+             its value position — a bare annotated-param read must export \
+             `int`, not `Unknown`"
+        );
+    }
+
+    /// The seeding block `infer_lambda` gained for issue #1941 must be
+    /// scoped to the lambda's own walk exactly like every other
+    /// `self.annotated` write in this function — an enclosing local of the
+    /// same bare name, annotated differently, must see its own annotation
+    /// again once the lambda walk finishes (mirrors
+    /// `lambda_local_shadow_frame_boundary_guard`'s "five frame-scoped
+    /// fields" guard, one field, one new write site).
+    #[test]
+    fn lambda_param_annotation_seed_does_not_leak_past_the_walk() {
+        let index = SymbolIndex::default();
+        let globals = BTreeMap::new();
+        let known_sigs = BTreeMap::new();
+        let inferable = BTreeSet::new();
+        let list_names = BTreeSet::new();
+        let struct_names = BTreeSet::new();
+        let handle_names = BTreeSet::new();
+        let resolution_by_range = BTreeMap::new();
+        let ctx = BodyCtx {
+            resolution_by_range: &resolution_by_range,
+            index: &index,
+            globals: &globals,
+            known_sigs: &known_sigs,
+            inferable: &inferable,
+            list_names: &list_names,
+            struct_names: &struct_names,
+            handle_names: &handle_names,
+            native: false,
+        };
+        let mut pass = empty_pass(&ctx);
+        // Enclosing frame: a same-named `t` already ascribed `string` (e.g.
+        // a prior `~ temp t: string = …`).
+        pass.annotated.insert("t".to_string(), Ty::String);
+
+        let lambda = brink_ir::LambdaExpr {
+            ptr: Provenance::synthetic(NodeClass::Lambda, range(5, 30)),
+            params: vec![brink_ir::Param {
+                name: Name {
+                    text: "t".to_string(),
+                    range: range(10, 11),
+                },
+                is_ref: false,
+                is_divert: false,
+                annotation: Some(brink_ir::TypeExpr::Named {
+                    name: "int".to_string(),
+                    range: range(13, 16),
+                }),
+            }],
+            return_type: None,
+            body: brink_ir::LambdaBody::Expr(Box::new(Expr::Path(HirPath {
+                segments: vec![Name {
+                    text: "t".to_string(),
+                    range: range(20, 21),
+                }],
+                range: range(20, 21),
+            }))),
+        };
+
+        let ty = pass.infer_lambda(&lambda);
+        assert_eq!(
+            ty,
+            Ty::Fn(vec![Ty::Int], Box::new(Ty::Int), FnRow::unknown()),
+            "the lambda's own `t: int` seed must win inside its own walk"
+        );
+        assert_eq!(
+            pass.annotated.get("t"),
+            Some(&Ty::String),
+            "issue #1941: the lambda's own param-annotation seed must not \
+             leak past the walk — the enclosing frame's same-named `t: \
+             string` ascription must be exactly what it was before"
         );
     }
 }

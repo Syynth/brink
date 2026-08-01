@@ -2700,6 +2700,62 @@ mod tests {
         );
     }
 
+    // ── issue #1941: a lambda's value-position read of an annotated ──
+    // param still typed Unknown — the structurally parallel gap #1938 left
+    // for `infer_return`'s fn-return position. `infer_lambda`'s tail
+    // (`LambdaBody::Block`) and sole expression (`LambdaBody::Expr`) are
+    // both a lambda's own value position, exactly like a `return`, and now
+    // run through the same `or_own_annotation` read-site fallback.
+
+    #[test]
+    fn native_lambda_tail_reading_a_content_param_takes_its_annotated_type() {
+        // Issue #1941's own reduction, both halves: the lambda-return-
+        // annotated twin was already clean (`infer_lambda`'s own
+        // `l.return_type` overlay — the same firewall shape the fn case had
+        // before #1938), the bare one let the lambda's own `Unknown` return
+        // type escape through the enclosing temp `g`.
+        let bare = native_strict_diags("fn f() {\n  let g = |t: content| {\n    t\n  };\n}\n");
+        assert!(
+            bare.is_empty(),
+            "`t: content`'s tail read supplies the lambda's own return type: {bare:?}"
+        );
+        let annotated =
+            native_strict_diags("fn f() {\n  let g = |t: content|: content {\n    t\n  };\n}\n");
+        assert!(
+            annotated.is_empty(),
+            "the lambda-return-annotated twin stays clean: {annotated:?}"
+        );
+    }
+
+    #[test]
+    fn native_lambda_tail_reading_an_annotated_param_is_not_content_specific() {
+        // All four leaf spellings, mirroring #1938's own
+        // `native_returning_an_annotated_param_is_not_content_specific` — a
+        // fix that only special-cased `Ty::Content` would fail here.
+        for ty in ["int", "float", "bool", "string"] {
+            let src = format!("fn f() {{\n  let g = |t: {ty}| {{\n    t\n  }};\n}}\n");
+            let diags = native_strict_diags(&src);
+            assert!(
+                diags.is_empty(),
+                "`t: {ty}`'s tail read supplies the lambda's own return type: {diags:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn native_lambda_expr_body_reading_an_annotated_param_exports_its_declared_type() {
+        // The expression-bodied twin (`|t: content| t`, no braces) — the
+        // *other* value-position read site #1941 fixed
+        // (`LambdaBody::Expr`), a structurally distinct code path from the
+        // block-tail arm above (`infer_lambda`'s own `match` on `l.body`).
+        let diags = native_strict_diags("fn f() {\n  let g = |t: content| t;\n}\n");
+        assert!(
+            diags.is_empty(),
+            "an expression-bodied lambda's sole expression is its value \
+             position, exactly like a block's tail: {diags:?}"
+        );
+    }
+
     // ── issue #1551: return-escape check extended past `is_function` ──
     //
     // `docs/decision-log.md` 2026-07-22 implicit-end ruling item 3: "a flow
