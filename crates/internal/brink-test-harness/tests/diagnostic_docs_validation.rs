@@ -164,12 +164,20 @@ fn diagnostic_codes_are_unique() {
         code_to_variants.keys().next(),
         code_to_variants.keys().last(),
     ) {
-        let first_num: u32 = first_code[1..].parse().unwrap_or_else(|e| {
-            panic!("diagnostic code {first_code} has a non-numeric suffix: {e}")
-        });
-        let last_num: u32 = last_code[1..].parse().unwrap_or_else(|e| {
-            panic!("diagnostic code {last_code} has a non-numeric suffix: {e}")
-        });
+        assert!(
+            first_code[1..].chars().all(|c| c.is_ascii_digit()),
+            "diagnostic code {first_code} has a non-numeric suffix"
+        );
+        assert!(
+            last_code[1..].chars().all(|c| c.is_ascii_digit()),
+            "diagnostic code {last_code} has a non-numeric suffix"
+        );
+        let first_num: u32 = first_code[1..]
+            .parse()
+            .expect("already validated as all-ASCII-digit above");
+        let last_num: u32 = last_code[1..]
+            .parse()
+            .expect("already validated as all-ASCII-digit above");
 
         let mut gaps = Vec::new();
         for num in first_num..=last_num {
