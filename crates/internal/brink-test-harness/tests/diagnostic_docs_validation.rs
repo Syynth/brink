@@ -7,15 +7,24 @@
 //!
 //! It also validates that every `DiagnosticCode` variant maps to exactly one code string
 //! via the `as_str()` method — a uniqueness check that prevents the collision hazard where
-//! two concurrent build agents allocate the same code independently.
+//! two concurrent build agents allocate the same code independently. This check is built
+//! from [`DiagnosticCode::ALL`], the exhaustive variant list, rather than probed through
+//! [`DiagnosticCode::from_str_code`] — `from_str_code` is `str -> Option<Self>`, so probing
+//! it can only ever discover a many-to-one mapping in the wrong direction (many code
+//! strings to one variant, which is not the hazard we care about); it can never surface
+//! two variants returning the *same* code string from `as_str()`, which is.
 //!
-//! The known-code list is derived from the enum itself (via
+//! The known-code list used for the doc-file checks is derived from the enum itself (via
 //! [`DiagnosticCode::from_str_code`]) rather than hand-copied, so a newly added variant is
 //! picked up automatically instead of silently passing a stale list.
 //!
 //! If this test fails when you add a new diagnostic code, you must:
-//! - Add a corresponding `docs/diagnostics/Exxx.md` file, and
-//! - Ensure no other variant returns the same code string from `as_str()`.
+//! - Add the new variant to [`DiagnosticCode::ALL`],
+//! - Add a corresponding `docs/diagnostics/Exxx.md` file,
+//! - Ensure no other variant returns the same code string from `as_str()`, and
+//! - Not skip a number or delete a variant from the middle of the range — codes are
+//!   never reused once assigned (retire in place with a `RETIRED` doc comment instead),
+//!   so the contiguity check enforces that the numeric sequence has no gaps.
 
 use brink_ir::DiagnosticCode;
 use std::collections::BTreeMap;
@@ -92,46 +101,42 @@ fn all_diagnostic_codes_have_documentation() {
 
 #[test]
 fn diagnostic_codes_are_unique() {
-    // Collect all known diagnostic codes and verify that each string maps back to
-    // exactly one `DiagnosticCode` variant via `from_str_code`.
-
-    let mut code_to_variants: BTreeMap<String, Vec<&'static str>> = BTreeMap::new();
-
-    // Build a map of code → variant names by checking the canonical code set
-    // discovered via from_str_code. This works because from_str_code is the
-    // parser — if a code string is in `known_codes`, it maps to something.
-    //
-    // To verify uniqueness, we reconstruct the inverse: for each known code,
-    // we parse it back and confirm its `as_str()` matches. This is sound because
-    // the enum's `as_str()` and `from_str_code()` must stay synchronized as a
-    // matter of correctness (if they diverge, the code becomes unreachable).
-
-    // We enumerate all possible codes in the range E001..E999 and collect which
-    // strings correspond to variants, building the inverse map.
-    for code_num in 1..=999 {
-        let code_str = format!("E{code_num:03}");
-
-        // If this code string parses to a variant, verify it round-trips correctly
-        // by checking `as_str()`.
-        if let Some(variant) = DiagnosticCode::from_str_code(&code_str) {
-            let canonical = variant.as_str();
-
-            // The variant's code should match the one we parsed
-            assert_eq!(
-                canonical, code_str,
-                "DiagnosticCode variant's as_str() did not round-trip: \
-                 from_str_code({code_str}) produced a variant whose as_str() = {canonical}. \
-                 This indicates inconsistency between as_str() and from_str_code()."
-            );
-
-            code_to_variants
-                .entry(code_str.clone())
-                .or_default()
-                .push(canonical);
-        }
+    // Enumerate the exhaustive variant list and build the inverse map: code string ->
+    // every variant whose `as_str()` produces it. Unlike probing `from_str_code` over
+    // `E001..E999` (which is `str -> Option<Self>` and can never surface two variants
+    // colliding on the same string), this walks `Self -> str` directly, so a genuine
+    // collision produces a BTreeMap key with more than one entry.
+    let mut code_to_variants: BTreeMap<&'static str, Vec<DiagnosticCode>> = BTreeMap::new();
+    for &variant in DiagnosticCode::ALL {
+        code_to_variants.entry(variant.as_str()).or_default().push(variant);
     }
 
-    // Now verify no code string maps to multiple variants
+    // Round-trip check: as_str() and from_str_code() must stay synchronized, or the
+    // variant becomes unreachable via its own code string.
+    for &variant in DiagnosticCode::ALL {
+        let code_str = variant.as_str();
+        assert_eq!(
+            DiagnosticCode::from_str_code(code_str),
+            Some(variant),
+            "DiagnosticCode variant {variant:?} did not round-trip: \
+             from_str_code({code_str}) did not produce {variant:?} back. \
+             This indicates inconsistency between as_str() and from_str_code()."
+        );
+    }
+
+    // ALL must agree with the from_str_code-derived known-code list in size, or ALL is
+    // stale (a variant was added to the enum but not to ALL).
+    let known_codes = all_diagnostic_code_strings();
+    assert_eq!(
+        DiagnosticCode::ALL.len(),
+        known_codes.len(),
+        "DiagnosticCode::ALL has {} entries but from_str_code recognizes {} code strings — \
+         ALL is out of sync with the enum. Add the missing variant(s) to ALL.",
+        DiagnosticCode::ALL.len(),
+        known_codes.len()
+    );
+
+    // Now verify no code string maps to multiple variants.
     let mut collisions = Vec::new();
     for (code_str, variants) in &code_to_variants {
         if variants.len() > 1 {
@@ -149,18 +154,24 @@ fn diagnostic_codes_are_unique() {
 
     // Verify no gaps in the numeric sequence: if E001 exists and E167 exists,
     // every code E001..=E167 must also exist. (Gaps are allowed *before* E001
-    // or *after* the max, but not in the middle.)
+    // or *after* the max, but not in the middle.) Codes are never reused once
+    // assigned — retire a code in place with a `RETIRED` doc comment on its variant
+    // rather than deleting it from the enum, or this check will fail.
     if let (Some(first_code), Some(last_code)) = (
         code_to_variants.keys().next(),
         code_to_variants.keys().last(),
     ) {
-        let first_num = first_code[1..].parse::<u32>().unwrap_or(0);
-        let last_num = last_code[1..].parse::<u32>().unwrap_or(0);
+        let first_num: u32 = first_code[1..]
+            .parse()
+            .unwrap_or_else(|e| panic!("diagnostic code {first_code} has a non-numeric suffix: {e}"));
+        let last_num: u32 = last_code[1..]
+            .parse()
+            .unwrap_or_else(|e| panic!("diagnostic code {last_code} has a non-numeric suffix: {e}"));
 
         let mut gaps = Vec::new();
         for num in first_num..=last_num {
             let code_str = format!("E{num:03}");
-            if !code_to_variants.contains_key(&code_str) {
+            if !code_to_variants.contains_key(code_str.as_str()) {
                 gaps.push(code_str);
             }
         }

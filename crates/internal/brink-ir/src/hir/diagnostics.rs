@@ -1343,6 +1343,39 @@ pub enum DiagnosticCode {
 }
 
 impl DiagnosticCode {
+    /// Every `DiagnosticCode` variant, in declaration order.
+    ///
+    /// Kept in sync with the enum by hand (there is no derive-based
+    /// enumeration here), but exercised by
+    /// `brink-test-harness/tests/diagnostic_docs_validation.rs`'s
+    /// `diagnostic_codes_are_unique` test: that test asserts `ALL.len()`
+    /// matches the number of code strings `from_str_code` recognizes, so a
+    /// variant added to the enum but missed here fails CI immediately
+    /// instead of silently under-covering the uniqueness/round-trip checks.
+    pub const ALL: &'static [Self] = &[
+        Self::E001, Self::E002, Self::E003, Self::E004, Self::E005, Self::E006, Self::E007, Self::E008,
+        Self::E009, Self::E010, Self::E011, Self::E012, Self::E013, Self::E014, Self::E015, Self::E016,
+        Self::E017, Self::E018, Self::E019, Self::E020, Self::E021, Self::E022, Self::E023, Self::E024,
+        Self::E025, Self::E026, Self::E027, Self::E028, Self::E029, Self::E030, Self::E031, Self::E032,
+        Self::E033, Self::E034, Self::E035, Self::E036, Self::E037, Self::E038, Self::E039, Self::E040,
+        Self::E041, Self::E042, Self::E043, Self::E044, Self::E045, Self::E046, Self::E047, Self::E048,
+        Self::E049, Self::E050, Self::E051, Self::E052, Self::E053, Self::E054, Self::E055, Self::E056,
+        Self::E057, Self::E058, Self::E059, Self::E060, Self::E061, Self::E062, Self::E063, Self::E064,
+        Self::E065, Self::E066, Self::E067, Self::E068, Self::E069, Self::E070, Self::E071, Self::E072,
+        Self::E073, Self::E074, Self::E075, Self::E076, Self::E077, Self::E078, Self::E079, Self::E080,
+        Self::E081, Self::E082, Self::E083, Self::E084, Self::E085, Self::E086, Self::E087, Self::E088,
+        Self::E089, Self::E090, Self::E091, Self::E092, Self::E093, Self::E094, Self::E095, Self::E096,
+        Self::E097, Self::E098, Self::E099, Self::E100, Self::E101, Self::E102, Self::E103, Self::E104,
+        Self::E105, Self::E106, Self::E107, Self::E108, Self::E109, Self::E110, Self::E111, Self::E112,
+        Self::E113, Self::E114, Self::E115, Self::E116, Self::E117, Self::E118, Self::E119, Self::E120,
+        Self::E121, Self::E122, Self::E123, Self::E124, Self::E125, Self::E126, Self::E127, Self::E128,
+        Self::E129, Self::E130, Self::E131, Self::E132, Self::E133, Self::E134, Self::E135, Self::E136,
+        Self::E137, Self::E138, Self::E139, Self::E140, Self::E141, Self::E142, Self::E143, Self::E144,
+        Self::E145, Self::E146, Self::E147, Self::E148, Self::E149, Self::E150, Self::E151, Self::E152,
+        Self::E153, Self::E154, Self::E155, Self::E156, Self::E157, Self::E158, Self::E159, Self::E160,
+        Self::E161, Self::E162, Self::E163, Self::E164, Self::E165, Self::E166, Self::E167,
+    ];
+
     /// The stable string representation (e.g., `"E001"`).
     #[must_use]
     #[expect(
