@@ -33,8 +33,8 @@ use rowan::TextRange;
 use super::effects::FnArgOrigins;
 use super::ty::{FnRow, TowerTy, Ty, assignable, coalesce, unify, unify_all};
 use super::{
-    DirectCallArgMismatch, InferredSig, TypedAssignMismatch, ValueCallFact, ValueCallKind,
-    range_key,
+    DirectCallArgMismatch, InferredSig, TypedAssignMismatch, UfcsCallArgs, ValueCallFact,
+    ValueCallKind, range_key,
 };
 
 /// Read-only context shared by every body inferred in the same SCC round.
@@ -193,6 +193,10 @@ pub(super) struct BodyResult {
     /// Recorded unconditionally, like `direct_call_arg_mismatches`; reported
     /// only by strict mode.
     pub typed_assign_mismatches: Vec<TypedAssignMismatch>,
+    /// Issue #1881: see [`super::UfcsCallArgs`]. Recorded unconditionally,
+    /// like `direct_call_arg_mismatches`; consumed by
+    /// `crate::ufcs::UfcsVisitor`, reported only by strict mode.
+    pub ufcs_call_args: Vec<UfcsCallArgs>,
     /// Issue #1532 (the #1501 review's `remove`/`remove_at` migration-tail
     /// finding): every `remove(a, i)` call site in this body whose first
     /// argument is statically known to be `Ty::Array` — the pre-#1484 array
@@ -236,6 +240,56 @@ pub(super) struct BodyResult {
     pub call_fn_args: BTreeMap<(DefinitionId, u32), FnArgOrigins>,
 }
 
+/// A fresh, empty [`InferPass`] over `ctx` for `def`, seeded with
+/// `annotated` (the resolved param-annotation overlay [`infer_def_body`]
+/// already computed) and `param_index` (§6.1, issue #1680). Split out of
+/// [`infer_def_body`] itself (clippy's `too_many_lines`) — every other
+/// field starts at its own empty/zero value, mirroring [`empty_pass`]'s own
+/// test-only twin below.
+fn new_pass<'a, 'b>(
+    ctx: &'a BodyCtx<'b>,
+    def: &super::Def<'_>,
+    annotated: BTreeMap<String, Ty>,
+) -> InferPass<'a, 'b> {
+    InferPass {
+        ctx,
+        locals: BTreeMap::new(),
+        return_ty: Ty::Unknown,
+        has_value_return: false,
+        calls: BTreeSet::new(),
+        referenced_globals: BTreeSet::new(),
+        effect_writes: BTreeSet::new(),
+        external_calls: BTreeSet::new(),
+        effect_opaque: false,
+        effect_emits: false,
+        effect_tags: false,
+        effect_faults: false,
+        effect_faults_refined: false,
+        annotated,
+        value_calls: Vec::new(),
+        direct_call_arg_mismatches: Vec::new(),
+        typed_assign_mismatches: Vec::new(),
+        ufcs_call_args: Vec::new(),
+        array_remove_calls: Vec::new(),
+        created_fn_values: BTreeSet::new(),
+        local_fn_origins: BTreeMap::new(),
+        pending_value_calls: Vec::new(),
+        lambda_param_names: BTreeMap::new(),
+        // §6.1 (issue #1680): `ref` params are excluded — see the field doc.
+        param_index: def
+            .params
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| !p.is_ref)
+            .filter_map(|(i, p)| u32::try_from(i).ok().map(|i| (p.name.text.clone(), i)))
+            .collect(),
+        param_writes: BTreeSet::new(),
+        param_holes: BTreeSet::new(),
+        pending_call_fn_args: Vec::new(),
+        call_fn_args: BTreeMap::new(),
+    }
+}
+
 /// Infer one definition's body against `ctx`. `def.params` are the declared
 /// params in order (a knot's or stitch's `params`); `def.body` is its
 /// `Block`. `params` in the result echoes the declaration order.
@@ -264,42 +318,7 @@ pub(super) fn infer_def_body(def: &super::Def<'_>, ctx: &BodyCtx<'_>) -> BodyRes
         })
         .collect();
 
-    let mut pass = InferPass {
-        ctx,
-        locals: BTreeMap::new(),
-        return_ty: Ty::Unknown,
-        has_value_return: false,
-        calls: BTreeSet::new(),
-        referenced_globals: BTreeSet::new(),
-        effect_writes: BTreeSet::new(),
-        external_calls: BTreeSet::new(),
-        effect_opaque: false,
-        effect_emits: false,
-        effect_tags: false,
-        effect_faults: false,
-        effect_faults_refined: false,
-        annotated,
-        value_calls: Vec::new(),
-        direct_call_arg_mismatches: Vec::new(),
-        typed_assign_mismatches: Vec::new(),
-        array_remove_calls: Vec::new(),
-        created_fn_values: BTreeSet::new(),
-        local_fn_origins: BTreeMap::new(),
-        pending_value_calls: Vec::new(),
-        lambda_param_names: BTreeMap::new(),
-        // §6.1 (issue #1680): `ref` params are excluded — see the field doc.
-        param_index: def
-            .params
-            .iter()
-            .enumerate()
-            .filter(|(_, p)| !p.is_ref)
-            .filter_map(|(i, p)| u32::try_from(i).ok().map(|i| (p.name.text.clone(), i)))
-            .collect(),
-        param_writes: BTreeSet::new(),
-        param_holes: BTreeSet::new(),
-        pending_call_fn_args: Vec::new(),
-        call_fn_args: BTreeMap::new(),
-    };
+    let mut pass = new_pass(ctx, def, annotated);
     // NS-A2 fault dimension (issue #1108, from #1097): a `ref` parameter's
     // dereference inside this body goes through a pointer/projection whose
     // resolution can raise `ProjectionInvalidated` (docs/t1e-spec.md §1(2))
@@ -358,6 +377,7 @@ pub(super) fn infer_def_body(def: &super::Def<'_>, ctx: &BodyCtx<'_>) -> BodyRes
         value_calls: pass.value_calls,
         direct_call_arg_mismatches: pass.direct_call_arg_mismatches,
         typed_assign_mismatches: pass.typed_assign_mismatches,
+        ufcs_call_args: pass.ufcs_call_args,
         array_remove_calls: pass.array_remove_calls,
         created_fn_values: pass.created_fn_values,
         param_holes: pass.param_holes,
@@ -443,6 +463,9 @@ struct InferPass<'a, 'b> {
     /// See [`BodyResult::typed_assign_mismatches`] — accumulated the same
     /// way `direct_call_arg_mismatches` is, during the one body walk.
     typed_assign_mismatches: Vec<TypedAssignMismatch>,
+    /// See [`BodyResult::ufcs_call_args`] — accumulated the same way
+    /// `direct_call_arg_mismatches` is, during the one body walk.
+    ufcs_call_args: Vec<UfcsCallArgs>,
     /// See [`BodyResult::array_remove_calls`] — accumulated the same way
     /// `value_calls` is, during the one body walk.
     array_remove_calls: Vec<TextRange>,
@@ -1767,6 +1790,25 @@ impl InferPass<'_, '_> {
                 // posture `Expr::FieldAccess` already takes (no static
                 // field-type table is threaded through inference).
                 if path.segments.len() > 1 {
+                    // Issue #1881: this pass cannot check anything against
+                    // a UFCS receiver directly (see the comment above), but
+                    // `arg_tys` — every *written* argument's type — was
+                    // already computed above regardless, as a side effect
+                    // of walking each argument expression. That is exactly
+                    // the raw data `brink_analyzer::ufcs`'s own resolution
+                    // pass is missing to complete its own check (it has the
+                    // resolved free-function target and the target's
+                    // declared param types; it has no expression-type
+                    // inference of its own to type these arguments with).
+                    // Record it unconditionally here — the same "recorded
+                    // regardless of policy, reported only by strict mode"
+                    // posture `direct_call_arg_mismatches` follows — for
+                    // `ufcs::UfcsVisitor` to read back via this def's own
+                    // `BodyTypes`.
+                    self.ufcs_call_args.push(UfcsCallArgs {
+                        range: path.range,
+                        args: arg_tys.clone(),
+                    });
                     return Ty::Unknown;
                 }
                 return self.infer_value_call(path, def, args, &arg_tys);
@@ -1920,6 +1962,7 @@ impl InferPass<'_, '_> {
             value_calls: _,
             direct_call_arg_mismatches: _,
             typed_assign_mismatches: _,
+            ufcs_call_args: _,
             array_remove_calls: _,
             created_fn_values: _,
             local_fn_origins,
@@ -3473,6 +3516,7 @@ mod tests {
             value_calls: Vec::new(),
             direct_call_arg_mismatches: Vec::new(),
             typed_assign_mismatches: Vec::new(),
+            ufcs_call_args: Vec::new(),
             array_remove_calls: Vec::new(),
             created_fn_values: BTreeSet::new(),
             local_fn_origins: BTreeMap::new(),

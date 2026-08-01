@@ -180,6 +180,41 @@ pub struct BodyTypes {
     /// target's *final* type is `Conflicted`. See
     /// `body::InferPass::check_declared_assign_target`'s doc.
     pub typed_assign_mismatches: Vec<TypedAssignMismatch>,
+    /// Issue #1881: per-call-site *written*-argument types for every
+    /// UFCS-shaped (multi-segment, receiver-resolving) callee found in this
+    /// body — see [`UfcsCallArgs`]'s own doc for why this pass records raw
+    /// argument types here rather than checking them itself (the receiver
+    /// resolves to a value, so this pass's own callee resolution can never
+    /// see the desugared free function's declared param types the way
+    /// `brink_analyzer::ufcs`'s resolution pass can). Recorded
+    /// unconditionally, like `direct_call_arg_mismatches`; consumed by
+    /// `ufcs::UfcsVisitor`, reported only by strict mode
+    /// (`ufcs::check_strict`, `E063`).
+    pub ufcs_call_args: Vec<UfcsCallArgs>,
+}
+
+/// One UFCS-desugared call site's (`recv.name(args)` → `name(recv, args)`)
+/// *written*-argument types (issue #1881) — the receiver itself is not
+/// included here (its type is already known directly to
+/// `ufcs::UfcsVisitor`, this fact's sole consumer, from receiver-type
+/// resolution). Recorded unconditionally alongside every other
+/// multi-segment, value-resolving call this pass types `Ty::Unknown` (see
+/// `body::InferPass::infer_call`'s own doc for why it cannot check anything
+/// against a UFCS receiver directly) — this is the raw per-argument type
+/// data `brink_analyzer::ufcs`'s own resolution pass needs to complete its
+/// own argument-type check against the desugared free function's
+/// already-known declared param types (`InferenceResult::signatures`, keyed
+/// by the *target*, which this body-walk has no way to resolve on its own),
+/// without a second expression-type inference pass over the same body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UfcsCallArgs {
+    /// The callee `Path`'s own source range (`recv.name`'s whole span) —
+    /// same convention as [`DirectCallArgMismatch::range`]; `ufcs::resolve`
+    /// keys its own verdict table on this identical range (the
+    /// `ResolvedRef::range` contract, issue #1561).
+    pub range: TextRange,
+    /// Each written argument's statically inferred type, in source order.
+    pub args: Vec<Ty>,
 }
 
 /// One statically-checkable type mismatch at a **declaration-initializer or
@@ -733,6 +768,7 @@ fn solve_one_batch(
                     array_remove_calls: result.array_remove_calls,
                     direct_call_arg_mismatches: result.direct_call_arg_mismatches,
                     typed_assign_mismatches: result.typed_assign_mismatches,
+                    ufcs_call_args: result.ufcs_call_args,
                 },
             )
         })

@@ -250,6 +250,14 @@ temp`. A `Param` target is the one exception: a param disagreement is
 always caught by the firewall check above instead, at the annotation
 itself.
 
+It also fires for a UFCS-desugared call's arguments, on the native
+(`.brink`) surface: `recv.name(args)` desugars to `name(recv, args)`, and
+both the receiver (standing in for the desugar's first argument) and every
+written argument are checked against `name`'s already-known declared
+param types — `g.greet(3)` reports `E063` when `greet`'s declared first
+param disagrees with `g`'s own type, exactly like a direct call to `greet`
+would.
+
 A function that returns nothing annotates `void` (or simply never
 `return`s a value — inference treats the two identically). Assigning the
 result of a `void` call is a strict-mode error, `E067` ("`f` returns void —
@@ -530,7 +538,7 @@ can't, and each edge has its own answer:
 | Code | Fires when | Policy |
 |---|---|---|
 | `E061` | annotation names an unrecognized type | both |
-| `E063` | annotated type disagrees with the type inferred from usage, or a `VAR`/`CONST`/`~ temp` declaration initializer or a plain assignment disagrees with its target's already-known declared type | warning under gradual, error under strict |
+| `E063` | annotated type disagrees with the type inferred from usage, or a `VAR`/`CONST`/`~ temp` declaration initializer or a plain assignment disagrees with its target's already-known declared type, or (native surface) a UFCS-desugared call's receiver or written argument disagrees with the desugared function's declared param type | warning under gradual, error under strict |
 | `E064` | `types = strict` without `dialect = brink` | config |
 | `E065` | a type escapes strict inference as `Unknown` | strict |
 | `E066` | a type is `Conflicted` — its uses disagree | strict |

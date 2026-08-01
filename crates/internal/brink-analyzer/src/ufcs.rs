@@ -113,7 +113,7 @@ use brink_ir::{
 use rowan::TextRange;
 
 use crate::annotations;
-use crate::infer::{InferenceResult, Ty};
+use crate::infer::{InferenceResult, InferredSig, Ty, assignable};
 use crate::resolve::ImportScope;
 use crate::structs::{ShapeInfo, declared_shapes};
 
@@ -246,6 +246,12 @@ pub enum UfcsVerdict {
         name: String,
         /// The definition the desugared call targets.
         target: DefinitionId,
+        /// Issue #1881: statically-checkable argument-type mismatches
+        /// between the desugared call `name(recv, args)` and `target`'s
+        /// already-known declared param types, computed unconditionally
+        /// alongside this verdict — see [`UfcsArgMismatch`]'s own doc.
+        /// Reported only by strict mode ([`check_strict`], `E063`).
+        arg_mismatches: Vec<UfcsArgMismatch>,
     },
     /// A free function won (step 3): the call desugars to
     /// `name(recv, args)`, by value.
@@ -256,6 +262,9 @@ pub enum UfcsVerdict {
         name: String,
         /// The definition the desugared call targets.
         target: DefinitionId,
+        /// Issue #1881: identical posture to [`Self::FreeFnAutoRef`]'s own
+        /// `arg_mismatches` field — the by-value desugar shape.
+        arg_mismatches: Vec<UfcsArgMismatch>,
     },
     /// A T1b/NS stdlib prelude name won (step 3, D4's "file `use` + prelude"
     /// candidate set): the call desugars to `name(recv, args)` exactly like
@@ -269,6 +278,30 @@ pub enum UfcsVerdict {
         /// The prelude function's name, as written.
         name: String,
     },
+}
+
+/// One statically-checkable argument-type mismatch at a UFCS-desugared free
+/// function call (`recv.name(args)` → `name(recv, args)`) — issue #1881,
+/// the UFCS sibling of `infer::DirectCallArgMismatch` (#1864/PR #1875,
+/// direct calls) and `infer::TypedAssignMismatch` (#1877/PR #1899,
+/// declaration initializers and assignments). Reported by [`check_strict`]
+/// as `E063`, the same code the other two siblings use — no new code minted
+/// for this position (docs/t1c-spec.md §8's "existing TM-3 machinery"
+/// posture, extended here rather than a parallel checker).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UfcsArgMismatch {
+    /// The mismatched argument's 0-based position in the **desugared** call
+    /// `name(recv, args)` — `0` names the receiver itself (the desugar's
+    /// first positional slot); `i` for `i >= 1` names the `(i - 1)`-th
+    /// *written* argument. Matches the "receiver counts as the first
+    /// argument" convention this call site's own arity-mismatch diagnostic
+    /// already uses (see [`UfcsVisitor::try_free_fn_desugar`]).
+    pub index: usize,
+    /// The desugared target's declared parameter type at `index`.
+    pub expected: Ty,
+    /// The receiver's (`index == 0`) or written argument's statically
+    /// classified type.
+    pub found: Ty,
 }
 
 /// Every UFCS call site's verdict for one project.
@@ -345,10 +378,11 @@ pub fn resolve(
             shapes: &shapes,
             globals: &globals,
             bodies: &inference.bodies,
+            signatures: &inference.signatures,
             resolution_by_range: &resolution_by_range,
             current_knot_name: None,
-            knot_locals: None,
-            stitch_locals: None,
+            knot_body: None,
+            stitch_body: None,
             table: &mut table,
             diagnostics: &mut diagnostics,
         };
@@ -358,22 +392,35 @@ pub fn resolve(
     (table, diagnostics)
 }
 
-/// The **strict-mode-only** diagnostics that fall out of the verdict table
-/// (issue #1540, second symptom): a typed check keyed on an intrinsic's
-/// receiver must see the UFCS spelling of that intrinsic too.
+/// The **strict-mode-only** diagnostics that fall out of the verdict table:
 ///
-/// `infer::body::infer_call` deliberately returns `Ty::Unknown` for a
-/// multi-segment callee *before* `infer_intrinsic` runs (a UFCS receiver is
-/// not the thing being called, so classifying it as a call-through-a-value
-/// would be a false `E066` on every legal method call — see that function's
-/// own note). The consequence is that `arr.remove(0)` records none of the
-/// facts `remove(arr, 0)` records, so every intrinsic-receiver diagnostic
-/// silently stopped at the free-call spelling. This pass is where the
-/// UFCS spelling gets them back: the verdict table already carries the
-/// receiver's resolved `Ty` next to the verb's name, which is exactly the
-/// `(receiver type, verb)` pair those checks key on — no second inference,
-/// and no `TypePolicy` threaded into [`resolve`] (which stays
-/// policy-independent, as LIR lowering and the IDE need it to be).
+/// - Issue #1540 (second symptom): a typed check keyed on an intrinsic's
+///   receiver must see the UFCS spelling of that intrinsic too.
+///
+///   `infer::body::infer_call` deliberately returns `Ty::Unknown` for a
+///   multi-segment callee *before* `infer_intrinsic` runs (a UFCS receiver
+///   is not the thing being called, so classifying it as a
+///   call-through-a-value would be a false `E066` on every legal method
+///   call — see that function's own note). The consequence is that
+///   `arr.remove(0)` records none of the facts `remove(arr, 0)` records, so
+///   every intrinsic-receiver diagnostic silently stopped at the free-call
+///   spelling. This pass is where the UFCS spelling gets them back: the
+///   verdict table already carries the receiver's resolved `Ty` next to the
+///   verb's name, which is exactly the `(receiver type, verb)` pair those
+///   checks key on — no second inference, and no `TypePolicy` threaded into
+///   [`resolve`] (which stays policy-independent, as LIR lowering and the
+///   IDE need it to be).
+///
+/// - Issue #1881: a `FreeFnDesugar`/`FreeFnAutoRef` verdict's own
+///   `arg_mismatches` (computed unconditionally alongside the verdict by
+///   [`UfcsVisitor::try_free_fn_desugar`]) — the UFCS sibling of
+///   `strict::check_direct_call_args` (#1864/PR #1875) and
+///   `strict::check_typed_assign_mismatches` (#1877/PR #1899): a UFCS
+///   receiver resolves to a *value*, so `InferenceResult::signatures` has
+///   no entry for it the way a direct call's callee does, which is exactly
+///   why this class of mismatch couldn't be checked by extending either of
+///   those two passes — the resolved free-function *target*'s signature is
+///   only ever available here, where this pass has already resolved it.
 ///
 /// Strict-mode-only **by convention, not by construction**, exactly like
 /// `coalesce::resolve`'s `E066` half: production reaches this only from
@@ -400,36 +447,77 @@ pub fn check_strict(
     let (table, _unconditional) = resolve(files, index, resolutions, inference);
     table
         .iter()
-        .filter_map(|(key, verdict)| strict_verdict_diagnostic(key, verdict))
+        .flat_map(|(key, verdict)| strict_verdict_diagnostics(key, verdict))
         .collect()
 }
 
-/// One verdict's strict-mode diagnostic, if it has one.
+/// One verdict's strict-mode diagnostics, if it has any.
 ///
-/// Today that is `E149` alone — `remove` went map-only in issue #1484 with
-/// no compatibility shim, so an array receiver means the site wants
+/// `E149` (issue #1540) — `remove` went map-only in issue #1484 with no
+/// compatibility shim, so an array receiver means the site wants
 /// `remove_at`. The free-call spelling of this exact check lives in
 /// `strict::check_array_remove_calls`, reading the fact
 /// `infer::body`'s `remove` arm records; the two spellings must agree, so
 /// the receiver test here (`Ty::Array`) is deliberately the same one.
 ///
+/// `E063` (issue #1881) — every recorded [`UfcsArgMismatch`] on a
+/// `FreeFnDesugar`/`FreeFnAutoRef` verdict, reported the same way
+/// `strict::check_direct_call_args` reports `DirectCallArgMismatch`.
+///
 /// Every future collection-typed check that keys on `(receiver type, verb)`
 /// belongs in this match rather than in a parallel walk — that is the point
 /// of routing through the verdict table at all.
-fn strict_verdict_diagnostic(key: NodeKey, verdict: &UfcsVerdict) -> Option<Diagnostic> {
-    let UfcsVerdict::PreludeDesugar { receiver, name } = verdict else {
-        return None;
-    };
-    let code = match (name.as_str(), receiver) {
-        ("remove", Ty::Array(_)) => DiagnosticCode::E149,
-        _ => return None,
-    };
-    Some(Diagnostic {
+fn strict_verdict_diagnostics(key: NodeKey, verdict: &UfcsVerdict) -> Vec<Diagnostic> {
+    match verdict {
+        UfcsVerdict::PreludeDesugar { receiver, name } => {
+            let code = match (name.as_str(), receiver) {
+                ("remove", Ty::Array(_)) => DiagnosticCode::E149,
+                _ => return Vec::new(),
+            };
+            vec![Diagnostic {
+                file: key.file,
+                range: TextRange::new(key.range.0.into(), key.range.1.into()),
+                message: code.title().to_owned(),
+                code,
+            }]
+        }
+        UfcsVerdict::FreeFnDesugar {
+            name,
+            arg_mismatches,
+            ..
+        }
+        | UfcsVerdict::FreeFnAutoRef {
+            name,
+            arg_mismatches,
+            ..
+        } => arg_mismatches
+            .iter()
+            .map(|mismatch| ufcs_arg_mismatch_diagnostic(key, name, mismatch))
+            .collect(),
+        UfcsVerdict::FieldCall { .. } => Vec::new(),
+    }
+}
+
+/// One [`UfcsArgMismatch`] as a diagnostic — the message wording matches
+/// `strict::check_direct_call_args`'s own `E063` phrasing exactly (the
+/// direct-call sibling this parallels), just against the *desugared* call's
+/// own argument numbering (`index` `0` is the receiver).
+fn ufcs_arg_mismatch_diagnostic(
+    key: NodeKey,
+    name: &str,
+    mismatch: &UfcsArgMismatch,
+) -> Diagnostic {
+    Diagnostic {
         file: key.file,
         range: TextRange::new(key.range.0.into(), key.range.1.into()),
-        message: code.title().to_owned(),
-        code,
-    })
+        message: format!(
+            "argument {} of call to `{name}` has type `{}` but its known type expects `{}`",
+            mismatch.index + 1,
+            mismatch.found.display(),
+            mismatch.expected.display(),
+        ),
+        code: DiagnosticCode::E063,
+    }
 }
 
 /// Cheap structural scan: does any call in `hir` have a multi-segment
@@ -486,10 +574,21 @@ struct UfcsVisitor<'a> {
     shapes: &'a BTreeMap<String, ShapeInfo>,
     globals: &'a BTreeMap<DefinitionId, Ty>,
     bodies: &'a BTreeMap<DefinitionId, crate::infer::BodyTypes>,
+    /// Every inferable def's finalized signature (issue #1881) — the UFCS
+    /// desugar's *target* (a knot/stitch, never the receiver) has its
+    /// declared param types here, the same firewall-facing projection a
+    /// direct call's `known_sigs` lookup reads. See
+    /// [`UfcsVisitor::try_free_fn_desugar`]'s own argument-type check.
+    signatures: &'a BTreeMap<DefinitionId, InferredSig>,
     resolution_by_range: &'a BTreeMap<(u32, u32), DefinitionId>,
     current_knot_name: Option<String>,
-    knot_locals: Option<&'a BTreeMap<String, Ty>>,
-    stitch_locals: Option<&'a BTreeMap<String, Ty>>,
+    /// The enclosing knot's own `BodyTypes` (issue #1881 widened this from
+    /// `locals` alone to the whole `BodyTypes`, so [`Self::current_body`]
+    /// can also read back the enclosing def's own recorded
+    /// `ufcs_call_args` — see [`Self::current_locals`] for the `locals`
+    /// projection every earlier call site still wants).
+    knot_body: Option<&'a crate::infer::BodyTypes>,
+    stitch_body: Option<&'a crate::infer::BodyTypes>,
     table: &'a mut UfcsTable,
     diagnostics: &'a mut Vec<Diagnostic>,
 }
@@ -501,28 +600,26 @@ impl HirVisitor for UfcsVisitor<'_> {
 
     fn enter_knot(&mut self, knot: &Knot) {
         self.current_knot_name = Some(knot.name.text.clone());
-        self.knot_locals =
+        self.knot_body =
             annotations::def_id_for(self.index, self.file, knot.symbol_kind(), &knot.name.text)
-                .and_then(|id| self.bodies.get(&id))
-                .map(|b| &b.locals);
+                .and_then(|id| self.bodies.get(&id));
     }
 
     fn exit_knot(&mut self, _knot: &Knot) {
         self.current_knot_name = None;
-        self.knot_locals = None;
+        self.knot_body = None;
     }
 
     fn enter_stitch(&mut self, stitch: &Stitch) {
-        self.stitch_locals = self.current_knot_name.as_ref().and_then(|knot_name| {
+        self.stitch_body = self.current_knot_name.as_ref().and_then(|knot_name| {
             let qualified = format!("{knot_name}.{}", stitch.name.text);
             annotations::def_id_for(self.index, self.file, SymbolKind::Stitch, &qualified)
                 .and_then(|id| self.bodies.get(&id))
-                .map(|b| &b.locals)
         });
     }
 
     fn exit_stitch(&mut self, _stitch: &Stitch) {
-        self.stitch_locals = None;
+        self.stitch_body = None;
     }
 
     fn enter_expr(&mut self, expr: &Expr) {
@@ -549,8 +646,15 @@ struct Receiver<'a> {
 }
 
 impl UfcsVisitor<'_> {
+    /// The innermost enclosing def's own `BodyTypes` — a stitch's own body
+    /// wins over its enclosing knot's, exactly like [`Self::current_locals`]
+    /// already preferred.
+    fn current_body(&self) -> Option<&crate::infer::BodyTypes> {
+        self.stitch_body.or(self.knot_body)
+    }
+
     fn current_locals(&self) -> Option<&BTreeMap<String, Ty>> {
-        self.stitch_locals.or(self.knot_locals)
+        self.current_body().map(|b| &b.locals)
     }
 
     /// The single call-site decision. Returns without touching the table or
@@ -752,22 +856,109 @@ impl UfcsVisitor<'_> {
             );
             self.push(path.range, DiagnosticCode::E031, &message);
         }
+        // Issue #1881: the argument-type half of this call site's check —
+        // computed here (unconditionally, like everything else in this
+        // resolution pass) and carried on the verdict for `check_strict` to
+        // report as `E063`.
+        let arg_mismatches = self.check_ufcs_arg_types(path.range, target, receiver);
         let verdict = if first_param_is_ref {
             UfcsVerdict::FreeFnAutoRef {
                 receiver: receiver.ty.clone(),
                 name: method.text.clone(),
                 target,
+                arg_mismatches,
             }
         } else {
             UfcsVerdict::FreeFnDesugar {
                 receiver: receiver.ty.clone(),
                 name: method.text.clone(),
                 target,
+                arg_mismatches,
             }
         };
         self.table
             .insert(NodeKey::new(self.file, path.range), verdict);
         true
+    }
+
+    /// Issue #1881: the desugared call's argument-type check — `target`'s
+    /// already-known declared param types (`self.signatures`, this pass's
+    /// own `InferenceResult::signatures` projection) against the receiver
+    /// (param `0`) and every *written* argument (param `1..`, read back
+    /// from `infer::body`'s own recorded [`super::UfcsCallArgs`] fact for
+    /// this exact call-site `range` — this pass has no expression-type
+    /// inference of its own, see that struct's own doc for why the split
+    /// lives here).
+    ///
+    /// Mirrors `infer::body::InferPass::infer_call`'s own direct-call check
+    /// (`assignable`, skipping whenever either side is `Unknown`/
+    /// `Conflicted`) with one simplification: unlike a direct call's
+    /// argument, nothing in `infer::body`'s own walk ever `observe`s a
+    /// UFCS receiver or written argument against `target`'s declared param
+    /// type — the multi-segment bail-out in `infer_call` returns
+    /// `Ty::Unknown` immediately, before any `observe` call runs. So there
+    /// is no `arg_is_observed_local`-style double-report risk against
+    /// `E066` to guard against here, unlike `DirectCallArgMismatch`'s own
+    /// exclusion.
+    ///
+    /// **The D5 auto-ref interaction** (both call sites — `first_param_is_ref`
+    /// or not — share this one check): a `ref` first param's entry in
+    /// `self.signatures` is *not* a special "reference" `Ty` — `InferredSig`
+    /// carries no such variant. `body::infer_def_body` derives every
+    /// param's row (`ref` included) from `pass.locals`, the type the body
+    /// itself observed that parameter holding — i.e. the **referent's**
+    /// own type, exactly what `receiver.ty` (a value type, never wrapped)
+    /// already is. So comparing `receiver.ty` against `sig.params[0]` with
+    /// the same plain `assignable` this whole function otherwise uses is
+    /// correct for `FreeFnAutoRef` too, not just `FreeFnDesugar` — no
+    /// auto-ref-specific unwrapping needed, and none of the false positives
+    /// #1895 shipped by assuming a receiver's call-site type must literally
+    /// equal a param's declared spelling.
+    fn check_ufcs_arg_types(
+        &self,
+        range: TextRange,
+        target: DefinitionId,
+        receiver: &Receiver<'_>,
+    ) -> Vec<UfcsArgMismatch> {
+        let Some(sig) = self.signatures.get(&target) else {
+            return Vec::new();
+        };
+        let empty: Vec<Ty> = Vec::new();
+        let written: &[Ty] = self
+            .current_body()
+            .and_then(|b| b.ufcs_call_args.iter().find(|f| f.range == range))
+            .map_or(empty.as_slice(), |f| f.args.as_slice());
+
+        let mut mismatches = Vec::new();
+        // Index 0: the receiver itself — `name(recv, args)`'s first
+        // positional slot, same "receiver counts as the first argument"
+        // convention this call site's own arity-mismatch diagnostic uses.
+        if let Some(param_ty) = sig.params.first()
+            && !param_ty.is_unresolved()
+            && !assignable(param_ty, &receiver.ty)
+        {
+            mismatches.push(UfcsArgMismatch {
+                index: 0,
+                expected: param_ty.clone(),
+                found: receiver.ty.clone(),
+            });
+        }
+        for (i, arg_ty) in written.iter().enumerate() {
+            if arg_ty.is_unresolved() {
+                continue;
+            }
+            let Some(param_ty) = sig.params.get(i + 1) else {
+                continue;
+            };
+            if !param_ty.is_unresolved() && !assignable(param_ty, arg_ty) {
+                mismatches.push(UfcsArgMismatch {
+                    index: i + 1,
+                    expected: param_ty.clone(),
+                    found: arg_ty.clone(),
+                });
+            }
+        }
+        mismatches
     }
 
     /// **D5's receiver gate.** `Some(cause)` when auto-ref cannot write
