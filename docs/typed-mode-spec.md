@@ -120,11 +120,49 @@ walk, restored via the same shadow/restore mechanism issue #1910 already
 uses for every other frame-scoped map this function touches — an enclosing
 same-named local's own annotation is exactly as protected as it was before.
 
+**This seed's reach is the whole body walk, not only the tail/expr value
+position.** `self.annotated` is read by `own_annotation`'s bare-name
+fallback at *every* `or_own_annotation`/`annotated_callee_ty` consumer
+reachable while the walk runs — an intrinsic's argument-position overlay
+(`some(t)`), a `for` loop's iterable, and a direct-call callee's own
+annotated type (`cb(1)` for a `cb: fn(int): int` param) all resolve through
+the same seed, exactly like a `fn`/`flow`'s own `new_pass`-time seed already
+covers its whole body, not only its `return`s. Only the value-position
+tail/expr reads were previously *wired up* to consult the fallback (#1941's
+own read-site fix); the seed that feeds them was never scoped to those two
+sites alone.
+
+One exclusion the seed must respect: a param name the lambda's own body
+*re-binds* (a fresh `TempDecl`/`if`/`while`/`for` binding of the same
+spelling, e.g. `|t: int| { let t = "a"; t = "b"; t }`) is never seeded.
+`check_declared_assign_target`'s `SymbolKind::Temp` arm reads this same
+bare-name-keyed map to find a Temp's *declared* type for its own mismatch
+report — it has no way to tell "the param's own annotation" apart from "a
+fresh same-named local's own (absent) annotation" — so seeding the param's
+type here would falsely report the fresh local's own unrelated assignment
+as a mismatch against the shadowed param's type. `infer_lambda` computes
+the body's own re-bound names (`lambda_own_binding_names`, already gathered
+for the `locals`/`annotated` shadow above) and skips seeding any param name
+that set contains.
+
 The firewall holds identically: the fallback overlays an `Unknown` only, so
 a lambda body that genuinely constrains its param still exports its own
 derivation, and a lambda's own explicit return annotation
 (`|t|: T { … }`) still overlays only when the tail/expr comes back
 `Unknown` — unchanged by this fix.
+
+**Distinct from the #1912 "no seed" scope note.** #1912's own scope-notes
+comment records that a whole-body **seeding** approach was tried and
+rejected for the `fn`/`flow` case: it seeded `self.locals` — the inference
+lattice itself — and broke the "overlay, never seed" firewall load-bearing
+for `E063`/`E066`, concluding "any future widening has to be per-read-site,
+not a seed." This fix does not breach that firewall: it seeds
+`self.annotated`, the read-site *fallback* map a `fn`/`flow` already
+receives for free at `new_pass` time — never `self.locals` — so a lambda
+body that genuinely constrains its param still produces its own
+independent derivation in `self.locals`, exactly as before. Recorded here
+so the two do not read as contradictory: different map, different
+contract, same firewall intact.
 
 ## 3. Annotation syntax — RULED
 

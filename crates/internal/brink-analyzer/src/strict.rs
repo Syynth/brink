@@ -2756,6 +2756,70 @@ mod tests {
         );
     }
 
+    #[test]
+    fn native_lambda_param_annotation_seed_does_not_leak_into_a_rebound_temp_of_the_same_name() {
+        // #1954 review finding (BLOCKING): `check_declared_assign_target`'s
+        // own `SymbolKind::Temp` arm reads the same bare-name-keyed
+        // `self.annotated` map the #1941 seed populates — it is a mismatch
+        // *reporter*, not a pure read site like `own_annotation`'s other
+        // consumers, and it cannot distinguish "the param's own annotation"
+        // from "a fresh same-named local's own (absent) annotation". Without
+        // excluding a body-rebound name from the seed, `t`'s param
+        // annotation (`int`) leaked into the *lambda-local* `t` this body
+        // re-declares, so assigning it a `string` falsely reported
+        // `` `t` has type `string` but its declared type is `int` ``
+        // (E063) even though the local `t` was never declared `: int` at
+        // all. Verified empirically before this fix: reverting the
+        // `body_bound_names` exclusion in `infer_lambda` reproduces this
+        // exact diagnostic on this exact snippet.
+        let diags = native_strict_diags(
+            "fn f() {\n  let g = |t: int| {\n    let t = \"a\";\n    t = \"b\";\n    t\n  };\n}\n",
+        );
+        assert!(
+            diags.is_empty(),
+            "the lambda body's own `t` re-declaration shadows the param \
+             entirely; it has no `int` annotation of its own to conflict \
+             with a `string` assignment: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn native_lambda_param_annotation_seed_reaches_every_own_annotation_read_site_in_the_body() {
+        // #1954 review finding: the #1941 seed's blast radius is wider than
+        // the PR's own description states — it is read by
+        // `own_annotation`'s bare-name fallback at *every*
+        // `or_own_annotation`/`annotated_callee_ty` consumer reachable
+        // during the body walk, not only the tail/expr value position. This
+        // mirrors a `fn`/`flow`'s own `new_pass`-time seed, which already
+        // covers its whole body, not only its `return`s — see
+        // `docs/typed-mode-spec.md` §2's #1941 paragraph for the recorded
+        // scope.
+        //
+        // `some(t)`: `t`'s annotated `int` reaches the intrinsic-argument
+        // overlay (`infer_intrinsic_call`'s `or_own_annotation` pass over
+        // each argument), which is what lets the tail's `Ty::Option(Int)`
+        // resolve at all instead of escaping as `Unknown`.
+        let via_intrinsic_arg =
+            native_strict_diags("fn f() {\n  let g = |t: int| {\n    some(t)\n  };\n}\n");
+        assert!(
+            via_intrinsic_arg.is_empty(),
+            "the seed reaches `some`'s argument-position read of `t`, not \
+             just the lambda's own tail: {via_intrinsic_arg:?}"
+        );
+
+        // `cb(1)`: `cb`'s annotated `fn(int): int` reaches
+        // `annotated_callee_ty`'s direct-call-callee read, which is what
+        // lets `cb` be called as a function value here rather than
+        // escaping strict inference.
+        let via_callee_ty =
+            native_strict_diags("fn f() {\n  let g = |cb: fn(int): int| {\n    cb(1)\n  };\n}\n");
+        assert!(
+            via_callee_ty.is_empty(),
+            "the seed reaches `annotated_callee_ty`'s direct-call read of \
+             `cb`, not just the lambda's own tail: {via_callee_ty:?}"
+        );
+    }
+
     // ── issue #1551: return-escape check extended past `is_function` ──
     //
     // `docs/decision-log.md` 2026-07-22 implicit-end ruling item 3: "a flow

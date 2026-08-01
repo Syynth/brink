@@ -27,6 +27,20 @@ annotations for the duration of its body walk, restored via the same
 shadow/restore mechanism issue #1910 already uses for every other
 frame-scoped map this function touches.
 
+This seed's reach is the whole body walk, not only the two value-position
+read sites above: `self.annotated` is consulted by `own_annotation`'s
+bare-name fallback at every `or_own_annotation`/`annotated_callee_ty`
+consumer reachable during the walk (an intrinsic's argument-position
+overlay, a `for` loop's iterable, a direct-call callee's own annotated
+type), exactly like a `fn`/`flow`'s own pass-creation seed already covers
+its whole body, not only its `return`s. One exclusion: a param name the
+lambda's own body re-binds via a fresh same-spelled `TempDecl`/`if`/
+`while`/`for` binding is never seeded — `check_declared_assign_target`'s
+`SymbolKind::Temp` arm reads this same map for its own mismatch report and
+cannot tell the param's annotation apart from the fresh local's (absent)
+one, so seeding it would falsely flag the fresh local's own assignment
+against the shadowed param's type.
+
 The TM-2 annotation firewall is unchanged: the fallback overlays an
 `Unknown` only, so a lambda body that genuinely constrains its param still
 exports its own independent derivation, and a lambda's own explicit return
