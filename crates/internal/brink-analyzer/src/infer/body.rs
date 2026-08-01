@@ -423,6 +423,61 @@ fn fold_literal_int_bound(expr: &Expr) -> Option<i64> {
     }
 }
 
+/// Issue #1910: every bare name a lambda's own block body directly binds —
+/// `TempDecl`, a `for` loop's `var_name`/`val_name`, or an `if`/`while`
+/// `EXPR as NAME` binding — collected recursively through `if`/`while`/`for`
+/// nesting. Used by `InferPass::infer_lambda` to extend its `self.locals`
+/// shadow past just the lambda's own params (see that call site's own doc):
+/// any of these can collide with an enclosing same-named local exactly the
+/// way an unshadowed param would.
+///
+/// Deliberately does **not** recurse into a nested `Expr::Lambda` (there is
+/// none to walk into here regardless — `BlockStmt` only carries expressions,
+/// and a lambda literal nested inside one of those is a leaf as far as this
+/// name collection is concerned): a nested lambda's own body binds its own
+/// names, shadowed by *its own* `infer_lambda` call when that literal is
+/// walked, not this one's.
+fn lambda_own_binding_names(stmts: &[brink_ir::BlockStmt], out: &mut BTreeSet<String>) {
+    fn walk_if(i: &brink_ir::IfStmt, out: &mut BTreeSet<String>) {
+        if let Some(b) = &i.binding {
+            out.insert(b.text.clone());
+        }
+        lambda_own_binding_names(&i.body, out);
+        match &i.else_branch {
+            Some(brink_ir::ElseBranch::ElseIf(nested)) => walk_if(nested, out),
+            Some(brink_ir::ElseBranch::Else(body)) => lambda_own_binding_names(body, out),
+            None => {}
+        }
+    }
+    for s in stmts {
+        match s {
+            brink_ir::BlockStmt::TempDecl(t) => {
+                out.insert(t.name.text.clone());
+            }
+            brink_ir::BlockStmt::If(i) => walk_if(i, out),
+            brink_ir::BlockStmt::While(w) => {
+                if let Some(b) = &w.binding {
+                    out.insert(b.text.clone());
+                }
+                lambda_own_binding_names(&w.body, out);
+            }
+            brink_ir::BlockStmt::For(f) => {
+                out.insert(f.var_name.text.clone());
+                if let Some(v) = &f.val_name {
+                    out.insert(v.text.clone());
+                }
+                lambda_own_binding_names(&f.body, out);
+            }
+            brink_ir::BlockStmt::Assignment(_)
+            | brink_ir::BlockStmt::Return(_)
+            | brink_ir::BlockStmt::Break(_)
+            | brink_ir::BlockStmt::Continue(_)
+            | brink_ir::BlockStmt::ExprStmt(_)
+            | brink_ir::BlockStmt::Await(_) => {}
+        }
+    }
+}
+
 #[expect(
     clippy::struct_excessive_bools,
     reason = "accumulator for the same independent facts BodyResult carries"
@@ -2108,25 +2163,37 @@ impl InferPass<'_, '_> {
                 .entry(p.name.text.clone())
                 .or_insert(0) += 1;
         }
-        // Issue #1910: shadow each param's own entry in `self.locals` too,
-        // for the same duration — mirroring `infer_def_body`'s own params,
-        // which likewise start every walk with no seeded entry (`new_pass`'s
-        // `locals: BTreeMap::new()`) and gain a type only through the body's
-        // own `observe`/`bind_local` calls (the mono-HM narrowing this
-        // function used to throw away — see below). `self.locals` is keyed
-        // by bare *name* and shared with the enclosing frame, exactly the
-        // hazard `lambda_param_names` above already guards for narrowing
-        // purposes: without this shadow an enclosing same-named local's
-        // already-inferred type would silently seed this lambda's
-        // unconstrained param, and symmetrically whatever this lambda's body
-        // narrows its own param to would leak into the enclosing frame's
-        // binding of that name once the lambda is done. `saved_params`
+        // Issue #1910: shadow every name this lambda's own body binds —
+        // every param, plus (for a block body) every `TempDecl`/`for`/`as`
+        // binding the body itself introduces, collected recursively through
+        // `if`/`while`/`for` nesting by `lambda_own_binding_names` (never
+        // through a nested `Expr::Lambda`, which shadows its own names when
+        // *its* `infer_lambda` runs) — for the same duration as the walk
+        // below. `self.locals` is keyed by bare *name* and shared with the
+        // enclosing frame; `bind_local`/`observe` UNIFY with whatever
+        // already occupies a name, which is correct for repeated writes to
+        // the SAME binding but not for a same-spelled *new* binding a
+        // nested scope introduces — without this shadow, an enclosing local
+        // already sitting under this name would silently seed (or worse,
+        // `Conflicted`-poison) the lambda's own fresh one the moment its
+        // first `TempDecl` writes it, and — for a param specifically — an
+        // enclosing same-named local's type would seed the param itself.
+        // `frame_snapshot`/`restore_frame` below (issue #1816) already keeps
+        // this contamination from ever reaching the *enclosing* frame once
+        // the walk finishes; what it does not do is stop this function's own
+        // `body_ty`/`narrowed_params` overlay from reading contaminated
+        // values *during* the walk, which is what made this shadow
+        // necessary the moment #1910 started reading them at all. `saved`
         // records exactly what (if anything) occupied each name so it can be
         // put back verbatim, `None` when nothing did.
-        let saved_params: Vec<(String, Option<Ty>)> = l
-            .params
+        let mut shadow_names: BTreeSet<String> =
+            l.params.iter().map(|p| p.name.text.clone()).collect();
+        if let brink_ir::LambdaBody::Block { stmts, .. } = &l.body {
+            lambda_own_binding_names(stmts, &mut shadow_names);
+        }
+        let saved: Vec<(String, Option<Ty>)> = shadow_names
             .iter()
-            .map(|p| (p.name.text.clone(), self.locals.remove(&p.name.text)))
+            .map(|name| (name.clone(), self.locals.remove(name)))
             .collect();
         // Issue #1910: capture the body's own derivation of the lambda's
         // return type and each param's type — read back from `self.locals`
@@ -2230,7 +2297,7 @@ impl InferPass<'_, '_> {
         // Undo the `self.locals` shadow (mirrors the `lambda_param_names`
         // decrement below): restore whatever an enclosing same-named local
         // held, or leave the name absent if nothing did.
-        for (name, prior) in saved_params {
+        for (name, prior) in saved {
             match prior {
                 Some(ty) => {
                     self.locals.insert(name, ty);

@@ -2523,6 +2523,28 @@ mod tests {
     }
 
     #[test]
+    fn native_lambda_temp_shadowing_an_enclosing_local_does_not_poison_the_lambda_result() {
+        // A regression this fix's own `self.locals` shadow had to grow to
+        // cover: `g`'s `let a = "str";` reuses the enclosing `a`'s bare
+        // name. Before extending the shadow past just params (issue #1910
+        // review), the lambda's *first* `TempDecl` write of "a" `unify`d
+        // with the enclosing `a: int`'s already-accumulated type —
+        // `unify(int, string) == Conflicted` — and that `Conflicted` value,
+        // now read back as this lambda's own tail type, made `map`'s whole
+        // result (and so `scaled`'s return) `Conflicted` under strict.
+        let diags = native_strict_diags(
+            "fn scaled() {\n  let a = 1;\n  let items = [1, 2, 3];\n  let scaled = map(items, |x| {\n    let a = \"str\";\n    a\n  });\n  return len(scaled);\n}\n",
+        );
+        assert!(
+            diags.is_empty(),
+            "the lambda's own `let a = \"str\";` is a fresh binding, wholly \
+             unrelated to the enclosing `let a = 1;` of the same name — it \
+             must not corrupt the lambda's own inferred `string` return \
+             into `Conflicted`: {diags:?}"
+        );
+    }
+
+    #[test]
     fn native_verb_callback_param_still_escapes_when_the_body_places_no_constraint_on_it() {
         // The boundary this fix does NOT cross: `infer_lambda`'s own doc
         // ("mono-HM narrowing of a lambda's own params from its concrete
