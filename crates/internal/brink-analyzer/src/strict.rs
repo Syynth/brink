@@ -5060,4 +5060,52 @@ mod tests {
             result.diagnostics
         );
     }
+
+    // ── Issue #1903: `root_content` reaches the strict walk ──────────────
+
+    /// Issue #1903 regression. `collect_defs` walked only `hir.knots`, so
+    /// `root_content` — which the **ink** frontend populates from the file's
+    /// literal top-level weave — never reached inference, and a declared-type
+    /// violation written at file root was silently unchecked.
+    ///
+    /// ⚠ **Note the dialect.** This fixture is ink, not native, and that is
+    /// load-bearing rather than incidental: `lower_native::entry_root_content`
+    /// makes a `.brink` file's `root_content` either empty or a *single
+    /// synthesized `Divert`* to `main`, never user statements. So native
+    /// root content holds nothing type-bearing and cannot exercise this path
+    /// at all — a `.brink` fixture would pass identically with the fix
+    /// reverted. See this test's companion,
+    /// [`native_root_content_holds_no_type_bearing_statements`].
+    #[test]
+    fn ink_root_content_declared_temp_init_is_checked() {
+        let src = "~ temp n: int = \"hello\"\nHello.\n-> END\n";
+        let (hir, index, res) = build(src);
+        assert!(
+            !hir.root_content.stmts.is_empty(),
+            "fixture precondition: the ink frontend must populate root_content"
+        );
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
+        assert!(
+            diags.iter().any(|d| d.code == DiagnosticCode::E063),
+            "a declared-type violation at file root must be reported: {diags:?}"
+        );
+    }
+
+    /// Pins the asymmetry the test above depends on: a native file's
+    /// `root_content` is only ever the synthesized entry `Divert`, so #1903's
+    /// walk finds no assignment or temp there. If native ever grows real
+    /// file-root statements this test fails, which is the signal to add a
+    /// native counterpart of the test above.
+    #[test]
+    fn native_root_content_holds_no_type_bearing_statements() {
+        let (hir, _index, _res) = build_native("flow main() {\n  Hello.\n}\n");
+        assert_eq!(hir.root_content.stmts.len(), 1);
+        assert!(
+            matches!(hir.root_content.stmts[0], brink_ir::Stmt::Divert(_)),
+            "native root_content must be the synthesized entry divert, got {:?}",
+            hir.root_content.stmts[0]
+        );
+    }
 }

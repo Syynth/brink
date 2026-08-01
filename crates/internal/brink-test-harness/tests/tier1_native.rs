@@ -395,13 +395,22 @@ fn inline_tag_embedded_brace_reaches_story_data() {
     );
 }
 
-/// Issue #1903: `root_content` statements in .brink files should be checked
-/// under strict types, applying the same typed-assign and temp-init checks
-/// that knot/stitch bodies receive. This case pairs a VAR declaration with
-/// an assignment in `root_content` that mismatches its declared type, so the
-/// compiler runs through the strict type checker and produces diagnostics.
-/// Unlike other cases, this one is intentionally structured to compile with
-/// strict types enabled (type mismatch is caught as expected).
+/// Issue #1903: end-to-end cover for a native file whose `root_content` is
+/// the synthesized entry divert — it compiles and runs through the native
+/// pipeline with #1903's `root_content` walk active.
+///
+/// ⚠ **This case does NOT exercise #1903's type checking, and cannot.**
+/// `hir::lower_native::entry_root_content` makes a `.brink` file's
+/// `root_content` either empty or a *single synthesized `Divert`* to
+/// `main` — never user statements — so native root content holds nothing
+/// type-bearing for the strict walk to check. #1903's fix only does real
+/// work on the **ink** frontend, whose `root_content` is populated from the
+/// file's literal top-level weave.
+///
+/// The discriminating tests (one that fails with the fix reverted, plus one
+/// pinning the native asymmetry above) are
+/// `brink_analyzer::strict::tests::ink_root_content_declared_temp_init_is_checked`
+/// and `::native_root_content_holds_no_type_bearing_statements`.
 #[test]
 fn root_content_typed_strict() {
     assert_case("root-content-typed-strict");
