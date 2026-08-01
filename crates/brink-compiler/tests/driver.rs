@@ -698,14 +698,13 @@ fn native_or_coalescing_chain_falls_through_to_final_fallback() {
 /// still eager, `bump()` would run regardless of `lhs` and `counter` would
 /// end up `1`; short-circuiting means a `some(_)` `lhs` skips `bump()`
 /// entirely, so `counter` stays `0`.
+const OR_COALESCING_SHORT_CIRCUIT_SRC: &str = "var counter = 0\n\
+     fn bump() {\n  counter = counter + 1;\n  return 99;\n}\n\
+     flow main() {\n  Value: {some(5) or bump()}\n  Counter: {counter} -> END\n}\n";
+
 #[test]
 fn native_or_coalescing_short_circuits_rhs_on_some_lhs() {
-    let output = compile_and_run_native(
-        "shortcircuit",
-        "var counter = 0\n\
-         fn bump() {\n  counter = counter + 1;\n  return 99;\n}\n\
-         flow main() {\n  Value: {some(5) or bump()}\n  Counter: {counter} -> END\n}\n",
-    );
+    let output = compile_and_run_native("shortcircuit", OR_COALESCING_SHORT_CIRCUIT_SRC);
     assert!(
         output.contains("Value: 5"),
         "the collapse form must still unwrap `some(5)`, got: {output:?}"
@@ -771,13 +770,15 @@ fn native_or_coalescing_chain_preserves_optionality_through_intermediate_some() 
 ///
 /// (`brink-analyzer`'s `coalesce_types.rs` pins the *verdict* for this exact
 /// chain; this pins the program it actually produces.)
+/// Shared with `native_or_coalescing_and_as_binding_strict_findings_match_baseline`
+/// below — a single source of truth so a change here cannot silently drift
+/// out of sync with what the strict sweep actually compiles.
+const OR_COALESCING_CHAIN_WITH_CALL_SRC: &str = "fn maybe() {\n  return none;\n}\n\
+     flow main() {\n  Chained: {some(5) or maybe() or 99} -> END\n}\n";
+
 #[test]
 fn native_or_coalescing_chain_with_intermediate_call_yields_the_leading_some() {
-    let output = compile_and_run_native(
-        "chain-call",
-        "fn maybe() {\n  return none;\n}\n\
-         flow main() {\n  Chained: {some(5) or maybe() or 99} -> END\n}\n",
-    );
+    let output = compile_and_run_native("chain-call", OR_COALESCING_CHAIN_WITH_CALL_SRC);
     assert!(
         output.contains("Chained: 5"),
         "expected the leading `some(5)` to win through an Option-returning \
@@ -815,14 +816,17 @@ fn native_or_coalescing_rhs_visit_count_reference_is_tracked() {
 /// check is the operator's semantics**. A plain (non-`Option`) value
 /// reaching the step is a turn-terminating `TypeError`, not a silent
 /// coalesce and not a compile error.
+/// Shared with `native_or_coalescing_and_as_binding_strict_findings_match_baseline`
+/// below — a single source of truth so a change here cannot silently drift
+/// out of sync with what the strict sweep actually compiles.
+const OR_COALESCING_UNPINNED_LHS_FAULT_SRC: &str = "fn pick(x) {\n  return x or 99;\n}\n\
+     flow main() {\n  Value: {pick(1)} -> END\n}\n";
+
 #[test]
 fn native_or_coalescing_unpinned_lhs_faults_on_a_plain_value() {
-    let err = try_compile_and_run_native(
-        "runtime-check-fault",
-        "fn pick(x) {\n  return x or 99;\n}\n\
-         flow main() {\n  Value: {pick(1)} -> END\n}\n",
-    )
-    .expect_err("a plain `Int` left-hand side must fault at runtime");
+    let err =
+        try_compile_and_run_native("runtime-check-fault", OR_COALESCING_UNPINNED_LHS_FAULT_SRC)
+            .expect_err("a plain `Int` left-hand side must fault at runtime");
     assert!(
         matches!(&err, brink_runtime::RuntimeError::TypeError(msg)
             if msg.contains("or-coalescing requires an Option left-hand side")),
@@ -915,25 +919,24 @@ fn native_as_binding_statement_form_binds_payload_and_falls_to_else() {
 /// `next_ticket()` yields `some(2)`, `some(1)`, `some(0)`, then `none`, so
 /// a per-iteration rebinding sums to 3 — a first-iteration snapshot would
 /// sum to 6 (2+2+2) and a non-terminating binding would never stop.
+const AS_BINDING_WHILE_REBIND_SRC: &str = "var counter = 3\n\
+     fn next_ticket() {\n\
+     \x20 if counter > 0 {\n\
+     \x20   counter = counter - 1;\n\
+     \x20   return some(counter);\n\
+     \x20 }\n\
+     \x20 return none;\n}\n\
+     fn drain() {\n\
+     \x20 let sum = 0;\n\
+     \x20 while next_ticket() as t {\n\
+     \x20   sum = sum + t;\n\
+     \x20 }\n\
+     \x20 return sum;\n}\n\
+     flow main() {\n  Sum: {drain()} -> END\n}\n";
+
 #[test]
 fn native_as_binding_while_form_rebinds_each_iteration() {
-    let output = compile_and_run_native(
-        "as-while",
-        "var counter = 3\n\
-         fn next_ticket() {\n\
-         \x20 if counter > 0 {\n\
-         \x20   counter = counter - 1;\n\
-         \x20   return some(counter);\n\
-         \x20 }\n\
-         \x20 return none;\n}\n\
-         fn drain() {\n\
-         \x20 let sum = 0;\n\
-         \x20 while next_ticket() as t {\n\
-         \x20   sum = sum + t;\n\
-         \x20 }\n\
-         \x20 return sum;\n}\n\
-         flow main() {\n  Sum: {drain()} -> END\n}\n",
-    );
+    let output = compile_and_run_native("as-while", AS_BINDING_WHILE_REBIND_SRC);
     assert!(
         output.contains("Sum: 3"),
         "expected 2+1+0 = 3 from per-iteration rebinding, got: {output:?}"
@@ -1395,6 +1398,154 @@ fn ink_var_initialized_to_a_function_name_is_not_typed_as_a_fn_value() {
             diagnostic_codes(&err)
         )
     });
+}
+
+// ── Strict-typing sweep of gradual-only native fixtures (issue #1916)
+//    ───────────────────────────────────────────────────────────────────
+//
+// `native_or_coalescing_*` and `native_as_binding_*` above compile
+// exclusively through `compile_and_run_native`, which uses
+// `brink_compiler::compile_path` — default `AnalysisOptions`
+// (`types = None`, resolving to `Gradual` for `Dialect::StrictInk`). The
+// strict type checker (`strict::check`) never runs on those two families,
+// even though a real `.brink` project with `dialect = "brink"` in its
+// `brink.toml` gets `Strict` by default. The gap does NOT extend to the
+// `native_bare_name_fn_value_*` family immediately above: those tests
+// already compile under `compile_native_strict` (issue #1876), so strict
+// coverage for bare-name fn values already exists.
+//
+// This sweep compiles two fixtures — reusing their exact sources via the
+// `OR_COALESCING_CHAIN_WITH_CALL_SRC` / `OR_COALESCING_UNPINNED_LHS_FAULT_SRC`
+// constants above, so a change to either fixture cannot silently drift out
+// of sync with what this sweep actually compiles — and records the
+// resulting `strict::check` findings as a baseline. Both were chosen
+// because they are empirically confirmed to produce NEW findings rows, not
+// zero-yield duplicates: every fixture tried below that returned no
+// findings, or that duplicates coverage already established elsewhere, was
+// left out, specifically —
+//   * `native_or_coalescing_collapse_form_unwraps_some_and_falls_back_on_none`,
+//     `native_or_coalescing_chain_falls_through_to_final_fallback`, the
+//     short-circuit pair (`native_or_coalescing_short_circuits_rhs_on_some_
+//     lhs` / `..._still_evaluates_rhs_when_lhs_is_none`), and
+//     `native_as_binding_while_form_rebinds_each_iteration` all compile with
+//     ZERO strict findings (confirmed by running each through
+//     `compile_native_strict` and inspecting `CompileOutput::warnings`) —
+//     sweeping them adds no coverage.
+//   * `native_as_binding_statement_form_binds_payload_and_falls_to_else`
+//     and `native_bare_name_fn_value_without_ref_params_compiles_and_runs`
+//     are byte-identical to (respectively a strict superset of)
+//     `tests/tier1-native/as-binding/story.brink` and
+//     `tests/tier1-native/fn-value-bare-name/story.brink`, both already
+//     swept by `tests/driver_native_strict.rs`'s baseline — re-sweeping
+//     them here would add zero net new rows.
+//
+// This is a **partial** sweep (2 of the 22 `native_*` fixtures in this
+// file) — see issue #1916 for the tracked remainder covering the other
+// `native_or_coalescing_*` and `native_as_binding_*` fixtures.
+
+/// Collect strict-pass findings (E063/E065/E066 diagnostics) from a compile
+/// result.
+fn strict_findings(
+    fixture_name: &str,
+    result: Result<brink_compiler::CompileOutput, brink_compiler::CompileError>,
+) -> Vec<(String, String, String)> {
+    let mut findings = Vec::new();
+    let diagnostics = match result {
+        Ok(output) => output.warnings,
+        Err(brink_compiler::CompileError::Diagnostics(ds)) => ds,
+        Err(e) => panic!("{fixture_name}: unexpected compile failure: {e}"),
+    };
+    for d in diagnostics {
+        if matches!(
+            d.code,
+            brink_ir::DiagnosticCode::E063
+                | brink_ir::DiagnosticCode::E065
+                | brink_ir::DiagnosticCode::E066
+        ) {
+            findings.push((
+                fixture_name.to_string(),
+                d.code.as_str().to_string(),
+                d.message,
+            ));
+        }
+    }
+    findings
+}
+
+/// Baseline of strict findings for the two swept fixtures, recorded from an
+/// actual `compile_native_strict` run (not hand-derived).
+///
+/// `or-coalescing-chain-call`: `maybe()`'s return type is unannotated, so it
+/// escapes strict inference as Unknown.
+///
+/// `or-coalescing-unpinned-lhs-fault`: `pick`'s parameter `x` and return
+/// type are both unannotated (`strict::check` reports the return type;
+/// `x`'s own Unknown-ness surfaces indirectly as the argument-type mismatch
+/// on the call site, since the runtime-check posture the analyzer commits
+/// to for an unpinned `lhs` still requires a *known* `Option` argument
+/// under strict `check_direct_call_args`).
+const BASELINE: &[(&str, &str, &str)] = &[
+    (
+        "or-coalescing-chain-call",
+        "E065",
+        "`maybe`'s return type escapes strict inference as Unknown — annotate or restructure",
+    ),
+    (
+        "or-coalescing-unpinned-lhs-fault",
+        "E063",
+        "argument 1 of call to `pick` has type `int` but its known type expects `Option<int>`",
+    ),
+    (
+        "or-coalescing-unpinned-lhs-fault",
+        "E065",
+        "`pick`'s return type escapes strict inference as Unknown — annotate or restructure",
+    ),
+];
+
+/// Gate: the swept driver.rs fixtures' findings under strict typing must
+/// match the recorded baseline.
+#[test]
+fn native_or_coalescing_strict_findings_match_baseline() {
+    let mut actual = Vec::new();
+
+    let result = compile_native_strict("or-coalesce-chain-call", OR_COALESCING_CHAIN_WITH_CALL_SRC);
+    actual.extend(strict_findings("or-coalescing-chain-call", result));
+
+    let result = compile_native_strict(
+        "or-coalesce-unpinned-lhs-fault",
+        OR_COALESCING_UNPINNED_LHS_FAULT_SRC,
+    );
+    actual.extend(strict_findings("or-coalescing-unpinned-lhs-fault", result));
+
+    actual.sort();
+    let expected: Vec<(String, String, String)> = BASELINE
+        .iter()
+        .map(|(f, c, m)| ((*f).to_string(), (*c).to_string(), (*m).to_string()))
+        .collect();
+
+    assert_eq!(
+        actual, expected,
+        "swept driver.rs native fixtures' strict findings drifted from baseline.\n\
+         Do NOT edit the fixtures to make this pass — triage each finding and either \
+         fix the checker or update BASELINE with a classification and tracking issue."
+    );
+}
+
+/// Guard against the sweep going vacuous if strict options are misconfigured.
+#[test]
+fn the_sweep_actually_runs_under_strict() {
+    let result = compile_native_strict(
+        "guard-check",
+        "fn f(x) { return x; }\nflow main() { -> END }\n",
+    );
+    let findings = strict_findings("guard", result);
+    // At minimum, an unannotated parameter `x` should escape as Unknown
+    // under strict mode. If we get nothing, the strict pass is not running.
+    assert!(
+        !findings.is_empty(),
+        "the strict pass produced no findings at all — it is almost certainly \
+         not running (issue #1916's original bug)"
+    );
 }
 
 // ── compile_path (disk-based) ───────────────────────────────────────
