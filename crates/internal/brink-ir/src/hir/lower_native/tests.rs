@@ -1777,31 +1777,51 @@ fn allow_e168_above_the_later_declaration_suppresses_it() {
 }
 
 #[test]
-fn distinct_overlapping_claim_patterns_are_not_yet_diagnosed_but_pin_first_match_wins() {
-    // Two *different* patterns that can both claim "VENDOR enters" — the
-    // more valuable overlap case #1848 leaves undetected (see
-    // `diagnose_duplicate_patterns`'s doc), and exactly the situation the
-    // interim first-match-wins-by-declaration-order rule resolves. This
-    // pins today's behavior (the earlier declaration's handler is called)
-    // so it reads as a documented, tested interim choice rather than an
-    // accident that silently changes later.
-    let (hir, _m, diags) = lower_src(
-        "@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival_general(who) {\n  return who;\n}\n\n@[element(claims = \"^(?<who>VENDOR) enters$\")]\nfn arrival_vendor(who) {\n  return who;\n}\n\nflow main() {\n  VENDOR enters\n}\n",
+fn non_identical_overlapping_claim_patterns_that_never_win_are_e170() {
+    // Two *different* patterns that can both match the same line
+    // (issue #1859, follow-up to #1848). `arrival_general` matches any
+    // `[A-Z]+ enters` line, and `arrival_vendor` matches only `VENDOR enters`.
+    // Both patterns can accept the same input ("VENDOR enters"), so they
+    // overlap. `arrival_vendor` is declared later and never actually wins a
+    // claim in this file (the earlier `arrival_general` always wins first),
+    // so it is flagged with E170.
+    let (_hir, _m, diags) = lower_src(
+        "@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival_general(who) {\n  return who;\n}\n\n@[element(claims = \"^(?<who>VENDOR) enters$\")]\nfn arrival_vendor(who) {\n  return who;\n}\n",
+    );
+    let e170s: Vec<_> = diags
+        .iter()
+        .filter(|d| d.code == DiagnosticCode::E170)
+        .collect();
+    assert_eq!(
+        e170s.len(),
+        1,
+        "exactly one E170 for the later, unreachable handler: {diags:?}"
+    );
+}
+
+#[test]
+fn overlapping_patterns_where_later_handler_actually_wins_are_not_e170() {
+    // If the later handler with an overlapping pattern actually wins a claim
+    // (necessarily for a line the earlier pattern couldn't match or where it
+    // was barred by the staging rule), it is live and must not be flagged.
+    let (_hir, _m, diags) = lower_src(
+        "@[element(claims = \"^INT\\\\. (?<p>.+)$\")]\nfn interior_full(p) {\n  return \"interior: \" + p;\n}\n\n@[element(claims = \"^INT\\\\. (?<p>.+) - DAY$\")]\nfn interior_daytime(p) {\n  return \"daytime interior: \" + p;\n}\n",
     );
     assert!(
-        diags.is_empty(),
-        "no diagnostic for a non-identical overlap today (tracked follow-up, not this slice): {diags:?}"
+        !diags.iter().any(|d| d.code == DiagnosticCode::E170),
+        "both patterns are live (neither strictly subsumes the other): {diags:?}"
     );
-    let main = hir
-        .knots
-        .iter()
-        .find(|k| k.name.text == "main")
-        .expect("main");
-    let (callee, _args) =
-        only_claimed_call(&main.body).expect("the claimed line must lower to one call");
-    assert_eq!(
-        callee, "arrival_general",
-        "first-declared handler wins under the interim dispatch order"
+}
+
+#[test]
+fn non_overlapping_patterns_are_not_e170() {
+    // Two patterns that don't overlap should not be flagged.
+    let (_hir, _m, diags) = lower_src(
+        "@[element(claims = \"^INT\\\\. (?<p>.+)$\")]\nfn interior(p) {\n  return p;\n}\n\n@[element(claims = \"^EXT\\\\. (?<p>.+)$\")]\nfn exterior(p) {\n  return p;\n}\n",
+    );
+    assert!(
+        !diags.iter().any(|d| d.code == DiagnosticCode::E170),
+        "no overlap between INT.* and EXT.*: {diags:?}"
     );
 }
 

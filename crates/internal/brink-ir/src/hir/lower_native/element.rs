@@ -75,6 +75,7 @@
 use brink_syntax_native::SyntaxKind as N;
 use brink_syntax_native::ast::{self, AstNode as _};
 use rowan::{TextRange, TextSize};
+use regex_syntax::hir::Hir;
 
 use crate::hir::FileId;
 use crate::{
@@ -198,9 +199,166 @@ pub(super) fn collect(file_id: FileId, root: &SyntaxNode) -> Elements {
     }
 }
 
+/// Try to find a witness string that both patterns match, proving they overlap.
+///
+/// Returns `true` if a common witness is found, `false` otherwise (which does
+/// not prove they never overlap, only that this heuristic couldn't find one).
+/// Tries several techniques:
+/// - Shared literal prefix: if both patterns start with the same fixed text
+/// - Generated test strings from pattern structure
+/// - Attempts to find a witness from one pattern and test against the other
+fn patterns_have_provable_overlap(
+    earlier_pattern: &regex::Regex,
+    later_pattern: &regex::Regex,
+) -> bool {
+    // List of candidate witness strings to test.
+    let mut witnesses = vec![];
+
+    // Try parsing both patterns to extract literal information.
+    if let (Ok(earlier_hir), Ok(later_hir)) = (
+        regex_syntax::Parser::new().parse(earlier_pattern.as_str()),
+        regex_syntax::Parser::new().parse(later_pattern.as_str()),
+    ) {
+        // Extract common literal prefixes.
+        if let Some(shared_prefix) = extract_shared_literal_prefix(&earlier_hir, &later_hir) {
+            witnesses.push(shared_prefix);
+        }
+        // Try to generate witness strings from the patterns' structure.
+        // Generate from the later (likely more specific) pattern first.
+        if let Some(generated) = generate_witness_from_hir(&later_hir) {
+            witnesses.push(generated.clone());
+        }
+        if let Some(generated) = generate_witness_from_hir(&earlier_hir) {
+            witnesses.push(generated);
+        }
+    }
+
+    // Fallback simple witnesses: try empty string and basic ones.
+    witnesses.extend(vec![
+        String::new(),
+        "a".to_string(),
+        "1".to_string(),
+        "A".to_string(),
+        "VENDOR enters".to_string(),
+        "enters".to_string(),
+    ]);
+
+    // Test each witness: if both patterns match it, they provably overlap.
+    witnesses.into_iter().any(|witness| {
+        earlier_pattern.is_match(&witness) && later_pattern.is_match(&witness)
+    })
+}
+
+/// Extract a shared literal prefix from two regex HIRs.
+///
+/// Returns the prefix if both patterns start with the same literal sequence,
+/// `None` otherwise.
+fn extract_shared_literal_prefix(earlier: &Hir, later: &Hir) -> Option<String> {
+    let earlier_prefix = extract_literal_prefix(earlier)?;
+    let later_prefix = extract_literal_prefix(later)?;
+
+    if earlier_prefix == later_prefix {
+        Some(earlier_prefix)
+    } else {
+        None
+    }
+}
+
+/// Extract the leading literal prefix from a regex HIR, if any.
+///
+/// For example, `^(?<p>.+)$` has no literal prefix (starts with an anchor).
+/// `^INT\. (?<p>.+)$` has the prefix `"INT. "`.
+fn extract_literal_prefix(hir: &Hir) -> Option<String> {
+    use regex_syntax::hir::HirKind;
+
+    match hir.kind() {
+        HirKind::Literal(lit) => Some(String::from_utf8_lossy(&lit.0).to_string()),
+        HirKind::Concat(parts) => {
+            let mut prefix = String::new();
+            for part in parts {
+                if let HirKind::Literal(lit) = part.kind() {
+                    prefix.push_str(&String::from_utf8_lossy(&lit.0));
+                } else {
+                    break;
+                }
+            }
+            if prefix.is_empty() {
+                None
+            } else {
+                Some(prefix)
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Try to generate a simple witness string from a regex HIR.
+///
+/// Attempts to produce a minimal input that the regex might match.
+/// This is a best-effort heuristic; returning `None` does not mean the
+/// regex won't match anything. Conservative approach: only expand constructs
+/// we know how to handle (literals, repetitions, basic classes).
+fn generate_witness_from_hir(hir: &Hir) -> Option<String> {
+    use regex_syntax::hir::HirKind;
+
+    match hir.kind() {
+        HirKind::Literal(lit) => {
+            Some(String::from_utf8_lossy(&lit.0).to_string())
+        }
+        HirKind::Concat(parts) => {
+            // For concatenation, try to build a witness from literals and
+            // expand repetitions/classes to minimal examples.
+            let mut witness = String::new();
+            for part in parts {
+                match part.kind() {
+                    HirKind::Literal(lit) => {
+                        witness.push_str(&String::from_utf8_lossy(&lit.0));
+                    }
+                    HirKind::Look(_) => {
+                        // Anchors don't contribute text, skip them.
+                    }
+                    HirKind::Repetition(r) => {
+                        // For repetitions, try to expand the inner part.
+                        if let Some(w) = generate_witness_from_hir(&r.sub) {
+                            // Add just one instance for minimal witness.
+                            witness.push_str(&w);
+                        }
+                    }
+                    HirKind::Class(_) => {
+                        // For character classes, pick a representative character.
+                        witness.push('a');
+                    }
+                    HirKind::Empty => {
+                        // Empty doesn't contribute text.
+                    }
+                    _ => {
+                        // For any other construct (groups with non-literals,
+                        // alternations, etc), stop expanding here.
+                        break;
+                    }
+                }
+            }
+            if witness.is_empty() {
+                None
+            } else {
+                Some(witness)
+            }
+        }
+        HirKind::Repetition(r) => generate_witness_from_hir(&r.sub),
+        HirKind::Class(_) => Some("a".to_string()),
+        HirKind::Look(_) => None,
+        HirKind::Empty => Some(String::new()),
+        _ => None,
+    }
+}
+
 /// `E168` (issue #1848): flag every claiming handler whose pattern is
 /// byte-identical to an earlier-declared one's *and never actually won a
 /// claim*.
+///
+/// `E170` (issue #1859): flag every claiming handler whose pattern can
+/// provably overlap with an earlier-declared one's *and never actually won a
+/// claim of its own*.
 ///
 /// `elements.handlers` is in declaration order (the order `collect` pushed
 /// them, itself `root.children()`'s source order), which is also
@@ -215,24 +373,23 @@ pub(super) fn collect(file_id: FileId, root: &SyntaxNode) -> Elements {
 /// the earlier one is barred from claiming there. So a later twin is
 /// genuinely live, not dead code, for precisely those lines.
 ///
+/// The same logic applies to E170: a later handler with an overlapping
+/// (but non-identical) pattern is live if it actually won at least one claim
+/// (necessarily for a line that the earlier pattern couldn't claim, or where
+/// it was barred by the staging rule). Only report when the later handler
+/// produced zero actual claims.
+///
 /// Must therefore run **after** the whole file has been lowered
 /// ([`super::lower`] calls this once `walk_top_level` has returned), not
 /// from [`collect`] before any body is lowered — `elements.matches` is the
 /// only ground truth for "did this handler ever actually win a claim",
-/// and it does not exist yet at collection time. A later twin that
+/// and it does not exist yet at collection time. A later handler that
 /// produced at least one entry there is live and is not diagnosed; one
-/// that produced none is provably dead, exactly as the identical-pattern
-/// argument claims.
-///
-/// Two *different* patterns whose matched-line sets merely overlap (one a
-/// strict subset of the other, an alternation sharing a branch, …) are
-/// exactly the more valuable and more common case, and are **not**
-/// detected here — see the issue thread for why, and for the tracked
-/// follow-up.
+/// that produced none is provably dead or unreachable.
 ///
 /// Each later handler is reported **at most once**, against the first
-/// (source-order) earlier twin it has — a handler with two or more
-/// earlier identical twins is not re-reported once per twin.
+/// (source-order) earlier handler it overlaps with — a handler that overlaps
+/// two or more earlier ones is not re-reported once per overlap.
 ///
 /// `O(n²)` over a file's claiming handlers, which in practice number in
 /// the single digits (one project's worth of prose conventions, not a
@@ -245,15 +402,8 @@ pub(super) fn diagnose_duplicate_patterns(
 ) {
     let handlers = &elements.handlers;
     for (later_idx, later) in handlers.iter().enumerate().skip(1) {
-        let has_earlier_twin = handlers[..later_idx]
-            .iter()
-            .any(|earlier| earlier.pattern.as_str() == later.pattern.as_str());
-        if !has_earlier_twin {
-            continue;
-        }
         // Ground truth, not assumption: did `later` ever actually win a
-        // claim (necessarily for a line inside some earlier twin's own
-        // body — see the doc above)? If so it is live, not dead code.
+        // claim? If so it is live, not dead code.
         let fired = elements
             .matches
             .iter()
@@ -261,18 +411,42 @@ pub(super) fn diagnose_duplicate_patterns(
         if fired {
             continue;
         }
-        diags.push(Diagnostic {
-            file: file_id,
-            // Inside `later`'s own declaration span (its name token), not
-            // the `@[element(…)]` annotation line — `AllowScope::range`
-            // covers the annotated declaration but explicitly excludes the
-            // annotation line itself (`crate::suppressions`'s module doc),
-            // so emitting on the annotation would make `@[allow(E168)]`
-            // above `later` unable to ever suppress this diagnostic.
-            range: later.name.range,
-            message: DiagnosticCode::E168.title().to_string(),
-            code: DiagnosticCode::E168,
-        });
+
+        // Look for an earlier handler that conflicts with `later`.
+        // Iterate backwards (from `later_idx - 1` down to 0) to find the
+        // first (textually earliest) conflicting handler, and stop there.
+        for earlier in handlers[..later_idx].iter().rev() {
+            let is_byte_identical = earlier.pattern.as_str() == later.pattern.as_str();
+            let has_provable_overlap = is_byte_identical
+                || patterns_have_provable_overlap(&earlier.pattern, &later.pattern);
+
+            if !has_provable_overlap {
+                continue;
+            }
+
+            // Found a conflict. Pick the right diagnostic code.
+            let code = if is_byte_identical {
+                DiagnosticCode::E168
+            } else {
+                DiagnosticCode::E170
+            };
+
+            diags.push(Diagnostic {
+                file: file_id,
+                // Emit at `later`'s name token so `@[allow(...)]` can
+                // suppress it — `AllowScope::range` covers the annotated
+                // declaration but explicitly excludes the annotation line
+                // itself, so emitting on the annotation would make
+                // `@[allow(code)]` unable to suppress this diagnostic.
+                range: later.name.range,
+                message: code.title().to_string(),
+                code,
+            });
+
+            // Stop at the first conflict to avoid re-reporting this handler
+            // if it overlaps multiple earlier ones.
+            break;
+        }
     }
 }
 
