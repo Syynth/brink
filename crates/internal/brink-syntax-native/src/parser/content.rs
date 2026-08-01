@@ -564,7 +564,7 @@ fn tag(p: &mut Parser<'_, '_>, extra_stop: &[SyntaxKind]) {
         // (#1852: `\\{` should count the brace, not escape it).
         let raw = p.nth_raw(0);
         match raw {
-            L_BRACE if backslash_count % 2 == 0 => {
+            L_BRACE if backslash_count & 1 == 0 => {
                 depth += 1;
                 backslash_count = 0;
             }

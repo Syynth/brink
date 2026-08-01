@@ -306,9 +306,10 @@ fn cue_name(p: &mut Parser<'_, '_>) {
         // braces correctly (#1852: `\\{` should count the brace, not escape
         // it). An L_BRACE is only excluded from depth counting if preceded
         // by an odd number of backslashes; an even number means the
-        // backslashes themselves are escaped.
+        // backslashes themselves are escaped. Use bitwise AND to check for
+        // even (lowest bit is 0).
         match raw {
-            L_BRACE if backslash_count % 2 == 0 => {
+            L_BRACE if backslash_count & 1 == 0 => {
                 depth += 1;
                 backslash_count = 0;
             }
