@@ -51,6 +51,13 @@ fn claim_handler_in_the_configured_module_is_silent() {
 fn claim_handler_outside_the_configured_module_is_e169() {
     let mut db = ProjectDb::new();
     db.set_analysis_options(opts_with_elements("conventions.brink"));
+    // `conventions.brink` must actually exist in the project — an
+    // `elements` pointer that resolves to no real file is a *different*
+    // silent case (see `an_unresolvable_elements_pointer_never_fires_
+    // even_against_the_real_module` below), not this one, which is
+    // specifically "the configured module exists, but this handler isn't
+    // in it".
+    db.set_file("conventions.brink", "flow other() {\n  hi\n}\n".to_owned());
     db.set_file(
         "scenes/heading.brink",
         format!("{CLAIMING_HANDLER}flow main() {{\n  INT. MARKET SQUARE\n}}\n"),
