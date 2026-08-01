@@ -74,6 +74,7 @@
 
 use brink_syntax_native::SyntaxKind as N;
 use brink_syntax_native::ast::{self, AstNode as _};
+use regex_syntax::hir::Hir;
 use rowan::{TextRange, TextSize};
 
 use crate::hir::FileId;
@@ -198,9 +199,97 @@ pub(super) fn collect(file_id: FileId, root: &SyntaxNode) -> Elements {
     }
 }
 
+/// Cap on the number of witness strings [`generate_witnesses_from_hir`]
+/// expands a concatenation into, so an alternation-heavy pattern can't blow
+/// up the cartesian product it builds.
+const MAX_GENERATED_WITNESSES: usize = 16;
+
+/// Try to prove that every string `later_pattern` can match is also matched
+/// by `earlier_pattern` — i.e. `later_pattern`'s language is a subset of
+/// `earlier_pattern`'s, so under first-match-wins dispatch the later handler
+/// can never win a claim the earlier one doesn't already win first.
+///
+/// Returns `true` if subsumption is proven, `false` otherwise (which does
+/// not prove the later pattern is *not* subsumed, only that this heuristic
+/// couldn't prove it). Mere overlap — some string both patterns match, but
+/// each also matches strings the other doesn't — is not enough: a later
+/// handler can still be genuinely useful (see `docs/diagnostics/E170.md`'s
+/// "What this does not catch"). Subsumption is proven by generating a set
+/// of candidate strings from `later_pattern`'s structure and checking that
+/// every one of them is also accepted by `earlier_pattern`.
+fn later_pattern_provably_subsumed(
+    earlier_pattern: &regex::Regex,
+    later_pattern: &regex::Regex,
+) -> bool {
+    let Ok(later_hir) = regex_syntax::Parser::new().parse(later_pattern.as_str()) else {
+        return false;
+    };
+    let witnesses = generate_witnesses_from_hir(&later_hir);
+    !witnesses.is_empty()
+        && witnesses
+            .iter()
+            .all(|witness| earlier_pattern.is_match(witness))
+}
+
+/// Generate a set of candidate strings the regex HIR might match.
+///
+/// This is a best-effort heuristic: an empty result does not mean the regex
+/// matches nothing, only that this function couldn't construct an example.
+/// Unlike a single-witness generator, this expands **every** branch of an
+/// alternation and recurses into capture groups — skipping either would make
+/// [`later_pattern_provably_subsumed`] blind to every claim pattern with a
+/// named capture (which is all of them, per `E160`/`E167`) or an
+/// alternation (a very common way to spell "either of these branches").
+/// `Concat` builds its result as the cartesian product of its parts'
+/// witnesses, capped at [`MAX_GENERATED_WITNESSES`] so an alternation-heavy
+/// pattern can't blow this up.
+fn generate_witnesses_from_hir(hir: &Hir) -> Vec<String> {
+    use regex_syntax::hir::HirKind;
+
+    match hir.kind() {
+        HirKind::Literal(lit) => vec![String::from_utf8_lossy(&lit.0).to_string()],
+        HirKind::Capture(cap) => generate_witnesses_from_hir(&cap.sub),
+        HirKind::Repetition(r) => generate_witnesses_from_hir(&r.sub),
+        HirKind::Class(_) => vec!["a".to_string()],
+        HirKind::Empty | HirKind::Look(_) => vec![String::new()],
+        HirKind::Alternation(alts) => alts
+            .iter()
+            .flat_map(generate_witnesses_from_hir)
+            .take(MAX_GENERATED_WITNESSES)
+            .collect(),
+        HirKind::Concat(parts) => {
+            let mut acc = vec![String::new()];
+            for part in parts {
+                let part_witnesses = generate_witnesses_from_hir(part);
+                if part_witnesses.is_empty() {
+                    // An unhandled construct contributes nothing provable;
+                    // stop here rather than silently dropping this part of
+                    // the pattern from every witness.
+                    return Vec::new();
+                }
+                let mut next = Vec::with_capacity(acc.len() * part_witnesses.len());
+                'outer: for prefix in &acc {
+                    for suffix in &part_witnesses {
+                        next.push(format!("{prefix}{suffix}"));
+                        if next.len() >= MAX_GENERATED_WITNESSES {
+                            break 'outer;
+                        }
+                    }
+                }
+                acc = next;
+            }
+            acc
+        }
+    }
+}
+
 /// `E168` (issue #1848): flag every claiming handler whose pattern is
 /// byte-identical to an earlier-declared one's *and never actually won a
 /// claim*.
+///
+/// `E170` (issue #1859): flag every claiming handler whose pattern can
+/// provably overlap with an earlier-declared one's *and never actually won a
+/// claim of its own*.
 ///
 /// `elements.handlers` is in declaration order (the order `collect` pushed
 /// them, itself `root.children()`'s source order), which is also
@@ -215,24 +304,23 @@ pub(super) fn collect(file_id: FileId, root: &SyntaxNode) -> Elements {
 /// the earlier one is barred from claiming there. So a later twin is
 /// genuinely live, not dead code, for precisely those lines.
 ///
+/// The same logic applies to E170: a later handler with an overlapping
+/// (but non-identical) pattern is live if it actually won at least one claim
+/// (necessarily for a line that the earlier pattern couldn't claim, or where
+/// it was barred by the staging rule). Only report when the later handler
+/// produced zero actual claims.
+///
 /// Must therefore run **after** the whole file has been lowered
 /// ([`super::lower`] calls this once `walk_top_level` has returned), not
 /// from [`collect`] before any body is lowered — `elements.matches` is the
 /// only ground truth for "did this handler ever actually win a claim",
-/// and it does not exist yet at collection time. A later twin that
+/// and it does not exist yet at collection time. A later handler that
 /// produced at least one entry there is live and is not diagnosed; one
-/// that produced none is provably dead, exactly as the identical-pattern
-/// argument claims.
-///
-/// Two *different* patterns whose matched-line sets merely overlap (one a
-/// strict subset of the other, an alternation sharing a branch, …) are
-/// exactly the more valuable and more common case, and are **not**
-/// detected here — see the issue thread for why, and for the tracked
-/// follow-up.
+/// that produced none is provably dead or unreachable.
 ///
 /// Each later handler is reported **at most once**, against the first
-/// (source-order) earlier twin it has — a handler with two or more
-/// earlier identical twins is not re-reported once per twin.
+/// (source-order) earlier handler it overlaps with — a handler that overlaps
+/// two or more earlier ones is not re-reported once per overlap.
 ///
 /// `O(n²)` over a file's claiming handlers, which in practice number in
 /// the single digits (one project's worth of prose conventions, not a
@@ -245,15 +333,8 @@ pub(super) fn diagnose_duplicate_patterns(
 ) {
     let handlers = &elements.handlers;
     for (later_idx, later) in handlers.iter().enumerate().skip(1) {
-        let has_earlier_twin = handlers[..later_idx]
-            .iter()
-            .any(|earlier| earlier.pattern.as_str() == later.pattern.as_str());
-        if !has_earlier_twin {
-            continue;
-        }
         // Ground truth, not assumption: did `later` ever actually win a
-        // claim (necessarily for a line inside some earlier twin's own
-        // body — see the doc above)? If so it is live, not dead code.
+        // claim? If so it is live, not dead code.
         let fired = elements
             .matches
             .iter()
@@ -261,18 +342,45 @@ pub(super) fn diagnose_duplicate_patterns(
         if fired {
             continue;
         }
-        diags.push(Diagnostic {
-            file: file_id,
-            // Inside `later`'s own declaration span (its name token), not
-            // the `@[element(…)]` annotation line — `AllowScope::range`
-            // covers the annotated declaration but explicitly excludes the
-            // annotation line itself (`crate::suppressions`'s module doc),
-            // so emitting on the annotation would make `@[allow(E168)]`
-            // above `later` unable to ever suppress this diagnostic.
-            range: later.name.range,
-            message: DiagnosticCode::E168.title().to_string(),
-            code: DiagnosticCode::E168,
-        });
+
+        // Look for an earlier handler that conflicts with `later`. Iterate
+        // forwards (from index 0 up to `later_idx - 1`) to find the first
+        // (textually earliest) conflicting handler, and stop there — a
+        // `.rev()` here would find the *nearest*, not the first, conflict,
+        // and could misclassify a byte-identical twin as a mere overlap if
+        // a between them a distinct overlapping handler was declared.
+        for earlier in &handlers[..later_idx] {
+            let is_byte_identical = earlier.pattern.as_str() == later.pattern.as_str();
+            let has_provable_overlap = is_byte_identical
+                || later_pattern_provably_subsumed(&earlier.pattern, &later.pattern);
+
+            if !has_provable_overlap {
+                continue;
+            }
+
+            // Found a conflict. Pick the right diagnostic code.
+            let code = if is_byte_identical {
+                DiagnosticCode::E168
+            } else {
+                DiagnosticCode::E170
+            };
+
+            diags.push(Diagnostic {
+                file: file_id,
+                // Emit at `later`'s name token so `@[allow(...)]` can
+                // suppress it — `AllowScope::range` covers the annotated
+                // declaration but explicitly excludes the annotation line
+                // itself, so emitting on the annotation would make
+                // `@[allow(code)]` unable to suppress this diagnostic.
+                range: later.name.range,
+                message: code.title().to_string(),
+                code,
+            });
+
+            // Stop at the first conflict to avoid re-reporting this handler
+            // if it overlaps multiple earlier ones.
+            break;
+        }
     }
 }
 

@@ -311,10 +311,16 @@ fn radio(chan: string, text: content) {
   certainly dead). A genuine overlap between two *different* patterns
   (one a strict subset of the other, a shared alternation branch, …) is
   real and more common, and is the case "pattern power proportional to
-  auditability" above most wants surfaced — but it is **not** detected;
-  proving it soundly needs a witness string or a full regex-intersection
-  analysis, and this slice built neither. Tracked as a follow-up on the
-  issue thread, not silently out of scope.
+  auditability" above most wants surfaced. `E170` (issue #1859) now
+  covers the provable slice of this: the later pattern's language
+  **subsumed** by the earlier one's, proven from a set of witness
+  strings generated from the later pattern's structure. Subsumption,
+  not mere overlap, is the deliberate bar — a pair that overlaps
+  without one subsuming the other (a shared alternation branch where
+  each also matches lines the other doesn't, two prefixes that
+  compete but don't nest) is not flagged, because the later handler in
+  that case is genuinely live for the lines only it matches, not dead
+  code.
 - **Zero comptime** / the rewrite is exactly **one call** / the body
   is arbitrary *runtime* code within its declared effect row —
   unchanged (addendum 2).
