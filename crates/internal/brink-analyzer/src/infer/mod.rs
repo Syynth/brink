@@ -55,13 +55,14 @@ mod graph;
 mod intrinsics;
 mod ty;
 
+pub(crate) use body::is_string_numeric_concat;
 pub(crate) use intrinsics::{intrinsic_effects, intrinsic_returns_option};
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use brink_format::DefinitionId;
 use brink_ir::{
-    BaseType, Block, DocBlock, FileId, HirFile, HostManifest, Name, Param, ResolutionMap,
+    AssignOp, BaseType, Block, DocBlock, FileId, HirFile, HostManifest, Name, Param, ResolutionMap,
     SymbolIndex, SymbolKind, TypeExpr, TypeRef,
 };
 use rowan::TextRange;
@@ -279,6 +280,14 @@ pub struct FieldAssignMismatch {
     /// `[x]`, `p.inner.x` → `[inner, x]`) — each segment's own `Name`
     /// carries the range a per-field diagnostic should point at.
     pub path: Vec<Name>,
+    /// The assignment's operator (`=`, `+=`, …). Carried alongside `found`
+    /// (issue #1900 review finding) so `structs::check_field_assign_mismatch`
+    /// — the only place the field's *declared* type is ever resolved — can
+    /// apply the same `+=` string-numeric display-concat carve-out
+    /// `Stmt::Assignment`'s own arm applies for a bare target: this body-
+    /// inference pass only knows the ROOT's type when the fact is recorded,
+    /// not the field's, so the carve-out can't be decided here.
+    pub op: AssignOp,
     /// The RHS's statically inferred type.
     pub found: Ty,
 }

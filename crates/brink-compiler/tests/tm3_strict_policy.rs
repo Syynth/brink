@@ -1159,6 +1159,76 @@ fn strict_var_plus_eq_string_int_concat_compiles_clean() {
     assert!(result.is_ok(), "{result:?}");
 }
 
+// ── BLOCKING review finding (issue #1900): the `+=` string-numeric
+// carve-out above must reach a *dotted* struct-field target too, not just a
+// bare local/global. `Stmt::Assignment`'s own `is_string_numeric_concat_add`
+// guard computes `target_ty` from `infer_expr(&a.target)`, which for a
+// multi-segment `Path` only ever returns the ROOT's type (`Ty::Struct`,
+// never the field's `string`/`int`) — so the guard can never trip for
+// exactly the targets this PR's `check_declared_field_assign_target` newly
+// checks. The carve-out has to be re-applied in
+// `structs::check_field_assign_mismatch`, the only place the field's
+// resolved declared type is ever known.
+
+#[test]
+fn strict_dotted_field_plus_eq_string_int_concat_compiles_clean() {
+    let result = compile_mem(
+        "STRUCT S = #{s: string}\n\
+         VAR v: S = S#{s: \"a\"}\n\
+         === main ===\n~ v.s += 5\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    );
+    assert!(result.is_ok(), "{result:?}");
+}
+
+#[test]
+fn strict_dotted_field_plus_eq_int_field_string_concat_compiles_clean() {
+    // Mirror case named in the same finding: an `int`-declared field with a
+    // `string` RHS under `+=` is the same carve-out in the other type
+    // direction.
+    let result = compile_mem(
+        "STRUCT S = #{n: int}\n\
+         VAR v: S = S#{n: 1}\n\
+         === main ===\n~ v.n += \"x\"\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    );
+    assert!(result.is_ok(), "{result:?}");
+}
+
+// ── Review finding (issue #1900): a chained target (`o.i.a = v`, 3+
+// segments) is unsupported at ANY RHS type — LIR's own
+// `try_lower_field_assignment` rejects it outright with the
+// non-suppressible `E074` regardless of whether the RHS's type agrees with
+// the field. `check_declared_field_assign_target` is fenced at exactly
+// `p.segments.len() == 2` (LIR's own single-level boundary) so a chained
+// target never gets a `FieldAssignMismatch` fact recorded at all — this
+// pins that a chained mistyped target reports `E074` alone, never a
+// shadowed `E063` first (the pre-fix behavior the finding flagged as
+// misleading: telling the author to fix a type on a construct that stays
+// rejected either way).
+
+#[test]
+fn strict_chained_field_assignment_reports_only_e074_not_e063() {
+    let err = compile_mem(
+        "STRUCT Inner = #{a: int}\n\
+         STRUCT Outer = #{i: Inner}\n\
+         VAR o: Outer = Outer#{i: Inner#{a: 0}}\n\
+         === main ===\n~ o.i.a = \"bad\"\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    )
+    .expect_err("a chained field-write target must fail strict compilation with E074");
+    let diags = diagnostics_of(err);
+    assert_eq!(
+        diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![DiagnosticCode::E074],
+        "the chained target is rejected outright regardless of type — this must never surface \
+         a shadowed E063 first: {diags:?}"
+    );
+}
+
 #[test]
 fn strict_string_plus_bool_still_blocks_compilation_with_e066() {
     // The display-concat carve-out is scoped to `Int`/`Float` only,

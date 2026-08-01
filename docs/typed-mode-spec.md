@@ -227,6 +227,15 @@ STRUCT Point = #{                          // decl body MIRRORS the literal:
   (`E084`) under both `types = gradual` and `types = strict` — the
   repeated occurrence's initializer, including any side effect, is not
   silently dropped (same ruling, issue #675).
+- **A post-construction dotted field write (`~ p.y = 3.0` above, or `~ p.y
+  += 1.0`) is type-checked against the field's declared type under strict**
+  (`E063`, issue #1900) — the RMW-discipline write shown above was, until
+  this issue, checked only for missing/extra/mistyped fields at
+  *construction* (the bullets above); a later plain assignment to a field
+  reached zero type checking. Single-level only (`p.x = v`): a **chained**
+  write (`p.a.b = v`, 3+ segments) or a **mixed** index/field write
+  (`arr[i].x = v`) is unsupported at any RHS type and is rejected outright
+  with the non-suppressible `E074`, never a type-mismatch diagnostic.
 
 ## 7. What strict mode checks in plain-ink content — RULED
 
@@ -244,7 +253,9 @@ cross-type VAR reassignment — including a plain `~ v = expr` against a
 `VAR`/`CONST`'s declared type, `~ temp` declaration initializers and
 ascriptions, and (issue #1877's own scope) an **unannotated** global's
 initializer-literal-inferred type, not only an explicit `: type`
-annotation — since #1877.
+annotation — since #1877. A **dotted struct-field assignment target**
+(`~ p.x = expr`, single-level only — see §6) reaches this same checking
+since #1900.
 
 ## 8. Effects touchpoint — RULED direction (T2 owns the detail)
 

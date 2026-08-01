@@ -58,13 +58,15 @@ use std::collections::BTreeMap;
 use brink_format::DefinitionId;
 use brink_ir::hir::visit::{self, HirVisitor};
 use brink_ir::{
-    Diagnostic, DiagnosticCode, Expr, FileId, HirFile, Knot, ResolutionMap, Stitch, StructLiteral,
-    SymbolIndex, SymbolKind,
+    AssignOp, Diagnostic, DiagnosticCode, Expr, FileId, HirFile, Knot, ResolutionMap, Stitch,
+    StructLiteral, SymbolIndex, SymbolKind,
 };
 use rowan::TextRange;
 
 use crate::annotations;
-use crate::infer::{FieldAssignMismatch, InferenceResult, InferredSig, Ty};
+use crate::infer::{
+    FieldAssignMismatch, InferenceResult, InferredSig, Ty, is_string_numeric_concat,
+};
 
 /// One declared struct shape: fields in declaration order, name -> declared
 /// type (`Ty::Unknown` if the field's own annotation doesn't resolve —
@@ -212,9 +214,16 @@ pub fn check(
 /// Walks `inference.bodies` directly (keyed by `DefinitionId`, itself
 /// `Ord`) rather than re-deriving a per-file `def_ids` list the way
 /// `strict::check_typed_assign_mismatches` does — every fact already
-/// carries its own diagnostic range, and the caller's own `check` aggregate
-/// is sorted before it reaches a consumer, so grouping by file first buys
-/// nothing extra here.
+/// carries its own diagnostic range, so grouping by file first buys nothing
+/// extra here. Correction (issue #1900 review finding): the caller
+/// (`strict::check`) does *not* sort this aggregate — `strict::check` and
+/// `strict_diagnostics` only concatenate each check's output in a fixed
+/// call order, with no sort in either. The only downstream ordering is
+/// `brink_db::queries::mod::partition_diagnostics` grouping by `FileId` for
+/// the salsa query path; the pure `analyze_with_options` path has no
+/// ordering step at all. Iterating `inference.bodies` (`Ord`-keyed by
+/// `DefinitionId`) still makes this function's own output deterministic —
+/// just not because anything downstream re-sorts it.
 #[must_use]
 pub fn check_assignments(
     files: &[(FileId, &HirFile)],
@@ -243,6 +252,17 @@ pub fn check_assignments(
 /// the same posture every other shape-agreement check in this module and
 /// `ref_projection`'s E098 take) — matching [`check_literal`]'s own
 /// "unresolved -> silent" contract for the same reasons.
+///
+/// BLOCKING review finding (issue #1900): the `+=` string-numeric
+/// display-concat carve-out (issue #1911, `body::is_string_numeric_concat`)
+/// applies to a dotted target exactly like it applies to a bare one — `~
+/// v.s += 5` on a `string`-declared field desugars to the identical runtime
+/// `String`/`Int`|`Float` `Add` arm as `~ v.s = v.s + 5` — but body
+/// inference can't decide that carve-out itself: it only ever resolves the
+/// *root's* type (`Ty::Struct("S")`, never `string`) when it records the
+/// fact, well before the field's own declared type is known. So the
+/// carve-out has to be re-applied here, once `current` has been walked all
+/// the way down to the field's actual declared type.
 fn check_field_assign_mismatch(
     fact: &FieldAssignMismatch,
     file: FileId,
@@ -263,6 +283,12 @@ fn check_field_assign_mismatch(
         current = field_ty.clone();
     }
     if current.is_unresolved() || crate::infer::assignable(&current, &fact.found) {
+        return;
+    }
+    // Issue #1911's carve-out, re-applied here (BLOCKING review finding,
+    // issue #1900) now that `current` is the field's own resolved declared
+    // type, not the root's — see this function's own doc.
+    if fact.op == AssignOp::Add && is_string_numeric_concat(&current, &fact.found) {
         return;
     }
     // `path` is never empty by construction (the recording site only ever
