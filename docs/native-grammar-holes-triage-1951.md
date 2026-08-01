@@ -44,9 +44,10 @@ respell FAIL:  210
 
 (397, not 396 — one fixture has been added to the corpus since #1335's
 187/396 was last quoted; the 187 "OK" count is unchanged.) The 210 failures
-bucket into exactly 15 distinct `EmitError::Unsupported` reasons. Six of
-those buckets map directly onto the six named holes; nine do not appear in
-#1951's list at all (see "Beyond the six holes" below).
+bucket into exactly 16 distinct `EmitError::Unsupported` reasons. Seven of
+those buckets map directly onto the six named holes — Holes 1 and 2 together
+cover three (`temp declaration`, `assignment`, `expression statement`); nine
+do not appear in #1951's list at all (see "Beyond the six holes" below).
 
 ## Verdicts
 
@@ -167,7 +168,9 @@ flattens a `Stmt::ThreadStart` into an ordinary preceding/trailing
 statement with no marker of its original nesting inside the choice point,
 and nothing in `emit_native.rs` re-nests it on the way back out
 (`Stmt::ThreadStart(_) => return Err(unsupported("thread-start splice",
-context))`, confirmed at `emit_native.rs:677`). This is real, open, and
+context))`, confirmed by grepping `emit_native.rs` for that refusal string
+— line numbers drift with every merge, so this doc cites the string, not a
+line). This is real, open, and
 **pure emitter work — no grammar change, no design ruling needed** — but it
 is a different gap than Hole 3 as worded in #1951, which is why it gets its
 own corrected issue below rather than reopening #1260.
@@ -241,9 +244,11 @@ flat multi-branch list, so `emit_native::emit_conditional` — which only
 handles `CondKind::InitialCondition` with **exactly one** condition-bearing
 branch plus an optional plain-else — has no path to reshape ink's
 `CondKind::IfElse` (ink's own independently-chained 3+-branch, no-shared-
-subject form) into that nesting on the way out. Confirmed at
-`emit_native.rs:1138`: `CondKind::IfElse => Err(unsupported("IfElse
-conditional (no native \`else if\` chain)", context))`.
+subject form) into that nesting on the way out. Confirmed by the
+`CondKind::IfElse => Err(unsupported("IfElse conditional (no native
+\`else if\` chain)", context))` arm in `emit_native.rs`'s `emit_conditional`
+(cited by refusal string, not line number, since that drifts with every
+merge).
 
 Corpus impact: `"IfElse conditional"` bucket, **12 cases**.
 
@@ -266,8 +271,10 @@ ink-sourced-HIR emission concern, not a "compile this native construct and
 see it fail" one, and `brink compile` never touches this code path. Per
 `emit_native`'s own finding: "no native token forces that same
 runtime-deferred-whitespace behavior, and respelling it as a literal space
-would silently change what renders, so it stays refused"
-(`emit_native.rs:840`).
+would silently change what renders, so it stays refused" — the
+`ContentPart::Spring => return Err(unsupported("word-break spring",
+context))` arm in `emit_native.rs` (cited by refusal string, not line
+number, since that drifts with every merge).
 
 Corpus impact: `"word-break spring"` bucket, **12 cases**. Whether native
 should grow a new token/behavior to express this, or whether these 12 cases
@@ -277,12 +284,15 @@ invent a ruling.
 
 ## Beyond the six holes
 
-The six named holes account for at most 27+19+21+16+12+12 = **107** of the
-210 failures (and that's counting "thread-start splice" and "IfElse
-conditional" generously, under the corrected framing above — the original
-Hole 3/Hole 5 wording maps to neither bucket cleanly). The other **~103
-failures**, across nine buckets, were never named in #1335's comment or
-#1951's body:
+The six named holes account for 27 (assignment) + 19 (expression statement)
++ 14 (temp declaration — folded into Holes 1+2, see above) + 21
+(thread-start splice) + 16 (return with a value expression) + 12 (IfElse
+conditional) + 12 (word-break spring) = **121** of the 210 failures, across
+seven `EmitError::Unsupported` buckets (and that's counting "thread-start
+splice" and "IfElse conditional" generously, under the corrected framing
+above — the original Hole 3/Hole 5 wording maps to neither bucket cleanly).
+The other **89 failures**, across nine buckets, were never named in #1335's
+comment or #1951's body:
 
 | Bucket | Count | Example |
 |---|---|---|
