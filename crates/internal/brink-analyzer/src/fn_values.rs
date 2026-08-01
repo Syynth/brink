@@ -1,10 +1,18 @@
-//! T1c creation-site checks for `#fn(name, args…)` function-value literals
-//! (docs/t1c-spec.md §2/§8, issue #699).
+//! Creation-site checks for function-value references — the ink/brink
+//! `#fn(name, args…)` literal (docs/t1c-spec.md §2/§8, issue #699) **and**
+//! the native bare-name spelling (`docs/t1c-spec.md` §2a, issue #1862).
+//! Two entry points, one shared obligation set:
+//!
+//! - [`check`] — the `#fn(name, args…)` literal, available on both surfaces
+//!   under `dialect = brink`.
+//! - [`check_native_bare_refs`] — the native-only bare-name spelling
+//!   (`register(scene)`, no sigil), unconditional for every native file
+//!   regardless of `dialect`; see that function's own doc for why.
 //!
 //! "Every static obligation lands at this one marked site" — the creation
 //! site is where the target name becomes a value, where `ref` params bind,
 //! and (T2) where the effect row freezes. Three diagnostics enforce the
-//! ruled discipline:
+//! ruled discipline for [`check`]'s `#fn(…)` literal:
 //!
 //! - **E079** — the target must resolve to a statically-named *function
 //!   definition* (`=== function name ===`). A variable, list, external,
@@ -25,12 +33,19 @@
 //! - **E081** — the bound args are a *prefix* of the declared param row;
 //!   binding more than the target declares is a compile error.
 //!
-//! Runs only under `dialect = brink` (`per_file_diagnostics` gates the
-//! call): under `strict-ink` the whole literal is already rejected as
+//! [`check`] runs only under `dialect = brink` (`per_file_diagnostics` gates
+//! the call): under `strict-ink` the whole literal is already rejected as
 //! extension syntax (E051), and content diagnostics on rejected syntax are
 //! noise (the TM-2 annotation-content precedent, ruling 2026-07-13).
 //! Dialect-level, not type-policy-level: these obligations hold under
 //! `types = gradual` too.
+//!
+//! [`check_native_bare_refs`] is gated differently — on `hir.native`, not
+//! `dialect` — because the bare-name spelling is a property of the *surface*
+//! (native vs. ink), not a dialect extension: a `.brink` file compiled under
+//! the default `strict-ink` dialect still needs this check. Of the three
+//! obligations above, only E080 survives the bare-name translation (see
+//! that function's own doc for why E079/E081 are unreachable there).
 
 use std::collections::BTreeMap;
 
@@ -119,7 +134,15 @@ pub fn check_native_bare_refs(
             index,
             diagnostics: &mut out,
         };
-        visit::visit(hir, &mut v);
+        // `visit::visit` alone only walks the block tree — it never
+        // descends into a file-level `VAR`/`CONST` initializer expression
+        // (issue #1571's own doc on `visit_with_decl_initializers`). A
+        // native declaration-initializer position (`var f = heal;`) is
+        // exactly as much a bare-name fn-value creation site as an
+        // expression inside a knot body, so this walk must use the
+        // initializer-inclusive entry point or an unbound `ref` param on a
+        // decl-initializer target silently gets no E080.
+        visit::visit_with_decl_initializers(hir, &mut v);
     }
     out
 }

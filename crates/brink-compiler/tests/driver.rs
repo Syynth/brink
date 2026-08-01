@@ -1048,6 +1048,42 @@ fn native_bare_name_fn_value_with_a_ref_param_is_e080() {
     );
 }
 
+/// Same obligation, but the bare-name reference sits in **declaration-
+/// initializer** position (`var f = heal`) rather than inside a function
+/// body. `check_native_bare_refs` only walks the block tree
+/// (`hir::visit::visit`), which never descends into a file-level `VAR`/
+/// `CONST` initializer — so before this test's fix, a `ref`-param target
+/// referenced only this way compiled clean with no E080 at all, even
+/// though the reviewer's own doc comment on `check_native_bare_refs`
+/// asserts the obligation as an absolute ("a target with any ref parameter
+/// can never be referenced by bare name").
+#[test]
+fn native_bare_name_fn_value_in_decl_initializer_with_a_ref_param_is_e080() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-native-fnvalue-decl-ref-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("main.brink"),
+        "fn heal(ref amount) {\n\
+         \x20 amount = amount + 1;\n}\n\
+         var f = heal\n\
+         flow main() {\n  Used: {0} -> END\n}\n",
+    )
+    .unwrap();
+    let result = brink_compiler::compile_path(&dir.join("main.brink"));
+    std::fs::remove_dir_all(&dir).ok();
+
+    let err = result.expect_err("a ref-param target may not be referenced by bare name");
+    let codes = diagnostic_codes(&err);
+    assert!(
+        codes.contains(&"E080"),
+        "expected E080 at the decl-initializer bare-name reference, got: {codes:?}"
+    );
+}
+
 /// The same shape without any `ref` parameter compiles and runs — the
 /// guard above must not fire on an ordinary by-value target.
 #[test]
