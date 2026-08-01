@@ -1157,10 +1157,28 @@ fn native_bare_name_fn_value_passed_where_an_int_is_expected_is_e063() {
          flow main() {\n  Bad: {total(double)} -> END\n}\n",
     )
     .expect_err("passing a bare-name fn value where an `int` is declared must fail compilation");
-    let codes = diagnostic_codes(&err);
-    assert!(
-        codes.contains(&"E063"),
-        "expected the ordinary typed-mismatch code at the argument, got: {codes:?}"
+    // Assert the exact code vector, not `contains` — this fixture is
+    // deliberately clean of every other strict diagnostic so E063 alone
+    // must be what fails compilation (matches the precedent in
+    // `tm3_strict_policy.rs`'s `strict_direct_call_arg_mismatch_blocks_
+    // compilation_with_e063`). `contains` alone would also stay green if
+    // the code came from the annotation-vs-inference mismatch path
+    // instead of `strict::check_direct_call_args` — pin the message too,
+    // so a diagnostic-source swap that happens to also be E063 still
+    // fails this test.
+    let brink_compiler::CompileError::Diagnostics(diags) = &err else {
+        panic!("expected a Diagnostics compile error, got: {err:?}");
+    };
+    assert_eq!(
+        diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![brink_ir::DiagnosticCode::E063],
+        "expected E063 alone, got: {diags:?}"
+    );
+    assert_eq!(
+        diags[0].message,
+        "argument 1 of call to `total` has type `fn(int): int` but its known type expects `int`",
+        "expected the `check_direct_call_args` message shape, got: {:?}",
+        diags[0].message
     );
 }
 
