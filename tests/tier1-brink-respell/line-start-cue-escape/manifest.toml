@@ -1,0 +1,30 @@
+# Native-only fixture (no ink origin). See ../README.md.
+ink_source = "n/a (native-only; see notes)"
+oracle_case = "n/a (native-only; see notes)"
+family = "line-start escapes `\\!` `\\@` (#1744)"
+status = "hand-written native, episode-identity proven (round_trip.rs only)"
+notes = """
+Issue #1744: §8d.6 rules `\\!`/`\\@` as line-start escapes (a second,
+disjoint set from the four inline escapes `\\< \\{ \\# \\\\`, PR #1732).
+Not a respelling of any ink source — there is no ink original, since
+this escape set (like the inline one) is a native-only surface.
+
+Exercises both line-start escapes as the first token of a body-line
+content line: `\\@VENDOR ...` (a bare `@NAME` at that position would
+otherwise open a `CUE`, §8b.9) and `\\!radio ...` (reserved for the
+`!name` annotation-element sigil, §3.5b, unimplemented today).
+
+Also proves the emitter side of the round trip: `hir::emit_native`'s
+`escape_leading_cue_sigil` re-escapes a literal leading `@`+identifier on
+the way back out, since `\\@VENDOR ...` lowers to an ordinary `Content`
+whose `Text` part's first characters are the literal `@VENDOR ...` — a
+HIR shape that could not previously exist at body-line position (every
+`@`+identifier there was always captured as a `CUE` before this issue's
+fix), so emitting it back unescaped would have silently re-parsed as a
+cue on the next pass, exactly the class of bug the `inline-markup-
+escape-set` fixture's own notes describe for the four inline escapes. No
+equivalent guard exists (or is needed) for a leading `!` today: no parser
+dispatch reads it at body-line position yet, so it already round-tripped
+unescaped before this issue; revisit `escape_leading_cue_sigil`'s own doc
+comment if the `!name` sigil ever lands.
+"""
