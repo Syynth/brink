@@ -42,7 +42,13 @@
 //! - Only a **top-level `fn`** may claim: the rewrite is an expression
 //!   call, and a `flow` is not callable as one. A `claims` annotation
 //!   anywhere else is `E112` (misplaced), enforced by
-//!   [`super::annotation::handle_line`]'s placement rule.
+//!   [`super::annotation::handle_line`]'s placement rule. "Top-level"
+//!   means a direct child of the file, matching exactly what [`collect`]
+//!   scans — a `fn` declared inside a `module { … }` block is *also*
+//!   misplaced (issue #1847), even though it is otherwise un-nested in
+//!   any `flow`/`fn`: `collect` never looks inside a `MODULE_DECL`, so a
+//!   claim admitted there would validate and then silently never
+//!   dispatch to anything.
 //! - Only a **wholly literal** prose line is a candidate — one with no
 //!   interpolation, glue, markup, tags, label or embedded divert. A line
 //!   carrying dynamic parts has no fixed text for a pattern to match, and
@@ -66,8 +72,8 @@ use rowan::{TextRange, TextSize};
 
 use crate::hir::FileId;
 use crate::{
-    Content, ContentPart, Diagnostic, ElementCapture, ElementDisposition, ElementKind,
-    ElementMatch, Expr, Name, Path, Stmt, StringExpr, StringPart,
+    Content, ContentPart, Diagnostic, DiagnosticCode, ElementCapture, ElementDisposition,
+    ElementKind, ElementMatch, Expr, Name, Path, Stmt, StringExpr, StringPart,
 };
 
 use super::SyntaxNode;
@@ -120,12 +126,15 @@ impl Elements {
 
 /// Collect every claiming handler declared in `root`.
 ///
-/// Diagnostic-free by construction: each `@[element(…)]` line is parsed and
-/// validated exactly once, by `container.rs`, when the annotated
-/// declaration is lowered. This re-reads the same lines into a dispatch
-/// table and drops anything that did not validate — reporting here as well
-/// would double every `E159`/`E160`/`E167`.
-pub(super) fn collect(file_id: FileId, root: &SyntaxNode) -> Elements {
+/// Silent on everything `container.rs` already validated: each
+/// `@[element(…)]` line is parsed and checked against its own declaration
+/// exactly once there. This re-reads the same lines into a dispatch table
+/// and drops anything that did not validate — reporting here as well would
+/// double every `E159`/`E160`/`E167`. The one check that belongs here
+/// instead is [`diagnose_duplicate_patterns`] — whether two *different*
+/// declarations' patterns collide is not a fact `container.rs` can see one
+/// declaration at a time.
+pub(super) fn collect(file_id: FileId, root: &SyntaxNode, diags: &mut Vec<Diagnostic>) -> Elements {
     let mut handlers = Vec::new();
     for node in root.children() {
         // Top-level `fn` only — see the module doc. `handle_line`'s
@@ -161,9 +170,49 @@ pub(super) fn collect(file_id: FileId, root: &SyntaxNode) -> Elements {
             decl: node.text_range(),
         });
     }
+    diagnose_duplicate_patterns(file_id, &handlers, diags);
     Elements {
         handlers,
         matches: Vec::new(),
+    }
+}
+
+/// `E168` (issue #1848): flag every claiming handler whose pattern is
+/// byte-identical to an earlier-declared one's.
+///
+/// `handlers` is in declaration order (the order `collect` pushed them,
+/// itself `root.children()`'s source order), which is also
+/// [`try_claim`]'s dispatch order — see that function's doc for why
+/// "earlier-declared" is the same as "wins". An identical pattern
+/// *provably* matches the identical set of lines, so the later one is
+/// certainly unreachable, not merely suspected to be: the narrow, sound
+/// slice of "overlapping claim patterns" this issue could deliver without
+/// a real regex-intersection analysis. Two *different* patterns whose
+/// matched-line sets merely overlap (one a strict subset of the other, an
+/// alternation sharing a branch, …) are exactly the more valuable and
+/// more common case, and are **not** detected here — see the issue
+/// thread for why, and for the tracked follow-up.
+///
+/// `O(n²)` over a file's claiming handlers, which in practice number in
+/// the single digits (one project's worth of prose conventions, not a
+/// generated table) — a sorted/hashed pass would trade clarity for
+/// headroom this call site doesn't need.
+fn diagnose_duplicate_patterns(
+    file_id: FileId,
+    handlers: &[ClaimHandler],
+    diags: &mut Vec<Diagnostic>,
+) {
+    for (i, earlier) in handlers.iter().enumerate() {
+        for later in &handlers[i + 1..] {
+            if earlier.pattern.as_str() == later.pattern.as_str() {
+                diags.push(Diagnostic {
+                    file: file_id,
+                    range: later.annotation,
+                    message: DiagnosticCode::E168.title().to_string(),
+                    code: DiagnosticCode::E168,
+                });
+            }
+        }
     }
 }
 
@@ -172,6 +221,25 @@ pub(super) fn collect(file_id: FileId, root: &SyntaxNode) -> Elements {
 /// `None` means "nothing claimed this" and the caller lowers the item the
 /// way it always did — the fall-through that keeps every unclaimed line,
 /// and every file with no claiming handler, byte-identical.
+///
+/// # Dispatch order (interim)
+///
+/// When more than one handler's pattern matches a line, the first one in
+/// `elements.handlers` wins — [`Iterator::find`] below, over a `Vec` built
+/// by `collect` in top-level declaration order. **This is an interim rule,
+/// not a permanent one.** Issue #1848: the 2026-07-31 §9.1 ruling's item
+/// (5) says `fn conventions()` will *register* handlers in order once
+/// issue #1840 lands, and statement order in that registering function —
+/// not a claiming `fn`'s textual position in the file — becomes the
+/// authoritative resolution order then. Until #1840 lands, declaration
+/// order is the only order there is, so it is what this dispatches on; do
+/// not treat it as a rule worth entrenching or optimizing around. Two
+/// patterns that can both claim one line get no diagnostic today except
+/// the narrow byte-identical case ([`diagnose_duplicate_patterns`], issue
+/// #1848) — a genuinely overlapping (non-identical) pair silently
+/// prefers the earlier one, exactly the failure mode "pattern power
+/// proportional to auditability" (`docs/prose-dialect-spec.md` §3.5b)
+/// exists to keep visible, not eliminate outright.
 pub(super) fn try_claim(
     file_id: FileId,
     node: &SyntaxNode,

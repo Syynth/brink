@@ -173,7 +173,7 @@ pub fn lower(
     // The file's natural-notation element handlers, collected before any
     // body is lowered so a claiming `@[element(claims = "…")]` declared
     // *below* the prose it claims still claims it (issue #1838).
-    let mut elements = element::collect(file_id, file.syntax());
+    let mut elements = element::collect(file_id, file.syntax(), &mut diags);
 
     walk_top_level(
         file.syntax_children(),

@@ -1664,6 +1664,66 @@ fn a_non_claiming_handler_may_have_params_beyond_its_captures() {
 }
 
 #[test]
+fn two_byte_identical_claim_patterns_diagnose_e168_on_the_later_one() {
+    // Issue #1848: a duplicate claiming pattern is provably unreachable
+    // (identical patterns match identical inputs), so the later-declared
+    // handler is flagged, not the earlier — the earlier one is the one
+    // that actually wins under the interim first-match-wins order.
+    let (_hir, _m, diags) = lower_src(
+        "@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival(who) {\n  return who;\n}\n\n@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival_again(who) {\n  return who;\n}\n",
+    );
+    let e168s: Vec<_> = diags
+        .iter()
+        .filter(|d| d.code == DiagnosticCode::E168)
+        .collect();
+    assert_eq!(
+        e168s.len(),
+        1,
+        "exactly one duplicate diagnostic, on the later declaration: {diags:?}"
+    );
+    let second_annotation_start = u32::try_from(
+        "@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival(who) {\n  return who;\n}\n\n"
+            .len(),
+    )
+    .expect("fixture length fits in u32");
+    let e168_start: u32 = e168s[0].range.start().into();
+    assert!(
+        e168_start >= second_annotation_start,
+        "E168 must point at the later (shadowed) declaration's annotation, not the earlier one: {:?}",
+        e168s[0].range
+    );
+}
+
+#[test]
+fn distinct_overlapping_claim_patterns_are_not_yet_diagnosed_but_pin_first_match_wins() {
+    // Two *different* patterns that can both claim "VENDOR enters" — the
+    // more valuable overlap case #1848 leaves undetected (see
+    // `diagnose_duplicate_patterns`'s doc), and exactly the situation the
+    // interim first-match-wins-by-declaration-order rule resolves. This
+    // pins today's behavior (the earlier declaration's handler is called)
+    // so it reads as a documented, tested interim choice rather than an
+    // accident that silently changes later.
+    let (hir, _m, diags) = lower_src(
+        "@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival_general(who) {\n  return who;\n}\n\n@[element(claims = \"^(?<who>VENDOR) enters$\")]\nfn arrival_vendor(who) {\n  return who;\n}\n\nflow main() {\n  VENDOR enters\n}\n",
+    );
+    assert!(
+        diags.is_empty(),
+        "no diagnostic for a non-identical overlap today (tracked follow-up, not this slice): {diags:?}"
+    );
+    let main = hir
+        .knots
+        .iter()
+        .find(|k| k.name.text == "main")
+        .expect("main");
+    let (callee, _args) =
+        only_claimed_call(&main.body).expect("the claimed line must lower to one call");
+    assert_eq!(
+        callee, "arrival_general",
+        "first-declared handler wins under the interim dispatch order"
+    );
+}
+
+#[test]
 fn a_claim_on_a_flow_is_misplaced_e112() {
     // Only a top-level `fn` is callable as an expression, so only a
     // top-level `fn` may claim — and a claim that could never fire must be
@@ -1685,6 +1745,31 @@ fn a_claim_on_a_nested_fn_is_misplaced_e112() {
     assert!(
         diags.iter().any(|d| d.code == DiagnosticCode::E112),
         "a claim on a nested fn must be diagnosed misplaced: {diags:?}"
+    );
+}
+
+#[test]
+fn a_claim_on_a_fn_inside_a_module_is_misplaced_e112() {
+    // Issue #1847: a `fn` nested in a `module { … }` block has
+    // `container_nesting_depth == 0` (a `MODULE_DECL` ancestor is not a
+    // `flow`/`fn`), so it reads as "top-level" by depth alone — but
+    // `element::collect` only scans the file's direct children, so a
+    // claim admitted there would validate and then never be registered
+    // as a handler: a silent drop. It must be diagnosed misplaced
+    // instead, same as a claim on a flow or a nested fn.
+    let (hir, _m, diags) = lower_src(
+        "module npcs {\n  @[element(claims = \"^(?<who>[A-Z]+) enters$\")]\n  fn arrival(who) {\n    return who;\n  }\n}\n",
+    );
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E112),
+        "a claim on a fn nested in a module must be diagnosed misplaced: {diags:?}"
+    );
+    // And, honestly, it never claims anything either — no handler was
+    // ever registered to claim with.
+    assert!(
+        hir.element_matches.is_empty(),
+        "an unregistered claim must not claim: {:?}",
+        hir.element_matches
     );
 }
 
