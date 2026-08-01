@@ -116,29 +116,41 @@ Consequences that follow from "bare name, no sigil":
   visit count.
 - **Ink is unchanged.** The same bare name in ink is still a knot's
   visit count; only `#fn(f)` creates a fn value there.
-- **One spelling per surface, one type, in body/expression position**
-  (issue #1876). A bare-name reference occurring in a body — an
-  argument, an operand, a call target — types exactly as the
-  zero-bound `#fn` literal does: `§4`'s `fn(T…): R` built from the
-  target's signature, carrying the target's own effect row
-  (`FnRow::of_target`, effects-spec §5/§6.1a) — it *is* a creation
-  site, so it is harvested as one (a call-graph edge plus the Fork A
-  creation atom). That is what makes §4's static checking apply to it:
-  passing `f` where an `int` is declared is an ordinary `E063`, not an
-  opaque `Unknown` deferred to the runtime. Inference keys this off the
-  per-file frontend flag (`HirFile::native` → `Def::native` →
-  `BodyCtx::native`), the same flag lowering gates `MakeFnValue` on, so
-  typing and lowering cannot disagree about which body-position
-  references are fn values.
-  A **declaration initializer** (`var f = double;`) is a separate
-  position, not covered by the above: lowering already mints the fn
-  value there (`lir/lower/decls.rs`'s `fold_path_ref`,
-  `fn_values.rs`'s `visit_with_decl_initializers`), but
-  `signature.rs`'s `declared_fn_type` — the typing path for a
-  declaration's initializer — has no native/bare-name awareness yet,
-  so `f`'s static type is `Unknown` and a later `f(3)` mistypes as
-  `E065` rather than `E063`/a clean type. Typing and lowering *do*
-  disagree here; tracked at issue #1895, not fixed by this ruling.
+- **One spelling per surface, one type, in every position** (issues
+  #1876, #1895). A bare-name reference types exactly as the zero-bound
+  `#fn` literal does: `§4`'s `fn(T…): R` built from the target's
+  signature, carrying the target's own effect row (`FnRow::of_target`,
+  effects-spec §5/§6.1a) — it *is* a creation site, so it is harvested
+  as one (a call-graph edge plus the Fork A creation atom). That is
+  what makes §4's static checking apply to it: passing `f` where an
+  `int` is declared is an ordinary `E063`, not an opaque `Unknown`
+  deferred to the runtime. Both typing paths key off the same per-file
+  frontend flag lowering gates on, so typing and lowering cannot
+  disagree about which references are fn values **when the target is
+  an actual knot**. The two gates are not otherwise identical: lowering's
+  `SymbolInfo::is_function_definition` accepts `SymbolKind::Knot |
+  SymbolKind::Stitch` carrying the `"function"` detail, but
+  `declared_fn_type`'s `lookup_by_name` restricts the bucket to
+  `&[SymbolKind::Knot]` alone — so a top-level stitch promoted to knot
+  status (`Knot::symbol_kind`) that carries the same `"function"`
+  detail mints a `FnRef` in lowering yet declines to `Ty::Unknown` in
+  typing, a genuine one-sided disagreement reachable from a native
+  declaration initializer naming that stitch and not yet closed:
+  - **Body/expression position** — an argument, an operand, a call
+    target — through `HirFile::native` → `Def::native` →
+    `BodyCtx::native` (`infer::body`'s `native_fn_value_target`,
+    mirroring `lir::lower::expr::lower_path`'s `MakeFnValue` gate).
+  - **Declaration-initializer position** (`var f = double;`) through
+    `HirFile::native` → `signature::declared_fn_type` (issue #1895),
+    mirroring `lir::lower::decls::fold_path_ref`'s `ConstValue::FnRef`
+    gate. This makes `Sig::value_ty` a real `Ty::Fn`, so the global
+    lands in `infer::collect_globals` and a later `f(3)` type-checks
+    instead of misfiring `E065` as an unknown-callee value call.
+    Declaration-derived typing has no resolution map, so a bare name
+    shadowed by a same-named `VAR`/`CONST`/list item declines to
+    `Unknown` rather than guessing the fn interpretation — lowering
+    resolves that name to the shadowing global, and the two must not
+    disagree.
 
 Respelling ink into native (`brink-respell`) follows the same split: a
 zero-bound `#fn(f)` emits as the bare name `f`; the binding form refuses
