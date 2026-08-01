@@ -71,8 +71,15 @@ pub enum Line {
     Done { text: String, tags: Vec<String> },     // turn complete (ink -> DONE)
     Choices { text: String, tags: Vec<String>, choices: Vec<Choice> },  // pick a choice
     End { text: String, tags: Vec<String> },      // story permanently ended (ink -> END)
+    Suspended { .. },                             // flow parked at an `await` site (FlowFrame model)
 }
 ```
+
+(`Suspended` is the flow-suspension park — `docs/flow-suspension-spec.md`
+§10.1. Like `Done` it is a turn boundary: text accumulated before the park
+flushes with it. The host wakes the flow via `Story::wake_check`; a park never
+auto-continues. See `brink-runtime/src/story/types.rs` for the real
+definition — this block is a summary, not the source of truth.)
 
 Primary consumer pattern:
 
