@@ -395,25 +395,47 @@ fn inline_tag_embedded_brace_reaches_story_data() {
     );
 }
 
+/// Issue #1903: end-to-end cover for a native file whose `root_content` is
+/// the synthesized entry divert — it compiles and runs through the native
+/// pipeline with #1903's `root_content` walk active.
+///
+/// ⚠ **This case does NOT exercise #1903's type checking, and cannot.**
+/// `hir::lower_native::entry_root_content` makes a `.brink` file's
+/// `root_content` either empty or a *single synthesized `Divert`* to
+/// `main` — never user statements — so native root content holds nothing
+/// type-bearing for the strict walk to check. #1903's fix only does real
+/// work on the **ink** frontend, whose `root_content` is populated from the
+/// file's literal top-level weave.
+///
+/// The discriminating tests (one that fails with the fix reverted, plus one
+/// pinning the native asymmetry above) are
+/// `brink_analyzer::strict::tests::ink_root_content_declared_temp_init_is_checked`
+/// and `::native_root_content_holds_no_type_bearing_statements`.
+#[test]
+fn root_content_typed_strict() {
+    assert_case("root-content-typed-strict");
+}
+
 /// Every `tests/tier1-native/` case directory is exercised by a `#[test]`
 /// above — a directory with no matching test would silently never run.
 #[test]
 fn every_case_directory_has_a_test() {
     let known = [
-        "or-coalescing",
-        "as-binding",
-        "ufcs",
-        "construction-literal",
-        "for-k-v",
-        "annotations-was",
-        "annotations-effects",
         "annotations-allow",
+        "annotations-effects",
         "annotations-element",
+        "annotations-was",
         "array-literal",
-        "lambda-verbs",
+        "as-binding",
+        "construction-literal",
+        "fn-value-bare-name",
+        "for-k-v",
         "inline-markup-point-marker",
         "inline-tag-embedded-brace",
-        "fn-value-bare-name",
+        "lambda-verbs",
+        "or-coalescing",
+        "root-content-typed-strict",
+        "ufcs",
     ];
     let mut found: Vec<String> = std::fs::read_dir(corpus_dir())
         .expect("read tests/tier1-native")
