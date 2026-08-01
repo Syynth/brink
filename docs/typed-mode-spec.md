@@ -324,3 +324,31 @@ ruling above closes the spec gap this paragraph identifies, and the
 `BASELINE` — the sweep's finding count drops from 37 to 35, and `for-k-v`
 now produces no strict finding at all, so the case count drops from 7 of
 14 to 6 of 14.
+
+**#1910 is now resolved in part** (this PR): `InferPass::infer_lambda`
+reads a lambda's own body-derived narrowing back (mono-HM, the same
+overlay a top-level `fn`'s own params/return already get) instead of
+discarding it and rebuilding the lambda's `Ty::Fn` row from written
+annotations alone. Of the 16 `BASELINE` rows attributable to #1910 (the
+sweep's `lambda-verbs` case in full, plus `fn-value-bare-name`'s `mixed`
+row), 10 are gone: `braced`, `call_through_capture` (return type and both
+temps), `chained`, `doubled`, `map_each_scaled`, `positives`, `total`, and
+`mixed`. Six remain, none in this PR's scope:
+
+- `scaled`'s parameter `factor` and return type (2 rows): call-site-driven
+  inference is forbidden by §2, so `Unknown` is the specified outcome
+  here — the same reasoning as `ufcs`'s `bump`/`heal`.
+- `ufcs_through_capture`'s return type and temp `f` (2 rows): blocked on
+  #1909's own remaining gap (`items.len()`'s UFCS-desugared result still
+  types `Unknown`), not on anything #1910 fixes.
+- `field_through_capture`'s return type and temp `f` (2 rows): implementing
+  #1910 surfaced a separate, pre-existing checker gap (#1924) — a dotted
+  field read on a captured struct (`p.x`) types as the whole struct, not
+  the field, because no static field-type table exists yet. That gap first
+  made these two rows disappear (replaced by one misleading `E063`, since a
+  lambda's signature was no longer rebuilt from annotations alone and so
+  could surface the mistyped read), then — per a follow-up review fix,
+  still within this PR — `infer_lambda`'s overlay was guarded to refuse
+  any `body_ty`/`narrowed_params` a walk that hit the mistyped case
+  produced, landing these two rows right back at their original, honest
+  `E065` shape. Tracked by #1924, unmoved (net) by #1910.

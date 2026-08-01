@@ -287,6 +287,7 @@ fn new_pass<'a, 'b>(
         param_holes: BTreeSet::new(),
         pending_call_fn_args: Vec::new(),
         call_fn_args: BTreeMap::new(),
+        dotted_field_read_tainted: false,
     }
 }
 
@@ -420,6 +421,61 @@ fn fold_literal_int_bound(expr: &Expr) -> Option<i64> {
             fold_literal_int_bound(inner).map(|n| -n)
         }
         _ => None,
+    }
+}
+
+/// Issue #1910: every bare name a lambda's own block body directly binds —
+/// `TempDecl`, a `for` loop's `var_name`/`val_name`, or an `if`/`while`
+/// `EXPR as NAME` binding — collected recursively through `if`/`while`/`for`
+/// nesting. Used by `InferPass::infer_lambda` to extend its `self.locals`
+/// shadow past just the lambda's own params (see that call site's own doc):
+/// any of these can collide with an enclosing same-named local exactly the
+/// way an unshadowed param would.
+///
+/// Deliberately does **not** recurse into a nested `Expr::Lambda` (there is
+/// none to walk into here regardless — `BlockStmt` only carries expressions,
+/// and a lambda literal nested inside one of those is a leaf as far as this
+/// name collection is concerned): a nested lambda's own body binds its own
+/// names, shadowed by *its own* `infer_lambda` call when that literal is
+/// walked, not this one's.
+fn lambda_own_binding_names(stmts: &[brink_ir::BlockStmt], out: &mut BTreeSet<String>) {
+    fn walk_if(i: &brink_ir::IfStmt, out: &mut BTreeSet<String>) {
+        if let Some(b) = &i.binding {
+            out.insert(b.text.clone());
+        }
+        lambda_own_binding_names(&i.body, out);
+        match &i.else_branch {
+            Some(brink_ir::ElseBranch::ElseIf(nested)) => walk_if(nested, out),
+            Some(brink_ir::ElseBranch::Else(body)) => lambda_own_binding_names(body, out),
+            None => {}
+        }
+    }
+    for s in stmts {
+        match s {
+            brink_ir::BlockStmt::TempDecl(t) => {
+                out.insert(t.name.text.clone());
+            }
+            brink_ir::BlockStmt::If(i) => walk_if(i, out),
+            brink_ir::BlockStmt::While(w) => {
+                if let Some(b) = &w.binding {
+                    out.insert(b.text.clone());
+                }
+                lambda_own_binding_names(&w.body, out);
+            }
+            brink_ir::BlockStmt::For(f) => {
+                out.insert(f.var_name.text.clone());
+                if let Some(v) = &f.val_name {
+                    out.insert(v.text.clone());
+                }
+                lambda_own_binding_names(&f.body, out);
+            }
+            brink_ir::BlockStmt::Assignment(_)
+            | brink_ir::BlockStmt::Return(_)
+            | brink_ir::BlockStmt::Break(_)
+            | brink_ir::BlockStmt::Continue(_)
+            | brink_ir::BlockStmt::ExprStmt(_)
+            | brink_ir::BlockStmt::Await(_) => {}
+        }
     }
 }
 
@@ -565,6 +621,23 @@ struct InferPass<'a, 'b> {
     /// §6.1: the folded caller-side row-variable material — see
     /// `EffectAtoms::call_fn_args`.
     call_fn_args: BTreeMap<(DefinitionId, u32), FnArgOrigins>,
+    /// Issue #1924 follow-up review on #1910: set the moment [`Self::
+    /// infer_path`] resolves a multi-segment path to a *value*-kind symbol
+    /// (`Param`/`Temp`/`Variable`/`Constant`) — the "dotted field read
+    /// spelled as a path" shape (`p.x`) that, for lack of a static
+    /// field-type table (#1924), resolves to its *head* variable's own type
+    /// rather than the field's. `infer_lambda` resets this to `false`
+    /// before walking a lambda's body and consults it afterward: if the
+    /// walk ever hit that mistyped case, the lambda's own `body_ty`/
+    /// `narrowed_params` overlay is discarded in favor of the pre-#1910
+    /// annotation-only posture, because an ordinary `unify`/`observe`
+    /// reachable from that mistyped value can otherwise poison a
+    /// completely unrelated param or return (`fold(items, 0, |a, b| p.x +
+    /// a + b)`: `p.x`'s mistyped `Struct` joins with `a`, corrupting the
+    /// fold accumulator's own type). Not part of [`FrameSnapshot`] — see
+    /// `infer_lambda`'s own save/reset/restore of this field for why a
+    /// manual scope, not the frame-snapshot mechanism, is correct here.
+    dotted_field_read_tainted: bool,
 }
 
 /// The `InferPass` fields scoped to a single lambda-body frame — see
@@ -1598,13 +1671,19 @@ impl InferPass<'_, '_> {
                 Ty::Unknown
             }
             // A lambda (issue #1685) is fn-colored always, so its type is a
-            // `Ty::Fn` row — built from what is *written*: an annotated
-            // param resolves, an unannotated one stays `Unknown` (mono-HM
-            // narrowing of a lambda's own params from its concrete call
-            // sites is not modeled in this slice, and inventing a type here
-            // would be worse than an honest `Unknown`). The body's value
-            // expression is inferred for its side effects (nested calls,
-            // uses) exactly like an interpolation's is.
+            // `Ty::Fn` row — since #1910, built from what the lambda's own
+            // body infers (mono-HM narrowing read back from the walk, the
+            // same overlay a top-level `fn`'s own params/return already get
+            // via `infer_def_body`), with what is *written* only the
+            // fallback where the body-derived type is still `Unknown`. Mono-
+            // HM narrowing of a lambda's own params from its concrete *call
+            // sites* is still not modeled in this slice (`scaled`'s own
+            // doc, `infer_lambda`'s "boundary this fix does NOT cross") —
+            // inventing a type from a call site would be worse than an
+            // honest `Unknown`, unlike a type the body itself already pins.
+            // See `infer_lambda` for the full read-back mechanics. The
+            // body's value expression is inferred for its side effects
+            // (nested calls, uses) exactly like an interpolation's is.
             //
             // `Ty::Fn` has carried an effect row since #1680 step 3, but a
             // lambda's is the unknown top element: composing one would mean
@@ -1666,6 +1745,27 @@ impl InferPass<'_, '_> {
             }
             return Ty::Unknown;
         };
+        // Issue #1924 follow-up review on #1910: a multi-segment path can be
+        // a genuine dotted namespace reference (`knot.stitch`) or a field
+        // access spelled as a path (`p.x`) — the latter resolves `def` to
+        // its *head* variable, not the field, because no static field-type
+        // table exists yet (#1924, the read-side twin of #994's write-side
+        // fix). `ty_of_def` below can't tell the two apart and returns the
+        // head's own type either way; flag the value-symbol case so
+        // `infer_lambda`'s `body_ty`/`narrowed_params` overlay (#1910) knows
+        // not to trust anything derived from this walk — see
+        // `Self::dotted_field_read_tainted`'s own field doc. A namespace
+        // reference resolves to a symbol kind not in this set, so it is
+        // unaffected.
+        if p.segments.len() > 1
+            && let Some(info) = self.ctx.index.symbols.get(&def)
+            && matches!(
+                info.kind,
+                SymbolKind::Param | SymbolKind::Temp | SymbolKind::Variable | SymbolKind::Constant
+            )
+        {
+            self.dotted_field_read_tainted = true;
+        }
         self.ty_of_def(def)
     }
 
@@ -2145,6 +2245,12 @@ impl InferPass<'_, '_> {
             param_holes: _,
             pending_call_fn_args: _,
             call_fn_args: _,
+            // Deliberately cumulative, not frame-scoped: `infer_lambda`
+            // manages this field's lifetime itself (reset before, consulted
+            // and restored after each lambda's own body walk) — see its own
+            // field doc for why the frame-snapshot mechanism is the wrong
+            // tool here.
+            dotted_field_read_tainted: _,
         } = self;
         FrameSnapshot {
             return_ty: return_ty.clone(),
@@ -2176,11 +2282,14 @@ impl InferPass<'_, '_> {
     }
 
     /// `|x| …` — a lambda (issue #1685) is fn-colored always, so its type is
-    /// a `Ty::Fn` row built from what is *written*: an annotated param
-    /// resolves, an unannotated one stays `Unknown` (mono-HM narrowing of a
-    /// lambda's own params from its concrete call sites is not modeled in
-    /// this slice, and inventing a type here would be worse than an honest
-    /// `Unknown`). The whole body is inferred for its side effects (nested
+    /// a `Ty::Fn` row — since #1910, built from what the lambda's own body
+    /// infers (mono-HM narrowing read back from the walk below), with what
+    /// is *written* only the fallback where the body-derived type is still
+    /// `Unknown`. Mono-HM narrowing of a lambda's own params from its
+    /// concrete *call sites* is still not modeled in this slice (inventing a
+    /// type from a call site would be worse than an honest `Unknown`,
+    /// unlike a type the body itself already pins). The whole body is
+    /// inferred for its side effects (nested
     /// calls, uses) exactly like an interpolation's value expression is —
     /// for a `LambdaBody::Block`, that means every `stmts` entry
     /// (`self.infer_block_stmt`) as well as the tail, not the tail alone:
@@ -2266,6 +2375,15 @@ impl InferPass<'_, '_> {
     /// optimization) — not #1680's own analyzer-side work, which has
     /// landed (Fork D retired T1c item 4's row field outright). Pinned by
     /// `brink-db/tests/issue_1680_lambda_effect_row_gap.rs`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one lambda-body walk threading three independent bare-name \
+                  shadows (locals, annotated, the #1924 dotted-field-read \
+                  taint) through both the Block and Expr body shapes — \
+                  splitting the shadow save/restore pairs across helper \
+                  functions would scatter the exact frame-scoping hazards \
+                  this function's own doc walks through in order"
+    )]
     fn infer_lambda(&mut self, l: &brink_ir::LambdaExpr) -> Ty {
         // Issue #1779: shadow this lambda's own param names for the whole
         // duration of walking its body — `stmts` *and* the tail/expr value
@@ -2280,7 +2398,74 @@ impl InferPass<'_, '_> {
                 .entry(p.name.text.clone())
                 .or_insert(0) += 1;
         }
-        match &l.body {
+        // Issue #1910: shadow every name this lambda's own body binds —
+        // every param, plus (for a block body) every `TempDecl`/`for`/`as`
+        // binding the body itself introduces, collected recursively through
+        // `if`/`while`/`for` nesting by `lambda_own_binding_names` (never
+        // through a nested `Expr::Lambda`, which shadows its own names when
+        // *its* `infer_lambda` runs) — for the same duration as the walk
+        // below. `self.locals` is keyed by bare *name* and shared with the
+        // enclosing frame; `bind_local`/`observe` UNIFY with whatever
+        // already occupies a name, which is correct for repeated writes to
+        // the SAME binding but not for a same-spelled *new* binding a
+        // nested scope introduces — without this shadow, an enclosing local
+        // already sitting under this name would silently seed (or worse,
+        // `Conflicted`-poison) the lambda's own fresh one the moment its
+        // first `TempDecl` writes it, and — for a param specifically — an
+        // enclosing same-named local's type would seed the param itself.
+        // `self.annotated` is a *second* bare-name-keyed map with the exact
+        // same hazard: it is read through `own_annotation`'s bare-single-
+        // segment fallback (used by `or_own_annotation` for every intrinsic
+        // argument, and by `annotated_callee_ty` for a direct-call callee)
+        // during the body walk below, so an enclosing same-named ANNOTATED
+        // local's `~ temp` ascription would otherwise leak into a lambda
+        // param or temp of the same name (issue #1910 follow-up review) —
+        // shadowed here for the identical reason and duration as `locals`.
+        // `frame_snapshot`/`restore_frame` below (issue #1816) already keeps
+        // this contamination from ever reaching the *enclosing* frame once
+        // the walk finishes; what it does not do is stop this function's own
+        // `body_ty`/`narrowed_params` overlay — or any `own_annotation` read
+        // *during* the walk — from reading contaminated values, which is
+        // what made this shadow necessary the moment #1910 started reading
+        // them at all. `saved`/`saved_annotated` record exactly what (if
+        // anything) occupied each name in each map so it can be put back
+        // verbatim, `None` when nothing did.
+        let mut shadow_names: BTreeSet<String> =
+            l.params.iter().map(|p| p.name.text.clone()).collect();
+        if let brink_ir::LambdaBody::Block { stmts, .. } = &l.body {
+            lambda_own_binding_names(stmts, &mut shadow_names);
+        }
+        let saved: Vec<(String, Option<Ty>)> = shadow_names
+            .iter()
+            .map(|name| (name.clone(), self.locals.remove(name)))
+            .collect();
+        let saved_annotated: Vec<(String, Option<Ty>)> = shadow_names
+            .iter()
+            .map(|name| (name.clone(), self.annotated.remove(name)))
+            .collect();
+        // Issue #1924 follow-up review on #1910: reset the taint flag to a
+        // fresh baseline for this lambda's own walk (mirrors the
+        // `return_ty`/`has_value_return` reset below) and save whatever the
+        // enclosing frame's value was, so a NESTED lambda's own dotted-field
+        // read cannot spuriously taint the ENCLOSING lambda's overlay too —
+        // each `infer_lambda` call judges only what its *own* body walk hit.
+        let outer_dotted_field_read_tainted =
+            std::mem::replace(&mut self.dotted_field_read_tainted, false);
+        // Issue #1910: capture the body's own derivation of the lambda's
+        // return type and each param's type — read back from `self.locals`
+        // *before* any restore below discards it, into plain local
+        // variables rather than back into `self.locals`. This is the
+        // lambda's counterpart of `infer_def_body`'s own post-walk
+        // `param_types`/`return_ty` overlay (`pass.locals.get(&p.name.text)`
+        // preferred over the annotation, annotation only as the Unknown
+        // fallback) — previously this function walked the body purely for
+        // its side effects and then discarded everything it learned,
+        // rebuilding `params`/`ret` from written annotations alone, which is
+        // exactly what let a pure verb's callback (`|x| x * 2`) and a
+        // lambda-bound local (`let f = |x| x + 1;`) escape strict inference
+        // as `Unknown` even when the body unambiguously pins the type
+        // (issue #1910).
+        let (body_ty, narrowed_params): (Ty, Vec<Ty>) = match &l.body {
             brink_ir::LambdaBody::Block { stmts, tail } => {
                 // Wholesale snapshot/restore (not a "remove newly-inserted
                 // keys" diff) — `bind_local` unifies into a pre-existing entry
@@ -2291,6 +2476,19 @@ impl InferPass<'_, '_> {
                 // future field can silently fall off of — see
                 // `FrameSnapshot`'s doc.
                 let snapshot = self.frame_snapshot();
+                // #1910: reset `return_ty`/`has_value_return` to a fresh
+                // baseline for the lambda's own frame, mirroring `new_pass`'s
+                // fresh start for a top-level def — without this, an
+                // internal `return` below (see `LambdaBody::Block`'s own
+                // doc: "return leaves the lambda") would `unify` into
+                // whatever the *enclosing* def's `return_ty` already held
+                // (e.g. an earlier `return` in the enclosing body), which
+                // `restore_frame` only ever cleaned up *after* the fact —
+                // fine when the accumulated value was simply discarded (the
+                // pre-#1910 behavior), but wrong the moment it is read back
+                // below as this lambda's own signature.
+                self.return_ty = Ty::Unknown;
+                self.has_value_return = false;
                 for s in stmts {
                     self.infer_block_stmt(s);
                 }
@@ -2307,16 +2505,92 @@ impl InferPass<'_, '_> {
                 // `Conflicted` escape (`E066`) on a temp the enclosing body
                 // never misuses. Inside the window, both directions stay in
                 // the lambda's own frame and are discarded by the restore.
-                if let Some(tail) = tail {
-                    self.infer_expr(tail);
-                }
+                let tail_ty = tail.as_ref().map_or(Ty::Unknown, |t| self.infer_expr(t));
+                // #1910: the lambda's own return type is the join of its
+                // tail value (if any) and every internal `return <expr>;`
+                // this walk observed (`self.return_ty`, freshly reset above)
+                // — a block-bodied lambda that ends in a `return` rather
+                // than a trailing expression (`positives`'s `filter_map`
+                // callback: an `if`/`return` shape with no tail at all)
+                // still has a real signature, and previously this function
+                // never looked at `return_ty` here at all.
+                let ty = unify(&self.return_ty, &tail_ty);
+                // Read the params' narrowed types *before* `restore_frame`
+                // resets `self.locals` back to `snapshot` — after that call
+                // every name this walk touched, param or `TempDecl` alike,
+                // is gone.
+                let narrowed = l
+                    .params
+                    .iter()
+                    .map(|p| {
+                        self.locals
+                            .get(&p.name.text)
+                            .cloned()
+                            .unwrap_or(Ty::Unknown)
+                    })
+                    .collect();
                 self.restore_frame(snapshot);
+                (ty, narrowed)
             }
             // A single-expression body has no `stmts`, so there is no frame
             // to open around it — it walks under whatever frame was already
             // live when `infer_lambda` was entered, unchanged by #1789.
             brink_ir::LambdaBody::Expr(e) => {
-                self.infer_expr(e);
+                let ty = self.infer_expr(e);
+                let narrowed = l
+                    .params
+                    .iter()
+                    .map(|p| {
+                        self.locals
+                            .get(&p.name.text)
+                            .cloned()
+                            .unwrap_or(Ty::Unknown)
+                    })
+                    .collect();
+                (ty, narrowed)
+            }
+        };
+        // Issue #1924 follow-up review on #1910: if anything during this
+        // lambda's own walk hit the mistyped dotted-field-read case (see
+        // `Self::dotted_field_read_tainted`'s field doc), the `body_ty`/
+        // `narrowed_params` just computed above may have been poisoned by an
+        // ordinary `unify`/`observe` reachable from that mistyped value —
+        // discard them in favor of the pre-#1910 posture (an honest
+        // `Unknown`, overlaid by the written annotation below exactly like
+        // it was before this lambda ever read its own body back). Restore
+        // the enclosing frame's own taint state — consumed here, not
+        // propagated outward, exactly like `saved`/`saved_annotated` above.
+        let tainted = std::mem::replace(
+            &mut self.dotted_field_read_tainted,
+            outer_dotted_field_read_tainted,
+        );
+        let (body_ty, narrowed_params) = if tainted {
+            (Ty::Unknown, vec![Ty::Unknown; l.params.len()])
+        } else {
+            (body_ty, narrowed_params)
+        };
+        // Undo the `self.locals` and `self.annotated` shadows (mirrors the
+        // `lambda_param_names` decrement below): restore whatever an
+        // enclosing same-named local/annotation held, or leave the name
+        // absent if nothing did.
+        for (name, prior) in saved {
+            match prior {
+                Some(ty) => {
+                    self.locals.insert(name, ty);
+                }
+                None => {
+                    self.locals.remove(&name);
+                }
+            }
+        }
+        for (name, prior) in saved_annotated {
+            match prior {
+                Some(ty) => {
+                    self.annotated.insert(name, ty);
+                }
+                None => {
+                    self.annotated.remove(&name);
+                }
             }
         }
         for p in &l.params {
@@ -2330,21 +2604,36 @@ impl InferPass<'_, '_> {
             }
         }
         let names = self.ctx.type_names();
+        // #1910: annotation-firewall overlay, same precedence as
+        // `infer_def_body`'s `param_types` — the body-derived type wins
+        // whenever it isn't `Unknown` (a use that *disagrees* with a written
+        // annotation still infers its own concrete/`Conflicted` type, which
+        // is what keeps `annotations::mismatches` (E063) comparing two
+        // independent derivations rather than one silently overlaying the
+        // other); the annotation is only the Unknown fallback.
         let params = l
             .params
             .iter()
-            .map(|p| {
-                p.annotation
-                    .as_ref()
-                    .and_then(|te| crate::annotations::resolve(te, &names))
-                    .unwrap_or(Ty::Unknown)
+            .zip(narrowed_params)
+            .map(|(p, inferred)| {
+                if inferred.is_unknown() {
+                    p.annotation
+                        .as_ref()
+                        .and_then(|te| crate::annotations::resolve(te, &names))
+                        .unwrap_or(inferred)
+                } else {
+                    inferred
+                }
             })
             .collect();
-        let ret = l
-            .return_type
-            .as_ref()
-            .and_then(|te| crate::annotations::resolve(te, &names))
-            .unwrap_or(Ty::Unknown);
+        let ret = if body_ty.is_unknown() {
+            l.return_type
+                .as_ref()
+                .and_then(|te| crate::annotations::resolve(te, &names))
+                .unwrap_or(body_ty)
+        } else {
+            body_ty
+        };
         // The effect row stays at the top element. A lambda's lifted
         // `DefinitionId` is minted in LIR (`alloc_lambda_address`), so it has
         // no id at inference time to *name* as a creation target — the
@@ -3124,10 +3413,17 @@ impl InferPass<'_, '_> {
             // (`crate::comparator_contract`), exceedance-only.
             //
             // Result typing reads the callback's own `Ty::Fn` return where
-            // one is known (an annotated target reached through an inline
-            // `#fn(…)` literal), and degrades to `Unknown` otherwise —
-            // never a guess: `Ty::Fn` is the only evidence there is, since
-            // the verb never sees the callback body.
+            // one is known, and degrades to `Unknown` otherwise — never a
+            // guess: `Ty::Fn` is the only evidence there is, this arm itself
+            // never walks the callback body. Since #1910, an inline
+            // `|x| …` lambda literal's own `Ty::Fn` is no longer
+            // annotation-only, though: `infer_lambda` already read that
+            // callback's body-derived return back (mono-HM narrowing) by
+            // the time `arg_tys` reaches this arm, so `map`'s own result
+            // can come from an unannotated callback's body just as well as
+            // from an annotated target reached through an inline `#fn(…)`
+            // literal — this arm's own job stays "read the ret field",
+            // just over a `Ty::Fn` that now carries more real information.
             // `map_each` (§4, issue #1679 slice 2) shares `map`'s exact
             // typing shape — the effectful/pure split is a runtime-contract
             // difference, not a typing one — merged per clippy
@@ -3146,13 +3442,25 @@ impl InferPass<'_, '_> {
             // the accumulator by signature, so prefer it when known and
             // fall back to `init`'s inferred type (which the mono-HM pass
             // usually has even when the callback is opaque).
+            //
+            // #1910: "known" means concretely known, not merely *present* —
+            // an inline lambda whose own body places no constraint on its
+            // params (`|a, b| a + b` with both params otherwise
+            // unconstrained) still types as `Ty::Fn(_, Ty::Unknown, _)`, and
+            // that `Unknown` used to win over `init`'s already-concrete type
+            // unconditionally, discarding real evidence the accumulator
+            // slot had. `Ty::Conflicted` is left out of this guard
+            // deliberately: unlike `Unknown` it is genuine information (the
+            // callback body really did observe two disagreeing types), so it
+            // must propagate rather than being masked by falling back to
+            // `init`.
             "fold" => {
                 if let Some(f) = args.get(2) {
                     let hint = self.value_call_origin(f);
                     self.pending_value_calls.push(hint);
                 }
                 match arg_tys.get(2) {
-                    Some(Ty::Fn(_, ret, _)) => (**ret).clone(),
+                    Some(Ty::Fn(_, ret, _)) if !ret.is_unknown() => (**ret).clone(),
                     _ => arg_tys.get(1).cloned().unwrap_or(Ty::Unknown),
                 }
             }
@@ -3160,8 +3468,11 @@ impl InferPass<'_, '_> {
             // issue #1679 slice 2) — the Option-mapper, dropping `none`.
             // Same shape as `map`: read the callback's `Ty::Fn` return, and
             // unwrap one layer of `Option` when it's known; degrade to
-            // `Unknown` otherwise (never a guess — the verb never sees the
-            // callback body, only its declared return shape).
+            // `Unknown` otherwise (never a guess: this arm itself never
+            // walks the callback body, only reads its `Ty::Fn`'s declared
+            // return shape — see `map`'s own arm comment above for why,
+            // since #1910, that shape is no longer annotation-only for an
+            // inline lambda literal).
             "filter_map" => {
                 if let Some(f) = args.get(1) {
                     let hint = self.value_call_origin(f);
@@ -3721,6 +4032,7 @@ mod tests {
             param_holes: BTreeSet::new(),
             pending_call_fn_args: Vec::new(),
             call_fn_args: BTreeMap::new(),
+            dotted_field_read_tainted: false,
         }
     }
 
