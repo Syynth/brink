@@ -43,8 +43,8 @@ use std::mem::{size_of, size_of_val};
 use std::sync::Arc;
 
 use brink_analyzer::{
-    BodyTypes, DirectCallArgMismatch, InferredSig, Sig, Ty, TypedAssignMismatch, UfcsCallArgs,
-    ValueCallFact,
+    BodyTypes, DirectCallArgMismatch, FieldAssignMismatch, InferredSig, Sig, Ty,
+    TypedAssignMismatch, UfcsCallArgs, ValueCallFact,
 };
 use brink_format::DefinitionId;
 use brink_ir::{
@@ -374,6 +374,18 @@ fn typed_assign_mismatch_heap(m: &TypedAssignMismatch) -> usize {
     string_heap(&m.target) + ty_heap(&m.expected) + ty_heap(&m.found)
 }
 
+/// Issue #1900: a `FieldAssignMismatch`'s own heap contribution — mirrors
+/// [`typed_assign_mismatch_heap`]'s shape (its `root` field plays the same
+/// role `target` does there), plus its own `path` `Vec<Name>` (the
+/// unresolved field chain) and each segment's own name heap cost.
+fn field_assign_mismatch_heap(m: &FieldAssignMismatch) -> usize {
+    string_heap(&m.root)
+        + ty_heap(&m.root_ty)
+        + vec_heap(&m.path)
+        + m.path.iter().map(name_heap).sum::<usize>()
+        + ty_heap(&m.found)
+}
+
 /// Issue #1881: a `UfcsCallArgs`'s own heap contribution — its `args` `Vec`
 /// plus each element's own `Ty` heap cost, same shape `body_types_heap`
 /// already applies to `b.params`/`b.locals`. `TextRange` owns no heap data
@@ -418,6 +430,11 @@ fn body_types_heap(b: &BodyTypes) -> usize {
         + b.typed_assign_mismatches
             .iter()
             .map(typed_assign_mismatch_heap)
+            .sum::<usize>()
+        + vec_heap(&b.field_assign_mismatches)
+        + b.field_assign_mismatches
+            .iter()
+            .map(field_assign_mismatch_heap)
             .sum::<usize>()
         + vec_heap(&b.ufcs_call_args)
         + b.ufcs_call_args
@@ -714,6 +731,7 @@ mod tests {
                 value_calls: Vec::new(),
                 direct_call_arg_mismatches: Vec::new(),
                 typed_assign_mismatches: Vec::new(),
+                field_assign_mismatches: Vec::new(),
                 ufcs_call_args: Vec::new(),
                 array_remove_calls: Vec::new(),
             },

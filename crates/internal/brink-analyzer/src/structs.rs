@@ -64,7 +64,7 @@ use brink_ir::{
 use rowan::TextRange;
 
 use crate::annotations;
-use crate::infer::{InferenceResult, InferredSig, Ty};
+use crate::infer::{FieldAssignMismatch, InferenceResult, InferredSig, Ty};
 
 /// One declared struct shape: fields in declaration order, name -> declared
 /// type (`Ty::Unknown` if the field's own annotation doesn't resolve —
@@ -193,6 +193,100 @@ pub fn check(
         }
     }
     out
+}
+
+// ─── Issue #1900: plain struct-field assignment target checking ──────
+
+/// Strict-mode-only: every [`crate::infer::FieldAssignMismatch`] fact body
+/// inference recorded (`~ p.x = expr`, a dotted assignment target — see that
+/// type's own doc for why the field chain is left unresolved until now),
+/// walked against [`declared_shapes`]/[`ShapeInfo`] to resolve the specific
+/// field's declared type and reported as `E063` — the same code
+/// `strict::check_typed_assign_mismatches` reports for a *bare* assignment
+/// target (issue #1877); this is that check's dotted sibling, split into
+/// its own issue (#1900) because the root's declared type is not the
+/// field's, so the bare-name comparison doesn't apply as-is. Callers only
+/// reach this once `strict::config_error` has confirmed `types = strict` +
+/// `dialect = brink` (mirrors [`check`]'s own entry condition).
+///
+/// Walks `inference.bodies` directly (keyed by `DefinitionId`, itself
+/// `Ord`) rather than re-deriving a per-file `def_ids` list the way
+/// `strict::check_typed_assign_mismatches` does — every fact already
+/// carries its own diagnostic range, and the caller's own `check` aggregate
+/// is sorted before it reaches a consumer, so grouping by file first buys
+/// nothing extra here.
+#[must_use]
+pub fn check_assignments(
+    files: &[(FileId, &HirFile)],
+    index: &SymbolIndex,
+    inference: &InferenceResult,
+) -> Vec<Diagnostic> {
+    let shapes = declared_shapes(files, index);
+    let mut out = Vec::new();
+    for (def, body) in &inference.bodies {
+        let Some(info) = index.symbols.get(def) else {
+            continue;
+        };
+        for fact in &body.field_assign_mismatches {
+            check_field_assign_mismatch(fact, info.file, &shapes, &mut out);
+        }
+    }
+    out
+}
+
+/// Walk one [`FieldAssignMismatch`]'s field chain from its already-resolved
+/// root type down to the specific field being assigned, comparing the
+/// result against the RHS's own type. Silently unclassifiable (no
+/// diagnostic) whenever the walk hits a non-`Struct` type, an unresolved
+/// shape name (`E068` already covers that separately), or a field name the
+/// shape doesn't declare (not this check's job — "Unknown never disagrees",
+/// the same posture every other shape-agreement check in this module and
+/// `ref_projection`'s E098 take) — matching [`check_literal`]'s own
+/// "unresolved -> silent" contract for the same reasons.
+fn check_field_assign_mismatch(
+    fact: &FieldAssignMismatch,
+    file: FileId,
+    shapes: &BTreeMap<String, ShapeInfo>,
+    out: &mut Vec<Diagnostic>,
+) {
+    let mut current = fact.root_ty.clone();
+    for segment in &fact.path {
+        let Ty::Struct(shape_name) = &current else {
+            return;
+        };
+        let Some(shape) = shapes.get(shape_name) else {
+            return;
+        };
+        let Some(field_ty) = shape.field_ty(&segment.text) else {
+            return;
+        };
+        current = field_ty.clone();
+    }
+    if current.is_unresolved() || crate::infer::assignable(&current, &fact.found) {
+        return;
+    }
+    // `path` is never empty by construction (the recording site only ever
+    // records a fact for a multi-segment target — `segments[1..]` is
+    // therefore non-empty), but a defensive `None` here (rather than
+    // `expect`, denied in production code) just silently skips the
+    // diagnostic instead of panicking if that invariant ever changes.
+    let Some(last) = fact.path.last() else {
+        return;
+    };
+    let dotted: Vec<&str> = std::iter::once(fact.root.as_str())
+        .chain(fact.path.iter().map(|n| n.text.as_str()))
+        .collect();
+    out.push(Diagnostic {
+        file,
+        range: last.range,
+        message: format!(
+            "`{}` has type `{}` but its declared type is `{}`",
+            dotted.join("."),
+            fact.found.display(),
+            current.display()
+        ),
+        code: DiagnosticCode::E063,
+    });
 }
 
 /// `TextRange` has no `Ord` impl, so a `Path`/`Call` reference's range keys
@@ -979,6 +1073,96 @@ mod tests {
         assert_eq!(diags_r.len(), 1, "{diags_r:?}");
         assert_eq!(diags_r[0].code, DiagnosticCode::E071);
         assert!(diags_r[0].message.contains('x'), "{:?}", diags_r[0].message);
+    }
+
+    // ─── check_assignments (E063, issue #1900) ─────────────────────────
+
+    /// [`check_assignments`] driven by [`build_with_inference`]'s output —
+    /// mirrors [`check_all`] for the plain-assignment sibling check.
+    fn check_assignments_all(src: &str) -> Vec<Diagnostic> {
+        let (hir, index, _resolutions, inference) = build_with_inference(src);
+        check_assignments(&[(FileId(0), &hir)], &index, &inference)
+    }
+
+    #[test]
+    fn field_assignment_mismatch_on_var_is_e063_naming_the_dotted_target() {
+        // The issue's own repro: `p.x`'s declared `float` disagrees with the
+        // RHS `string`.
+        let diags = check_assignments_all(
+            "STRUCT Point = #{x: float, y: float}\n\
+             VAR p: Point = Point#{x: 0.0, y: 0.0}\n\
+             === main ===\n~ p.x = \"wrong\"\n-> DONE\n",
+        );
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E063);
+        assert!(diags[0].message.contains("p.x"), "{:?}", diags[0].message);
+    }
+
+    #[test]
+    fn field_assignment_of_the_declared_type_is_clean() {
+        let diags = check_assignments_all(
+            "STRUCT Point = #{x: float, y: float}\n\
+             VAR p: Point = Point#{x: 0.0, y: 0.0}\n\
+             === main ===\n~ p.x = 1.0\n-> DONE\n",
+        );
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn field_assignment_int_initializer_for_a_float_field_is_the_legal_coercion() {
+        // §4's directional int -> float coercion applies here too, same as
+        // `int_initializer_for_a_float_field_is_the_legal_coercion` above.
+        let diags = check_assignments_all(
+            "STRUCT Point = #{x: float}\nVAR p: Point = Point#{x: 0.0}\n\
+             === main ===\n~ p.x = 1\n-> DONE\n",
+        );
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn field_assignment_mismatch_on_annotated_temp_is_e063() {
+        // The second of the issue's two named root sources: an annotated `~
+        // temp`'s own ascription, not a global.
+        let diags = check_assignments_all(
+            "STRUCT Point = #{x: float}\n\
+             === main ===\n~ temp p: Point = Point#{x: 0.0}\n~ p.x = \"wrong\"\n-> DONE\n",
+        );
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E063);
+    }
+
+    #[test]
+    fn field_assignment_on_unannotated_temp_stays_silent_when_unknown() {
+        // An unannotated `~ temp` has no declared shape to check against —
+        // "Unknown never disagrees", same posture every other shape-
+        // agreement check in this module takes.
+        let diags = check_assignments_all(
+            "STRUCT Point = #{x: float}\n\
+             === main ===\n~ temp p = Point#{x: 0.0}\n~ p.x = \"wrong\"\n-> DONE\n",
+        );
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn field_assignment_to_a_nonexistent_field_stays_silent() {
+        // A field name the shape doesn't declare isn't this check's job —
+        // an unresolvable classification, "Unknown never disagrees".
+        let diags = check_assignments_all(
+            "STRUCT Point = #{x: float}\n\
+             VAR p: Point = Point#{x: 0.0}\n\
+             === main ===\n~ p.bogus = \"wrong\"\n-> DONE\n",
+        );
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    #[test]
+    fn bare_var_assignment_is_not_double_reported_by_check_assignments() {
+        // A single-segment target is `check_declared_assign_target`'s job
+        // (issue #1877 / E063 via `strict::check_typed_assign_mismatches`),
+        // never this dotted-target check's — `check_assignments` must stay
+        // silent for it (no double-report across the two checks).
+        let diags = check_assignments_all("VAR v: int = 5\n=== main ===\n~ v = \"hi\"\n-> DONE\n");
+        assert!(diags.is_empty(), "{diags:?}");
     }
 
     // ─── check_duplicates (E084, issue #675) ──────────────────────────

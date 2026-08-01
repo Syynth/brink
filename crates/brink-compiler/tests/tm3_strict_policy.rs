@@ -939,6 +939,87 @@ fn gradual_var_assignment_mismatch_still_compiles() {
     assert!(result.is_ok(), "{result:?}");
 }
 
+// ── Issue #1900: a *dotted* struct-field assignment target (`~ p.x =
+// expr`) was excluded by #1899's own `check_declared_assign_target`
+// (`p.segments.len() > 1` guard, this issue's split-off remainder) — the
+// field's own declared type was never checked against the RHS at all, on
+// either root source #1899's bare-name check covers (a global VAR/CONST or
+// an annotated Param/Temp).
+
+#[test]
+fn strict_struct_field_assignment_mismatch_blocks_compilation_with_e063() {
+    // The issue's own repro: `p.x`'s declared type (`float`, from `Point`'s
+    // shape) disagrees with the RHS `string`.
+    let err = compile_mem(
+        "STRUCT Point = #{x: float, y: float}\n\
+         VAR p: Point = Point#{x: 0.0, y: 0.0}\n\
+         === main ===\n~ p.x = \"wrong\"\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    )
+    .expect_err(
+        "a dotted struct-field assignment disagreeing with the field's declared type must \
+         fail strict compilation",
+    );
+    let diags = diagnostics_of(err);
+    assert_eq!(
+        diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![DiagnosticCode::E063],
+        "this fixture is deliberately clean of every other strict diagnostic so E063 alone \
+         must be what fails compilation: {diags:?}"
+    );
+}
+
+#[test]
+fn strict_struct_field_assignment_of_declared_type_compiles_clean() {
+    // Negative counterpart: the RHS's type agrees with `Point.x`'s declared
+    // `float` (via the legal directional `int -> float` coercion, spec §4,
+    // same as `structs::check`'s own E071 coercion test).
+    let result = compile_mem(
+        "STRUCT Point = #{x: float, y: float}\n\
+         VAR p: Point = Point#{x: 0.0, y: 0.0}\n\
+         === main ===\n~ p.x = 1\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    );
+    assert!(result.is_ok(), "{result:?}");
+}
+
+#[test]
+fn strict_struct_field_assignment_on_annotated_temp_blocks_compilation_with_e063() {
+    // The second of the issue's two named root sources: an annotated `~
+    // temp`'s own ascription, not a global.
+    let err = compile_mem(
+        "STRUCT Point = #{x: float}\n\
+         === main ===\n~ temp p: Point = Point#{x: 0.0}\n~ p.x = \"wrong\"\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    )
+    .expect_err("a dotted field assignment on an annotated temp must fail strict compilation");
+    let diags = diagnostics_of(err);
+    assert_eq!(
+        diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![DiagnosticCode::E063],
+        "this fixture is deliberately clean of every other strict diagnostic so E063 alone \
+         must be what fails compilation: {diags:?}"
+    );
+}
+
+#[test]
+fn gradual_struct_field_assignment_mismatch_still_compiles() {
+    // Same fixture as the struct-field-assignment test above, under `types
+    // = gradual` — the new check stays advisory-only, same posture as
+    // every other TM-3 check.
+    let result = compile_mem(
+        "STRUCT Point = #{x: float, y: float}\n\
+         VAR p: Point = Point#{x: 0.0, y: 0.0}\n\
+         === main ===\n~ p.x = \"wrong\"\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::default(),
+    );
+    assert!(result.is_ok(), "{result:?}");
+}
+
 // ── Issue #1911: `string + int`/`string + float` concatenation must not
 // report E066 under strict types — this is ink's core display-concat
 // idiom (spec §4, amended by this PR), and the runtime already accepts it

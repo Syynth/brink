@@ -61,8 +61,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use brink_format::DefinitionId;
 use brink_ir::{
-    BaseType, Block, DocBlock, FileId, HirFile, HostManifest, Param, ResolutionMap, SymbolIndex,
-    SymbolKind, TypeExpr, TypeRef,
+    BaseType, Block, DocBlock, FileId, HirFile, HostManifest, Name, Param, ResolutionMap,
+    SymbolIndex, SymbolKind, TypeExpr, TypeRef,
 };
 use rowan::TextRange;
 
@@ -180,6 +180,14 @@ pub struct BodyTypes {
     /// target's *final* type is `Conflicted`. See
     /// `body::InferPass::check_declared_assign_target`'s doc.
     pub typed_assign_mismatches: Vec<TypedAssignMismatch>,
+    /// Issue #1900 (split from #1864/#1877): a dotted struct-field
+    /// assignment target (`~ p.x = expr`), with the root's declared type
+    /// resolved but the field chain past it left unresolved (no shape table
+    /// in this module — see [`FieldAssignMismatch`]'s own doc). Recorded
+    /// unconditionally during inference, like `typed_assign_mismatches`;
+    /// resolved and reported only by strict mode
+    /// (`structs::check_assignments`, `E063`).
+    pub field_assign_mismatches: Vec<FieldAssignMismatch>,
     /// Issue #1881: per-call-site *written*-argument types for every
     /// UFCS-shaped (multi-segment, receiver-resolving) callee found in this
     /// body — see [`UfcsCallArgs`]'s own doc for why this pass records raw
@@ -241,6 +249,37 @@ pub struct TypedAssignMismatch {
     /// The target's already-known declared type.
     pub expected: Ty,
     /// The initializer/RHS expression's statically classified type.
+    pub found: Ty,
+}
+
+/// One statically-checkable type mismatch at a **dotted struct-field**
+/// assignment target (issue #1900, split from #1864/#1877 — PR #1899's own
+/// `check_declared_assign_target` explicitly excludes a multi-segment
+/// target, since a dotted target's declared type is its *root's* shape, not
+/// the field's).
+///
+/// Body inference resolves only the ROOT's declared type here (`ctx.globals`
+/// for a `VAR`/`CONST`, or an annotated Param/Temp's ascription — see
+/// `body::InferPass::check_declared_field_assign_target`'s doc) — it has no
+/// struct-shape table of its own (the firewall: a body never reads
+/// project-wide `STRUCT` declarations), so `path` is recorded unresolved.
+/// `structs::check_assignments` (strict-mode-only) walks `path` against
+/// `structs::declared_shapes`/`ShapeInfo` to resolve the specific field's
+/// declared type and reports `E063`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldAssignMismatch {
+    /// The root local/global's bare display name (`p` in `p.x = expr`).
+    pub root: String,
+    /// The root's resolved declared type — `Ty::Struct(name)` in the
+    /// classifiable case; anything else (`Unknown`, a scalar/collection) is
+    /// never recorded as a fact at all (see the recording site's own
+    /// "Unknown never disagrees" guard).
+    pub root_ty: Ty,
+    /// The field-access chain past the root, in source order (`p.x` →
+    /// `[x]`, `p.inner.x` → `[inner, x]`) — each segment's own `Name`
+    /// carries the range a per-field diagnostic should point at.
+    pub path: Vec<Name>,
+    /// The RHS's statically inferred type.
     pub found: Ty,
 }
 
@@ -775,6 +814,7 @@ fn solve_one_batch(
                     array_remove_calls: result.array_remove_calls,
                     direct_call_arg_mismatches: result.direct_call_arg_mismatches,
                     typed_assign_mismatches: result.typed_assign_mismatches,
+                    field_assign_mismatches: result.field_assign_mismatches,
                     ufcs_call_args: result.ufcs_call_args,
                 },
             )

@@ -33,8 +33,8 @@ use rowan::TextRange;
 use super::effects::FnArgOrigins;
 use super::ty::{FnRow, TowerTy, Ty, assignable, coalesce, unify, unify_all};
 use super::{
-    DirectCallArgMismatch, InferredSig, TypedAssignMismatch, UfcsCallArgs, ValueCallFact,
-    ValueCallKind, range_key,
+    DirectCallArgMismatch, FieldAssignMismatch, InferredSig, TypedAssignMismatch, UfcsCallArgs,
+    ValueCallFact, ValueCallKind, range_key,
 };
 
 /// Read-only context shared by every body inferred in the same SCC round.
@@ -193,6 +193,10 @@ pub(super) struct BodyResult {
     /// Recorded unconditionally, like `direct_call_arg_mismatches`; reported
     /// only by strict mode.
     pub typed_assign_mismatches: Vec<TypedAssignMismatch>,
+    /// Issue #1900: see [`super::FieldAssignMismatch`]. Recorded
+    /// unconditionally, like `typed_assign_mismatches`; resolved and
+    /// reported only by strict mode.
+    pub field_assign_mismatches: Vec<FieldAssignMismatch>,
     /// Issue #1881: see [`super::UfcsCallArgs`]. Recorded unconditionally,
     /// like `direct_call_arg_mismatches`; consumed by
     /// `crate::ufcs::UfcsVisitor`, reported only by strict mode.
@@ -269,6 +273,7 @@ fn new_pass<'a, 'b>(
         value_calls: Vec::new(),
         direct_call_arg_mismatches: Vec::new(),
         typed_assign_mismatches: Vec::new(),
+        field_assign_mismatches: Vec::new(),
         ufcs_call_args: Vec::new(),
         array_remove_calls: Vec::new(),
         created_fn_values: BTreeSet::new(),
@@ -378,6 +383,7 @@ pub(super) fn infer_def_body(def: &super::Def<'_>, ctx: &BodyCtx<'_>) -> BodyRes
         value_calls: pass.value_calls,
         direct_call_arg_mismatches: pass.direct_call_arg_mismatches,
         typed_assign_mismatches: pass.typed_assign_mismatches,
+        field_assign_mismatches: pass.field_assign_mismatches,
         ufcs_call_args: pass.ufcs_call_args,
         array_remove_calls: pass.array_remove_calls,
         created_fn_values: pass.created_fn_values,
@@ -535,6 +541,9 @@ struct InferPass<'a, 'b> {
     /// See [`BodyResult::typed_assign_mismatches`] — accumulated the same
     /// way `direct_call_arg_mismatches` is, during the one body walk.
     typed_assign_mismatches: Vec<TypedAssignMismatch>,
+    /// See [`BodyResult::field_assign_mismatches`] — accumulated the same
+    /// way `typed_assign_mismatches` is, during the one body walk.
+    field_assign_mismatches: Vec<FieldAssignMismatch>,
     /// See [`BodyResult::ufcs_call_args`] — accumulated the same way
     /// `direct_call_arg_mismatches` is, during the one body walk.
     ufcs_call_args: Vec<UfcsCallArgs>,
@@ -1066,6 +1075,88 @@ impl InferPass<'_, '_> {
             range: p.range,
             target: info.name.clone(),
             expected: declared,
+            found: found.clone(),
+        });
+    }
+
+    /// Issue #1900 (split from #1864/#1877 — PR #1899's own review flagged
+    /// the dotted case as excluded): a dotted assignment target (`~ p.x =
+    /// expr`) checked against the field's declared type — the sibling of
+    /// [`Self::check_declared_assign_target`] above for a multi-segment
+    /// `Expr::Path` target, which that method explicitly declines
+    /// (`p.segments.len() > 1` guard).
+    ///
+    /// `~ p.x = expr` lowers as ONE multi-segment `Expr::Path`, not an
+    /// `Expr::FieldAccess`: `brink-syntax`'s `indexable_lvalue` consumes a
+    /// bare `ident.ident…` prefix whole via `divert::path`'s dotted-path
+    /// grammar; a `FIELD_ACCESS_EXPR` node is only ever produced for a
+    /// `.field` segment *after* an index (`arr[i].x`), which LIR already
+    /// rejects outright as a mixed index/field write (`E074`, the T1e
+    /// boundary) — so that shape needs no handling here, and this method
+    /// only ever matches `Expr::Path`. The whole path's range resolves (the
+    /// TM-4b fallback [`Self::observe`]'s own doc documents) to the *head*
+    /// segment's `DefinitionId`; `p.segments[1..]` is the field-access chain
+    /// past that root.
+    ///
+    /// This module has no struct-shape table (the firewall: a body never
+    /// reads project-wide `STRUCT` declarations) — this only resolves the
+    /// ROOT's already-known declared type, from exactly the two sources
+    /// [`Self::check_declared_assign_target`] reads for its own Variable/
+    /// Constant/Temp arms (`ctx.globals`, `self.annotated`) — never the
+    /// live/finalized `self.locals` join, so unlike that method this never
+    /// touches the `Ty::Conflicted` lattice or needs its double-report
+    /// guard: [`Self::observe`] itself already never joins a dotted target
+    /// at all (its own segment-count guard), so there is no accumulated
+    /// per-write state to race against here. A `Param` root is included
+    /// (unlike `check_declared_assign_target`'s deliberate Param exclusion,
+    /// which exists only to avoid double-reporting against
+    /// `annotations::mismatches`' own *whole-signature* comparison) — a
+    /// param's own signature-level annotation says nothing about one of its
+    /// *fields*, so there is no equivalent double-report risk here.
+    ///
+    /// The field chain itself is left unresolved: [`FieldAssignMismatch`] is
+    /// only a candidate fact, walked the rest of the way by
+    /// `structs::check_assignments` (strict-mode-only, wired into
+    /// `strict::check`) against `structs::declared_shapes`/`ShapeInfo` — the
+    /// same shared shape table `structs::check`'s construction-literal trio
+    /// and `ref_projection::check_strict`'s E098 already reuse rather than
+    /// re-deriving.
+    ///
+    /// Scope: a plain (non-`ref`) assignment only. A `ref`-mediated field
+    /// write (`ref npc.hp` handed to a call, reassigned inside the callee)
+    /// is a different aliasing channel (§6.1a channel 4) this method does
+    /// not reach — `ref_projection::check_strict`'s E098 already validates
+    /// that a `ref` projection's own segments are legal against the root's
+    /// shape, but neither it nor this method compares the eventual write's
+    /// *value* against the field there; that is a distinct gap, not this
+    /// issue's.
+    fn check_declared_field_assign_target(&mut self, target: &Expr, found: &Ty) {
+        if found.is_unresolved() {
+            return;
+        }
+        let Expr::Path(p) = target else { return };
+        if p.segments.len() < 2 {
+            return; // bare name — `check_declared_assign_target`'s job.
+        }
+        let Some(def) = self.resolve(p.range) else {
+            return;
+        };
+        let Some(info) = self.ctx.index.symbols.get(&def) else {
+            return;
+        };
+        let root_ty = match info.kind {
+            SymbolKind::Variable | SymbolKind::Constant => self.ctx.globals.get(&def).cloned(),
+            SymbolKind::Param | SymbolKind::Temp => self.annotated.get(&info.name).cloned(),
+            _ => None,
+        };
+        let Some(root_ty) = root_ty else { return };
+        if root_ty.is_unresolved() {
+            return;
+        }
+        self.field_assign_mismatches.push(FieldAssignMismatch {
+            root: info.name.clone(),
+            root_ty,
+            path: p.segments[1..].to_vec(),
             found: found.clone(),
         });
     }
@@ -2234,6 +2325,7 @@ impl InferPass<'_, '_> {
             value_calls: _,
             direct_call_arg_mismatches: _,
             typed_assign_mismatches: _,
+            field_assign_mismatches: _,
             ufcs_call_args: _,
             array_remove_calls: _,
             created_fn_values: _,
@@ -3655,6 +3747,9 @@ impl InferPass<'_, '_> {
                     // Conflicted (see `check_declared_assign_target`'s doc
                     // for the ordering).
                     self.check_declared_assign_target(&a.target, &ty);
+                    // Issue #1900: the dotted sibling of the check above —
+                    // see `check_declared_field_assign_target`'s own doc.
+                    self.check_declared_field_assign_target(&a.target, &ty);
                     self.observe(&a.target, &ty);
                 }
                 self.record_write(&a.target);
@@ -3835,6 +3930,8 @@ impl InferPass<'_, '_> {
                 if !is_string_numeric_concat_add {
                     // Issue #1877: see `Stmt::Assignment`'s twin above.
                     self.check_declared_assign_target(&a.target, &ty);
+                    // Issue #1900: see `Stmt::Assignment`'s twin above.
+                    self.check_declared_field_assign_target(&a.target, &ty);
                     self.observe(&a.target, &ty);
                 }
                 self.record_write(&a.target);
@@ -4021,6 +4118,7 @@ mod tests {
             value_calls: Vec::new(),
             direct_call_arg_mismatches: Vec::new(),
             typed_assign_mismatches: Vec::new(),
+            field_assign_mismatches: Vec::new(),
             ufcs_call_args: Vec::new(),
             array_remove_calls: Vec::new(),
             created_fn_values: BTreeSet::new(),
