@@ -987,6 +987,121 @@ fn native_as_binding_scope_ends_at_the_arm() {
     );
 }
 
+// ── Native bare-name fn values (issue #1862) ────────────────────────
+//
+// The end-to-end proof that a bare name *is* a fn value lives in the
+// `tests/tier1-native/fn-value-bare-name/` golden case. The three tests
+// below cover the edges that case cannot express: the ink side of the
+// gate, the `ref`-param refusal, and a plain (non-`.brink`) reading of the
+// same shape.
+
+/// The gate's ink half: in **ink** a bare function-knot name in expression
+/// position is still the knot's **visit count**, not a fn value —
+/// `#fn(f)` remains ink's only fn-value spelling. Dropping the
+/// `LowerCtx::native` guard in `lir::lower::expr::lower_path` would turn
+/// this `0` into a function value and print something else entirely.
+#[test]
+fn ink_bare_function_name_is_still_a_visit_count() {
+    let source = "Count: {f}\n\
+                  -> END\n\n\
+                  === function f ===\n\
+                  ~ return 1\n";
+    let output = compile_and_run(source, &[]);
+    assert!(
+        output.contains("Count: 0"),
+        "an ink bare function-knot name must stay a visit count (0, never entered), \
+         got: {output:?}"
+    );
+}
+
+/// A native bare-name reference binds **zero** arguments — the `#fn(f, a)`
+/// binding form has no native spelling — so a target with a `ref`
+/// parameter can never satisfy "all ref params bind at creation" and is
+/// `E080` at the reference site (`fn_values::check_native_bare_refs`).
+/// Before this check existed the reference compiled clean.
+#[test]
+fn native_bare_name_fn_value_with_a_ref_param_is_e080() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-native-fnvalue-ref-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("main.brink"),
+        "fn heal(ref amount) {\n\
+         \x20 amount = amount + 1;\n}\n\
+         fn used() {\n\
+         \x20 let f = heal;\n\
+         \x20 return 0;\n}\n\
+         flow main() {\n  Used: {used()} -> END\n}\n",
+    )
+    .unwrap();
+    let result = brink_compiler::compile_path(&dir.join("main.brink"));
+    std::fs::remove_dir_all(&dir).ok();
+
+    let err = result.expect_err("a ref-param target may not be referenced by bare name");
+    let codes = diagnostic_codes(&err);
+    assert!(
+        codes.contains(&"E080"),
+        "expected E080 at the bare-name reference, got: {codes:?}"
+    );
+}
+
+/// Same obligation, but the bare-name reference sits in **declaration-
+/// initializer** position (`var f = heal`) rather than inside a function
+/// body. `check_native_bare_refs` only walks the block tree
+/// (`hir::visit::visit`), which never descends into a file-level `VAR`/
+/// `CONST` initializer — so before this test's fix, a `ref`-param target
+/// referenced only this way compiled clean with no E080 at all, even
+/// though the reviewer's own doc comment on `check_native_bare_refs`
+/// asserts the obligation as an absolute ("a target with any ref parameter
+/// can never be referenced by bare name").
+#[test]
+fn native_bare_name_fn_value_in_decl_initializer_with_a_ref_param_is_e080() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-native-fnvalue-decl-ref-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("main.brink"),
+        "fn heal(ref amount) {\n\
+         \x20 amount = amount + 1;\n}\n\
+         var f = heal\n\
+         flow main() {\n  Used: {0} -> END\n}\n",
+    )
+    .unwrap();
+    let result = brink_compiler::compile_path(&dir.join("main.brink"));
+    std::fs::remove_dir_all(&dir).ok();
+
+    let err = result.expect_err("a ref-param target may not be referenced by bare name");
+    let codes = diagnostic_codes(&err);
+    assert!(
+        codes.contains(&"E080"),
+        "expected E080 at the decl-initializer bare-name reference, got: {codes:?}"
+    );
+}
+
+/// The same shape without any `ref` parameter compiles and runs — the
+/// guard above must not fire on an ordinary by-value target.
+#[test]
+fn native_bare_name_fn_value_without_ref_params_compiles_and_runs() {
+    let output = compile_and_run_native(
+        "fnvalue-plain",
+        "fn double(x) {\n\
+         \x20 return x * 2;\n}\n\
+         fn apply(g, v) {\n\
+         \x20 return g(v);\n}\n\
+         flow main() {\n  Applied: {apply(double, 21)} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Applied: 42"),
+        "expected the bare name to reach `apply` as a callable fn value, got: {output:?}"
+    );
+}
+
 // ── compile_path (disk-based) ───────────────────────────────────────
 
 #[test]

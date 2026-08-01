@@ -143,6 +143,9 @@ pub(super) fn lower_lambda(l: &hir::LambdaExpr, ctx: &mut LowerCtx<'_>) -> lir::
     let (body, children) = {
         let mut lctx = LowerCtx {
             file: ctx.file,
+            // A lifted lambda body is still the enclosing file's source —
+            // it inherits the frontend that produced it.
+            native: ctx.native,
             resolutions: ctx.resolutions,
             index: ctx.index,
             temps: &temps,

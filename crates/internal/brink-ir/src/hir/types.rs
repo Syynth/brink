@@ -99,6 +99,30 @@ pub struct HirFile {
     /// frontend (`hir::lower_native::element`); always empty for the ink
     /// frontend, whose grammar has no `@[element]` channel.
     pub element_matches: Vec<ElementMatch>,
+    /// Which frontend produced this file: `true` for the native (`.brink`)
+    /// surface (`hir::lower_native`), `false` for the ink one
+    /// (`hir::lower::structure`).
+    ///
+    /// The two surfaces share every HIR shape below this struct, so a
+    /// downstream pass that must decide a question the *surface* answers
+    /// differently has nowhere else to ask. Today that is exactly one
+    /// question — the 2026-08-01 ruling that a statically-named function in
+    /// expression position **is** a fn value in native (`register(scene)`,
+    /// no sigil) while the same bare name in ink is a knot's visit count
+    /// (`docs/t1c-spec.md` §2a). `lir::lower::expr::lower_path` and
+    /// `brink-analyzer`'s `fn_values`/`infer` read this flag; see those
+    /// sites for why a per-*file* answer (rather than the project-wide
+    /// `is_native` flag `brink_analyzer::analyze_with_modules` takes) is the
+    /// right granularity: the fact travels with the HIR it describes, so
+    /// every pass that already holds an `HirFile` gets it for free.
+    pub native: bool,
+    /// Every natural-notation claiming handler *declared* in this file
+    /// (issue #1844), in source order — independent of whether it ever
+    /// claimed a line; see [`ClaimHandlerDecl`]'s own doc for why this is
+    /// not derivable from `element_matches`. Populated by the native
+    /// frontend (`hir::lower_native::element::collect`); always empty for
+    /// the ink frontend.
+    pub claim_handlers: Vec<ClaimHandlerDecl>,
 }
 
 /// A file's explicit `#@module(name)` declaration (M-1, modules-spec §1).
@@ -341,6 +365,25 @@ pub struct ElementMatch {
     pub captures: Vec<ElementCapture>,
     /// What the compiler did with the line.
     pub disposition: ElementDisposition,
+}
+
+/// One natural-notation claiming handler *declared* in a file — recorded
+/// regardless of whether it ever won a claim (issue #1844, the module half
+/// of the §9.1 confinement ruling: "pattern-claiming is confined to ONE
+/// module — the conventions module named in `brink.toml`"). [`ElementMatch`]
+/// only records lines a handler actually claimed, which is the wrong ground
+/// truth for this check — a claiming handler that matches nothing in its
+/// *own* file (because the lines it targets live elsewhere, or simply don't
+/// occur here) is still a declared claim, and still misplaced if this file
+/// isn't the configured conventions module.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaimHandlerDecl {
+    /// The handler's own name, carrying its declaration-site range.
+    pub name: Name,
+    /// Range of the `@[element(claims = "…")]` annotation line itself — the
+    /// confinement diagnostic's anchor, matching `E112`'s own placement
+    /// diagnostic (the annotation line, not the declaration body).
+    pub annotation: TextRange,
 }
 
 /// A built-in editor-presentation token (`docs/prose-dialect-spec.md`

@@ -517,6 +517,15 @@ fn hir_file_heap(hir: &HirFile) -> usize {
                         .sum::<usize>()
             })
             .sum::<usize>()
+        // Declared claiming handlers (issue #1844): the vec itself plus
+        // each record's own owned name string — `ClaimHandlerDecl` carries
+        // no other heap allocation (`annotation` is a `Copy` `TextRange`).
+        + vec_heap(&hir.claim_handlers)
+        + hir
+            .claim_handlers
+            .iter()
+            .map(|h| h.name.text.capacity())
+            .sum::<usize>()
 }
 
 pub(crate) fn lowered_file_heap_size(value: &LoweredFile) -> usize {

@@ -29,10 +29,10 @@ use std::conventions::screenplay
 
 @[effects(pure)]
 fn conventions() {
-    register(#fn(screenplay::scene))
-    register(#fn(sfx))
-    register(#fn(screenplay::cue))
-    register(#fn(screenplay::action))
+    register(screenplay::scene)
+    register(sfx)
+    register(screenplay::cue)
+    register(screenplay::action)
 }
 ```
 
@@ -226,18 +226,18 @@ spell that, and both fail:
 Even with all four questions answered, none of these exists and none is
 tracked:
 
-1. **`#fn(…)` has no native spelling.** `hir::Expr::FnLiteral` is
-   constructed at exactly one site, the **ink** lowerer
-   (`crates/internal/brink-ir/src/hir/lower/expr/sigils.rs:57,72`);
-   `lower_native/` has no `FnLiteral` construction, and
-   `brink-syntax-native` has no `FN_LITERAL` node at all. The native
-   *emitter* states this outright:
-   `Expr::FnLiteral(_) => Err(unsupported("`#fn` literal", context))`
-   (`crates/internal/brink-ir/src/hir/emit_native.rs:1218`). A `.brink`
-   conventions module cannot write `register(#fn(x))` today. Note also that
-   `#` is the tag sigil in native content position
-   (`crates/internal/brink-syntax-native/src/parser/block.rs:214`), so this
-   is a real grammar addition, not a token reuse.
+1. ~~**`#fn(…)` has no native spelling.**~~ **RESOLVED** (issue #1862,
+   RULED 2026-08-01 — see `docs/t1c-spec.md` §2a). The ruling went the
+   other way from what this item assumed: native gets **no `#fn` at
+   all**, precisely because `#` is already the tag sigil in native content
+   position (`crates/internal/brink-syntax-native/src/parser/block.rs`).
+   Instead, a statically-named function in expression position simply *is*
+   a fn value — `register(screenplay::scene)`, no sigil — with a call
+   still spelled `screenplay::scene()`. So this was a lowering addition,
+   not a grammar addition: `brink-syntax-native` needed no new token and
+   no new node. The **binding** form (`#fn(f, a)`, a bound prefix) still
+   has no native spelling and stays ink-only; §1's example above is
+   already updated to the ruled bare-name spelling.
 2. **`std::conventions::screenplay` does not exist.** There are no stdlib
    `.brink` module files in the tree at all — the `.brink` files that do
    exist are either test fixtures under `tests/` (top-level, e.g.

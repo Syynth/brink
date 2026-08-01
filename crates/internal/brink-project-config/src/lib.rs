@@ -68,6 +68,20 @@
 //!                                  # un-prune) and warns.
 //! ```
 //!
+//! ```toml
+//! [project]
+//! elements = "conventions.brink"  # docs/prose-dialect-spec.md §3.4: a
+//!                                 # built-in preset name ("screenplay") or
+//!                                 # a project-relative path to a `.brink`
+//!                                 # conventions module. Names the ONE file
+//!                                 # a pattern-claiming `@[element(claims =
+//!                                 # "…")]` handler may be declared in
+//!                                 # (issue #1844's confinement rule, `E169`
+//!                                 # elsewhere) — unset means no conventions
+//!                                 # module is configured, so nothing is
+//!                                 # enforced yet.
+//! ```
+//!
 //! (`E014` — a plainly `Warning`-by-default code — is used here rather than
 //! `E063`: `E063`'s own *base* severity is `types`-policy-dependent (`Error`
 //! under `types = strict`, see `brink_analyzer::effective_severity`'s doc
@@ -216,6 +230,17 @@ pub struct ProjectConfig {
     /// warns about it rather than silently accepting a likely typo (e.g.
     /// `"node-modules"` instead of `"node_modules"`).
     pub unprune_dirs: Vec<String>,
+    /// `[project] elements`, if set (docs/prose-dialect-spec.md §3.4's
+    /// pointer mechanism): either a built-in preset name (`"screenplay"`)
+    /// or a project-relative path to a `.brink` conventions module
+    /// (`"conventions.brink"`, `"scenes/conventions.brink"`). This crate
+    /// only carries the raw string — it doesn't know the closed preset-name
+    /// set or validate the path exists, for the same dependency-free
+    /// reason `lints` doesn't validate codes (#1234); resolving it (and, if
+    /// it names a project path, checking that pattern-claiming handlers
+    /// only live in that one file, issue #1844's confinement rule) is
+    /// `brink-analyzer`/`brink-db`'s job.
+    pub elements: Option<String>,
 }
 
 impl ProjectConfig {
@@ -228,6 +253,7 @@ impl ProjectConfig {
             && self.lints.is_empty()
             && self.deny_warnings.is_none()
             && self.unprune_dirs.is_empty()
+            && self.elements.is_none()
     }
 }
 
@@ -438,6 +464,18 @@ pub fn parse_str_at(
                         }
                         config.unprune_dirs = dirs;
                     }
+                    "elements" => {
+                        let s = parse_elements(&path, pkey, pvalue)?;
+                        if s.is_empty() {
+                            warnings.push(ConfigWarning(format!(
+                                "`project.elements` in {CONFIG_FILE_NAME} is an empty string \
+                                 (ignored) — expected a built-in preset name (e.g. \"screenplay\") \
+                                 or a path to a conventions module (e.g. \"conventions.brink\")"
+                            )));
+                        } else {
+                            config.elements = Some(s);
+                        }
+                    }
                     _ => warnings.push(ConfigWarning(format!(
                         "unknown key `project.{pkey}` in {CONFIG_FILE_NAME} (ignored)"
                     ))),
@@ -489,6 +527,22 @@ fn parse_dialect(path: &str, key: &str, value: &Value) -> Result<Dialect, Config
             found: other.to_owned(),
         }),
     }
+}
+
+/// Parse `[project] elements` (§3.4's pointer mechanism): any non-empty
+/// string, since this crate doesn't know the closed set of built-in preset
+/// names and can't check a project path exists (kept dependency-free,
+/// #1234) — [`parse_str_at`]'s caller flags an empty string as a warning;
+/// this only enforces the TOML shape (a string, full stop).
+fn parse_elements(path: &str, key: &str, value: &Value) -> Result<String, ConfigError> {
+    value
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| ConfigError::WrongType {
+            path: path.to_owned(),
+            key: format!("project.{key}"),
+            found: value_type_name(value),
+        })
 }
 
 fn parse_types(path: &str, key: &str, value: &Value) -> Result<TypePolicy, ConfigError> {
@@ -1024,6 +1078,49 @@ mod tests {
     fn invalid_dialect_value_is_an_error() {
         let err = parse_str("[project]\ndialect = \"sideways\"\n").unwrap_err();
         assert!(matches!(err, ConfigError::InvalidValue { .. }));
+    }
+
+    // ── elements (issue #1844) ───────────────────────────────────────────
+
+    #[test]
+    fn parses_elements_as_a_path() {
+        let (config, warnings) = parse_str(
+            r#"
+            [project]
+            elements = "conventions.brink"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.elements.as_deref(), Some("conventions.brink"));
+        assert!(!config.is_empty());
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
+    fn parses_elements_as_a_preset_name() {
+        let (config, _warnings) = parse_str("[project]\nelements = \"screenplay\"\n").unwrap();
+        assert_eq!(config.elements.as_deref(), Some("screenplay"));
+    }
+
+    #[test]
+    fn empty_elements_string_warns_and_is_not_set() {
+        let (config, warnings) = parse_str("[project]\nelements = \"\"\n").unwrap();
+        assert_eq!(config.elements, None);
+        assert!(config.is_empty());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].0.contains("elements"));
+    }
+
+    #[test]
+    fn elements_wrong_type_is_an_error() {
+        let err = parse_str("[project]\nelements = 1\n").unwrap_err();
+        assert!(matches!(err, ConfigError::WrongType { .. }));
+    }
+
+    #[test]
+    fn unset_elements_leaves_config_empty_by_itself() {
+        let (config, _warnings) = parse_str("[project]\ndialect = \"brink\"\n").unwrap();
+        assert_eq!(config.elements, None);
     }
 
     #[test]

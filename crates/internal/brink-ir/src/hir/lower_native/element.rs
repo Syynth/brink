@@ -64,7 +64,13 @@
 //! registration + comptime evaluation are the ruling's other two build
 //! slices, filed separately (issues #1839/#1840). The confinement of
 //! claiming to the `brink.toml`-named conventions module needs project
-//! identity that single-file lowering does not have; see the issue thread.
+//! identity that single-file lowering does not have — this module only
+//! records the raw material for that check ([`collect`] populates
+//! `HirFile::claim_handlers` with every declared handler's name and
+//! annotation range, independent of `matches`); the check itself runs at
+//! the project layer (issue #1844, `brink_db::queries::analysis::
+//! conventions_confinement_diagnostics_query`), which is the one seam that
+//! has both a file's module identity and the configured pointer.
 
 use brink_syntax_native::SyntaxKind as N;
 use brink_syntax_native::ast::{self, AstNode as _};
@@ -121,6 +127,21 @@ impl Elements {
     /// skip candidate testing entirely on the overwhelmingly common path.
     fn is_inert(&self) -> bool {
         self.handlers.is_empty()
+    }
+
+    /// Every claiming handler *declared* in this file, in declaration
+    /// order — [`HirFile::claim_handlers`](crate::HirFile::claim_handlers)'s
+    /// source (issue #1844's confinement check). Deliberately independent
+    /// of `matches`: a handler that claims nothing in its own file is still
+    /// a declaration, and still checkable.
+    pub(super) fn handler_decls(&self) -> Vec<crate::ClaimHandlerDecl> {
+        self.handlers
+            .iter()
+            .map(|h| crate::ClaimHandlerDecl {
+                name: h.name.clone(),
+                annotation: h.annotation,
+            })
+            .collect()
     }
 }
 

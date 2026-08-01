@@ -659,6 +659,28 @@ fn lower_path(path: &hir::Path, ctx: &mut LowerCtx<'_>) -> lir::Expr {
         {
             return lower_ambiguous_dotted_path(path, info, ctx);
         }
+        // Native bare-name fn value (RULED 2026-08-01, `docs/t1c-spec.md`
+        // §2a, issue #1862): on the **native** surface a statically-named
+        // function in expression position *is* a fn value — `register(
+        // screenplay::scene)` — with no sigil, because a call keeps its
+        // parentheses (`screenplay::scene()`, `lower_call`'s job) and so
+        // reference-vs-call is unambiguous. Zero bound args by
+        // construction: the `#fn(f, a)` partial-application form has no
+        // native spelling and stays ink-only, so this always lowers to the
+        // `MakeFnValue`-with-empty-`bound` shape codegen emits as
+        // `PushFnRef`.
+        //
+        // Deliberately **not** applied to ink: there, the same bare name is
+        // a knot's visit count (the `Knot | Stitch | Label` arm below), and
+        // ink function knots are visit-counted like any other. A local of
+        // the same name still wins — `temp_slot` is consulted at the top of
+        // this function, before any resolution.
+        if ctx.native && info.is_function_definition() {
+            return lir::Expr::MakeFnValue {
+                target: info.id,
+                bound: Vec::new(),
+            };
+        }
         match info.kind {
             SymbolKind::Variable | SymbolKind::Constant => lir::Expr::GetGlobal(info.id),
             SymbolKind::List => {
