@@ -578,11 +578,15 @@ const ELEMENT_BLOCK: &str = "block";
 /// The native-type-system spelling `@[element(…, block)]`'s trailing
 /// capture parameter must carry (`text: content`, per the ruled example).
 /// Checked as plain annotation text here, at the declaration surface —
-/// this module never calls into the type checker, and `content` is not a
-/// resolvable native type yet either (`docs/prose-dialect-spec.md` §3.5b's
-/// own Deferred list); the check below is deliberately shallow, exactly
-/// the "declared, not resolved" posture the rest of this file's `element`/
-/// `style` surface already takes.
+/// this module never calls into the type checker, so this stays a shallow
+/// text check even though `content` is now a resolvable native leaf
+/// (`Ty::Content`, issue #1846, `crate::infer::resolve`) — same
+/// "declared, not resolved" posture the rest of this file's `element`/
+/// `style` surface already takes for every other type name. Only the
+/// *type's* resolvability landed with #1846; the `!name` sigil dispatch
+/// rewrite that would actually bind a captured run to this param (finding
+/// the block's terminator, building the `FragmentRef`, calling the
+/// handler) is still issue #1839's scope, not delivered here.
 const ELEMENT_CONTENT_TYPE: &str = "content";
 
 /// The two `@[style(…)]` keys that name the whole line rather than a
@@ -763,9 +767,9 @@ fn parse_element(
 /// `true` when `params` ends with a `content`-typed parameter that is not
 /// one of `captures` — the structural shape `block` requires (`E166`
 /// otherwise). Declaration-surface-only, like the rest of this module: this
-/// checks the raw `TypeExpr` text, not a resolved type, because `content`
-/// is not a resolvable native type yet (see [`ELEMENT_CONTENT_TYPE`]'s
-/// doc).
+/// checks the raw `TypeExpr` text, not a resolved type, because this module
+/// never calls into the type checker at all (not because `content` itself
+/// is unresolvable — see [`ELEMENT_CONTENT_TYPE`]'s doc).
 fn has_block_content_param(params: &[Param], captures: &[String]) -> bool {
     let Some(last) = params.last() else {
         return false;

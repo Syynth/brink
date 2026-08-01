@@ -188,9 +188,75 @@ fn annotations_effects() {
 /// compile) — so `expected.txt`'s `-- inside MARKET SQUARE --` cannot be
 /// produced by any other path, and the line beneath it pins that the
 /// heading claimed only its own line, never the header-scoped run below.
+///
+/// `radio` and `interior` both now carry a `content`-typed parameter
+/// (issue #1846, `docs/prose-dialect-spec.md` §3.5b's capture contract) —
+/// `radio(chan: string, text: content)` is the exact signature #1719 ruled
+/// and #1846 unblocked (before this landed, `content` tripped `E061` like
+/// any unrecognized name, so this fixture could not compile at all).
+/// `interior` gained a second claimed heading (`INT. OLD MILL`) so this
+/// fixture proves a `content`-typed param survives *two* distinct claim
+/// dispatches with different captured text, not just one. `content`'s own
+/// binding to a genuine captured `FragmentRef` (rather than today's plain
+/// string argument) is issue #1839's dispatch-mechanism scope, not
+/// delivered here — see that issue and the compile-level sibling test
+/// immediately below for what this slice does and does not prove.
 #[test]
 fn annotations_element() {
     assert_case("annotations-element");
+}
+
+/// Compile-level sibling to `annotations_element`, mirroring
+/// `inline_tag_embedded_brace_reaches_story_data`'s pattern: `assert_case`
+/// only proves the *transcript* matches, which can't distinguish "this text
+/// reached `StoryData`'s line table" from "this text was computed some
+/// other way at runtime". This compiles+links the same fixture directly and
+/// inspects `line_tables` to pin that reachability directly, independent of
+/// transcript equality.
+///
+/// Note this is **not** a regression test for `content`-typed params
+/// specifically: `hir::lower_native::element::try_claim` binds every
+/// capture as a plain `Expr::String` literal regardless of the receiving
+/// param's declared type (issue #1846 only made `content` a resolvable
+/// `Ty`, it did not change how captures are bound), so both assertions
+/// below hold identically whether `radio`/`interior`'s params are typed
+/// `content` or left untyped. What this pins is StoryData/line-table
+/// reachability for a claim-dispatched fixture in general:
+///
+/// - an ordinary, unclaimed content line that sits alongside the claimed
+///   headings (`"The stalls are shuttered."`) still reaches its own
+///   translatable `LineEntry` with a real `SourceLocation`;
+/// - the claim-dispatched call embedding a handler's return value
+///   (`radio(...)`, composed via `Feed: {radio(...)}.`) still reaches its
+///   own `Template` line entry with its `SlotInfo` intact — the existing
+///   display-position fragment-composition machinery
+///   (`brink-codegen-inkb::content::emit_slot_expr`) is untouched.
+///
+/// What this does **not** prove: that the captured span itself (`"MARKET
+/// SQUARE"`, `"OLD MILL"`) becomes its own line-table entry — today
+/// `try_claim`'s plain-`Expr::String` binding means a `content`-typed
+/// capture is not yet translation-resident the way the capture contract
+/// ultimately requires. Closing that gap needs a captured-run-to-
+/// `FragmentRef` binding, issue #1838's dispatch-mechanism scope, not
+/// delivered here.
+#[test]
+fn annotations_element_reaches_story_data() {
+    let path = corpus_dir().join("annotations-element").join("story.brink");
+    let output = brink_compiler::compile_path(&path)
+        .unwrap_or_else(|e| panic!("compile annotations-element: {e:?}"));
+    let (_program, line_tables) =
+        brink_runtime::link(&output.data).expect("link annotations-element");
+    let all_lines = format!("{line_tables:?}");
+    assert!(
+        all_lines.contains("The stalls are shuttered."),
+        "an ordinary content line beside the claimed headings must \
+         still reach its own line-table entry: {all_lines}"
+    );
+    assert!(
+        all_lines.contains(r#"name: "radio(...)""#),
+        "the display-position call composing a claim handler's return \
+         value must still carry its slot info: {all_lines}"
+    );
 }
 
 /// NG-D array/sequence literals (issue #1490, RULED 2026-07-27:

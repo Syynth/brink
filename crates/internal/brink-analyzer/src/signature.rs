@@ -127,10 +127,11 @@ fn ty_to_inferred_type(ty: &Ty) -> Option<InferredType> {
         // Everything below has no `InferredType` variant to downcast to —
         // `Array`/`Map` (T1b), `Struct` (TM-4b), `Fn` (T1c), `Handle`
         // (T1d-2), `Option` (NS-A1), `Range` (NS-A5), `Weighted` (NS-A7),
-        // `Tower` (NS-A8). None of them is a silent drop: since issue #1540
-        // each is carried whole on `Sig::value_ty` (see this function's doc),
-        // which is the field every typed consumer reads. Only the narrow,
-        // wire-adjacent `Sig::value_type` stops here.
+        // `Tower` (NS-A8), `Content` (issue #1846). None of them is a silent
+        // drop: since issue #1540 each is carried whole on `Sig::value_ty`
+        // (see this function's doc), which is the field every typed
+        // consumer reads. Only the narrow, wire-adjacent `Sig::value_type`
+        // stops here.
         Ty::Weighted(_)
         | Ty::Tower(_)
         | Ty::Array(_)
@@ -140,6 +141,7 @@ fn ty_to_inferred_type(ty: &Ty) -> Option<InferredType> {
         | Ty::Handle(_)
         | Ty::Option(_)
         | Ty::Range { .. }
+        | Ty::Content
         | Ty::Unknown
         | Ty::Conflicted => None,
     }

@@ -54,6 +54,13 @@ fn is_known_leaf(name: &str) -> bool {
             | "mat2"
             | "mat3"
             | "mat4"
+            // issue #1846, `docs/prose-dialect-spec.md` §3.5b's capture
+            // contract: a first-class content value, fragment-capture
+            // backed — the type of a `content`-typed parameter (e.g.
+            // `fn radio(chan: string, text: content)`). A global leaf name
+            // like every other scalar above, not a declared/nominal vocab
+            // entry.
+            | "content"
     )
 }
 
@@ -146,6 +153,10 @@ pub fn resolve(te: &brink_ir::TypeExpr, names: &TypeNames) -> Option<Ty> {
             "float" => Some(Ty::Float),
             "bool" => Some(Ty::Bool),
             "string" => Some(Ty::String),
+            // issue #1846: the capture-contract's `content` leaf resolves
+            // to `Ty::Content` — a distinct nominal leaf from `string` (see
+            // that variant's doc for why it must never coerce to one).
+            "content" => Some(Ty::Content),
             "divert" => Some(Ty::Divert),
             // NS-A8 tower kinds — checked before the struct lookup, so a
             // STRUCT can never shadow a tower type name (the same ordering
@@ -298,9 +309,9 @@ fn check_one(te: &brink_ir::TypeExpr, names: &TypeNames, file: FileId, out: &mut
                     range: *range,
                     message: format!(
                         "`{name}` is not a recognized type — expected int, float, bool, \
-                         string, divert, void, a tower kind (vec2/vec3/vec4/quat/mat2/mat3/mat4), \
-                         List<L>, Array<T>, Map<K, V>, Option<T>, Weighted<T>, Handle<K>, or a \
-                         declared STRUCT name"
+                         string, content, divert, void, a tower kind \
+                         (vec2/vec3/vec4/quat/mat2/mat3/mat4), List<L>, Array<T>, Map<K, V>, \
+                         Option<T>, Weighted<T>, Handle<K>, or a declared STRUCT name"
                     ),
                     code: DiagnosticCode::E061,
                 });
@@ -601,6 +612,18 @@ mod tests {
         assert_eq!(resolve(a, &tn(&empty, &empty)), Some(Ty::Int));
         assert_eq!(resolve(b, &tn(&empty, &empty)), Some(Ty::Float));
         assert_eq!(resolve(c, &tn(&empty, &empty)), Some(Ty::Bool));
+    }
+
+    /// Issue #1846, `docs/prose-dialect-spec.md` §3.5b's capture contract:
+    /// `content` resolves to `Ty::Content`, a fixed global leaf like the
+    /// scalars above — it needs no declared vocabulary the way `List<L>`/
+    /// `Handle<K>` do.
+    #[test]
+    fn resolve_recognizes_content_leaf() {
+        let (hir, _index) = build("VAR v: content = 0\n");
+        let te = hir.variables[0].annotation.as_ref().expect("annotation");
+        let empty = BTreeSet::new();
+        assert_eq!(resolve(te, &tn(&empty, &empty)), Some(Ty::Content));
     }
 
     #[test]
@@ -936,6 +959,19 @@ mod tests {
     #[test]
     fn check_accepts_void_return_type() {
         let (hir, index) = build("=== function noop(): void ===\n~ return\n");
+        let diags = check(&[(FileId(0), &hir)], &index, None);
+        assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    /// Issue #1846: before this landed, the ruled `fn radio(chan: string,
+    /// text: content)` example (`docs/prose-dialect-spec.md` §3.5b) could
+    /// not compile — `content` tripped `E061` like any other unrecognized
+    /// name. Same signature, exercised through the shared ink-grammar
+    /// `function` form this module's tests already use.
+    #[test]
+    fn check_accepts_content_param_annotation() {
+        let (hir, index) =
+            build("=== function radio(chan: string, text: content) ===\n~ return text\n");
         let diags = check(&[(FileId(0), &hir)], &index, None);
         assert!(diags.is_empty(), "{diags:?}");
     }

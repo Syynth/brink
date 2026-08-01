@@ -2100,47 +2100,44 @@ fn e157_denied_through_the_lints_control_plane_becomes_an_error() {
     );
 }
 
-// ─── E166 `@[element(…, block)]` declaration surface: `content` is not yet
-// a resolvable annotation type name (review finding on PR #1842/#1839) ────
+// ─── E166 `@[element(…, block)]` declaration surface: `content` is now a
+// resolvable annotation type name (#1846) ──────────────────────────────
 //
 // `has_block_content_param` (`hir::lower_native::annotation`) requires the
-// trailing param's `TypeExpr` text to read `content`, but
+// trailing param's `TypeExpr` text to read `content`, and
 // `annotations::is_known_leaf` — the E061 vocabulary `per_file_diagnostics`
 // consults whenever `dialect == Dialect::Brink` (the exact dialect
 // brink-lsp's and brink-web's `"brink" => Dialect::Brink` mapping resolves
-// from a project's `brink.toml`, independently of `is_native`) — has no
-// `content` entry. This crosses HIR lowering (which validates the `block`
-// declaration surface and finds nothing wrong with it) into the analyzer
-// (which then rejects the very param `block` requires) on the identical
-// pipeline pass a real editor runs. So a conforming `block` declaration
-// parses and validates cleanly at the declaration-surface level, but is
-// **not usable end-to-end today** — see docs/diagnostics/E166.md's note
-// and docs/prose-dialect-spec.md §3.5b's Deferred list, both of which
-// state this plainly rather than leaving it to be re-discovered.
+// from a project's `brink.toml`, independently of `is_native`) — now
+// carries a `content` entry too. So a conforming `block` declaration with a
+// fully annotated `body: content` param parses and validates cleanly
+// end-to-end, on the identical pipeline pass a real editor runs.
 
 /// The `element_annotation_block_flag_lowers_with_trailing_content_param`
-/// fixture (`hir::lower_native::tests`) proves this same source lowers with
+/// fixture (`hir::lower_native::tests`) proves this same shape lowers with
 /// zero diagnostics *in isolation* — no `E166`, `block` recorded, captures
-/// intact. Run through the full pipeline under `Dialect::Brink`, the block
-/// declaration still raises no `E166`, but `body`'s `content` annotation
-/// now raises `E061` — the annotator layer knows nothing about `content`.
+/// intact. Run through the full pipeline under `Dialect::Brink` with every
+/// param explicitly annotated, the block declaration still raises no
+/// `E166`, and `body`'s `content` annotation no longer raises `E061`.
 #[test]
-fn e166_block_declaration_surface_parses_but_content_param_still_trips_e061() {
-    let source = "@[element(args = \"^@(?<name>[A-Z]+)$\", block)]\nflow cue(name, body: content) {\n  Hi, {name}!\n}\n";
-    let err = compile_native("e166-content-not-known-leaf", source, brink_options())
-        .map(|_| ())
-        .expect_err(
-            "`content` is not a recognized annotation type name yet, so this must fail \
-             the compile even though the block declaration surface itself is well-formed",
-        );
-    let diags = errors_of(err);
+fn e166_block_declaration_surface_and_content_param_both_compile_clean() {
+    let source = "@[element(args = \"^@(?<name>[A-Z]+)$\", block)]\nflow cue(name: string, body: content) {\n  Hi, {name}!\n}\n";
+    let out =
+        compile_native("e166-content-known-leaf", source, brink_options()).unwrap_or_else(|e| {
+            panic!(
+                "a fully annotated `block` declaration with a `content` param must \
+                 compile clean now that `content` is a resolvable Ty: {e:?}"
+            )
+        });
     assert!(
-        diags.iter().all(|d| d.code != DiagnosticCode::E166),
-        "the block declaration is structurally well-formed — E166 must not fire: {diags:?}"
+        out.warnings.iter().all(|d| d.code != DiagnosticCode::E166),
+        "the block declaration is structurally well-formed — E166 must not fire: {:?}",
+        out.warnings
     );
     assert!(
-        diags.iter().any(|d| d.code == DiagnosticCode::E061),
-        "`content` is not yet in `annotations::is_known_leaf`'s vocabulary, so its own \
-         param annotation must raise E061: {diags:?}"
+        out.warnings.iter().all(|d| d.code != DiagnosticCode::E061),
+        "`content` is now in `annotations::is_known_leaf`'s vocabulary, so its own \
+         param annotation must not raise E061: {:?}",
+        out.warnings
     );
 }

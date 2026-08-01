@@ -110,8 +110,10 @@ Beyond the scalars: **`divert`** (a knot/stitch target held as a value,
 **`LIST`s** (ink's flag-set type,
 nominal per declaration), **structs** (declared shapes, below), **function
 values** ([Function Values](function-values.md)), **ranges**, the
-**numeric tower** (`vec2`…`mat4`), and **handles** (host-owned resources,
-typed by the engine's manifest).
+**numeric tower** (`vec2`…`mat4`), **handles** (host-owned resources,
+typed by the engine's manifest), and **`content`** (a first-class,
+fragment-capture-backed value — the type of a captured prose run, e.g. an
+annotated handler's `text: content` parameter).
 
 When you write a type — in any annotation position — primitives are
 lowercase and every other type name is Uppercase:
@@ -119,6 +121,7 @@ lowercase and every other type name is Uppercase:
 | Written as | Meaning |
 |---|---|
 | `int`, `float`, `bool`, `string` | the scalar kinds |
+| `content` | a captured prose run (fragment-capture-backed) |
 | `divert` | a divert target as a value |
 | `void` | return position only: "this function returns nothing" |
 | `List<L>` | `L` names a declared `LIST` |
