@@ -30,12 +30,13 @@ use brink_ir::{
 /// `known_sigs` ahead of `main`'s SCC solve.
 ///
 /// `spawn_timer`/`spawn_audio` are genuinely-registered `EXTERNAL`
-/// producers (issue #1942, docs/t1d-spec.md §3's own "a natively-registered
-/// producer" construction path): each declares a fixed `returns` naming its
-/// own `Handle`-based `SemanticTypeDef`, so the leaf's body-derived return
-/// resolves directly to the concrete `Ty::Handle(K)` — the annotation only
-/// confirms it. This replaces a plain `~ return id` (issue #1912): a handle
-/// is an opaque `{kind, id}` scalar (docs/t1d-spec.md §3), not an `int`, so
+/// producers (issue #1942's Scope section proposes "a natively-registered
+/// producer" as one construction path): each declares a fixed `returns`
+/// naming its own `Handle`-based `SemanticTypeDef`, so the leaf's
+/// body-derived return resolves directly to the concrete `Ty::Handle(K)` —
+/// the annotation only confirms it. This replaces a plain `~ return id`
+/// (issue #1912): a handle is an opaque `{kind, id}` scalar
+/// (docs/t1d-spec.md §1), not an `int`, so
 /// handing an `int`-annotated param back out of a `Handle<K>`-returning
 /// function was a real type error that only passed while reading an
 /// annotated param as a value typed `Unknown`. It also replaces the earlier

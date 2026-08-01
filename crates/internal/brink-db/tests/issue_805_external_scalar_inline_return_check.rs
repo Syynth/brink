@@ -101,10 +101,11 @@ fn external_call_scalar_semantic_type_match_reaches_no_diagnostics_under_strict(
 
 // ─── (2) Inline-doc-only externals ──────────────────────────────────────
 
-/// The registered manifest declares only the handle-kind *vocabulary*
-/// (`types`) — no `ManifestExternal` entry for `play_sound` at all.
-/// `play_sound`'s only declared signature source is its own inline `///
-/// @param` doc comment.
+/// The registered manifest declares the handle-kind *vocabulary* (`types`)
+/// plus the genuinely-registered `spawn_audio`/`spawn_timer` handle
+/// producers (issue #1942) — but there is still no `ManifestExternal` entry
+/// for `play_sound` itself. `play_sound`'s only declared signature source
+/// remains its own inline `/// @param` doc comment.
 fn manifest_with_only_handle_vocabulary() -> HostManifest {
     HostManifest {
         markup: Vec::new(),
@@ -148,14 +149,15 @@ fn manifest_with_only_handle_vocabulary() -> HostManifest {
 }
 
 /// `spawn_timer`/`spawn_audio` are genuinely-registered `EXTERNAL`
-/// producers (issue #1942, docs/t1d-spec.md §3's own "a natively-registered
-/// producer" construction path): each declares a fixed `returns` naming its
-/// own `Handle`-based `SemanticTypeDef`, so the leaf's body-derived return
-/// resolves directly to the concrete `Ty::Handle(K)` — the annotation only
-/// confirms it. `play_sound` stays inline-doc-only (absent from this
-/// manifest's `externals`), which is the property this fixture actually
-/// tests. This replaces a plain `~ return id` (issue #1912): a handle is an
-/// opaque `{kind, id}` scalar (docs/t1d-spec.md §3), not an `int`, so
+/// producers (issue #1942's Scope section proposes "a natively-registered
+/// producer" as one construction path): each declares a fixed `returns`
+/// naming its own `Handle`-based `SemanticTypeDef`, so the leaf's
+/// body-derived return resolves directly to the concrete `Ty::Handle(K)` —
+/// the annotation only confirms it. `play_sound` stays inline-doc-only
+/// (absent from this manifest's `externals`), which is the property this
+/// fixture actually tests. This replaces a plain `~ return id` (issue
+/// #1912): a handle is an opaque `{kind, id}` scalar (docs/t1d-spec.md §1),
+/// not an `int`, so
 /// handing an `int`-annotated param back out of a `Handle<K>`-returning
 /// function was a real type error that only passed while reading an
 /// annotated param as a value typed `Unknown`. It also replaces the earlier

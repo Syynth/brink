@@ -3003,13 +3003,14 @@ mod tests {
     #[test]
     fn cross_kind_handle_comparison_from_body_usage_is_conflicted_under_strict() {
         // `spawn_audio`/`spawn_timer` are genuinely-registered `EXTERNAL`
-        // producers (issue #1942, docs/t1d-spec.md §3's "a
-        // natively-registered producer" construction path): each declares a
-        // fixed `returns` naming its own `Handle`-based `SemanticTypeDef`,
-        // so `get_audio`/`get_timer`'s body-derived return resolves
-        // directly to the concrete `Ty::Handle(K)` — replacing the earlier
-        // *unregistered* `opaque_handle` workaround (PR #1938) whose result
-        // was untyped and relied on the annotation-firewall overlay alone.
+        // producers (issue #1942's Scope section proposes "a
+        // natively-registered producer" as one construction path): each
+        // declares a fixed `returns` naming its own `Handle`-based
+        // `SemanticTypeDef`, so `get_audio`/`get_timer`'s body-derived
+        // return resolves directly to the concrete `Ty::Handle(K)` —
+        // replacing the earlier *unregistered* `opaque_handle` workaround
+        // (PR #1938) whose result was untyped and relied on the
+        // annotation-firewall overlay alone.
         let src = "EXTERNAL spawn_audio()\nEXTERNAL spawn_timer()\n\
 === function get_audio(): Handle<AudioInstance> ===\n~ return spawn_audio()\n\
 === function get_timer(): Handle<Timer> ===\n~ return spawn_timer()\n\
@@ -3316,11 +3317,11 @@ mod tests {
                     widgets: Vec::new(),
                     path: Vec::new(),
                 },
-                // Genuinely-registered `EXTERNAL` producers (issue #1942,
-                // docs/t1d-spec.md §3's "a natively-registered producer"
-                // construction path), replacing the earlier *unregistered*
-                // `opaque_handle` workaround (PR #1938) the tests below used
-                // to manufacture a handle value.
+                // Genuinely-registered `EXTERNAL` producers (issue #1942's
+                // Scope section proposes "a natively-registered producer"
+                // as one construction path), replacing the earlier
+                // *unregistered* `opaque_handle` workaround (PR #1938) the
+                // tests below used to manufacture a handle value.
                 brink_ir::ManifestExternal {
                     name: "spawn_audio".to_string(),
                     params: Vec::new(),
@@ -3448,10 +3449,11 @@ mod tests {
     }
 
     /// An `EXTERNAL` with no matching registered manifest entry contributes
-    /// no checkable signature — the argument's own inferred kind
-    /// (`AudioInstance`, from the annotated return) stays clean, same as
-    /// today (this is the disclosed inline-doc-only gap
-    /// `infer::collect_external_sigs`'s doc names, not a regression).
+    /// no checkable signature — the argument's own inferred kind (`Timer`,
+    /// from `get_timer`'s registered `spawn_timer` producer, not the
+    /// annotated return) stays clean, same as today (this is the disclosed
+    /// inline-doc-only gap `infer::collect_external_sigs`'s doc names, not a
+    /// regression).
     #[test]
     fn external_binding_with_unregistered_name_is_unchecked() {
         let src = "EXTERNAL other_call(inst)\nEXTERNAL spawn_timer()\n\
