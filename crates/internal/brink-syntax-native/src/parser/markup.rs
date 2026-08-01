@@ -50,13 +50,17 @@
 //! ([`escape`]), never silently swallowed as a literal backslash.
 //!
 //! §8d.6 also rules a second, disjoint pair as **line-start** escapes —
-//! `\!` `\@`, legal only as the very first item of a content line
-//! ([`at_line_start_escape`]/[`line_start_escape`], issue #1744) —
+//! `\!` `\@` ([`at_line_start_escape`]/[`line_start_escape`], issue #1744) —
 //! protecting a literal leading `!`/`@` from the sigils those characters
 //! carry there (`@NAME` cue dispatch, the reserved `!name` annotation
-//! sigil). A `\!`/`\@` anywhere else in a line is not part of the inline
-//! four and hits the same compile error as any other unrecognized
-//! backslash.
+//! sigil). "Line-start" means the first item `content::content_line`/
+//! `content_line_else_boundary` is asked to scan — which is the true start
+//! of a physical line for an ordinary content line, but is also right
+//! after a compact cue's `@NAME:` prefix (`element::cue_line`'s
+//! `COMPACT_CUE` arm calls `content_line` directly for the fused dialogue
+//! line), since that call reuses the same entry point. A `\!`/`\@`
+//! anywhere else in a line is not part of the inline four and hits the
+//! same compile error as any other unrecognized backslash.
 
 use crate::SyntaxKind::{
     AT, BACKSLASH, BANG, EQ, ERROR, GT, HASH, IDENT, L_BRACE, LT, QUOTE, SLASH, SPAN, SPAN_ATTR,
@@ -231,16 +235,19 @@ pub(crate) fn escape(p: &mut Parser<'_, '_>) {
 //
 // A second, disjoint escape set from [`is_escapable`]'s four inline
 // escapes — **not** an extension of it (§8d.6 rules that set final; see
-// its doc comment). `\!` and `\@` are legal only as the very first item
-// of a content line (`content::content_line`/`content_line_else_boundary`,
-// right after the optional `(label)` prefix), where a bare `!`/`@` would
-// otherwise carry sigil meaning: `@NAME` opens a `CUE`
-// (`element::at_cue`), and a bare line-start `!` is reserved for the
-// `!name` annotation-element dispatch (§3.5b) — implemented or not, an
-// author must be able to write a literal leading `!`/`@` without
-// colliding with either. Anywhere else in a line, `\!`/`\@` are not in
-// the inline set and remain the ordinary "backslash before anything
-// else" compile error [`escape`] already gives.
+// its doc comment). `\!` and `\@` are legal as the first item
+// `content::content_line`/`content_line_else_boundary` scans (right after
+// the optional `(label)` prefix) — the true start of a physical line for
+// an ordinary content line, but also right after a compact cue's `@NAME:`
+// prefix, since `element::cue_line`'s `COMPACT_CUE` arm calls
+// `content_line` directly for the fused dialogue line and that call is
+// this same entry point. A bare `!`/`@` there would otherwise carry sigil
+// meaning: `@NAME` opens a `CUE` (`element::at_cue`), and a bare
+// line-start `!` is reserved for the `!name` annotation-element dispatch
+// (§3.5b) — implemented or not, an author must be able to write a literal
+// leading `!`/`@` without colliding with either. Anywhere else in a line,
+// `\!`/`\@` are not in the inline set and remain the ordinary "backslash
+// before anything else" compile error [`escape`] already gives.
 
 /// True at `\!` or `\@`, immediately adjacent (no trivia) — the two
 /// line-start escapes. Only meaningful when checked at a content line's
@@ -257,6 +264,13 @@ pub(crate) fn at_line_start_escape(p: &Parser<'_, '_>) -> bool {
 /// takes any `ESCAPE` node's second token verbatim as the literal it
 /// produces.
 pub(crate) fn line_start_escape(p: &mut Parser<'_, '_>) {
+    // Flush pending trivia *before* opening the node — a raw `bump()`
+    // emits whatever sits at `p.pos` including trivia (see `eat`'s doc
+    // comment on why every raw-bump call site needs this). Doing it here,
+    // ahead of `start_node`, keeps that trivia a sibling of `ESCAPE`
+    // rather than swallowed inside it; flushing after `start_node` would
+    // still land the trivia inside the node.
+    p.skip_ws();
     p.start_node(crate::SyntaxKind::ESCAPE);
     p.bump(); // `\`
     p.bump(); // `!` or `@`

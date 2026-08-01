@@ -259,6 +259,45 @@ fn a_leading_backslash_bang_escapes_to_a_literal_bang() {
 }
 
 #[test]
+fn a_compact_cue_dialogue_line_start_backslash_at_escapes_correctly() {
+    // Regression for the trivia-flush bug in `line_start_escape`: the
+    // fused dialogue line after `@KID:` (`COMPACT_CUE`, `element::cue_line`)
+    // reaches `content::content_line` via a *raw* `bump()` on `COLON` with
+    // no trivia flush in between, so the space after the colon is still
+    // pending in the raw token stream when `line_start_escape` opens its
+    // node. Before the fix, `line_start_escape`'s own raw `bump()` calls
+    // consumed that pending `WHITESPACE` as if it were the `\`, leaving the
+    // real `\` and `@` split across `ESCAPE[WHITESPACE, BACKSLASH]` +
+    // `TEXT[AT, IDENT "VENDOR", …]` — the escape did the opposite of its
+    // job and the `@` re-opened as a would-be cue sigil in the leftover
+    // text. `line_start_escape` now flushes trivia itself before opening
+    // the node, so the fix holds regardless of whether the caller already
+    // flushed.
+    let src = "flow f() {\n  @KID: \\@VENDOR waves.\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::COMPACT_CUE));
+    assert!(
+        !has_node_kind(&p.syntax(), SyntaxKind::CUE),
+        "the escaped @ must not open a second, nested cue"
+    );
+    assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::ESCAPE), 1);
+    let escape = first_node(&p.syntax(), SyntaxKind::ESCAPE);
+    assert_eq!(escape_literal(&escape), "@");
+    let escape_tokens: Vec<_> = escape
+        .children_with_tokens()
+        .filter_map(rowan::NodeOrToken::into_token)
+        .collect();
+    assert_eq!(
+        escape_tokens.len(),
+        2,
+        "ESCAPE must hold exactly `\\` + `@`, no leaked whitespace: {escape_tokens:?}"
+    );
+    assert_eq!(escape_tokens[0].text(), "\\");
+    assert!(text_run_concat(&p.syntax()).contains("VENDOR waves"));
+}
+
+#[test]
 fn a_mid_line_backslash_bang_or_at_is_still_a_compile_error() {
     // The line-start escapes are exactly that — line-start only. A `\!`/
     // `\@` anywhere else in a line is not in the four-char inline escape

@@ -1012,10 +1012,14 @@ it).
 `\<` `\{` `\#` `\\` are the only valid inline escape sequences. A backslash
 before any other character in inline position — including spaces,
 punctuation, emoticons, path separators — is now a compile error. §8d.6 also
-rules `\!` and `\@` as **line-start** escapes — a disjoint set, legal only as
-the very first item of a content line, guarding a literal leading `!`/`@`
-from the sigils those characters carry there (`@NAME` cue dispatch, §8b.9;
-the reserved `!name` annotation-element sigil, §3.5b). **Implemented, issue
+rules `\!` and `\@` as **line-start** escapes — a disjoint set, legal as the
+first item `content::content_line`/`content_line_else_boundary` scans,
+guarding a literal leading `!`/`@` from the sigils those characters carry
+there (`@NAME` cue dispatch, §8b.9; the reserved `!name` annotation-element
+sigil, §3.5b). That is the true start of a physical line for an ordinary
+content line, but also right after a compact cue's `@NAME:` prefix
+(`element::cue_line`'s `COMPACT_CUE` arm calls `content_line` directly for
+the fused dialogue line, reusing the same entry point). **Implemented, issue
 #1744**: `parser::markup::at_line_start_escape`/`line_start_escape`
 (`crates/internal/brink-syntax-native/src/parser/markup.rs`), wired into
 `content::content_line`/`content_line_else_boundary`. A `\!`/`\@` anywhere

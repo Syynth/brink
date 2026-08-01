@@ -33,9 +33,14 @@ pub(crate) fn content_line(p: &mut Parser<'_, '_>) {
     // checked once, right here, before the general item scanner: a
     // literal leading `!`/`@` would otherwise collide with the `@NAME`
     // cue sigil (or, unimplemented today, the `!name` annotation sigil,
-    // §3.5b). Anywhere else in the line, `\!`/`\@` fall through to
-    // `content_items_until`'s generic `BACKSLASH` handling and remain the
-    // ordinary compile error (`markup::escape`'s four-char inline set).
+    // §3.5b). "Right here" is the first item *this function* scans — the
+    // true start of a physical line for a normal content line, but also
+    // right after a compact cue's `@NAME:` prefix, since
+    // `element::cue_line`'s `COMPACT_CUE` arm calls this same function for
+    // its fused dialogue line. Anywhere else in the line, `\!`/`\@` fall
+    // through to `content_items_until`'s generic `BACKSLASH` handling and
+    // remain the ordinary compile error (`markup::escape`'s four-char
+    // inline set).
     if super::markup::at_line_start_escape(p) {
         super::markup::line_start_escape(p);
     }
