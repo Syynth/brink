@@ -29,10 +29,10 @@ use std::conventions::screenplay
 
 @[effects(pure)]
 fn conventions() {
-    register(#fn(screenplay::scene))
-    register(#fn(sfx))
-    register(#fn(screenplay::cue))
-    register(#fn(screenplay::action))
+    register(screenplay::scene)
+    register(sfx)
+    register(screenplay::cue)
+    register(screenplay::action)
 }
 ```
 
@@ -237,8 +237,7 @@ tracked:
    not a grammar addition: `brink-syntax-native` needed no new token and
    no new node. The **binding** form (`#fn(f, a)`, a bound prefix) still
    has no native spelling and stays ink-only; §1's example above is
-   written in the pre-ruling spelling and should be read as
-   `register(screenplay::scene)`.
+   already updated to the ruled bare-name spelling.
 2. **`std::conventions::screenplay` does not exist.** There are no stdlib
    `.brink` module files in the tree at all — the `.brink` files that do
    exist are either test fixtures under `tests/` (top-level, e.g.
