@@ -2421,4 +2421,13 @@ fn ufcs_result_ty_is_not_derived_for_a_wrong_arity_desugar() {
         diags.iter().any(|d| d.code == DiagnosticCode::E031),
         "expected the desugar's own arity error, got: {diags:?}"
     );
+    // The arity gate in `infer_ufcs_free_fn_result` is what this test is
+    // actually named for: without it, `n.double(7)` would still type as
+    // `int` (arity mismatches aside) and `caller`'s return type would infer
+    // cleanly, leaving only the desugar's own `E031` — this assertion is
+    // what distinguishes that from the gate doing its job.
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E065),
+        "expected E065 on `caller`'s return type (the arity gate must leave it Unknown), got: {diags:?}"
+    );
 }
