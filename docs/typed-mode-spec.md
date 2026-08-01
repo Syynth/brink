@@ -231,7 +231,7 @@ Then **T1c unfreezes** with `fn(T…): R` types from day one, then the
 T2 effects round. Spine slices run as single reviewed, oracle-gated
 agents; the tail as a pump wave — the T1b working method unchanged.
 
-## 10. Where the strict pass is exercised — issue #1882
+## 10. Where the strict pass is exercised — RULED
 
 TM-3's checks only run where a corpus is actually compiled under
 `types = strict`, and until #1882 the **native** golden corpus was not
@@ -279,5 +279,5 @@ promise is not what the corpus experiences: a helper whose body
 genuinely constrains nothing (`fn bump(ref n, amount) { n = n +
 amount; }`) is an `Unknown` escape — correct under "call-site-driven
 inference is forbidden", but not what that sentence leads a writer to
-expect. §2 should say "never require an annotation *when the body
-constrains them*".
+expect. §2 is RULED, so its wording is not re-struck here; the
+discrepancy is filed as #1915 for sign-off on the replacement text.
