@@ -270,6 +270,13 @@ pub struct Def<'a> {
     /// the annotated type, so `#fn` rows built from this signature are
     /// concrete). `None` for stitches and unannotated knots.
     pub return_annotation: Option<&'a TypeExpr>,
+    /// Which frontend produced [`Self::file`] — [`HirFile::native`] (issue
+    /// #1862), carried per def because that is the granularity every
+    /// consumer of this struct has: `brink-db`'s narrowed per-def HIR
+    /// projection never holds a whole [`HirFile`]. Reaches inference as
+    /// [`body::BodyCtx::native`], where the native bare-name fn-value rule
+    /// (issue #1876) keys off it.
+    pub native: bool,
 }
 
 /// Per-file resolution lookup: a `Path`'s range is only unique within its
@@ -506,6 +513,7 @@ fn collect_defs<'a>(files: &[(FileId, &'a HirFile)], index: &SymbolIndex) -> Vec
                     params: &knot.params,
                     body: &knot.body,
                     return_annotation: knot.return_type.as_ref(),
+                    native: hir.native,
                 });
             }
             for stitch in &knot.stitches {
@@ -519,6 +527,7 @@ fn collect_defs<'a>(files: &[(FileId, &'a HirFile)], index: &SymbolIndex) -> Vec
                         // #1509 widened `Stitch` with the same `return_type`
                         // grammar position `Knot` carries.
                         return_annotation: stitch.return_type.as_ref(),
+                        native: hir.native,
                     });
                 }
             }
@@ -581,6 +590,11 @@ impl<'a> ProjectCtx<'a> {
             list_names: &self.list_names,
             struct_names: &self.struct_names,
             handle_names: &self.handle_names,
+            // Per *def*, not per project: `ProjectCtx` is shared across
+            // every batch, and a project can mix `.ink` and `.brink` files
+            // (INCLUDE/IMPORT across surfaces), so the frontend flag must
+            // follow the body being walked — issue #1876.
+            native: def.native,
         }
     }
 }
@@ -2494,6 +2508,7 @@ mod tests {
                     params,
                     body,
                     return_annotation: return_annotation.as_ref(),
+                    native: false,
                 })
                 .collect();
 

@@ -68,6 +68,17 @@ pub(super) struct BodyCtx<'a> {
     /// when no manifest is registered, same degrade posture as every other
     /// manifest-driven check.
     pub handle_names: &'a BTreeSet<String>,
+    /// Which frontend produced the file this body was declared in: `true`
+    /// for the native (`.brink`) surface, `false` for the ink one — the
+    /// inference-side mirror of [`brink_ir::HirFile::native`] and
+    /// `lir::lower::context::LowerCtx::native` (issue #1862), threaded
+    /// through [`super::Def::native`].
+    ///
+    /// One rule keys off it: a bare name resolving to a **function
+    /// definition** is a fn *value* on the native surface (RULED
+    /// 2026-08-01, `docs/t1c-spec.md` §2a) and a knot's **visit count** in
+    /// ink. See [`InferPass::native_fn_value_target`].
+    pub native: bool,
 }
 
 impl BodyCtx<'_> {
@@ -622,6 +633,16 @@ impl InferPass<'_, '_> {
         let Some(info) = self.ctx.index.symbols.get(&def) else {
             return Ty::Unknown;
         };
+        // Native bare-name fn value (issue #1876, the typing half of
+        // #1862's RULED 2026-08-01 lowering): checked *before* the kind
+        // match because the reference's type is decided by the surface it
+        // was written on, not by the kind alone — the very same
+        // `SymbolKind::Knot` is a visit count in ink and a fn value in
+        // native. `native_fn_value_target` is the one gate; everything it
+        // declines falls through to the kind match below unchanged.
+        if self.native_fn_value_target(def) {
+            return self.infer_native_fn_value(def);
+        }
         match info.kind {
             SymbolKind::Param | SymbolKind::Temp => {
                 self.locals.get(&info.name).cloned().unwrap_or(Ty::Unknown)
@@ -647,15 +668,12 @@ impl InferPass<'_, '_> {
             // `infer_fn_literal`, never here.
             //
             // On the **native** surface the same bare name resolving to a
-            // function definition *is* a fn value since issue #1862 — it
-            // lowers to `MakeFnValue`/`PushFnRef` in
-            // `brink_ir::lir::lower::expr::lower_path`. Inference does not
-            // yet distinguish the two surfaces here (`BodyCtx` carries no
-            // per-file frontend flag), so such a reference still types
-            // `Unknown` — the documented "opaque callback" degrade, whose
-            // purity obligation falls to the runtime's dev-mode fault
-            // instead of a compile-time `E119`. Tracked as the typing/
-            // effects follow-up on #1862.
+            // function definition *is* a fn value since issue #1862, and
+            // types as one since #1876 — [`Self::infer_native_fn_value`]
+            // above already returned for exactly that case. What is left
+            // here on native is everything that is *not* a function
+            // definition: a plain (non-`fn`) knot/stitch visit count, an
+            // `EXTERNAL` (no body to address — `E079`), a label.
             SymbolKind::Knot | SymbolKind::Stitch | SymbolKind::External | SymbolKind::Label => {
                 Ty::Unknown
             }
@@ -665,6 +683,67 @@ impl InferPass<'_, '_> {
             // match exhaustiveness only.
             SymbolKind::Struct => Ty::Unknown,
         }
+    }
+
+    /// Whether a bare reference to `def` is a **native bare-name fn value**
+    /// (RULED 2026-08-01, `docs/t1c-spec.md` §2a, issues #1862/#1876): the
+    /// sigil-free second spelling of `#fn(def)`, admitted on the native
+    /// (`.brink`) surface only.
+    ///
+    /// The predicate is deliberately the *same* two conjuncts
+    /// `lir::lower::expr::lower_path` gates its `MakeFnValue` on — this
+    /// body's file is native, and the target is a statically-named function
+    /// definition ([`brink_ir::SymbolInfo::is_function_definition`], the
+    /// shared creation-site predicate) — so typing and lowering can never
+    /// disagree about which references are fn values. In ink the same bare
+    /// name is a knot's visit count and this is always `false`.
+    ///
+    /// A local of the same name never reaches here: `resolve` maps the
+    /// reference to the local's own `DefinitionId` (`resolve::lookup_variable`
+    /// step 1 shadows every global interpretation), exactly as `lower_path`
+    /// consults its temp map before its resolution map.
+    fn native_fn_value_target(&self, def: DefinitionId) -> bool {
+        self.ctx.native
+            && self
+                .ctx
+                .index
+                .symbols
+                .get(&def)
+                .is_some_and(brink_ir::SymbolInfo::is_function_definition)
+    }
+
+    /// Type a native bare-name fn value — the zero-bound-argument case of
+    /// [`Self::infer_fn_literal`], whose shape it mirrors step for step
+    /// (issue #1876). The partial-application form `#fn(f, a)` has no native
+    /// spelling, so a bare name always binds zero arguments and the value's
+    /// parameter row is the target's whole signature.
+    ///
+    /// The two structural records happen **before** the `known_sigs` early
+    /// return, for the same reason `infer_fn_literal` orders them that way:
+    /// `def_effect_atoms` runs this walk with an empty `known_sigs`, so
+    /// anything after the return would be dead code in the one pass that
+    /// harvests effect atoms. They are what make this reference an ordinary
+    /// creation site to the effect machinery — a call-graph edge
+    /// ([`Self::record_call_edge`]) plus the Fork A creation atom
+    /// ([`Self::record_fn_value_creation`], issue #1726), keeping
+    /// `EffectAtoms::creates_fn_values ⊆ EffectAtoms::direct_calls`.
+    ///
+    /// The row is `FnRow::of_target(def)`, not the unknown top element:
+    /// this reference **is** the creation site and `def` is the target it
+    /// names syntactically (`docs/effects-spec.md` §5/§6.1a), so the row
+    /// rides along through every later join exactly as a `#fn` literal's
+    /// does.
+    fn infer_native_fn_value(&mut self, def: DefinitionId) -> Ty {
+        self.record_call_edge(def);
+        self.record_fn_value_creation(def);
+        let Some(sig) = self.ctx.known_sigs.get(&def) else {
+            return Ty::Unknown;
+        };
+        Ty::Fn(
+            sig.params.clone(),
+            Box::new(sig.return_ty.clone()),
+            FnRow::of_target(def),
+        )
     }
 
     /// Join `ty` into the accumulated type of `expr`'s target local, if
@@ -788,9 +867,12 @@ impl InferPass<'_, '_> {
 
     // ── T2 §8 precision rung (docs/effects-spec.md §6 item 3/§8, issue #872) ──
 
-    /// The single def a `#fn(target, …)` literal (optionally through one or
-    /// more `bind(…)` wrappers — partial application never changes *which*
-    /// def eventually runs) traces to, if `expr` is exactly that shape.
+    /// The single def a fn-value creation site traces to, if `expr` is
+    /// exactly that shape: a `#fn(target, …)` literal, a native bare name
+    /// resolving to a function definition (issue #1876 — the same creation
+    /// site, one spelling per surface), either of them optionally through
+    /// one or more `bind(…)` wrappers (partial application never changes
+    /// *which* def eventually runs).
     /// `bind`'s intrinsic form is matched the same way `infer_intrinsic`
     /// classifies it: an unresolved single-segment path named `bind` with a
     /// non-empty argument list (a real `bind`-named def always wins
@@ -811,6 +893,19 @@ impl InferPass<'_, '_> {
             Expr::FnLiteral(fl) => {
                 let def = self.resolve(fl.target.range)?;
                 self.is_effect_edge_target(def).then_some(def)
+            }
+            // Issue #1876: on the native surface a bare name resolving to a
+            // function definition is the *same* creation site, spelled
+            // without the sigil ([`Self::native_fn_value_target`]) — so it
+            // traces to exactly the same origin `#fn(target)` does. Without
+            // this arm the value #1862 made writable would be untraceable:
+            // `map(items, double)` would poison `map`'s §6.1 row-variable
+            // hole and a `let f = double; f(…)` would fall to the pessimal
+            // floor, purely because of which spelling was used. Same
+            // `is_effect_edge_target` gate as the literal arm.
+            Expr::Path(p) => {
+                let def = self.resolve(p.range)?;
+                (self.native_fn_value_target(def) && self.is_effect_edge_target(def)).then_some(def)
             }
             Expr::Call(path, args)
                 if path.segments.len() == 1
@@ -3241,6 +3336,7 @@ mod tests {
             list_names: &list_names,
             struct_names: &struct_names,
             handle_names: &handle_names,
+            native: false,
         };
         let mut pass = empty_pass(&ctx);
 
@@ -3319,6 +3415,7 @@ mod tests {
             list_names: &list_names,
             struct_names: &struct_names,
             handle_names: &handle_names,
+            native: false,
         };
         let mut pass = empty_pass(&ctx);
         // Stands in for the enclosing `~ temp f = #fn(bar)` this pass would
@@ -3413,6 +3510,7 @@ mod tests {
             list_names: &list_names,
             struct_names: &struct_names,
             handle_names: &handle_names,
+            native: false,
         };
         let mut pass = empty_pass(&ctx);
         pass.local_fn_origins.insert(
@@ -3517,6 +3615,7 @@ mod tests {
             list_names: &list_names,
             struct_names: &struct_names,
             handle_names: &handle_names,
+            native: false,
         };
         let mut pass = empty_pass(&ctx);
 
@@ -3683,6 +3782,7 @@ mod tests {
             list_names: &list_names,
             struct_names: &struct_names,
             handle_names: &handle_names,
+            native: false,
         };
         let mut pass = empty_pass(&ctx);
         // Enclosing def state before the lambda walk: `x` already traced to

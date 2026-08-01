@@ -652,6 +652,7 @@ mod tests {
             params: Vec::new(),
             return_annotation: None,
             body: Block::default(),
+            native: false,
         };
         let mut big_stmts = Vec::new();
         for _ in 0..50 {
@@ -662,6 +663,7 @@ mod tests {
             params: Vec::new(),
             return_annotation: None,
             body: Block::from_stmts(big_stmts),
+            native: false,
         };
 
         let small_size = def_body_heap_size(&Some(Arc::new(small)));

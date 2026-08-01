@@ -985,6 +985,12 @@ pub(crate) struct DefBody {
     /// annotation-firewall overlay in `infer_def_body`).
     pub return_annotation: Option<brink_ir::TypeExpr>,
     pub body: brink_ir::Block,
+    /// Which frontend produced the declaring file (`HirFile::native`, issue
+    /// #1862). Projected per def because this narrowed projection is all
+    /// `solve_scc_query` holds — it never sees the whole `HirFile` — and
+    /// `brink_analyzer::Def::native` needs it for the native bare-name
+    /// fn-value typing rule (issue #1876).
+    pub native: bool,
 }
 
 /// `lru = 16384`: per-def runaway-guard ceiling (issue #647). `heap_size =
@@ -1012,6 +1018,7 @@ pub(crate) fn def_body_query<'db>(
         params,
         return_annotation,
         body,
+        native: hir.native,
     }))
 }
 
@@ -1256,6 +1263,7 @@ pub(crate) fn solve_scc_query<'db>(
             params: &b.params,
             body: &b.body,
             return_annotation: b.return_annotation.as_ref(),
+            native: b.native,
         })
         .collect();
 
