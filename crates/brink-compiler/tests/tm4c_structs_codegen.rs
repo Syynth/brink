@@ -167,9 +167,19 @@ fn strict_and_gradual_produce_equivalent_output_for_well_formed_program() {
     // equivalent observable semantics — even though strict emits static
     // `RecordGet`/`RecordSet` offset ops here (the VAR is struct-typed) and
     // gradual emits the by-name `RecordGetDyn`/`RecordSetDyn` forms.
+    //
+    // Issue #1877 (review correction): `p`'s declaration default was
+    // originally a bare `0` — a genuine, previously-uncaught `Point` vs
+    // `int` mismatch against its own `: Point` annotation, incidental to
+    // what this test verifies (strict/gradual codegen equivalence). Before
+    // #1877, strict mode never checked a VAR's initializer against its own
+    // annotation at all. Fixed to a well-typed `Point#{...}` default — the
+    // very next statement overwrites it before any read, so the observable
+    // behavior (and the `RecordGet`/`RecordSet` vs `RecordGetDyn`/
+    // `RecordSetDyn` codegen split this test exists to prove) is unchanged.
     let src = format!(
-        "{POINT_SRC}VAR p: Point = 0\n~ p = Point#{{x: 1.0, y: 2.0}}\n~ p.y = 5.0\n\
-        {{p.x}} {{p.y}}\n-> DONE\n"
+        "{POINT_SRC}VAR p: Point = Point#{{x: 0.0, y: 0.0}}\n~ p = Point#{{x: 1.0, y: 2.0}}\n\
+        ~ p.y = 5.0\n{{p.x}} {{p.y}}\n-> DONE\n"
     );
     let gradual = compile_mem(&src, Dialect::Brink, TypePolicy::Gradual).unwrap();
     let strict = compile_mem(&src, Dialect::Brink, TypePolicy::Strict).unwrap();

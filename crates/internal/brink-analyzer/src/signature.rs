@@ -191,7 +191,14 @@ fn value_type_with_annotation_override(
 /// ([`crate::annotations::resolve`] has no `"range"` arm), so
 /// `declared_value_ty`'s annotation branch can't produce `Ty::Range` any
 /// more than this literal branch can.
-fn literal_ty(expr: &Expr, index: &SymbolIndex) -> Option<Ty> {
+///
+/// `pub(crate)` (issue #1877) so `strict::check_one_global_initializer` can
+/// independently type a VAR/CONST initializer literal and compare it
+/// against the declaration's own explicit annotation — the exact TM-2
+/// firewall comparison `declared_value_ty` below never makes, since there
+/// the annotation *replaces* this value outright rather than being checked
+/// against it.
+pub(crate) fn literal_ty(expr: &Expr, index: &SymbolIndex) -> Option<Ty> {
     match expr {
         Expr::ArrayLiteral(a) => Some(Ty::Array(Box::new(crate::infer::unify_all(
             a.elements
