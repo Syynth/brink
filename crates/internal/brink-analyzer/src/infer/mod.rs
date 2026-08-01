@@ -59,7 +59,7 @@ pub(crate) use intrinsics::{intrinsic_effects, intrinsic_returns_option};
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use brink_format::DefinitionId;
+use brink_format::{DefinitionId, DefinitionTag};
 use brink_ir::{
     BaseType, Block, DocBlock, FileId, HirFile, HostManifest, Param, ResolutionMap, SymbolIndex,
     SymbolKind, TypeExpr, TypeRef,
@@ -595,6 +595,26 @@ fn collect_defs<'a>(files: &[(FileId, &'a HirFile)], index: &SymbolIndex) -> Vec
 
     let mut defs: Vec<Def<'a>> = Vec::new();
     for &(file_id, hir) in files {
+        // Issue #1903: walk `root_content` statements through inference,
+        // creating a synthetic def so `check_declared_assign_target` and
+        // `check_declared_temp_init` (called from `infer_def_body`) reach them.
+        // Root content has no parameters, no return type, and no DefinitionId
+        // in the symbol table. A synthetic ID is derived from the FileId
+        // (mixing in a tag bit to avoid collision with real definition IDs);
+        // the ID is never looked up in the symbol table, only used to key
+        // `inference.bodies` so that strict checks later read the results.
+        if !hir.root_content.stmts.is_empty() {
+            let synthetic_id = DefinitionId::new(DefinitionTag::LocalVar, u64::from(file_id.0));
+            defs.push(Def {
+                id: synthetic_id,
+                file: file_id,
+                params: &[],
+                body: &hir.root_content,
+                return_annotation: None,
+                native: hir.native,
+            });
+        }
+
         for knot in &hir.knots {
             let knot_symbol_kind = knot.symbol_kind();
             if let Some(&id) = def_of.get(&(file_id, knot_symbol_kind, knot.name.text.clone())) {

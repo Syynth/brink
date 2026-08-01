@@ -78,7 +78,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use brink_format::DefinitionId;
+use brink_format::{DefinitionId, DefinitionTag};
 use brink_ir::{
     Block, BlockStmt, Content, ContentPart, ElseBranch, Expr, FileId, HirFile, IfStmt, Path,
     ResolutionMap, Stmt, SymbolIndex, SymbolKind, TypeExpr,
@@ -1109,6 +1109,12 @@ fn check_typed_assign_mismatches(
     let mut out = Vec::new();
     for &(file, hir) in files {
         let mut def_ids: Vec<DefinitionId> = Vec::new();
+        // Issue #1903: add root_content's synthetic ID to the list of defs
+        // to check, just as collect_defs synthesizes it for inference.
+        if !hir.root_content.stmts.is_empty() {
+            let synthetic_id = DefinitionId::new(DefinitionTag::LocalVar, u64::from(file.0));
+            def_ids.push(synthetic_id);
+        }
         for knot in &hir.knots {
             let kind = knot.symbol_kind();
             if let Some(id) = annotations::def_id_for(index, file, kind, &knot.name.text) {
