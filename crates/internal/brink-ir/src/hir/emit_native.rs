@@ -33,10 +33,24 @@
 //! dissolved-gather continuation — including a **labeled** continuation,
 //! and a mid-flow `Stmt::LabeledBlock` wherever it occurs, both via G-1's
 //! `(name)` content-line-label spelling, see the "Labeled lines" section
-//! above); `{if cond {} else {}}` conditionals (`CondKind::InitialCondition`
-//! only — native's `if`/`else` grammar has no `else if` chain, so
-//! `CondKind::IfElse` has no native spelling, see `lower_native::cond`'s
-//! own finding); `{match subj {}}` (`CondKind::Switch`).
+//! above); `{if cond {} else {}}` conditionals — `CondKind::InitialCondition`
+//! with at most one else arm carrying no condition of its own; `{match subj
+//! {}}` (`CondKind::Switch`). **Correction (issue #1951, 2026-08-01
+//! triage):** native's `if`/`else` grammar has supported a flat `else if`
+//! chain since #1258/#1261 (2026-07-22) — `lower_native::cond`'s own doc
+//! comment and this emitter both used to claim otherwise, which is exactly
+//! how that stale claim ended up mis-transcribed into #1335's "no `else if`
+//! chain" native-grammar hole. The grammar was never the gap; this emitter
+//! is: a native-authored chain always lowers to *nested* `InitialCondition`s
+//! (an `else` arm's body containing another `Conditional`), which this
+//! emitter's ordinary recursive `emit_conditional` call already reproduces
+//! faithfully. What this emitter still cannot produce is a native spelling
+//! for `CondKind::IfElse` itself (ink's own independently-chained,
+//! no-shared-subject 3+-branch form) — 12 corpus cases per
+//! `full_corpus_sweep`'s `"IfElse conditional"` bucket — since that HIR
+//! shape has no flattened native counterpart to walk into; it would need to
+//! be re-shaped into nested `if`/`else`s on the way out, which nothing here
+//! does yet.
 //!
 //! Explicitly unsupported (each a real gap, not an oversight — see
 //! `docs/b0-sequencing.md` §3 and `tests/tier1-brink-respell/README.md`'s
@@ -63,11 +77,12 @@
 //! `lower::choice::replace_trailing_ws_with_spring` produces — no native
 //! token forces that same runtime-deferred-whitespace behavior, and
 //! respelling it as a literal space would silently change what renders,
-//! so it stays refused); `CondKind::IfElse` and a prose-body `return`
-//! with a value expression (both native-grammar gaps too — `if`/`else`
-//! has no `else if` chain and `RETURN_STMT` never carries a value at body
-//! position, see `lower_native::cond`'s and `lower_native::body`'s own
-//! findings); most `Expr` variants beyond literals/paths/operators/calls
+//! so it stays refused); `CondKind::IfElse` (emitter-only — see the
+//! corrected note on `CondKind::InitialCondition` above, issue #1951) and a
+//! prose-body `return` with a value expression (a real native-**grammar**
+//! gap — `RETURN_STMT` never carries a value at body position, see
+//! `lower_native::body`'s own finding); most `Expr` variants beyond
+//! literals/paths/operators/calls
 //! (collections, structs, refs, a divert target used as a value, and
 //! `#fn(f, a)` — the *binding* form, which by the 2026-08-01 ruling has no
 //! native spelling at all; a **zero-bound** `#fn(f)` does respell, as the

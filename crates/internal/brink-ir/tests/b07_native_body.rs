@@ -332,9 +332,12 @@ flow elsewhere() {
 /// real writer authors for "if X then A else B" and what B0.8b's future
 /// mechanical converter would actually emit. That ink shape lowers to
 /// `CondKind::InitialCondition`, not `IfElse` (`IfElse` is reserved for
-/// ink's independently-chained 3+-condition form, which native's `if`/
-/// `else`-only grammar has no way to produce at all — no `else if`). This
-/// test is what caught that and pinned the corrected mapping.
+/// ink's independently-chained 3+-condition form — a *flat* multi-branch
+/// shape native's own lowering never constructs, since a native `else if`
+/// chain lowers through nesting instead, not because the grammar lacks
+/// `else if`: #1258/#1261 (2026-07-22) added it, and it works; see the
+/// correction on `cond::lower_conditional`'s doc, issue #1951). This test
+/// is what caught the `InitialCondition`-vs-`IfElse` mapping and pinned it.
 #[test]
 fn cross_frontend_conditional_shape_matches_ink() {
     let ink_src = "\
@@ -392,4 +395,69 @@ flow weather() {
     assert!(native_cond.branches[0].condition.is_some());
     assert!(ink_cond.branches[1].condition.is_none());
     assert!(native_cond.branches[1].condition.is_none());
+}
+
+/// Pins the nesting contract `lower_native::cond::lower_conditional`'s doc
+/// comment asserts for a flat native `else if` chain (issue #1951's 2026-08-01
+/// re-triage, "Hole 5"): a 3-armed `{if … } else if … { … } else { … }}`
+/// lowers to a `CondKind::InitialCondition` with exactly 2 branches, whose
+/// `else` branch's `Block` body contains exactly one further `Stmt`, itself
+/// a nested `Conditional` — never a flat 3-branch list and never
+/// `CondKind::IfElse` (that variant is reserved for ink's own independently-
+/// chained multi-condition form; see `cross_frontend_conditional_shape_matches_ink`
+/// above). Before this test, that nesting shape was asserted only in prose —
+/// `docs/ruling-ledger.md`'s "Native grammar supports flat `else if` chains"
+/// row recorded "'Lowers identically' holds by construction, with no
+/// dedicated lowering test."
+#[test]
+fn else_if_chain_lowers_to_nested_initial_condition() {
+    let native_src = "\
+var score = 2
+flow main() {
+  {if score == 1 { One. } else if score == 2 { Two. } else { Other. }}
+}
+";
+    let (native_hir, _m, diags) = lower_native_fixture(native_src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let knot = native_hir
+        .knots
+        .iter()
+        .find(|k| k.name.text == "main")
+        .expect("main knot");
+    let outer_cond = knot
+        .body
+        .stmts
+        .iter()
+        .find_map(|s| match s {
+            Stmt::Conditional(c) => Some(c),
+            _ => None,
+        })
+        .expect("outer Conditional");
+
+    assert_eq!(outer_cond.kind, brink_ir::CondKind::InitialCondition);
+    assert_eq!(
+        outer_cond.branches.len(),
+        2,
+        "flat else-if chain must lower to a 2-branch nesting, not a flat 3-branch list"
+    );
+    assert!(outer_cond.branches[0].condition.is_some());
+    assert!(outer_cond.branches[1].condition.is_none());
+
+    // The `else` branch's body must contain exactly one further Stmt: a
+    // nested Conditional carrying the `else if`'s condition and the final
+    // `else`'s body as its own 2-branch InitialCondition.
+    let else_body_stmts = &outer_cond.branches[1].body.stmts;
+    assert_eq!(
+        else_body_stmts.len(),
+        1,
+        "else arm's body must contain exactly one nested Stmt::Conditional: {else_body_stmts:?}"
+    );
+    let inner_cond = match &else_body_stmts[0] {
+        Stmt::Conditional(c) => c,
+        other => panic!("expected a nested Stmt::Conditional, got {other:?}"),
+    };
+    assert_eq!(inner_cond.kind, brink_ir::CondKind::InitialCondition);
+    assert_eq!(inner_cond.branches.len(), 2);
+    assert!(inner_cond.branches[0].condition.is_some());
+    assert!(inner_cond.branches[1].condition.is_none());
 }
