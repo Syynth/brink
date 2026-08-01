@@ -19,6 +19,7 @@ tracing.workspace = true
 serde = { workspace = true }
 thiserror.workspace = true
 regex.workspace = true
+regex-syntax.workspace = true
 
 [dev-dependencies]
 brink-analyzer = { path = "../brink-analyzer" }

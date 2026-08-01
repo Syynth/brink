@@ -1398,6 +1398,40 @@ pub enum DiagnosticCode {
     /// misplaced claim is not a style nit, it is a claim that violates the
     /// one property the whole mechanism depends on.
     E169,
+    /// Two claiming handlers' patterns are textually different but can both
+    /// match the same line of prose — they silently race, with the earlier
+    /// one winning (issue #1859, follow-up to #1848).
+    ///
+    /// `E168` catches the narrow case: byte-identical patterns provably
+    /// match identical inputs. This code catches the more common and more
+    /// valuable instance: two *different* patterns whose matched-line sets
+    /// overlap (one a strict subset of the other, an alternation branch
+    /// shared between them, two competing prefixes, etc.).
+    ///
+    /// Detection uses a sound-but-incomplete heuristic: finding a concrete
+    /// witness string demonstrably accepted by both compiled patterns. The
+    /// heuristic checks:
+    /// - Whether the patterns share a literal prefix (both start with the
+    ///   same fixed text, before any regex metacharacters)
+    /// - Whether one pattern's literal parts are a subset of the other's
+    ///   (e.g. `^A$` is subsumed by `^AB?$` if the second can match `A`)
+    /// - Whether generated test strings match both patterns
+    ///
+    /// A witness found proves overlap; none found does not prove they
+    /// never overlap. This is the safer alternative to a textual heuristic
+    /// that could produce false positives (e.g. "shares a literal prefix"
+    /// without confirming both patterns actually match anything starting
+    /// with that prefix — `^A$` and `^AB$` share the prefix `A` but never
+    /// both match any input). Only reports what it can prove.
+    ///
+    /// Reported **at most once** per later-handler, against the first
+    /// earlier handler it provably overlaps with. A handler that overlaps
+    /// multiple earlier ones is not re-reported. `Warning` severity, like
+    /// `E168`, since a silent race is a real problem but not a hard error.
+    ///
+    /// See also: `E168` (byte-identical patterns), `docs/prose-dialect-
+    /// spec.md` §3.5b ("pattern power proportional to auditability").
+    E170,
 }
 
 impl DiagnosticCode {
@@ -1580,6 +1614,7 @@ impl DiagnosticCode {
         Self::E167,
         Self::E168,
         Self::E169,
+        Self::E170,
     ];
 
     /// The stable string representation (e.g., `"E001"`).
@@ -1759,6 +1794,7 @@ impl DiagnosticCode {
             Self::E167 => "E167",
             Self::E168 => "E168",
             Self::E169 => "E169",
+            Self::E170 => "E170",
         }
     }
 
@@ -2035,6 +2071,9 @@ impl DiagnosticCode {
             Self::E169 => {
                 "a pattern-claiming `@[element(claims = \"…\")]` handler is legal only in the project's configured conventions module (`brink.toml`'s `[project] elements`)"
             }
+            Self::E170 => {
+                "this `@[element(claims = \"…\")]` pattern can overlap with an earlier-declared handler's pattern — they silently race, with the earlier one winning"
+            }
         }
     }
 
@@ -2075,7 +2114,9 @@ impl DiagnosticCode {
             // earlier-declared handler always wins first), not a hard
             // error — `Warning`-tier so it stays `[lints]`-configurable and
             // `@[allow(E168)]`-suppressible, same posture as E164/E165.
-            | Self::E168 => Severity::Warning,
+            | Self::E168
+            // Non-identical patterns that can overlap: same rationale as E168.
+            | Self::E170 => Severity::Warning,
             // Issue #1674: the one code whose *default* is the `Info`
             // advisory tier rather than `Warning` — RULED "off or info by
             // default" (a single-shot project should not be nagged) while
@@ -2265,6 +2306,7 @@ impl DiagnosticCode {
             "E167" => Some(Self::E167),
             "E168" => Some(Self::E168),
             "E169" => Some(Self::E169),
+            "E170" => Some(Self::E170),
             _ => None,
         }
     }

@@ -82,6 +82,7 @@ bon = "3"
 # `regex` crate has no lookaround/backreferences, which is exactly the JS
 # RegExp ∩ Rust `regex` subset the dialect schema requires.
 regex = "1"
+regex-syntax = "0.8"
 syn = { version = "2", features = ["full"] }
 quote = "1"
 proc-macro2 = "1"
