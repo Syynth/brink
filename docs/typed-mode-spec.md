@@ -297,6 +297,17 @@ reads type as `Unknown`, and `try_claim` synthesizes `string`
 arguments the handler signature rejects). The rest are fixtures written
 in gradual style, expected under §2 and §5.
 
+**#1909's free-function half is closed.** A UFCS call that desugars to
+a free function (`n.double()` → `double(n)`) now takes that function's
+own declared return type, so its result is no longer an `Unknown`
+escape, and one baseline row (`ufcs`/`describe_double`) went away. The
+call also records the call-graph edge the desugar implies, which is
+what makes the target's signature reliably available first. The
+*prelude*-verb half (`m.len()`, `tally`'s row) stays open: typing it
+means running the intrinsic-typing arms on the desugared argument list,
+which would double-report `E149` against `ufcs::check_strict`'s copy —
+issue #1540's second symptom, tracked separately.
+
 Two findings land back on this spec rather than on the analyzer. §4's
 coercion lattice does not say what `string + T` concatenation does at
 all (#1911). And §2's "internal helpers never require an annotation"

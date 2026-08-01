@@ -104,10 +104,21 @@ fn corpus_dir() -> PathBuf {
 /// `fn f() { let n = 21; return double(n); }` is clean while
 /// `fn f() { let n = 21; return n.double(); }` reports `E065` — identical
 /// bodies, only the call spelling differs. `describe_double`
-/// (`FreeFnDesugar`) and `tally` (`m.len()`, `PreludeDesugar`) are the two
+/// (`FreeFnDesugar`) and `tally` (`m.len()`, `PreludeDesugar`) were the two
 /// forms of it here. Distinct from issue #1483, which is the
 /// receiver-type-unknown direction; here the receiver's type is known and
 /// resolution succeeds.
+///
+/// **`describe_double`'s row is gone** — the free-function half landed
+/// (`infer::body::InferPass::infer_ufcs_free_fn_result`), so a UFCS call
+/// desugaring to a free function now carries that function's own return
+/// type. `tally`'s row stays: `m.len()` is a `PreludeDesugar`, whose result
+/// type would have to come from `infer::body`'s `infer_intrinsic`, and that
+/// function's arms `observe` operands and record `array_remove_calls` —
+/// running it on a desugared UFCS argument list would double-report `E149`
+/// against `ufcs::strict_verdict_diagnostics`' own copy. That is issue
+/// #1540's second symptom and is tracked separately (see #1909's own
+/// scope comment); it is deliberately not folded in here.
 ///
 /// `bump`/`heal`'s parameters are a different, **expected** row: their
 /// bodies genuinely place no constraint on the parameters (`n = n +
@@ -332,12 +343,6 @@ const BASELINE: &[(&str, &str, &str)] = &[
         "ufcs",
         "E065",
         "`bump`'s parameter `n` escapes strict inference as Unknown — annotate or restructure",
-    ),
-    (
-        "ufcs",
-        "E065",
-        "`describe_double`'s return type escapes strict inference as Unknown \
-         — annotate or restructure",
     ),
     (
         "ufcs",

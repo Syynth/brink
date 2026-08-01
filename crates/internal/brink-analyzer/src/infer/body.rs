@@ -1788,6 +1788,143 @@ impl InferPass<'_, '_> {
         }
     }
 
+    /// Issue #1909: the **result type** of a UFCS-shaped call
+    /// (`recv.name(args)`) that desugars to a free function
+    /// (`name(recv, args)`), plus the call-graph edge that desugar implies.
+    ///
+    /// `brink_analyzer::ufcs` owns the *verdict* — which of D1's four
+    /// outcomes a UFCS site is — but it runs strictly **after** inference
+    /// (it is type-directed: [`ufcs::resolve`] takes the finished
+    /// [`InferenceResult`] to type receivers with), so it can never be the
+    /// thing that hands this pass a result type. Before this, every UFCS
+    /// call expression therefore typed `Ty::Unknown`, and that `Unknown`
+    /// propagated: `fn f() { let n = 21; return n.double(); }` reported
+    /// `E065` on `f`'s *return type* while the byte-equivalent
+    /// `return double(n);` was clean, and an `Unknown` result reaching a
+    /// call position is what [`Self::check_value_call`]'s own `Unknown` arm
+    /// turns into a further diagnostic downstream (the #1895 precedent).
+    ///
+    /// This re-derives only the one outcome it can reach without any of
+    /// that pass's inputs, and refuses (staying `Unknown`, exactly as
+    /// before) everywhere else:
+    ///
+    /// - **The desugar target** is looked up with
+    ///   [`resolve::lookup_unique_by_name`], the scope-free subset of the
+    ///   [`resolve::lookup_by_name`] call `ufcs::try_free_fn_desugar` makes
+    ///   — a [`BodyCtx`] carries no file imports, so an *ambiguous*
+    ///   cross-module name is declined rather than guessed at.
+    /// - **The arity must already agree** (`params.len() == arg_count + 1`,
+    ///   counting the receiver as the first argument, the same convention
+    ///   the desugar's own `E031` uses). A wrong-arity call is a hard error
+    ///   one pass later; typing it would be typing a program that does not
+    ///   compile.
+    /// - **A `Ty::Struct` receiver's *result type* is declined outright.**
+    ///   D1 says field access *wins* over a same-named free function, and
+    ///   deciding that needs the declared-shape table
+    ///   (`structs::declared_shapes`), which is not threaded into inference.
+    ///   Declining keeps the *result type* from ever contradicting the
+    ///   verdict `ufcs` will reach; a struct receiver's `FieldCall` result
+    ///   type stays `Unknown` (tracked separately), it does not silently
+    ///   become the free function's. This says nothing about the call-graph
+    ///   **edge**, which is already recorded above by the time this gate
+    ///   runs — see "Why the edge is recorded before the receiver is even
+    ///   typed" below. A struct receiver whose shape declares an `Fn`-typed
+    ///   field of the called name still gets an edge to a same-named,
+    ///   matching-arity free function that D1 never actually invokes. That
+    ///   is a deliberate over-approximation, not a bug: the recorded call
+    ///   graph is always a *superset* of the real one, so a spurious edge
+    ///   can at worst pull two unrelated defs into the same SCC or union an
+    ///   unrelated effect row — never miss a real call. Narrowing it needs
+    ///   the same shape table the result-type gate is missing.
+    /// - A **prelude verb** (`m.len()`, `UfcsVerdict::PreludeDesugar`) has
+    ///   no index symbol, so it never resolves here and keeps typing
+    ///   `Unknown`. Typing it means running [`Self::infer_intrinsic`] on
+    ///   the desugared argument list, whose arms `observe` operands and
+    ///   record `array_remove_calls` — the latter would double-report
+    ///   `E149` against `ufcs::strict_verdict_diagnostics`' own copy. That
+    ///   is issue #1540's second symptom, deliberately left alone here.
+    /// - A **projected receiver** (`party.members.heal(5)`) needs the same
+    ///   shape table the struct case does, so only a single-segment
+    ///   receiver is typed.
+    ///
+    /// ## Why the edge is recorded before the receiver is even typed
+    ///
+    /// [`Self::record_call_edge`] is a *structural* fact, and the three
+    /// per-def entry points that harvest structural facts
+    /// ([`super::call_edges`], [`super::referenced_globals`],
+    /// [`super::def_effect_atoms`] — `brink-db`'s fine-grained salsa
+    /// queries) all run this walk with an **empty globals map** and discard
+    /// every computed type. Gating the edge on the receiver's type would
+    /// make a `VAR`-receiver call an edge in `infer_project`'s monolithic
+    /// walk and *not* an edge in the composed one, so the two would infer
+    /// different signatures. Everything above the receiver gate reads only
+    /// the symbol index, so the edge is identical in both. (The result type
+    /// below is free to read `ctx.globals`: it is discarded by exactly
+    /// those three callers, and `solve_scc` — the one caller whose types
+    /// survive — always gets a real globals map.)
+    fn infer_ufcs_free_fn_result(
+        &mut self,
+        path: &HirPath,
+        receiver_def: DefinitionId,
+        arg_count: usize,
+    ) -> Ty {
+        let Some((method, receiver_segs)) = path.segments.split_last() else {
+            return Ty::Unknown;
+        };
+        let Some(target) = crate::resolve::lookup_unique_by_name(
+            self.ctx.index,
+            &method.text,
+            &[SymbolKind::Knot, SymbolKind::External],
+        ) else {
+            return Ty::Unknown;
+        };
+        let Some(info) = self.ctx.index.symbols.get(&target) else {
+            return Ty::Unknown;
+        };
+        if info.params.len() != arg_count + 1 {
+            return Ty::Unknown;
+        }
+        self.record_call_edge(target);
+
+        if receiver_segs.len() != 1 {
+            return Ty::Unknown;
+        }
+        let receiver_ty = self.ufcs_receiver_ty(receiver_def);
+        if receiver_ty.is_unresolved() || matches!(receiver_ty, Ty::Struct(_)) {
+            return Ty::Unknown;
+        }
+        self.ctx
+            .known_sigs
+            .get(&target)
+            .map_or(Ty::Unknown, |sig| sig.return_ty.clone())
+    }
+
+    /// The UFCS receiver's own type, **read-only** — the deliberate
+    /// counterpart to [`Self::ty_of_def`], which additionally records a
+    /// `VAR`/`CONST` read into `referenced_globals`.
+    ///
+    /// A receiver is only inspected here to decide whether D1's
+    /// field-access-wins rule could possibly apply (see
+    /// [`Self::infer_ufcs_free_fn_result`]); it is not a *reference* this
+    /// pass newly discovered, and recording one would change
+    /// [`super::EffectAtoms::reads`] for every UFCS call on a global — an
+    /// effect-row change that has nothing to do with typing the call's
+    /// result.
+    fn ufcs_receiver_ty(&self, def: DefinitionId) -> Ty {
+        let Some(info) = self.ctx.index.symbols.get(&def) else {
+            return Ty::Unknown;
+        };
+        match info.kind {
+            SymbolKind::Param | SymbolKind::Temp => {
+                self.locals.get(&info.name).cloned().unwrap_or(Ty::Unknown)
+            }
+            SymbolKind::Variable | SymbolKind::Constant => {
+                self.ctx.globals.get(&def).cloned().unwrap_or(Ty::Unknown)
+            }
+            _ => Ty::Unknown,
+        }
+    }
+
     fn infer_call(&mut self, path: &HirPath, args: &[Expr]) -> Ty {
         let arg_tys: Vec<Ty> = args.iter().map(|a| self.infer_expr(a)).collect();
         // `path.range` here is the callee `Path`'s whole span — this
@@ -1821,10 +1958,9 @@ impl InferPass<'_, '_> {
                 // being called, so classifying it as a T1c call-through-a-
                 // value would report the receiver's own (non-`Fn`) type as
                 // "not callable" — a false `E066` on every legal method
-                // call. `brink-analyzer::ufcs` owns this site's checking;
-                // the call's own type stays `Unknown` here, the same
-                // posture `Expr::FieldAccess` already takes (no static
-                // field-type table is threaded through inference).
+                // call. `brink-analyzer::ufcs` owns this site's *checking*
+                // — but not, since issue #1909, the call's own **result
+                // type**: see [`Self::infer_ufcs_free_fn_result`].
                 if path.segments.len() > 1 {
                     // Issue #1881: this pass cannot check anything against
                     // a UFCS receiver directly (see the comment above), but
@@ -1845,7 +1981,7 @@ impl InferPass<'_, '_> {
                         range: path.range,
                         args: arg_tys.clone(),
                     });
-                    return Ty::Unknown;
+                    return self.infer_ufcs_free_fn_result(path, def, args.len());
                 }
                 return self.infer_value_call(path, def, args, &arg_tys);
             }
