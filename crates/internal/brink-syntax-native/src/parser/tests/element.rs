@@ -288,12 +288,62 @@ fn an_unbalanced_open_brace_in_a_cue_name_eats_the_enclosing_blocks_own_closer()
 }
 
 #[test]
+fn an_unbalanced_open_brace_in_a_cue_name_with_a_colon_inside_it_eats_the_enclosing_blocks_own_closer()
+ {
+    // #1851 widens the same accepted tradeoff pinned just above by
+    // `an_unbalanced_open_brace_in_a_cue_name_eats_the_enclosing_blocks_own_closer`
+    // from R_BRACE to COLON: once COLON is depth-guarded like R_BRACE, a
+    // genuinely unbalanced, unescaped `{` left open in a name swallows not
+    // just a later `}` but a later `:` too, along with everything after it
+    // up to EOF, since nothing at depth > 0 can stop the scan anymore. So
+    // this — balanced-looking at a glance, but the name's own `{` is never
+    // closed — fails to parse: the R_BRACE that would close the block is
+    // consumed as part of the still-open name scan, and the scan runs off
+    // the end of input looking for a match.
+    let src = "flow f() { @NAME {x: y }\n";
+    let p = assert_lossless(src);
+    assert!(
+        !p.errors().is_empty(),
+        "expected the unbalanced `{{` to swallow the `:` and the flow's own closer, got: {:?}",
+        p.errors()
+    );
+}
+
+#[test]
 fn a_cue_name_with_an_escaped_open_brace_does_not_swallow_the_enclosing_blocks_own_closer() {
     // `\{` is the literal-brace escape (#1716/PR #1732), not a
     // metacharacter, so it must not count as a depth-opener — otherwise
     // the escaped brace would swallow the enclosing flow's own same-line
     // closer exactly like the unbalanced-raw-brace case above.
     let src = "flow f() { @NAME \\{ }\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::FLOW_DECL), 1);
+}
+
+#[test]
+fn a_cue_name_with_an_escaped_backslash_before_a_real_brace_counts_the_brace() {
+    // #1852: `\\{` is an escaped backslash (producing literal `\`), followed
+    // by a real interpolation-opening brace. The carve-out that excludes
+    // `\{` from the depth counter must not fire for `\\{`, because the
+    // backslash is itself escaped. Without the fix, the brace is not counted,
+    // so the matching `}` ends the cue name prematurely, and the text after
+    // it becomes stray content — a parse error.
+    let src = "flow f() { @NAME \\\\{ } coins. }\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::FLOW_DECL), 1);
+}
+
+#[test]
+fn a_cue_name_with_a_colon_inside_braces_does_not_terminate_the_name() {
+    // #1851: `cue_name()` has a COLON stop that mis-parses `@NAME {a:b}`
+    // — the colon inside the braces should not terminate the cue name
+    // because the braces create an interpolation context. The depth counter
+    // should guard the COLON check the same way it guards the R_BRACE check.
+    // Without the fix, the cue name ends at the colon, and the text after
+    // it becomes stray content — a parse error.
+    let src = "flow f() { @NAME {a:b} }\n";
     let p = assert_lossless(src);
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
     assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::FLOW_DECL), 1);

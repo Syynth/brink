@@ -505,10 +505,14 @@ pub(crate) fn header_tag_tail(p: &mut Parser<'_, '_>) {
 /// would be the surprising reading — a `\{` with no real interpolation
 /// nearby would then let a later unescaped `}` swallow the enclosing
 /// closer, converting previously clean source into a parse error. So an
-/// `L_BRACE` immediately preceded by a raw `BACKSLASH` is excluded from
-/// the counter (an `R_BRACE` is still unconditionally significant to the
-/// depth check either way — `\}` alone, with no preceding unescaped `{`,
-/// already terminated a tag before this fix and still does). Pinned by
+/// `L_BRACE` is excluded from the counter when it is preceded by an *odd*
+/// number of consecutive raw `BACKSLASH`es (#1852: `\\{` is an escaped
+/// backslash followed by a real, depth-counted brace, not an escaped
+/// brace — an even backslash count means the backslashes escape each
+/// other and the brace stands unescaped) (an `R_BRACE` is still
+/// unconditionally significant to the depth check either way — `\}` alone,
+/// with no preceding unescaped `{`, already terminated a tag before this
+/// fix and still does). Pinned by
 /// `a_tag_with_an_escaped_open_brace_does_not_swallow_the_enclosing_blocks_own_closer`.
 ///
 /// **RULED (review of #1777, issue #1787): `depth` is scoped per-tag, not
@@ -540,7 +544,7 @@ fn tag(p: &mut Parser<'_, '_>, extra_stop: &[SyntaxKind]) {
     p.start_node(TAG);
     p.expect(HASH);
     let mut depth: u32 = 0;
-    let mut prev_raw_was_backslash = false;
+    let mut backslash_count: u32 = 0;
     loop {
         let cur = p.current();
         if matches!(cur, NEWLINE | EOF | HASH) || extra_stop.contains(&cur) {
@@ -555,17 +559,28 @@ fn tag(p: &mut Parser<'_, '_>, extra_stop: &[SyntaxKind]) {
         // bumps the whitespace ahead of it one raw token at a time.
         // `nth_raw(0)` is the exact raw token this iteration is about to
         // bump, so depth changes exactly once per brace, never double- or
-        // zero-counted. Tracked in lockstep with `prev_raw_was_backslash`,
-        // which likewise reflects the previous iteration's raw token, not
-        // `cur` — an escape is only ever adjacent raw tokens, never
-        // separated by trivia.
+        // zero-counted. Tracked in lockstep with `backslash_count`, which
+        // counts consecutive backslashes before a brace or other token —
+        // escapes are only ever adjacent raw tokens, never separated by
+        // trivia. An L_BRACE is only excluded from depth counting if
+        // preceded by an odd number of backslashes (the last one escapes
+        // it); an even number means the backslashes themselves are escaped
+        // (#1852: `\\{` should count the brace, not escape it).
         let raw = p.nth_raw(0);
         match raw {
-            L_BRACE if !prev_raw_was_backslash => depth += 1,
-            R_BRACE => depth = depth.saturating_sub(1),
-            _ => {}
+            L_BRACE if backslash_count & 1 == 0 => {
+                depth += 1;
+                backslash_count = 0;
+            }
+            R_BRACE => {
+                depth = depth.saturating_sub(1);
+                backslash_count = 0;
+            }
+            BACKSLASH => backslash_count += 1,
+            _ => {
+                backslash_count = 0;
+            }
         }
-        prev_raw_was_backslash = raw == BACKSLASH;
         p.bump();
     }
     p.finish_node();

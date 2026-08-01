@@ -665,6 +665,22 @@ fn a_tag_with_an_escaped_open_brace_does_not_swallow_the_enclosing_blocks_own_cl
 }
 
 #[test]
+fn a_tag_with_an_escaped_backslash_before_a_real_brace_counts_the_brace() {
+    // #1852: `\\{` is an escaped backslash (producing literal `\`), followed
+    // by a real interpolation-opening brace. The carve-out that excludes
+    // `\{` from the depth counter must not fire for `\\{`, because the
+    // backslash is itself escaped. `tag()` must look beyond just the
+    // immediately preceding raw token to detect that the backslash is not
+    // the escaper. Without the fix, the brace is not counted, so the
+    // matching `}` ends the tag prematurely, leaving ` coins` as plain text
+    // and the flow body's own closer unconsumed — this fails to parse.
+    let src = "flow f() { Hello #tag \\\\{ } coins. }\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::FLOW_DECL), 1);
+}
+
+#[test]
 fn a_tags_own_unbalanced_brace_does_not_leak_depth_into_a_sibling_tag() {
     // #1787: `tag()`'s `depth` counter is scoped per-TAG, not per-line —
     // ruled correct, not a gap (see `tag()`'s doc comment). `#a {x #b}`
