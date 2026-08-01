@@ -266,9 +266,14 @@ fn declared_value_ty(
 /// `ty_of_def` answered `Ty::Unknown`, and a later `f(3)` misfired `E065`
 /// on correct code. The bare-name arm below is gated on the *same* two
 /// conjuncts lowering uses, so the two can never disagree about which
-/// initializers are fn values. A bare name always binds **zero**
-/// arguments — the binding form `#fn(f, a)` has no native spelling (§2a) —
-/// so the value's parameter row is the target's whole signature.
+/// initializers are fn values *when the target resolves to an actual
+/// knot* — the lookup below is restricted to `&[SymbolKind::Knot]`,
+/// narrower than lowering's `is_function_definition` (`Knot | Stitch`),
+/// so a top-level stitch promoted to knot status is a known, still-open
+/// one-sided gap (`docs/t1c-spec.md` §2a). A bare name always binds
+/// **zero** arguments — the binding form `#fn(f, a)` has no native
+/// spelling (§2a) — so the value's parameter row is the target's whole
+/// signature.
 fn declared_fn_type(
     value: &Expr,
     index: &SymbolIndex,

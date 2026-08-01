@@ -17,7 +17,9 @@ classified as an unknown-callee value call — reporting `E065` under
 The bare-name arm is now gated on the same two conjuncts lowering uses (the
 declaring file is native, and the target is a statically-named function
 definition), so the two sides can never disagree about which initializers
-are fn values. `f` types as `fn(T…): R` from the target's signature and
+are fn values when the target is an actual knot (a top-level stitch
+promoted to knot status is a narrower, still-open case — `docs/t1c-spec.md`
+§2a). `f` types as `fn(T…): R` from the target's signature and
 carries the target's effect row, exactly as the body-position spelling does
 since #1876 — a real mismatch through the global is now an ordinary `E063`
 rather than an opaque `E065`. A bare name shadowed by a same-named

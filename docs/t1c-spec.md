@@ -126,7 +126,16 @@ Consequences that follow from "bare name, no sigil":
   `int` is declared is an ordinary `E063`, not an opaque `Unknown`
   deferred to the runtime. Both typing paths key off the same per-file
   frontend flag lowering gates on, so typing and lowering cannot
-  disagree about which references are fn values:
+  disagree about which references are fn values **when the target is
+  an actual knot**. The two gates are not otherwise identical: lowering's
+  `SymbolInfo::is_function_definition` accepts `SymbolKind::Knot |
+  SymbolKind::Stitch` carrying the `"function"` detail, but
+  `declared_fn_type`'s `lookup_by_name` restricts the bucket to
+  `&[SymbolKind::Knot]` alone — so a top-level stitch promoted to knot
+  status (`Knot::symbol_kind`) that carries the same `"function"`
+  detail mints a `FnRef` in lowering yet declines to `Ty::Unknown` in
+  typing, a genuine one-sided disagreement reachable from a native
+  declaration initializer naming that stitch and not yet closed:
   - **Body/expression position** — an argument, an operand, a call
     target — through `HirFile::native` → `Def::native` →
     `BodyCtx::native` (`infer::body`'s `native_fn_value_target`,
