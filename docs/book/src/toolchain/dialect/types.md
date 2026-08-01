@@ -240,6 +240,16 @@ Under `types = strict` it is promoted to a hard error: a signature that
 lies about its body is exactly the kind of latent bug strict mode exists to
 catch.
 
+`E063` isn't only about the param/return firewall above. The same code
+fires for a `VAR`/`CONST`/`~ temp` declaration initializer that disagrees
+with its own annotation (`VAR v: int = "hi"`), and for a plain assignment
+that disagrees with its target's already-known declared type — a
+`VAR`/`CONST` (annotated *or not*: an unannotated `VAR v = 5`'s declared
+type is still the initializer's own inferred type) or an annotated `~
+temp`. A `Param` target is the one exception: a param disagreement is
+always caught by the firewall check above instead, at the annotation
+itself.
+
 A function that returns nothing annotates `void` (or simply never
 `return`s a value — inference treats the two identically). Assigning the
 result of a `void` call is a strict-mode error, `E067` ("`f` returns void —
@@ -520,7 +530,7 @@ can't, and each edge has its own answer:
 | Code | Fires when | Policy |
 |---|---|---|
 | `E061` | annotation names an unrecognized type | both |
-| `E063` | annotated type disagrees with the type inferred from usage | warning under gradual, error under strict |
+| `E063` | annotated type disagrees with the type inferred from usage, or a `VAR`/`CONST`/`~ temp` declaration initializer or a plain assignment disagrees with its target's already-known declared type | warning under gradual, error under strict |
 | `E064` | `types = strict` without `dialect = brink` | config |
 | `E065` | a type escapes strict inference as `Unknown` | strict |
 | `E066` | a type is `Conflicted` — its uses disagree | strict |

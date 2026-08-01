@@ -156,11 +156,15 @@ pub struct BodyTypes {
     /// temp name: T = expr` declaration initializer (against its own
     /// ascription) or a plain `~ name = expr` assignment (against the
     /// target's already-known declared type — a VAR/CONST's declaration-
-    /// derived type, or an annotated Param/Temp's ascription). Recorded
-    /// unconditionally during inference, like `direct_call_arg_mismatches`;
-    /// reported only by strict mode.
+    /// derived type, or an annotated `~ temp`'s ascription). A `Param`
+    /// assignment target never reaches this fact at all: a param
+    /// annotation is a signature-firewall slot `annotations::mismatches`
+    /// (E063) already owns (compared against the body's *final* inferred
+    /// param type), so checking it again here would double-report the
+    /// identical disagreement. Recorded unconditionally during inference,
+    /// like `direct_call_arg_mismatches`; reported only by strict mode.
     ///
-    /// A Param/Temp assignment target is excluded from this fact whenever
+    /// A `Temp` assignment target is excluded from this fact whenever
     /// `InferPass::observe`'s own join (which runs right after, on every
     /// assignment) is *already* about to drive that local to
     /// `Ty::Conflicted` on its own — that disagreement is independently
@@ -169,7 +173,11 @@ pub struct BodyTypes {
     /// `DirectCallArgMismatch`'s own `arg_is_observed_local` exclusion, but
     /// computed per-write rather than a blanket kind exclusion, since an
     /// assignment to an as-yet-`Unknown` local never goes `Conflicted` and
-    /// would otherwise go unchecked entirely). See
+    /// would otherwise go unchecked entirely). That per-write guard is
+    /// order-sensitive — a *later* read of the same temp can independently
+    /// conflict it after a fact was already recorded — so
+    /// `body::infer_def_body` also drops, post-walk, any fact whose
+    /// target's *final* type is `Conflicted`. See
     /// `body::InferPass::check_declared_assign_target`'s doc.
     pub typed_assign_mismatches: Vec<TypedAssignMismatch>,
 }

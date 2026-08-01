@@ -311,11 +311,7 @@ pub(super) fn infer_def_body(def: &super::Def<'_>, ctx: &BodyCtx<'_>) -> BodyRes
         pass.effect_faults_refined = true;
     }
     pass.infer_block(def.body);
-    // T2 §8 precision rung (issue #872): resolve every value-call site now
-    // that the whole body's write counts are final — see
-    // `resolve_pending_value_calls`'s doc for why this must run post-walk.
-    pass.resolve_pending_value_calls();
-
+    pass.finish_walk();
     let param_types = def
         .params
         .iter()
@@ -854,10 +850,16 @@ impl InferPass<'_, '_> {
     /// after this runs never disagrees with a *fresh* local on its first
     /// write. So a single-write disagreement between an ascription and its
     /// own initializer — `~ temp t: int = "hi"` — reaches no other TM-3
-    /// check today; no double-report risk here (unlike
-    /// `check_declared_assign_target`'s Param/Temp case below), since this
-    /// runs once per declaration, before `bind_local` ever touches
-    /// `self.locals` for this name.
+    /// check today; no double-report risk *on this exact write* (unlike
+    /// `check_declared_assign_target`'s Temp case below), since this runs
+    /// once per declaration, before `bind_local` ever touches `self.locals`
+    /// for this name. A *later* read of the same temp can still
+    /// independently conflict it (e.g. `~ temp t: int = "hi"\n~ return t +
+    /// 1`), which `check_escapes` reports as `E066` for the same
+    /// disagreement —
+    /// [`Self::drop_typed_assign_mismatches_conflicted_by_a_later_read`]
+    /// (called post-walk, from `infer_def_body` via [`Self::finish_walk`])
+    /// is what actually prevents that double-report, not anything here.
     fn check_declared_temp_init(&mut self, t: &brink_ir::TempDecl, found: &Ty) {
         if found.is_unresolved() {
             return;
@@ -879,14 +881,25 @@ impl InferPass<'_, '_> {
 
     /// Issue #1877: check a plain assignment's RHS type (`found`) against
     /// `target`'s already-known declared type — a VAR/CONST's declaration-
-    /// derived type (`ctx.globals`), or an annotated Param/Temp's ascription
+    /// derived type (`ctx.globals`), or an annotated `~ temp`'s ascription
     /// (`self.annotated`). Only a bare, single-segment `Path` is checked
     /// (mirrors `observe`'s own guard — a dotted field-access target's
     /// declared type is its root's shape, not the field's, so comparing
     /// against it would be a category error).
     ///
+    /// A `Param` target is deliberately **excluded** here (review finding on
+    /// this issue's own PR): a param annotation is a signature-firewall slot
+    /// `annotations::mismatches` (E063) already owns — that check compares
+    /// the def's declared param annotation against the body's *final*
+    /// inferred param type (the T1c overlay in [`infer_def_body`]), so any
+    /// disagreement a Param assignment could report here is either already
+    /// caught there (the common case: the write's type becomes the param's
+    /// final inferred type) or already caught as `E066` once a later use
+    /// conflicts it. Recording a fact here too double-reported the identical
+    /// disagreement as two separate `E063`s.
+    ///
     /// **Must run before [`Self::observe`]** on the same assignment: for a
-    /// Param/Temp target, `observe`'s join (`unify(cur, found)`) is what may
+    /// `Temp` target, `observe`'s join (`unify(cur, found)`) is what may
     /// drive the local to `Ty::Conflicted`, independently reported as
     /// `E066` by `strict::check_escapes`. This reads `cur` — the target's
     /// accumulated type *before* that join — to check whether this exact
@@ -896,9 +909,16 @@ impl InferPass<'_, '_> {
     /// exclusion, computed per-write here rather than a blanket kind
     /// exclusion — an assignment to an as-yet-`Unknown` local never goes
     /// `Conflicted` on this join and would otherwise go completely
-    /// unchecked, e.g. `~ temp t: int` with no initializer, later `~ t =
-    /// "hi"`). A VAR/CONST target is never subject to this exclusion: globals
-    /// are never joined into `self.locals`/Conflicted tracking at all (this
+    /// unchecked, e.g. a `~ temp t: int = expr` whose own initializer
+    /// infers `Unknown`, later `~ t = "hi"`). This per-write guard only
+    /// catches a disagreement that conflicts on *this* write — a later
+    /// *read* can still independently conflict the same local after a fact
+    /// was already recorded here;
+    /// [`Self::drop_typed_assign_mismatches_conflicted_by_a_later_read`]
+    /// drops that fact once the local's final type is known (see its own
+    /// doc). A
+    /// VAR/CONST target is never subject to either exclusion: globals are
+    /// never joined into `self.locals`/Conflicted tracking at all (this
     /// module's own doc: "the inference substrate never joins a global's
     /// declaration-derived type against its assignment sites").
     fn check_declared_assign_target(&mut self, target: &Expr, found: &Ty) {
@@ -917,7 +937,7 @@ impl InferPass<'_, '_> {
         };
         let declared = match info.kind {
             SymbolKind::Variable | SymbolKind::Constant => self.ctx.globals.get(&def).cloned(),
-            SymbolKind::Param | SymbolKind::Temp => {
+            SymbolKind::Temp => {
                 let cur = self.locals.get(&info.name).cloned().unwrap_or(Ty::Unknown);
                 if unify(&cur, found).is_conflicted() {
                     return; // `check_escapes` (E066) already reports this write.
@@ -936,6 +956,25 @@ impl InferPass<'_, '_> {
             expected: declared,
             found: found.clone(),
         });
+    }
+
+    /// Issue #1877 review finding: [`Self::check_declared_assign_target`]
+    /// and [`Self::check_declared_temp_init`]'s own per-write `Conflicted`
+    /// guards only see whether *this* write is about to conflict its
+    /// target — they cannot see a *later* read (e.g. `~ t = "hi"` then `~
+    /// return t + 1`) that independently drives the same local to
+    /// `Ty::Conflicted` further down the same body. That later join still
+    /// reports as `E066` via `strict::check_escapes`, which reads each
+    /// local's *final* whole-body type, not any single write. So a fact
+    /// recorded during the walk for a name whose final `locals` entry ends
+    /// up `Conflicted` would double-report the same disagreement as both
+    /// `E063` and `E066`. Called once, post-walk, once every local's final
+    /// type is known — the one point that actually matches what
+    /// `check_escapes` keys on. A VAR/CONST target is unaffected: it is
+    /// never joined into `locals` at all.
+    fn drop_typed_assign_mismatches_conflicted_by_a_later_read(&mut self) {
+        self.typed_assign_mismatches
+            .retain(|fact| !self.locals.get(&fact.target).is_some_and(Ty::is_conflicted));
     }
 
     fn bind_local(&mut self, name: &str, ty: &Ty) {
@@ -1177,6 +1216,19 @@ impl InferPass<'_, '_> {
             }
             _ => {}
         }
+    }
+
+    /// Every post-walk finalization step that needs the whole body's final
+    /// state (every local's accumulated type, every write counted) rather
+    /// than whatever was known mid-walk — called once, right after
+    /// [`InferPass::infer_block`] returns. Composes
+    /// [`Self::resolve_pending_value_calls`] (T2 §8 precision rung, issue
+    /// #872 — see its own doc for why a mid-walk read would be unsound) and
+    /// [`Self::drop_typed_assign_mismatches_conflicted_by_a_later_read`]
+    /// (issue #1877 review finding — see its own doc).
+    fn finish_walk(&mut self) {
+        self.resolve_pending_value_calls();
+        self.drop_typed_assign_mismatches_conflicted_by_a_later_read();
     }
 
     /// Resolve every value-call site recorded during the walk

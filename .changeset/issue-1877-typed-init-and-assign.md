@@ -16,9 +16,17 @@ remainder of #1864 left after PR #1875's direct-call-argument half):
 - A plain assignment (`~ v = "hi"`) against a target's already-known
   declared type now reports `E063` too: a global `VAR`/`CONST` target
   (never checked before — globals are never joined into the `Ty::Conflicted`
-  lattice at all), and an annotated Param/Temp target whenever the
+  lattice at all), and an annotated `~ temp` target whenever the
   disagreement wouldn't already be independently reported as `E066` via the
-  existing Conflicted-escape join (no double-reporting).
+  existing Conflicted-escape join (no double-reporting). A `Param`
+  assignment target is deliberately excluded from this new check — a param
+  annotation is a signature-firewall slot `annotations::mismatches` (E063)
+  already owns, and disagreements there are already reported through it.
+- The global `VAR`/`CONST` check above compares against the declaration's
+  full derived type, not only an explicit `: type` annotation: an
+  **unannotated** `VAR v = 5` is checked too, since its declared type is
+  read the same way as an annotated one (the initializer literal's own
+  inferred type) — `VAR v = 5` followed by `~ v = "hi"` now reports `E063`.
 
 This closes the gap `content`'s (#1846) "never coerces to or from string"
 invariant still had at these positions after #1875 landed the direct-call

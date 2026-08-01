@@ -1087,12 +1087,20 @@ fn check_direct_call_args(
 /// [`check_direct_call_args`]: walk every inferable def, read its recorded
 /// facts, map each straight onto one diagnostic.
 ///
-/// `infer::body::InferPass::check_declared_assign_target` already excludes
-/// a Param/Temp assignment whose own `observe` join is about to drive it to
-/// `Ty::Conflicted` — every fact reaching here is disjoint from
-/// `check_escapes`'s own Conflicted-escape (`E066`) reporting for the same
-/// write, no dedup needed on this side (mirrors
-/// [`check_direct_call_args`]'s own doc on the identical point).
+/// `infer::body::InferPass::check_declared_assign_target` and
+/// `check_declared_temp_init` each exclude a Temp write whose own `observe`/
+/// `bind_local` join is about to drive it to `Ty::Conflicted` *on that exact
+/// write*; `infer::body::InferPass::
+/// drop_typed_assign_mismatches_conflicted_by_a_later_read` (run post-walk,
+/// from `infer_def_body` via `InferPass::finish_walk`) additionally drops
+/// any fact whose target's *final* whole-body type ends up `Conflicted` —
+/// the guard is per-write and order-sensitive, so a later read of the same
+/// local (not just the write that produced the fact) can also conflict it,
+/// and only the post-walk pass sees that. Between the two, every fact
+/// reaching here is disjoint from `check_escapes`'s own Conflicted-escape
+/// (`E066`) reporting for the same local, no dedup needed
+/// on this side (mirrors [`check_direct_call_args`]'s own doc on the
+/// identical point).
 fn check_typed_assign_mismatches(
     files: &[(FileId, &HirFile)],
     index: &SymbolIndex,
