@@ -1342,6 +1342,54 @@ fn native_bare_name_shadowed_by_a_same_named_global_is_not_typed_as_a_fn_value()
     );
 }
 
+/// The `ListItem` sibling of the test above: a bare name shadowed by a list
+/// item, in the *same* file. `ListItem`s are indexed under their qualified
+/// `List.Item` name (never the bare item name), so the direct
+/// `index.by_name.get(target_name)` lookup in `declared_fn_type`'s shadow
+/// guard can never see them — closing this gap needs the same bare-name
+/// suffix scan `lookup_variable` itself uses (`lookup_list_item_bare`),
+/// consulted ahead of the knot lookup exactly as `lookup_variable`'s own
+/// priority order does. Without it, `alias` was typed `fn(int): int` from
+/// the knot `double` while lowering actually bound it to the list item
+/// `Palette.double` — a same-file disagreement with no cross-module
+/// privacy gate (`E087`) to mask it, unlike the cross-file case
+/// (`native_cross_file_global_shadow_of_a_fn_value_reference_fails_to_compile`
+/// below). Revert the `lookup_list_item_bare` call in
+/// `crates/internal/brink-analyzer/src/signature.rs`'s `declared_fn_type`
+/// and this fails with a bogus `E063` alone (verified per house rule 20a).
+#[test]
+fn native_bare_name_shadowed_by_a_same_named_list_item_is_not_typed_as_a_fn_value() {
+    let data = compile_native_strict(
+        "decl-init-shadowed-by-list-item",
+        "flags Palette = double, other\n\
+         fn double(x: int): int {\n\
+         \x20 return x * 2;\n}\n\
+         fn total(n: int): int {\n\
+         \x20 return n + 1;\n}\n\
+         var alias = double\n\
+         flow main() {\n  Val: {total(alias)} -> END\n}\n",
+    )
+    .unwrap_or_else(|err| {
+        panic!(
+            "a bare name shadowed by a same-named list item is a list-item read, not a fn value: {:?}",
+            diagnostic_codes(&err)
+        )
+    })
+    .data;
+    let (program, line_tables) = brink_runtime::link(&data).unwrap();
+    let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
+    let output: String = story
+        .continue_maximally()
+        .unwrap()
+        .iter()
+        .map(Line::text)
+        .collect();
+    assert!(
+        output.contains("Val:"),
+        "the shadowed bare name must fold to the list item's value, got: {output:?}"
+    );
+}
+
 /// The ink surface is untouched: `VAR f = double` in `.ink` has never been
 /// a fn value (a bare knot name there is a visit count), so the new arm
 /// must stay off unless the declaring file is native. Kept as a guard on
@@ -3485,5 +3533,114 @@ Quiet.
     assert!(
         !visits("plaza"),
         "unmarked, unread knot keeps counting compiled out"
+    );
+}
+
+// ── Native cross-file same-named shadow can never legitimately
+//    compile (issue #1901) ──────────────────────────────────────────────
+//
+// #1901 asked whether `declared_fn_type`'s shadow guard (issue #1895,
+// `crates/internal/brink-analyzer/src/signature.rs`) being an *index-wide*,
+// unscoped check — "does a `Variable`/`Constant`/`ListItem` named `double`
+// exist *anywhere in the project*", not "does one exist in a module this
+// declaration can actually see" — can disagree with
+// `lir::lower::decls::fold_path_ref`'s real, `ImportScope`-aware
+// resolution in a way that is user-visible: an unrelated, non-importing
+// file's same-named global suppressing the typing of a local bare-name fn
+// value that lowering would actually still resolve to the local knot.
+//
+// It cannot, for two independent reasons. First: `lower_native::decl::
+// {lower_var_decl, lower_const_decl, lower_flags_decl}` hard-code
+// `visibility: None` for every native `VAR`/`CONST`/`LIST` — there is no
+// annotation grammar that overrides it (unlike ink's `#@public`/
+// `#@private` tags) — and a native file is unconditionally its own module
+// (`brink_db::modules::native_module_path`, decision-log 2026-07-22:
+// "Native module identity: pure function of the root-relative path;
+// `FileId` never in `DefinitionId`"). So a `VAR`/`CONST`/`LIST` declared
+// in one `.brink` file can *never* be legitimately referenced from
+// another: `modules::check`'s `E087` (private-cross-module) fires
+// unconditionally the moment resolution reaches it — confirmed below,
+// where `unrelated.brink`'s `double` isn't even imported by `main.brink`,
+// yet still poisons the bare-name reference (kind-priority —
+// `Variable`/`Constant`/`ListItem` over `Knot` — is checked project-wide,
+// ahead of module scope) and the whole compile fails on `E087` before
+// `alias`'s type could ever matter.
+//
+// Second, independently of visibility: `resolve::lookup_by_name`'s own
+// `lookup_by_name_direct` fast path (`crates/internal/brink-analyzer/src/
+// resolve.rs:1194`, `if !multiple { return first_match; }`) returns the
+// *sole* candidate of the requested kinds without ever consulting the
+// `ImportScope` — so with `unrelated.brink`'s private `const double`
+// present, a direct call `{double(3)}` still resolves to `main.brink`'s
+// own `fn double` and compiles clean (only the *value* reference
+// `{double}` hits the `Variable`/`Constant`/`ListItem`-over-`Knot`
+// kind-priority ahead of that fast path and errors `E087`). Scoping that
+// fast path for native is a plausible standalone correctness change that
+// would remove this second trigger with no publicity mechanism involved —
+// tracked separately, not attempted here.
+//
+// Every case where the shadow guard's project-wide scan finds a
+// same-named global in a *different* file is exactly the first case
+// above: the compile fails outright, so `Sig::value_ty`'s imprecision
+// (`Unknown` instead of a real resolution) is unobservable — there is no
+// successful `StoryData` for it to be wrong about. Combined with the
+// same-file cases (`native_bare_name_shadowed_by_a_same_named_global_is_not_typed_as_a_fn_value`
+// for `Variable`/`Constant` and
+// `native_bare_name_shadowed_by_a_same_named_list_item_is_not_typed_as_a_fn_value`
+// for `ListItem`, both above — the latter added after review found the
+// guard's original `ListItem` arm was dead code for a bare-name reference,
+// since list items are indexed under their qualified `List.Item` name and
+// the guard now also runs `lookup_list_item_bare`), this closes #1901's
+// own question empirically: the guard cannot disagree with lowering in
+// any project that compiles.
+//
+// If native `VAR`/`CONST`/`LIST` ever gain a real publicity mechanism, or
+// `lookup_by_name_direct`'s fast path becomes `ImportScope`-aware, this
+// test starts failing (the cross-file reference would newly succeed) —
+// that is the signal to revisit `declared_fn_type` and thread a real
+// resolution map through `signature()`, the fix #1901 itself declined to
+// build pre-emptively.
+#[test]
+fn native_cross_file_global_shadow_of_a_fn_value_reference_fails_to_compile() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-native-1901-cross-file-shadow-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("main.brink"),
+        "fn double(x: int): int {\n\
+         \x20 return x * 2;\n}\n\
+         fn total(n: int): int {\n\
+         \x20 return n + 1;\n}\n\
+         var alias = double\n\
+         flow main() {\n  Val: {total(alias)} -> END\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("unrelated.brink"),
+        "const double = \"unrelated shadow\"\n",
+    )
+    .unwrap();
+    let result = brink_compiler::compile_path_with_options(
+        &dir.join("main.brink"),
+        brink_compiler::AnalysisOptions {
+            dialect: brink_compiler::Dialect::Brink,
+            types: Some(brink_compiler::TypePolicy::Strict),
+            ..brink_compiler::AnalysisOptions::default()
+        },
+    );
+    std::fs::remove_dir_all(&dir).ok();
+    let err = result.expect_err(
+        "an unrelated file's same-named global must never be a legitimate reference target",
+    );
+    let brink_compiler::CompileError::Diagnostics(diags) = &err else {
+        panic!("expected a Diagnostics compile error, got: {err:?}");
+    };
+    assert_eq!(
+        diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![brink_ir::DiagnosticCode::E087],
+        "expected the cross-module privacy gate alone, got: {diags:?}"
     );
 }
