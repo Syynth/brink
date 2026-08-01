@@ -15,15 +15,15 @@ If `story.ink` contains, say, `~ x = #[1, 2, 3]`, that command fails and the
 CLI reports:
 
 ```text
+ERROR brink: story.ink:6..16 [E051] `#[…]` array literal is a brink extension — this project compiles strict ink (dialect = brink to enable)
 ERROR brink: 1 diagnostic(s) prevented compilation
 ```
 
-The CLI only reports a *count* today — for the underlying diagnostic
-(`E051`, pointing at the array literal, with the message `` `#[…]` array
-literal is a brink extension — this project compiles strict ink (dialect =
-brink to enable) ``), drive the compiler as a library and read
-`CompileError::Diagnostics` (see below), or use `brink ide` /
-`@brink-lang/web`, which do surface per-diagnostic detail.
+The CLI renders every resolved diagnostic — the source `path`, its byte
+`range`, the `[CODE]`, and the message — with the count still printing as a
+trailing summary underneath. Driving the compiler as a library and reading
+`CompileError::Diagnostics` (see below), or using `brink ide` /
+`@brink-lang/web`, gets you the same resolved set programmatically.
 
 Opt in explicitly with `--dialect brink`:
 
