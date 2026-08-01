@@ -32,7 +32,7 @@ use rowan::TextRange;
 
 use super::effects::FnArgOrigins;
 use super::ty::{FnRow, TowerTy, Ty, assignable, coalesce, unify, unify_all};
-use super::{InferredSig, ValueCallFact, ValueCallKind, range_key};
+use super::{DirectCallArgMismatch, InferredSig, ValueCallFact, ValueCallKind, range_key};
 
 /// Read-only context shared by every body inferred in the same SCC round.
 pub(super) struct BodyCtx<'a> {
@@ -168,6 +168,11 @@ pub(super) struct BodyResult {
     /// only place argument expressions have types; reported by strict mode
     /// only.
     pub value_calls: Vec<ValueCallFact>,
+    /// Issue #1864: statically-checkable argument-type mismatches at
+    /// **direct** call sites — see [`super::DirectCallArgMismatch`].
+    /// Recorded unconditionally, like `value_calls`; reported only by
+    /// strict mode.
+    pub direct_call_arg_mismatches: Vec<DirectCallArgMismatch>,
     /// Issue #1532 (the #1501 review's `remove`/`remove_at` migration-tail
     /// finding): every `remove(a, i)` call site in this body whose first
     /// argument is statically known to be `Ty::Array` — the pre-#1484 array
@@ -255,6 +260,7 @@ pub(super) fn infer_def_body(def: &super::Def<'_>, ctx: &BodyCtx<'_>) -> BodyRes
         effect_faults_refined: false,
         annotated,
         value_calls: Vec::new(),
+        direct_call_arg_mismatches: Vec::new(),
         array_remove_calls: Vec::new(),
         created_fn_values: BTreeSet::new(),
         local_fn_origins: BTreeMap::new(),
@@ -333,6 +339,7 @@ pub(super) fn infer_def_body(def: &super::Def<'_>, ctx: &BodyCtx<'_>) -> BodyRes
         effect_faults: pass.effect_faults,
         effect_faults_refined: pass.effect_faults_refined,
         value_calls: pass.value_calls,
+        direct_call_arg_mismatches: pass.direct_call_arg_mismatches,
         array_remove_calls: pass.array_remove_calls,
         created_fn_values: pass.created_fn_values,
         param_holes: pass.param_holes,
@@ -412,6 +419,9 @@ struct InferPass<'a, 'b> {
     /// two-independent-derivations comparison stays intact.
     annotated: BTreeMap<String, Ty>,
     value_calls: Vec<ValueCallFact>,
+    /// See [`BodyResult::direct_call_arg_mismatches`] — accumulated the
+    /// same way `value_calls` is, during the one body walk.
+    direct_call_arg_mismatches: Vec<DirectCallArgMismatch>,
     /// See [`BodyResult::array_remove_calls`] — accumulated the same way
     /// `value_calls` is, during the one body walk.
     array_remove_calls: Vec<TextRange>,
@@ -685,6 +695,31 @@ impl InferPass<'_, '_> {
         let name = info.name.clone();
         let cur = self.locals.get(&name).cloned().unwrap_or(Ty::Unknown);
         self.locals.insert(name, unify(&cur, ty));
+    }
+
+    /// Whether `expr` is exactly the expression shape [`Self::observe`]
+    /// itself would join a type into — a bare, single-segment `Path`
+    /// resolving to a `Param`/`Temp` in this body (mirrors `observe`'s own
+    /// `Expr::Path`/segment-count/`SymbolKind` guards verbatim, minus its
+    /// `ty.is_unknown()` check, which is about the *type being joined*,
+    /// not this expression's own shape). Issue #1864's direct-call
+    /// argument-mismatch check consults this to skip exactly the
+    /// arguments `observe` — called unconditionally right after, in
+    /// [`Self::infer_call`]'s direct-call branch — is about to (possibly)
+    /// drive to `Ty::Conflicted` on its own, which independently escapes
+    /// as `E066`; see [`super::DirectCallArgMismatch`]'s doc.
+    fn arg_is_observed_local(&self, expr: &Expr) -> bool {
+        let Expr::Path(p) = expr else { return false };
+        if p.segments.len() > 1 {
+            return false;
+        }
+        let Some(def) = self.resolve(p.range) else {
+            return false;
+        };
+        let Some(info) = self.ctx.index.symbols.get(&def) else {
+            return false;
+        };
+        matches!(info.kind, SymbolKind::Param | SymbolKind::Temp)
     }
 
     /// Record a `~ temp name: T = …` ascription in the annotated-fallback
@@ -1468,6 +1503,37 @@ impl InferPass<'_, '_> {
             return self.ctx.known_sigs.get(&def).map_or(Ty::Unknown, |sig| {
                 for (i, arg) in args.iter().enumerate() {
                     if let Some(param_ty) = sig.params.get(i) {
+                        // Issue #1864: a direct call's argument types were
+                        // only ever *observed* below — never checked
+                        // against the callee's already-known declared
+                        // param type, unlike a call through a function
+                        // value (`check_value_call`'s `ArgMismatch`, T1c).
+                        // Excludes an argument that `observe` (right
+                        // below) is about to join `param_ty` into — a
+                        // genuine disagreement there drives that local to
+                        // `Ty::Conflicted` on its own, already reported as
+                        // `E066`; see `super::DirectCallArgMismatch`'s doc
+                        // for why reporting it again here would double up.
+                        if !param_ty.is_unresolved()
+                            && !self.arg_is_observed_local(arg)
+                            && let Some(arg_ty) = arg_tys.get(i)
+                            && !arg_ty.is_unresolved()
+                            && !assignable(param_ty, arg_ty)
+                        {
+                            let callee = path
+                                .segments
+                                .iter()
+                                .map(|s| s.text.as_str())
+                                .collect::<Vec<_>>()
+                                .join(".");
+                            self.direct_call_arg_mismatches.push(DirectCallArgMismatch {
+                                range: path.range,
+                                callee,
+                                index: i,
+                                expected: param_ty.clone(),
+                                found: arg_ty.clone(),
+                            });
+                        }
                         self.observe(arg, param_ty);
                     }
                 }
@@ -1578,6 +1644,7 @@ impl InferPass<'_, '_> {
             effect_faults_refined: _,
             annotated,
             value_calls: _,
+            direct_call_arg_mismatches: _,
             array_remove_calls: _,
             created_fn_values: _,
             local_fn_origins,
@@ -3117,6 +3184,7 @@ mod tests {
             effect_faults_refined: false,
             annotated: BTreeMap::new(),
             value_calls: Vec::new(),
+            direct_call_arg_mismatches: Vec::new(),
             array_remove_calls: Vec::new(),
             created_fn_values: BTreeSet::new(),
             local_fn_origins: BTreeMap::new(),

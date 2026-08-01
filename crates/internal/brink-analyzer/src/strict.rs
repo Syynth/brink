@@ -328,6 +328,11 @@ pub fn check(
     // recorded map onto the existing TM-3 codes (E065/E066 escapes, E063
     // typed mismatches), never parallel ones.
     out.extend(check_value_calls(files, index, inference));
+    // Issue #1864: a direct call's arguments, checked against the resolved
+    // callee's already-known declared parameter types — the gap T1c's own
+    // `check_value_calls` above deliberately never covered (that pass is
+    // calls *through a value* specifically).
+    out.extend(check_direct_call_args(files, index, inference));
     // Issue #1532 (#1501 review, migration-tail finding 1): `remove`'s
     // pre-#1484 array leg has no compatibility shim — a statically-known
     // array receiver is caught here instead of only at the `MapRemove`
@@ -983,6 +988,70 @@ fn check_value_calls(
                     range: fact.range,
                     message,
                     code,
+                });
+            }
+        }
+    }
+    out
+}
+
+// ── Direct-call argument types (issue #1864) ───────────────────────────
+
+/// Report every [`crate::infer::DirectCallArgMismatch`] inference recorded,
+/// per def, as `E063` — the same typed-mismatch code
+/// [`check_value_calls`]'s own `ArgMismatch` arm reports for a call
+/// *through a value*; a direct call resolving straight to a known def via
+/// `known_sigs` is the same "declared type disagrees with what a caller
+/// passed" fact, just without a value in between (docs/t1c-spec.md §8's
+/// "existing TM-3 machinery, no new codes" posture, applied to the direct-
+/// call case #1864 identified as unchecked). Same shape as
+/// [`check_value_calls`]: walk every inferable def, read its recorded
+/// facts, map each straight onto one diagnostic.
+///
+/// `infer::body::InferPass::arg_is_observed_local` already excludes an
+/// argument `InferPass::observe` itself would join `param_ty` into, so
+/// every fact reaching here is disjoint from `check_escapes`'s own
+/// Conflicted-escape (`E066`) reporting for the same call site — no
+/// dedup needed on this side.
+fn check_direct_call_args(
+    files: &[(FileId, &HirFile)],
+    index: &SymbolIndex,
+    inference: &InferenceResult,
+) -> Vec<brink_ir::Diagnostic> {
+    let mut out = Vec::new();
+    for &(file, hir) in files {
+        let mut def_ids: Vec<DefinitionId> = Vec::new();
+        for knot in &hir.knots {
+            let kind = knot.symbol_kind();
+            if let Some(id) = annotations::def_id_for(index, file, kind, &knot.name.text) {
+                def_ids.push(id);
+            }
+            for stitch in &knot.stitches {
+                let qualified = format!("{}.{}", knot.name.text, stitch.name.text);
+                if let Some(id) =
+                    annotations::def_id_for(index, file, SymbolKind::Stitch, &qualified)
+                {
+                    def_ids.push(id);
+                }
+            }
+        }
+        for id in def_ids {
+            let Some(body) = inference.bodies.get(&id) else {
+                continue;
+            };
+            for fact in &body.direct_call_arg_mismatches {
+                out.push(brink_ir::Diagnostic {
+                    file,
+                    range: fact.range,
+                    message: format!(
+                        "argument {} of call to `{}` has type `{}` but its declared \
+                         parameter type is `{}`",
+                        fact.index + 1,
+                        fact.callee,
+                        fact.found.display(),
+                        fact.expected.display()
+                    ),
+                    code: brink_ir::DiagnosticCode::E063,
                 });
             }
         }

@@ -1805,11 +1805,18 @@ fn e152_array_receiver_is_never_flagged() {
 }
 
 /// An author-defined `contains` knot shadows the builtin (T1b-surface-spec
-/// §5's shadowing ruling) — a resolved call is ordinary and never checked.
+/// §5's shadowing ruling) — a resolved call is ordinary and never checked
+/// by E152 specifically (this test's own concern). The call site's own
+/// arguments (`1, 3`) deliberately match the shadowing `contains(a: int, b:
+/// int)`'s declared param types — issue #1864 landed general direct-call
+/// argument-type checking after this test was first written; the map/float
+/// arguments the builtin-shaped case above uses would now correctly fire
+/// `E063` against *this* def's own `int, int` signature, which is a real
+/// but unrelated diagnostic this test isn't about.
 #[test]
 fn e152_author_defined_contains_shadowing_the_builtin_is_not_flagged() {
     let source = "=== function contains(a: int, b: int) ===\n~ return true\n\
-                  === main ===\n~ temp x = contains(#{1: \"a\"}, 3.5)\n-> DONE\n";
+                  === main ===\n~ temp x = contains(1, 3)\n-> DONE\n";
     let out = compile(source, strict_options()).unwrap_or_else(|e| panic!("must compile: {e:?}"));
     assert!(
         out.warnings.iter().all(|d| d.code != DiagnosticCode::E152),
