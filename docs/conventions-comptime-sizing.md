@@ -260,19 +260,28 @@ tracked:
    `crates/internal/brink-syntax-native/tests/corpus/`) or fuzzer seed
    corpus under `crates/internal/brink-syntax-native/fuzz/seeds/brink/` —
    none of them is a stdlib module.
-3. **`brink.toml` has no conventions pointer.** `ProjectConfig`
-   (`crates/internal/brink-project-config/src/lib.rs:192`) carries
-   `dialect`, `types`, `lints`, `deny_warnings`, `unprune_dirs` — no
-   `conventions`/`elements` key. §3.5 already listed this as "design pass
-   owed".
-4. **Element dispatch has no project-level injection point.**
-   `element::collect(file_id, root)`
-   (`crates/internal/brink-ir/src/hir/lower_native/element.rs:128`) builds
-   the handler table by walking *the file's own* CST children. There is no
-   parameter through which an externally-evaluated registry could arrive,
-   and `element.rs:59-61` records why: confinement to the
-   `brink.toml`-named module "needs project identity that single-file
-   lowering does not have".
+3. ~~**`brink.toml` has no conventions pointer.**~~ **RESOLVED** (issue
+   #1844, PR #1872). `ProjectConfig`
+   (`crates/internal/brink-project-config/src/lib.rs`) now carries
+   `[project] elements` (a preset name or a project-relative `.brink`
+   path), threaded through `AnalysisOptions::apply_project_config` and
+   resolved against `module_map_query` by `brink-db`'s
+   `conventions_confinement_diagnostics_query` (`E169`).
+4. ~~**Element dispatch has no project-level injection point.**~~ **THE
+   SEAM IS BUILT** (issue #1863). `element::collect` and
+   `hir::lower_native::lower_with_conventions`
+   (`crates/internal/brink-ir/src/hir/lower_native/{element,mod}.rs`) now
+   accept an optional, already-ordered `ExternalConventions` — claiming
+   handlers declared in another file, merged into a file's own dispatch —
+   and `brink_analyzer::conventions_registry` performs the "join on
+   `DefinitionId`" (Q1) against the project `SymbolIndex`. **Not yet
+   live-wired**: `brink-db`'s per-file `lowered_query` still takes no
+   `ProjectInput` (the salsa-invalidation property item 4 originally
+   flagged is unchanged, deliberately — widening it is its own
+   architectural call), and there is still no real ordered identity list
+   to feed the seam until #1840's comptime evaluator exists. Every piece
+   is unit-tested with a hand-constructed registry; see issue #1863's own
+   PR for the full seam and the remaining live-wiring gap.
 
 Additionally, `brink-compiler` depends on `brink-runtime` only as a
 **dev-dependency** (`crates/brink-compiler/Cargo.toml`). Comptime evaluation

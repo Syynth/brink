@@ -1,7 +1,8 @@
 #![allow(clippy::panic)]
 
 use super::*;
-use crate::{BlockStmt, DiagnosticCode, ElseBranch, Tail, Terminator};
+use crate::{BlockStmt, DiagnosticCode, ElseBranch, Name, Tail, Terminator};
+use rowan::TextRange;
 
 fn lower_src(src: &str) -> (HirFile, SymbolManifest, Vec<Diagnostic>) {
     let parse = brink_syntax_native::parse(src);
@@ -1995,6 +1996,191 @@ fn element_matches_are_recorded_in_source_order_across_a_choice_point() {
         usize::from(hir.element_matches[1].line.start()),
         late_pos,
         "the continuation claim (source-later) must sort second: {:?}",
+        hir.element_matches
+    );
+}
+
+// ─── Conventions registry injection point (issue #1863) ────────────
+//
+// `element::collect`/`lower` accept an externally supplied, already
+// ordered registry — claiming handlers declared in some OTHER file — and
+// merge it into this file's own dispatch. #1840's comptime evaluator does
+// not exist yet, so every fixture below hand-constructs the
+// `ExternalConventions` the issue asks for: proof the seam works before
+// the evaluator that will eventually feed it.
+
+fn external_arrival_handler() -> ExternalConventions {
+    // A hand-built stand-in for what a real project-layer join
+    // (`brink_analyzer::conventions_registry::join_conventions_registry`)
+    // would hand `lower_with_conventions` once #1840 exists — the exact
+    // same `arrival(who)` handler `a_claimed_content_line_lowers_to_exactly_one_call`
+    // declares LOCALLY above, this time arriving from outside.
+    ExternalConventions::new(vec![ExternalClaimHandler {
+        name: Name {
+            text: "arrival".to_string(),
+            range: TextRange::new(0.into(), 7.into()),
+        },
+        params: vec!["who".to_string()],
+        pattern: "^(?<who>[A-Z]+) enters$".to_string(),
+        annotation: TextRange::new(0.into(), 10.into()),
+    }])
+}
+
+#[test]
+fn lower_with_no_external_registry_is_byte_identical_to_lower() {
+    // `external: None` must be `lower`'s own implementation, not a
+    // parallel path — the whole point of `lower` being a thin wrapper.
+    let src = "@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival(who) {\n  return who;\n}\n\nflow main() {\n  VENDOR enters\n}\n";
+    let parse = brink_syntax_native::parse(src);
+    let tree = parse.tree();
+    assert_eq!(
+        lower(FileId(0), &tree),
+        lower_with_conventions(FileId(0), &tree, None)
+    );
+}
+
+#[test]
+fn an_injected_registry_claims_a_line_in_a_file_that_declares_no_local_handler() {
+    // The gap issue #1863 names directly: today a file with zero local
+    // `claims = "…"` handlers never dispatches anything, however the
+    // project's `[project] elements` module is configured. An injected
+    // registry is the seam that changes that.
+    let (hir, _m, diags) = lower_with_conventions(
+        FileId(0),
+        &brink_syntax_native::parse("flow main() {\n  VENDOR enters\n}\n").tree(),
+        Some(&external_arrival_handler()),
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let main = hir
+        .knots
+        .iter()
+        .find(|k| k.name.text == "main")
+        .expect("main");
+    let (callee, args) = only_claimed_call(&main.body)
+        .expect("the injected handler must claim the line exactly like a local one would");
+    assert_eq!(callee, "arrival");
+    assert_eq!(args, vec!["VENDOR".to_string()]);
+}
+
+#[test]
+fn an_injected_handler_never_populates_this_files_own_claim_handlers() {
+    // `HirFile::claim_handlers` means "declared in this file" (issue
+    // #1844's confinement ground truth) — an injected handler was
+    // declared somewhere else, so it must never appear here. If it did,
+    // the confinement check would falsely accuse the *injecting* file of
+    // hosting a claiming handler it never wrote.
+    let (hir, _m, _diags) = lower_with_conventions(
+        FileId(0),
+        &brink_syntax_native::parse("flow main() {\n  VENDOR enters\n}\n").tree(),
+        Some(&external_arrival_handler()),
+    );
+    assert!(
+        hir.claim_handlers.is_empty(),
+        "an injected handler must not be recorded as locally declared: {:?}",
+        hir.claim_handlers
+    );
+}
+
+#[test]
+fn a_local_handler_wins_over_an_injected_handler_of_the_same_name() {
+    // The conventions module's own file is injected with (a subset of)
+    // its own declarations once a real project-layer join exists — this
+    // is the case that dedup exists for: the local declaration, with its
+    // real self-suppression range, must be the one `try_claim` finds
+    // first, never the injected duplicate.
+    let (hir, _m, diags) = lower_with_conventions(
+        FileId(0),
+        &brink_syntax_native::parse(
+            "@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival(who) {\n  return who;\n}\n\nflow main() {\n  VENDOR enters\n}\n",
+        )
+        .tree(),
+        Some(&external_arrival_handler()),
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(
+        hir.element_matches.len(),
+        1,
+        "no double-claim from the duplicate injected entry: {:?}",
+        hir.element_matches
+    );
+}
+
+#[test]
+fn an_injected_duplicate_with_a_stale_pattern_is_dropped_not_merely_shadowed() {
+    // `a_local_handler_wins_over_an_injected_handler_of_the_same_name`
+    // above cannot actually distinguish "the same-name injected entry was
+    // dropped at `collect` time" from "it was kept but never reached,
+    // because `try_claim`'s `handlers.chain(external).find(..)` tries the
+    // local one first and local+injected share one byte-identical
+    // pattern" — with identical patterns those two behave identically.
+    // This fixture gives the injected duplicate a DIFFERENT pattern (a
+    // stand-in for a registry gone stale relative to the file's current
+    // live declaration) so the two are observationally distinguishable:
+    // if `collect` actually drops the duplicate, nothing in this file
+    // ever tries the stale pattern at all, so a line matching *only* the
+    // stale pattern must go unclaimed.
+    let stale_duplicate = ExternalConventions::new(vec![ExternalClaimHandler {
+        name: Name {
+            text: "arrival".to_string(),
+            range: TextRange::new(0.into(), 7.into()),
+        },
+        params: vec!["who".to_string()],
+        // Deliberately NOT the local declaration's pattern — the stand-in
+        // for staleness.
+        pattern: "^(?<who>[A-Z]+) arrives$".to_string(),
+        annotation: TextRange::new(0.into(), 10.into()),
+    }]);
+    let (hir, _m, diags) = lower_with_conventions(
+        FileId(0),
+        &brink_syntax_native::parse(
+            "@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival(who) {\n  return who;\n}\n\nflow main() {\n  VENDOR arrives\n}\n",
+        )
+        .tree(),
+        Some(&stale_duplicate),
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert!(
+        hir.element_matches.is_empty(),
+        "a same-name injected duplicate must be dropped at collect time, not merely \
+         out-dispatched by declaration order — a line matching only the stale \
+         injected pattern must stay unclaimed: {:?}",
+        hir.element_matches
+    );
+}
+
+#[test]
+fn an_injected_handlers_foreign_annotation_range_never_suppresses_a_claim() {
+    // Correctness guard: `ExternalClaimHandler` carries no `decl` at all
+    // (only `annotation`, from the DECLARING file's own text) — `collect`
+    // sets an injected handler's `decl` to `None` rather than ever
+    // reusing `annotation` as a stand-in. If it did, a claimed line in
+    // THIS file whose byte offsets happen to fall inside that foreign
+    // range would be wrongly self-suppressed — pure numeric coincidence
+    // between two files' independent offset spaces, not a real "own
+    // body". The fixture constructs exactly that coincidence: the
+    // injected handler's (foreign) `annotation` is the same range this
+    // file's own claimed `SIGNAL` line occupies inside `flow main()`.
+    let src = "flow main() {\n  SIGNAL\n}\n";
+    let claimed_start = u32::try_from(src.find("SIGNAL").expect("fixture contains SIGNAL"))
+        .expect("fixture length fits in u32");
+    let (hir, _m, diags) = lower_with_conventions(
+        FileId(0),
+        &brink_syntax_native::parse(src).tree(),
+        Some(&ExternalConventions::new(vec![ExternalClaimHandler {
+            name: Name {
+                text: "effect".to_string(),
+                range: TextRange::default(),
+            },
+            params: Vec::new(),
+            pattern: "^SIGNAL$".to_string(),
+            annotation: TextRange::new(claimed_start.into(), (claimed_start + 6).into()),
+        }])),
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(
+        hir.element_matches.len(),
+        1,
+        "a foreign annotation range must never suppress a claim in this file: {:?}",
         hir.element_matches
     );
 }

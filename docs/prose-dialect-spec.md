@@ -197,7 +197,11 @@ consumes the module, only the value.
   confinement half of item (4) below (`E169`) for a path-shaped
   pointer. Resolving it against an *evaluated* `fn conventions()`
   registry (the dispatch-consuming half, not just the confinement
-  check) is still #1863's open injection-point question.
+  check) has its injection point built (issue #1863:
+  `hir::lower_native::lower_with_conventions` accepts an already-ordered
+  external handler set, joined on `DefinitionId` by
+  `brink_analyzer::conventions_registry`) but not yet live-wired to a
+  real evaluator — that is #1840's own job.
 
 ### 3.6 Element roles & attachment (RULED direction; mechanism leaned)
 Elements declare a **role**:

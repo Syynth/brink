@@ -71,6 +71,15 @@
 //! the project layer (issue #1844, `brink_db::queries::analysis::
 //! conventions_confinement_diagnostics_query`), which is the one seam that
 //! has both a file's module identity and the configured pointer.
+//!
+//! [`collect`] also accepts an optional, already-ordered EXTERNAL handler
+//! set (issue #1863, `super::external_conventions`) — claiming handlers
+//! declared in some *other* file (the project's conventions module) and
+//! injected into this file's dispatch. They are kept in their own list,
+//! never merged into the locally declared `handlers` this module
+//! collects: `HirFile::claim_handlers` and `E168`'s duplicate-pattern
+//! check both mean "declared IN THIS FILE", and folding an injected
+//! handler in would silently corrupt both.
 
 use brink_syntax_native::SyntaxKind as N;
 use brink_syntax_native::ast::{self, AstNode as _};
@@ -84,13 +93,18 @@ use crate::{
 };
 
 use super::SyntaxNode;
+use super::external_conventions::ExternalConventions;
 use super::provenance::native_provenance;
 use crate::provenance::NodeClass;
 
 /// One declared natural-notation handler: a top-level `fn` whose
-/// `@[element(claims = "…")]` pattern claims prose lines.
+/// `@[element(claims = "…")]` pattern claims prose lines — OR a handler
+/// injected from another file's evaluated conventions registry (issue
+/// #1863), for which `decl` is `None` (see that field's own doc).
 struct ClaimHandler {
-    /// The handler's own name, carrying its declaration-site range.
+    /// The handler's own name, carrying its declaration-site range — in
+    /// the injected case, the range is in the DECLARING file, not this
+    /// one.
     name: Name,
     /// Parameter names in declaration order — the argument order the
     /// rewritten call uses. Guaranteed by `E160`/`E167` to be exactly the
@@ -101,8 +115,14 @@ struct ClaimHandler {
     /// Range of the `@[element(claims = "…")]` line itself.
     annotation: TextRange,
     /// The handler declaration's own range — used to suppress claiming
-    /// inside the handler's own body (the staging rule).
-    decl: TextRange,
+    /// inside the handler's own body (the staging rule). `None` for an
+    /// injected handler (issue #1863): "own body is not claimable" is a
+    /// same-file concept, and an injected handler's declaration range is
+    /// meaningless — usually plain wrong — against `claimed` ranges in
+    /// THIS file's own text; comparing them by coincidence of numeric
+    /// offset would be a real bug, not a conservative no-op, so injected
+    /// handlers skip the check entirely rather than risk it.
+    decl: Option<TextRange>,
 }
 
 /// The dispatcher threaded through body lowering: the file's claiming
@@ -113,6 +133,15 @@ struct ClaimHandler {
 /// lowering quadratic in file size.
 pub(super) struct Elements {
     handlers: Vec<ClaimHandler>,
+    /// Handlers injected from another file's evaluated conventions
+    /// registry (issue #1863, `super::external_conventions`) — kept
+    /// separate from `handlers` for the reason the module doc gives:
+    /// `handler_decls`/`E168` both mean "declared in this file", and an
+    /// injected handler was declared elsewhere. [`try_claim`] dispatches
+    /// over `handlers` first, `external` second — a local declaration
+    /// always wins over an injected one of the same name (see
+    /// [`collect`]'s dedup).
+    external: Vec<ClaimHandler>,
     /// Every claimed line, in the order lowering *reached* it — not
     /// necessarily source order (a `CHOICE_POINT` lowers its source-later
     /// continuation before its source-earlier choice bodies). [`super::lower`]
@@ -124,23 +153,30 @@ pub(super) struct Elements {
 }
 
 impl Elements {
-    /// `true` when no handler in this file claims anything, so callers can
-    /// skip candidate testing entirely on the overwhelmingly common path.
+    /// `true` when no handler — local or injected — claims anything in
+    /// this file, so callers can skip candidate testing entirely on the
+    /// overwhelmingly common path.
     fn is_inert(&self) -> bool {
-        self.handlers.is_empty()
+        self.handlers.is_empty() && self.external.is_empty()
     }
 
     /// Every claiming handler *declared* in this file, in declaration
     /// order — [`HirFile::claim_handlers`](crate::HirFile::claim_handlers)'s
     /// source (issue #1844's confinement check). Deliberately independent
     /// of `matches`: a handler that claims nothing in its own file is still
-    /// a declaration, and still checkable.
+    /// a declaration, and still checkable. Deliberately reads `handlers`
+    /// only, never `external` — an injected handler (issue #1863) was not
+    /// declared in this file, so it must never appear here (it would
+    /// otherwise falsely accuse the *injecting* file of a confinement
+    /// violation).
     pub(super) fn handler_decls(&self) -> Vec<crate::ClaimHandlerDecl> {
         self.handlers
             .iter()
             .map(|h| crate::ClaimHandlerDecl {
                 name: h.name.clone(),
                 annotation: h.annotation,
+                params: h.params.clone(),
+                pattern: h.pattern.as_str().to_string(),
             })
             .collect()
     }
@@ -157,7 +193,19 @@ impl Elements {
 /// *not* happen here either: it needs to see which handlers actually
 /// fired during body lowering, which hasn't happened yet at collection
 /// time — see that function's doc.
-pub(super) fn collect(file_id: FileId, root: &SyntaxNode) -> Elements {
+///
+/// `external` is the issue #1863 injection point: an optional,
+/// already-ordered conventions registry built OUTSIDE this file (another
+/// file's declared handlers). Any injected handler whose name collides
+/// with one this file declares locally is dropped — a local declaration
+/// always wins (see [`Elements`]'s doc); in practice this only fires for
+/// the conventions module's own file, where the injected registry and
+/// this file's own declarations name the very same handlers.
+pub(super) fn collect(
+    file_id: FileId,
+    root: &SyntaxNode,
+    external: Option<&ExternalConventions>,
+) -> Elements {
     let mut handlers = Vec::new();
     for node in root.children() {
         // Top-level `fn` only — see the module doc. `handle_line`'s
@@ -190,11 +238,30 @@ pub(super) fn collect(file_id: FileId, root: &SyntaxNode) -> Elements {
             params: params.into_iter().map(|p| p.name.text).collect(),
             pattern,
             annotation: element.range,
-            decl: node.text_range(),
+            decl: Some(node.text_range()),
         });
+    }
+    let mut external_handlers = Vec::new();
+    if let Some(external) = external {
+        for candidate in external.handlers() {
+            if handlers.iter().any(|h| h.name.text == candidate.name.text) {
+                continue;
+            }
+            let Ok(pattern) = regex::Regex::new(&candidate.pattern) else {
+                continue;
+            };
+            external_handlers.push(ClaimHandler {
+                name: candidate.name.clone(),
+                params: candidate.params.clone(),
+                pattern,
+                annotation: candidate.annotation,
+                decl: None,
+            });
+        }
     }
     Elements {
         handlers,
+        external: external_handlers,
         matches: Vec::new(),
     }
 }
@@ -428,10 +495,18 @@ pub(super) fn try_claim(
     let base = text_node.text_range().start() + TextSize::from(lead);
 
     let claimed = node.text_range();
+    // Local handlers are tried before injected ones (issue #1863) — see
+    // `Elements`'s doc. Only a local handler's `decl` ever suppresses a
+    // claim inside its own body; an injected handler's `decl` is `None`
+    // and never suppresses (see `ClaimHandler::decl`'s doc for why
+    // comparing a foreign-file range here would be a real bug).
     let handler = elements
         .handlers
         .iter()
-        .find(|h| !h.decl.contains_range(claimed) && h.pattern.is_match(trimmed))?;
+        .chain(elements.external.iter())
+        .find(|h| {
+            !h.decl.is_some_and(|decl| decl.contains_range(claimed)) && h.pattern.is_match(trimmed)
+        })?;
 
     let caps = handler.pattern.captures(trimmed)?;
     let mut captures = Vec::with_capacity(handler.params.len());

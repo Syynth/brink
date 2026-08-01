@@ -517,14 +517,20 @@ fn hir_file_heap(hir: &HirFile) -> usize {
                         .sum::<usize>()
             })
             .sum::<usize>()
-        // Declared claiming handlers (issue #1844): the vec itself plus
-        // each record's own owned name string — `ClaimHandlerDecl` carries
-        // no other heap allocation (`annotation` is a `Copy` `TextRange`).
+        // Declared claiming handlers (issue #1844, extended by #1863's
+        // `params`/`pattern` fields): the vec itself plus each record's
+        // own owned strings — the handler's name, its pattern source, and
+        // every parameter name (`annotation` is a `Copy` `TextRange`).
         + vec_heap(&hir.claim_handlers)
         + hir
             .claim_handlers
             .iter()
-            .map(|h| h.name.text.capacity())
+            .map(|h| {
+                h.name.text.capacity()
+                    + h.pattern.capacity()
+                    + vec_heap(&h.params)
+                    + h.params.iter().map(String::capacity).sum::<usize>()
+            })
             .sum::<usize>()
 }
 

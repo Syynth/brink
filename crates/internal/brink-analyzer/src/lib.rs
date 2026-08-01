@@ -13,6 +13,7 @@ mod coalesce;
 mod comparator_contract;
 mod contains_domain;
 mod conventions_confinement;
+mod conventions_registry;
 mod conversions;
 mod determinism;
 mod dialect_gate;
@@ -61,6 +62,9 @@ pub use comparator_contract::{
     check as comparator_contract_diagnostics, comparator_callees, hir_has_comparator_site,
 };
 pub use conventions_confinement::conventions_module_diagnostics;
+pub use conventions_registry::{
+    ClaimHandlerCandidate, candidate_claim_handlers, join_conventions_registry,
+};
 pub use dialect_gate::Dialect;
 pub use effects_assertions::{
     assertion_defs as effects_assertion_defs, check as effects_assertion_diagnostics,

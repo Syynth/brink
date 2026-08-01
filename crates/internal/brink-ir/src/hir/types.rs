@@ -376,6 +376,13 @@ pub struct ElementMatch {
 /// *own* file (because the lines it targets live elsewhere, or simply don't
 /// occur here) is still a declared claim, and still misplaced if this file
 /// isn't the configured conventions module.
+///
+/// `params`/`pattern` (issue #1863) are the same CST-derived payload
+/// [`crate::hir::lower_native::external_conventions::ExternalClaimHandler`]
+/// carries into another file's lowering — this struct IS the "compiler
+/// reads the conventions module's CST for `ClaimHandler` records" half of
+/// the two-independent-reads join (`docs/decision-log.md`, 2026-08-01
+/// "Conventions comptime", Q1), not a parallel record of the same fact.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaimHandlerDecl {
     /// The handler's own name, carrying its declaration-site range.
@@ -384,6 +391,13 @@ pub struct ClaimHandlerDecl {
     /// confinement diagnostic's anchor, matching `E112`'s own placement
     /// diagnostic (the annotation line, not the declaration body).
     pub annotation: TextRange,
+    /// Parameter names in declaration order — the argument order a
+    /// rewritten call uses. Guaranteed by `E160`/`E167` to be exactly the
+    /// pattern's named-capture set.
+    pub params: Vec<String>,
+    /// The claiming pattern's regex source (uncompiled — `regex::Regex`
+    /// has no `Eq`, which this struct's derive needs).
+    pub pattern: String,
 }
 
 /// A built-in editor-presentation token (`docs/prose-dialect-spec.md`
