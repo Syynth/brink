@@ -277,6 +277,16 @@ pub enum UfcsVerdict {
         receiver: Ty,
         /// The prelude function's name, as written.
         name: String,
+        /// Issue #1919: statically-checkable argument-domain mismatches
+        /// between the desugared call `name(recv, args)` and the verb's
+        /// own container-projected domain (the receiver's element/key/
+        /// value type — a prelude verb has no [`DefinitionId`] and so no
+        /// declared param list to compare against), computed
+        /// unconditionally alongside this verdict — see
+        /// [`UfcsVisitor::check_ufcs_prelude_arg_types`]'s own doc.
+        /// Reported only by strict mode ([`check_strict`], `E063`), the
+        /// same code [`Self::FreeFnDesugar`]'s own `arg_mismatches` uses.
+        arg_mismatches: Vec<UfcsArgMismatch>,
     },
 }
 
@@ -428,6 +438,15 @@ pub fn resolve(
 ///   those two passes — the resolved free-function *target*'s signature is
 ///   only ever available here, where this pass has already resolved it.
 ///
+/// - Issue #1919: a `PreludeDesugar` verdict's own `arg_mismatches`
+///   ([`UfcsVisitor::check_ufcs_prelude_arg_types`]) — the prelude sibling
+///   of the `FreeFnDesugar` bullet above, for the collection verbs whose
+///   domain is a plain container projection (`xs.push(v)`, `m.get(k)`, and
+///   the rest of that family). `remove`'s array leg stays the hand-written
+///   `E149` check just below rather than folding into this fact: the two
+///   are disjoint diagnostic families keyed on the same `(receiver, name)`
+///   pair, not a double-report risk.
+///
 /// Strict-mode-only **by convention, not by construction**, exactly like
 /// `coalesce::resolve`'s `E066` half: production reaches this only from
 /// `strict::check`, after `strict::config_error` has confirmed
@@ -466,8 +485,9 @@ pub fn check_strict(
 /// `infer::body`'s `remove` arm records; the two spellings must agree, so
 /// the receiver test here (`Ty::Array`) is deliberately the same one.
 ///
-/// `E063` (issue #1881) — every recorded [`UfcsArgMismatch`] on a
-/// `FreeFnDesugar`/`FreeFnAutoRef` verdict, reported the same way
+/// `E063` (issue #1881, widened to `PreludeDesugar` by issue #1919) —
+/// every recorded [`UfcsArgMismatch`] on a `FreeFnDesugar`/`FreeFnAutoRef`/
+/// `PreludeDesugar` verdict, reported the same way
 /// `strict::check_direct_call_args` reports `DirectCallArgMismatch`.
 ///
 /// Every future collection-typed check that keys on `(receiver type, verb)`
@@ -475,17 +495,24 @@ pub fn check_strict(
 /// of routing through the verdict table at all.
 fn strict_verdict_diagnostics(key: NodeKey, verdict: &UfcsVerdict) -> Vec<Diagnostic> {
     match verdict {
-        UfcsVerdict::PreludeDesugar { receiver, name } => {
-            let code = match (name.as_str(), receiver) {
-                ("remove", Ty::Array(_)) => DiagnosticCode::E149,
-                _ => return Vec::new(),
-            };
-            vec![Diagnostic {
-                file: key.file,
-                range: TextRange::new(key.range.0.into(), key.range.1.into()),
-                message: code.title().to_owned(),
-                code,
-            }]
+        UfcsVerdict::PreludeDesugar {
+            receiver,
+            name,
+            arg_mismatches,
+        } => {
+            let mut out: Vec<Diagnostic> = arg_mismatches
+                .iter()
+                .map(|mismatch| ufcs_arg_mismatch_diagnostic(key, name, mismatch))
+                .collect();
+            if let ("remove", Ty::Array(_)) = (name.as_str(), receiver) {
+                out.push(Diagnostic {
+                    file: key.file,
+                    range: TextRange::new(key.range.0.into(), key.range.1.into()),
+                    message: DiagnosticCode::E149.title().to_owned(),
+                    code: DiagnosticCode::E149,
+                });
+            }
+            out
         }
         UfcsVerdict::FreeFnDesugar {
             name,
@@ -814,9 +841,19 @@ impl UfcsVisitor<'_> {
             if crate::resolve::is_t1b_stdlib_name(&method.text)
                 || crate::resolve::is_builtin_function(&method.text)
             {
+                // Issue #1919: the prelude sibling of the `arg_mismatches`
+                // computed below for the free-fn desugar — see
+                // `check_ufcs_prelude_arg_types`'s own doc for why this is
+                // safe to compute here (D1's field-access-wins check has
+                // already run by the time this verdict is reached) and why
+                // it cannot double-report `E149` (a disjoint diagnostic
+                // family from the domain mismatches this checks).
+                let arg_mismatches =
+                    self.check_ufcs_prelude_arg_types(path.range, &receiver.ty, &method.text);
                 let verdict = UfcsVerdict::PreludeDesugar {
                     receiver: receiver.ty.clone(),
                     name: method.text.clone(),
+                    arg_mismatches,
                 };
                 self.table
                     .insert(NodeKey::new(self.file, path.range), verdict);
@@ -962,6 +999,83 @@ impl UfcsVisitor<'_> {
                 mismatches.push(UfcsArgMismatch {
                     index: i + 1,
                     expected: param_ty.clone(),
+                    found: arg_ty.clone(),
+                });
+            }
+        }
+        mismatches
+    }
+
+    /// Issue #1919: `PreludeDesugar`'s own argument-domain check — the T1b/
+    /// NS-A1 stdlib-verb sibling of [`Self::check_ufcs_arg_types`] (issue
+    /// #1881, `FreeFnDesugar`/`FreeFnAutoRef`). A prelude verb has no
+    /// [`DefinitionId`] and no declared parameter list
+    /// ([`UfcsVerdict::PreludeDesugar`]'s own doc) — its "signature" instead
+    /// lives as `infer::body::InferPass::infer_intrinsic`'s own per-verb
+    /// domain rules, keyed off the receiver's *inferred container type*
+    /// (an array's element type, a map's key/value types).
+    ///
+    /// This mirrors that domain knowledge declaratively, for the verbs
+    /// whose domain is a plain container projection, rather than calling
+    /// `infer_intrinsic` itself: that method needs a live `Expr` for its
+    /// receiver-write arms (`push`/`insert`/… call
+    /// `record_write(args.first())`, resolving an `Expr::Path` back through
+    /// the `ResolutionMap` — keyed at the *whole call's* own range, so a
+    /// synthetic receiver-only `Expr` would resolve to nothing there) and
+    /// mutates the body-inference walk's own `self.locals`/
+    /// `self.array_remove_calls` state, neither of which this post-hoc,
+    /// already-fully-resolved verdict pass has access to (see
+    /// `check_strict`'s own module doc for why the `E149` half stays a
+    /// hand-written twin rather than an `infer_intrinsic` call, for the
+    /// same reason).
+    ///
+    /// Unlike [`infer::body::InferPass::infer_ufcs_free_fn_result`]
+    /// (issue #1909), which has to decline a `Ty::Struct` receiver because
+    /// D1's field-access-wins rule has not run yet at body-inference time,
+    /// this check runs no such risk: [`Self::resolve_call`] always tries
+    /// [`Self::try_field_call`] (D1) before [`Self::try_free_fn_desugar`]
+    /// (D3/D4), so a `PreludeDesugar` verdict is only ever constructed once
+    /// field access has already lost.
+    ///
+    /// `remove`'s *array* leg is deliberately excluded from the domain
+    /// table below: that shape is `E149` (issue #1540), already reported
+    /// unconditionally for this exact verdict by
+    /// [`strict_verdict_diagnostics`] — a disjoint diagnostic family from
+    /// the domain mismatches this method reports, so there is no risk of
+    /// double-reporting between the two.
+    fn check_ufcs_prelude_arg_types(
+        &self,
+        range: TextRange,
+        receiver: &Ty,
+        name: &str,
+    ) -> Vec<UfcsArgMismatch> {
+        let expected: Vec<Ty> = match (name, receiver) {
+            ("push" | "heap_push" | "index_of", Ty::Array(elem)) => vec![(**elem).clone()],
+            ("contains", Ty::Array(elem)) => vec![(**elem).clone()],
+            ("contains", Ty::Map(k, _)) => vec![(**k).clone()],
+            ("get" | "remove", Ty::Map(k, _)) => vec![(**k).clone()],
+            ("contains_value", Ty::Map(_, v)) => vec![(**v).clone()],
+            ("insert", Ty::Map(k, v)) => vec![(**k).clone(), (**v).clone()],
+            _ => return Vec::new(),
+        };
+        let empty: Vec<Ty> = Vec::new();
+        let written: &[Ty] = self
+            .current_body()
+            .and_then(|b| b.ufcs_call_args.iter().find(|f| f.range == range))
+            .map_or(empty.as_slice(), |f| f.args.as_slice());
+
+        let mut mismatches = Vec::new();
+        for (i, expected_ty) in expected.iter().enumerate() {
+            let Some(arg_ty) = written.get(i) else {
+                continue;
+            };
+            if arg_ty.is_unresolved() {
+                continue;
+            }
+            if !assignable(expected_ty, arg_ty) {
+                mismatches.push(UfcsArgMismatch {
+                    index: i + 1,
+                    expected: expected_ty.clone(),
                     found: arg_ty.clone(),
                 });
             }
