@@ -1396,7 +1396,9 @@ export type SpeculationKinds = Record<string, "query" | "effect">;
 
 /** Options for `StoryRunnerHandle.speculate()`. All fields optional. */
 export interface SpeculationOptions {
-  /** VM step budget for a single `advance()` call. Default 100,000. */
+  /** VM step budget for a single `advance()`, `evalFunction()`, or
+   * `resumeFunctionEval()` call — each call gets its own fresh allowance.
+   * Default 100,000. */
   steps?: number;
   /** Total visible-line budget across this speculation's lifetime. Default 1,000. */
   lines?: number;

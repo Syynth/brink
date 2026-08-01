@@ -799,7 +799,7 @@ impl StoryRunner {
     ///
     /// ```json
     /// {
-    ///   "steps": 100000,        // VM step budget for one `advance` call
+    ///   "steps": 100000,        // VM step budget for one `advance`/`evalFunction`/`resumeFunctionEval` call
     ///   "lines": 1000,          // total visible-line budget for this speculation
     ///   "context": "watch",     // "watch" | "eval" — gates Effect-kind externals
     ///   "liveEffects": false,   // arm Effect externals (only takes effect under "eval")

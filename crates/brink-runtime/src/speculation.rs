@@ -44,9 +44,11 @@ use crate::world::{ContextView, FlowLocal, Mode, World};
 /// Caller-supplied cap on a [`Speculation`]'s VM stepping, in place of the
 /// runtime's hardcoded `STEP_LIMIT`/`LINE_LIMIT` ceilings.
 ///
-/// - `steps` bounds a single [`Speculation::advance`] call's inner VM step
-///   loop (mirrors [`FlowInstance`]'s private `STEP_LIMIT`, 1,000,000 in
-///   production).
+/// - `steps` bounds a single call's inner VM step loop — for
+///   [`Speculation::advance`], [`Speculation::eval_function`], and
+///   [`Speculation::resume_function_eval`] alike (mirrors [`FlowInstance`]'s
+///   private `STEP_LIMIT`, 1,000,000 in production). Each call gets its own
+///   fresh allowance; the budget does not accumulate across calls.
 /// - `lines` bounds the total number of visible lines a `Speculation` may
 ///   produce over its lifetime, across however many `advance` calls the
 ///   caller makes (mirrors [`FlowInstance::LINE_LIMIT`], 10,000 in
