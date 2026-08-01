@@ -516,7 +516,10 @@ fn a_tag_starting_with_at_on_a_trailing_tag_line_emits_e172() {
     // A trailing tag on a content line — the `lower_content_run` TAG arm.
     let (hir, _m, diags) = lower_src("flow a() {\n  Hi. #@was(\"old_name\")\n}\n");
     assert_eq!(
-        diags.iter().filter(|d| d.code == DiagnosticCode::E172).count(),
+        diags
+            .iter()
+            .filter(|d| d.code == DiagnosticCode::E172)
+            .count(),
         1,
         "expected exactly one E172, got: {diags:?}"
     );
@@ -535,7 +538,10 @@ fn a_standalone_at_prefixed_tag_line_emits_e172() {
     // A whole-line tag — the `TAG_LINE` arm of `lower_one_item`.
     let (hir, _m, diags) = lower_src("flow a() {\n  #@private\n}\n");
     assert_eq!(
-        diags.iter().filter(|d| d.code == DiagnosticCode::E172).count(),
+        diags
+            .iter()
+            .filter(|d| d.code == DiagnosticCode::E172)
+            .count(),
         1,
         "expected exactly one E172, got: {diags:?}"
     );
