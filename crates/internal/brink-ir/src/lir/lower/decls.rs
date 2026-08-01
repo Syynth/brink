@@ -311,39 +311,7 @@ pub fn eval_const_expr(
             eval_const_infix(&l, ie.op, &r)
         }
         hir::Expr::Path(path) => {
-            if let Some(id) = resolutions.resolve(file, path.range) {
-                if let Some(info) = index.symbols.get(&id) {
-                    // Native bare-name fn value in declaration-initializer
-                    // position (RULED 2026-08-01, `docs/t1c-spec.md` §2a,
-                    // issue #1862): `var f = double;` must fold the same way
-                    // the zero-bound `#fn(double)` literal arm
-                    // (`eval_const_fn_literal`) does — mirrors the gate
-                    // `lir::lower::expr::lower_path` applies in expression
-                    // position, so a native declaration default and a native
-                    // expression-position reference to the same function
-                    // never disagree on what value they produce.
-                    if native && info.is_function_definition() {
-                        lir::ConstValue::FnRef(id)
-                    } else {
-                        match info.kind {
-                            SymbolKind::ListItem => lir::ConstValue::List {
-                                items: vec![id],
-                                origins: vec![],
-                            },
-                            SymbolKind::Constant => const_values
-                                .get(&id)
-                                .cloned()
-                                .unwrap_or(lir::ConstValue::Null),
-                            SymbolKind::Variable => lir::ConstValue::Null,
-                            _ => lir::ConstValue::DivertTarget(id),
-                        }
-                    }
-                } else {
-                    lir::ConstValue::Null
-                }
-            } else {
-                lir::ConstValue::Null
-            }
+            fold_path_ref(path, file, resolutions, index, const_values, native)
         }
         hir::Expr::DivertTarget(path) => {
             if let Some(id) = resolutions.resolve(file, path.range) {
@@ -395,6 +363,48 @@ pub fn eval_const_expr(
         // T1c-2: `VAR f = #fn(…)` — see `eval_const_fn_literal`'s doc.
         hir::Expr::FnLiteral(fl) => eval_const_fn_literal(fl, env, diagnostics),
         _ => lir::ConstValue::Null,
+    }
+}
+
+/// Fold a bare `Path` reference used as (or nested inside) a declaration
+/// default — [`eval_const_expr`]'s `Path` arm, split out to keep that match
+/// under clippy's line budget.
+///
+/// Native bare-name fn value in declaration-initializer position (RULED
+/// 2026-08-01, `docs/t1c-spec.md` §2a, issue #1862): `var f = double;` must
+/// fold the same way the zero-bound `#fn(double)` literal arm
+/// (`eval_const_fn_literal`) does — mirrors the gate
+/// `lir::lower::expr::lower_path` applies in expression position, so a
+/// native declaration default and a native expression-position reference to
+/// the same function never disagree on what value they produce.
+fn fold_path_ref(
+    path: &hir::Path,
+    file: FileId,
+    resolutions: &ResolutionLookup,
+    index: &SymbolIndex,
+    const_values: &LookupMap<DefinitionId, lir::ConstValue>,
+    native: bool,
+) -> lir::ConstValue {
+    let Some(id) = resolutions.resolve(file, path.range) else {
+        return lir::ConstValue::Null;
+    };
+    let Some(info) = index.symbols.get(&id) else {
+        return lir::ConstValue::Null;
+    };
+    if native && info.is_function_definition() {
+        return lir::ConstValue::FnRef(id);
+    }
+    match info.kind {
+        SymbolKind::ListItem => lir::ConstValue::List {
+            items: vec![id],
+            origins: vec![],
+        },
+        SymbolKind::Constant => const_values
+            .get(&id)
+            .cloned()
+            .unwrap_or(lir::ConstValue::Null),
+        SymbolKind::Variable => lir::ConstValue::Null,
+        _ => lir::ConstValue::DivertTarget(id),
     }
 }
 
