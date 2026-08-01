@@ -75,10 +75,11 @@ pub use external_check::{
 };
 pub use infer::{
     BodyTypes, CallGraph, CoalesceError, Def, DirectCallArgMismatch, EffectAtoms, EffectRow, FnRow,
-    InferenceResult, InferredSig, SccGraph, Ty, TypedAssignMismatch, ValueCallFact, ValueCallKind,
-    assignable, call_edges, coalesce, collect_external_sigs, def_body, def_effect_atoms,
-    effects_project, erase_fn_rows, infer_project, inferable_defs, inferable_defs_from_index,
-    referenced_globals, scc_graph, solve_scc, solve_scc_effects, unify, unify_all,
+    InferenceResult, InferredSig, SccGraph, Ty, TypedAssignMismatch, UfcsCallArgs, ValueCallFact,
+    ValueCallKind, assignable, call_edges, coalesce, collect_external_sigs, def_body,
+    def_effect_atoms, effects_project, erase_fn_rows, infer_project, inferable_defs,
+    inferable_defs_from_index, referenced_globals, scc_graph, solve_scc, solve_scc_effects, unify,
+    unify_all,
 };
 pub use manifest::{ModuleMap, ResolvedModule};
 pub use native_admission::validate_native_accept_list;
@@ -95,7 +96,7 @@ pub use strict::{
 };
 pub use structs::{ShapeInfo, declared_shapes};
 pub use ufcs::{
-    NodeKey, SideTable, UfcsTable, UfcsVerdict, project_has_ufcs_call,
+    NodeKey, SideTable, UfcsArgMismatch, UfcsTable, UfcsVerdict, project_has_ufcs_call,
     resolve as resolve_ufcs_calls, to_lir_lookup as ufcs_lir_lookup,
 };
 

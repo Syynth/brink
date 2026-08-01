@@ -43,7 +43,8 @@ use std::mem::{size_of, size_of_val};
 use std::sync::Arc;
 
 use brink_analyzer::{
-    BodyTypes, DirectCallArgMismatch, InferredSig, Sig, Ty, TypedAssignMismatch, ValueCallFact,
+    BodyTypes, DirectCallArgMismatch, InferredSig, Sig, Ty, TypedAssignMismatch, UfcsCallArgs,
+    ValueCallFact,
 };
 use brink_format::DefinitionId;
 use brink_ir::{
@@ -373,6 +374,14 @@ fn typed_assign_mismatch_heap(m: &TypedAssignMismatch) -> usize {
     string_heap(&m.target) + ty_heap(&m.expected) + ty_heap(&m.found)
 }
 
+/// Issue #1881: a `UfcsCallArgs`'s own heap contribution — its `args` `Vec`
+/// plus each element's own `Ty` heap cost, same shape `body_types_heap`
+/// already applies to `b.params`/`b.locals`. `TextRange` owns no heap data
+/// of its own (two `u32`s inline), same posture as `array_remove_calls`.
+fn ufcs_call_args_heap(f: &UfcsCallArgs) -> usize {
+    vec_heap(&f.args) + f.args.iter().map(ty_heap).sum::<usize>()
+}
+
 fn body_types_heap(b: &BodyTypes) -> usize {
     let params_heap: usize = b
         .params
@@ -409,6 +418,11 @@ fn body_types_heap(b: &BodyTypes) -> usize {
         + b.typed_assign_mismatches
             .iter()
             .map(typed_assign_mismatch_heap)
+            .sum::<usize>()
+        + vec_heap(&b.ufcs_call_args)
+        + b.ufcs_call_args
+            .iter()
+            .map(ufcs_call_args_heap)
             .sum::<usize>()
 }
 
@@ -700,6 +714,7 @@ mod tests {
                 value_calls: Vec::new(),
                 direct_call_arg_mismatches: Vec::new(),
                 typed_assign_mismatches: Vec::new(),
+                ufcs_call_args: Vec::new(),
                 array_remove_calls: Vec::new(),
             },
         );
@@ -763,6 +778,23 @@ mod tests {
             target: "very_long_target_name".to_string(),
             expected: Ty::Int,
             found: Ty::String,
+        });
+
+        let populated_size = infer_body_heap_size(&Some(Arc::new(populated)));
+        assert!(populated_size > empty);
+    }
+
+    /// Issue #1881: `ufcs_call_args` is a consumer `body_types_heap` must
+    /// walk too — same growth-proof shape as
+    /// [`infer_body_heap_size_grows_with_direct_call_arg_mismatches`].
+    #[test]
+    fn infer_body_heap_size_grows_with_ufcs_call_args() {
+        let empty = infer_body_heap_size(&Some(Arc::new(BodyTypes::default())));
+
+        let mut populated = BodyTypes::default();
+        populated.ufcs_call_args.push(UfcsCallArgs {
+            range: rowan::TextRange::new(rowan::TextSize::new(0), rowan::TextSize::new(1)),
+            args: vec![Ty::Int, Ty::String],
         });
 
         let populated_size = infer_body_heap_size(&Some(Arc::new(populated)));

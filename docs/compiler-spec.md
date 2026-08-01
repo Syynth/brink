@@ -437,7 +437,7 @@ asserts every variant has a corresponding doc file and that no orphaned doc file
 | [`E060`](diagnostics/E060.md) | `brink-codegen-inkb` refused to emit bytecode for a `Program` that violates an invariant an earlier,... |
 | [`E061`](diagnostics/E061.md) | A type annotation names something that isn't a recognized nominal type... |
 | [`E062`](diagnostics/E062.md) | RETIRED — : |
-| [`E063`](diagnostics/E063.md) | A param/return/`VAR`/`CONST`/`~ temp` type annotation disagrees with the type TM-1's body inference would otherwise derive, or (issue #1877) a `VAR`/`CONST`/`~ temp` declaration initializer or a plain assignment disagrees with its target's already-known declared type. |
+| [`E063`](diagnostics/E063.md) | A param/return/`VAR`/`CONST`/`~ temp` type annotation disagrees with the type TM-1's body inference would otherwise derive, or (issue #1877) a `VAR`/`CONST`/`~ temp` declaration initializer or a plain assignment disagrees with its target's already-known declared type, or (issue #1881) a UFCS-desugared call's receiver or written argument disagrees with the desugared free function's already-known declared param type. |
 | [`E064`](diagnostics/E064.md) | `types = strict` was requested but the project's dialect isn't `brink` — strict typing is a brink-dialect... |
 | [`E065`](diagnostics/E065.md) | Under `types = strict`, a def's inferred signature or body slot (param, return, or temp) resolved to... |
 | [`E066`](diagnostics/E066.md) | Under `types = strict`, a def's inferred signature or body slot resolved to `Ty::Conflicted` — the body's... |

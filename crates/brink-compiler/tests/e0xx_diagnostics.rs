@@ -19,7 +19,12 @@
 //!   exception, native-only (`InfixOp::Coalesce`) and disk-based (their own
 //!   `compile_native` helper), kept here per the review finding that added
 //!   them (PR #1469/#1460) rather than growing a second disk-based harness
-//!   in `tm3_strict_policy.rs` for one code.
+//!   in `tm3_strict_policy.rs` for one code. The E063-through-UFCS block
+//!   near the bottom of this file (issue #1881) is the identical exception
+//!   for the same reason: UFCS is native-only by construction (see
+//!   `brink-analyzer::ufcs`'s module doc), so it needs this file's own
+//!   `compile_native` helper rather than `tm3_strict_policy.rs`'s
+//!   in-memory, ink-syntax-only `compile_mem`.
 //!
 //! Codes retired as unreachable (lane-A audit findings + hygiene follow-up
 //! #709; see enum docs for rationale):
@@ -1522,6 +1527,138 @@ fn e149_inert_under_gradual_types() {
         out.warnings
     );
 }
+
+// ─── E063 through the UFCS spelling (issue #1881) ──────────────────────
+//
+// A UFCS-desugared call (`recv.name(args)` → `name(recv, args)`) had no
+// argument-type check of its own against the desugared free function's
+// declared param types — `strict::check_direct_call_args` (#1864/PR #1875)
+// only reaches a *direct* call's callee, and a UFCS receiver resolves to a
+// *value*, so `infer::body::infer_call`'s `known_sigs` branch (the thing
+// that check reads) never runs for it either. `ufcs::UfcsVisitor::
+// try_free_fn_desugar` is where the resolved free-function target is
+// already available, so that is where this check lives instead — see that
+// function's own `check_ufcs_arg_types` doc.
+//
+// Native (`.brink`) fixtures, same reasoning as the E149-through-UFCS block
+// above: UFCS is native-only by construction.
+
+/// The issue's own repro shape: a receiver whose statically-known type
+/// disagrees with the desugared target's first declared param (the
+/// receiver counts as that first argument). Before this fix, this compiled
+/// with zero diagnostics.
+#[test]
+fn e063_ufcs_receiver_type_disagrees_with_target_first_param() {
+    let source = "fn greet(name: string): string {\n  return name;\n}\n\nfn main(): int {\n  \
+                  let g = 5;\n  g.greet();\n  return 1;\n}\n";
+    let err = compile_native(
+        "ufcs-arg-mismatch-receiver",
+        source,
+        native_strict_options(),
+    )
+    .map(|_| ())
+    .unwrap_err();
+    let diags = errors_of(err);
+    assert_eq!(
+        diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![DiagnosticCode::E063],
+        "this fixture is deliberately clean of every other strict diagnostic so E063 alone \
+         must be what fails compilation: {diags:?}"
+    );
+    assert_code_at_nth(&diags, DiagnosticCode::E063, source, "g.greet()", 0);
+}
+
+/// A *written* argument (not the receiver) disagrees with its corresponding
+/// declared param — proves the check reaches every position in the
+/// desugared call, not only the receiver slot.
+#[test]
+fn e063_ufcs_written_argument_disagrees_with_target_param() {
+    let source = "fn combine(base: int, extra: int): int {\n  return base;\n}\n\n\
+                  fn main(): int {\n  let x = 5;\n  x.combine(\"bad\");\n  return 1;\n}\n";
+    let err = compile_native("ufcs-arg-mismatch-written", source, native_strict_options())
+        .map(|_| ())
+        .unwrap_err();
+    let diags = errors_of(err);
+    assert_eq!(
+        diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![DiagnosticCode::E063],
+        "this fixture is deliberately clean of every other strict diagnostic so E063 alone \
+         must be what fails compilation: {diags:?}"
+    );
+    assert_code_at_nth(
+        &diags,
+        DiagnosticCode::E063,
+        source,
+        "x.combine(\"bad\")",
+        0,
+    );
+}
+
+/// **The D5 auto-ref interaction**, positive case: the desugared target's
+/// first param is `ref`, and the receiver's statically-known type still
+/// genuinely disagrees with it. `ref`-ness must not become a blind spot —
+/// `check_ufcs_arg_types` reads `InferredSig::params[0]`'s own type, which
+/// `body::infer_def_body` derives from the *referent's* observed type
+/// regardless of `ref`, so this must be caught exactly like the by-value
+/// case above.
+#[test]
+fn e063_ufcs_auto_ref_receiver_type_disagrees_with_target_first_param() {
+    let source = "fn heal(ref hp: int) {\n  hp = hp + 1;\n}\n\nfn main(): int {\n  \
+                  let h = \"oops\";\n  h.heal();\n  return 1;\n}\n";
+    let err = compile_native(
+        "ufcs-arg-mismatch-auto-ref",
+        source,
+        native_strict_options(),
+    )
+    .map(|_| ())
+    .unwrap_err();
+    let diags = errors_of(err);
+    assert_eq!(
+        diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![DiagnosticCode::E063],
+        "this fixture is deliberately clean of every other strict diagnostic so E063 alone \
+         must be what fails compilation: {diags:?}"
+    );
+    assert_code_at_nth(&diags, DiagnosticCode::E063, source, "h.heal()", 0);
+}
+
+/// **The D5 auto-ref interaction**, negative case: the same `ref`-first-param
+/// shape as above, but the receiver's type genuinely agrees with the
+/// declared param — this is the #1895 false-positive shape (a receiver's
+/// call-site type mistaken for disagreeing with a `ref` param's declared
+/// spelling) and must stay completely clean.
+#[test]
+fn ufcs_auto_ref_receiver_type_matching_target_param_is_unaffected() {
+    let source = "fn heal(ref hp: int) {\n  hp = hp + 1;\n}\n\nfn main(): int {\n  let h = 5;\n  \
+                  h.heal();\n  return 1;\n}\n";
+    let out = compile_native("ufcs-arg-match-auto-ref", source, native_strict_options())
+        .unwrap_or_else(|e| panic!("a type-matching auto-ref receiver must compile clean: {e:?}"));
+    assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+}
+
+/// General clean case: every position (receiver and written argument) type-
+/// agrees with the desugared target's declared params — must stay
+/// completely clean, the same "legal method call must be diagnostic-free"
+/// posture `ufcs_resolution.rs`'s own analysis-layer fixtures prove.
+#[test]
+fn ufcs_call_with_matching_arg_types_is_unaffected_by_e063() {
+    let source = "fn combine(base: int, extra: int): int {\n  return base;\n}\n\n\
+                  fn main(): int {\n  let x = 5;\n  x.combine(9);\n  return 1;\n}\n";
+    let out = compile_native("ufcs-arg-match-written", source, native_strict_options())
+        .unwrap_or_else(|e| panic!("a type-matching UFCS call must compile clean: {e:?}"));
+    assert!(out.warnings.is_empty(), "{:?}", out.warnings);
+}
+
+// No `types = gradual` UFCS-inert fixture here — unlike E149 (checked via
+// `ufcs::check_strict`, but the block-level free-call spelling in
+// `e149_inert_under_gradual_types` above can use ink syntax, where gradual
+// is a valid policy), this check is UFCS-only by construction and UFCS is
+// native-only; native compiles are strict-only
+// (`strict::native_strict_only_error`'s "Typing posture ruled" doc,
+// 2026-07-19), so there is no native `types = gradual` compile to write a
+// fixture against. `strict::check`'s own caller-side gate (unchanged by
+// this fix) is what keeps every strict-only code, `E063` included, from
+// ever firing under gradual in the first place.
 
 // ─── E150 (issue #1551): declared-return-value def falls through ───────
 //
