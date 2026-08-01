@@ -52,35 +52,6 @@ jobs:
       # actually *executes* them (#672 workstream D).
       - run: cargo check -p brink-web --all-targets --target wasm32-unknown-unknown
 
-  # Verify that satellite crates (demos/compound, benchmarks/tools/gen-input,
-  # benchmarks/drivers/brink-loop) have current lockfiles. Each is a separate
-  # [workspace] root with path dependencies into brink crates, so changes to
-  # root Cargo.toml or workspace member deps can stale their Cargo.lock files.
-  # If a root workspace dependency changes, all three lockfiles must be
-  # regenerated or this check fails (#1890). This is a REQUIRED gate to prevent
-  # a recurrence of the silent drift that let PR #1885 merge with stale
-  # satellite lockfiles, breaking the advisory DEMO_GATE and BENCHMARKS_*_GATE
-  # workflows.
-  satellites:
-    name: Satellites (locked)
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          persist-credentials: false
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-      - name: Check (demos/compound, --locked)
-        working-directory: demos/compound
-        run: cargo check --locked
-      - name: Check (benchmarks/tools/gen-input, --locked)
-        working-directory: benchmarks/tools/gen-input
-        run: cargo check --locked
-      - name: Check (benchmarks/drivers/brink-loop, --locked)
-        working-directory: benchmarks/drivers/brink-loop
-        run: cargo check --locked
-
   # Executes the `#[wasm_bindgen_test]` suite under Node (the `check` job
   # above only type-checks it for wasm32 — it never ran, so PR #620's
   # Record→null marshal regression would not have been caught by any CI

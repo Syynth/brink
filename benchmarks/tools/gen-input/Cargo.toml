@@ -1,5 +1,3 @@
-[workspace]
-
 [package]
 name = "gen-input"
 version = "0.0.1"
