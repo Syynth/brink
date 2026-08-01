@@ -191,7 +191,14 @@ cross-referenced so views ≠ projections.
   effects-spec §6.1c's stratum question is open — so "pure-required"
   (for the four verbs it still gates) is enforced only at
   syntactically-visible callback origins today; that gap is unchanged
-  by this slice.)*
+  by this slice. *(As-built 2026-08-01, issue #1887, #1862's ruling:
+  E119's "syntactically-visible callback origins" now include the
+  native bare-name spelling — `map(items, double)`, no `#fn` sigil —
+  proven only when the reference resolves to a real function
+  definition, the same two conjuncts `lower_path`'s `MakeFnValue` arm
+  gates lowering on. An inline lambda argument is a separate,
+  explicitly deferred hole — see #1887's scope and #1709/#1727 — a
+  lambda has no `DefinitionId` until LIR lowering mints one.)*
 - 🔶 **Mutating iteration — `for ref m in maps { m[k] = v }`**
   (proposed; arose from the §5 array-of-maps case): a ref-binding
   in `for` over arrays, desugaring to index-based access so

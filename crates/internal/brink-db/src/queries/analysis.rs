@@ -504,8 +504,10 @@ fn is_path_shaped_elements_pointer(pointer: &str) -> bool {
 /// One file's NS-A4 comparator-contract diagnostics (E119,
 /// docs/stdlib-spec.md §4b, issue #1110 — extended to the fn-value verb
 /// trio `map`/`filter`/`fold` by issue #1679, §4): `sort_by`/`sorted_by`/
-/// `map`/`filter`/`fold` calls whose inline `#fn(target)` callback's row
-/// provably exceeds pure·silent. Brink-only + lazy, the exact
+/// `map`/`filter`/`fold` calls whose callback's row — named either by an
+/// inline `#fn(target)` literal (ink/brink) or, since issue #1887, a
+/// native bare-name reference — provably exceeds pure·silent. Brink-only
+/// + lazy, the exact
 /// [`await_purity_diagnostics_query`] shape: a file with no such site never
 /// fetches a single per-def effect row, so a callback-free project stays
 /// effect-inference-free.
@@ -527,7 +529,7 @@ pub(crate) fn comparator_contract_diagnostics_query(
     }
     let (file_resolutions, _diags) = resolve_query(db, project, file);
     let index = resolution_index_query(db, project);
-    let callee_defs = brink_analyzer::comparator_callees(file_id, hir, file_resolutions);
+    let callee_defs = brink_analyzer::comparator_callees(file_id, hir, index, file_resolutions);
     let mut rows = BTreeMap::new();
     for id in callee_defs {
         if let Some(row) = effects_query(db, project, DefKey::new(db, id)) {
