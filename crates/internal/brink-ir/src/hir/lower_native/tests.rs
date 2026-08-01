@@ -2014,6 +2014,49 @@ fn a_local_handler_wins_over_an_injected_handler_of_the_same_name() {
 }
 
 #[test]
+fn an_injected_duplicate_with_a_stale_pattern_is_dropped_not_merely_shadowed() {
+    // `a_local_handler_wins_over_an_injected_handler_of_the_same_name`
+    // above cannot actually distinguish "the same-name injected entry was
+    // dropped at `collect` time" from "it was kept but never reached,
+    // because `try_claim`'s `handlers.chain(external).find(..)` tries the
+    // local one first and local+injected share one byte-identical
+    // pattern" — with identical patterns those two behave identically.
+    // This fixture gives the injected duplicate a DIFFERENT pattern (a
+    // stand-in for a registry gone stale relative to the file's current
+    // live declaration) so the two are observationally distinguishable:
+    // if `collect` actually drops the duplicate, nothing in this file
+    // ever tries the stale pattern at all, so a line matching *only* the
+    // stale pattern must go unclaimed.
+    let stale_duplicate = ExternalConventions::new(vec![ExternalClaimHandler {
+        name: Name {
+            text: "arrival".to_string(),
+            range: TextRange::new(0.into(), 7.into()),
+        },
+        params: vec!["who".to_string()],
+        // Deliberately NOT the local declaration's pattern — the stand-in
+        // for staleness.
+        pattern: "^(?<who>[A-Z]+) arrives$".to_string(),
+        annotation: TextRange::new(0.into(), 10.into()),
+    }]);
+    let (hir, _m, diags) = lower_with_conventions(
+        FileId(0),
+        &brink_syntax_native::parse(
+            "@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival(who) {\n  return who;\n}\n\nflow main() {\n  VENDOR arrives\n}\n",
+        )
+        .tree(),
+        Some(&stale_duplicate),
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert!(
+        hir.element_matches.is_empty(),
+        "a same-name injected duplicate must be dropped at collect time, not merely \
+         out-dispatched by declaration order — a line matching only the stale \
+         injected pattern must stay unclaimed: {:?}",
+        hir.element_matches
+    );
+}
+
+#[test]
 fn an_injected_handlers_foreign_annotation_range_never_suppresses_a_claim() {
     // Correctness guard: `ExternalClaimHandler` carries no `decl` at all
     // (only `annotation`, from the DECLARING file's own text) — `collect`
