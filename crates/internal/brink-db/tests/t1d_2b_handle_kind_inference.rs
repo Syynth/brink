@@ -16,31 +16,61 @@
 
 use brink_analyzer::{AnalysisOptions, Dialect, TypePolicy};
 use brink_db::ProjectDb;
-use brink_ir::{BaseType, DiagnosticCode, HostManifest, SemanticTypeDef};
+use brink_ir::{
+    BaseType, DiagnosticCode, HostManifest, ManifestExternal, SemanticTypeDef, TypeRef,
+};
 
 /// `get_audio`/`get_timer` are leaf functions whose return type is
-/// annotated with a distinct handle kind each; their body-derived return
-/// stays `Unknown` (`opaque_handle` is an *unregistered* `EXTERNAL`, so its
-/// result is untyped and its call sites unchecked), so the annotation
-/// firewall overlay supplies the concrete `Ty::Handle(K)`. `main`'s temps
-/// `a`/`b` pick those types up purely through call-site inference — never an
-/// annotation of their own — then get compared, a genuine cross-kind handle
-/// mismatch detectable only from body-usage inference.
+/// annotated with a distinct handle kind each. `spawn_audio`/`spawn_timer`
+/// are genuinely-registered `EXTERNAL` producers (issue #1942's Scope
+/// section proposes "a natively-registered producer" as one construction
+/// path) — each declares a fixed `returns` naming its own `Handle`-based
+/// `SemanticTypeDef`, so `collect_external_sigs` resolves the *body's own*
+/// return expression to the concrete `Ty::Handle(K)` directly; the
+/// annotation only has to confirm it, never manufacture it from `Unknown`.
+/// `main`'s temps `a`/`b` pick those types up purely through call-site
+/// inference — never an annotation of their own — then get compared, a
+/// genuine cross-kind handle mismatch detectable only from body-usage
+/// inference.
 ///
-/// The opaque producer replaces a plain `~ return id` (issue #1912): a
-/// handle is an opaque `{kind, id}` scalar (docs/t1d-spec.md §3), not an
+/// A registered producer replaces a plain `~ return id` (issue #1912): a
+/// handle is an opaque `{kind, id}` scalar (docs/t1d-spec.md §1), not an
 /// `int`, so handing an `int`-annotated param back out of a
 /// `Handle<K>`-returning function was a real type error that only passed
-/// while reading an annotated param as a value typed `Unknown`.
-const CROSS_KIND_SRC: &str = "EXTERNAL opaque_handle(seed)\n\
-=== function get_audio(id: int): Handle<AudioInstance> ===\n~ return opaque_handle(id)\n\
-=== function get_timer(id: int): Handle<Timer> ===\n~ return opaque_handle(id)\n\
-=== main ===\n~ temp a = get_audio(1)\n~ temp b = get_timer(1)\n{a == b:\n  ok\n}\n-> DONE\n";
+/// while reading an annotated param as a value typed `Unknown`. It also
+/// replaces the earlier *unregistered* `opaque_handle` workaround (PR
+/// #1938): that made the return type-check pass only because an
+/// unregistered external's result is untyped, papered over by the
+/// annotation-firewall overlay — scaffolding issue #1942 asked not to let
+/// calcify. `spawn_audio`/`spawn_timer` are real, checked signatures
+/// instead.
+const CROSS_KIND_SRC: &str = "EXTERNAL spawn_audio()\nEXTERNAL spawn_timer()\n\
+=== function get_audio(): Handle<AudioInstance> ===\n~ return spawn_audio()\n\
+=== function get_timer(): Handle<Timer> ===\n~ return spawn_timer()\n\
+=== main ===\n~ temp a = get_audio()\n~ temp b = get_timer()\n{a == b:\n  ok\n}\n-> DONE\n";
 
-const SAME_KIND_SRC: &str = "EXTERNAL opaque_handle(seed)\n\
-=== function get_audio(id: int): Handle<AudioInstance> ===\n~ return opaque_handle(id)\n\
-=== function get_audio2(id: int): Handle<AudioInstance> ===\n~ return opaque_handle(id)\n\
-=== main ===\n~ temp a = get_audio(1)\n~ temp c = get_audio2(1)\n{a == c:\n  ok\n}\n-> DONE\n";
+const SAME_KIND_SRC: &str = "EXTERNAL spawn_audio()\n\
+=== function get_audio(): Handle<AudioInstance> ===\n~ return spawn_audio()\n\
+=== function get_audio2(): Handle<AudioInstance> ===\n~ return spawn_audio()\n\
+=== main ===\n~ temp a = get_audio()\n~ temp c = get_audio2()\n{a == c:\n  ok\n}\n-> DONE\n";
+
+/// A no-arg, manifest-registered producer whose declared `returns` names a
+/// `Handle`-based semantic type — the genuine construction path issue
+/// #1942's Scope section calls out ("a natively-registered producer ... that
+/// legitimately returns `Handle<K>`"), not a language literal (T1d spec §7
+/// rules out handle literal syntax entirely: "no literal syntax exists;
+/// only bindings mint them").
+fn handle_producer(name: &str, kind: &str) -> ManifestExternal {
+    ManifestExternal {
+        name: name.to_string(),
+        params: Vec::new(),
+        returns: TypeRef(kind.to_string()),
+        kind: brink_ir::ExternalKind::default(),
+        doc: None,
+        widgets: Vec::new(),
+        path: Vec::new(),
+    }
+}
 
 fn two_kind_manifest() -> HostManifest {
     HostManifest {
@@ -61,7 +91,10 @@ fn two_kind_manifest() -> HostManifest {
                 widget: None,
             },
         ],
-        ..Default::default()
+        externals: vec![
+            handle_producer("spawn_audio", "AudioInstance"),
+            handle_producer("spawn_timer", "Timer"),
+        ],
     }
 }
 
@@ -191,5 +224,49 @@ fn strict_analyze_populates_memoized_inference_with_distinct_handle_kinds() {
             .expect("get_timer has an inferred signature")
             .return_ty,
         brink_analyzer::Ty::Handle("Timer".to_string())
+    );
+}
+
+/// This PR's body describes a manual, uncommitted experiment (temporarily
+/// mis-registering `spawn_timer`'s declared return) to argue the new
+/// registered-producer mechanism is genuinely load-bearing rather than
+/// decorative — a review finding pointed out that every assertion in this
+/// file's other fixtures passes identically with the `externals` vectors
+/// deleted entirely, because with no manifest entry
+/// `collect_external_sigs` skips the external
+/// (`brink-analyzer/src/infer/mod.rs`), the body-derived return stays
+/// `Ty::Unknown`, and the annotation-firewall overlay re-supplies
+/// `Handle<K>` exactly as before (the pre-#1942 `opaque_handle` behavior).
+/// This test commits that experiment as an automated regression instead:
+/// `spawn_timer` is registered with a genuinely *wrong* declared `returns`
+/// (`"Timer"`) for a function annotated `Handle<AudioInstance>`. It can only
+/// go green when the producer's declared return is genuinely consulted,
+/// because `annotations::report_if_mismatched`
+/// (`crates/internal/brink-analyzer/src/annotations.rs:534`) returns early
+/// whenever `body_ty.is_unresolved()` — i.e. it stays silent whenever the
+/// type came from the annotation overlay rather than the body. Drop the
+/// registration (or the `externals` entry entirely) and this guard goes
+/// red, which is the property #1942 actually asked for.
+#[test]
+fn mis_kinded_registered_producer_is_caught_through_production_diagnostics_under_strict() {
+    let src = "EXTERNAL spawn_timer()\n\
+=== function get_audio(): Handle<AudioInstance> ===\n~ return spawn_timer()\n\
+=== main ===\n~ temp a = get_audio()\n-> DONE\n";
+
+    let mut manifest = two_kind_manifest();
+    // Only register the mis-kinded producer under test: `spawn_timer`
+    // genuinely declares `returns: Timer`, called from a function annotated
+    // `Handle<AudioInstance>`.
+    manifest.externals = vec![handle_producer("spawn_timer", "Timer")];
+
+    let mut db = ProjectDb::new();
+    let file = db.set_file("main.ink", src.to_owned());
+    db.set_entry("main.ink");
+    db.set_analysis_options(strict_opts(manifest));
+
+    let diags = db.diagnostics(file).expect("file diagnostics");
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E063),
+        "{diags:?}"
     );
 }

@@ -101,10 +101,11 @@ fn external_call_scalar_semantic_type_match_reaches_no_diagnostics_under_strict(
 
 // ─── (2) Inline-doc-only externals ──────────────────────────────────────
 
-/// The registered manifest declares only the handle-kind *vocabulary*
-/// (`types`) — no `ManifestExternal` entry for `play_sound` at all.
-/// `play_sound`'s only declared signature source is its own inline `///
-/// @param` doc comment.
+/// The registered manifest declares the handle-kind *vocabulary* (`types`)
+/// plus the genuinely-registered `spawn_audio`/`spawn_timer` handle
+/// producers (issue #1942) — but there is still no `ManifestExternal` entry
+/// for `play_sound` itself. `play_sound`'s only declared signature source
+/// remains its own inline `/// @param` doc comment.
 fn manifest_with_only_handle_vocabulary() -> HostManifest {
     HostManifest {
         markup: Vec::new(),
@@ -124,27 +125,52 @@ fn manifest_with_only_handle_vocabulary() -> HostManifest {
                 widget: None,
             },
         ],
-        externals: Vec::new(),
+        externals: vec![
+            ManifestExternal {
+                name: "spawn_audio".to_string(),
+                params: Vec::new(),
+                returns: TypeRef("AudioInstance".to_string()),
+                kind: ExternalKind::default(),
+                doc: None,
+                widgets: Vec::new(),
+                path: Vec::new(),
+            },
+            ManifestExternal {
+                name: "spawn_timer".to_string(),
+                params: Vec::new(),
+                returns: TypeRef("Timer".to_string()),
+                kind: ExternalKind::default(),
+                doc: None,
+                widgets: Vec::new(),
+                path: Vec::new(),
+            },
+        ],
     }
 }
 
-/// `opaque_handle` is an *unregistered* `EXTERNAL` (no manifest entry, no
-/// inline doc), so its result is untyped and its call sites unchecked: the
-/// leaf's body-derived return stays `Unknown` and the annotation firewall
-/// overlay supplies the concrete `Ty::Handle(K)`, which is what these
-/// fixtures need. It replaces a plain `~ return id` (issue #1912): a handle
-/// is an opaque `{kind, id}` scalar (docs/t1d-spec.md §3), not an `int`, so
+/// `spawn_timer`/`spawn_audio` are genuinely-registered `EXTERNAL`
+/// producers (issue #1942's Scope section proposes "a natively-registered
+/// producer" as one construction path): each declares a fixed `returns`
+/// naming its own `Handle`-based `SemanticTypeDef`, so the leaf's
+/// body-derived return resolves directly to the concrete `Ty::Handle(K)` —
+/// the annotation only confirms it. `play_sound` stays inline-doc-only
+/// (absent from this manifest's `externals`), which is the property this
+/// fixture actually tests. This replaces a plain `~ return id` (issue
+/// #1912): a handle is an opaque `{kind, id}` scalar (docs/t1d-spec.md §1),
+/// not an `int`, so
 /// handing an `int`-annotated param back out of a `Handle<K>`-returning
 /// function was a real type error that only passed while reading an
-/// annotated param as a value typed `Unknown`.
+/// annotated param as a value typed `Unknown`. It also replaces the earlier
+/// *unregistered* `opaque_handle` workaround (PR #1938), scaffolding issue
+/// #1942 asked not to let calcify.
 const INLINE_ONLY_CROSS_KIND_SRC: &str = "\
 /// @param inst {AudioInstance}
 EXTERNAL play_sound(inst)
-EXTERNAL opaque_handle(seed)
-=== function get_timer(id: int): Handle<Timer> ===
-~ return opaque_handle(id)
+EXTERNAL spawn_timer()
+=== function get_timer(): Handle<Timer> ===
+~ return spawn_timer()
 === main ===
-~ temp t = get_timer(1)
+~ temp t = get_timer()
 ~ play_sound(t)
 -> DONE
 ";
@@ -173,11 +199,11 @@ fn inline_only_external_cross_kind_argument_reaches_production_diagnostics_under
 const INLINE_ONLY_SAME_KIND_SRC: &str = "\
 /// @param inst {AudioInstance}
 EXTERNAL play_sound(inst)
-EXTERNAL opaque_handle(seed)
-=== function get_audio(id: int): Handle<AudioInstance> ===
-~ return opaque_handle(id)
+EXTERNAL spawn_audio()
+=== function get_audio(): Handle<AudioInstance> ===
+~ return spawn_audio()
 === main ===
-~ temp a = get_audio(1)
+~ temp a = get_audio()
 ~ play_sound(a)
 -> DONE
 ";
