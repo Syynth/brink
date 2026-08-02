@@ -92,7 +92,10 @@
 // `docs/prose-dialect-spec.md` §8's own worked pages: `@VENDOR` /
 // `(hushed)` / dialogue), `cue`'s own `block` capture sees ZERO lines —
 // the very next item is the parenthetical, not plain dialogue — and
-// `cue` emits just the speaker name. `parenthetical` is then claimed on
+// `cue` emits the speaker name followed by a BLANK line (the `>{ {name}
+// \n{body} }` template's own newline still renders even when `{body}`
+// interpolates to the empty `Fragment` — pinned in `tests/tier1-native/
+// conventions-screenplay-preset/expected.txt`). `parenthetical` is then claimed on
 // its own very next iteration, and IT captures the dialogue. There is no
 // context injection (deferred, §3.5b's own Deferred list: "handlers
 // reading attachment data") linking the two calls — `cue` never learns
@@ -120,6 +123,21 @@
 // either a kind-aware dispatch restriction (a mechanism change beyond
 // this issue's fence) or a token that survives the parens/braces some
 // other way — not attempted here.
+//
+// ⚠ **This is not just a self-re-claim hazard — it is the real constraint
+// on this preset's patterns.** Because `try_claim` is kind-blind (see
+// above: `candidate()` gates which NODE KINDS offer text to match, not
+// which handler may claim a given match), `parenthetical`'s
+// `^[a-z][a-z' -]*$` pattern will claim ANY all-lowercase,
+// punctuation-free line anywhere a `CONTENT_LINE` is itself a claim
+// candidate — not only a chain-gated `PARENTHETICAL` node and not only
+// inside dialogue. An ordinary, unrelated action/prose line elsewhere in
+// the same project (`she waits`, `he nods slowly`) matches the same
+// pattern and gets wrongly rewritten through `parenthetical`, block-
+// capturing whatever plain lines follow it. Keeping every ordinary prose
+// line either capitalized, punctuated, or otherwise outside this exact
+// shape is the only guard today — there is no kind restriction to fall
+// back on.
 //
 // ⚠ **Compact cues (`@NAME: text`, §8b.9) and any cue/heading carrying a
 // tag extension are NOT covered.** `COMPACT_CUE` fuses a `CUE_NAME` and

@@ -321,14 +321,16 @@ fn annotations_element_block() {
 /// `(hushed)` parenthetical (the cue's own `block` capture sees ZERO
 /// lines — the ruled terminator ends a run at any element-level line,
 /// and a `PARENTHETICAL` is one, `docs/prose-dialect-spec.md` §3.5b — so
-/// `VENDOR` alone is `cue`'s own output, and the parenthetical claims the
+/// `VENDOR` is `cue`'s own output, and the parenthetical claims the
 /// dialogue separately, one line down), and `@KID` directly followed by
 /// dialogue with no parenthetical (the cue's `block` capture sees that
-/// dialogue line directly). `expected.txt`'s `VENDOR` alone, with no
-/// second line beneath it, is exactly what an empty `Fragment` renders as
-/// through `>{ {name}\n{body} }` — confirmed against a real compile+run,
-/// not assumed (see the PR description for why this case was written
-/// empirically rather than by prediction).
+/// dialogue line directly). `expected.txt`'s `VENDOR` line is followed by
+/// a BLANK line, not nothing — that blank line is exactly what an empty
+/// `Fragment` renders as through `>{ {name}\n{body} }` (the template's own
+/// newline between `{name}` and `{body}` still emits even when `{body}`
+/// interpolates to the empty string) — confirmed against a real
+/// compile+run, not assumed (see the PR description for why this case was
+/// written empirically rather than by prediction).
 #[test]
 fn conventions_screenplay_preset() {
     assert_case("conventions-screenplay-preset");

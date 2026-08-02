@@ -1029,8 +1029,9 @@ pub(super) fn try_dispatch(
 ///
 /// **Issue #1720** (the built-in screenplay preset) widens this to the
 /// two remaining literal-line grammar shapes `docs/prose-dialect-spec.md`
-/// names as claim candidates (§3.5b: "only a wholly literal prose line or
-/// scene heading is a candidate" predates this widening — the ruling's own
+/// §3.5b now names as claim candidates alongside a prose line and scene
+/// heading — the spec's clause was amended in the same PR (rule 20d: a
+/// ruling lands in the spec, not only in a code comment) — the ruling's own
 /// natural-notation examples are cue/heading text, and the wave retro
 /// posted on #1720 itself names the gap this closes: without it, real
 /// `@NAME` cue and `(parenthetical)` lines are structurally invisible to

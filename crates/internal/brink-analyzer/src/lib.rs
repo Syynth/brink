@@ -320,7 +320,34 @@ impl AnalysisOptions {
                 self.elements = Some(pointer.to_owned());
             } else {
                 match validate_elements_preset(pointer, BUILTIN_ELEMENT_PRESETS) {
-                    Ok(()) => self.elements = Some(pointer.to_owned()),
+                    Ok(()) => {
+                        self.elements = Some(pointer.to_owned());
+                        // Issue #1720 review finding: recognizing a preset
+                        // name in `BUILTIN_ELEMENT_PRESETS` is validation-
+                        // only — nothing downstream injects its handlers
+                        // into a project's dispatch table yet (no
+                        // `std::`-namespaced module resolution, #2080; no
+                        // `fn conventions()` registration/comptime, #1840).
+                        // Silently accepting the name here would leave an
+                        // author writing `elements = "screenplay"` with
+                        // zero diagnostics and zero behavior — the exact
+                        // "validate against the real set, never silently
+                        // drop an unactionable value" failure rule 19h
+                        // targets, just inverted (a *recognized* value that
+                        // does nothing, not an unrecognized one). So a name
+                        // in `BUILTIN_ELEMENT_PRESETS` but not yet in
+                        // `INJECTABLE_ELEMENT_PRESETS` still warns, on the
+                        // same "warn, never silently drop" channel, until
+                        // #2080/#1840 land and this can become a real
+                        // no-op.
+                        if !INJECTABLE_ELEMENT_PRESETS.contains(&pointer) {
+                            warnings.push(ConfigWarning(format!(
+                                "[project] elements = \"{pointer}\" names a recognized \
+                                 built-in preset, not injectable yet — no conventions \
+                                 applied (#2080/#1840)"
+                            )));
+                        }
+                    }
                     Err(warning) => warnings.push(warning),
                 }
             }
@@ -444,6 +471,21 @@ fn validate_lint_code(code: &str) -> Result<(), ConfigWarning> {
 /// hardcoded set drifting out of sync with the real module set is exactly
 /// the kind of silent staleness this closed-set check exists to prevent.
 const BUILTIN_ELEMENT_PRESETS: &[&str] = &["screenplay"];
+
+/// The subset of [`BUILTIN_ELEMENT_PRESETS`] whose handlers are actually
+/// injected into a project's dispatch table today (issue #1720 review
+/// finding). Empty: no preset injection mechanism exists yet — #2080's
+/// `std::`-namespaced module resolution and #1840's `fn conventions()`
+/// registration/comptime are both still open. A name present in
+/// [`BUILTIN_ELEMENT_PRESETS`] but absent here is recognized (a correctly
+/// spelled built-in preset name, not an unrecognized-name error) but not
+/// yet reachable — [`AnalysisOptions::apply_project_config`] warns about
+/// that gap explicitly on the same channel rather than silently
+/// no-opping, so an author never sees zero diagnostics *and* zero
+/// behavior for the same value. Move a name from here to
+/// `BUILTIN_ELEMENT_PRESETS`'s sibling list into this one the moment its
+/// handlers are actually wired in.
+const INJECTABLE_ELEMENT_PRESETS: &[&str] = &[];
 
 /// Validate a preset-shaped `[project] elements` pointer (already
 /// established by the caller, via [`is_path_shaped_elements_pointer`], to
@@ -2358,6 +2400,14 @@ EXTERNAL add_state(who)
     /// does not by itself mean anything downstream consumes it yet (no
     /// `std::`-module resolution or `fn conventions()` registration exists,
     /// #2080/#1840).
+    ///
+    /// A #1720 review finding caught the first version of this test
+    /// asserting `warnings.is_empty()`: recognizing the name here is
+    /// validation-only, and silently accepting it would leave an author
+    /// writing `elements = "screenplay"` with zero diagnostics and zero
+    /// behavior (rule 19h's failure mode). `options.elements` is still
+    /// populated (the name is not rejected as unrecognized), but a
+    /// not-yet-injectable warning is still surfaced on the same channel.
     #[test]
     fn apply_project_config_accepts_screenplay_preset_name_now_that_it_shipped() {
         let mut options = AnalysisOptions::default();
@@ -2368,8 +2418,12 @@ EXTERNAL add_state(who)
 
         let warnings = options.apply_project_config(&config, false, false);
 
-        assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
         assert_eq!(options.elements.as_deref(), Some("screenplay"));
+        assert_eq!(warnings.len(), 1, "unexpected warnings: {warnings:?}");
+        assert!(warnings[0].0.contains("screenplay"));
+        assert!(warnings[0].0.contains("not injectable yet"));
+        assert!(warnings[0].0.contains("#2080"));
+        assert!(warnings[0].0.contains("#1840"));
     }
 
     #[test]
