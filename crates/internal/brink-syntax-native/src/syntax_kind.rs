@@ -579,21 +579,24 @@ pub enum SyntaxKind {
     TUNNEL_CALL,
     /// A divert target: `END` / `DONE` / a `PATH`.
     DIVERT_TARGET,
-    /// `return` — leave this container (content-ground, bare, no value —
-    /// `parser/divert.rs::return_stmt`). **Also** reused, unmodified, as
-    /// the code-ground `return e?;` value-return statement (B0.8 Wave B
-    /// tail, issue #1322, `docs/decision-log.md` 2026-07-23 "Code-ground
-    /// sitting" item 1) — `parser/stmt.rs::return_stmt` parses an optional
-    /// value expression and a `;` terminator instead. The two grammars
-    /// never overlap (dispatched from different parent contexts — content-
-    /// ground `BLOCK`/`family.rs` vs. code-ground `STMT_BLOCK`/`stmt.rs`),
-    /// so one node shape serves both, mirroring the brink-dialect's own
+    /// `return` / `return <expr>` — leave this container, optionally with a
+    /// value (content-ground, `parser/divert.rs::return_stmt`; the value
+    /// expression is optional — issue #1973 added it, previously always
+    /// bare). **Also** reused, unmodified, as the code-ground `return e?;`
+    /// value-return statement (B0.8 Wave B tail, issue #1322,
+    /// `docs/decision-log.md` 2026-07-23 "Code-ground sitting" item 1) —
+    /// `parser/stmt.rs::return_stmt` parses an optional value expression
+    /// and a `;` terminator instead. The two grammars never overlap
+    /// (dispatched from different parent contexts — content-ground
+    /// `BLOCK`/`family.rs` vs. code-ground `STMT_BLOCK`/`stmt.rs`), so one
+    /// node shape serves both, mirroring the brink-dialect's own
     /// `RETURN_STMT` (`brink-syntax`), which likewise serves both its bare
     /// container-exit and its valued `~ { … }`-block-return uses.
     /// `ast::ReturnStmt::value()` is a plain "first child expr, if any"
-    /// accessor — `None` for the content-ground form (never parses one),
-    /// `Some`/`None` for the code-ground form (initializer optional there
-    /// too).
+    /// accessor — `Some`/`None` for both grammars now (content-ground: a
+    /// bare `return` is still `None`, and `return -> x` is a distinct
+    /// `RETURN_REDIRECT` node below, never this one's value; code-ground:
+    /// the initializer was already optional).
     RETURN_STMT,
     /// `return -> x` — the tunnel-return respelling (charter §11):
     /// `RETURN_STMT` immediately followed by a divert to `x`. Content-
