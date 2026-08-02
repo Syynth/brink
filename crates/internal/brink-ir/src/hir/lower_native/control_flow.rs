@@ -152,9 +152,9 @@ fn lower_block_item(
         N::LET_STMT => {
             ast::LetStmt::cast(item.clone()).and_then(|n| lower_temp_decl(file_id, &n, diags))
         }
-        N::ASSIGN_STMT => {
-            ast::AssignStmt::cast(item.clone()).and_then(|n| lower_assignment(file_id, &n, diags))
-        }
+        N::ASSIGN_STMT => ast::AssignStmt::cast(item.clone())
+            .and_then(|n| lower_assignment(file_id, &n, diags))
+            .map(BlockStmt::Assignment),
         N::EXPR_STMT => {
             ast::ExprStmt::cast(item.clone()).and_then(|n| lower_expr_stmt(file_id, &n, diags))
         }
@@ -221,11 +221,16 @@ fn lower_temp_decl(
 /// `PLUS_EQ`/`MINUS_EQ` map to `Add`/`Sub`, anything else (a bare `=`, or a
 /// malformed parse `assign_stmt`'s `expect(EQ)` fallback already
 /// diagnosed) falls back to `Set`.
-fn lower_assignment(
+/// Shared by both call sites that lower an `AssignStmt` — the `StmtBlock`
+/// item position here, and the content-ground `~ x = expr` logic line in
+/// `lower_native::body::lower_logic_line_assignment`, which wraps the
+/// result in its own `Stmt::Assignment` instead of this module's
+/// `BlockStmt::Assignment`.
+pub(super) fn lower_assignment(
     file_id: FileId,
     assign: &ast::AssignStmt,
     diags: &mut Vec<Diagnostic>,
-) -> Option<BlockStmt> {
+) -> Option<Assignment> {
     let range = assign.syntax().text_range();
     let Some(place) = assign.place() else {
         diags.push(diag(file_id, range, DiagnosticCode::E014));
@@ -244,12 +249,12 @@ fn lower_assignment(
             N::MINUS_EQ => AssignOp::Sub,
             _ => AssignOp::Set,
         });
-    Some(BlockStmt::Assignment(Assignment {
+    Some(Assignment {
         ptr: native_provenance(file_id, NodeClass::Assignment, assign.syntax()),
         target,
         op,
         value,
-    }))
+    })
 }
 
 fn lower_expr_stmt(

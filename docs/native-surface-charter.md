@@ -180,11 +180,14 @@ depth will be revisited then.*
 2. **Interleaving escapes** — ✅ RULED 2026-07-23 (decision-log):
    `~` = enter code, `>` = emit prose, at two granularities —
    whole-body selectors (`~{ }` / `>{ }` / plain `{ }` = keyword
-   default, §4) and line escapes ("grains" = these fine-grained lines):
-   `~ stmt` runs code inside a prose body (ink's logic line, kept),
-   `> text` emits a prose line inside a code body. Open tail: any
-   prose→code escapes beyond `~`/interpolation, and the
-   interpolation-vs-`{~` overlap.
+   default, §4, implemented #1309) and line escapes ("grains" = these
+   fine-grained lines): `~ stmt` runs code inside a prose body (ink's
+   logic line, kept) — **implemented** (issue #1991: the escape had
+   compiled clean and silently printed as literal prose, dropping the
+   statement, until this landed) — and `> text` emits a prose line
+   inside a code body — **still unimplemented, loudly (E129)**, tracked
+   by #1992. Open tail: any prose→code escapes beyond `~`/interpolation,
+   and the interpolation-vs-`{~` overlap.
 3. **Divert / tunnel / thread / await** — ✅ RULED (scattered across
    rulings): `->` stays divert ("one arrow, one meaning", 2026-07-14);
    tunnel-return unified under native `return` / `->->` (the

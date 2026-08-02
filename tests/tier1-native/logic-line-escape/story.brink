@@ -1,0 +1,20 @@
+var n = 0
+
+fn bump() {
+  n += 1;
+}
+
+fn shout() >{
+  Hi
+  return
+}
+
+flow main() {
+  ~ n = 5
+  ~ n += 3
+  ~ bump()
+  Value is {n}.
+  ~ n = shout()
+  after
+  -> END
+}

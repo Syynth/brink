@@ -41,6 +41,7 @@ ast_node!(ModuleDecl, MODULE_DECL);
 
 ast_node!(Block, BLOCK);
 ast_node!(ContentLine, CONTENT_LINE);
+ast_node!(LogicLine, LOGIC_LINE);
 ast_node!(Text, TEXT);
 ast_node!(Interpolation, INTERPOLATION);
 ast_node!(GlueNode, GLUE_NODE);
@@ -1076,6 +1077,20 @@ impl DivertTarget {
 impl ContentLine {
     /// The leading `(name)` label, if this line opens with one (G-1).
     pub fn label(&self) -> Option<Label> {
+        support::child(&self.syntax)
+    }
+}
+
+impl LogicLine {
+    /// The wrapped `~ x = expr` / `~ x += expr`, when this logic line is an
+    /// assignment (`parser/stmt.rs::logic_line`'s `at_assignment` branch).
+    pub fn assign_stmt(&self) -> Option<AssignStmt> {
+        support::child(&self.syntax)
+    }
+
+    /// The wrapped `~ expr` — an expression evaluated for its side effect
+    /// (e.g. a function call) — when this logic line is not an assignment.
+    pub fn expr_stmt(&self) -> Option<ExprStmt> {
         support::child(&self.syntax)
     }
 }

@@ -38,9 +38,9 @@ use crate::Provenance;
 use crate::hir::FileId;
 use crate::provenance::NodeClass;
 use crate::{
-    Block, BlockStmt, Content, ContentPart, Diagnostic, DiagnosticCode, Divert, DivertPath,
-    DivertTarget, ElseBranch, Expr, IfStmt, LogicBlock, Name, Return, ReturnKind, SpanPart, Stmt,
-    Tag, TunnelCall,
+    Assignment, Block, BlockStmt, Content, ContentPart, Diagnostic, DiagnosticCode, Divert,
+    DivertPath, DivertTarget, ElseBranch, Expr, IfStmt, LogicBlock, Name, Return, ReturnKind,
+    SpanPart, Stmt, StringPart, Tag, TunnelCall,
 };
 
 use super::choice::lower_choice_point;
@@ -292,6 +292,15 @@ fn lower_one_item(
         N::DIVERT_STMT | N::TUNNEL_CALL => lower_divert_like(file_id, node, diags)
             .into_iter()
             .collect(),
+        // `~ stmt` — the content-ground logic-line escape into code
+        // (charter §8.2, RULED 2026-07-23, issue #1991: ink's logic line,
+        // kept). See `lower_logic_line`'s doc.
+        N::LOGIC_LINE => {
+            let Some(ll) = ast::LogicLine::cast(node.clone()) else {
+                return Vec::new();
+            };
+            lower_logic_line(file_id, &ll, diags)
+        }
         N::RETURN_STMT => vec![Stmt::Return(Return {
             ptr: Some(native_provenance(file_id, NodeClass::Return, node)),
             kind: ReturnKind::Explicit,
@@ -349,6 +358,101 @@ fn lower_one_item(
             diags.push(diag(file_id, node.text_range(), DiagnosticCode::E129));
             Vec::new()
         }
+    }
+}
+
+/// `~ stmt` — the content-ground logic-line escape into code (charter
+/// §8.2, RULED 2026-07-23 `docs/decision-log.md` "Native interleaving &
+/// body-dialect spelling", issue #1991: ink's logic line, kept). Targets
+/// the top-level `Stmt::Assignment`/`Stmt::ExprStmt` variants — an
+/// already-proven HIR/LIR/codegen/runtime path, since those are exactly
+/// what the ink-dialect's own logic line already lowers to
+/// (`hir::lower::content::logic_line::LogicLineOutput`) — rather than
+/// inventing a new one. Only the two `LogicLine` shapes `parser/stmt.rs::
+/// logic_line` can produce are matched; a `LOGIC_LINE` with neither child
+/// (should not happen given that parser, but CST nodes from a malformed
+/// parse are never assumed well-formed) is diagnosed loudly (E129) rather
+/// than silently dropped.
+fn lower_logic_line(
+    file_id: FileId,
+    ll: &ast::LogicLine,
+    diags: &mut Vec<Diagnostic>,
+) -> Vec<Stmt> {
+    let range = ll.syntax().text_range();
+    if let Some(assign) = ll.assign_stmt() {
+        return lower_logic_line_assignment(file_id, &assign, diags).map_or_else(Vec::new, |a| {
+            let needs_eol = expr_contains_call(&a.value);
+            let mut out = vec![Stmt::Assignment(a)];
+            if needs_eol {
+                out.push(Stmt::EndOfLine);
+            }
+            out
+        });
+    }
+    if let Some(expr_stmt) = ll.expr_stmt() {
+        return lower_logic_line_expr_stmt(file_id, &expr_stmt, diags);
+    }
+    diags.push(diag(file_id, range, DiagnosticCode::E129));
+    Vec::new()
+}
+
+/// `~ x = expr` / `~ x += expr` / `~ x -= expr` — the content-ground
+/// `Stmt::Assignment` shares its place/value/op-token handling verbatim
+/// with `lower_native::control_flow::lower_assignment` (same `ASSIGN_STMT`
+/// node shape, reused verbatim by the parser — see `SyntaxKind::LOGIC_LINE`'s
+/// doc), so it delegates there directly rather than duplicating the logic;
+/// only the wrapper differs (`Stmt::Assignment` here vs. that function's
+/// own `BlockStmt::Assignment` at its `StmtBlock` call site).
+fn lower_logic_line_assignment(
+    file_id: FileId,
+    assign: &ast::AssignStmt,
+    diags: &mut Vec<Diagnostic>,
+) -> Option<Assignment> {
+    super::control_flow::lower_assignment(file_id, assign, diags)
+}
+
+/// `~ expr` — an expression evaluated for its side effect (a function call
+/// being the overwhelmingly common case). Appends `Stmt::EndOfLine` when
+/// the expression contains a call, matching inklecate's behavior for a
+/// call-only logic line — the same rule the ink-dialect frontend already
+/// applies (`hir::lower::content::logic_line::LogicLineOutput::has_call`);
+/// this is the identical semantic construct ("ink's logic line, kept"), so
+/// it needs the identical trailing-boundary behavior on the same runtime.
+fn lower_logic_line_expr_stmt(
+    file_id: FileId,
+    stmt: &ast::ExprStmt,
+    diags: &mut Vec<Diagnostic>,
+) -> Vec<Stmt> {
+    let range = stmt.syntax().text_range();
+    let Some(expr_node) = stmt.expr() else {
+        diags.push(diag(file_id, range, DiagnosticCode::E015));
+        return Vec::new();
+    };
+    let expr = lower_expr(file_id, &expr_node, diags);
+    let needs_eol = expr_contains_call(&expr);
+    let mut out = vec![Stmt::ExprStmt(expr)];
+    if needs_eol {
+        out.push(Stmt::EndOfLine);
+    }
+    out
+}
+
+/// Whether `expr`'s tree contains a function call. Deliberately mirrors
+/// `hir::lower::helpers::expr_contains_call` (that module is private to the
+/// ink-dialect's own `lower` tree, so this is a small, intentional
+/// duplication rather than a cross-dialect reach-through) — see
+/// [`lower_logic_line_expr_stmt`]'s doc for why the two dialects need the
+/// identical answer here.
+fn expr_contains_call(expr: &Expr) -> bool {
+    match expr {
+        Expr::Call(..) => true,
+        Expr::Prefix(_, inner) | Expr::Postfix(inner, _) => expr_contains_call(inner),
+        Expr::Infix(ie) => expr_contains_call(&ie.lhs) || expr_contains_call(&ie.rhs),
+        Expr::String(s) => s
+            .parts
+            .iter()
+            .any(|p| matches!(p, StringPart::Interpolation(e) if expr_contains_call(e))),
+        _ => false,
     }
 }
 

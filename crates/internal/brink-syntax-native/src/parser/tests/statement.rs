@@ -606,3 +606,197 @@ fn error_as_with_no_name_does_not_panic() {
     assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
     assert!(!p.errors().is_empty());
 }
+
+// ── J. The content-ground line escape: `~ stmt` (charter §8.2, RULED ─
+// ── 2026-07-23, issue #1991) ──────────────────────────────────────────
+//
+// Ink's logic line, kept: `~ stmt` runs code inside an otherwise
+// content-ground (prose) `flow`/`fn` body. Before this landed, a leading
+// `~` on a content line was not recognized by `block::body_line`'s
+// dispatch at all, so it fell through to the prose fallback and was
+// swallowed into an ordinary `TEXT` run — compiling clean, with the `~`
+// and the statement text both printed verbatim as story prose, and the
+// statement itself never executed. These tests pin the fix at the CST
+// level; `tests/tier1-native/logic-line-escape/` pins it end-to-end
+// through a real compile+run, and `hir::lower_native::tests` pins the HIR
+// lowering.
+
+#[test]
+fn logic_line_assignment_is_not_swallowed_as_prose() {
+    let src = "flow greet() {\n~ n = 5\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let flow: ast::FlowDecl = find_child(&p.syntax()).expect("flow decl");
+    let body = expect_prose_body(flow.body());
+    // The whole point of the fix: no `TEXT` node anywhere in the body
+    // (the pre-fix bug folded `~ n = 5` into exactly that).
+    assert!(
+        !has_node_kind(body.syntax(), SyntaxKind::TEXT),
+        "the logic line must not be swallowed into a TEXT run"
+    );
+    let logic_line: ast::LogicLine = find_child(body.syntax()).expect("LOGIC_LINE");
+    let assign = logic_line.assign_stmt().expect("ASSIGN_STMT child");
+    assert!(logic_line.expr_stmt().is_none());
+    let place: ast::Path = find_child(assign.syntax()).expect("place path");
+    assert_eq!(
+        place
+            .segments()
+            .map(|t| t.text().to_string())
+            .collect::<Vec<_>>(),
+        vec!["n".to_string()]
+    );
+    assert_eq!(
+        assign.value().map(|n| n.kind()),
+        Some(SyntaxKind::INTEGER_LIT)
+    );
+    assert!(assign.op_token().is_none_or(|t| t.kind() == SyntaxKind::EQ));
+}
+
+#[test]
+fn logic_line_compound_assignment_operators() {
+    for (src_op, expected) in [("+=", SyntaxKind::PLUS_EQ), ("-=", SyntaxKind::MINUS_EQ)] {
+        let src = format!("flow greet() {{\n~ n {src_op} 1\n}}\n");
+        let p = assert_lossless(&src);
+        assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+        let flow: ast::FlowDecl = find_child(&p.syntax()).expect("flow decl");
+        let body = expect_prose_body(flow.body());
+        let logic_line: ast::LogicLine = find_child(body.syntax()).expect("LOGIC_LINE");
+        let assign = logic_line.assign_stmt().expect("ASSIGN_STMT child");
+        assert_eq!(assign.op_token().map(|t| t.kind()), Some(expected));
+    }
+}
+
+#[test]
+fn logic_line_bare_expression_is_a_call() {
+    let src = "flow greet() {\n~ bump()\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let flow: ast::FlowDecl = find_child(&p.syntax()).expect("flow decl");
+    let body = expect_prose_body(flow.body());
+    let logic_line: ast::LogicLine = find_child(body.syntax()).expect("LOGIC_LINE");
+    assert!(logic_line.assign_stmt().is_none());
+    let expr_stmt = logic_line.expr_stmt().expect("EXPR_STMT child");
+    assert_eq!(
+        expr_stmt.expr().map(|n| n.kind()),
+        Some(SyntaxKind::CALL_EXPR)
+    );
+}
+
+#[test]
+fn logic_line_precedes_ordinary_content_on_the_next_line() {
+    // The escape consumes exactly its own line — the content line right
+    // after it parses completely normally, unaffected.
+    let src = "flow greet() {\n~ n = 5\nValue is {n}.\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let flow: ast::FlowDecl = find_child(&p.syntax()).expect("flow decl");
+    let body = expect_prose_body(flow.body());
+    let items: Vec<_> = body.syntax().children().collect();
+    assert_eq!(items[0].kind(), SyntaxKind::LOGIC_LINE);
+    assert_eq!(items[1].kind(), SyntaxKind::CONTENT_LINE);
+    assert!(has_node_kind(&items[1], SyntaxKind::INTERPOLATION));
+}
+
+#[test]
+fn logic_line_inside_choice_body_and_conditional_colon_body() {
+    // `body_line`'s TILDE arm is shared by every body-shaped list that
+    // reuses it (choice bodies via `braced_item_list`); `colon_body_line`
+    // (`family.rs`) keeps its own copy in sync (see that function's doc) —
+    // both must recognize the escape, not just the top-level flow body.
+    let choice_src = "flow greet() {\n{?\n* [go] {\n~ n = 1\n}\n}\n}\n";
+    let p = assert_lossless(choice_src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::LOGIC_LINE));
+
+    let colon_src = "flow greet() {\n{if n > 0: ~ n = 0}\n}\n";
+    let p = assert_lossless(colon_src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::LOGIC_LINE));
+}
+
+#[test]
+fn logic_line_partial_progress_is_not_swallowed_as_prose() {
+    // Issue #1991 finding F2: the recovery loop originally fired only on
+    // ZERO token progress. `~ n *= 3` makes PARTIAL progress — `at_assignment`
+    // doesn't recognize `*=` (only `=`/`+=`/`-=`), so `expr_stmt_line` parses
+    // `n` alone as an `EXPR_STMT` and stops, leaving `*= 3` unconsumed. Before
+    // the fix that leftover was handed back to `body_line`'s prose scanner
+    // with zero diagnostics; it must now be recovered inside `LOGIC_LINE`
+    // itself, loudly, and never fold into `TEXT`.
+    let src = "flow greet() {\n~ n *= 3\n}\n";
+    let p = parse(src);
+    assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
+    assert!(
+        !p.errors().is_empty(),
+        "partial-progress leftover tokens must raise a real diagnostic"
+    );
+    assert!(
+        !has_node_kind(&p.syntax(), SyntaxKind::TEXT),
+        "partial-progress leftover tokens must never be swallowed into TEXT prose"
+    );
+}
+
+#[test]
+fn logic_line_recovery_does_not_consume_enclosing_close_brace() {
+    // Issue #1991 finding F3: the recovery loop originally terminated only
+    // on NEWLINE/EOF, so inside a braced/colon body (no NEWLINE before the
+    // block's own `}`) it consumed the enclosing `R_BRACE` too, corrupting
+    // the block structure. `~ if` is a zero-progress unsupported shape
+    // (mirrors `logic_line_unsupported_shape_is_a_loud_diagnostic_never_silent_prose`),
+    // reached here from a same-line colon body so its leftover recovery
+    // has to stop at `}` rather than eat it. Before the fix, the recovery
+    // loop consumed straight through `}` looking for a `NEWLINE`, so the
+    // `CONDITIONAL_BLOCK` never closed, `after` was absorbed into the
+    // still-open `IF_ARM`, and the parse ended with a spurious "expected
+    // R_BRACE, found EOF" (this test's own source has no such content, so
+    // that extra diagnostic — not present here — was the tell).
+    let src = "flow greet() {\n{if n > 0: ~ if}\nafter\n}\n";
+    let p = parse(src);
+    assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
+    assert_eq!(
+        p.errors().len(),
+        2,
+        "expected exactly the atom + logic-line diagnostics for `~ if`, no R_BRACE/EOF fallout: {:?}",
+        p.errors()
+    );
+    // The conditional block must close cleanly, so the following content
+    // line is a sibling of it — not absorbed into the still-open IF_ARM —
+    // and the whole flow body reaches its own closing brace.
+    let flow: ast::FlowDecl = find_child(&p.syntax()).expect("flow decl");
+    let body = expect_prose_body(flow.body());
+    let items: Vec<_> = body.syntax().children().collect();
+    assert!(
+        items
+            .iter()
+            .any(|n| n.kind() == SyntaxKind::CONDITIONAL_BLOCK),
+        "expected a closed CONDITIONAL_BLOCK sibling, got: {:?}",
+        items.iter().map(SyntaxNode::kind).collect::<Vec<_>>()
+    );
+    assert!(
+        items.iter().any(|n| n.kind() == SyntaxKind::CONTENT_LINE
+            && n.text().to_string().contains("after")),
+        "expected the following content line as a sibling, not absorbed into the block"
+    );
+}
+
+#[test]
+fn logic_line_unsupported_shape_is_a_loud_diagnostic_never_silent_prose() {
+    // Issue #1991's own hedge: if a shape reachable at code-ground
+    // statement position has no content-ground meaning (`if`, here), it
+    // must be diagnosed, never silently accepted as prose. It must NOT
+    // fold into a `TEXT` run either way — including the recovery-loop
+    // guard that keeps a fully-unrecognized shape's leftover tokens from
+    // being handed back to `body_line`'s next iteration and re-dispatched
+    // as a fresh (prose) line.
+    let src = "flow greet() {\n~ if\n}\n";
+    let p = parse(src);
+    assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
+    assert!(
+        !p.errors().is_empty(),
+        "an unsupported logic-line shape must raise a real diagnostic"
+    );
+    assert!(
+        !has_node_kind(&p.syntax(), SyntaxKind::TEXT),
+        "an unsupported logic-line shape must never be swallowed into TEXT prose"
+    );
+}

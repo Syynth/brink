@@ -81,11 +81,30 @@ through to `content::content_line` and is folded into an ordinary `TEXT`
 run. It prints as literal story text and `n` never changes. This is a
 **silent grammar gap**, worse than a compile error: the author gets no
 diagnostic and no execution failure, just a story that quietly does the
-wrong thing. Confirmed by `hir::emit_native`'s own module doc, which
-independently reaches the same conclusion: "`Stmt::TempDecl`/`Assignment`/
-`ExprStmt`/`LogicBlock`/`Await` at prose-body position ... this is a
-native-**grammar** gap, not just an emission one: there is no bare `~ x =
-expr`-style prose-body statement to round-trip yet."
+wrong thing. At the time of writing, this was confirmed by
+`hir::emit_native`'s own module doc, which independently reached the same
+conclusion: "`Stmt::TempDecl`/`Assignment`/`ExprStmt`/`LogicBlock`/`Await`
+at prose-body position ... this is a native-**grammar** gap, not just an
+emission one: there is no bare `~ x = expr`-style prose-body statement to
+round-trip yet."
+
+**Correction (issue #1991, PR #2002, landed after this triage):** that
+quote is now stale for two of the five variants it named. `~ x = expr` /
+`~ expr` (the ruled content-ground logic-line escape, charter §8.2) is
+exactly the bare prose-body statement the old sentence said didn't exist —
+it does now, parsed by `stmt::logic_line` and lowered by
+`lower_native::body::lower_logic_line` to real top-level
+`Stmt::Assignment`/`Stmt::ExprStmt` HIR, with zero diagnostics. `emit_native`
+itself has **not** grown a printer for either (the corpus impact below is
+unchanged by #2002 — it measures the printer/`brink-respell` direction, not
+the parser one this fix touched), so its own module doc now classifies both
+as emitter-only, the same bucket its alternations sentence already used —
+see that doc for the corrected wording. `TempDecl`/`LogicBlock`/`Await`
+remain genuine native-**grammar** gaps: #1991/#2002 scoped only the
+`~`-prefixed assignment/bare-call spelling, and the fixtures below use the
+**bare, unprefixed** form (`n = 1`, no `~`), which is a different, still-
+unfixed gap — tracked at **#1972** ("prose-body statement grammar:
+assignment/call/temp-decl/logic-block/await"), OPEN as of this writing.
 
 Corpus impact: the `full_corpus_sweep` `"assignment"` bucket alone is **27
 cases**.
@@ -109,18 +128,26 @@ flow main() {
 
 compiles with zero diagnostics; `brink play` prints `bump()` as literal text
 and `Value is 0.` — the call never executes. Same code-location cluster as
-Hole 1 (`Stmt::ExprStmt` has no prose-body grammar either).
+Hole 1 (`Stmt::ExprStmt` has no prose-body grammar either, for the *bare*
+spelling probed here — see the #1991/PR #2002 correction on Hole 1: the
+`~`-prefixed spelling now does).
 
 Corpus impact: `"expression statement"` bucket, **19 cases**.
 
 **Holes 1 and 2 are the same underlying gap** — `emit_native`'s module doc
-groups `TempDecl`/`Assignment`/`ExprStmt`/`LogicBlock`/`Await` under one
-finding, because `lower_native::body` never constructs any of them outside
-a `~{ }` logic block, full stop. The single biggest lever in the whole
-sweep is fixing this one gap: `"temp declaration"` (14) + `"assignment"`
-(27) + `"expression statement"` (19) = **60 cases**, more than a third of
-all remaining failures, from one grammar slice (a prose-body statement
-form).
+used to group `TempDecl`/`Assignment`/`ExprStmt`/`LogicBlock`/`Await` under
+one finding, because `lower_native::body` never constructed any of them
+outside a `~{ }` logic block, full stop. As of #1991/PR #2002 that's no
+longer true for `Assignment`/`ExprStmt` at the **lowering** level (the
+`~`-prefixed spelling constructs them directly, no `~{ }` needed) — but the
+bare, unprefixed spelling these two holes actually probe is untouched, and
+`emit_native`'s **printer** hasn't grown support for either variant either
+way, so the corpus buckets below are unchanged. The single biggest lever in
+the whole sweep is still fixing the remaining gap (bare prose-body
+statement recognition, #1972, plus growing `emit_native`'s printer):
+`"temp declaration"` (14) + `"assignment"` (27) + `"expression statement"`
+(19) = **60 cases**, more than a third of all remaining failures, from one
+prose-body statement form.
 
 ### Hole 3 — "`<- flow(args)` outside `~{}`"
 
