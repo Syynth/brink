@@ -621,7 +621,8 @@ fn emit_stmt_stream(
                     _ => None,
                 };
                 if let Some(divert_text) = same_line_divert {
-                    let text = escape_leading_line_start_sigil(&emit_content_parts(&c.parts, context)?);
+                    let text =
+                        escape_leading_line_start_sigil(&emit_content_parts(&c.parts, context)?);
                     if !c.tags.is_empty() {
                         return Err(unsupported(
                             "tags on a content line sharing its line with a divert",
