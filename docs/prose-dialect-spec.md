@@ -498,6 +498,42 @@ makes them `[lints]`-configurable and `@[allow(…)]`-suppressible (only
 the attribute name is vocabulary. Implemented in
 `brink_analyzer::markup_check`, wired into `per_file_diagnostics`.
 
+**Required attributes + widened attribute schema (RULED 2026-08-01, issue
+#1997, closing #1780).** Two gaps issue #1780 found in the schema above:
+`attrs` was an *allow*-list only (a declared-but-missing attribute was
+never diagnosed), and `attrs` being a bare `Vec<String>` had no room to
+grow into typed attribute values without a breaking manifest change.
+Issue #1997 ruled **both halves adopted**:
+
+- **(a) Required attributes.** Each declared attribute
+  (`brink_ir::ManifestSpanKind::attrs`, now `Vec<ManifestSpanAttr>`) carries
+  a `required: bool`, `false` by default. A span of a declared kind that
+  omits one of that kind's `required` attributes reports `E173`, gated the
+  same way `E164`/`E165` are (only for a span whose name is declared, one
+  report per missing attribute) and defaulting to `Warning` for the same
+  `[lints]`/`@[allow(…)]`-configurability reason as `E164`/`E165`.
+  Implemented in `brink_analyzer::markup_check`, alongside the existing
+  checks.
+- **(b) Widened attribute schema — headroom, not typing.**
+  `ManifestSpanKind.attrs` moved from `Vec<String>` to
+  `Vec<ManifestSpanAttr>` (`{ name, required }`, plus a reserved,
+  currently-inert `ty` slot) **specifically so that adding attribute-value
+  typing later needs a new check, not another manifest schema break** —
+  `TypeRef` is already `#[serde(transparent)]`, so `ty`'s wire form is
+  already the plain-string shape a future typed value would use.
+  **⚠ This is schema headroom only. Issue #1997 does NOT implement
+  attribute-value typing** — span attribute values stay static text by
+  construction (`SyntaxKind::SPAN_ATTR_VALUE`), exactly as this section
+  already said above; `ty` is deserialized and round-tripped but read by
+  no check. A reader seeing `ManifestSpanAttr::ty` in the source should
+  not conclude typing shipped.
+
+This is a wire-format change to the `markup` section itself (a bare
+attribute-name array is no longer accepted at the type level — hosts must
+migrate to `[{ "name": "…" }, …]`), observable through `@brink-lang/web`.
+See `docs/host-capability-manifest.md` § "Markup vocabulary" for the
+updated wire shape and migration note.
+
 ### 4.3 Nesting doctrine (RULED)
 - **A tag must close in the same fragment scope it opened in.** Markup
   and logic nest freely inside each other; they can never partially

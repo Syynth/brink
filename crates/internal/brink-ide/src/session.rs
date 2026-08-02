@@ -872,7 +872,11 @@ mod tests {
         HostManifest {
             markup: vec![brink_ir::ManifestSpanKind {
                 name: "wave".into(),
-                attrs: vec!["amount".into()],
+                attrs: vec![brink_ir::ManifestSpanAttr {
+                    name: "amount".into(),
+                    required: false,
+                    ty: None,
+                }],
             }],
             ..HostManifest::default()
         }

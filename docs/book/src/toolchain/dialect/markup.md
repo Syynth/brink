@@ -123,9 +123,9 @@ The manifest's `markup` section is an array of span kinds:
 ```json
 {
   "markup": [
-    { "name": "wave", "attrs": ["amount"] },
-    { "name": "item", "attrs": ["id"] },
-    { "name": "sfx", "attrs": ["name", "volume"] },
+    { "name": "wave", "attrs": [{ "name": "amount" }] },
+    { "name": "item", "attrs": [{ "name": "id", "required": true }] },
+    { "name": "sfx", "attrs": [{ "name": "name" }, { "name": "volume", "required": true }] },
     { "name": "b" },
     { "name": "i" }
   ]
@@ -135,7 +135,13 @@ The manifest's `markup` section is an array of span kinds:
 Each span kind has:
 
 - **`name`** (required) — the tag name
-- **`attrs`** (optional) — an array of allowed attribute names
+- **`attrs`** (optional) — an array of attribute declarations this kind accepts
+
+Each attribute declaration has:
+
+- **`name`** (required) — the attribute name
+- **`required`** (optional, defaults to `false`) — whether every span of this kind
+  must carry this attribute
 
 If a span kind has no `attrs`, it accepts no attributes (like the `<b>` and `<i>`
 examples above).
@@ -149,9 +155,12 @@ in the project:
   `E164`.
 - An **undeclared attribute** on a declared kind (e.g., `<wave speed="2">` when only
   `amount` is declared) reports `E165`.
+- A **missing required attribute** on a declared kind (e.g., `<item>the lantern</item>`
+  when `item`'s `id` is declared `required`) reports `E173`.
 
 Attribute **values** are never checked — they are always plain text, so there is
-nothing to type-check. Only the attribute *name* is part of the declared vocabulary.
+nothing to type-check. Only the attribute *name*, and now whether it is *required*,
+is part of the declared vocabulary.
 
 ### Freeform markup (no validation)
 
@@ -164,6 +173,7 @@ To go back to freeform markup:
 [lints]
 E164 = "allow"
 E165 = "allow"
+E173 = "allow"
 ```
 
 You can also suppress markup validation for a single tag or line:
@@ -178,17 +188,19 @@ You can also suppress markup validation for a single tag or line:
 
 ### Severity control
 
-Both `E164` and `E165` default to **`Warning`** severity, which means they don't
-break the build. You can make them stricter:
+`E164`, `E165`, and `E173` all default to **`Warning`** severity, which means they
+don't break the build. You can make them stricter:
 
 ```toml
 [lints]
 E164 = "deny"
 E165 = "deny"
+E173 = "deny"
 ```
 
-Now undeclared tags and attributes are hard errors. You can also suppress them
-selectively with `@[allow(…)]` or line-level `// brink-disable`.
+Now undeclared tags, undeclared attributes, and missing required attributes are hard
+errors. You can also suppress them selectively with `@[allow(…)]` or line-level
+`// brink-disable`.
 
 ## How the runtime sees markup
 
