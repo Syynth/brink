@@ -472,15 +472,28 @@ fn radio(chan: string, text: content) {
   `fn` (`!name`'s own placement is legal on a `flow` too, but nothing
   scans a `flow`'s declaration into the dispatch table yet); `fn
   conventions()` registration + comptime (issue #1840 —
-  **blocked on four rulings**, sized in
-  `docs/conventions-comptime-sizing.md`: the identity a registered handler
-  carries across the comptime boundary, whether a comptime fault fails the
-  build or degrades to an empty convention set, the diagnostic floor while
-  epic #452's instruction→range carrier stays `needs-design`, and — sharpest
-  — what `register`'s own effect row is, since an `EXTERNAL` `register` lands
-  in `EffectRow.calls` and makes the ruling's canonical `@[effects(pure)] fn
-  conventions()` fail its own fence with `E103`); **multi-token style
-  values** — issue #1719's `@[style(key = "value")]` value is a single
+  **RULED 2026-08-01/2026-08-02, sized in
+  `docs/conventions-comptime-sizing.md`**: `docs/decision-log.md`'s
+  2026-08-01 "Conventions comptime: the four blocking rulings (#1840)"
+  entry settles handler identity across the comptime boundary (Q1),
+  comptime fault behavior (Q2, build-hard-fails / editor-keeps-last-good),
+  the diagnostic floor as a v1 name-level stack trace with no ranges (Q3),
+  and `register`'s own effect row (Q4 — a write to a **named registry
+  cell**, correcting the earlier `@[effects(pure)]` framing that failed its
+  own `E103` fence; `register` is neither an `EXTERNAL` nor a bespoke
+  row-exempt intrinsic); the 2026-08-02 "`register` is a comptime-only
+  intrinsic; calling it elsewhere is a diagnostic (#1840 Q5)" entry then
+  settles `register`'s own legality and lowering — a T1b intrinsic, legal
+  only inside the conventions module's `fn conventions()`, enforced by
+  `E175` (`crates/internal/brink-analyzer/src/register_intrinsic.rs`).
+  ⚠ **Still open, implementation-side:** Q4's ruled effect row for
+  `register` (the named-registry-cell write) has no arm yet in
+  `brink_analyzer::infer::intrinsics` — see that gap recorded in
+  `register_intrinsic.rs`'s own module doc and `docs/diagnostics/E175.md`.
+  The comptime evaluator itself (`begin_function_eval` interception,
+  `brink-compiler` taking `brink-runtime` as a real dependency per
+  `docs/decision-log.md`'s #1867 entry) also remains unbuilt); **multi-token
+  style values** — issue #1719's `@[style(key = "value")]` value is a single
   presentation token today (one `StyleToken` per key), not the
   space-separated list this section's own screenplay preset describes
   (`[right, uppercase]`, `[uppercase]`); a `key = "a b"` value lowers to

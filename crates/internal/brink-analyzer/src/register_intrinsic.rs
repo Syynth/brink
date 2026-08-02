@@ -43,10 +43,30 @@
 //! just evaluates and discards its argument) but does not yet feed any
 //! registry — that is exactly what the comptime evaluator slice will
 //! change, without needing to touch this confinement check again.
+//!
+//! # Known gap: the ruled effect row isn't wired yet
+//!
+//! `docs/decision-log.md`'s 2026-08-01 Q4 ruling settles what `register`
+//! *means* in the effect system — a write to a **named registry cell**,
+//! the same "ordinary write" shape §10 of `docs/effects-spec.md` already
+//! gives every RNG draw — specifically to correct an earlier framing
+//! (`@[effects(pure)] fn conventions()`) that failed its own `E103` fence,
+//! and to reject the alternative of a bespoke row-exempt intrinsic.
+//! **That row has no arm yet in `brink_analyzer::infer::intrinsics`**, so
+//! as of this pass, `register` is in practice row-exempt (an empty row) —
+//! the exact shape Q4 rejected. Concretely: `@[effects(pure)] fn
+//! conventions() { register(x) }` compiles clean today, though Q4's ruling
+//! says a `register` call should be recorded as a write and `pure` should
+//! therefore fail it. This pass (legality/confinement, `E175`) is
+//! unaffected either way; the gap is purely in effect inference and is
+//! deliberately not fixed here — see `docs/effects-spec.md` §14.5 item 3
+//! and `docs/diagnostics/E175.md` for the same note.
 
 use brink_ir::hir::visit::{self, HirVisitor};
-use brink_ir::{Diagnostic, DiagnosticCode, Expr, FileId, HirFile, Knot};
+use brink_ir::{Diagnostic, DiagnosticCode, Expr, FileId, HirFile, Knot, ResolutionMap};
 use rowan::TextRange;
+
+use crate::determinism::LookupSet;
 
 /// The well-known function name the conventions module registers handlers
 /// from (`docs/decision-log.md`'s 2026-07-31 "Conventions are annotated
@@ -70,33 +90,33 @@ const REGISTER_INTRINSIC_NAME: &str = "register";
 /// two checks' "unconfigured project" postures differ.
 ///
 /// **Shadowing**: `resolve::is_t1b_stdlib_name` only recognizes `register`
-/// as the intrinsic on a resolution *failure* — a real top-level
-/// declaration of the same name (a `fn`, `EXTERNAL`, `VAR`/`CONST`, or
-/// `LIST`) always wins resolution first, exactly like every other T1b
+/// as the intrinsic on a resolution *failure* — a real declaration of the
+/// same name (a `fn`, `EXTERNAL`, `VAR`/`CONST`, `LIST`, or a local
+/// temp/param) always wins resolution first, exactly like every other T1b
 /// name, so calls to it lower as ordinary calls and never reach the
 /// intrinsic lowering at all (`lir::lower::expr::lower_expr`'s
 /// resolution-map branch runs before its `lower_t1b_stdlib_call`
-/// fallback). This pass honors that for a **same-file** shadow — if `hir`
-/// itself declares anything named `register`, every bare `register(...)`
-/// call in `hir` resolves to that declaration, so this pass stays silent
-/// for the whole file rather than raising a false `E175` against calls
-/// that were never the intrinsic to begin with. A *cross-file* shadow
-/// (declared in a different file, reached however this project's
-/// resolution normally reaches other files' symbols) is not checked here
-/// — this crate has no project-wide symbol index to consult (see the
-/// module doc) — and is a known, narrow gap: a project that shadows
-/// `register` from another file could see a spurious `E175` here. This
-/// never affects *codegen*: lowering itself is fully resolution-aware and
-/// always compiles a real shadow correctly regardless of this pass.
+/// fallback). This pass honors that the same way `dialect_gate::check`
+/// honors it for the rest of the T1b stdlib names (`dialect_gate.rs`'s own
+/// `is_t1b_stdlib_call_name` check): `resolved` is the project's already-
+/// computed resolution result (`brink-db` threads in this file's own
+/// [`resolve_file`](crate::resolve::resolve_file) output, the same
+/// project-wide-index-backed resolver every other pass reads) — a call
+/// whose own range appears in `resolved` resolved to a *real* symbol
+/// (same-file **or** cross-file, and locals), so it is never the intrinsic
+/// and is filtered out per-call before the confinement check ever sees it.
+/// This is deliberately **not** a whole-file suppression: only the
+/// individual shadowed call sites are exempt, so a file that both shadows
+/// `register` for one call and makes an illegal intrinsic call elsewhere
+/// still gets `E175` for the latter.
 #[must_use]
 pub fn register_intrinsic_diagnostics(
     file_id: FileId,
     hir: &HirFile,
     is_conventions_module: bool,
+    resolved: &ResolutionMap,
 ) -> Vec<Diagnostic> {
-    if file_declares_register(hir) {
-        return Vec::new();
-    }
+    let resolved_ranges: LookupSet<TextRange> = resolved.iter().map(|r| r.range).collect();
 
     let mut walker = RegisterCallWalker {
         in_conventions_fn: false,
@@ -107,46 +127,15 @@ pub fn register_intrinsic_diagnostics(
     walker
         .calls
         .into_iter()
+        .filter(|call| !resolved_ranges.contains(&call.range))
         .filter(|call| !(is_conventions_module && call.in_conventions_fn))
         .map(|call| Diagnostic {
             file: file_id,
             range: call.range,
             code: DiagnosticCode::E175,
-            message: format!(
-                "{}: `register` is a comptime-only intrinsic — legal only inside the \
-                 project's configured conventions module's `fn conventions()`",
-                DiagnosticCode::E175.title(),
-            ),
+            message: DiagnosticCode::E175.title().to_owned(),
         })
         .collect()
-}
-
-/// Whether `hir` itself declares any top-level symbol literally named
-/// `register` — a `fn`/`flow` knot, an `EXTERNAL`, a `VAR`/`CONST`, or a
-/// `LIST` — matching `resolve::resolve_function`'s own lookup chain (every
-/// category it checks before falling back to the T1b intrinsic list). See
-/// [`register_intrinsic_diagnostics`]'s doc for why a same-file shadow
-/// must suppress this whole file's check.
-fn file_declares_register(hir: &HirFile) -> bool {
-    hir.knots
-        .iter()
-        .any(|k| k.name.text == REGISTER_INTRINSIC_NAME)
-        || hir
-            .externals
-            .iter()
-            .any(|e| e.name.text == REGISTER_INTRINSIC_NAME)
-        || hir
-            .variables
-            .iter()
-            .any(|v| v.name.text == REGISTER_INTRINSIC_NAME)
-        || hir
-            .constants
-            .iter()
-            .any(|c| c.name.text == REGISTER_INTRINSIC_NAME)
-        || hir
-            .lists
-            .iter()
-            .any(|l| l.name.text == REGISTER_INTRINSIC_NAME)
 }
 
 /// One `register(...)` call site found by [`RegisterCallWalker`].
@@ -198,13 +187,39 @@ impl HirVisitor for RegisterCallWalker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use brink_format::{DefinitionId, DefinitionTag};
     use brink_ir::hir::lower_native;
+    use brink_ir::{ResolvedRef, Stmt};
 
     fn build_native(src: &str) -> HirFile {
         let parsed = brink_syntax_native::parse(src);
         assert!(parsed.errors().is_empty(), "{:?}", parsed.errors());
         let (hir, _manifest, _diags) = lower_native::lower(FileId(0), &parsed.tree());
         hir
+    }
+
+    fn no_resolutions() -> ResolutionMap {
+        ResolutionMap::new()
+    }
+
+    /// Finds the sole `register(...)` call inside a knot named `knot_name`,
+    /// unwrapping the `~ { … }` [`brink_ir::LogicBlock`] wrapper a native
+    /// `fn` body's logic statements always lower into (`knot.body.stmts`'s
+    /// one [`Stmt::LogicBlock`], whose own `stmts` are [`brink_ir::BlockStmt`]
+    /// — a different type from the outer `Stmt`).
+    fn find_register_call<'a>(hir: &'a HirFile, knot_name: &str) -> &'a Expr {
+        let knot = hir
+            .knots
+            .iter()
+            .find(|k| k.name.text == knot_name)
+            .unwrap_or_else(|| unreachable!("knot {knot_name:?} must exist in the built HIR"));
+        let Some(Stmt::LogicBlock(lb)) = knot.body.stmts.first() else {
+            unreachable!("a native `fn` body's statements lower into one LogicBlock");
+        };
+        let Some(brink_ir::BlockStmt::ExprStmt(expr)) = lb.stmts.first() else {
+            unreachable!("the logic block's one statement is the register(...) call");
+        };
+        expr
     }
 
     #[test]
@@ -214,7 +229,7 @@ mod tests {
              fn conventions() {\n  register(scene);\n}\n\
              flow main() {\n  hi\n}\n",
         );
-        let diags = register_intrinsic_diagnostics(FileId(0), &hir, true);
+        let diags = register_intrinsic_diagnostics(FileId(0), &hir, true, &no_resolutions());
         assert!(diags.is_empty(), "{diags:?}");
     }
 
@@ -226,7 +241,7 @@ mod tests {
              fn conventions() {\n}\n\
              flow main() {\n  hi\n}\n",
         );
-        let diags = register_intrinsic_diagnostics(FileId(0), &hir, true);
+        let diags = register_intrinsic_diagnostics(FileId(0), &hir, true, &no_resolutions());
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E175);
     }
@@ -241,7 +256,7 @@ mod tests {
         // Same source, but this file is NOT the configured conventions
         // module — `is_conventions_module: false` — so even though the
         // call sits inside a function named `conventions`, it's illegal.
-        let diags = register_intrinsic_diagnostics(FileId(0), &hir, false);
+        let diags = register_intrinsic_diagnostics(FileId(0), &hir, false, &no_resolutions());
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E175);
     }
@@ -257,7 +272,7 @@ mod tests {
              fn conventions() {\n  register(scene);\n}\n\
              flow main() {\n  hi\n}\n",
         );
-        let diags = register_intrinsic_diagnostics(FileId(0), &hir, false);
+        let diags = register_intrinsic_diagnostics(FileId(0), &hir, false, &no_resolutions());
         assert_eq!(diags.len(), 1, "{diags:?}");
     }
 
@@ -268,31 +283,77 @@ mod tests {
              fn b() {\n  register(y);\n}\n\
              flow main() {\n  hi\n}\n",
         );
-        let diags = register_intrinsic_diagnostics(FileId(0), &hir, true);
+        let diags = register_intrinsic_diagnostics(FileId(0), &hir, true, &no_resolutions());
         assert_eq!(diags.len(), 2, "{diags:?}");
         assert!(diags.iter().all(|d| d.code == DiagnosticCode::E175));
     }
 
+    /// A same-file `register`-named user function shadows the intrinsic —
+    /// `resolve_file` resolves the call to that declaration and this pass
+    /// reads the resolution result, exactly like `dialect_gate::check`'s own
+    /// `resolved_stdlib_name_call_is_never_flagged_in_either_dialect` test
+    /// simulates it for the rest of the T1b names. Unlike the old whole-file
+    /// `file_declares_register` heuristic, this is a **per-call** filter: it
+    /// is proven precise (not merely coarse-safe) below by
+    /// `a_shadowed_call_does_not_suppress_an_unrelated_illegal_call_in_the_
+    /// same_file`.
     #[test]
-    fn a_same_file_shadowing_register_fn_suppresses_the_whole_file() {
-        // A real top-level `fn register(...)` always wins name resolution
-        // over the intrinsic (same posture as every other T1b name), so
-        // every bare `register(...)` call in this file resolves to it,
-        // not to the comptime intrinsic — this pass must stay silent for
-        // the whole file rather than raising a false `E175`.
+    fn a_resolved_call_to_a_real_declaration_is_never_e175() {
         let hir = build_native(
             "fn register(x: string) {\n  return x;\n}\n\
              fn setup() {\n  register(\"x\");\n}\n\
              flow main() {\n  hi\n}\n",
         );
-        let diags = register_intrinsic_diagnostics(FileId(0), &hir, true);
+        let Expr::Call(path, _) = find_register_call(&hir, "setup") else {
+            unreachable!("setup's one statement is always the register(\"x\") call");
+        };
+        let resolved = vec![ResolvedRef {
+            file: FileId(0),
+            range: path.range,
+            target: DefinitionId::new(DefinitionTag::Address, 1),
+        }];
+        let diags = register_intrinsic_diagnostics(FileId(0), &hir, true, &resolved);
         assert!(diags.is_empty(), "{diags:?}");
+    }
+
+    /// The precision half of the fix (review finding on the old
+    /// `file_declares_register`, which suppressed the *entire file* once any
+    /// one call shadowed): a call that resolved to a real symbol is exempt,
+    /// but an unrelated illegal intrinsic call in the very same file still
+    /// raises `E175` — proving the filter is per-call-site, not per-file.
+    #[test]
+    fn a_shadowed_call_does_not_suppress_an_unrelated_illegal_call_in_the_same_file() {
+        let hir = build_native(
+            "fn register(x: string) {\n  return x;\n}\n\
+             fn setup() {\n  register(\"x\");\n}\n\
+             fn other() {\n  register(1);\n}\n\
+             flow main() {\n  hi\n}\n",
+        );
+        let Expr::Call(shadowed_path, _) = find_register_call(&hir, "setup") else {
+            unreachable!("setup's one statement is always the register(\"x\") call");
+        };
+        // Only `setup`'s call resolved (to the real `fn register`); `other`'s
+        // `register(1)` call never resolved (nothing but the intrinsic list
+        // matches an int argument to `fn register(x: string)`), so it's
+        // still illegal.
+        let resolved = vec![ResolvedRef {
+            file: FileId(0),
+            range: shadowed_path.range,
+            target: DefinitionId::new(DefinitionTag::Address, 1),
+        }];
+        let diags = register_intrinsic_diagnostics(FileId(0), &hir, true, &resolved);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E175);
     }
 
     #[test]
     fn no_register_calls_at_all_is_always_silent() {
         let hir = build_native("flow main() {\n  hi\n}\n");
-        assert!(register_intrinsic_diagnostics(FileId(0), &hir, true).is_empty());
-        assert!(register_intrinsic_diagnostics(FileId(0), &hir, false).is_empty());
+        assert!(
+            register_intrinsic_diagnostics(FileId(0), &hir, true, &no_resolutions()).is_empty()
+        );
+        assert!(
+            register_intrinsic_diagnostics(FileId(0), &hir, false, &no_resolutions()).is_empty()
+        );
     }
 }

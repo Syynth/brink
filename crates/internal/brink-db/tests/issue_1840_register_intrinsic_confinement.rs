@@ -158,6 +158,51 @@ fn a_shadowing_register_function_is_never_e175() {
     );
 }
 
+/// An unannotated param named `register` (native allows unannotated params —
+/// `brink-syntax-native/src/parser/declaration.rs`'s `fn heal(hp)`) shadows
+/// the intrinsic when used as a call target — `resolve_query`'s locals
+/// lookup (`resolve.rs`'s "temps/params used as function names" branch)
+/// resolves it before the T1b-intrinsic fallback is ever consulted, so this
+/// must never raise `E175`.
+#[test]
+fn a_param_named_register_used_as_a_call_target_is_never_e175() {
+    let mut db = ProjectDb::new();
+    db.set_analysis_options(opts_with_elements("conventions.brink"));
+    db.set_file("conventions.brink", "flow other() {\n  hi\n}\n".to_owned());
+    db.set_file(
+        "scenes/heading.brink",
+        "fn apply(register) {\n  return register(1);\n}\n\
+         flow main() {\n  hi\n}\n"
+            .to_owned(),
+    );
+    let diags = db.analysis().diagnostics.clone();
+    assert!(
+        diags.iter().all(|d| d.code != DiagnosticCode::E175),
+        "{diags:?}"
+    );
+}
+
+/// The same shadow, via a local `temp` instead of a param — same resolution
+/// path, same expected silence.
+#[test]
+fn a_temp_named_register_used_as_a_call_target_is_never_e175() {
+    let mut db = ProjectDb::new();
+    db.set_analysis_options(opts_with_elements("conventions.brink"));
+    db.set_file("conventions.brink", "flow other() {\n  hi\n}\n".to_owned());
+    db.set_file(
+        "scenes/heading.brink",
+        "fn scene(place: string) {\n  return place;\n}\n\
+         fn setup() {\n  let register = scene;\n  register(\"x\");\n}\n\
+         flow main() {\n  hi\n}\n"
+            .to_owned(),
+    );
+    let diags = db.analysis().diagnostics.clone();
+    assert!(
+        diags.iter().all(|d| d.code != DiagnosticCode::E175),
+        "{diags:?}"
+    );
+}
+
 /// A project with no `register` calls anywhere never raises `E175`,
 /// configured conventions module or not — the ordinary, unconfigured-
 /// project case stays completely silent.

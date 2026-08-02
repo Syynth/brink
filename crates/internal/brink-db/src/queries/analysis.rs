@@ -494,7 +494,7 @@ pub(crate) fn conventions_confinement_diagnostics_query(
 /// project's configured conventions module's `fn conventions()`.
 ///
 /// Lazy the same way [`conventions_confinement_diagnostics_query`] is: a
-/// file with no `register(...)` call anywhere never reads
+/// file with no unresolved `register(...)` call anywhere never reads
 /// [`module_map_query`]. **Deliberately NOT the same early-outs as that
 /// query for the "unconfigured" cases** — see
 /// `brink_analyzer::register_intrinsic_diagnostics`'s own module doc for
@@ -508,6 +508,13 @@ pub(crate) fn conventions_confinement_diagnostics_query(
 /// differing "unconfigured" postures from ever being tempted to drift back
 /// together by a well-meaning refactor.
 ///
+/// Threads this file's own [`resolve_query`] output through to
+/// `register_intrinsic_diagnostics` — a call whose range resolved to a real
+/// symbol (same-file or cross-file declaration, or a local temp/param of
+/// the same name) is a shadow, never the intrinsic, exactly the same
+/// resolution-map-backed check `dialect_gate::check` already does for
+/// every other T1b stdlib name.
+///
 /// `lru = 4096`: same per-file runaway-guard ceiling as every other
 /// per-file diagnostic query in this module.
 #[salsa::tracked(lru = 4096)]
@@ -518,16 +525,16 @@ pub(crate) fn register_intrinsic_diagnostics_query(
 ) -> Arc<Vec<Diagnostic>> {
     let hir = &lowered_query(db, file).hir;
     let file_id = file.file_id(db);
+    let (file_resolutions, _diags) = resolve_query(db, project, file);
 
-    // Cheap, project-identity-free pre-check (mirrors `conventions_
-    // confinement_diagnostics_query`'s own laziness): skip `module_map_
-    // query` entirely when this file can never produce a diagnostic no
-    // matter how `is_conventions_module` resolves. `is_conventions_module:
-    // false` is the maximal/superset case — every structurally-found
-    // (post-shadow-filter) call gets flagged — so an empty result here
-    // means `true` would be empty too, and it's safe to skip project
-    // resolution entirely.
-    if register_intrinsic_diagnostics(file_id, hir, false).is_empty() {
+    // Cheap pre-check (mirrors `conventions_confinement_diagnostics_query`'s
+    // own laziness): skip `module_map_query` entirely when this file can
+    // never produce a diagnostic no matter how `is_conventions_module`
+    // resolves. `is_conventions_module: false` is the maximal/superset case
+    // — every structurally-found, not-already-resolved-to-a-real-symbol
+    // call gets flagged — so an empty result here means `true` would be
+    // empty too, and it's safe to skip project resolution entirely.
+    if register_intrinsic_diagnostics(file_id, hir, false, file_resolutions.as_ref()).is_empty() {
         return Arc::new(Vec::new());
     }
 
@@ -567,6 +574,7 @@ pub(crate) fn register_intrinsic_diagnostics_query(
         file_id,
         hir,
         is_conventions_module,
+        file_resolutions.as_ref(),
     ))
 }
 
