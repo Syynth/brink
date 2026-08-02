@@ -278,6 +278,21 @@ fn annotations_element_reaches_story_data() {
     );
 }
 
+/// Value-carrying `return <expr>` at prose-body position (issue #1973):
+/// `fn double(x) >{ return x * 2 }` overrides the `fn`'s default
+/// code-ground body to prose-ground, and `return x * 2` is the
+/// content-ground `return_stmt` grammar this issue's fix taught to parse a
+/// trailing value expression instead of leaving it as dangling,
+/// unreachable content (the old shape raised `E033`). `flow main()` calls
+/// `double(21)` from display position (`Doubled: {double(21)}`) so the
+/// returned value must actually reach the transcript, not just compile —
+/// before the fix, this exact source failed to compile at all (`return x *
+/// 2` left `* 2` as unparsed dangling content past the bare `return`).
+#[test]
+fn prose_return_value() {
+    assert_case("prose-return-value");
+}
+
 /// NG-D array/sequence literals (issue #1490, RULED 2026-07-27:
 /// `[1, 2, 3]`). Three functions: one builds a three-element array bound to
 /// a `let` and sums it by iterating with `for` (proving `Expr::ArrayLiteral`
@@ -598,6 +613,7 @@ fn every_case_directory_has_a_test() {
         "lambda-verbs",
         "logic-line-escape",
         "or-coalescing",
+        "prose-return-value",
         "root-content-typed-strict",
         "ufcs",
     ];

@@ -473,7 +473,7 @@ fn return_redirect_dotted_target() {
 }
 
 #[test]
-fn return_followed_by_unrelated_content_is_bare_return_stmt() {
+fn bare_return_on_its_own_line_has_no_value() {
     // A `return` on its own line, with nothing after it before the
     // NEWLINE, stays a bare RETURN_STMT with no value — the ordinary case
     // this grammar has always handled. The value-carrying case (`return

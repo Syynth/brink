@@ -263,8 +263,8 @@ ever spells **prose-ground** statement syntax (a bare `return`/`return
 today never gets it. This blocks genuine oracle-episode-identity round-trip
 for this bucket's own function-knot corpus cases specifically (though not
 this issue's own acceptance metric, `full_corpus_sweep`'s emit-success
-count, which never re-parses) — flagged as its own follow-up rather than
-folded into #1973's fix.
+count, which never re-parses) — filed as its own follow-up, issue #2029,
+rather than folded into #1973's fix.
 
 ### Hole 5 — "No `else if` chain"
 
