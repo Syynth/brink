@@ -167,3 +167,12 @@ fn inline_markup_escape_set() {
 fn line_start_cue_escape() {
     round_trip_case("line-start-cue-escape");
 }
+
+/// Issue #2029: `emit_knot` must spell the `>{ }` prose-ground override
+/// for a `fn`'s body — a bare `{` instead selects the code-ground
+/// default, and this printer's statement stream never spells that dialect
+/// (see the fixture's own `manifest.toml`).
+#[test]
+fn fn_prose_return() {
+    round_trip_case("fn-prose-return");
+}

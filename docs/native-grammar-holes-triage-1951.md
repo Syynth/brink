@@ -266,6 +266,20 @@ this issue's own acceptance metric, `full_corpus_sweep`'s emit-success
 count, which never re-parses) — filed as its own follow-up, issue #2029,
 rather than folded into #1973's fix.
 
+**Correction (issue #2029, landed):** fixed — `emit_knot` now spells the
+`>{ }` prose-ground override whenever `k.is_function` is true (a `flow`'s
+bare `{` already matches its own prose default and is left alone). Proven
+by a new `tests/tier1-brink-respell/fn-prose-return/` fixture
+(`crates/internal/brink-respell/tests/round_trip.rs`'s `fn_prose_return`)
+and two `emit_native` unit tests
+(`fn_prose_body_value_return_round_trips`,
+`fn_prose_body_bare_return_and_content_round_trip`). As predicted above,
+`full_corpus_sweep`'s emit-success bucket counts are unaffected (measured:
+250 pass / 147 fail, identical bucket-by-bucket with the fix reverted) —
+the fix only changes whether the *reparse* succeeds, which that sweep never
+attempts. The oracle ratchet is untouched by construction: this emitter has
+no caller in the compile/run pipeline the oracle snapshots exercise.
+
 ### Hole 5 — "No `else if` chain"
 
 **DOES NOT REPRODUCE as a grammar gap — the hole as stated is false.** The
