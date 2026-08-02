@@ -486,6 +486,22 @@ fn if_stmt_as_the_last_item_is_not_mistaken_for_a_tail() {
     assert_eq!(items[0].kind(), SyntaxKind::IF_STMT);
 }
 
+/// `> text` (charter §8.2, issue #1992) never produces a value either —
+/// review finding F2. Before this, a `PROSE_LINE` as the last item in a
+/// `STMT_BLOCK` was missing from `StmtBlock::tail`'s exclusion list, so it
+/// was mistaken for the block's blocks-as-values tail expression exactly
+/// like an `IF_STMT` used to be (the sibling case just above).
+#[test]
+fn prose_line_as_the_last_item_is_not_mistaken_for_a_tail() {
+    let p = assert_lossless("var x = { > hi }\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let block = stmt_block_of(&p);
+    assert!(block.tail().is_none());
+    let items: Vec<_> = block.items().collect();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].kind(), SyntaxKind::PROSE_LINE);
+}
+
 #[test]
 fn control_flow_bodies_nest_and_recurse() {
     let p = assert_lossless(
@@ -899,4 +915,121 @@ fn logic_line_unsupported_shape_is_a_loud_diagnostic_never_silent_prose() {
         !has_node_kind(&p.syntax(), SyntaxKind::TEXT),
         "an unsupported logic-line shape must never be swallowed into TEXT prose"
     );
+}
+
+// ── K. The code-ground line escape: `> text` (charter §8.2, RULED ────
+// ── 2026-07-23, issue #1992) ───────────────────────────────────────────
+//
+// The mirror image of section J at the opposite ground: `> text` emits a
+// prose line inside an otherwise code-ground `flow`/`fn` body (`fn`'s
+// default, or a `flow`'s `~{ }` "Compound guard" override). Dispatched
+// from `stmt::statement()`'s `GT` arm — reachable everywhere a
+// code-ground `STMT_BLOCK` statement is parsed, including nested
+// `if`/`while`/`for` bodies (all of which reuse `stmt_block`/`statement()`
+// verbatim). Unlike `LOGIC_LINE`, `PROSE_LINE` wraps a `CONTENT_LINE` — the
+// content-ground line layer's own node, reused unmodified — and needs no
+// bespoke recovery loop of its own: `content_line` already owns its own
+// termination discipline (stops at `NEWLINE`/EOF, never consumes a bare
+// `R_BRACE`).
+
+#[test]
+fn prose_line_wraps_a_content_line_with_zero_errors() {
+    let src = "fn radio() {\n> hi\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let f: ast::FnDecl = find_child(&p.syntax()).expect("fn decl");
+    let body = expect_code_body(f.body());
+    let items: Vec<_> = body.items().collect();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].kind(), SyntaxKind::PROSE_LINE);
+    let prose_line: ast::ProseLine = find_child(body.syntax()).expect("PROSE_LINE");
+    let content_line = prose_line.content_line().expect("CONTENT_LINE child");
+    assert!(has_node_kind(content_line.syntax(), SyntaxKind::TEXT));
+}
+
+#[test]
+fn prose_line_carries_interpolation_like_any_content_line() {
+    // The issue's own repro: `> [{chan}] {text}` — interpolation works
+    // identically to the whole-body `>{ }` form, since both route through
+    // the same `content_line` grammar.
+    let src = "fn radio(chan: string, text: string) {\n> [{chan}] {text}\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let f: ast::FnDecl = find_child(&p.syntax()).expect("fn decl");
+    let body = expect_code_body(f.body());
+    let prose_line: ast::ProseLine = find_child(body.syntax()).expect("PROSE_LINE");
+    let content_line = prose_line.content_line().expect("CONTENT_LINE child");
+    let interpolations: Vec<_> = content_line
+        .syntax()
+        .children()
+        .filter(|n| n.kind() == SyntaxKind::INTERPOLATION)
+        .collect();
+    assert_eq!(interpolations.len(), 2, "one per `{{…}}` interpolation");
+}
+
+#[test]
+fn prose_line_precedes_ordinary_code_on_the_next_line() {
+    // The escape consumes exactly its own line — an ordinary code
+    // statement right after it parses completely normally, unaffected.
+    // Mirrors `logic_line_precedes_ordinary_content_on_the_next_line`'s
+    // opposite-ground shape.
+    let src = "fn radio() {\n> hi\nn = 1;\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let f: ast::FnDecl = find_child(&p.syntax()).expect("fn decl");
+    let body = expect_code_body(f.body());
+    let items: Vec<_> = body.items().collect();
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0].kind(), SyntaxKind::PROSE_LINE);
+    assert_eq!(items[1].kind(), SyntaxKind::ASSIGN_STMT);
+}
+
+#[test]
+fn prose_line_reachable_inside_nested_if_body() {
+    // Rule 12o: verify a construct dispatched from the shared per-statement
+    // loop also parses safely one level down, inside a nested control-flow
+    // body — `if`/`while`/`for` bodies all reuse `stmt_block`/`statement()`
+    // verbatim, so this is the same dispatch table, not a special case.
+    let src = "fn radio() {\nif true {\n> hi\n}\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::PROSE_LINE));
+}
+
+#[test]
+fn prose_line_recovery_does_not_consume_enclosing_close_brace() {
+    // Rule 12o's second half: a `> text` line nested inside an `if` body,
+    // followed by an ordinary statement in the *enclosing* block, must not
+    // have its own closing `}` swallowed — the following statement must
+    // land as the `IF_STMT`'s own sibling, not get absorbed into a
+    // still-open `if` body. `content_line` already stops cleanly at
+    // `NEWLINE`, so this is a plain reachability/structure check, not a
+    // fresh recovery-loop probe the way `LOGIC_LINE`'s own version of this
+    // test (`logic_line_recovery_does_not_consume_enclosing_close_brace`)
+    // needed to be for its own, more permissive statement grammar.
+    let src = "fn radio() {\nif true {\n> hi\n}\nafter();\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let f: ast::FnDecl = find_child(&p.syntax()).expect("fn decl");
+    let body = expect_code_body(f.body());
+    let items: Vec<_> = body.items().collect();
+    assert_eq!(
+        items.len(),
+        2,
+        "expected IF_STMT + the trailing EXPR_STMT as siblings, got: {:?}",
+        items.iter().map(SyntaxNode::kind).collect::<Vec<_>>()
+    );
+    assert_eq!(items[0].kind(), SyntaxKind::IF_STMT);
+    assert_eq!(items[1].kind(), SyntaxKind::EXPR_STMT);
+}
+
+#[test]
+fn prose_line_is_reachable_from_a_flows_compound_guard_body_too() {
+    // `~{ }` selects the code-ground `STMT_BLOCK` body for a `flow`
+    // (charter §4's "Compound guard") — the same node/grammar an `fn`'s
+    // default body uses, so `> text` must work there too.
+    let src = "flow greet() ~{\n> hi\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::PROSE_LINE));
 }

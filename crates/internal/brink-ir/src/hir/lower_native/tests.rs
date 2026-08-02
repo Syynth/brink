@@ -1206,6 +1206,211 @@ fn logic_line_with_no_recognized_child_is_a_loud_e129_not_a_silent_drop() {
     );
 }
 
+// ── Issue #1992: `> text` — the code-ground line escape into prose ────
+// ── (charter §8.2, RULED 2026-07-23) ───────────────────────────────────
+//
+// The mirror image of #1991 (above) at the opposite ground: `> text` emits
+// a prose line inside an otherwise code-ground `fn`/`flow` body. Before
+// this landed the parser had no `GT` dispatch in `stmt::statement()` at
+// all, so `> hi` inside a code-ground body was a parse error (`expected an
+// expression, found GT`), not a lowering gap — these tests pin the fixed
+// grammar's HIR lowering; `tests/tier1-native/prose-line-escape/` pins the
+// same fix end-to-end through a real compile+run.
+
+#[test]
+fn prose_line_only_body_lowers_to_content_and_end_of_line_with_no_logic_block() {
+    let (hir, _m, diags) = lower_src("fn radio() {\n  > hi\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = only_knot_body(&hir);
+    assert!(
+        matches!(body.stmts[0], Stmt::Content(_)),
+        "a code-ground body with only a prose line must never wrap it in a \
+         LogicBlock (content is out of that closed set by design): {:?}",
+        body.stmts
+    );
+    assert!(matches!(body.stmts[1], Stmt::EndOfLine));
+    assert_eq!(body.stmts.len(), 2);
+}
+
+#[test]
+fn prose_line_carries_interpolation_like_any_content_line() {
+    // The issue's own repro: `> [{chan}] {text}`.
+    let (hir, _m, diags) = lower_src("fn radio(chan, text) {\n  > [{chan}] {text}\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = only_knot_body(&hir);
+    let Stmt::Content(c) = &body.stmts[0] else {
+        panic!("expected Stmt::Content, got {:?}", body.stmts[0]);
+    };
+    let interpolations = c
+        .parts
+        .iter()
+        .filter(|p| matches!(p, crate::ContentPart::Interpolation(_)))
+        .count();
+    assert_eq!(interpolations, 2, "one per `{{…}}` interpolation: {c:?}");
+}
+
+#[test]
+fn prose_line_with_no_prose_still_lowers_to_a_single_logic_block_unchanged() {
+    // Strict generalization, not a behavior change: a code-ground body with
+    // no `> text` line in it (every body before this issue) must still
+    // lower to exactly one `LogicBlock`, byte-for-byte the prior shape.
+    let (hir, _m, diags) = lower_src("fn bump() {\n  n += 1;\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = only_knot_body(&hir);
+    assert_eq!(body.stmts.len(), 1);
+    let Stmt::LogicBlock(lb) = &body.stmts[0] else {
+        panic!("expected Stmt::LogicBlock, got {:?}", body.stmts[0]);
+    };
+    assert_eq!(lb.stmts.len(), 1);
+    assert!(matches!(lb.stmts[0], BlockStmt::Assignment(_)));
+}
+
+#[test]
+fn prose_line_with_no_prose_anchors_provenance_on_the_whole_stmt_block() {
+    // Review finding F4: `flush_code_ground_run` anchors a `LogicBlock`'s
+    // `ptr` on the run's first item (`run_start`), which is the right
+    // choice once a `> text` split has actually happened, but the
+    // no-split case must still anchor on the whole `STMT_BLOCK` node —
+    // the pre-#1992 shape — since `lb.ptr` is read for diagnostic ranges
+    // (`brink-analyzer/src/validate.rs`, `coalesce.rs`) and the module doc
+    // claims "byte-for-byte the prior shape" for exactly this case.
+    let src = "fn bump() {\n  n += 1;\n}\n";
+    let (hir, _m, diags) = lower_src(src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = only_knot_body(&hir);
+    let Stmt::LogicBlock(lb) = &body.stmts[0] else {
+        panic!("expected Stmt::LogicBlock, got {:?}", body.stmts[0]);
+    };
+    let parse = brink_syntax_native::parse(src);
+    let expected = parse
+        .tree()
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == N::STMT_BLOCK)
+        .expect("STMT_BLOCK in tree")
+        .text_range();
+    assert_eq!(
+        lb.ptr.range, expected,
+        "the single-run LogicBlock's ptr must span the whole `STMT_BLOCK`, \
+         not just its first statement"
+    );
+}
+
+#[test]
+fn prose_line_interleaves_with_logic_block_runs() {
+    // Runs of ordinary statements on either side of a `> text` line each
+    // become their own `LogicBlock`, with the content emission sitting
+    // between them as an ordinary sibling `Stmt` — not nested inside
+    // either logic segment (content is out of `BlockStmt`'s closed set by
+    // design, `docs/t1b-surface-spec.md` §2's seam rule).
+    let (hir, _m, diags) = lower_src("fn radio() {\n  n = 1;\n  > hi\n  n = 2;\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = only_knot_body(&hir);
+    assert_eq!(
+        body.stmts.len(),
+        4,
+        "expected [LogicBlock, Content, EndOfLine, LogicBlock]: {:?}",
+        body.stmts
+    );
+    assert!(matches!(body.stmts[0], Stmt::LogicBlock(_)));
+    assert!(matches!(body.stmts[1], Stmt::Content(_)));
+    assert!(matches!(body.stmts[2], Stmt::EndOfLine));
+    assert!(matches!(body.stmts[3], Stmt::LogicBlock(_)));
+    let Stmt::LogicBlock(first) = &body.stmts[0] else {
+        unreachable!()
+    };
+    assert!(matches!(first.stmts[0], BlockStmt::Assignment(_)));
+    let Stmt::LogicBlock(second) = &body.stmts[3] else {
+        unreachable!()
+    };
+    assert!(matches!(second.stmts[0], BlockStmt::Assignment(_)));
+}
+
+#[test]
+fn prose_line_nested_in_an_if_body_is_a_loud_e129_not_silent() {
+    // This slice only gives `> text` a real content-emission home at a
+    // `flow`/`fn`'s own top-level code-ground body (`body::
+    // lower_stmt_block_as_body`'s doc); the escape still *parses* at any
+    // nesting depth (`stmt::statement()`'s shared dispatch), so a
+    // `PROSE_LINE` nested inside an `if` body reaches `control_flow::
+    // lower_block_item` directly and must fall to its default `E129` arm —
+    // loud, never a silent drop, and never folded into a `LogicBlock`
+    // either (that would require inventing the very `BlockStmt::Content`
+    // variant the seam rule forbids).
+    let (hir, _m, diags) = lower_src("fn radio() {\n  if true {\n    > hi\n  }\n}\n");
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E129),
+        "expected E129 for a prose line nested inside an if body, got: {diags:?}"
+    );
+    let body = only_knot_body(&hir);
+    assert!(
+        !body_contains_content(body),
+        "a prose line with no content-emission home in this context must never \
+         still surface as content: {body:?}"
+    );
+}
+
+#[test]
+fn a_g1_label_on_a_code_ground_prose_line_is_a_loud_e129_not_silently_dropped() {
+    // Review finding F3: `lower_code_ground_items` called
+    // `lower_content_line_body`, which its own doc says skips the
+    // `CONTENT_LINE`'s `LABEL` child deliberately — that's correct for
+    // `lower_items`'s weave-ground absorption algorithm (a label there
+    // decides how much of the item stream to swallow, consumed by the
+    // *caller* before this helper ever sees the line), but this
+    // split-run loop has no absorption target at all, so a `(name)` label
+    // on a `> text` line here was silently vanishing with no diagnostic —
+    // and a later `-> again` divert to that name would then fail to
+    // resolve, with no way to trace why.
+    let (hir, _m, diags) = lower_src("fn radio() {\n  n = 1;\n  > (again) hi\n}\n");
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E129),
+        "expected E129 for a G-1 label on a code-ground prose line, got: {diags:?}"
+    );
+    // The label's loss doesn't also swallow the line's own content — the
+    // prose line still lowers to ordinary `Stmt::Content`/`Stmt::EndOfLine`
+    // siblings, same as an unlabeled one.
+    let body = only_knot_body(&hir);
+    assert!(
+        body_contains_content(body),
+        "the prose line's own content must still lower even though its label \
+         is rejected: {body:?}"
+    );
+}
+
+/// Whether any `Stmt::Content` appears anywhere in `block`, including nested
+/// inside a `Stmt::LogicBlock`'s own `BlockStmt::If`/`While`/`For` bodies —
+/// used by [`prose_line_nested_in_an_if_body_is_a_loud_e129_not_silent`] to
+/// assert the *absence* of content at any depth, not just the top level.
+fn body_contains_content(block: &crate::Block) -> bool {
+    block.stmts.iter().any(stmt_contains_content)
+}
+
+fn stmt_contains_content(stmt: &Stmt) -> bool {
+    match stmt {
+        Stmt::Content(_) => true,
+        Stmt::LogicBlock(lb) => lb.stmts.iter().any(block_stmt_contains_content),
+        _ => false,
+    }
+}
+
+fn block_stmt_contains_content(stmt: &BlockStmt) -> bool {
+    match stmt {
+        BlockStmt::If(i) => {
+            i.body.iter().any(block_stmt_contains_content)
+                || i.else_branch.as_ref().is_some_and(|e| match e {
+                    ElseBranch::ElseIf(inner) => {
+                        block_stmt_contains_content(&BlockStmt::If((**inner).clone()))
+                    }
+                    ElseBranch::Else(stmts) => stmts.iter().any(block_stmt_contains_content),
+                })
+        }
+        BlockStmt::While(w) => w.body.iter().any(block_stmt_contains_content),
+        BlockStmt::For(f) => f.body.iter().any(block_stmt_contains_content),
+        _ => false,
+    }
+}
+
 #[test]
 fn end_and_done_targets_lower_to_sentinel_paths() {
     let (hir, _m, diags) = lower_src("flow a() {\n  -> END\n}\nflow b() {\n  -> DONE\n}\n");

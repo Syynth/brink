@@ -592,6 +592,37 @@ fn logic_line_escape() {
     assert_case("logic-line-escape");
 }
 
+/// Issue #1992: `> text` — the code-ground line escape into prose (charter
+/// §8.2, RULED 2026-07-23, the mirror image of #1991 above at the opposite
+/// ground). Before this landed, `>` had no dispatch in
+/// `stmt::statement()`'s code-ground per-statement loop at all, so `>
+/// [{chan}] {text}` at statement position inside a `fn`'s default
+/// code-ground body was a parse error (`expected an expression, found GT`)
+/// rather than a lowering gap.
+#[test]
+fn prose_line_escape() {
+    assert_case("prose-line-escape");
+}
+
+/// Issue #1992 review finding F1: a `> text` split must not fragment a
+/// code-ground body's T1b lexical scope. `prose-line-escape`'s own
+/// `bump_and_announce` case deliberately uses the global `var n` around its
+/// split, so it never exercises this — here `x` is a `let`-declared local,
+/// read (via `{x}` interpolation) in the `Content` sitting *between* the
+/// two split `LogicBlock` runs and written (`x += 1;`) in the second run,
+/// so both the READ half (a block-scoped read after the first run's scope
+/// would have been wrongly popped, misdiagnosed as E082) and the WRITE
+/// half (a write that would otherwise miss its temp slot and fall through
+/// to a phantom `AssignTarget::Global`) are covered by one case. Confirmed
+/// to fail — E082 misdiagnosis / wrong or panicking output — with
+/// `mark_split_logic_block_scopes` and `lower_logic_block`'s scope-aware
+/// push/pop (`brink-ir/src/hir/lower_native/body.rs`,
+/// `brink-ir/src/lir/lower/blocks.rs`) reverted.
+#[test]
+fn prose_line_escape_shares_scope_across_the_split() {
+    assert_case("prose-line-escape-scope");
+}
+
 /// Every `tests/tier1-native/` case directory is exercised by a `#[test]`
 /// above — a directory with no matching test would silently never run.
 #[test]
@@ -613,6 +644,8 @@ fn every_case_directory_has_a_test() {
         "lambda-verbs",
         "logic-line-escape",
         "or-coalescing",
+        "prose-line-escape",
+        "prose-line-escape-scope",
         "prose-return-value",
         "root-content-typed-strict",
         "ufcs",

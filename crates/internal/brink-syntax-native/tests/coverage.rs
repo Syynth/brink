@@ -208,6 +208,7 @@ fn classify(kind: SyntaxKind) -> Coverage {
         SyntaxKind::BLOCK
         | SyntaxKind::CONTENT_LINE
         | SyntaxKind::LOGIC_LINE
+        | SyntaxKind::PROSE_LINE
         | SyntaxKind::TEXT
         | SyntaxKind::INTERPOLATION
         | SyntaxKind::GLUE_NODE

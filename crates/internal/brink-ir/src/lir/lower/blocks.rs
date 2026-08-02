@@ -41,16 +41,33 @@ use super::expr::lower_expr;
 use super::lir;
 
 /// Lower a `~ { … }` block's statements into the enclosing body's flat
-/// statement sequence. Opens a new T1b lexical scope for the block's own
-/// `temp` declarations (and any nested scopes it opens), popped on return.
-pub(super) fn lower_logic_block(
-    stmts: &[hir::BlockStmt],
-    ctx: &mut LowerCtx<'_>,
-) -> Vec<lir::Stmt> {
-    ctx.push_block_scope();
-    let out = lower_block_stmt_list(stmts, ctx);
-    ctx.pop_block_scope();
-    out
+/// statement sequence, honoring [`hir::LogicBlock::scope`] — almost always
+/// [`hir::LogicBlockScope::Standalone`] (push a new T1b lexical scope for
+/// the block's own `temp` declarations on entry, pop it on return), except
+/// when a code-ground body's `> text` prose-line escape has split it into
+/// several sibling `LogicBlock`s (issue #1992 review finding F1,
+/// `hir::lower_native::body::mark_split_logic_block_scopes`'s doc): those
+/// siblings share one scope, so only the first (`Opens`) pushes; a
+/// `Continues` sibling neither pushes nor pops. **Neither `Opens` nor
+/// `Continues` pops here** — the matching pop is the enclosing block's
+/// responsibility ([`super::lower_block_with_children`]), since a
+/// `Stmt::Content` sibling produced by a trailing `> text` line can
+/// legally come after the last split run and still needs the scope open.
+pub(super) fn lower_logic_block(lb: &hir::LogicBlock, ctx: &mut LowerCtx<'_>) -> Vec<lir::Stmt> {
+    use hir::LogicBlockScope as Scope;
+    match lb.scope {
+        Scope::Standalone => {
+            ctx.push_block_scope();
+            let out = lower_block_stmt_list(&lb.stmts, ctx);
+            ctx.pop_block_scope();
+            out
+        }
+        Scope::Opens => {
+            ctx.push_block_scope();
+            lower_block_stmt_list(&lb.stmts, ctx)
+        }
+        Scope::Continues => lower_block_stmt_list(&lb.stmts, ctx),
+    }
 }
 
 pub(super) fn lower_block_stmt_list(

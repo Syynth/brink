@@ -42,6 +42,7 @@ ast_node!(ModuleDecl, MODULE_DECL);
 ast_node!(Block, BLOCK);
 ast_node!(ContentLine, CONTENT_LINE);
 ast_node!(LogicLine, LOGIC_LINE);
+ast_node!(ProseLine, PROSE_LINE);
 ast_node!(Text, TEXT);
 ast_node!(Interpolation, INTERPOLATION);
 ast_node!(GlueNode, GLUE_NODE);
@@ -1105,6 +1106,15 @@ impl LogicLine {
     }
 }
 
+impl ProseLine {
+    /// The wrapped `> text` content line — the mirror image of
+    /// [`LogicLine`]'s own wrapped children (`parser/stmt.rs::prose_line`),
+    /// reusing [`ContentLine`]'s grammar unmodified.
+    pub fn content_line(&self) -> Option<ContentLine> {
+        support::child(&self.syntax)
+    }
+}
+
 impl Label {
     pub fn name_token(&self) -> Option<SyntaxToken> {
         support::token(&self.syntax, IDENT)
@@ -1363,7 +1373,13 @@ impl StmtBlock {
     /// `CONTINUE_STMT` to this same non-tail set — all three are always
     /// `;`-terminated in code-ground position (`parser/stmt.rs`'s
     /// `return_stmt`/`break_stmt`/`continue_stmt`), never a bare tail
-    /// value.
+    /// value. The `> text` prose-line escape (issue #1992) adds
+    /// `PROSE_LINE` to the set for the same reason: it never produces a
+    /// value (`parser/stmt.rs::statement`'s doc), so a `STMT_BLOCK` ending
+    /// in one has no tail expression, not a prose line masquerading as one
+    /// (review finding F2 — `lower_native/lambda.rs`'s `block.tail()` call
+    /// would otherwise lower it as a lambda's return value instead of
+    /// reaching `lower_block_item`'s loud `E129` arm).
     pub fn tail(&self) -> Option<SyntaxNode> {
         let last = self.syntax.children().last()?;
         (!matches!(
@@ -1378,6 +1394,7 @@ impl StmtBlock {
                 | SyntaxKind::RETURN_STMT
                 | SyntaxKind::BREAK_STMT
                 | SyntaxKind::CONTINUE_STMT
+                | SyntaxKind::PROSE_LINE
         ))
         .then_some(last)
     }

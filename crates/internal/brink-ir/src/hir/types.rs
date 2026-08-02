@@ -810,6 +810,53 @@ pub enum Stmt {
 pub struct LogicBlock {
     pub ptr: Provenance,
     pub stmts: Vec<BlockStmt>,
+    /// How this block's T1b lexical scope relates to its neighbors in the
+    /// enclosing `Vec<Stmt>` — always `Standalone` except a code-ground
+    /// body split by a `> text` prose-line escape (issue #1992 review
+    /// finding F1; see `hir::lower_native::body`'s
+    /// `mark_split_logic_block_scopes` doc).
+    pub scope: LogicBlockScope,
+}
+
+/// How a `Stmt::LogicBlock`'s block-scope push/pop bracket relates to its
+/// neighbors in the same statement stream. `lower_stmt_block_as_body`
+/// (`hir::lower_native::body`) splits one code-ground `STMT_BLOCK` into
+/// more than one `LogicBlock` around a `> text` prose-line escape — but a
+/// `let`/`temp` declared in an earlier run must stay visible, for both
+/// reads and writes, in every run after it (and in the `Stmt::Content`
+/// siblings a `> text` line lowers to, including any trailing content
+/// *after* the last split run), so the split runs still need to share
+/// **one** T1b lexical scope spanning the whole body rather than each
+/// opening and closing its own.
+///
+/// `lir::lower::blocks::lower_logic_block` reads this to decide whether to
+/// push a scope for a given run; the matching pop is **not** attached to
+/// any particular run (a `Stmt::Content` sibling can legally come after the
+/// last one and still needs the scope open) — instead
+/// `lir::lower::lower_block_with_children`, which lowers a whole
+/// `hir::Block`'s statements in one call, pops it once after processing
+/// every statement in the block, if and only if an `Opens` was seen. This
+/// is sound because splitting is scoped to *this* function's caller only:
+/// a `PROSE_LINE` nested inside an `if`/`while`/`for` body or a lambda's
+/// braced body never reaches `lower_stmt_block_as_body` and so never
+/// produces an `Opens`/`Continues` tag that could leak into some other,
+/// recursively-processed block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LogicBlockScope {
+    /// Push a new scope on entry, pop it on exit — every `LogicBlock`
+    /// except a split code-ground run.
+    #[default]
+    Standalone,
+    /// The first of several runs split from one code-ground body: push a
+    /// new scope on entry. The scope stays open for every later
+    /// `Continues` sibling (and any interleaved `Stmt::Content`) — popped
+    /// once, by the enclosing block's own lowering, after every statement
+    /// in the block has been processed.
+    Opens,
+    /// A run (other than the first) split from one code-ground body:
+    /// neither push nor pop — continues the scope an earlier `Opens`
+    /// sibling pushed.
+    Continues,
 }
 
 /// A single statement inside a `~ { … }` block.
