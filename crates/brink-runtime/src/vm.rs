@@ -25,7 +25,7 @@ use crate::record_ops;
 use crate::state::ContextAccess;
 use crate::story::{
     CallFrame, CallFrameType, ContainerPosition, ExecMode, Flow, PendingChoice, PureCallbackState,
-    Stats,
+    Stats, classify_ran_out_of_content,
 };
 use crate::string_ops;
 use crate::tower_ops;
@@ -2809,6 +2809,22 @@ fn handle_frame_exhaustion(
     stats: &mut Stats,
     frame_type: CallFrameType,
 ) -> Result<Stepped, RuntimeError> {
+    // Classify *why*, from the exhausted frame's shape right now — before
+    // anything below pops it (issue #1993). This is only meaningful for a
+    // `Done` returned from *this* call: that is the sole case the deferred
+    // `RanOutOfContent` fault (one `continue_single` later) can be
+    // reporting on. It must NOT be written to `flow` on a branch that
+    // resumes execution (a completed thread with more to run, a popped
+    // frame with content still below it) — doing so unconditionally would
+    // let a transient exhaustion elsewhere on the same flow (e.g. a
+    // `Story::call_function` boundary evaluating a function that calls a
+    // void helper) clobber a cause an *earlier*, still-pending exhaustion
+    // already recorded, which is then read stale by a later, unrelated
+    // `Done`. So: compute it now, but stash it on `flow` only at each
+    // `return Ok(Stepped::Done)` below.
+    let can_pop = flow.current_thread().call_stack.len() > 1;
+    let cause = classify_ran_out_of_content(frame_type, can_pop);
+
     if frame_type == CallFrameType::Thread {
         // Thread boundary exhausted — thread is done. Pop it without
         // touching inherited frames below. ThreadCall always creates a
@@ -2818,6 +2834,7 @@ fn handle_frame_exhaustion(
             stats.threads_completed += 1;
             return Ok(Stepped::ThreadCompleted);
         }
+        flow.ran_out_of_content_cause = cause;
         return Ok(Stepped::Done);
     }
 
@@ -2833,6 +2850,7 @@ fn handle_frame_exhaustion(
             stats.threads_completed += 1;
             return Ok(Stepped::ThreadCompleted);
         }
+        flow.ran_out_of_content_cause = cause;
         return Ok(Stepped::Done);
     }
 
@@ -2843,6 +2861,7 @@ fn handle_frame_exhaustion(
             stats.threads_completed += 1;
             return Ok(Stepped::ThreadCompleted);
         }
+        flow.ran_out_of_content_cause = cause;
         return Ok(Stepped::Done);
     }
     Ok(Stepped::Continue)
@@ -3238,6 +3257,7 @@ mod tests {
             skipping_choice: false,
             did_safe_exit: false,
             did_unsafe_yield: false,
+            ran_out_of_content_cause: crate::RanOutOfContentCause::default(),
             exec_mode: ExecMode::default(),
             pure_callback: crate::story::PureCallbackState::default(),
         }
