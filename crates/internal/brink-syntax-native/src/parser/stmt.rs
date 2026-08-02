@@ -328,9 +328,9 @@ pub(crate) fn logic_line(p: &mut Parser<'_, '_>) {
         expr_stmt_line(p);
     }
     // A statement/expression grammar that either recognized NOTHING at all
-    // (an unsupported shape — `if`/`while`/`for`/`until`/`let`/`return`/
-    // `break`/`continue`, none of which `expr::expression`'s atom accepts,
-    // already raised a diagnostic there) or stopped partway through (e.g.
+    // (an unsupported shape — `if`/`while`/`for`/`until`/`return`/`break`/
+    // `continue`, none of which `expr::expression`'s atom accepts, already
+    // raised a diagnostic there) or stopped partway through (e.g.
     // an operator `expr::expression` doesn't recognize, like `~ n *= 3`)
     // can leave tokens unconsumed before the line's real terminator. Left
     // alone, those tokens would be handed back to `body_line`'s next loop

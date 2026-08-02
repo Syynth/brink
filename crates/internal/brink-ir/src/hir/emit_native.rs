@@ -1806,16 +1806,18 @@ mod tests {
 
     #[test]
     fn logic_line_compound_assignment_round_trips() {
-        let src = "flow a() {\n  ~ n += 3\n}\n";
-        let emitted =
-            lower_and_emit(src).expect("a content-ground compound assignment must now emit");
-        assert!(emitted.contains("~ n += 3"), "{emitted}");
+        for (src_op, expected_op) in [("+=", crate::AssignOp::Add), ("-=", crate::AssignOp::Sub)] {
+            let src = format!("flow a() {{\n  ~ n {src_op} 3\n}}\n");
+            let emitted =
+                lower_and_emit(&src).expect("a content-ground compound assignment must now emit");
+            assert!(emitted.contains(&format!("~ n {src_op} 3")), "{emitted}");
 
-        let hir = reparse_and_lower(&emitted);
-        let Stmt::Assignment(a) = &hir.knots[0].body.stmts[0] else {
-            panic!("expected Stmt::Assignment: {:?}", hir.knots[0].body);
-        };
-        assert_eq!(a.op, crate::AssignOp::Add);
+            let hir = reparse_and_lower(&emitted);
+            let Stmt::Assignment(a) = &hir.knots[0].body.stmts[0] else {
+                panic!("expected Stmt::Assignment: {:?}", hir.knots[0].body);
+            };
+            assert_eq!(a.op, expected_op);
+        }
     }
 
     #[test]
