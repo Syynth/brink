@@ -621,7 +621,7 @@ fn emit_stmt_stream(
                     _ => None,
                 };
                 if let Some(divert_text) = same_line_divert {
-                    let text = escape_leading_cue_sigil(&emit_content_parts(&c.parts, context)?);
+                    let text = escape_leading_line_start_sigil(&emit_content_parts(&c.parts, context)?);
                     if !c.tags.is_empty() {
                         return Err(unsupported(
                             "tags on a content line sharing its line with a divert",
@@ -888,7 +888,7 @@ fn emit_content_line(
     c: &Content,
     context: &str,
 ) -> Result<(), EmitError> {
-    let text = escape_leading_cue_sigil(&emit_content_parts(&c.parts, context)?);
+    let text = escape_leading_line_start_sigil(&emit_content_parts(&c.parts, context)?);
     let mut line = format!("{indent}{text}");
     for tag in &c.tags {
         let _ = write!(line, " #{}", emit_tag(tag, context)?);
@@ -974,25 +974,29 @@ fn escape_content_text(s: &str) -> String {
 /// `lexer::ident::is_ident_start_byte`) — `@ 5pm` or a bare trailing `@`
 /// never opened a cue in the first place and needs no escaping either.
 ///
-/// `!` carries no equivalent hazard *today*: no parser dispatch reads a
-/// leading `!` at body-line position (the `!name` annotation-element
-/// sigil §3.5b reserves is unimplemented), so a literal leading `!` —
-/// whether authored directly or produced by `\!` — already round-trips
-/// unescaped. Revisit this function when that sigil lands.
+/// `!` now carries the exact same hazard (issue #2004): a leading
+/// `!` immediately followed by an identifier is `parser::element::
+/// at_bang_dispatch`'s own adjacency test for a `BANG_DISPATCH` (`!name`
+/// dispatch, §3.5b) at body-line position, so a literal leading `!name` —
+/// authored directly or produced by `\!` — needs the same one-character
+/// re-escape or it would silently re-parse as a dispatch instead of the
+/// literal text it started as. `! Wait, listen.` (a gap after the `!`)
+/// never opened a dispatch and needs no escaping, matching `at_bang_
+/// dispatch`'s own adjacency requirement.
 ///
 /// Only called at genuine body-line-position emission
 /// (`emit_stmt_stream`'s `Stmt::Content` arm, `emit_content_line`) — a
 /// labeled line (`emit_labeled_stmt_stream`) already carries its own
 /// `(name) ` prefix ahead of the content, so on re-parse the line's first
-/// token is never `AT` there regardless of what the content says, and
-/// needs no equivalent guard.
-fn escape_leading_cue_sigil(text: &str) -> String {
+/// token is never `AT`/`BANG` there regardless of what the content says,
+/// and needs no equivalent guard.
+fn escape_leading_line_start_sigil(text: &str) -> String {
     let mut chars = text.chars();
     match chars.next() {
-        Some('@') => {
+        Some(sigil @ ('@' | '!')) => {
             let rest = chars.as_str();
             if rest.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') {
-                format!("\\@{rest}")
+                format!("\\{sigil}{rest}")
             } else {
                 text.to_string()
             }
