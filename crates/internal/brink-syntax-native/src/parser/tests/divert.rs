@@ -473,21 +473,164 @@ fn return_redirect_dotted_target() {
 }
 
 #[test]
-fn return_followed_by_unrelated_content_is_bare_return_stmt() {
-    // `return` not immediately followed by `->` must NOT become a
-    // RETURN_REDIRECT — the trailing content is a separate item, exactly
-    // the divert/tunnel-call disambiguation's sibling case.
+fn bare_return_on_its_own_line_has_no_value() {
+    // A `return` on its own line, with nothing after it before the
+    // NEWLINE, stays a bare RETURN_STMT with no value — the ordinary case
+    // this grammar has always handled. The value-carrying case (`return
+    // home`, issue #1973) is [`return_with_value_expression_on_same_line`],
+    // below; the next-line-content case is
+    // [`return_with_value_then_next_line_content_is_unaffected`].
+    let src = "flow f() {\n  return\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::RETURN_STMT));
+    assert!(!has_node_kind(&p.syntax(), SyntaxKind::RETURN_REDIRECT));
+    let ret = p
+        .syntax()
+        .descendants()
+        .find_map(ast::ReturnStmt::cast)
+        .expect("RETURN_STMT");
+    assert!(ret.value().is_none(), "no value token follows this return");
+}
+
+#[test]
+fn return_with_value_expression_on_same_line() {
+    // `return <expr>` at content-ground/prose-body position (issue #1973):
+    // `home` (an `IDENT`) is not followed by `->`, so this is not a
+    // RETURN_REDIRECT — but it *is* a token that can start an expression,
+    // so it becomes the return's value, not a separate CONTENT_LINE. This
+    // is a real behavior change from the grammar's old bare-`return`-only
+    // shape: `return home` used to leave `home` as dangling, separately
+    // parsed prose content (and would raise E033 "unreachable code after
+    // divert" once lowered) — it is now `RETURN_STMT`'s own value child.
     let src = "flow f() {\n  return home\n}\n";
     let p = assert_lossless(src);
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
     assert!(has_node_kind(&p.syntax(), SyntaxKind::RETURN_STMT));
     assert!(!has_node_kind(&p.syntax(), SyntaxKind::RETURN_REDIRECT));
     assert!(
+        !p.syntax()
+            .descendants()
+            .any(|n| n.kind() == SyntaxKind::CONTENT_LINE),
+        "`home` must be the RETURN_STMT's value, not folded into a separate CONTENT_LINE"
+    );
+    let ret = p
+        .syntax()
+        .descendants()
+        .find_map(ast::ReturnStmt::cast)
+        .expect("RETURN_STMT");
+    let value = ret.value().expect("value expression");
+    assert_eq!(value.kind(), SyntaxKind::PATH_EXPR);
+}
+
+#[test]
+fn return_with_value_then_next_line_content_is_unaffected() {
+    // A bare `return` followed on the NEXT line by unrelated content: the
+    // NEWLINE terminates `return_stmt` before it ever reaches `home`, so
+    // this stays two separate items regardless of issue #1973's value
+    // grammar — pins the still-bare case doesn't regress alongside the
+    // same-line value case above.
+    let src = "flow f() {\n  return\n  home\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let ret = p
+        .syntax()
+        .descendants()
+        .find_map(ast::ReturnStmt::cast)
+        .expect("RETURN_STMT");
+    assert!(
+        ret.value().is_none(),
+        "no value — `home` is on the next line"
+    );
+    assert!(
         p.syntax()
             .descendants()
             .any(|n| n.kind() == SyntaxKind::CONTENT_LINE),
-        "`home` must land in its own CONTENT_LINE, not get folded into RETURN_STMT"
+        "`home` on the next line must land in its own CONTENT_LINE"
     );
+}
+
+#[test]
+fn return_with_numeric_value_expression() {
+    // The exact reproduction from issue #1973's filing: `return 5` at
+    // flow prose-body position.
+    let src = "flow f() {\n  return 5\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let ret = p
+        .syntax()
+        .descendants()
+        .find_map(ast::ReturnStmt::cast)
+        .expect("RETURN_STMT");
+    let value = ret.value().expect("value expression");
+    assert_eq!(value.kind(), SyntaxKind::INTEGER_LIT);
+}
+
+#[test]
+fn return_with_infix_value_expression() {
+    // `return hp > 0` (I003-tunnel-to-death's shape, issue #1973's corpus
+    // motivation): an infix comparison, not just a bare literal/path.
+    let src = "flow f() {\n  return hp > 0\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let ret = p
+        .syntax()
+        .descendants()
+        .find_map(ast::ReturnStmt::cast)
+        .expect("RETURN_STMT");
+    let value = ret.value().expect("value expression");
+    assert_eq!(value.kind(), SyntaxKind::INFIX_EXPR);
+}
+
+#[test]
+fn return_redirect_still_wins_over_value_grammar() {
+    // The collision the issue itself flags: `return -> target` must keep
+    // parsing as RETURN_REDIRECT, never get reinterpreted as "return the
+    // value of a divert expression" — `return_stmt`'s `DIVERT` check runs
+    // first and unconditionally wins, before the value-expression branch
+    // is ever considered.
+    let src = "flow f() {\n  return -> x\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::RETURN_REDIRECT));
+    assert!(!has_node_kind(&p.syntax(), SyntaxKind::RETURN_STMT));
+}
+
+#[test]
+fn return_value_in_colon_body_form() {
+    // The inline colon-body form (`family::colon_body_line`, terminated by
+    // `R_BRACE`, not `NEWLINE`): `return 5` immediately followed by the
+    // closing `}` with no whitespace must still parse the value and must
+    // not swallow the brace.
+    let src = "var score = 1\nflow f() {\n  {if score == 1: return 5}\n  -> END\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let ret = p
+        .syntax()
+        .descendants()
+        .find_map(ast::ReturnStmt::cast)
+        .expect("RETURN_STMT");
+    let value = ret.value().expect("value expression");
+    assert_eq!(value.kind(), SyntaxKind::INTEGER_LIT);
+}
+
+#[test]
+fn bare_return_in_colon_body_before_else_arm() {
+    // The exact boundary [`at_return_value_start`] exists to avoid
+    // mis-swallowing: a bare `return` immediately followed by an `else`
+    // arm on the same colon-body line. `KW_ELSE` is not a value-start
+    // token, so this must stay a bare RETURN_STMT with no spurious
+    // "expected an expression" error, and the `else` arm must still parse.
+    let src = "var score = 1\nflow f() {\n  {if score == 1: return else: Other.}\n  -> END\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let ret = p
+        .syntax()
+        .descendants()
+        .find_map(ast::ReturnStmt::cast)
+        .expect("RETURN_STMT");
+    assert!(ret.value().is_none(), "no value before the `else` arm");
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::ELSE_BRANCH));
 }
 
 // ── SPLICE — valid inside a CHOICE_POINT ─────────────────────────────

@@ -1417,6 +1417,47 @@ fn explicit_return_stamps_explicit_kind() {
 }
 
 #[test]
+fn content_ground_return_with_value_lowers_the_expression() {
+    // `>{ }` forces the prose-ground override on an `fn`, exercising the
+    // content-ground `RETURN_STMT` value grammar (issue #1973) rather than
+    // the code-ground `return expr;` form `lower_return_stmt` already
+    // covers. `is_function: true` keeps this legal per E032 (checked in
+    // `brink-analyzer`, not here) — the corpus motivation
+    // (I003-tunnel-to-death's `~ return hp > 0`) is exactly a function
+    // knot's value-carrying return.
+    let (hir, _m, diags) = lower_src("fn f() >{\n  return hp > 0\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let Stmt::Return(r) = &hir.knots[0].body.stmts[0] else {
+        panic!("expected Return, got {:?}", hir.knots[0].body.stmts[0]);
+    };
+    assert_eq!(r.kind, ReturnKind::Explicit);
+    assert!(
+        matches!(r.value, Some(Expr::Infix(_))),
+        "expected an infix comparison value, got {:?}",
+        r.value
+    );
+}
+
+#[test]
+fn content_ground_return_with_value_stays_explicit_in_a_non_function() {
+    // A value-carrying `return <expr>` inside an ordinary `flow` (not
+    // `fn`) parses and lowers cleanly at THIS layer — `fixup_return_kind`
+    // only demotes a *bare* (`value.is_none()`) return to
+    // `TunnelRedirect`, so a valued one stays `Explicit` regardless of
+    // `is_function`. Whether that's semantically legal is
+    // `brink-analyzer`'s E032 call (`validate.rs`'s
+    // `value_carrying_return_in_non_function_still_emits_e032`), a
+    // different crate/pass — this test only pins the lowering shape.
+    let (hir, _m, diags) = lower_src("flow f() {\n  Hello.\n  return 5\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let Stmt::Return(r) = hir.knots[0].body.stmts.last().expect("a Return statement") else {
+        panic!("expected Return, got {:?}", hir.knots[0].body.stmts);
+    };
+    assert_eq!(r.kind, ReturnKind::Explicit);
+    assert!(matches!(r.value, Some(Expr::Int(5))));
+}
+
+#[test]
 fn return_redirect_to_named_path_stamps_tunnel_redirect() {
     let (hir, _m, diags) = lower_src("flow b() {\n  Bye.\n}\nflow a() {\n  return -> b\n}\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
@@ -2205,6 +2246,141 @@ fn a_non_claiming_handler_may_have_params_beyond_its_captures() {
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     let element = hir.knots[0].element_annotation.as_ref().expect("present");
     assert!(!element.claims);
+}
+
+// The `!name` sigil dispatch half of `@[element(…)]` (issue #2004): a
+// `BANG_DISPATCH` line dispatches by name to an `args = "…"`-annotated
+// handler, the pattern parsing only the remainder after the sigil.
+
+#[test]
+fn a_bang_dispatch_line_lowers_to_exactly_one_call() {
+    let (hir, _m, diags) = lower_src(
+        "@[element(args = \"^(?<chan>[A-Z0-9-]+): (?<text>.+)$\")]\nfn radio(chan, text) {\n  return text;\n}\n\nflow main() {\n  !radio TAC-2: All units report in.\n}\n",
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let main = hir
+        .knots
+        .iter()
+        .find(|k| k.name.text == "main")
+        .expect("main");
+    let (callee, args) =
+        only_claimed_call(&main.body).expect("the dispatched line must lower to one call");
+    assert_eq!(callee, "radio");
+    assert_eq!(
+        args,
+        vec!["TAC-2".to_string(), "All units report in.".to_string()]
+    );
+}
+
+#[test]
+fn a_bang_dispatch_records_handler_and_capture_spans() {
+    let src = "@[element(args = \"^(?<chan>[A-Z0-9-]+): (?<text>.+)$\")]\nfn radio(chan, text) {\n  return text;\n}\n\nflow main() {\n  !radio TAC-2: All units report in.\n}\n";
+    let (hir, _m, diags) = lower_src(src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(hir.element_matches.len(), 1);
+    let m = &hir.element_matches[0];
+    assert_eq!(m.kind, crate::ElementKind::BangDispatch);
+    assert_eq!(m.disposition, crate::ElementDisposition::Call);
+    assert_eq!(m.handler.text, "radio");
+    assert_eq!(m.captures.len(), 2);
+    assert_eq!(m.captures[0].name, "chan");
+    assert_eq!(m.captures[0].text, "TAC-2");
+    assert_eq!(
+        &src[usize::from(m.captures[0].range.start())..usize::from(m.captures[0].range.end())],
+        "TAC-2"
+    );
+    assert_eq!(m.captures[1].name, "text");
+    assert_eq!(m.captures[1].text, "All units report in.");
+}
+
+#[test]
+fn a_bang_dispatch_honors_a_name_alias() {
+    let (hir, _m, diags) = lower_src(
+        "@[element(args = \"^ready$\", name = \"walkie\")]\nfn tally() {\n  return \"ready\";\n}\n\nflow main() {\n  !walkie ready\n}\n",
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let main = hir
+        .knots
+        .iter()
+        .find(|k| k.name.text == "main")
+        .expect("main");
+    let (callee, _args) =
+        only_claimed_call(&main.body).expect("the aliased dispatch must lower to one call");
+    assert_eq!(callee, "tally");
+}
+
+#[test]
+fn a_bang_dispatch_naming_an_undeclared_handler_is_loudly_unlowered() {
+    // No handler at all is declared under this name — the line still
+    // parses (the parser cannot know what the lowering pass will find),
+    // and this compiler cannot honor it yet, so it must stay loud (E129)
+    // rather than silently falling back to plain prose.
+    let (_hir, _m, diags) = lower_src("flow main() {\n  !radio TAC-2: hello.\n}\n");
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E129),
+        "an undeclared dispatch name must stay loud: {diags:?}"
+    );
+}
+
+#[test]
+fn a_bang_dispatch_whose_remainder_does_not_match_is_loudly_unlowered() {
+    let (_hir, _m, diags) = lower_src(
+        "@[element(args = \"^(?<chan>[A-Z0-9-]+): (?<text>.+)$\")]\nfn radio(chan, text) {\n  return text;\n}\n\nflow main() {\n  !radio this does not match the pattern\n}\n",
+    );
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E129),
+        "an unmatched remainder must stay loud: {diags:?}"
+    );
+}
+
+#[test]
+fn two_bang_dispatch_handlers_with_the_same_name_first_declared_wins() {
+    // Interim rule (`Elements::dispatch`'s own doc), mirroring `claims`'s
+    // own interim first-declared-wins pending #1840's registration order.
+    let (hir, _m, diags) = lower_src(
+        "@[element(args = \"^ready$\")]\nfn tally_first() {\n  return \"first\";\n}\n\n@[element(args = \"^ready$\", name = \"tally_first\")]\nfn tally_second() {\n  return \"second\";\n}\n\nflow main() {\n  !tally_first ready\n}\n",
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let main = hir
+        .knots
+        .iter()
+        .find(|k| k.name.text == "main")
+        .expect("main");
+    let (callee, _args) = only_claimed_call(&main.body).expect("must dispatch to the first");
+    assert_eq!(callee, "tally_first");
+}
+
+#[test]
+fn a_bang_dispatch_handler_with_an_uncaptured_param_does_not_dispatch() {
+    // `annotation::parse_element`'s own doc: a `!name` handler is exempt
+    // from `E167`'s declaration-time check and stays callable by hand with
+    // ordinary arguments — but the sigil-dispatched rewrite still has no
+    // other source of arguments, so a line dispatching to a handler with a
+    // param no capture covers must decline (E129), not emit a call with a
+    // missing argument.
+    let (_hir, _m, diags) = lower_src(
+        "@[element(args = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival(who, mood) {\n  return who;\n}\n\nflow main() {\n  !arrival VENDOR enters\n}\n",
+    );
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E129),
+        "a param with no capture must decline the dispatch: {diags:?}"
+    );
+}
+
+#[test]
+fn an_escaped_bang_at_line_start_stays_plain_text_and_never_dispatches() {
+    // Composition with §8d.6's line-start escape (`\!`, issue #1744/#1978):
+    // an author writing a literal leading `!` must not have it silently
+    // reinterpreted as a dispatch attempt.
+    let (hir, _m, diags) = lower_src(
+        "@[element(args = \"^radio.*$\")]\nfn radio() {\n  return \"ping\";\n}\n\nflow main() {\n  \\!radio still just prose.\n}\n",
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert!(
+        hir.element_matches.is_empty(),
+        "an escaped `\\!` must never dispatch: {:?}",
+        hir.element_matches
+    );
 }
 
 #[test]

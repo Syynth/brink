@@ -392,6 +392,49 @@ mod tests {
         assert_eq!(diags[0].code, DiagnosticCode::E032);
     }
 
+    /// Issue #1973's own scope note, pinned: parsing/lowering a
+    /// value-carrying `return <expr>` at content-ground/prose-body position
+    /// (a real native-**grammar** fix) is deliberately independent of
+    /// whether a non-function `flow` may *semantically* carry a return
+    /// value — that stays an open design question, unchanged here. A
+    /// value-carrying `Explicit` return in a non-function knot must still
+    /// raise E032 exactly as a bare one does — `fixup_return_kind`
+    /// (`lower_native::body`) only demotes a *bare* (`value.is_none()`)
+    /// return to `TunnelRedirect`, so this shape reaches `validate` intact.
+    #[test]
+    fn value_carrying_return_in_non_function_still_emits_e032() {
+        let mut hir = empty_hir();
+        hir.knots.push(Knot {
+            ptr: dummy_knot_ptr(),
+            name: Name {
+                text: "my_flow".into(),
+                range: dummy_range(),
+            },
+            is_function: false,
+            params: Vec::new(),
+            body: Block::from_stmts(vec![Stmt::Return(Return {
+                ptr: Some(dummy_return_ptr()),
+                kind: ReturnKind::Explicit,
+                value: Some(Expr::Int(5)),
+                onwards_args: Vec::new(),
+            })]),
+            stitches: Vec::new(),
+            is_local: false,
+            effects_assertion: None,
+            element_annotation: None,
+            style_annotation: None,
+            return_type: None,
+            doc: None,
+            visibility: None,
+            was: None,
+        });
+
+        let files = vec![(FileId(0), &hir)];
+        let diags = validate(&files);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, DiagnosticCode::E032);
+    }
+
     #[test]
     fn return_in_function_no_error() {
         let mut hir = empty_hir();

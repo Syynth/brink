@@ -95,15 +95,18 @@
 //! §8d.6 also rules a second, disjoint pair as **line-start** escapes —
 //! `\!` `\@` ([`at_line_start_escape`]/[`line_start_escape`], issue #1744) —
 //! protecting a literal leading `!`/`@` from the sigils those characters
-//! carry there (`@NAME` cue dispatch, the reserved `!name` annotation
-//! sigil). "Line-start" means the first item `content::content_line`/
-//! `content_line_else_boundary` is asked to scan — which is the true start
-//! of a physical line for an ordinary content line, but is also right
-//! after a compact cue's `@NAME:` prefix (`element::cue_line`'s
+//! carry there (`@NAME` cue dispatch, the `!name` annotation-element
+//! dispatch sigil, §3.5b/issue #2004). "Line-start" means the first item
+//! `content::content_line`/`content_line_else_boundary` is asked to scan —
+//! which is the true start of a physical line for an ordinary content
+//! line, but is also right after a compact cue's `@NAME:` prefix
+//! (`element::cue_line`'s
 //! `COMPACT_CUE` arm calls `content_line` directly for the fused dialogue
-//! line), since that call reuses the same entry point. A `\!`/`\@`
-//! anywhere else in a line is not part of the inline four and hits the
-//! same compile error as any other unrecognized backslash.
+//! line) or a `!name` dispatch's own name (`element::bang_dispatch` calls
+//! `content_line` directly for its remainder, the same way), since both
+//! reuse the same entry point. A `\!`/`\@` anywhere else in a line is not
+//! part of the inline four and hits the same compile error as any other
+//! unrecognized backslash.
 
 use crate::SyntaxKind::{
     AT, BACKSLASH, BANG, EQ, ERROR, GT, HASH, IDENT, L_BRACE, LT, MINUS, QUOTE, SLASH, SPAN,
@@ -349,14 +352,16 @@ pub(crate) fn escape(p: &mut Parser<'_, '_>) {
 // the optional `(label)` prefix) — the true start of a physical line for
 // an ordinary content line, but also right after a compact cue's `@NAME:`
 // prefix, since `element::cue_line`'s `COMPACT_CUE` arm calls
-// `content_line` directly for the fused dialogue line and that call is
-// this same entry point. A bare `!`/`@` there would otherwise carry sigil
-// meaning: `@NAME` opens a `CUE` (`element::at_cue`), and a bare
-// line-start `!` is reserved for the `!name` annotation-element dispatch
-// (§3.5b) — implemented or not, an author must be able to write a literal
-// leading `!`/`@` without colliding with either. Anywhere else in a line,
-// `\!`/`\@` are not in the inline set and remain the ordinary "backslash
-// before anything else" compile error [`escape`] already gives.
+// `content_line` directly for the fused dialogue line, and a `!name`
+// dispatch's own name calls it for its remainder the same way
+// (`element::bang_dispatch`) — both are this same entry point. A bare
+// `!`/`@` there would otherwise carry sigil meaning: `@NAME` opens a `CUE`
+// (`element::at_cue`), and a bare line-start `!` opens a `BANG_DISPATCH`
+// (`element::at_bang_dispatch`, §3.5b/issue #2004) — an author must be
+// able to write a literal leading `!`/`@` without colliding with either.
+// Anywhere else in a line, `\!`/`\@` are not in the inline set and remain
+// the ordinary "backslash before anything else" compile error [`escape`]
+// already gives.
 
 /// True at `\!` or `\@`, immediately adjacent (no trivia) — the two
 /// line-start escapes. Only meaningful when checked at a content line's

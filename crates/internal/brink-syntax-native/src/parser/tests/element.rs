@@ -404,6 +404,59 @@ fn a_compact_cue_line_keeps_interpolation_and_trailing_tags() {
     assert!(has_node_kind(&compact, SyntaxKind::TAG));
 }
 
+// ── `!name` sigil dispatch (§3.5b, issue #2004) ──────────────────────
+
+#[test]
+fn a_bang_name_line_parses_as_a_bang_dispatch() {
+    let src = "!radio TAC-2: All units report in.\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+
+    let dispatch = ast::BangDispatch::cast(first_node(&p.syntax(), SyntaxKind::BANG_DISPATCH))
+        .expect("BANG_DISPATCH");
+    assert_eq!(dispatch.name().expect("name").text(), "radio");
+    assert_eq!(
+        dispatch.line().expect("fused remainder").to_string().trim(),
+        "TAC-2: All units report in."
+    );
+}
+
+#[test]
+fn a_bang_dispatch_line_keeps_interpolation_and_trailing_tags() {
+    let src = "!radio I have {gold} coins. #beat\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let dispatch = first_node(&p.syntax(), SyntaxKind::BANG_DISPATCH);
+    assert!(has_node_kind(&dispatch, SyntaxKind::INTERPOLATION));
+    assert!(has_node_kind(&dispatch, SyntaxKind::TAG));
+}
+
+#[test]
+fn a_bang_not_immediately_followed_by_an_ident_is_still_plain_text() {
+    // Adjacency-guarded the same way `@NAME` is (`at_cue`'s own doc): a
+    // gap between `!` and the name means this is ordinary exclamation-mark
+    // prose, not a dispatch attempt.
+    let src = "flow f() {\n  ! Wait, listen.\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(!has_node_kind(&p.syntax(), SyntaxKind::BANG_DISPATCH));
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::CONTENT_LINE));
+}
+
+#[test]
+fn an_escaped_bang_composes_with_bang_dispatch_and_stays_plain_text() {
+    // §8d.6's line-start escape (`\!`, issue #1744/#1978) must still win
+    // over the sigil this issue adds — composition, not a collision.
+    let src = "flow f() {\n  \\!radio still just prose.\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(
+        !has_node_kind(&p.syntax(), SyntaxKind::BANG_DISPATCH),
+        "an escaped `\\!` must never open a BANG_DISPATCH"
+    );
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::ESCAPE));
+}
+
 #[test]
 fn a_lone_at_in_prose_is_still_plain_text() {
     // `SyntaxKind::AT`'s standing promise: the cue sigil is tight, so a

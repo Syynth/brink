@@ -183,16 +183,26 @@ fn annotations_effects() {
 /// (captures binding both its params), a top-level `flow` (a capture-free
 /// pattern), and a nested `flow` (the `Stitch` level, with the optional
 /// `name = "…"` alias clause). Until that landed, every one of these lines
-/// hard-failed the compile with `E129`, so its signal is narrow: an
-/// annotated `.brink` story compiles and runs. The `!name` sigil dispatch
-/// rewrite `args` exists to eventually drive is still not implemented —
-/// see `docs/prose-dialect-spec.md` §3.5b's Deferred list.
+/// hard-failed the compile with `E129`, so its signal is narrow for the
+/// `flow`-attached declarations: an annotated `.brink` story compiles and
+/// runs (dispatching to a `flow` target isn't implemented — see
+/// `docs/prose-dialect-spec.md` §3.5b's Deferred list). The **`fn`**-
+/// attached declaration now has a real behavioral signal too: the fixture's
+/// `!radio TAC-2: All units report in.` line is the `!name` sigil dispatch
+/// rewrite itself (issue #2004) — it dispatches by name to `radio`, binds
+/// `chan`/`text` from the remainder, and lowers to one call whose return
+/// value (`text`, unmodified) is `expected.txt`'s second line. Before #2004
+/// that same line was ordinary, un-diagnosed prose (`!radio` parsed as
+/// plain `TEXT`, per rule 20a's "establish the starting point empirically"
+/// — reserved-and-ignored, not reserved-and-diagnosed); it could not have
+/// reached this transcript line any other way, since `radio` is never
+/// otherwise called with this exact captured text.
 ///
 /// The `claims = "…"` half (issue #1838) is the part with a *behavioral*
 /// signal, and it is this corpus's proof that natural-notation dispatch
 /// actually reaches a reader: `interior` claims the `INT. MARKET SQUARE`
 /// line, binds `place` to `MARKET SQUARE`, and the line lowers to one call
-/// whose value is the transcript's second line. Before #1838 that same
+/// whose value is `expected.txt`'s third line. Before #1838 that same
 /// line was a scene heading with no HIR lowering at all (`E129`, a failed
 /// compile) — so `expected.txt`'s `-- inside MARKET SQUARE --` cannot be
 /// produced by any other path, and the line beneath it pins that the
@@ -266,6 +276,21 @@ fn annotations_element_reaches_story_data() {
         "the display-position call composing a claim handler's return \
          value must still carry its slot info: {all_lines}"
     );
+}
+
+/// Value-carrying `return <expr>` at prose-body position (issue #1973):
+/// `fn double(x) >{ return x * 2 }` overrides the `fn`'s default
+/// code-ground body to prose-ground, and `return x * 2` is the
+/// content-ground `return_stmt` grammar this issue's fix taught to parse a
+/// trailing value expression instead of leaving it as dangling,
+/// unreachable content (the old shape raised `E033`). `flow main()` calls
+/// `double(21)` from display position (`Doubled: {double(21)}`) so the
+/// returned value must actually reach the transcript, not just compile —
+/// before the fix, this exact source failed to compile at all (`return x *
+/// 2` left `* 2` as unparsed dangling content past the bare `return`).
+#[test]
+fn prose_return_value() {
+    assert_case("prose-return-value");
 }
 
 /// NG-D array/sequence literals (issue #1490, RULED 2026-07-27:
@@ -601,6 +626,7 @@ fn every_case_directory_has_a_test() {
         "logic-line-escape",
         "or-coalescing",
         "prose-line-escape",
+        "prose-return-value",
         "root-content-typed-strict",
         "ufcs",
     ];
