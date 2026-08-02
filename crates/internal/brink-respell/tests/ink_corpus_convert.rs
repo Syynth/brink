@@ -204,3 +204,21 @@ fn rnd_func() {
     // whose sequence depends on the seed actually having been applied.
     assert_episode_identical("rnd-func", "tests/tier2/function/rnd-func/story.ink");
 }
+
+// ─── `CondKind::IfElse` re-nesting (issue #1975) ────────────────────────
+//
+// ink's independently-chained, no-shared-subject conditional
+// (`{ - cond: … - cond2: … - else: … }`) lowers to `CondKind::IfElse`,
+// which `emit_conditional` used to refuse outright — see
+// `full_corpus_sweep.rs`'s "IfElse conditional" bucket. `emit_if_else_chain`
+// now re-shapes the flat branch list into nested native `{if …} else { {if
+// …} else { … } }`, exactly what a native-authored `else if` chain lowers
+// to on the way in (`lower_native::cond::lower_conditional`'s doc).
+
+#[test]
+fn ifelse_ext_three_way_chain() {
+    // Two real conditions plus a trailing `else` (3-way `IfElse`) — the
+    // exact shape `emit_conditional`'s old `CondKind::IfElse` arm refused
+    // unconditionally.
+    assert_episode_identical("ifelse-ext", "tests/tier2/conditional/ifelse-ext/story.ink");
+}

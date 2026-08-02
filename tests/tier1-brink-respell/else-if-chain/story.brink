@@ -1,0 +1,15 @@
+var x = -2
+var y = 3
+
+flow main() {
+  {if x == 0 {
+    ~ y = 0
+  } else {
+    {if x > 0 {
+      ~ y = x - 1
+    } else {
+      ~ y = x + 1
+    }}
+  }}
+  The value is {y}. -> END
+}

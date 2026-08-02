@@ -45,13 +45,13 @@
 //! is: a native-authored chain always lowers to *nested* `InitialCondition`s
 //! (an `else` arm's body containing another `Conditional`), which this
 //! emitter's ordinary recursive `emit_conditional` call already reproduces
-//! faithfully. What this emitter still cannot produce is a native spelling
-//! for `CondKind::IfElse` itself (ink's own independently-chained,
-//! no-shared-subject 3+-branch form) — 12 corpus cases per
-//! `full_corpus_sweep`'s `"IfElse conditional"` bucket — since that HIR
-//! shape has no flattened native counterpart to walk into; it would need to
-//! be re-shaped into nested `if`/`else`s on the way out, which nothing here
-//! does yet.
+//! faithfully. **Correction (issue #1975):** `CondKind::IfElse` itself (ink's
+//! own independently-chained, no-shared-subject 3+-branch form —
+//! `full_corpus_sweep`'s `"IfElse conditional"` bucket) is now **supported**
+//! too: `emit_if_else_chain` walks the flat `IfElse` branch list and
+//! re-shapes it into the same nested `{if …} else { {if …} else { … } }`
+//! structure a native-authored `else if` chain lowers to, rather than
+//! refusing outright.
 //!
 //! Explicitly unsupported (each a real gap, not an oversight — see
 //! `docs/b0-sequencing.md` §3 and `tests/tier1-brink-respell/README.md`'s
@@ -88,8 +88,10 @@
 //! `lower::choice::replace_trailing_ws_with_spring` produces — no native
 //! token forces that same runtime-deferred-whitespace behavior, and
 //! respelling it as a literal space would silently change what renders,
-//! so it stays refused); `CondKind::IfElse` (emitter-only — see the
-//! corrected note on `CondKind::InitialCondition` above, issue #1951).
+//! so it stays refused). **Correction (issue #1975):** `CondKind::IfElse`
+//! used to be listed here as an emitter-only gap (see the corrected note on
+//! `CondKind::InitialCondition` above, issue #1951) — it is now supported,
+//! see `emit_if_else_chain` below.
 //! **Correction (issue #1973):** a prose-body `return` with a value
 //! expression used to be listed here as a native-grammar gap —
 //! `parser/divert.rs::return_stmt` now parses a trailing value expression
@@ -1272,11 +1274,75 @@ fn emit_conditional(
             let _ = writeln!(out, "{indent}}}}}");
             Ok(())
         }
-        CondKind::IfElse => Err(unsupported(
-            "IfElse conditional (no native `else if` chain)",
-            context,
-        )),
+        CondKind::IfElse => emit_if_else_chain(out, indent, depth, &cond.branches, context),
     }
+}
+
+/// `CondKind::IfElse` — ink's own independently-chained, no-shared-subject
+/// 3+-branch conditional (`{ - cond1: … - cond2: … - else: … }`, no shared
+/// switch expression) — has no flat native counterpart to walk into
+/// (`lower_native::cond::lower_conditional`'s doc: a native-authored chain
+/// always lowers through *nesting* instead, one `InitialCondition` per
+/// `else if` link). This function re-shapes the flat `IfElse` branch list
+/// back into that same nesting on the way out: the first branch becomes the
+/// `{if …}` head, and if more branches remain, they recurse into this same
+/// function as the *body* of an `else { … }` arm — reproducing exactly the
+/// `{if …} else { {if …} else { … } }` shape a native `else if` chain would
+/// have lowered to in the first place (issue #1975).
+fn emit_if_else_chain(
+    out: &mut String,
+    indent: &str,
+    depth: usize,
+    branches: &[CondBranch],
+    context: &str,
+) -> Result<(), EmitError> {
+    let Some((first, rest)) = branches.split_first() else {
+        return Err(unsupported("empty `else if` chain", context));
+    };
+    let Some(if_cond) = &first.condition else {
+        return Err(unsupported(
+            "`else if` chain branch with no leading condition",
+            context,
+        ));
+    };
+    // Same B1b `as`-binding respelling `CondKind::InitialCondition` does
+    // above — ink's own lowering never sets `CondBranch::binding` (it's
+    // native-only, `lower/conditional/multiline.rs::lower_if_else_branches`
+    // always passes `None`), but a future native-authored `IfElse` shape (or
+    // hand-built HIR) could carry one, and dropping it silently would change
+    // what the respelled source means.
+    let binding_suffix = match &first.binding {
+        Some(name) => format!(" as {}", name.text),
+        None => String::new(),
+    };
+    let _ = writeln!(
+        out,
+        "{indent}{{if {}{binding_suffix} {{",
+        emit_expr(if_cond, context)?
+    );
+    emit_block_stmts(out, &first.body, depth + 1, context)?;
+    match rest {
+        [] => {}
+        // Exactly one branch left and it's a plain `else` (no condition of
+        // its own): the terminal link in the chain, spelled flat rather than
+        // as a pointless one-branch nested `{if}`.
+        [only] if only.condition.is_none() => {
+            let _ = writeln!(out, "{indent}}} else {{");
+            emit_block_stmts(out, &only.body, depth + 1, context)?;
+        }
+        // Two or more branches remain, or the sole remaining branch still
+        // carries its own condition (an `IfElse` chain with no trailing
+        // `else` at all): nest the rest one level deeper inside this arm's
+        // `else { … }`, recursing back into this same function — this is
+        // the flattened-to-nested reshape the issue asks for.
+        _ => {
+            let inner_indent = "  ".repeat(depth + 1);
+            let _ = writeln!(out, "{indent}}} else {{");
+            emit_if_else_chain(out, &inner_indent, depth + 1, rest, context)?;
+        }
+    }
+    let _ = writeln!(out, "{indent}}}}}");
+    Ok(())
 }
 
 fn emit_match_arm(
@@ -1949,5 +2015,142 @@ mod tests {
         };
         assert!(t.value.is_none());
         assert!(t.annotation.is_some());
+    }
+
+    // ── Issue #1975: `CondKind::IfElse` re-nesting ───────────────────────
+    //
+    // `CondKind::IfElse` — ink's own independently-chained,
+    // no-shared-subject conditional (`{ - cond1: … - cond2: … - else: … }`)
+    // — has no native lowering path (`lower_native::cond::lower_conditional`
+    // only ever constructs `InitialCondition`/`Switch`, plus the empty-branch
+    // parser-recovery case), so it can't be reached through `lower_and_emit`
+    // like the tests above. These build the HIR by hand instead, calling
+    // `emit_conditional` directly — the same shape `brink-respell`'s
+    // `ink_corpus_convert.rs::ifelse_ext_three_way_chain` proves end to end
+    // from a real ink source (that test is the one that fails without this
+    // fix; these are the isolated, fast unit-level complement).
+
+    fn synthetic_branch(condition: Option<Expr>, stmt: Stmt) -> CondBranch {
+        let empty_range = rowan::TextRange::empty(rowan::TextSize::from(0));
+        CondBranch {
+            ptr: crate::provenance::Provenance::synthetic(
+                crate::provenance::NodeClass::ConditionalBranch,
+                empty_range,
+            ),
+            condition,
+            binding: None,
+            body: Block {
+                label: None,
+                stmts: vec![stmt.clone()],
+                container_id: None,
+                tail: crate::tail_from_stmts(&[stmt]),
+            },
+            container_id: None,
+        }
+    }
+
+    /// A 2-way `IfElse` (one real condition, one trailing plain `else`) —
+    /// the minimal shape — re-nests to exactly the same text
+    /// `CondKind::InitialCondition` would have produced for the same
+    /// branches.
+    #[test]
+    fn if_else_two_way_chain_emits_nested_native_syntax() {
+        let empty_range = rowan::TextRange::empty(rowan::TextSize::from(0));
+        let cond = Conditional {
+            ptr: crate::provenance::Provenance::synthetic(
+                crate::provenance::NodeClass::Conditional,
+                empty_range,
+            ),
+            kind: CondKind::IfElse,
+            branches: vec![
+                synthetic_branch(Some(Expr::Bool(true)), Stmt::ExprStmt(Expr::Int(1))),
+                synthetic_branch(None, Stmt::ExprStmt(Expr::Int(2))),
+            ],
+        };
+        let mut out = String::new();
+        emit_conditional(&mut out, "", 0, &cond, "test")
+            .expect("a 2-way IfElse chain must now emit");
+        assert_eq!(out, "{if true {\n  ~ 1\n} else {\n  ~ 2\n}}\n");
+    }
+
+    /// A 3-way `IfElse` (two real conditions plus a trailing `else`) —
+    /// `emit_conditional`'s old `CondKind::IfElse` arm refused this
+    /// unconditionally — re-nests into `{if …} else { {if …} else { … } }`,
+    /// which reparses back to two nested `InitialCondition`s (exactly what
+    /// a native-authored `else if` chain would have produced).
+    #[test]
+    fn if_else_three_way_chain_emits_nested_native_syntax_and_reparses() {
+        let empty_range = rowan::TextRange::empty(rowan::TextSize::from(0));
+        let cond = Conditional {
+            ptr: crate::provenance::Provenance::synthetic(
+                crate::provenance::NodeClass::Conditional,
+                empty_range,
+            ),
+            kind: CondKind::IfElse,
+            branches: vec![
+                synthetic_branch(Some(Expr::Bool(true)), Stmt::ExprStmt(Expr::Int(1))),
+                synthetic_branch(Some(Expr::Bool(false)), Stmt::ExprStmt(Expr::Int(2))),
+                synthetic_branch(None, Stmt::ExprStmt(Expr::Int(3))),
+            ],
+        };
+        let mut out = String::new();
+        emit_conditional(&mut out, "", 0, &cond, "test")
+            .expect("a 3-way IfElse chain must now emit");
+        assert_eq!(
+            out,
+            "{if true {\n  ~ 1\n} else {\n  {if false {\n    ~ 2\n  } else {\n    ~ 3\n  }}\n}}\n"
+        );
+
+        // The emitted text must itself be legal `.brink` source whose body
+        // opens with a conditional statement carrying a *nested*
+        // `Conditional` inside its `else` arm — proving this isn't just
+        // syntactically-plausible text but a real, reparseable nesting
+        // (mirroring what a native-authored `else if` chain lowers to,
+        // per `lower_native::cond::lower_conditional`'s doc).
+        let src = format!("flow a() {{\n{out}}}\n");
+        let hir = reparse_and_lower(&src);
+        let Some(Stmt::Conditional(outer)) = hir.knots[0].body.stmts.first() else {
+            panic!(
+                "expected the re-lowered body's first statement to be a Conditional: {:?}",
+                hir.knots[0].body
+            );
+        };
+        assert_eq!(outer.kind, CondKind::InitialCondition);
+        assert_eq!(outer.branches.len(), 2);
+        let else_arm = &outer.branches[1];
+        assert!(else_arm.condition.is_none());
+        let Some(Stmt::Conditional(inner)) = else_arm.body.stmts.first() else {
+            panic!(
+                "expected the outer else arm's body to open with a nested Conditional: {:?}",
+                else_arm.body
+            );
+        };
+        assert_eq!(inner.kind, CondKind::InitialCondition);
+        assert_eq!(inner.branches.len(), 2);
+    }
+
+    /// An `IfElse` chain with **no** trailing `else` (every branch carries
+    /// its own condition) must not spuriously synthesize one.
+    #[test]
+    fn if_else_chain_with_no_trailing_else_emits_without_one() {
+        let empty_range = rowan::TextRange::empty(rowan::TextSize::from(0));
+        let cond = Conditional {
+            ptr: crate::provenance::Provenance::synthetic(
+                crate::provenance::NodeClass::Conditional,
+                empty_range,
+            ),
+            kind: CondKind::IfElse,
+            branches: vec![
+                synthetic_branch(Some(Expr::Bool(true)), Stmt::ExprStmt(Expr::Int(1))),
+                synthetic_branch(Some(Expr::Bool(false)), Stmt::ExprStmt(Expr::Int(2))),
+            ],
+        };
+        let mut out = String::new();
+        emit_conditional(&mut out, "", 0, &cond, "test")
+            .expect("an IfElse chain with no trailing else must now emit");
+        assert_eq!(
+            out,
+            "{if true {\n  ~ 1\n} else {\n  {if false {\n    ~ 2\n  }}\n}}\n"
+        );
     }
 }
