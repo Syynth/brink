@@ -1,4 +1,5 @@
 Feed: come in.
+All units report in.
 -- inside MARKET SQUARE --
 The stalls are shuttered.
 -- inside OLD MILL --

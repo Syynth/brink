@@ -36,9 +36,9 @@
 //! # What claims, and what does not
 //!
 //! - A pattern is a *claim* only when spelled `claims = "…"`. The
-//!   `args = "…"` form declares the `!name`-dispatched handler, whose
-//!   sigil rewrite is still unimplemented (`docs/prose-dialect-spec.md`
-//!   §3.5b Deferred).
+//!   `args = "…"` form declares the `!name`-dispatched handler instead
+//!   ([`try_dispatch`], issue #2004) — see that function's own doc for what
+//!   it covers and what it still doesn't.
 //! - Only a **top-level `fn`** may claim: the rewrite is an expression
 //!   call, and a `flow` is not callable as one. A `claims` annotation
 //!   anywhere else is `E112` (misplaced), enforced by
@@ -56,19 +56,31 @@
 //! - A claiming handler's **own body is not claimable** (the staging rule
 //!   §3.5 states for the conventions module: it cannot use the conventions
 //!   it defines). Without this, a handler whose body repeats the shape it
-//!   claims would rewrite into a call on itself.
+//!   claims would rewrite into a call on itself. A `!name`-dispatched
+//!   handler carries no such restriction — the sigil already makes every
+//!   dispatched line self-announcing, so recursion (a handler's own body
+//!   containing a `!name` line naming itself) is not the silent risk
+//!   claiming guards against.
 //!
 //! # Deliberately not here
 //!
 //! Block capture (the `block` param form) and `fn conventions()`
 //! registration + comptime evaluation are the ruling's other two build
-//! slices, filed separately (issues #1839/#1840). The confinement of
-//! claiming to the `brink.toml`-named conventions module needs project
-//! identity that single-file lowering does not have — this module only
-//! records the raw material for that check ([`collect`] populates
-//! `HirFile::claim_handlers` with every declared handler's name and
-//! annotation range, independent of `matches`); the check itself runs at
-//! the project layer (issue #1844, `brink_db::queries::analysis::
+//! slices, filed separately (issues #1839/#1840) — [`try_dispatch`] never
+//! dispatches a `block`-declared handler (its trailing `content`-typed
+//! receiver has no capture to bind it from, so the same missing-argument
+//! decline [`try_claim`] already uses applies unchanged). Dispatching to a
+//! `flow` target (rather than a top-level `fn`) is also not here: `!name`'s
+//! placement is legal on a `flow` too ([`super::annotation::
+//! is_consumed_position`]), but [`collect`] only ever scans top-level `fn`
+//! declarations into the dispatch table — the same restriction `claims`
+//! already has, for the same reason (the rewrite is an expression call).
+//! The confinement of claiming to the `brink.toml`-named conventions
+//! module needs project identity that single-file lowering does not have
+//! — this module only records the raw material for that check ([`collect`]
+//! populates `HirFile::claim_handlers` with every declared handler's name
+//! and annotation range, independent of `matches`); the check itself runs
+//! at the project layer (issue #1844, `brink_db::queries::analysis::
 //! conventions_confinement_diagnostics_query`), which is the one seam that
 //! has both a file's module identity and the configured pointer.
 //!
@@ -79,7 +91,12 @@
 //! never merged into the locally declared `handlers` this module
 //! collects: `HirFile::claim_handlers` and `E168`'s duplicate-pattern
 //! check both mean "declared IN THIS FILE", and folding an injected
-//! handler in would silently corrupt both.
+//! handler in would silently corrupt both. `!name` dispatch has no
+//! external-injection counterpart at all yet — cross-file dispatch-name
+//! resolution is `docs/prose-dialect-spec.md` §3.5b's own Deferred item,
+//! so [`try_dispatch`] is file-local, matching `claims`'s pre-#1863 scope.
+
+use std::collections::BTreeMap;
 
 use brink_syntax_native::SyntaxKind as N;
 use brink_syntax_native::ast::{self, AstNode as _};
@@ -125,6 +142,36 @@ struct ClaimHandler {
     decl: Option<TextRange>,
 }
 
+/// One declared `!name`-dispatched handler: a top-level `fn` whose
+/// `@[element(args = "…")]` pattern parses the remainder after a `!name`
+/// sigil (issue #2004). Unlike [`ClaimHandler`], there is no `decl`
+/// self-suppression field — a dispatched handler's own body is not exempt
+/// from matching its own sigil (see the module doc's "What claims, and
+/// what does not" section for why), and no `external` counterpart either
+/// — `!name` dispatch is file-local (same doc, "Deliberately not here").
+struct DispatchHandler {
+    /// The handler's own name, carrying its declaration-site range — the
+    /// rewritten call's target. May differ from the map key this is stored
+    /// under (`Elements::dispatch`), which is the dispatch name (the
+    /// `name = "…"` alias, if any, else this same name's text).
+    name: Name,
+    /// Parameter names in declaration order — the argument order the
+    /// rewritten call uses. Not guaranteed to be exactly the pattern's
+    /// named-capture set the way `ClaimHandler::params` is (`claims`'s
+    /// `E167` has no `args` counterpart: "a `!name` handler … stays
+    /// callable by hand with ordinary arguments," `annotation.rs`'s own
+    /// `E167` doc) — [`try_dispatch`] declines (rather than mis-dispatches)
+    /// a line whose captures don't cover every param, exactly like
+    /// [`try_claim`] does for the same missing-argument reason.
+    params: Vec<String>,
+    /// The compiled `args = "…"` pattern, matched against the dispatched
+    /// line's remainder (the text after the `!name ` prefix), not the
+    /// whole line.
+    pattern: regex::Regex,
+    /// Range of the `@[element(args = "…")]` line itself.
+    annotation: TextRange,
+}
+
 /// The dispatcher threaded through body lowering: the file's claiming
 /// handlers plus the per-line classification records they produce.
 ///
@@ -142,6 +189,18 @@ pub(super) struct Elements {
     /// always wins over an injected one of the same name (see
     /// [`collect`]'s dedup).
     external: Vec<ClaimHandler>,
+    /// `!name`-dispatched handlers (issue #2004), keyed by dispatch name
+    /// (the `name = "…"` alias if declared, else the `fn`'s own name) — a
+    /// `BTreeMap`, not a `HashMap`, per this workspace's determinism rule,
+    /// though the only operation ever performed over it is a by-key
+    /// lookup (`try_dispatch`) or an insert-if-absent during [`collect`]'s
+    /// single source-order pass, neither of which is order-sensitive on
+    /// its own; a `BTreeMap` costs nothing here and removes any doubt.
+    /// Two declarations naming the same dispatch name is an interim
+    /// first-declared-wins ([`collect`]'s own doc), the same posture
+    /// `try_claim`'s dispatch-order doc already takes for `claims` pending
+    /// issue #1840's `fn conventions()` registration order.
+    dispatch: BTreeMap<String, DispatchHandler>,
     /// Every claimed line, in the order lowering *reached* it — not
     /// necessarily source order (a `CHOICE_POINT` lowers its source-later
     /// continuation before its source-earlier choice bodies). [`super::lower`]
@@ -207,10 +266,16 @@ pub(super) fn collect(
     external: Option<&ExternalConventions>,
 ) -> Elements {
     let mut handlers = Vec::new();
+    let mut dispatch: BTreeMap<String, DispatchHandler> = BTreeMap::new();
     for node in root.children() {
         // Top-level `fn` only — see the module doc. `handle_line`'s
         // placement rule reports every other position as `E112`, so a
-        // claim this loop skips is never silently dropped.
+        // claim this loop skips is never silently dropped. `!name`
+        // dispatch shares this same top-level-`fn`-only restriction (issue
+        // #2004) — a `flow`'s own `args` clause is a legal *declaration*
+        // (`annotation::is_consumed_position` allows it) but is not yet a
+        // live dispatch target; see the module doc's "Deliberately not
+        // here" section.
         if node.kind() != N::FN_DECL {
             continue;
         }
@@ -227,19 +292,32 @@ pub(super) fn collect(
         else {
             continue;
         };
-        if !element.claims {
-            continue;
-        }
         let Ok(pattern) = regex::Regex::new(&element.pattern) else {
             continue;
         };
-        handlers.push(ClaimHandler {
-            name,
-            params: params.into_iter().map(|p| p.name.text).collect(),
-            pattern,
-            annotation: element.range,
-            decl: Some(node.text_range()),
-        });
+        let param_names: Vec<String> = params.into_iter().map(|p| p.name.text).collect();
+        if element.claims {
+            handlers.push(ClaimHandler {
+                name,
+                params: param_names,
+                pattern,
+                annotation: element.range,
+                decl: Some(node.text_range()),
+            });
+        } else {
+            // The dispatch name: the `name = "…"` alias if declared, else
+            // the `fn`'s own name — `annotation::parse_element`'s
+            // `ELEMENT_NAME` clause. First-declared wins on a collision
+            // (`entry`/`or_insert`, never overwriting): an interim rule,
+            // not a permanent one — see `Elements::dispatch`'s own doc.
+            let dispatch_name = element.alias.clone().unwrap_or_else(|| name.text.clone());
+            dispatch.entry(dispatch_name).or_insert(DispatchHandler {
+                name,
+                params: param_names,
+                pattern,
+                annotation: element.range,
+            });
+        }
     }
     let mut external_handlers = Vec::new();
     if let Some(external) = external {
@@ -262,6 +340,7 @@ pub(super) fn collect(
     Elements {
         handlers,
         external: external_handlers,
+        dispatch,
         matches: Vec::new(),
     }
 }
@@ -551,6 +630,131 @@ pub(super) fn try_claim(
     elements.matches.push(ElementMatch {
         line: claimed,
         kind,
+        handler: handler.name.clone(),
+        annotation: handler.annotation,
+        captures,
+        disposition: ElementDisposition::Call,
+    });
+
+    Some(vec![
+        Stmt::Content(Content {
+            ptr: Some(native_provenance(file_id, NodeClass::Content, node)),
+            parts: vec![ContentPart::Interpolation(call)],
+            tags: Vec::new(),
+        }),
+        Stmt::EndOfLine,
+    ])
+}
+
+/// Try to dispatch one body item via the `!name` sigil (issue #2004),
+/// returning the statements that replace it.
+///
+/// `None` means "not dispatched" — either `node` isn't a `BANG_DISPATCH` at
+/// all (the harmless, overwhelmingly common case, mirroring how [`try_claim`]
+/// is harmless for any node [`candidate`] doesn't recognize), no handler is
+/// declared under its dispatch name, its remainder isn't a wholly-literal
+/// candidate ([`candidate`], the same requirement [`try_claim`] enforces on
+/// a claimed line), or the handler's `args` pattern doesn't match the
+/// (trimmed) remainder. Every one of those is a real `!name` line the
+/// author wrote that this compiler cannot yet honor — the caller
+/// (`body::lower_one_item`) falls through to its own default arm, which
+/// diagnoses an unrecognized `BANG_DISPATCH` node loudly (`E129`, "parses
+/// cleanly but has no HIR lowering yet") rather than silently dropping it.
+///
+/// The ruled spec text asks for more than that: "an unmatched remainder is
+/// a targeted diagnostic naming both the line and the handler's pattern"
+/// (§3.5b). `E129`'s generic message doesn't name either — a sharper
+/// diagnostic would need a new code, which this issue's own hint says to
+/// treat as a stop-and-report rather than an allocate-it-yourself (rule
+/// 12q, no code is pre-assigned here). `E129` is the honest, already-
+/// established "not fully implemented" fallback in the meantime, loud
+/// rather than silent, not a substitute for the ruled diagnostic.
+///
+/// No dispatch-*order* question analogous to [`try_claim`]'s own doc
+/// section: `elements.dispatch` is keyed by name, so at most one handler
+/// can ever match a given `!name` line's own name. Two *declarations*
+/// colliding on the same dispatch name is a distinct question — see
+/// `Elements::dispatch`'s own doc for the interim first-declared-wins rule
+/// there.
+pub(super) fn try_dispatch(
+    file_id: FileId,
+    node: &SyntaxNode,
+    elements: &mut Elements,
+) -> Option<Vec<Stmt>> {
+    if node.kind() != N::BANG_DISPATCH || elements.dispatch.is_empty() {
+        return None;
+    }
+    let dispatch_name = node
+        .children()
+        .find(|n| n.kind() == N::DISPATCH_NAME)
+        .map(|n| n.text().to_string().trim().to_owned())?;
+    let handler = elements.dispatch.get(&dispatch_name)?;
+
+    let remainder = node.children().find(|n| n.kind() == N::CONTENT_LINE)?;
+    // The inner classification (always `ElementKind::ContentLine`, since a
+    // `BANG_DISPATCH`'s remainder is always a fused `CONTENT_LINE`) is
+    // discarded — the record below classifies the *outer* shape as
+    // `ElementKind::BangDispatch`, the self-announcing sigil, not the
+    // content-line-shaped remainder underneath it.
+    let (_, text_node) = candidate(&remainder)?;
+    let text = text_node.text().to_string();
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    // Where `trimmed` starts inside `text_node`, so capture offsets land on
+    // real source bytes rather than on the untrimmed run's start.
+    let lead = u32::try_from(text.len() - text.trim_start().len()).unwrap_or(0);
+    let base = text_node.text_range().start() + TextSize::from(lead);
+
+    if !handler.pattern.is_match(trimmed) {
+        return None;
+    }
+    let caps = handler.pattern.captures(trimmed)?;
+    let mut captures = Vec::with_capacity(handler.params.len());
+    for param in &handler.params {
+        // Mirrors `try_claim`'s own "declining is the honest answer": a
+        // param with no matching capture (an `args` handler is allowed
+        // extra params not covered by any capture — `annotation::E167`'s
+        // own doc, "a `!name` handler is exempt") has no source of value
+        // for the rewritten call to pass, so this line just doesn't
+        // dispatch rather than dispatching with a broken call.
+        let m = caps.name(param)?;
+        captures.push(ElementCapture {
+            name: param.clone(),
+            text: m.as_str().to_string(),
+            range: TextRange::new(
+                base + TextSize::from(u32::try_from(m.start()).ok()?),
+                base + TextSize::from(u32::try_from(m.end()).ok()?),
+            ),
+        });
+    }
+
+    let claimed = node.text_range();
+    let call = Expr::Call(
+        Path {
+            segments: vec![Name {
+                text: handler.name.text.clone(),
+                // The call is written at the dispatched line, not at the
+                // handler's declaration — the range a reader clicking the
+                // rewritten call should land on (mirrors `try_claim`).
+                range: claimed,
+            }],
+            range: claimed,
+        },
+        captures
+            .iter()
+            .map(|c| {
+                Expr::String(StringExpr {
+                    parts: vec![StringPart::Literal(c.text.clone())],
+                })
+            })
+            .collect(),
+    );
+
+    elements.matches.push(ElementMatch {
+        line: claimed,
+        kind: ElementKind::BangDispatch,
         handler: handler.name.clone(),
         annotation: handler.annotation,
         captures,

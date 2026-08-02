@@ -1,6 +1,6 @@
 use crate::SyntaxKind::{
-    self, AT, AT_L_BRACKET, BLOCK, COLON_COLON, DIVERT, EOF, HASH, KW_CONST, KW_IMPORT, KW_RETURN,
-    KW_USE, KW_VAR, L_BRACE, L_PAREN, NEWLINE, R_BRACE, THREAD, TILDE,
+    self, AT, AT_L_BRACKET, BANG, BLOCK, COLON_COLON, DIVERT, EOF, HASH, KW_CONST, KW_IMPORT,
+    KW_RETURN, KW_USE, KW_VAR, L_BRACE, L_PAREN, NEWLINE, R_BRACE, THREAD, TILDE,
 };
 
 use super::Parser;
@@ -225,6 +225,16 @@ pub(crate) fn body_line(p: &mut Parser<'_, '_>) {
         AT if super::element::at_cue(p) => {
             super::element::cue_line(p);
             p.set_cue_chain(true);
+        }
+        // `!name` — the self-announcing annotation-element dispatch sigil
+        // (§3.5b, issue #2004). Adjacency-guarded the same way the `@NAME`
+        // cue above is, so a lone `!` (or one followed by a gap, ordinary
+        // exclamation-mark prose) falls through to `TEXT` unchanged. Never
+        // a link in a dialogue chain — a dispatched line stands alone, like
+        // a divert or a logic line.
+        BANG if super::element::at_bang_dispatch(p) => {
+            super::element::bang_dispatch(p);
+            p.set_cue_chain(false);
         }
         // `(hushed)` — only inside a live chain, so G-1's `(label)`
         // content-line spelling is untouched everywhere else

@@ -13,6 +13,7 @@ fn interior(place: content) {
 @[element(args = "^ready$")]
 flow main() {
   Feed: {radio(call_sign, "come in")}.
+  !radio TAC-2: All units report in.
   @[element(args = "^ready$", name = "walkie")]
   flow tally() {
     Channel ready -> END

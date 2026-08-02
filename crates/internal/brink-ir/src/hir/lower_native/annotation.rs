@@ -44,19 +44,21 @@
 //!   captures the run *following* its matched line into a trailing
 //!   `content`-typed param, and this module validates that receiver exists
 //!   (`E166`) — see [`ElementAnnotation::block`]'s doc. The `!name` sigil
-//!   dispatch rewrite the annotation exists to drive — matching a content
-//!   line, binding captures, finding a block's terminator, and lowering to
-//!   a call — is **not** implemented here; see [`ElementAnnotation`]'s own
-//!   doc for why, and `docs/prose-dialect-spec.md` §3.5b's Deferred list.
-//!   Issue #1838 added the **other** natural-notation spelling, `claims =
-//!   "…"` beside `args = "…"` — a pattern that claims a prose line
-//!   carrying no `!name` sigil. A claim is validated in both directions
-//!   (`E160` *and* `E167`: params ≡ captures, since every argument of the
-//!   rewritten call comes from a capture) and is legal only above a
-//!   top-level `fn` (`E112` otherwise — see [`is_consumed_position`]). The
-//!   dispatch itself lives in [`super::element`]; the `!name` *sigil*
-//!   rewrite remains unimplemented for both spellings, per the deferred
-//!   list above.
+//!   dispatch rewrite the annotation exists to drive now dispatches
+//!   (issue #2004, `super::element::try_dispatch`) for the plain, non-
+//!   `block` case on a top-level `fn` — matching a content line, binding
+//!   captures, and lowering to a call; a `block`-declared handler's
+//!   trailing receiver still has nothing dispatching into it (that binding
+//!   is issue #1839's own scope, not this one's — see [`ElementAnnotation`]'s
+//!   own doc). Issue #1838 added the **other** natural-notation spelling,
+//!   `claims = "…"` beside `args = "…"` — a pattern that claims a prose
+//!   line carrying no `!name` sigil. A claim is validated in both
+//!   directions (`E160` *and* `E167`: params ≡ captures, since every
+//!   argument of the rewritten call comes from a capture) and is legal
+//!   only above a top-level `fn` (`E112` otherwise — see
+//!   [`is_consumed_position`]). The dispatch itself lives in
+//!   [`super::element`]; `try_dispatch`'s own doc has the exact boundary of
+//!   what `!name` dispatch covers today.
 //! - **`style`** — `@[style(…)]`, the companion editor-presentation
 //!   annotation (same spec section, addenda 3–4). **This module delivers
 //!   it** as a pure declaration surface — [`style_annotation`] requires a
@@ -557,9 +559,12 @@ fn parse_effects(
 
 // ─── `@[element]` / `@[style]` declaration surface (issue #1719) ─────────
 //
-// The `!name` sigil dispatch rewrite these annotations exist to declare is
-// NOT implemented here — only the declaration surface is (parse, validate,
-// store on the `Knot`/`Stitch`). See this module's doc comment for why.
+// The `!name` sigil dispatch rewrite these annotations exist to declare
+// dispatches now for the plain (non-`block`) case (issue #2004,
+// `super::element::try_dispatch`) — this module remains only the
+// declaration surface (parse, validate, store on the `Knot`/`Stitch`); the
+// dispatch mechanism itself lives in `super::element`. See this module's
+// doc comment for the exact boundary.
 
 /// The `@[element(…)]` clause keys. Exactly one of `args = "…"` (the
 /// `!name`-dispatched remainder pattern) and `claims = "…"` (the
