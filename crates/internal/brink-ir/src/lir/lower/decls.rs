@@ -4,8 +4,11 @@ use crate::determinism::LookupMap;
 use crate::symbols::{SymbolIndex, SymbolKind};
 use crate::{Diagnostic, DiagnosticCode, FileId, hir};
 
-use super::context::{NameTable, ResolutionLookup};
+use super::context::{
+    AnalyzerTables, IdAllocator, NameTable, ResolutionLookup, StructCtx, TempMap,
+};
 use super::expr::const_value_to_map_key;
+use super::lambda;
 use super::lir;
 use super::structs::ShapeTable;
 
@@ -19,6 +22,11 @@ use super::structs::ShapeTable;
 /// and field order to fold into [`lir::ConstValue::Record`] (issue #1530),
 /// which is why [`super::build_prelude_decls`] builds the shape table
 /// *before* calling this.
+///
+/// `lambda_ctx` bundles the resources needed only when a default is itself
+/// a lambda literal (issue #1774, [`GlobalLambdaCtx`]'s own doc) — kept out
+/// of the always-paid parameter list because the overwhelmingly common case
+/// (no file-scope lambda anywhere) never touches it.
 pub fn collect_globals(
     files: &[(FileId, &hir::HirFile)],
     index: &SymbolIndex,
@@ -26,6 +34,7 @@ pub fn collect_globals(
     resolutions: &ResolutionLookup,
     shapes: &ShapeTable,
     diagnostics: &mut Vec<Diagnostic>,
+    lambda_ctx: &mut GlobalLambdaCtx<'_>,
 ) -> Vec<lir::GlobalDef> {
     // Pass 1: evaluate all constants and build a value lookup (keyed
     // lookup only — `LookupMap`, issue #801's audited alias).
@@ -33,6 +42,14 @@ pub fn collect_globals(
     let mut globals = Vec::new();
 
     for &(file_id, hir_file) in files {
+        // #1504/#1774: qualify this file's lambda-lifted container paths by
+        // the owning file, same qualifier `lower_root_content_chunks` gives
+        // that file's anonymous choice/gather containers — otherwise two
+        // files' `VAR f = |x| x;` at the same source offset would mint the
+        // same `DefinitionId`.
+        lambda_ctx.ids.set_path_prefix(hir::root_content_scope_path(
+            lambda_ctx.file_paths.get(&file_id).map(String::as_str),
+        ));
         for cst in &hir_file.constants {
             if let Some(id) = lookup_global(index, &cst.name.text, SymbolKind::Constant) {
                 let name = names.intern(&cst.name.text);
@@ -48,15 +65,28 @@ pub fn collect_globals(
                         code: DiagnosticCode::E083,
                     });
                 }
-                let env = ConstEvalEnv {
-                    index,
-                    resolutions,
-                    file: file_id,
-                    const_values: &const_values,
-                    shapes,
-                    native: hir_file.native,
+                let default = if let hir::Expr::Lambda(l) = &cst.value {
+                    eval_const_lambda(
+                        l,
+                        file_id,
+                        hir_file.native,
+                        index,
+                        resolutions,
+                        names,
+                        lambda_ctx,
+                        diagnostics,
+                    )
+                } else {
+                    let env = ConstEvalEnv {
+                        index,
+                        resolutions,
+                        file: file_id,
+                        const_values: &const_values,
+                        shapes,
+                        native: hir_file.native,
+                    };
+                    eval_const_expr(&cst.value, env, diagnostics)
                 };
-                let default = eval_const_expr(&cst.value, env, diagnostics);
                 const_values.insert(id, default.clone());
                 globals.push(lir::GlobalDef {
                     id,
@@ -71,6 +101,10 @@ pub fn collect_globals(
 
     // Pass 2: evaluate variables (may reference constants).
     for &(file_id, hir_file) in files {
+        // See the matching comment in the constants pass above.
+        lambda_ctx.ids.set_path_prefix(hir::root_content_scope_path(
+            lambda_ctx.file_paths.get(&file_id).map(String::as_str),
+        ));
         for var in &hir_file.variables {
             if let Some(id) = lookup_global(index, &var.name.text, SymbolKind::Variable) {
                 let name = names.intern(&var.name.text);
@@ -84,15 +118,28 @@ pub fn collect_globals(
                         code: DiagnosticCode::E083,
                     });
                 }
-                let env = ConstEvalEnv {
-                    index,
-                    resolutions,
-                    file: file_id,
-                    const_values: &const_values,
-                    shapes,
-                    native: hir_file.native,
+                let default = if let hir::Expr::Lambda(l) = &var.value {
+                    eval_const_lambda(
+                        l,
+                        file_id,
+                        hir_file.native,
+                        index,
+                        resolutions,
+                        names,
+                        lambda_ctx,
+                        diagnostics,
+                    )
+                } else {
+                    let env = ConstEvalEnv {
+                        index,
+                        resolutions,
+                        file: file_id,
+                        const_values: &const_values,
+                        shapes,
+                        native: hir_file.native,
+                    };
+                    eval_const_expr(&var.value, env, diagnostics)
                 };
-                let default = eval_const_expr(&var.value, env, diagnostics);
                 globals.push(lir::GlobalDef {
                     id,
                     name,
@@ -105,6 +152,157 @@ pub fn collect_globals(
     }
 
     globals
+}
+
+/// Resources [`collect_globals`] needs only for a lambda-literal decl
+/// default (issue #1774) — bundled so the common lambda-free case pays
+/// nothing extra in the parameter list.
+///
+/// RULED 2026-08-01 (`docs/decision-log.md` #1774): a native `var`/`const`
+/// may hold a fn value, including a lambda literal — not just the bare-name
+/// reference #1862 already shipped. The gate that used to block this was
+/// `is_const_foldable_decl_default`'s `Lambda` arm (raising `E083` in
+/// [`collect_globals`] above) — *not* [`is_const_foldable_kind`], which
+/// governs a lambda nested one level inside a collection/struct/`#fn` bound
+/// arg and is deliberately left unchanged by this issue (out of scope: see
+/// the PR description). The 2026-07-23 "flows-as-actors" direction homes a
+/// *capturing* fn value to its creating flow to protect `#@local` privacy —
+/// but that reasoning never reaches file scope, because a file-scope lambda
+/// has no enclosing frame to capture from at all (no knot/stitch params, no
+/// `~ temp` locals) — see [`eval_const_lambda`]'s doc for how that is made
+/// mechanical, not just argued.
+pub struct GlobalLambdaCtx<'a> {
+    /// Shared across every file's decl pass — a lifted function's identity
+    /// is content-derived, so one allocator (re-prefixed per file, same as
+    /// [`super::lower_root_content_chunks`]) is enough for the whole
+    /// project.
+    pub ids: &'a mut IdAllocator,
+    /// Lambda-lifted containers synthesized while folding decl defaults,
+    /// destined to become siblings of the project's knots — the same
+    /// placement [`lambda::lower_lambda`]'s own doc gives every lifted
+    /// function, for the same reason (only ever entered through its own fn
+    /// value).
+    pub lifted: &'a mut Vec<lir::Container>,
+    /// Per-file registered paths, for the `set_path_prefix` qualifier above.
+    pub file_paths: &'a LookupMap<FileId, String>,
+    /// Whole-program struct-shape data — `lower_lambda`'s body lowering
+    /// needs it for the same TM-4c reasons any other body lowering does.
+    pub structs: &'a StructCtx<'a>,
+    /// Analyzer side-tables (UFCS/`or`-coalescing) — the real,
+    /// whole-project verdict tables `brink-db`'s `lir_prelude_decls_query`
+    /// builds from `ufcs_resolution_query`/`coalesce_types_query` (review
+    /// finding on #1774: this used to be an unconditionally-empty pair,
+    /// which risked a decl-default lambda body silently losing a resolved
+    /// UFCS call's *meaning* — see [`super::expr::lower_ufcs_call`]'s doc
+    /// for why that arm is not actually a silent miscompile, just a hard
+    /// `E144` refusal).
+    ///
+    /// The `or`-coalescing half is genuinely complete now: `coalesce::
+    /// resolve` already hand-recurses over `hir.variables`/`hir.constants`
+    /// (issue #1764) specifically because their initializers sit outside
+    /// `visit::visit`'s block-tree walk, so a decl-default lambda's chains
+    /// are recorded in the real table this field now carries.
+    ///
+    /// The UFCS half is **not** yet complete: `ufcs::resolve` walks only
+    /// `visit::visit` (never `visit_with_decl_initializers`), so a method
+    /// call inside a decl-default lambda body is never visited by the UFCS
+    /// pass at all — no verdict is ever recorded for it, real table or not.
+    /// Such a call therefore still safely refuses with `E144` (a hard
+    /// compile error, not a silently wrong program) rather than resolving —
+    /// pinned by `brink-compiler`'s
+    /// `compile_path_native_ufcs_call_in_lambda_decl_default_is_e144`.
+    /// Teaching `ufcs::resolve` to also walk decl initializers (mirroring
+    /// `coalesce::resolve`'s own precedent) is the follow-up that would
+    /// close this, not a change this field's plumbing can make on its own.
+    pub tables: AnalyzerTables<'a>,
+    /// The root container's `DefinitionId` — see
+    /// [`super::context::root_definition_id`].
+    pub root_id: brink_format::DefinitionId,
+}
+
+/// Fold a file-scope lambda literal used directly as a `VAR`/`CONST`
+/// declaration default (issue #1774) — the lambda half of "a native
+/// `var`/`const` may hold a fn value" ([`GlobalLambdaCtx`]'s doc has the
+/// ruling).
+///
+/// Reuses [`lambda::lower_lambda`] verbatim rather than a parallel
+/// mechanism: a file-scope lambda has no enclosing frame, so this hands it
+/// an **empty** `TempMap`/`visible_temps` — every free name in the body
+/// then misses `ctx.temp_slot`, and `lower_lambda`'s own `captured_locals`
+/// contract is "everything that misses `ctx.temp_slot` is a legitimate
+/// non-local" (a global `VAR`/`CONST` cell or a knot/function name), left
+/// alone rather than captured. That is the 2026-08-01 ruling's safety
+/// argument made mechanical rather than merely argued: the creation-site-
+/// capture rule exists to keep a captured `#@local` cell from leaking
+/// outside its home flow, and that can never be at stake here because
+/// there is no capture *at all* — [`lir::Expr::MakeFnValue`]'s `bound` row
+/// is always empty for a file-scope lambda, by construction of the empty
+/// frame handed to it, not by a special case added here. Pinned by
+/// `decls::tests::file_scope_lambda_cannot_capture_flow_local` — if a
+/// future change ever gives file scope a real temp/param frame, that test
+/// starts failing loudly instead of a capture silently smuggling
+/// `#@local` state out through a fn value.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "mirrors GlobalLambdaCtx's own field count; a context struct already absorbed the growth"
+)]
+fn eval_const_lambda(
+    l: &hir::LambdaExpr,
+    file: FileId,
+    native: bool,
+    index: &SymbolIndex,
+    resolutions: &ResolutionLookup,
+    names: &mut NameTable,
+    lambda_ctx: &mut GlobalLambdaCtx<'_>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> lir::ConstValue {
+    let empty_temps = TempMap::new();
+    let mut next_block_slot = 0u16;
+    let mut ctx = super::make_ctx(
+        file,
+        native,
+        resolutions,
+        index,
+        &empty_temps,
+        names,
+        lambda_ctx.ids,
+        lambda_ctx.root_id,
+        String::new(),
+        false,
+        &[],
+        lambda_ctx.file_paths,
+        &mut next_block_slot,
+        diagnostics,
+        lambda_ctx.structs,
+        lambda_ctx.tables,
+        lambda_ctx.lifted,
+    );
+    match lambda::lower_lambda(l, &mut ctx) {
+        lir::Expr::MakeFnValue { target, bound } if bound.is_empty() => {
+            lir::ConstValue::FnRef(target)
+        }
+        // Structurally unreachable at file scope today (see this fn's doc:
+        // `temp_slot` can never hit with an empty `TempMap`/`visible_temps`,
+        // so `bound` is always empty) — but "unreachable today" is exactly
+        // the invariant a future change could break silently. Review
+        // finding: falling back to a bare `Null` here would turn that break
+        // into a silently-wrong global default (a captured `#@local`
+        // snapshot that was never computed, quietly discarded) rather than
+        // a refusal — this crate's own "flag silent data drops" rule. Emit
+        // the same `E083` `is_const_foldable_decl_default` would have
+        // raised for this position instead: a future break of the
+        // empty-frame invariant becomes a loud compile refusal, never a
+        // silent one.
+        _ => {
+            diagnostics.push(Diagnostic {
+                file,
+                range: l.ptr.text_range(),
+                message: DiagnosticCode::E083.title().to_string(),
+                code: DiagnosticCode::E083,
+            });
+            lir::ConstValue::Null
+        }
+    }
 }
 
 /// Collect list definitions, items, and corresponding global variables from HIR files.
@@ -751,9 +949,16 @@ fn is_const_foldable_kind(
         // Wiring `ConstValue::Range` through the decl-default pipeline is
         // a follow-up if authoring demand appears.
         | hir::Expr::Range(_)
-        // Lambdas (issue #1685) never constant-fold: a lambda value is
-        // made at its creation site (its captures are snapshotted there),
-        // so it has no compile-time value at all.
+        // Lambdas (issue #1685) never constant-fold *nested one level in* —
+        // a collection/struct-field/`#fn`-bound-`val` element position. This
+        // deliberately stays `false` even though a lambda literal used as
+        // the *whole* top-level default now folds
+        // (`is_const_foldable_decl_default`'s own arm, issue #1774): the
+        // 2026-08-01 ruling that lifted the top-level gate is about "a
+        // native `var`/`const` may hold a fn value", not about a lambda
+        // appearing inside a collection that itself becomes a global's
+        // default (`#[|x| x, 2]`) — genuinely reachable, but out of this
+        // issue's scope; see the #1774 PR description.
         | hir::Expr::Lambda(_)
         // Internal-only (issue #1839) — never surface syntax, so it can
         // never appear as a declaration default in the first place; `false`
@@ -807,7 +1012,22 @@ fn is_const_foldable_decl_default(
         | hir::Expr::ArrayLiteral(_)
         | hir::Expr::MapLiteral(_)
         | hir::Expr::StructLiteral(_)
-        | hir::Expr::FnLiteral(_) => true,
+        | hir::Expr::FnLiteral(_)
+        // A lambda literal as the *whole* top-level default (`VAR f = |x|
+        // x + 1;`) folds — RULED 2026-08-01, `docs/decision-log.md` #1774:
+        // a native `var`/`const` may hold a fn value, both a bare-name
+        // reference (already legal, #1862) and a lambda literal. This is
+        // the E083 gate the ruling lifts; `collect_globals` special-cases
+        // `Expr::Lambda` before calling `eval_const_expr` (see
+        // `eval_const_lambda`) rather than folding it through the shared
+        // recursive path, since `eval_const_expr` has no Lambda arm of its
+        // own — a lambda nested one level in (a collection element, a
+        // struct field, a `#fn` bound `val` arg) stays ungated by this
+        // arm but still unsupported by `eval_const_expr`, so it still folds
+        // to `Null` behind its own `E077`/`E076` diagnostic
+        // (`is_const_foldable_kind`'s Lambda arm, deliberately unchanged —
+        // out of this issue's scope).
+        | hir::Expr::Lambda(_) => true,
         hir::Expr::Path(path) => !matches!(
             resolutions
                 .resolve(file, path.range)
@@ -832,8 +1052,6 @@ fn is_const_foldable_decl_default(
         | hir::Expr::RefArg(_)
         // NS-A5 v1: see `is_const_foldable_kind`'s Range arm.
         | hir::Expr::Range(_)
-        // Lambdas: see `is_const_foldable_kind`'s Lambda arm.
-        | hir::Expr::Lambda(_)
         // Internal-only (issue #1839): see `is_const_foldable_kind`'s
         // Fragment arm.
         | hir::Expr::Fragment(_) => false,

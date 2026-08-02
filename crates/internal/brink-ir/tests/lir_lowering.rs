@@ -91,6 +91,8 @@ mod inline_content_elements;
 mod knot_parameters;
 #[path = "lir_lowering/knots.rs"]
 mod knots;
+#[path = "lir_lowering/lambda_literal_declaration_default.rs"]
+mod lambda_literal_declaration_default;
 #[path = "lir_lowering/lists.rs"]
 mod lists;
 #[path = "lir_lowering/logicblock_inside_unlifted_inline_conditional_sequence.rs"]
