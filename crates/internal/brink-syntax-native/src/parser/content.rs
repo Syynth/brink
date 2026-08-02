@@ -508,6 +508,8 @@ pub(crate) fn header_tag_tail(p: &mut Parser<'_, '_>) {
     }
 }
 
+/// Spec'd in `docs/prose-dialect-spec.md` §4.7.
+///
 /// #1728: a tag's body is raw text (`tag_text_runs_raw_to_end_of_line`) —
 /// it never re-parses `{…}` as a real interpolation/alternation/choice
 /// node — but it still must not mistake a `}` that merely *echoes* a `{`

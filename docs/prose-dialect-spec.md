@@ -837,10 +837,20 @@ how far its raw scan runs before deciding the tag is over.
 own tags) is scanned as raw text — it never re-parses a `{…}` it meets as a
 real interpolation/alternation/choice node (§4.6's table calls the sibling
 engine's `TEXT`-run scanner "structural only, by design"; the same is true
-here, one level up). The scan stops at `NEWLINE`/`EOF`, at an unescaped
-`HASH` (a new sibling tag), or at an `R_BRACE` — but only once a `depth`
-counter, bumped on every literal, unescaped `{` and brought back down on
-every `}`, has returned to zero. This is pure raw-character balancing, not
+here, one level up). The scan stops unconditionally at `NEWLINE`/`EOF` or at
+any of `tag()`'s caller-supplied `extra_stop` kinds — checked first, before
+any depth logic runs. This is where the two callers diverge: `tag_line_tail`
+passes an empty `extra_stop`, so a *content* line's trailing tag balances
+`{`/`}` as described below; `header_tag_tail` passes `&[L_BRACE, TILDE, GT]`,
+so a *declaration header* line's own tags stop at the very first unescaped
+`{`/`~`/`>` — the body opener — before the depth counter ever gets a chance
+to engage (this is the entire reason the two entry points are kept
+separate, per `header_tag_tail`'s own doc comment, and is pinned by
+`header_tags_do_not_swallow_a_body_dialect_selector`). For a content line's
+trailing tags, the scan additionally stops at an unescaped `HASH` (a new
+sibling tag) or at an `R_BRACE` — but only once a `depth` counter, bumped on
+every literal, unescaped `{` and brought back down on every `}`, has
+returned to zero. This is pure raw-character balancing, not
 interpolation awareness: `#tag {gold` (never closed) still runs to end of
 line exactly as it did before #1728.
 
@@ -871,9 +881,17 @@ consumed as its match, leaving the flow body with no closer before
 `NEWLINE`/`EOF`. This is accepted as inherent to depth-based balancing over
 raw text, not a regression — pinned by
 `an_unbalanced_open_brace_in_a_tag_eats_the_enclosing_blocks_own_closer`.
-`\{` is excluded from the depth counter (an escaped brace is text, not a
-metacharacter, per #1716/PR #1732's literal-brace escape), pinned by
-`a_tag_with_an_escaped_open_brace_does_not_swallow_the_enclosing_blocks_own_closer`.
+The depth counter uses odd/even **backslash-parity**, not a flat exclusion:
+an `L_BRACE` is only skipped when it is preceded by an *odd* run of raw
+`BACKSLASH`es (the last one escapes it — an escaped brace is text, not a
+metacharacter, per #1716/PR #1732's literal-brace escape), while an *even*
+run means the backslashes escape each other and the brace is still counted
+(`\\{` counts the brace, per #1852) — `content.rs`'s
+`L_BRACE if backslash_count & 1 == 0 => depth += 1`. Pinned by
+`a_tag_with_an_escaped_open_brace_does_not_swallow_the_enclosing_blocks_own_closer`
+(the odd case) and
+`a_tag_with_an_escaped_backslash_before_a_real_brace_counts_the_brace` (the
+even case).
 
 **Scope (RULED, review of #1777, issue #1787, delivered by PR #1807,
 merged 2026-07-31): `depth` is scoped per-tag, not per-line, and that is
@@ -904,12 +922,16 @@ as absolute. Pinned by
 `a_tags_own_unbalanced_brace_does_not_leak_depth_into_a_sibling_tag`.
 
 **Still open, not ruled here:** issue #1883 asks a related but distinct
-question — after #1851/#1852 made `cue_name()`'s own brace-depth counter
-`COLON`-aware and gave `\{` backslash-parity treatment there, whether
-`tag()`/`cue_name()`'s `HASH`-as-hard-reset boundary (ruled above) still
-holds, and whether `\}` should gain the same backslash-parity carve-out
-`\{` already has. Both are about the parser's *structural* recognition and
-are untouched by this section, exactly as they're untouched by §4.6's
+question — #1851 made `cue_name()`'s own brace-depth counter `COLON`-aware
+(a `cue_name()`-only change; `tag()` has no `COLON` handling to make
+depth-aware in the first place), while #1852's `\{` backslash-parity
+treatment already applies to *both* `tag()`'s and `cue_name()`'s depth
+counters, not `cue_name()` alone (§4.6's table above states this for
+`tag()` explicitly). #1883 asks whether `tag()`/`cue_name()`'s
+`HASH`-as-hard-reset boundary (ruled above) still holds, and whether `\}`
+should gain the same backslash-parity carve-out `\{` already has in both
+functions. Both are about the parser's *structural* recognition and are
+untouched by this section, exactly as they're untouched by §4.6's
 escape-stripping ruling above.
 
 ## 5. Tooling: completions & succession (RULED doctrine)
