@@ -229,6 +229,9 @@ with a value expression ... `RETURN_STMT` never carries a value at body
 position."
 
 Corpus impact: `"return with a value expression"` bucket, **16 cases**.
+(Stale at this triage's own date — see the correction below: re-measured at
+merge time as **22 cases**, since the corpus shifted between the
+2026-08-01 triage and #1973's landing.)
 
 **Correction (issue #1973, landed):** the grammar gap is fixed —
 `divert.rs::return_stmt` now parses a trailing value expression at
