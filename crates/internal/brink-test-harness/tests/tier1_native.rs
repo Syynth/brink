@@ -340,6 +340,19 @@ fn inline_markup_point_marker() {
     assert_case("inline-markup-point-marker");
 }
 
+/// Issue #1996 (`docs/prose-dialect-spec.md` §4.1, RULED 2026-08-01): a
+/// hyphenated tag name (`<fade-in>`) end to end — parses, lowers, and runs
+/// through the full native pipeline with the tag stripped and its content
+/// surviving, exactly like any other span (`inline_markup_point_marker`'s
+/// unhyphenated sibling). `in` is a reserved keyword (`KW_IN`) elsewhere in
+/// native code, so this also proves the hyphen-continuation leniency
+/// (`markup::is_name_segment`) doesn't just satisfy the parser's own unit
+/// tests but reaches a real compiled-and-run story.
+#[test]
+fn inline_markup_hyphenated_name() {
+    assert_case("inline-markup-hyphenated-name");
+}
+
 /// A `#`-tag whose own raw text embeds a balanced `{…}` brace pair,
 /// end-to-end (issue #1787 — filed from review of #1728/PR #1777, whose fix
 /// to `content::tag()`'s brace-depth counter had only parser-unit coverage,
@@ -518,6 +531,24 @@ flow main() {
     );
 }
 
+/// Issue #1991: `~ stmt` — the ruled content-ground line escape into code
+/// (charter §8.2, RULED 2026-07-23 "Native interleaving & body-dialect
+/// spelling": ink's logic line, kept). Before this landed, `~ n = 5` at
+/// prose-body position compiled clean (zero diagnostics) and printed the
+/// literal text `~ n = 5` to the player while silently never performing
+/// the assignment — this fixture's `expected.txt` ("Value is 9.") is only
+/// reachable if all three logic lines (a plain assignment, a compound
+/// `+=` assignment, and a bare function call for its side effect) actually
+/// ran: `n` starts at `0`, `~ n = 5` sets it to `5`, `~ n += 3` to `8`,
+/// then `~ bump()` (a code-ground `fn` whose own body does `n += 1;`) to
+/// `9`. With the parser/lowering fix reverted, this case's transcript
+/// reads `~ n = 5\n~ n += 3\n~ bump()\nValue is 0.` instead — a different
+/// mismatch for every one of the three lines, not just a missing feature.
+#[test]
+fn logic_line_escape() {
+    assert_case("logic-line-escape");
+}
+
 /// Every `tests/tier1-native/` case directory is exercised by a `#[test]`
 /// above — a directory with no matching test would silently never run.
 #[test]
@@ -533,9 +564,11 @@ fn every_case_directory_has_a_test() {
         "directive-like-tag",
         "fn-value-bare-name",
         "for-k-v",
+        "inline-markup-hyphenated-name",
         "inline-markup-point-marker",
         "inline-tag-embedded-brace",
         "lambda-verbs",
+        "logic-line-escape",
         "or-coalescing",
         "root-content-typed-strict",
         "ufcs",

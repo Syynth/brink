@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 
 use brink_format::{ChoiceFlags, DefinitionId, Value};
 
-use crate::error::RuntimeError;
+use crate::error::{RanOutOfContentCause, RuntimeError};
 use crate::output::OutputBuffer;
 
 // ── Internal types ──────────────────────────────────────────────────────────
@@ -47,6 +47,33 @@ pub(crate) enum CallFrameType {
     /// function has returned. Mirrors C#'s
     /// `PushPopType.FunctionEvaluationFromGame`.
     FunctionEvalFromGame,
+}
+
+/// Classify *why* execution ran out of content, from the exhausted frame's
+/// type and whether the call stack could pop at all at that instant.
+/// Mirrors C#'s `Story.Continue()` selection (`Story.cs`): a tunnel or
+/// function frame gets its own message; a stack that can't pop at all (only
+/// the root frame remains) is the plain case; anything else (a `Thread`
+/// boundary, an in-progress `FunctionEvalFromGame` frame) is the "unknown
+/// reason" backstop — a call-stack shape well-formed compiler output should
+/// never produce. Called from [`crate::vm::handle_frame_exhaustion`] at the
+/// exact moment a frame's content is discovered exhausted — the same
+/// instant C# reads `callStack.CanPop` — before this runtime's own
+/// exhaustion recovery (which, unlike C#, always pops the exhausted frame)
+/// can change the stack's shape out from under a later read.
+pub(crate) fn classify_ran_out_of_content(
+    frame_type: CallFrameType,
+    can_pop: bool,
+) -> RanOutOfContentCause {
+    if can_pop && frame_type == CallFrameType::Tunnel {
+        RanOutOfContentCause::Tunnel
+    } else if can_pop && frame_type == CallFrameType::Function {
+        RanOutOfContentCause::Function
+    } else if can_pop {
+        RanOutOfContentCause::Unknown
+    } else {
+        RanOutOfContentCause::Plain
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -281,6 +308,26 @@ pub(crate) struct Flow {
     /// pending choices — the story passed through an empty choice set.
     /// Cleared at the start of each `continue_single` call.
     pub did_unsafe_yield: bool,
+    /// The call-stack-derived cause captured the moment execution hit the
+    /// content-exhaustion boundary ([`crate::vm::handle_frame_exhaustion`])
+    /// that produced the terminal `Done` — mirrors C#'s inline
+    /// `CanPop(Tunnel)`/`CanPop(Function)`/`!canPop` selection (`Story.cs`)
+    /// at the instant it happens, before this runtime's own frame unwinding
+    /// (which, unlike C#, always pops the exhausted frame — see the type's
+    /// own docs) can erase the evidence. Read by
+    /// [`FlowInstance::advance_with_limit`](crate::story::FlowInstance::advance_with_limit)'s
+    /// deferred "ran out of content" fault one `continue_single` call
+    /// later. Written *only* on the exhaustion paths that themselves return
+    /// `Done` — an exhaustion that instead resumes execution (a completed
+    /// thread with a parent to fall back to, a popped frame with content
+    /// still below it) never touches this field, so a transient exhaustion
+    /// elsewhere on the same flow (e.g. a `Story::call_function` boundary
+    /// evaluating a function that calls a void helper) can't clobber a
+    /// cause an earlier, still-pending exhaustion already recorded. Not
+    /// cleared between cycles like the two flags above it — it is
+    /// meaningless unless `did_safe_exit` is `false` at the same `Done`,
+    /// which is the only condition under which it is ever read.
+    pub ran_out_of_content_cause: RanOutOfContentCause,
     /// The dev/prod execution mode (NS-A4, [`ExecMode`]). A host/build
     /// knob, not story state — never persisted; defaults to
     /// [`ExecMode::Dev`].
@@ -462,5 +509,71 @@ impl Flow {
     /// Peek at the top value without popping.
     pub fn peek_value(&self) -> Result<&Value, RuntimeError> {
         self.value_stack.last().ok_or(RuntimeError::StackUnderflow)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A tunnel frame that can still pop classifies as `Tunnel` — mirrors
+    /// C#'s `callStack.CanPop(PushPopType.Tunnel)` arm.
+    #[test]
+    fn classify_tunnel_with_can_pop_is_tunnel() {
+        assert_eq!(
+            classify_ran_out_of_content(CallFrameType::Tunnel, true),
+            RanOutOfContentCause::Tunnel
+        );
+    }
+
+    /// A function frame that can still pop classifies as `Function` —
+    /// mirrors C#'s `callStack.CanPop(PushPopType.Function)` arm.
+    #[test]
+    fn classify_function_with_can_pop_is_function() {
+        assert_eq!(
+            classify_ran_out_of_content(CallFrameType::Function, true),
+            RanOutOfContentCause::Function
+        );
+    }
+
+    /// Any other frame type that can still pop (a `Thread` boundary, a
+    /// `FunctionEvalFromGame` boundary, even `Root`/`External`) falls to
+    /// the "unknown reason" backstop — mirrors C#'s final `else` arm.
+    #[test]
+    fn classify_other_frame_types_with_can_pop_is_unknown() {
+        for frame_type in [
+            CallFrameType::Root,
+            CallFrameType::Thread,
+            CallFrameType::External,
+            CallFrameType::FunctionEvalFromGame,
+        ] {
+            assert_eq!(
+                classify_ran_out_of_content(frame_type, true),
+                RanOutOfContentCause::Unknown,
+                "frame type {frame_type:?} with can_pop=true should classify as Unknown"
+            );
+        }
+    }
+
+    /// A call stack that can't pop at all — regardless of the exhausted
+    /// frame's type — is the plain "story fell off the end" case. Mirrors
+    /// C#'s `!callStack.canPop` arm, which is checked before frame-type
+    /// distinctions are even considered.
+    #[test]
+    fn classify_cannot_pop_is_always_plain() {
+        for frame_type in [
+            CallFrameType::Root,
+            CallFrameType::Function,
+            CallFrameType::Tunnel,
+            CallFrameType::Thread,
+            CallFrameType::External,
+            CallFrameType::FunctionEvalFromGame,
+        ] {
+            assert_eq!(
+                classify_ran_out_of_content(frame_type, false),
+                RanOutOfContentCause::Plain,
+                "frame type {frame_type:?} with can_pop=false should classify as Plain"
+            );
+        }
     }
 }

@@ -244,7 +244,12 @@ pub(crate) fn content_items_until_impl(
         // `stop`/`L_BRACE` handling below since `LT` is never itself a
         // caller-supplied stop kind.
         if cur == LT && super::markup::at_span_close(p) {
-            if expected_close == Some(p.nth_text(2)) {
+            // Compare the close tag's FULL (possibly hyphenated) name, not
+            // just its first token (`p.nth_text(2)`) — `expected_close` may
+            // itself be hyphenated (§4.1, issue #1996), and comparing only
+            // the leading segment would wrongly treat e.g. `</fade>` as the
+            // expected close for a `<fade-in>` open tag.
+            if expected_close.is_some_and(|name| super::markup::at_span_close_named(p, name)) {
                 break;
             }
             super::markup::consume_stray_close(p);

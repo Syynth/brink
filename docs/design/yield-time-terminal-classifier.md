@@ -175,10 +175,22 @@ Two further deltas surface while checking this, both R2's business:
 
 - C# selects among **four** messages by call-stack state (tunnel needs
   `->->`; function needs `~ return`; plain `ran out of content`; an
-  "unknown reason" fallback). Brink has a single
-  `RuntimeError::RanOutOfContent`. Any move to same-call faulting should
-  decide whether to keep collapsing them, because the harness compares
-  error *strings*.
+  "unknown reason" fallback). Brink's `RuntimeError::RanOutOfContent` now
+  carries the same four-way `RanOutOfContentCause` split (issue #1993) —
+  captured at `vm::handle_frame_exhaustion`, the same instant C# reads
+  `callStack.CanPop`, and stashed on `Flow` for the deferred fault to read.
+  Any move to same-call faulting should decide whether this classification
+  moves with it. It does **not** change the oracle-matching math below:
+  `oracle::oracle_outcome_eq` only compares the *category* of an error
+  outcome (`(OracleOutcome::Error { .. }, Outcome::Error(_)) => true`,
+  never the rendered message), so which of the four causes attaches was
+  already unobservable to the harness before #1993 landed, and stays so
+  after. #1993 also found that only `RanOutOfContentCause::Plain` is
+  reachable through any call-stack shape this runtime can currently
+  produce — the other three arms need a separate, deliberate fix to how
+  `handle_frame_exhaustion` auto-pops an exhausted Tunnel frame (tracked in
+  #2005), which is real VM semantics work with oracle-wide ripple risk, not
+  a side effect of this design.
 - C#'s guard also excludes `_temporaryEvaluationContainer != null`.
   Brink's equivalent isolation is the separate `begin_function_eval`
   loop, which raises `FunctionYielded` on `Stepped::Done | Stepped::Ended`

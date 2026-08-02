@@ -1032,6 +1032,120 @@ fn inline_divert_mid_content_line_splits_into_two_statements() {
     assert!(matches!(body.stmts[1], Stmt::Divert(_)));
 }
 
+// ── Issue #1991: `~ stmt` — the content-ground line escape into code ─
+// ── (charter §8.2, RULED 2026-07-23) ──────────────────────────────────
+//
+// Before this landed, `LOGIC_LINE` had no lowering at all — because the
+// parser never produced the node in the first place, `~ n = 5` reached
+// this pass folded into an ordinary `Stmt::Content` (the literal text
+// `~ n = 5`), never as a statement. These pin the fixed lowering
+// specifically; `tests/tier1-native/logic-line-escape/` pins the same
+// fix end-to-end through a real compile+run.
+
+#[test]
+fn logic_line_assignment_lowers_to_stmt_assignment() {
+    let (hir, _m, diags) = lower_src("flow a() {\n  ~ n = 5\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = only_knot_body(&hir);
+    let Stmt::Assignment(a) = &body.stmts[0] else {
+        panic!("expected Stmt::Assignment, got {:?}", body.stmts[0]);
+    };
+    assert_eq!(a.op, crate::AssignOp::Set);
+    assert!(matches!(&a.target, Expr::Path(p) if p.segments.last().unwrap().text == "n"));
+    assert!(matches!(a.value, Expr::Int(5)));
+}
+
+#[test]
+fn logic_line_compound_assignment_lowers_op() {
+    let (hir, _m, diags) = lower_src("flow a() {\n  ~ n += 3\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = only_knot_body(&hir);
+    let Stmt::Assignment(a) = &body.stmts[0] else {
+        panic!("expected Stmt::Assignment, got {:?}", body.stmts[0]);
+    };
+    assert_eq!(a.op, crate::AssignOp::Add);
+}
+
+#[test]
+fn logic_line_bare_call_lowers_to_expr_stmt_with_end_of_line() {
+    // Mirrors the ink-dialect's own `LogicLineOutput::has_call` rule
+    // (`hir::lower::content::logic_line`): a call-only logic line needs a
+    // trailing `Stmt::EndOfLine` to match inklecate's behavior — the same
+    // semantic construct ("ink's logic line, kept") on the same runtime.
+    let (hir, _m, diags) = lower_src("fn bump() {\n  return 1;\n}\nflow a() {\n  ~ bump()\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = &hir.knots[1].body;
+    assert!(matches!(body.stmts[0], Stmt::ExprStmt(Expr::Call(..))));
+    assert!(matches!(body.stmts[1], Stmt::EndOfLine));
+}
+
+#[test]
+fn logic_line_assignment_from_an_emitting_call_lowers_to_end_of_line() {
+    // Finding F1 (PR #2002 review): `lower_logic_line`'s ASSIGN_STMT arm
+    // originally never appended `Stmt::EndOfLine`, so a call's own emitted
+    // content lost its trailing line break when the logic line assigned
+    // the call's result instead of discarding it — `~ shout()` printed
+    // "Hi\n" but `~ n = shout()` printed "Hi" with no break, even though
+    // both reach the exact same `>{ }` function body. Mirrors
+    // `logic_line_bare_call_lowers_to_expr_stmt_with_end_of_line`, but for
+    // `Stmt::Assignment` — the ink-dialect frontend this dialect claims
+    // parity with applies the same `expr_contains_call` rule to both
+    // `Assignment` and `ExprStmt` (`hir/lower/content/logic_line.rs`).
+    let (hir, _m, diags) =
+        lower_src("fn shout() >{\n  Hi\n  return 7\n}\nflow a() {\n  ~ n = shout()\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = &hir.knots[1].body;
+    let Stmt::Assignment(a) = &body.stmts[0] else {
+        panic!("expected Stmt::Assignment, got {:?}", body.stmts[0]);
+    };
+    assert!(matches!(a.value, Expr::Call(..)));
+    assert!(
+        matches!(body.stmts[1], Stmt::EndOfLine),
+        "an assignment whose value contains a call must still get the trailing \
+         EndOfLine the ink-dialect frontend applies to the same construct: {:?}",
+        body.stmts
+    );
+}
+
+#[test]
+fn logic_line_precedes_ordinary_content_unaffected() {
+    let (hir, _m, diags) = lower_src("flow a() {\n  ~ n = 5\n  Value is {n}.\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = only_knot_body(&hir);
+    assert!(matches!(body.stmts[0], Stmt::Assignment(_)));
+    assert!(
+        body.stmts[1..]
+            .iter()
+            .any(|s| matches!(s, Stmt::Content(_))),
+        "the content line after the logic line must still lower normally: {:?}",
+        body.stmts
+    );
+}
+
+#[test]
+fn logic_line_with_no_recognized_child_is_a_loud_e129_not_a_silent_drop() {
+    // Defense in depth: `lower_logic_line` itself must never silently
+    // return an empty `Vec<Stmt>` for a `LOGIC_LINE` with neither an
+    // `ASSIGN_STMT` nor an `EXPR_STMT` child — CLAUDE.md's "flag silent
+    // data drops". The parser's own recovery loop (`stmt::logic_line`)
+    // means a fully-unrecognized shape (e.g. `~ if`) still produces an
+    // `EXPR_STMT` wrapper (empty, since `expression` failed at the first
+    // token) — that missing-expr shape is already covered by `E015`
+    // below; this pins the HIR-level fence for the node-shape case
+    // directly, independent of what the parser happens to produce today.
+    let (hir, _m, diags) = lower_src("flow a() {\n  ~ if\n}\n");
+    assert!(
+        !diags.is_empty(),
+        "an unrecognized/malformed logic line must raise a diagnostic, never silently drop"
+    );
+    let body = only_knot_body(&hir);
+    assert!(
+        !body.stmts.iter().any(|s| matches!(s, Stmt::Content(_))),
+        "a malformed logic line must never lower to visible story content: {:?}",
+        body.stmts
+    );
+}
+
 #[test]
 fn end_and_done_targets_lower_to_sentinel_paths() {
     let (hir, _m, diags) = lower_src("flow a() {\n  -> END\n}\nflow b() {\n  -> DONE\n}\n");

@@ -1,6 +1,6 @@
 use crate::SyntaxKind::{
     self, AT, AT_L_BRACKET, BLOCK, COLON_COLON, DIVERT, EOF, HASH, KW_CONST, KW_IMPORT, KW_RETURN,
-    KW_USE, KW_VAR, L_BRACE, L_PAREN, NEWLINE, R_BRACE, THREAD,
+    KW_USE, KW_VAR, L_BRACE, L_PAREN, NEWLINE, R_BRACE, THREAD, TILDE,
 };
 
 use super::Parser;
@@ -236,6 +236,16 @@ pub(crate) fn body_line(p: &mut Parser<'_, '_>) {
         }
         KW_RETURN => {
             super::divert::return_stmt(p);
+            p.set_cue_chain(false);
+        }
+        // `~ stmt` — the content-ground logic-line escape into code
+        // (charter §8.2, RULED 2026-07-23, issue #1991: ink's logic line,
+        // kept). Checked before the prose fallback so a leading `~` is
+        // never swallowed into `TEXT` — see `SyntaxKind::LOGIC_LINE`'s doc
+        // and `stmt::logic_line`. Never a link in a dialogue chain, same as
+        // every other non-prose body line.
+        TILDE => {
+            super::stmt::logic_line(p);
             p.set_cue_chain(false);
         }
         // `<-` outside a choice point (issue #1263, ruled #1260): not a

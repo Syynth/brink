@@ -113,7 +113,7 @@ use brink_ir::{
 use rowan::TextRange;
 
 use crate::annotations;
-use crate::infer::{InferenceResult, InferredSig, Ty, assignable};
+use crate::infer::{InferenceResult, InferredSig, Ty, assignable, ref_assignable};
 use crate::resolve::ImportScope;
 use crate::structs::{ShapeInfo, declared_shapes};
 
@@ -973,14 +973,32 @@ impl UfcsVisitor<'_> {
             .current_body()
             .and_then(|b| b.ufcs_call_args.iter().find(|f| f.range == range))
             .map_or(empty.as_slice(), |f| f.args.as_slice());
+        // Issue #1995/#1920: which positions are declared `ref` lives on
+        // the symbol index's own `params` — `InferredSig` (`sig`, above)
+        // carries no `is_ref` bit, exactly like the direct-call sibling in
+        // `infer::body::InferPass::infer_call`.
+        let ref_positions = self.index.symbols.get(&target);
+        let is_ref_param = |i: usize| {
+            ref_positions
+                .and_then(|info| info.params.get(i))
+                .is_some_and(|p| p.is_ref)
+        };
 
         let mut mismatches = Vec::new();
         // Index 0: the receiver itself — `name(recv, args)`'s first
         // positional slot, same "receiver counts as the first argument"
         // convention this call site's own arity-mismatch diagnostic uses.
+        // D5's auto-ref desugar makes this slot `ref` whenever
+        // `first_param_is_ref` selected `FreeFnAutoRef` — the exact write-
+        // back-through-the-caller's-cell case the invariant check exists
+        // for.
         if let Some(param_ty) = sig.params.first()
             && !param_ty.is_unresolved()
-            && !assignable(param_ty, &receiver.ty)
+            && if is_ref_param(0) {
+                !ref_assignable(param_ty, &receiver.ty)
+            } else {
+                !assignable(param_ty, &receiver.ty)
+            }
         {
             mismatches.push(UfcsArgMismatch {
                 index: 0,
@@ -995,7 +1013,12 @@ impl UfcsVisitor<'_> {
             let Some(param_ty) = sig.params.get(i + 1) else {
                 continue;
             };
-            if !param_ty.is_unresolved() && !assignable(param_ty, arg_ty) {
+            let ty_disagrees = if is_ref_param(i + 1) {
+                !ref_assignable(param_ty, arg_ty)
+            } else {
+                !assignable(param_ty, arg_ty)
+            };
+            if !param_ty.is_unresolved() && ty_disagrees {
                 mismatches.push(UfcsArgMismatch {
                     index: i + 1,
                     expected: param_ty.clone(),

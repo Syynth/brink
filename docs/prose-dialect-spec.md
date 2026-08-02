@@ -459,6 +459,26 @@ fn radio(chan: string, text: content) {
   anything else is a **compile error**. The editor hides escapes in
   rendering and can auto-insert them — the format stays blunt, the
   editor supplies the grace.
+- **Hyphenated tag names** (RULED 2026-08-01, issue #1996, superseding
+  #1740): a tag name may contain `-`, e.g. `<fade-in>` — kebab-case is
+  the common convention for custom-element vocabularies a host manifest
+  might expose, and the markup layer is freeform by default (§4.2), so
+  there was no reason to exclude it. The hyphen is legal **only as an
+  internal separator between two name segments** — never leading, never
+  trailing: `<fade-in>` ✓, `<-x>` ✗, `<x->` ✗. A leading hyphen is
+  largely forced by the existing grammar rather than a new rule: `<-` is
+  already `THREAD` (splice) at the lexer, so an open tag's name can never
+  start with one in the first place; a trailing hyphen is representable
+  (a lone `-` lexes as `MINUS`) but is a **parse error**, not silently
+  folded into the name. This widens the tag-name shape at **span-tag
+  position only** (`brink-syntax-native::parser::markup`) — plain `IDENT`
+  lexing is unchanged everywhere else in the language. A hyphen-separated
+  segment may be spelled the same as a reserved keyword (`in`, `for`, …
+  — `<fade-in>` itself is the motivating case: `in` is `KW_IN` in
+  expression position) since a tag name is prose vocabulary, not code;
+  this is narrower than "a tag may be *named* a bare keyword" — the
+  tag's own opening segment is unaffected and still cannot be a bare
+  keyword spelling, hyphenated or not.
 
 ### 4.2 Schema: freeform by default, manifest-validated (RULED)
 Undeclared markup passes through freely (fast host iteration). When the
