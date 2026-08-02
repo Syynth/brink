@@ -63,6 +63,126 @@ fn glue_and_splice_are_not_claimed_by_span_recognition() {
     assert!(!has_node_kind(&p.syntax(), SyntaxKind::SPAN));
 }
 
+// ── Hyphenated tag names (§4.1, RULED 2026-08-01, issue #1996) ───────
+
+#[test]
+fn a_hyphenated_span_name_parses_with_no_errors_and_matches_its_close_tag() {
+    let src = "flow f() {\n  <fade-in>hello</fade-in>\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let span = ast::Span::cast(first_node(&p.syntax(), SyntaxKind::SPAN)).expect("SPAN");
+    assert_eq!(
+        find_child::<ast::SpanName>(span.syntax())
+            .expect("span name")
+            .to_string(),
+        "fade-in"
+    );
+    assert_eq!(text_run_concat(span.syntax()), "hello");
+}
+
+#[test]
+fn a_hyphenated_self_closing_span_parses() {
+    let src = "flow f() {\n  Bell tolls. <fade-in/> Door slams.\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let span = ast::Span::cast(first_node(&p.syntax(), SyntaxKind::SPAN)).expect("SPAN");
+    assert_eq!(
+        find_child::<ast::SpanName>(span.syntax())
+            .expect("name")
+            .to_string(),
+        "fade-in"
+    );
+}
+
+#[test]
+fn a_hyphen_continuation_segment_may_be_a_reserved_keyword_spelling() {
+    // `fade-in` is this ruling's own worked example, and `in` is `KW_IN`
+    // everywhere else in the grammar (`for k in m`) — native keywords are
+    // reserved everywhere in code, but a tag name is freeform prose
+    // vocabulary (§4.2). A continuation segment (the word after a `-`)
+    // must accept a keyword spelling, or the ruling's own headline example
+    // wouldn't parse. This is deliberately narrower than "a tag may be
+    // *named* a bare keyword" — see `a_leading_hyphen_never_opens_a_span`'s
+    // sibling concern is unaffected; only the continuation position widens.
+    let src = "flow f() {\n  <fade-in>hello</fade-in>\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let span = ast::Span::cast(first_node(&p.syntax(), SyntaxKind::SPAN)).expect("SPAN");
+    assert_eq!(
+        find_child::<ast::SpanName>(span.syntax())
+            .expect("span name")
+            .to_string(),
+        "fade-in"
+    );
+}
+
+#[test]
+fn a_tag_name_may_chain_more_than_one_hyphen() {
+    // Proves `tag_name_len`'s loop, not just a single MINUS/IDENT pair.
+    let src = "flow f() {\n  <a-b-c>x</a-b-c>\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let span = ast::Span::cast(first_node(&p.syntax(), SyntaxKind::SPAN)).expect("SPAN");
+    assert_eq!(
+        find_child::<ast::SpanName>(span.syntax())
+            .expect("name")
+            .to_string(),
+        "a-b-c"
+    );
+}
+
+#[test]
+fn a_leading_hyphen_never_opens_a_span() {
+    // `<-` is already claimed by `THREAD` (splice) at the lexer, so `<-x>`
+    // never even reaches `LT` — pinning the "leading hyphen is illegal"
+    // half of the ruling, and mirroring the existing
+    // `glue_and_splice_are_not_claimed_by_span_recognition` precedent.
+    let src = "flow f() {\n  text <-x> more text\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(!has_node_kind(&p.syntax(), SyntaxKind::SPAN));
+}
+
+#[test]
+fn a_leading_hyphen_never_closes_a_span() {
+    // `</-x>` IS lexically distinguishable from `THREAD` (`SLASH` breaks
+    // the `<-` pattern) — but `at_span_close` requires its own first name
+    // token to be `IDENT`, not `MINUS`, so it is rejected here too, keeping
+    // the ban symmetric across open/close by construction.
+    let src = "flow f() {\n  <b>hi</-b>\n}\n";
+    let p = assert_lossless(src);
+    assert!(
+        !p.errors().is_empty(),
+        "`<b>` never sees a matching close (`</-b>` isn't one), so it's unclosed"
+    );
+}
+
+#[test]
+fn a_trailing_hyphen_is_a_parse_error_not_folded_into_the_name() {
+    // `<x->` — the trailing `-` (here, greedily lexed as one `DIVERT`
+    // token alongside the following `>`) is never folded into the name;
+    // pinning the "trailing hyphen is illegal" half of the ruling.
+    let src = "flow f() {\n  <x-> more text\n}\n";
+    let p = assert_lossless(src);
+    assert!(
+        !p.errors().is_empty(),
+        "a trailing hyphen must be reported, not silently accepted"
+    );
+}
+
+#[test]
+fn a_close_tag_must_match_the_open_tags_full_hyphenated_name_not_a_prefix() {
+    // Regression for comparing the FULL close-tag name, not just its first
+    // `IDENT` segment: `</fade>` must NOT be accepted as the close for
+    // `<fade-in>`, even though both start with the `fade` segment.
+    let src = "flow f() {\n  <fade-in>hi</fade>\n}\n";
+    let p = assert_lossless(src);
+    assert!(
+        !p.errors().is_empty(),
+        "`</fade>` must not satisfy `<fade-in>`'s close tag"
+    );
+}
+
 // ── Point markers (§8b.11) — self-closing spans ──────────────────────
 
 #[test]

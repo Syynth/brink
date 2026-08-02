@@ -340,6 +340,19 @@ fn inline_markup_point_marker() {
     assert_case("inline-markup-point-marker");
 }
 
+/// Issue #1996 (`docs/prose-dialect-spec.md` §4.1, RULED 2026-08-01): a
+/// hyphenated tag name (`<fade-in>`) end to end — parses, lowers, and runs
+/// through the full native pipeline with the tag stripped and its content
+/// surviving, exactly like any other span (`inline_markup_point_marker`'s
+/// unhyphenated sibling). `in` is a reserved keyword (`KW_IN`) elsewhere in
+/// native code, so this also proves the hyphen-continuation leniency
+/// (`markup::is_name_segment`) doesn't just satisfy the parser's own unit
+/// tests but reaches a real compiled-and-run story.
+#[test]
+fn inline_markup_hyphenated_name() {
+    assert_case("inline-markup-hyphenated-name");
+}
+
 /// A `#`-tag whose own raw text embeds a balanced `{…}` brace pair,
 /// end-to-end (issue #1787 — filed from review of #1728/PR #1777, whose fix
 /// to `content::tag()`'s brace-depth counter had only parser-unit coverage,
@@ -551,6 +564,7 @@ fn every_case_directory_has_a_test() {
         "directive-like-tag",
         "fn-value-bare-name",
         "for-k-v",
+        "inline-markup-hyphenated-name",
         "inline-markup-point-marker",
         "inline-tag-embedded-brace",
         "lambda-verbs",

@@ -218,6 +218,66 @@ fn span_with_children_roundtrips_as_pc_through_xliff() {
     );
 }
 
+/// Issue #1996 (`docs/prose-dialect-spec.md` §4.1, RULED 2026-08-01): a
+/// hyphenated tag name (`<fade-in>`) round-trips through XLIFF exactly like
+/// any other name — clone of
+/// `span_with_children_roundtrips_as_pc_through_xliff` with `name:
+/// "fade-in"`. This is the ⚠-flagged check that #1734's `<pc>`/`<x/>`
+/// inline-code mapping still holds for a hyphenated name: `span.name`
+/// rides through `originalData` as an opaque JSON string
+/// (`SpanMetaJson`/`brink_intl::xliff_convert`), never as a raw XML
+/// element/attribute *name* the mapping itself constructs — so nothing in
+/// the pc/x mapping is sensitive to which characters appear in it, and
+/// this pins that directly rather than by argument.
+#[test]
+fn a_hyphenated_span_name_roundtrips_as_pc_through_xliff() {
+    let lines = make_lines_json(vec![make_scope(
+        "0x0100000000000001",
+        Some("root"),
+        vec![make_line(
+            0,
+            "aaaa",
+            Some(ContentJson::Template {
+                template: vec![
+                    PartJson::Literal("He hands you ".to_string()),
+                    PartJson::Span {
+                        span: brink_intl::SpanJson {
+                            name: "fade-in".to_string(),
+                            attrs: vec![],
+                            children: vec![PartJson::Literal("the lantern".to_string())],
+                        },
+                    },
+                    PartJson::Literal(".".to_string()),
+                ],
+            }),
+            None,
+        )],
+    )]);
+
+    let doc = lines_json_to_xliff(&lines, "en", None);
+    let xml = xliff2::write::to_string(&doc).unwrap();
+    assert!(
+        xml.contains("<pc "),
+        "expected a <pc> paired inline code in the exported XML, got:\n{xml}"
+    );
+
+    let parsed = xliff2::read::read_xliff(&xml).unwrap();
+    let translated = fill_targets(parsed);
+    let recovered = xliff_to_lines_json(&translated).unwrap();
+
+    assert_eq!(
+        recovered.scopes[0].lines[0].content, lines.scopes[0].lines[0].content,
+        "a hyphenated span name must round-trip exactly, hyphen included"
+    );
+    let Some(ContentJson::Template { template }) = &recovered.scopes[0].lines[0].content else {
+        panic!("expected a recovered Template");
+    };
+    let Some(PartJson::Span { span }) = template.get(1) else {
+        panic!("expected the recovered span at index 1: {template:?}");
+    };
+    assert_eq!(span.name, "fade-in");
+}
+
 /// A childless (point-marker, §8b.11 — `<pause/>`, `<sfx name="bell"/>`)
 /// [`PartJson::Span`] round-trips through XLIFF as a standalone inline
 /// code. Under the pre-#1734 flattening path this span vanished entirely
