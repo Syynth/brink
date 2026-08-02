@@ -2457,6 +2457,139 @@ fn an_unclaimed_scene_heading_is_still_loudly_unlowered() {
     );
 }
 
+// ─── `CUE`/`PARENTHETICAL` claim candidates (issue #1720) ───────────
+//
+// `candidate()`'s widening to the two remaining literal-line grammar
+// shapes named in `docs/prose-dialect-spec.md` §3.5b — a genuine `@NAME`
+// cue and a chain-gated `(delivery)` parenthetical, not a look-alike
+// plain `CONTENT_LINE` (the pre-#1720 fixtures in this file and
+// `tests/tier1-native/annotations-element-block/story.brink` all claim
+// bare `VENDOR`, never `@VENDOR` — the actual grammar node was never
+// reachable before this).
+
+#[test]
+fn a_claimed_cue_lowers_to_a_call() {
+    let (hir, _m, diags) = lower_src(
+        "@[element(claims = \"^(?<name>[A-Z][A-Z ]*)$\")]\nfn cue(name) {\n  return name;\n}\n\nflow main() {\n  @VENDOR\n}\n",
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let main = hir
+        .knots
+        .iter()
+        .find(|k| k.name.text == "main")
+        .expect("main");
+    let (callee, args) =
+        only_claimed_call(&main.body).expect("the cue line must lower to one call");
+    assert_eq!(callee, "cue");
+    assert_eq!(args, vec!["VENDOR".to_string()]);
+    assert_eq!(hir.element_matches.len(), 1);
+    assert_eq!(hir.element_matches[0].kind, crate::ElementKind::Cue);
+}
+
+#[test]
+fn an_unclaimed_cue_is_still_loudly_unlowered() {
+    let (_hir, _m, diags) = lower_src("flow main() {\n  @VENDOR\n}\n");
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E129),
+        "an unclaimed cue must stay loud: {diags:?}"
+    );
+}
+
+#[test]
+fn a_cue_with_a_tag_extension_is_not_a_claim_candidate() {
+    // §8d.4: cue extensions ride the tag channel, e.g. `@VENDOR #(v.o.)`.
+    // The tag is structure the pattern is never shown — mirroring the
+    // slug/tag-carrying `SCENE_HEADING` case above — so this still falls
+    // to the loud `E129` default even with a matching handler declared.
+    let (_hir, _m, diags) = lower_src(
+        "@[element(claims = \"^(?<name>[A-Z][A-Z ]*)$\")]\nfn cue(name) {\n  return name;\n}\n\nflow main() {\n  @VENDOR #(v.o.)\n}\n",
+    );
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E129),
+        "a tag-carrying cue must not be silently claimed against a partial line: {diags:?}"
+    );
+}
+
+#[test]
+fn a_claimed_parenthetical_lowers_to_a_call() {
+    // A parenthetical is chain-gated by the parser (`at_parenthetical`) —
+    // it only parses as `PARENTHETICAL` directly after a live cue.
+    let (hir, _m, diags) = lower_src(
+        "@[element(claims = \"^(?<name>[A-Z][A-Z ]*)$\")]\nfn cue(name) {\n  return name;\n}\n@[element(claims = \"^(?<delivery>.+)$\")]\nfn parenthetical(delivery) {\n  return delivery;\n}\n\nflow main() {\n  @VENDOR\n  (hushed)\n}\n",
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(
+        hir.element_matches.len(),
+        2,
+        "both the cue and the parenthetical must be claimed: {:?}",
+        hir.element_matches
+    );
+    assert_eq!(
+        hir.element_matches[1].kind,
+        crate::ElementKind::Parenthetical
+    );
+    let main = hir
+        .knots
+        .iter()
+        .find(|k| k.name.text == "main")
+        .expect("main");
+    let rendered = format!("{:?}", main.body.stmts);
+    assert!(
+        rendered.contains("hushed"),
+        "the parenthetical's captured delivery text must reach the call: {rendered}"
+    );
+}
+
+#[test]
+fn a_cue_block_capture_stops_at_a_following_parenthetical_and_the_parenthetical_claims_separately()
+{
+    // The screenplay preset's actual chaining shape (§8, "the complement-
+    // pass page"): `@VENDOR` / `(hushed)` / dialogue. `capture_block`'s
+    // ruled terminator ends a run at "any element-level line", and a
+    // `PARENTHETICAL` is explicitly one of those (`element.rs`'s own
+    // doc) — so a `block`-declared cue captures ZERO lines here (the very
+    // next item is the parenthetical, not a plain `CONTENT_LINE`), and the
+    // parenthetical is then claimed on its own next iteration, in turn
+    // `block`-capturing the dialogue that follows IT. This is the intended
+    // reading of the ruled terminator, not a bug: attachment across a cue
+    // AND a parenthetical is two independent claims, not one.
+    //
+    // The parenthetical's own pattern is deliberately narrow
+    // (`^[a-z][a-z' -]*$`, lowercase-only) rather than the obvious `.+`:
+    // `try_claim` matches purely on the extracted text against
+    // `handler.pattern`, with **no kind restriction at all** —
+    // `candidate()` only decides whether a node offers literal text to
+    // match, never which handler is allowed to claim which grammar shape.
+    // A permissive parenthetical pattern would therefore also claim the
+    // captured dialogue line a second time when `capture_block` re-lowers
+    // it through the ordinary `body::lower_items` path (proven: an
+    // earlier draft of this test used `.+` and got 3 `element_matches`,
+    // not 2, because "You shouldn't be here." satisfied it too). This is
+    // a real, load-bearing constraint on how the built-in preset's own
+    // patterns must be written, not a mechanism bug — see the PR
+    // description's own finding.
+    let src = "@[element(claims = \"^(?<name>[A-Z][A-Z ]*)$\", block)]\nfn cue(name: string, body: content) {\n  return name;\n}\n@[element(claims = \"^(?<delivery>[a-z][a-z' -]*)$\", block)]\nfn parenthetical(delivery: string, body: content) {\n  return delivery;\n}\n\nflow main() {\n  @VENDOR\n  (hushed)\n  You shouldn't be here.\n}\n";
+    let (hir, _m, diags) = lower_src(src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(hir.element_matches.len(), 2);
+    let cue_match = &hir.element_matches[0];
+    assert_eq!(cue_match.handler.text, "cue");
+    assert_eq!(
+        cue_match.content, None,
+        "the cue's own block capture must see zero lines: the very next item is the \
+         parenthetical, not a plain CONTENT_LINE"
+    );
+    let paren_match = &hir.element_matches[1];
+    assert_eq!(paren_match.handler.text, "parenthetical");
+    let content_range = paren_match
+        .content
+        .expect("the parenthetical's own block capture must see the dialogue line");
+    assert_eq!(
+        &src[usize::from(content_range.start())..usize::from(content_range.end())],
+        "You shouldn't be here."
+    );
+}
+
 #[test]
 fn a_claim_records_handler_and_capture_spans() {
     let src = "@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival(who) {\n  return who;\n}\n\nflow main() {\n  VENDOR enters\n}\n";

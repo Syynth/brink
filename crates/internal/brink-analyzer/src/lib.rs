@@ -320,7 +320,34 @@ impl AnalysisOptions {
                 self.elements = Some(pointer.to_owned());
             } else {
                 match validate_elements_preset(pointer, BUILTIN_ELEMENT_PRESETS) {
-                    Ok(()) => self.elements = Some(pointer.to_owned()),
+                    Ok(()) => {
+                        self.elements = Some(pointer.to_owned());
+                        // Issue #1720 review finding: recognizing a preset
+                        // name in `BUILTIN_ELEMENT_PRESETS` is validation-
+                        // only — nothing downstream injects its handlers
+                        // into a project's dispatch table yet (no
+                        // `std::`-namespaced module resolution, #2080; no
+                        // `fn conventions()` registration/comptime, #1840).
+                        // Silently accepting the name here would leave an
+                        // author writing `elements = "screenplay"` with
+                        // zero diagnostics and zero behavior — the exact
+                        // "validate against the real set, never silently
+                        // drop an unactionable value" failure rule 19h
+                        // targets, just inverted (a *recognized* value that
+                        // does nothing, not an unrecognized one). So a name
+                        // in `BUILTIN_ELEMENT_PRESETS` but not yet in
+                        // `INJECTABLE_ELEMENT_PRESETS` still warns, on the
+                        // same "warn, never silently drop" channel, until
+                        // #2080/#1840 land and this can become a real
+                        // no-op.
+                        if !INJECTABLE_ELEMENT_PRESETS.contains(&pointer) {
+                            warnings.push(ConfigWarning(format!(
+                                "[project] elements = \"{pointer}\" names a recognized \
+                                 built-in preset, not injectable yet — no conventions \
+                                 applied (#2080/#1840)"
+                            )));
+                        }
+                    }
                     Err(warning) => warnings.push(warning),
                 }
             }
@@ -415,17 +442,21 @@ fn validate_lint_code(code: &str) -> Result<(), ConfigWarning> {
 /// (docs/prose-dialect-spec.md §3.4), checked against a bare, preset-shaped
 /// `elements` value (issue #1874, the remainder of #1844's item 5).
 ///
-/// **Empty as of this writing.** §3.5 rules that "presets ship as modules"
-/// (`std::conventions::screenplay`), but no preset has actually shipped as
-/// a real, comptime-evaluated module yet: #1720 (the built-in screenplay
-/// preset) is still open, and `std::conventions::screenplay` today is spec
-/// prose in docs/prose-dialect-spec.md, not a real module. So *every*
-/// preset-shaped `elements` value is currently unrecognized — which is
-/// correct, not merely conservative: nothing downstream consumes a
-/// preset-shaped pointer either yet (`brink-db`'s
-/// `conventions_confinement_diagnostics_query` explicitly skips the `E169`
-/// confinement check for one, per its own doc). Add a preset's name here
-/// the moment it ships for real.
+/// **`"screenplay"` added by issue #1720** (the built-in screenplay
+/// preset), the moment it shipped its authored source at
+/// `std/conventions/screenplay.brink` — exactly what this doc comment
+/// asked the landing PR to do. This changes ONLY the validation verdict
+/// (a project spelling `elements = "screenplay"` no longer gets the
+/// "no built-in preset has shipped yet" warning) — it does **not** mean
+/// the pointer is consumed downstream yet. Nothing reads `self.elements`
+/// to actually inject the preset's handlers into a project's dispatch
+/// table: `std::conventions::screenplay` has no real `use`-importable
+/// module path (no `std::`-namespaced resolution exists in the compiler
+/// at all — see #2080), and `fn conventions()` registration/comptime
+/// (#1840) hasn't landed either. `brink-db`'s
+/// `conventions_confinement_diagnostics_query` still explicitly skips the
+/// `E169` confinement check for a preset-shaped pointer, per its own doc,
+/// unchanged by this addition.
 ///
 /// **Hardcoded, deliberately, not data-driven** — and this should change
 /// once it can. A truly data-driven registry would read the actual
@@ -439,7 +470,22 @@ fn validate_lint_code(code: &str) -> Result<(), ConfigWarning> {
 /// against that registry rather than grown further as a literal — a
 /// hardcoded set drifting out of sync with the real module set is exactly
 /// the kind of silent staleness this closed-set check exists to prevent.
-const BUILTIN_ELEMENT_PRESETS: &[&str] = &[];
+const BUILTIN_ELEMENT_PRESETS: &[&str] = &["screenplay"];
+
+/// The subset of [`BUILTIN_ELEMENT_PRESETS`] whose handlers are actually
+/// injected into a project's dispatch table today (issue #1720 review
+/// finding). Empty: no preset injection mechanism exists yet — #2080's
+/// `std::`-namespaced module resolution and #1840's `fn conventions()`
+/// registration/comptime are both still open. A name present in
+/// [`BUILTIN_ELEMENT_PRESETS`] but absent here is recognized (a correctly
+/// spelled built-in preset name, not an unrecognized-name error) but not
+/// yet reachable — [`AnalysisOptions::apply_project_config`] warns about
+/// that gap explicitly on the same channel rather than silently
+/// no-opping, so an author never sees zero diagnostics *and* zero
+/// behavior for the same value. Move a name from here to
+/// `BUILTIN_ELEMENT_PRESETS`'s sibling list into this one the moment its
+/// handlers are actually wired in.
+const INJECTABLE_ELEMENT_PRESETS: &[&str] = &[];
 
 /// Validate a preset-shaped `[project] elements` pointer (already
 /// established by the caller, via [`is_path_shaped_elements_pointer`], to
@@ -459,13 +505,15 @@ fn validate_elements_preset(pointer: &str, presets: &[&str]) -> Result<(), Confi
         return Ok(());
     }
     if presets.is_empty() {
-        // The only reachable case today: `BUILTIN_ELEMENT_PRESETS` is empty
-        // because no built-in preset has shipped yet (#1720). Every
-        // preset-shaped value — including the eventual `"screenplay"`
-        // spelled straight out of docs/prose-dialect-spec.md §3.4 — is
-        // unrecognized right now, and that is not a typo on the author's
-        // part. Say so, rather than accusing them of misspelling a name
-        // that has never been valid.
+        // No longer reachable in production since #1720 shipped
+        // `"screenplay"` into `BUILTIN_ELEMENT_PRESETS` — kept as its own
+        // arm (rather than folded into the `else` below) because the
+        // message is meaningfully different: an empty registry means
+        // *every* preset-shaped value, including a correctly-spelled one,
+        // is unrecognized because nothing has shipped, which is not a typo
+        // on the author's part. Still exercised directly by this module's
+        // own tests (`validate_elements_preset`'s `presets` parameter, not
+        // the real constant) to pin that distinction.
         Err(ConfigWarning(format!(
             "[project] elements = \"{pointer}\" names a built-in preset, but no built-in \
              preset has shipped yet (#1720); use a project-relative path to a `.brink` \
@@ -2343,14 +2391,25 @@ EXTERNAL add_state(who)
         assert!(warnings[0].0.contains("screnplay"));
     }
 
-    /// #1720 (the built-in screenplay preset) has not shipped as of this
-    /// writing — `BUILTIN_ELEMENT_PRESETS` is empty — so even the *intended*
-    /// eventual preset name is, correctly, unrecognized today. This pins
-    /// that reality down as a regression test: the moment `"screenplay"` is
-    /// added to the registry, this test starts failing and must be updated
-    /// alongside it, rather than silently going stale.
+    /// #1720 (the built-in screenplay preset) shipped its authored source
+    /// at `std/conventions/screenplay.brink` and added `"screenplay"` to
+    /// `BUILTIN_ELEMENT_PRESETS` — this test used to pin the opposite
+    /// (rejected-until-shipped) reality, per its own doc comment's promise
+    /// to update alongside the registry change. Note this proves only the
+    /// *validation* verdict flipped — `options.elements` being populated
+    /// does not by itself mean anything downstream consumes it yet (no
+    /// `std::`-module resolution or `fn conventions()` registration exists,
+    /// #2080/#1840).
+    ///
+    /// A #1720 review finding caught the first version of this test
+    /// asserting `warnings.is_empty()`: recognizing the name here is
+    /// validation-only, and silently accepting it would leave an author
+    /// writing `elements = "screenplay"` with zero diagnostics and zero
+    /// behavior (rule 19h's failure mode). `options.elements` is still
+    /// populated (the name is not rejected as unrecognized), but a
+    /// not-yet-injectable warning is still surfaced on the same channel.
     #[test]
-    fn apply_project_config_rejects_screenplay_preset_name_until_it_ships() {
+    fn apply_project_config_accepts_screenplay_preset_name_now_that_it_shipped() {
         let mut options = AnalysisOptions::default();
         let config = ProjectConfig {
             elements: Some("screenplay".to_owned()),
@@ -2359,8 +2418,12 @@ EXTERNAL add_state(who)
 
         let warnings = options.apply_project_config(&config, false, false);
 
-        assert_eq!(options.elements, None);
-        assert_eq!(warnings.len(), 1);
+        assert_eq!(options.elements.as_deref(), Some("screenplay"));
+        assert_eq!(warnings.len(), 1, "unexpected warnings: {warnings:?}");
+        assert!(warnings[0].0.contains("screenplay"));
+        assert!(warnings[0].0.contains("not injectable yet"));
+        assert!(warnings[0].0.contains("#2080"));
+        assert!(warnings[0].0.contains("#1840"));
     }
 
     #[test]
@@ -2413,11 +2476,14 @@ EXTERNAL add_state(who)
 
     #[test]
     fn validate_elements_preset_accepts_a_name_present_in_the_registry() {
-        // Exercises the comparison logic itself against a non-empty
-        // registry, decoupled from whether a real built-in preset exists
-        // yet — proves the check is a real membership test, not a
-        // hardcoded "always reject a bare name" — production always calls
-        // this with `BUILTIN_ELEMENT_PRESETS`, which is empty today.
+        // Exercises the comparison logic itself against an explicit
+        // registry literal, decoupled from `BUILTIN_ELEMENT_PRESETS`'s own
+        // current contents — proves the check is a real membership test,
+        // not a hardcoded "always reject a bare name". Since #1720,
+        // production's real constant also contains `"screenplay"` (see
+        // `apply_project_config_accepts_screenplay_preset_name_now_that_it_shipped`),
+        // but this test's own point survives regardless of what the
+        // constant holds.
         assert!(validate_elements_preset("screenplay", &["screenplay"]).is_ok());
     }
 
