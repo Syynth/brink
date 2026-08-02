@@ -815,14 +815,16 @@ into rendered tag/cue-name/scene-title text — see the changeset. Neither
 open, not decided here) nor #1883 (below) is touched by this ruling.
 
 **Relationship to #1883** ("residual escape/depth asymmetries in
-`tag()`/`cue_name()` after #1852/#1851", open): that issue is about a
-*different* axis — whether `HASH` should become depth-aware like `COLON`
-(item 1) and whether `\}` should gain the same backslash-parity treatment
-`\{` already has (item 2) — both about the parser's *structural*
-recognition, not the *materialized-text* stripping #2045 rules on. #2045
-touches neither item, changes no parsing/depth/parity decision, and is not
-a step toward resolving either one — it does not narrow #1883, same as
-#1738's original `\#` fix didn't.
+`tag()`/`cue_name()` after #1852/#1851", resolved — see §4.7b): that issue
+was about a *different* axis — whether `HASH` should become depth-aware
+like `COLON` (item 1) and whether `\}` should gain the same
+backslash-parity treatment `\{` already has (item 2) — both about the
+parser's *structural* recognition, not the *materialized-text* stripping
+#2045 rules on. #2045 touched neither item, changed no parsing/depth/parity
+decision, and was not a step toward resolving either one — it did not
+narrow #1883, same as #1738's original `\#` fix didn't. §4.7b confirms
+both items resolve to "the current asymmetry is correct, given the ruled
+escape set" — no code change, no narrowing of #2045's own scope either.
 
 ### 4.7 Tag raw-text scan: brace-balancing and per-tag scope (#1728, #1787)
 
@@ -923,18 +925,100 @@ than a hard reset would blur a structural boundary the CST already treats
 as absolute. Pinned by
 `a_tags_own_unbalanced_brace_does_not_leak_depth_into_a_sibling_tag`.
 
-**Still open, not ruled here:** issue #1883 asks a related but distinct
-question — #1851 made `cue_name()`'s own brace-depth counter `COLON`-aware
-(a `cue_name()`-only change; `tag()` has no `COLON` handling to make
-depth-aware in the first place), while #1852's `\{` backslash-parity
-treatment already applies to *both* `tag()`'s and `cue_name()`'s depth
-counters, not `cue_name()` alone (§4.6's table above states this for
-`tag()` explicitly). #1883 asks whether `tag()`/`cue_name()`'s
-`HASH`-as-hard-reset boundary (ruled above) still holds, and whether `\}`
-should gain the same backslash-parity carve-out `\{` already has in both
-functions. Both are about the parser's *structural* recognition and are
-untouched by this section, exactly as they're untouched by §4.6's
-escape-stripping ruling above.
+### 4.7a `element::cue_name()` shares the identical tradeoff (wave-111 retro, #1883)
+
+`element::cue_name()`'s own raw-text scan carries the *identical,
+equally unspec'd* brace-balancing tradeoff §4.7 gives a home for `tag()`
+above — flagged by a wave-111 review of PR #2053 (#1814) as a gap in that
+PR's own scope (§4.7 was written tag-only) rather than filed as a new
+issue, since #1883 already owns the tag()/cue_name() residual-asymmetry
+surface. The mechanism, the tradeoff, and the per-name scope are all the
+same reasoning as `tag()`'s, applied to `element::cue_name()` in
+`element.rs` instead of `content.rs`:
+
+- **The tradeoff** is pinned by
+  `an_unbalanced_open_brace_in_a_cue_name_eats_the_enclosing_blocks_own_closer`
+  — the exact mirror of `tag()`'s own
+  `an_unbalanced_open_brace_in_a_tag_eats_the_enclosing_blocks_own_closer`
+  pinned above: `flow f() { @NAME { }` fails to parse for the same reason
+  `flow f() { Hello #tag { }` does.
+- **Backslash-parity** for `\{`/`\\{` is pinned by
+  `a_cue_name_with_an_escaped_open_brace_does_not_swallow_the_enclosing_blocks_own_closer`
+  and
+  `a_cue_name_with_an_escaped_backslash_before_a_real_brace_counts_the_brace`
+  — the same odd/even `backslash_count` parity as `tag()`'s.
+- **Scope is per-name, not per-line**, the same way `tag()`'s is per-tag:
+  `cue_line` calls `cue_name()` once per `@NAME`, so there is no sibling
+  boundary within a single cue the way `tag_line_tail` has across several
+  trailing tags — the per-tag-scope ruling's *reasoning* (a real,
+  tokenized boundary resets local, raw-text bookkeeping) still applies,
+  it just has no sibling-`HASH`-mid-scan case to exercise here the way
+  `tag()`'s does.
+
+### 4.7b Resolving issue #1883's remaining two items
+
+Issue #1883 (filed from the same #1871 review that produced #1852/#1851)
+tracked two further items beyond the escape/markup-coverage audit (§4.6)
+and the brace-balancing spec home (§4.7/§4.7a) above. Both are resolved
+here, per the issue's own two acceptable resolutions ("get a ruling, or
+confirm the existing one still applies" / "fix the parity gap, or record
+explicitly why it's intentionally asymmetric") — **neither required a
+code change**; both were confirmed, by re-deriving the existing rulings'
+own reasoning, to already answer the question correctly.
+
+**Item 1 — should `HASH` become depth-aware in `cue_name()`, matching
+`COLON` (#1851)? CONFIRMED: no — §4.7's own per-tag-scope ruling already
+settles this.** That ruling's reasoning is not specific to *resetting*
+depth at a sibling boundary — it is a claim about what kind of thing
+`HASH` *is*: "a real, tokenized boundary (each one starts its own `TAG`
+node), unlike the raw, grammar-blind `{`/`}` this scan balances." `COLON`
+and `R_BRACE` are exactly that raw, grammar-blind kind — punctuation this
+scan locally treats as "just text" while a brace is open, with no
+grammar of its own to violate. `HASH` never is: an unescaped `HASH`
+*always* begins its own `TAG` node, in `tag_line_tail`/`header_tag_tail`
+and in the shared trailing-tag grammar `cue_line` itself reuses. Gating
+`HASH`'s stop role by `depth == 0` would make that structural boundary
+conditional on unrelated brace-balance elsewhere in the name — an
+always-starts-a-new-`TAG` token becoming sometimes-just-name-text — the
+same blurring the per-tag-scope ruling already rejects, just from the
+opposite direction. `@NAME {a#b} c.` therefore still fails to parse:
+pinned by `a_hash_inside_an_open_brace_still_ends_a_cue_name_early`
+(`element.rs`'s test module).
+
+**Item 2 — should `\}` gain the same backslash-parity carve-out `\{`
+has, in both `tag()` and `cue_name()`? CONFIRMED: no — the asymmetry is
+correct given the ruled escape set, not a gap.** `\{`'s carve-out exists
+*because* `\{` is one of the ruled, final four-character inline escape
+set (§8d.6, §4.6 above: `\< \{ \# \\`) — #1716/PR #1732 ruled it the
+literal-brace escape, so a depth counter that counted it as a real
+opener would be misreading a ruled escape. `}` is **not** a member of
+that set — there is no equivalent "`\}` is a literal, non-metacharacter
+close-brace" ruling anywhere to protect the depth counter against
+misreading. An `R_BRACE` preceded by a `BACKSLASH` is therefore exactly
+what it looks like: an ordinary backslash character followed by an
+ordinary, structurally significant `}` — giving it `\{`'s carve-out would
+*invent* a new escape meaning for a character the ruled grammar has never
+assigned one to, not close a parity gap between two members of the same
+set. `#tag \{a\}` (and `@NAME \{a\}`) therefore still end at the `\}`,
+one character earlier than a "matched escape pair" reading would predict
+— pinned by
+`a_tags_own_unescaped_closing_brace_remains_the_terminator_even_when_preceded_by_a_backslash`
+(`content.rs`) and
+`a_cue_names_own_unescaped_closing_brace_remains_the_terminator_even_when_preceded_by_a_backslash`
+(`element.rs`).
+
+Neither resolution touches #2040 (should `tag()`/`cue_name()` reject an
+*unrecognized* backslash sequence as a compile error) — that ruling
+question remains open and is not answered by confirming these two
+already-ruled-adjacent asymmetries are intentional.
+
+**Item 3 — corpus fixture backfill.** `tests/corpus/19_tag_cue_name_brace_escapes.brink`
+exercises both shapes that previously reached only in-crate unit tests: a
+trailing tag's `\\{`/`}` (an escaped backslash followed by a real,
+depth-counted brace) and a cue name whose own `{...}` balances internally
+without swallowing the enclosing flow's closer — both parse cleanly and
+are now covered by `corpus_roundtrip`/`coverage`, alongside the existing
+unit-test coverage.
 
 ## 5. Tooling: completions & succession (RULED doctrine)
 
