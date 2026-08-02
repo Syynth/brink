@@ -750,6 +750,14 @@ needed a paired fix — it used to skip *every* `HASH` token in the node
 (safe only because an interior one was structurally impossible before this
 fix); now it skips only the tag's own leading delimiter.
 
+**Superseded by the #2045 ruling below:** both the "non-stripping `\{`
+precedent" description and the "`lower_tag` … now it skips only the tag's
+own leading delimiter" description above are historical — accurate for
+#1738/#1852's own PR, not for the current code. #2045 replaced that
+`lower_tag` body entirely with a delegation to `ast::Tag::text()`, which
+now strips a recognized escape's backslash; see the ruling immediately
+below.
+
 **Found and fixed during this PR's own review:** the audit above initially
 missed `element::scene_title`, which turned out to share the *exact same*
 pre-fix defect as `tag()`/`cue_name()` — an unconditional `HASH` stop with

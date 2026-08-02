@@ -559,14 +559,26 @@ pub(crate) fn header_tag_tail(p: &mut Parser<'_, '_>) {
 /// treated as the tag's terminator when NOT preceded by an odd number of
 /// consecutive raw `BACKSLASH`es — same `backslash_count` parity tracking,
 /// same "even means the backslashes escape each other" reading (#1852). Like
-/// `\{`, the backslash is **not stripped** from the tag's own literal text
-/// (`lower_tag` takes every non-leading-`HASH` token verbatim) — this stays
+/// `\{`, the backslash is **not stripped** from this raw `TAG` node's own
+/// CST text — it stays a lossless, unstripped copy of the source, exactly
+/// like every other raw-text scanner in this file — this stays
 /// self-consistent with `\{`'s established "structural role only" treatment
 /// inside these two raw-text scanners, not a claim that `tag()` now runs the
 /// full `markup::escape` layer (it still doesn't: `<ident>` stays inert
 /// literal text here too, per the separate, already-ruled #1783 "markup is
-/// literal in a `#` tag" decision — untouched by this fix). Pinned by
-/// `a_tag_with_an_escaped_hash_does_not_end_the_tag_early`.
+/// literal in a `#` tag" decision — untouched by this fix).
+///
+/// **Superseded in part by issue #2045:** the CST-level claim above still
+/// holds, but `ast::Tag::text()` (`ast/nodes.rs`) is a *later* materialization
+/// point that now strips a recognized escape's backslash from the tag's
+/// rendered text (parity with `markup::escape`'s stripping for ordinary
+/// content), and `hir::lower_native::body::lower_tag` was changed to funnel
+/// through it instead of hand-rolling its own HASH-skip + concatenation —
+/// so "not stripped" is only true of the raw CST node, not of every reader
+/// of a tag's text. Pinned by
+/// `a_tag_with_an_escaped_hash_does_not_end_the_tag_early` (raw CST) and
+/// `a_tags_text_accessor_strips_a_recognized_escapes_backslash` (the
+/// stripping accessor).
 ///
 /// **RULED (review of #1777, issue #1787): `depth` is scoped per-tag, not
 /// per-line, and that is the intended contract, not a gap.** `tag_line_tail`

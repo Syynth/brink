@@ -18,8 +18,16 @@ by `hir::lower_native::body::lower_tag`): a recognized escape's backslash
 is now stripped there too, so the tag observed through `Line::Text`'s
 `tags` field reads `a #b`.
 
-Migration: a `.brink` file whose tag text contains `\#`, `\{`, `\<`, or
-`\\` and depends on the backslash surviving into the rendered tag will see
-that backslash disappear. Rewrite `\\#` (a literal backslash you want to
-keep) as `\\\\#` if you need the backslash itself to survive, matching
-what ordinary content already requires.
+Migration: a `.brink` file whose tag text contains a recognized escape
+(`\#`, `\{`, `\<`, or a bare `\\`) and depends on the backslash surviving
+into the rendered tag will see it disappear (a bare pair collapses from
+two backslashes to one). To keep one literal backslash immediately before
+a literal `#`/`{`/`<` in the *same* tag, use three backslashes (e.g.
+`\\\#`, not `\\#` or `\\\\#`): the odd count is what keeps the following
+character from ending the tag early (unchanged structural parity,
+#1738/#1852), and the materialized text then collapses the leading pair to
+one backslash while the trailing backslash escapes the final character —
+`#tag \\\#more` renders as `tag \#more`. An even count (`\\#`, `\\\\#`, …)
+still ends the tag at that unescaped character exactly as before this fix,
+splitting into a new sibling tag instead. This matches what ordinary
+content already requires for the same effect.
