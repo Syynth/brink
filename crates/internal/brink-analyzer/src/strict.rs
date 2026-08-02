@@ -1015,7 +1015,7 @@ fn check_value_calls(
     out
 }
 
-// ── Direct-call argument types (issue #1864) ───────────────────────────
+// ── Direct-call + `#fn` creation-site argument types (issues #1864, #2001) ──
 
 /// Report every [`crate::infer::DirectCallArgMismatch`] inference recorded,
 /// per def, as `E063` — the same typed-mismatch code
@@ -1028,11 +1028,20 @@ fn check_value_calls(
 /// [`check_value_calls`]: walk every inferable def, read its recorded
 /// facts, map each straight onto one diagnostic.
 ///
+/// As of #2001, [`crate::infer::DirectCallArgMismatch`] also carries facts
+/// from a second producer that is not a call at all: a `#fn(target, args…)`
+/// literal's bound-argument list, which is the by-ref *creation* site for a
+/// partial application (see that struct's own doc). Both producers map onto
+/// the same `E063` message ("argument N of call to `name`") — accepted as
+/// close enough for the creation-site case too rather than adding a
+/// call-vs-creation discriminant; see [`crate::infer::DirectCallArgMismatch`]
+/// for that call.
+///
 /// `infer::body::InferPass::arg_is_observed_local` already excludes an
 /// argument `InferPass::observe` itself would join `param_ty` into, so
 /// every fact reaching here is disjoint from `check_escapes`'s own
-/// Conflicted-escape (`E066`) reporting for the same call site — no
-/// dedup needed on this side.
+/// Conflicted-escape (`E066`) reporting for the same call/creation site —
+/// no dedup needed on this side.
 fn check_direct_call_args(
     files: &[(FileId, &HirFile)],
     index: &SymbolIndex,
