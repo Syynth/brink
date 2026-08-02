@@ -2609,6 +2609,114 @@ fn a_block_handler_captures_the_following_run_terminated_by_an_element_level_lin
 }
 
 #[test]
+fn a_captured_line_ending_in_a_divert_does_not_join_the_block() {
+    // Reviewer finding on #1839's PR: the terminator search above only
+    // recognized a *separate* non-`CONTENT_LINE` sibling as "element-level"
+    // — but the native parser fuses a trailing `->`/`->->`/`{?}` onto the
+    // SAME `CONTENT_LINE` node as preceding prose
+    // (`brink-syntax-native`'s `divert_inside_multiline_choice_body_after_
+    // prose_is_a_divert_node` test proves the fused shape). Absorbing such
+    // a line into the capture would leave a real `Divert` inside the
+    // `Fragment`'s `BeginFragment`/`EndFragment` bracket with no way for
+    // `EndFragment` to ever run — the divert transfers control away first
+    // — silently corrupting the runtime's fragment-depth tracking
+    // (`crates/brink-runtime/src/output/fragment.rs`). The line must stay
+    // OUTSIDE the capture and lower normally instead.
+    let src = "@[element(claims = \"^(?<name>[A-Z]+)$\", block)]\nfn cue(name: string, body: content) {\n  return name;\n}\n\nflow main() {\n  VENDOR\n  Line one.\n  Get out. -> END\n}\n";
+    let (hir, _m, diags) = lower_src(src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let m = &hir.element_matches[0];
+    let content_range = m
+        .content
+        .expect("a block match must record the captured block's own range");
+    assert_eq!(
+        &src[usize::from(content_range.start())..usize::from(content_range.end())],
+        "Line one.",
+        "the divert-carrying line must not be folded into the captured range"
+    );
+
+    let main = hir
+        .knots
+        .iter()
+        .find(|k| k.name.text == "main")
+        .expect("main");
+    let stmts = claimed_fragment_stmts(&main.body);
+    assert_eq!(
+        stmts.len(),
+        2,
+        "expected exactly the one captured line's worth of statements, not the \
+         divert-carrying one too: {stmts:?}"
+    );
+    assert!(
+        !format!("{stmts:?}").contains("Divert"),
+        "the divert must never appear inside the fragment: {stmts:?}"
+    );
+
+    // The divert-carrying line must still lower normally, as an ordinary
+    // top-level statement, with its own real `Stmt::Divert`.
+    assert!(
+        main.body.stmts.iter().any(|s| matches!(s, Stmt::Divert(_))),
+        "the divert-carrying line must still lower as a normal top-level \
+         statement, not be swallowed by the capture: {:?}",
+        main.body.stmts
+    );
+    let main_rendered = format!("{:?}", main.body.stmts);
+    assert!(
+        main_rendered.contains("Get out."),
+        "the divert line's own prose must survive: {main_rendered}"
+    );
+}
+
+#[test]
+fn a_captured_line_carrying_a_label_does_not_join_the_block() {
+    // Same reviewer finding, the other fused shape: a labeled content line
+    // (`(name) text`) is still `CONTENT_LINE` kind, but folding it into the
+    // capture would let `lower_items`'s own label-absorption mechanism
+    // swallow the REST of the captured run into a `Stmt::LabeledBlock`
+    // nested inside the `Fragment` — which LIR then rejects with a
+    // misleading `E059` about inline-content position rather than anything
+    // about block capture (`lir::lower::stmts`'s
+    // `reject_unsupported_inline_construct`). The labeled line must stay
+    // OUTSIDE the capture and lower normally as its own top-level
+    // `Stmt::LabeledBlock`.
+    let src = "@[element(claims = \"^(?<name>[A-Z]+)$\", block)]\nfn cue(name: string, body: content) {\n  return name;\n}\n\nflow main() {\n  VENDOR\n  Line one.\n  (later) You wait.\n  -> END\n}\n";
+    let (hir, _m, diags) = lower_src(src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let m = &hir.element_matches[0];
+    let content_range = m
+        .content
+        .expect("a block match must record the captured block's own range");
+    assert_eq!(
+        &src[usize::from(content_range.start())..usize::from(content_range.end())],
+        "Line one.",
+        "the labeled line must not be folded into the captured range"
+    );
+
+    let main = hir
+        .knots
+        .iter()
+        .find(|k| k.name.text == "main")
+        .expect("main");
+    let stmts = claimed_fragment_stmts(&main.body);
+    assert_eq!(
+        stmts.len(),
+        2,
+        "expected exactly the one captured line's worth of statements, not the \
+         labeled line too: {stmts:?}"
+    );
+
+    assert!(
+        main.body
+            .stmts
+            .iter()
+            .any(|s| matches!(s, Stmt::LabeledBlock(_))),
+        "the labeled line must still lower as a normal top-level \
+         LabeledBlock, not be swallowed by the capture: {:?}",
+        main.body.stmts
+    );
+}
+
+#[test]
 fn a_claiming_handler_does_not_claim_lines_in_its_own_body() {
     // The staging rule §3.5 states for the conventions module ("it cannot
     // use the conventions it defines"): without this the handler's own

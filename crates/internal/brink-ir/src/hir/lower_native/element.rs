@@ -736,19 +736,35 @@ pub(super) fn try_claim(
 /// consume a prefix of `following` — the caller's remaining, not-yet-
 /// lowered sibling items — stopping at **a blank line, or any element-level
 /// line**. "Element-level" is read structurally against this dialect's own
-/// candidate set ([`candidate`]): a plain `CONTENT_LINE` continues the run
-/// (and is lowered through the ordinary [`super::body::lower_items`] path,
-/// so a handler that claims *it* still claims it — "interior lines keep
-/// their own handlers" falls out of reusing the normal dispatch loop rather
-/// than needing a special case); any other node kind — a new
-/// `SCENE_HEADING`/`SCENE_STITCH`, `CUE`/`COMPACT_CUE`/`PARENTHETICAL`,
-/// another `BANG_DISPATCH`, a choice point, a divert, a nested declaration —
-/// is "any element-level line" and ends the run, and so does running out of
-/// items. Returns the lowered statements, how many items were consumed (so
-/// the caller can skip re-lowering them), and the captured span's own
-/// source range (`None` when nothing was captured — an immediate
-/// terminator, e.g. a claimed header line with a blank line right after
-/// it).
+/// candidate set: a *plain* `CONTENT_LINE` — [`is_plain_content_line`] —
+/// continues the run (and is lowered through the ordinary
+/// [`super::body::lower_items`] path, so a handler that claims *it* still
+/// claims it — "interior lines keep their own handlers" falls out of
+/// reusing the normal dispatch loop rather than needing a special case);
+/// anything else ends the run: a new `SCENE_HEADING`/`SCENE_STITCH`,
+/// `CUE`/`COMPACT_CUE`/`PARENTHETICAL`, another `BANG_DISPATCH`, a
+/// standalone choice point or divert, a nested declaration, running out of
+/// items — **or a `CONTENT_LINE` that is not plain**, i.e. one carrying a
+/// `LABEL` (it would otherwise absorb the rest of the captured run into a
+/// `Stmt::LabeledBlock` — reviewer finding, #1839's PR review) or an
+/// element-level construct fused onto the same line (`DIVERT_STMT`/
+/// `TUNNEL_CALL`/`CHOICE_POINT` — a trailing `-> target`/`->->`/`{?}` on a
+/// prose line is still "an element-level line" in the ruled sense, even
+/// though the parser fuses it onto the preceding `CONTENT_LINE` rather than
+/// giving it its own sibling node; same reviewer finding). Absorbing either
+/// shape into the fragment either mis-lowers as `Stmt::LabeledBlock`/
+/// `Stmt::ChoiceSet` (rejected at LIR by `reject_unsupported_inline_construct`,
+/// E059, with a message that talks about inline-content position rather than
+/// block-capture) or — for a bare divert/tunnel, which *does* lower cleanly
+/// at LIR — silently corrupts the runtime's fragment-depth tracking, since
+/// the divert transfers control before the fragment's own `EndFragment` can
+/// run. Both are avoided by simply never absorbing such a line into the
+/// capture: it becomes the terminator instead, and lowers normally as the
+/// next ordinary body item. Returns the lowered statements, how many items
+/// were consumed (so the caller can skip re-lowering them), and the
+/// captured span's own source range (`None` when nothing was captured — an
+/// immediate terminator, e.g. a claimed header line with a blank line right
+/// after it).
 fn capture_block(
     file_id: FileId,
     following: &[SyntaxNode],
@@ -758,7 +774,7 @@ fn capture_block(
     let mut end = 0;
     while end < following.len() {
         let item = &following[end];
-        if item.kind() != N::CONTENT_LINE || blank_line_precedes(item) {
+        if !is_plain_content_line(item) || blank_line_precedes(item) {
             break;
         }
         end += 1;
@@ -770,6 +786,35 @@ fn capture_block(
     };
     let stmts = super::body::lower_items(file_id, captured, 0, elements, diags);
     (stmts, end, range)
+}
+
+/// `true` when `node` is a `CONTENT_LINE` that [`capture_block`]'s
+/// terminator search may fold into the captured run.
+///
+/// A `CONTENT_LINE` is not automatically "plain" just because its `SyntaxKind`
+/// matches: the native parser fuses a `LABEL`, or a trailing `DIVERT_STMT`/
+/// `TUNNEL_CALL`/`CHOICE_POINT`, onto the *same* `CONTENT_LINE` node as the
+/// preceding prose rather than giving it its own sibling item (see
+/// `brink-syntax-native`'s `labeled_content_line_produces_a_label_node` and
+/// `divert_inside_multiline_choice_body_after_prose_is_a_divert_node` tests).
+/// Each of those is "an element-level line" in the ruled terminator's sense
+/// even though it shares a `CONTENT_LINE` wrapper with ordinary text —
+/// folding it into the capture is what let a labeled/divert/choice-bearing
+/// line be silently absorbed and mis-lowered (reviewer finding, #1839's PR
+/// review; see [`capture_block`]'s own doc for the two concrete failure
+/// modes). Checked structurally over `node`'s direct children — the same
+/// depth [`super::body::lower_content_run`] scans when it lowers a content
+/// line's own body — rather than a deep descendant search, since a divert
+/// nested inside e.g. a bracketed span is not "this line ends in a divert"
+/// in the same sense.
+fn is_plain_content_line(node: &SyntaxNode) -> bool {
+    node.kind() == N::CONTENT_LINE
+        && !node.children().any(|child| {
+            matches!(
+                child.kind(),
+                N::LABEL | N::DIVERT_STMT | N::TUNNEL_CALL | N::CHOICE_POINT
+            )
+        })
 }
 
 /// `true` when at least one blank source line separates `node` from

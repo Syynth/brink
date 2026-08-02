@@ -256,7 +256,10 @@ nodes:
   captures must each bind a real parameter on the declaration (`E160`); a
   `claims` pattern additionally requires the *converse* — every parameter
   must be bound by some named capture (`E167`), since a claimed line's
-  rewritten call has no other source of arguments. A `claims` parameter's
+  rewritten call has no other source of arguments — except a
+  `block`-flagged handler's trailing `content`-typed receiver (see below),
+  which binds the captured run rather than a named group and is exempt
+  from this check. A `claims` parameter's
   declared type must be `string`, absent, or `content`, not `int`/`float`/
   `bool` or a struct — claiming always binds captures as strings, so a
   mismatched type makes the parameter unreachable (`E171`, issue #1849).
