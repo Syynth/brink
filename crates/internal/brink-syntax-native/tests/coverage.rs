@@ -223,7 +223,9 @@ fn classify(kind: SyntaxKind) -> Coverage {
         | SyntaxKind::CUE
         | SyntaxKind::CUE_NAME
         | SyntaxKind::COMPACT_CUE
-        | SyntaxKind::PARENTHETICAL => Exercised,
+        | SyntaxKind::PARENTHETICAL
+        | SyntaxKind::BANG_DISPATCH
+        | SyntaxKind::DISPATCH_NAME => Exercised,
 
         // ── Node kinds — inline markup (§4, issue #1716) ───────────
         SyntaxKind::SPAN

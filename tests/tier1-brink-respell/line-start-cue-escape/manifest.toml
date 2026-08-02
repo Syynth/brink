@@ -15,16 +15,14 @@ otherwise open a `CUE`, §8b.9) and `\\!radio ...` (reserved for the
 `!name` annotation-element sigil, §3.5b, unimplemented today).
 
 Also proves the emitter side of the round trip: `hir::emit_native`'s
-`escape_leading_cue_sigil` re-escapes a literal leading `@`+identifier on
-the way back out, since `\\@VENDOR ...` lowers to an ordinary `Content`
-whose `Text` part's first characters are the literal `@VENDOR ...` — a
+`escape_leading_line_start_sigil` re-escapes a literal leading
+`@`+identifier or `!`+identifier on the way back out, since
+`\\@VENDOR ...`/`\\!radio ...` lower to an ordinary `Content` whose `Text`
+part's first characters are the literal `@VENDOR ...`/`!radio ...` — a
 HIR shape that could not previously exist at body-line position (every
-`@`+identifier there was always captured as a `CUE` before this issue's
-fix), so emitting it back unescaped would have silently re-parsed as a
-cue on the next pass, exactly the class of bug the `inline-markup-
-escape-set` fixture's own notes describe for the four inline escapes. No
-equivalent guard exists (or is needed) for a leading `!` today: no parser
-dispatch reads it at body-line position yet, so it already round-tripped
-unescaped before this issue; revisit `escape_leading_cue_sigil`'s own doc
-comment if the `!name` sigil ever lands.
+`@`+identifier or `!`+identifier there was always captured as a `CUE` or
+`BANG_DISPATCH` before this issue's/#2004's fix), so emitting it back
+unescaped would have silently re-parsed as a cue or dispatch on the next
+pass, exactly the class of bug the `inline-markup-escape-set` fixture's
+own notes describe for the four inline escapes.
 """
