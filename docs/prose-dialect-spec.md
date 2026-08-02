@@ -187,7 +187,9 @@ consumes the module, only the value.
   shaped for extension ergonomics; the `fn conventions()` well-known-
   name entry (mirroring `flow main()`); the portable-regex subset
   validated at marshal with module-pointing errors; the editor
-  re-evaluation loop; sequencing (native construction literals ride
+  re-evaluation loop (**RULED 2026-08-01**: projection cached on the
+  conventions module's import closure; classification per keystroke against
+  it — comptime is never per-keystroke); sequencing (native construction literals ride
   the #1103 build; the module may be brink-dialect until then). The
   `brink.toml` pointer itself (§3.4's `elements = "conventions.brink"`
   — corrected here from a stale `conventions = …` spelling that never
@@ -1294,6 +1296,13 @@ grace.
 6. **Editor implications (NS-T)** — #1350/#1131 stay held; the bridge
    features (§2b.3), the park decoration (§8c), the built-in token
    vocabulary (§3.5b) are their incoming scope.
+
+   ⚠ **Scope of the hold, ruled 2026-08-01:** it covers editor *frontend*
+   work — CM6, token rendering, the live renderer, `fmt`. It does **not**
+   cover the classification/explain-match query family, which is emitted from
+   `brink-db`/`brink-ide` and is **compiler work wearing editor's clothes**
+   (#2006). Holding compiler-side queries behind the compiler track would
+   hold them behind themselves.
 
    ⚠ **Why they are held, restated 2026-08-01 (maintainer).** The hold is
    **deliberate sequencing — the compiler work finishes before the editor

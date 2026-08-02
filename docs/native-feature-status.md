@@ -69,8 +69,113 @@ unimplemented · ❓ unverified (nobody has checked; do not assume either way)
 | Inline sequences | ✅ | ✅ | ✅ | ❌ | emitter gap, 10 cases |
 | Thread splice `<- flow(args)` | ✅ | ⚠️ | ❓ | ❌ | #1974; narrowed to choice-point splice |
 | Scene headings / cues / parentheticals | ✅ | ✅ | ❌ | ❌ | parse (#1715) but produce **no HIR** (`E129`) |
-| Block elements `@[element(…, block)]` | ✅ | ❌ | — | — | **#1839 — unblocked 2026-08-01**, unbuilt |
 | Word-break spring | ❓ | ❌ | — | — | #1976, `needs-design`, 12 cases |
+
+## Conventions & elements
+
+The machinery that makes the prose dialect *authorable as a screenplay*:
+patterns claim lines, handlers receive the captures, and a project swaps the
+whole vocabulary by naming a different conventions module. Sequenced as
+**v1a → v1b → v1c** (#1838 → #1839 → #1840).
+
+| Feature | Ruled | Parses | Runs | Round-trips | Notes |
+|---|---|---|---|---|---|
+| `@[element(claims=…)]` pattern claiming | ✅ | ✅ | ✅ | ❓ | **v1a landed** — `annotations-element` golden |
+| `@[element(args=…)]` capture binding | ✅ | ✅ | ✅ | ❓ | named captures bind params by name |
+| Prose-bodied handlers `>{ }` | ✅ | ✅ | ✅ | ❓ | verified 2026-08-01 — emits `[A] hi` |
+| Typed handler params (`E171`) | ✅ | ✅ | ✅ | — | #1849 closed |
+| Confinement to one module (`E169`) | ✅ | ✅ | ⚠️ | — | query landed; **unreachable from live typing** (#1880) |
+| Directive-shaped tag guard (`E172`) | ✅ | ✅ | ✅ | — | landed 2026-08-01 (#1835) |
+| **`!name` sigil dispatch** | ✅ | ❌ | — | — | **reserved, unimplemented** — see below |
+| Block elements `@[element(…, block)]` | ✅ | ❌ | — | — | **v1b · #1839 — unblocked 2026-08-01**, unbuilt |
+| `fn conventions()` registration | ✅ | ❌ | — | — | **v1c · #1840** — 4 blocking questions ruled 2026-08-01 |
+| Comptime evaluation of conventions | ✅ | ❌ | — | — | #1840; dependency shape ruled 2026-08-01 (#1867) |
+| `@[style]` declaration surface | ✅ | ✅ | ❌ | — | `StyleToken` produced, **zero consumers** (#1719) |
+| Built-in screenplay preset | ✅ | ❌ | — | — | #1720; `dialect.rs`'s `Default` is legacy hardcoding, not this |
+| `[project] elements` name validation | ✅ | ⚠️ | ⚠️ | — | #1874 |
+| `std::conventions` types | ❓ | ❌ | — | — | prose-spec §9 residual — the last prose-round design item |
+
+## Editor side — how the author interrogates a claimed line
+
+Under conventions, a prose line silently becomes a function call. The ruled
+compensation — **"no invisible expansion", a stated maintainer requirement** —
+is that the editor can always show which handler claimed a line, why, and what
+it bound. **That compensation is currently a promise, not a property.**
+
+Tracked as **#2006**.
+
+| Feature | Ruled | Built | Notes |
+|---|---|---|---|
+| Per-line classification metadata | ✅ | ❌ | matched kind · handler + source location · capture bindings as spans · disposition |
+| Explain-match query | ✅ | ❌ | is-this-matched / by-what / what-bound; lists attempted patterns on a miss |
+| Hover shows the handler body | ✅ | ❌ | every matched line points at a real function (§9.1's improvement over the dissolved table) |
+| Capture spans as decoration ranges | ✅ | ❌ | the same spans drive editor decoration |
+| Harvest index (cues, span kinds) | ✅ | ❌ | ruled a **project-db index obligation**, sibling of the symbol index |
+| Succession rules (Tab/Enter) | ✅ | ❌ | live in the conventions file; what makes transitions convention-driven, not hardcoded ink |
+| Serialized conventions projection | ✅ | ❌ | what the editor reads instead of tracing execution |
+| Last-good caching on comptime fault | ✅ | ❌ | ruled Q2 2026-08-01; never substitute another module's conventions |
+| `@[style]` consumption | ✅ | ❌ | `StyleToken` produced in `brink-ir`, read by nothing (#1719) |
+| Elements reach `IdeSession` | ✅ | ❌ | #1880 — `E169` unreachable from live typing |
+| **Match ordering** | ⏳ | ❌ | **RULE OWED** — "declaration-order + overlap diagnostics is the lean" |
+| **Editor re-evaluation loop** | ⏳ | ❌ | **OWED** (§3.5) — yet Q2 already depends on it existing |
+
+⚠ **Two rulings are still owed here**, and one of them has already been
+depended on: Q2's last-good caching is justified *because* "§3.5's owed
+re-evaluation loop re-runs on every keystroke" — a ruling shipped ahead of the
+thing it assumes.
+
+⚠ **Sequencing note.** NS-T (#1131) is held behind the compiler work by
+deliberate choice. But this seam is **compiler-side** — queries emitted from
+`brink-db`/`brink-ide` — so it is not obviously covered by that hold.
+
+## Output side — what the host actually receives
+
+Authoring an element is only half of it. For a host to *render* a scene
+heading differently from dialogue, the element has to survive to runtime
+output. **Today almost none of it does.**
+
+Verified 2026-08-01: no `element_kind`, `element_data` or `ElementKind`
+anywhere in `brink-format` or `brink-runtime`; `Choice` is still
+`{ text, index, tags }`; `Line` carries only text and tags.
+
+| Feature | Ruled | On the wire | Reaches the host | Notes |
+|---|---|---|---|---|
+| Markup spans (`PART_SPAN`) | ✅ | ✅ | ✅ | **the one output-side thing that shipped** — `.inkb` v6, PR #1732 |
+| Element kind per line | ✅ | ❌ | ❌ | #1683 — v6 residual payload, unimplemented |
+| Per-line element data | ✅ | ❌ | ❌ | #1683 — open-map payload |
+| Universal block id | ✅ | ❌ | ❌ | #1684 — a dedicated `OutputLine` field; zero lines exist |
+| `Step` / `OutputLine` contract | ✅ | ❌ | ❌ | #1684 — R1 folded #1520 into it 2026-08-01 |
+| Choice captured environment | ✅ | ❌ | ❌ | #1508 — rides the open v6 line |
+| Scene entry / transitions as host calls | ✅ | ❓ | ❓ | ruled sitting 4; the `lower:` column it used was **dissolved** by §9.1 — unverified what replaced it |
+| Display metrics / measurement | ✅ | — | ❌ | design ruled (prose-spec §6); #362's CM6 consumer unbuilt |
+| Element data in XLIFF | ✅ | — | — | ruled **never exported** in v1 (decision-log 2026-07-26) — lives in the base `.inkb` |
+
+**Consequence.** An element today is a *compile-time* concept: a claimed line
+runs its handler and the handler emits ordinary prose. Nothing downstream
+knows the line was a scene heading. Every renderer-side promise in the
+charter — the live renderer, per-element styling, `@[style]` tokens,
+Fountain/FDX export — depends on this row group, and it is gated almost
+entirely on **#1683 and #1684**.
+
+That makes #1684 more load-bearing than its "runtime refactor" title suggests:
+it is the carrier for block id *and* the shape element data rides on.
+
+### ⚠ The shape that anchors the design cannot be written yet
+
+The 2026-07-31 §9.1 ruling turns on a distinction between two dispatch kinds:
+**pattern-claiming** handlers are confined to the one conventions module, while
+**`!name`-dispatched** handlers are legal anywhere *precisely because they
+self-announce*. The 2026-08-01 #1866 ruling rests on the same split.
+
+**Only the first half exists.** `brink-syntax-native`'s own comments say so —
+`parser/content.rs`: *"(or, unimplemented today, the `!name` annotation
+sigil…)"*; `parser/markup.rs`: *"line-start `!` is reserved for the `!name`
+annotation-element dispatch"*. The `annotations-element` golden dispatches
+`radio` by **regex** (`args = "^(?<chan>…): (?<text>.+)$"`), not by `!radio`.
+
+So the confinement rule is currently enforceable only against the kind of
+handler that exists. Worth filing before v1c, since #1840's registration
+design assumes both kinds.
 
 ## 🔴 The one that matters most
 
