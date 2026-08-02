@@ -39,8 +39,8 @@ use crate::hir::FileId;
 use crate::provenance::NodeClass;
 use crate::{
     Assignment, Block, BlockStmt, Content, ContentPart, Diagnostic, DiagnosticCode, Divert,
-    DivertPath, DivertTarget, ElseBranch, Expr, IfStmt, LogicBlock, Name, Return, ReturnKind,
-    SpanPart, Stmt, StringPart, Tag, TempDecl, TunnelCall,
+    DivertPath, DivertTarget, ElseBranch, Expr, IfStmt, LogicBlock, LogicBlockScope, Name, Return,
+    ReturnKind, SpanPart, Stmt, StringPart, Tag, TempDecl, TunnelCall,
 };
 
 use super::choice::lower_choice_point;
@@ -523,22 +523,54 @@ fn lower_one_item(
 /// `~ stmt` — the content-ground logic-line escape into code (charter
 /// §8.2, RULED 2026-07-23 `docs/decision-log.md` "Native interleaving &
 /// body-dialect spelling", issue #1991: ink's logic line, kept). Targets
-/// the top-level `Stmt::TempDecl`/`Stmt::Assignment`/`Stmt::ExprStmt`
-/// variants — an already-proven HIR/LIR/codegen/runtime path, since those
-/// are exactly what the ink-dialect's own logic line already lowers to
+/// the top-level `Stmt::TempDecl`/`Stmt::Assignment`/`Stmt::ExprStmt`/
+/// `Stmt::Await`/`Stmt::LogicBlock` variants — an already-proven HIR/LIR/
+/// codegen/runtime path for the first three (LIR-fenced E052 for `Await`
+/// pending FS-3, same as the code-ground `until` statement — see
+/// `lir::lower::stmts`), since those are exactly what the ink-dialect's own
+/// logic line already lowers to
 /// (`hir::lower::content::logic_line::LogicLineOutput`) — rather than
-/// inventing a new one. `TempDecl` (`~ let name = expr`) is issue #1972's
-/// addition to the two shapes #1991 originally wired; only the three
-/// `LogicLine` shapes `parser/stmt.rs::logic_line` can produce are matched
-/// — a `LOGIC_LINE` with none of them (should not happen given that
-/// parser, but CST nodes from a malformed parse are never assumed
-/// well-formed) is diagnosed loudly (E129) rather than silently dropped.
+/// inventing a new one. `TempDecl` (`~ let name = expr`, issue #1972) and
+/// `Await`/`LogicBlock` (`~ until cond` / `~{ … }`, also issue #1972) are
+/// this and #1991's additions to the single shape (`Assignment`/
+/// `ExprStmt`) #1991 originally wired; only the five `LogicLine` shapes
+/// `parser/stmt.rs::logic_line` can produce are matched — a `LOGIC_LINE`
+/// with none of them (should not happen given that parser, but CST nodes
+/// from a malformed parse are never assumed well-formed) is diagnosed
+/// loudly (E129) rather than silently dropped.
+///
+/// The `stmt_block()`/`until_stmt()` checks run first: a `~{ … }` block
+/// wraps its own `stmts: Vec<BlockStmt>` via
+/// [`super::control_flow::lower_stmt_block`] (the same call `expr::lower_expr`'s
+/// `STMT_BLOCK` atom case and the whole-body `~{ }`/`fn`-default override
+/// use) with `scope: LogicBlockScope::Standalone` — this escape is always
+/// exactly one `LogicBlock`, never split (splitting only ever happens one
+/// level up, in `lower_stmt_block_as_body`, for a `> text` line inside a
+/// **whole** code-ground body — see that function's doc). A `~ until cond`
+/// reuses `control_flow::lower_until_stmt` verbatim, wrapping the result as
+/// `Stmt::Await` instead of that function's own `BlockStmt::Await` call
+/// site.
 fn lower_logic_line(
     file_id: FileId,
     ll: &ast::LogicLine,
     diags: &mut Vec<Diagnostic>,
 ) -> Vec<Stmt> {
     let range = ll.syntax().text_range();
+    if let Some(block) = ll.stmt_block() {
+        let stmts = super::control_flow::lower_stmt_block(file_id, &block, diags);
+        return vec![Stmt::LogicBlock(LogicBlock {
+            ptr: native_provenance(file_id, NodeClass::LogicBlock, block.syntax()),
+            stmts,
+            scope: LogicBlockScope::Standalone,
+        })];
+    }
+    if let Some(until_stmt) = ll.until_stmt() {
+        return vec![Stmt::Await(super::control_flow::lower_until_stmt(
+            file_id,
+            &until_stmt,
+            diags,
+        ))];
+    }
     if let Some(let_stmt) = ll.let_stmt() {
         return lower_logic_line_temp_decl(file_id, &let_stmt, diags).map_or_else(Vec::new, |td| {
             let needs_eol = td.value.as_ref().is_some_and(expr_contains_call);

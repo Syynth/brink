@@ -17,6 +17,12 @@ flow main() {
   ~ let m = n + 1
   Temp is {m}.
   ~ n = shout()
+  ~{
+    let k = m + 2;
+    n = k;
+    bump();
+  }
+  Now is {n}.
   after
   -> END
 }

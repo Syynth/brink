@@ -428,7 +428,17 @@ fn lower_for_stmt(
 /// `AwaitStmt.condition: Option<Expr>` (`hir/lower/content/logic_block.rs::
 /// lower_await_stmt`): the parser's own `p.error` on `until_stmt` already
 /// covers a malformed `until` with no condition expression.
-fn lower_until_stmt(file_id: FileId, u: &ast::UntilStmt, diags: &mut Vec<Diagnostic>) -> AwaitStmt {
+///
+/// `pub(super)`, reused by `body::lower_logic_line` (issue #1972): the
+/// content-ground `~ until cond` escape shares this exact lowering, the
+/// same `UNTIL_STMT` node shape reused verbatim by the parser — only the
+/// wrapper differs (`Stmt::Await` there vs. this module's own
+/// `BlockStmt::Await` at its `StmtBlock` item-position call site).
+pub(super) fn lower_until_stmt(
+    file_id: FileId,
+    u: &ast::UntilStmt,
+    diags: &mut Vec<Diagnostic>,
+) -> AwaitStmt {
     let condition = u.condition().map(|n| lower_expr(file_id, &n, diags));
     AwaitStmt {
         ptr: native_provenance(file_id, NodeClass::Await, u.syntax()),

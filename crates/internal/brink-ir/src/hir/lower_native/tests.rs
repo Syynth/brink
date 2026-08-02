@@ -1234,6 +1234,80 @@ fn logic_line_precedes_ordinary_content_unaffected() {
     );
 }
 
+// ── Issue #1972 (second slice): `~ until cond` / `~{ … }` — the same ──
+// ── content-ground escape, extended to native's `Await`/`LogicBlock` ──
+//
+// `until` is native's sole flow-suspension spelling (decision-log
+// 2026-07-23 item 4, retiring `await`); `~{ … }` is the multi-statement
+// logic-block escape. Both lower via the exact same functions the
+// code-ground `until <cond>;` statement and the whole-body `~{ }` override
+// already use (`lower_native::control_flow::lower_until_stmt`/
+// `lower_stmt_block`) — only the wrapper (`Stmt::Await`/`Stmt::LogicBlock`
+// vs. `BlockStmt::Await`/a `StmtBlock` item-position call) differs.
+
+#[test]
+fn logic_line_until_lowers_to_stmt_await() {
+    let (hir, _m, diags) = lower_src("flow a() {\n  ~ until n > 0\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = only_knot_body(&hir);
+    let Stmt::Await(a) = &body.stmts[0] else {
+        panic!("expected Stmt::Await, got {:?}", body.stmts[0]);
+    };
+    assert!(matches!(a.condition, Some(Expr::Infix(_))));
+}
+
+#[test]
+fn logic_line_until_precedes_ordinary_content_unaffected() {
+    let (hir, _m, diags) = lower_src("flow a() {\n  ~ until n > 0\n  Value is {n}.\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = only_knot_body(&hir);
+    assert!(matches!(body.stmts[0], Stmt::Await(_)));
+    assert!(
+        body.stmts[1..]
+            .iter()
+            .any(|s| matches!(s, Stmt::Content(_))),
+        "the content line after the logic line must still lower normally: {:?}",
+        body.stmts
+    );
+}
+
+#[test]
+fn logic_line_block_lowers_to_stmt_logic_block_with_standalone_scope() {
+    let (hir, _m, diags) = lower_src("flow a() {\n  ~{\n    let m = 1;\n    n = m;\n  }\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = only_knot_body(&hir);
+    let Stmt::LogicBlock(lb) = &body.stmts[0] else {
+        panic!("expected Stmt::LogicBlock, got {:?}", body.stmts[0]);
+    };
+    assert_eq!(lb.scope, crate::LogicBlockScope::Standalone);
+    assert_eq!(lb.stmts.len(), 2);
+    assert!(matches!(lb.stmts[0], crate::BlockStmt::TempDecl(_)));
+    assert!(matches!(lb.stmts[1], crate::BlockStmt::Assignment(_)));
+}
+
+#[test]
+fn logic_line_block_precedes_ordinary_content_unaffected() {
+    // The escape's own T1b lexical scope (`~{ }`) is Standalone here — a
+    // single content-ground `~{ }` island is never split the way a
+    // *whole* code-ground body is around a nested `> text` line (issue
+    // #1992/#2028's `LogicBlockScope::Opens`/`Continues`, only produced by
+    // `lower_stmt_block_as_body`, a different call site than this one) —
+    // so a `let` declared inside it does not need to stay visible to the
+    // ordinary content line after it; this only pins that the surrounding
+    // stream still lowers normally.
+    let (hir, _m, diags) = lower_src("flow a() {\n  ~{\n    n = 1;\n  }\n  Value is {n}.\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = only_knot_body(&hir);
+    assert!(matches!(body.stmts[0], Stmt::LogicBlock(_)));
+    assert!(
+        body.stmts[1..]
+            .iter()
+            .any(|s| matches!(s, Stmt::Content(_))),
+        "the content line after the logic block must still lower normally: {:?}",
+        body.stmts
+    );
+}
+
 #[test]
 fn logic_line_with_no_recognized_child_is_a_loud_e129_not_a_silent_drop() {
     // Defense in depth: `lower_logic_line` itself must never silently

@@ -55,22 +55,34 @@
 //!
 //! Explicitly unsupported (each a real gap, not an oversight — see
 //! `docs/b0-sequencing.md` §3 and `tests/tier1-brink-respell/README.md`'s
-//! own gap findings for the native-grammar context): `Stmt::LogicBlock`/
-//! `Await` at prose-body position (code-dialect ground —
-//! `lower_native::body` never constructs either outside a `~{ }` logic
-//! block, so this is a native-**grammar** gap, not just an emission one:
-//! there is no `~{ }`-block/`~ await …`-style prose-body statement to
-//! round-trip yet, issue #1335's B0.8b sweep). **Correction (issue #1991,
-//! PR #2002; issue #1972):** `Stmt::TempDecl`/`Assignment`/`ExprStmt` at
-//! prose-body position no longer belong in that native-grammar-gap bucket —
-//! `~ let name = expr`/`~ x = expr`/`~ expr` (the content-ground logic-line
-//! escape, charter §8.2, extended to `TempDecl` by #1972) is exactly that
-//! bare prose-body statement, and `lower_native::body::lower_logic_line`
-//! has produced all three outside any `~{ }` block since #1991/#1972
-//! landed. This printer now emits all three (`emit_temp_decl`/
-//! `emit_assignment`/`emit_expr_stmt`, below) — as opposed to the
-//! code-ground `~{ }` `STMT_BLOCK` form, which is a different HIR shape,
-//! `Stmt::LogicBlock`, still a real grammar gap above; `Stmt::Sequence`/
+//! own gap findings for the native-grammar context). **Correction (issue
+//! #1991, PR #2002; issue #1972):** `Stmt::TempDecl`/`Assignment`/
+//! `ExprStmt` at prose-body position no longer belong in the
+//! native-grammar-gap bucket this section used to open with — `~ let name =
+//! expr`/`~ x = expr`/`~ expr` (the content-ground logic-line escape,
+//! charter §8.2, extended to `TempDecl` by #1972) is exactly that bare
+//! prose-body statement, and `lower_native::body::lower_logic_line` has
+//! produced all three since #1991/#1972 landed. This printer emits all
+//! three (`emit_temp_decl`/`emit_assignment`/`emit_expr_stmt`, below).
+//! **Correction (issue #1972, second slice):** `Stmt::LogicBlock`/`Await`
+//! at prose-body position — the `~{ … }` multi-statement escape and the
+//! `~ until cond` condition-park escape (native's sole `await` spelling) —
+//! are likewise no longer a native-**grammar** gap:
+//! `lower_native::body::lower_logic_line` produces both, and this printer
+//! now emits both too (`emit_logic_block`/`emit_await`, below), **with one
+//! carved-out residual**: a `Stmt::LogicBlock` whose `scope` is `Opens`/
+//! `Continues` (a *whole* code-ground body split around a nested `> text`
+//! line, issue #1992/#2028 — never produced by this content-ground escape,
+//! only by a `fn`'s own default body or a `flow`'s whole-body `~{ }`
+//! override) still refuses: re-spelling that shape needs `emit_knot`-level
+//! restructuring (the original single code-ground body, not a nested
+//! `~{ }` per run) that is out of this slice's scope. A `LogicBlock`
+//! containing nested `if`/`while`/`for` control flow also still refuses —
+//! this printer's new code-ground statement printer
+//! (`emit_block_stmt_stream`) only spells the leaf `BlockStmt` shapes
+//! (`TempDecl`/`Assignment`/`ExprStmt`/`Return`/`Break`/`Continue`/
+//! `Await`), not nested control flow, which would need the full code-ground
+//! `if`/`while`/`for` printer this slice doesn't build. `Stmt::Sequence`/
 //! `ContentPart::InlineSequence`/`InlineConditional`
 //! (alternations `~`/`&`/`!`/`|` — **unlike the code-dialect-ground gaps
 //! above, this one is emitter-only, not native-grammar**: native's
@@ -148,10 +160,11 @@
 use std::fmt::Write as _;
 
 use crate::{
-    AssignOp, Assignment, Block, Choice, ChoiceSet, CondBranch, CondKind, Conditional, ConstDecl,
-    Content, ContentPart, DivertPath, DivertTarget, Expr, ExternalDecl, HirFile, Import, InfixOp,
-    Knot, LambdaBody, ListDecl, Name, Param, Path, PostfixOp, PrefixOp, Return, Stitch, Stmt,
-    StringPart, StructDecl, Tag, TempDecl, ThreadStart, TypeExpr, VarDecl,
+    AssignOp, Assignment, AwaitStmt, Block, BlockStmt, Choice, ChoiceSet, CondBranch, CondKind,
+    Conditional, ConstDecl, Content, ContentPart, DivertPath, DivertTarget, Expr, ExternalDecl,
+    HirFile, Import, InfixOp, Knot, LambdaBody, ListDecl, LogicBlock, LogicBlockScope, Name, Param,
+    Path, PostfixOp, PrefixOp, Return, Stitch, Stmt, StringPart, StructDecl, Tag, TempDecl,
+    ThreadStart, TypeExpr, VarDecl,
 };
 
 // ─── Labeled lines (G-1) ─────────────────────────────────────────────
@@ -758,8 +771,11 @@ fn emit_stmt_stream(
                 emit_choice_set_and_continuation(out, &indent, depth, cs, &leading, context)?;
                 return Ok(());
             }
-            Stmt::LogicBlock(_) => return Err(unsupported("`~ { }` logic block", context)),
-            Stmt::Await(_) => return Err(unsupported("await statement", context)),
+            Stmt::LogicBlock(lb) => emit_logic_block(out, &indent, depth, lb, context)?,
+            Stmt::Await(a) => {
+                let line = emit_await(a, context)?;
+                let _ = writeln!(out, "{indent}{line}");
+            }
         }
         i += 1;
     }
@@ -895,6 +911,111 @@ fn emit_assignment(a: &Assignment, context: &str) -> Result<String, EmitError> {
 /// call being the overwhelmingly common case).
 fn emit_expr_stmt(e: &Expr, context: &str) -> Result<String, EmitError> {
     Ok(format!("~ {}", emit_expr(e, context)?))
+}
+
+/// `~ until cond` — the content-ground `Stmt::Await` printer (issue #1972).
+/// `until` is native's sole flow-suspension spelling (decision-log
+/// 2026-07-23 item 4, retiring `await`) — reused verbatim whether the
+/// `AwaitStmt` came from this content-ground escape or the ink-dialect's own
+/// `~ await cond` (this emitter is shared across both dialects' lowered
+/// HIR). `AwaitStmt.condition` is `None` only for a malformed source whose
+/// condition already failed to parse (`lower_until_stmt`'s doc) — never the
+/// shape of a real source this emitter is asked to respell — so refuse
+/// rather than guess at a spelling for it.
+fn emit_await(a: &AwaitStmt, context: &str) -> Result<String, EmitError> {
+    let Some(cond) = &a.condition else {
+        return Err(unsupported("`until`/`await` with no condition", context));
+    };
+    Ok(format!("~ until {}", emit_expr(cond, context)?))
+}
+
+/// `~{ … }` — the content-ground `Stmt::LogicBlock` printer (issue #1972):
+/// a multi-statement escape into code, using the same `~{ }` sigil the
+/// whole-body override (`flow name() ~{ … }`, issue #1309) and the
+/// code-ground `> text` split (issues #1992/#2028) both use.
+///
+/// Only spells a `Standalone`-scoped block — the scope this content-ground
+/// escape always produces (`lower_native::body::lower_logic_line`'s doc,
+/// never split). An `Opens`/`Continues` block only ever comes from a
+/// *whole* code-ground body split around a nested `> text` line
+/// (`lower_stmt_block_as_body`, issue #1992/#2028); re-spelling that shape
+/// correctly needs `emit_knot`-level restructuring back to one shared
+/// code-ground body rather than a nested `~{ }` per run, out of this
+/// slice's scope — refused, not guessed (see this module's doc).
+fn emit_logic_block(
+    out: &mut String,
+    indent: &str,
+    depth: usize,
+    lb: &LogicBlock,
+    context: &str,
+) -> Result<(), EmitError> {
+    if lb.scope != LogicBlockScope::Standalone {
+        return Err(unsupported(
+            "a code-ground body split by a nested `> text` line",
+            context,
+        ));
+    }
+    let _ = writeln!(out, "{indent}~{{");
+    emit_block_stmt_stream(out, &lb.stmts, depth + 1, context)?;
+    let _ = writeln!(out, "{indent}}}");
+    Ok(())
+}
+
+/// A `~{ … }`/whole-code-ground-body statement stream (issue #1972): the
+/// code-ground counterpart of [`emit_stmt_stream`] — `;`-terminated per
+/// statement, no content lines, choices, or diverts (`BlockStmt`'s closed
+/// T1b set, `docs/t1b-surface-spec.md` §2's seam rule). Only the **leaf**
+/// shapes are spelled (`TempDecl`/`Assignment`/`ExprStmt`/`Return`/`Break`/
+/// `Continue`/`Await`) — nested `If`/`While`/`For` control flow refuses:
+/// printing those faithfully needs the full code-ground control-flow
+/// printer (`if cond { … } else { … }`/`while cond { … }`/`for x in expr {
+/// … }`), a separate, larger lift this slice does not take on (see this
+/// module's doc "Explicitly unsupported" section).
+fn emit_block_stmt_stream(
+    out: &mut String,
+    stmts: &[BlockStmt],
+    depth: usize,
+    context: &str,
+) -> Result<(), EmitError> {
+    let indent = "  ".repeat(depth);
+    for stmt in stmts {
+        let line = match stmt {
+            BlockStmt::TempDecl(t) => {
+                let ty = emit_annotation_suffix(t.annotation.as_ref());
+                match &t.value {
+                    Some(v) => format!("let {}{ty} = {}", t.name.text, emit_expr(v, context)?),
+                    None => format!("let {}{ty}", t.name.text),
+                }
+            }
+            BlockStmt::Assignment(a) => {
+                let target = emit_expr(&a.target, context)?;
+                let op = match a.op {
+                    AssignOp::Set => "=",
+                    AssignOp::Add => "+=",
+                    AssignOp::Sub => "-=",
+                };
+                format!("{target} {op} {}", emit_expr(&a.value, context)?)
+            }
+            BlockStmt::ExprStmt(e) => emit_expr(e, context)?,
+            BlockStmt::Return(r) => emit_return(r, context)?,
+            BlockStmt::Break(_) => "break".to_string(),
+            BlockStmt::Continue(_) => "continue".to_string(),
+            BlockStmt::Await(a) => {
+                let Some(cond) = &a.condition else {
+                    return Err(unsupported("`until` with no condition", context));
+                };
+                format!("until {}", emit_expr(cond, context)?)
+            }
+            BlockStmt::If(_) | BlockStmt::While(_) | BlockStmt::For(_) => {
+                return Err(unsupported(
+                    "nested control flow inside a `~{ }` logic block",
+                    context,
+                ));
+            }
+        };
+        let _ = writeln!(out, "{indent}{line};");
+    }
+    Ok(())
 }
 
 /// `return` / `return -> target` / `return <expr>` (issue #1973's last
@@ -1739,11 +1860,12 @@ mod tests {
     /// claim would otherwise be false for this one `TypeExpr` shape.
     #[test]
     fn fn_type_annotation_round_trips() {
-        // A `flow` (not `fn`) so the body stays prose-ground — `fn`'s
-        // default code-ground body is a separate, pre-existing emission
-        // gap (a whole code body lowers to one `Stmt::LogicBlock`, and
-        // `LogicBlock` bodies aren't emittable yet); this test is only
-        // about the `fn(...)` *type* annotation on the parameter.
+        // A `flow` (not `fn`) — orthogonal to which body dialect a `fn`'s
+        // default code-ground body now round-trips through (see
+        // `fn_default_code_ground_body_round_trips_via_logic_block`, issue
+        // #1972's second slice); this test is only about the `fn(...)`
+        // *type* annotation on the parameter, so it keeps the simplest body
+        // shape.
         let src = "flow apply(f: fn(int): bool) {\n  Hello.\n}\n";
         let emitted = lower_and_emit(src).expect("fn(...) type annotation must now emit");
         assert!(
@@ -2104,11 +2226,13 @@ mod tests {
 
     #[test]
     fn logic_line_bare_call_round_trips() {
-        // `bump` is a `flow` (not `fn`) so its default plain `{ }` body
-        // stays prose-ground — a `fn`'s default `{ }` lowers to a
-        // `Stmt::LogicBlock` `emit_knot` cannot spell back at all (it
-        // always prints a bare `{` regardless of body dialect, a
-        // separate, pre-existing round-trip gap unrelated to this test).
+        // `bump` is a `flow` (not `fn`) purely for simplicity — `emit_knot`
+        // now spells a `fn`'s body correctly too (the `>{ }` override,
+        // issue #2029), and its own default code-ground body round-trips
+        // as a nested `~{ }` logic block since this issue's second slice
+        // (`fn_default_code_ground_body_round_trips_via_logic_block`,
+        // below); nothing about the fix under test here depends on which
+        // keyword `bump` uses.
         let src = "flow bump() {\n  return\n}\nflow a() {\n  ~ bump()\n}\n";
         let emitted = lower_and_emit(src).expect("a content-ground bare call must now emit");
         assert!(emitted.contains("~ bump()"), "{emitted}");
@@ -2223,6 +2347,97 @@ mod tests {
             matches!(&ts.target.path, DivertPath::Path(p) if p.segments.last().is_some_and(|s| s.text == "helper"))
         );
         assert!(matches!(ts.target.args.as_slice(), [Expr::Int(3)]));
+    }
+
+    // ── Issue #1972 (second slice): `~ until cond` / `~{ … }` printers ───
+    //
+    // Before this landed, both refused with `EmitError::Unsupported`
+    // unconditionally — `Stmt::LogicBlock`/`Stmt::Await` at prose-body
+    // position were a native-**grammar** gap, not just an emission one (see
+    // this module's doc), so `brink-respell` could never even reach these
+    // printers from a real ink source; these tests build the HIR the
+    // ordinary way (parse a `.brink` fixture) since the grammar now exists.
+
+    #[test]
+    fn logic_line_until_round_trips() {
+        let src = "flow a() {\n  ~ until n > 0\n}\n";
+        let emitted = lower_and_emit(src).expect("a content-ground `until` must now emit");
+        assert!(emitted.contains("~ until n > 0"), "{emitted}");
+
+        let hir = reparse_and_lower(&emitted);
+        let Stmt::Await(a) = &hir.knots[0].body.stmts[0] else {
+            panic!(
+                "expected Stmt::Await as the re-lowered body's first statement: {:?}",
+                hir.knots[0].body
+            );
+        };
+        assert!(matches!(a.condition, Some(Expr::Infix(_))));
+    }
+
+    #[test]
+    fn logic_line_block_round_trips() {
+        let src = "flow a() {\n  ~{\n    let m = 1;\n    n = m;\n    bump();\n  }\n}\n";
+        let emitted = lower_and_emit(src).expect("a content-ground logic block must now emit");
+        assert!(emitted.contains("~{"), "{emitted}");
+        assert!(emitted.contains("let m = 1;"), "{emitted}");
+        assert!(emitted.contains("n = m;"), "{emitted}");
+        assert!(emitted.contains("bump();"), "{emitted}");
+
+        let hir = reparse_and_lower(&emitted);
+        let Stmt::LogicBlock(lb) = &hir.knots[0].body.stmts[0] else {
+            panic!(
+                "expected Stmt::LogicBlock as the re-lowered body's first statement: {:?}",
+                hir.knots[0].body
+            );
+        };
+        assert_eq!(lb.scope, crate::LogicBlockScope::Standalone);
+        assert_eq!(lb.stmts.len(), 3);
+        assert!(matches!(lb.stmts[0], crate::BlockStmt::TempDecl(_)));
+        assert!(matches!(lb.stmts[1], crate::BlockStmt::Assignment(_)));
+        assert!(matches!(lb.stmts[2], crate::BlockStmt::ExprStmt(_)));
+    }
+
+    #[test]
+    fn logic_line_block_with_nested_control_flow_refuses_to_emit() {
+        // A deliberately narrower first slice (this module's doc): nested
+        // `if`/`while`/`for` inside a `~{ }` block would need the full
+        // code-ground control-flow printer, which this slice doesn't
+        // build — refused loudly, never guessed.
+        let src = "flow a() {\n  ~{\n    if n > 0 {\n      n = 1;\n    }\n  }\n}\n";
+        let err = lower_and_emit(src)
+            .expect_err("nested control flow inside a `~{ }` block must still refuse, not guess");
+        assert!(matches!(err, EmitError::Unsupported { .. }));
+    }
+
+    #[test]
+    fn fn_default_code_ground_body_round_trips_via_logic_block() {
+        // A byproduct of this issue's second slice, not its main target: a
+        // `fn`'s default code-ground body lowers to exactly one whole-body
+        // `Stmt::LogicBlock(Standalone)` (`lower_stmt_block_as_body`'s
+        // doc — a body with no `> text` split is byte-for-byte the
+        // original, unsplit shape). `emit_knot` already spells a `fn`'s
+        // body with the `>{ }` prose override (issue #2029), so that single
+        // `LogicBlock` now round-trips as one nested `~{ }` escape inside
+        // it — closing a slice of the "LogicBlock bodies aren't emittable"
+        // gap this module's doc used to describe as wholly open, though the
+        // nested-control-flow / split-scope residuals above still stand.
+        let src = "fn shout() {\n  n = n + 1;\n}\n";
+        let emitted = lower_and_emit(src).expect("a fn's default code-ground body must now emit");
+        assert!(emitted.contains(">{"), "{emitted}");
+        assert!(emitted.contains("~{"), "{emitted}");
+
+        let hir = reparse_and_lower(&emitted);
+        let Stmt::LogicBlock(lb) = &hir.knots[0].body.stmts[0] else {
+            panic!(
+                "expected the re-lowered fn body to still be one whole-body LogicBlock: {:?}",
+                hir.knots[0].body
+            );
+        };
+        assert_eq!(lb.scope, crate::LogicBlockScope::Standalone);
+        assert!(matches!(
+            lb.stmts.as_slice(),
+            [crate::BlockStmt::Assignment(_)]
+        ));
     }
 
     // ── Issue #1975: `CondKind::IfElse` re-nesting ───────────────────────

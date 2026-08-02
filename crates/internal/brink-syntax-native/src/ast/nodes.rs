@@ -1104,6 +1104,22 @@ impl LogicLine {
     pub fn expr_stmt(&self) -> Option<ExprStmt> {
         support::child(&self.syntax)
     }
+
+    /// The wrapped `~ until cond`, when this logic line is a condition-park
+    /// escape — native's sole `await` spelling (issue #1972,
+    /// `parser/stmt.rs::logic_line`'s `KW_UNTIL` branch).
+    pub fn until_stmt(&self) -> Option<UntilStmt> {
+        support::child(&self.syntax)
+    }
+
+    /// The wrapped `~{ … }` multi-statement logic block, when this logic
+    /// line is a T1b-style block escape (issue #1972,
+    /// `parser/stmt.rs::logic_line`'s `L_BRACE` branch). Reuses
+    /// [`StmtBlock`]'s grammar unmodified — the same node kind a `fn`'s
+    /// default body or a `flow`'s whole-body `~{ }` override use.
+    pub fn stmt_block(&self) -> Option<StmtBlock> {
+        support::child(&self.syntax)
+    }
 }
 
 impl ProseLine {

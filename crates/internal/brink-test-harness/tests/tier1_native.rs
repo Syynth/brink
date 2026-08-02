@@ -587,6 +587,19 @@ flow main() {
 /// than #1991's assignment/bare-call case, but this test still fails
 /// without the fix (it just fails at `compile_path`, not at the
 /// transcript-diff step).
+///
+/// Extended again by issue #1972's second slice with a `~{ … }`
+/// multi-statement logic block: `let k = m + 2; n = k; bump();` — "Now is
+/// 13." is only reachable if all three statements inside the block
+/// actually ran (`m` is `10` at that point, so `k = 12`, `n = k = 12`, then
+/// `bump()`'s `n += 1;` makes it `13`). With the `L_BRACE` dispatch arm in
+/// `logic_line` reverted, `~{` falls through to `expr_stmt_line`'s
+/// `expr::expression`, whose `STMT_BLOCK` atom case (blocks-as-values)
+/// lowers the block's statements for their diagnostics but has no `Expr`
+/// representation for the block's own value (`expr::lower_expr`'s
+/// `STMT_BLOCK` arm doc) — always a loud `E129`, never a silent drop, so
+/// this fixture fails to compile without the fix too, the same posture as
+/// the temp-decl case above.
 #[test]
 fn logic_line_escape() {
     assert_case("logic-line-escape");

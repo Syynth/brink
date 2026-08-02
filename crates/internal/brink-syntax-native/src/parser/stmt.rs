@@ -39,7 +39,7 @@ use crate::SyntaxKind::{
     ASSIGN_STMT, BREAK_STMT, CONTINUE_STMT, DOT, EOF, EQ, EXPR_STMT, GT, IDENT, KW_BREAK,
     KW_CONTINUE, KW_FOR, KW_IF, KW_LET, KW_RETURN, KW_UNTIL, KW_WHILE, L_BRACE, LET_STMT,
     LOGIC_LINE, MINUS_EQ, NEWLINE, PLUS_EQ, PROSE_LINE, R_BRACE, RETURN_STMT, SEMICOLON,
-    STMT_BLOCK,
+    STMT_BLOCK, UNTIL_STMT,
 };
 
 use super::Parser;
@@ -307,32 +307,47 @@ fn expr_or_tail_stmt(p: &mut Parser<'_, '_>) -> bool {
 // statement loop, which recognizes a bare `~` nowhere in its dispatch.
 
 /// `~ stmt` — parse one logic line. A temp declaration (`KW_LET`, issue
-/// #1972), assignment (`at_assignment`, above), and a bare expression
-/// (evaluated for its side effect — e.g. a function call) have
-/// content-ground meaning here; every other code-ground statement shape
-/// (`if`, `while`, `for`, `until`, `return`, `break`, `continue`) either
-/// already has its own content-ground spelling reachable without a `~`
-/// (bare `return`/diverts are `body_line` keywords in their own right) or
-/// has no content-ground meaning at all — reaching for one of those here
-/// falls through to [`expr_stmt_line`], whose `expr::expression` call
-/// diagnoses an unrecognized leading keyword loudly (`expr::atom`'s
+/// #1972), an assignment (`at_assignment`, above), a bare expression
+/// (evaluated for its side effect — e.g. a function call), a condition-park
+/// (`KW_UNTIL`, issue #1972 — native's sole `await` spelling, decision-log
+/// 2026-07-23 item 4), and a `~{ … }` multi-statement logic block (`L_BRACE`,
+/// issue #1972) all have content-ground meaning here; every other
+/// code-ground statement shape (`if`, `while`, `for`, `return`, `break`,
+/// `continue`) either already has its own content-ground spelling reachable
+/// without a `~` (bare `return`/diverts are `body_line` keywords in their
+/// own right) or has no content-ground meaning at all — reaching for one of
+/// those here falls through to [`expr_stmt_line`], whose `expr::expression`
+/// call diagnoses an unrecognized leading keyword loudly (`expr::atom`'s
 /// "expected an expression" fallback) rather than silently swallowing it,
 /// per issue #1991's own hedge ("if the decision is instead ... it must be
 /// a diagnostic, never silent prose").
 ///
-/// The `NEWLINE`/EOF that ends the line is left **unconsumed** by the three
-/// callees below and bumped here, as a sibling of `LOGIC_LINE`, exactly
-/// like `content::content_line`'s own trailing-newline handling — the line
-/// escape is a content-ground line, terminated by end-of-line, never by the
-/// code-ground `;` (`LET_STMT`/`ASSIGN_STMT`/`EXPR_STMT` are reused
-/// unmodified from `stmt_block`'s grammar above — see
-/// `SyntaxKind::RETURN_STMT`'s doc for the established one-node-two-grammars
-/// precedent this follows).
+/// The `L_BRACE` case is checked first and dispatches to [`stmt_block`]
+/// **unmodified** — the identical code-ground `STMT_BLOCK` grammar a `fn`'s
+/// default body or a `flow`'s whole-body `~{ }` override already use
+/// (`parser/decl.rs::decl_body`); here it is a single body-item wrapped
+/// inside `LOGIC_LINE` instead of the entire body. This is checked ahead of
+/// every other branch since none of `KW_LET`/`KW_UNTIL`/`at_assignment`
+/// ever starts with `{`, so there is no ambiguity.
+///
+/// The `NEWLINE`/EOF that ends a *line*-shaped escape (every case except
+/// `~{ … }`, which is self-delimiting via its own matching `}`) is left
+/// **unconsumed** by the callees below and bumped here, as a sibling of
+/// `LOGIC_LINE`, exactly like `content::content_line`'s own trailing-newline
+/// handling — the line escape is a content-ground line, terminated by
+/// end-of-line, never by the code-ground `;`/no-terminator-at-all
+/// (`LET_STMT`/`ASSIGN_STMT`/`EXPR_STMT`/`UNTIL_STMT` are reused unmodified
+/// from `stmt_block`'s grammar above — see `SyntaxKind::RETURN_STMT`'s doc
+/// for the established one-node-two-grammars precedent this follows).
 pub(crate) fn logic_line(p: &mut Parser<'_, '_>) {
     p.start_node(LOGIC_LINE);
     p.bump(); // TILDE
     p.skip_ws();
-    if p.at(KW_LET) {
+    if p.at(L_BRACE) {
+        stmt_block(p);
+    } else if p.at(KW_UNTIL) {
+        until_line(p);
+    } else if p.at(KW_LET) {
         let_line(p);
     } else if at_assignment(p) {
         assign_line(p);
@@ -425,6 +440,28 @@ fn let_line(p: &mut Parser<'_, '_>) {
         p.skip_ws();
         super::expr::expression(p);
     }
+    p.finish_node();
+}
+
+/// `~ until cond` — a content-ground condition-park escape (issue #1972).
+/// Native has no `await` keyword (retired, decision-log 2026-07-23 item 4);
+/// `until` is its sole flow-suspension spelling, at both grounds — this is
+/// the content-ground counterpart of [`super::control_flow::until_stmt`],
+/// identical except for the terminator: this is a content-ground line, so
+/// it stops at `NEWLINE`/EOF, never the code-ground `;` (see [`logic_line`]'s
+/// doc) — the same one-node-two-grammars precedent [`assign_line`]/
+/// [`let_line`] already follow, reusing `UNTIL_STMT` unmodified. Dispatched
+/// ahead of `at_assignment`/`KW_LET` in [`logic_line`] since `KW_UNTIL` is a
+/// distinct token from `IDENT`, so there is no ambiguity with a plain
+/// `~ until = expr` assignment to a variable literally named `until` — that
+/// name is unavailable, `until` is hard-reserved everywhere (`syntax_kind.rs`
+/// Finding #1's "`RustScript` reserves globally" posture), same as `if`/
+/// `while`/`for`.
+fn until_line(p: &mut Parser<'_, '_>) {
+    p.start_node(UNTIL_STMT);
+    p.bump(); // KW_UNTIL
+    p.skip_ws();
+    super::expr::expression(p);
     p.finish_node();
 }
 
