@@ -281,12 +281,27 @@ fn eval_const_lambda(
         lir::Expr::MakeFnValue { target, bound } if bound.is_empty() => {
             lir::ConstValue::FnRef(target)
         }
-        // Structurally unreachable at file scope (see this fn's doc) —
-        // falls back to `Null` like every other "can't happen" arm in this
-        // file (e.g. `eval_const_expr`'s `Prefix(Negate, …)` on a
-        // non-numeric) rather than fabricating a snapshot for captures
-        // that were never computed.
-        _ => lir::ConstValue::Null,
+        // Structurally unreachable at file scope today (see this fn's doc:
+        // `temp_slot` can never hit with an empty `TempMap`/`visible_temps`,
+        // so `bound` is always empty) — but "unreachable today" is exactly
+        // the invariant a future change could break silently. Review
+        // finding: falling back to a bare `Null` here would turn that break
+        // into a silently-wrong global default (a captured `#@local`
+        // snapshot that was never computed, quietly discarded) rather than
+        // a refusal — this crate's own "flag silent data drops" rule. Emit
+        // the same `E083` `is_const_foldable_decl_default` would have
+        // raised for this position instead: a future break of the
+        // empty-frame invariant becomes a loud compile refusal, never a
+        // silent one.
+        _ => {
+            diagnostics.push(Diagnostic {
+                file,
+                range: l.ptr.text_range(),
+                message: DiagnosticCode::E083.title().to_string(),
+                code: DiagnosticCode::E083,
+            });
+            lir::ConstValue::Null
+        }
     }
 }
 
