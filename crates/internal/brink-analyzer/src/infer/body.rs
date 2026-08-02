@@ -2918,13 +2918,21 @@ impl InferPass<'_, '_> {
         // verifies a `ref` position is bound to *some* durable cell, never
         // that the cell's static type agrees with the declared `ref` param
         // type, so this invariant check is a separate obligation. Mirrors
-        // `infer_call`'s direct-call check exactly, down to the
-        // observed-local carve-out (`arg_is_observed_local`) staying scoped
-        // to the non-ref arm only (the same review finding that check's own
-        // doc records). By-value (non-`ref`) bound arguments are
-        // deliberately left unchecked here — #2001's own scope note: adding
-        // a by-value check at this creation site is new checking that needs
-        // its own design call, not an assumed yes.
+        // `infer_call`'s direct-call check, but only the `ref`-arm half of
+        // it: this loop only checks `ref`-bound arguments, so the
+        // observed-local carve-out below is always the *partial* one
+        // (`!observed || assignable(..)`), never the *full* skip
+        // (`!observed && !assignable(..)`) `infer_call`'s non-ref arm uses.
+        // That is deliberate, not an oversight — the #1995 finding on
+        // `infer_call` is that the full skip is only sound for the non-ref
+        // case (an argument that would already conflict and get reported as
+        // `E066`); a `ref` mismatch that stays `assignable` in the
+        // covariant direction still needs its own report even when the
+        // argument is an observed local, so the ref arm always keeps this
+        // narrower, partial carve-out. By-value (non-`ref`) bound arguments
+        // are deliberately left unchecked here — #2001's own scope note:
+        // adding a by-value check at this creation site is new checking
+        // that needs its own design call, not an assumed yes.
         let ref_positions = self.ctx.index.symbols.get(&def);
         for (i, arg) in fl.args.iter().enumerate() {
             if let Some(param_ty) = sig.params.get(i) {
