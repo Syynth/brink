@@ -18,7 +18,10 @@
 //! updated deliberately, with the oracle re-run; that is the point of
 //! writing them down.
 
-use brink_runtime::{DotNetRng, Line, RanOutOfContentCause, RuntimeError, Story};
+use brink_format::Value;
+use brink_runtime::{
+    DotNetRng, ExternalFnHandler, ExternalResult, Line, RanOutOfContentCause, RuntimeError, Story,
+};
 
 /// Compile ink source and link it into a runnable story.
 #[expect(clippy::unwrap_used)]
@@ -169,7 +172,7 @@ fn end_classifies_eagerly_unlike_done() {
 /// the module docs' philosophy. If a future fix makes tunnels match C#'s
 /// no-auto-pop semantics, this test must flip to `Tunnel` deliberately, with
 /// the oracle corpus re-run (`docs/decision-log.md`-worthy: it changes VM
-/// frame-popping, not just message text).
+/// frame-popping, not just message text). Tracked in #2005.
 #[test]
 fn tunnel_fall_off_classifies_as_plain_not_tunnel_today() {
     let mut story =
@@ -185,7 +188,7 @@ fn tunnel_fall_off_classifies_as_plain_not_tunnel_today() {
             story.continue_single(),
             Err(RuntimeError::RanOutOfContent(RanOutOfContentCause::Plain))
         ),
-        "tunnel fall-off is misclassified as Plain today (see #1993 scope notes) — \
+        "tunnel fall-off is misclassified as Plain today (see #2005) — \
          a future fix to Tunnel auto-pop semantics must flip this to Tunnel deliberately"
     );
 }
@@ -202,6 +205,8 @@ fn tunnel_fall_off_classifies_as_plain_not_tunnel_today() {
 /// reachable in principle (e.g. if a future change lets some frame type
 /// block the cascade partway up without itself being poppable), but not
 /// through any call-stack shape this runtime can currently produce.
+/// Tracked in #2005 (filed for the Tunnel case; revisit this test's framing
+/// once that lands, in case it also makes `Function` reachable).
 #[test]
 fn function_fall_off_classifies_as_plain_not_function_today() {
     let mut story =
@@ -218,6 +223,73 @@ fn function_fall_off_classifies_as_plain_not_function_today() {
             Err(RuntimeError::RanOutOfContent(RanOutOfContentCause::Plain))
         ),
         "function fall-off cascades down to the root frame's own Plain \
-         classification today (see #1993 scope notes)"
+         classification today (see #2005)"
+    );
+}
+
+/// A no-op [`ExternalFnHandler`] — the regression below calls no externals,
+/// it only needs a handler to satisfy [`Story::call_function`]'s signature.
+struct NoExternals;
+impl ExternalFnHandler for NoExternals {
+    fn call(&self, _name: &str, _args: &[Value]) -> ExternalResult {
+        ExternalResult::Fallback
+    }
+}
+
+/// Regression for the review finding on #1993's `handle_frame_exhaustion`
+/// change: the captured cause must not be overwritten by a transient
+/// exhaustion that happens *after* the real fall-off, on a call the
+/// deferred fault never reads.
+///
+/// Sequence: the main flow falls off the end (`Plain`, exactly like
+/// [`ran_out_of_content_faults_on_the_call_after_the_done_line`]) and
+/// delivers its trailing text as `Line::Done`. Before the caller ever asks
+/// for the *next* line, the engine drives an out-of-band
+/// [`Story::call_function`] evaluation on the *same* flow: `f` calls a void
+/// helper `g` (no `~ return`, so `g`'s frame exhausts naturally through
+/// `handle_frame_exhaustion` with `frame_type: Function`), then `f` itself
+/// returns explicitly via `~ return` (which goes through `pop_call_frame`
+/// directly, never through `handle_frame_exhaustion`). `g`'s exhaustion
+/// must not clobber the `Plain` cause the earlier fall-off recorded: the
+/// *next* `continue_single` after the eval still has to report the
+/// original `Plain` reason, not `Function`.
+#[test]
+fn call_function_void_helper_exhaustion_does_not_clobber_the_pending_plain_cause() {
+    let mut story = story_from_source(
+        "-> k\n\
+         == k ==\n\
+         Hello.\n\
+         \n\
+         === function f ===\n\
+         ~ g()\n\
+         ~ return true\n\
+         \n\
+         === function g ===\n\
+         World.\n",
+    );
+
+    let (terminal, text) = drive_to_terminal(&mut story);
+    assert!(matches!(terminal, Line::Done { .. }));
+    assert!(text.contains("Hello."));
+    assert!(
+        !story.did_safe_exit(),
+        "k's body falls off the end with no -> DONE"
+    );
+
+    // Out-of-band eval on the same flow: `g`'s implicit-return exhaustion
+    // must not touch `ran_out_of_content_cause`, since this call doesn't
+    // yield a `Done` of its own.
+    let ret = story
+        .call_function("f", &[], &NoExternals)
+        .expect("f() should evaluate cleanly with no pending external");
+    assert_eq!(ret, Value::Bool(true));
+
+    assert!(
+        matches!(
+            story.continue_single(),
+            Err(RuntimeError::RanOutOfContent(RanOutOfContentCause::Plain))
+        ),
+        "g's void-helper exhaustion during call_function must not clobber \
+         the Plain cause the earlier fall-off recorded"
     );
 }

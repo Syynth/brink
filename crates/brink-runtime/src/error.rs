@@ -10,24 +10,33 @@ use brink_format::{DecodeError, DefinitionId};
 /// `callStack.CanPop(PushPopType.Tunnel)`, then `.CanPop(PushPopType.Function)`,
 /// then `!callStack.canPop`, with a final backstop for none of the above).
 ///
-/// Captured the moment a frame's content is discovered exhausted
+/// Classified the moment a frame's content is discovered exhausted
 /// (`vm::handle_frame_exhaustion`, the same instant C# reads
-/// `callStack.CanPop`) and stashed on `Flow` until the *next*
-/// `continue_single` call raises the deferred fault (issue #1574 ruled the
-/// deferred timing stays — this only changes which cause is attached, not
-/// *when* the fault fires). It has to be captured that early rather than
-/// read fresh at fault time: unlike C#, this runtime's own exhaustion
-/// recovery always pops the exhausted frame (even a Tunnel with nothing
-/// pending), so by the time the deferred fault fires the frame that
-/// triggered it is usually long gone from the call stack.
+/// `callStack.CanPop`), but only *stashed* on `Flow` — for the *next*
+/// `continue_single` call to raise as the deferred fault (issue #1574 ruled
+/// the deferred timing stays — this only changes which cause is attached,
+/// not *when* the fault fires) — on the paths where this exhaustion is
+/// itself the terminal one (`vm::Stepped::Done`). A frame whose exhaustion
+/// instead resumes execution (a completed thread with a parent to fall back
+/// to, a popped frame with content still below it) never writes its cause:
+/// otherwise a transient exhaustion elsewhere on the same flow (e.g. a
+/// `Story::call_function` boundary evaluating a function that calls a void
+/// helper) would clobber a cause an earlier, still-pending exhaustion had
+/// already recorded, and a later, unrelated `Done` would read it stale. It
+/// has to be classified that early rather than read fresh at fault time:
+/// unlike C#, this runtime's own exhaustion recovery always pops the
+/// exhausted frame (even a Tunnel with nothing pending), so by the time the
+/// deferred fault fires the frame that triggered it is usually long gone
+/// from the call stack.
 ///
 /// In practice, only [`Plain`](Self::Plain) is reachable through any story
-/// today: a Tunnel or Function frame's exhaustion is captured correctly at
+/// today: a Tunnel or Function frame's exhaustion classifies correctly at
 /// the instant it happens, but this runtime's frame-popping (unlike C#'s)
-/// keeps unwinding past it — cascading all the way to the root frame's own
-/// exhaustion, which overwrites the cause with `Plain` before the fault
-/// ever surfaces. Making the other three arms reachable needs a separate,
-/// deliberate fix to that popping behavior (issue #1993's scope notes).
+/// keeps unwinding past it instead of stopping there — cascading all the
+/// way to the root frame's own exhaustion, which is the one that actually
+/// produces the terminal `Done` and gets its `Plain` cause stashed, before
+/// the fault ever surfaces. Making the other three arms reachable needs a
+/// separate, deliberate fix to that popping behavior — tracked in #2005.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, thiserror::Error)]
 pub enum RanOutOfContentCause {
     /// The top call-stack frame is a tunnel (`->t->`) — content ran out
@@ -46,10 +55,15 @@ pub enum RanOutOfContentCause {
     #[default]
     #[error("ran out of content. Do you need a '-> DONE' or '-> END'?")]
     Plain,
-    /// The call stack can pop, but the top frame is neither a tunnel nor a
-    /// function (e.g. a thread boundary, or an in-progress
-    /// engine-called-function frame). C#'s backstop for a call-stack shape
-    /// well-formed compiler output should never produce.
+    /// The call stack can still pop, but the exhausted frame that produced
+    /// the terminal `Done` is neither a tunnel nor a function — e.g. a
+    /// `Thread` boundary with no parent thread left to fall back to, or a
+    /// `FunctionEvalFromGame` boundary that is itself the last frame
+    /// standing. C#'s backstop for a call-stack shape well-formed compiler
+    /// output should never produce; an *ordinary* `<- thread` completing
+    /// (a `Thread` frame exhausting with a parent thread still waiting)
+    /// never reaches this arm — that path resumes via `ThreadCompleted` and
+    /// records no cause at all.
     #[error("unexpectedly reached end of content for unknown reason. Please debug compiler!")]
     Unknown,
 }

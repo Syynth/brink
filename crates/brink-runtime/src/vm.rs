@@ -2809,16 +2809,21 @@ fn handle_frame_exhaustion(
     stats: &mut Stats,
     frame_type: CallFrameType,
 ) -> Result<Stepped, RuntimeError> {
-    // Record *why*, from the exhausted frame's shape right now — before
-    // anything below pops it — in case this turns out to be the last
-    // exhaustion event before a content-exhausted `Done` (issue #1993).
-    // Harmless to write on every call: it is only ever consulted one
-    // `continue_single` later, and only when that later check finds
-    // `did_safe_exit == false`, so an overwrite from a branch that resumes
-    // normally (pending choices, a popped function with more content below)
-    // is simply superseded before anyone reads it.
+    // Classify *why*, from the exhausted frame's shape right now — before
+    // anything below pops it (issue #1993). This is only meaningful for a
+    // `Done` returned from *this* call: that is the sole case the deferred
+    // `RanOutOfContent` fault (one `continue_single` later) can be
+    // reporting on. It must NOT be written to `flow` on a branch that
+    // resumes execution (a completed thread with more to run, a popped
+    // frame with content still below it) — doing so unconditionally would
+    // let a transient exhaustion elsewhere on the same flow (e.g. a
+    // `Story::call_function` boundary evaluating a function that calls a
+    // void helper) clobber a cause an *earlier*, still-pending exhaustion
+    // already recorded, which is then read stale by a later, unrelated
+    // `Done`. So: compute it now, but stash it on `flow` only at each
+    // `return Ok(Stepped::Done)` below.
     let can_pop = flow.current_thread().call_stack.len() > 1;
-    flow.ran_out_of_content_cause = classify_ran_out_of_content(frame_type, can_pop);
+    let cause = classify_ran_out_of_content(frame_type, can_pop);
 
     if frame_type == CallFrameType::Thread {
         // Thread boundary exhausted — thread is done. Pop it without
@@ -2829,6 +2834,7 @@ fn handle_frame_exhaustion(
             stats.threads_completed += 1;
             return Ok(Stepped::ThreadCompleted);
         }
+        flow.ran_out_of_content_cause = cause;
         return Ok(Stepped::Done);
     }
 
@@ -2844,6 +2850,7 @@ fn handle_frame_exhaustion(
             stats.threads_completed += 1;
             return Ok(Stepped::ThreadCompleted);
         }
+        flow.ran_out_of_content_cause = cause;
         return Ok(Stepped::Done);
     }
 
@@ -2854,6 +2861,7 @@ fn handle_frame_exhaustion(
             stats.threads_completed += 1;
             return Ok(Stepped::ThreadCompleted);
         }
+        flow.ran_out_of_content_cause = cause;
         return Ok(Stepped::Done);
     }
     Ok(Stepped::Continue)

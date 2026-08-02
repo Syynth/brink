@@ -14,10 +14,13 @@ consumer matching the old shape. The four messages mirror C#'s
 In practice only `Plain` is reachable through any story today — its
 message text is byte-identical to the old unit variant's, so this ships
 with no behavioral change for `@brink-lang/web` consumers. The other
-three causes are correctly wired but not yet reachable: this runtime's
+three causes classify correctly at the instant a frame's content is
+discovered exhausted, but the classification is only ever persisted for
+the exhaustion that actually produces the terminal `Done`: this runtime's
 own frame-popping (unlike C#'s) always unwinds an exhausted Tunnel frame
-even with nothing pending, so the classification cascades down to
-`Plain` before the deferred fault ever reads it (tracked as a scope note
-on #1993; see `tunnel_fall_off_classifies_as_plain_not_tunnel_today` /
+even with nothing pending, so a Tunnel or Function frame's exhaustion
+cascades down to the root frame's own `Plain` exhaustion before the
+deferred fault ever reads it (tracked in #2005; see
+`tunnel_fall_off_classifies_as_plain_not_tunnel_today` /
 `function_fall_off_classifies_as_plain_not_function_today` in
 `crates/brink-runtime/tests/terminal_classification.rs`).
