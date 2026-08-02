@@ -1132,12 +1132,15 @@ impl ReturnRedirect {
 
 impl ReturnStmt {
     /// The value expression, if any — `RETURN_STMT`'s only child node.
-    /// `None` for the content-ground bare `return`/`return -> x` (never
-    /// parses one, `parser/divert.rs::return_stmt`); `Some`/`None` for the
+    /// `Some`/`None` for both grammars now: the content-ground bare
+    /// `return`/`return <expr>`/`return -> x` (`parser/divert.rs::
+    /// return_stmt` — the value is optional, and `-> x` is a distinct
+    /// `RETURN_REDIRECT` node, never this accessor's concern; issue #1973
+    /// added the value case, previously always `None` here) and the
     /// code-ground `return e?;` (B0.8 Wave B tail, issue #1322,
-    /// `parser/stmt.rs::return_stmt` — the initializer is optional there
-    /// too). See `syntax_kind.rs`'s `RETURN_STMT` doc for why one node
-    /// shape serves both grammars.
+    /// `parser/stmt.rs::return_stmt` — the initializer was already
+    /// optional there). See `syntax_kind.rs`'s `RETURN_STMT` doc for why
+    /// one node shape serves both grammars.
     pub fn value(&self) -> Option<SyntaxNode> {
         self.syntax.children().next()
     }

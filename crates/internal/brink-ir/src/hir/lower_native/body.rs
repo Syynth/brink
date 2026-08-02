@@ -301,10 +301,11 @@ fn lower_one_item(
             };
             lower_logic_line(file_id, &ll, diags)
         }
+        // `return <expr>` (issue #1973) — see `lower_return_value`'s doc.
         N::RETURN_STMT => vec![Stmt::Return(Return {
             ptr: Some(native_provenance(file_id, NodeClass::Return, node)),
             kind: ReturnKind::Explicit,
-            value: None,
+            value: lower_return_value(file_id, node, diags),
             onwards_args: Vec::new(),
         })],
         N::RETURN_REDIRECT => lower_return_redirect(file_id, node, diags),
@@ -1098,6 +1099,28 @@ fn lower_divert_target(
         path,
         args: Vec::new(),
     })
+}
+
+/// `RETURN_STMT`'s optional value expression (issue #1973): `None` for a
+/// bare content-ground `return` (unchanged) and `Some` once
+/// `parser/divert.rs::return_stmt` parses a trailing value expression —
+/// mirrors `lower_native::control_flow::lower_return_stmt`'s identical
+/// `ret.value().map(...)` for the code-ground `return expr?;` form, the two
+/// grammars' shared `RETURN_STMT` node shape. A value-carrying `Explicit`
+/// return outside a `fn` is still caught downstream by `brink-analyzer`'s
+/// E032 ("explicit return outside function") — [`fixup_return_kind`] only
+/// demotes a *bare* (`value.is_none()`) return to `TunnelRedirect`, so this
+/// stays a pure grammar/lowering fix, not a change to whether a
+/// non-function `flow` may carry a return value (an open design question
+/// per issue #1973's own scope note, not decided here).
+fn lower_return_value(
+    file_id: FileId,
+    node: &SyntaxNode,
+    diags: &mut Vec<Diagnostic>,
+) -> Option<Expr> {
+    ast::ReturnStmt::cast(node.clone())
+        .and_then(|n| n.value())
+        .map(|v| lower_expr(file_id, &v, diags))
 }
 
 /// `return -> x` (charter §11's tunnel-return respelling, B0.2's payoff).

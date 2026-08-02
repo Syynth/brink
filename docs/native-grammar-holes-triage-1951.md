@@ -230,6 +230,42 @@ position."
 
 Corpus impact: `"return with a value expression"` bucket, **16 cases**.
 
+**Correction (issue #1973, landed):** the grammar gap is fixed —
+`divert.rs::return_stmt` now parses a trailing value expression at
+content-ground position (a positive "does this look like an expression"
+probe, not a terminator enumeration, so it coexists cleanly with the
+`return -> target` redirect and an `else`-arm boundary in colon-body form),
+`lower_native::body` lowers it, and `emit_native::emit_return` spells it
+back. This is a pure grammar/lowering/emitter fix, deliberately **not** a
+semantics change: this doc's own literal reproduction above
+(`flow main() { … return 5 }`) still does not compile clean — it now fails
+with **E032** ("explicit return outside function") instead of E033, since
+`fixup_return_kind` only demotes a *bare* (no-value) return in a
+non-function container to a tunnel redirect; a value-carrying one stays
+`ReturnKind::Explicit`, and E032 correctly rejects it there. That's the
+*more accurate* diagnostic, not a regression — whether a non-function
+`flow`'s prose body may semantically carry a return value is still the open
+design question this doc flagged (`docs/block-effect-model.md` §5's
+"Value-returning flows — RULED (sitting)" names a bigger, not-yet-built
+mechanism: a *declared return type* toggling a `flow` into a coroutine —
+which is a separate, larger effort than this grammar fix). A value-carrying
+return inside an actual `fn` (`is_function: true`, e.g. this corpus
+bucket's own `is_alive`/`factorial` motivating cases) compiles and emits
+cleanly today.
+
+A second, separate, pre-existing gap surfaced while verifying this fix's
+real round-trip: `emit_native::emit_knot` always prints a bare `{` for both
+`flow` and `fn`, but its whole `emit_stmt_stream`/`emit_return` printer only
+ever spells **prose-ground** statement syntax (a bare `return`/`return
+<expr>` with no `;`, among others) — since `fn`'s plain `{ }` defaults to
+**code-ground** `STMT_BLOCK` (`;`-terminated statements, charter §4), any
+`fn` this emitter produces needs the `>{ }` prose override to re-parse, and
+today never gets it. This blocks genuine oracle-episode-identity round-trip
+for this bucket's own function-knot corpus cases specifically (though not
+this issue's own acceptance metric, `full_corpus_sweep`'s emit-success
+count, which never re-parses) — flagged as its own follow-up rather than
+folded into #1973's fix.
+
 ### Hole 5 — "No `else if` chain"
 
 **DOES NOT REPRODUCE as a grammar gap — the hole as stated is false.** The

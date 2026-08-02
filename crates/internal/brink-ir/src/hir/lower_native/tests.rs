@@ -1271,6 +1271,47 @@ fn explicit_return_stamps_explicit_kind() {
 }
 
 #[test]
+fn content_ground_return_with_value_lowers_the_expression() {
+    // `>{ }` forces the prose-ground override on an `fn`, exercising the
+    // content-ground `RETURN_STMT` value grammar (issue #1973) rather than
+    // the code-ground `return expr;` form `lower_return_stmt` already
+    // covers. `is_function: true` keeps this legal per E032 (checked in
+    // `brink-analyzer`, not here) — the corpus motivation
+    // (I003-tunnel-to-death's `~ return hp > 0`) is exactly a function
+    // knot's value-carrying return.
+    let (hir, _m, diags) = lower_src("fn f() >{\n  return hp > 0\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let Stmt::Return(r) = &hir.knots[0].body.stmts[0] else {
+        panic!("expected Return, got {:?}", hir.knots[0].body.stmts[0]);
+    };
+    assert_eq!(r.kind, ReturnKind::Explicit);
+    assert!(
+        matches!(r.value, Some(Expr::Infix(_))),
+        "expected an infix comparison value, got {:?}",
+        r.value
+    );
+}
+
+#[test]
+fn content_ground_return_with_value_stays_explicit_in_a_non_function() {
+    // A value-carrying `return <expr>` inside an ordinary `flow` (not
+    // `fn`) parses and lowers cleanly at THIS layer — `fixup_return_kind`
+    // only demotes a *bare* (`value.is_none()`) return to
+    // `TunnelRedirect`, so a valued one stays `Explicit` regardless of
+    // `is_function`. Whether that's semantically legal is
+    // `brink-analyzer`'s E032 call (`validate.rs`'s
+    // `value_carrying_return_in_non_function_still_emits_e032`), a
+    // different crate/pass — this test only pins the lowering shape.
+    let (hir, _m, diags) = lower_src("flow f() {\n  Hello.\n  return 5\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let Stmt::Return(r) = hir.knots[0].body.stmts.last().expect("a Return statement") else {
+        panic!("expected Return, got {:?}", hir.knots[0].body.stmts);
+    };
+    assert_eq!(r.kind, ReturnKind::Explicit);
+    assert!(matches!(r.value, Some(Expr::Int(5))));
+}
+
+#[test]
 fn return_redirect_to_named_path_stamps_tunnel_redirect() {
     let (hir, _m, diags) = lower_src("flow b() {\n  Bye.\n}\nflow a() {\n  return -> b\n}\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
