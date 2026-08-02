@@ -52,7 +52,12 @@
 //! - Only a **wholly literal** prose line is a candidate — one with no
 //!   interpolation, glue, markup, tags, label or embedded divert. A line
 //!   carrying dynamic parts has no fixed text for a pattern to match, and
-//!   capture spans over it would not point at anything real.
+//!   capture spans over it would not point at anything real. This
+//!   restriction applies identically to a `CUE`'s name and a
+//!   `PARENTHETICAL`'s delivery text (issue #1720 widens [`candidate`] to
+//!   these two shapes, alongside `CONTENT_LINE`/`SCENE_HEADING`) — a cue
+//!   or parenthetical carrying a trailing tag extension declines the same
+//!   way a slug/tag-carrying heading does.
 //! - A claiming handler's **own body is not claimable** (the staging rule
 //!   §3.5 states for the conventions module: it cannot use the conventions
 //!   it defines). Without this, a handler whose body repeats the shape it
@@ -1021,6 +1026,31 @@ pub(super) fn try_dispatch(
 /// optional `[slug]` and trailing tags are structure the pattern is not
 /// shown, so a heading carrying either is declined rather than matched
 /// against a partial line.
+///
+/// **Issue #1720** (the built-in screenplay preset) widens this to the
+/// two remaining literal-line grammar shapes `docs/prose-dialect-spec.md`
+/// §3.5b now names as claim candidates alongside a prose line and scene
+/// heading — the spec's clause was amended in the same PR (rule 20d: a
+/// ruling lands in the spec, not only in a code comment) — the ruling's own
+/// natural-notation examples are cue/heading text, and the wave retro
+/// posted on #1720 itself names the gap this closes: without it, real
+/// `@NAME` cue and `(parenthetical)` lines are structurally invisible to
+/// `claims`/`args` dispatch and always fall to `body::lower_one_item`'s
+/// loud `E129`, no matter what a project or preset declares):
+///
+/// - A `CUE`'s `CUE_NAME` run qualifies the same way — exactly that one
+///   child, nothing else. A cue carrying a trailing tag extension (§8d.4,
+///   `@VENDOR #(v.o.)`) is declined, mirroring the heading/slug case: the
+///   tag is structure the pattern is not shown.
+/// - A `PARENTHETICAL`'s `TEXT` run (the text strictly between the
+///   parens — `(`/`)` are tokens, not part of the child) qualifies the
+///   same way; a parenthetical carrying trailing tags is declined too.
+///
+/// Both new arms feed the exact same `try_claim`/`try_dispatch`
+/// mechanism unchanged — this function is the only seam that needed
+/// widening; the block-capture terminator (`capture_block`) already
+/// treats an upcoming `CUE`/`PARENTHETICAL` as "ends the run" regardless
+/// of whether either is itself claimable, so nothing there changes.
 fn candidate(node: &SyntaxNode) -> Option<(ElementKind, SyntaxNode)> {
     match node.kind() {
         N::CONTENT_LINE => {
@@ -1034,6 +1064,18 @@ fn candidate(node: &SyntaxNode) -> Option<(ElementKind, SyntaxNode)> {
             let first = children.next()?;
             (first.kind() == N::SCENE_TITLE && children.next().is_none())
                 .then_some((ElementKind::SceneHeading, first))
+        }
+        N::CUE => {
+            let mut children = node.children();
+            let first = children.next()?;
+            (first.kind() == N::CUE_NAME && children.next().is_none())
+                .then_some((ElementKind::Cue, first))
+        }
+        N::PARENTHETICAL => {
+            let mut children = node.children();
+            let first = children.next()?;
+            (first.kind() == N::TEXT && children.next().is_none())
+                .then_some((ElementKind::Parenthetical, first))
         }
         _ => None,
     }

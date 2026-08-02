@@ -300,6 +300,42 @@ fn annotations_element_block() {
     assert_case("annotations-element-block");
 }
 
+/// The built-in screenplay preset (issue #1720, `std/conventions/
+/// screenplay.brink`), exercised end to end: `heading`/`transition` (plain
+/// `claims`, code-ground bodies returning a string — mirroring
+/// `annotations-element`'s `interior`) and `cue`/`parenthetical` (`claims`
+/// + `block`, prose-ground `>{ }` bodies — mirroring `annotations-element-
+/// block`'s `cue`).
+///
+/// This is the first e2e coverage of the *actual* `CUE`/`PARENTHETICAL`
+/// grammar nodes reaching a claim (issue #1720's own `candidate()`
+/// widening): every pre-existing element fixture, including `annotations-
+/// element-block`'s own `cue` handler, only ever matched a bare, ALL-CAPS
+/// **`CONTENT_LINE`** that happens to look like a cue name (`VENDOR` with
+/// no `@`) — a real `@VENDOR` line was structurally invisible to `claims`
+/// dispatch before this issue (`hir::lower_native::element::candidate`
+/// recognized only `CONTENT_LINE`/`SCENE_HEADING`), always falling to the
+/// loud `E129` default regardless of what any project or preset declared.
+///
+/// Two `cue` shapes are both exercised: `@VENDOR` directly followed by a
+/// `(hushed)` parenthetical (the cue's own `block` capture sees ZERO
+/// lines — the ruled terminator ends a run at any element-level line,
+/// and a `PARENTHETICAL` is one, `docs/prose-dialect-spec.md` §3.5b — so
+/// `VENDOR` is `cue`'s own output, and the parenthetical claims the
+/// dialogue separately, one line down), and `@KID` directly followed by
+/// dialogue with no parenthetical (the cue's `block` capture sees that
+/// dialogue line directly). `expected.txt`'s `VENDOR` line is followed by
+/// a BLANK line, not nothing — that blank line is exactly what an empty
+/// `Fragment` renders as through `>{ {name}\n{body} }` (the template's own
+/// newline between `{name}` and `{body}` still emits even when `{body}`
+/// interpolates to the empty string) — confirmed against a real
+/// compile+run, not assumed (see the PR description for why this case was
+/// written empirically rather than by prediction).
+#[test]
+fn conventions_screenplay_preset() {
+    assert_case("conventions-screenplay-preset");
+}
+
 /// Compile-level sibling to `annotations_element_block`, proving the ⚠
 /// requirement `docs/decision-log.md`'s 2026-08-01 ruling flags as owed and
 /// unverified: a block's interior lines must keep their **own** line-table
@@ -779,6 +815,7 @@ fn every_case_directory_has_a_test() {
         "array-literal",
         "as-binding",
         "construction-literal",
+        "conventions-screenplay-preset",
         "directive-like-tag",
         "fn-value-bare-name",
         "for-k-v",
