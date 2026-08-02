@@ -103,10 +103,10 @@ pub struct ManifestSpanAttr {
     pub name: String,
     /// Whether a span of this kind must carry this attribute, checked by
     /// `brink_analyzer::markup_check` (`E173`). Defaults to `false`
-    /// (optional), matching every attribute's behavior before this field
-    /// existed — a manifest predating issue #1997 declares only names, and
-    /// every one of them deserializes as optional, exactly as it always
-    /// checked.
+    /// (optional) when an attribute record omits this key. Note this is
+    /// about the *record* shape, not the pre-#1997 bare-string element
+    /// shape (`"attrs": ["amount"]`) — that older form does not deserialize
+    /// at all and must be migrated to `{ "name": "amount" }`.
     #[serde(default)]
     pub required: bool,
     /// Reserved slot for a future attribute-value type (issue #1780 gap 2).
@@ -118,7 +118,7 @@ pub struct ManifestSpanAttr {
     /// manifest shape: `TypeRef` is `#[serde(transparent)]`, so this field's
     /// wire form is already the plain-string shape `ManifestParam::ty` uses
     /// (e.g. `"ty": "int"`), and switching it on is additive.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ty: Option<TypeRef>,
 }
 
@@ -578,8 +578,28 @@ mod doc_example_tests {
         let round_tripped: super::HostManifest =
             serde_json::from_str(&serialized).expect("re-parse serialized manifest");
         assert_eq!(manifest, round_tripped);
-        assert!(serialized.contains(
-            r#""markup":[{"name":"wave","attrs":[{"name":"amount","required":false,"ty":null}]}"#
-        ));
+        assert!(
+            serialized.contains(
+                r#""markup":[{"name":"wave","attrs":[{"name":"amount","required":false}]}"#
+            )
+        );
+    }
+
+    /// Issue #1997 is a **breaking** wire-format change: the pre-#1997 bare
+    /// attribute-name-array form (`"attrs": ["amount"]`) must no longer
+    /// parse. `ManifestSpanAttr` is a plain derived-`Deserialize` struct
+    /// with no untagged/custom impl, so a JSON string element where a
+    /// `{ "name": ... }` record is expected is a hard type error, not a
+    /// silently-defaulted optional field. This guards the migration claim
+    /// made in `docs/host-capability-manifest.md`'s "Markup vocabulary"
+    /// section and in [`ManifestSpanAttr::required`]'s doc comment, both of
+    /// which previously (wrongly) implied this form still parsed.
+    #[test]
+    fn pre_1997_bare_attribute_name_array_is_rejected() {
+        let json = r#"{ "markup": [{ "name": "wave", "attrs": ["amount"] }] }"#;
+        assert!(
+            serde_json::from_str::<super::HostManifest>(json).is_err(),
+            "the pre-#1997 bare attribute-name form is deliberately rejected"
+        );
     }
 }

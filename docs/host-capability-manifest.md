@@ -325,9 +325,12 @@ conventions module instead — a different surface with a different author.
 ```
 
 Each attribute is `{ "name": "…", "required": false }` — `name` is the only
-required key; `required` defaults to `false` (optional) when omitted, so a
-manifest predating issue #1997 (a bare attribute-name array) still parses:
-every attribute in it deserializes as optional, exactly as it always checked.
+required key; `required` defaults to `false` (optional) when an attribute
+*record* omits it. This is a **breaking wire-format change**: issue #1997
+widened `attrs` from a bare `Vec<String>` to `Vec<ManifestSpanAttr>`, so the
+older bare attribute-name-array form (`"attrs": ["amount"]`) no longer
+deserializes at all — it must be migrated to the record form
+(`"attrs": [{ "name": "amount" }]`).
 
 **Freeform by default.** Markup is freeform unless a vocabulary is declared: a
 project with no manifest, *and* a project whose manifest carries only
