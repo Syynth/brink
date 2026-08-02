@@ -1,3 +1,4 @@
 Value is 9.
+Temp is 10.
 Hi
 after

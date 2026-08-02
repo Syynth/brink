@@ -40,7 +40,7 @@ use crate::provenance::NodeClass;
 use crate::{
     Assignment, Block, BlockStmt, Content, ContentPart, Diagnostic, DiagnosticCode, Divert,
     DivertPath, DivertTarget, ElseBranch, Expr, IfStmt, LogicBlock, Name, Return, ReturnKind,
-    SpanPart, Stmt, StringPart, Tag, TunnelCall,
+    SpanPart, Stmt, StringPart, Tag, TempDecl, TunnelCall,
 };
 
 use super::choice::lower_choice_point;
@@ -364,21 +364,32 @@ fn lower_one_item(
 /// `~ stmt` — the content-ground logic-line escape into code (charter
 /// §8.2, RULED 2026-07-23 `docs/decision-log.md` "Native interleaving &
 /// body-dialect spelling", issue #1991: ink's logic line, kept). Targets
-/// the top-level `Stmt::Assignment`/`Stmt::ExprStmt` variants — an
-/// already-proven HIR/LIR/codegen/runtime path, since those are exactly
-/// what the ink-dialect's own logic line already lowers to
+/// the top-level `Stmt::TempDecl`/`Stmt::Assignment`/`Stmt::ExprStmt`
+/// variants — an already-proven HIR/LIR/codegen/runtime path, since those
+/// are exactly what the ink-dialect's own logic line already lowers to
 /// (`hir::lower::content::logic_line::LogicLineOutput`) — rather than
-/// inventing a new one. Only the two `LogicLine` shapes `parser/stmt.rs::
-/// logic_line` can produce are matched; a `LOGIC_LINE` with neither child
-/// (should not happen given that parser, but CST nodes from a malformed
-/// parse are never assumed well-formed) is diagnosed loudly (E129) rather
-/// than silently dropped.
+/// inventing a new one. `TempDecl` (`~ let name = expr`) is issue #1972's
+/// addition to the two shapes #1991 originally wired; only the three
+/// `LogicLine` shapes `parser/stmt.rs::logic_line` can produce are matched
+/// — a `LOGIC_LINE` with none of them (should not happen given that
+/// parser, but CST nodes from a malformed parse are never assumed
+/// well-formed) is diagnosed loudly (E129) rather than silently dropped.
 fn lower_logic_line(
     file_id: FileId,
     ll: &ast::LogicLine,
     diags: &mut Vec<Diagnostic>,
 ) -> Vec<Stmt> {
     let range = ll.syntax().text_range();
+    if let Some(let_stmt) = ll.let_stmt() {
+        return lower_logic_line_temp_decl(file_id, &let_stmt, diags).map_or_else(Vec::new, |td| {
+            let needs_eol = td.value.as_ref().is_some_and(expr_contains_call);
+            let mut out = vec![Stmt::TempDecl(td)];
+            if needs_eol {
+                out.push(Stmt::EndOfLine);
+            }
+            out
+        });
+    }
     if let Some(assign) = ll.assign_stmt() {
         return lower_logic_line_assignment(file_id, &assign, diags).map_or_else(Vec::new, |a| {
             let needs_eol = expr_contains_call(&a.value);
@@ -394,6 +405,21 @@ fn lower_logic_line(
     }
     diags.push(diag(file_id, range, DiagnosticCode::E129));
     Vec::new()
+}
+
+/// `~ let name: type = expr` — the content-ground `Stmt::TempDecl` shares
+/// its name/value/annotation handling verbatim with
+/// `lower_native::control_flow::lower_temp_decl` (same `LET_STMT` node
+/// shape, reused unmodified by the parser — see [`lower_logic_line`]'s
+/// doc), so it delegates there directly rather than duplicating the logic;
+/// only the wrapper differs (`Stmt::TempDecl` here vs. that function's own
+/// `StmtBlock` call site, which wraps as `BlockStmt::TempDecl`).
+fn lower_logic_line_temp_decl(
+    file_id: FileId,
+    temp: &ast::LetStmt,
+    diags: &mut Vec<Diagnostic>,
+) -> Option<TempDecl> {
+    super::control_flow::lower_temp_decl(file_id, temp, diags)
 }
 
 /// `~ x = expr` / `~ x += expr` / `~ x -= expr` — the content-ground

@@ -1082,6 +1082,13 @@ impl ContentLine {
 }
 
 impl LogicLine {
+    /// The wrapped `~ let name = expr`, when this logic line is a temp
+    /// declaration (`parser/stmt.rs::logic_line`'s `KW_LET` branch, issue
+    /// #1972).
+    pub fn let_stmt(&self) -> Option<LetStmt> {
+        support::child(&self.syntax)
+    }
+
     /// The wrapped `~ x = expr` / `~ x += expr`, when this logic line is an
     /// assignment (`parser/stmt.rs::logic_line`'s `at_assignment` branch).
     pub fn assign_stmt(&self) -> Option<AssignStmt> {
@@ -1089,7 +1096,8 @@ impl LogicLine {
     }
 
     /// The wrapped `~ expr` — an expression evaluated for its side effect
-    /// (e.g. a function call) — when this logic line is not an assignment.
+    /// (e.g. a function call) — when this logic line is neither a temp
+    /// declaration nor an assignment.
     pub fn expr_stmt(&self) -> Option<ExprStmt> {
         support::child(&self.syntax)
     }
