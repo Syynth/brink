@@ -318,32 +318,39 @@ pub(crate) fn logic_line(p: &mut Parser<'_, '_>) {
     p.start_node(LOGIC_LINE);
     p.bump(); // TILDE
     p.skip_ws();
-    let before = p.pos();
     if at_assignment(p) {
         assign_line(p);
     } else {
         expr_stmt_line(p);
     }
-    // A statement/expression grammar that recognized NOTHING at all (an
-    // unsupported shape — `if`/`while`/`for`/`until`/`let`/`return`/
+    // A statement/expression grammar that either recognized NOTHING at all
+    // (an unsupported shape — `if`/`while`/`for`/`until`/`let`/`return`/
     // `break`/`continue`, none of which `expr::expression`'s atom accepts,
-    // already raised a diagnostic there) makes zero progress past `before`.
-    // Left alone, the still-unconsumed tokens would be handed back to
-    // `body_line`'s next loop iteration and re-dispatched — for anything
-    // that isn't itself a fresh structural item, that fallback is the
-    // prose scanner, which is exactly the silent swallow issue #1991 is
-    // about. Consume the rest of THIS physical line here instead, inside
-    // `LOGIC_LINE` itself, so a malformed logic line is always loud (one
-    // `error_recover` diagnostic per stray token, the same idiom
-    // `stmt_block`'s own recovery loop above uses) and never silently
-    // reclassified as story text.
-    if p.pos() == before {
-        while !matches!(p.current(), NEWLINE | EOF) {
-            let stuck = p.pos();
-            p.error_recover("unsupported logic-line shape");
-            if p.pos() == stuck {
-                break;
-            }
+    // already raised a diagnostic there) or stopped partway through (e.g.
+    // an operator `expr::expression` doesn't recognize, like `~ n *= 3`)
+    // can leave tokens unconsumed before the line's real terminator. Left
+    // alone, those tokens would be handed back to `body_line`'s next loop
+    // iteration and re-dispatched — for anything that isn't itself a fresh
+    // structural item, that fallback is the prose scanner, which is
+    // exactly the silent swallow issue #1991 is about (partial-progress
+    // case included, not just zero-progress). Consume the rest of THIS
+    // physical line here instead, inside `LOGIC_LINE` itself, so a
+    // malformed logic line is always loud (one `error_recover` diagnostic
+    // per stray token, the same idiom `stmt_block`'s own recovery loop
+    // above uses) and never silently reclassified as story text.
+    //
+    // The terminator set matches `stmt_block`'s own recovery loop's
+    // boundary awareness: `R_BRACE` closes the enclosing block (never
+    // consumed here, or a braced/colon body like `{if …: ~ x = 1}` loses
+    // its closing brace and the parse desyncs — issue #1991 finding F3),
+    // and `family::at_else_arm` is the same same-line else-arm boundary
+    // `content.rs`'s own stop-set awareness (`stop_at_else_arm`) already
+    // respects, so `{if c: ~ x = 1 else: …}` doesn't eat the `else` arm.
+    while !logic_line_at_terminator(p) {
+        let stuck = p.pos();
+        p.error_recover("unsupported logic-line shape");
+        if p.pos() == stuck {
+            break;
         }
     }
     p.finish_node();
@@ -351,6 +358,15 @@ pub(crate) fn logic_line(p: &mut Parser<'_, '_>) {
         p.skip_ws();
         p.bump();
     }
+}
+
+/// The set of positions at which [`logic_line`]'s recovery loop must stop
+/// rather than keep consuming — end-of-line (`NEWLINE`/EOF), the enclosing
+/// block's close brace, or a same-line `else` arm boundary. See
+/// [`logic_line`]'s doc for why all three are needed (issue #1991,
+/// findings F2/F3).
+fn logic_line_at_terminator(p: &Parser<'_, '_>) -> bool {
+    matches!(p.current(), NEWLINE | EOF | R_BRACE) || super::family::at_else_arm(p)
 }
 
 /// `~ x = expr` / `~ x += expr` / `~ x -= expr` — identical to

@@ -715,6 +715,71 @@ fn logic_line_inside_choice_body_and_conditional_colon_body() {
 }
 
 #[test]
+fn logic_line_partial_progress_is_not_swallowed_as_prose() {
+    // Issue #1991 finding F2: the recovery loop originally fired only on
+    // ZERO token progress. `~ n *= 3` makes PARTIAL progress — `at_assignment`
+    // doesn't recognize `*=` (only `=`/`+=`/`-=`), so `expr_stmt_line` parses
+    // `n` alone as an `EXPR_STMT` and stops, leaving `*= 3` unconsumed. Before
+    // the fix that leftover was handed back to `body_line`'s prose scanner
+    // with zero diagnostics; it must now be recovered inside `LOGIC_LINE`
+    // itself, loudly, and never fold into `TEXT`.
+    let src = "flow greet() {\n~ n *= 3\n}\n";
+    let p = parse(src);
+    assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
+    assert!(
+        !p.errors().is_empty(),
+        "partial-progress leftover tokens must raise a real diagnostic"
+    );
+    assert!(
+        !has_node_kind(&p.syntax(), SyntaxKind::TEXT),
+        "partial-progress leftover tokens must never be swallowed into TEXT prose"
+    );
+}
+
+#[test]
+fn logic_line_recovery_does_not_consume_enclosing_close_brace() {
+    // Issue #1991 finding F3: the recovery loop originally terminated only
+    // on NEWLINE/EOF, so inside a braced/colon body (no NEWLINE before the
+    // block's own `}`) it consumed the enclosing `R_BRACE` too, corrupting
+    // the block structure. `~ if` is a zero-progress unsupported shape
+    // (mirrors `logic_line_unsupported_shape_is_a_loud_diagnostic_never_silent_prose`),
+    // reached here from a same-line colon body so its leftover recovery
+    // has to stop at `}` rather than eat it. Before the fix, the recovery
+    // loop consumed straight through `}` looking for a `NEWLINE`, so the
+    // `CONDITIONAL_BLOCK` never closed, `after` was absorbed into the
+    // still-open `IF_ARM`, and the parse ended with a spurious "expected
+    // R_BRACE, found EOF" (this test's own source has no such content, so
+    // that extra diagnostic — not present here — was the tell).
+    let src = "flow greet() {\n{if n > 0: ~ if}\nafter\n}\n";
+    let p = parse(src);
+    assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
+    assert_eq!(
+        p.errors().len(),
+        2,
+        "expected exactly the atom + logic-line diagnostics for `~ if`, no R_BRACE/EOF fallout: {:?}",
+        p.errors()
+    );
+    // The conditional block must close cleanly, so the following content
+    // line is a sibling of it — not absorbed into the still-open IF_ARM —
+    // and the whole flow body reaches its own closing brace.
+    let flow: ast::FlowDecl = find_child(&p.syntax()).expect("flow decl");
+    let body = expect_prose_body(flow.body());
+    let items: Vec<_> = body.syntax().children().collect();
+    assert!(
+        items
+            .iter()
+            .any(|n| n.kind() == SyntaxKind::CONDITIONAL_BLOCK),
+        "expected a closed CONDITIONAL_BLOCK sibling, got: {:?}",
+        items.iter().map(SyntaxNode::kind).collect::<Vec<_>>()
+    );
+    assert!(
+        items.iter().any(|n| n.kind() == SyntaxKind::CONTENT_LINE
+            && n.text().to_string().contains("after")),
+        "expected the following content line as a sibling, not absorbed into the block"
+    );
+}
+
+#[test]
 fn logic_line_unsupported_shape_is_a_loud_diagnostic_never_silent_prose() {
     // Issue #1991's own hedge: if a shape reachable at code-ground
     // statement position has no content-ground meaning (`if`, here), it
