@@ -227,12 +227,12 @@ still a real authoring footgun worth a future lint (a separate, much
 smaller concern than a grammar decision), not because a bare-statement
 grammar is still pending.
 
-Fixed by #1991 (assignment/bare-call `~`-spelling) and #1972 (`~ let` temp
-decl + emitter parity for all three): the assignment/expression-statement/
-temp-declaration respell buckets that together accounted for 60 of the
-(then) 210 respell failures are now all at **zero** cases (verified by
-`full_corpus_sweep`, 2026-08-01). See "Corpus arithmetic" below for the
-current bucket breakdown.
+The assignment/expression-statement/temp-declaration respell buckets that
+together accounted for 60 of the (then) 210 respell failures — fixed by
+#1991's first slice and #1972's `~ let` temp-decl + emitter-parity
+follow-up — are now all at **zero** cases (verified by `full_corpus_sweep`,
+2026-08-01). See "Corpus arithmetic" below for the current bucket
+breakdown.
 
 The bare-unprefixed form is still the worst failure mode the project has:
 no compile error, no runtime error, just a story that quietly does the
