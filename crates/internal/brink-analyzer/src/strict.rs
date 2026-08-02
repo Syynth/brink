@@ -1041,6 +1041,16 @@ fn check_direct_call_args(
     let mut out = Vec::new();
     for &(file, hir) in files {
         let mut def_ids: Vec<DefinitionId> = Vec::new();
+        // Issue #1903: add root_content's synthetic ID to the list of defs
+        // to check, just as collect_defs synthesizes it for inference.
+        // Mirrors check_typed_assign_mismatches below — without this, a
+        // direct call (or #fn literal) at the top level of an ink file's
+        // root_content silently drops its recorded facts (2026-08 review,
+        // issue #2001).
+        if !hir.root_content.stmts.is_empty() {
+            let synthetic_id = DefinitionId::new(DefinitionTag::LocalVar, u64::from(file.0));
+            def_ids.push(synthetic_id);
+        }
         for knot in &hir.knots {
             let kind = knot.symbol_kind();
             if let Some(id) = annotations::def_id_for(index, file, kind, &knot.name.text) {
@@ -5562,6 +5572,66 @@ mod tests {
                 .any(|d| d.code == DiagnosticCode::E063 && d.message.contains("argument")),
             "a well-typed ref argument plus an exactly-typed by-value argument bound at \
              creation must stay clean: {diags:?}"
+        );
+    }
+
+    // ── Review finding on #2001: root_content reaches check_direct_call_args ──
+
+    /// Review finding (BLOCKING) on this issue's own PR: `check_direct_call_args`
+    /// built `def_ids` from `hir.knots` + stitches only, never gaining the
+    /// #1903 `root_content` synthetic-ID block its structurally parallel
+    /// sibling `check_typed_assign_mismatches` has — so a direct-call
+    /// argument-type mismatch written at an ink file's literal top-level
+    /// weave was recorded by inference but silently dropped by strict,
+    /// never reaching a diagnostic. Mirrors
+    /// `ink_root_content_declared_temp_init_is_checked` above, but for
+    /// `check_direct_call_args`'s own fact kind, and MUST fail with the
+    /// `check_direct_call_args` `root_content` block reverted.
+    #[test]
+    fn ink_root_content_direct_call_ref_widening_is_checked() {
+        let src = "VAR i = 3\n\
+                   ~ scale(i, 2)\nHello.\n-> END\n\
+                   === function scale(ref x: float, k: int): float ===\n\
+                   ~ x = x * k\n~ return x\n";
+        let (hir, index, res) = build(src);
+        assert!(
+            !hir.root_content.stmts.is_empty(),
+            "fixture precondition: the ink frontend must populate root_content"
+        );
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E063 && d.message.contains("argument 1")),
+            "a direct-call ref-argument mismatch written at file root must be \
+             reported, not silently dropped: {diags:?}"
+        );
+    }
+
+    /// The `#fn` creation-site sibling of the test above, in `root_content` —
+    /// same gap, same fix, same fact kind #2001 introduced.
+    #[test]
+    fn ink_root_content_fn_literal_ref_widening_is_checked() {
+        let src = "VAR i = 3\n\
+                   ~ temp f = #fn(scale, i)\nHello.\n-> END\n\
+                   === function scale(ref x: float, k: int): float ===\n\
+                   ~ x = x * k\n~ return x\n";
+        let (hir, index, res) = build(src);
+        assert!(
+            !hir.root_content.stmts.is_empty(),
+            "fixture precondition: the ink frontend must populate root_content"
+        );
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E063 && d.message.contains("argument 1")),
+            "a #fn-bound ref-argument mismatch written at file root must be \
+             reported, not silently dropped: {diags:?}"
         );
     }
 
