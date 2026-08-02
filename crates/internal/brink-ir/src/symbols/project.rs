@@ -752,6 +752,16 @@ impl Projector {
             // as giving hover/goto-def/rename the same handle they have on
             // every other local).
             Expr::Lambda(l) => self.walk_lambda(l, knot, stitch),
+            // Block capture (issue #1839): the captured run is real body
+            // content — a reference/call inside it needs the identical
+            // symbol-table entries (hover/goto-def/rename) it would get at
+            // its original top-level position, so it walks through
+            // `walk_stmt` exactly as it did before capture.
+            Expr::Fragment(stmts) => {
+                for s in stmts {
+                    self.walk_stmt(s, knot, stitch);
+                }
+            }
         }
     }
 

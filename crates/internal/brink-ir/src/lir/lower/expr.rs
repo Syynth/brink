@@ -151,6 +151,22 @@ pub fn lower_expr(expr: &hir::Expr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
         // that stood here through #1685 is retired: an anonymous body has a
         // runtime representation now. See `super::lambda`.
         hir::Expr::Lambda(l) => super::lambda::lower_lambda(l, ctx),
+
+        // Block capture (issue #1839, `docs/decision-log.md` 2026-08-01
+        // "Content-as-value"): the captured run lowers through the exact
+        // same per-statement path an ordinary body uses
+        // (`super::stmts::lower_stmt`) — interior lines keep their own
+        // `Stmt::Content`/`Stmt::EndOfLine` shape (and, once recognized,
+        // their own line-table entry) rather than being flattened. Codegen
+        // (`brink-codegen-inkb::content`) wraps the result in
+        // `BeginFragment`/`EndFragment`.
+        hir::Expr::Fragment(stmts) => {
+            let lowered = stmts
+                .iter()
+                .filter_map(|s| super::stmts::lower_stmt(s, ctx))
+                .collect();
+            lir::Expr::Fragment(lowered)
+        }
     }
 }
 

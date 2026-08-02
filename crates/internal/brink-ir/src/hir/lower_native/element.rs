@@ -62,14 +62,31 @@
 //!   containing a `!name` line naming itself) is not the silent risk
 //!   claiming guards against.
 //!
+//! # Block capture (issue #1839)
+//!
+//! `@[element(…, block)]` captures the **following run** into the
+//! declaration's trailing `content`-typed parameter — the same
+//! `BeginFragment`…`EndFragment` → `Value::FragmentRef` machinery an
+//! ordinary call already composes through (`brink-codegen-inkb::content::
+//! emit_slot_expr`), widened to hold an arbitrary captured statement run
+//! rather than one call's own output (`docs/decision-log.md` 2026-08-01
+//! "Content-as-value": the internal `hir::Expr::Fragment` / `lir::Expr::
+//! Fragment` node this produces). Both [`try_claim`] and [`try_dispatch`]
+//! support it identically — see either function's own "Block capture" doc
+//! section — via the shared terminator search, [`capture_block`]. The
+//! handler **wraps** the captured run (receives it, decides emission) and
+//! does not tag it; interior lines are lowered through the ordinary
+//! [`super::body::lower_items`] path, so a handler that would claim one of
+//! them still claims it, with no special case needed.
+//!
+//! **Not carried across the cross-file injection join** (issue #1863): an
+//! `external`/injected `ClaimHandler` is always `block: false` — see
+//! [`ClaimHandler::block`]'s own doc for why.
+//!
 //! # Deliberately not here
 //!
-//! Block capture (the `block` param form) and `fn conventions()`
-//! registration + comptime evaluation are the ruling's other two build
-//! slices, filed separately (issues #1839/#1840) — [`try_dispatch`] never
-//! dispatches a `block`-declared handler (its trailing `content`-typed
-//! receiver has no capture to bind it from, so the same missing-argument
-//! decline [`try_claim`] already uses applies unchanged). Dispatching to a
+//! `fn conventions()` registration + comptime evaluation is the ruling's
+//! other build slice, filed separately (issue #1840). Dispatching to a
 //! `flow` target (rather than a top-level `fn`) is also not here: `!name`'s
 //! placement is legal on a `flow` too ([`super::annotation::
 //! is_consumed_position`]), but [`collect`] only ever scans top-level `fn`
@@ -140,6 +157,19 @@ struct ClaimHandler {
     /// offset would be a real bug, not a conservative no-op, so injected
     /// handlers skip the check entirely rather than risk it.
     decl: Option<TextRange>,
+    /// The bare `block` clause (issue #1839): `true` when the trailing
+    /// parameter is a `content`-typed block-capture receiver, not a
+    /// regex-bound capture — see [`try_claim`]'s doc for what that changes
+    /// about argument binding. **Always `false` for an injected handler**
+    /// (`decl: None`): `super::external_conventions::ExternalClaimHandler`
+    /// does not carry the `block` flag across the cross-file injection
+    /// join (issue #1863) yet, so a conventions-module handler declared
+    /// with `block` can dispatch its non-block capture params when injected
+    /// into another file, but never its block capture there — a real,
+    /// tracked gap (issue #1839's PR notes it), not a silent one: `collect`
+    /// always sets this `false` for `external`, never reads a nonexistent
+    /// field.
+    block: bool,
 }
 
 /// One declared `!name`-dispatched handler: a top-level `fn` whose
@@ -170,6 +200,10 @@ struct DispatchHandler {
     pattern: regex::Regex,
     /// Range of the `@[element(args = "…")]` line itself.
     annotation: TextRange,
+    /// The bare `block` clause (issue #1839) — see [`ClaimHandler::block`]'s
+    /// doc; the same meaning, for a `!name`-dispatched handler instead of a
+    /// claiming one.
+    block: bool,
 }
 
 /// The dispatcher threaded through body lowering: the file's claiming
@@ -303,6 +337,7 @@ pub(super) fn collect(
                 pattern,
                 annotation: element.range,
                 decl: Some(node.text_range()),
+                block: element.block,
             });
         } else {
             // The dispatch name: the `name = "…"` alias if declared, else
@@ -316,6 +351,7 @@ pub(super) fn collect(
                 params: param_names,
                 pattern,
                 annotation: element.range,
+                block: element.block,
             });
         }
     }
@@ -334,6 +370,12 @@ pub(super) fn collect(
                 pattern,
                 annotation: candidate.annotation,
                 decl: None,
+                // See `ClaimHandler::block`'s doc: `ExternalClaimHandler`
+                // does not carry this flag across the injection join yet
+                // (issue #1863's own scope), so an injected handler can
+                // never block-capture — always `false`, never read from
+                // `candidate` (which has no such field).
+                block: false,
             });
         }
     }
@@ -554,11 +596,28 @@ pub(super) fn diagnose_duplicate_patterns(
 /// prefers the earlier one, exactly the failure mode "pattern power
 /// proportional to auditability" (`docs/prose-dialect-spec.md` §3.5b)
 /// exists to keep visible, not eliminate outright.
+///
+/// # Block capture (issue #1839)
+///
+/// When `handler.block` is set, the trailing declared parameter is not a
+/// regex-bound capture at all — `annotation::has_block_content_param`'s own
+/// `E166` check already guarantees it is the *last* param, is `content`-
+/// typed, and is excluded from `captures`, so only the params *before* it
+/// need a named capture here. That trailing param instead binds an
+/// `Expr::Fragment` built from the **following run** ([`capture_block`]):
+/// `following` is the caller's remaining, not-yet-lowered sibling items,
+/// and the terminator search consumes a prefix of it (a blank line, or any
+/// non-`CONTENT_LINE` item, ends the run — the ruled terminator). The
+/// number of items consumed is returned alongside the statements so the
+/// caller (`body::lower_items`) can skip them rather than lowering them
+/// a second time.
 pub(super) fn try_claim(
     file_id: FileId,
     node: &SyntaxNode,
     elements: &mut Elements,
-) -> Option<Vec<Stmt>> {
+    following: &[SyntaxNode],
+    diags: &mut Vec<Diagnostic>,
+) -> Option<(Vec<Stmt>, usize)> {
     if elements.is_inert() {
         return None;
     }
@@ -587,9 +646,14 @@ pub(super) fn try_claim(
             !h.decl.is_some_and(|decl| decl.contains_range(claimed)) && h.pattern.is_match(trimmed)
         })?;
 
+    let is_block = handler.block;
+    // See this function's own "Block capture" doc: the trailing param is
+    // excluded from the regex-bound set when `block` is set.
+    let bound_len = handler.params.len().saturating_sub(usize::from(is_block));
+
     let caps = handler.pattern.captures(trimmed)?;
-    let mut captures = Vec::with_capacity(handler.params.len());
-    for param in &handler.params {
+    let mut captures = Vec::with_capacity(bound_len);
+    for param in &handler.params[..bound_len] {
         // `E160`/`E167` already pinned params ≡ named captures at the
         // declaration, so a miss here means the group did not participate
         // in this particular match (an alternation branch). Declining the
@@ -606,10 +670,35 @@ pub(super) fn try_claim(
         });
     }
 
+    // Every field taken from `handler` past this point is copied/cloned out
+    // — `handler` (and so the borrow of `elements.handlers`/`.external` it
+    // holds) is never referenced again, which is what lets the `block`
+    // branch below borrow `elements` mutably for the recursive capture.
+    let handler_name = handler.name.clone();
+    let handler_annotation = handler.annotation;
+
+    let mut call_args: Vec<Expr> = captures
+        .iter()
+        .map(|c| {
+            Expr::String(StringExpr {
+                parts: vec![StringPart::Literal(c.text.clone())],
+            })
+        })
+        .collect();
+
+    let mut consumed = 0;
+    let mut content_range = None;
+    if is_block {
+        let (fragment_stmts, n, range) = capture_block(file_id, following, elements, diags);
+        consumed = n;
+        content_range = range;
+        call_args.push(Expr::Fragment(fragment_stmts));
+    }
+
     let call = Expr::Call(
         Path {
             segments: vec![Name {
-                text: handler.name.text.clone(),
+                text: handler_name.text.clone(),
                 // The call is written at the claimed line, not at the
                 // handler's declaration — the range a reader clicking the
                 // rewritten call should land on.
@@ -617,33 +706,103 @@ pub(super) fn try_claim(
             }],
             range: claimed,
         },
-        captures
-            .iter()
-            .map(|c| {
-                Expr::String(StringExpr {
-                    parts: vec![StringPart::Literal(c.text.clone())],
-                })
-            })
-            .collect(),
+        call_args,
     );
 
     elements.matches.push(ElementMatch {
         line: claimed,
         kind,
-        handler: handler.name.clone(),
-        annotation: handler.annotation,
+        handler: handler_name,
+        annotation: handler_annotation,
         captures,
         disposition: ElementDisposition::Call,
+        content: content_range,
     });
 
-    Some(vec![
-        Stmt::Content(Content {
-            ptr: Some(native_provenance(file_id, NodeClass::Content, node)),
-            parts: vec![ContentPart::Interpolation(call)],
-            tags: Vec::new(),
-        }),
-        Stmt::EndOfLine,
-    ])
+    Some((
+        vec![
+            Stmt::Content(Content {
+                ptr: Some(native_provenance(file_id, NodeClass::Content, node)),
+                parts: vec![ContentPart::Interpolation(call)],
+                tags: Vec::new(),
+            }),
+            Stmt::EndOfLine,
+        ],
+        consumed,
+    ))
+}
+
+/// The block-capture terminator search (issue #1839, ruled 2026-07-31):
+/// consume a prefix of `following` — the caller's remaining, not-yet-
+/// lowered sibling items — stopping at **a blank line, or any element-level
+/// line**. "Element-level" is read structurally against this dialect's own
+/// candidate set ([`candidate`]): a plain `CONTENT_LINE` continues the run
+/// (and is lowered through the ordinary [`super::body::lower_items`] path,
+/// so a handler that claims *it* still claims it — "interior lines keep
+/// their own handlers" falls out of reusing the normal dispatch loop rather
+/// than needing a special case); any other node kind — a new
+/// `SCENE_HEADING`/`SCENE_STITCH`, `CUE`/`COMPACT_CUE`/`PARENTHETICAL`,
+/// another `BANG_DISPATCH`, a choice point, a divert, a nested declaration —
+/// is "any element-level line" and ends the run, and so does running out of
+/// items. Returns the lowered statements, how many items were consumed (so
+/// the caller can skip re-lowering them), and the captured span's own
+/// source range (`None` when nothing was captured — an immediate
+/// terminator, e.g. a claimed header line with a blank line right after
+/// it).
+fn capture_block(
+    file_id: FileId,
+    following: &[SyntaxNode],
+    elements: &mut Elements,
+    diags: &mut Vec<Diagnostic>,
+) -> (Vec<Stmt>, usize, Option<TextRange>) {
+    let mut end = 0;
+    while end < following.len() {
+        let item = &following[end];
+        if item.kind() != N::CONTENT_LINE || blank_line_precedes(item) {
+            break;
+        }
+        end += 1;
+    }
+    let captured = &following[..end];
+    let range = match (captured.first(), captured.last()) {
+        (Some(first), Some(last)) => Some(first.text_range().cover(last.text_range())),
+        _ => None,
+    };
+    let stmts = super::body::lower_items(file_id, captured, 0, elements, diags);
+    (stmts, end, range)
+}
+
+/// `true` when at least one blank source line separates `node` from
+/// whatever real body item precedes it in the tree — a lone `NEWLINE`
+/// token ends the previous item's own line; a *second* bare `NEWLINE` with
+/// nothing but trivia between the two is the blank line itself (native's
+/// content-ground layer never wraps a blank line in its own node — see
+/// `brink-syntax-native`'s `blank_line_produces_no_content_line` test).
+/// Walks backwards over raw sibling tokens the same way
+/// `annotation::annotations_before`/`attached_declaration` already do,
+/// rather than re-deriving trivia classification here.
+fn blank_line_precedes(node: &SyntaxNode) -> bool {
+    let mut cursor = node.prev_sibling_or_token();
+    let mut newlines = 0u32;
+    while let Some(el) = cursor {
+        match &el {
+            rowan::NodeOrToken::Token(tok) => {
+                if tok.kind() == N::NEWLINE {
+                    newlines += 1;
+                    if newlines >= 2 {
+                        return true;
+                    }
+                } else if !tok.kind().is_trivia() {
+                    break;
+                }
+            }
+            // A preceding real node is the previous body item itself —
+            // stop, no blank line found.
+            rowan::NodeOrToken::Node(_) => break,
+        }
+        cursor = el.prev_sibling_or_token();
+    }
+    false
 }
 
 /// Try to dispatch one body item via the `!name` sigil (issue #2004),
@@ -676,11 +835,19 @@ pub(super) fn try_claim(
 /// colliding on the same dispatch name is a distinct question — see
 /// `Elements::dispatch`'s own doc for the interim first-declared-wins rule
 /// there.
+///
+/// Block capture (issue #1839) works identically to [`try_claim`]'s own
+/// "Block capture" doc section: a `block`-declared handler's trailing param
+/// binds an `Expr::Fragment` built from `following` via [`capture_block`]
+/// instead of a named capture, and the number of items consumed is
+/// returned alongside the statements.
 pub(super) fn try_dispatch(
     file_id: FileId,
     node: &SyntaxNode,
     elements: &mut Elements,
-) -> Option<Vec<Stmt>> {
+    following: &[SyntaxNode],
+    diags: &mut Vec<Diagnostic>,
+) -> Option<(Vec<Stmt>, usize)> {
     if node.kind() != N::BANG_DISPATCH || elements.dispatch.is_empty() {
         return None;
     }
@@ -710,9 +877,15 @@ pub(super) fn try_dispatch(
     if !handler.pattern.is_match(trimmed) {
         return None;
     }
+
+    let is_block = handler.block;
+    // See `try_claim`'s "Block capture" doc: the trailing param is excluded
+    // from the regex-bound set when `block` is set.
+    let bound_len = handler.params.len().saturating_sub(usize::from(is_block));
+
     let caps = handler.pattern.captures(trimmed)?;
-    let mut captures = Vec::with_capacity(handler.params.len());
-    for param in &handler.params {
+    let mut captures = Vec::with_capacity(bound_len);
+    for param in &handler.params[..bound_len] {
         // Mirrors `try_claim`'s own "declining is the honest answer": a
         // param with no matching capture (an `args` handler is allowed
         // extra params not covered by any capture — `annotation::E167`'s
@@ -730,11 +903,36 @@ pub(super) fn try_dispatch(
         });
     }
 
+    // See `try_claim`'s identical note: everything from `handler` needed
+    // past this point is copied out, ending the borrow of
+    // `elements.dispatch` before the `block` branch borrows `elements`
+    // mutably.
+    let handler_name = handler.name.clone();
+    let handler_annotation = handler.annotation;
+
+    let mut call_args: Vec<Expr> = captures
+        .iter()
+        .map(|c| {
+            Expr::String(StringExpr {
+                parts: vec![StringPart::Literal(c.text.clone())],
+            })
+        })
+        .collect();
+
+    let mut consumed = 0;
+    let mut content_range = None;
+    if is_block {
+        let (fragment_stmts, n, range) = capture_block(file_id, following, elements, diags);
+        consumed = n;
+        content_range = range;
+        call_args.push(Expr::Fragment(fragment_stmts));
+    }
+
     let claimed = node.text_range();
     let call = Expr::Call(
         Path {
             segments: vec![Name {
-                text: handler.name.text.clone(),
+                text: handler_name.text.clone(),
                 // The call is written at the dispatched line, not at the
                 // handler's declaration — the range a reader clicking the
                 // rewritten call should land on (mirrors `try_claim`).
@@ -742,33 +940,30 @@ pub(super) fn try_dispatch(
             }],
             range: claimed,
         },
-        captures
-            .iter()
-            .map(|c| {
-                Expr::String(StringExpr {
-                    parts: vec![StringPart::Literal(c.text.clone())],
-                })
-            })
-            .collect(),
+        call_args,
     );
 
     elements.matches.push(ElementMatch {
         line: claimed,
         kind: ElementKind::BangDispatch,
-        handler: handler.name.clone(),
-        annotation: handler.annotation,
+        handler: handler_name,
+        annotation: handler_annotation,
         captures,
         disposition: ElementDisposition::Call,
+        content: content_range,
     });
 
-    Some(vec![
-        Stmt::Content(Content {
-            ptr: Some(native_provenance(file_id, NodeClass::Content, node)),
-            parts: vec![ContentPart::Interpolation(call)],
-            tags: Vec::new(),
-        }),
-        Stmt::EndOfLine,
-    ])
+    Some((
+        vec![
+            Stmt::Content(Content {
+                ptr: Some(native_provenance(file_id, NodeClass::Content, node)),
+                parts: vec![ContentPart::Interpolation(call)],
+                tags: Vec::new(),
+            }),
+            Stmt::EndOfLine,
+        ],
+        consumed,
+    ))
 }
 
 /// Classify a body item as a claim candidate, yielding the node whose text

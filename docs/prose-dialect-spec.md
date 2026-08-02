@@ -297,9 +297,9 @@ fn radio(chan: string, text: content) {
   restriction (the rewrite is an expression call) — a `flow`'s own `args`
   clause still parses and validates but is not yet a live dispatch
   target. Dispatch is **file-local**, matching `claims`'s pre-#1863 scope
-  (no cross-file dispatch-name resolution yet), and a `block`-declared
-  handler's trailing receiver still has nothing dispatching into it
-  (issue #1839's own scope). (Fountain's `!`-forces-plain-action
+  (no cross-file dispatch-name resolution yet). **A `block`-declared
+  handler's trailing receiver now dispatches for real (issue #1839)** —
+  see the `block` capture bullet below. (Fountain's `!`-forces-plain-action
   inversion noted and accepted — "good point of reference, not
   married to it.")
 - **Pattern power proportional to auditability.** Natural-notation
@@ -369,33 +369,40 @@ fn radio(chan: string, text: content) {
   argument type-checking, which does not exist yet; the coercion gap
   itself stays deferred (see below), only the silence around it is
   closed.
-- **`block` capture (RULED, 2026-07-31 sitting, issue #1839).**
-  `@[element(args = "…", block)]` declares that the handler captures the
-  run **following** its matched line into a trailing `content`-typed
-  param, terminated by a blank line or any element-level line — the
-  handler WRAPS the captured run. That is the whole of what the ruling
-  itself says. `E166`, the declaration surface's own static check, adds
-  two implementation-level requirements the ruling's own wording does not
-  state — recorded here so they live somewhere other than a private
-  helper's doc comment: the qualifying `content`-typed parameter must be
-  the declaration's **last** parameter, and its name must not collide
-  with one of `args`' own named capture groups (a capture and the block
-  receiver cannot be the same param) —
+- **`block` capture (RULED, 2026-07-31 sitting; DELIVERED, issue #1839).**
+  `@[element(args = "…", block)]` / `@[element(claims = "…", block)]`
+  capture the run **following** the matched line into a trailing
+  `content`-typed param, terminated by a blank line or any element-level
+  line (any body item other than a plain `CONTENT_LINE`) — the handler
+  WRAPS the captured run rather than tagging it. `E166`, the declaration
+  surface's own static check, adds two implementation-level requirements
+  the ruling's own wording does not state — recorded here so they live
+  somewhere other than a private helper's doc comment: the qualifying
+  `content`-typed parameter must be the declaration's **last** parameter,
+  and its name must not collide with one of `args`'/`claims`' own named
+  capture groups (a capture and the block receiver cannot be the same
+  param) —
   `crates/internal/brink-ir/src/hir/lower_native/annotation.rs`'s
-  `has_block_content_param`. Declaration-surface only, matching #1719's
-  own scope for `element`/`style`: the non-`block` half of `!name`
-  dispatch now matches a line and calls the handler (issue #2004), but
-  finding the block's terminator and capturing the following run into the
-  trailing param is still not implemented — that is issue #1839's own
-  follow-on scope, not delivered here or by #2004. `content` is now a
-  resolvable annotation type name (`Ty::Content`, issue #1846 — see the
-  Deferred bullet below), so a conforming `block` declaration compiles
-  cleanly under `dialect = brink` on its own `content`-typed parameter;
-  it is still **not usable end-to-end** — `try_dispatch` declines to
-  dispatch a `block`-declared handler at all today (its trailing receiver
-  has no capture to bind it from, the same missing-argument decline any
-  under-captured handler gets), since the block-capture binding that
-  would actually fill it remains issue #1839's scope.
+  `has_block_content_param`.
+  The dispatch mechanism itself (`hir::lower_native::element::
+  capture_block`, both `try_claim` and `try_dispatch`) builds the internal
+  `hir::Expr::Fragment`/`lir::Expr::Fragment` node the 2026-08-01
+  "Content-as-value" ruling adds (`docs/decision-log.md`) — the same
+  `BeginFragment`…`EndFragment` → `Value::FragmentRef` machinery an
+  ordinary call's display-position composition already uses
+  (`brink-codegen-inkb::content::emit_slot_expr`), widened to hold an
+  arbitrary captured statement run rather than one call's output.
+  Interior lines lower through the ordinary `body::lower_items` dispatch
+  loop, so a handler that would claim one of them still claims it — no
+  special case, and each interior line still reaches its own line-table
+  entry (`tests/tier1-native/annotations-element-block/`). Not carried
+  across the cross-file conventions-module injection join (issue #1863):
+  an injected `ClaimHandler` is always treated as non-`block`, so a
+  handler declared `block` in the project's conventions module dispatches
+  its non-block capture params when injected into another file but never
+  its block capture there — a real, tracked gap
+  (`hir::lower_native::element::ClaimHandler::block`'s own doc), not a
+  silent one.
 - **`@[style]` — declared editor presentation (RULED, addenda 3–4).**
   A companion annotation mapping captures (and `line` = the whole
   line; `dispatch` = the `!name` prefix) to style values, drawn from
@@ -434,13 +441,17 @@ fn radio(chan: string, text: content) {
   itself, and binding a non-`string` capture to a real typed value,
   remain unbuilt); context injection (handlers
   reading attachment data); `Option` params for optional captures;
-  binding a `content`-typed param to an actual captured `FragmentRef`/prose
-  block via the `block` clause (issue #1846 gave `content` a resolvable
-  `Ty` in the native type system — the ruled `fn radio(chan: string, text:
-  content)` example's `text` param, and `block`'s own trailing receiver
-  param, now compile, and issue #2004 now dispatches the plain, non-`block`
-  case — but a `block`-declared handler's trailing receiver still has
-  nothing dispatching into it; that binding is issue #1839's own scope);
+  binding an ORDINARY (non-`block`) `content`-typed param to a genuine
+  captured `FragmentRef` — `try_claim`/`try_dispatch` still bind every
+  named-capture-group value as a plain `Expr::String` literal regardless
+  of the receiving parameter's declared type (the ruled `fn radio(chan:
+  string, text: content)` example's `text` param binds this way), so a
+  `string` literal is accepted where `content` is declared and the
+  captured span is not yet translation-resident through *this* path —
+  **the `block` clause's own trailing receiver is the one exception,
+  landed by issue #1839** (see the `block` capture bullet above): this
+  narrower, ordinary-capture gap is issue #1912's own remaining scope,
+  not #1839's;
   the ruled duplicate-dispatch-name error and the ruled targeted
   unmatched-remainder diagnostic (issue #2004 dispatches the plain case
   but leaves both of these as an interim first-declared-wins and a
@@ -450,9 +461,8 @@ fn radio(chan: string, text: content) {
   time — and #2004's `!name` dispatch is file-local for the same reason
   `claims` is); dispatching to a `flow` target rather than a top-level
   `fn` (`!name`'s own placement is legal on a `flow` too, but nothing
-  scans a `flow`'s declaration into the dispatch table yet); block
-  capture's own dispatch mechanism (issue #1839) and `fn conventions()`
-  registration + comptime (issue #1840 —
+  scans a `flow`'s declaration into the dispatch table yet); `fn
+  conventions()` registration + comptime (issue #1840 —
   **blocked on four rulings**, sized in
   `docs/conventions-comptime-sizing.md`: the identity a registered handler
   carries across the comptime boundary, whether a comptime fault fails the

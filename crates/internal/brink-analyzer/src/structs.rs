@@ -587,6 +587,10 @@ fn expr_children(expr: &Expr) -> Vec<&Expr> {
                 brink_ir::StringPart::Literal(_) => None,
             })
             .collect(),
+        // Block capture (issue #1839) — same shared flattening
+        // `Expr::Lambda` uses above, over a captured `Stmt` run instead of
+        // a `BlockStmt` one (issue #1764's audit-driven pattern).
+        Expr::Fragment(stmts) => brink_ir::fragment_stmt_exprs(stmts),
         Expr::Int(_)
         | Expr::Float(_)
         | Expr::Bool(_)

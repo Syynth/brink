@@ -117,12 +117,13 @@ pub fn validate_admission(
     for v in &hir.variables {
         c.check_range(v.ptr.text_range());
         c.check_range(v.name.range);
-        c.walk_expr(&v.value);
+        // File scope — no enclosing knot/stitch (mirrors root content above).
+        c.walk_expr(&v.value, "");
     }
     for cst in &hir.constants {
         c.check_range(cst.ptr.text_range());
         c.check_range(cst.name.range);
-        c.walk_expr(&cst.value);
+        c.walk_expr(&cst.value, "");
     }
     for l in &hir.lists {
         c.check_range(l.ptr.text_range());
@@ -258,36 +259,36 @@ impl Collector {
                 self.check_range(t.ptr.text_range());
                 self.check_range(t.name.range);
                 if let Some(e) = &t.value {
-                    self.walk_expr(e);
+                    self.walk_expr(e, prefix);
                 }
             }
             Stmt::Assignment(a) => {
                 self.check_range(a.ptr.text_range());
-                self.walk_expr(&a.target);
-                self.walk_expr(&a.value);
+                self.walk_expr(&a.target, prefix);
+                self.walk_expr(&a.value, prefix);
             }
             Stmt::Return(r) => {
                 if let Some(p) = &r.ptr {
                     self.check_range(p.text_range());
                 }
                 if let Some(e) = &r.value {
-                    self.walk_expr(e);
+                    self.walk_expr(e, prefix);
                 }
                 for e in &r.onwards_args {
-                    self.walk_expr(e);
+                    self.walk_expr(e, prefix);
                 }
             }
             Stmt::ChoiceSet(cs) => self.walk_choice_set(cs, prefix),
             Stmt::LabeledBlock(b) => self.walk_block(b, prefix),
             Stmt::Conditional(c) => self.walk_conditional(c, prefix),
             Stmt::Sequence(s) => self.walk_sequence(s, prefix),
-            Stmt::ExprStmt(e) => self.walk_expr(e),
+            Stmt::ExprStmt(e) => self.walk_expr(e, prefix),
             Stmt::EndOfLine => {}
             Stmt::LogicBlock(lb) => self.walk_logic_block(lb),
             Stmt::Await(a) => {
                 self.check_range(a.ptr.text_range());
                 if let Some(e) = &a.condition {
-                    self.walk_expr(e);
+                    self.walk_expr(e, prefix);
                 }
             }
         }
@@ -297,8 +298,13 @@ impl Collector {
         if let DivertPath::Path(p) = &target.path {
             self.push_ref(p.range);
         }
+        // `""`: a divert-target argument is always author-written, never a
+        // block-capture synthesized `Expr::Fragment` (issue #1839's only
+        // producer is `hir::lower_native::element`'s claim/dispatch
+        // rewrite, which never places one here), so `walk_expr`'s `prefix`
+        // is dead in this position — no `Stmt::LabeledBlock` can reach it.
         for e in &target.args {
-            self.walk_expr(e);
+            self.walk_expr(e, "");
         }
     }
 
@@ -316,7 +322,7 @@ impl Collector {
 
     fn walk_content_part(&mut self, part: &ContentPart, prefix: &str) {
         match part {
-            ContentPart::Interpolation(e) => self.walk_expr(e),
+            ContentPart::Interpolation(e) => self.walk_expr(e, prefix),
             ContentPart::InlineConditional(c) => self.walk_conditional(c, prefix),
             ContentPart::InlineSequence(s) => self.walk_sequence(s, prefix),
             // A span is presentational (§4.3) — admission must still see
@@ -357,7 +363,7 @@ impl Collector {
                 .push((Self::qualify_label(prefix, &name.text), name.range));
         }
         if let Some(e) = &choice.condition {
-            self.walk_expr(e);
+            self.walk_expr(e, prefix);
         }
         if let Some(c) = &choice.start_content {
             self.walk_content(c, prefix);
@@ -377,11 +383,11 @@ impl Collector {
     fn walk_conditional(&mut self, cond: &Conditional, prefix: &str) {
         self.check_range(cond.ptr.text_range());
         if let CondKind::Switch(e) = &cond.kind {
-            self.walk_expr(e);
+            self.walk_expr(e, prefix);
         }
         for branch in &cond.branches {
             if let Some(e) = &branch.condition {
-                self.walk_expr(e);
+                self.walk_expr(e, prefix);
             }
             // B1b (issue #1475): the template form's `as` binding needs the
             // same range admission `walk_if_stmt`/`walk_while_stmt` already
@@ -433,40 +439,49 @@ impl Collector {
         }
     }
 
+    // Every `self.walk_expr(_, "")` in this T1b (`~ { … }`) family below —
+    // `walk_block_stmt` and the `walk_if_stmt`/`walk_while_stmt`/
+    // `walk_for_stmt` trio it dispatches to — passes an empty prefix on
+    // purpose: `BlockStmt` is a closed set with no `LabeledBlock` variant
+    // (`docs/t1b-surface-spec.md` §2's seam rule), and it is lowered by a
+    // wholly separate code-ground path that never calls
+    // `hir::lower_native::element`'s claim/dispatch rewrite — so an
+    // `Expr::Fragment` (issue #1839) can never actually reach `prefix` here.
+
     fn walk_block_stmt(&mut self, bs: &BlockStmt) {
         match bs {
             BlockStmt::TempDecl(t) => {
                 self.check_range(t.ptr.text_range());
                 self.check_range(t.name.range);
                 if let Some(e) = &t.value {
-                    self.walk_expr(e);
+                    self.walk_expr(e, "");
                 }
             }
             BlockStmt::Assignment(a) => {
                 self.check_range(a.ptr.text_range());
-                self.walk_expr(&a.target);
-                self.walk_expr(&a.value);
+                self.walk_expr(&a.target, "");
+                self.walk_expr(&a.value, "");
             }
             BlockStmt::Return(r) => {
                 if let Some(p) = &r.ptr {
                     self.check_range(p.text_range());
                 }
                 if let Some(e) = &r.value {
-                    self.walk_expr(e);
+                    self.walk_expr(e, "");
                 }
                 for e in &r.onwards_args {
-                    self.walk_expr(e);
+                    self.walk_expr(e, "");
                 }
             }
             BlockStmt::If(i) => self.walk_if_stmt(i),
             BlockStmt::While(w) => self.walk_while_stmt(w),
             BlockStmt::For(f) => self.walk_for_stmt(f),
             BlockStmt::Break(p) | BlockStmt::Continue(p) => self.check_range(p.text_range()),
-            BlockStmt::ExprStmt(e) => self.walk_expr(e),
+            BlockStmt::ExprStmt(e) => self.walk_expr(e, ""),
             BlockStmt::Await(a) => {
                 self.check_range(a.ptr.text_range());
                 if let Some(e) = &a.condition {
-                    self.walk_expr(e);
+                    self.walk_expr(e, "");
                 }
             }
         }
@@ -474,7 +489,7 @@ impl Collector {
 
     fn walk_if_stmt(&mut self, i: &IfStmt) {
         self.check_range(i.ptr.text_range());
-        self.walk_expr(&i.condition);
+        self.walk_expr(&i.condition, "");
         if let Some(binding) = &i.binding {
             self.check_range(binding.range);
         }
@@ -494,7 +509,7 @@ impl Collector {
 
     fn walk_while_stmt(&mut self, w: &WhileStmt) {
         self.check_range(w.ptr.text_range());
-        self.walk_expr(&w.condition);
+        self.walk_expr(&w.condition, "");
         if let Some(binding) = &w.binding {
             self.check_range(binding.range);
         }
@@ -509,19 +524,30 @@ impl Collector {
         if let Some(val_name) = &f.val_name {
             self.check_range(val_name.range);
         }
-        self.walk_expr(&f.iterable);
+        self.walk_expr(&f.iterable, "");
         for s in &f.body {
             self.walk_block_stmt(s);
         }
     }
 
-    fn walk_expr(&mut self, expr: &Expr) {
+    /// `prefix` is the enclosing knot/stitch label-qualification scope
+    /// (same meaning as [`Self::walk_stmt`]'s own `prefix`) — needed since
+    /// issue #1839's block capture (`Expr::Fragment`) can carry a
+    /// `Stmt::LabeledBlock` (a captured interior line with a `(label)`),
+    /// which must qualify with the *same* prefix the label would have
+    /// gotten had it stayed at its original top-level position, so
+    /// `check_declared_symbols_have_hir_nodes`'s manifest⇄HIR label
+    /// agreement (E122) doesn't false-positive on a label inside a
+    /// captured block. Every other `Expr` variant is unaffected by
+    /// `prefix` — it's threaded through purely so it reaches the one
+    /// arm that needs it.
+    fn walk_expr(&mut self, expr: &Expr, prefix: &str) {
         match expr {
             Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Null => {}
             Expr::String(s) => {
                 for part in &s.parts {
                     if let StringPart::Interpolation(e) = part {
-                        self.walk_expr(e);
+                        self.walk_expr(e, prefix);
                     }
                 }
             }
@@ -531,62 +557,62 @@ impl Collector {
                     self.push_ref(p.range);
                 }
             }
-            Expr::Prefix(_, inner) | Expr::Postfix(inner, _) => self.walk_expr(inner),
+            Expr::Prefix(_, inner) | Expr::Postfix(inner, _) => self.walk_expr(inner, prefix),
             Expr::Infix(ie) => {
                 self.check_range(ie.ptr.text_range());
-                self.walk_expr(&ie.lhs);
-                self.walk_expr(&ie.rhs);
+                self.walk_expr(&ie.lhs, prefix);
+                self.walk_expr(&ie.rhs, prefix);
             }
             Expr::Call(path, args) => {
                 self.push_ref(path.range);
                 for a in args {
-                    self.walk_expr(a);
+                    self.walk_expr(a, prefix);
                 }
             }
             Expr::ArrayLiteral(a) => {
                 self.check_range(a.ptr.text_range());
                 for e in &a.elements {
-                    self.walk_expr(e);
+                    self.walk_expr(e, prefix);
                 }
             }
             Expr::MapLiteral(m) => {
                 self.check_range(m.ptr.text_range());
                 for (k, v) in &m.entries {
-                    self.walk_expr(k);
-                    self.walk_expr(v);
+                    self.walk_expr(k, prefix);
+                    self.walk_expr(v, prefix);
                 }
             }
             Expr::Index(idx) => {
                 self.check_range(idx.ptr.text_range());
-                self.walk_expr(&idx.base);
-                self.walk_expr(&idx.index);
+                self.walk_expr(&idx.base, prefix);
+                self.walk_expr(&idx.index, prefix);
             }
             Expr::Range(r) => {
                 self.check_range(r.ptr.text_range());
-                self.walk_expr(&r.start);
-                self.walk_expr(&r.end);
+                self.walk_expr(&r.start, prefix);
+                self.walk_expr(&r.end, prefix);
             }
             Expr::StructLiteral(sl) => {
                 self.check_range(sl.ptr.text_range());
                 self.push_ref(sl.shape.range);
                 for (_, v) in &sl.fields {
-                    self.walk_expr(v);
+                    self.walk_expr(v, prefix);
                 }
             }
             Expr::FieldAccess(fa) => {
                 self.check_range(fa.ptr.text_range());
-                self.walk_expr(&fa.base);
+                self.walk_expr(&fa.base, prefix);
             }
             Expr::FnLiteral(fl) => {
                 self.check_range(fl.ptr.text_range());
                 self.push_ref(fl.target.range);
                 for a in &fl.args {
-                    self.walk_expr(a);
+                    self.walk_expr(a, prefix);
                 }
             }
             Expr::RefArg(ra) => {
                 self.check_range(ra.ptr.text_range());
-                self.walk_expr(&ra.operand);
+                self.walk_expr(&ra.operand, prefix);
             }
             // A lambda (issue #1685) carries provenance of its own, so its
             // range is admission-checked like every other provenance-
@@ -600,7 +626,16 @@ impl Collector {
                     }
                 }
                 for e in l.body.value_exprs() {
-                    self.walk_expr(e);
+                    self.walk_expr(e, prefix);
+                }
+            }
+            // Block capture (issue #1839): the captured run is real body
+            // content at the SAME knot/stitch scope it was captured from
+            // (the terminator search never crosses a container boundary),
+            // so it walks with the ambient `prefix` unchanged.
+            Expr::Fragment(stmts) => {
+                for s in stmts {
+                    self.walk_stmt(s, prefix);
                 }
             }
         }

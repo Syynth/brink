@@ -2488,6 +2488,126 @@ fn a_claim_records_handler_and_capture_spans() {
     );
 }
 
+/// Pull the `Expr::Fragment` a block-capturing claim's call passes as its
+/// last argument, panicking with a descriptive message if the shape isn't
+/// what a `block`-declared handler's call is supposed to produce.
+fn claimed_fragment_stmts(block: &crate::Block) -> &[Stmt] {
+    let Some(Stmt::Content(c)) = block.stmts.first() else {
+        panic!("expected the claimed line's Content statement first: {block:?}");
+    };
+    let [ContentPart::Interpolation(Expr::Call(_, args))] = c.parts.as_slice() else {
+        panic!("expected a single-call interpolation: {:?}", c.parts);
+    };
+    let Some(Expr::Fragment(stmts)) = args.last() else {
+        panic!("expected the last call argument to be a Fragment: {args:?}");
+    };
+    stmts
+}
+
+#[test]
+fn a_block_handler_captures_the_following_run_terminated_by_a_blank_line() {
+    // Issue #1839's ruled terminator: "a blank line, or any element-level
+    // line". This fixture exercises the blank-line half — two captured
+    // lines, then a blank line, then a third line that must stay OUTSIDE
+    // the capture (and outside `main.body`'s own top-level statements
+    // entirely, since it is absorbed into the `Fragment` argument).
+    let src = "@[element(claims = \"^(?<name>[A-Z]+)$\", block)]\nfn cue(name: string, body: content) {\n  return name;\n}\n\nflow main() {\n  VENDOR\n  Line one.\n  Line two.\n\n  After the blank line.\n}\n";
+    let (hir, _m, diags) = lower_src(src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(hir.element_matches.len(), 1);
+    let m = &hir.element_matches[0];
+    assert_eq!(m.handler.text, "cue");
+    let content_range = m
+        .content
+        .expect("a block match must record the captured block's own range");
+    assert_eq!(
+        &src[usize::from(content_range.start())..usize::from(content_range.end())],
+        "Line one.\n  Line two.",
+        "the recorded content range must cover exactly the two captured lines, no more"
+    );
+
+    let main = hir
+        .knots
+        .iter()
+        .find(|k| k.name.text == "main")
+        .expect("main");
+    let stmts = claimed_fragment_stmts(&main.body);
+    // Two captured content lines, each `Stmt::Content` + `Stmt::EndOfLine`.
+    assert_eq!(
+        stmts.len(),
+        4,
+        "expected two captured lines' worth of statements: {stmts:?}"
+    );
+    let rendered = format!("{stmts:?}");
+    assert!(
+        rendered.contains("Line one.") && rendered.contains("Line two."),
+        "both captured lines must be present in the fragment: {rendered}"
+    );
+
+    // `main.body`'s own top-level statements are exactly the claimed call
+    // (Content + EndOfLine) and the post-blank-line line (Content +
+    // EndOfLine) — four statements, not more. The two captured lines live
+    // ONLY inside the Fragment nested in the first Content's own call
+    // (`stmts`, checked above) — checking `main.body.stmts`' own *length*
+    // (rather than searching its `Debug` text, which would trivially find
+    // "Line one." nested inside that same first statement's Fragment
+    // regardless of whether it also, wrongly, appeared a second time as a
+    // sibling) is what actually proves nothing was lowered twice.
+    assert_eq!(
+        main.body.stmts.len(),
+        5,
+        "main's own body must contain only the claimed call, the \
+         post-blank-line line, and the flow's own implicit end-of-body \
+         divert — not the captured lines a second time: {:?}",
+        main.body.stmts
+    );
+    let main_rendered = format!("{:?}", main.body.stmts);
+    assert!(
+        main_rendered.contains("After the blank line."),
+        "the line after the blank line must survive as ordinary content: {main_rendered}"
+    );
+}
+
+#[test]
+fn a_block_handler_captures_the_following_run_terminated_by_an_element_level_line() {
+    // The other half of the ruled terminator: a non-`CONTENT_LINE` item
+    // (here, a divert) ends the run immediately, even with NO blank line
+    // separating it from the last captured line.
+    let src = "@[element(claims = \"^(?<name>[A-Z]+)$\", block)]\nfn cue(name: string, body: content) {\n  return name;\n}\n\nflow main() {\n  VENDOR\n  Line one.\n  Line two.\n  -> END\n}\n";
+    let (hir, _m, diags) = lower_src(src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(hir.element_matches.len(), 1);
+    let m = &hir.element_matches[0];
+    let content_range = m
+        .content
+        .expect("a block match must record the captured block's own range");
+    assert_eq!(
+        &src[usize::from(content_range.start())..usize::from(content_range.end())],
+        "Line one.\n  Line two.",
+        "the divert must not be absorbed into the captured range"
+    );
+
+    let main = hir
+        .knots
+        .iter()
+        .find(|k| k.name.text == "main")
+        .expect("main");
+    let stmts = claimed_fragment_stmts(&main.body);
+    assert_eq!(
+        stmts.len(),
+        4,
+        "expected exactly the two captured lines: {stmts:?}"
+    );
+
+    // The divert must still lower as a real, ordinary top-level statement
+    // in `main`'s own body, not be swallowed by the capture.
+    assert!(
+        main.body.stmts.iter().any(|s| matches!(s, Stmt::Divert(_))),
+        "the terminating divert must still lower normally: {:?}",
+        main.body.stmts
+    );
+}
+
 #[test]
 fn a_claiming_handler_does_not_claim_lines_in_its_own_body() {
     // The staging rule §3.5 states for the conventions module ("it cannot

@@ -440,7 +440,7 @@ impl OutputBuffer {
         // targets.  In C#, that space is a StringValue which makes
         // `outputStreamContainsContent` true, allowing the subsequent newline
         // through.  Without counting Spring, post-choice newlines are lost.
-        let has_content = if self.capture_depth > 0 {
+        let has_content = if self.capture_depth > 0 || self.fragment_depth > 0 {
             self.has_content()
         } else {
             self.unread_has_content_or_spring()
@@ -453,10 +453,24 @@ impl OutputBuffer {
 
     /// Returns true if the active target contains any text content.
     /// When inside a capture, scans the capture vec (stopping at checkpoint).
-    /// When outside, scans the transcript from cursor position.
+    /// When inside a fragment (and no capture is active — same priority
+    /// `target()` uses), scans `fragment_capture` the identical way, stopping
+    /// at *its own* checkpoint (issue #1839: a fragment capturing more than
+    /// one recognized line needs this to see the lines it has already
+    /// captured at THIS nesting level, not the outer transcript, which a
+    /// multi-statement block capture is the first producer to ever exercise
+    /// — every earlier fragment use captured at most one call's worth of
+    /// output). When neither is active, scans the transcript from cursor
+    /// position.
     fn has_content(&self) -> bool {
         if self.capture_depth > 0 {
             self.capture
+                .iter()
+                .rev()
+                .take_while(|p| !matches!(p, OutputPart::Checkpoint))
+                .any(OutputPart::is_content)
+        } else if self.fragment_depth > 0 {
+            self.fragment_capture
                 .iter()
                 .rev()
                 .take_while(|p| !matches!(p, OutputPart::Checkpoint))
@@ -486,9 +500,12 @@ impl OutputBuffer {
     }
 
     /// Returns true if the last part in the active target is a newline.
+    /// Same three-way priority as [`Self::has_content`] (issue #1839).
     fn ends_in_newline(&self) -> bool {
         let target = if self.capture_depth > 0 {
             &self.capture
+        } else if self.fragment_depth > 0 {
+            &self.fragment_capture
         } else {
             &self.transcript
         };
@@ -510,6 +527,8 @@ impl OutputBuffer {
     fn ends_in_whitespace(&self) -> bool {
         let target = if self.capture_depth > 0 {
             &self.capture
+        } else if self.fragment_depth > 0 {
+            &self.fragment_capture
         } else {
             &self.transcript
         };

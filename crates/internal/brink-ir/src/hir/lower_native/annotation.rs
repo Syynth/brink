@@ -770,7 +770,23 @@ fn parse_element(
     // argument comes from a named capture, so a parameter no capture names
     // has nothing to bind it to. A `!name` handler is exempt — it stays
     // callable by hand with ordinary arguments.
-    if claims && let Some(p) = params.iter().find(|p| !captures.contains(&p.name.text)) {
+    //
+    // A `block`-declared handler's trailing `content` param (issue #1839)
+    // is exempt too, the same way: `has_block_content_param`'s own check
+    // just above already guarantees it is the last param and is not one of
+    // `captures` by construction (it binds the captured *run*, not a named
+    // group), so re-checking it here would reject every legal block
+    // declaration with a false `E167`.
+    let e167_checked_params = if block {
+        &params[..params.len().saturating_sub(1)]
+    } else {
+        params
+    };
+    if claims
+        && let Some(p) = e167_checked_params
+            .iter()
+            .find(|p| !captures.contains(&p.name.text))
+    {
         diags.push(diag(file_id, p.name.range, DiagnosticCode::E167));
         return None;
     }
