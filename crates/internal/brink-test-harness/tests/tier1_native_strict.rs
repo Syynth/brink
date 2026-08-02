@@ -88,9 +88,15 @@ fn corpus_dir() -> PathBuf {
 ///   doc says so in as many words), so the compiler synthesizes a call
 ///   whose argument type contradicts the handler signature it is calling.
 ///   Closing it is issue #1839's captured-run-to-`FragmentRef` scope.
-/// - The `radio` row is the same mismatch written by hand — a `string`
-///   literal passed to a `content` parameter. Whether `string` should widen
-///   to `content` at all is the open half of that question.
+/// - The two `radio` rows are the same mismatch, from two different call
+///   sites: one written by hand (`radio(call_sign, "come in")`), one
+///   synthesized by `!name` sigil dispatch (issue #2004,
+///   `hir::lower_native::element::try_dispatch`, added when the fixture
+///   grew a `!radio TAC-2: …` line) — `try_dispatch` binds every capture
+///   as a plain `Expr::String` too, the exact same posture `try_claim`
+///   already has, so it is the identical root cause, not a new one.
+///   Whether `string` should widen to `content` at all is the open half
+///   of that question.
 /// - `radio`'s **return type** escaping as `Unknown` was a **checker gap**,
 ///   and is **FIXED** — its row is gone. `radio`'s body is `return text;`
 ///   where `text: content`, so the return type is exactly the annotated
@@ -268,6 +274,14 @@ const BASELINE: &[(&str, &str, &str)] = &[
         "E063",
         "argument 1 of call to `interior` has type `string` but its known type expects `content`",
     ),
+    (
+        "annotations-element",
+        "E063",
+        "argument 2 of call to `radio` has type `string` but its known type expects `content`",
+    ),
+    // The `!radio` dispatch call site (issue #2004) — same message as the
+    // hand-written call above, same root cause (see the module doc's
+    // Group A).
     (
         "annotations-element",
         "E063",

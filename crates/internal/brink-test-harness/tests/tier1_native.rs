@@ -183,16 +183,26 @@ fn annotations_effects() {
 /// (captures binding both its params), a top-level `flow` (a capture-free
 /// pattern), and a nested `flow` (the `Stitch` level, with the optional
 /// `name = "…"` alias clause). Until that landed, every one of these lines
-/// hard-failed the compile with `E129`, so its signal is narrow: an
-/// annotated `.brink` story compiles and runs. The `!name` sigil dispatch
-/// rewrite `args` exists to eventually drive is still not implemented —
-/// see `docs/prose-dialect-spec.md` §3.5b's Deferred list.
+/// hard-failed the compile with `E129`, so its signal is narrow for the
+/// `flow`-attached declarations: an annotated `.brink` story compiles and
+/// runs (dispatching to a `flow` target isn't implemented — see
+/// `docs/prose-dialect-spec.md` §3.5b's Deferred list). The **`fn`**-
+/// attached declaration now has a real behavioral signal too: the fixture's
+/// `!radio TAC-2: All units report in.` line is the `!name` sigil dispatch
+/// rewrite itself (issue #2004) — it dispatches by name to `radio`, binds
+/// `chan`/`text` from the remainder, and lowers to one call whose return
+/// value (`text`, unmodified) is `expected.txt`'s second line. Before #2004
+/// that same line was ordinary, un-diagnosed prose (`!radio` parsed as
+/// plain `TEXT`, per rule 20a's "establish the starting point empirically"
+/// — reserved-and-ignored, not reserved-and-diagnosed); it could not have
+/// reached this transcript line any other way, since `radio` is never
+/// otherwise called with this exact captured text.
 ///
 /// The `claims = "…"` half (issue #1838) is the part with a *behavioral*
 /// signal, and it is this corpus's proof that natural-notation dispatch
 /// actually reaches a reader: `interior` claims the `INT. MARKET SQUARE`
 /// line, binds `place` to `MARKET SQUARE`, and the line lowers to one call
-/// whose value is the transcript's second line. Before #1838 that same
+/// whose value is `expected.txt`'s third line. Before #1838 that same
 /// line was a scene heading with no HIR lowering at all (`E129`, a failed
 /// compile) — so `expected.txt`'s `-- inside MARKET SQUARE --` cannot be
 /// produced by any other path, and the line beneath it pins that the
@@ -266,6 +276,21 @@ fn annotations_element_reaches_story_data() {
         "the display-position call composing a claim handler's return \
          value must still carry its slot info: {all_lines}"
     );
+}
+
+/// Value-carrying `return <expr>` at prose-body position (issue #1973):
+/// `fn double(x) >{ return x * 2 }` overrides the `fn`'s default
+/// code-ground body to prose-ground, and `return x * 2` is the
+/// content-ground `return_stmt` grammar this issue's fix taught to parse a
+/// trailing value expression instead of leaving it as dangling,
+/// unreachable content (the old shape raised `E033`). `flow main()` calls
+/// `double(21)` from display position (`Doubled: {double(21)}`) so the
+/// returned value must actually reach the transcript, not just compile —
+/// before the fix, this exact source failed to compile at all (`return x *
+/// 2` left `* 2` as unparsed dangling content past the bare `return`).
+#[test]
+fn prose_return_value() {
+    assert_case("prose-return-value");
 }
 
 /// NG-D array/sequence literals (issue #1490, RULED 2026-07-27:
@@ -567,6 +592,37 @@ fn logic_line_escape() {
     assert_case("logic-line-escape");
 }
 
+/// Issue #1992: `> text` — the code-ground line escape into prose (charter
+/// §8.2, RULED 2026-07-23, the mirror image of #1991 above at the opposite
+/// ground). Before this landed, `>` had no dispatch in
+/// `stmt::statement()`'s code-ground per-statement loop at all, so `>
+/// [{chan}] {text}` at statement position inside a `fn`'s default
+/// code-ground body was a parse error (`expected an expression, found GT`)
+/// rather than a lowering gap.
+#[test]
+fn prose_line_escape() {
+    assert_case("prose-line-escape");
+}
+
+/// Issue #1992 review finding F1: a `> text` split must not fragment a
+/// code-ground body's T1b lexical scope. `prose-line-escape`'s own
+/// `bump_and_announce` case deliberately uses the global `var n` around its
+/// split, so it never exercises this — here `x` is a `let`-declared local,
+/// read (via `{x}` interpolation) in the `Content` sitting *between* the
+/// two split `LogicBlock` runs and written (`x += 1;`) in the second run,
+/// so both the READ half (a block-scoped read after the first run's scope
+/// would have been wrongly popped, misdiagnosed as E082) and the WRITE
+/// half (a write that would otherwise miss its temp slot and fall through
+/// to a phantom `AssignTarget::Global`) are covered by one case. Confirmed
+/// to fail — E082 misdiagnosis / wrong or panicking output — with
+/// `mark_split_logic_block_scopes` and `lower_logic_block`'s scope-aware
+/// push/pop (`brink-ir/src/hir/lower_native/body.rs`,
+/// `brink-ir/src/lir/lower/blocks.rs`) reverted.
+#[test]
+fn prose_line_escape_shares_scope_across_the_split() {
+    assert_case("prose-line-escape-scope");
+}
+
 /// Every `tests/tier1-native/` case directory is exercised by a `#[test]`
 /// above — a directory with no matching test would silently never run.
 #[test]
@@ -588,6 +644,9 @@ fn every_case_directory_has_a_test() {
         "lambda-verbs",
         "logic-line-escape",
         "or-coalescing",
+        "prose-line-escape",
+        "prose-line-escape-scope",
+        "prose-return-value",
         "root-content-typed-strict",
         "ufcs",
     ];

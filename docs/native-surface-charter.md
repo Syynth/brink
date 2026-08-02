@@ -185,8 +185,13 @@ depth will be revisited then.*
    logic line, kept) — **implemented** (issue #1991: the escape had
    compiled clean and silently printed as literal prose, dropping the
    statement, until this landed) — and `> text` emits a prose line
-   inside a code body — **still unimplemented, loudly (E129)**, tracked
-   by #1992. Open tail: any prose→code escapes beyond `~`/interpolation,
+   inside a code body — **implemented** (issue #1992) at a `flow`/`fn`'s
+   own top-level code-ground body, the same granularity #1991's repro
+   exercised; the escape also *parses* at any nesting depth a code-ground
+   `STMT_BLOCK` statement can appear (a nested `if`/`while`/`for` body, a
+   lambda's braced body), but those still lower loudly (E129) — a
+   deliberately narrower first slice, not a silent gap. Open tail: any
+   prose→code escapes beyond `~`/interpolation,
    and the interpolation-vs-`{~` overlap.
 3. **Divert / tunnel / thread / await** — ✅ RULED (scattered across
    rulings): `->` stays divert ("one arrow, one meaning", 2026-07-14);

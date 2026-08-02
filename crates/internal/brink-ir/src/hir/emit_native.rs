@@ -28,7 +28,8 @@
 //! `ref`, type-annotated); content lines (text, glue, `{expr}`
 //! interpolation, trailing tags); diverts (`-> target`, `-> END`,
 //! `-> DONE`, with call args); tunnel calls (`-> target ->`); `return` /
-//! `return -> target`; `{?}` choice points (sticky/once, guards, labels,
+//! `return -> target` / `return <expr>` (issue #1973); `{?}` choice points
+//! (sticky/once, guards, labels,
 //! the `text[bracket]inner` display split, `else {}` fallback, the
 //! dissolved-gather continuation — including a **labeled** continuation,
 //! and a mid-flow `Stmt::LabeledBlock` wherever it occurs, both via G-1's
@@ -88,11 +89,19 @@
 //! token forces that same runtime-deferred-whitespace behavior, and
 //! respelling it as a literal space would silently change what renders,
 //! so it stays refused); `CondKind::IfElse` (emitter-only — see the
-//! corrected note on `CondKind::InitialCondition` above, issue #1951) and a
-//! prose-body `return` with a value expression (a real native-**grammar**
-//! gap — `RETURN_STMT` never carries a value at body position, see
-//! `lower_native::body`'s own finding); most `Expr` variants beyond
-//! literals/paths/operators/calls
+//! corrected note on `CondKind::InitialCondition` above, issue #1951).
+//! **Correction (issue #1973):** a prose-body `return` with a value
+//! expression used to be listed here as a native-grammar gap —
+//! `parser/divert.rs::return_stmt` now parses a trailing value expression
+//! at content-ground position (mirroring the code-ground `return expr?;`
+//! form it always supported), `lower_native::body`'s `N::RETURN_STMT` arm
+//! lowers it, and this emitter now spells it back (`emit_return`, below).
+//! Whether a non-function `flow`'s prose body may *semantically* carry a
+//! return value stays an open design question (unchanged by this fix) —
+//! `brink-analyzer`'s existing E032 ("explicit return outside function")
+//! still rejects it there exactly as before; only a `fn`'s value-carrying
+//! return round-trips through this emitter today. Most `Expr` variants
+//! beyond literals/paths/operators/calls
 //! (collections, structs, refs, a divert target used as a value, and
 //! `#fn(f, a)` — the *binding* form, which by the 2026-08-01 ruling has no
 //! native spelling at all; a **zero-bound** `#fn(f)` does respell, as the
@@ -621,7 +630,8 @@ fn emit_stmt_stream(
                     _ => None,
                 };
                 if let Some(divert_text) = same_line_divert {
-                    let text = escape_leading_cue_sigil(&emit_content_parts(&c.parts, context)?);
+                    let text =
+                        escape_leading_line_start_sigil(&emit_content_parts(&c.parts, context)?);
                     if !c.tags.is_empty() {
                         return Err(unsupported(
                             "tags on a content line sharing its line with a divert",
@@ -848,6 +858,15 @@ fn emit_expr_stmt(e: &Expr, context: &str) -> Result<String, EmitError> {
     Ok(format!("~ {}", emit_expr(e, context)?))
 }
 
+/// `return` / `return -> target` / `return <expr>` (issue #1973's last
+/// case — `lower_native::body`'s `N::RETURN_STMT` arm now lowers a
+/// content-ground value expression, mirroring the code-ground `return
+/// expr?;` form it always supported; see that arm's doc for the E032 note
+/// on why this stays a pure grammar/emitter fix, not a semantics change).
+/// `Expr::DivertTarget` keeps its own dedicated `return -> target` spelling
+/// (the tunnel-return redirect, checked first) — every other `Expr` shape
+/// falls to the general `return <expr>` case, which simply reuses
+/// [`emit_expr`] and propagates whatever it can't spell.
 fn emit_return(r: &Return, context: &str) -> Result<String, EmitError> {
     if !r.onwards_args.is_empty() {
         return Err(unsupported("tunnel-return onwards args", context));
@@ -855,7 +874,7 @@ fn emit_return(r: &Return, context: &str) -> Result<String, EmitError> {
     match &r.value {
         None => Ok("return".to_string()),
         Some(Expr::DivertTarget(p)) => Ok(format!("return -> {}", emit_path(p))),
-        Some(_) => Err(unsupported("return with a value expression", context)),
+        Some(v) => Ok(format!("return {}", emit_expr(v, context)?)),
     }
 }
 
@@ -888,7 +907,7 @@ fn emit_content_line(
     c: &Content,
     context: &str,
 ) -> Result<(), EmitError> {
-    let text = escape_leading_cue_sigil(&emit_content_parts(&c.parts, context)?);
+    let text = escape_leading_line_start_sigil(&emit_content_parts(&c.parts, context)?);
     let mut line = format!("{indent}{text}");
     for tag in &c.tags {
         let _ = write!(line, " #{}", emit_tag(tag, context)?);
@@ -974,25 +993,29 @@ fn escape_content_text(s: &str) -> String {
 /// `lexer::ident::is_ident_start_byte`) — `@ 5pm` or a bare trailing `@`
 /// never opened a cue in the first place and needs no escaping either.
 ///
-/// `!` carries no equivalent hazard *today*: no parser dispatch reads a
-/// leading `!` at body-line position (the `!name` annotation-element
-/// sigil §3.5b reserves is unimplemented), so a literal leading `!` —
-/// whether authored directly or produced by `\!` — already round-trips
-/// unescaped. Revisit this function when that sigil lands.
+/// `!` now carries the exact same hazard (issue #2004): a leading
+/// `!` immediately followed by an identifier is `parser::element::
+/// at_bang_dispatch`'s own adjacency test for a `BANG_DISPATCH` (`!name`
+/// dispatch, §3.5b) at body-line position, so a literal leading `!name` —
+/// authored directly or produced by `\!` — needs the same one-character
+/// re-escape or it would silently re-parse as a dispatch instead of the
+/// literal text it started as. `! Wait, listen.` (a gap after the `!`)
+/// never opened a dispatch and needs no escaping, matching `at_bang_
+/// dispatch`'s own adjacency requirement.
 ///
 /// Only called at genuine body-line-position emission
 /// (`emit_stmt_stream`'s `Stmt::Content` arm, `emit_content_line`) — a
 /// labeled line (`emit_labeled_stmt_stream`) already carries its own
 /// `(name) ` prefix ahead of the content, so on re-parse the line's first
-/// token is never `AT` there regardless of what the content says, and
-/// needs no equivalent guard.
-fn escape_leading_cue_sigil(text: &str) -> String {
+/// token is never `AT`/`BANG` there regardless of what the content says,
+/// and needs no equivalent guard.
+fn escape_leading_line_start_sigil(text: &str) -> String {
     let mut chars = text.chars();
     match chars.next() {
-        Some('@') => {
+        Some(sigil @ ('@' | '!')) => {
             let rest = chars.as_str();
             if rest.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') {
-                format!("\\@{rest}")
+                format!("\\{sigil}{rest}")
             } else {
                 text.to_string()
             }
@@ -1669,6 +1692,66 @@ mod tests {
             "re-lowered lambda lost its expression body: {:?}",
             lambda.body
         );
+    }
+
+    /// Issue #1973: a value-carrying `return <expr>` at content-ground
+    /// position now emits (and round-trips) instead of refusing with
+    /// `"return with a value expression"`.
+    ///
+    /// Deliberately a `flow`, not an `fn` (unlike the corpus's own motivating
+    /// shape, e.g. I003-tunnel-to-death's `is_alive` function): `emit_knot`
+    /// always prints a plain `{` for both keywords, never the `>{ }`
+    /// prose-ground override an `fn`'s body-dialect default needs to
+    /// re-parse this emitter's prose-ground statement text (`emit_return`'s
+    /// own `return <expr>` spelling included) — a real, separate,
+    /// pre-existing gap this fix's own round-trip check surfaced (every
+    /// `fn` this emitter produces already needed it, for a bare `return`
+    /// too; nothing here changes that channel), flagged rather than folded
+    /// into this PR. This test instead pins exactly what #1973 changed: the
+    /// grammar/lowering/emitter path for a value-carrying return, isolated
+    /// from that unrelated container-keyword gap. `brink-analyzer`'s E032
+    /// (return outside function) is a different crate/pass this emitter
+    /// test harness never runs — see `value_carrying_return_in_non_function_
+    /// still_emits_e032` in `brink-analyzer` for that semantics pin.
+    #[test]
+    fn value_carrying_return_round_trips() {
+        let src = "flow f() {\n  Hello.\n  return hp > 0\n}\n";
+        let emitted = lower_and_emit(src).expect("value-carrying return must now emit");
+        assert!(
+            emitted.contains("return hp > 0"),
+            "expected the emitted source to spell the return's value back out:\n{emitted}"
+        );
+
+        let hir = reparse_and_lower(&emitted);
+        let Stmt::Return(r) = hir.knots[0].body.stmts.last().expect("a Return statement") else {
+            panic!(
+                "expected Return as the re-lowered body's last statement: {:?}",
+                hir.knots[0].body.stmts
+            );
+        };
+        assert!(
+            matches!(&r.value, Some(Expr::Infix(_))),
+            "re-lowered return lost its value expression: {:?}",
+            r.value
+        );
+    }
+
+    /// The tunnel-return redirect keeps its own dedicated spelling and must
+    /// not be swallowed by the general value-expression case #1973 added —
+    /// `Expr::DivertTarget` is checked first in `emit_return`.
+    #[test]
+    fn return_redirect_still_wins_over_general_value_emission() {
+        let src = "flow b() {\n  Bye.\n}\nflow a() {\n  return -> b\n}\n";
+        let emitted = lower_and_emit(src).expect("return redirect must emit");
+        assert!(
+            emitted.contains("return -> b"),
+            "expected the tunnel-return redirect spelling, got:\n{emitted}"
+        );
+        assert!(
+            !emitted.contains("return b"),
+            "must not spell the redirect as a bare value expression:\n{emitted}"
+        );
+        reparse_and_lower(&emitted);
     }
 
     /// Issue #1614/#1161: `HirFile::allow_scopes` carries a `(range,

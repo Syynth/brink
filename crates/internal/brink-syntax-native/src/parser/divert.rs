@@ -3,8 +3,8 @@
 //! ink's `->-> x` for the self-explanatory `return -> x`).
 
 use crate::SyntaxKind::{
-    DIVERT, DIVERT_STMT, DIVERT_TARGET, KW_DONE, KW_END, L_PAREN, NEWLINE, RETURN_REDIRECT,
-    RETURN_STMT, TUNNEL_CALL,
+    BANG, DIVERT, DIVERT_STMT, DIVERT_TARGET, FLOAT, IDENT, INTEGER, KW_DONE, KW_END, KW_FALSE,
+    KW_TRUE, L_BRACKET, L_PAREN, MINUS, NEWLINE, QUOTE, RETURN_REDIRECT, RETURN_STMT, TUNNEL_CALL,
 };
 
 use super::Parser;
@@ -82,7 +82,28 @@ fn divert_target(p: &mut Parser<'_, '_>) {
 }
 
 /// `return` — leave this container. `return -> x` is the tunnel-return
-/// respelling (charter §11): pop the obligation, then go.
+/// respelling (charter §11): pop the obligation, then go. `return <expr>` —
+/// a value-carrying return at prose-body/content-ground position (issue
+/// #1973) — mirrors the code-ground `return expr?;` value grammar
+/// (`parser/stmt.rs::return_stmt`), minus the `;` terminator content-ground
+/// statements never carry; `ast::ReturnStmt::value()` is the one accessor
+/// shared by both grammars (see `SyntaxKind::RETURN_STMT`'s doc).
+///
+/// The `DIVERT` check runs first and unconditionally wins: `return -> x`
+/// must always parse as `RETURN_REDIRECT`, never fall into the value
+/// branch (there is no divert-target *expression* atom in `expr.rs` for it
+/// to collide with today, but the ordering is the actual guarantee, not an
+/// accident of the current grammar — pinned by a test).
+///
+/// [`at_return_value_start`] is a **positive** "does this look like an
+/// expression" probe rather than a negative "not a terminator" one
+/// (Finding #5's prose-collision discipline, `parser/decl.rs`'s doc) — this
+/// function is reached from both `block::body_line` (terminated by
+/// `NEWLINE`/`EOF`) and `family::colon_body_line` (terminated by
+/// `R_BRACE`/an `else`-arm boundary, e.g. `{if cond: return else: …}`), and
+/// enumerating every terminator risks missing one and mis-swallowing it as
+/// a spurious "expected an expression" error where a bare `return` was
+/// actually intended.
 pub(crate) fn return_stmt(p: &mut Parser<'_, '_>) {
     let checkpoint = p.checkpoint();
     p.bump(); // KW_RETURN
@@ -92,6 +113,10 @@ pub(crate) fn return_stmt(p: &mut Parser<'_, '_>) {
         p.bump(); // ->
         divert_target(p);
         p.finish_node();
+    } else if at_return_value_start(p) {
+        p.start_node_at(checkpoint, RETURN_STMT);
+        super::expr::expression(p);
+        p.finish_node();
     } else {
         p.start_node_at(checkpoint, RETURN_STMT);
         p.finish_node();
@@ -100,4 +125,19 @@ pub(crate) fn return_stmt(p: &mut Parser<'_, '_>) {
         p.skip_ws();
         p.bump();
     }
+}
+
+/// Whether the current token can start [`return_stmt`]'s optional value
+/// expression. Mirrors `expr::atom`'s atom first-set plus
+/// `expr::is_prefix_op`'s prefix operators, deliberately **excluding**
+/// `L_BRACE` and `PIPE`: a block-expression or lambda-literal return value
+/// has no corpus motivation at this position, and `L_BRACE` specifically
+/// would collide with the brace-family constructs (`{if …}`/`{?…}`/
+/// alternations) that can otherwise immediately follow a bare `return` on
+/// the same content line.
+fn at_return_value_start(p: &Parser<'_, '_>) -> bool {
+    matches!(
+        p.current(),
+        INTEGER | FLOAT | KW_TRUE | KW_FALSE | QUOTE | L_PAREN | IDENT | L_BRACKET | MINUS | BANG
+    )
 }

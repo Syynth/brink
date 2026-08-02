@@ -1,7 +1,8 @@
 // Prose block elements (#1715) - docs/prose-dialect-spec.md 8b/8d.
 // A trimmed version of the spec's own "complement-pass page": every shape
 // this slice's grammar recognizes, and nothing from the slices that follow
-// (no markup spans, no !name annotation elements, no attachment).
+// (no markup spans, no attachment). `!name` sigil dispatch (issue #2004)
+// is grammar, not a later slice, so it earns a line here too.
 
 /// The market, after curfew.
 INT. MARKET SQUARE - NIGHT [market] #act1 #tense
@@ -15,6 +16,8 @@ You shouldn't be here after dark. The gates closed an hour ago.
 @KID: Says who?
 
 @MARKET VENDOR: The curfew, kid. That.
+
+!alarm TAC-2: Sirens wail through the square.
 
 -> alley_escape
 

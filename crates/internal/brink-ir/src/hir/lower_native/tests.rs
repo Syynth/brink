@@ -1206,6 +1206,211 @@ fn logic_line_with_no_recognized_child_is_a_loud_e129_not_a_silent_drop() {
     );
 }
 
+// ── Issue #1992: `> text` — the code-ground line escape into prose ────
+// ── (charter §8.2, RULED 2026-07-23) ───────────────────────────────────
+//
+// The mirror image of #1991 (above) at the opposite ground: `> text` emits
+// a prose line inside an otherwise code-ground `fn`/`flow` body. Before
+// this landed the parser had no `GT` dispatch in `stmt::statement()` at
+// all, so `> hi` inside a code-ground body was a parse error (`expected an
+// expression, found GT`), not a lowering gap — these tests pin the fixed
+// grammar's HIR lowering; `tests/tier1-native/prose-line-escape/` pins the
+// same fix end-to-end through a real compile+run.
+
+#[test]
+fn prose_line_only_body_lowers_to_content_and_end_of_line_with_no_logic_block() {
+    let (hir, _m, diags) = lower_src("fn radio() {\n  > hi\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = only_knot_body(&hir);
+    assert!(
+        matches!(body.stmts[0], Stmt::Content(_)),
+        "a code-ground body with only a prose line must never wrap it in a \
+         LogicBlock (content is out of that closed set by design): {:?}",
+        body.stmts
+    );
+    assert!(matches!(body.stmts[1], Stmt::EndOfLine));
+    assert_eq!(body.stmts.len(), 2);
+}
+
+#[test]
+fn prose_line_carries_interpolation_like_any_content_line() {
+    // The issue's own repro: `> [{chan}] {text}`.
+    let (hir, _m, diags) = lower_src("fn radio(chan, text) {\n  > [{chan}] {text}\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = only_knot_body(&hir);
+    let Stmt::Content(c) = &body.stmts[0] else {
+        panic!("expected Stmt::Content, got {:?}", body.stmts[0]);
+    };
+    let interpolations = c
+        .parts
+        .iter()
+        .filter(|p| matches!(p, crate::ContentPart::Interpolation(_)))
+        .count();
+    assert_eq!(interpolations, 2, "one per `{{…}}` interpolation: {c:?}");
+}
+
+#[test]
+fn prose_line_with_no_prose_still_lowers_to_a_single_logic_block_unchanged() {
+    // Strict generalization, not a behavior change: a code-ground body with
+    // no `> text` line in it (every body before this issue) must still
+    // lower to exactly one `LogicBlock`, byte-for-byte the prior shape.
+    let (hir, _m, diags) = lower_src("fn bump() {\n  n += 1;\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = only_knot_body(&hir);
+    assert_eq!(body.stmts.len(), 1);
+    let Stmt::LogicBlock(lb) = &body.stmts[0] else {
+        panic!("expected Stmt::LogicBlock, got {:?}", body.stmts[0]);
+    };
+    assert_eq!(lb.stmts.len(), 1);
+    assert!(matches!(lb.stmts[0], BlockStmt::Assignment(_)));
+}
+
+#[test]
+fn prose_line_with_no_prose_anchors_provenance_on_the_whole_stmt_block() {
+    // Review finding F4: `flush_code_ground_run` anchors a `LogicBlock`'s
+    // `ptr` on the run's first item (`run_start`), which is the right
+    // choice once a `> text` split has actually happened, but the
+    // no-split case must still anchor on the whole `STMT_BLOCK` node —
+    // the pre-#1992 shape — since `lb.ptr` is read for diagnostic ranges
+    // (`brink-analyzer/src/validate.rs`, `coalesce.rs`) and the module doc
+    // claims "byte-for-byte the prior shape" for exactly this case.
+    let src = "fn bump() {\n  n += 1;\n}\n";
+    let (hir, _m, diags) = lower_src(src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = only_knot_body(&hir);
+    let Stmt::LogicBlock(lb) = &body.stmts[0] else {
+        panic!("expected Stmt::LogicBlock, got {:?}", body.stmts[0]);
+    };
+    let parse = brink_syntax_native::parse(src);
+    let expected = parse
+        .tree()
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == N::STMT_BLOCK)
+        .expect("STMT_BLOCK in tree")
+        .text_range();
+    assert_eq!(
+        lb.ptr.range, expected,
+        "the single-run LogicBlock's ptr must span the whole `STMT_BLOCK`, \
+         not just its first statement"
+    );
+}
+
+#[test]
+fn prose_line_interleaves_with_logic_block_runs() {
+    // Runs of ordinary statements on either side of a `> text` line each
+    // become their own `LogicBlock`, with the content emission sitting
+    // between them as an ordinary sibling `Stmt` — not nested inside
+    // either logic segment (content is out of `BlockStmt`'s closed set by
+    // design, `docs/t1b-surface-spec.md` §2's seam rule).
+    let (hir, _m, diags) = lower_src("fn radio() {\n  n = 1;\n  > hi\n  n = 2;\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = only_knot_body(&hir);
+    assert_eq!(
+        body.stmts.len(),
+        4,
+        "expected [LogicBlock, Content, EndOfLine, LogicBlock]: {:?}",
+        body.stmts
+    );
+    assert!(matches!(body.stmts[0], Stmt::LogicBlock(_)));
+    assert!(matches!(body.stmts[1], Stmt::Content(_)));
+    assert!(matches!(body.stmts[2], Stmt::EndOfLine));
+    assert!(matches!(body.stmts[3], Stmt::LogicBlock(_)));
+    let Stmt::LogicBlock(first) = &body.stmts[0] else {
+        unreachable!()
+    };
+    assert!(matches!(first.stmts[0], BlockStmt::Assignment(_)));
+    let Stmt::LogicBlock(second) = &body.stmts[3] else {
+        unreachable!()
+    };
+    assert!(matches!(second.stmts[0], BlockStmt::Assignment(_)));
+}
+
+#[test]
+fn prose_line_nested_in_an_if_body_is_a_loud_e129_not_silent() {
+    // This slice only gives `> text` a real content-emission home at a
+    // `flow`/`fn`'s own top-level code-ground body (`body::
+    // lower_stmt_block_as_body`'s doc); the escape still *parses* at any
+    // nesting depth (`stmt::statement()`'s shared dispatch), so a
+    // `PROSE_LINE` nested inside an `if` body reaches `control_flow::
+    // lower_block_item` directly and must fall to its default `E129` arm —
+    // loud, never a silent drop, and never folded into a `LogicBlock`
+    // either (that would require inventing the very `BlockStmt::Content`
+    // variant the seam rule forbids).
+    let (hir, _m, diags) = lower_src("fn radio() {\n  if true {\n    > hi\n  }\n}\n");
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E129),
+        "expected E129 for a prose line nested inside an if body, got: {diags:?}"
+    );
+    let body = only_knot_body(&hir);
+    assert!(
+        !body_contains_content(body),
+        "a prose line with no content-emission home in this context must never \
+         still surface as content: {body:?}"
+    );
+}
+
+#[test]
+fn a_g1_label_on_a_code_ground_prose_line_is_a_loud_e129_not_silently_dropped() {
+    // Review finding F3: `lower_code_ground_items` called
+    // `lower_content_line_body`, which its own doc says skips the
+    // `CONTENT_LINE`'s `LABEL` child deliberately — that's correct for
+    // `lower_items`'s weave-ground absorption algorithm (a label there
+    // decides how much of the item stream to swallow, consumed by the
+    // *caller* before this helper ever sees the line), but this
+    // split-run loop has no absorption target at all, so a `(name)` label
+    // on a `> text` line here was silently vanishing with no diagnostic —
+    // and a later `-> again` divert to that name would then fail to
+    // resolve, with no way to trace why.
+    let (hir, _m, diags) = lower_src("fn radio() {\n  n = 1;\n  > (again) hi\n}\n");
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E129),
+        "expected E129 for a G-1 label on a code-ground prose line, got: {diags:?}"
+    );
+    // The label's loss doesn't also swallow the line's own content — the
+    // prose line still lowers to ordinary `Stmt::Content`/`Stmt::EndOfLine`
+    // siblings, same as an unlabeled one.
+    let body = only_knot_body(&hir);
+    assert!(
+        body_contains_content(body),
+        "the prose line's own content must still lower even though its label \
+         is rejected: {body:?}"
+    );
+}
+
+/// Whether any `Stmt::Content` appears anywhere in `block`, including nested
+/// inside a `Stmt::LogicBlock`'s own `BlockStmt::If`/`While`/`For` bodies —
+/// used by [`prose_line_nested_in_an_if_body_is_a_loud_e129_not_silent`] to
+/// assert the *absence* of content at any depth, not just the top level.
+fn body_contains_content(block: &crate::Block) -> bool {
+    block.stmts.iter().any(stmt_contains_content)
+}
+
+fn stmt_contains_content(stmt: &Stmt) -> bool {
+    match stmt {
+        Stmt::Content(_) => true,
+        Stmt::LogicBlock(lb) => lb.stmts.iter().any(block_stmt_contains_content),
+        _ => false,
+    }
+}
+
+fn block_stmt_contains_content(stmt: &BlockStmt) -> bool {
+    match stmt {
+        BlockStmt::If(i) => {
+            i.body.iter().any(block_stmt_contains_content)
+                || i.else_branch.as_ref().is_some_and(|e| match e {
+                    ElseBranch::ElseIf(inner) => {
+                        block_stmt_contains_content(&BlockStmt::If((**inner).clone()))
+                    }
+                    ElseBranch::Else(stmts) => stmts.iter().any(block_stmt_contains_content),
+                })
+        }
+        BlockStmt::While(w) => w.body.iter().any(block_stmt_contains_content),
+        BlockStmt::For(f) => f.body.iter().any(block_stmt_contains_content),
+        _ => false,
+    }
+}
+
 #[test]
 fn end_and_done_targets_lower_to_sentinel_paths() {
     let (hir, _m, diags) = lower_src("flow a() {\n  -> END\n}\nflow b() {\n  -> DONE\n}\n");
@@ -1268,6 +1473,47 @@ fn explicit_return_stamps_explicit_kind() {
     };
     assert_eq!(r.kind, ReturnKind::Explicit);
     assert!(r.value.is_none());
+}
+
+#[test]
+fn content_ground_return_with_value_lowers_the_expression() {
+    // `>{ }` forces the prose-ground override on an `fn`, exercising the
+    // content-ground `RETURN_STMT` value grammar (issue #1973) rather than
+    // the code-ground `return expr;` form `lower_return_stmt` already
+    // covers. `is_function: true` keeps this legal per E032 (checked in
+    // `brink-analyzer`, not here) — the corpus motivation
+    // (I003-tunnel-to-death's `~ return hp > 0`) is exactly a function
+    // knot's value-carrying return.
+    let (hir, _m, diags) = lower_src("fn f() >{\n  return hp > 0\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let Stmt::Return(r) = &hir.knots[0].body.stmts[0] else {
+        panic!("expected Return, got {:?}", hir.knots[0].body.stmts[0]);
+    };
+    assert_eq!(r.kind, ReturnKind::Explicit);
+    assert!(
+        matches!(r.value, Some(Expr::Infix(_))),
+        "expected an infix comparison value, got {:?}",
+        r.value
+    );
+}
+
+#[test]
+fn content_ground_return_with_value_stays_explicit_in_a_non_function() {
+    // A value-carrying `return <expr>` inside an ordinary `flow` (not
+    // `fn`) parses and lowers cleanly at THIS layer — `fixup_return_kind`
+    // only demotes a *bare* (`value.is_none()`) return to
+    // `TunnelRedirect`, so a valued one stays `Explicit` regardless of
+    // `is_function`. Whether that's semantically legal is
+    // `brink-analyzer`'s E032 call (`validate.rs`'s
+    // `value_carrying_return_in_non_function_still_emits_e032`), a
+    // different crate/pass — this test only pins the lowering shape.
+    let (hir, _m, diags) = lower_src("flow f() {\n  Hello.\n  return 5\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let Stmt::Return(r) = hir.knots[0].body.stmts.last().expect("a Return statement") else {
+        panic!("expected Return, got {:?}", hir.knots[0].body.stmts);
+    };
+    assert_eq!(r.kind, ReturnKind::Explicit);
+    assert!(matches!(r.value, Some(Expr::Int(5))));
 }
 
 #[test]
@@ -2059,6 +2305,141 @@ fn a_non_claiming_handler_may_have_params_beyond_its_captures() {
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     let element = hir.knots[0].element_annotation.as_ref().expect("present");
     assert!(!element.claims);
+}
+
+// The `!name` sigil dispatch half of `@[element(…)]` (issue #2004): a
+// `BANG_DISPATCH` line dispatches by name to an `args = "…"`-annotated
+// handler, the pattern parsing only the remainder after the sigil.
+
+#[test]
+fn a_bang_dispatch_line_lowers_to_exactly_one_call() {
+    let (hir, _m, diags) = lower_src(
+        "@[element(args = \"^(?<chan>[A-Z0-9-]+): (?<text>.+)$\")]\nfn radio(chan, text) {\n  return text;\n}\n\nflow main() {\n  !radio TAC-2: All units report in.\n}\n",
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let main = hir
+        .knots
+        .iter()
+        .find(|k| k.name.text == "main")
+        .expect("main");
+    let (callee, args) =
+        only_claimed_call(&main.body).expect("the dispatched line must lower to one call");
+    assert_eq!(callee, "radio");
+    assert_eq!(
+        args,
+        vec!["TAC-2".to_string(), "All units report in.".to_string()]
+    );
+}
+
+#[test]
+fn a_bang_dispatch_records_handler_and_capture_spans() {
+    let src = "@[element(args = \"^(?<chan>[A-Z0-9-]+): (?<text>.+)$\")]\nfn radio(chan, text) {\n  return text;\n}\n\nflow main() {\n  !radio TAC-2: All units report in.\n}\n";
+    let (hir, _m, diags) = lower_src(src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(hir.element_matches.len(), 1);
+    let m = &hir.element_matches[0];
+    assert_eq!(m.kind, crate::ElementKind::BangDispatch);
+    assert_eq!(m.disposition, crate::ElementDisposition::Call);
+    assert_eq!(m.handler.text, "radio");
+    assert_eq!(m.captures.len(), 2);
+    assert_eq!(m.captures[0].name, "chan");
+    assert_eq!(m.captures[0].text, "TAC-2");
+    assert_eq!(
+        &src[usize::from(m.captures[0].range.start())..usize::from(m.captures[0].range.end())],
+        "TAC-2"
+    );
+    assert_eq!(m.captures[1].name, "text");
+    assert_eq!(m.captures[1].text, "All units report in.");
+}
+
+#[test]
+fn a_bang_dispatch_honors_a_name_alias() {
+    let (hir, _m, diags) = lower_src(
+        "@[element(args = \"^ready$\", name = \"walkie\")]\nfn tally() {\n  return \"ready\";\n}\n\nflow main() {\n  !walkie ready\n}\n",
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let main = hir
+        .knots
+        .iter()
+        .find(|k| k.name.text == "main")
+        .expect("main");
+    let (callee, _args) =
+        only_claimed_call(&main.body).expect("the aliased dispatch must lower to one call");
+    assert_eq!(callee, "tally");
+}
+
+#[test]
+fn a_bang_dispatch_naming_an_undeclared_handler_is_loudly_unlowered() {
+    // No handler at all is declared under this name — the line still
+    // parses (the parser cannot know what the lowering pass will find),
+    // and this compiler cannot honor it yet, so it must stay loud (E129)
+    // rather than silently falling back to plain prose.
+    let (_hir, _m, diags) = lower_src("flow main() {\n  !radio TAC-2: hello.\n}\n");
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E129),
+        "an undeclared dispatch name must stay loud: {diags:?}"
+    );
+}
+
+#[test]
+fn a_bang_dispatch_whose_remainder_does_not_match_is_loudly_unlowered() {
+    let (_hir, _m, diags) = lower_src(
+        "@[element(args = \"^(?<chan>[A-Z0-9-]+): (?<text>.+)$\")]\nfn radio(chan, text) {\n  return text;\n}\n\nflow main() {\n  !radio this does not match the pattern\n}\n",
+    );
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E129),
+        "an unmatched remainder must stay loud: {diags:?}"
+    );
+}
+
+#[test]
+fn two_bang_dispatch_handlers_with_the_same_name_first_declared_wins() {
+    // Interim rule (`Elements::dispatch`'s own doc), mirroring `claims`'s
+    // own interim first-declared-wins pending #1840's registration order.
+    let (hir, _m, diags) = lower_src(
+        "@[element(args = \"^ready$\")]\nfn tally_first() {\n  return \"first\";\n}\n\n@[element(args = \"^ready$\", name = \"tally_first\")]\nfn tally_second() {\n  return \"second\";\n}\n\nflow main() {\n  !tally_first ready\n}\n",
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let main = hir
+        .knots
+        .iter()
+        .find(|k| k.name.text == "main")
+        .expect("main");
+    let (callee, _args) = only_claimed_call(&main.body).expect("must dispatch to the first");
+    assert_eq!(callee, "tally_first");
+}
+
+#[test]
+fn a_bang_dispatch_handler_with_an_uncaptured_param_does_not_dispatch() {
+    // `annotation::parse_element`'s own doc: a `!name` handler is exempt
+    // from `E167`'s declaration-time check and stays callable by hand with
+    // ordinary arguments — but the sigil-dispatched rewrite still has no
+    // other source of arguments, so a line dispatching to a handler with a
+    // param no capture covers must decline (E129), not emit a call with a
+    // missing argument.
+    let (_hir, _m, diags) = lower_src(
+        "@[element(args = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival(who, mood) {\n  return who;\n}\n\nflow main() {\n  !arrival VENDOR enters\n}\n",
+    );
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E129),
+        "a param with no capture must decline the dispatch: {diags:?}"
+    );
+}
+
+#[test]
+fn an_escaped_bang_at_line_start_stays_plain_text_and_never_dispatches() {
+    // Composition with §8d.6's line-start escape (`\!`, issue #1744/#1978):
+    // an author writing a literal leading `!` must not have it silently
+    // reinterpreted as a dispatch attempt.
+    let (hir, _m, diags) = lower_src(
+        "@[element(args = \"^radio.*$\")]\nfn radio() {\n  return \"ping\";\n}\n\nflow main() {\n  \\!radio still just prose.\n}\n",
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert!(
+        hir.element_matches.is_empty(),
+        "an escaped `\\!` must never dispatch: {:?}",
+        hir.element_matches
+    );
 }
 
 #[test]

@@ -47,9 +47,10 @@
 //! element. There is deliberately no `LYRICS` shape here.
 
 use crate::SyntaxKind::{
-    AT, BACKSLASH, COLON, COMPACT_CUE, CUE, CUE_NAME, DOC_COMMENT_OUTER, DOT, EOF, HASH, IDENT,
-    L_BRACE, L_BRACKET, L_PAREN, NEWLINE, PARENTHETICAL, R_BRACE, R_BRACKET, R_PAREN, SCENE_BODY,
-    SCENE_HEADING, SCENE_SLUG, SCENE_STITCH, SCENE_TITLE, TEXT,
+    AT, BACKSLASH, BANG, BANG_DISPATCH, COLON, COMPACT_CUE, CUE, CUE_NAME, DISPATCH_NAME,
+    DOC_COMMENT_OUTER, DOT, EOF, HASH, IDENT, L_BRACE, L_BRACKET, L_PAREN, NEWLINE, PARENTHETICAL,
+    R_BRACE, R_BRACKET, R_PAREN, SCENE_BODY, SCENE_HEADING, SCENE_SLUG, SCENE_STITCH, SCENE_TITLE,
+    TEXT,
 };
 
 use super::Parser;
@@ -325,6 +326,59 @@ fn cue_name(p: &mut Parser<'_, '_>) {
         }
         p.bump();
     }
+    p.finish_node();
+}
+
+// ── `!name` sigil dispatch (§3.5b, issue #2004) ──────────────────────
+
+/// `!name` at item position — the self-announcing annotation-element
+/// dispatch sigil. The `!` and the name must be **adjacent**, the same
+/// adjacency discipline [`at_cue`] applies to `@NAME`: a bare `!` followed
+/// by a gap (`! Wait, listen.`) is ordinary prose punctuation, never a
+/// malformed dispatch attempt.
+///
+/// Recognition only — whether `name` actually names a declared
+/// `@[element(args = "…")]` handler, and whether that handler's pattern
+/// matches the remainder, is a lowering-time question
+/// (`hir::lower_native::element::try_dispatch`), not this function's. An
+/// unresolved `!name` line still parses cleanly (see [`bang_dispatch`]'s
+/// doc for why that composes with `\!`, the ruled line-start escape).
+pub(crate) fn at_bang_dispatch(p: &Parser<'_, '_>) -> bool {
+    p.at(BANG) && p.nth(1) == IDENT && p.nth_adjacent(0)
+}
+
+/// Parses a confirmed [`at_bang_dispatch`] position into one `BANG_DISPATCH`:
+/// the `!`, a `DISPATCH_NAME` holding the dispatching identifier, and the
+/// remainder as a fused `CONTENT_LINE` via `content::content_line` —
+/// the exact same fused-line technique [`cue_line`]'s `COMPACT_CUE` arm uses
+/// for `@NAME: text`, so interpolation, glue, inline markup and trailing tags
+/// all parse in the remainder exactly as they would in any other content
+/// line.
+///
+/// Reusing `content_line` here, rather than a bespoke raw-text scan, is
+/// deliberate: `hir::lower_native::element::try_dispatch` requires the
+/// remainder to be **wholly literal** (no interpolation etc.) before a
+/// portable-regex pattern can match it — exactly the same requirement
+/// natural-notation claiming already enforces
+/// (`hir::lower_native::element::candidate`) — so a dynamic remainder still
+/// parses, and is diagnosed loudly downstream (`E129`, "parses cleanly but
+/// has no HIR lowering yet") rather than being rejected here at the grammar
+/// level.
+///
+/// Composes with `\!` (§8d.6, the ruled line-start escape,
+/// `markup::at_line_start_escape`) by construction, not by a special case
+/// here: `\!` lexes as `BACKSLASH` `BANG`, never a bare `BANG`, so
+/// `body_line`'s own dispatch on `p.current()` never reaches this function
+/// for an escaped `!` — it falls to the ordinary content-line default arm,
+/// exactly like it did before this sigil existed.
+pub(crate) fn bang_dispatch(p: &mut Parser<'_, '_>) {
+    p.skip_ws();
+    p.start_node(BANG_DISPATCH);
+    p.bump(); // `!`
+    p.start_node(DISPATCH_NAME);
+    p.bump(); // the dispatching IDENT
+    p.finish_node();
+    super::content::content_line(p);
     p.finish_node();
 }
 

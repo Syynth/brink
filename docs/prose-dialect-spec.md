@@ -266,19 +266,40 @@ fn radio(chan: string, text: content) {
 !radio TAC-2: All units report in.
 ```
 
-- **Sigil + name dispatch (RULED, addendum 3).** Annotation elements
-  live behind the `!` sigil: `!name args…`. The first identifier
-  dispatches **by name** to the annotated fn (fn name, or an alias
-  given by `@[element(name = "alias")]`); the `args` pattern parses
-  only the remainder,
-  binding captures to params. Rationale: without a sigil, a user
-  pattern can silently claim natural prose — declared, but *invisible
-  at the use site*; the sigil makes every rewritten line
-  self-announcing (the explicit-format posture applied to macros).
-  Name dispatch **dissolves the match-ordering problem entirely**:
-  duplicate names are ordinary duplicate-definition errors, and an
-  unmatched remainder is a targeted diagnostic naming both the line
-  and the handler's pattern. (Fountain's `!`-forces-plain-action
+- **Sigil + name dispatch (RULED, addendum 3; landed by issue #2004 for
+  the plain, non-`block` case).** Annotation elements live behind the `!`
+  sigil: `!name args…` — parsed as one `BANG_DISPATCH` node
+  (`brink-syntax-native`'s `parser::element::at_bang_dispatch`/
+  `bang_dispatch`), composing with `\!`'s line-start escape (§8d.6) by
+  construction. The first identifier dispatches **by name** to the
+  annotated fn (fn name, or an alias given by `@[element(name =
+  "alias")]`); the `args` pattern parses only the remainder, binding
+  captures to params (`brink_ir::hir::lower_native::element::
+  try_dispatch`) — the same wholly-literal-remainder and
+  captures-bind-params-by-name mechanics `claims` dispatch already uses.
+  Rationale: without a sigil, a user pattern can silently claim natural
+  prose — declared, but *invisible at the use site*; the sigil makes
+  every rewritten line self-announcing (the explicit-format posture
+  applied to macros). Name dispatch **dissolves the match-ordering
+  problem entirely**: at most one handler can ever match a given `!name`
+  line's own name, so there is no analogue of `claims`'s "two patterns
+  match one line" question. Two *declarations* naming the same dispatch
+  name is a distinct question, and is only an interim first-declared-wins
+  today (`Elements::dispatch`'s own doc) — the ruled "duplicate names are
+  ordinary duplicate-definition errors" is not yet a diagnostic; nor is
+  the ruled "an unmatched remainder is a targeted diagnostic naming both
+  the line and the handler's pattern" — an unmatched-name or
+  unmatched-remainder `!name` line falls to the generic `E129`
+  ("parses cleanly but has no HIR lowering yet") rather than a diagnostic
+  that names the line and pattern, since no diagnostic code is
+  pre-assigned for either yet (both remain open follow-up work). The
+  target is a **top-level `fn` only**, matching `claims`'s own
+  restriction (the rewrite is an expression call) — a `flow`'s own `args`
+  clause still parses and validates but is not yet a live dispatch
+  target. Dispatch is **file-local**, matching `claims`'s pre-#1863 scope
+  (no cross-file dispatch-name resolution yet), and a `block`-declared
+  handler's trailing receiver still has nothing dispatching into it
+  (issue #1839's own scope). (Fountain's `!`-forces-plain-action
   inversion noted and accepted — "good point of reference, not
   married to it.")
 - **Pattern power proportional to auditability.** Natural-notation
@@ -362,16 +383,19 @@ fn radio(chan: string, text: content) {
   receiver cannot be the same param) —
   `crates/internal/brink-ir/src/hir/lower_native/annotation.rs`'s
   `has_block_content_param`. Declaration-surface only, matching #1719's
-  own scope for `element`/`style`: the `!name`/natural-notation dispatch
-  rewrite that would actually match a line, find the block's terminator,
-  and call the handler with the captured run is issue #1838's scope, not
-  delivered here. `content` is now a resolvable annotation type name
-  (`Ty::Content`, issue #1846 — see the Deferred bullet below), so a
-  conforming `block` declaration compiles cleanly under `dialect = brink`
-  on its own `content`-typed parameter; it is still **not usable
-  end-to-end** — nothing dispatches to it yet, since the `!name` sigil
-  rewrite that would actually bind a captured run to that param remains
-  issue #1838's scope.
+  own scope for `element`/`style`: the non-`block` half of `!name`
+  dispatch now matches a line and calls the handler (issue #2004), but
+  finding the block's terminator and capturing the following run into the
+  trailing param is still not implemented — that is issue #1839's own
+  follow-on scope, not delivered here or by #2004. `content` is now a
+  resolvable annotation type name (`Ty::Content`, issue #1846 — see the
+  Deferred bullet below), so a conforming `block` declaration compiles
+  cleanly under `dialect = brink` on its own `content`-typed parameter;
+  it is still **not usable end-to-end** — `try_dispatch` declines to
+  dispatch a `block`-declared handler at all today (its trailing receiver
+  has no capture to bind it from, the same missing-argument decline any
+  under-captured handler gets), since the block-capture binding that
+  would actually fill it remains issue #1839's scope.
 - **`@[style]` — declared editor presentation (RULED, addenda 3–4).**
   A companion annotation mapping captures (and `line` = the whole
   line; `dispatch` = the `!name` prefix) to style values, drawn from
@@ -411,24 +435,24 @@ fn radio(chan: string, text: content) {
   remain unbuilt); context injection (handlers
   reading attachment data); `Option` params for optional captures;
   binding a `content`-typed param to an actual captured `FragmentRef`/prose
-  block (issue #1846 gave `content` a resolvable `Ty` in the native type
-  system — the ruled `fn radio(chan: string, text: content)` example's
-  `text` param, and `block`'s own trailing receiver param, now compile —
-  but nothing yet *dispatches* a captured run into one; that binding rides
-  the `!name` sigil rewrite below, issue #1838's scope); the `!name` sigil
-  dispatch rewrite itself (matching
-  a content line, binding captures, lowering to a call — issue #1719
-  delivered the `@[element]`/`@[style]` **declaration surface**, and issue
-  #1839 widened it with the `block` clause's own declaration-surface
-  contract (`E166`, see the bullet above): parsing, portable-regex
-  validation, the captures-bind-params-by-name compile check, and the
-  block-receiver structural check, all in
-  `brink_ir::hir::lower_native::annotation`; nothing dispatches yet, for
-  either);
-  cross-file dispatch-name resolution and the duplicate-dispatch-name
-  check (v1 validates one declaration at a time — and #1838's claiming
-  dispatch is file-local for the same reason); block capture (issue
-  #1839) and `fn conventions()` registration + comptime (issue #1840 —
+  block via the `block` clause (issue #1846 gave `content` a resolvable
+  `Ty` in the native type system — the ruled `fn radio(chan: string, text:
+  content)` example's `text` param, and `block`'s own trailing receiver
+  param, now compile, and issue #2004 now dispatches the plain, non-`block`
+  case — but a `block`-declared handler's trailing receiver still has
+  nothing dispatching into it; that binding is issue #1839's own scope);
+  the ruled duplicate-dispatch-name error and the ruled targeted
+  unmatched-remainder diagnostic (issue #2004 dispatches the plain case
+  but leaves both of these as an interim first-declared-wins and a
+  generic `E129` fallback respectively — see the "Sigil + name dispatch"
+  bullet above; no diagnostic code is pre-assigned for either yet);
+  cross-file dispatch-name resolution (v1 validates one declaration at a
+  time — and #2004's `!name` dispatch is file-local for the same reason
+  `claims` is); dispatching to a `flow` target rather than a top-level
+  `fn` (`!name`'s own placement is legal on a `flow` too, but nothing
+  scans a `flow`'s declaration into the dispatch table yet); block
+  capture's own dispatch mechanism (issue #1839) and `fn conventions()`
+  registration + comptime (issue #1840 —
   **blocked on four rulings**, sized in
   `docs/conventions-comptime-sizing.md`: the identity a registered handler
   carries across the comptime boundary, whether a comptime fault fails the
@@ -1091,8 +1115,8 @@ punctuation, emoticons, path separators — is now a compile error. §8d.6 also
 rules `\!` and `\@` as **line-start** escapes — a disjoint set, legal as the
 first item `content::content_line`/`content_line_else_boundary` scans,
 guarding a literal leading `!`/`@` from the sigils those characters carry
-there (`@NAME` cue dispatch, §8b.9; the reserved `!name` annotation-element
-sigil, §3.5b). That is the true start of a physical line for an ordinary
+there (`@NAME` cue dispatch, §8b.9; the `!name` annotation-element dispatch
+sigil, §3.5b, issue #2004). That is the true start of a physical line for an ordinary
 content line, but also right after a compact cue's `@NAME:` prefix
 (`element::cue_line`'s `COMPACT_CUE` arm calls `content_line` directly for
 the fused dialogue line, reusing the same entry point). **Implemented, issue

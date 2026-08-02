@@ -42,6 +42,7 @@ ast_node!(ModuleDecl, MODULE_DECL);
 ast_node!(Block, BLOCK);
 ast_node!(ContentLine, CONTENT_LINE);
 ast_node!(LogicLine, LOGIC_LINE);
+ast_node!(ProseLine, PROSE_LINE);
 ast_node!(Text, TEXT);
 ast_node!(Interpolation, INTERPOLATION);
 ast_node!(GlueNode, GLUE_NODE);
@@ -59,6 +60,8 @@ ast_node!(Cue, CUE);
 ast_node!(CueName, CUE_NAME);
 ast_node!(CompactCue, COMPACT_CUE);
 ast_node!(Parenthetical, PARENTHETICAL);
+ast_node!(BangDispatch, BANG_DISPATCH);
+ast_node!(DispatchName, DISPATCH_NAME);
 
 // ── Inline markup (docs/prose-dialect-spec.md §4, issue #1716) ──────
 ast_node!(Span, SPAN);
@@ -1103,6 +1106,15 @@ impl LogicLine {
     }
 }
 
+impl ProseLine {
+    /// The wrapped `> text` content line — the mirror image of
+    /// [`LogicLine`]'s own wrapped children (`parser/stmt.rs::prose_line`),
+    /// reusing [`ContentLine`]'s grammar unmodified.
+    pub fn content_line(&self) -> Option<ContentLine> {
+        support::child(&self.syntax)
+    }
+}
+
 impl Label {
     pub fn name_token(&self) -> Option<SyntaxToken> {
         support::token(&self.syntax, IDENT)
@@ -1132,12 +1144,15 @@ impl ReturnRedirect {
 
 impl ReturnStmt {
     /// The value expression, if any — `RETURN_STMT`'s only child node.
-    /// `None` for the content-ground bare `return`/`return -> x` (never
-    /// parses one, `parser/divert.rs::return_stmt`); `Some`/`None` for the
+    /// `Some`/`None` for both grammars now: the content-ground bare
+    /// `return`/`return <expr>`/`return -> x` (`parser/divert.rs::
+    /// return_stmt` — the value is optional, and `-> x` is a distinct
+    /// `RETURN_REDIRECT` node, never this accessor's concern; issue #1973
+    /// added the value case, previously always `None` here) and the
     /// code-ground `return e?;` (B0.8 Wave B tail, issue #1322,
-    /// `parser/stmt.rs::return_stmt` — the initializer is optional there
-    /// too). See `syntax_kind.rs`'s `RETURN_STMT` doc for why one node
-    /// shape serves both grammars.
+    /// `parser/stmt.rs::return_stmt` — the initializer was already
+    /// optional there). See `syntax_kind.rs`'s `RETURN_STMT` doc for why
+    /// one node shape serves both grammars.
     pub fn value(&self) -> Option<SyntaxNode> {
         self.syntax.children().next()
     }
@@ -1358,7 +1373,13 @@ impl StmtBlock {
     /// `CONTINUE_STMT` to this same non-tail set — all three are always
     /// `;`-terminated in code-ground position (`parser/stmt.rs`'s
     /// `return_stmt`/`break_stmt`/`continue_stmt`), never a bare tail
-    /// value.
+    /// value. The `> text` prose-line escape (issue #1992) adds
+    /// `PROSE_LINE` to the set for the same reason: it never produces a
+    /// value (`parser/stmt.rs::statement`'s doc), so a `STMT_BLOCK` ending
+    /// in one has no tail expression, not a prose line masquerading as one
+    /// (review finding F2 — `lower_native/lambda.rs`'s `block.tail()` call
+    /// would otherwise lower it as a lambda's return value instead of
+    /// reaching `lower_block_item`'s loud `E129` arm).
     pub fn tail(&self) -> Option<SyntaxNode> {
         let last = self.syntax.children().last()?;
         (!matches!(
@@ -1373,6 +1394,7 @@ impl StmtBlock {
                 | SyntaxKind::RETURN_STMT
                 | SyntaxKind::BREAK_STMT
                 | SyntaxKind::CONTINUE_STMT
+                | SyntaxKind::PROSE_LINE
         ))
         .then_some(last)
     }
@@ -1646,6 +1668,27 @@ impl CompactCue {
     /// The fused dialogue line after the `:` (§8b.9).
     pub fn line(&self) -> Option<ContentLine> {
         support::child(&self.syntax)
+    }
+}
+
+impl BangDispatch {
+    /// The dispatching name after the `!` sigil.
+    pub fn name(&self) -> Option<DispatchName> {
+        support::child(&self.syntax)
+    }
+
+    /// The remainder after the name — a fused content line, the same way
+    /// [`CompactCue::line`] fuses its dialogue line.
+    pub fn line(&self) -> Option<ContentLine> {
+        support::child(&self.syntax)
+    }
+}
+
+impl DispatchName {
+    /// The dispatching name, with the surrounding source whitespace
+    /// trimmed.
+    pub fn text(&self) -> String {
+        self.syntax.text().to_string().trim().to_owned()
     }
 }
 

@@ -354,6 +354,25 @@ pub enum SyntaxKind {
     /// `parser/stmt.rs::logic_line`, dispatched from `block::body_line`'s
     /// (and `family::colon_body_line`'s) `TILDE` arm.
     LOGIC_LINE,
+    /// `> text` — the code-ground line-escape into prose (charter §8.2,
+    /// RULED 2026-07-23, `docs/decision-log.md` "Native interleaving &
+    /// body-dialect spelling": the mirror image of [`Self::LOGIC_LINE`] at
+    /// the opposite ground — issue #1992). Wraps a single
+    /// [`Self::CONTENT_LINE`] child, reused **unmodified** from the
+    /// content-ground line layer (`parser/content.rs::content_line`) in a
+    /// different position: same grammar, same terminator discipline
+    /// (`NEWLINE`/EOF, never a bare `R_BRACE`, which — as for `CONTENT_LINE`
+    /// itself — closes the enclosing body rather than the escape). Mirrors
+    /// [`Self::LOGIC_LINE`]'s own one-node-two-grammars precedent, just with
+    /// the wrapped/wrapper roles swapped: there the escape wraps a
+    /// code-ground node inside a content-ground dispatch; here it wraps a
+    /// content-ground node inside a code-ground dispatch. Parsed by
+    /// `parser/stmt.rs::prose_line`, dispatched from `stmt::statement()`'s
+    /// `GT` arm — reachable everywhere a code-ground `STMT_BLOCK` statement
+    /// is parsed (a `fn`'s default body, a `flow`'s `~{ }` override, and
+    /// every nested `if`/`while`/`for` body, which all share that one
+    /// dispatch loop).
+    PROSE_LINE,
     /// A run of literal text inside a `CONTENT_LINE` (no escapes, no
     /// interpolation — those break the run).
     TEXT,
@@ -426,6 +445,21 @@ pub enum SyntaxKind {
     /// parenthetical, or that cue's dialogue), so the G-1 `(label)`
     /// content-line spelling is untouched everywhere else.
     PARENTHETICAL,
+    /// `!name rest of the line…` — the self-announcing `!name`
+    /// annotation-element dispatch sigil (§3.5b, issue #2004). The `!` and
+    /// the name must be **adjacent**, mirroring [`Self::CUE`]'s `@NAME`
+    /// discipline (`element::at_bang_dispatch`) — a bare `!` not
+    /// immediately followed by an identifier stays ordinary prose. Holds a
+    /// [`Self::DISPATCH_NAME`] and the remainder as a fused
+    /// [`Self::CONTENT_LINE`] (the same technique [`Self::COMPACT_CUE`]
+    /// uses for its dialogue line) — whether a handler by that name
+    /// actually exists, and whether its `args = "…"` pattern matches the
+    /// remainder, is `hir::lower_native::element::try_dispatch`'s
+    /// question, not the parser's.
+    BANG_DISPATCH,
+    /// The name run inside a [`Self::BANG_DISPATCH`], after the `!` sigil
+    /// and before the remainder.
+    DISPATCH_NAME,
 
     // ── Node kinds — inline markup (docs/prose-dialect-spec.md §4, ──────
     // ── RULED 2026-07-25, issue #1716) ───────────────────────────────────
@@ -564,21 +598,24 @@ pub enum SyntaxKind {
     TUNNEL_CALL,
     /// A divert target: `END` / `DONE` / a `PATH`.
     DIVERT_TARGET,
-    /// `return` — leave this container (content-ground, bare, no value —
-    /// `parser/divert.rs::return_stmt`). **Also** reused, unmodified, as
-    /// the code-ground `return e?;` value-return statement (B0.8 Wave B
-    /// tail, issue #1322, `docs/decision-log.md` 2026-07-23 "Code-ground
-    /// sitting" item 1) — `parser/stmt.rs::return_stmt` parses an optional
-    /// value expression and a `;` terminator instead. The two grammars
-    /// never overlap (dispatched from different parent contexts — content-
-    /// ground `BLOCK`/`family.rs` vs. code-ground `STMT_BLOCK`/`stmt.rs`),
-    /// so one node shape serves both, mirroring the brink-dialect's own
+    /// `return` / `return <expr>` — leave this container, optionally with a
+    /// value (content-ground, `parser/divert.rs::return_stmt`; the value
+    /// expression is optional — issue #1973 added it, previously always
+    /// bare). **Also** reused, unmodified, as the code-ground `return e?;`
+    /// value-return statement (B0.8 Wave B tail, issue #1322,
+    /// `docs/decision-log.md` 2026-07-23 "Code-ground sitting" item 1) —
+    /// `parser/stmt.rs::return_stmt` parses an optional value expression
+    /// and a `;` terminator instead. The two grammars never overlap
+    /// (dispatched from different parent contexts — content-ground
+    /// `BLOCK`/`family.rs` vs. code-ground `STMT_BLOCK`/`stmt.rs`), so one
+    /// node shape serves both, mirroring the brink-dialect's own
     /// `RETURN_STMT` (`brink-syntax`), which likewise serves both its bare
     /// container-exit and its valued `~ { … }`-block-return uses.
     /// `ast::ReturnStmt::value()` is a plain "first child expr, if any"
-    /// accessor — `None` for the content-ground form (never parses one),
-    /// `Some`/`None` for the code-ground form (initializer optional there
-    /// too).
+    /// accessor — `Some`/`None` for both grammars now (content-ground: a
+    /// bare `return` is still `None`, and `return -> x` is a distinct
+    /// `RETURN_REDIRECT` node below, never this one's value; code-ground:
+    /// the initializer was already optional).
     RETURN_STMT,
     /// `return -> x` — the tunnel-return respelling (charter §11):
     /// `RETURN_STMT` immediately followed by a divert to `x`. Content-
