@@ -137,21 +137,26 @@ pub(super) fn lower_stmt_block_as_body(
     // `STMT_BLOCK` node (the pre-#1992 shape) rather than
     // `flush_code_ground_run`'s `run_start` anchor (the first statement
     // inside it), which is only a meaningful choice once a split has
-    // actually happened (review finding F4). Found by position rather than
-    // matched as `stmts`'s only element: since #2056, a call-containing run
-    // gains a trailing `Stmt::EndOfLine` sibling (see
-    // `flush_code_ground_run`'s doc), so a singleton unsplit body is no
-    // longer necessarily a singleton `stmts` vec — count `LogicBlock`s, the
-    // same test [`mark_split_logic_block_scopes`] already uses to decide
-    // "did a split happen," rather than the slice's raw length.
-    let logic_block_count = stmts
-        .iter()
-        .filter(|s| matches!(s, Stmt::LogicBlock(_)))
-        .count();
-    if logic_block_count == 1
-        && let Some(Stmt::LogicBlock(lb)) =
-            stmts.iter_mut().find(|s| matches!(s, Stmt::LogicBlock(_)))
-    {
+    // actually happened (review finding F4).
+    //
+    // Matched as an exact shape, not by counting `LogicBlock`s (review
+    // finding F1's fix): `mark_split_logic_block_scopes`'s `count < 2` test
+    // answers a different question ("must these runs share one lexical
+    // scope"), not "did a split happen" — a body where a `> text` line DID
+    // split the item stream but left only one call-containing run (e.g.
+    // `fn radio() { > hi\n  n = 1; }` lowers to `[Content, EndOfLine,
+    // LogicBlock]`, one `LogicBlock`, but very much split) would satisfy
+    // `logic_block_count == 1` and wrongly widen `lb.ptr` to span the
+    // whole `STMT_BLOCK`, including the prose line, when it must stay on
+    // `run_start` (`flush_code_ground_run`'s anchor) since the split is
+    // real. A genuinely unsplit body — the only case this re-anchor should
+    // fire for — is provably one of exactly two shapes: a lone
+    // `Stmt::LogicBlock` (no call in the run), or a `Stmt::LogicBlock`
+    // followed by `Stmt::EndOfLine` (#2056's trailing boundary for a
+    // call-containing run) — because `lower_code_ground_items` flushes
+    // its single run exactly once, at the end, when no `PROSE_LINE` was
+    // ever hit.
+    if let [Stmt::LogicBlock(lb)] | [Stmt::LogicBlock(lb), Stmt::EndOfLine] = stmts.as_mut_slice() {
         lb.ptr = native_provenance(file_id, NodeClass::LogicBlock, block.syntax());
     }
     let tail = crate::tail_from_stmts(&stmts);

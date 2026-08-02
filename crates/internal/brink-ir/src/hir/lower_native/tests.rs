@@ -1562,6 +1562,50 @@ fn call_containing_run_with_no_split_still_anchors_provenance_on_the_whole_stmt_
 }
 
 #[test]
+fn one_run_split_body_still_anchors_provenance_on_run_start_not_the_whole_stmt_block() {
+    // Review finding F1: the F4 re-anchor above must fire ONLY for a
+    // genuinely unsplit body, not merely whenever `stmts` happens to
+    // contain exactly one `Stmt::LogicBlock`. A `> text` prose line can
+    // split a code-ground body into one run (`Content`/`EndOfLine`) plus a
+    // trailing `LogicBlock` with no call in it, e.g. `fn radio() { > hi\n
+    // n = 1; }` lowers to `[Content, EndOfLine, LogicBlock]` — exactly one
+    // `LogicBlock`, but the item stream WAS split, so `lb.ptr` must stay on
+    // `flush_code_ground_run`'s `run_start` anchor (the `n = 1;`
+    // `ASSIGN_STMT`), never widen to the whole `STMT_BLOCK` (which would
+    // wrongly include the `> hi` prose line in the LogicBlock's
+    // diagnostic range).
+    let src = "fn radio() {\n  > hi\n  n = 1;\n}\n";
+    let (hir, _m, diags) = lower_src(src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = only_knot_body(&hir);
+    assert_eq!(
+        body.stmts.len(),
+        3,
+        "expected [Content, EndOfLine, LogicBlock]: {:?}",
+        body.stmts
+    );
+    assert!(matches!(body.stmts[0], Stmt::Content(_)));
+    assert!(matches!(body.stmts[1], Stmt::EndOfLine));
+    let Stmt::LogicBlock(lb) = &body.stmts[2] else {
+        panic!("expected Stmt::LogicBlock, got {:?}", body.stmts[2]);
+    };
+    let parse = brink_syntax_native::parse(src);
+    let expected = parse
+        .tree()
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == N::ASSIGN_STMT)
+        .expect("ASSIGN_STMT in tree")
+        .text_range();
+    assert_eq!(
+        lb.ptr.range, expected,
+        "a split body's trailing single-statement LogicBlock must keep \
+         run_start anchoring (the ASSIGN_STMT alone), not widen to the \
+         whole STMT_BLOCK"
+    );
+}
+
+#[test]
 fn prose_line_interleaves_with_a_call_containing_logic_block_run() {
     // The split-run sibling of the two tests above: a `> text` line splits
     // a code-ground body into more than one `LogicBlock`, and only the run

@@ -11,10 +11,16 @@ fn bump_and_shout() {
   n += 1;
 }
 
+fn tail_after_call() {
+  shout();
+  > tail
+}
+
 flow main() ~{
   > before
   shout();
   > middle
   bump_and_shout();
   > after {n}.
+  tail_after_call();
 }
