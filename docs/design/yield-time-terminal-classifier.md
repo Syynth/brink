@@ -1,8 +1,21 @@
 # Yield-time terminal classifier — design writeup
 
-Status: **design only — two maintainer rulings required before any
-runtime code moves.** Issue #1520 (`needs-design`, runtime). Companion of
-#1449 (whose harness half landed as PR #1513) and #1522.
+Status: **BOTH RULINGS MADE 2026-08-01 — this document is now background,
+not a gate.** Issue #1520 is **closed as folded into #1684**: R1 ruled that
+the classifier's output *is* `Step`'s own variants, so there is no interim
+shape and no standalone refactor — it lands as part of the Step migration.
+R2 (split out as #1574) ruled **no**: `RanOutOfContent` keeps the deferred
+fault, so the `oracle.rs:227` and #1522 extra-step allowances are now
+**permanent**, and §5's "the allowance is retirable only under R2" is
+answered — it is not being retired. The ran-out-of-content *message* does
+split into four C#-matched variants (#1993), which is an independent axis
+from fault timing. Companion of #1449 (whose harness half landed as PR
+#1513) and #1522.
+
+⚠ The proposal below is preserved as analysis — its six-sites inventory and
+its reasoning remain accurate and useful to #1684's implementer — but its
+line-number citations have drifted from `flow_instance.rs` and should be
+re-derived rather than trusted.
 
 This document is the "design first" artifact #1520 asks for. It
 inventories what terminal classification looks like today, states what a
