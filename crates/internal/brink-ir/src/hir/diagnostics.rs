@@ -1552,6 +1552,22 @@ pub enum DiagnosticCode {
     /// `infer::body::InferPass::infer_lambda`, reported by
     /// `strict::check_lambda_annotation_mismatches` under `types = strict`.
     E174,
+    /// `register(…)` used outside the conventions module's `fn conventions()`
+    /// (issue #1840 Q5, `docs/decision-log.md` 2026-08-02 "`register` is a
+    /// comptime-only intrinsic; calling it elsewhere is a diagnostic").
+    /// `register` is a T1b comptime-only intrinsic with no opcode, no
+    /// runtime registry cell, and no bytecode — legal only inside the
+    /// project's configured conventions module's well-known `fn
+    /// conventions()`, where a comptime evaluator (not yet built —
+    /// #1840's remaining slice) intercepts it. Calling it anywhere else —
+    /// a different function, a different file, or a conventions module
+    /// with no confined pointer configured at all — is this compile
+    /// error rather than the silent no-op CLAUDE.md forbids.
+    ///
+    /// Native-only: the conventions module and `fn conventions()` are both
+    /// `.brink`-surface concepts (`@[element(claims = "…")]` handlers,
+    /// `brink.toml`'s `[project] elements`), same posture as `E169`.
+    E175,
 }
 
 impl DiagnosticCode {
@@ -1739,6 +1755,7 @@ impl DiagnosticCode {
         Self::E172,
         Self::E173,
         Self::E174,
+        Self::E175,
     ];
 
     /// The stable string representation (e.g., `"E001"`).
@@ -1923,6 +1940,7 @@ impl DiagnosticCode {
             Self::E172 => "E172",
             Self::E173 => "E173",
             Self::E174 => "E174",
+            Self::E175 => "E175",
         }
     }
 
@@ -2214,6 +2232,9 @@ impl DiagnosticCode {
             Self::E174 => {
                 "a lambda's written parameter/return annotation disagrees with the type its body actually infers"
             }
+            Self::E175 => {
+                "`register` is a comptime-only intrinsic — legal only inside the project's configured conventions module's `fn conventions()`"
+            }
         }
     }
 
@@ -2459,6 +2480,7 @@ impl DiagnosticCode {
             "E172" => Some(Self::E172),
             "E173" => Some(Self::E173),
             "E174" => Some(Self::E174),
+            "E175" => Some(Self::E175),
             _ => None,
         }
     }

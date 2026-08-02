@@ -1095,6 +1095,19 @@ pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
             | "filter_map"
             | "each"
             | "map_each"
+            // `register(#fn(target))` (issue #1840 Q5, `docs/decision-log.md`
+            // 2026-08-02 "`register` is a comptime-only intrinsic"): a T1b
+            // comptime-only intrinsic, legal only inside the project's
+            // configured conventions module's well-known `fn conventions()`.
+            // Listed here (silent, unconditional-by-name — the same
+            // shadowable, dialect-gated posture as every other name above)
+            // so an ordinary resolution failure doesn't raise E025 for a
+            // legal use; a SEPARATE pass (`register_intrinsic_diagnostics`,
+            // caller-fed `is_conventions_module` — the same shape
+            // `conventions_module_diagnostics`/`E169` uses) narrows the
+            // *legal placement* down and raises `E175` for every use
+            // outside `fn conventions()`.
+            | "register"
     )
 }
 

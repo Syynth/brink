@@ -32,6 +32,7 @@ mod option_rules;
 mod protocols;
 mod range_refinement;
 mod ref_projection;
+mod register_intrinsic;
 mod resolve;
 mod signature;
 mod strict;
@@ -90,6 +91,7 @@ pub use protocols::{
     Protocol, ProtocolImplDecl, check_protocol_impls, check_reserved_names,
     is_reserved_protocol_name, iterate_element_ty, iterate_val_ty,
 };
+pub use register_intrinsic::register_intrinsic_diagnostics;
 pub use resolve::ImportScope;
 pub use signature::{Sig, local_signature, signature};
 pub use strict::{

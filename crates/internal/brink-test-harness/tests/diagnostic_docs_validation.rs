@@ -259,6 +259,10 @@ fn diagnostic_codes_are_unique() {
 ///   with its body-derived type (issue #1994); raised only from
 ///   `infer::body::InferPass::infer_lambda`, and `LAMBDA_EXPR` exists only
 ///   in `brink-syntax-native`, same posture as `E156`/`E158`.
+/// - `E175` — `register` called outside the conventions module's `fn
+///   conventions()` (issue #1840 Q5); the conventions module and its
+///   well-known `fn conventions()` are both `.brink`-surface concepts,
+///   same posture as `E169`.
 ///
 /// Codes intentionally **excluded** despite living in the same numeric
 /// neighborhood: `E157` (the unnamed-once-only-choice / unnamed-sequence
@@ -268,7 +272,7 @@ fn diagnostic_codes_are_unique() {
 const NATIVE_ONLY_CODES: &[&str] = &[
     "E130", "E132", "E145", "E146", "E153", "E154", "E155", "E156", "E158", "E159", "E160", "E161",
     "E162", "E163", "E164", "E165", "E166", "E167", "E168", "E169", "E170", "E171", "E172", "E173",
-    "E174",
+    "E174", "E175",
 ];
 
 /// Every fenced code block's info string (the text right after the opening
