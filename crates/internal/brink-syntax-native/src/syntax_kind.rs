@@ -429,16 +429,20 @@ pub enum SyntaxKind {
     // name is not a parse-time concern at all — manifest validation is a
     // separate, later compiler pass over the same tree, exactly the
     // externals-manifest pattern. `<center>` (§8d.3) is ordinary markup;
-    // nothing here special-cases it.
+    // nothing here special-cases it. A tag name may also contain `-` as an
+    // internal separator only (`<fade-in>`; RULED 2026-08-01, issue #1996)
+    // — `markup::tag_name_len` widens just this position's name shape, not
+    // `IDENT` lexing itself.
     /// One inline span: the open tag (name + attrs), its content (when not
     /// self-closing — recursively any content-item shape, including a
     /// nested `SPAN`), and the matching close tag. Self-closing spans (no
     /// content, no close tag) are the point-marker shape (§8b.11).
     SPAN,
-    /// The `IDENT` naming a [`Self::SPAN`]'s open tag. Wrapped (rather than
-    /// a bare token) so lowering can find *this* identifier unambiguously
-    /// among the attr names and the close tag's own (unwrapped) name token
-    /// that also live under `SPAN`.
+    /// The tag name at a [`Self::SPAN`]'s open tag — one `IDENT`, or an
+    /// `IDENT (MINUS IDENT)*` chain for a hyphenated name (`<fade-in>`,
+    /// issue #1996). Wrapped (rather than a bare token) so lowering can
+    /// find *this* name unambiguously among the attr names and the close
+    /// tag's own (unwrapped) name tokens that also live under `SPAN`.
     SPAN_NAME,
     /// One `name="value"` attribute inside a [`Self::SPAN`]'s open tag.
     SPAN_ATTR,

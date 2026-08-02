@@ -19,6 +19,49 @@
 //! closes one ([`at_span_close`]). A `<` that doesn't qualify either way —
 //! `5 < 10`, a lone `<3` — falls through to ordinary `TEXT`, unchanged.
 //!
+//! # Hyphenated tag names (§4.1, RULED 2026-08-01, issue #1996)
+//!
+//! A tag name may contain `-`, but **only as an internal separator between
+//! two `IDENT` segments** — `<fade-in>` is legal, a leading or trailing
+//! hyphen is not (`<-x>`, `<x->`). This is a **parser**-level widening of
+//! the tag-name shape only ([`tag_name_len`]/[`tag_name_text`]), scoped to
+//! span-tag position — it does not touch `IDENT` lexing itself
+//! (`lexer/ident.rs`), so identifiers everywhere else in the language are
+//! unaffected.
+//!
+//! The leading-hyphen ban isn't just a style choice; it's partly a
+//! consequence already forced by the lexer. An **open** tag's name can
+//! never start with `-` in the first place: `<-` is already claimed by
+//! `THREAD` (splice) at the lexer (`lexer/punctuation.rs`), so `<-x>` never
+//! even reaches [`at_span_open`] as a `LT` — it lexes as `THREAD IDENT`.
+//! A **close** tag's `</-x>` *is* lexically distinguishable (`LT SLASH
+//! MINUS IDENT`, since `SLASH` breaks the `THREAD` pattern) — but
+//! [`at_span_close`] requires its own first name token to be `IDENT`, not
+//! `MINUS`, so it is rejected there for the same reason, keeping the rule
+//! symmetric across open/close by construction rather than by a
+//! special-cased check.
+//!
+//! A trailing hyphen is representable at the token level (a lone `-` not
+//! immediately followed by `>`/`=` lexes as `MINUS`) but is deliberately
+//! **not** folded into the name: [`tag_name_len`] only extends a name
+//! across a `MINUS` that is itself followed by another adjacent `IDENT`.
+//! `<x->` stops the name at `x`, leaving the `-` (or, when it sits directly
+//! before `>`, the whole `->` — greedily lexed as one `DIVERT` token)
+//! unconsumed; [`span`]'s own `p.expect(GT)` then reports a clear parse
+//! error instead of silently accepting the dangling hyphen as part of the
+//! name.
+//!
+//! A continuation segment (the word after a `-`) may also be a reserved
+//! keyword ([`is_name_segment`]) — native keywords are reserved everywhere
+//! in *code*, but a tag name is freeform prose vocabulary (§4.2), and
+//! `fade-in` is this very ruling's own worked example even though `in` is
+//! `KW_IN`. This leniency is deliberately narrow: only a segment reached
+//! after an already-confirmed `-` gets it; the tag's opening segment still
+//! goes through [`at_span_open`]/[`at_span_close`]'s existing `IDENT`-only
+//! check unchanged, so a tag literally *named* a bare keyword (`<in>`,
+//! hyphen or not) is still not representable — a pre-existing limitation
+//! this issue doesn't ask to widen.
+//!
 //! # Nesting doctrine (§4.3) — enforced by sharing one scanning engine
 //!
 //! A tag must close in the same fragment scope it opened in. [`span`] does
@@ -63,8 +106,8 @@
 //! same compile error as any other unrecognized backslash.
 
 use crate::SyntaxKind::{
-    AT, BACKSLASH, BANG, EQ, ERROR, GT, HASH, IDENT, L_BRACE, LT, QUOTE, SLASH, SPAN, SPAN_ATTR,
-    SPAN_ATTR_VALUE, SPAN_NAME, STRING_ESCAPE, STRING_TEXT,
+    AT, BACKSLASH, BANG, EQ, ERROR, GT, HASH, IDENT, L_BRACE, LT, MINUS, QUOTE, SLASH, SPAN,
+    SPAN_ATTR, SPAN_ATTR_VALUE, SPAN_NAME, STRING_ESCAPE, STRING_TEXT,
 };
 
 use super::Parser;
@@ -86,10 +129,60 @@ pub(crate) fn at_span_close(p: &Parser<'_, '_>) -> bool {
     p.at(LT) && p.nth(1) == SLASH && p.nth(2) == IDENT && p.nth_adjacent(0) && p.nth_adjacent(1)
 }
 
-/// [`at_span_close`], plus the close tag's name matches `name` exactly.
-/// Only meaningful where [`at_span_close`] already holds.
-fn at_span_close_named(p: &Parser<'_, '_>, name: &str) -> bool {
-    at_span_close(p) && p.nth_text(2) == name
+/// [`at_span_close`], plus the close tag's name matches `name` exactly —
+/// comparing the **full**, possibly hyphenated, tag name
+/// ([`tag_name_text`]), never just its first token. Only meaningful where
+/// [`at_span_close`] already holds.
+///
+/// `pub(crate)`, not private: `content::content_items_until_impl` also
+/// calls this directly, to decide whether a close tag it reaches is the one
+/// its own `expected_close` frame is looking for (see that function's
+/// doc) — comparing only the close tag's leading `IDENT` segment there
+/// would wrongly treat e.g. `</fade>` as matching a `<fade-in>` open tag
+/// (both start with the `fade` segment).
+pub(crate) fn at_span_close_named(p: &Parser<'_, '_>, name: &str) -> bool {
+    at_span_close(p) && tag_name_text(p, 2, tag_name_len(p, 2)) == name
+}
+
+/// Length, in (non-trivia) lookahead tokens, of a tag name starting at
+/// offset `start` — `p.nth(start)` must already be a confirmed `IDENT`
+/// (every call site checks this before calling: [`at_span_open`]/
+/// [`at_span_close`]'s own recognition, or [`span`]'s freshly-bumped `<`).
+/// A name is `IDENT (MINUS IDENT)*`, all mutually adjacent (no whitespace/
+/// comment gap anywhere) — see the module doc's "Hyphenated tag names"
+/// section for why a leading hyphen can't reach here and a trailing one is
+/// deliberately left unconsumed. Always returns an odd count (1, 3, 5, …).
+fn tag_name_len(p: &Parser<'_, '_>, start: usize) -> usize {
+    let mut len = 1;
+    while p.nth_adjacent(start + len - 1)
+        && p.nth(start + len) == MINUS
+        && p.nth_adjacent(start + len)
+        && is_name_segment(p.nth(start + len + 1))
+    {
+        len += 2;
+    }
+    len
+}
+
+/// True for a token kind that can stand as a hyphen-continuation segment of
+/// a tag name (the word *after* a `-`) — `IDENT`, or any reserved keyword.
+/// Native keywords are reserved everywhere in ordinary code (Rust-style,
+/// per `SyntaxKind::is_keyword`'s doc), but a tag name is freeform prose
+/// vocabulary (§4.2), not code: `<fade-in>` must work even though `in` is
+/// `KW_IN` in expression position. Deliberately narrower than "any keyword
+/// anywhere in a tag name" — only a *continuation* segment (reached after
+/// an already-confirmed `-`) gets this leniency; the tag's own opening
+/// segment still goes through `at_span_open`/`at_span_close`'s existing
+/// `IDENT`-only check, unchanged.
+fn is_name_segment(k: crate::SyntaxKind) -> bool {
+    k == IDENT || k.is_keyword()
+}
+
+/// The concatenated source text of a `len`-token tag name starting at
+/// lookahead offset `start` (as computed by [`tag_name_len`]) —
+/// `"fade"` + `"-"` + `"in"` = `"fade-in"`.
+fn tag_name_text(p: &Parser<'_, '_>, start: usize, len: usize) -> String {
+    (0..len).map(|i| p.nth_text(start + i)).collect()
 }
 
 /// True at `/>` with zero gap — a self-closing tag (the point-marker shape,
@@ -108,9 +201,12 @@ fn at_self_close(p: &Parser<'_, '_>) -> bool {
 pub(crate) fn span(p: &mut Parser<'_, '_>, stop: &[crate::SyntaxKind], stop_at_else_arm: bool) {
     p.start_node(SPAN);
     p.bump(); // `<`
-    let name = p.nth_text(0).to_string();
+    let name_len = tag_name_len(p, 0);
+    let name = tag_name_text(p, 0, name_len);
     p.start_node(SPAN_NAME);
-    p.bump(); // the name IDENT
+    for _ in 0..name_len {
+        p.bump(); // the name: one `IDENT`, or `IDENT (MINUS IDENT)*` if hyphenated
+    }
     p.finish_node();
 
     span_attrs(p);
@@ -139,9 +235,16 @@ pub(crate) fn span(p: &mut Parser<'_, '_>, stop: &[crate::SyntaxKind], stop_at_e
     }
 
     if at_span_close_named(p, &name) {
+        // `tag_name_len` reads via lookahead only (doesn't move `p`), so it
+        // must run before `<`/`/` are bumped — offset 2 is the close name's
+        // first token relative to the *current* position, exactly what
+        // `at_span_close`/`at_span_close_named` just checked against.
+        let close_len = tag_name_len(p, 2);
         p.bump(); // `<`
         p.bump(); // `/`
-        p.bump(); // the close name IDENT
+        for _ in 0..close_len {
+            p.bump(); // the close name (mirrors the open name above)
+        }
         p.expect(GT);
     } else {
         p.error(format!(
@@ -196,9 +299,15 @@ fn span_attr_value(p: &mut Parser<'_, '_>) {
 pub(crate) fn consume_stray_close(p: &mut Parser<'_, '_>) {
     p.error("unexpected closing tag: no matching open tag here".to_owned());
     p.start_node(ERROR);
+    // Read via lookahead (offset 2, the name's first token relative to the
+    // still-unconsumed `<`) before bumping anything — mirrors `span`'s own
+    // close-tag consumption.
+    let name_len = tag_name_len(p, 2);
     p.bump(); // `<`
     p.bump(); // `/`
-    p.bump(); // name
+    for _ in 0..name_len {
+        p.bump(); // name (possibly hyphenated)
+    }
     if p.at(GT) {
         p.bump();
     }

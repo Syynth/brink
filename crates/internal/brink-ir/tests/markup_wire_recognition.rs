@@ -105,6 +105,24 @@ fn a_span_is_recognized_as_a_real_wire_line_part_span() {
     assert!(matches!(&parts[2], brink_format::LinePart::Literal(s) if s == "."));
 }
 
+/// Issue #1996 (`docs/prose-dialect-spec.md` §4.1, RULED 2026-08-01): a
+/// hyphenated tag name (`<fade-in>`) reaches the wire as a real
+/// `LinePart::Span` carrying the full, hyphenated name — not just its
+/// first segment. `in` is a reserved keyword (`KW_IN`) everywhere else in
+/// native code, so this also proves the hyphen-continuation leniency
+/// (`markup::is_name_segment`) reaches all the way to `StoryData`'s wire
+/// representation, not just the parser's own tree.
+#[test]
+fn a_hyphenated_span_name_reaches_the_wire_as_the_full_name() {
+    let program =
+        lower_native_to_program("flow f() {\n  He hands you <fade-in>the lantern</fade-in>.\n}\n");
+    let (parts, _hash) = find_root_template(&program);
+    let brink_format::LinePart::Span { name, .. } = &parts[1] else {
+        panic!("expected LinePart::Span, got {:?}", parts[1]);
+    };
+    assert_eq!(name, "fade-in");
+}
+
 #[test]
 fn span_hash_transparency_markup_normalizes_out_of_source_hash() {
     // The ⚠⚠-ruled precondition (§4.4): `Hello <wave>world</wave>` hashes

@@ -33,6 +33,20 @@ flow scene() {
 Attributes are `name="value"` pairs (the quotes are required). The value is always
 literal text — there is no type system or interpolation inside an attribute value.
 
+### Hyphenated tag names
+
+A tag name may contain `-` as a separator between words — useful for kebab-case
+vocabularies borrowed from XML/HTML custom elements:
+
+```brink
+flow scene() {
+  The screen goes dark. <fade-in>A new day begins.</fade-in>
+}
+```
+
+The hyphen is only legal *between* two name segments — never as the first or
+last character (`<-x>` and `<x->` are both errors).
+
 ### Self-closing tags
 
 For markers that carry no content — a sound effect, a visual cue — use self-closing

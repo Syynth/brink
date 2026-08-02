@@ -1,0 +1,5 @@
+flow main() {
+  Bell tolls.
+  <fade-in>the lantern</fade-in>
+  Door slams. -> END
+}
