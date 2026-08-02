@@ -394,5 +394,5 @@ fix lands elsewhere — the sweep can't.
 | Hole 3 corrected (thread-start splice re-nesting, emitter-only) | #1974 |
 | Hole 3 literal wording (outside-choice-point splice) | **not filed** — deliberate ruling #1260, would need a design re-ruling, not implementation |
 | Hole 4 (prose-body value-return) | #1973 |
-| Hole 5 corrected (`CondKind::IfElse` emitter gap) | #1975 |
+| Hole 5 corrected (`CondKind::IfElse` emitter gap) | #1975 — **RESOLVED**, PR #2041: `emit_if_else_chain` re-nests the flat `IfElse` branch list into native's own nested `else if` shape; the "IfElse conditional" `full_corpus_sweep` bucket (14 cases, grown from this doc's original 12) is fully closed |
 | Hole 6 (`ContentPart::Spring`) | #1976 — flagged needs-design on whether native should grow new syntax for this at all |
