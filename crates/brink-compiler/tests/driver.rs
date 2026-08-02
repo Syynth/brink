@@ -521,6 +521,49 @@ fn compile_path_native_lambda_valued_var_default_compiles_with_map_keys_warning_
     );
 }
 
+/// Review finding on #1774: `GlobalLambdaCtx`'s `AnalyzerTables` used to be
+/// unconditionally empty regardless of what `brink-db` actually computed —
+/// this test pins the safe, current behavior now that
+/// `lir_prelude_decls_query` threads the real `ufcs_resolution_query`/
+/// `coalesce_types_query` tables through. A method call inside a
+/// decl-default lambda body is still refused with `E144`, not because the
+/// tables are fake, but because `brink_analyzer::ufcs::resolve` walks only
+/// `visit::visit`'s block-tree (never a `VAR`/`CONST` initializer) — see
+/// `decls::GlobalLambdaCtx::tables`'s doc for the follow-up that would close
+/// this gap. The important thing this test guards: refusing with a loud
+/// compile error, never silently lowering to a wrong `lir::Expr::Null`
+/// that then reaches `StoryData`.
+#[test]
+fn compile_path_native_ufcs_call_in_lambda_decl_default_is_e144() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-native-ufcs-lambda-decl-default-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("main.brink"),
+        "struct Guest {\n  name: string\n}\n\n\
+         fn greet(g, loudness) {\n  return loudness;\n}\n\n\
+         const callGreet = |g| g.greet(3)\n\n\
+         flow main() {\n  Hi. -> END\n}\n",
+    )
+    .unwrap();
+
+    let result = brink_compiler::compile_path(&dir.join("main.brink"));
+    std::fs::remove_dir_all(&dir).ok();
+
+    let err = result.expect_err(
+        "a method call in a decl-default lambda body must refuse to compile \
+         (the analyzer never visited it), not silently fold to Null",
+    );
+    let codes = diagnostic_codes(&err);
+    assert!(
+        codes.contains(&"E144"),
+        "expected E144 among diagnostics, got: {codes:?}"
+    );
+}
+
 /// A `target/` subdirectory sitting next to a valid `.brink` entry, holding
 /// a file that is not valid brink source at all: native discovery must
 /// never walk into `target/` in the first place (issue #1381), so the

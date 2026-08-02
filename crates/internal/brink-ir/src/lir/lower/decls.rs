@@ -188,12 +188,32 @@ pub struct GlobalLambdaCtx<'a> {
     /// Whole-program struct-shape data — `lower_lambda`'s body lowering
     /// needs it for the same TM-4c reasons any other body lowering does.
     pub structs: &'a StructCtx<'a>,
-    /// Analyzer side-tables (UFCS/`or`-coalescing). Empty by construction
-    /// for this caller, the same as every caller that never ran those
-    /// analyzer passes ([`AnalyzerTables`]'s own doc) — decl-default lambda
-    /// bodies do not currently get UFCS/coalesce desugaring; a body that
-    /// needs it is a follow-up, not silently broken (the syntax it would
-    /// need is not reachable through any other route today either).
+    /// Analyzer side-tables (UFCS/`or`-coalescing) — the real,
+    /// whole-project verdict tables `brink-db`'s `lir_prelude_decls_query`
+    /// builds from `ufcs_resolution_query`/`coalesce_types_query` (review
+    /// finding on #1774: this used to be an unconditionally-empty pair,
+    /// which risked a decl-default lambda body silently losing a resolved
+    /// UFCS call's *meaning* — see [`super::expr::lower_ufcs_call`]'s doc
+    /// for why that arm is not actually a silent miscompile, just a hard
+    /// `E144` refusal).
+    ///
+    /// The `or`-coalescing half is genuinely complete now: `coalesce::
+    /// resolve` already hand-recurses over `hir.variables`/`hir.constants`
+    /// (issue #1764) specifically because their initializers sit outside
+    /// `visit::visit`'s block-tree walk, so a decl-default lambda's chains
+    /// are recorded in the real table this field now carries.
+    ///
+    /// The UFCS half is **not** yet complete: `ufcs::resolve` walks only
+    /// `visit::visit` (never `visit_with_decl_initializers`), so a method
+    /// call inside a decl-default lambda body is never visited by the UFCS
+    /// pass at all — no verdict is ever recorded for it, real table or not.
+    /// Such a call therefore still safely refuses with `E144` (a hard
+    /// compile error, not a silently wrong program) rather than resolving —
+    /// pinned by `brink-compiler`'s
+    /// `compile_path_native_ufcs_call_in_lambda_decl_default_is_e144`.
+    /// Teaching `ufcs::resolve` to also walk decl initializers (mirroring
+    /// `coalesce::resolve`'s own precedent) is the follow-up that would
+    /// close this, not a change this field's plumbing can make on its own.
     pub tables: AnalyzerTables<'a>,
     /// The root container's `DefinitionId` — see
     /// [`super::context::root_definition_id`].

@@ -231,6 +231,65 @@ pub(crate) fn lower_native_files_with_paths(sources: &[(&str, &str)]) -> lir::Pr
     program.unwrap()
 }
 
+/// [`lower_native`] with the **real** `ufcs`/`coalesce` analyzer verdict
+/// tables threaded through, instead of the always-empty pair — the review
+/// finding on #1774: `lower_native` (and the production
+/// `lir_prelude_decls_query` before that PR's fix) built its `AnalyzerTables`
+/// as an unconditional `UfcsLookup::new()`/`CoalesceLookup::new()` pair, so
+/// this crate's own test suite could never exercise a decl-default lambda
+/// body against the real tables `brink-db` computes in production. Mirrors
+/// `ufcs_field_call.rs`'s hand-assembled pipeline (parse -> `lower_native` ->
+/// analyze -> infer -> `ufcs_resolution`/`coalesce_types`), since neither of
+/// those two side tables is built by `brink_analyzer::analyze` itself.
+pub(crate) fn lower_native_with_real_tables(
+    source: &str,
+) -> (Option<lir::Program>, Vec<brink_ir::Diagnostic>) {
+    let parsed = brink_syntax_native::parse(source);
+    let tree = parsed.tree();
+    let file_id = FileId(0);
+    let (mut hir, manifest, _diags) = brink_ir::hir::lower_native::lower(file_id, &tree);
+    brink_ir::hir::normalize_file(&mut hir);
+
+    let files_for_analysis: Vec<(FileId, &HirFile, &SymbolManifest)> =
+        vec![(file_id, &hir, &manifest)];
+    let result = brink_analyzer::analyze(&files_for_analysis);
+
+    let hir_inputs: Vec<(FileId, &HirFile)> = vec![(file_id, &hir)];
+    let manifest_inputs = vec![(file_id, &manifest)];
+    let inline_docs = brink_analyzer::project_inline_docs(&manifest_inputs);
+    let inference = brink_analyzer::infer_project(
+        &hir_inputs,
+        &result.index,
+        &result.resolutions,
+        None,
+        &inline_docs,
+    );
+
+    let (ufcs_table, _ufcs_diags) = brink_analyzer::ufcs_resolution(
+        &hir_inputs,
+        &result.index,
+        &result.resolutions,
+        &inference,
+    );
+    let ufcs = brink_analyzer::ufcs_lir_lookup(&ufcs_table);
+
+    let (coalesce_table, _coalesce_diags) =
+        brink_analyzer::coalesce_types(&hir_inputs, &result.index, &inference, &result.resolutions);
+    let coalesce = brink_analyzer::coalesce_lir_lookup(&coalesce_table);
+
+    lir::lower_to_program_with_type_mode(
+        &hir_inputs,
+        &result.index,
+        &result.resolutions,
+        &std::collections::HashMap::new(),
+        lir::TypeMode::Gradual,
+        lir::AnalyzerTables {
+            ufcs: &ufcs,
+            coalesce: &coalesce,
+        },
+    )
+}
+
 /// Get the root container.
 pub(crate) fn root(program: &lir::Program) -> &lir::Container {
     &program.root

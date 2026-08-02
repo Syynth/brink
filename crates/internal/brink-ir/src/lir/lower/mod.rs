@@ -147,7 +147,7 @@ pub fn lower_to_program_with_type_mode(
     // `lir_lowering.rs` tests, `compile_bench`, `golden_i078.rs`) keep a
     // single whole-project call; `brink-db` caches the per-knot phase
     // individually, per `DefinitionId`, instead.
-    let prelude = build_prelude(files, index, resolutions, file_paths, type_mode);
+    let prelude = build_prelude(files, index, resolutions, file_paths, type_mode, tables);
     let resolutions = ResolutionLookup::build(resolutions);
     let struct_ctx = prelude.struct_ctx();
 
@@ -349,6 +349,7 @@ pub fn build_prelude_decls(
     resolutions: &ResolutionMap,
     file_paths: &LookupMap<FileId, String>,
     type_mode: context::TypeMode,
+    tables: context::AnalyzerTables<'_>,
 ) -> PreludeDecls {
     let resolutions_lookup = ResolutionLookup::build(resolutions);
     let mut names = NameTable::new();
@@ -373,19 +374,17 @@ pub fn build_prelude_decls(
         global_shapes: &global_shapes,
         type_mode,
     };
-    // Empty by construction (issue #1774) — decl-default lambda bodies are
-    // not currently wired to the analyzer's UFCS/`or`-coalescing passes,
-    // the same "no analyzer pass ran" default every other caller of
-    // `AnalyzerTables` uses ([`context::AnalyzerTables`]'s own doc).
+    // The real, caller-supplied UFCS/`or`-coalescing verdict tables (issue
+    // #1774 review) — a decl-default lambda body is lowered through the same
+    // `lower_lambda` machinery as any other lambda, so it needs the same
+    // analyzer side-tables any other lambda body gets, not a placeholder
+    // empty pair. See [`decls::GlobalLambdaCtx::tables`]'s doc.
     let mut lambda_ctx = decls::GlobalLambdaCtx {
         ids: &mut ids,
         lifted: &mut lifted,
         file_paths,
         structs: &struct_ctx,
-        tables: context::AnalyzerTables {
-            ufcs: &context::UfcsLookup::new(),
-            coalesce: &context::CoalesceLookup::new(),
-        },
+        tables,
         root_id,
     };
     let mut globals = decls::collect_globals(
@@ -481,6 +480,7 @@ pub fn build_prelude(
     resolutions: &ResolutionMap,
     file_paths: &LookupMap<FileId, String>,
     type_mode: context::TypeMode,
+    tables: context::AnalyzerTables<'_>,
 ) -> LirPrelude {
     let mut normalized: Vec<(FileId, hir::HirFile)> = files
         .iter()
@@ -494,7 +494,14 @@ pub fn build_prelude(
 
     let normalized_refs: Vec<(FileId, &hir::HirFile)> =
         normalized.iter().map(|(id, h)| (*id, h)).collect();
-    let decls = build_prelude_decls(&normalized_refs, index, resolutions, file_paths, type_mode);
+    let decls = build_prelude_decls(
+        &normalized_refs,
+        index,
+        resolutions,
+        file_paths,
+        type_mode,
+        tables,
+    );
     assemble_prelude(decls, normalized)
 }
 

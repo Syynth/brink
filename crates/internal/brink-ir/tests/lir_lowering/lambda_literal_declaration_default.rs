@@ -90,6 +90,48 @@ fn lambda_literal_decl_default_reads_other_globals_without_capturing_them() {
     );
 }
 
+/// Review finding on #1774: `GlobalLambdaCtx`'s `AnalyzerTables` used to be
+/// unconditionally empty (`UfcsLookup::new()`/`CoalesceLookup::new()`),
+/// regardless of what the caller actually computed — so a decl-default
+/// lambda body's own `or`-coalescing chains always fell back to
+/// `CoalesceShape::RuntimeCheck` (the default for "no verdict recorded"),
+/// even though `coalesce::resolve` *does* record a real verdict for a
+/// decl-default lambda's chains (it hand-recurses over
+/// `hir.variables`/`hir.constants` specifically because their initializers
+/// sit outside `visit::visit`'s walk — issue #1764). This test proves the
+/// real table now reaches the lambda body: `some(1) or 2`'s left-hand side
+/// is a statically-known `Option[int]`, so the chain collapses
+/// (`CoalesceShape::Collapse`), not the runtime-check fallback a caller
+/// still handing an empty table would be stuck with.
+#[test]
+fn coalesce_chain_in_lambda_decl_default_gets_its_real_recorded_shape() {
+    let source = "const f = ||: int {\n  let x = some(1) or 2;\n  x\n}\n\n\
+                   flow main() {\n  Result: {f()} -> END\n}\n";
+    let (program, diagnostics) = lower_native_with_real_tables(source);
+    assert!(
+        diagnostics.is_empty(),
+        "expected a clean lowering: {diagnostics:?}"
+    );
+    let program = program.expect("lowering stays total");
+    let lambda = find_any(&program.root, &|c| c.is_function)
+        .expect("the decl-default lambda must lift into its own function container");
+
+    let shape = lambda.body.iter().find_map(|stmt| match stmt {
+        lir::Stmt::DeclareTemp {
+            value: Some(lir::Expr::Coalesce { shape, .. }),
+            ..
+        } => Some(*shape),
+        _ => None,
+    });
+    assert_eq!(
+        shape,
+        Some(lir::CoalesceShape::Collapse),
+        "expected the real recorded shape (Collapse — Option[int] or int), \
+         got {shape:?} — either no Coalesce DeclareTemp was found or its \
+         shape fell back to the empty-table default"
+    );
+}
+
 /// Two files' lambda-literal decl defaults at the same source offset must
 /// not collide on `DefinitionId` (#1504) — `collect_globals` qualifies the
 /// `IdAllocator`'s path prefix per file (`hir::root_content_scope_path`),
