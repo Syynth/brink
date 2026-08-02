@@ -43,8 +43,11 @@
 //!   way — but as of issue #1874 the bare name itself is no longer silently
 //!   *accepted*: `AnalysisOptions::apply_project_config` (a different crate,
 //!   a different check) validates it against the closed built-in-preset set
-//!   and emits a `ConfigWarning` when it isn't recognized, which today means
-//!   every bare name (no preset has shipped yet, #1720).
+//!   and emits a `ConfigWarning` when it isn't recognized — `"screenplay"`
+//!   is now a recognized name (issue #1720 shipped its authored source at
+//!   `std/conventions/screenplay.brink`), though recognition there is only
+//!   the validation verdict; this module's own confinement check still has
+//!   nothing to confine a preset-shaped pointer against, unchanged.
 
 use brink_ir::{Diagnostic, DiagnosticCode, FileId, HirFile};
 
