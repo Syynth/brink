@@ -350,6 +350,30 @@ fn a_cue_name_with_a_colon_inside_braces_does_not_terminate_the_name() {
 }
 
 #[test]
+fn a_cue_name_with_an_escaped_hash_does_not_end_the_name_early() {
+    // Issue #1738, mirrors `content.rs`'s
+    // `a_tag_with_an_escaped_hash_does_not_end_the_tag_early`: `#` is one of
+    // the four members of the ruled, final inline escape set (§8d.6), but
+    // before this fix `cue_name()` gave `\#` zero escape treatment — a bare
+    // `HASH` always ended the name, even one immediately preceded by a
+    // backslash.
+    let src = "@NAME \\#not a tag\nHello.\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let cue = ast::Cue::cast(first_node(&p.syntax(), SyntaxKind::CUE)).expect("CUE");
+    assert_eq!(
+        cue.name().expect("name").text(),
+        "NAME \\#not a tag",
+        "an escaped `#` must not end the name early, and the backslash is \
+         not stripped — same precedent `\\{{` already established"
+    );
+    assert!(
+        !has_node_kind(&p.syntax(), SyntaxKind::TAG),
+        "the escaped `#` must not be reparsed as a trailing TAG"
+    );
+}
+
+#[test]
 fn a_cue_immediately_followed_by_the_enclosing_blocks_own_closer_still_stops_there() {
     // Guard against over-correcting, the same way `content.rs`'s
     // `a_tag_immediately_followed_by_the_enclosing_blocks_own_closer_still_stops_there`

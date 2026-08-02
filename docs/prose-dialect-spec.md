@@ -709,6 +709,65 @@ one. See §4.2 above.
 `<pc>`/`<ph>` mapping, described above. The only item still open is the
 `Step`/`Part` structured runtime surface (§7/§9.1).
 
+### 4.6 Escape/markup layer coverage audit across prose scanners (#1738)
+
+Filed from a wave retro on #1716/PR #1732: that PR landed the final inline
+escape set (§8d.6) and the markup/span grammar, but only for the scanners
+that reuse the shared `content::content_items_until_impl` engine. A handful
+of *other* free-text scanners exist in the native parser
+(`brink-syntax-native`) that never call into that engine at all — issue
+#1738 asked for an explicit, durable audit of exactly which scanner honors
+which piece of §4/§8d.6, since "does `\#` work here" had never been checked
+scanner-by-scanner before. The table below is that audit; keep it current
+when any scanner's escape/markup handling changes.
+
+| Scanner | Where | 4-char inline escapes `\< \{ \# \\` (§8d.6) | Line-start escapes `\! \@` (§8d.6, #1744) | Markup spans `<ident>…</ident>` (§4) | Status |
+|---|---|---|---|---|---|
+| `content::content_items_until_impl` (the shared engine: ordinary content lines, choice-text anatomy, inline alternation bodies) | `content.rs` | **Full** — `BACKSLASH` dispatches to `markup::escape`, which recognizes exactly the four and errors on anything else | N/A (line-start-only; see the `content_line` row) | **Full** — `LT` dispatches to `markup::span` when `at_span_open`/`at_span_close` holds | Reference implementation — this is "the escape/markup layer" the other rows are compared against |
+| `content::text_run_until` (the engine's own `TEXT`-run sub-scanner) | `content.rs` | N/A directly — it never sees a `BACKSLASH`/`LT`/`HASH`/`GLUE`/`DIVERT`/doc-comment token itself; it unconditionally **breaks** on each so the outer loop above can dispatch them structurally | N/A | N/A (same reason) | Structural only, by design — not a gap; folding these into `TEXT` would silently defeat the outer loop's own dispatch (its own doc comment says so) |
+| `content_line` / `content_line_else_boundary` (a full `CONTENT_LINE`, including the fused remainder a `COMPACT_CUE`/`BANG_DISPATCH` reuses it for) | `content.rs` | **Full**, via the shared engine above | **Full** — the one and only call site of `markup::at_line_start_escape`/`line_start_escape`, checked once as the first item scanned | **Full**, via the shared engine above | Reference implementation |
+| `markup::span` (a span's own body, recursing back into the shared engine with an `expected_close`) | `markup.rs` | **Full** — inherited "for free" by construction, not reimplemented: `span` calls `content::content_items_until_impl` for its body with the *same* `stop` its caller had | N/A (spans never open at a physical line-start; the sigil collision §1744 guards against doesn't arise mid-span) | **Full** — nested spans recurse the same way | Reference implementation, by inheritance |
+| `content::tag` (a `#tag`'s own free-text body — `tag_line_tail`'s per-tag call, and `header_tag_tail`'s header-line variant) | `content.rs` | **Partial, as of this PR.** `\{`/`\\{` were already backslash-parity-aware (#1852) *for brace-depth-counting purposes only* — the characters are **not stripped** from the tag's own literal text either way. `\#` gets the identical treatment as of this PR (#1738): an odd-parity backslash suppresses `#`'s tag-terminating role, but again does not strip the backslash from the emitted text. `\<`/`\\` are inert — see the Markup column | **Not applicable** — a tag body starts after a `HASH`, not at content-line start; the `@`/`!` sigil collision `\!`/`\@` exist to guard against cannot arise here | **None, ruled** (#1783, RULED 2026-08-01): `<glitch>` inside a `#` tag is intentionally literal text forever — "no spans in tags, ever." Not touched by this PR | See "What this PR changed" and "What is still open" below |
+| `element::cue_name` (an `@NAME` cue's own free-text name, before `:`/tags/newline) | `element.rs` | **Partial, as of this PR** — identical shape to `tag()` above, by design (`cue_name`'s own doc comment: "confirmed to share `content::tag()`'s pre-#1728 shape"): `\{`/`\\{` parity-aware for depth only (#1852); `\#` gets the same treatment as `tag()` as of this PR, same non-stripping precedent. `\<`/`\\` inert | **Not applicable** — same reasoning as `tag()` | **None** — by the same reasoning #1783 rules for `tag()` (no active span grammar runs inside a cue name); not separately ruled by number, but no code path here ever calls `markup::span` either | See below |
+
+**What this PR changed:** `#` is one of the ruled four-character inline
+escape set, but `tag()`/`cue_name()` gave it **zero** escape treatment
+before this fix — an unescaped-*or*-escaped `#` both ended the scan
+identically (splitting `#tag \#more` into two sibling `TAG`s, the second one
+starting mid-word at the escaped hash). That is the one clear,
+unambiguous bug this audit found: `{`/`\{` already had backslash-parity
+awareness in both functions (#1852), but `#` — a member of the *same* ruled
+set — had none, an internal inconsistency between two characters of one
+set inside the very same two functions, not a question of whether to widen
+scope. Fixed by extending the existing `backslash_count` parity mechanism
+to `#`'s tag/name-terminating role, mirroring the established
+non-stripping `\{` precedent exactly (the backslash stays in the emitted
+text) rather than introducing new "strip the backslash" semantics these
+two raw-text scanners have never had. `hir::lower_native::body::lower_tag`
+needed a paired fix — it used to skip *every* `HASH` token in the node
+(safe only because an interior one was structurally impossible before this
+fix); now it skips only the tag's own leading delimiter.
+
+**What is still open, deliberately not decided here:** whether `tag()`/
+`cue_name()` should eventually run the *rest* of §8d.6 — i.e. whether an
+unrecognized backslash sequence (`\x`, a bare trailing `\`) should become a
+compile error inside these two scanners the way it already is everywhere
+`markup::escape` runs, instead of today's fully-permissive "any backslash
+sequence is literal text, never an error." That would be a real breaking
+change of the same shape PR #1732 made for ordinary content (existing
+`.brink` tag bodies containing an incidental backslash would start failing
+to compile) and deserves its own design ruling, not a silent decision
+folded into a low-severity consistency audit. Filed as a follow-up,
+**issue #2040**, rather than decided unilaterally here.
+
+**Relationship to #1883** ("residual escape/depth asymmetries in
+`tag()`/`cue_name()` after #1852/#1851", open): that issue is about a
+*different* axis — whether `HASH` should become depth-aware like `COLON`
+(item 1) and whether `\}` should gain the same backslash-parity treatment
+`\{` already has (item 2) — both *within* the already-literal scan these
+two functions perform. This PR's `\#` fix touches neither of those; it is
+**independent** of #1883, not a closure or a narrowing of it.
+
 ## 5. Tooling: completions & succession (RULED doctrine)
 
 **Harvest by default, declaration upgrades** — the freeform/manifest
