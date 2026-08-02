@@ -38,9 +38,9 @@ use crate::Provenance;
 use crate::hir::FileId;
 use crate::provenance::NodeClass;
 use crate::{
-    AssignOp, Assignment, Block, BlockStmt, Content, ContentPart, Diagnostic, DiagnosticCode,
-    Divert, DivertPath, DivertTarget, ElseBranch, Expr, IfStmt, LogicBlock, Name, Return,
-    ReturnKind, SpanPart, Stmt, StringPart, Tag, TunnelCall,
+    Assignment, Block, BlockStmt, Content, ContentPart, Diagnostic, DiagnosticCode, Divert,
+    DivertPath, DivertTarget, ElseBranch, Expr, IfStmt, LogicBlock, Name, Return, ReturnKind,
+    SpanPart, Stmt, StringPart, Tag, TunnelCall,
 };
 
 use super::choice::lower_choice_point;
@@ -380,8 +380,14 @@ fn lower_logic_line(
 ) -> Vec<Stmt> {
     let range = ll.syntax().text_range();
     if let Some(assign) = ll.assign_stmt() {
-        return lower_logic_line_assignment(file_id, &assign, diags)
-            .map_or_else(Vec::new, |a| vec![Stmt::Assignment(a)]);
+        return lower_logic_line_assignment(file_id, &assign, diags).map_or_else(Vec::new, |a| {
+            let needs_eol = expr_contains_call(&a.value);
+            let mut out = vec![Stmt::Assignment(a)];
+            if needs_eol {
+                out.push(Stmt::EndOfLine);
+            }
+            out
+        });
     }
     if let Some(expr_stmt) = ll.expr_stmt() {
         return lower_logic_line_expr_stmt(file_id, &expr_stmt, diags);
@@ -390,41 +396,19 @@ fn lower_logic_line(
     Vec::new()
 }
 
-/// `~ x = expr` / `~ x += expr` / `~ x -= expr` — mirrors
-/// `lower_native::control_flow::lower_assignment`'s place/value/op-token
-/// handling exactly (same `ASSIGN_STMT` node shape, reused verbatim by the
-/// parser — see `SyntaxKind::LOGIC_LINE`'s doc), producing the top-level
-/// `Assignment` a content-ground `Stmt::Assignment` carries instead of that
-/// function's `BlockStmt::Assignment`.
+/// `~ x = expr` / `~ x += expr` / `~ x -= expr` — the content-ground
+/// `Stmt::Assignment` shares its place/value/op-token handling verbatim
+/// with `lower_native::control_flow::lower_assignment` (same `ASSIGN_STMT`
+/// node shape, reused verbatim by the parser — see `SyntaxKind::LOGIC_LINE`'s
+/// doc), so it delegates there directly rather than duplicating the logic;
+/// only the wrapper differs (`Stmt::Assignment` here vs. that function's
+/// own `BlockStmt::Assignment` at its `StmtBlock` call site).
 fn lower_logic_line_assignment(
     file_id: FileId,
     assign: &ast::AssignStmt,
     diags: &mut Vec<Diagnostic>,
 ) -> Option<Assignment> {
-    let range = assign.syntax().text_range();
-    let Some(place) = assign.place() else {
-        diags.push(diag(file_id, range, DiagnosticCode::E014));
-        return None;
-    };
-    let Some(value_node) = assign.value() else {
-        diags.push(diag(file_id, range, DiagnosticCode::E014));
-        return None;
-    };
-    let target = Expr::Path(super::expr::lower_path(&place));
-    let value = lower_expr(file_id, &value_node, diags);
-    let op = assign
-        .op_token()
-        .map_or(AssignOp::Set, |tok| match tok.kind() {
-            N::PLUS_EQ => AssignOp::Add,
-            N::MINUS_EQ => AssignOp::Sub,
-            _ => AssignOp::Set,
-        });
-    Some(Assignment {
-        ptr: native_provenance(file_id, NodeClass::Assignment, assign.syntax()),
-        target,
-        op,
-        value,
-    })
+    super::control_flow::lower_assignment(file_id, assign, diags)
 }
 
 /// `~ expr` — an expression evaluated for its side effect (a function call

@@ -1080,6 +1080,34 @@ fn logic_line_bare_call_lowers_to_expr_stmt_with_end_of_line() {
 }
 
 #[test]
+fn logic_line_assignment_from_an_emitting_call_lowers_to_end_of_line() {
+    // Finding F1 (PR #2002 review): `lower_logic_line`'s ASSIGN_STMT arm
+    // originally never appended `Stmt::EndOfLine`, so a call's own emitted
+    // content lost its trailing line break when the logic line assigned
+    // the call's result instead of discarding it — `~ shout()` printed
+    // "Hi\n" but `~ n = shout()` printed "Hi" with no break, even though
+    // both reach the exact same `>{ }` function body. Mirrors
+    // `logic_line_bare_call_lowers_to_expr_stmt_with_end_of_line`, but for
+    // `Stmt::Assignment` — the ink-dialect frontend this dialect claims
+    // parity with applies the same `expr_contains_call` rule to both
+    // `Assignment` and `ExprStmt` (`hir/lower/content/logic_line.rs`).
+    let (hir, _m, diags) =
+        lower_src("fn shout() >{\n  Hi\n  return 7\n}\nflow a() {\n  ~ n = shout()\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = &hir.knots[1].body;
+    let Stmt::Assignment(a) = &body.stmts[0] else {
+        panic!("expected Stmt::Assignment, got {:?}", body.stmts[0]);
+    };
+    assert!(matches!(a.value, Expr::Call(..)));
+    assert!(
+        matches!(body.stmts[1], Stmt::EndOfLine),
+        "an assignment whose value contains a call must still get the trailing \
+         EndOfLine the ink-dialect frontend applies to the same construct: {:?}",
+        body.stmts
+    );
+}
+
+#[test]
 fn logic_line_precedes_ordinary_content_unaffected() {
     let (hir, _m, diags) = lower_src("flow a() {\n  ~ n = 5\n  Value is {n}.\n}\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
