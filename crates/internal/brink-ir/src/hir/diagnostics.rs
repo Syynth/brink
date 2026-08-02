@@ -1523,6 +1523,35 @@ pub enum DiagnosticCode {
     /// `@[allow(…)]`-suppressible, and a host that wants a required
     /// attribute to be binding raises it with `[lints] E173 = "deny"`.
     E173,
+    /// A lambda's own **written annotation** (a param's `: T` or the
+    /// lambda's `: R` return annotation) disagrees with its body-derived
+    /// type (issue #1994, RULED 2026-08-01, closing #1932: "the written
+    /// annotation takes priority... an incompatible body is an eager error
+    /// at the lambda, not a deferred surprise at the call site").
+    ///
+    /// `#1910`/PR #1928 made `infer::body::InferPass::infer_lambda` read a
+    /// lambda's body-derived param/return types back — the same overlay
+    /// `infer_def_body` already applies for a top-level `fn`/`flow` — which
+    /// silently let a *wrong* body derivation override a *correct* written
+    /// annotation with no diagnostic anywhere (a standalone `let f = |k:
+    /// int|: int { "wrong" };` with no call site produced nothing at all).
+    /// This code closes that gap for the annotated case specifically: a
+    /// lambda's own written per-param/return annotation now always governs
+    /// that slot's resulting type, and this diagnostic fires the moment the
+    /// body-derived type (when it resolves to anything concrete) disagrees
+    /// with it — deliberately **not** gradual/advisory like `E063`, since
+    /// the annotation is the ruled source of truth for a lambda's own
+    /// signature, not a hint to double-check later.
+    ///
+    /// `#1910`'s own fix is unchanged for the *unannotated* case — a
+    /// lambda param/return with no written annotation still exports
+    /// whatever its body derives, exactly as before.
+    ///
+    /// Native-only (`LAMBDA_EXPR` has no `brink-syntax` counterpart, same
+    /// posture as `E156`/`E158`): raised only from
+    /// `infer::body::InferPass::infer_lambda`, reported by
+    /// `strict::check_lambda_annotation_mismatches` under `types = strict`.
+    E174,
 }
 
 impl DiagnosticCode {
@@ -1709,6 +1738,7 @@ impl DiagnosticCode {
         Self::E171,
         Self::E172,
         Self::E173,
+        Self::E174,
     ];
 
     /// The stable string representation (e.g., `"E001"`).
@@ -1892,6 +1922,7 @@ impl DiagnosticCode {
             Self::E171 => "E171",
             Self::E172 => "E172",
             Self::E173 => "E173",
+            Self::E174 => "E174",
         }
     }
 
@@ -2180,6 +2211,9 @@ impl DiagnosticCode {
             Self::E173 => {
                 "inline markup tag is missing an attribute the host manifest marks required for this span kind"
             }
+            Self::E174 => {
+                "a lambda's written parameter/return annotation disagrees with the type its body actually infers"
+            }
         }
     }
 
@@ -2424,6 +2458,7 @@ impl DiagnosticCode {
             "E171" => Some(Self::E171),
             "E172" => Some(Self::E172),
             "E173" => Some(Self::E173),
+            "E174" => Some(Self::E174),
             _ => None,
         }
     }
