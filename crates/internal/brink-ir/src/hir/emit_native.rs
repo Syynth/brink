@@ -2173,7 +2173,9 @@ mod tests {
                 hir.knots[0].body
             );
         };
-        assert!(matches!(&ts.target.path, DivertPath::Path(p) if p.segments.last().is_some_and(|s| s.text == "options")));
+        assert!(
+            matches!(&ts.target.path, DivertPath::Path(p) if p.segments.last().is_some_and(|s| s.text == "options"))
+        );
         assert!(matches!(ts.target.args.as_slice(), [Expr::Int(2)]));
         assert!(
             matches!(hir.knots[0].body.stmts.get(1), Some(Stmt::ChoiceSet(_))),
@@ -2193,8 +2195,7 @@ mod tests {
     fn trailing_thread_start_splice_round_trips() {
         let src = "flow main() {\n  {?\n    * Look. You look around.\n    <- helper(3)\n    * Other choice.\n  }\n}\n\
                     flow helper(n) {\n  -> DONE\n}\n";
-        let emitted =
-            lower_and_emit(src).expect("a trailing thread-start splice must now emit");
+        let emitted = lower_and_emit(src).expect("a trailing thread-start splice must now emit");
         assert!(
             emitted.contains("<- helper(3)"),
             "expected the emitted source to spell the splice (with its args) back out:\n{emitted}"
@@ -2207,14 +2208,20 @@ mod tests {
                 hir.knots[0].body
             );
         };
-        assert_eq!(cs.choices.len(), 2, "expected both choices to survive: {cs:?}");
+        assert_eq!(
+            cs.choices.len(),
+            2,
+            "expected both choices to survive: {cs:?}"
+        );
         let Some(Stmt::ThreadStart(ts)) = cs.choices[0].body.stmts.last() else {
             panic!(
                 "expected the first choice's body to end in a re-lowered Stmt::ThreadStart: {:?}",
                 cs.choices[0].body
             );
         };
-        assert!(matches!(&ts.target.path, DivertPath::Path(p) if p.segments.last().is_some_and(|s| s.text == "helper")));
+        assert!(
+            matches!(&ts.target.path, DivertPath::Path(p) if p.segments.last().is_some_and(|s| s.text == "helper"))
+        );
         assert!(matches!(ts.target.args.as_slice(), [Expr::Int(3)]));
     }
 
