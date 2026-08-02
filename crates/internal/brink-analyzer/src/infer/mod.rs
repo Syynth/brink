@@ -190,6 +190,16 @@ pub struct BodyTypes {
     /// resolved and reported only by strict mode
     /// (`structs::check_assignments`, `E063`).
     pub field_assign_mismatches: Vec<FieldAssignMismatch>,
+    /// Issue #1994 (RULED 2026-08-01, closing #1932): a lambda's own
+    /// written param/return annotation disagreeing with its body-derived
+    /// type — see [`LambdaAnnotationMismatch`]'s own doc for why this is a
+    /// materially different severity posture from `typed_assign_mismatches`/
+    /// `field_assign_mismatches` above (an eager `Error`, not a gradual
+    /// `E063` advisory). Recorded unconditionally during inference, folded
+    /// in from every lambda anywhere in this body (including nested ones);
+    /// reported only by strict mode (`strict::check_lambda_annotation_
+    /// mismatches`, `E173`).
+    pub lambda_annotation_mismatches: Vec<LambdaAnnotationMismatch>,
     /// Issue #1881: per-call-site *written*-argument types for every
     /// UFCS-shaped (multi-segment, receiver-resolving) callee found in this
     /// body — see [`UfcsCallArgs`]'s own doc for why this pass records raw
@@ -251,6 +261,43 @@ pub struct TypedAssignMismatch {
     /// The target's already-known declared type.
     pub expected: Ty,
     /// The initializer/RHS expression's statically classified type.
+    pub found: Ty,
+}
+
+/// One incompatibility between a lambda's own **written annotation** (a
+/// param's `: T` or the lambda's `: R` return annotation) and its
+/// body-derived type (issue #1994, RULED 2026-08-01, closing #1932: "the
+/// written annotation takes priority... an incompatible body is an eager
+/// error at the lambda, not a deferred surprise at the call site").
+///
+/// Unlike [`TypedAssignMismatch`]/[`DirectCallArgMismatch`] (both `E063`,
+/// gradual/advisory — the body-derived type wins regardless, the
+/// annotation-vs-body comparison is only ever a warning), a mismatch
+/// recorded here is reported unconditionally as an `Error`-severity `E173`
+/// by `strict::check_lambda_annotation_mismatches` — the written annotation
+/// *replaces* the body-derived type at this slot (see
+/// `body::InferPass::infer_lambda`'s own doc for the precedence change),
+/// so a disagreement is never merely advisory.
+///
+/// Recorded only when a written annotation exists for this slot *and* the
+/// body-derived type is not itself unresolved (`Ty::is_unresolved`) — an
+/// unannotated slot has nothing to compare against and keeps #1910's
+/// unchanged body-derived-wins behavior, and an `Unknown`/`Conflicted`
+/// body-derived type never disagrees with anything (mirrors
+/// `annotations::report_if_mismatched`'s identical guard for the `fn`/`flow`
+/// case).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LambdaAnnotationMismatch {
+    /// The diagnostic site: the mismatched param's own `: T` annotation
+    /// range, or the lambda's own `: R` return-annotation range.
+    pub range: TextRange,
+    /// `Some(param name)` for a mismatched parameter annotation, `None` for
+    /// the lambda's own return annotation.
+    pub param_name: Option<String>,
+    /// The written annotation's resolved type — what now governs this
+    /// slot's type.
+    pub expected: Ty,
+    /// The body's own independent derivation, which disagreed.
     pub found: Ty,
 }
 
@@ -845,6 +892,7 @@ fn solve_one_batch(
                     direct_call_arg_mismatches: result.direct_call_arg_mismatches,
                     typed_assign_mismatches: result.typed_assign_mismatches,
                     field_assign_mismatches: result.field_assign_mismatches,
+                    lambda_annotation_mismatches: result.lambda_annotation_mismatches,
                     ufcs_call_args: result.ufcs_call_args,
                 },
             )

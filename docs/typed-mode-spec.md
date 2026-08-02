@@ -164,6 +164,57 @@ independent derivation in `self.locals`, exactly as before. Recorded here
 so the two do not read as contradictory: different map, different
 contract, same firewall intact.
 
+**RULED (issue #1994, closing #1932, 2026-08-01): a lambda's own written
+annotation governs its type unconditionally, and the checker errors
+immediately when the body disagrees — deliberately NOT the same precedence
+as a top-level `fn`/`flow`.** #1910/PR #1928 gave `infer_lambda` the same
+posture `infer_def_body` already had (body-derived wins, annotation only
+the `Unknown` fallback above), which was never itself ruled for a lambda —
+it fell out as a side effect of reusing the `fn`/`flow` shape, and it meant
+a *wrong* body derivation could silently override a *correct* written
+annotation with no diagnostic anywhere (a standalone `let f = |k: int|:
+int { "wrong" };`, never called, produced nothing at all).
+
+This reconciles that gap against this section's own "annotation = firewall"
+language (§9's phrasing for what feeds `signature()`) by splitting it in
+two, on purpose:
+
+- **`fn`/`flow`** (unchanged): the annotation is the *fallback* firewall —
+  it fires only when the body itself leaves a slot `Unknown`, exactly as
+  ruled above. A body that disagrees with the annotation still exports its
+  own concrete/`Conflicted` derivation, and the disagreement is only ever
+  the gradual, `[lints]`-configurable advisory `E063`
+  (`annotations::mismatches`) — TM-3's call, not a hard failure.
+- **A lambda's own written param/return annotation** (this ruling): the
+  annotation *replaces* the body-derived type at that slot, full stop. A
+  body-derived type that disagrees (when it resolves to anything concrete —
+  `Unknown`/`Conflicted` never "disagrees", same guard
+  `report_if_mismatched` uses) is recorded as an eager, `Error`-severity
+  `E173` (`infer::body::InferPass::infer_lambda`, reported by
+  `strict::check_lambda_annotation_mismatches`), raised at the lambda's own
+  declaration — never deferred to wherever the lambda is later called, and
+  never downgradable the way `E063` is.
+
+The two are ruled to differ because a lambda is typically small and
+locally scoped, and more likely annotated specifically to pin down what its
+body should mean, than a top-level `fn`/`flow` whose annotation is
+primarily a boundary contract for callers. **Scope is narrow and literal**:
+this is the lambda's own `|p: T|`/`: R` syntax only — an enclosing
+binding's declared type (`let f: fn(int): int = |k| …`) is not "the
+lambda's own annotation" and does not reach this mechanism. It also does
+not apply to a param the lambda's own body *re-binds* (`|t: int| { let t =
+"a"; t = "b"; t }`): `narrowed_params` is bare-name-keyed off `self.locals`,
+so once the body's own `TempDecl` shadows the param, there is nothing left
+in this pass's bookkeeping that still distinguishes "the param's own
+narrowing" from "the shadowing local's" — that one param falls back to the
+unannotated `fn`/`flow`-style posture unconditionally (no diagnostic either
+way), the same carve-out issue #1954 already made for the `self.annotated`
+seed just above, for the identical reason.
+
+An unannotated param/return is entirely unaffected by this ruling — #1910's
+own fix stands exactly as it was: the body-derived type still wins over
+nothing, because there is no written annotation to govern with.
+
 ## 3. Annotation syntax — RULED
 
 **Inline types, brink-dialect-gated.** This revises the #473 ruling: the

@@ -1502,6 +1502,35 @@ pub enum DiagnosticCode {
     /// unrecognized name gets a shape-only wording that never asserts ink
     /// membership.
     E172,
+    /// A lambda's own **written annotation** (a param's `: T` or the
+    /// lambda's `: R` return annotation) disagrees with its body-derived
+    /// type (issue #1994, RULED 2026-08-01, closing #1932: "the written
+    /// annotation takes priority... an incompatible body is an eager error
+    /// at the lambda, not a deferred surprise at the call site").
+    ///
+    /// `#1910`/PR #1928 made `infer::body::InferPass::infer_lambda` read a
+    /// lambda's body-derived param/return types back — the same overlay
+    /// `infer_def_body` already applies for a top-level `fn`/`flow` — which
+    /// silently let a *wrong* body derivation override a *correct* written
+    /// annotation with no diagnostic anywhere (a standalone `let f = |k:
+    /// int|: int { "wrong" };` with no call site produced nothing at all).
+    /// This code closes that gap for the annotated case specifically: a
+    /// lambda's own written per-param/return annotation now always governs
+    /// that slot's resulting type, and this diagnostic fires the moment the
+    /// body-derived type (when it resolves to anything concrete) disagrees
+    /// with it — deliberately **not** gradual/advisory like `E063`, since
+    /// the annotation is the ruled source of truth for a lambda's own
+    /// signature, not a hint to double-check later.
+    ///
+    /// `#1910`'s own fix is unchanged for the *unannotated* case — a
+    /// lambda param/return with no written annotation still exports
+    /// whatever its body derives, exactly as before.
+    ///
+    /// Native-only (`LAMBDA_EXPR` has no `brink-syntax` counterpart, same
+    /// posture as `E156`/`E158`): raised only from
+    /// `infer::body::InferPass::infer_lambda`, reported by
+    /// `strict::check_lambda_annotation_mismatches` under `types = strict`.
+    E173,
 }
 
 impl DiagnosticCode {
@@ -1687,6 +1716,7 @@ impl DiagnosticCode {
         Self::E170,
         Self::E171,
         Self::E172,
+        Self::E173,
     ];
 
     /// The stable string representation (e.g., `"E001"`).
@@ -1869,6 +1899,7 @@ impl DiagnosticCode {
             Self::E170 => "E170",
             Self::E171 => "E171",
             Self::E172 => "E172",
+            Self::E173 => "E173",
         }
     }
 
@@ -2154,6 +2185,9 @@ impl DiagnosticCode {
             Self::E172 => {
                 "native: a `#…` tag beginning with `@` is the ink-dialect compiler-directive shape (`#@private`/`#@was`/`#@local`/…) — native has no such directive channel, so it lowers as an ordinary runtime tag"
             }
+            Self::E173 => {
+                "a lambda's written parameter/return annotation disagrees with the type its body actually infers"
+            }
         }
     }
 
@@ -2394,6 +2428,7 @@ impl DiagnosticCode {
             "E170" => Some(Self::E170),
             "E171" => Some(Self::E171),
             "E172" => Some(Self::E172),
+            "E173" => Some(Self::E173),
             _ => None,
         }
     }

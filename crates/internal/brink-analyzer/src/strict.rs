@@ -346,6 +346,11 @@ pub fn check(
     // against its target's already-known declared type — direct-call
     // arguments' sibling gap, same E063 machinery.
     out.extend(check_typed_assign_mismatches(files, index, inference));
+    // Issue #1994 (RULED 2026-08-01, closing #1932): a lambda's own written
+    // param/return annotation disagreeing with its body-derived type — an
+    // eager `Error`-severity `E173`, deliberately not folded into the
+    // gradual `E063` machinery above.
+    out.extend(check_lambda_annotation_mismatches(files, index, inference));
     out.extend(check_global_initializers(files, index, manifest));
     // Issue #1532 (#1501 review, migration-tail finding 1): `remove`'s
     // pre-#1484 array leg has no compatibility shim — a statically-known
@@ -1150,6 +1155,77 @@ fn check_typed_assign_mismatches(
                         fact.expected.display()
                     ),
                     code: brink_ir::DiagnosticCode::E063,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// Report every [`crate::infer::LambdaAnnotationMismatch`] inference
+/// recorded, per def, as `E173` (issue #1994, RULED 2026-08-01, closing
+/// #1932). Same walk shape as [`check_typed_assign_mismatches`] above (every
+/// fact was harvested onto whichever top-level def's own `BodyResult` the
+/// lambda that produced it was nested inside — `infer::body::InferPass`
+/// never snapshots this accumulator around a lambda frame, see that
+/// struct's own field doc), but a materially different severity posture:
+/// unlike `E063`'s gradual/advisory "two independent derivations, compared
+/// but never merged", a lambda's own written annotation now *replaces* its
+/// body-derived type at this slot (`infer::body::InferPass::infer_lambda`'s
+/// own doc), so a disagreement recorded here is never merely a warning —
+/// `E173`'s default severity is `Error`, not downgradable the way `E063` is.
+fn check_lambda_annotation_mismatches(
+    files: &[(FileId, &HirFile)],
+    index: &SymbolIndex,
+    inference: &InferenceResult,
+) -> Vec<brink_ir::Diagnostic> {
+    let mut out = Vec::new();
+    for &(file, hir) in files {
+        let mut def_ids: Vec<DefinitionId> = Vec::new();
+        // Issue #1903: see `check_typed_assign_mismatches`'s identical
+        // `root_content` synthetic-id inclusion — a lambda can be written
+        // directly in a file's top-level content, not only inside a
+        // knot/stitch.
+        if !hir.root_content.stmts.is_empty() {
+            let synthetic_id = DefinitionId::new(DefinitionTag::LocalVar, u64::from(file.0));
+            def_ids.push(synthetic_id);
+        }
+        for knot in &hir.knots {
+            let kind = knot.symbol_kind();
+            if let Some(id) = annotations::def_id_for(index, file, kind, &knot.name.text) {
+                def_ids.push(id);
+            }
+            for stitch in &knot.stitches {
+                let qualified = format!("{}.{}", knot.name.text, stitch.name.text);
+                if let Some(id) =
+                    annotations::def_id_for(index, file, SymbolKind::Stitch, &qualified)
+                {
+                    def_ids.push(id);
+                }
+            }
+        }
+        for id in def_ids {
+            let Some(body) = inference.bodies.get(&id) else {
+                continue;
+            };
+            for fact in &body.lambda_annotation_mismatches {
+                let message = match &fact.param_name {
+                    Some(name) => format!(
+                        "lambda parameter `{name}` is annotated `{}` but its body infers `{}`",
+                        fact.expected.display(),
+                        fact.found.display()
+                    ),
+                    None => format!(
+                        "lambda return type is annotated `{}` but its body infers `{}`",
+                        fact.expected.display(),
+                        fact.found.display()
+                    ),
+                };
+                out.push(brink_ir::Diagnostic {
+                    file,
+                    range: fact.range,
+                    message,
+                    code: brink_ir::DiagnosticCode::E173,
                 });
             }
         }
