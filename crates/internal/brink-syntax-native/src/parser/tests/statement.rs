@@ -917,6 +917,133 @@ fn logic_line_unsupported_shape_is_a_loud_diagnostic_never_silent_prose() {
     );
 }
 
+#[test]
+fn logic_line_until_is_not_swallowed_as_prose() {
+    // Issue #1972's second slice: `~ until cond` — native's sole `await`
+    // spelling (decision-log 2026-07-23 item 4) — at content-ground
+    // position. Before this, `KW_UNTIL` had no dispatch in `logic_line`
+    // at all and reached `expr_stmt_line`'s `expr::expression`, which
+    // diagnoses `until` as an unrecognized atom (same posture as `~ if`,
+    // see `logic_line_unsupported_shape_is_a_loud_diagnostic_never_
+    // silent_prose`).
+    let src = "flow greet() {\n~ until n > 0\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let flow: ast::FlowDecl = find_child(&p.syntax()).expect("flow decl");
+    let body = expect_prose_body(flow.body());
+    assert!(
+        !has_node_kind(body.syntax(), SyntaxKind::TEXT),
+        "the logic line must not be swallowed into a TEXT run"
+    );
+    let logic_line: ast::LogicLine = find_child(body.syntax()).expect("LOGIC_LINE");
+    let until_stmt = logic_line.until_stmt().expect("UNTIL_STMT child");
+    assert!(logic_line.let_stmt().is_none());
+    assert!(logic_line.assign_stmt().is_none());
+    assert!(logic_line.expr_stmt().is_none());
+    assert!(logic_line.stmt_block().is_none());
+    assert!(until_stmt.condition().is_some());
+}
+
+#[test]
+fn logic_line_until_precedes_ordinary_content_on_the_next_line() {
+    // Mirrors `logic_line_temp_decl_precedes_ordinary_content_on_the_next_
+    // line`: the escape consumes exactly its own line, never bleeding into
+    // the next (content-ground, since `until` is NEWLINE-terminated here,
+    // not `;`-terminated like its code-ground sibling).
+    let src = "flow greet() {\n~ until n > 0\nValue is {n}.\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let flow: ast::FlowDecl = find_child(&p.syntax()).expect("flow decl");
+    let body = expect_prose_body(flow.body());
+    let items: Vec<_> = body.syntax().children().collect();
+    assert_eq!(items[0].kind(), SyntaxKind::LOGIC_LINE);
+    assert_eq!(items[1].kind(), SyntaxKind::CONTENT_LINE);
+}
+
+#[test]
+fn logic_line_until_inside_choice_body_and_conditional_colon_body() {
+    // Same two `TILDE`-dispatch sites `logic_line_inside_choice_body_and_
+    // conditional_colon_body` covers for the assignment shape, exercised
+    // with `~ until` instead.
+    let choice_src = "flow greet() {\n{?\n* [go] {\n~ until n > 0\n}\n}\n}\n";
+    let p = assert_lossless(choice_src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::LOGIC_LINE));
+
+    let colon_src = "flow greet() {\n{if n > 0: ~ until n > 1}\n}\n";
+    let p = assert_lossless(colon_src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::LOGIC_LINE));
+}
+
+#[test]
+fn logic_line_block_wraps_a_stmt_block_with_multiple_statements() {
+    // Issue #1972's second slice: `~{ … }` — a multi-statement logic-block
+    // escape at content-ground position, reusing `STMT_BLOCK`'s grammar
+    // unmodified (the same node kind a `fn`'s default body or a `flow`'s
+    // whole-body `~{ }` override use, `parser/decl.rs::decl_body`).
+    let src = "flow greet() {\n~{\n  let m = 1;\n  n = m;\n}\nValue is {n}.\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let flow: ast::FlowDecl = find_child(&p.syntax()).expect("flow decl");
+    let body = expect_prose_body(flow.body());
+    let items: Vec<_> = body.syntax().children().collect();
+    assert_eq!(items[0].kind(), SyntaxKind::LOGIC_LINE);
+    // The escape consumes exactly its own block, never bleeding into the
+    // ordinary content line after it.
+    assert_eq!(items[1].kind(), SyntaxKind::CONTENT_LINE);
+    let logic_line: ast::LogicLine = find_child(body.syntax()).expect("LOGIC_LINE");
+    let stmt_block = logic_line.stmt_block().expect("STMT_BLOCK child");
+    assert!(logic_line.until_stmt().is_none());
+    assert!(logic_line.let_stmt().is_none());
+    let inner_items: Vec<_> = stmt_block.items().collect();
+    assert_eq!(
+        inner_items.len(),
+        2,
+        "expected two statements inside ~{{ }}"
+    );
+    assert_eq!(inner_items[0].kind(), SyntaxKind::LET_STMT);
+    assert_eq!(inner_items[1].kind(), SyntaxKind::ASSIGN_STMT);
+}
+
+#[test]
+fn logic_line_block_tolerates_a_space_between_tilde_and_brace() {
+    // `logic_line` calls `p.skip_ws()` before dispatching (like every other
+    // shape it recognizes), so `~ { … }` and `~{ … }` are equivalent —
+    // unlike `parser/decl.rs::decl_body`'s adjacency-sensitive selector
+    // check, which this escape doesn't need to mirror (no other meaning of
+    // a bare `~` competes with the block form once `~` is already
+    // committed to the content-ground escape dispatch).
+    let src = "flow greet() {\n~ {\n  n = 1;\n}\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::STMT_BLOCK));
+}
+
+#[test]
+fn logic_line_block_inside_choice_body_and_conditional_colon_body() {
+    let choice_src = "flow greet() {\n{?\n* [go] {\n~{\n  n = 1;\n}\n}\n}\n}\n";
+    let p = assert_lossless(choice_src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::STMT_BLOCK));
+
+    let colon_src = "flow greet() {\n{if n > 0: ~{ n = 0; }}\n}\n";
+    let p = assert_lossless(colon_src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::STMT_BLOCK));
+}
+
+#[test]
+fn logic_line_block_unclosed_at_eof_does_not_panic() {
+    // Adversarial: an unclosed `~{` must be a diagnostic, not a panic or a
+    // hang, mirroring `error_unclosed_block_at_eof_does_not_panic`'s
+    // coverage of the code-ground `STMT_BLOCK` this escape reuses.
+    let src = "flow greet() {\n~{\n  let m = 1;\n";
+    let p = parse(src);
+    assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
+    assert!(!p.errors().is_empty());
+}
+
 // ── K. The code-ground line escape: `> text` (charter §8.2, RULED ────
 // ── 2026-07-23, issue #1992) ───────────────────────────────────────────
 //

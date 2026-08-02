@@ -59,8 +59,10 @@ unimplemented · ❓ unverified (nobody has checked; do not assume either way)
 | Tags `#` | ✅ | ✅ | ✅ | ✅ | markup inside a tag is **literal** (ruled #1783) |
 | Markup spans `<b>…</b>` | ✅ | ✅ | ✅ | ✅ | `.inkb` **v6** `PART_SPAN` |
 | Hyphenated span names `<fade-in>` | ✅ | ❌ | — | — | 🔒 ruled 2026-08-01 → **#1996** |
-| **Statements at prose position (bare, no `~`)** | ⚠️ | ❌ | ❌ | ❌ | **🔴 SILENT** — see below; still open, #1972 |
-| `~ stmt` line escape (assignment/bare-call/temp-decl) | ✅ | ✅ | ✅ | ✅ | #1991 + #1972; `~{ }` LogicBlock and `~ await` still ungrammared |
+| `@[element(claims=…)]` handlers | ✅ | ✅ | ✅ | ❓ | `annotations-element` golden |
+| Prose-bodied `fn` via `>{ }` | ✅ | ✅ | ✅ | ❓ | verified 2026-08-01: emits `[A] hi` |
+| **Statements at prose position (bare, no `~`)** | ⚠️ | ❌ | ❌ | ❌ | **🔴 SILENT** — see below; by design, not open (charter §8.2) |
+| `~ stmt`/`~{ }` line/block escape (assignment/bare-call/temp-decl/`until`/logic block) | ✅ | ✅ | ⚠️ | ⚠️ | #1991 + #1972 (both slices); Round-trips only leaf stmts, nested if/while/for inside `~{ }` is an emitter-only gap; Runs — a call-only `~{ }` escape now correctly flushes its output boundary (review finding, w111), but the same pre-existing gluing bug (no `Stmt::EndOfLine` after a call-only code-ground `LogicBlock`) still reaches the whole-body `~{ }`/`fn`-default override path (`lower_stmt_block_as_body`/`lir::lower::blocks::lower_block_stmt_list`), untouched by this fix — tracked at **#2056** |
 | `> text` line escape in code body | ✅ | ✅ | ❌ | ❌ | 🔒 `E129` — #1992 |
 | `return <value>` at prose position | ✅ | ❌ | — | — | #1973, 16 cases |
 | Alternations `{~ {& {! {\|` | ✅ | ✅ | ✅ | ❌ | emitter gap, 17 cases |
@@ -201,14 +203,29 @@ Value is 0.
 at content-ground position**, so anything statement-shaped and unprefixed
 falls through to `content::content_line` and is folded into a `TEXT` run.
 The ruled `~`-prefixed logic line (charter §8.2) is a separate dispatch arm
-and, as of #1991 + #1972, covers assignment, compound assignment, bare
-calls, and temp declarations — those four shapes parse, run, and
-round-trip correctly through `~`. `~{ }` `LogicBlock` and `~ await` remain
-real, unimplemented grammar gaps at this position, unrelated to the bare-
-spelling question. Only the **bare, unprefixed** spelling (`n = 1`, no `~`)
-still hits the silent fold-into-prose failure mode described above, and its
-disambiguation from ordinary prose is still an open design question
-(#1972's own scope note).
+and, as of #1991 + #1972 (both slices), covers assignment, compound
+assignment, bare calls, temp declarations, a `~ until cond` condition-park
+(native's sole `await` spelling), and a `~{ … }` multi-statement logic
+block — every shape parses, runs, and round-trips correctly through `~`
+(leaf statements; nested `if`/`while`/`for` inside a `~{ }` block is a
+narrower, emitter-only residual — see the charter §8 status board).
+
+**Corrected 2026-08-02 (issue #1972's second slice, per the "check whether
+it is already ruled" precedent):** the **bare, unprefixed** spelling
+(`n = 1`, no `~`) still hits the silent fold-into-prose failure mode above,
+but this is **not an open design question** — #1972's own filing-time body
+framed the sigil-vs-bare choice as undecided, but charter §8.2's
+2026-07-23 ruling already settled it: `~` is the *only* mechanism a
+prose-ground body has for entering code, at both line and block
+granularity ("`~` = enter code ... at two granularities"). A bare `n = 1`
+is therefore, by design, ordinary prose text starting with the identifier
+`n` — never a statement missing an implementation — the same "distinct
+syntax over overloaded spellings" principle §10 states for the surface as
+a whole. Nothing needs building here; the row above stays 🔴 only because
+zero-diagnostic silent prose-folding of something that *looks* like code is
+still a real authoring footgun worth a future lint (a separate, much
+smaller concern than a grammar decision), not because a bare-statement
+grammar is still pending.
 
 Fixed by #1991 (assignment/bare-call `~`-spelling) and #1972 (`~ let` temp
 decl + emitter parity for all three): the assignment/expression-statement/

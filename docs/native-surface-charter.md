@@ -79,7 +79,13 @@ combination is honestly spellable.
   container-level per-flow *metadata*. Identity is still the
   declaration's name, never a tag, so the SFC lesson stands;
   docs/prose-dialect-spec.md §8b.4.)** No one-flow-per-file constraint —
-  files hold many declarations (RULED: hard requirement).
+  files hold many declarations (RULED: hard requirement). **A `#tag`'s own
+  body is scanned as raw text, not reparsed — a content line's trailing
+  tags brace-balance (accepted eats-the-enclosing-closer tradeoff,
+  per-tag not per-line scope), while a declaration header line's own tags
+  instead stop unconditionally at the body opener (`{`/`~`/`>`) before
+  that depth logic ever engages — both spec'd in
+  docs/prose-dialect-spec.md §4.7.**
 - **Stitches are nested `flow`s** — `garden.gate` because addressing
   is nesting. (Depth >2 = watch list.)
 - Braces are the universal body delimiter — "solid" — for
@@ -184,15 +190,34 @@ depth will be revisited then.*
    fine-grained lines): `~ stmt` runs code inside a prose body (ink's
    logic line, kept) — **implemented** (issue #1991: the escape had
    compiled clean and silently printed as literal prose, dropping the
-   statement, until this landed) — and `> text` emits a prose line
-   inside a code body — **implemented** (issue #1992) at a `flow`/`fn`'s
-   own top-level code-ground body, the same granularity #1991's repro
-   exercised; the escape also *parses* at any nesting depth a code-ground
-   `STMT_BLOCK` statement can appear (a nested `if`/`while`/`for` body, a
-   lambda's braced body), but those still lower loudly (E129) — a
-   deliberately narrower first slice, not a silent gap. Open tail: any
-   prose→code escapes beyond `~`/interpolation,
-   and the interpolation-vs-`{~` overlap.
+   statement, until this landed), extended to a temp declaration
+   (`~ let name = expr`, issue #1972) and, in that same issue's second
+   slice, to a `~{ … }` multi-statement logic block and `~ until cond`
+   (native's sole `await` spelling — `await` itself is retired, see
+   item 3 below) — both **implemented**, sharing the identical
+   `Stmt::LogicBlock`/`Stmt::Await` HIR the whole-body `~{ }` override and
+   the ink-dialect's own `~ { … }`/`~ await` already produce. **Residual,
+   not a design gap**: a `~{ … }` block containing nested `if`/`while`/
+   `for` control flow parses and lowers cleanly but the shared native
+   emitter (`hir::emit_native`, used by `brink-respell`'s ink→native
+   corpus conversion) only spells the leaf statement shapes back out —
+   round-tripping nested control flow needs the full code-ground
+   control-flow printer, a separate, larger lift issue #1972 didn't take
+   on. `> text` emits a prose line inside a code body — **implemented**
+   (issue #1992) at a `flow`/`fn`'s own top-level code-ground body, the
+   same granularity #1991's repro exercised; the escape also *parses* at
+   any nesting depth a code-ground `STMT_BLOCK` statement can appear (a
+   nested `if`/`while`/`for` body, a lambda's braced body), but those
+   still lower loudly (E129) — a deliberately narrower first slice, not a
+   silent gap. **The "bare, unprefixed spelling" question is not a live
+   design question** — it reads that way in #1972's own filing-time body,
+   but this ruling already settled it: the sigil is the *only* mechanism
+   ("`~` = enter code ... at two granularities"), so a sigil-less `n = 1`
+   at prose-body position is, by design, ordinary prose text, not an
+   accidentally-unimplemented statement form; see the 2026-08-01 accuracy
+   ruling (rule 12k precedent) on re-deriving already-ruled questions.
+   Open tail: any prose→code escapes beyond `~`/interpolation, and the
+   interpolation-vs-`{~` overlap.
 3. **Divert / tunnel / thread / await** — ✅ RULED (scattered across
    rulings): `->` stays divert ("one arrow, one meaning", 2026-07-14);
    tunnel-return unified under native `return` / `->->` (the

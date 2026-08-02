@@ -1,10 +1,12 @@
 // `~ stmt` — the content-ground line escape into code (charter §8.2,
 // RULED 2026-07-23, issue #1991: ink's logic line, kept). Exercises all
-// three recognized shapes (assignment, including the `+=`/`-=` compound
-// forms; a bare expression evaluated for its side effect; and a temp
-// declaration, `~ let`, added by issue #1972), a logic line followed by
-// ordinary prose on the next line, and the escape reused inside a choice's
-// braced body and a conditional's colon body — the two other body-shaped
+// recognized shapes (assignment, including the `+=`/`-=` compound forms;
+// a bare expression evaluated for its side effect; a temp declaration,
+// `~ let`, added by issue #1972; a condition-park, `~ until` — native's
+// sole `await` spelling — and a multi-statement logic block, `~{ }`, both
+// added by issue #1972's second slice), a logic line followed by ordinary
+// prose on the next line, and the escape reused inside a choice's braced
+// body and a conditional's colon body — the two other body-shaped
 // positions that dispatch through the same `TILDE` arm (`block::body_line`
 // and `family::colon_body_line`, kept in sync).
 
@@ -19,6 +21,12 @@ flow greet() {
   ~ n -= 1
   ~ bump()
   Value is {n}.
+  ~{
+    let k = m + 1;
+    n = k;
+    bump();
+  }
+  ~ until n > 100
   {?
     * [go] {
       ~ n = 0

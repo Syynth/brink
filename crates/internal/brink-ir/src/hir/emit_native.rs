@@ -55,22 +55,34 @@
 //!
 //! Explicitly unsupported (each a real gap, not an oversight — see
 //! `docs/b0-sequencing.md` §3 and `tests/tier1-brink-respell/README.md`'s
-//! own gap findings for the native-grammar context): `Stmt::LogicBlock`/
-//! `Await` at prose-body position (code-dialect ground —
-//! `lower_native::body` never constructs either outside a `~{ }` logic
-//! block, so this is a native-**grammar** gap, not just an emission one:
-//! there is no `~{ }`-block/`~ await …`-style prose-body statement to
-//! round-trip yet, issue #1335's B0.8b sweep). **Correction (issue #1991,
-//! PR #2002; issue #1972):** `Stmt::TempDecl`/`Assignment`/`ExprStmt` at
-//! prose-body position no longer belong in that native-grammar-gap bucket —
-//! `~ let name = expr`/`~ x = expr`/`~ expr` (the content-ground logic-line
-//! escape, charter §8.2, extended to `TempDecl` by #1972) is exactly that
-//! bare prose-body statement, and `lower_native::body::lower_logic_line`
-//! has produced all three outside any `~{ }` block since #1991/#1972
-//! landed. This printer now emits all three (`emit_temp_decl`/
-//! `emit_assignment`/`emit_expr_stmt`, below) — as opposed to the
-//! code-ground `~{ }` `STMT_BLOCK` form, which is a different HIR shape,
-//! `Stmt::LogicBlock`, still a real grammar gap above; `Stmt::Sequence`/
+//! own gap findings for the native-grammar context). **Correction (issue
+//! #1991, PR #2002; issue #1972):** `Stmt::TempDecl`/`Assignment`/
+//! `ExprStmt` at prose-body position no longer belong in the
+//! native-grammar-gap bucket this section used to open with — `~ let name =
+//! expr`/`~ x = expr`/`~ expr` (the content-ground logic-line escape,
+//! charter §8.2, extended to `TempDecl` by #1972) is exactly that bare
+//! prose-body statement, and `lower_native::body::lower_logic_line` has
+//! produced all three since #1991/#1972 landed. This printer emits all
+//! three (`emit_temp_decl`/`emit_assignment`/`emit_expr_stmt`, below).
+//! **Correction (issue #1972, second slice):** `Stmt::LogicBlock`/`Await`
+//! at prose-body position — the `~{ … }` multi-statement escape and the
+//! `~ until cond` condition-park escape (native's sole `await` spelling) —
+//! are likewise no longer a native-**grammar** gap:
+//! `lower_native::body::lower_logic_line` produces both, and this printer
+//! now emits both too (`emit_logic_block`/`emit_await`, below), **with one
+//! carved-out residual**: a `Stmt::LogicBlock` whose `scope` is `Opens`/
+//! `Continues` (a *whole* code-ground body split around a nested `> text`
+//! line, issue #1992/#2028 — never produced by this content-ground escape,
+//! only by a `fn`'s own default body or a `flow`'s whole-body `~{ }`
+//! override) still refuses: re-spelling that shape needs `emit_knot`-level
+//! restructuring (the original single code-ground body, not a nested
+//! `~{ }` per run) that is out of this slice's scope. A `LogicBlock`
+//! containing nested `if`/`while`/`for` control flow also still refuses —
+//! this printer's new code-ground statement printer
+//! (`emit_block_stmt_stream`) only spells the leaf `BlockStmt` shapes
+//! (`TempDecl`/`Assignment`/`ExprStmt`/`Return`/`Break`/`Continue`/
+//! `Await`), not nested control flow, which would need the full code-ground
+//! `if`/`while`/`for` printer this slice doesn't build. `Stmt::Sequence`/
 //! `ContentPart::InlineSequence`/`InlineConditional`
 //! (alternations `~`/`&`/`!`/`|` — **unlike the code-dialect-ground gaps
 //! above, this one is emitter-only, not native-grammar**: native's
@@ -92,6 +104,17 @@
 //! used to be listed here as an emitter-only gap (see the corrected note on
 //! `CondKind::InitialCondition` above, issue #1951) — it is now supported,
 //! see `emit_if_else_chain` below.
+//! **Correction (issue #1974):** `Stmt::ThreadStart` is likewise no longer
+//! refused in the two positions the HIR actually flattens it into. A run of
+//! splices immediately *preceding* a `Stmt::ChoiceSet` in the same stream
+//! re-nests as leading `<- flow(args)` line(s) inside the `{?}` ahead of the
+//! first choice (`emit_choice_set`'s `leading`), and a *trailing* run on a
+//! choice's own `body.stmts` re-nests as sibling line(s) printed right after
+//! that choice, never inside its braces (`split_trailing_thread_starts` /
+//! `emit_trailing_thread_starts`). Both adjacencies are unambiguous, so
+//! nothing is guessed; a `ThreadStart` in any *other* position (no
+//! `ChoiceSet` after the run, or interleaved mid-choice-body) has no legal
+//! native spelling at all and is still refused.
 //! **Correction (issue #1973):** a prose-body `return` with a value
 //! expression used to be listed here as a native-grammar gap —
 //! `parser/divert.rs::return_stmt` now parses a trailing value expression
@@ -137,10 +160,11 @@
 use std::fmt::Write as _;
 
 use crate::{
-    AssignOp, Assignment, Block, Choice, ChoiceSet, CondBranch, CondKind, Conditional, ConstDecl,
-    Content, ContentPart, DivertPath, DivertTarget, Expr, ExternalDecl, HirFile, Import, InfixOp,
-    Knot, LambdaBody, ListDecl, Name, Param, Path, PostfixOp, PrefixOp, Return, Stitch, Stmt,
-    StringPart, StructDecl, Tag, TempDecl, TypeExpr, VarDecl,
+    AssignOp, Assignment, AwaitStmt, Block, BlockStmt, Choice, ChoiceSet, CondBranch, CondKind,
+    Conditional, ConstDecl, Content, ContentPart, DivertPath, DivertTarget, Expr, ExternalDecl,
+    HirFile, Import, InfixOp, Knot, LambdaBody, ListDecl, LogicBlock, LogicBlockScope, Name, Param,
+    Path, PostfixOp, PrefixOp, Return, Stitch, Stmt, StringPart, StructDecl, Tag, TempDecl,
+    ThreadStart, TypeExpr, VarDecl,
 };
 
 // ─── Labeled lines (G-1) ─────────────────────────────────────────────
@@ -675,28 +699,7 @@ fn emit_stmt_stream(
                 let _ = writeln!(out, "{indent}{line}");
             }
             Stmt::ChoiceSet(cs) => {
-                emit_choice_set(out, &indent, depth, cs, context)?;
-                // The continuation's statements are the rest of *this*
-                // stream, flattened in place — see this function's doc. A
-                // labeled continuation (a gather `(name)` immediately after
-                // the `{?}`, per `lower_native::body::lower_continuation`)
-                // spells with G-1's `(name)` content-line-label prefix on
-                // the continuation's own first line — see
-                // `emit_labeled_stmt_stream`.
-                match &cs.continuation.label {
-                    Some(label) => {
-                        emit_labeled_stmt_stream(
-                            out,
-                            label,
-                            &cs.continuation.stmts,
-                            depth,
-                            context,
-                        )?;
-                    }
-                    None => {
-                        emit_stmt_stream(out, &cs.continuation.stmts, depth, context)?;
-                    }
-                }
+                emit_choice_set_and_continuation(out, &indent, depth, cs, &[], context)?;
                 return Ok(());
             }
             Stmt::Conditional(cond) => emit_conditional(out, &indent, depth, cond, context)?,
@@ -733,9 +736,46 @@ fn emit_stmt_stream(
                 let line = emit_expr_stmt(e, context)?;
                 let _ = writeln!(out, "{indent}{line}");
             }
-            Stmt::ThreadStart(_) => return Err(unsupported("thread-start splice", context)),
-            Stmt::LogicBlock(_) => return Err(unsupported("`~ { }` logic block", context)),
-            Stmt::Await(_) => return Err(unsupported("await statement", context)),
+            Stmt::ThreadStart(_) => {
+                // A splice reached *before* any choice line in a `{?}`
+                // point lowers as a plain sibling statement immediately
+                // preceding the resulting `Stmt::ChoiceSet` — never
+                // flattened away, just not marked (`lower/block/weave.rs`'s
+                // `addContentToPreviousWeavePoint`-mirroring fold and
+                // `lower_native::choice::lower_choice_point`'s own
+                // `preamble` both produce exactly this adjacency; see
+                // their module docs). So a run of one or more consecutive
+                // `ThreadStart`s immediately followed by a `ChoiceSet` in
+                // *this* stream is re-nestable: pull the run out and hand
+                // it to `emit_choice_set` to print as leading splice
+                // line(s) inside the `{?}` block, ahead of the first
+                // choice/`else`. A `ThreadStart` with no `ChoiceSet`
+                // immediately after the run has no legal native spelling
+                // at all (a splice outside a choice point is deliberately
+                // refused by the grammar, charter §11, ruling
+                // #1260/#1263) — refuse rather than guess.
+                let mut j = i;
+                while matches!(stmts.get(j), Some(Stmt::ThreadStart(_))) {
+                    j += 1;
+                }
+                let Some(Stmt::ChoiceSet(cs)) = stmts.get(j) else {
+                    return Err(unsupported("thread-start splice", context));
+                };
+                let leading: Vec<&ThreadStart> = stmts[i..j]
+                    .iter()
+                    .map(|s| match s {
+                        Stmt::ThreadStart(t) => t,
+                        _ => unreachable!("loop above only advances over ThreadStart"),
+                    })
+                    .collect();
+                emit_choice_set_and_continuation(out, &indent, depth, cs, &leading, context)?;
+                return Ok(());
+            }
+            Stmt::LogicBlock(lb) => emit_logic_block(out, &indent, depth, lb, context)?,
+            Stmt::Await(a) => {
+                let line = emit_await(a, context)?;
+                let _ = writeln!(out, "{indent}{line}");
+            }
         }
         i += 1;
     }
@@ -871,6 +911,133 @@ fn emit_assignment(a: &Assignment, context: &str) -> Result<String, EmitError> {
 /// call being the overwhelmingly common case).
 fn emit_expr_stmt(e: &Expr, context: &str) -> Result<String, EmitError> {
     Ok(format!("~ {}", emit_expr(e, context)?))
+}
+
+/// `~ until cond` — the content-ground `Stmt::Await` printer (issue #1972).
+/// `until` is native's sole flow-suspension spelling (decision-log
+/// 2026-07-23 item 4, retiring `await`) — reused verbatim whether the
+/// `AwaitStmt` came from this content-ground escape or the ink-dialect's own
+/// `~ await cond` (this emitter is shared across both dialects' lowered
+/// HIR). `AwaitStmt.condition` is `None` only for a malformed source whose
+/// condition already failed to parse (`lower_until_stmt`'s doc) — never the
+/// shape of a real source this emitter is asked to respell — so refuse
+/// rather than guess at a spelling for it.
+fn emit_await(a: &AwaitStmt, context: &str) -> Result<String, EmitError> {
+    let Some(cond) = &a.condition else {
+        return Err(unsupported("`until`/`await` with no condition", context));
+    };
+    Ok(format!("~ until {}", emit_expr(cond, context)?))
+}
+
+/// `~{ … }` — the content-ground `Stmt::LogicBlock` printer (issue #1972):
+/// a multi-statement escape into code, using the same `~{ }` sigil the
+/// whole-body override (`flow name() ~{ … }`, issue #1309) and the
+/// code-ground `> text` split (issues #1992/#2028) both use.
+///
+/// Only spells a `Standalone`-scoped block — the scope this content-ground
+/// escape always produces (`lower_native::body::lower_logic_line`'s doc,
+/// never split). An `Opens`/`Continues` block only ever comes from a
+/// *whole* code-ground body split around a nested `> text` line
+/// (`lower_stmt_block_as_body`, issue #1992/#2028); re-spelling that shape
+/// correctly needs `emit_knot`-level restructuring back to one shared
+/// code-ground body rather than a nested `~{ }` per run, out of this
+/// slice's scope — refused, not guessed (see this module's doc).
+fn emit_logic_block(
+    out: &mut String,
+    indent: &str,
+    depth: usize,
+    lb: &LogicBlock,
+    context: &str,
+) -> Result<(), EmitError> {
+    if lb.scope != LogicBlockScope::Standalone {
+        return Err(unsupported(
+            "a code-ground body split by a nested `> text` line",
+            context,
+        ));
+    }
+    let _ = writeln!(out, "{indent}~{{");
+    emit_block_stmt_stream(out, &lb.stmts, depth + 1, context)?;
+    let _ = writeln!(out, "{indent}}}");
+    Ok(())
+}
+
+/// A `~{ … }`/whole-code-ground-body statement stream (issue #1972): the
+/// code-ground counterpart of [`emit_stmt_stream`] — `;`-terminated per
+/// statement, no content lines, choices, or diverts (`BlockStmt`'s closed
+/// T1b set, `docs/t1b-surface-spec.md` §2's seam rule). Only the **leaf**
+/// shapes are spelled (`TempDecl`/`Assignment`/`ExprStmt`/`Return`/`Break`/
+/// `Continue`/`Await`) — nested `If`/`While`/`For` control flow refuses:
+/// printing those faithfully needs the full code-ground control-flow
+/// printer (`if cond { … } else { … }`/`while cond { … }`/`for x in expr {
+/// … }`), a separate, larger lift this slice does not take on (see this
+/// module's doc "Explicitly unsupported" section).
+fn emit_block_stmt_stream(
+    out: &mut String,
+    stmts: &[BlockStmt],
+    depth: usize,
+    context: &str,
+) -> Result<(), EmitError> {
+    let indent = "  ".repeat(depth);
+    for stmt in stmts {
+        let line = match stmt {
+            BlockStmt::TempDecl(t) => {
+                let ty = emit_annotation_suffix(t.annotation.as_ref());
+                match &t.value {
+                    Some(v) => format!("let {}{ty} = {}", t.name.text, emit_expr(v, context)?),
+                    None => format!("let {}{ty}", t.name.text),
+                }
+            }
+            BlockStmt::Assignment(a) => {
+                let target = emit_expr(&a.target, context)?;
+                let op = match a.op {
+                    AssignOp::Set => "=",
+                    AssignOp::Add => "+=",
+                    AssignOp::Sub => "-=",
+                };
+                format!("{target} {op} {}", emit_expr(&a.value, context)?)
+            }
+            BlockStmt::ExprStmt(e) => emit_expr(e, context)?,
+            BlockStmt::Return(r) => {
+                // Unlike `Stmt::Return` at weave/content-ground position
+                // (this file's `emit_stmt_stream`, which reuses the same
+                // `emit_return`), a code-ground `return` has no `-> target`
+                // respelling: `parser/stmt.rs::return_stmt`'s doc states it
+                // "has no tunnel-redirect (`return -> x`) counterpart —
+                // that respelling is a content-ground/tunnel concept with
+                // no code-ground meaning", and `parser/expr.rs::atom` has no
+                // divert-target atom for `return`'s general-expression arm
+                // to reach. `lower_block_return`/`lower_return_stmt` lower
+                // whatever `ReturnStmt::value()` yields, and the ink dialect
+                // does have divert-target-as-value, so refuse rather than
+                // spell an output that would fail to reparse (review
+                // finding, w111) — the same leaf-only refuse-don't-guess
+                // posture the rest of this function already takes.
+                if matches!(r.value, Some(Expr::DivertTarget(_))) {
+                    return Err(unsupported(
+                        "code-ground `return -> target` (no tunnel-redirect counterpart at code-ground position)",
+                        context,
+                    ));
+                }
+                emit_return(r, context)?
+            }
+            BlockStmt::Break(_) => "break".to_string(),
+            BlockStmt::Continue(_) => "continue".to_string(),
+            BlockStmt::Await(a) => {
+                let Some(cond) = &a.condition else {
+                    return Err(unsupported("`until` with no condition", context));
+                };
+                format!("until {}", emit_expr(cond, context)?)
+            }
+            BlockStmt::If(_) | BlockStmt::While(_) | BlockStmt::For(_) => {
+                return Err(unsupported(
+                    "nested control flow inside a `~{ }` logic block",
+                    context,
+                ));
+            }
+        };
+        let _ = writeln!(out, "{indent}{line};");
+    }
+    Ok(())
 }
 
 /// `return` / `return -> target` / `return <expr>` (issue #1973's last
@@ -1063,18 +1230,99 @@ fn escape_attr_value(s: &str) -> String {
 
 // ─── Choices ─────────────────────────────────────────────────────────
 
+/// Emit a `ChoiceSet` plus whatever follows it in the source stream (the
+/// dissolved-gather continuation, flattened back in place — see
+/// `emit_stmt_stream`'s own doc). Shared by the two `emit_stmt_stream`
+/// arms that can reach a `ChoiceSet`: the plain case (no leading splices)
+/// and the thread-start-splice re-nesting case (one or more leading
+/// splices pulled out of the surrounding stream, issue #1974).
+fn emit_choice_set_and_continuation(
+    out: &mut String,
+    indent: &str,
+    depth: usize,
+    cs: &ChoiceSet,
+    leading: &[&ThreadStart],
+    context: &str,
+) -> Result<(), EmitError> {
+    emit_choice_set(out, indent, depth, cs, leading, context)?;
+    // The continuation's statements are the rest of *this* stream,
+    // flattened in place — see `emit_stmt_stream`'s doc. A labeled
+    // continuation (a gather `(name)` immediately after the `{?}`, per
+    // `lower_native::body::lower_continuation`) spells with G-1's
+    // `(name)` content-line-label prefix on the continuation's own first
+    // line — see `emit_labeled_stmt_stream`.
+    match &cs.continuation.label {
+        Some(label) => {
+            emit_labeled_stmt_stream(out, label, &cs.continuation.stmts, depth, context)?;
+        }
+        None => {
+            emit_stmt_stream(out, &cs.continuation.stmts, depth, context)?;
+        }
+    }
+    Ok(())
+}
+
 fn emit_choice_set(
     out: &mut String,
     indent: &str,
     depth: usize,
     cs: &ChoiceSet,
+    leading: &[&ThreadStart],
     context: &str,
 ) -> Result<(), EmitError> {
     let _ = writeln!(out, "{indent}{{?");
+    // Leading splices (a `<- flow(args)` reached before any choice line)
+    // print as sibling lines at the same indent as the choices
+    // themselves, ahead of the first one — see the `emit_stmt_stream`
+    // `Stmt::ThreadStart` arm that collects `leading`.
+    let child_indent = "  ".repeat(depth + 1);
+    for t in leading {
+        let target = emit_divert_target(&t.target, context)?;
+        let _ = writeln!(out, "{child_indent}<- {target}");
+    }
     for choice in &cs.choices {
         emit_choice(out, depth + 1, choice, context)?;
     }
     let _ = writeln!(out, "{indent}}}");
+    Ok(())
+}
+
+/// Split a choice body's `stmts` into (own content, trailing splices).
+///
+/// A splice reached *after* a choice line, still before the next
+/// choice/`else`, is appended onto that choice's own `body.stmts` as a
+/// trailing run (`lower_native::choice`'s doc: "interspersed content
+/// 'belongs to the previous choice'"; ink's own weave-fold mirrors this
+/// identically, `lower/block/weave.rs`'s `addContentToPreviousWeavePoint`
+/// citation) — always at the *end*, since nothing else is a legal sibling
+/// of a choice line once a splice starts (native's `choice_point` loop
+/// only recognizes another `CHOICE`/`SPLICE`/`ELSE_BRANCH` next, never a
+/// bare content line). This is the maximal trailing run, so a
+/// `ThreadStart` anywhere *before* it (interleaved with other content) is
+/// left in the returned "own content" half and refused by the ordinary
+/// `emit_stmt_stream` walk — a shape with no native spelling, not one
+/// this splits away.
+fn split_trailing_thread_starts(stmts: &[Stmt]) -> (&[Stmt], &[Stmt]) {
+    let mut split = stmts.len();
+    while split > 0 && matches!(stmts[split - 1], Stmt::ThreadStart(_)) {
+        split -= 1;
+    }
+    stmts.split_at(split)
+}
+
+fn emit_trailing_thread_starts(
+    out: &mut String,
+    indent: &str,
+    trailing: &[Stmt],
+    context: &str,
+) -> Result<(), EmitError> {
+    for stmt in trailing {
+        let Stmt::ThreadStart(t) = stmt else {
+            unreachable!("split_trailing_thread_starts guarantees only ThreadStart here")
+        };
+        let target = emit_divert_target(&t.target, context)?;
+        let _ = writeln!(out, "{indent}<- {target}");
+    }
     Ok(())
 }
 
@@ -1084,9 +1332,18 @@ fn emit_choice(out: &mut String, depth: usize, c: &Choice, context: &str) -> Res
         return Err(unsupported("choice-line trailing tags", context));
     }
 
+    // Native has no grammar for a splice *inside* a choice's own nested
+    // `{}` body (that block parses through the generic
+    // `braced_item_list`, which never recognizes `THREAD` — only
+    // `choice_point`'s own loop does), so a trailing splice must print as
+    // a sibling line *after* this choice, at the same depth as its
+    // bullet/`else`, never nested inside its braces (issue #1974).
+    let (own_stmts, trailing_threads) = split_trailing_thread_starts(c.body.stmts.as_slice());
+
     if c.is_fallback {
         let _ = write!(out, "{indent}else ");
-        emit_choice_body(out, depth, &c.body, context)?;
+        emit_choice_body(out, depth, c.body.label.as_ref(), own_stmts, context)?;
+        emit_trailing_thread_starts(out, &indent, trailing_threads, context)?;
         return Ok(());
     }
 
@@ -1130,8 +1387,9 @@ fn emit_choice(out: &mut String, depth: usize, c: &Choice, context: &str) -> Res
     // list-display/echoed-text boundary marker"), optionally preceded by a
     // `Divert`/`TunnelCall` pulled out of the bracket/inner text regions
     // (N-1: a divert immediately following `]` with no further text). See
-    // this function's three-way dispatch below.
-    let stmts = c.body.stmts.as_slice();
+    // this function's three-way dispatch below. `own_stmts` already has
+    // any trailing splice(s) stripped off (see this function's top).
+    let stmts = own_stmts;
     match stmts {
         [] => {
             return Err(unsupported(
@@ -1176,19 +1434,20 @@ fn emit_choice(out: &mut String, depth: usize, c: &Choice, context: &str) -> Res
             ));
         }
     }
-    Ok(())
+    emit_trailing_thread_starts(out, &indent, trailing_threads, context)
 }
 
 fn emit_choice_body(
     out: &mut String,
     depth: usize,
-    body: &Block,
+    label: Option<&Name>,
+    stmts: &[Stmt],
     context: &str,
 ) -> Result<(), EmitError> {
-    if body.label.is_some() {
+    if label.is_some() {
         return Err(unsupported("labeled choice/else body", context));
     }
-    match body.stmts.as_slice() {
+    match stmts {
         [] => Err(unsupported(
             "malformed else body (no EndOfLine marker)",
             context,
@@ -1207,7 +1466,7 @@ fn emit_choice_body(
         // display text — see `tests/tier1/choices/I079-…`) must always
         // spell with braces, never the regular path's compact one-liner.
         [Stmt::Divert(_) | Stmt::TunnelCall(_), ..] => {
-            emit_choice_body_stmts(out, depth, body.stmts.as_slice(), context)
+            emit_choice_body_stmts(out, depth, stmts, context)
         }
         _ => Err(unsupported(
             "malformed else body (no leading EndOfLine)",
@@ -1623,11 +1882,12 @@ mod tests {
     /// claim would otherwise be false for this one `TypeExpr` shape.
     #[test]
     fn fn_type_annotation_round_trips() {
-        // A `flow` (not `fn`) so the body stays prose-ground — `fn`'s
-        // default code-ground body is a separate, pre-existing emission
-        // gap (a whole code body lowers to one `Stmt::LogicBlock`, and
-        // `LogicBlock` bodies aren't emittable yet); this test is only
-        // about the `fn(...)` *type* annotation on the parameter.
+        // A `flow` (not `fn`) — orthogonal to which body dialect a `fn`'s
+        // default code-ground body now round-trips through (see
+        // `fn_default_code_ground_body_round_trips_via_logic_block`, issue
+        // #1972's second slice); this test is only about the `fn(...)`
+        // *type* annotation on the parameter, so it keeps the simplest body
+        // shape.
         let src = "flow apply(f: fn(int): bool) {\n  Hello.\n}\n";
         let emitted = lower_and_emit(src).expect("fn(...) type annotation must now emit");
         assert!(
@@ -1837,6 +2097,49 @@ mod tests {
         reparse_and_lower(&emitted);
     }
 
+    /// Review finding (w111): a code-ground `return` (inside a `~{ }` block)
+    /// has no `return -> target` respelling — `parser/stmt.rs::return_stmt`'s
+    /// doc states it "has no tunnel-redirect (`return -> x`) counterpart",
+    /// and `parser/expr.rs::atom` has no divert-target atom for the
+    /// general-expression arm of a code-ground `return` to reach — so no
+    /// real `.brink` source can lower a `BlockStmt::Return` whose value is
+    /// `Expr::DivertTarget` (this is a guard against `emit_return`'s shared
+    /// use by the content-ground `Stmt::Return` printer, which *does*
+    /// support it, not a reachable-from-source case — built by hand rather
+    /// than parsed, same posture the finding itself took). The
+    /// `BlockStmt::Return` arm must refuse rather than spell `return ->
+    /// target`, which would fail to reparse at code-ground position.
+    #[test]
+    fn code_ground_return_with_divert_target_value_refuses_to_emit() {
+        let lb = crate::LogicBlock {
+            ptr: crate::Provenance::synthetic(
+                crate::provenance::NodeClass::LogicBlock,
+                rowan::TextRange::new(rowan::TextSize::new(0), rowan::TextSize::new(1)),
+            ),
+            stmts: vec![BlockStmt::Return(Return {
+                ptr: None,
+                kind: crate::ReturnKind::TunnelRedirect,
+                value: Some(Expr::DivertTarget(crate::Path {
+                    segments: vec![Name {
+                        text: "b".to_string(),
+                        range: rowan::TextRange::new(
+                            rowan::TextSize::new(0),
+                            rowan::TextSize::new(1),
+                        ),
+                    }],
+                    range: rowan::TextRange::new(rowan::TextSize::new(0), rowan::TextSize::new(1)),
+                })),
+                onwards_args: Vec::new(),
+            })],
+            scope: LogicBlockScope::Standalone,
+        };
+        let mut out = String::new();
+        let err = emit_logic_block(&mut out, "", 0, &lb, "test").expect_err(
+            "a code-ground return of a divert target must refuse, not guess a spelling",
+        );
+        assert!(matches!(err, EmitError::Unsupported { .. }), "{err:?}");
+    }
+
     /// Issue #1614/#1161: `HirFile::allow_scopes` carries a `(range,
     /// codes)` fact with no pointer back to the declaration it decorates —
     /// this emitter has no way to re-place the `@[allow(…)]` line, so a
@@ -1988,11 +2291,13 @@ mod tests {
 
     #[test]
     fn logic_line_bare_call_round_trips() {
-        // `bump` is a `flow` (not `fn`) so its default plain `{ }` body
-        // stays prose-ground — a `fn`'s default `{ }` lowers to a
-        // `Stmt::LogicBlock` `emit_knot` cannot spell back at all (it
-        // always prints a bare `{` regardless of body dialect, a
-        // separate, pre-existing round-trip gap unrelated to this test).
+        // `bump` is a `flow` (not `fn`) purely for simplicity — `emit_knot`
+        // now spells a `fn`'s body correctly too (the `>{ }` override,
+        // issue #2029), and its own default code-ground body round-trips
+        // as a nested `~{ }` logic block since this issue's second slice
+        // (`fn_default_code_ground_body_round_trips_via_logic_block`,
+        // below); nothing about the fix under test here depends on which
+        // keyword `bump` uses.
         let src = "flow bump() {\n  return\n}\nflow a() {\n  ~ bump()\n}\n";
         let emitted = lower_and_emit(src).expect("a content-ground bare call must now emit");
         assert!(emitted.contains("~ bump()"), "{emitted}");
@@ -2032,6 +2337,183 @@ mod tests {
         };
         assert!(t.value.is_none());
         assert!(t.annotation.is_some());
+    }
+
+    /// Issue #1974: a splice (`<- flow(args)`) reached *before* any choice
+    /// line in a `{?}` point lowers to a plain `Stmt::ThreadStart` sitting
+    /// immediately before the resulting `Stmt::ChoiceSet` in the same
+    /// stream — `lower_native::choice::lower_choice_point`'s `preamble`.
+    /// The emitter must re-nest it as a sibling line inside the `{?}`,
+    /// ahead of the first choice, not refuse the whole file.
+    #[test]
+    fn leading_thread_start_splice_round_trips() {
+        let src = "flow hub() {\n  {?\n    <- options(2)\n  }\n}\n\
+                    flow options(count) {\n  -> DONE\n}\n";
+        let emitted = lower_and_emit(src).expect("a leading thread-start splice must now emit");
+        assert!(
+            emitted.contains("<- options(2)"),
+            "expected the emitted source to spell the splice (with its args) back out:\n{emitted}"
+        );
+
+        let hir = reparse_and_lower(&emitted);
+        let Stmt::ThreadStart(ts) = &hir.knots[0].body.stmts[0] else {
+            panic!(
+                "expected a leading Stmt::ThreadStart in the re-lowered body: {:?}",
+                hir.knots[0].body
+            );
+        };
+        assert!(
+            matches!(&ts.target.path, DivertPath::Path(p) if p.segments.last().is_some_and(|s| s.text == "options"))
+        );
+        assert!(matches!(ts.target.args.as_slice(), [Expr::Int(2)]));
+        assert!(
+            matches!(hir.knots[0].body.stmts.get(1), Some(Stmt::ChoiceSet(_))),
+            "expected the ChoiceSet immediately after the re-lowered leading splice: {:?}",
+            hir.knots[0].body
+        );
+    }
+
+    /// Issue #1974: a splice reached *after* a choice line (still before
+    /// the next choice/`else`) lowers by appending its `Stmt::ThreadStart`
+    /// onto that choice's own `body.stmts`, as the last statement
+    /// (`lower_native::choice`'s doc: "interspersed content 'belongs to
+    /// the previous choice'"). The emitter must re-nest it as a sibling
+    /// line printed right after that choice — never inside that choice's
+    /// own nested `{}` body, which has no splice grammar at all.
+    #[test]
+    fn trailing_thread_start_splice_round_trips() {
+        let src = "flow main() {\n  {?\n    * Look. You look around.\n    <- helper(3)\n    * Other choice.\n  }\n}\n\
+                    flow helper(n) {\n  -> DONE\n}\n";
+        let emitted = lower_and_emit(src).expect("a trailing thread-start splice must now emit");
+        assert!(
+            emitted.contains("<- helper(3)"),
+            "expected the emitted source to spell the splice (with its args) back out:\n{emitted}"
+        );
+
+        let hir = reparse_and_lower(&emitted);
+        let Stmt::ChoiceSet(cs) = &hir.knots[0].body.stmts[0] else {
+            panic!(
+                "expected ChoiceSet as the re-lowered body's first statement: {:?}",
+                hir.knots[0].body
+            );
+        };
+        assert_eq!(
+            cs.choices.len(),
+            2,
+            "expected both choices to survive: {cs:?}"
+        );
+        let Some(Stmt::ThreadStart(ts)) = cs.choices[0].body.stmts.last() else {
+            panic!(
+                "expected the first choice's body to end in a re-lowered Stmt::ThreadStart: {:?}",
+                cs.choices[0].body
+            );
+        };
+        assert!(
+            matches!(&ts.target.path, DivertPath::Path(p) if p.segments.last().is_some_and(|s| s.text == "helper"))
+        );
+        assert!(matches!(ts.target.args.as_slice(), [Expr::Int(3)]));
+    }
+
+    // ── Issue #1972 (second slice): `~ until cond` / `~{ … }` printers ───
+    //
+    // Before this landed, both refused with `EmitError::Unsupported`
+    // unconditionally — `Stmt::LogicBlock`/`Stmt::Await` at prose-body
+    // position were a native-**grammar** gap, not just an emission one (see
+    // this module's doc), so `brink-respell` could never even reach these
+    // printers from a real ink source; these tests build the HIR the
+    // ordinary way (parse a `.brink` fixture) since the grammar now exists.
+
+    #[test]
+    fn logic_line_until_round_trips() {
+        let src = "flow a() {\n  ~ until n > 0\n}\n";
+        let emitted = lower_and_emit(src).expect("a content-ground `until` must now emit");
+        assert!(emitted.contains("~ until n > 0"), "{emitted}");
+
+        let hir = reparse_and_lower(&emitted);
+        let Stmt::Await(a) = &hir.knots[0].body.stmts[0] else {
+            panic!(
+                "expected Stmt::Await as the re-lowered body's first statement: {:?}",
+                hir.knots[0].body
+            );
+        };
+        assert!(matches!(a.condition, Some(Expr::Infix(_))));
+    }
+
+    #[test]
+    fn logic_line_block_round_trips() {
+        let src = "flow a() {\n  ~{\n    let m = 1;\n    n = m;\n    bump();\n  }\n}\n";
+        let emitted = lower_and_emit(src).expect("a content-ground logic block must now emit");
+        assert!(emitted.contains("~{"), "{emitted}");
+        assert!(emitted.contains("let m = 1;"), "{emitted}");
+        assert!(emitted.contains("n = m;"), "{emitted}");
+        assert!(emitted.contains("bump();"), "{emitted}");
+
+        let hir = reparse_and_lower(&emitted);
+        let Stmt::LogicBlock(lb) = &hir.knots[0].body.stmts[0] else {
+            panic!(
+                "expected Stmt::LogicBlock as the re-lowered body's first statement: {:?}",
+                hir.knots[0].body
+            );
+        };
+        assert_eq!(lb.scope, crate::LogicBlockScope::Standalone);
+        assert_eq!(lb.stmts.len(), 3);
+        assert!(matches!(lb.stmts[0], crate::BlockStmt::TempDecl(_)));
+        assert!(matches!(lb.stmts[1], crate::BlockStmt::Assignment(_)));
+        assert!(matches!(lb.stmts[2], crate::BlockStmt::ExprStmt(_)));
+        // Review finding (w111): the block contains a call (`bump()`), so
+        // the re-lowered stream must still carry the trailing
+        // `Stmt::EndOfLine` `lower_logic_line`'s `LogicBlock` arm now
+        // appends — round-tripping through the emitter and back must not
+        // lose it, the same guard `logic_line_block_containing_a_call_
+        // lowers_to_end_of_line` pins at the lowering layer directly.
+        assert!(
+            matches!(hir.knots[0].body.stmts.get(1), Some(Stmt::EndOfLine)),
+            "expected a trailing Stmt::EndOfLine after the re-lowered LogicBlock: {:?}",
+            hir.knots[0].body
+        );
+    }
+
+    #[test]
+    fn logic_line_block_with_nested_control_flow_refuses_to_emit() {
+        // A deliberately narrower first slice (this module's doc): nested
+        // `if`/`while`/`for` inside a `~{ }` block would need the full
+        // code-ground control-flow printer, which this slice doesn't
+        // build — refused loudly, never guessed.
+        let src = "flow a() {\n  ~{\n    if n > 0 {\n      n = 1;\n    }\n  }\n}\n";
+        let err = lower_and_emit(src)
+            .expect_err("nested control flow inside a `~{ }` block must still refuse, not guess");
+        assert!(matches!(err, EmitError::Unsupported { .. }));
+    }
+
+    #[test]
+    fn fn_default_code_ground_body_round_trips_via_logic_block() {
+        // A byproduct of this issue's second slice, not its main target: a
+        // `fn`'s default code-ground body lowers to exactly one whole-body
+        // `Stmt::LogicBlock(Standalone)` (`lower_stmt_block_as_body`'s
+        // doc — a body with no `> text` split is byte-for-byte the
+        // original, unsplit shape). `emit_knot` already spells a `fn`'s
+        // body with the `>{ }` prose override (issue #2029), so that single
+        // `LogicBlock` now round-trips as one nested `~{ }` escape inside
+        // it — closing a slice of the "LogicBlock bodies aren't emittable"
+        // gap this module's doc used to describe as wholly open, though the
+        // nested-control-flow / split-scope residuals above still stand.
+        let src = "fn shout() {\n  n = n + 1;\n}\n";
+        let emitted = lower_and_emit(src).expect("a fn's default code-ground body must now emit");
+        assert!(emitted.contains(">{"), "{emitted}");
+        assert!(emitted.contains("~{"), "{emitted}");
+
+        let hir = reparse_and_lower(&emitted);
+        let Stmt::LogicBlock(lb) = &hir.knots[0].body.stmts[0] else {
+            panic!(
+                "expected the re-lowered fn body to still be one whole-body LogicBlock: {:?}",
+                hir.knots[0].body
+            );
+        };
+        assert_eq!(lb.scope, crate::LogicBlockScope::Standalone);
+        assert!(matches!(
+            lb.stmts.as_slice(),
+            [crate::BlockStmt::Assignment(_)]
+        ));
     }
 
     // ── Issue #1975: `CondKind::IfElse` re-nesting ───────────────────────

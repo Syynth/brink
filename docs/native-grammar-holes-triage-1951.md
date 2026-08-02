@@ -106,6 +106,55 @@ remain genuine native-**grammar** gaps: #1991/#2002 scoped only the
 unfixed gap — tracked at **#1972** ("prose-body statement grammar:
 assignment/call/temp-decl/logic-block/await"), OPEN as of this writing.
 
+**Correction (issue #2015, then issue #1972's second slice/PR #2055, both
+landed after the #2002 correction above):** every clause in that correction
+is now stale in turn.
+
+- PR #2015 gave `TempDecl` (`~ let name: type = expr`) the same
+  `~`-prefixed grammar/lowering `Assignment`/`ExprStmt` already had, **and**
+  grew `emit_native`'s printer for all three (`TempDecl`/`Assignment`/
+  `ExprStmt`) — so "`emit_native` has not grown a printer for either" and
+  "`TempDecl` … remain[s] a genuine native-grammar gap" were both already
+  false as of #2015, independent of this PR.
+- PR #2055 (issue #1972's second slice) did the same for the other two
+  named variants: `~{ … }` (`LogicBlock`) and `~ until cond` (`Await`, the
+  charter's sole spelling — `await` itself is retired) now parse, lower,
+  and have `emit_native` printer arms too (leaf statements only inside
+  `~{ }` — nested `if`/`while`/`for` is a separate, still-open emitter gap,
+  not a grammar one). So "`LogicBlock`/`Await` remain genuine
+  native-grammar gaps" is false as of this PR.
+- **#1972 is not "OPEN as of this writing"** — PR #2055's own disposition
+  comment on that issue recommends closing it once #2055 merges: all three
+  items the issue was narrowed to (PR #2015's own scoping comment) are now
+  either delivered (`LogicBlock`/`Await` grammar) or resolved-by-clarification
+  (the bare/sigil-less spelling question was already ruled, not open — see
+  `docs/decision-log.md`'s 2026-07-23 "Native interleaving & body-dialect
+  spelling" entry and `docs/native-surface-charter.md` §8 item 2).
+
+None of the above changes the **bare, unprefixed** spelling's own status:
+`n = 1`/`bump()` with no `~` still folds silently into prose (by design,
+not a bug — see `docs/native-feature-status.md`'s 🔴 row) — the silent-fold
+behavior Hole 1/Hole 2's fixtures reproduce is untouched by #2015 or #2055,
+neither of which built (or was ever meant to build) bare-spelling grammar.
+
+**However**, the "Corpus impact" counts quoted for Hole 1 (27 cases) and
+Hole 2 (19 cases) below are themselves now stale, and not from this PR:
+`full_corpus_sweep` (re-run against this branch, which is #2015 plus #2055)
+reports **zero** cases in an `"assignment"`, `"expression statement"`, or
+`"temp declaration"` bucket — those buckets no longer appear in its output
+at all. This matches PR #2015's own disposition comment on #1972
+("the 'assignment' (27), 'expression statement' (19), and 'temp
+declaration' (14) buckets ... are now all 0"): the corpus fixtures that hit
+those buckets apparently all used the `~`-prefixed spelling, not the bare
+one, so #2015's emitter work alone retired all three counts even though
+the bare-spelling gap these two holes are *about* is still open. The
+"Corpus impact" lines under Hole 1/Hole 2 above were never refreshed when
+#2015 landed; left as-is here since re-triaging every count in this
+document is out of this correction's scope (the reviewer finding this
+correction answers named three specific stale claims, not a full
+re-sweep) — flagged so the next reader doesn't trust those two numbers
+either.
+
 Corpus impact: the `full_corpus_sweep` `"assignment"` bucket alone is **27
 cases**.
 
@@ -404,7 +453,7 @@ fix lands elsewhere — the sweep can't.
 
 | Verdict | Issue |
 |---|---|
-| Holes 1+2 (prose-body statement grammar: assignment/call/temp-decl/logic-block/await) | #1972 |
+| Holes 1+2 (prose-body statement grammar: assignment/call/temp-decl/logic-block/await) | #1972 — **substantially delivered**: `~`-prefixed grammar/lowering/printer for all five variants landed across #2015 (`TempDecl`) and #2055 (`LogicBlock`/`Await`); the bare/sigil-less spelling these holes actually reproduce was clarified as already-ruled prose, not a design gap (see the correction above); PR #2055's disposition comment recommends closing #1972 |
 | Hole 3 corrected (thread-start splice re-nesting, emitter-only) | #1974 |
 | Hole 3 literal wording (outside-choice-point splice) | **not filed** — deliberate ruling #1260, would need a design re-ruling, not implementation |
 | Hole 4 (prose-body value-return) | #1973 |
