@@ -354,6 +354,25 @@ pub enum SyntaxKind {
     /// `parser/stmt.rs::logic_line`, dispatched from `block::body_line`'s
     /// (and `family::colon_body_line`'s) `TILDE` arm.
     LOGIC_LINE,
+    /// `> text` — the code-ground line-escape into prose (charter §8.2,
+    /// RULED 2026-07-23, `docs/decision-log.md` "Native interleaving &
+    /// body-dialect spelling": the mirror image of [`Self::LOGIC_LINE`] at
+    /// the opposite ground — issue #1992). Wraps a single
+    /// [`Self::CONTENT_LINE`] child, reused **unmodified** from the
+    /// content-ground line layer (`parser/content.rs::content_line`) in a
+    /// different position: same grammar, same terminator discipline
+    /// (`NEWLINE`/EOF, never a bare `R_BRACE`, which — as for `CONTENT_LINE`
+    /// itself — closes the enclosing body rather than the escape). Mirrors
+    /// [`Self::LOGIC_LINE`]'s own one-node-two-grammars precedent, just with
+    /// the wrapped/wrapper roles swapped: there the escape wraps a
+    /// code-ground node inside a content-ground dispatch; here it wraps a
+    /// content-ground node inside a code-ground dispatch. Parsed by
+    /// `parser/stmt.rs::prose_line`, dispatched from `stmt::statement()`'s
+    /// `GT` arm — reachable everywhere a code-ground `STMT_BLOCK` statement
+    /// is parsed (a `fn`'s default body, a `flow`'s `~{ }` override, and
+    /// every nested `if`/`while`/`for` body, which all share that one
+    /// dispatch loop).
+    PROSE_LINE,
     /// A run of literal text inside a `CONTENT_LINE` (no escapes, no
     /// interpolation — those break the run).
     TEXT,

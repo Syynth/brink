@@ -42,6 +42,7 @@ ast_node!(ModuleDecl, MODULE_DECL);
 ast_node!(Block, BLOCK);
 ast_node!(ContentLine, CONTENT_LINE);
 ast_node!(LogicLine, LOGIC_LINE);
+ast_node!(ProseLine, PROSE_LINE);
 ast_node!(Text, TEXT);
 ast_node!(Interpolation, INTERPOLATION);
 ast_node!(GlueNode, GLUE_NODE);
@@ -1099,6 +1100,15 @@ impl LogicLine {
     /// (e.g. a function call) — when this logic line is neither a temp
     /// declaration nor an assignment.
     pub fn expr_stmt(&self) -> Option<ExprStmt> {
+        support::child(&self.syntax)
+    }
+}
+
+impl ProseLine {
+    /// The wrapped `> text` content line — the mirror image of
+    /// [`LogicLine`]'s own wrapped children (`parser/stmt.rs::prose_line`),
+    /// reusing [`ContentLine`]'s grammar unmodified.
+    pub fn content_line(&self) -> Option<ContentLine> {
         support::child(&self.syntax)
     }
 }

@@ -1,0 +1,16 @@
+// `> text` — the code-ground line escape into prose (charter §8.2, RULED
+// 2026-07-23, issue #1992: the mirror image of `~ stmt` (#1991) at the
+// opposite ground — `>` emits a prose line inside an otherwise code-ground
+// body). Exercises the escape at a `fn`'s top-level code-ground body, with
+// interpolation, and nested inside an `if` body (the same per-statement
+// dispatch loop `stmt::statement()` shares with every `STMT_BLOCK`).
+
+fn radio(chan: string, text: string) {
+  > [{chan}] {text}
+}
+
+fn maybe_radio(chan: string, text: string, loud: bool) {
+  if loud {
+    > [{chan}] {text}
+  }
+}

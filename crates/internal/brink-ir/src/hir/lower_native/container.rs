@@ -75,13 +75,15 @@ fn container_doc(
 /// Lower a `flow`/`fn`'s body — whichever body-dialect the selector chose
 /// (charter §4) — to the HIR `Block` a `Knot`/`Stitch` carries. A prose body
 /// rides B0.7's `body::lower_block` unchanged; a code body (`fn`'s default,
-/// or a `flow`'s `~{ }` "Compound guard" override) lowers its statements via
-/// the existing B0.8 `control_flow::lower_stmt_block` and wraps the result
-/// as the container's sole statement — a single `Stmt::LogicBlock`, exactly
-/// the shape a brink-dialect container whose entire body is one `~ { … }`
-/// block already produces (`hir::lower::content::logic_line`). No new HIR
-/// node: NF-2's existing-HIR-only fence, and the differential partner this
-/// reuses is already fully wired to LIR (`lir::lower::blocks`).
+/// or a `flow`'s `~{ }` "Compound guard" override) lowers via
+/// `body::lower_stmt_block_as_body`, which wraps each run of ordinary
+/// statements as a `Stmt::LogicBlock` — exactly the shape a brink-dialect
+/// container whose entire body is one `~ { … }` block already produces
+/// (`hir::lower::content::logic_line`) — and, since issue #1992, splits
+/// those runs around any `> text` prose-line escape, lowering it to real
+/// content emission alongside the logic (see that function's doc). No new
+/// HIR node: NF-2's existing-HIR-only fence, and the differential partner
+/// this reuses is already fully wired to LIR (`lir::lower::blocks`).
 fn lower_body(
     file_id: FileId,
     body: &ast::Body,
@@ -90,7 +92,7 @@ fn lower_body(
 ) -> Block {
     match body {
         ast::Body::Prose(b) => super::body::lower_block(file_id, b, elements, diags),
-        ast::Body::Code(sb) => super::body::lower_stmt_block_as_body(file_id, sb, diags),
+        ast::Body::Code(sb) => super::body::lower_stmt_block_as_body(file_id, sb, elements, diags),
     }
 }
 

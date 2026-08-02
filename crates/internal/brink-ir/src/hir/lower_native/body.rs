@@ -89,20 +89,36 @@ pub(super) fn lower_block(
 /// the HIR `Block` a `Knot`/`Stitch` carries.
 ///
 /// The `STMT_BLOCK`'s own statements already have a real lowering target
-/// (`control_flow::lower_stmt_block`, B0.8 Waves A/B/B-tail): the T1b
-/// closed `BlockStmt` set. This wraps that `Vec<BlockStmt>` as a single
-/// `Stmt::LogicBlock` — the container's *sole* statement — rather than
-/// inventing a flattened `Stmt`-level mapping: `BlockStmt` carries
-/// `If`/`While`/`For`/`Break`/`Continue`, none of which have a top-level
-/// `Stmt` counterpart to flatten into (only `TempDecl`/`Assignment`/
-/// `Return`/`ExprStmt`/`Await` do), so a uniform wrap is both the simplest
-/// rule and the one that already has a fully-wired LIR lowering
-/// (`lir::lower::blocks::lower_logic_block` splices a `LogicBlock`'s
-/// statements directly into the enclosing container's flat sequence) — the
-/// exact shape a brink-dialect container whose entire body is one
-/// `~ { … }` block already produces, see
+/// (`control_flow::lower_block_item`, B0.8 Waves A/B/B-tail): the T1b
+/// closed `BlockStmt` set. Each maximal **run** of those gets wrapped as one
+/// `Stmt::LogicBlock` rather than inventing a flattened `Stmt`-level
+/// mapping: `BlockStmt` carries `If`/`While`/`For`/`Break`/`Continue`, none
+/// of which have a top-level `Stmt` counterpart to flatten into (only
+/// `TempDecl`/`Assignment`/`Return`/`ExprStmt`/`Await` do), so a uniform
+/// wrap is both the simplest rule and the one that already has a
+/// fully-wired LIR lowering (`lir::lower::blocks::lower_logic_block`
+/// splices a `LogicBlock`'s statements directly into the enclosing
+/// container's flat sequence) — the exact shape a brink-dialect container
+/// whose entire body is one `~ { … }` block already produces, see
 /// `crates/internal/brink-ir/tests/b08_native_control_flow.rs`'s
 /// `ink_block_stmts` differential helper.
+///
+/// **`> text` (charter §8.2, issue #1992)** is the one `STMT_BLOCK` item
+/// that *isn't* folded into a `LogicBlock` run: a `PROSE_LINE` splits the
+/// run there and lowers through the same content-emission path a
+/// content-ground body's own `CONTENT_LINE` uses
+/// ([`lower_content_line_body`]), producing ordinary `Stmt::Content`/
+/// `Stmt::EndOfLine` siblings — content is a weave concept, out of the
+/// closed `BlockStmt` set by design (`docs/t1b-surface-spec.md` §2's seam
+/// rule), so it can never live *inside* a `LogicBlock`, only *beside* one.
+/// A code-ground body with no `> text` line in it (every body before this
+/// issue) still lowers to exactly one `LogicBlock`, byte-for-byte the prior
+/// shape — this is a strict generalization, not a behavior change for the
+/// existing case. Splitting is scoped to *this* function only: a
+/// `PROSE_LINE` nested inside an `if`/`while`/`for` body or a lambda's
+/// braced body still reaches [`control_flow::lower_block_item`] directly
+/// (via [`control_flow::lower_stmt_block`]/`lower_stmt_block_stmts`) and
+/// falls to its default `E129` arm — see that function's doc.
 ///
 /// An empty `STMT_BLOCK` (`{}`/`~{}`) produces an empty `Block` — no
 /// `LogicBlock` wrapper with zero statements, matching `lower_block`'s own
@@ -111,17 +127,11 @@ pub(super) fn lower_block(
 pub(super) fn lower_stmt_block_as_body(
     file_id: FileId,
     block: &ast::StmtBlock,
+    elements: &mut Elements,
     diags: &mut Vec<Diagnostic>,
 ) -> Block {
-    let block_stmts = super::control_flow::lower_stmt_block(file_id, block, diags);
-    let stmts = if block_stmts.is_empty() {
-        Vec::new()
-    } else {
-        vec![Stmt::LogicBlock(LogicBlock {
-            ptr: native_provenance(file_id, NodeClass::LogicBlock, block.syntax()),
-            stmts: block_stmts,
-        })]
-    };
+    let items: Vec<SyntaxNode> = block.items().collect();
+    let stmts = lower_code_ground_items(file_id, &items, elements, diags);
     let tail = crate::tail_from_stmts(&stmts);
     Block {
         label: None,
@@ -129,6 +139,75 @@ pub(super) fn lower_stmt_block_as_body(
         container_id: None,
         tail,
     }
+}
+
+/// Lower a code-ground item stream, splitting runs of ordinary `BlockStmt`
+/// items (wrapped as `Stmt::LogicBlock`) around `PROSE_LINE` items (lowered
+/// to `Stmt::Content`/`Stmt::EndOfLine` directly) — see
+/// [`lower_stmt_block_as_body`]'s doc for why the split lives here rather
+/// than inside `BlockStmt` itself.
+fn lower_code_ground_items(
+    file_id: FileId,
+    items: &[SyntaxNode],
+    elements: &mut Elements,
+    diags: &mut Vec<Diagnostic>,
+) -> Vec<Stmt> {
+    let mut stmts = Vec::new();
+    let mut run: Vec<&SyntaxNode> = Vec::new();
+    let mut run_start: Option<SyntaxNode> = None;
+
+    for item in items {
+        if item.kind() == N::PROSE_LINE {
+            flush_code_ground_run(file_id, &mut run, &mut run_start, diags, &mut stmts);
+            if let Some(pl) = ast::ProseLine::cast(item.clone()) {
+                if let Some(cl) = pl.content_line() {
+                    stmts.extend(lower_content_line_body(file_id, &cl, elements, diags));
+                } else {
+                    diags.push(diag(file_id, item.text_range(), DiagnosticCode::E129));
+                }
+            } else {
+                diags.push(diag(file_id, item.text_range(), DiagnosticCode::E129));
+            }
+            continue;
+        }
+        if run.is_empty() {
+            run_start = Some(item.clone());
+        }
+        run.push(item);
+    }
+    flush_code_ground_run(file_id, &mut run, &mut run_start, diags, &mut stmts);
+    stmts
+}
+
+/// Flush a buffered run of ordinary (non-`PROSE_LINE`) `STMT_BLOCK` items
+/// into a single `Stmt::LogicBlock`, appended to `stmts` — the helper
+/// [`lower_code_ground_items`]'s loop calls both mid-stream (on hitting a
+/// `PROSE_LINE`) and once more after the loop, to flush any trailing run.
+/// A no-op when `run` is empty (two `PROSE_LINE`s back to back, or one at
+/// either edge of the item stream).
+fn flush_code_ground_run(
+    file_id: FileId,
+    run: &mut Vec<&SyntaxNode>,
+    run_start: &mut Option<SyntaxNode>,
+    diags: &mut Vec<Diagnostic>,
+    stmts: &mut Vec<Stmt>,
+) {
+    if run.is_empty() {
+        return;
+    }
+    let block_stmts: Vec<_> = run
+        .drain(..)
+        .filter_map(|item| super::control_flow::lower_block_item(file_id, item, diags))
+        .collect();
+    if !block_stmts.is_empty()
+        && let Some(anchor) = run_start.take()
+    {
+        stmts.push(Stmt::LogicBlock(LogicBlock {
+            ptr: native_provenance(file_id, NodeClass::LogicBlock, &anchor),
+            stmts: block_stmts,
+        }));
+    }
+    *run_start = None;
 }
 
 /// The shared item-stream lowering algorithm: dispatches each item, but a

@@ -567,6 +567,18 @@ fn logic_line_escape() {
     assert_case("logic-line-escape");
 }
 
+/// Issue #1992: `> text` — the code-ground line escape into prose (charter
+/// §8.2, RULED 2026-07-23, the mirror image of #1991 above at the opposite
+/// ground). Before this landed, `>` had no dispatch in
+/// `stmt::statement()`'s code-ground per-statement loop at all, so `>
+/// [{chan}] {text}` at statement position inside a `fn`'s default
+/// code-ground body was a parse error (`expected an expression, found GT`)
+/// rather than a lowering gap.
+#[test]
+fn prose_line_escape() {
+    assert_case("prose-line-escape");
+}
+
 /// Every `tests/tier1-native/` case directory is exercised by a `#[test]`
 /// above — a directory with no matching test would silently never run.
 #[test]
@@ -588,6 +600,7 @@ fn every_case_directory_has_a_test() {
         "lambda-verbs",
         "logic-line-escape",
         "or-coalescing",
+        "prose-line-escape",
         "root-content-typed-strict",
         "ufcs",
     ];
