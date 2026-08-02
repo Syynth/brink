@@ -190,6 +190,16 @@ pub struct BodyTypes {
     /// resolved and reported only by strict mode
     /// (`structs::check_assignments`, `E063`).
     pub field_assign_mismatches: Vec<FieldAssignMismatch>,
+    /// Issue #1994 (RULED 2026-08-01, closing #1932): a lambda's own
+    /// written param/return annotation disagreeing with its body-derived
+    /// type — see [`LambdaAnnotationMismatch`]'s own doc for why this is a
+    /// materially different severity posture from `typed_assign_mismatches`/
+    /// `field_assign_mismatches` above (an eager `Error`, not a gradual
+    /// `E063` advisory). Recorded unconditionally during inference, folded
+    /// in from every lambda anywhere in this body (including nested ones);
+    /// reported only by strict mode (`strict::check_lambda_annotation_
+    /// mismatches`, `E174`).
+    pub lambda_annotation_mismatches: Vec<LambdaAnnotationMismatch>,
     /// Issue #1881: per-call-site *written*-argument types for every
     /// UFCS-shaped (multi-segment, receiver-resolving) callee found in this
     /// body — see [`UfcsCallArgs`]'s own doc for why this pass records raw
@@ -254,6 +264,43 @@ pub struct TypedAssignMismatch {
     pub found: Ty,
 }
 
+/// One incompatibility between a lambda's own **written annotation** (a
+/// param's `: T` or the lambda's `: R` return annotation) and its
+/// body-derived type (issue #1994, RULED 2026-08-01, closing #1932: "the
+/// written annotation takes priority... an incompatible body is an eager
+/// error at the lambda, not a deferred surprise at the call site").
+///
+/// Unlike [`TypedAssignMismatch`]/[`DirectCallArgMismatch`] (both `E063`,
+/// gradual/advisory — the body-derived type wins regardless, the
+/// annotation-vs-body comparison is only ever a warning), a mismatch
+/// recorded here is reported unconditionally as an `Error`-severity `E174`
+/// by `strict::check_lambda_annotation_mismatches` — the written annotation
+/// *replaces* the body-derived type at this slot (see
+/// `body::InferPass::infer_lambda`'s own doc for the precedence change),
+/// so a disagreement is never merely advisory.
+///
+/// Recorded only when a written annotation exists for this slot *and* the
+/// body-derived type is not itself unresolved (`Ty::is_unresolved`) — an
+/// unannotated slot has nothing to compare against and keeps #1910's
+/// unchanged body-derived-wins behavior, and an `Unknown`/`Conflicted`
+/// body-derived type never disagrees with anything (mirrors
+/// `annotations::report_if_mismatched`'s identical guard for the `fn`/`flow`
+/// case).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LambdaAnnotationMismatch {
+    /// The diagnostic site: the mismatched param's own `: T` annotation
+    /// range, or the lambda's own `: R` return-annotation range.
+    pub range: TextRange,
+    /// `Some(param name)` for a mismatched parameter annotation, `None` for
+    /// the lambda's own return annotation.
+    pub param_name: Option<String>,
+    /// The written annotation's resolved type — what now governs this
+    /// slot's type.
+    pub expected: Ty,
+    /// The body's own independent derivation, which disagreed.
+    pub found: Ty,
+}
+
 /// One statically-checkable type mismatch at a **dotted struct-field**
 /// assignment target (issue #1900, split from #1864/#1877 — PR #1899's own
 /// `check_declared_assign_target` explicitly excludes a multi-segment
@@ -293,15 +340,32 @@ pub struct FieldAssignMismatch {
     pub found: Ty,
 }
 
-/// One statically-checkable argument-type mismatch at a **direct** call
-/// site (issue #1864) — the callee resolves straight to a known def via
-/// `known_sigs`, so its declared parameter types are already fully known
-/// at the call site, unlike the T1c call-through-a-value case
-/// [`ValueCallFact`] exists for.
+/// One statically-checkable argument-type mismatch recorded at either of
+/// two producer sites whose callee resolves straight to a known def via
+/// `known_sigs` — so its declared parameter types are already fully known
+/// at the site — unlike the T1c call-through-a-value case
+/// [`ValueCallFact`] exists for:
+///
+/// - a **direct call** (issue #1864) — `f(a, b)` where `f` names a known
+///   knot/stitch/function directly;
+/// - a `#fn(target, args…)` **creation site** (issue #2001) — not a call
+///   at all, but the by-ref *binding* site for a partial application;
+///   `target`'s remaining (unbound) params still go through the ordinary
+///   call-through-a-value check when the resulting `Ty::Fn` value is
+///   later invoked, but the *bound* prefix checked here is only ever
+///   checkable at creation.
+///
+/// `strict::check_direct_call_args`'s rendered message reads "argument N
+/// of call to `name`" for both producers — accepted as-is for a `#fn`
+/// literal (a creation site's bound-argument list still names the target
+/// function's own parameter it's populating), rather than adding a
+/// site-discriminant field to say "creation of" instead of "call to";
+/// revisit if that reads as confusing in practice (#2001 review finding).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirectCallArgMismatch {
-    /// The callee `Path`'s own source range (the diagnostic site) — same
-    /// convention as [`ValueCallFact::range`].
+    /// The diagnostic site's source range: the callee `Path`'s own range
+    /// for a direct call (same convention as [`ValueCallFact::range`]), or
+    /// the `#fn` literal's `target` path range for a creation site.
     pub range: TextRange,
     /// The callee's display name (`h` in `h("hi")`; dotted if the resolved
     /// path had multiple segments, e.g. `Knot.stitch`).
@@ -845,6 +909,7 @@ fn solve_one_batch(
                     direct_call_arg_mismatches: result.direct_call_arg_mismatches,
                     typed_assign_mismatches: result.typed_assign_mismatches,
                     field_assign_mismatches: result.field_assign_mismatches,
+                    lambda_annotation_mismatches: result.lambda_annotation_mismatches,
                     ufcs_call_args: result.ufcs_call_args,
                 },
             )

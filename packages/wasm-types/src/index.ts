@@ -1149,17 +1149,41 @@ export interface ManifestExternal {
 }
 
 /**
+ * One attribute a {@link ManifestSpanKind} accepts (docs/prose-dialect-spec.md
+ * §4.2, issue #1780 gap 1, ruled by issue #1997).
+ *
+ * Widens the old bare attribute-name-string shape into a record so
+ * `required` has somewhere to live, and so a future attribute-value type has
+ * somewhere to land later without another wire-format break (issue #1780
+ * gap 2) — **schema headroom only: attribute-value typing is NOT
+ * implemented**. Span attribute values stay static text by construction, so
+ * nothing parses, resolves, or checks a value against a type today.
+ */
+export interface ManifestSpanAttr {
+  /** The attribute name, e.g. "amount" for `<wave amount="3">`. */
+  name: string;
+  /** Whether a span of this kind must carry this attribute (`E173`).
+   *  Defaults to `false` (optional) when absent. */
+  required?: boolean;
+}
+
+/**
  * One declared inline-markup span kind (docs/prose-dialect-spec.md §4.2,
- * issue #1733). Flat by design: a tag name plus the attribute names that
- * tag accepts. Attribute *values* are static text by construction, so they
- * are never type-checked — only the attribute name is vocabulary.
+ * issue #1733; required attributes, issue #1780/#1997). A tag name plus the
+ * attributes that tag accepts. Attribute *values* are static text by
+ * construction, so they are never type-checked — only the attribute name
+ * (and now whether it is required) is vocabulary.
  */
 export interface ManifestSpanKind {
   /** The tag name as written in source, e.g. "wave" for `<wave>…</wave>`. */
   name: string;
-  /** Attribute names this kind accepts, e.g. ["amount"] for
-   *  `<wave amount="3">`. Empty/absent = the kind takes no attributes. */
-  attrs?: string[];
+  /** Attributes this kind accepts, e.g. `[{ name: "amount" }]` for
+   *  `<wave amount="3">`. Empty/absent = the kind takes no attributes.
+   *
+   *  Issue #1997 widened this from `string[]` to `ManifestSpanAttr[]` — a
+   *  bare attribute-name array is no longer accepted; migrate `"amount"` to
+   *  `{ "name": "amount" }`. */
+  attrs?: ManifestSpanAttr[];
 }
 
 /** The host-owned, project-wide external vocabulary. */
@@ -1176,9 +1200,10 @@ export interface HostManifest {
    * **Empty/absent means freeform**, which is the default: markup passes
    * through unchecked unless at least one span kind is declared here — an
    * externals-only manifest never enables markup checking. Once declared,
-   * an undeclared tag reports `E164` and an undeclared attribute on a
-   * declared kind reports `E165`; both are warnings by default, so a host
-   * tightens them with `[lints] E164 = "deny"`.
+   * an undeclared tag reports `E164`, an undeclared attribute on a declared
+   * kind reports `E165`, and a declared kind's span omitting one of its
+   * `required` attributes reports `E173`; all three are warnings by
+   * default, so a host tightens them with `[lints] E164 = "deny"`.
    */
   markup?: ManifestSpanKind[];
 }

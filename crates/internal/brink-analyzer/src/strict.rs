@@ -346,6 +346,11 @@ pub fn check(
     // against its target's already-known declared type — direct-call
     // arguments' sibling gap, same E063 machinery.
     out.extend(check_typed_assign_mismatches(files, index, inference));
+    // Issue #1994 (RULED 2026-08-01, closing #1932): a lambda's own written
+    // param/return annotation disagreeing with its body-derived type — an
+    // eager `Error`-severity `E174`, deliberately not folded into the
+    // gradual `E063` machinery above.
+    out.extend(check_lambda_annotation_mismatches(files, index, inference));
     out.extend(check_global_initializers(files, index, manifest));
     // Issue #1532 (#1501 review, migration-tail finding 1): `remove`'s
     // pre-#1484 array leg has no compatibility shim — a statically-known
@@ -1015,7 +1020,7 @@ fn check_value_calls(
     out
 }
 
-// ── Direct-call argument types (issue #1864) ───────────────────────────
+// ── Direct-call + `#fn` creation-site argument types (issues #1864, #2001) ──
 
 /// Report every [`crate::infer::DirectCallArgMismatch`] inference recorded,
 /// per def, as `E063` — the same typed-mismatch code
@@ -1028,11 +1033,20 @@ fn check_value_calls(
 /// [`check_value_calls`]: walk every inferable def, read its recorded
 /// facts, map each straight onto one diagnostic.
 ///
+/// As of #2001, [`crate::infer::DirectCallArgMismatch`] also carries facts
+/// from a second producer that is not a call at all: a `#fn(target, args…)`
+/// literal's bound-argument list, which is the by-ref *creation* site for a
+/// partial application (see that struct's own doc). Both producers map onto
+/// the same `E063` message ("argument N of call to `name`") — accepted as
+/// close enough for the creation-site case too rather than adding a
+/// call-vs-creation discriminant; see [`crate::infer::DirectCallArgMismatch`]
+/// for that call.
+///
 /// `infer::body::InferPass::arg_is_observed_local` already excludes an
 /// argument `InferPass::observe` itself would join `param_ty` into, so
 /// every fact reaching here is disjoint from `check_escapes`'s own
-/// Conflicted-escape (`E066`) reporting for the same call site — no
-/// dedup needed on this side.
+/// Conflicted-escape (`E066`) reporting for the same call/creation site —
+/// no dedup needed on this side.
 fn check_direct_call_args(
     files: &[(FileId, &HirFile)],
     index: &SymbolIndex,
@@ -1041,6 +1055,16 @@ fn check_direct_call_args(
     let mut out = Vec::new();
     for &(file, hir) in files {
         let mut def_ids: Vec<DefinitionId> = Vec::new();
+        // Issue #1903: add root_content's synthetic ID to the list of defs
+        // to check, just as collect_defs synthesizes it for inference.
+        // Mirrors check_typed_assign_mismatches below — without this, a
+        // direct call (or #fn literal) at the top level of an ink file's
+        // root_content silently drops its recorded facts (2026-08 review,
+        // issue #2001).
+        if !hir.root_content.stmts.is_empty() {
+            let synthetic_id = DefinitionId::new(DefinitionTag::LocalVar, u64::from(file.0));
+            def_ids.push(synthetic_id);
+        }
         for knot in &hir.knots {
             let kind = knot.symbol_kind();
             if let Some(id) = annotations::def_id_for(index, file, kind, &knot.name.text) {
@@ -1107,6 +1131,38 @@ fn check_direct_call_args(
 /// (`E066`) reporting for the same local, no dedup needed
 /// on this side (mirrors [`check_direct_call_args`]'s own doc on the
 /// identical point).
+/// Every top-level def id a body-level check (typed-assign mismatches,
+/// lambda annotation mismatches) needs to walk for one file: each
+/// knot/stitch, plus (issue #1903) `root_content`'s own synthetic id when
+/// the file has top-level content of its own — `collect_defs` synthesizes
+/// that same id for inference, so a body-level check must look it up under
+/// the identical scheme or it silently never sees a lambda/assignment
+/// written directly in a file's top-level content. Factored out of
+/// [`check_typed_assign_mismatches`] and [`check_lambda_annotation_mismatches`]
+/// (previously a character-for-character copy in each, house rule on
+/// keeping a single walk shared once it needs a second issue-specific fix
+/// threaded through it) so the next such fix only has to land once.
+fn body_def_ids(file: FileId, hir: &HirFile, index: &SymbolIndex) -> Vec<DefinitionId> {
+    let mut def_ids: Vec<DefinitionId> = Vec::new();
+    if !hir.root_content.stmts.is_empty() {
+        let synthetic_id = DefinitionId::new(DefinitionTag::LocalVar, u64::from(file.0));
+        def_ids.push(synthetic_id);
+    }
+    for knot in &hir.knots {
+        let kind = knot.symbol_kind();
+        if let Some(id) = annotations::def_id_for(index, file, kind, &knot.name.text) {
+            def_ids.push(id);
+        }
+        for stitch in &knot.stitches {
+            let qualified = format!("{}.{}", knot.name.text, stitch.name.text);
+            if let Some(id) = annotations::def_id_for(index, file, SymbolKind::Stitch, &qualified) {
+                def_ids.push(id);
+            }
+        }
+    }
+    def_ids
+}
+
 fn check_typed_assign_mismatches(
     files: &[(FileId, &HirFile)],
     index: &SymbolIndex,
@@ -1114,28 +1170,7 @@ fn check_typed_assign_mismatches(
 ) -> Vec<brink_ir::Diagnostic> {
     let mut out = Vec::new();
     for &(file, hir) in files {
-        let mut def_ids: Vec<DefinitionId> = Vec::new();
-        // Issue #1903: add root_content's synthetic ID to the list of defs
-        // to check, just as collect_defs synthesizes it for inference.
-        if !hir.root_content.stmts.is_empty() {
-            let synthetic_id = DefinitionId::new(DefinitionTag::LocalVar, u64::from(file.0));
-            def_ids.push(synthetic_id);
-        }
-        for knot in &hir.knots {
-            let kind = knot.symbol_kind();
-            if let Some(id) = annotations::def_id_for(index, file, kind, &knot.name.text) {
-                def_ids.push(id);
-            }
-            for stitch in &knot.stitches {
-                let qualified = format!("{}.{}", knot.name.text, stitch.name.text);
-                if let Some(id) =
-                    annotations::def_id_for(index, file, SymbolKind::Stitch, &qualified)
-                {
-                    def_ids.push(id);
-                }
-            }
-        }
-        for id in def_ids {
+        for id in body_def_ids(file, hir, index) {
             let Some(body) = inference.bodies.get(&id) else {
                 continue;
             };
@@ -1150,6 +1185,54 @@ fn check_typed_assign_mismatches(
                         fact.expected.display()
                     ),
                     code: brink_ir::DiagnosticCode::E063,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// Report every [`crate::infer::LambdaAnnotationMismatch`] inference
+/// recorded, per def, as `E174` (issue #1994, RULED 2026-08-01, closing
+/// #1932). Same walk shape as [`check_typed_assign_mismatches`] above (every
+/// fact was harvested onto whichever top-level def's own `BodyResult` the
+/// lambda that produced it was nested inside — `infer::body::InferPass`
+/// never snapshots this accumulator around a lambda frame, see that
+/// struct's own field doc), but a materially different severity posture:
+/// unlike `E063`'s gradual/advisory "two independent derivations, compared
+/// but never merged", a lambda's own written annotation now *replaces* its
+/// body-derived type at this slot (`infer::body::InferPass::infer_lambda`'s
+/// own doc), so a disagreement recorded here is never merely a warning —
+/// `E174`'s default severity is `Error`, not downgradable the way `E063` is.
+fn check_lambda_annotation_mismatches(
+    files: &[(FileId, &HirFile)],
+    index: &SymbolIndex,
+    inference: &InferenceResult,
+) -> Vec<brink_ir::Diagnostic> {
+    let mut out = Vec::new();
+    for &(file, hir) in files {
+        for id in body_def_ids(file, hir, index) {
+            let Some(body) = inference.bodies.get(&id) else {
+                continue;
+            };
+            for fact in &body.lambda_annotation_mismatches {
+                let message = match &fact.param_name {
+                    Some(name) => format!(
+                        "lambda parameter `{name}` is annotated `{}` but its body infers `{}`",
+                        fact.expected.display(),
+                        fact.found.display()
+                    ),
+                    None => format!(
+                        "lambda return type is annotated `{}` but its body infers `{}`",
+                        fact.expected.display(),
+                        fact.found.display()
+                    ),
+                };
+                out.push(brink_ir::Diagnostic {
+                    file,
+                    range: fact.range,
+                    message,
+                    code: brink_ir::DiagnosticCode::E174,
                 });
             }
         }
@@ -2817,6 +2900,66 @@ mod tests {
             via_callee_ty.is_empty(),
             "the seed reaches `annotated_callee_ty`'s direct-call read of \
              `cb`, not just the lambda's own tail: {via_callee_ty:?}"
+        );
+    }
+
+    // ── issue #1994: a lambda's own written annotation governs, with an ──
+    // eager E174 on disagreement — exercised through `native_strict_diags`,
+    // the same end-to-end harness the #1941/#1954 tests immediately above
+    // use, not just at the `infer_lambda` unit level (review finding on
+    // #1994: the hand-built HIR unit tests in `infer::body::tests` never
+    // reach `strict::check_lambda_annotation_mismatches` at all).
+
+    #[test]
+    fn native_lambda_return_annotation_disagreement_is_e174() {
+        let diags =
+            native_strict_diags("fn f() {\n  let g = |k: int|: int {\n    \"wrong\"\n  };\n}\n");
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E174);
+        assert!(
+            diags[0]
+                .message
+                .contains("lambda return type is annotated `int` but its body infers `string`"),
+            "{:?}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn native_lambda_param_annotation_disagreement_is_e174() {
+        // The param-arm twin of the return test above: `k`'s only body
+        // evidence (`k == true`, an expression-bodied tail so `g` itself
+        // resolves to a concrete `Ty::Fn` rather than separately escaping)
+        // pins it to `bool`, disagreeing with its own written `k: int`.
+        // `int` vs `bool` is irreconcilable in either direction, so this
+        // must still fire even with the widening-only guard in place.
+        let diags = native_strict_diags("fn f() {\n  let g = |k: int| k == true;\n}\n");
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E174);
+        assert!(
+            diags[0]
+                .message
+                .contains("lambda parameter `k` is annotated `int` but its body infers `bool`"),
+            "{:?}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn native_lambda_param_widening_use_is_not_a_mismatch() {
+        // Review finding (BLOCKING) on #1994: the param arm's original
+        // `!assignable(&declared_ty, &inferred)` check compared in the
+        // wrong direction for a parameter, turning legal int→float widening
+        // into a hard, non-downgradable E174. An `int`-annotated param used
+        // as a `float` in the body (ordinary numeric widening, exactly like
+        // the structurally identical `fn f(x: int): float { return x +
+        // 1.0; }` — which reports nothing under the pre-existing top-level
+        // `fn`/`flow` posture) must stay clean.
+        let diags = native_strict_diags("fn f() {\n  let g = |x: int| {\n    x + 1.0\n  };\n}\n");
+        assert!(
+            diags.is_empty(),
+            "an int-annotated param used as a float is legal widening, not \
+             a mismatch: {diags:?}"
         );
     }
 
@@ -5496,6 +5639,132 @@ mod tests {
             "a `~ temp` int cell must not widen into a declared-float ref parameter \
              either: {:?}",
             result.diagnostics
+        );
+    }
+
+    // ── Issue #2001: `#fn` creation-site ref-invariance ───────────────────
+
+    /// Repro from #2001 (the tracked remainder of #1995/#1920 left after PR
+    /// #1999): `#fn(target, args…)`'s bound-argument loop
+    /// (`InferPass::infer_fn_literal`) never ran *any* argument-type check —
+    /// neither `ref_assignable` nor `assignable` — even though this literal
+    /// **is** the by-ref binding site (docs/t1c-spec.md §2: "all `ref`
+    /// params must be bound at creation"), the one place a `Ty::Fn` value's
+    /// remaining param row can never contain a `ref` param. `#fn`'s own
+    /// `fn_values::check` (`E080`) only checks that a `ref` position is
+    /// bound to *some* durable cell — never that the cell's static type
+    /// agrees with the declared `ref` param type — so this is a genuinely
+    /// separate gap from that check. Ink-only fixture (`#fn`'s binding form
+    /// is ink-only, ruled 2026-08-01 per #1862).
+    #[test]
+    fn fn_literal_ref_param_widening_is_rejected_under_strict() {
+        let parsed = brink_syntax::parse(
+            "=== function scale(ref x: float, k: int): float ===\n\
+             ~ x = x * k\n~ return x\n\
+             VAR i = 3\n\
+             === main ===\n~ temp f = #fn(scale, i)\n~ temp r: float = f(2)\n-> DONE\n",
+        );
+        let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
+        let opts = crate::AnalysisOptions {
+            dialect: crate::Dialect::Brink,
+            types: Some(TypePolicy::Strict),
+            ..crate::AnalysisOptions::default()
+        };
+        let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E063 && d.message.contains("argument 1")),
+            "a #fn-bound int cell must not widen into a declared-float ref parameter \
+             either: {:?}",
+            result.diagnostics
+        );
+    }
+
+    /// The by-value sibling: binding an ordinary (non-`ref`) `int` argument
+    /// into `k` alongside an exactly-typed `ref float` binding must stay
+    /// clean — the invariant check only rejects widening at the `ref`
+    /// position, and #2001 explicitly declines to add a *new* by-value
+    /// check at this creation site (that is its own scope call per the
+    /// issue body, not assumed yes).
+    #[test]
+    fn fn_literal_by_value_param_is_unaffected_by_ref_invariance() {
+        let (hir, index, res) = build(
+            "=== function scale(ref x: float, k: int): float ===\n\
+             ~ x = x * k\n~ return x\n\
+             VAR f: float = 1.0\n\
+             === main ===\n~ temp fv = #fn(scale, f, 2)\n-> DONE\n",
+        );
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E063 && d.message.contains("argument")),
+            "a well-typed ref argument plus an exactly-typed by-value argument bound at \
+             creation must stay clean: {diags:?}"
+        );
+    }
+
+    // ── Review finding on #2001: root_content reaches check_direct_call_args ──
+
+    /// Review finding (BLOCKING) on this issue's own PR: `check_direct_call_args`
+    /// built `def_ids` from `hir.knots` + stitches only, never gaining the
+    /// #1903 `root_content` synthetic-ID block its structurally parallel
+    /// sibling `check_typed_assign_mismatches` has — so a direct-call
+    /// argument-type mismatch written at an ink file's literal top-level
+    /// weave was recorded by inference but silently dropped by strict,
+    /// never reaching a diagnostic. Mirrors
+    /// `ink_root_content_declared_temp_init_is_checked` above, but for
+    /// `check_direct_call_args`'s own fact kind, and MUST fail with the
+    /// `check_direct_call_args` `root_content` block reverted.
+    #[test]
+    fn ink_root_content_direct_call_ref_widening_is_checked() {
+        let src = "VAR i = 3\n\
+                   ~ scale(i, 2)\nHello.\n-> END\n\
+                   === function scale(ref x: float, k: int): float ===\n\
+                   ~ x = x * k\n~ return x\n";
+        let (hir, index, res) = build(src);
+        assert!(
+            !hir.root_content.stmts.is_empty(),
+            "fixture precondition: the ink frontend must populate root_content"
+        );
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E063 && d.message.contains("argument 1")),
+            "a direct-call ref-argument mismatch written at file root must be \
+             reported, not silently dropped: {diags:?}"
+        );
+    }
+
+    /// The `#fn` creation-site sibling of the test above, in `root_content` —
+    /// same gap, same fix, same fact kind #2001 introduced.
+    #[test]
+    fn ink_root_content_fn_literal_ref_widening_is_checked() {
+        let src = "VAR i = 3\n\
+                   ~ temp f = #fn(scale, i)\nHello.\n-> END\n\
+                   === function scale(ref x: float, k: int): float ===\n\
+                   ~ x = x * k\n~ return x\n";
+        let (hir, index, res) = build(src);
+        assert!(
+            !hir.root_content.stmts.is_empty(),
+            "fixture precondition: the ink frontend must populate root_content"
+        );
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E063 && d.message.contains("argument 1")),
+            "a #fn-bound ref-argument mismatch written at file root must be \
+             reported, not silently dropped: {diags:?}"
         );
     }
 

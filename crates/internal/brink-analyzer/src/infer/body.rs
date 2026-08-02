@@ -33,8 +33,8 @@ use rowan::TextRange;
 use super::effects::FnArgOrigins;
 use super::ty::{FnRow, TowerTy, Ty, assignable, coalesce, ref_assignable, unify, unify_all};
 use super::{
-    DirectCallArgMismatch, FieldAssignMismatch, InferredSig, TypedAssignMismatch, UfcsCallArgs,
-    ValueCallFact, ValueCallKind, range_key,
+    DirectCallArgMismatch, FieldAssignMismatch, InferredSig, LambdaAnnotationMismatch,
+    TypedAssignMismatch, UfcsCallArgs, ValueCallFact, ValueCallKind, range_key,
 };
 
 /// Read-only context shared by every body inferred in the same SCC round.
@@ -197,6 +197,12 @@ pub(super) struct BodyResult {
     /// unconditionally, like `typed_assign_mismatches`; resolved and
     /// reported only by strict mode.
     pub field_assign_mismatches: Vec<FieldAssignMismatch>,
+    /// Issue #1994: see [`super::LambdaAnnotationMismatch`]. Recorded
+    /// unconditionally by every `infer_lambda` call this body walk reaches
+    /// (including nested lambdas); reported only by strict mode, as
+    /// `Error`-severity `E174` rather than the gradual `E063`
+    /// `typed_assign_mismatches`/`field_assign_mismatches` use.
+    pub lambda_annotation_mismatches: Vec<LambdaAnnotationMismatch>,
     /// Issue #1881: see [`super::UfcsCallArgs`]. Recorded unconditionally,
     /// like `direct_call_arg_mismatches`; consumed by
     /// `crate::ufcs::UfcsVisitor`, reported only by strict mode.
@@ -274,6 +280,7 @@ fn new_pass<'a, 'b>(
         direct_call_arg_mismatches: Vec::new(),
         typed_assign_mismatches: Vec::new(),
         field_assign_mismatches: Vec::new(),
+        lambda_annotation_mismatches: Vec::new(),
         ufcs_call_args: Vec::new(),
         array_remove_calls: Vec::new(),
         created_fn_values: BTreeSet::new(),
@@ -384,6 +391,7 @@ pub(super) fn infer_def_body(def: &super::Def<'_>, ctx: &BodyCtx<'_>) -> BodyRes
         direct_call_arg_mismatches: pass.direct_call_arg_mismatches,
         typed_assign_mismatches: pass.typed_assign_mismatches,
         field_assign_mismatches: pass.field_assign_mismatches,
+        lambda_annotation_mismatches: pass.lambda_annotation_mismatches,
         ufcs_call_args: pass.ufcs_call_args,
         array_remove_calls: pass.array_remove_calls,
         created_fn_values: pass.created_fn_values,
@@ -552,6 +560,12 @@ struct InferPass<'a, 'b> {
     /// See [`BodyResult::field_assign_mismatches`] — accumulated the same
     /// way `typed_assign_mismatches` is, during the one body walk.
     field_assign_mismatches: Vec<FieldAssignMismatch>,
+    /// See [`BodyResult::lambda_annotation_mismatches`] — accumulated the
+    /// same way `typed_assign_mismatches` is, pushed by [`Self::infer_lambda`]
+    /// itself rather than snapshotted/restored per lambda frame: a mismatch
+    /// recorded by a nested lambda must survive into the enclosing body's
+    /// own result exactly like every other fact this pass harvests.
+    lambda_annotation_mismatches: Vec<LambdaAnnotationMismatch>,
     /// See [`BodyResult::ufcs_call_args`] — accumulated the same way
     /// `direct_call_arg_mismatches` is, during the one body walk.
     ufcs_call_args: Vec<UfcsCallArgs>,
@@ -2396,6 +2410,12 @@ impl InferPass<'_, '_> {
             direct_call_arg_mismatches: _,
             typed_assign_mismatches: _,
             field_assign_mismatches: _,
+            // Deliberately cumulative, not frame-scoped (issue #1994): a
+            // mismatch a nested lambda's own annotation-precedence overlay
+            // records must survive into the enclosing body's own result,
+            // exactly like `typed_assign_mismatches` above — never
+            // snapshotted/restored around a lambda's own frame window.
+            lambda_annotation_mismatches: _,
             ufcs_call_args: _,
             array_remove_calls: _,
             created_fn_values: _,
@@ -2846,35 +2866,127 @@ impl InferPass<'_, '_> {
         // mutated between that seed and this overlay, so the same snapshot
         // is valid here too.
         //
-        // #1910: annotation-firewall overlay, same precedence as
-        // `infer_def_body`'s `param_types` — the body-derived type wins
-        // whenever it isn't `Unknown` (a use that *disagrees* with a written
-        // annotation still infers its own concrete/`Conflicted` type, which
-        // is what keeps `annotations::mismatches` (E063) comparing two
-        // independent derivations rather than one silently overlaying the
-        // other); the annotation is only the Unknown fallback.
+        // Issue #1994 (RULED 2026-08-01, closing #1932): **narrowed to the
+        // unannotated case** — #1910's own posture below (body-derived wins
+        // whenever it isn't `Unknown`, annotation only the `Unknown`
+        // fallback) is UNCHANGED for a param/return with no written
+        // annotation of its own. But a lambda's own *written* annotation —
+        // unlike a top-level `fn`/`flow`'s, which stays the #1910/
+        // `infer_def_body` fallback-only posture, `annotations::mismatches`
+        // (E063) reporting any disagreement only as a gradual advisory —
+        // now GOVERNS this slot unconditionally: the annotation is the
+        // resulting type, and a body-derived type that disagrees with it is
+        // recorded as an eager, `Error`-severity `E174`
+        // ([`LambdaAnnotationMismatch`]) rather than silently overridden.
+        // `docs/typed-mode-spec.md` §2 records why the two are now ruled to
+        // differ. An `Unknown`/`Conflicted` body-derived type never
+        // "disagrees" (`Ty::is_unresolved`) — nothing to compare, and a
+        // genuinely `Conflicted` body already has its own `E066` escape
+        // report elsewhere; double-reporting the same fact here would be
+        // exactly the hazard `annotations::report_if_mismatched`'s identical
+        // guard exists to avoid.
+        //
+        // One more exclusion, the same shape as the `#1941`/`#1954` seed's
+        // own `body_bound_names` guard above: a param name the body itself
+        // *re-binds* (`|t: int| { let t = "a"; t = "b"; t }`) is never run
+        // through the new governs-unconditionally precedence at all.
+        // `narrowed_params`/`self.locals` is bare-name-keyed, so once the
+        // body's own `TempDecl` re-declares `t`, `self.locals["t"]` holds
+        // the *fresh local's* accumulated type, not the param's — there is
+        // nothing left in this pass's bookkeeping that still distinguishes
+        // "the param's own narrowing" from "the shadowing local's". Running
+        // the disagreement check against that value would compare the
+        // param's annotation against a completely unrelated binding's type
+        // and report a false `E174` the instant the two disagree (the exact
+        // review-finding shape #1954 already fixed once for the `self.
+        // annotated` seed — a rebound name is excluded there for the
+        // identical reason). Falls back to #1910's own unannotated-style
+        // posture unconditionally for this one param, matching this
+        // slot's pre-#1994 behavior exactly (no diagnostic either way,
+        // since a rebound name was never seeded into `self.annotated` for
+        // `own_annotation` to compare against anyway).
         let params = l
             .params
             .iter()
             .zip(narrowed_params)
             .map(|(p, inferred)| {
-                if inferred.is_unknown() {
-                    p.annotation
-                        .as_ref()
-                        .and_then(|te| crate::annotations::resolve(te, &type_names))
-                        .unwrap_or(inferred)
-                } else {
-                    inferred
+                if body_bound_names.contains(&p.name.text) {
+                    return if inferred.is_unknown() {
+                        p.annotation
+                            .as_ref()
+                            .and_then(|te| crate::annotations::resolve(te, &type_names))
+                            .unwrap_or(inferred)
+                    } else {
+                        inferred
+                    };
+                }
+                let declared = p
+                    .annotation
+                    .as_ref()
+                    .and_then(|te| crate::annotations::resolve(te, &type_names));
+                match declared {
+                    Some(declared_ty) => {
+                        // Review finding on #1994 (measured at head c1be12d
+                        // via `strict::native_strict_diags`): a plain
+                        // `!assignable(&declared_ty, &inferred)` is the wrong
+                        // comparison direction for a *parameter* — it flags
+                        // legal widening (an `int`-annotated param whose body
+                        // uses it as a `float`, e.g. `|x: int| { x + 1.0 }`)
+                        // as a hard, non-downgradable `E174`, when the
+                        // pre-#1994 posture (and the structurally identical
+                        // top-level `fn(x: int): float { return x + 1.0; }`)
+                        // reported nothing (or only the advisory `E063`).
+                        // Only report when the pair is genuinely
+                        // irreconcilable in *either* direction — an
+                        // int-vs-bool mismatch still fires, since neither
+                        // direction is assignable there.
+                        if !inferred.is_unresolved()
+                            && !assignable(&declared_ty, &inferred)
+                            && !assignable(&inferred, &declared_ty)
+                        {
+                            self.lambda_annotation_mismatches
+                                .push(LambdaAnnotationMismatch {
+                                    // `p.annotation` is `Some` whenever `declared`
+                                    // resolved (the `and_then` above), so this
+                                    // always finds the written annotation's own
+                                    // range rather than falling back to the
+                                    // lambda's whole span.
+                                    range: p
+                                        .annotation
+                                        .as_ref()
+                                        .map_or(l.ptr.range, brink_ir::TypeExpr::range),
+                                    param_name: Some(p.name.text.clone()),
+                                    expected: declared_ty.clone(),
+                                    found: inferred,
+                                });
+                        }
+                        declared_ty
+                    }
+                    None => inferred,
                 }
             })
             .collect();
-        let ret = if body_ty.is_unknown() {
-            l.return_type
-                .as_ref()
-                .and_then(|te| crate::annotations::resolve(te, &type_names))
-                .unwrap_or(body_ty)
-        } else {
-            body_ty
+        let declared_ret = l
+            .return_type
+            .as_ref()
+            .and_then(|te| crate::annotations::resolve(te, &type_names));
+        let ret = match declared_ret {
+            Some(declared_ty) => {
+                if !body_ty.is_unresolved() && !assignable(&declared_ty, &body_ty) {
+                    self.lambda_annotation_mismatches
+                        .push(LambdaAnnotationMismatch {
+                            range: l
+                                .return_type
+                                .as_ref()
+                                .map_or(l.ptr.range, brink_ir::TypeExpr::range),
+                            param_name: None,
+                            expected: declared_ty.clone(),
+                            found: body_ty,
+                        });
+                }
+                declared_ty
+            }
+            None => body_ty,
         };
         // The effect row stays at the top element. A lambda's lifted
         // `DefinitionId` is minted in LIR (`alloc_lambda_address`), so it has
@@ -2899,9 +3011,7 @@ impl InferPass<'_, '_> {
     /// placed after the return would be dead code in the one pass that
     /// harvests effect atoms.
     fn infer_fn_literal(&mut self, fl: &brink_ir::FnLiteral) -> Ty {
-        for arg in &fl.args {
-            self.infer_expr(arg);
-        }
+        let arg_tys: Vec<Ty> = fl.args.iter().map(|arg| self.infer_expr(arg)).collect();
         let Some(def) = self.resolve(fl.target.range) else {
             return Ty::Unknown;
         };
@@ -2911,8 +3021,59 @@ impl InferPass<'_, '_> {
         let Some(sig) = self.ctx.known_sigs.get(&def) else {
             return Ty::Unknown;
         };
+        // Issue #2001 (the tracked remainder of #1995/#1920 after PR #1999):
+        // `#fn`'s bound-argument loop **is** the by-ref binding site
+        // (docs/t1c-spec.md §2, §6.1a channel 5 — the creation-site half of
+        // the aliasing enumeration) — the one place a `Ty::Fn` value's
+        // remaining param row can never contain a `ref` param, because it
+        // must already be bound here. `fn_values::check`'s `E080` only
+        // verifies a `ref` position is bound to *some* durable cell, never
+        // that the cell's static type agrees with the declared `ref` param
+        // type, so this invariant check is a separate obligation. Mirrors
+        // `infer_call`'s direct-call check, but only the `ref`-arm half of
+        // it: this loop only checks `ref`-bound arguments, so the
+        // observed-local carve-out below is always the *partial* one
+        // (`!observed || assignable(..)`), never the *full* skip
+        // (`!observed && !assignable(..)`) `infer_call`'s non-ref arm uses.
+        // That is deliberate, not an oversight — the #1995 finding on
+        // `infer_call` is that the full skip is only sound for the non-ref
+        // case (an argument that would already conflict and get reported as
+        // `E066`); a `ref` mismatch that stays `assignable` in the
+        // covariant direction still needs its own report even when the
+        // argument is an observed local, so the ref arm always keeps this
+        // narrower, partial carve-out. By-value (non-`ref`) bound arguments
+        // are deliberately left unchecked here — #2001's own scope note:
+        // adding a by-value check at this creation site is new checking
+        // that needs its own design call, not an assumed yes.
+        let ref_positions = self.ctx.index.symbols.get(&def);
         for (i, arg) in fl.args.iter().enumerate() {
             if let Some(param_ty) = sig.params.get(i) {
+                let is_ref_param = ref_positions
+                    .and_then(|info| info.params.get(i))
+                    .is_some_and(|p| p.is_ref);
+                let observed = self.arg_is_observed_local(arg);
+                if is_ref_param
+                    && !param_ty.is_unresolved()
+                    && let Some(arg_ty) = arg_tys.get(i)
+                    && !arg_ty.is_unresolved()
+                    && !ref_assignable(param_ty, arg_ty)
+                    && (!observed || assignable(param_ty, arg_ty))
+                {
+                    let callee = fl
+                        .target
+                        .segments
+                        .iter()
+                        .map(|s| s.text.as_str())
+                        .collect::<Vec<_>>()
+                        .join(".");
+                    self.direct_call_arg_mismatches.push(DirectCallArgMismatch {
+                        range: fl.target.range,
+                        callee,
+                        index: i,
+                        expected: param_ty.clone(),
+                        found: arg_ty.clone(),
+                    });
+                }
                 self.observe(arg, param_ty);
             }
         }
@@ -4301,6 +4462,7 @@ mod tests {
             direct_call_arg_mismatches: Vec::new(),
             typed_assign_mismatches: Vec::new(),
             field_assign_mismatches: Vec::new(),
+            lambda_annotation_mismatches: Vec::new(),
             ufcs_call_args: Vec::new(),
             array_remove_calls: Vec::new(),
             created_fn_values: BTreeSet::new(),
@@ -5049,6 +5211,247 @@ mod tests {
             "issue #1941: the lambda's own param-annotation seed must not \
              leak past the walk — the enclosing frame's same-named `t: \
              string` ascription must be exactly what it was before"
+        );
+    }
+
+    // ── Issue #1994 (RULED 2026-08-01, closing #1932): a lambda's own ──
+    // written annotation now governs its param/return type unconditionally
+    // — narrowing #1910's body-derived read-back to the unannotated case —
+    // and an incompatible body raises an eager `LambdaAnnotationMismatch`
+    // (`E174`) at the lambda itself, never silently discarded.
+
+    #[test]
+    fn lambda_return_annotation_governs_over_a_disagreeing_body() {
+        let index = SymbolIndex::default();
+        let globals = BTreeMap::new();
+        let known_sigs = BTreeMap::new();
+        let inferable = BTreeSet::new();
+        let list_names = BTreeSet::new();
+        let struct_names = BTreeSet::new();
+        let handle_names = BTreeSet::new();
+        let resolution_by_range = BTreeMap::new();
+        let ctx = BodyCtx {
+            resolution_by_range: &resolution_by_range,
+            index: &index,
+            globals: &globals,
+            known_sigs: &known_sigs,
+            inferable: &inferable,
+            list_names: &list_names,
+            struct_names: &struct_names,
+            handle_names: &handle_names,
+            native: false,
+        };
+        let mut pass = empty_pass(&ctx);
+
+        // `||: int { "wrong" }` — a zero-arg lambda whose written return
+        // annotation is `int` but whose body always produces a `string`.
+        let return_annotation_range = range(8, 11);
+        let lambda = brink_ir::LambdaExpr {
+            ptr: Provenance::synthetic(NodeClass::Lambda, range(0, 30)),
+            params: Vec::new(),
+            return_type: Some(brink_ir::TypeExpr::Named {
+                name: "int".to_string(),
+                range: return_annotation_range,
+            }),
+            body: brink_ir::LambdaBody::Expr(Box::new(Expr::String(brink_ir::StringExpr {
+                parts: vec![brink_ir::StringPart::Literal("wrong".to_string())],
+            }))),
+        };
+
+        let ty = pass.infer_lambda(&lambda);
+        assert_eq!(
+            ty,
+            Ty::Fn(Vec::new(), Box::new(Ty::Int), FnRow::unknown()),
+            "issue #1994: the written return annotation must govern the \
+             lambda's resulting type even though the body disagrees — it \
+             must not be silently overridden by the body-derived `string`"
+        );
+        assert_eq!(
+            pass.lambda_annotation_mismatches,
+            vec![LambdaAnnotationMismatch {
+                range: return_annotation_range,
+                param_name: None,
+                expected: Ty::Int,
+                found: Ty::String,
+            }],
+            "issue #1994: an eager mismatch must be recorded pointing at \
+             the lambda's own written return annotation, not deferred to \
+             wherever the lambda is later called"
+        );
+    }
+
+    #[test]
+    fn lambda_param_annotation_governs_over_a_disagreeing_body_write() {
+        let x_id = DefinitionId::new(DefinitionTag::LocalVar, 1);
+        let mut index = SymbolIndex::default();
+        // Issue #1994's own field doc: a lambda's own params are indexed as
+        // `SymbolKind::Temp`, the same project-wide keyspace an enclosing
+        // `~ temp` gets — `temp_symbol` below mirrors that real convention.
+        index
+            .symbols
+            .insert(x_id, temp_symbol(x_id, "x", range(10, 11)));
+
+        let target_range = range(20, 21);
+        let mut resolution_by_range = BTreeMap::new();
+        resolution_by_range.insert(range_key(target_range), x_id);
+
+        let globals = BTreeMap::new();
+        let known_sigs = BTreeMap::new();
+        let inferable = BTreeSet::new();
+        let list_names = BTreeSet::new();
+        let struct_names = BTreeSet::new();
+        let handle_names = BTreeSet::new();
+        let ctx = BodyCtx {
+            resolution_by_range: &resolution_by_range,
+            index: &index,
+            globals: &globals,
+            known_sigs: &known_sigs,
+            inferable: &inferable,
+            list_names: &list_names,
+            struct_names: &struct_names,
+            handle_names: &handle_names,
+            native: false,
+        };
+        let mut pass = empty_pass(&ctx);
+
+        // `|x: int| { x = true; }` — the body's only evidence for `x`
+        // pins it to `bool` (a clean, un-conflicted single write — `x` was
+        // never observed with any other type first), disagreeing with the
+        // lambda's own written `x: int` annotation.
+        let annotation_range = range(13, 16);
+        let lambda = brink_ir::LambdaExpr {
+            ptr: Provenance::synthetic(NodeClass::Lambda, range(5, 40)),
+            params: vec![brink_ir::Param {
+                name: Name {
+                    text: "x".to_string(),
+                    range: range(10, 11),
+                },
+                is_ref: false,
+                is_divert: false,
+                annotation: Some(brink_ir::TypeExpr::Named {
+                    name: "int".to_string(),
+                    range: annotation_range,
+                }),
+            }],
+            return_type: None,
+            body: brink_ir::LambdaBody::Block {
+                stmts: vec![BlockStmt::Assignment(brink_ir::Assignment {
+                    ptr: Provenance::synthetic(NodeClass::Stmt, range(18, 26)),
+                    target: Expr::Path(HirPath {
+                        segments: vec![Name {
+                            text: "x".to_string(),
+                            range: target_range,
+                        }],
+                        range: target_range,
+                    }),
+                    op: AssignOp::Set,
+                    value: Expr::Bool(true),
+                })],
+                tail: None,
+            },
+        };
+
+        let ty = pass.infer_lambda(&lambda);
+        assert_eq!(
+            ty,
+            Ty::Fn(vec![Ty::Int], Box::new(Ty::Unknown), FnRow::unknown()),
+            "issue #1994: the lambda's own written `x: int` annotation must \
+             govern the param's resulting type even though its body's only \
+             evidence disagrees"
+        );
+        assert_eq!(
+            pass.lambda_annotation_mismatches,
+            vec![LambdaAnnotationMismatch {
+                range: annotation_range,
+                param_name: Some("x".to_string()),
+                expected: Ty::Int,
+                found: Ty::Bool,
+            }],
+            "issue #1994: an eager mismatch must be recorded pointing at \
+             the lambda's own written param annotation, not silently \
+             discarded in favor of the body's own wrong derivation"
+        );
+    }
+
+    #[test]
+    fn lambda_unannotated_param_still_exports_its_body_derived_type() {
+        // Regression pin (issue #1994's own scope note: "do not simply
+        // revert #1910 — its fix for the unannotated case is correct"):
+        // an unannotated param/return must still export whatever its body
+        // derives, exactly as #1910 left it — this test would fail if the
+        // new annotation-precedence logic were accidentally applied to the
+        // unannotated case too (e.g. by treating `None` as "annotation
+        // says Unknown" instead of "no annotation to govern with").
+        let x_id = DefinitionId::new(DefinitionTag::LocalVar, 1);
+        let mut index = SymbolIndex::default();
+        index
+            .symbols
+            .insert(x_id, temp_symbol(x_id, "x", range(10, 11)));
+
+        let target_range = range(20, 21);
+        let mut resolution_by_range = BTreeMap::new();
+        resolution_by_range.insert(range_key(target_range), x_id);
+
+        let globals = BTreeMap::new();
+        let known_sigs = BTreeMap::new();
+        let inferable = BTreeSet::new();
+        let list_names = BTreeSet::new();
+        let struct_names = BTreeSet::new();
+        let handle_names = BTreeSet::new();
+        let ctx = BodyCtx {
+            resolution_by_range: &resolution_by_range,
+            index: &index,
+            globals: &globals,
+            known_sigs: &known_sigs,
+            inferable: &inferable,
+            list_names: &list_names,
+            struct_names: &struct_names,
+            handle_names: &handle_names,
+            native: false,
+        };
+        let mut pass = empty_pass(&ctx);
+
+        // `|x| { x = true; }` — no written annotation on `x` at all.
+        let lambda = brink_ir::LambdaExpr {
+            ptr: Provenance::synthetic(NodeClass::Lambda, range(5, 40)),
+            params: vec![brink_ir::Param {
+                name: Name {
+                    text: "x".to_string(),
+                    range: range(10, 11),
+                },
+                is_ref: false,
+                is_divert: false,
+                annotation: None,
+            }],
+            return_type: None,
+            body: brink_ir::LambdaBody::Block {
+                stmts: vec![BlockStmt::Assignment(brink_ir::Assignment {
+                    ptr: Provenance::synthetic(NodeClass::Stmt, range(18, 26)),
+                    target: Expr::Path(HirPath {
+                        segments: vec![Name {
+                            text: "x".to_string(),
+                            range: target_range,
+                        }],
+                        range: target_range,
+                    }),
+                    op: AssignOp::Set,
+                    value: Expr::Bool(true),
+                })],
+                tail: None,
+            },
+        };
+
+        let ty = pass.infer_lambda(&lambda);
+        assert_eq!(
+            ty,
+            Ty::Fn(vec![Ty::Bool], Box::new(Ty::Unknown), FnRow::unknown()),
+            "issue #1910 (unchanged by #1994): an unannotated param still \
+             exports whatever its body derives"
+        );
+        assert!(
+            pass.lambda_annotation_mismatches.is_empty(),
+            "an unannotated param has nothing to disagree with — no \
+             mismatch should ever be recorded for it"
         );
     }
 }

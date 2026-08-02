@@ -1042,6 +1042,66 @@ fn inline_divert_mid_content_line_splits_into_two_statements() {
 // specifically; `tests/tier1-native/logic-line-escape/` pins the same
 // fix end-to-end through a real compile+run.
 
+// ── Issue #1972: `~ let name = expr` — the same content-ground escape, ─
+// ── extended to a temp declaration ────────────────────────────────────
+//
+// #1991 wired `LOGIC_LINE`'s `ASSIGN_STMT`/`EXPR_STMT` children; `LET_STMT`
+// had no `KW_LET` dispatch in the parser at all, so `~ let n = 5` reached
+// `expr_stmt_line`'s `expr::expression`, which diagnoses `let` as an
+// unrecognized atom rather than parsing a declaration. These pin the fixed
+// lowering; `tests/tier1-native/logic-line-escape/` extends the same
+// end-to-end fixture #1991 added.
+
+#[test]
+fn logic_line_temp_decl_lowers_to_stmt_temp_decl() {
+    let (hir, _m, diags) = lower_src("flow a() {\n  ~ let n = 5\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = only_knot_body(&hir);
+    let Stmt::TempDecl(t) = &body.stmts[0] else {
+        panic!("expected Stmt::TempDecl, got {:?}", body.stmts[0]);
+    };
+    assert_eq!(t.name.text, "n");
+    assert!(matches!(t.value, Some(Expr::Int(5))));
+}
+
+#[test]
+fn logic_line_temp_decl_without_initializer_lowers_with_no_value() {
+    let (hir, _m, diags) = lower_src("flow a() {\n  ~ let n: int\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = only_knot_body(&hir);
+    let Stmt::TempDecl(t) = &body.stmts[0] else {
+        panic!("expected Stmt::TempDecl, got {:?}", body.stmts[0]);
+    };
+    assert!(t.value.is_none());
+    assert!(
+        t.annotation.is_some(),
+        "expected the `: int` annotation to lower"
+    );
+}
+
+#[test]
+fn logic_line_temp_decl_from_an_emitting_call_lowers_to_end_of_line() {
+    // Mirrors `logic_line_assignment_from_an_emitting_call_lowers_to_end_of_line`
+    // for `TempDecl`: the ink-dialect frontend's own `LogicLineOutput::
+    // has_call` rule applies `td.value.as_ref().is_some_and(expr_contains_call)`
+    // identically across `TempDecl`/`Assignment`/`ExprStmt` — this pins the
+    // native lowering's parity for the one variant `#1991` didn't cover.
+    let (hir, _m, diags) =
+        lower_src("fn shout() >{\n  Hi\n  return 7\n}\nflow a() {\n  ~ let n = shout()\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = &hir.knots[1].body;
+    let Stmt::TempDecl(t) = &body.stmts[0] else {
+        panic!("expected Stmt::TempDecl, got {:?}", body.stmts[0]);
+    };
+    assert!(matches!(t.value, Some(Expr::Call(..))));
+    assert!(
+        matches!(body.stmts[1], Stmt::EndOfLine),
+        "a temp decl whose value contains a call must still get the trailing \
+         EndOfLine the ink-dialect frontend applies to the same construct: {:?}",
+        body.stmts
+    );
+}
+
 #[test]
 fn logic_line_assignment_lowers_to_stmt_assignment() {
     let (hir, _m, diags) = lower_src("flow a() {\n  ~ n = 5\n}\n");

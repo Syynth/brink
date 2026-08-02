@@ -43,8 +43,8 @@ use std::mem::{size_of, size_of_val};
 use std::sync::Arc;
 
 use brink_analyzer::{
-    BodyTypes, DirectCallArgMismatch, FieldAssignMismatch, InferredSig, Sig, Ty,
-    TypedAssignMismatch, UfcsCallArgs, ValueCallFact,
+    BodyTypes, DirectCallArgMismatch, FieldAssignMismatch, InferredSig, LambdaAnnotationMismatch,
+    Sig, Ty, TypedAssignMismatch, UfcsCallArgs, ValueCallFact,
 };
 use brink_format::DefinitionId;
 use brink_ir::{
@@ -386,6 +386,14 @@ fn field_assign_mismatch_heap(m: &FieldAssignMismatch) -> usize {
         + ty_heap(&m.found)
 }
 
+/// Issue #1994: a `LambdaAnnotationMismatch`'s own heap contribution — its
+/// optional `param_name` (`None` for a return-slot mismatch, so it costs
+/// nothing) plus its two `Ty`s (`expected`/`found`), same shape as
+/// [`typed_assign_mismatch_heap`] extended for the optional string.
+fn lambda_annotation_mismatch_heap(m: &LambdaAnnotationMismatch) -> usize {
+    m.param_name.as_ref().map_or(0, string_heap) + ty_heap(&m.expected) + ty_heap(&m.found)
+}
+
 /// Issue #1881: a `UfcsCallArgs`'s own heap contribution — its `args` `Vec`
 /// plus each element's own `Ty` heap cost, same shape `body_types_heap`
 /// already applies to `b.params`/`b.locals`. `TextRange` owns no heap data
@@ -435,6 +443,11 @@ fn body_types_heap(b: &BodyTypes) -> usize {
         + b.field_assign_mismatches
             .iter()
             .map(field_assign_mismatch_heap)
+            .sum::<usize>()
+        + vec_heap(&b.lambda_annotation_mismatches)
+        + b.lambda_annotation_mismatches
+            .iter()
+            .map(lambda_annotation_mismatch_heap)
             .sum::<usize>()
         + vec_heap(&b.ufcs_call_args)
         + b.ufcs_call_args
@@ -732,6 +745,7 @@ mod tests {
                 direct_call_arg_mismatches: Vec::new(),
                 typed_assign_mismatches: Vec::new(),
                 field_assign_mismatches: Vec::new(),
+                lambda_annotation_mismatches: Vec::new(),
                 ufcs_call_args: Vec::new(),
                 array_remove_calls: Vec::new(),
             },
@@ -797,6 +811,28 @@ mod tests {
             expected: Ty::Int,
             found: Ty::String,
         });
+
+        let populated_size = infer_body_heap_size(&Some(Arc::new(populated)));
+        assert!(populated_size > empty);
+    }
+
+    /// Issue #1994: `lambda_annotation_mismatches` is a consumer
+    /// `body_types_heap` must walk too — same growth-proof shape as
+    /// [`infer_body_heap_size_grows_with_direct_call_arg_mismatches`], the
+    /// house rule 20b guard against a structurally-ignoring accumulator.
+    #[test]
+    fn infer_body_heap_size_grows_with_lambda_annotation_mismatches() {
+        let empty = infer_body_heap_size(&Some(Arc::new(BodyTypes::default())));
+
+        let mut populated = BodyTypes::default();
+        populated
+            .lambda_annotation_mismatches
+            .push(LambdaAnnotationMismatch {
+                range: rowan::TextRange::new(rowan::TextSize::new(0), rowan::TextSize::new(1)),
+                param_name: Some("very_long_param_name".to_string()),
+                expected: Ty::Int,
+                found: Ty::String,
+            });
 
         let populated_size = infer_body_heap_size(&Some(Arc::new(populated)));
         assert!(populated_size > empty);

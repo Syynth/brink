@@ -294,39 +294,43 @@ fn expr_or_tail_stmt(p: &mut Parser<'_, '_>) -> bool {
 // `TILDE` dispatch arm — never reached from `stmt_block`'s own per-
 // statement loop, which recognizes a bare `~` nowhere in its dispatch.
 
-/// `~ stmt` — parse one logic line. Only assignment (`at_assignment`,
-/// above) and a bare expression (evaluated for its side effect — e.g. a
-/// function call) have content-ground meaning here; every other code-ground
-/// statement shape (`let`, `if`, `while`, `for`, `until`, `return`, `break`,
-/// `continue`) either already has its own content-ground spelling reachable
-/// without a `~` (bare `return`/diverts are `body_line` keywords in their
-/// own right) or has no content-ground meaning at all — reaching for one of
-/// those here falls through to [`expr_stmt_line`], whose `expr::expression`
-/// call diagnoses an unrecognized leading keyword loudly (`expr::atom`'s
+/// `~ stmt` — parse one logic line. A temp declaration (`KW_LET`, issue
+/// #1972), assignment (`at_assignment`, above), and a bare expression
+/// (evaluated for its side effect — e.g. a function call) have
+/// content-ground meaning here; every other code-ground statement shape
+/// (`if`, `while`, `for`, `until`, `return`, `break`, `continue`) either
+/// already has its own content-ground spelling reachable without a `~`
+/// (bare `return`/diverts are `body_line` keywords in their own right) or
+/// has no content-ground meaning at all — reaching for one of those here
+/// falls through to [`expr_stmt_line`], whose `expr::expression` call
+/// diagnoses an unrecognized leading keyword loudly (`expr::atom`'s
 /// "expected an expression" fallback) rather than silently swallowing it,
 /// per issue #1991's own hedge ("if the decision is instead ... it must be
 /// a diagnostic, never silent prose").
 ///
-/// The `NEWLINE`/EOF that ends the line is left **unconsumed** by the two
+/// The `NEWLINE`/EOF that ends the line is left **unconsumed** by the three
 /// callees below and bumped here, as a sibling of `LOGIC_LINE`, exactly
 /// like `content::content_line`'s own trailing-newline handling — the line
 /// escape is a content-ground line, terminated by end-of-line, never by the
-/// code-ground `;` (`ASSIGN_STMT`/`EXPR_STMT` are reused unmodified from
-/// `stmt_block`'s grammar above — see `SyntaxKind::RETURN_STMT`'s doc for
-/// the established one-node-two-grammars precedent this follows).
+/// code-ground `;` (`LET_STMT`/`ASSIGN_STMT`/`EXPR_STMT` are reused
+/// unmodified from `stmt_block`'s grammar above — see
+/// `SyntaxKind::RETURN_STMT`'s doc for the established one-node-two-grammars
+/// precedent this follows).
 pub(crate) fn logic_line(p: &mut Parser<'_, '_>) {
     p.start_node(LOGIC_LINE);
     p.bump(); // TILDE
     p.skip_ws();
-    if at_assignment(p) {
+    if p.at(KW_LET) {
+        let_line(p);
+    } else if at_assignment(p) {
         assign_line(p);
     } else {
         expr_stmt_line(p);
     }
     // A statement/expression grammar that either recognized NOTHING at all
-    // (an unsupported shape — `if`/`while`/`for`/`until`/`let`/`return`/
-    // `break`/`continue`, none of which `expr::expression`'s atom accepts,
-    // already raised a diagnostic there) or stopped partway through (e.g.
+    // (an unsupported shape — `if`/`while`/`for`/`until`/`return`/`break`/
+    // `continue`, none of which `expr::expression`'s atom accepts, already
+    // raised a diagnostic there) or stopped partway through (e.g.
     // an operator `expr::expression` doesn't recognize, like `~ n *= 3`)
     // can leave tokens unconsumed before the line's real terminator. Left
     // alone, those tokens would be handed back to `body_line`'s next loop
@@ -387,13 +391,38 @@ fn assign_line(p: &mut Parser<'_, '_>) {
     p.finish_node();
 }
 
+/// `~ let name: type = expr` — a content-ground temp declaration (issue
+/// #1972: the emitter-only `Assignment`/`ExprStmt` gap #1991 closed left
+/// `TempDecl` as the one bucket of the three named in the corpus sweep
+/// still missing native **grammar**, not just a printer arm). Identical to
+/// [`let_stmt`] except for the terminator: this is a content-ground line,
+/// so it stops at `NEWLINE`/EOF, never `;` (see [`logic_line`]'s doc) — the
+/// same one-node-two-grammars precedent [`assign_line`] already follows for
+/// `ASSIGN_STMT`. Dispatched ahead of `at_assignment` in [`logic_line`]
+/// since `KW_LET` is a distinct token from `IDENT`, so there is no
+/// ambiguity between `~ let n = 5` and a plain `~ n = 5` assignment.
+fn let_line(p: &mut Parser<'_, '_>) {
+    p.start_node(LET_STMT);
+    p.bump(); // KW_LET
+    p.skip_ws();
+    p.expect(IDENT);
+    p.skip_ws();
+    super::decl::binding_annotation(p);
+    p.skip_ws();
+    if p.eat(EQ) {
+        p.skip_ws();
+        super::expr::expression(p);
+    }
+    p.finish_node();
+}
+
 /// `~ expr` — an expression evaluated for its side effect (a function call
 /// being the overwhelmingly common case). The content-ground counterpart of
 /// [`expr_or_tail_stmt`]'s `EXPR_STMT` case, minus the `;` terminator (see
-/// [`logic_line`]'s doc) — every `~ stmt` that isn't recognized as an
-/// assignment reaches here, so a malformed or unsupported logic line still
-/// gets a real (if generic) diagnostic from `expr::expression` rather than
-/// silently falling through to nothing.
+/// [`logic_line`]'s doc) — every `~ stmt` that isn't recognized as a temp
+/// declaration or an assignment reaches here, so a malformed or unsupported
+/// logic line still gets a real (if generic) diagnostic from
+/// `expr::expression` rather than silently falling through to nothing.
 fn expr_stmt_line(p: &mut Parser<'_, '_>) {
     p.start_node(EXPR_STMT);
     super::expr::expression(p);

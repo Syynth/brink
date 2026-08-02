@@ -59,8 +59,8 @@ unimplemented · ❓ unverified (nobody has checked; do not assume either way)
 | Tags `#` | ✅ | ✅ | ✅ | ✅ | markup inside a tag is **literal** (ruled #1783) |
 | Markup spans `<b>…</b>` | ✅ | ✅ | ✅ | ✅ | `.inkb` **v6** `PART_SPAN` |
 | Hyphenated span names `<fade-in>` | ✅ | ❌ | — | — | 🔒 ruled 2026-08-01 → **#1996** |
-| **Statements at prose position** | ✅ | ❌ | ❌ | ❌ | **🔴 SILENT** — see below |
-| `~ stmt` line escape | ✅ | ⚠️ | ❌ | ❌ | **🔴 SILENT** — #1991 |
+| **Statements at prose position (bare, no `~`)** | ⚠️ | ❌ | ❌ | ❌ | **🔴 SILENT** — see below; still open, #1972 |
+| `~ stmt` line escape (assignment/bare-call/temp-decl) | ✅ | ✅ | ✅ | ✅ | #1991 + #1972; `~{ }` LogicBlock and `~ await` still ungrammared |
 | `> text` line escape in code body | ✅ | ✅ | ❌ | ❌ | 🔒 `E129` — #1992 |
 | `return <value>` at prose position | ✅ | ❌ | — | — | #1973, 16 cases |
 | Alternations `{~ {& {! {\|` | ✅ | ✅ | ✅ | ❌ | emitter gap, 17 cases |
@@ -197,43 +197,68 @@ n = 1
 Value is 0.
 ```
 
-`block.rs::body_line` has **no dispatch arm for statements at content-ground
-position**, so anything statement-shaped falls through to
-`content::content_line` and is folded into a `TEXT` run. That single missing
-arm covers assignment, bare calls, temp declarations, logic blocks, `await`,
-**and** the ruled `~`-prefixed logic line.
+`block.rs::body_line` has **no dispatch arm for a *bare* (non-`~`) statement
+at content-ground position**, so anything statement-shaped and unprefixed
+falls through to `content::content_line` and is folded into a `TEXT` run.
+The ruled `~`-prefixed logic line (charter §8.2) is a separate dispatch arm
+and, as of #1991 + #1972, covers assignment, compound assignment, bare
+calls, and temp declarations — those four shapes parse, run, and
+round-trip correctly through `~`. `~{ }` `LogicBlock` and `~ await` remain
+real, unimplemented grammar gaps at this position, unrelated to the bare-
+spelling question. Only the **bare, unprefixed** spelling (`n = 1`, no `~`)
+still hits the silent fold-into-prose failure mode described above, and its
+disambiguation from ordinary prose is still an open design question
+(#1972's own scope note).
 
-**60 of the 210 respell failures** trace to it: assignment 27, expression
-statement 19, temp declaration 14. Tracked as **#1972**, with **#1991** as the
-`~`-spelling face of the same root cause.
+Fixed by #1991 (assignment/bare-call `~`-spelling) and #1972 (`~ let` temp
+decl + emitter parity for all three): the assignment/expression-statement/
+temp-declaration respell buckets that together accounted for 60 of the
+(then) 210 respell failures are now all at **zero** cases (verified by
+`full_corpus_sweep`, 2026-08-01). See "Corpus arithmetic" below for the
+current bucket breakdown.
 
-It is the worst failure mode the project has: no compile error, no runtime
-error, just a story that quietly does the wrong thing and shows the author's
-code to the reader.
+The bare-unprefixed form is still the worst failure mode the project has:
+no compile error, no runtime error, just a story that quietly does the
+wrong thing and shows the author's code to the reader.
 
 ---
 
 ## Corpus arithmetic
 
-`brink-respell`'s full-corpus sweep: **210 of 396 cases cannot round-trip.**
+`brink-respell`'s full-corpus sweep, re-run 2026-08-01 against this PR's
+branch (397 oracle cases; `cargo test -p brink-respell --test
+full_corpus_sweep -- --ignored --nocapture`): **168 of 397 cases cannot
+round-trip** (229 OK), down from 210/396 before #1991+#1972. The
+assignment / expression-statement / temp-declaration buckets that used to
+total 60 cases are now **zero** — those cases either round-trip cleanly or,
+where a second unsupported construct shared the same file, now surface that
+*other* gap instead (since `respell_ink_source` fails loud at the first
+unsupported node it meets, never partially). That's why several buckets
+below grew relative to the pre-fix table: IfElse conditional, alternation
+sequence, inline conditional in content, and return-with-value each picked
+up cases that used to be miscounted under the prose-body-statements bucket.
 
 | Cause | Cases | Kind |
 |---|---|---|
-| Prose-body statements (#1972/#1991) | **60** | grammar — **silent** |
+| Inline conditional in content | 26 | emitter |
+| Return with a value expression (#1973) | 22 | grammar |
 | Thread-start splice (#1974) | 21 | emitter |
-| Inline conditional in content | 21 | emitter |
+| Alternation sequence | 19 | emitter |
 | Divert-target-as-value | 18 | grammar |
-| Alternation sequence | 17 | emitter |
-| Value-return at prose position (#1973) | 16 | grammar |
-| `else if` conditional (#1975) | 12 | emitter |
-| Word-break spring (#1976) | 12 | needs-design |
-| Inline sequence in content | 10 | emitter |
+| `IfElse` conditional | 13 | emitter |
+| Word-break spring (#1976) | 13 | needs-design |
+| Inline sequence in content | 11 | emitter |
+| List-literal expression | 10 | — |
 | INCLUDE sites | 9 | — |
-| List-literal expression | 8 | — |
-| Multi-hop tunnel · onwards args · match arm | 6 | — |
+| Multi-hop tunnel chain | 3 | — |
+| Tunnel-return onwards args | 2 | — |
+| Match arm with no pattern | 1 | — |
 
-**At least 48 are pure emitter gaps** needing no grammar work
-(alternation + inline conditional + inline sequence).
+**Prose-body statements (#1972/#1991) are no longer a bucket** — 0 cases,
+verified above.
+
+**At least 56 are pure emitter gaps** needing no grammar work
+(alternation 19 + inline conditional 26 + inline sequence 11).
 
 ## How to read this board
 
