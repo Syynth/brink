@@ -93,7 +93,7 @@ whole vocabulary by naming a different conventions module. Sequenced as
 | `@[style]` declaration surface | ✅ | ✅ | ❌ | — | `StyleToken` produced, **zero consumers** (#1719) |
 | Built-in screenplay preset | ✅ | ❌ | — | — | #1720; `dialect.rs`'s `Default` is legacy hardcoding, not this |
 | `[project] elements` name validation | ✅ | ⚠️ | ⚠️ | — | #1874 |
-| `std::conventions` types | ❓ | ❌ | — | — | prose-spec §9 residual — the last prose-round design item |
+| `std::conventions` types | ✅ | — | — | — | **DISSOLVED by §9.1** — no type to design; `use` + a registration call |
 
 ## Editor side — how the author interrogates a claimed line
 
