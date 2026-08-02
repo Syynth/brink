@@ -79,7 +79,13 @@ combination is honestly spellable.
   container-level per-flow *metadata*. Identity is still the
   declaration's name, never a tag, so the SFC lesson stands;
   docs/prose-dialect-spec.md §8b.4.)** No one-flow-per-file constraint —
-  files hold many declarations (RULED: hard requirement).
+  files hold many declarations (RULED: hard requirement). **A `#tag`'s own
+  body is scanned as raw text, not reparsed — a content line's trailing
+  tags brace-balance (accepted eats-the-enclosing-closer tradeoff,
+  per-tag not per-line scope), while a declaration header line's own tags
+  instead stop unconditionally at the body opener (`{`/`~`/`>`) before
+  that depth logic ever engages — both spec'd in
+  docs/prose-dialect-spec.md §4.7.**
 - **Stitches are nested `flow`s** — `garden.gate` because addressing
   is nesting. (Depth >2 = watch list.)
 - Braces are the universal body delimiter — "solid" — for
