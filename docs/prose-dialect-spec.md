@@ -961,7 +961,18 @@ grace.
    `continue`** (a ratchet-moving change that would retire #1522's
    extra-step allowance).
 
-   ⚠ **Updated 2026-08-01.** **R2 was split out to #1574** on 2026-07-26,
+   ✅ **RULED 2026-08-01 — this thread is closed.** **R1: #1520 folds into
+   #1684** (the classifier's output *is* `Step`'s variants; no interim shape,
+   no standalone refactor) — so **#1684 now carries zero outstanding rulings**.
+   **R2 (#1574): NO** — `RanOutOfContent` keeps the deferred fault, brink does
+   not adopt `Story.cs`'s raise-on-discovery behavior, and `did_safe_exit()`
+   remains how callers distinguish a real `-> DONE`. ⚠ Consequence: the
+   `oracle.rs:227` and #1522 extra-step allowances are **PERMANENT**, and the
+   divergence from `Story.cs`'s `!canContinue` branch is **intentional** — stop
+   describing either as pending. The ran-out-of-content **message** does split
+   into four C#-matched variants (#1993), an axis independent of fault timing.
+
+   Historical note (superseded by the above): **R2 was split out to #1574** on 2026-07-26,
    so this is no longer "two rulings on one issue" — #1520 owns R1, #1574
    owns R2, and **neither is ruled** (no decision-log entry touches this
    cluster after 2026-07-25). Note also that **#1573/PR #1577 shipped a
