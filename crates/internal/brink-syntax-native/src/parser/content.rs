@@ -544,6 +544,23 @@ pub(crate) fn header_tag_tail(p: &mut Parser<'_, '_>) {
 /// fix and still does). Pinned by
 /// `a_tag_with_an_escaped_open_brace_does_not_swallow_the_enclosing_blocks_own_closer`.
 ///
+/// **CONFIRMED (issue #1883, item 2): `\}`'s unconditional significance is
+/// intentional, not a residual asymmetry to close.** `\{`'s
+/// backslash-parity carve-out exists *because* `\{` is one of the ruled,
+/// final four-character inline escape set (§8d.6: `\< \{ \# \\`) —
+/// #1716/PR #1732 ruled it the literal-brace escape, so a depth counter
+/// that treated it as a real opener would be reading a ruled escape
+/// wrong. `}` is **not** a member of that set — there is no equivalent
+/// "`\}` is a literal, non-metacharacter close-brace" ruling anywhere to
+/// protect. So an `R_BRACE` preceded by a `BACKSLASH` is exactly what it
+/// looks like: an ordinary backslash character followed by an ordinary,
+/// structurally significant `}` — giving it the same backslash-parity
+/// carve-out `{` has would *invent* a new escape meaning for a character
+/// the ruled grammar has never assigned one to, not close a parity gap.
+/// Pinned by
+/// `a_tags_own_unescaped_closing_brace_remains_the_terminator_even_when_preceded_by_a_backslash`.
+/// See `docs/prose-dialect-spec.md` §4.7 for the durable spec-level home.
+///
 /// **`\#` escapes the tag-boundary role of `#` (issue #1738).** A bare
 /// unescaped `HASH` always ends a tag — that is the `TAG_LINE`/trailing-tag
 /// grammar's own separator (`#a#b` is two sibling tags,
