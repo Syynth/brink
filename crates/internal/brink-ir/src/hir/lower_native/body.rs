@@ -1106,31 +1106,13 @@ pub(super) fn lower_interpolation(
 }
 
 fn lower_tag(file_id: FileId, t: &ast::Tag, diags: &mut Vec<Diagnostic>) -> Tag {
-    let mut text = String::new();
-    // Skip only the tag's own *leading* `HASH` (the `#` `tag()` consumes via
-    // `p.expect(HASH)` as its very first token) — not every `HASH` in the
-    // node. Before issue #1738's escape fix this distinction never mattered
-    // (a `HASH` anywhere else in the node was structurally impossible:
-    // `tag()`'s free-text scan always stopped *at* an interior `#`, ending
-    // the node right there). Now that `\#` lets a literal `#` survive inside
-    // a tag's own text (parser::content::tag's doc comment), an
-    // unconditional `HASH => continue` here would silently strip that
-    // escaped hash back out during lowering — dropping the very character
-    // the escape exists to preserve and leaving its paired backslash
-    // dangling with nothing after it.
-    let mut skipped_leading_hash = false;
-    for tok in t
-        .syntax()
-        .children_with_tokens()
-        .filter_map(rowan::NodeOrToken::into_token)
-    {
-        if !skipped_leading_hash && tok.kind() == N::HASH {
-            skipped_leading_hash = true;
-            continue;
-        }
-        text.push_str(tok.text());
-    }
-    let trimmed = text.trim().to_string();
+    // `ast::Tag::text()` owns the tag's own materialization: skipping only
+    // the leading `HASH` (not every `HASH` in the node — an interior one
+    // survives via `\#`, #1738), trimming surrounding whitespace, and
+    // stripping a *recognized* escape's backslash (§8d.6, issue #2045) —
+    // parity with `markup::escape`'s stripping in ordinary content. See
+    // that accessor's own doc for the full rationale.
+    let trimmed = t.text();
     if let Some(rest) = trimmed.strip_prefix('@') {
         diags.push(directive_like_tag_diagnostic(
             file_id,

@@ -101,15 +101,29 @@ fn a_scene_title_with_an_escaped_hash_does_not_end_the_title_early() {
         .expect("SCENE_HEADING");
     assert_eq!(
         heading.title().expect("title").text(),
-        "INT. MARKET \\#3",
-        "an escaped `#` must not end the title early, and the backslash is \
-         not stripped — same precedent `\\{{` and `tag()`/`cue_name()` \
-         already established"
+        "INT. MARKET #3",
+        "an escaped `#` must not end the title early, and (issue #2045)
+         `SceneTitle::text()` now strips the recognized escape's backslash,
+         parity with `markup::escape`'s stripping in ordinary content"
     );
     assert!(
         !has_node_kind(&p.syntax(), SyntaxKind::TAG),
         "the escaped `#` must not be reparsed as a trailing TAG"
     );
+}
+
+#[test]
+fn a_scene_titles_text_accessor_strips_a_recognized_open_brace_escapes_backslash() {
+    // Issue #2045's own scope note: `\{` gets the identical treatment as
+    // `\#`, not just the hash case. `scene_title()` never counts braces
+    // (unlike `tag()`/`cue_name()`), so there is no depth interaction to
+    // guard here — just the same text-accessor stripping.
+    let src = "INT. MARKET \\{3\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let heading = ast::SceneHeading::cast(first_node(&p.syntax(), SyntaxKind::SCENE_HEADING))
+        .expect("SCENE_HEADING");
+    assert_eq!(heading.title().expect("title").text(), "INT. MARKET {3");
 }
 
 #[test]
@@ -390,14 +404,28 @@ fn a_cue_name_with_an_escaped_hash_does_not_end_the_name_early() {
     let cue = ast::Cue::cast(first_node(&p.syntax(), SyntaxKind::CUE)).expect("CUE");
     assert_eq!(
         cue.name().expect("name").text(),
-        "NAME \\#not a tag",
-        "an escaped `#` must not end the name early, and the backslash is \
-         not stripped — same precedent `\\{{` already established"
+        "NAME #not a tag",
+        "an escaped `#` must not end the name early, and (issue #2045)
+         `CueName::text()` now strips the recognized escape's backslash,
+         parity with `markup::escape`'s stripping in ordinary content"
     );
     assert!(
         !has_node_kind(&p.syntax(), SyntaxKind::TAG),
         "the escaped `#` must not be reparsed as a trailing TAG"
     );
+}
+
+#[test]
+fn a_cue_names_text_accessor_strips_a_recognized_open_brace_escapes_backslash() {
+    // Issue #2045's own scope note: `\{` gets the identical treatment as
+    // `\#`. Kept brace-free-of-depth (no unclosed `{` here — the depth
+    // carve-out this fix does not touch stays orthogonal, see
+    // `a_cue_name_with_an_escaped_open_brace_does_not_swallow_the_enclosing_blocks_own_closer`).
+    let src = "@NAME \\{not a brace\nHello.\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let cue = ast::Cue::cast(first_node(&p.syntax(), SyntaxKind::CUE)).expect("CUE");
+    assert_eq!(cue.name().expect("name").text(), "NAME {not a brace");
 }
 
 #[test]
