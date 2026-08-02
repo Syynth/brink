@@ -559,7 +559,7 @@ pub(crate) fn header_tag_tail(p: &mut Parser<'_, '_>) {
 /// the ruled grammar has never assigned one to, not close a parity gap.
 /// Pinned by
 /// `a_tags_own_unescaped_closing_brace_remains_the_terminator_even_when_preceded_by_a_backslash`.
-/// See `docs/prose-dialect-spec.md` §4.7 for the durable spec-level home.
+/// See `docs/prose-dialect-spec.md` §4.7b for the durable spec-level home.
 ///
 /// **`\#` escapes the tag-boundary role of `#` (issue #1738).** A bare
 /// unescaped `HASH` always ends a tag — that is the `TAG_LINE`/trailing-tag

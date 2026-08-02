@@ -285,6 +285,8 @@ pub(crate) fn cue_line(p: &mut Parser<'_, '_>) {
     }
 }
 
+/// Spec'd in `docs/prose-dialect-spec.md` §4.7a.
+///
 /// The name run after the `@` sigil. Raw-bumped up to `:`/tags/line end,
 /// so a multi-word character name (`@MARKET VENDOR`) is one name rather
 /// than a name plus stray text.
@@ -336,7 +338,7 @@ pub(crate) fn cue_line(p: &mut Parser<'_, '_>) {
 /// becomes a sibling `TAG`, and the still-open `{`'s matching `}` becomes
 /// a stray top-level token once the name's own scan is long over. Pinned
 /// by `a_hash_inside_an_open_brace_still_ends_a_cue_name_early`. See
-/// `docs/prose-dialect-spec.md` §4.7 for the durable spec-level home.
+/// `docs/prose-dialect-spec.md` §4.7b for the durable spec-level home.
 ///
 /// **CONFIRMED (issue #1883, item 2): `\}`'s unconditional significance to
 /// the depth check (mirroring `tag()`, above) is intentional, not a
@@ -350,14 +352,16 @@ pub(crate) fn cue_line(p: &mut Parser<'_, '_>) {
 /// significant `}`, so it keeps ending the name exactly like an unescaped
 /// `}` would, at depth zero. Pinned by
 /// `a_cue_names_own_unescaped_closing_brace_remains_the_terminator_even_when_preceded_by_a_backslash`.
+/// See `docs/prose-dialect-spec.md` §4.7b for the durable spec-level home.
 ///
 /// **`\#` escapes the name-boundary role of `#` (issue #1738), mirroring
 /// `tag()`'s identical fix** — an unescaped `HASH` still cuts the name short
-/// (the paragraph above, and #1883, are both about *that* case and are
-/// unchanged by this), but `#` is one of the four members of the ruled,
-/// final inline escape set (§8d.6), and `cue_name()` gave it zero escape
-/// treatment before this fix: a `\#` inside a name still ended it at the
-/// `#`, same defect `tag()` had. Same `backslash_count`-parity carve-out,
+/// (the paragraph above, and #1883 — resolved, see §4.7b — are both about
+/// *that* case and are unchanged by this), but `#` is one of the four
+/// members of the ruled, final inline escape set (§8d.6), and `cue_name()`
+/// gave it zero escape treatment before this fix: a `\#` inside a name
+/// still ended it at the `#`, same defect `tag()` had. Same
+/// `backslash_count`-parity carve-out,
 /// same "backslash not stripped from the literal text" precedent as `\{`
 /// just above. Pinned by
 /// `a_cue_name_with_an_escaped_hash_does_not_end_the_name_early`.
