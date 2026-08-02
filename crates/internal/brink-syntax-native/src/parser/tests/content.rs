@@ -678,6 +678,25 @@ fn a_tag_with_an_escaped_backslash_before_a_real_brace_counts_the_brace() {
     let p = assert_lossless(src);
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
     assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::FLOW_DECL), 1);
+    // Issue #2045: `ast::Tag::text()` strips a recognized escape's
+    // backslash via the same greedy left-to-right consumption
+    // `markup::escape` uses, so the escaped backslash here collapses to
+    // one literal `\` and the real brace that follows is left alone —
+    // `\\{ }` materializes as `\{ }`, not the raw `\\{ }`.
+    let tag = find_child::<ast::Tag>(
+        &p.syntax()
+            .descendants()
+            .find(|n| n.kind() == SyntaxKind::CONTENT_LINE)
+            .expect("CONTENT_LINE"),
+    )
+    .expect("Tag");
+    assert_eq!(
+        tag.text(),
+        "tag \\{ } coins.",
+        "an escaped backslash before a real brace collapses to one literal \
+         `\\`, matching `markup::escape`'s greedy consumption for ordinary \
+         content"
+    );
 }
 
 #[test]

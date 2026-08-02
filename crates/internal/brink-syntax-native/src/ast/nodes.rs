@@ -1385,54 +1385,33 @@ impl Tag {
 /// accessors funnel through instead, so the three stay self-consistent
 /// rather than drifting into three near-identical hand-rolled copies.
 ///
-/// Mirrors the *existing* parser-level parity reading these scanners
-/// already use for structural purposes (#1852/#1738: a run of `N`
-/// consecutive backslashes immediately preceding an escapable character
-/// only escapes it when `N` is odd — the last backslash is the escaping
-/// one; an even run means the backslashes pair off and escape each other,
-/// so the character stays unescaped). Only the odd case strips anything,
-/// and only ever the one escaping backslash: the `N - 1` backslashes left
-/// over from an odd run, and every backslash in an even run, are left
-/// untouched — this does not newly collapse backslash *pairs* the way
-/// `markup::escape`'s own greedy left-to-right consumption would for a
-/// bare `\\` with nothing recognized following it (that residual gap, if
-/// it is one, is unclaimed by this issue and not decided here). A run
-/// followed by anything other than `< { #` is untouched — these scanners
-/// give zero escape treatment to any other backslash sequence, and #2040
-/// (whether that should become a diagnostic) is a distinct, still-open
-/// question this does not answer.
+/// This is the *same* greedy left-to-right consumption `markup::escape`
+/// itself performs: scanning forward, a lone `\` immediately followed by
+/// one of `< { # \` consumes both and emits the escaped char literally;
+/// any other `\` (followed by something else, or by nothing) is emitted
+/// as itself and only that one character is consumed before continuing.
+/// This is provably identical to the parser's own odd/even run-parity
+/// reading these scanners use for structural purposes (#1852/#1738: `N`
+/// consecutive backslashes before `<`/`{`/`#` only escape it when `N` is
+/// odd, because greedily consuming pairs left-to-right leaves exactly one
+/// unpaired backslash when `N` is odd and none when `N` is even) — so no
+/// parser change is needed here, and no structural test moves. Unlike the
+/// prior run-parity-only reading, this also collapses a bare `\\` pair
+/// with nothing recognized following it (`a\\b` -> `a\b`), because that is
+/// exactly what `markup::escape`'s greedy consumption does too: the first
+/// backslash of the pair escapes the second, regardless of what follows.
 fn strip_recognized_escape_backslashes(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
     let mut i = 0;
     while i < chars.len() {
-        if chars[i] != '\\' {
+        if chars[i] == '\\' && matches!(chars.get(i + 1), Some('<' | '{' | '#' | '\\')) {
+            let escaped = chars[i + 1];
+            out.push(escaped);
+            i += 2;
+        } else {
             out.push(chars[i]);
             i += 1;
-            continue;
-        }
-        let run_start = i;
-        while i < chars.len() && chars[i] == '\\' {
-            i += 1;
-        }
-        let run_len = i - run_start;
-        // A maximal run of backslashes was just consumed, so the next
-        // char (if any) can never itself be `\` — only `<`/`{`/`#` are
-        // possible members of the recognized set here.
-        let next = chars.get(i).copied();
-        let escapes_next = run_len % 2 == 1 && matches!(next, Some('<' | '{' | '#'));
-        if escapes_next {
-            for _ in 0..run_len - 1 {
-                out.push('\\');
-            }
-            if let Some(c) = next {
-                out.push(c);
-                i += 1;
-            }
-        } else {
-            for _ in 0..run_len {
-                out.push('\\');
-            }
         }
     }
     out

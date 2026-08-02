@@ -66,3 +66,22 @@ flow main() {
     );
     assert_eq!(out, vec!["tag {gold".to_owned()]);
 }
+
+#[test]
+fn a_recognized_backslash_escape_in_a_tag_strips_its_backslash_end_to_end() {
+    // Issue #2045 review finding: `\\` (a backslash escaping a backslash)
+    // is the fourth member of the §8d.6 recognized set and was the one
+    // actually broken by the prior run-parity-only reading — a bare `\\`
+    // pair with nothing recognized following it never stripped, unlike
+    // `markup::escape`'s greedy consumption for ordinary content, which
+    // collapses the pair to one literal `\` regardless of what follows.
+    let out = tags(
+        "\
+flow main() {
+  Hello. #a\\\\b
+  -> END
+}
+",
+    );
+    assert_eq!(out, vec!["a\\b".to_owned()]);
+}
