@@ -36,9 +36,10 @@
 //! (`block::block`).
 
 use crate::SyntaxKind::{
-    ASSIGN_STMT, BREAK_STMT, CONTINUE_STMT, DOT, EOF, EQ, EXPR_STMT, IDENT, KW_BREAK, KW_CONTINUE,
-    KW_FOR, KW_IF, KW_LET, KW_RETURN, KW_UNTIL, KW_WHILE, L_BRACE, LET_STMT, LOGIC_LINE, MINUS_EQ,
-    NEWLINE, PLUS_EQ, R_BRACE, RETURN_STMT, SEMICOLON, STMT_BLOCK,
+    ASSIGN_STMT, BREAK_STMT, CONTINUE_STMT, DOT, EOF, EQ, EXPR_STMT, GT, IDENT, KW_BREAK,
+    KW_CONTINUE, KW_FOR, KW_IF, KW_LET, KW_RETURN, KW_UNTIL, KW_WHILE, L_BRACE, LET_STMT,
+    LOGIC_LINE, MINUS_EQ, NEWLINE, PLUS_EQ, PROSE_LINE, R_BRACE, RETURN_STMT, SEMICOLON,
+    STMT_BLOCK,
 };
 
 use super::Parser;
@@ -100,12 +101,13 @@ pub(crate) fn stmt_block(p: &mut Parser<'_, '_>) {
 /// Parse one statement (or the block's tail expression) at the current
 /// position. Returns `true` if the block should keep looping (a `;`-
 /// terminated `LET_STMT`/`ASSIGN_STMT`/`EXPR_STMT`/`UNTIL_STMT`/
-/// `RETURN_STMT`/`BREAK_STMT`/`CONTINUE_STMT`, or a brace-delimited
-/// `IF_STMT`/`WHILE_STMT`/`FOR_STMT`, was produced), `false` if what was
-/// parsed is the tail — an unterminated expression, which must be the last
-/// thing in the enclosing `STMT_BLOCK`. Control-flow constructs and the
-/// three B0.8 Wave B tail additions never produce a value (no case for any
-/// of them exists on the blocks-as-values tail position — see
+/// `RETURN_STMT`/`BREAK_STMT`/`CONTINUE_STMT`, a brace-delimited
+/// `IF_STMT`/`WHILE_STMT`/`FOR_STMT`, or a `PROSE_LINE`, was produced),
+/// `false` if what was parsed is the tail — an unterminated expression,
+/// which must be the last thing in the enclosing `STMT_BLOCK`.
+/// Control-flow constructs, the three B0.8 Wave B tail additions, and the
+/// `> text` prose-line escape (issue #1992) never produce a value (no case
+/// for any of them exists on the blocks-as-values tail position — see
 /// `ast::StmtBlock::tail`'s doc), so they always return `true` here, same
 /// as the `;`-terminated statements.
 fn statement(p: &mut Parser<'_, '_>) -> bool {
@@ -139,6 +141,16 @@ fn statement(p: &mut Parser<'_, '_>) -> bool {
     }
     if p.at(KW_CONTINUE) {
         continue_stmt(p);
+        return true;
+    }
+    // `> text` — the code-ground prose-line escape (charter §8.2, issue
+    // #1992: the mirror image of `logic_line`'s `~ stmt`, below). Checked
+    // ahead of `at_assignment`/`expr_or_tail_stmt`: `GT` is a distinct
+    // token from `IDENT` and starts no expression this grammar's `atom`
+    // recognizes, so there is no ambiguity with a comparison expression
+    // statement or any other shape.
+    if p.at(GT) {
+        prose_line(p);
         return true;
     }
     if at_assignment(p) {
@@ -426,5 +438,43 @@ fn let_line(p: &mut Parser<'_, '_>) {
 fn expr_stmt_line(p: &mut Parser<'_, '_>) {
     p.start_node(EXPR_STMT);
     super::expr::expression(p);
+    p.finish_node();
+}
+
+// `> text` — the code-ground prose-line escape (charter §8.2, RULED
+// 2026-07-23, issue #1992): the mirror image of `logic_line` above, at the
+// opposite ground. Dispatched from `statement()`'s `GT` arm — reachable
+// everywhere a `STMT_BLOCK` statement is parsed: a `fn`'s default body, a
+// `flow`'s `~{ }` "Compound guard" override, and every nested `if`/`while`/
+// `for` body (all of which reuse `stmt_block`/`statement()` verbatim for
+// their own braced body). HIR lowering (`hir::lower_native`) only wires the
+// **top-level** case through to real content emission today — the same
+// scope the issue's own repro exercises; the nested-body case still parses
+// clean (this escape needs no case-by-case grammar restriction — it is
+// legal everywhere a statement is) but is diagnosed loudly (E129, "parses
+// but has no HIR lowering yet") wherever the HIR layer doesn't yet have a
+// content-emission home for it, exactly like any other as-yet-unsupported
+// `STMT_BLOCK` item.
+
+/// `> text` — parse one prose-line escape. Wraps a single
+/// [`super::content::content_line`] child, reused **unmodified** from the
+/// content-ground line layer — same grammar, same node kind (`CONTENT_LINE`)
+/// the whole-body `>{ }` prose-ground form (`block::block`) already
+/// produces per line. Unlike [`logic_line`], no extra recovery loop is
+/// needed here: `content_line` already owns its own termination discipline
+/// (stops at `NEWLINE`/EOF, and — critically, since this now nests inside a
+/// code-ground `STMT_BLOCK` — never consumes a bare `R_BRACE`, which closes
+/// the enclosing body rather than the line itself; see `content_line`'s own
+/// doc). A partially-consumed content run (e.g. an interpolation `{expr}`
+/// that itself hits a parse error) is handled by `content_line`'s own
+/// `content_items_until` engine, which already stops cleanly at the same
+/// terminator set — nothing here can leave the parser stuck mid-line the
+/// way an unrecognized code-ground statement shape could (issue #1991
+/// findings F2/F3, [`logic_line`]'s doc).
+pub(crate) fn prose_line(p: &mut Parser<'_, '_>) {
+    p.start_node(PROSE_LINE);
+    p.bump(); // GT
+    p.skip_ws();
+    super::content::content_line(p);
     p.finish_node();
 }

@@ -30,6 +30,18 @@
 //! this slice — see `expr::lower_expr`'s `STMT_BLOCK` arm doc and `expr`'s
 //! module doc, respectively. UFCS calls lower structurally here like any
 //! other call; their resolution is `brink-analyzer::ufcs`' (issue #1482).
+//!
+//! **`> text` (charter §8.2, issue #1992)** is deliberately *not* part of
+//! the closed `BlockStmt` set this module lowers to: content is the one
+//! weave concept `docs/t1b-surface-spec.md` §2's seam rule fences out of
+//! it, and that fence protects the brink-dialect's own `~ { … }` block too
+//! (same HIR type, different frontend). The escape's real content-emission
+//! lowering lives one layer up, in `body::lower_stmt_block_as_body`, which
+//! splits a `flow`/`fn`'s own top-level code-ground body around
+//! `PROSE_LINE` boundaries instead of handing the whole body to
+//! [`lower_stmt_block`] in one call. See [`lower_block_item`]'s doc for
+//! what that means for a `PROSE_LINE` nested deeper (an `if`/`while`/`for`
+//! body, or a lambda's).
 
 use brink_syntax_native::SyntaxKind as N;
 use brink_syntax_native::SyntaxNode;
@@ -143,7 +155,24 @@ pub(super) fn lower_stmt_block_stmts(
         .collect()
 }
 
-fn lower_block_item(
+/// Lower a single `STMT_BLOCK` item to the `BlockStmt` T1b closed set.
+///
+/// `pub(super)`, reused by `body::lower_stmt_block_as_body` (issue #1992):
+/// that function still lowers each *run* of ordinary statements through
+/// this same per-item dispatch, splitting only at `PROSE_LINE` boundaries
+/// (which have no `BlockStmt` representation — content is a weave concept,
+/// out of scope for the T1b closed set, `docs/t1b-surface-spec.md` §2's
+/// seam rule) to interleave real content emission between logic segments.
+/// A `PROSE_LINE` reaching *this* function directly (nested inside an
+/// `if`/`while`/`for` body, or a lambda's braced body — every context that
+/// still calls [`lower_stmt_block`]/[`lower_stmt_block_stmts`] wholesale
+/// rather than the split-aware caller) therefore still falls to the
+/// default `_ => E129` arm below: the escape parses cleanly at any nesting
+/// depth (`stmt::statement()`'s dispatch has no positional restriction),
+/// but this slice only gives it a real content-emission home at a
+/// `flow`/`fn`'s own top-level code-ground body — loud, not silent,
+/// everywhere else, same posture as any other as-yet-unsupported item.
+pub(super) fn lower_block_item(
     file_id: FileId,
     item: &SyntaxNode,
     diags: &mut Vec<Diagnostic>,

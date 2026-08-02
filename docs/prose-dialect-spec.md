@@ -264,19 +264,40 @@ fn radio(chan: string, text: content) {
 !radio TAC-2: All units report in.
 ```
 
-- **Sigil + name dispatch (RULED, addendum 3).** Annotation elements
-  live behind the `!` sigil: `!name args…`. The first identifier
-  dispatches **by name** to the annotated fn (fn name, or an alias
-  given by `@[element(name = "alias")]`); the `args` pattern parses
-  only the remainder,
-  binding captures to params. Rationale: without a sigil, a user
-  pattern can silently claim natural prose — declared, but *invisible
-  at the use site*; the sigil makes every rewritten line
-  self-announcing (the explicit-format posture applied to macros).
-  Name dispatch **dissolves the match-ordering problem entirely**:
-  duplicate names are ordinary duplicate-definition errors, and an
-  unmatched remainder is a targeted diagnostic naming both the line
-  and the handler's pattern. (Fountain's `!`-forces-plain-action
+- **Sigil + name dispatch (RULED, addendum 3; landed by issue #2004 for
+  the plain, non-`block` case).** Annotation elements live behind the `!`
+  sigil: `!name args…` — parsed as one `BANG_DISPATCH` node
+  (`brink-syntax-native`'s `parser::element::at_bang_dispatch`/
+  `bang_dispatch`), composing with `\!`'s line-start escape (§8d.6) by
+  construction. The first identifier dispatches **by name** to the
+  annotated fn (fn name, or an alias given by `@[element(name =
+  "alias")]`); the `args` pattern parses only the remainder, binding
+  captures to params (`brink_ir::hir::lower_native::element::
+  try_dispatch`) — the same wholly-literal-remainder and
+  captures-bind-params-by-name mechanics `claims` dispatch already uses.
+  Rationale: without a sigil, a user pattern can silently claim natural
+  prose — declared, but *invisible at the use site*; the sigil makes
+  every rewritten line self-announcing (the explicit-format posture
+  applied to macros). Name dispatch **dissolves the match-ordering
+  problem entirely**: at most one handler can ever match a given `!name`
+  line's own name, so there is no analogue of `claims`'s "two patterns
+  match one line" question. Two *declarations* naming the same dispatch
+  name is a distinct question, and is only an interim first-declared-wins
+  today (`Elements::dispatch`'s own doc) — the ruled "duplicate names are
+  ordinary duplicate-definition errors" is not yet a diagnostic; nor is
+  the ruled "an unmatched remainder is a targeted diagnostic naming both
+  the line and the handler's pattern" — an unmatched-name or
+  unmatched-remainder `!name` line falls to the generic `E129`
+  ("parses cleanly but has no HIR lowering yet") rather than a diagnostic
+  that names the line and pattern, since no diagnostic code is
+  pre-assigned for either yet (both remain open follow-up work). The
+  target is a **top-level `fn` only**, matching `claims`'s own
+  restriction (the rewrite is an expression call) — a `flow`'s own `args`
+  clause still parses and validates but is not yet a live dispatch
+  target. Dispatch is **file-local**, matching `claims`'s pre-#1863 scope
+  (no cross-file dispatch-name resolution yet), and a `block`-declared
+  handler's trailing receiver still has nothing dispatching into it
+  (issue #1839's own scope). (Fountain's `!`-forces-plain-action
   inversion noted and accepted — "good point of reference, not
   married to it.")
 - **Pattern power proportional to auditability.** Natural-notation
@@ -360,16 +381,19 @@ fn radio(chan: string, text: content) {
   receiver cannot be the same param) —
   `crates/internal/brink-ir/src/hir/lower_native/annotation.rs`'s
   `has_block_content_param`. Declaration-surface only, matching #1719's
-  own scope for `element`/`style`: the `!name`/natural-notation dispatch
-  rewrite that would actually match a line, find the block's terminator,
-  and call the handler with the captured run is issue #1838's scope, not
-  delivered here. `content` is now a resolvable annotation type name
-  (`Ty::Content`, issue #1846 — see the Deferred bullet below), so a
-  conforming `block` declaration compiles cleanly under `dialect = brink`
-  on its own `content`-typed parameter; it is still **not usable
-  end-to-end** — nothing dispatches to it yet, since the `!name` sigil
-  rewrite that would actually bind a captured run to that param remains
-  issue #1838's scope.
+  own scope for `element`/`style`: the non-`block` half of `!name`
+  dispatch now matches a line and calls the handler (issue #2004), but
+  finding the block's terminator and capturing the following run into the
+  trailing param is still not implemented — that is issue #1839's own
+  follow-on scope, not delivered here or by #2004. `content` is now a
+  resolvable annotation type name (`Ty::Content`, issue #1846 — see the
+  Deferred bullet below), so a conforming `block` declaration compiles
+  cleanly under `dialect = brink` on its own `content`-typed parameter;
+  it is still **not usable end-to-end** — `try_dispatch` declines to
+  dispatch a `block`-declared handler at all today (its trailing receiver
+  has no capture to bind it from, the same missing-argument decline any
+  under-captured handler gets), since the block-capture binding that
+  would actually fill it remains issue #1839's scope.
 - **`@[style]` — declared editor presentation (RULED, addenda 3–4).**
   A companion annotation mapping captures (and `line` = the whole
   line; `dispatch` = the `!name` prefix) to style values, drawn from
@@ -409,24 +433,24 @@ fn radio(chan: string, text: content) {
   remain unbuilt); context injection (handlers
   reading attachment data); `Option` params for optional captures;
   binding a `content`-typed param to an actual captured `FragmentRef`/prose
-  block (issue #1846 gave `content` a resolvable `Ty` in the native type
-  system — the ruled `fn radio(chan: string, text: content)` example's
-  `text` param, and `block`'s own trailing receiver param, now compile —
-  but nothing yet *dispatches* a captured run into one; that binding rides
-  the `!name` sigil rewrite below, issue #1838's scope); the `!name` sigil
-  dispatch rewrite itself (matching
-  a content line, binding captures, lowering to a call — issue #1719
-  delivered the `@[element]`/`@[style]` **declaration surface**, and issue
-  #1839 widened it with the `block` clause's own declaration-surface
-  contract (`E166`, see the bullet above): parsing, portable-regex
-  validation, the captures-bind-params-by-name compile check, and the
-  block-receiver structural check, all in
-  `brink_ir::hir::lower_native::annotation`; nothing dispatches yet, for
-  either);
-  cross-file dispatch-name resolution and the duplicate-dispatch-name
-  check (v1 validates one declaration at a time — and #1838's claiming
-  dispatch is file-local for the same reason); block capture (issue
-  #1839) and `fn conventions()` registration + comptime (issue #1840 —
+  block via the `block` clause (issue #1846 gave `content` a resolvable
+  `Ty` in the native type system — the ruled `fn radio(chan: string, text:
+  content)` example's `text` param, and `block`'s own trailing receiver
+  param, now compile, and issue #2004 now dispatches the plain, non-`block`
+  case — but a `block`-declared handler's trailing receiver still has
+  nothing dispatching into it; that binding is issue #1839's own scope);
+  the ruled duplicate-dispatch-name error and the ruled targeted
+  unmatched-remainder diagnostic (issue #2004 dispatches the plain case
+  but leaves both of these as an interim first-declared-wins and a
+  generic `E129` fallback respectively — see the "Sigil + name dispatch"
+  bullet above; no diagnostic code is pre-assigned for either yet);
+  cross-file dispatch-name resolution (v1 validates one declaration at a
+  time — and #2004's `!name` dispatch is file-local for the same reason
+  `claims` is); dispatching to a `flow` target rather than a top-level
+  `fn` (`!name`'s own placement is legal on a `flow` too, but nothing
+  scans a `flow`'s declaration into the dispatch table yet); block
+  capture's own dispatch mechanism (issue #1839) and `fn conventions()`
+  registration + comptime (issue #1840 —
   **blocked on four rulings**, sized in
   `docs/conventions-comptime-sizing.md`: the identity a registered handler
   carries across the comptime boundary, whether a comptime fault fails the
@@ -684,6 +708,119 @@ one. See §4.2 above.
 `xliff_convert.rs`'s `push_part_inline`/`elements_to_parts`) — real
 `<pc>`/`<ph>` mapping, described above. The only item still open is the
 `Step`/`Part` structured runtime surface (§7/§9.1).
+
+### 4.6 Escape/markup layer coverage audit across prose scanners (#1738)
+
+Filed from a wave retro on #1716/PR #1732: that PR landed the final inline
+escape set (§8d.6) and the markup/span grammar, but only for the scanners
+that reuse the shared `content::content_items_until_impl` engine. A handful
+of *other* free-text scanners exist in the native parser
+(`brink-syntax-native`) that never call into that engine at all — issue
+#1738 asked for an explicit, durable audit of exactly which scanner honors
+which piece of §4/§8d.6, since "does `\#` work here" had never been checked
+scanner-by-scanner before. The table below is that audit; keep it current
+when any scanner's escape/markup handling changes.
+
+| Scanner | Where | 4-char inline escapes `\< \{ \# \\` (§8d.6) | Line-start escapes `\! \@` (§8d.6, #1744) | Markup spans `<ident>…</ident>` (§4) | Status |
+|---|---|---|---|---|---|
+| `content::content_items_until_impl` (the shared engine: ordinary content lines, choice-text anatomy, inline alternation bodies) | `content.rs` | **Full** — `BACKSLASH` dispatches to `markup::escape`, which recognizes exactly the four and errors on anything else | N/A (line-start-only; see the `content_line` row) | **Full** — `LT` dispatches to `markup::span` when `at_span_open`/`at_span_close` holds | Reference implementation — this is "the escape/markup layer" the other rows are compared against |
+| `content::text_run_until` (the engine's own `TEXT`-run sub-scanner) | `content.rs` | N/A directly — it never sees a `BACKSLASH`/`LT`/`HASH`/`GLUE`/`DIVERT`/doc-comment token itself; it unconditionally **breaks** on each so the outer loop above can dispatch them structurally | N/A | N/A (same reason) | Structural only, by design — not a gap; folding these into `TEXT` would silently defeat the outer loop's own dispatch (its own doc comment says so) |
+| `content_line` / `content_line_else_boundary` (a full `CONTENT_LINE`, including the fused remainder a `COMPACT_CUE`/`BANG_DISPATCH` reuses it for) | `content.rs` | **Full**, via the shared engine above | **Full** — the one and only call site of `markup::at_line_start_escape`/`line_start_escape`, checked once as the first item scanned | **Full**, via the shared engine above | Reference implementation |
+| `markup::span` (a span's own body, recursing back into the shared engine with an `expected_close`) | `markup.rs` | **Full** — inherited "for free" by construction, not reimplemented: `span` calls `content::content_items_until_impl` for its body with the *same* `stop` its caller had | N/A (spans never open at a physical line-start; the sigil collision §1744 guards against doesn't arise mid-span) | **Full** — nested spans recurse the same way | Reference implementation, by inheritance |
+| `content::tag` (a `#tag`'s own free-text body — `tag_line_tail`'s per-tag call, and `header_tag_tail`'s header-line variant) | `content.rs` | **Full, as of #2045.** The *parser's* backslash-parity tracking is unchanged from #1738/#1852 (`\{`/`\\{` depth-parity; `\#` suppresses the tag-terminating role) and the raw `TAG` CST node stays a lossless, unstripped copy of the source — there is still no `ESCAPE` sub-node here to strip at parse time. What changed: `ast::Tag::text()` (`ast/nodes.rs`, new) is now the one materialization point every consumer goes through, and it strips a *recognized* escape's backslash there, parity with `markup::escape`. `hir::lower_native::body::lower_tag` was simplified to delegate to it instead of hand-rolling the same HASH-skip + concatenation. `\<`/`\\` get the identical stripping (the full four-member set, uniformly) even though neither has a structural role here — see the Markup column | **Not applicable** — a tag body starts after a `HASH`, not at content-line start; the `@`/`!` sigil collision `\!`/`\@` exist to guard against cannot arise here | **None, ruled** (#1783, RULED 2026-08-01): `<glitch>` inside a `#` tag is intentionally literal text forever — "no spans in tags, ever." Not touched by #2045 | Fixed by #2045 — see `a_tags_text_accessor_strips_a_recognized_escapes_backslash` and its `\{` sibling |
+| `element::cue_name` (an `@NAME` cue's own free-text name, before `:`/tags/newline) | `element.rs` | **Full, as of #2045** — identical shape to `tag()` above: the parser's own depth/parity tracking (#1738/#1852/#1851) is untouched, and `ast::CueName::text()` now strips a recognized escape's backslash the same way `ast::Tag::text()` does. **No current lowering consumer**, though: `hir::lower_native` still meets a `CUE` node at its loud-`E129` "parses cleanly but has no HIR lowering yet" default arm (the `element::lower`/attachment slice, #1717, hasn't landed) — so this fix is proven at the parser/AST level (`CueName::text()`, exercised by parser tests) and is *not yet* runtime-observable through the compiler, unlike the `tag()` fix above. It is real, tested, and load-bearing the moment #1717 lands and some lowering path starts calling `CueName::text()` | **Not applicable** — same reasoning as `tag()` | **None** — by the same reasoning #1783 rules for `tag()` (no active span grammar runs inside a cue name); not separately ruled by number, but no code path here ever calls `markup::span` either | Fixed by #2045 — see `a_cue_names_text_accessor_strips_a_recognized_open_brace_escapes_backslash` (the `\#` case: the pre-existing `a_cue_name_with_an_escaped_hash_does_not_end_the_name_early` test, updated) |
+| `element::scene_title` (a scene heading's display name, before the optional `[slug]`/tags/newline — §3.3/§8b.3) | `element.rs` | **Full, as of #2045** — the parser's own `HASH`-parity carve-out (#1738) is untouched, and `ast::SceneTitle::text()` now strips a recognized escape's backslash the same way. **One real, if narrow, lowering consumer today:** `hir::lower_native::element::try_claim`/`try_dispatch`'s natural-notation candidate matching reads a `SCENE_HEADING`'s single `SCENE_TITLE` child's text as a regex-match input — but via `text_node.text()` on the raw `SyntaxNode` directly, **not** through `ast::SceneTitle::text()`, and deliberately left that way by this fix: that raw text's byte offsets are load-bearing for mapping a capture group back to a real source range (`base = text_node.text_range().start() + lead`), and running the stripped, byte-shifted string through that offset math would risk silently corrupting capture provenance for a delicate, unrelated feature (#1838). So a title's *pattern-matching* input still sees an unstripped backslash; only its *display* text (`SceneTitle::text()`) is stripped. Flagged here rather than silently decided — a real, if narrow, residual divergence between two readers of the same node, orthogonal to what #2045 was asked to resolve | **Not applicable** — a scene title starts at the heading's own line-start pattern (`INT.`/`EXT.`), not at content-line start; the `\!`/`\@` sigils this column tracks don't arise here | **None** — same reasoning as `tag()`/`cue_name()`: no code path here ever calls `markup::span`, and headings get no markup carve-out (this module's own doc comment: "a `{` on a heading line is just title text") | Fixed by #2045 — see `a_scene_titles_text_accessor_strips_a_recognized_open_brace_escapes_backslash` (the `\#` case: the pre-existing `a_scene_title_with_an_escaped_hash_does_not_end_the_title_early` test, updated) |
+| `element::parenthetical` (a `(hushed)` delivery line's literal text, between the parens) | `element.rs` | **None, and not a bug** — a free-text raw scan with zero escape treatment of any kind. Confirmed no `\#`-shaped defect: `(hushed \# quiet)` stays one `PARENTHETICAL` (it stops only on `EOF`/`NEWLINE`, and paren depth for `(`/`)` — `HASH` plays no terminating role here at all, unlike `tag()`/`cue_name()`/`scene_title`, so there was never a `\#` boundary to escape) | **Not applicable** — a parenthetical starts mid-line, after a cue, never at content-line start | **None** — free text only, same reasoning as the other raw scanners above; not separately ruled by number | Included for the audit's own completeness claim ("enumerate every prose scanner"); no fix needed |
+
+**What this PR changed:** `#` is one of the ruled four-character inline
+escape set, but `tag()`/`cue_name()` gave it **zero** escape treatment
+before this fix — an unescaped-*or*-escaped `#` both ended the scan
+identically (splitting `#tag \#more` into two sibling `TAG`s, the second one
+starting mid-word at the escaped hash). That is the one clear,
+unambiguous bug this audit found: `{`/`\{` already had backslash-parity
+awareness in both functions (#1852), but `#` — a member of the *same* ruled
+set — had none, an internal inconsistency between two characters of one
+set inside the very same two functions, not a question of whether to widen
+scope. Fixed by extending the existing `backslash_count` parity mechanism
+to `#`'s tag/name-terminating role, mirroring the established
+non-stripping `\{` precedent exactly (the backslash stays in the emitted
+text) rather than introducing new "strip the backslash" semantics these
+two raw-text scanners have never had. `hir::lower_native::body::lower_tag`
+needed a paired fix — it used to skip *every* `HASH` token in the node
+(safe only because an interior one was structurally impossible before this
+fix); now it skips only the tag's own leading delimiter.
+
+**Superseded by the #2045 ruling below:** both the "non-stripping `\{`
+precedent" description and the "`lower_tag` … now it skips only the tag's
+own leading delimiter" description above are historical — accurate for
+#1738/#1852's own PR, not for the current code. #2045 replaced that
+`lower_tag` body entirely with a delegation to `ast::Tag::text()`, which
+now strips a recognized escape's backslash; see the ruling immediately
+below.
+
+**Found and fixed during this PR's own review:** the audit above initially
+missed `element::scene_title`, which turned out to share the *exact same*
+pre-fix defect as `tag()`/`cue_name()` — an unconditional `HASH` stop with
+no backslash awareness. Fixed the same way, with a paired parser test
+(`a_scene_title_with_an_escaped_hash_does_not_end_the_title_early`); see
+the table row above. `element::parenthetical` was also added to the table
+for the audit's own completeness claim — confirmed to have no `\#`-shaped
+defect (it never treats `HASH` as a terminator at all), so no fix was
+needed there, just the missing row.
+
+**What is still open, deliberately not decided here:** whether `tag()`/
+`cue_name()` should eventually run the *rest* of §8d.6 — i.e. whether an
+unrecognized backslash sequence (`\x`, a bare trailing `\`) should become a
+compile error inside these two scanners the way it already is everywhere
+`markup::escape` runs, instead of today's fully-permissive "any backslash
+sequence is literal text, never an error." That would be a real breaking
+change of the same shape PR #1732 made for ordinary content (existing
+`.brink` tag bodies containing an incidental backslash would start failing
+to compile) and deserves its own design ruling, not a silent decision
+folded into a low-severity consistency audit. Filed as a follow-up,
+**issue #2040**, rather than decided unilaterally here.
+
+**RULED (#2045, 2026-08-02): a *recognized* escape strips its backslash in
+`tag()`/`cue_name()`/`scene_title()` text too — full parity with
+`markup::escape`.** Before this ruling, a *recognized* escape's backslash
+was stripped in ordinary content but **retained** in these three scanners'
+materialized text — the exact inconsistency #1738's own filing body used
+as its motivating example:
+
+```
+Hello \# world #a \#b
+```
+
+The content-line text became `Hello # world` (backslash stripped, via
+`markup::escape`), but the trailing tag's text stayed `a \#b` (backslash
+retained, via `tag()`'s raw scan) — same output line, two different
+escape semantics for the same `\#`. Ruled toward consistency over the
+`\{`-established precedent's inertia: an author moving between ordinary
+content and a tag/cue-name/scene title should not need to remember that
+the same four-character escape set means "the backslash disappears" in
+one and "the backslash survives, only the boundary role is suppressed" in
+the other — one escape set, one reading, everywhere it is recognized. The
+*parser's* structural recognition (an escaped `#`/`{` doesn't end the
+scan, #1738/#1852) is completely unchanged — only the *materialized text*
+these scanners' `ast::Tag::text()`/`ast::CueName::text()`/
+`ast::SceneTitle::text()` accessors hand back now strips the one escaping
+backslash, mirroring `markup::escape`'s own reading of the same
+even/odd-backslash-run parity (`ast/nodes.rs`'s
+`strip_recognized_escape_backslashes`, shared by all three). This is a
+breaking change for any `.brink` file relying on the backslash surviving
+into rendered tag/cue-name/scene-title text — see the changeset. Neither
+#2040 (should an *unrecognized* sequence become a compile error — still
+open, not decided here) nor #1883 (below) is touched by this ruling.
+
+**Relationship to #1883** ("residual escape/depth asymmetries in
+`tag()`/`cue_name()` after #1852/#1851", open): that issue is about a
+*different* axis — whether `HASH` should become depth-aware like `COLON`
+(item 1) and whether `\}` should gain the same backslash-parity treatment
+`\{` already has (item 2) — both about the parser's *structural*
+recognition, not the *materialized-text* stripping #2045 rules on. #2045
+touches neither item, changes no parsing/depth/parity decision, and is not
+a step toward resolving either one — it does not narrow #1883, same as
+#1738's original `\#` fix didn't.
 
 ## 5. Tooling: completions & succession (RULED doctrine)
 
@@ -1082,8 +1219,8 @@ punctuation, emoticons, path separators — is now a compile error. §8d.6 also
 rules `\!` and `\@` as **line-start** escapes — a disjoint set, legal as the
 first item `content::content_line`/`content_line_else_boundary` scans,
 guarding a literal leading `!`/`@` from the sigils those characters carry
-there (`@NAME` cue dispatch, §8b.9; the reserved `!name` annotation-element
-sigil, §3.5b). That is the true start of a physical line for an ordinary
+there (`@NAME` cue dispatch, §8b.9; the `!name` annotation-element dispatch
+sigil, §3.5b, issue #2004). That is the true start of a physical line for an ordinary
 content line, but also right after a compact cue's `@NAME:` prefix
 (`element::cue_line`'s `COMPACT_CUE` arm calls `content_line` directly for
 the fused dialogue line, reusing the same entry point). **Implemented, issue

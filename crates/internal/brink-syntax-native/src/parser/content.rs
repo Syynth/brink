@@ -32,14 +32,16 @@ pub(crate) fn content_line(p: &mut Parser<'_, '_>) {
     // `\!` / `\@` — the line-start escape set (§8d.6, issue #1744),
     // checked once, right here, before the general item scanner: a
     // literal leading `!`/`@` would otherwise collide with the `@NAME`
-    // cue sigil (or, unimplemented today, the `!name` annotation sigil,
-    // §3.5b). "Right here" is the first item *this function* scans — the
-    // true start of a physical line for a normal content line, but also
-    // right after a compact cue's `@NAME:` prefix, since
-    // `element::cue_line`'s `COMPACT_CUE` arm calls this same function for
-    // its fused dialogue line. Anywhere else in the line, `\!`/`\@` fall
-    // through to `content_items_until`'s generic `BACKSLASH` handling and
-    // remain the ordinary compile error (`markup::escape`'s four-char
+    // cue sigil or the `!name` annotation-element dispatch sigil (§3.5b,
+    // issue #2004, `element::at_bang_dispatch`). "Right here" is the
+    // first item *this function* scans — the true start of a physical
+    // line for a normal content line, but also right after a compact
+    // cue's `@NAME:` prefix (`element::cue_line`'s `COMPACT_CUE` arm) or a
+    // `!name` dispatch's own name (`element::bang_dispatch`), since both
+    // call this same function for their fused remainder. Anywhere else in
+    // the line, `\!`/`\@` fall through to `content_items_until`'s generic
+    // `BACKSLASH` handling and remain the ordinary compile error
+    // (`markup::escape`'s four-char
     // inline set).
     if super::markup::at_line_start_escape(p) {
         super::markup::line_start_escape(p);
@@ -540,6 +542,44 @@ pub(crate) fn header_tag_tail(p: &mut Parser<'_, '_>) {
 /// fix and still does). Pinned by
 /// `a_tag_with_an_escaped_open_brace_does_not_swallow_the_enclosing_blocks_own_closer`.
 ///
+/// **`\#` escapes the tag-boundary role of `#` (issue #1738).** A bare
+/// unescaped `HASH` always ends a tag — that is the `TAG_LINE`/trailing-tag
+/// grammar's own separator (`#a#b` is two sibling tags,
+/// `tags_with_no_space_between_are_two_separate_tag_nodes`), and this
+/// function must keep honoring that for the common case. But `#` is one of
+/// the four members of the ruled, final inline escape set (§8d.6: `\< \{ \#
+/// \\`), and before this fix `tag()` gave it **zero** escape treatment: a
+/// `\#` inside a tag's own text still split the tag in two at the `#`,
+/// leaving a dangling, meaningless backslash in the first half — the exact
+/// "escape/markup layer coverage inconsistent across prose scanners" gap
+/// #1738 tracks (the *ordinary* content-line scanner already turns `\#` into
+/// a literal `#` via `markup::escape`'s `ESCAPE` node; `tag()`'s free-text
+/// scan didn't). The fix mirrors the *existing* `\{` carve-out immediately
+/// below, not `markup::escape`'s node-producing shape: an `HASH` is only
+/// treated as the tag's terminator when NOT preceded by an odd number of
+/// consecutive raw `BACKSLASH`es — same `backslash_count` parity tracking,
+/// same "even means the backslashes escape each other" reading (#1852). Like
+/// `\{`, the backslash is **not stripped** from this raw `TAG` node's own
+/// CST text — it stays a lossless, unstripped copy of the source, exactly
+/// like every other raw-text scanner in this file — this stays
+/// self-consistent with `\{`'s established "structural role only" treatment
+/// inside these two raw-text scanners, not a claim that `tag()` now runs the
+/// full `markup::escape` layer (it still doesn't: `<ident>` stays inert
+/// literal text here too, per the separate, already-ruled #1783 "markup is
+/// literal in a `#` tag" decision — untouched by this fix).
+///
+/// **Superseded in part by issue #2045:** the CST-level claim above still
+/// holds, but `ast::Tag::text()` (`ast/nodes.rs`) is a *later* materialization
+/// point that now strips a recognized escape's backslash from the tag's
+/// rendered text (parity with `markup::escape`'s stripping for ordinary
+/// content), and `hir::lower_native::body::lower_tag` was changed to funnel
+/// through it instead of hand-rolling its own HASH-skip + concatenation —
+/// so "not stripped" is only true of the raw CST node, not of every reader
+/// of a tag's text. Pinned by
+/// `a_tag_with_an_escaped_hash_does_not_end_the_tag_early` (raw CST) and
+/// `a_tags_text_accessor_strips_a_recognized_escapes_backslash` (the
+/// stripping accessor).
+///
 /// **RULED (review of #1777, issue #1787): `depth` is scoped per-tag, not
 /// per-line, and that is the intended contract, not a gap.** `tag_line_tail`
 /// calls this function fresh for each `HASH` it sees, so `depth` always
@@ -548,8 +588,8 @@ pub(crate) fn header_tag_tail(p: &mut Parser<'_, '_>) {
 /// `content_line`'s own doc comment: "Trailing `#tag`s are folded in
 /// before the line ends", so this shape only ever arises between
 /// *sibling* tags, never between a tag and following prose), tag `a`'s
-/// scan is cut short by the `HASH` starting
-/// `b` — unconditionally, before the brace-depth check ever runs, exactly
+/// scan is cut short by the (unescaped — see the `\#` note just above) `HASH`
+/// starting `b` — before the brace-depth check ever runs, exactly
 /// like `NEWLINE`/`EOF` — so `a`'s in-progress depth of 1 is simply
 /// discarded, not carried into `b`'s scan. `b` starts its own scan at
 /// depth zero and immediately meets the `}`, stopping there without
@@ -572,10 +612,28 @@ fn tag(p: &mut Parser<'_, '_>, extra_stop: &[SyntaxKind]) {
     let mut backslash_count: u32 = 0;
     loop {
         let cur = p.current();
-        if matches!(cur, NEWLINE | EOF | HASH) || extra_stop.contains(&cur) {
+        if matches!(cur, NEWLINE | EOF) || extra_stop.contains(&cur) {
             break;
         }
         if cur == R_BRACE && depth == 0 {
+            break;
+        }
+        // `HASH` keeps `cur`'s existing "peek past pending trivia, don't
+        // consume it" early-exit shape (same as `NEWLINE`/`EOF` above) for
+        // the common unescaped case — a trailing space before a sibling
+        // tag's `#` must stay outside this tag's own text exactly as
+        // before this fix (`a_tags_own_unbalanced_brace_does_not_leak_depth_into_a_sibling_tag`
+        // pins the precise whitespace placement). The escape check itself,
+        // though, must not trust `backslash_count` at this point unless
+        // `p.nth_raw(0)` is *actually* `HASH` with no pending trivia ahead
+        // of it — `cur` can report `HASH` while raw position still sits on
+        // intervening whitespace (peeked through), and `backslash_count`
+        // would then still hold a stale value from before that whitespace
+        // is ever bumped/reset. Requiring `p.nth_raw(0) == HASH` too closes
+        // that gap: a non-adjacent `\ #` (space between them) never reads
+        // as escaped, matching the adjacency discipline `markup::escape`/
+        // `at_line_start_escape` already enforce elsewhere.
+        if cur == HASH && !(p.nth_raw(0) == HASH && backslash_count & 1 == 1) {
             break;
         }
         // `nth_raw(0)`, not `cur`: `cur` (`current()`) looks past pending

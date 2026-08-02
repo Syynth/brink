@@ -6,7 +6,7 @@
 //! without pre-building every accessor a later lowering pass might want
 //! (that's additive, not a re-architecture, when it's actually needed).
 
-use crate::SyntaxKind::{self, DOC_COMMENT_INNER, DOC_COMMENT_OUTER, IDENT, L_PAREN};
+use crate::SyntaxKind::{self, DOC_COMMENT_INNER, DOC_COMMENT_OUTER, HASH, IDENT, L_PAREN};
 use crate::ast::AstNode as _;
 use crate::ast::ast_node;
 use crate::ast::support;
@@ -42,6 +42,7 @@ ast_node!(ModuleDecl, MODULE_DECL);
 ast_node!(Block, BLOCK);
 ast_node!(ContentLine, CONTENT_LINE);
 ast_node!(LogicLine, LOGIC_LINE);
+ast_node!(ProseLine, PROSE_LINE);
 ast_node!(Text, TEXT);
 ast_node!(Interpolation, INTERPOLATION);
 ast_node!(GlueNode, GLUE_NODE);
@@ -59,6 +60,8 @@ ast_node!(Cue, CUE);
 ast_node!(CueName, CUE_NAME);
 ast_node!(CompactCue, COMPACT_CUE);
 ast_node!(Parenthetical, PARENTHETICAL);
+ast_node!(BangDispatch, BANG_DISPATCH);
+ast_node!(DispatchName, DISPATCH_NAME);
 
 // ── Inline markup (docs/prose-dialect-spec.md §4, issue #1716) ──────
 ast_node!(Span, SPAN);
@@ -1103,6 +1106,15 @@ impl LogicLine {
     }
 }
 
+impl ProseLine {
+    /// The wrapped `> text` content line — the mirror image of
+    /// [`LogicLine`]'s own wrapped children (`parser/stmt.rs::prose_line`),
+    /// reusing [`ContentLine`]'s grammar unmodified.
+    pub fn content_line(&self) -> Option<ContentLine> {
+        support::child(&self.syntax)
+    }
+}
+
 impl Label {
     pub fn name_token(&self) -> Option<SyntaxToken> {
         support::token(&self.syntax, IDENT)
@@ -1132,12 +1144,15 @@ impl ReturnRedirect {
 
 impl ReturnStmt {
     /// The value expression, if any — `RETURN_STMT`'s only child node.
-    /// `None` for the content-ground bare `return`/`return -> x` (never
-    /// parses one, `parser/divert.rs::return_stmt`); `Some`/`None` for the
+    /// `Some`/`None` for both grammars now: the content-ground bare
+    /// `return`/`return <expr>`/`return -> x` (`parser/divert.rs::
+    /// return_stmt` — the value is optional, and `-> x` is a distinct
+    /// `RETURN_REDIRECT` node, never this accessor's concern; issue #1973
+    /// added the value case, previously always `None` here) and the
     /// code-ground `return e?;` (B0.8 Wave B tail, issue #1322,
-    /// `parser/stmt.rs::return_stmt` — the initializer is optional there
-    /// too). See `syntax_kind.rs`'s `RETURN_STMT` doc for why one node
-    /// shape serves both grammars.
+    /// `parser/stmt.rs::return_stmt` — the initializer was already
+    /// optional there). See `syntax_kind.rs`'s `RETURN_STMT` doc for why
+    /// one node shape serves both grammars.
     pub fn value(&self) -> Option<SyntaxNode> {
         self.syntax.children().next()
     }
@@ -1332,6 +1347,76 @@ impl TagLine {
     }
 }
 
+impl Tag {
+    /// The tag's own text: the leading `#` sigil dropped, surrounding
+    /// source whitespace trimmed, and a *recognized* inline escape's
+    /// backslash stripped (§8d.6, issue #2045) — parity with
+    /// `markup::escape`'s stripping in ordinary content. `tag()`'s raw
+    /// free-text scan (`parser::content::tag`) never builds an `ESCAPE`
+    /// sub-node the way the shared content engine does, so there is no
+    /// node-level place to skip the backslash the way `push_escape` does
+    /// downstream; this accessor is that place instead — the single
+    /// materialization point every consumer of "the tag's text" should go
+    /// through, mirroring [`SceneTitle::text`]/[`CueName::text`].
+    pub fn text(&self) -> String {
+        let mut skipped_leading_hash = false;
+        let mut raw = String::new();
+        for tok in self
+            .syntax
+            .children_with_tokens()
+            .filter_map(rowan::NodeOrToken::into_token)
+        {
+            if !skipped_leading_hash && tok.kind() == HASH {
+                skipped_leading_hash = true;
+                continue;
+            }
+            raw.push_str(tok.text());
+        }
+        strip_recognized_escape_backslashes(raw.trim())
+    }
+}
+
+/// Strip the backslash from a *recognized* inline escape (`\< \{ \# \\`,
+/// §8d.6 — the set is final) inside already-assembled raw text, achieving
+/// parity with `markup::escape`'s stripping behavior for ordinary content
+/// (issue #2045). `tag()`/`cue_name()`/`scene_title()` are raw free-text
+/// scanners with no `ESCAPE` sub-node to strip at build time (unlike the
+/// shared content engine); this is the one shared place their `text()`
+/// accessors funnel through instead, so the three stay self-consistent
+/// rather than drifting into three near-identical hand-rolled copies.
+///
+/// This is the *same* greedy left-to-right consumption `markup::escape`
+/// itself performs: scanning forward, a lone `\` immediately followed by
+/// one of `< { # \` consumes both and emits the escaped char literally;
+/// any other `\` (followed by something else, or by nothing) is emitted
+/// as itself and only that one character is consumed before continuing.
+/// This is provably identical to the parser's own odd/even run-parity
+/// reading these scanners use for structural purposes (#1852/#1738: `N`
+/// consecutive backslashes before `<`/`{`/`#` only escape it when `N` is
+/// odd, because greedily consuming pairs left-to-right leaves exactly one
+/// unpaired backslash when `N` is odd and none when `N` is even) — so no
+/// parser change is needed here, and no structural test moves. Unlike the
+/// prior run-parity-only reading, this also collapses a bare `\\` pair
+/// with nothing recognized following it (`a\\b` -> `a\b`), because that is
+/// exactly what `markup::escape`'s greedy consumption does too: the first
+/// backslash of the pair escapes the second, regardless of what follows.
+fn strip_recognized_escape_backslashes(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '\\' && matches!(chars.get(i + 1), Some('<' | '{' | '#' | '\\')) {
+            let escaped = chars[i + 1];
+            out.push(escaped);
+            i += 2;
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
 // ── B0.8 Wave A additions: the code-ground statement layer ──────────
 //
 // `docs/decision-log.md` 2026-07-23 "Code-ground sitting" — parser only,
@@ -1358,7 +1443,13 @@ impl StmtBlock {
     /// `CONTINUE_STMT` to this same non-tail set — all three are always
     /// `;`-terminated in code-ground position (`parser/stmt.rs`'s
     /// `return_stmt`/`break_stmt`/`continue_stmt`), never a bare tail
-    /// value.
+    /// value. The `> text` prose-line escape (issue #1992) adds
+    /// `PROSE_LINE` to the set for the same reason: it never produces a
+    /// value (`parser/stmt.rs::statement`'s doc), so a `STMT_BLOCK` ending
+    /// in one has no tail expression, not a prose line masquerading as one
+    /// (review finding F2 — `lower_native/lambda.rs`'s `block.tail()` call
+    /// would otherwise lower it as a lambda's return value instead of
+    /// reaching `lower_block_item`'s loud `E129` arm).
     pub fn tail(&self) -> Option<SyntaxNode> {
         let last = self.syntax.children().last()?;
         (!matches!(
@@ -1373,6 +1464,7 @@ impl StmtBlock {
                 | SyntaxKind::RETURN_STMT
                 | SyntaxKind::BREAK_STMT
                 | SyntaxKind::CONTINUE_STMT
+                | SyntaxKind::PROSE_LINE
         ))
         .then_some(last)
     }
@@ -1598,9 +1690,12 @@ impl SceneHeading {
 }
 
 impl SceneTitle {
-    /// The title text, with the surrounding source whitespace trimmed.
+    /// The title text, with the surrounding source whitespace trimmed and
+    /// a *recognized* inline escape's backslash stripped (§8d.6, issue
+    /// #2045) — parity with `markup::escape`'s stripping in ordinary
+    /// content. See [`Tag::text`] for the shared rationale.
     pub fn text(&self) -> String {
-        self.syntax.text().to_string().trim().to_owned()
+        strip_recognized_escape_backslashes(self.syntax.text().to_string().trim())
     }
 }
 
@@ -1631,9 +1726,12 @@ impl Cue {
 }
 
 impl CueName {
-    /// The speaker name, with the surrounding source whitespace trimmed.
+    /// The speaker name, with the surrounding source whitespace trimmed
+    /// and a *recognized* inline escape's backslash stripped (§8d.6,
+    /// issue #2045) — parity with `markup::escape`'s stripping in
+    /// ordinary content. See [`Tag::text`] for the shared rationale.
     pub fn text(&self) -> String {
-        self.syntax.text().to_string().trim().to_owned()
+        strip_recognized_escape_backslashes(self.syntax.text().to_string().trim())
     }
 }
 
@@ -1646,6 +1744,27 @@ impl CompactCue {
     /// The fused dialogue line after the `:` (§8b.9).
     pub fn line(&self) -> Option<ContentLine> {
         support::child(&self.syntax)
+    }
+}
+
+impl BangDispatch {
+    /// The dispatching name after the `!` sigil.
+    pub fn name(&self) -> Option<DispatchName> {
+        support::child(&self.syntax)
+    }
+
+    /// The remainder after the name — a fused content line, the same way
+    /// [`CompactCue::line`] fuses its dialogue line.
+    pub fn line(&self) -> Option<ContentLine> {
+        support::child(&self.syntax)
+    }
+}
+
+impl DispatchName {
+    /// The dispatching name, with the surrounding source whitespace
+    /// trimmed.
+    pub fn text(&self) -> String {
+        self.syntax.text().to_string().trim().to_owned()
     }
 }
 

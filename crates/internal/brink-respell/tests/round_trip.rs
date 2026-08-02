@@ -167,3 +167,29 @@ fn inline_markup_escape_set() {
 fn line_start_cue_escape() {
     round_trip_case("line-start-cue-escape");
 }
+
+/// Issue #1975: the checked-in `story.brink` is `respell_ink_source`'s
+/// mechanical output for `tests/tier2/conditional/ifelse-ext/story.ink`'s
+/// `CondKind::IfElse` (3-way, independently-chained, no shared subject)
+/// conditional, re-shaped into nested `{if …} else { {if …} else { … } }`
+/// native syntax. This only proves the *emitted* nesting is itself legal,
+/// episode-identical native source when re-parsed — native's own lowering
+/// always reconstructs `CondKind::InitialCondition` from an `if`/`else if`
+/// chain (never `IfElse`, see the fixture's own `manifest.toml`), so this
+/// round trip alone doesn't exercise the new `CondKind::IfElse` emitter arm.
+/// `ink_corpus_convert.rs::ifelse_ext_three_way_chain` is the differential
+/// that does (it lowers the ink origin directly, constructing the real
+/// `IfElse` HIR shape my fix re-shapes).
+#[test]
+fn else_if_chain() {
+    round_trip_case("else-if-chain");
+}
+
+/// Issue #2029: `emit_knot` must spell the `>{ }` prose-ground override
+/// for a `fn`'s body — a bare `{` instead selects the code-ground
+/// default, and this printer's statement stream never spells that dialect
+/// (see the fixture's own `manifest.toml`).
+#[test]
+fn fn_prose_return() {
+    round_trip_case("fn-prose-return");
+}

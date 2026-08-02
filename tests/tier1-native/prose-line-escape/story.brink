@@ -1,0 +1,18 @@
+var n = 0
+
+fn radio(chan: string, text: string) {
+  > [{chan}] {text}
+}
+
+fn bump_and_announce() {
+  n += 1;
+  > Counter is now {n}.
+  n += 1;
+}
+
+flow main() {
+  {radio("A", "hi")}
+  {bump_and_announce()}
+  Value is {n}.
+  -> END
+}

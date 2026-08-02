@@ -945,6 +945,18 @@ fn lower_block_with_children(
     let mut stmts = Vec::new();
     let mut children = Vec::new();
     let mut pos = 0;
+    // Issue #1992 review finding F1: a code-ground body's `> text` split
+    // (`hir::lower_native::body::mark_split_logic_block_scopes`) opens one
+    // shared T1b scope across every split `LogicBlock` run, but leaves the
+    // matching pop to *this* function rather than to any particular run —
+    // a `Stmt::Content` sibling from a trailing `> text` line can legally
+    // follow the last split run in `block.stmts` and still needs the scope
+    // open. Sound because splitting only ever happens at the top level of
+    // the one `hir::Block` `lower_stmt_block_as_body` produces, never
+    // inside a nested block this function recurses into — so an `Opens`
+    // seen here is always matched by a pop here, never by a caller further
+    // up or a recursive call further down.
+    let mut pending_split_scope = false;
 
     while pos < block.stmts.len() {
         let stmt = &block.stmts[pos];
@@ -1263,7 +1275,10 @@ fn lower_block_with_children(
                 // flat statement sequence (never a child container: block
                 // bodies never contain weave concepts, so there's nothing
                 // that needs container isolation).
-                stmts.extend(blocks::lower_logic_block(&lb.stmts, ctx));
+                if matches!(lb.scope, hir::LogicBlockScope::Opens) {
+                    pending_split_scope = true;
+                }
+                stmts.extend(blocks::lower_logic_block(lb, ctx));
                 pos += 1;
             }
 
@@ -1315,6 +1330,10 @@ fn lower_block_with_children(
                 pos += 1;
             }
         }
+    }
+
+    if pending_split_scope {
+        ctx.pop_block_scope();
     }
 
     (stmts, children)

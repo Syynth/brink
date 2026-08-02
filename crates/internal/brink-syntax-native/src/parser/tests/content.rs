@@ -678,6 +678,107 @@ fn a_tag_with_an_escaped_backslash_before_a_real_brace_counts_the_brace() {
     let p = assert_lossless(src);
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
     assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::FLOW_DECL), 1);
+    // Issue #2045: `ast::Tag::text()` strips a recognized escape's
+    // backslash via the same greedy left-to-right consumption
+    // `markup::escape` uses, so the escaped backslash here collapses to
+    // one literal `\` and the real brace that follows is left alone —
+    // `\\{ }` materializes as `\{ }`, not the raw `\\{ }`.
+    let tag = find_child::<ast::Tag>(
+        &p.syntax()
+            .descendants()
+            .find(|n| n.kind() == SyntaxKind::CONTENT_LINE)
+            .expect("CONTENT_LINE"),
+    )
+    .expect("Tag");
+    assert_eq!(
+        tag.text(),
+        "tag \\{ } coins.",
+        "an escaped backslash before a real brace collapses to one literal \
+         `\\`, matching `markup::escape`'s greedy consumption for ordinary \
+         content"
+    );
+}
+
+#[test]
+fn a_tag_with_an_escaped_hash_does_not_end_the_tag_early() {
+    // Issue #1738: `#` is one of the four members of the ruled, final
+    // inline escape set (§8d.6), but before this fix `tag()` gave `\#` zero
+    // escape treatment — a bare `HASH` always ended a tag, unconditionally,
+    // even one immediately preceded by a backslash. Contrast with
+    // `tags_with_no_space_between_are_two_separate_tag_nodes` (`#a#b`, no
+    // backslash — still two sibling tags, unchanged by this fix): here the
+    // `#` is escaped, so it stays inside the ONE tag's own text instead of
+    // starting a second `TAG` node.
+    let p = assert_lossless("Hello #tag \\#not a new tag\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert_eq!(
+        count_node_kind(&p.syntax(), SyntaxKind::TAG),
+        1,
+        "an escaped `#` must not split the tag in two"
+    );
+    let tag = p
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::TAG)
+        .expect("TAG");
+    assert_eq!(
+        tag.text(),
+        "#tag \\#not a new tag",
+        "the raw CST node's own text is never rewritten — it stays a \
+         faithful, lossless copy of the source, backslash and all; \
+         `ast::Tag::text()` is the separate, later materialization point \
+         that strips a recognized escape's backslash (issue #2045), see \
+         `a_tags_text_accessor_strips_a_recognized_escapes_backslash` below"
+    );
+}
+
+#[test]
+fn a_tags_text_accessor_strips_a_recognized_escapes_backslash() {
+    // Issue #2045: `markup::escape` already strips a *recognized* escape's
+    // backslash for ordinary content, but `tag()`'s raw free-text scan gave
+    // `\#`/`\{` structural recognition only (#1738/#1852: an escaped `#`/`{`
+    // no longer ends the tag/counts toward depth early) without ever
+    // stripping the backslash from the tag's own materialized text — the
+    // exact divergence #1738's own filing body used as its motivating
+    // example (`Hello \# world #a \#b`). `ast::Tag::text()` is the
+    // materialization point that now closes it, in parity with
+    // `markup::escape`, while the raw CST node above stays untouched.
+    let p = assert_lossless("Hello #tag \\#not a new tag\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let tag = find_child::<ast::Tag>(
+        &p.syntax()
+            .descendants()
+            .find(|n| n.kind() == SyntaxKind::CONTENT_LINE)
+            .expect("CONTENT_LINE"),
+    )
+    .expect("Tag");
+    assert_eq!(
+        tag.text(),
+        "tag #not a new tag",
+        "a recognized `\\#` strips its backslash in the tag's materialized \
+         text, same as ordinary content"
+    );
+}
+
+#[test]
+fn a_tags_text_accessor_strips_a_recognized_open_brace_escapes_backslash() {
+    // Issue #2045's own scope note: `\{` gets the identical treatment as
+    // `\#`, not just the hash case.
+    let p = assert_lossless("Hello #tag \\{gold\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let tag = find_child::<ast::Tag>(
+        &p.syntax()
+            .descendants()
+            .find(|n| n.kind() == SyntaxKind::CONTENT_LINE)
+            .expect("CONTENT_LINE"),
+    )
+    .expect("Tag");
+    assert_eq!(
+        tag.text(),
+        "tag {gold",
+        "a recognized `\\{{` strips its backslash in the tag's materialized \
+         text, same as `\\#`"
+    );
 }
 
 #[test]

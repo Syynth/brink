@@ -28,7 +28,8 @@
 //! `ref`, type-annotated); content lines (text, glue, `{expr}`
 //! interpolation, trailing tags); diverts (`-> target`, `-> END`,
 //! `-> DONE`, with call args); tunnel calls (`-> target ->`); `return` /
-//! `return -> target`; `{?}` choice points (sticky/once, guards, labels,
+//! `return -> target` / `return <expr>` (issue #1973); `{?}` choice points
+//! (sticky/once, guards, labels,
 //! the `text[bracket]inner` display split, `else {}` fallback, the
 //! dissolved-gather continuation — including a **labeled** continuation,
 //! and a mid-flow `Stmt::LabeledBlock` wherever it occurs, both via G-1's
@@ -44,13 +45,13 @@
 //! is: a native-authored chain always lowers to *nested* `InitialCondition`s
 //! (an `else` arm's body containing another `Conditional`), which this
 //! emitter's ordinary recursive `emit_conditional` call already reproduces
-//! faithfully. What this emitter still cannot produce is a native spelling
-//! for `CondKind::IfElse` itself (ink's own independently-chained,
-//! no-shared-subject 3+-branch form) — 12 corpus cases per
-//! `full_corpus_sweep`'s `"IfElse conditional"` bucket — since that HIR
-//! shape has no flattened native counterpart to walk into; it would need to
-//! be re-shaped into nested `if`/`else`s on the way out, which nothing here
-//! does yet.
+//! faithfully. **Correction (issue #1975):** `CondKind::IfElse` itself (ink's
+//! own independently-chained, no-shared-subject 3+-branch form —
+//! `full_corpus_sweep`'s `"IfElse conditional"` bucket) is now **supported**
+//! too: `emit_if_else_chain` walks the flat `IfElse` branch list and
+//! re-shapes it into the same nested `{if …} else { {if …} else { … } }`
+//! structure a native-authored `else if` chain lowers to, rather than
+//! refusing outright.
 //!
 //! Explicitly unsupported (each a real gap, not an oversight — see
 //! `docs/b0-sequencing.md` §3 and `tests/tier1-brink-respell/README.md`'s
@@ -87,12 +88,33 @@
 //! `lower::choice::replace_trailing_ws_with_spring` produces — no native
 //! token forces that same runtime-deferred-whitespace behavior, and
 //! respelling it as a literal space would silently change what renders,
-//! so it stays refused); `CondKind::IfElse` (emitter-only — see the
-//! corrected note on `CondKind::InitialCondition` above, issue #1951) and a
-//! prose-body `return` with a value expression (a real native-**grammar**
-//! gap — `RETURN_STMT` never carries a value at body position, see
-//! `lower_native::body`'s own finding); most `Expr` variants beyond
-//! literals/paths/operators/calls
+//! so it stays refused). **Correction (issue #1975):** `CondKind::IfElse`
+//! used to be listed here as an emitter-only gap (see the corrected note on
+//! `CondKind::InitialCondition` above, issue #1951) — it is now supported,
+//! see `emit_if_else_chain` below.
+//! **Correction (issue #1974):** `Stmt::ThreadStart` is likewise no longer
+//! refused in the two positions the HIR actually flattens it into. A run of
+//! splices immediately *preceding* a `Stmt::ChoiceSet` in the same stream
+//! re-nests as leading `<- flow(args)` line(s) inside the `{?}` ahead of the
+//! first choice (`emit_choice_set`'s `leading`), and a *trailing* run on a
+//! choice's own `body.stmts` re-nests as sibling line(s) printed right after
+//! that choice, never inside its braces (`split_trailing_thread_starts` /
+//! `emit_trailing_thread_starts`). Both adjacencies are unambiguous, so
+//! nothing is guessed; a `ThreadStart` in any *other* position (no
+//! `ChoiceSet` after the run, or interleaved mid-choice-body) has no legal
+//! native spelling at all and is still refused.
+//! **Correction (issue #1973):** a prose-body `return` with a value
+//! expression used to be listed here as a native-grammar gap —
+//! `parser/divert.rs::return_stmt` now parses a trailing value expression
+//! at content-ground position (mirroring the code-ground `return expr?;`
+//! form it always supported), `lower_native::body`'s `N::RETURN_STMT` arm
+//! lowers it, and this emitter now spells it back (`emit_return`, below).
+//! Whether a non-function `flow`'s prose body may *semantically* carry a
+//! return value stays an open design question (unchanged by this fix) —
+//! `brink-analyzer`'s existing E032 ("explicit return outside function")
+//! still rejects it there exactly as before; only a `fn`'s value-carrying
+//! return round-trips through this emitter today. Most `Expr` variants
+//! beyond literals/paths/operators/calls
 //! (collections, structs, refs, a divert target used as a value, and
 //! `#fn(f, a)` — the *binding* form, which by the 2026-08-01 ruling has no
 //! native spelling at all; a **zero-bound** `#fn(f)` does respell, as the
@@ -532,7 +554,20 @@ fn emit_knot(out: &mut String, k: &Knot) -> Result<(), EmitError> {
     // The ruled `: type` return clause goes after the parameter list
     // (NG-C, issue #1489) — never before the `(`, and never as an arrow.
     let ret = emit_annotation_suffix(k.return_type.as_ref());
-    let _ = writeln!(out, "{keyword} {}({params}){ret} {{", k.name.text);
+    // Body-dialect selector (charter §4, RULED 2026-07-23): plain `{ }` is
+    // the per-keyword *default* — `fn` → code-ground `STMT_BLOCK`, `flow` →
+    // prose-ground `BLOCK`. This printer's statement stream
+    // (`emit_stmt_stream`/`emit_return`/`emit_temp_decl`/etc.) only ever
+    // spells **prose-ground** syntax (bare `return`, no `;`; the `~ …`
+    // content-ground logic-line escape) — it never emits the `;`-terminated
+    // code-ground form. A `flow`'s bare `{` already matches its prose
+    // default, so it needs no override. A `fn`'s bare `{` would instead
+    // select the *code*-ground default, and reparsing prose-ground
+    // statements under that dialect fails (issue #2029) — so a `fn`'s body
+    // always needs the explicit `>{ }` prose override to reparse into the
+    // same shape this printer just wrote.
+    let selector = if k.is_function { ">" } else { "" };
+    let _ = writeln!(out, "{keyword} {}({params}){ret} {selector}{{", k.name.text);
     emit_block_stmts(out, &k.body, 1, &k.name.text)?;
     for s in &k.stitches {
         emit_stitch(out, s, 1)?;
@@ -621,7 +656,8 @@ fn emit_stmt_stream(
                     _ => None,
                 };
                 if let Some(divert_text) = same_line_divert {
-                    let text = escape_leading_cue_sigil(&emit_content_parts(&c.parts, context)?);
+                    let text =
+                        escape_leading_line_start_sigil(&emit_content_parts(&c.parts, context)?);
                     if !c.tags.is_empty() {
                         return Err(unsupported(
                             "tags on a content line sharing its line with a divert",
@@ -861,6 +897,15 @@ fn emit_expr_stmt(e: &Expr, context: &str) -> Result<String, EmitError> {
     Ok(format!("~ {}", emit_expr(e, context)?))
 }
 
+/// `return` / `return -> target` / `return <expr>` (issue #1973's last
+/// case — `lower_native::body`'s `N::RETURN_STMT` arm now lowers a
+/// content-ground value expression, mirroring the code-ground `return
+/// expr?;` form it always supported; see that arm's doc for the E032 note
+/// on why this stays a pure grammar/emitter fix, not a semantics change).
+/// `Expr::DivertTarget` keeps its own dedicated `return -> target` spelling
+/// (the tunnel-return redirect, checked first) — every other `Expr` shape
+/// falls to the general `return <expr>` case, which simply reuses
+/// [`emit_expr`] and propagates whatever it can't spell.
 fn emit_return(r: &Return, context: &str) -> Result<String, EmitError> {
     if !r.onwards_args.is_empty() {
         return Err(unsupported("tunnel-return onwards args", context));
@@ -868,7 +913,7 @@ fn emit_return(r: &Return, context: &str) -> Result<String, EmitError> {
     match &r.value {
         None => Ok("return".to_string()),
         Some(Expr::DivertTarget(p)) => Ok(format!("return -> {}", emit_path(p))),
-        Some(_) => Err(unsupported("return with a value expression", context)),
+        Some(v) => Ok(format!("return {}", emit_expr(v, context)?)),
     }
 }
 
@@ -901,7 +946,7 @@ fn emit_content_line(
     c: &Content,
     context: &str,
 ) -> Result<(), EmitError> {
-    let text = escape_leading_cue_sigil(&emit_content_parts(&c.parts, context)?);
+    let text = escape_leading_line_start_sigil(&emit_content_parts(&c.parts, context)?);
     let mut line = format!("{indent}{text}");
     for tag in &c.tags {
         let _ = write!(line, " #{}", emit_tag(tag, context)?);
@@ -987,25 +1032,29 @@ fn escape_content_text(s: &str) -> String {
 /// `lexer::ident::is_ident_start_byte`) — `@ 5pm` or a bare trailing `@`
 /// never opened a cue in the first place and needs no escaping either.
 ///
-/// `!` carries no equivalent hazard *today*: no parser dispatch reads a
-/// leading `!` at body-line position (the `!name` annotation-element
-/// sigil §3.5b reserves is unimplemented), so a literal leading `!` —
-/// whether authored directly or produced by `\!` — already round-trips
-/// unescaped. Revisit this function when that sigil lands.
+/// `!` now carries the exact same hazard (issue #2004): a leading
+/// `!` immediately followed by an identifier is `parser::element::
+/// at_bang_dispatch`'s own adjacency test for a `BANG_DISPATCH` (`!name`
+/// dispatch, §3.5b) at body-line position, so a literal leading `!name` —
+/// authored directly or produced by `\!` — needs the same one-character
+/// re-escape or it would silently re-parse as a dispatch instead of the
+/// literal text it started as. `! Wait, listen.` (a gap after the `!`)
+/// never opened a dispatch and needs no escaping, matching `at_bang_
+/// dispatch`'s own adjacency requirement.
 ///
 /// Only called at genuine body-line-position emission
 /// (`emit_stmt_stream`'s `Stmt::Content` arm, `emit_content_line`) — a
 /// labeled line (`emit_labeled_stmt_stream`) already carries its own
 /// `(name) ` prefix ahead of the content, so on re-parse the line's first
-/// token is never `AT` there regardless of what the content says, and
-/// needs no equivalent guard.
-fn escape_leading_cue_sigil(text: &str) -> String {
+/// token is never `AT`/`BANG` there regardless of what the content says,
+/// and needs no equivalent guard.
+fn escape_leading_line_start_sigil(text: &str) -> String {
     let mut chars = text.chars();
     match chars.next() {
-        Some('@') => {
+        Some(sigil @ ('@' | '!')) => {
             let rest = chars.as_str();
             if rest.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') {
-                format!("\\@{rest}")
+                format!("\\{sigil}{rest}")
             } else {
                 text.to_string()
             }
@@ -1354,11 +1403,75 @@ fn emit_conditional(
             let _ = writeln!(out, "{indent}}}}}");
             Ok(())
         }
-        CondKind::IfElse => Err(unsupported(
-            "IfElse conditional (no native `else if` chain)",
-            context,
-        )),
+        CondKind::IfElse => emit_if_else_chain(out, indent, depth, &cond.branches, context),
     }
+}
+
+/// `CondKind::IfElse` — ink's own independently-chained, no-shared-subject
+/// 3+-branch conditional (`{ - cond1: … - cond2: … - else: … }`, no shared
+/// switch expression) — has no flat native counterpart to walk into
+/// (`lower_native::cond::lower_conditional`'s doc: a native-authored chain
+/// always lowers through *nesting* instead, one `InitialCondition` per
+/// `else if` link). This function re-shapes the flat `IfElse` branch list
+/// back into that same nesting on the way out: the first branch becomes the
+/// `{if …}` head, and if more branches remain, they recurse into this same
+/// function as the *body* of an `else { … }` arm — reproducing exactly the
+/// `{if …} else { {if …} else { … } }` shape a native `else if` chain would
+/// have lowered to in the first place (issue #1975).
+fn emit_if_else_chain(
+    out: &mut String,
+    indent: &str,
+    depth: usize,
+    branches: &[CondBranch],
+    context: &str,
+) -> Result<(), EmitError> {
+    let Some((first, rest)) = branches.split_first() else {
+        return Err(unsupported("empty `else if` chain", context));
+    };
+    let Some(if_cond) = &first.condition else {
+        return Err(unsupported(
+            "`else if` chain branch with no leading condition",
+            context,
+        ));
+    };
+    // Same B1b `as`-binding respelling `CondKind::InitialCondition` does
+    // above — ink's own lowering never sets `CondBranch::binding` (it's
+    // native-only, `lower/conditional/multiline.rs::lower_if_else_branches`
+    // always passes `None`), but a future native-authored `IfElse` shape (or
+    // hand-built HIR) could carry one, and dropping it silently would change
+    // what the respelled source means.
+    let binding_suffix = match &first.binding {
+        Some(name) => format!(" as {}", name.text),
+        None => String::new(),
+    };
+    let _ = writeln!(
+        out,
+        "{indent}{{if {}{binding_suffix} {{",
+        emit_expr(if_cond, context)?
+    );
+    emit_block_stmts(out, &first.body, depth + 1, context)?;
+    match rest {
+        [] => {}
+        // Exactly one branch left and it's a plain `else` (no condition of
+        // its own): the terminal link in the chain, spelled flat rather than
+        // as a pointless one-branch nested `{if}`.
+        [only] if only.condition.is_none() => {
+            let _ = writeln!(out, "{indent}}} else {{");
+            emit_block_stmts(out, &only.body, depth + 1, context)?;
+        }
+        // Two or more branches remain, or the sole remaining branch still
+        // carries its own condition (an `IfElse` chain with no trailing
+        // `else` at all): nest the rest one level deeper inside this arm's
+        // `else { … }`, recursing back into this same function — this is
+        // the flattened-to-nested reshape the issue asks for.
+        _ => {
+            let inner_indent = "  ".repeat(depth + 1);
+            let _ = writeln!(out, "{indent}}} else {{");
+            emit_if_else_chain(out, &inner_indent, depth + 1, rest, context)?;
+        }
+    }
+    let _ = writeln!(out, "{indent}}}}}");
+    Ok(())
 }
 
 fn emit_match_arm(
@@ -1776,6 +1889,70 @@ mod tests {
         );
     }
 
+    /// Issue #1973: a value-carrying `return <expr>` at content-ground
+    /// position now emits (and round-trips) instead of refusing with
+    /// `"return with a value expression"`.
+    ///
+    /// Deliberately a `flow`, not an `fn` (unlike the corpus's own motivating
+    /// shape, e.g. I003-tunnel-to-death's `is_alive` function): at the time
+    /// this test was written, `emit_knot` always printed a plain `{` for
+    /// both keywords, never the `>{ }` prose-ground override an `fn`'s
+    /// body-dialect default needs to re-parse this emitter's prose-ground
+    /// statement text (`emit_return`'s own `return <expr>` spelling
+    /// included) — a real, separate, pre-existing gap this fix's own
+    /// round-trip check surfaced (every `fn` this emitter produces already
+    /// needed it, for a bare `return` too; nothing here changed that
+    /// channel), flagged rather than folded into this PR. This test instead
+    /// pinned exactly what #1973 changed: the grammar/lowering/emitter path
+    /// for a value-carrying return, isolated from that unrelated
+    /// container-keyword gap. `brink-analyzer`'s E032 (return outside
+    /// function) is a different crate/pass this emitter test harness never
+    /// runs — see `value_carrying_return_in_non_function_still_emits_e032`
+    /// in `brink-analyzer` for that semantics pin. **Correction (issue
+    /// #2029, fixed):** `emit_knot` now spells `>{ }` for every `fn` (see
+    /// its own doc comment) — `fn_prose_body_value_return_round_trips`,
+    /// below, is the `fn` counterpart this note used to say was missing.
+    #[test]
+    fn value_carrying_return_round_trips() {
+        let src = "flow f() {\n  Hello.\n  return hp > 0\n}\n";
+        let emitted = lower_and_emit(src).expect("value-carrying return must now emit");
+        assert!(
+            emitted.contains("return hp > 0"),
+            "expected the emitted source to spell the return's value back out:\n{emitted}"
+        );
+
+        let hir = reparse_and_lower(&emitted);
+        let Stmt::Return(r) = hir.knots[0].body.stmts.last().expect("a Return statement") else {
+            panic!(
+                "expected Return as the re-lowered body's last statement: {:?}",
+                hir.knots[0].body.stmts
+            );
+        };
+        assert!(
+            matches!(&r.value, Some(Expr::Infix(_))),
+            "re-lowered return lost its value expression: {:?}",
+            r.value
+        );
+    }
+
+    /// The tunnel-return redirect keeps its own dedicated spelling and must
+    /// not be swallowed by the general value-expression case #1973 added —
+    /// `Expr::DivertTarget` is checked first in `emit_return`.
+    #[test]
+    fn return_redirect_still_wins_over_general_value_emission() {
+        let src = "flow b() {\n  Bye.\n}\nflow a() {\n  return -> b\n}\n";
+        let emitted = lower_and_emit(src).expect("return redirect must emit");
+        assert!(
+            emitted.contains("return -> b"),
+            "expected the tunnel-return redirect spelling, got:\n{emitted}"
+        );
+        assert!(
+            !emitted.contains("return b"),
+            "must not spell the redirect as a bare value expression:\n{emitted}"
+        );
+        reparse_and_lower(&emitted);
+    }
+
     /// Issue #1614/#1161: `HirFile::allow_scopes` carries a `(range,
     /// codes)` fact with no pointer back to the declaration it decorates —
     /// this emitter has no way to re-place the `@[allow(…)]` line, so a
@@ -2039,5 +2216,214 @@ mod tests {
         };
         assert!(matches!(&ts.target.path, DivertPath::Path(p) if p.segments.last().is_some_and(|s| s.text == "helper")));
         assert!(matches!(ts.target.args.as_slice(), [Expr::Int(3)]));
+    }
+
+    // ── Issue #1975: `CondKind::IfElse` re-nesting ───────────────────────
+    //
+    // `CondKind::IfElse` — ink's own independently-chained,
+    // no-shared-subject conditional (`{ - cond1: … - cond2: … - else: … }`)
+    // — has no native lowering path (`lower_native::cond::lower_conditional`
+    // only ever constructs `InitialCondition`/`Switch`, plus the empty-branch
+    // parser-recovery case), so it can't be reached through `lower_and_emit`
+    // like the tests above. These build the HIR by hand instead, calling
+    // `emit_conditional` directly — the same shape `brink-respell`'s
+    // `ink_corpus_convert.rs::ifelse_ext_three_way_chain` proves end to end
+    // from a real ink source (that test is the one that fails without this
+    // fix; these are the isolated, fast unit-level complement).
+
+    fn synthetic_branch(condition: Option<Expr>, stmt: Stmt) -> CondBranch {
+        let empty_range = rowan::TextRange::empty(rowan::TextSize::from(0));
+        CondBranch {
+            ptr: crate::provenance::Provenance::synthetic(
+                crate::provenance::NodeClass::ConditionalBranch,
+                empty_range,
+            ),
+            condition,
+            binding: None,
+            body: Block {
+                label: None,
+                stmts: vec![stmt.clone()],
+                container_id: None,
+                tail: crate::tail_from_stmts(&[stmt]),
+            },
+            container_id: None,
+        }
+    }
+
+    /// A 2-way `IfElse` (one real condition, one trailing plain `else`) —
+    /// the minimal shape — re-nests to exactly the same text
+    /// `CondKind::InitialCondition` would have produced for the same
+    /// branches.
+    #[test]
+    fn if_else_two_way_chain_emits_nested_native_syntax() {
+        let empty_range = rowan::TextRange::empty(rowan::TextSize::from(0));
+        let cond = Conditional {
+            ptr: crate::provenance::Provenance::synthetic(
+                crate::provenance::NodeClass::Conditional,
+                empty_range,
+            ),
+            kind: CondKind::IfElse,
+            branches: vec![
+                synthetic_branch(Some(Expr::Bool(true)), Stmt::ExprStmt(Expr::Int(1))),
+                synthetic_branch(None, Stmt::ExprStmt(Expr::Int(2))),
+            ],
+        };
+        let mut out = String::new();
+        emit_conditional(&mut out, "", 0, &cond, "test")
+            .expect("a 2-way IfElse chain must now emit");
+        assert_eq!(out, "{if true {\n  ~ 1\n} else {\n  ~ 2\n}}\n");
+    }
+
+    /// A 3-way `IfElse` (two real conditions plus a trailing `else`) —
+    /// `emit_conditional`'s old `CondKind::IfElse` arm refused this
+    /// unconditionally — re-nests into `{if …} else { {if …} else { … } }`,
+    /// which reparses back to two nested `InitialCondition`s (exactly what
+    /// a native-authored `else if` chain would have produced).
+    #[test]
+    fn if_else_three_way_chain_emits_nested_native_syntax_and_reparses() {
+        let empty_range = rowan::TextRange::empty(rowan::TextSize::from(0));
+        let cond = Conditional {
+            ptr: crate::provenance::Provenance::synthetic(
+                crate::provenance::NodeClass::Conditional,
+                empty_range,
+            ),
+            kind: CondKind::IfElse,
+            branches: vec![
+                synthetic_branch(Some(Expr::Bool(true)), Stmt::ExprStmt(Expr::Int(1))),
+                synthetic_branch(Some(Expr::Bool(false)), Stmt::ExprStmt(Expr::Int(2))),
+                synthetic_branch(None, Stmt::ExprStmt(Expr::Int(3))),
+            ],
+        };
+        let mut out = String::new();
+        emit_conditional(&mut out, "", 0, &cond, "test")
+            .expect("a 3-way IfElse chain must now emit");
+        assert_eq!(
+            out,
+            "{if true {\n  ~ 1\n} else {\n  {if false {\n    ~ 2\n  } else {\n    ~ 3\n  }}\n}}\n"
+        );
+
+        // The emitted text must itself be legal `.brink` source whose body
+        // opens with a conditional statement carrying a *nested*
+        // `Conditional` inside its `else` arm — proving this isn't just
+        // syntactically-plausible text but a real, reparseable nesting
+        // (mirroring what a native-authored `else if` chain lowers to,
+        // per `lower_native::cond::lower_conditional`'s doc).
+        let src = format!("flow a() {{\n{out}}}\n");
+        let hir = reparse_and_lower(&src);
+        let Some(Stmt::Conditional(outer)) = hir.knots[0].body.stmts.first() else {
+            panic!(
+                "expected the re-lowered body's first statement to be a Conditional: {:?}",
+                hir.knots[0].body
+            );
+        };
+        assert_eq!(outer.kind, CondKind::InitialCondition);
+        assert_eq!(outer.branches.len(), 2);
+        let else_arm = &outer.branches[1];
+        assert!(else_arm.condition.is_none());
+        let Some(Stmt::Conditional(inner)) = else_arm.body.stmts.first() else {
+            panic!(
+                "expected the outer else arm's body to open with a nested Conditional: {:?}",
+                else_arm.body
+            );
+        };
+        assert_eq!(inner.kind, CondKind::InitialCondition);
+        assert_eq!(inner.branches.len(), 2);
+    }
+
+    /// An `IfElse` chain with **no** trailing `else` (every branch carries
+    /// its own condition) still needs an `else { }` wrapper to hold the
+    /// recursively-nested next condition — but the innermost nested
+    /// `Conditional` must not spuriously synthesize a terminal bare `else`
+    /// arm of its own, since none was present in the source branches.
+    #[test]
+    fn if_else_chain_with_no_trailing_else_has_no_innermost_else_arm() {
+        let empty_range = rowan::TextRange::empty(rowan::TextSize::from(0));
+        let cond = Conditional {
+            ptr: crate::provenance::Provenance::synthetic(
+                crate::provenance::NodeClass::Conditional,
+                empty_range,
+            ),
+            kind: CondKind::IfElse,
+            branches: vec![
+                synthetic_branch(Some(Expr::Bool(true)), Stmt::ExprStmt(Expr::Int(1))),
+                synthetic_branch(Some(Expr::Bool(false)), Stmt::ExprStmt(Expr::Int(2))),
+            ],
+        };
+        let mut out = String::new();
+        emit_conditional(&mut out, "", 0, &cond, "test")
+            .expect("an IfElse chain with no trailing else must now emit");
+        assert_eq!(
+            out,
+            "{if true {\n  ~ 1\n} else {\n  {if false {\n    ~ 2\n  }}\n}}\n"
+        );
+    }
+
+    /// A `fn` whose body is the prose-ground override (`>{ … }`, charter
+    /// §4) must round-trip back into the **same** `>{ … }` spelling, not
+    /// the bare `{` (which would select the *code*-ground default). This
+    /// printer's statement stream (`emit_return`, here) only ever spells
+    /// prose-ground syntax (no `;`) — under the wrong default, reparsing
+    /// fails outright (issue #2029: `expected SEMICOLON, found R_BRACE`
+    /// with the bug present). A value-carrying `return` (issue #1973) is
+    /// the shape that surfaced this — see `emit_return`'s own doc.
+    #[test]
+    fn fn_prose_body_value_return_round_trips() {
+        let src = "fn heal(hp) >{\n  return hp\n}\n";
+        let emitted = lower_and_emit(src).expect("fn with a value return must emit");
+        assert!(
+            emitted.contains(">{"),
+            "emitted fn body must carry the `>{{` prose-ground override:\n{emitted}"
+        );
+
+        let hir = reparse_and_lower(&emitted);
+        assert!(hir.knots[0].is_function);
+        let Stmt::Return(r) = &hir.knots[0].body.stmts[0] else {
+            panic!(
+                "expected Stmt::Return as the re-lowered fn body's first statement: {:?}",
+                hir.knots[0].body
+            );
+        };
+        assert!(matches!(r.value, Some(Expr::Path(_))));
+    }
+
+    /// The same dialect-selector bug reaches *any* statement the emitter
+    /// regenerates for a `fn`'s prose body, not just a value-carrying
+    /// `return` — a bare `return` and ordinary content lines hit it too
+    /// (issue #2029's stated scope, broader than #1973's).
+    #[test]
+    fn fn_prose_body_bare_return_and_content_round_trip() {
+        let src = "fn greet() >{\n  Hi.\n  return\n}\n";
+        let emitted = lower_and_emit(src).expect("fn with prose content + bare return must emit");
+        assert!(
+            emitted.contains(">{"),
+            "emitted fn body must carry the `>{{` prose-ground override:\n{emitted}"
+        );
+
+        let hir = reparse_and_lower(&emitted);
+        assert!(hir.knots[0].is_function);
+        let stmts = &hir.knots[0].body.stmts;
+        assert!(
+            stmts.iter().any(|s| matches!(s, Stmt::Content(_))),
+            "expected a Content statement among the re-lowered fn body: {stmts:?}"
+        );
+        assert!(
+            stmts
+                .iter()
+                .any(|s| matches!(s, Stmt::Return(r) if r.value.is_none())),
+            "expected a bare Return statement among the re-lowered fn body: {stmts:?}"
+        );
+    }
+
+    /// A `flow`'s bare `{` is already its prose default — `emit_knot` must
+    /// not start writing a spurious selector for it (only `fn` needs the
+    /// override; a `flow` never does).
+    #[test]
+    fn flow_body_has_no_selector_prefix() {
+        let src = "flow a() {\n  Hi.\n}\n";
+        let emitted = lower_and_emit(src).expect("flow must emit");
+        assert!(
+            emitted.contains("flow a() {\n"),
+            "flow header must stay a bare `{{`, no selector:\n{emitted}"
+        );
     }
 }

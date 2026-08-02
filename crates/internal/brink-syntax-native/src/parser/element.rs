@@ -47,9 +47,10 @@
 //! element. There is deliberately no `LYRICS` shape here.
 
 use crate::SyntaxKind::{
-    AT, BACKSLASH, COLON, COMPACT_CUE, CUE, CUE_NAME, DOC_COMMENT_OUTER, DOT, EOF, HASH, IDENT,
-    L_BRACE, L_BRACKET, L_PAREN, NEWLINE, PARENTHETICAL, R_BRACE, R_BRACKET, R_PAREN, SCENE_BODY,
-    SCENE_HEADING, SCENE_SLUG, SCENE_STITCH, SCENE_TITLE, TEXT,
+    AT, BACKSLASH, BANG, BANG_DISPATCH, COLON, COMPACT_CUE, CUE, CUE_NAME, DISPATCH_NAME,
+    DOC_COMMENT_OUTER, DOT, EOF, HASH, IDENT, L_BRACE, L_BRACKET, L_PAREN, NEWLINE, PARENTHETICAL,
+    R_BRACE, R_BRACKET, R_PAREN, SCENE_BODY, SCENE_HEADING, SCENE_SLUG, SCENE_STITCH, SCENE_TITLE,
+    TEXT,
 };
 
 use super::Parser;
@@ -171,15 +172,46 @@ fn scene_heading(p: &mut Parser<'_, '_>) {
 /// Raw-bumped like `content::text_run_until`, so interior spacing and any
 /// run of `.`/`-`/digits in a slugline survives verbatim in one `TEXT`-
 /// shaped node.
+///
+/// **`\#` escapes the title-boundary role of `#` (issue #1738), mirroring
+/// `content::tag()`'s and `cue_name()`'s identical fix.** `#` is one of the
+/// four members of the ruled, final inline escape set (§8d.6), and before
+/// this fix `scene_title` gave it zero escape treatment — an unconditional
+/// `HASH` stop with no backslash awareness, the exact pre-fix shape
+/// `tag()`/`cue_name()` had. Same `backslash_count`-parity carve-out, same
+/// "backslash not stripped from the literal text" precedent: this scan
+/// already tests `nth_raw(0)` directly (no `cur`/`raw` adjacency hazard
+/// like `tag()`'s), so the parity check is safe to apply unconditionally.
+/// Pinned by `a_scene_title_with_an_escaped_hash_does_not_end_the_title_early`.
+///
+/// **Superseded in part by issue #2045:** the raw CST node built here is
+/// still an unstripped, lossless copy of the source — that part of the
+/// precedent holds. But `ast::SceneTitle::text()` (`ast/nodes.rs`) is a
+/// *later* materialization point that now strips a recognized escape's
+/// backslash from the title's rendered display text, in parity with
+/// `markup::escape`; `try_claim`/`try_dispatch`'s natural-notation matching
+/// deliberately keeps reading the raw, unstripped `SyntaxNode` text instead
+/// (its byte offsets are load-bearing for capture-group provenance, #1838)
+/// — so "not stripped" is still true of the CST node and of that one
+/// pattern-matching reader, but no longer true of every reader.
 fn scene_title(p: &mut Parser<'_, '_>) {
     p.start_node(SCENE_TITLE);
+    let mut backslash_count: u32 = 0;
     loop {
         let k = p.nth_raw(0);
-        if matches!(k, EOF | NEWLINE | HASH | R_BRACE) {
+        if matches!(k, EOF | NEWLINE | R_BRACE) {
+            break;
+        }
+        if k == HASH && backslash_count & 1 == 0 {
             break;
         }
         if k == L_BRACKET && at_scene_slug(p) {
             break;
+        }
+        if k == BACKSLASH {
+            backslash_count += 1;
+        } else {
+            backslash_count = 0;
         }
         p.bump();
     }
@@ -281,18 +313,47 @@ pub(crate) fn cue_line(p: &mut Parser<'_, '_>) {
 /// This is not full parity with `tag()`, though: `cue_name`'s stop set has
 /// one member `tag()`'s does not, `HASH`, checked *before* the depth guard,
 /// exactly like `NEWLINE`/`EOF` — so a `#` still cuts a name short even
-/// while a brace is open. `COLON`, unlike `HASH`, is now depth-guarded the
+/// while a brace is open (#1883 tracks whether `HASH` should become
+/// depth-aware like `COLON`; that is a distinct, still-open question this
+/// function does not answer). `COLON`, unlike `HASH`, is now depth-guarded the
 /// same way `R_BRACE` is (#1851): a colon inside an unclosed `{` is part of
 /// an interpolation, not the cue's terminator, so `@NAME {a:b} c.` no
 /// longer stops at the `:` — it scans through to the balanced `}` like
 /// `tag()` does.
+///
+/// **`\#` escapes the name-boundary role of `#` (issue #1738), mirroring
+/// `tag()`'s identical fix** — an unescaped `HASH` still cuts the name short
+/// (the paragraph above, and #1883, are both about *that* case and are
+/// unchanged by this), but `#` is one of the four members of the ruled,
+/// final inline escape set (§8d.6), and `cue_name()` gave it zero escape
+/// treatment before this fix: a `\#` inside a name still ended it at the
+/// `#`, same defect `tag()` had. Same `backslash_count`-parity carve-out,
+/// same "backslash not stripped from the literal text" precedent as `\{`
+/// just above. Pinned by
+/// `a_cue_name_with_an_escaped_hash_does_not_end_the_name_early`.
+///
+/// **Superseded in part by issue #2045:** the raw CST node built here is
+/// still an unstripped, lossless copy of the source — that part of the
+/// precedent holds. But `ast::CueName::text()` (`ast/nodes.rs`) is a
+/// *later* materialization point that now strips a recognized escape's
+/// backslash the same way `ast::Tag::text()` does, so "not stripped" is
+/// still true of the CST node but no longer true of every reader.
 fn cue_name(p: &mut Parser<'_, '_>) {
     p.start_node(CUE_NAME);
     let mut depth: u32 = 0;
     let mut backslash_count: u32 = 0;
     loop {
         let raw = p.nth_raw(0);
-        if matches!(raw, EOF | NEWLINE | HASH) {
+        if matches!(raw, EOF | NEWLINE) {
+            break;
+        }
+        // See `tag()`'s identical carve-out (issue #1738) for why this is
+        // safe to check directly against `raw`: `cue_name()` already checks
+        // every stop kind against `raw` (unlike `tag()`, which mixes `cur`
+        // and `raw` — see that function's own doc for why), so
+        // `backslash_count`'s parity is always accurate exactly when this
+        // fires, with no additional adjacency care needed here.
+        if raw == HASH && backslash_count & 1 == 0 {
             break;
         }
         // COLON is a stop only at depth zero: a colon inside braces (e.g.
@@ -325,6 +386,59 @@ fn cue_name(p: &mut Parser<'_, '_>) {
         }
         p.bump();
     }
+    p.finish_node();
+}
+
+// ── `!name` sigil dispatch (§3.5b, issue #2004) ──────────────────────
+
+/// `!name` at item position — the self-announcing annotation-element
+/// dispatch sigil. The `!` and the name must be **adjacent**, the same
+/// adjacency discipline [`at_cue`] applies to `@NAME`: a bare `!` followed
+/// by a gap (`! Wait, listen.`) is ordinary prose punctuation, never a
+/// malformed dispatch attempt.
+///
+/// Recognition only — whether `name` actually names a declared
+/// `@[element(args = "…")]` handler, and whether that handler's pattern
+/// matches the remainder, is a lowering-time question
+/// (`hir::lower_native::element::try_dispatch`), not this function's. An
+/// unresolved `!name` line still parses cleanly (see [`bang_dispatch`]'s
+/// doc for why that composes with `\!`, the ruled line-start escape).
+pub(crate) fn at_bang_dispatch(p: &Parser<'_, '_>) -> bool {
+    p.at(BANG) && p.nth(1) == IDENT && p.nth_adjacent(0)
+}
+
+/// Parses a confirmed [`at_bang_dispatch`] position into one `BANG_DISPATCH`:
+/// the `!`, a `DISPATCH_NAME` holding the dispatching identifier, and the
+/// remainder as a fused `CONTENT_LINE` via `content::content_line` —
+/// the exact same fused-line technique [`cue_line`]'s `COMPACT_CUE` arm uses
+/// for `@NAME: text`, so interpolation, glue, inline markup and trailing tags
+/// all parse in the remainder exactly as they would in any other content
+/// line.
+///
+/// Reusing `content_line` here, rather than a bespoke raw-text scan, is
+/// deliberate: `hir::lower_native::element::try_dispatch` requires the
+/// remainder to be **wholly literal** (no interpolation etc.) before a
+/// portable-regex pattern can match it — exactly the same requirement
+/// natural-notation claiming already enforces
+/// (`hir::lower_native::element::candidate`) — so a dynamic remainder still
+/// parses, and is diagnosed loudly downstream (`E129`, "parses cleanly but
+/// has no HIR lowering yet") rather than being rejected here at the grammar
+/// level.
+///
+/// Composes with `\!` (§8d.6, the ruled line-start escape,
+/// `markup::at_line_start_escape`) by construction, not by a special case
+/// here: `\!` lexes as `BACKSLASH` `BANG`, never a bare `BANG`, so
+/// `body_line`'s own dispatch on `p.current()` never reaches this function
+/// for an escaped `!` — it falls to the ordinary content-line default arm,
+/// exactly like it did before this sigil existed.
+pub(crate) fn bang_dispatch(p: &mut Parser<'_, '_>) {
+    p.skip_ws();
+    p.start_node(BANG_DISPATCH);
+    p.bump(); // `!`
+    p.start_node(DISPATCH_NAME);
+    p.bump(); // the dispatching IDENT
+    p.finish_node();
+    super::content::content_line(p);
     p.finish_node();
 }
 

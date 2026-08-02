@@ -230,6 +230,56 @@ position."
 
 Corpus impact: `"return with a value expression"` bucket, **16 cases**.
 
+**Correction (issue #1973, landed):** the grammar gap is fixed —
+`divert.rs::return_stmt` now parses a trailing value expression at
+content-ground position (a positive "does this look like an expression"
+probe, not a terminator enumeration, so it coexists cleanly with the
+`return -> target` redirect and an `else`-arm boundary in colon-body form),
+`lower_native::body` lowers it, and `emit_native::emit_return` spells it
+back. This is a pure grammar/lowering/emitter fix, deliberately **not** a
+semantics change: this doc's own literal reproduction above
+(`flow main() { … return 5 }`) still does not compile clean — it now fails
+with **E032** ("explicit return outside function") instead of E033, since
+`fixup_return_kind` only demotes a *bare* (no-value) return in a
+non-function container to a tunnel redirect; a value-carrying one stays
+`ReturnKind::Explicit`, and E032 correctly rejects it there. That's the
+*more accurate* diagnostic, not a regression — whether a non-function
+`flow`'s prose body may semantically carry a return value is still the open
+design question this doc flagged (`docs/block-effect-model.md` §5's
+"Value-returning flows — RULED (sitting)" names a bigger, not-yet-built
+mechanism: a *declared return type* toggling a `flow` into a coroutine —
+which is a separate, larger effort than this grammar fix). A value-carrying
+return inside an actual `fn` (`is_function: true`, e.g. this corpus
+bucket's own `is_alive`/`factorial` motivating cases) compiles and emits
+cleanly today.
+
+A second, separate, pre-existing gap surfaced while verifying this fix's
+real round-trip: `emit_native::emit_knot` always prints a bare `{` for both
+`flow` and `fn`, but its whole `emit_stmt_stream`/`emit_return` printer only
+ever spells **prose-ground** statement syntax (a bare `return`/`return
+<expr>` with no `;`, among others) — since `fn`'s plain `{ }` defaults to
+**code-ground** `STMT_BLOCK` (`;`-terminated statements, charter §4), any
+`fn` this emitter produces needs the `>{ }` prose override to re-parse, and
+today never gets it. This blocks genuine oracle-episode-identity round-trip
+for this bucket's own function-knot corpus cases specifically (though not
+this issue's own acceptance metric, `full_corpus_sweep`'s emit-success
+count, which never re-parses) — filed as its own follow-up, issue #2029,
+rather than folded into #1973's fix.
+
+**Correction (issue #2029, landed):** fixed — `emit_knot` now spells the
+`>{ }` prose-ground override whenever `k.is_function` is true (a `flow`'s
+bare `{` already matches its own prose default and is left alone). Proven
+by a new `tests/tier1-brink-respell/fn-prose-return/` fixture
+(`crates/internal/brink-respell/tests/round_trip.rs`'s `fn_prose_return`)
+and two `emit_native` unit tests
+(`fn_prose_body_value_return_round_trips`,
+`fn_prose_body_bare_return_and_content_round_trip`). As predicted above,
+`full_corpus_sweep`'s emit-success bucket counts are unaffected (measured:
+250 pass / 147 fail, identical bucket-by-bucket with the fix reverted) —
+the fix only changes whether the *reparse* succeeds, which that sweep never
+attempts. The oracle ratchet is untouched by construction: this emitter has
+no caller in the compile/run pipeline the oracle snapshots exercise.
+
 ### Hole 5 — "No `else if` chain"
 
 **DOES NOT REPRODUCE as a grammar gap — the hole as stated is false.** The
@@ -358,5 +408,5 @@ fix lands elsewhere — the sweep can't.
 | Hole 3 corrected (thread-start splice re-nesting, emitter-only) | #1974 |
 | Hole 3 literal wording (outside-choice-point splice) | **not filed** — deliberate ruling #1260, would need a design re-ruling, not implementation |
 | Hole 4 (prose-body value-return) | #1973 |
-| Hole 5 corrected (`CondKind::IfElse` emitter gap) | #1975 |
+| Hole 5 corrected (`CondKind::IfElse` emitter gap) | #1975 — **RESOLVED**, PR #2041: `emit_if_else_chain` re-nests the flat `IfElse` branch list into native's own nested `else if` shape; the "IfElse conditional" `full_corpus_sweep` bucket (14 cases, grown from this doc's original 12) is fully closed |
 | Hole 6 (`ContentPart::Spring`) | #1976 — flagged needs-design on whether native should grow new syntax for this at all |

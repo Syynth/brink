@@ -1,0 +1,11 @@
+fn counter() {
+  let x = 1;
+  > x is {x}.
+  x += 1;
+  > x is now {x}.
+}
+
+flow main() {
+  {counter()}
+  -> END
+}

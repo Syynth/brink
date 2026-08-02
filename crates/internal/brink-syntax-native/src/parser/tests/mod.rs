@@ -50,6 +50,19 @@ fn expect_prose_body(body: Option<ast::Body>) -> ast::Block {
     .expect("expected a prose-ground (BLOCK) body")
 }
 
+/// [`expect_prose_body`]'s mirror: unwrap a `flow`/`fn`'s body-dialect
+/// selector down to its code-ground `STMT_BLOCK` (issue #1992's `> text`
+/// tests need this one; every earlier fixture in this suite reached
+/// `STMT_BLOCK` through the `var name = { … }` blocks-as-values entry point
+/// instead, `statement.rs`'s own `stmt_block_of` helper).
+fn expect_code_body(body: Option<ast::Body>) -> ast::StmtBlock {
+    body.and_then(|b| match b {
+        ast::Body::Code(block) => Some(block),
+        ast::Body::Prose(_) => None,
+    })
+    .expect("expected a code-ground (STMT_BLOCK) body")
+}
+
 /// Token-level counterpart to `has_node_kind` — `descendants()` yields only
 /// nodes, so a check for a token kind (e.g. `ERROR_TOKEN`, which
 /// `SyntaxKind::is_token()` lists and is therefore never wrapped in a

@@ -71,6 +71,7 @@ impl LowerBody for ast::LogicLine {
             return Ok(LogicLineOutput::Block(LogicBlock {
                 ptr: scope.prov(NodeClass::LogicBlock, block.syntax()),
                 stmts,
+                scope: crate::LogicBlockScope::Standalone,
             }));
         }
 

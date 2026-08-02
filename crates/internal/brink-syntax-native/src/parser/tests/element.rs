@@ -86,6 +86,47 @@ fn a_bracket_in_the_middle_of_a_title_is_not_a_slug() {
 }
 
 #[test]
+fn a_scene_title_with_an_escaped_hash_does_not_end_the_title_early() {
+    // Issue #1738, mirrors `content.rs`'s
+    // `a_tag_with_an_escaped_hash_does_not_end_the_tag_early` and
+    // `a_cue_name_with_an_escaped_hash_does_not_end_the_name_early`: `#` is
+    // one of the four members of the ruled, final inline escape set
+    // (§8d.6), but before this fix `scene_title()` gave `\#` zero escape
+    // treatment — a bare `HASH` always ended the title, even one
+    // immediately preceded by a backslash.
+    let src = "INT. MARKET \\#3\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let heading = ast::SceneHeading::cast(first_node(&p.syntax(), SyntaxKind::SCENE_HEADING))
+        .expect("SCENE_HEADING");
+    assert_eq!(
+        heading.title().expect("title").text(),
+        "INT. MARKET #3",
+        "an escaped `#` must not end the title early, and (issue #2045)
+         `SceneTitle::text()` now strips the recognized escape's backslash,
+         parity with `markup::escape`'s stripping in ordinary content"
+    );
+    assert!(
+        !has_node_kind(&p.syntax(), SyntaxKind::TAG),
+        "the escaped `#` must not be reparsed as a trailing TAG"
+    );
+}
+
+#[test]
+fn a_scene_titles_text_accessor_strips_a_recognized_open_brace_escapes_backslash() {
+    // Issue #2045's own scope note: `\{` gets the identical treatment as
+    // `\#`, not just the hash case. `scene_title()` never counts braces
+    // (unlike `tag()`/`cue_name()`), so there is no depth interaction to
+    // guard here — just the same text-accessor stripping.
+    let src = "INT. MARKET \\{3\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let heading = ast::SceneHeading::cast(first_node(&p.syntax(), SyntaxKind::SCENE_HEADING))
+        .expect("SCENE_HEADING");
+    assert_eq!(heading.title().expect("title").text(), "INT. MARKET {3");
+}
+
+#[test]
 fn int_stays_an_ordinary_identifier_away_from_item_position() {
     // The heading prefix is a declared line shape, not a reserved word:
     // `INT` is still a perfectly good binding name.
@@ -350,6 +391,44 @@ fn a_cue_name_with_a_colon_inside_braces_does_not_terminate_the_name() {
 }
 
 #[test]
+fn a_cue_name_with_an_escaped_hash_does_not_end_the_name_early() {
+    // Issue #1738, mirrors `content.rs`'s
+    // `a_tag_with_an_escaped_hash_does_not_end_the_tag_early`: `#` is one of
+    // the four members of the ruled, final inline escape set (§8d.6), but
+    // before this fix `cue_name()` gave `\#` zero escape treatment — a bare
+    // `HASH` always ended the name, even one immediately preceded by a
+    // backslash.
+    let src = "@NAME \\#not a tag\nHello.\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let cue = ast::Cue::cast(first_node(&p.syntax(), SyntaxKind::CUE)).expect("CUE");
+    assert_eq!(
+        cue.name().expect("name").text(),
+        "NAME #not a tag",
+        "an escaped `#` must not end the name early, and (issue #2045)
+         `CueName::text()` now strips the recognized escape's backslash,
+         parity with `markup::escape`'s stripping in ordinary content"
+    );
+    assert!(
+        !has_node_kind(&p.syntax(), SyntaxKind::TAG),
+        "the escaped `#` must not be reparsed as a trailing TAG"
+    );
+}
+
+#[test]
+fn a_cue_names_text_accessor_strips_a_recognized_open_brace_escapes_backslash() {
+    // Issue #2045's own scope note: `\{` gets the identical treatment as
+    // `\#`. Kept brace-free-of-depth (no unclosed `{` here — the depth
+    // carve-out this fix does not touch stays orthogonal, see
+    // `a_cue_name_with_an_escaped_open_brace_does_not_swallow_the_enclosing_blocks_own_closer`).
+    let src = "@NAME \\{not a brace\nHello.\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let cue = ast::Cue::cast(first_node(&p.syntax(), SyntaxKind::CUE)).expect("CUE");
+    assert_eq!(cue.name().expect("name").text(), "NAME {not a brace");
+}
+
+#[test]
 fn a_cue_immediately_followed_by_the_enclosing_blocks_own_closer_still_stops_there() {
     // Guard against over-correcting, the same way `content.rs`'s
     // `a_tag_immediately_followed_by_the_enclosing_blocks_own_closer_still_stops_there`
@@ -402,6 +481,59 @@ fn a_compact_cue_line_keeps_interpolation_and_trailing_tags() {
     let compact = first_node(&p.syntax(), SyntaxKind::COMPACT_CUE);
     assert!(has_node_kind(&compact, SyntaxKind::INTERPOLATION));
     assert!(has_node_kind(&compact, SyntaxKind::TAG));
+}
+
+// ── `!name` sigil dispatch (§3.5b, issue #2004) ──────────────────────
+
+#[test]
+fn a_bang_name_line_parses_as_a_bang_dispatch() {
+    let src = "!radio TAC-2: All units report in.\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+
+    let dispatch = ast::BangDispatch::cast(first_node(&p.syntax(), SyntaxKind::BANG_DISPATCH))
+        .expect("BANG_DISPATCH");
+    assert_eq!(dispatch.name().expect("name").text(), "radio");
+    assert_eq!(
+        dispatch.line().expect("fused remainder").to_string().trim(),
+        "TAC-2: All units report in."
+    );
+}
+
+#[test]
+fn a_bang_dispatch_line_keeps_interpolation_and_trailing_tags() {
+    let src = "!radio I have {gold} coins. #beat\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let dispatch = first_node(&p.syntax(), SyntaxKind::BANG_DISPATCH);
+    assert!(has_node_kind(&dispatch, SyntaxKind::INTERPOLATION));
+    assert!(has_node_kind(&dispatch, SyntaxKind::TAG));
+}
+
+#[test]
+fn a_bang_not_immediately_followed_by_an_ident_is_still_plain_text() {
+    // Adjacency-guarded the same way `@NAME` is (`at_cue`'s own doc): a
+    // gap between `!` and the name means this is ordinary exclamation-mark
+    // prose, not a dispatch attempt.
+    let src = "flow f() {\n  ! Wait, listen.\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(!has_node_kind(&p.syntax(), SyntaxKind::BANG_DISPATCH));
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::CONTENT_LINE));
+}
+
+#[test]
+fn an_escaped_bang_composes_with_bang_dispatch_and_stays_plain_text() {
+    // §8d.6's line-start escape (`\!`, issue #1744/#1978) must still win
+    // over the sigil this issue adds — composition, not a collision.
+    let src = "flow f() {\n  \\!radio still just prose.\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(
+        !has_node_kind(&p.syntax(), SyntaxKind::BANG_DISPATCH),
+        "an escaped `\\!` must never open a BANG_DISPATCH"
+    );
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::ESCAPE));
 }
 
 #[test]

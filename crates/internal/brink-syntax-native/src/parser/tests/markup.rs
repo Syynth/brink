@@ -367,11 +367,13 @@ fn a_leading_backslash_at_escapes_to_a_literal_at_not_a_cue() {
 #[test]
 fn a_leading_backslash_bang_escapes_to_a_literal_bang() {
     // `\!` at line start produces a literal `!` (§8d.6's second line-start
-    // escape, reserved alongside `\@` for the annotation-element `!name`
-    // sigil, §3.5b).
+    // escape, alongside `\@`) instead of a `BANG_DISPATCH` — the
+    // annotation-element `!name` dispatch sigil §3.5b now implements
+    // (issue #2004).
     let src = "flow f() {\n  \\!radio TAC-2: not a handler dispatch.\n}\n";
     let p = assert_lossless(src);
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(!has_node_kind(&p.syntax(), SyntaxKind::BANG_DISPATCH));
     assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::ESCAPE), 1);
     let escape = first_node(&p.syntax(), SyntaxKind::ESCAPE);
     assert_eq!(escape_literal(&escape), "!");

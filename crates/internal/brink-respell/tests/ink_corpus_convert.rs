@@ -204,3 +204,100 @@ fn rnd_func() {
     // whose sequence depends on the seed actually having been applied.
     assert_episode_identical("rnd-func", "tests/tier2/function/rnd-func/story.ink");
 }
+
+// ─── `CondKind::IfElse` re-nesting (issue #1975) ────────────────────────
+//
+// ink's independently-chained, no-shared-subject conditional
+// (`{ - cond: … - cond2: … - else: … }`) lowers to `CondKind::IfElse`,
+// which `emit_conditional` used to refuse outright — see
+// `full_corpus_sweep.rs`'s "IfElse conditional" bucket. `emit_if_else_chain`
+// now re-shapes the flat branch list into nested native `{if …} else { {if
+// …} else { … } }`, exactly what a native-authored `else if` chain lowers
+// to on the way in (`lower_native::cond::lower_conditional`'s doc).
+
+#[test]
+fn ifelse_ext_three_way_chain() {
+    // Two real conditions plus a trailing `else` (3-way `IfElse`) — the
+    // exact shape `emit_conditional`'s old `CondKind::IfElse` arm refused
+    // unconditionally.
+    assert_episode_identical("ifelse-ext", "tests/tier2/conditional/ifelse-ext/story.ink");
+}
+
+// The above proves the re-shape is legal, episode-identical native syntax
+// for a chain whose branch bodies carry only `~` assignments (no prose, no
+// choices) — the flat→nested reshape's real risk is what happens to
+// *content* and `EndOfLine` structure once a branch body becomes the sole
+// statement of a synthesized `else { … }` arm, which that case cannot
+// exercise. These four content-bearing differentials close that gap: the
+// `ifelse-ext-text*` trio is the same 3-way `IfElse` shape with prose
+// branch bodies (only the driving `x` value differs, so each of the three
+// branches gets taken at least once across the trio), and
+// `I113-else-branches` is the choice-shaped variant (`IfElse` and
+// `InitialCondition`/`Switch` blocks mixed in the same file, one of them
+// with a bare-inline branch body rather than an indented block).
+
+#[test]
+fn ifelse_ext_text1() {
+    assert_episode_identical(
+        "ifelse-ext-text1",
+        "tests/tier2/conditional/ifelse-ext-text1/story.ink",
+    );
+}
+
+#[test]
+fn ifelse_ext_text2() {
+    assert_episode_identical(
+        "ifelse-ext-text2",
+        "tests/tier2/conditional/ifelse-ext-text2/story.ink",
+    );
+}
+
+#[test]
+fn ifelse_ext_text3() {
+    assert_episode_identical(
+        "ifelse-ext-text3",
+        "tests/tier2/conditional/ifelse-ext-text3/story.ink",
+    );
+}
+
+#[test]
+fn i113_else_branches() {
+    assert_episode_identical(
+        "I113-else-branches",
+        "tests/tier2/conditions/I113-else-branches/story.ink",
+    );
+}
+
+// ─── `fn`-body prose-override selector (issue #2044) ────────────────────
+//
+// `tests/tier2/function/complex-func2/story.ink`'s `=== function derp(a,
+// b) ===` knot mixes a `VAR`-turned-declaration, a mid-body `~ x = a - b`
+// assignment, and a follow-on `IfElse`-shaped conditional block in the
+// same ink source body — the exact "mid-body statement after an
+// inline-conditional VAR chain" shape #2044 named. Note the `VAR`s hoist
+// to file-level globals on the way through the mechanical respell (the
+// emitted `.brink` puts `var x = 0` / `var y = 3` / `var z = 1` before
+// `flow main()`), so the emitted `fn derp` body itself carries only the
+// assignment and the conditional, not a declaration — it's the *ink*
+// source, not the emitted knot body, that mixes all three. At filing
+// time this failed to reparse
+// (`expected an expression, found TILDE`): `emit_knot` wrote a bare `{`
+// for every `fn`, which selects native's code-ground (`;`-terminated)
+// statement dialect, but the printer's statement stream only ever spells
+// prose-ground syntax.
+//
+// That root cause was already fixed by PR #2039 (closing #2029, merged
+// before this issue's assigned work began) — `emit_knot` now spells the
+// `>{ }` prose-ground override for every `fn` body. This test is the
+// round-trip differential #2044 asked for: no `ink_corpus_convert.rs`
+// case exercised an ink-derived `fn` knot's body before now, so the
+// `>{ }` fix had no episode-identity proof against a real oracle-corpus
+// `fn`. See `docs/decision-log.md` or issue #2029 for the fix itself —
+// this PR adds test coverage only, not a production change.
+#[test]
+fn complex_func2_fn_body_mid_statement() {
+    assert_episode_identical(
+        "complex-func2",
+        "tests/tier2/function/complex-func2/story.ink",
+    );
+}

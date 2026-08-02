@@ -1,0 +1,7 @@
+fn double(x) >{
+  return x * 2
+}
+
+flow main() {
+  Doubled: {double(21)} -> END
+}
