@@ -86,6 +86,33 @@ fn a_bracket_in_the_middle_of_a_title_is_not_a_slug() {
 }
 
 #[test]
+fn a_scene_title_with_an_escaped_hash_does_not_end_the_title_early() {
+    // Issue #1738, mirrors `content.rs`'s
+    // `a_tag_with_an_escaped_hash_does_not_end_the_tag_early` and
+    // `a_cue_name_with_an_escaped_hash_does_not_end_the_name_early`: `#` is
+    // one of the four members of the ruled, final inline escape set
+    // (§8d.6), but before this fix `scene_title()` gave `\#` zero escape
+    // treatment — a bare `HASH` always ended the title, even one
+    // immediately preceded by a backslash.
+    let src = "INT. MARKET \\#3\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let heading = ast::SceneHeading::cast(first_node(&p.syntax(), SyntaxKind::SCENE_HEADING))
+        .expect("SCENE_HEADING");
+    assert_eq!(
+        heading.title().expect("title").text(),
+        "INT. MARKET \\#3",
+        "an escaped `#` must not end the title early, and the backslash is \
+         not stripped — same precedent `\\{{` and `tag()`/`cue_name()` \
+         already established"
+    );
+    assert!(
+        !has_node_kind(&p.syntax(), SyntaxKind::TAG),
+        "the escaped `#` must not be reparsed as a trailing TAG"
+    );
+}
+
+#[test]
 fn int_stays_an_ordinary_identifier_away_from_item_position() {
     // The heading prefix is a declared line shape, not a reserved word:
     // `INT` is still a perfectly good binding name.
@@ -347,6 +374,30 @@ fn a_cue_name_with_a_colon_inside_braces_does_not_terminate_the_name() {
     let p = assert_lossless(src);
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
     assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::FLOW_DECL), 1);
+}
+
+#[test]
+fn a_cue_name_with_an_escaped_hash_does_not_end_the_name_early() {
+    // Issue #1738, mirrors `content.rs`'s
+    // `a_tag_with_an_escaped_hash_does_not_end_the_tag_early`: `#` is one of
+    // the four members of the ruled, final inline escape set (§8d.6), but
+    // before this fix `cue_name()` gave `\#` zero escape treatment — a bare
+    // `HASH` always ended the name, even one immediately preceded by a
+    // backslash.
+    let src = "@NAME \\#not a tag\nHello.\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let cue = ast::Cue::cast(first_node(&p.syntax(), SyntaxKind::CUE)).expect("CUE");
+    assert_eq!(
+        cue.name().expect("name").text(),
+        "NAME \\#not a tag",
+        "an escaped `#` must not end the name early, and the backslash is \
+         not stripped — same precedent `\\{{` already established"
+    );
+    assert!(
+        !has_node_kind(&p.syntax(), SyntaxKind::TAG),
+        "the escaped `#` must not be reparsed as a trailing TAG"
+    );
 }
 
 #[test]
