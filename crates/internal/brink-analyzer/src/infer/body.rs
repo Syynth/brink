@@ -2926,7 +2926,24 @@ impl InferPass<'_, '_> {
                     .and_then(|te| crate::annotations::resolve(te, &type_names));
                 match declared {
                     Some(declared_ty) => {
-                        if !inferred.is_unresolved() && !assignable(&declared_ty, &inferred) {
+                        // Review finding on #1994 (measured at head c1be12d
+                        // via `strict::native_strict_diags`): a plain
+                        // `!assignable(&declared_ty, &inferred)` is the wrong
+                        // comparison direction for a *parameter* — it flags
+                        // legal widening (an `int`-annotated param whose body
+                        // uses it as a `float`, e.g. `|x: int| { x + 1.0 }`)
+                        // as a hard, non-downgradable `E174`, when the
+                        // pre-#1994 posture (and the structurally identical
+                        // top-level `fn(x: int): float { return x + 1.0; }`)
+                        // reported nothing (or only the advisory `E063`).
+                        // Only report when the pair is genuinely
+                        // irreconcilable in *either* direction — an
+                        // int-vs-bool mismatch still fires, since neither
+                        // direction is assignable there.
+                        if !inferred.is_unresolved()
+                            && !assignable(&declared_ty, &inferred)
+                            && !assignable(&inferred, &declared_ty)
+                        {
                             self.lambda_annotation_mismatches
                                 .push(LambdaAnnotationMismatch {
                                     // `p.annotation` is `Some` whenever `declared`

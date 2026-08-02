@@ -1131,6 +1131,38 @@ fn check_direct_call_args(
 /// (`E066`) reporting for the same local, no dedup needed
 /// on this side (mirrors [`check_direct_call_args`]'s own doc on the
 /// identical point).
+/// Every top-level def id a body-level check (typed-assign mismatches,
+/// lambda annotation mismatches) needs to walk for one file: each
+/// knot/stitch, plus (issue #1903) `root_content`'s own synthetic id when
+/// the file has top-level content of its own — `collect_defs` synthesizes
+/// that same id for inference, so a body-level check must look it up under
+/// the identical scheme or it silently never sees a lambda/assignment
+/// written directly in a file's top-level content. Factored out of
+/// [`check_typed_assign_mismatches`] and [`check_lambda_annotation_mismatches`]
+/// (previously a character-for-character copy in each, house rule on
+/// keeping a single walk shared once it needs a second issue-specific fix
+/// threaded through it) so the next such fix only has to land once.
+fn body_def_ids(file: FileId, hir: &HirFile, index: &SymbolIndex) -> Vec<DefinitionId> {
+    let mut def_ids: Vec<DefinitionId> = Vec::new();
+    if !hir.root_content.stmts.is_empty() {
+        let synthetic_id = DefinitionId::new(DefinitionTag::LocalVar, u64::from(file.0));
+        def_ids.push(synthetic_id);
+    }
+    for knot in &hir.knots {
+        let kind = knot.symbol_kind();
+        if let Some(id) = annotations::def_id_for(index, file, kind, &knot.name.text) {
+            def_ids.push(id);
+        }
+        for stitch in &knot.stitches {
+            let qualified = format!("{}.{}", knot.name.text, stitch.name.text);
+            if let Some(id) = annotations::def_id_for(index, file, SymbolKind::Stitch, &qualified) {
+                def_ids.push(id);
+            }
+        }
+    }
+    def_ids
+}
+
 fn check_typed_assign_mismatches(
     files: &[(FileId, &HirFile)],
     index: &SymbolIndex,
@@ -1138,28 +1170,7 @@ fn check_typed_assign_mismatches(
 ) -> Vec<brink_ir::Diagnostic> {
     let mut out = Vec::new();
     for &(file, hir) in files {
-        let mut def_ids: Vec<DefinitionId> = Vec::new();
-        // Issue #1903: add root_content's synthetic ID to the list of defs
-        // to check, just as collect_defs synthesizes it for inference.
-        if !hir.root_content.stmts.is_empty() {
-            let synthetic_id = DefinitionId::new(DefinitionTag::LocalVar, u64::from(file.0));
-            def_ids.push(synthetic_id);
-        }
-        for knot in &hir.knots {
-            let kind = knot.symbol_kind();
-            if let Some(id) = annotations::def_id_for(index, file, kind, &knot.name.text) {
-                def_ids.push(id);
-            }
-            for stitch in &knot.stitches {
-                let qualified = format!("{}.{}", knot.name.text, stitch.name.text);
-                if let Some(id) =
-                    annotations::def_id_for(index, file, SymbolKind::Stitch, &qualified)
-                {
-                    def_ids.push(id);
-                }
-            }
-        }
-        for id in def_ids {
+        for id in body_def_ids(file, hir, index) {
             let Some(body) = inference.bodies.get(&id) else {
                 continue;
             };
@@ -1200,30 +1211,7 @@ fn check_lambda_annotation_mismatches(
 ) -> Vec<brink_ir::Diagnostic> {
     let mut out = Vec::new();
     for &(file, hir) in files {
-        let mut def_ids: Vec<DefinitionId> = Vec::new();
-        // Issue #1903: see `check_typed_assign_mismatches`'s identical
-        // `root_content` synthetic-id inclusion — a lambda can be written
-        // directly in a file's top-level content, not only inside a
-        // knot/stitch.
-        if !hir.root_content.stmts.is_empty() {
-            let synthetic_id = DefinitionId::new(DefinitionTag::LocalVar, u64::from(file.0));
-            def_ids.push(synthetic_id);
-        }
-        for knot in &hir.knots {
-            let kind = knot.symbol_kind();
-            if let Some(id) = annotations::def_id_for(index, file, kind, &knot.name.text) {
-                def_ids.push(id);
-            }
-            for stitch in &knot.stitches {
-                let qualified = format!("{}.{}", knot.name.text, stitch.name.text);
-                if let Some(id) =
-                    annotations::def_id_for(index, file, SymbolKind::Stitch, &qualified)
-                {
-                    def_ids.push(id);
-                }
-            }
-        }
-        for id in def_ids {
+        for id in body_def_ids(file, hir, index) {
             let Some(body) = inference.bodies.get(&id) else {
                 continue;
             };
@@ -2912,6 +2900,66 @@ mod tests {
             via_callee_ty.is_empty(),
             "the seed reaches `annotated_callee_ty`'s direct-call read of \
              `cb`, not just the lambda's own tail: {via_callee_ty:?}"
+        );
+    }
+
+    // ── issue #1994: a lambda's own written annotation governs, with an ──
+    // eager E174 on disagreement — exercised through `native_strict_diags`,
+    // the same end-to-end harness the #1941/#1954 tests immediately above
+    // use, not just at the `infer_lambda` unit level (review finding on
+    // #1994: the hand-built HIR unit tests in `infer::body::tests` never
+    // reach `strict::check_lambda_annotation_mismatches` at all).
+
+    #[test]
+    fn native_lambda_return_annotation_disagreement_is_e174() {
+        let diags =
+            native_strict_diags("fn f() {\n  let g = |k: int|: int {\n    \"wrong\"\n  };\n}\n");
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E174);
+        assert!(
+            diags[0]
+                .message
+                .contains("lambda return type is annotated `int` but its body infers `string`"),
+            "{:?}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn native_lambda_param_annotation_disagreement_is_e174() {
+        // The param-arm twin of the return test above: `k`'s only body
+        // evidence (`k == true`, an expression-bodied tail so `g` itself
+        // resolves to a concrete `Ty::Fn` rather than separately escaping)
+        // pins it to `bool`, disagreeing with its own written `k: int`.
+        // `int` vs `bool` is irreconcilable in either direction, so this
+        // must still fire even with the widening-only guard in place.
+        let diags = native_strict_diags("fn f() {\n  let g = |k: int| k == true;\n}\n");
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E174);
+        assert!(
+            diags[0]
+                .message
+                .contains("lambda parameter `k` is annotated `int` but its body infers `bool`"),
+            "{:?}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn native_lambda_param_widening_use_is_not_a_mismatch() {
+        // Review finding (BLOCKING) on #1994: the param arm's original
+        // `!assignable(&declared_ty, &inferred)` check compared in the
+        // wrong direction for a parameter, turning legal int→float widening
+        // into a hard, non-downgradable E174. An `int`-annotated param used
+        // as a `float` in the body (ordinary numeric widening, exactly like
+        // the structurally identical `fn f(x: int): float { return x +
+        // 1.0; }` — which reports nothing under the pre-existing top-level
+        // `fn`/`flow` posture) must stay clean.
+        let diags = native_strict_diags("fn f() {\n  let g = |x: int| {\n    x + 1.0\n  };\n}\n");
+        assert!(
+            diags.is_empty(),
+            "an int-annotated param used as a float is legal widening, not \
+             a mismatch: {diags:?}"
         );
     }
 
