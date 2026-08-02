@@ -293,15 +293,32 @@ pub struct FieldAssignMismatch {
     pub found: Ty,
 }
 
-/// One statically-checkable argument-type mismatch at a **direct** call
-/// site (issue #1864) — the callee resolves straight to a known def via
-/// `known_sigs`, so its declared parameter types are already fully known
-/// at the call site, unlike the T1c call-through-a-value case
-/// [`ValueCallFact`] exists for.
+/// One statically-checkable argument-type mismatch recorded at either of
+/// two producer sites whose callee resolves straight to a known def via
+/// `known_sigs` — so its declared parameter types are already fully known
+/// at the site — unlike the T1c call-through-a-value case
+/// [`ValueCallFact`] exists for:
+///
+/// - a **direct call** (issue #1864) — `f(a, b)` where `f` names a known
+///   knot/stitch/function directly;
+/// - a `#fn(target, args…)` **creation site** (issue #2001) — not a call
+///   at all, but the by-ref *binding* site for a partial application;
+///   `target`'s remaining (unbound) params still go through the ordinary
+///   call-through-a-value check when the resulting `Ty::Fn` value is
+///   later invoked, but the *bound* prefix checked here is only ever
+///   checkable at creation.
+///
+/// `strict::check_direct_call_args`'s rendered message reads "argument N
+/// of call to `name`" for both producers — accepted as-is for a `#fn`
+/// literal (a creation site's bound-argument list still names the target
+/// function's own parameter it's populating), rather than adding a
+/// site-discriminant field to say "creation of" instead of "call to";
+/// revisit if that reads as confusing in practice (#2001 review finding).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirectCallArgMismatch {
-    /// The callee `Path`'s own source range (the diagnostic site) — same
-    /// convention as [`ValueCallFact::range`].
+    /// The diagnostic site's source range: the callee `Path`'s own range
+    /// for a direct call (same convention as [`ValueCallFact::range`]), or
+    /// the `#fn` literal's `target` path range for a creation site.
     pub range: TextRange,
     /// The callee's display name (`h` in `h("hi")`; dotted if the resolved
     /// path had multiple segments, e.g. `Knot.stitch`).

@@ -171,3 +171,36 @@ fn once_only_choices_can_link_back_to_self() {
         "tests/tier1/choices/once-only-choices-can-link-back-to-self/story.ink",
     );
 }
+
+// ─── Content-ground logic-line cases (issue #1972) ──────────────────────
+//
+// `emit_native`'s `Stmt::TempDecl`/`Assignment`/`ExprStmt` arms at
+// prose-body position (F1, review of PR #2015): the 42 "assignment" /
+// "expression statement" / "temp declaration" cases that moved from
+// `respell_ink_source` FAIL to OK were only proven emitter-clean by
+// `full_corpus_sweep.rs` (produces `.brink` text, nothing more) — neither
+// case had episode-identity coverage in this file until now.
+
+#[test]
+fn temporaries_at_global_scope() {
+    // `~ temp y = 4` at root content position (issue #1972's `~ let`
+    // temp-decl emitter arm), interpolated alongside a `VAR` global —
+    // proves the emitted `~ let y = 4` re-parses, re-lowers, and plays
+    // identically to the ink original, not just that the emitter accepted
+    // the node.
+    assert_episode_identical(
+        "temporaries-at-global-scope",
+        "tests/tier1/variables/I011-temporaries-at-global-scope/story.ink",
+    );
+}
+
+#[test]
+fn rnd_func() {
+    // `~ SEED_RANDOM(10)` — a bare call to a builtin at root content
+    // position, discarding its return value for side effect only (issue
+    // #1972's `ExprStmt` emitter arm) — proves the emitted
+    // `~ SEED_RANDOM(10)` re-parses, re-lowers, and plays identically to
+    // the ink original, including the downstream `RANDOM(1, 6)` calls
+    // whose sequence depends on the seed actually having been applied.
+    assert_episode_identical("rnd-func", "tests/tier2/function/rnd-func/story.ink");
+}

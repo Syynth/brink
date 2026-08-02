@@ -544,6 +544,24 @@ flow main() {
 /// `9`. With the parser/lowering fix reverted, this case's transcript
 /// reads `~ n = 5\n~ n += 3\n~ bump()\nValue is 0.` instead — a different
 /// mismatch for every one of the three lines, not just a missing feature.
+///
+/// Extended by issue #1972 with a fourth logic-line shape the same
+/// `TILDE` dispatch didn't originally cover: `~ let m = n + 1` (a
+/// content-ground temp declaration). "Temp is 10." is only reachable if
+/// `m` is actually bound to `n + 1` (`n` is `9` at that point) and
+/// interpolated — with the #1972 grammar/lowering reverted, this fixture
+/// does not silently swallow the statement: `logic_line`'s dispatch falls
+/// through to `expr_stmt_line`, which routes `let` into `expr::expression`
+/// (`crates/internal/brink-syntax-native/src/parser/expr.rs`'s atom
+/// fallback); `KW_LET` is not an expression starter there, so it raises
+/// `"expected an expression, found KW_LET"`, plus one `error_recover` per
+/// leftover token on the line (issue #1991's recovery loop — it does not
+/// let the tokens through as prose). `brink-db` maps that `ParseSeverity::Error`
+/// to the non-suppressible `DiagnosticCode::E037`, so the fixture fails to
+/// *compile* rather than misrendering at runtime — a different failure mode
+/// than #1991's assignment/bare-call case, but this test still fails
+/// without the fix (it just fails at `compile_path`, not at the
+/// transcript-diff step).
 #[test]
 fn logic_line_escape() {
     assert_case("logic-line-escape");
