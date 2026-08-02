@@ -705,8 +705,60 @@ fn a_tag_with_an_escaped_hash_does_not_end_the_tag_early() {
     assert_eq!(
         tag.text(),
         "#tag \\#not a new tag",
-        "the backslash is not stripped from the tag's own literal text — \
-         same precedent `\\{{` already established"
+        "the raw CST node's own text is never rewritten — it stays a \
+         faithful, lossless copy of the source, backslash and all; \
+         `ast::Tag::text()` is the separate, later materialization point \
+         that strips a recognized escape's backslash (issue #2045), see \
+         `a_tags_text_accessor_strips_a_recognized_escapes_backslash` below"
+    );
+}
+
+#[test]
+fn a_tags_text_accessor_strips_a_recognized_escapes_backslash() {
+    // Issue #2045: `markup::escape` already strips a *recognized* escape's
+    // backslash for ordinary content, but `tag()`'s raw free-text scan gave
+    // `\#`/`\{` structural recognition only (#1738/#1852: an escaped `#`/`{`
+    // no longer ends the tag/counts toward depth early) without ever
+    // stripping the backslash from the tag's own materialized text — the
+    // exact divergence #1738's own filing body used as its motivating
+    // example (`Hello \# world #a \#b`). `ast::Tag::text()` is the
+    // materialization point that now closes it, in parity with
+    // `markup::escape`, while the raw CST node above stays untouched.
+    let p = assert_lossless("Hello #tag \\#not a new tag\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let tag = find_child::<ast::Tag>(
+        &p.syntax()
+            .descendants()
+            .find(|n| n.kind() == SyntaxKind::CONTENT_LINE)
+            .expect("CONTENT_LINE"),
+    )
+    .expect("Tag");
+    assert_eq!(
+        tag.text(),
+        "tag #not a new tag",
+        "a recognized `\\#` strips its backslash in the tag's materialized \
+         text, same as ordinary content"
+    );
+}
+
+#[test]
+fn a_tags_text_accessor_strips_a_recognized_open_brace_escapes_backslash() {
+    // Issue #2045's own scope note: `\{` gets the identical treatment as
+    // `\#`, not just the hash case.
+    let p = assert_lossless("Hello #tag \\{gold\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let tag = find_child::<ast::Tag>(
+        &p.syntax()
+            .descendants()
+            .find(|n| n.kind() == SyntaxKind::CONTENT_LINE)
+            .expect("CONTENT_LINE"),
+    )
+    .expect("Tag");
+    assert_eq!(
+        tag.text(),
+        "tag {gold",
+        "a recognized `\\{{` strips its backslash in the tag's materialized \
+         text, same as `\\#`"
     );
 }
 

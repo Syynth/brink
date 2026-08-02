@@ -536,17 +536,16 @@ fn a_tag_starting_with_at_on_a_trailing_tag_line_emits_e172() {
 // ── `\#` inside a tag body (issue #1738) ─────────────────────────────
 
 #[test]
-fn a_tag_with_an_escaped_hash_lowers_to_one_tag_with_the_literal_hash_preserved() {
+fn a_tag_with_an_escaped_hash_lowers_with_the_backslash_stripped() {
     // Issue #1738: before the parser fix (`content::tag`'s doc comment),
     // `\#` inside a tag split it into two sibling `TAG`s at the `#` —
-    // this would lower to `c.tags.len() == 2`. After the fix, one `TAG`
-    // survives whose literal text includes the escaped `#`, backslash and
-    // all (mirrors the already-established `\{` precedent: the escape is
-    // not stripped, only its structural role as a tag-boundary is
-    // suppressed). This also exercises `lower_tag`'s own fix — skip only
-    // the tag's *leading* `HASH`, not every `HASH` in the node, or the
-    // escaped one would be silently stripped back out here even with the
-    // parser fix in place.
+    // this would lower to `c.tags.len() == 2`. After that fix, one `TAG`
+    // survives with the escaped `#` preserved. Issue #2045 (this test,
+    // updated): `ast::Tag::text()` now strips the *recognized* escape's
+    // backslash too, parity with `markup::escape`'s stripping for ordinary
+    // content — `lower_tag` no longer hand-rolls the leading-`HASH`-skip
+    // itself, it delegates to `ast::Tag::text()`, which owns both that and
+    // this stripping in one place.
     let (hir, _m, diags) = lower_src("flow a() {\n  Hi. #tag \\#more\n}\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     let body = only_knot_body(&hir);
@@ -560,8 +559,28 @@ fn a_tag_with_an_escaped_hash_lowers_to_one_tag_with_the_literal_hash_preserved(
         c.tags
     );
     assert!(
-        matches!(&c.tags[0].parts[0], ContentPart::Text(t) if t == "tag \\#more"),
-        "expected the literal backslash-hash preserved verbatim, got {:?}",
+        matches!(&c.tags[0].parts[0], ContentPart::Text(t) if t == "tag #more"),
+        "expected the literal `#` preserved with its escaping backslash \
+         stripped (issue #2045), got {:?}",
+        c.tags[0].parts
+    );
+}
+
+#[test]
+fn a_tag_with_an_escaped_open_brace_lowers_with_the_backslash_stripped() {
+    // Issue #2045's own scope note: `\{` gets the identical treatment as
+    // `\#`, not just the hash case.
+    let (hir, _m, diags) = lower_src("flow a() {\n  Hi. #tag \\{gold\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = only_knot_body(&hir);
+    let Stmt::Content(c) = &body.stmts[0] else {
+        panic!("expected Content, got {:?}", body.stmts[0]);
+    };
+    assert_eq!(c.tags.len(), 1);
+    assert!(
+        matches!(&c.tags[0].parts[0], ContentPart::Text(t) if t == "tag {gold"),
+        "expected the literal `{{` preserved with its escaping backslash \
+         stripped (issue #2045), got {:?}",
         c.tags[0].parts
     );
 }

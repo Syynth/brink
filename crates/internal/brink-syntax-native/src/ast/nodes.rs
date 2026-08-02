@@ -6,7 +6,7 @@
 //! without pre-building every accessor a later lowering pass might want
 //! (that's additive, not a re-architecture, when it's actually needed).
 
-use crate::SyntaxKind::{self, DOC_COMMENT_INNER, DOC_COMMENT_OUTER, IDENT, L_PAREN};
+use crate::SyntaxKind::{self, DOC_COMMENT_INNER, DOC_COMMENT_OUTER, HASH, IDENT, L_PAREN};
 use crate::ast::AstNode as _;
 use crate::ast::ast_node;
 use crate::ast::support;
@@ -1347,6 +1347,97 @@ impl TagLine {
     }
 }
 
+impl Tag {
+    /// The tag's own text: the leading `#` sigil dropped, surrounding
+    /// source whitespace trimmed, and a *recognized* inline escape's
+    /// backslash stripped (§8d.6, issue #2045) — parity with
+    /// `markup::escape`'s stripping in ordinary content. `tag()`'s raw
+    /// free-text scan (`parser::content::tag`) never builds an `ESCAPE`
+    /// sub-node the way the shared content engine does, so there is no
+    /// node-level place to skip the backslash the way `push_escape` does
+    /// downstream; this accessor is that place instead — the single
+    /// materialization point every consumer of "the tag's text" should go
+    /// through, mirroring [`SceneTitle::text`]/[`CueName::text`].
+    pub fn text(&self) -> String {
+        let mut skipped_leading_hash = false;
+        let mut raw = String::new();
+        for tok in self
+            .syntax
+            .children_with_tokens()
+            .filter_map(rowan::NodeOrToken::into_token)
+        {
+            if !skipped_leading_hash && tok.kind() == HASH {
+                skipped_leading_hash = true;
+                continue;
+            }
+            raw.push_str(tok.text());
+        }
+        strip_recognized_escape_backslashes(raw.trim())
+    }
+}
+
+/// Strip the backslash from a *recognized* inline escape (`\< \{ \# \\`,
+/// §8d.6 — the set is final) inside already-assembled raw text, achieving
+/// parity with `markup::escape`'s stripping behavior for ordinary content
+/// (issue #2045). `tag()`/`cue_name()`/`scene_title()` are raw free-text
+/// scanners with no `ESCAPE` sub-node to strip at build time (unlike the
+/// shared content engine); this is the one shared place their `text()`
+/// accessors funnel through instead, so the three stay self-consistent
+/// rather than drifting into three near-identical hand-rolled copies.
+///
+/// Mirrors the *existing* parser-level parity reading these scanners
+/// already use for structural purposes (#1852/#1738: a run of `N`
+/// consecutive backslashes immediately preceding an escapable character
+/// only escapes it when `N` is odd — the last backslash is the escaping
+/// one; an even run means the backslashes pair off and escape each other,
+/// so the character stays unescaped). Only the odd case strips anything,
+/// and only ever the one escaping backslash: the `N - 1` backslashes left
+/// over from an odd run, and every backslash in an even run, are left
+/// untouched — this does not newly collapse backslash *pairs* the way
+/// `markup::escape`'s own greedy left-to-right consumption would for a
+/// bare `\\` with nothing recognized following it (that residual gap, if
+/// it is one, is unclaimed by this issue and not decided here). A run
+/// followed by anything other than `< { #` is untouched — these scanners
+/// give zero escape treatment to any other backslash sequence, and #2040
+/// (whether that should become a diagnostic) is a distinct, still-open
+/// question this does not answer.
+fn strip_recognized_escape_backslashes(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] != '\\' {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        let run_start = i;
+        while i < chars.len() && chars[i] == '\\' {
+            i += 1;
+        }
+        let run_len = i - run_start;
+        // A maximal run of backslashes was just consumed, so the next
+        // char (if any) can never itself be `\` — only `<`/`{`/`#` are
+        // possible members of the recognized set here.
+        let next = chars.get(i).copied();
+        let escapes_next = run_len % 2 == 1 && matches!(next, Some('<' | '{' | '#'));
+        if escapes_next {
+            for _ in 0..run_len - 1 {
+                out.push('\\');
+            }
+            if let Some(c) = next {
+                out.push(c);
+                i += 1;
+            }
+        } else {
+            for _ in 0..run_len {
+                out.push('\\');
+            }
+        }
+    }
+    out
+}
+
 // ── B0.8 Wave A additions: the code-ground statement layer ──────────
 //
 // `docs/decision-log.md` 2026-07-23 "Code-ground sitting" — parser only,
@@ -1620,9 +1711,12 @@ impl SceneHeading {
 }
 
 impl SceneTitle {
-    /// The title text, with the surrounding source whitespace trimmed.
+    /// The title text, with the surrounding source whitespace trimmed and
+    /// a *recognized* inline escape's backslash stripped (§8d.6, issue
+    /// #2045) — parity with `markup::escape`'s stripping in ordinary
+    /// content. See [`Tag::text`] for the shared rationale.
     pub fn text(&self) -> String {
-        self.syntax.text().to_string().trim().to_owned()
+        strip_recognized_escape_backslashes(self.syntax.text().to_string().trim())
     }
 }
 
@@ -1653,9 +1747,12 @@ impl Cue {
 }
 
 impl CueName {
-    /// The speaker name, with the surrounding source whitespace trimmed.
+    /// The speaker name, with the surrounding source whitespace trimmed
+    /// and a *recognized* inline escape's backslash stripped (§8d.6,
+    /// issue #2045) — parity with `markup::escape`'s stripping in
+    /// ordinary content. See [`Tag::text`] for the shared rationale.
     pub fn text(&self) -> String {
-        self.syntax.text().to_string().trim().to_owned()
+        strip_recognized_escape_backslashes(self.syntax.text().to_string().trim())
     }
 }
 
