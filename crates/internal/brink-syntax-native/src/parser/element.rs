@@ -172,15 +172,35 @@ fn scene_heading(p: &mut Parser<'_, '_>) {
 /// Raw-bumped like `content::text_run_until`, so interior spacing and any
 /// run of `.`/`-`/digits in a slugline survives verbatim in one `TEXT`-
 /// shaped node.
+///
+/// **`\#` escapes the title-boundary role of `#` (issue #1738), mirroring
+/// `content::tag()`'s and `cue_name()`'s identical fix.** `#` is one of the
+/// four members of the ruled, final inline escape set (§8d.6), and before
+/// this fix `scene_title` gave it zero escape treatment — an unconditional
+/// `HASH` stop with no backslash awareness, the exact pre-fix shape
+/// `tag()`/`cue_name()` had. Same `backslash_count`-parity carve-out, same
+/// "backslash not stripped from the literal text" precedent: this scan
+/// already tests `nth_raw(0)` directly (no `cur`/`raw` adjacency hazard
+/// like `tag()`'s), so the parity check is safe to apply unconditionally.
+/// Pinned by `a_scene_title_with_an_escaped_hash_does_not_end_the_title_early`.
 fn scene_title(p: &mut Parser<'_, '_>) {
     p.start_node(SCENE_TITLE);
+    let mut backslash_count: u32 = 0;
     loop {
         let k = p.nth_raw(0);
-        if matches!(k, EOF | NEWLINE | HASH | R_BRACE) {
+        if matches!(k, EOF | NEWLINE | R_BRACE) {
+            break;
+        }
+        if k == HASH && backslash_count & 1 == 0 {
             break;
         }
         if k == L_BRACKET && at_scene_slug(p) {
             break;
+        }
+        if k == BACKSLASH {
+            backslash_count += 1;
+        } else {
+            backslash_count = 0;
         }
         p.bump();
     }
@@ -282,18 +302,40 @@ pub(crate) fn cue_line(p: &mut Parser<'_, '_>) {
 /// This is not full parity with `tag()`, though: `cue_name`'s stop set has
 /// one member `tag()`'s does not, `HASH`, checked *before* the depth guard,
 /// exactly like `NEWLINE`/`EOF` — so a `#` still cuts a name short even
-/// while a brace is open. `COLON`, unlike `HASH`, is now depth-guarded the
+/// while a brace is open (#1883 tracks whether `HASH` should become
+/// depth-aware like `COLON`; that is a distinct, still-open question this
+/// function does not answer). `COLON`, unlike `HASH`, is now depth-guarded the
 /// same way `R_BRACE` is (#1851): a colon inside an unclosed `{` is part of
 /// an interpolation, not the cue's terminator, so `@NAME {a:b} c.` no
 /// longer stops at the `:` — it scans through to the balanced `}` like
 /// `tag()` does.
+///
+/// **`\#` escapes the name-boundary role of `#` (issue #1738), mirroring
+/// `tag()`'s identical fix** — an unescaped `HASH` still cuts the name short
+/// (the paragraph above, and #1883, are both about *that* case and are
+/// unchanged by this), but `#` is one of the four members of the ruled,
+/// final inline escape set (§8d.6), and `cue_name()` gave it zero escape
+/// treatment before this fix: a `\#` inside a name still ended it at the
+/// `#`, same defect `tag()` had. Same `backslash_count`-parity carve-out,
+/// same "backslash not stripped from the literal text" precedent as `\{`
+/// just above. Pinned by
+/// `a_cue_name_with_an_escaped_hash_does_not_end_the_name_early`.
 fn cue_name(p: &mut Parser<'_, '_>) {
     p.start_node(CUE_NAME);
     let mut depth: u32 = 0;
     let mut backslash_count: u32 = 0;
     loop {
         let raw = p.nth_raw(0);
-        if matches!(raw, EOF | NEWLINE | HASH) {
+        if matches!(raw, EOF | NEWLINE) {
+            break;
+        }
+        // See `tag()`'s identical carve-out (issue #1738) for why this is
+        // safe to check directly against `raw`: `cue_name()` already checks
+        // every stop kind against `raw` (unlike `tag()`, which mixes `cur`
+        // and `raw` — see that function's own doc for why), so
+        // `backslash_count`'s parity is always accurate exactly when this
+        // fires, with no additional adjacency care needed here.
+        if raw == HASH && backslash_count & 1 == 0 {
             break;
         }
         // COLON is a stop only at depth zero: a colon inside braces (e.g.

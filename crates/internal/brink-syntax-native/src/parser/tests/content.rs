@@ -681,6 +681,36 @@ fn a_tag_with_an_escaped_backslash_before_a_real_brace_counts_the_brace() {
 }
 
 #[test]
+fn a_tag_with_an_escaped_hash_does_not_end_the_tag_early() {
+    // Issue #1738: `#` is one of the four members of the ruled, final
+    // inline escape set (§8d.6), but before this fix `tag()` gave `\#` zero
+    // escape treatment — a bare `HASH` always ended a tag, unconditionally,
+    // even one immediately preceded by a backslash. Contrast with
+    // `tags_with_no_space_between_are_two_separate_tag_nodes` (`#a#b`, no
+    // backslash — still two sibling tags, unchanged by this fix): here the
+    // `#` is escaped, so it stays inside the ONE tag's own text instead of
+    // starting a second `TAG` node.
+    let p = assert_lossless("Hello #tag \\#not a new tag\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert_eq!(
+        count_node_kind(&p.syntax(), SyntaxKind::TAG),
+        1,
+        "an escaped `#` must not split the tag in two"
+    );
+    let tag = p
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::TAG)
+        .expect("TAG");
+    assert_eq!(
+        tag.text(),
+        "#tag \\#not a new tag",
+        "the backslash is not stripped from the tag's own literal text — \
+         same precedent `\\{{` already established"
+    );
+}
+
+#[test]
 fn a_tags_own_unbalanced_brace_does_not_leak_depth_into_a_sibling_tag() {
     // #1787: `tag()`'s `depth` counter is scoped per-TAG, not per-line —
     // ruled correct, not a gap (see `tag()`'s doc comment). `#a {x #b}`

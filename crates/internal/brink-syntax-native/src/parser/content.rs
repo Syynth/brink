@@ -542,6 +542,32 @@ pub(crate) fn header_tag_tail(p: &mut Parser<'_, '_>) {
 /// fix and still does). Pinned by
 /// `a_tag_with_an_escaped_open_brace_does_not_swallow_the_enclosing_blocks_own_closer`.
 ///
+/// **`\#` escapes the tag-boundary role of `#` (issue #1738).** A bare
+/// unescaped `HASH` always ends a tag — that is the `TAG_LINE`/trailing-tag
+/// grammar's own separator (`#a#b` is two sibling tags,
+/// `tags_with_no_space_between_are_two_separate_tag_nodes`), and this
+/// function must keep honoring that for the common case. But `#` is one of
+/// the four members of the ruled, final inline escape set (§8d.6: `\< \{ \#
+/// \\`), and before this fix `tag()` gave it **zero** escape treatment: a
+/// `\#` inside a tag's own text still split the tag in two at the `#`,
+/// leaving a dangling, meaningless backslash in the first half — the exact
+/// "escape/markup layer coverage inconsistent across prose scanners" gap
+/// #1738 tracks (the *ordinary* content-line scanner already turns `\#` into
+/// a literal `#` via `markup::escape`'s `ESCAPE` node; `tag()`'s free-text
+/// scan didn't). The fix mirrors the *existing* `\{` carve-out immediately
+/// below, not `markup::escape`'s node-producing shape: an `HASH` is only
+/// treated as the tag's terminator when NOT preceded by an odd number of
+/// consecutive raw `BACKSLASH`es — same `backslash_count` parity tracking,
+/// same "even means the backslashes escape each other" reading (#1852). Like
+/// `\{`, the backslash is **not stripped** from the tag's own literal text
+/// (`lower_tag` takes every non-leading-`HASH` token verbatim) — this stays
+/// self-consistent with `\{`'s established "structural role only" treatment
+/// inside these two raw-text scanners, not a claim that `tag()` now runs the
+/// full `markup::escape` layer (it still doesn't: `<ident>` stays inert
+/// literal text here too, per the separate, already-ruled #1783 "markup is
+/// literal in a `#` tag" decision — untouched by this fix). Pinned by
+/// `a_tag_with_an_escaped_hash_does_not_end_the_tag_early`.
+///
 /// **RULED (review of #1777, issue #1787): `depth` is scoped per-tag, not
 /// per-line, and that is the intended contract, not a gap.** `tag_line_tail`
 /// calls this function fresh for each `HASH` it sees, so `depth` always
@@ -550,8 +576,8 @@ pub(crate) fn header_tag_tail(p: &mut Parser<'_, '_>) {
 /// `content_line`'s own doc comment: "Trailing `#tag`s are folded in
 /// before the line ends", so this shape only ever arises between
 /// *sibling* tags, never between a tag and following prose), tag `a`'s
-/// scan is cut short by the `HASH` starting
-/// `b` — unconditionally, before the brace-depth check ever runs, exactly
+/// scan is cut short by the (unescaped — see the `\#` note just above) `HASH`
+/// starting `b` — before the brace-depth check ever runs, exactly
 /// like `NEWLINE`/`EOF` — so `a`'s in-progress depth of 1 is simply
 /// discarded, not carried into `b`'s scan. `b` starts its own scan at
 /// depth zero and immediately meets the `}`, stopping there without
@@ -574,10 +600,28 @@ fn tag(p: &mut Parser<'_, '_>, extra_stop: &[SyntaxKind]) {
     let mut backslash_count: u32 = 0;
     loop {
         let cur = p.current();
-        if matches!(cur, NEWLINE | EOF | HASH) || extra_stop.contains(&cur) {
+        if matches!(cur, NEWLINE | EOF) || extra_stop.contains(&cur) {
             break;
         }
         if cur == R_BRACE && depth == 0 {
+            break;
+        }
+        // `HASH` keeps `cur`'s existing "peek past pending trivia, don't
+        // consume it" early-exit shape (same as `NEWLINE`/`EOF` above) for
+        // the common unescaped case — a trailing space before a sibling
+        // tag's `#` must stay outside this tag's own text exactly as
+        // before this fix (`a_tags_own_unbalanced_brace_does_not_leak_depth_into_a_sibling_tag`
+        // pins the precise whitespace placement). The escape check itself,
+        // though, must not trust `backslash_count` at this point unless
+        // `p.nth_raw(0)` is *actually* `HASH` with no pending trivia ahead
+        // of it — `cur` can report `HASH` while raw position still sits on
+        // intervening whitespace (peeked through), and `backslash_count`
+        // would then still hold a stale value from before that whitespace
+        // is ever bumped/reset. Requiring `p.nth_raw(0) == HASH` too closes
+        // that gap: a non-adjacent `\ #` (space between them) never reads
+        // as escaped, matching the adjacency discipline `markup::escape`/
+        // `at_line_start_escape` already enforce elsewhere.
+        if cur == HASH && !(p.nth_raw(0) == HASH && backslash_count & 1 == 1) {
             break;
         }
         // `nth_raw(0)`, not `cur`: `cur` (`current()`) looks past pending
