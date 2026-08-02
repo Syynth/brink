@@ -226,6 +226,12 @@ pub struct LirPrelude {
     /// Declaration-phase diagnostics (`collect_globals`'s constant-eval
     /// errors) — the diagnostics the monolithic path pushes before any chunk.
     pub decl_diagnostics: Vec<crate::Diagnostic>,
+    /// Lambda-lifted containers synthesized while folding a `VAR`/`CONST`
+    /// declaration default that is itself a lambda literal (issue #1774) —
+    /// see [`PreludeDecls`]'s matching field for why no relocation is
+    /// needed. [`assemble_program`] appends these to the assembled root's
+    /// children.
+    lifted: Vec<lir::Container>,
 }
 
 impl LirPrelude {
@@ -286,6 +292,15 @@ pub struct PreludeDecls {
     private_defs: Vec<brink_format::DefinitionId>,
     aliases: Vec<brink_format::AliasEntry>,
     decl_diagnostics: Vec<crate::Diagnostic>,
+    /// Lambda-lifted containers synthesized while folding a `VAR`/`CONST`
+    /// declaration default that is itself a lambda literal (issue #1774).
+    /// Siblings of the project's knots — [`assemble_program`] appends them
+    /// to the assembled root's children directly, with no relocation: they
+    /// were interned against this same seeded `NameTable`
+    /// ([`decls::collect_globals`]'s `names` parameter), not a per-chunk
+    /// local one, so their `NameId`s are already valid in the table
+    /// [`assemble_program`] reconstructs from [`Self::name_seed`].
+    lifted: Vec<lir::Container>,
 }
 
 impl PreludeDecls {
@@ -306,6 +321,7 @@ impl PreludeDecls {
             private_defs: Vec::new(),
             aliases: Vec::new(),
             decl_diagnostics: Vec::new(),
+            lifted: Vec::new(),
         }
     }
 }
@@ -317,11 +333,21 @@ impl PreludeDecls {
 /// steps 1–2 of the old monolithic `build_prelude` (name collection +
 /// struct-shape table), factored out so `brink-db` can memoize it
 /// independently of the normalize+stamp step (step 0).
+///
+/// `file_paths` reaches [`decls::collect_globals`]'s lambda-lifting path
+/// (issue #1774) — a lambda-literal `VAR`/`CONST` default qualifies its
+/// synthesized function's address by the owning file, the same #1504
+/// collision-avoidance every other per-file anonymous container gets.
 #[must_use]
+#[expect(
+    clippy::implicit_hasher,
+    reason = "internal API, no need to generalize"
+)]
 pub fn build_prelude_decls(
     files: &[(FileId, &hir::HirFile)],
     index: &SymbolIndex,
     resolutions: &ResolutionMap,
+    file_paths: &LookupMap<FileId, String>,
     type_mode: context::TypeMode,
 ) -> PreludeDecls {
     let resolutions_lookup = ResolutionLookup::build(resolutions);
@@ -340,6 +366,28 @@ pub fn build_prelude_decls(
     let global_shapes = structs::build_global_shape_map(files, index, &shape_table);
 
     let mut decl_diagnostics = Vec::new();
+    let mut ids = context::IdAllocator::new();
+    let mut lifted: Vec<lir::Container> = Vec::new();
+    let struct_ctx = context::StructCtx {
+        shapes: &shape_table,
+        global_shapes: &global_shapes,
+        type_mode,
+    };
+    // Empty by construction (issue #1774) — decl-default lambda bodies are
+    // not currently wired to the analyzer's UFCS/`or`-coalescing passes,
+    // the same "no analyzer pass ran" default every other caller of
+    // `AnalyzerTables` uses ([`context::AnalyzerTables`]'s own doc).
+    let mut lambda_ctx = decls::GlobalLambdaCtx {
+        ids: &mut ids,
+        lifted: &mut lifted,
+        file_paths,
+        structs: &struct_ctx,
+        tables: context::AnalyzerTables {
+            ufcs: &context::UfcsLookup::new(),
+            coalesce: &context::CoalesceLookup::new(),
+        },
+        root_id,
+    };
     let mut globals = decls::collect_globals(
         files,
         index,
@@ -347,6 +395,7 @@ pub fn build_prelude_decls(
         &resolutions_lookup,
         &shape_table,
         &mut decl_diagnostics,
+        &mut lambda_ctx,
     );
     let (lists, list_items, list_globals) = decls::collect_lists(files, index, &mut names);
     globals.extend(list_globals);
@@ -378,6 +427,7 @@ pub fn build_prelude_decls(
         private_defs,
         aliases,
         decl_diagnostics,
+        lifted,
     }
 }
 
@@ -405,6 +455,7 @@ pub fn assemble_prelude(
         private_defs: decls.private_defs,
         aliases: decls.aliases,
         decl_diagnostics: decls.decl_diagnostics,
+        lifted: decls.lifted,
     }
 }
 
@@ -443,7 +494,7 @@ pub fn build_prelude(
 
     let normalized_refs: Vec<(FileId, &hir::HirFile)> =
         normalized.iter().map(|(id, h)| (*id, h)).collect();
-    let decls = build_prelude_decls(&normalized_refs, index, resolutions, type_mode);
+    let decls = build_prelude_decls(&normalized_refs, index, resolutions, file_paths, type_mode);
     assemble_prelude(decls, normalized)
 }
 
@@ -709,7 +760,14 @@ pub fn assemble_program(
     _index: &SymbolIndex,
 ) -> lir::Program {
     let mut names = NameTable::from_entries(prelude.name_seed.clone());
-    let (mut root_body, root_children) = chunk::assemble_scopes(chunks, &mut names);
+    let (mut root_body, mut root_children) = chunk::assemble_scopes(chunks, &mut names);
+
+    // Issue #1774: lambda-lifted functions synthesized from a VAR/CONST
+    // decl default (`decls::collect_globals`'s lambda path) are siblings of
+    // the project's knots, same placement `lower::lambda`'s own lifted
+    // functions get. No relocation needed — see `PreludeDecls::lifted`'s
+    // doc for why their `NameId`s are already valid against `names` above.
+    root_children.extend(prelude.lifted.iter().cloned());
 
     let ends_with_divert = root_body
         .last()

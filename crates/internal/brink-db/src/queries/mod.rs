@@ -1793,10 +1793,27 @@ pub(crate) fn lir_prelude_decls_query(
         })
         .collect();
     let resolved = resolutions_index_query(db, project);
+    // #1774: reaches `decls::collect_globals`'s lambda-lifting path, which
+    // qualifies a lambda-literal decl default's synthesized function by the
+    // owning file — same #1696 root-relative convention as
+    // `chunk_lowering_ctx_query`/`lir_lowering_query`'s own `file_paths`.
+    // `project.files(db)` is already read just above (`by_id`), so reading
+    // each file's `.path(db)` here adds no new dependency edge.
+    let ink_root = project.ink_root(db).as_deref();
+    let file_paths: LookupMap<FileId, String> = files
+        .iter()
+        .map(|f| {
+            (
+                f.file_id(db),
+                crate::modules::root_relative_key(ink_root, f.path(db)).into_owned(),
+            )
+        })
+        .collect();
     let decls = brink_ir::lir::build_prelude_decls(
         &decl_refs,
         &resolved.index,
         &resolved.resolutions,
+        &file_paths,
         type_mode,
     );
     PreludeDeclsResult {

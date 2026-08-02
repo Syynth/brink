@@ -58,6 +58,38 @@ pub(crate) fn lower_ink_with_type_mode(
     )
 }
 
+/// [`lower_ink`]'s native-dialect twin — parse `.brink` source → native HIR
+/// lower → analyze → LIR lower. Issue #1774's decl-default lambda literal
+/// tests need this: the feature is native-only (lambdas and bare-name fn
+/// references are both native-surface constructs, #1685/#1862), so the ink
+/// helpers above never reach it.
+pub(crate) fn lower_native(source: &str) -> (Option<lir::Program>, Vec<brink_ir::Diagnostic>) {
+    let parsed = brink_syntax_native::parse(source);
+    let tree = parsed.tree();
+    let file_id = FileId(0);
+    let (mut hir, manifest, _diags) = brink_ir::hir::lower_native::lower(file_id, &tree);
+
+    // Same normalize step `lower_ink_with_type_mode` does — dialect-agnostic.
+    brink_ir::hir::normalize_file(&mut hir);
+
+    let files_for_analysis: Vec<(FileId, &HirFile, &SymbolManifest)> =
+        vec![(file_id, &hir, &manifest)];
+    let result = brink_analyzer::analyze(&files_for_analysis);
+
+    let files_for_lir: Vec<(FileId, &HirFile)> = vec![(file_id, &hir)];
+    lir::lower_to_program_with_type_mode(
+        &files_for_lir,
+        &result.index,
+        &result.resolutions,
+        &std::collections::HashMap::new(),
+        lir::TypeMode::Gradual,
+        lir::AnalyzerTables {
+            ufcs: &lir::UfcsLookup::new(),
+            coalesce: &lir::CoalesceLookup::new(),
+        },
+    )
+}
+
 /// Parse and lower a multi-file project → LIR, mirroring [`lower_ink`] for a
 /// project with `INCLUDE`s (issue #1502).
 ///
@@ -119,6 +151,53 @@ pub(crate) fn lower_ink_files_with_paths(sources: &[(&str, &str)]) -> lir::Progr
             let file_id = FileId(u32::try_from(i).unwrap());
             let parsed = brink_syntax::parse(source);
             let (mut hir, manifest, _diags) = brink_ir::hir::lower(file_id, &parsed.tree());
+            brink_ir::hir::normalize_file(&mut hir);
+            (file_id, hir, manifest)
+        })
+        .collect();
+
+    let files_for_analysis: Vec<(FileId, &HirFile, &SymbolManifest)> = lowered
+        .iter()
+        .map(|(id, hir, manifest)| (*id, hir, manifest))
+        .collect();
+    let result = brink_analyzer::analyze(&files_for_analysis);
+
+    let file_paths: std::collections::HashMap<FileId, String> = sources
+        .iter()
+        .enumerate()
+        .map(|(i, (path, _))| (FileId(u32::try_from(i).unwrap()), (*path).to_string()))
+        .collect();
+
+    let files_for_lir: Vec<(FileId, &HirFile)> =
+        lowered.iter().map(|(id, hir, _)| (*id, hir)).collect();
+    let (program, _diags) = lir::lower_to_program_with_type_mode(
+        &files_for_lir,
+        &result.index,
+        &result.resolutions,
+        &file_paths,
+        lir::TypeMode::Gradual,
+        lir::AnalyzerTables {
+            ufcs: &lir::UfcsLookup::new(),
+            coalesce: &lir::CoalesceLookup::new(),
+        },
+    );
+    program.unwrap()
+}
+
+/// [`lower_native`]'s multi-file twin, with a real per-file path map — the
+/// native-dialect analogue of [`lower_ink_files_with_paths`], needed for
+/// issue #1774's #1504 collision-avoidance test (two files' lambda-literal
+/// decl defaults at the same source offset).
+pub(crate) fn lower_native_files_with_paths(sources: &[(&str, &str)]) -> lir::Program {
+    let lowered: Vec<(FileId, HirFile, SymbolManifest)> = sources
+        .iter()
+        .enumerate()
+        .map(|(i, (_, source))| {
+            // `usize as u32`: test sources, never more than a handful.
+            let file_id = FileId(u32::try_from(i).unwrap());
+            let parsed = brink_syntax_native::parse(source);
+            let (mut hir, manifest, _diags) =
+                brink_ir::hir::lower_native::lower(file_id, &parsed.tree());
             brink_ir::hir::normalize_file(&mut hir);
             (file_id, hir, manifest)
         })

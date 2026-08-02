@@ -367,17 +367,133 @@ fn compile_path_native_lambda_self_reference_is_e158() {
     );
 }
 
-/// Review finding on #1764: a lambda-valued `VAR`/`CONST` default is
-/// *already* a hard compile error today, independently of this PR —
-/// `decls.rs`'s `is_const_foldable_decl_default` has treated every
-/// `hir::Expr::Lambda` as never constant-foldable (by design, since #1685)
-/// well before the seven analyzer passes audited here existed. So the
-/// per-pass fixes landed alongside this test do not unlock any new
-/// compiling program; they add an *extra* diagnostic (here, `E106`) to a
-/// file that was already refused. Pinned so the day a lambda default
-/// legally folds is the day this test — not just prose — goes red.
+// ── File-scope VAR/CONST lambda literal decl defaults (issue #1774) ────
+
+/// A native `var`/`const` may hold a lambda literal as its declaration
+/// default (RULED 2026-08-01, `docs/decision-log.md` #1774) — the E083 gate
+/// this used to hit is lifted, and the lambda is lowered through the same
+/// lambda-lifting machinery (#1709) as a local lambda, just with an empty
+/// enclosing frame (no locals to capture at file scope). Reachability: the
+/// production `compile_path` entry point.
+///
+/// Deliberately asserts *compilation*, not invocation from `flow main()` —
+/// see `compile_path_native_lambda_valued_global_call_site_is_unresolved`
+/// below for why a call site is a separate, pre-existing gap this issue
+/// does not reach.
 #[test]
-fn compile_path_native_lambda_valued_var_default_is_e083_with_map_keys_warning_alongside() {
+fn compile_path_native_const_lambda_literal_decl_default_compiles() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-native-lambda-decl-default-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("main.brink"),
+        "const twice = |x| x * 2\n\nflow main() {\n  Hi. -> END\n}\n",
+    )
+    .unwrap();
+
+    let result = brink_compiler::compile_path(&dir.join("main.brink"));
+    std::fs::remove_dir_all(&dir).ok();
+
+    let output = result.expect("a file-scope const lambda literal must compile (E083 lifted)");
+    let global = output
+        .data
+        .variables
+        .iter()
+        .find(|v| output.data.name_table[v.name.0 as usize] == "twice")
+        .expect("global `twice` must be present in the compiled StoryData");
+    assert!(
+        !global.mutable,
+        "a `const` global stays immutable regardless of its default's kind"
+    );
+    assert!(
+        matches!(global.default_value, brink_format::Value::FnRef(_)),
+        "a file-scope lambda has no enclosing frame to capture from, so it \
+         must fold to a bare FnRef (no bound environment), got {:?}",
+        global.default_value
+    );
+}
+
+/// The `var` half of the same ruling.
+#[test]
+fn compile_path_native_var_lambda_literal_decl_default_compiles() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-native-lambda-decl-default-var-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("main.brink"),
+        "var addOne = |x| x + 1\n\nflow main() {\n  Hi. -> END\n}\n",
+    )
+    .unwrap();
+
+    let result = brink_compiler::compile_path(&dir.join("main.brink"));
+    std::fs::remove_dir_all(&dir).ok();
+
+    let output = result.expect("a file-scope var lambda literal must compile (E083 lifted)");
+    let global = output
+        .data
+        .variables
+        .iter()
+        .find(|v| output.data.name_table[v.name.0 as usize] == "addOne")
+        .expect("global `addOne` must be present in the compiled StoryData");
+    assert!(global.mutable, "a `var` global stays mutable");
+    assert!(matches!(
+        global.default_value,
+        brink_format::Value::FnRef(_)
+    ));
+}
+
+/// A DISTINCT, PRE-EXISTING gap this issue's own scope does not reach —
+/// filed separately as #2083: calling a fn-valued global `const`/`var`
+/// from *anywhere other than its own declaration* does not resolve through
+/// the production `compile_path` →
+/// `brink-db` incremental pipeline, reporting `E025` ("unresolved variable
+/// reference"). Reproduced with **#1862's already-shipped bare-name fn
+/// reference** — `twice = double` (no lambda involved at all) — to prove
+/// this is not new in this PR: verified to already reproduce on `origin/main`
+/// before this PR's changes, and to NOT reproduce through the simpler
+/// whole-project `brink_analyzer::analyze` + `lower_to_program_with_type_mode`
+/// path `brink-ir`'s own test suite uses (this crate's sibling
+/// `lambda_literal_decl_default_reads_other_globals_without_capturing_them`
+/// compiles the identical shape cleanly through that path). The divergence
+/// points at `brink-db`'s FG-3 incremental `resolve_query`/
+/// `resolutions_index_query` machinery specifically, not at anything this
+/// PR's `decls::collect_globals` lambda path touches. Left failing here
+/// (ignored) as the honest record of the gap rather than silently absent.
+#[test]
+#[ignore = "pre-existing brink-db incremental-resolution gap for ANY fn-valued global call site — not introduced or fixed by #1774, filed separately as #2083"]
+fn compile_path_native_lambda_valued_global_call_site_is_unresolved() {
+    let output = compile_and_run_native(
+        "lambda-decl-default-call-site",
+        "const twice = |x| x * 2\n\nflow main() {\n  Result: {twice(21)} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Result: 42"),
+        "calling a fn-valued global from flow main should work once the \
+         separately-filed incremental-resolution gap is fixed, got: {output:?}"
+    );
+}
+
+/// Review finding on #1764, UPDATED by #1774 (RULED 2026-08-01): a
+/// lambda-valued `VAR`/`CONST` default used to be a hard compile error
+/// (`E083`) independently of #1764's seven analyzer-pass fixes — this test
+/// originally pinned that "the day a lambda default legally folds is the
+/// day this test goes red", predicting exactly the day #1774 landed. It is
+/// updated here rather than left to bit-rot into a false assertion: the
+/// `VAR` now compiles cleanly (E083 lifted), and the inner `E106` warning
+/// (a bad map-literal key inside the lambda's own body) still fires
+/// alongside — proving #1764's per-pass fixes (analyzing a lambda's body
+/// the same way any other body is analyzed) were never dead code, they were
+/// just one layer ahead of a program that could reach them from a decl
+/// default. This is a concrete "yes" to the issue's "does #1764 become
+/// expressible" question, for the map-key-warning pass specifically.
+#[test]
+fn compile_path_native_lambda_valued_var_default_compiles_with_map_keys_warning_alongside() {
     let dir = std::env::temp_dir().join(format!(
         "brink-compiler-native-lambda-var-default-{}",
         std::process::id()
@@ -394,19 +510,14 @@ fn compile_path_native_lambda_valued_var_default_is_e083_with_map_keys_warning_a
     let result = brink_compiler::compile_path(&dir.join("main.brink"));
     std::fs::remove_dir_all(&dir).ok();
 
-    let err = result.expect_err(
-        "a lambda-valued VAR default must refuse to compile (E083) — it never legally \
-         constant-folds, before or after #1764's analyzer-pass fixes",
+    let output = result.expect(
+        "a lambda-valued VAR default now compiles (E083 lifted, RULED 2026-08-01, issue #1774)",
     );
-    let codes = diagnostic_codes(&err);
-    assert!(
-        codes.contains(&"E083"),
-        "expected E083 (non-constant-foldable declaration default), got: {codes:?}"
-    );
+    let codes: Vec<&str> = output.warnings.iter().map(|d| d.code.as_str()).collect();
     assert!(
         codes.contains(&"E106"),
-        "expected E106 (bad map key inside the lambda's statements) to still fire \
-         alongside E083, got: {codes:?}"
+        "expected E106 (bad map key inside the lambda's own body) to still fire \
+         as a warning now that the outer VAR compiles, got: {codes:?}"
     );
 }
 
