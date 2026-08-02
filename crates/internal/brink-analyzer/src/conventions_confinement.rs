@@ -39,9 +39,39 @@
 //!   and inventing a project-side "no file may claim" rule for this case
 //!   is a bigger decision than this issue's slice covers (see the PR
 //!   description's scope note). The caller skips this pass for a
-//!   non-path-shaped pointer.
+//!   non-path-shaped pointer. This module still stays silent on it either
+//!   way — but as of issue #1874 the bare name itself is no longer silently
+//!   *accepted*: `AnalysisOptions::apply_project_config` (a different crate,
+//!   a different check) validates it against the closed built-in-preset set
+//!   and emits a `ConfigWarning` when it isn't recognized, which today means
+//!   every bare name (no preset has shipped yet, #1720).
 
 use brink_ir::{Diagnostic, DiagnosticCode, FileId, HirFile};
+
+/// Whether a `[project] elements` pointer names a project-relative path to
+/// a `.brink` conventions module, as opposed to a bare built-in preset name
+/// (docs/prose-dialect-spec.md §3.4's "either shape" pointer mechanism). A
+/// path either contains a directory separator or ends in the `.brink`
+/// extension; a bare word (no separator, no extension) is a preset name.
+///
+/// Shared by two callers so the "is this a path or a preset" classification
+/// can never drift between them: `brink-db`'s
+/// `conventions_confinement_diagnostics_query` (this module's own `E169`
+/// caller) skips the module-confinement check entirely for a preset-shaped
+/// pointer — a preset has no project file to compare a claiming handler's
+/// own module against (see this module's doc above) — and
+/// [`crate::AnalysisOptions::apply_project_config`]'s preset-name
+/// validation (issue #1874) skips its closed-set check entirely for a
+/// path-shaped pointer — rejecting a valid custom-module path here would
+/// break the exact case #1844's confinement rule is built around.
+#[must_use]
+pub fn is_path_shaped_elements_pointer(pointer: &str) -> bool {
+    pointer.contains('/')
+        || pointer.contains('\\')
+        || std::path::Path::new(pointer)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("brink"))
+}
 
 /// Diagnose every claiming handler declared in `hir` when this file is not
 /// the project's configured conventions module.

@@ -92,7 +92,7 @@ whole vocabulary by naming a different conventions module. Sequenced as
 | Comptime evaluation of conventions | ✅ | ❌ | — | — | #1840; dependency shape ruled 2026-08-01 (#1867) |
 | `@[style]` declaration surface | ✅ | ✅ | ❌ | — | `StyleToken` produced, **zero consumers** (#1719) |
 | Built-in screenplay preset | ✅ | ❌ | — | — | #1720; `dialect.rs`'s `Default` is legacy hardcoding, not this |
-| `[project] elements` name validation | ✅ | ⚠️ | ⚠️ | — | #1874 |
+| `[project] elements` name validation | ✅ | ⚠️ | ⚠️ | — | #1874 landed: a bare preset-shaped name is checked against `brink-analyzer`'s `BUILTIN_ELEMENT_PRESETS` (empty until #1720 ships a real preset) via `apply_project_config`, warning through the existing `ConfigWarning` channel; a path-shaped pointer is never rejected (still #1844's job). **Parses** doesn't really apply — `[project] elements` is a `brink.toml` key, not grammar `brink-syntax-native` accepts or rejects; **Runs** is established only by `brink-analyzer` unit tests (`apply_project_config_*`) — no `brink compile`/`brink play` CLI run was performed |
 | `std::conventions` types | ❓ | ❌ | — | — | prose-spec §9 residual — the last prose-round design item |
 
 ## Editor side — how the author interrogates a claimed line

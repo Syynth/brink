@@ -421,15 +421,16 @@ fn resolve_options(
             // bug (house rule).
             tracing::warn!("[{config_key}] {warning}");
         }
-        let lint_warnings = options.apply_project_config(
+        let config_warnings = options.apply_project_config(
             &config,
             overrides.dialect.is_some(),
             overrides.types.is_some(),
         );
-        for warning in &lint_warnings {
+        for warning in &config_warnings {
             // Same channel as the unknown-key warnings above: an unknown or
-            // non-overridable `[lints]` code is never silently dropped
-            // (house rule).
+            // non-overridable `[lints]` code, or an unrecognized `[project]
+            // elements` preset name (issue #1874), is never silently
+            // dropped (house rule).
             tracing::warn!("[{config_key}] {warning}");
         }
     }
