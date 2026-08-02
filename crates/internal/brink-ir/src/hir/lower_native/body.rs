@@ -137,8 +137,21 @@ pub(super) fn lower_stmt_block_as_body(
     // `STMT_BLOCK` node (the pre-#1992 shape) rather than
     // `flush_code_ground_run`'s `run_start` anchor (the first statement
     // inside it), which is only a meaningful choice once a split has
-    // actually happened (review finding F4).
-    if let [Stmt::LogicBlock(lb)] = stmts.as_mut_slice() {
+    // actually happened (review finding F4). Found by position rather than
+    // matched as `stmts`'s only element: since #2056, a call-containing run
+    // gains a trailing `Stmt::EndOfLine` sibling (see
+    // `flush_code_ground_run`'s doc), so a singleton unsplit body is no
+    // longer necessarily a singleton `stmts` vec — count `LogicBlock`s, the
+    // same test [`mark_split_logic_block_scopes`] already uses to decide
+    // "did a split happen," rather than the slice's raw length.
+    let logic_block_count = stmts
+        .iter()
+        .filter(|s| matches!(s, Stmt::LogicBlock(_)))
+        .count();
+    if logic_block_count == 1
+        && let Some(Stmt::LogicBlock(lb)) =
+            stmts.iter_mut().find(|s| matches!(s, Stmt::LogicBlock(_)))
+    {
         lb.ptr = native_provenance(file_id, NodeClass::LogicBlock, block.syntax());
     }
     let tail = crate::tail_from_stmts(&stmts);
@@ -255,6 +268,24 @@ fn mark_split_logic_block_scopes(stmts: &mut [Stmt]) {
 /// `PROSE_LINE`) and once more after the loop, to flush any trailing run.
 /// A no-op when `run` is empty (two `PROSE_LINE`s back to back, or one at
 /// either edge of the item stream).
+///
+/// Appends a trailing `Stmt::EndOfLine` when the flushed run contains a call
+/// anywhere in its statements (issue #2056, the whole-body-override sibling
+/// of [`lower_logic_line`]'s own `needs_eol` fix, #2055): a `flow`'s `~{ }`
+/// "Compound guard" override and a `fn`'s default code-ground body both
+/// lower through this function (`lower_stmt_block_as_body` →
+/// `lower_code_ground_items` → here — see `container.rs::lower_body`'s
+/// doc), and without an `EndOfLine` boundary a call's emitted output runs
+/// straight into whatever content follows — the same output-gluing bug
+/// #2055 fixed for the single-statement content-ground escape, just at a
+/// different HIR call site that builds `Stmt::LogicBlock` directly instead
+/// of going through `lower_logic_line`. Reuses
+/// [`block_stmts_contain_call`]/[`if_stmt_contains_call`] (which already
+/// recurse into nested `if`/`while`/`for` bodies) rather than a third
+/// variant of the same walk. When a `> text` line has split one code-ground
+/// body into several runs (`mark_split_logic_block_scopes`), each run is
+/// checked independently — the boundary belongs right after the run whose
+/// call produced it, not only at the very end of the body.
 fn flush_code_ground_run(
     file_id: FileId,
     run: &mut Vec<&SyntaxNode>,
@@ -272,11 +303,15 @@ fn flush_code_ground_run(
     if !block_stmts.is_empty()
         && let Some(anchor) = run_start.take()
     {
+        let needs_eol = block_stmts_contain_call(&block_stmts);
         stmts.push(Stmt::LogicBlock(LogicBlock {
             ptr: native_provenance(file_id, NodeClass::LogicBlock, &anchor),
             stmts: block_stmts,
             scope: crate::LogicBlockScope::Standalone,
         }));
+        if needs_eol {
+            stmts.push(Stmt::EndOfLine);
+        }
     }
     *run_start = None;
 }

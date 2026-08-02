@@ -62,7 +62,7 @@ unimplemented · ❓ unverified (nobody has checked; do not assume either way)
 | `@[element(claims=…)]` handlers | ✅ | ✅ | ✅ | ❓ | `annotations-element` golden |
 | Prose-bodied `fn` via `>{ }` | ✅ | ✅ | ✅ | ❓ | verified 2026-08-01: emits `[A] hi` |
 | **Statements at prose position (bare, no `~`)** | ⚠️ | ❌ | ❌ | ❌ | **🔴 SILENT** — see below; by design, not open (charter §8.2) |
-| `~ stmt`/`~{ }` line/block escape (assignment/bare-call/temp-decl/`until`/logic block) | ✅ | ✅ | ⚠️ | ⚠️ | #1991 + #1972 (both slices); Round-trips only leaf stmts, nested if/while/for inside `~{ }` is an emitter-only gap; Runs — a call-only `~{ }` escape now correctly flushes its output boundary (review finding, w111), but the same pre-existing gluing bug (no `Stmt::EndOfLine` after a call-only code-ground `LogicBlock`) still reaches the whole-body `~{ }`/`fn`-default override path (`lower_stmt_block_as_body`/`lir::lower::blocks::lower_block_stmt_list`), untouched by this fix — tracked at **#2056** |
+| `~ stmt`/`~{ }` line/block escape (assignment/bare-call/temp-decl/`until`/logic block) | ✅ | ✅ | ✅ | ⚠️ | #1991 + #1972 (both slices); Round-trips only leaf stmts, nested if/while/for inside `~{ }` is an emitter-only gap; Runs — the call-only-escape output-boundary fix (review finding, w111) and its whole-body-override/`fn`-default sibling (`lower_stmt_block_as_body`/`flush_code_ground_run`, **#2056**) are both fixed: every call-containing code-ground `LogicBlock` run now gets a trailing `Stmt::EndOfLine`, split-run or not |
 | `> text` line escape in code body | ✅ | ✅ | ❌ | ❌ | 🔒 `E129` — #1992 |
 | `return <value>` at prose position | ✅ | ❌ | — | — | #1973, 16 cases |
 | Alternations `{~ {& {! {\|` | ✅ | ✅ | ✅ | ❌ | emitter gap, 17 cases |

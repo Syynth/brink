@@ -1,0 +1,20 @@
+var n = 0
+
+fn shout() >{
+  Hi
+  return
+}
+
+fn bump_and_shout() {
+  n += 1;
+  shout();
+  n += 1;
+}
+
+flow main() ~{
+  > before
+  shout();
+  > middle
+  bump_and_shout();
+  > after {n}.
+}
