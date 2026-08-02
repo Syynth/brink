@@ -990,6 +990,13 @@ grace.
    features (§2b.3), the park decoration (§8c), the built-in token
    vocabulary (§3.5b) are their incoming scope.
 
+   ⚠ **Scope of the hold, ruled 2026-08-01:** it covers editor *frontend*
+   work — CM6, token rendering, the live renderer, `fmt`. It does **not**
+   cover the classification/explain-match query family, which is emitted from
+   `brink-db`/`brink-ide` and is **compiler work wearing editor's clothes**
+   (#2006). Holding compiler-side queries behind the compiler track would
+   hold them behind themselves.
+
    ⚠ **Why they are held, restated 2026-08-01 (maintainer).** The hold is
    **deliberate sequencing — the compiler work finishes before the editor
    work starts** — *not* an unlifted blocker waiting on this document. The
