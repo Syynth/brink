@@ -70,7 +70,8 @@ use rowan::TextRange;
 pub use effects::{EffectAtoms, EffectRow, solve_scc_effects};
 pub use graph::{CallGraph, SccGraph, scc_graph};
 pub use ty::{
-    CoalesceError, FnRow, TowerTy, Ty, assignable, coalesce, erase_fn_rows, unify, unify_all,
+    CoalesceError, FnRow, TowerTy, Ty, assignable, coalesce, erase_fn_rows, ref_assignable, unify,
+    unify_all,
 };
 
 use body::{BodyCtx, infer_def_body};
