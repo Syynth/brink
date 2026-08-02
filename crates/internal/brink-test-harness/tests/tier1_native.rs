@@ -615,6 +615,37 @@ fn logic_line_escape() {
     assert_case("logic-line-escape");
 }
 
+/// Issue #2056: the *whole-body* code-ground override — a `flow`'s `~{ }`
+/// "Compound guard" override (`flow main() ~{ … }`) and a `fn`'s default
+/// code-ground body (`fn bump_and_shout() { … }`, no `~`/`>{` sigil at all)
+/// — has the identical output-boundary defect #2055 fixed for the
+/// single-statement content-ground escape (`logic_line_escape` above), at a
+/// structurally distinct HIR call site: both build `Stmt::LogicBlock`
+/// directly via `lower_stmt_block_as_body`/`flush_code_ground_run`, never
+/// going through `lower_logic_line`, so #2055's `needs_eol` fix on that
+/// function did nothing for either shape.
+///
+/// `shout()` is called twice, in two different whole-body-override
+/// positions:
+/// - directly inside `main`'s own `~{ }` override, immediately before a
+///   `> middle` prose-escape line;
+/// - inside `bump_and_shout`'s `fn`-default code-ground body (no explicit
+///   sigil at all — the *other* named call site in #2056), immediately
+///   before that whole call returns to `main`'s own following `> after
+///   {n}.` line.
+///
+/// Without the fix (`flush_code_ground_run` appending `Stmt::EndOfLine`
+/// after a flushed run when [`block_stmts_contain_call`] says the run
+/// contains a call), both call's "Hi" output glues into whatever prose
+/// follows: "before" / "Himiddle" / "Hiafter 2." instead of five separate
+/// lines — verified by hand, reverting only the production `needs_eol`
+/// push in `flush_code_ground_run` and re-running this case, which fails
+/// on exactly those two glued lines (rule 20a).
+#[test]
+fn whole_body_code_ground_call_terminates_its_line() {
+    assert_case("whole-body-code-ground-call");
+}
+
 /// Issue #1992: `> text` — the code-ground line escape into prose (charter
 /// §8.2, RULED 2026-07-23, the mirror image of #1991 above at the opposite
 /// ground). Before this landed, `>` had no dispatch in
@@ -672,6 +703,7 @@ fn every_case_directory_has_a_test() {
         "prose-return-value",
         "root-content-typed-strict",
         "ufcs",
+        "whole-body-code-ground-call",
     ];
     let mut found: Vec<String> = std::fs::read_dir(corpus_dir())
         .expect("read tests/tier1-native")

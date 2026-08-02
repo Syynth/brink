@@ -1499,6 +1499,142 @@ fn prose_line_interleaves_with_logic_block_runs() {
 }
 
 #[test]
+fn call_containing_run_with_no_split_gets_a_trailing_end_of_line() {
+    // Issue #2056: `flush_code_ground_run` built `Stmt::LogicBlock` directly
+    // — the whole-body `~{ }` override / `fn`-default path, never going
+    // through `lower_logic_line` — so it never inherited #2055's
+    // `needs_eol` fix. A call-containing code-ground body with no `> text`
+    // split (the plain `fn`-default shape) produced no trailing
+    // `Stmt::EndOfLine` at all, gluing the call's emitted output into
+    // whatever content followed at the call site (verified end to end via
+    // `tests/tier1-native/whole-body-code-ground-call/`).
+    let src = "fn shout() >{\n  Hi\n  return\n}\nfn wrapper() {\n  shout();\n}\n";
+    let (hir, _m, diags) = lower_src(src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let wrapper = hir
+        .knots
+        .iter()
+        .find(|k| k.name.text == "wrapper")
+        .expect("wrapper knot");
+    assert_eq!(
+        wrapper.body.stmts.len(),
+        2,
+        "expected [LogicBlock, EndOfLine]: {:?}",
+        wrapper.body.stmts
+    );
+    assert!(matches!(wrapper.body.stmts[0], Stmt::LogicBlock(_)));
+    assert!(matches!(wrapper.body.stmts[1], Stmt::EndOfLine));
+}
+
+#[test]
+fn call_containing_run_with_no_split_still_anchors_provenance_on_the_whole_stmt_block() {
+    // The trailing `Stmt::EndOfLine` #2056 adds means `stmts` is no longer
+    // necessarily a one-element slice for the no-split case — so
+    // `lower_stmt_block_as_body`'s F4 re-anchoring (see
+    // `prose_line_with_no_prose_anchors_provenance_on_the_whole_stmt_block`
+    // above) must still find and re-anchor the single `LogicBlock` by
+    // counting `LogicBlock`s, not by matching the whole slice's length.
+    let src = "fn shout() >{\n  Hi\n  return\n}\nfn wrapper() {\n  shout();\n}\n";
+    let (hir, _m, diags) = lower_src(src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let wrapper = hir
+        .knots
+        .iter()
+        .find(|k| k.name.text == "wrapper")
+        .expect("wrapper knot");
+    let Stmt::LogicBlock(lb) = &wrapper.body.stmts[0] else {
+        panic!("expected Stmt::LogicBlock, got {:?}", wrapper.body.stmts[0]);
+    };
+    let parse = brink_syntax_native::parse(src);
+    let expected = parse
+        .tree()
+        .syntax()
+        .descendants()
+        .filter(|n| n.kind() == N::STMT_BLOCK)
+        .last()
+        .expect("wrapper's STMT_BLOCK in tree")
+        .text_range();
+    assert_eq!(
+        lb.ptr.range, expected,
+        "the single-run LogicBlock's ptr must still span the whole `STMT_BLOCK`, \
+         even though it now has a trailing Stmt::EndOfLine sibling"
+    );
+}
+
+#[test]
+fn one_run_split_body_still_anchors_provenance_on_run_start_not_the_whole_stmt_block() {
+    // Review finding F1: the F4 re-anchor above must fire ONLY for a
+    // genuinely unsplit body, not merely whenever `stmts` happens to
+    // contain exactly one `Stmt::LogicBlock`. A `> text` prose line can
+    // split a code-ground body into one run (`Content`/`EndOfLine`) plus a
+    // trailing `LogicBlock` with no call in it, e.g. `fn radio() { > hi\n
+    // n = 1; }` lowers to `[Content, EndOfLine, LogicBlock]` — exactly one
+    // `LogicBlock`, but the item stream WAS split, so `lb.ptr` must stay on
+    // `flush_code_ground_run`'s `run_start` anchor (the `n = 1;`
+    // `ASSIGN_STMT`), never widen to the whole `STMT_BLOCK` (which would
+    // wrongly include the `> hi` prose line in the LogicBlock's
+    // diagnostic range).
+    let src = "fn radio() {\n  > hi\n  n = 1;\n}\n";
+    let (hir, _m, diags) = lower_src(src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = only_knot_body(&hir);
+    assert_eq!(
+        body.stmts.len(),
+        3,
+        "expected [Content, EndOfLine, LogicBlock]: {:?}",
+        body.stmts
+    );
+    assert!(matches!(body.stmts[0], Stmt::Content(_)));
+    assert!(matches!(body.stmts[1], Stmt::EndOfLine));
+    let Stmt::LogicBlock(lb) = &body.stmts[2] else {
+        panic!("expected Stmt::LogicBlock, got {:?}", body.stmts[2]);
+    };
+    let parse = brink_syntax_native::parse(src);
+    let expected = parse
+        .tree()
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == N::ASSIGN_STMT)
+        .expect("ASSIGN_STMT in tree")
+        .text_range();
+    assert_eq!(
+        lb.ptr.range, expected,
+        "a split body's trailing single-statement LogicBlock must keep \
+         run_start anchoring (the ASSIGN_STMT alone), not widen to the \
+         whole STMT_BLOCK"
+    );
+}
+
+#[test]
+fn prose_line_interleaves_with_a_call_containing_logic_block_run() {
+    // The split-run sibling of the two tests above: a `> text` line splits
+    // a code-ground body into more than one `LogicBlock`, and only the run
+    // that actually contains a call gets the trailing `Stmt::EndOfLine` —
+    // the boundary belongs right after the call that produced it, not only
+    // at the very end of the body (`flush_code_ground_run`'s doc).
+    let src =
+        "fn shout() >{\n  Hi\n  return\n}\nfn wrapper() {\n  shout();\n  > mid\n  n = 2;\n}\n";
+    let (hir, _m, diags) = lower_src(src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let wrapper = hir
+        .knots
+        .iter()
+        .find(|k| k.name.text == "wrapper")
+        .expect("wrapper knot");
+    assert_eq!(
+        wrapper.body.stmts.len(),
+        5,
+        "expected [LogicBlock(call), EndOfLine, Content, EndOfLine, LogicBlock(no call)]: {:?}",
+        wrapper.body.stmts
+    );
+    assert!(matches!(wrapper.body.stmts[0], Stmt::LogicBlock(_)));
+    assert!(matches!(wrapper.body.stmts[1], Stmt::EndOfLine));
+    assert!(matches!(wrapper.body.stmts[2], Stmt::Content(_)));
+    assert!(matches!(wrapper.body.stmts[3], Stmt::EndOfLine));
+    assert!(matches!(wrapper.body.stmts[4], Stmt::LogicBlock(_)));
+}
+
+#[test]
 fn prose_line_nested_in_an_if_body_is_a_loud_e129_not_silent() {
     // This slice only gives `> text` a real content-emission home at a
     // `flow`/`fn`'s own top-level code-ground body (`body::
