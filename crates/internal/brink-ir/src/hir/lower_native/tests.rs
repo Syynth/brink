@@ -1309,6 +1309,52 @@ fn logic_line_block_precedes_ordinary_content_unaffected() {
 }
 
 #[test]
+fn logic_line_block_containing_a_call_lowers_to_end_of_line() {
+    // Review finding (w111): mirrors
+    // `logic_line_bare_call_lowers_to_expr_stmt_with_end_of_line`/
+    // `logic_line_assignment_from_an_emitting_call_lowers_to_end_of_line`
+    // for the `~{ … }` multi-statement block — a call anywhere inside the
+    // block still needs the trailing `Stmt::EndOfLine` a single-statement
+    // `~ expr`/`~ x = expr` escape already gets, or its output glues into
+    // whatever content line follows (`tests/tier1-native/logic-line-escape/`
+    // pins the same fix end-to-end through a real compile+run).
+    let (hir, _m, diags) = lower_src(
+        "fn shout() >{\n  Hi\n  return\n}\nflow a() {\n  ~{\n    let m = 1;\n    shout();\n  }\n}\n",
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = &hir.knots[1].body;
+    assert!(matches!(body.stmts[0], Stmt::LogicBlock(_)));
+    assert!(
+        matches!(body.stmts[1], Stmt::EndOfLine),
+        "a `~{{ }}` block containing a call must still get the trailing \
+         EndOfLine its single-statement siblings apply to the same \
+         construct: {:?}",
+        body.stmts
+    );
+}
+
+#[test]
+fn logic_line_block_with_no_call_gets_no_end_of_line() {
+    // The converse of the above: a block with no call anywhere (the
+    // pre-existing `logic_line_block_lowers_to_stmt_logic_block_with_standalone_scope`
+    // shape) must not gain a spurious trailing EndOfLine — only a call's
+    // own pending output needs the flush.
+    let (hir, _m, diags) = lower_src("flow a() {\n  ~{\n    let m = 1;\n    n = m;\n  }\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = only_knot_body(&hir);
+    assert!(matches!(body.stmts[0], Stmt::LogicBlock(_)));
+    // The body falls off the end, so `apply_implicit_done` appends a
+    // synthesized `-> DONE` divert right after the block (unrelated to this
+    // fix) — what this test pins is that the statement immediately after
+    // the block is NOT a spurious `Stmt::EndOfLine`.
+    assert!(
+        !matches!(body.stmts.get(1), Some(Stmt::EndOfLine)),
+        "a call-free block must not gain a trailing EndOfLine: {:?}",
+        body.stmts
+    );
+}
+
+#[test]
 fn logic_line_with_no_recognized_child_is_a_loud_e129_not_a_silent_drop() {
     // Defense in depth: `lower_logic_line` itself must never silently
     // return an empty `Vec<Stmt>` for a `LOGIC_LINE` with neither an

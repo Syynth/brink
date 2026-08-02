@@ -20,7 +20,7 @@ flow main() {
   ~{
     let k = m + 2;
     n = k;
-    bump();
+    shout();
   }
   Now is {n}.
   after

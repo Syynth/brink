@@ -997,7 +997,29 @@ fn emit_block_stmt_stream(
                 format!("{target} {op} {}", emit_expr(&a.value, context)?)
             }
             BlockStmt::ExprStmt(e) => emit_expr(e, context)?,
-            BlockStmt::Return(r) => emit_return(r, context)?,
+            BlockStmt::Return(r) => {
+                // Unlike `Stmt::Return` at weave/content-ground position
+                // (this file's `emit_stmt_stream`, which reuses the same
+                // `emit_return`), a code-ground `return` has no `-> target`
+                // respelling: `parser/stmt.rs::return_stmt`'s doc states it
+                // "has no tunnel-redirect (`return -> x`) counterpart —
+                // that respelling is a content-ground/tunnel concept with
+                // no code-ground meaning", and `parser/expr.rs::atom` has no
+                // divert-target atom for `return`'s general-expression arm
+                // to reach. `lower_block_return`/`lower_return_stmt` lower
+                // whatever `ReturnStmt::value()` yields, and the ink dialect
+                // does have divert-target-as-value, so refuse rather than
+                // spell an output that would fail to reparse (review
+                // finding, w111) — the same leaf-only refuse-don't-guess
+                // posture the rest of this function already takes.
+                if matches!(r.value, Some(Expr::DivertTarget(_))) {
+                    return Err(unsupported(
+                        "code-ground `return -> target` (no tunnel-redirect counterpart at code-ground position)",
+                        context,
+                    ));
+                }
+                emit_return(r, context)?
+            }
             BlockStmt::Break(_) => "break".to_string(),
             BlockStmt::Continue(_) => "continue".to_string(),
             BlockStmt::Await(a) => {
@@ -2075,6 +2097,49 @@ mod tests {
         reparse_and_lower(&emitted);
     }
 
+    /// Review finding (w111): a code-ground `return` (inside a `~{ }` block)
+    /// has no `return -> target` respelling — `parser/stmt.rs::return_stmt`'s
+    /// doc states it "has no tunnel-redirect (`return -> x`) counterpart",
+    /// and `parser/expr.rs::atom` has no divert-target atom for the
+    /// general-expression arm of a code-ground `return` to reach — so no
+    /// real `.brink` source can lower a `BlockStmt::Return` whose value is
+    /// `Expr::DivertTarget` (this is a guard against `emit_return`'s shared
+    /// use by the content-ground `Stmt::Return` printer, which *does*
+    /// support it, not a reachable-from-source case — built by hand rather
+    /// than parsed, same posture the finding itself took). The
+    /// `BlockStmt::Return` arm must refuse rather than spell `return ->
+    /// target`, which would fail to reparse at code-ground position.
+    #[test]
+    fn code_ground_return_with_divert_target_value_refuses_to_emit() {
+        let lb = crate::LogicBlock {
+            ptr: crate::Provenance::synthetic(
+                crate::provenance::NodeClass::LogicBlock,
+                rowan::TextRange::new(rowan::TextSize::new(0), rowan::TextSize::new(1)),
+            ),
+            stmts: vec![BlockStmt::Return(Return {
+                ptr: None,
+                kind: crate::ReturnKind::TunnelRedirect,
+                value: Some(Expr::DivertTarget(crate::Path {
+                    segments: vec![Name {
+                        text: "b".to_string(),
+                        range: rowan::TextRange::new(
+                            rowan::TextSize::new(0),
+                            rowan::TextSize::new(1),
+                        ),
+                    }],
+                    range: rowan::TextRange::new(rowan::TextSize::new(0), rowan::TextSize::new(1)),
+                })),
+                onwards_args: Vec::new(),
+            })],
+            scope: LogicBlockScope::Standalone,
+        };
+        let mut out = String::new();
+        let err = emit_logic_block(&mut out, "", 0, &lb, "test").expect_err(
+            "a code-ground return of a divert target must refuse, not guess a spelling",
+        );
+        assert!(matches!(err, EmitError::Unsupported { .. }), "{err:?}");
+    }
+
     /// Issue #1614/#1161: `HirFile::allow_scopes` carries a `(range,
     /// codes)` fact with no pointer back to the declaration it decorates —
     /// this emitter has no way to re-place the `@[allow(…)]` line, so a
@@ -2395,6 +2460,17 @@ mod tests {
         assert!(matches!(lb.stmts[0], crate::BlockStmt::TempDecl(_)));
         assert!(matches!(lb.stmts[1], crate::BlockStmt::Assignment(_)));
         assert!(matches!(lb.stmts[2], crate::BlockStmt::ExprStmt(_)));
+        // Review finding (w111): the block contains a call (`bump()`), so
+        // the re-lowered stream must still carry the trailing
+        // `Stmt::EndOfLine` `lower_logic_line`'s `LogicBlock` arm now
+        // appends — round-tripping through the emitter and back must not
+        // lose it, the same guard `logic_line_block_containing_a_call_
+        // lowers_to_end_of_line` pins at the lowering layer directly.
+        assert!(
+            matches!(hir.knots[0].body.stmts.get(1), Some(Stmt::EndOfLine)),
+            "expected a trailing Stmt::EndOfLine after the re-lowered LogicBlock: {:?}",
+            hir.knots[0].body
+        );
     }
 
     #[test]
