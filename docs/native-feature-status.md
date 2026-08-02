@@ -93,6 +93,39 @@ whole vocabulary by naming a different conventions module. Sequenced as
 | `[project] elements` name validation | ✅ | ⚠️ | ⚠️ | — | #1874 |
 | `std::conventions` types | ❓ | ❌ | — | — | prose-spec §9 residual — the last prose-round design item |
 
+## Editor side — how the author interrogates a claimed line
+
+Under conventions, a prose line silently becomes a function call. The ruled
+compensation — **"no invisible expansion", a stated maintainer requirement** —
+is that the editor can always show which handler claimed a line, why, and what
+it bound. **That compensation is currently a promise, not a property.**
+
+Tracked as **#2006**.
+
+| Feature | Ruled | Built | Notes |
+|---|---|---|---|
+| Per-line classification metadata | ✅ | ❌ | matched kind · handler + source location · capture bindings as spans · disposition |
+| Explain-match query | ✅ | ❌ | is-this-matched / by-what / what-bound; lists attempted patterns on a miss |
+| Hover shows the handler body | ✅ | ❌ | every matched line points at a real function (§9.1's improvement over the dissolved table) |
+| Capture spans as decoration ranges | ✅ | ❌ | the same spans drive editor decoration |
+| Harvest index (cues, span kinds) | ✅ | ❌ | ruled a **project-db index obligation**, sibling of the symbol index |
+| Succession rules (Tab/Enter) | ✅ | ❌ | live in the conventions file; what makes transitions convention-driven, not hardcoded ink |
+| Serialized conventions projection | ✅ | ❌ | what the editor reads instead of tracing execution |
+| Last-good caching on comptime fault | ✅ | ❌ | ruled Q2 2026-08-01; never substitute another module's conventions |
+| `@[style]` consumption | ✅ | ❌ | `StyleToken` produced in `brink-ir`, read by nothing (#1719) |
+| Elements reach `IdeSession` | ✅ | ❌ | #1880 — `E169` unreachable from live typing |
+| **Match ordering** | ⏳ | ❌ | **RULE OWED** — "declaration-order + overlap diagnostics is the lean" |
+| **Editor re-evaluation loop** | ⏳ | ❌ | **OWED** (§3.5) — yet Q2 already depends on it existing |
+
+⚠ **Two rulings are still owed here**, and one of them has already been
+depended on: Q2's last-good caching is justified *because* "§3.5's owed
+re-evaluation loop re-runs on every keystroke" — a ruling shipped ahead of the
+thing it assumes.
+
+⚠ **Sequencing note.** NS-T (#1131) is held behind the compiler work by
+deliberate choice. But this seam is **compiler-side** — queries emitted from
+`brink-db`/`brink-ide` — so it is not obviously covered by that hold.
+
 ## Output side — what the host actually receives
 
 Authoring an element is only half of it. For a host to *render* a scene
