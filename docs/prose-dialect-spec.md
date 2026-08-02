@@ -729,9 +729,9 @@ when any scanner's escape/markup handling changes.
 | `content::text_run_until` (the engine's own `TEXT`-run sub-scanner) | `content.rs` | N/A directly — it never sees a `BACKSLASH`/`LT`/`HASH`/`GLUE`/`DIVERT`/doc-comment token itself; it unconditionally **breaks** on each so the outer loop above can dispatch them structurally | N/A | N/A (same reason) | Structural only, by design — not a gap; folding these into `TEXT` would silently defeat the outer loop's own dispatch (its own doc comment says so) |
 | `content_line` / `content_line_else_boundary` (a full `CONTENT_LINE`, including the fused remainder a `COMPACT_CUE`/`BANG_DISPATCH` reuses it for) | `content.rs` | **Full**, via the shared engine above | **Full** — the one and only call site of `markup::at_line_start_escape`/`line_start_escape`, checked once as the first item scanned | **Full**, via the shared engine above | Reference implementation |
 | `markup::span` (a span's own body, recursing back into the shared engine with an `expected_close`) | `markup.rs` | **Full** — inherited "for free" by construction, not reimplemented: `span` calls `content::content_items_until_impl` for its body with the *same* `stop` its caller had | N/A (spans never open at a physical line-start; the sigil collision §1744 guards against doesn't arise mid-span) | **Full** — nested spans recurse the same way | Reference implementation, by inheritance |
-| `content::tag` (a `#tag`'s own free-text body — `tag_line_tail`'s per-tag call, and `header_tag_tail`'s header-line variant) | `content.rs` | **Partial, as of this PR.** `\{`/`\\{` were already backslash-parity-aware (#1852) *for brace-depth-counting purposes only* — the characters are **not stripped** from the tag's own literal text either way. `\#` gets the identical treatment as of this PR (#1738): an odd-parity backslash suppresses `#`'s tag-terminating role, but again does not strip the backslash from the emitted text. `\<`/`\\` are inert — see the Markup column | **Not applicable** — a tag body starts after a `HASH`, not at content-line start; the `@`/`!` sigil collision `\!`/`\@` exist to guard against cannot arise here | **None, ruled** (#1783, RULED 2026-08-01): `<glitch>` inside a `#` tag is intentionally literal text forever — "no spans in tags, ever." Not touched by this PR | See "What this PR changed" and "What is still open" below |
-| `element::cue_name` (an `@NAME` cue's own free-text name, before `:`/tags/newline) | `element.rs` | **Partial, as of this PR** — identical shape to `tag()` above, by design (`cue_name`'s own doc comment: "confirmed to share `content::tag()`'s pre-#1728 shape"): `\{`/`\\{` parity-aware for depth only (#1852); `\#` gets the same treatment as `tag()` as of this PR, same non-stripping precedent. `\<`/`\\` inert | **Not applicable** — same reasoning as `tag()` | **None** — by the same reasoning #1783 rules for `tag()` (no active span grammar runs inside a cue name); not separately ruled by number, but no code path here ever calls `markup::span` either | See below |
-| `element::scene_title` (a scene heading's display name, before the optional `[slug]`/tags/newline — §3.3/§8b.3) | `element.rs` | **Partial, found and fixed by this PR's own review.** Before this fix, `scene_title` had the *exact* pre-#1738 shape `tag()`/`cue_name()` had: an unconditional `HASH` stop with zero backslash awareness (verified at head `55976d239`: `INT. MARKET \#3` parsed to `SCENE_TITLE<"INT. MARKET \">` + `TAG<"#3">`, the same dangling-backslash split). Fixed with the identical `backslash_count`-parity carve-out, same non-stripping precedent — no depth/brace tracking needed here (`scene_title` never counts braces; `R_BRACE` stays an unconditional stop, unchanged) | **Not applicable** — a scene title starts at the heading's own line-start pattern (`INT.`/`EXT.`), not at content-line start; the `\!`/`\@` sigils this column tracks don't arise here | **None** — same reasoning as `tag()`/`cue_name()`: no code path here ever calls `markup::span`, and headings get no markup carve-out (this module's own doc comment: "a `{` on a heading line is just title text") | Fixed by this PR — see `a_scene_title_with_an_escaped_hash_does_not_end_the_title_early` |
+| `content::tag` (a `#tag`'s own free-text body — `tag_line_tail`'s per-tag call, and `header_tag_tail`'s header-line variant) | `content.rs` | **Full, as of #2045.** The *parser's* backslash-parity tracking is unchanged from #1738/#1852 (`\{`/`\\{` depth-parity; `\#` suppresses the tag-terminating role) and the raw `TAG` CST node stays a lossless, unstripped copy of the source — there is still no `ESCAPE` sub-node here to strip at parse time. What changed: `ast::Tag::text()` (`ast/nodes.rs`, new) is now the one materialization point every consumer goes through, and it strips a *recognized* escape's backslash there, parity with `markup::escape`. `hir::lower_native::body::lower_tag` was simplified to delegate to it instead of hand-rolling the same HASH-skip + concatenation. `\<`/`\\` get the identical stripping (the full four-member set, uniformly) even though neither has a structural role here — see the Markup column | **Not applicable** — a tag body starts after a `HASH`, not at content-line start; the `@`/`!` sigil collision `\!`/`\@` exist to guard against cannot arise here | **None, ruled** (#1783, RULED 2026-08-01): `<glitch>` inside a `#` tag is intentionally literal text forever — "no spans in tags, ever." Not touched by #2045 | Fixed by #2045 — see `a_tags_text_accessor_strips_a_recognized_escapes_backslash` and its `\{` sibling |
+| `element::cue_name` (an `@NAME` cue's own free-text name, before `:`/tags/newline) | `element.rs` | **Full, as of #2045** — identical shape to `tag()` above: the parser's own depth/parity tracking (#1738/#1852/#1851) is untouched, and `ast::CueName::text()` now strips a recognized escape's backslash the same way `ast::Tag::text()` does. **No current lowering consumer**, though: `hir::lower_native` still meets a `CUE` node at its loud-`E129` "parses cleanly but has no HIR lowering yet" default arm (the `element::lower`/attachment slice, #1717, hasn't landed) — so this fix is proven at the parser/AST level (`CueName::text()`, exercised by parser tests) and is *not yet* runtime-observable through the compiler, unlike the `tag()` fix above. It is real, tested, and load-bearing the moment #1717 lands and some lowering path starts calling `CueName::text()` | **Not applicable** — same reasoning as `tag()` | **None** — by the same reasoning #1783 rules for `tag()` (no active span grammar runs inside a cue name); not separately ruled by number, but no code path here ever calls `markup::span` either | Fixed by #2045 — see `a_cue_names_text_accessor_strips_a_recognized_open_brace_escapes_backslash` (the `\#` case: the pre-existing `a_cue_name_with_an_escaped_hash_does_not_end_the_name_early` test, updated) |
+| `element::scene_title` (a scene heading's display name, before the optional `[slug]`/tags/newline — §3.3/§8b.3) | `element.rs` | **Full, as of #2045** — the parser's own `HASH`-parity carve-out (#1738) is untouched, and `ast::SceneTitle::text()` now strips a recognized escape's backslash the same way. **One real, if narrow, lowering consumer today:** `hir::lower_native::element::try_claim`/`try_dispatch`'s natural-notation candidate matching reads a `SCENE_HEADING`'s single `SCENE_TITLE` child's text as a regex-match input — but via `text_node.text()` on the raw `SyntaxNode` directly, **not** through `ast::SceneTitle::text()`, and deliberately left that way by this fix: that raw text's byte offsets are load-bearing for mapping a capture group back to a real source range (`base = text_node.text_range().start() + lead`), and running the stripped, byte-shifted string through that offset math would risk silently corrupting capture provenance for a delicate, unrelated feature (#1838). So a title's *pattern-matching* input still sees an unstripped backslash; only its *display* text (`SceneTitle::text()`) is stripped. Flagged here rather than silently decided — a real, if narrow, residual divergence between two readers of the same node, orthogonal to what #2045 was asked to resolve | **Not applicable** — a scene title starts at the heading's own line-start pattern (`INT.`/`EXT.`), not at content-line start; the `\!`/`\@` sigils this column tracks don't arise here | **None** — same reasoning as `tag()`/`cue_name()`: no code path here ever calls `markup::span`, and headings get no markup carve-out (this module's own doc comment: "a `{` on a heading line is just title text") | Fixed by #2045 — see `a_scene_titles_text_accessor_strips_a_recognized_open_brace_escapes_backslash` (the `\#` case: the pre-existing `a_scene_title_with_an_escaped_hash_does_not_end_the_title_early` test, updated) |
 | `element::parenthetical` (a `(hushed)` delivery line's literal text, between the parens) | `element.rs` | **None, and not a bug** — a free-text raw scan with zero escape treatment of any kind. Confirmed no `\#`-shaped defect: `(hushed \# quiet)` stays one `PARENTHETICAL` (it stops only on `EOF`/`NEWLINE`, and paren depth for `(`/`)` — `HASH` plays no terminating role here at all, unlike `tag()`/`cue_name()`/`scene_title`, so there was never a `\#` boundary to escape) | **Not applicable** — a parenthetical starts mid-line, after a cue, never at content-line start | **None** — free text only, same reasoning as the other raw scanners above; not separately ruled by number | Included for the audit's own completeness claim ("enumerate every prose scanner"); no fix needed |
 
 **What this PR changed:** `#` is one of the ruled four-character inline
@@ -751,6 +751,14 @@ two raw-text scanners have never had. `hir::lower_native::body::lower_tag`
 needed a paired fix — it used to skip *every* `HASH` token in the node
 (safe only because an interior one was structurally impossible before this
 fix); now it skips only the tag's own leading delimiter.
+
+**Superseded by the #2045 ruling below:** both the "non-stripping `\{`
+precedent" description and the "`lower_tag` … now it skips only the tag's
+own leading delimiter" description above are historical — accurate for
+#1738/#1852's own PR, not for the current code. #2045 replaced that
+`lower_tag` body entirely with a delegation to `ast::Tag::text()`, which
+now strips a recognized escape's backslash; see the ruling immediately
+below.
 
 **Found and fixed during this PR's own review:** the audit above initially
 missed `element::scene_title`, which turned out to share the *exact same*
@@ -774,34 +782,47 @@ to compile) and deserves its own design ruling, not a silent decision
 folded into a low-severity consistency audit. Filed as a follow-up,
 **issue #2040**, rather than decided unilaterally here.
 
-**A second, distinct divergence, also still open:** a *recognized* escape's
-backslash is stripped in ordinary content but **retained** in
-`tag()`/`cue_name()`/`scene_title()` text — this is the exact
-inconsistency #1738's own filing body used as its motivating example, and
-it reproduces identically at this PR's head. One content line shows both
-behaviors at once:
+**RULED (#2045, 2026-08-02): a *recognized* escape strips its backslash in
+`tag()`/`cue_name()`/`scene_title()` text too — full parity with
+`markup::escape`.** Before this ruling, a *recognized* escape's backslash
+was stripped in ordinary content but **retained** in these three scanners'
+materialized text — the exact inconsistency #1738's own filing body used
+as its motivating example:
 
 ```
 Hello \# world #a \#b
 ```
 
-The content-line text becomes `Hello # world` (backslash stripped, via
-`markup::escape`), but the trailing tag's text stays `a \#b` (backslash
+The content-line text became `Hello # world` (backslash stripped, via
+`markup::escape`), but the trailing tag's text stayed `a \#b` (backslash
 retained, via `tag()`'s raw scan) — same output line, two different
-escape semantics for the same `\#`. Neither #2040 (unrecognized sequences
-becoming errors) nor #1883 (`HASH`/`COLON` depth-awareness, `\}`/`\{`
-parity) covers this — it is a third, distinct question: whether a
-*recognized* escape should also be stripped, not just structurally
-honored. `\{` has the identical retained-backslash shape and is covered by
-the same question. Tracked as **issue #2045**, not decided here.
+escape semantics for the same `\#`. Ruled toward consistency over the
+`\{`-established precedent's inertia: an author moving between ordinary
+content and a tag/cue-name/scene title should not need to remember that
+the same four-character escape set means "the backslash disappears" in
+one and "the backslash survives, only the boundary role is suppressed" in
+the other — one escape set, one reading, everywhere it is recognized. The
+*parser's* structural recognition (an escaped `#`/`{` doesn't end the
+scan, #1738/#1852) is completely unchanged — only the *materialized text*
+these scanners' `ast::Tag::text()`/`ast::CueName::text()`/
+`ast::SceneTitle::text()` accessors hand back now strips the one escaping
+backslash, mirroring `markup::escape`'s own reading of the same
+even/odd-backslash-run parity (`ast/nodes.rs`'s
+`strip_recognized_escape_backslashes`, shared by all three). This is a
+breaking change for any `.brink` file relying on the backslash surviving
+into rendered tag/cue-name/scene-title text — see the changeset. Neither
+#2040 (should an *unrecognized* sequence become a compile error — still
+open, not decided here) nor #1883 (below) is touched by this ruling.
 
 **Relationship to #1883** ("residual escape/depth asymmetries in
 `tag()`/`cue_name()` after #1852/#1851", open): that issue is about a
 *different* axis — whether `HASH` should become depth-aware like `COLON`
 (item 1) and whether `\}` should gain the same backslash-parity treatment
-`\{` already has (item 2) — both *within* the already-literal scan these
-two functions perform. This PR's `\#` fix touches neither of those; it is
-**independent** of #1883, not a closure or a narrowing of it.
+`\{` already has (item 2) — both about the parser's *structural*
+recognition, not the *materialized-text* stripping #2045 rules on. #2045
+touches neither item, changes no parsing/depth/parity decision, and is not
+a step toward resolving either one — it does not narrow #1883, same as
+#1738's original `\#` fix didn't.
 
 ## 5. Tooling: completions & succession (RULED doctrine)
 

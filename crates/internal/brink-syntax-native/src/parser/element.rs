@@ -183,6 +183,17 @@ fn scene_heading(p: &mut Parser<'_, '_>) {
 /// already tests `nth_raw(0)` directly (no `cur`/`raw` adjacency hazard
 /// like `tag()`'s), so the parity check is safe to apply unconditionally.
 /// Pinned by `a_scene_title_with_an_escaped_hash_does_not_end_the_title_early`.
+///
+/// **Superseded in part by issue #2045:** the raw CST node built here is
+/// still an unstripped, lossless copy of the source — that part of the
+/// precedent holds. But `ast::SceneTitle::text()` (`ast/nodes.rs`) is a
+/// *later* materialization point that now strips a recognized escape's
+/// backslash from the title's rendered display text, in parity with
+/// `markup::escape`; `try_claim`/`try_dispatch`'s natural-notation matching
+/// deliberately keeps reading the raw, unstripped `SyntaxNode` text instead
+/// (its byte offsets are load-bearing for capture-group provenance, #1838)
+/// — so "not stripped" is still true of the CST node and of that one
+/// pattern-matching reader, but no longer true of every reader.
 fn scene_title(p: &mut Parser<'_, '_>) {
     p.start_node(SCENE_TITLE);
     let mut backslash_count: u32 = 0;
@@ -320,6 +331,13 @@ pub(crate) fn cue_line(p: &mut Parser<'_, '_>) {
 /// same "backslash not stripped from the literal text" precedent as `\{`
 /// just above. Pinned by
 /// `a_cue_name_with_an_escaped_hash_does_not_end_the_name_early`.
+///
+/// **Superseded in part by issue #2045:** the raw CST node built here is
+/// still an unstripped, lossless copy of the source — that part of the
+/// precedent holds. But `ast::CueName::text()` (`ast/nodes.rs`) is a
+/// *later* materialization point that now strips a recognized escape's
+/// backslash the same way `ast::Tag::text()` does, so "not stripped" is
+/// still true of the CST node but no longer true of every reader.
 fn cue_name(p: &mut Parser<'_, '_>) {
     p.start_node(CUE_NAME);
     let mut depth: u32 = 0;
