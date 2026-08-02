@@ -443,7 +443,7 @@ pub(crate) fn conventions_confinement_diagnostics_query(
     let Some(pointer) = opts.elements.as_deref() else {
         return Arc::new(Vec::new());
     };
-    if !is_path_shaped_elements_pointer(pointer) {
+    if !brink_analyzer::is_path_shaped_elements_pointer(pointer) {
         return Arc::new(Vec::new());
     }
     let file_id = file.file_id(db);
@@ -484,21 +484,6 @@ pub(crate) fn conventions_confinement_diagnostics_query(
         is_conventions_module,
         pointer,
     ))
-}
-
-/// Whether a `[project] elements` pointer names a project-relative `.brink`
-/// path, as opposed to a bare built-in preset name (`"screenplay"`) — the
-/// same heuristic [`conventions_confinement_diagnostics_query`]'s own doc
-/// explains: a preset has no project file to compare a claiming handler's
-/// own module against. A path either contains a directory separator or
-/// ends in the `.brink` extension; a bare word (no separator, no
-/// extension) is treated as a preset name.
-fn is_path_shaped_elements_pointer(pointer: &str) -> bool {
-    pointer.contains('/')
-        || pointer.contains('\\')
-        || std::path::Path::new(pointer)
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("brink"))
 }
 
 /// One file's NS-A4 comparator-contract diagnostics (E119,
