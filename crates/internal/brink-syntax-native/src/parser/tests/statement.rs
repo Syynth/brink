@@ -653,6 +653,64 @@ fn logic_line_assignment_is_not_swallowed_as_prose() {
 }
 
 #[test]
+fn logic_line_temp_decl_is_not_swallowed_as_prose() {
+    // Issue #1972: the emitter-only `Assignment`/`ExprStmt` gap #1991
+    // closed left `TempDecl` as the one bucket of the three named in the
+    // corpus sweep still missing native grammar entirely — before this,
+    // `~ let n = 5` had no `KW_LET` dispatch here at all and reached
+    // `expr_stmt_line`'s `expr::expression`, which diagnoses `let` as an
+    // unrecognized atom (same as `~ if`) rather than parsing it.
+    let src = "flow greet() {\n~ let n = 5\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let flow: ast::FlowDecl = find_child(&p.syntax()).expect("flow decl");
+    let body = expect_prose_body(flow.body());
+    assert!(
+        !has_node_kind(body.syntax(), SyntaxKind::TEXT),
+        "the logic line must not be swallowed into a TEXT run"
+    );
+    let logic_line: ast::LogicLine = find_child(body.syntax()).expect("LOGIC_LINE");
+    let let_stmt = logic_line.let_stmt().expect("LET_STMT child");
+    assert!(logic_line.assign_stmt().is_none());
+    assert!(logic_line.expr_stmt().is_none());
+    assert_eq!(
+        let_stmt.name_token().map(|t| t.text().to_string()),
+        Some("n".to_string())
+    );
+    assert_eq!(
+        let_stmt.value().map(|n| n.kind()),
+        Some(SyntaxKind::INTEGER_LIT)
+    );
+}
+
+#[test]
+fn logic_line_temp_decl_with_annotation_and_no_initializer() {
+    let src = "flow greet() {\n~ let n: int\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let flow: ast::FlowDecl = find_child(&p.syntax()).expect("flow decl");
+    let body = expect_prose_body(flow.body());
+    let logic_line: ast::LogicLine = find_child(body.syntax()).expect("LOGIC_LINE");
+    let let_stmt = logic_line.let_stmt().expect("LET_STMT child");
+    assert!(let_stmt.type_annotation().is_some());
+    assert!(let_stmt.value().is_none());
+}
+
+#[test]
+fn logic_line_temp_decl_precedes_ordinary_content_on_the_next_line() {
+    // Mirrors `logic_line_precedes_ordinary_content_on_the_next_line` for
+    // the assignment shape: the escape consumes exactly its own line.
+    let src = "flow greet() {\n~ let n = 5\nValue is {n}.\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let flow: ast::FlowDecl = find_child(&p.syntax()).expect("flow decl");
+    let body = expect_prose_body(flow.body());
+    let items: Vec<_> = body.syntax().children().collect();
+    assert_eq!(items[0].kind(), SyntaxKind::LOGIC_LINE);
+    assert_eq!(items[1].kind(), SyntaxKind::CONTENT_LINE);
+}
+
+#[test]
 fn logic_line_compound_assignment_operators() {
     for (src_op, expected) in [("+=", SyntaxKind::PLUS_EQ), ("-=", SyntaxKind::MINUS_EQ)] {
         let src = format!("flow greet() {{\n~ n {src_op} 1\n}}\n");
@@ -712,6 +770,48 @@ fn logic_line_inside_choice_body_and_conditional_colon_body() {
     let p = assert_lossless(colon_src);
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
     assert!(has_node_kind(&p.syntax(), SyntaxKind::LOGIC_LINE));
+}
+
+#[test]
+fn logic_line_temp_decl_inside_choice_body_and_conditional_colon_body() {
+    // Same two `TILDE`-dispatch sites `logic_line_inside_choice_body_and_
+    // conditional_colon_body` already covers for the assignment shape,
+    // exercised with `~ let` instead — the recovery/terminator awareness
+    // (issue #1991 findings F2/F3) must hold for every logic-line shape,
+    // not just assignment, or a `~ let` inside a braced/colon body could
+    // desync the enclosing block (rule 12o).
+    let choice_src = "flow greet() {\n{?\n* [go] {\n~ let n = 1\n}\n}\n}\n";
+    let p = assert_lossless(choice_src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::LOGIC_LINE));
+
+    let colon_src = "flow greet() {\n{if n > 0: ~ let m = 0}\n}\n";
+    let p = assert_lossless(colon_src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    assert!(has_node_kind(&p.syntax(), SyntaxKind::LOGIC_LINE));
+}
+
+#[test]
+fn logic_line_temp_decl_partial_progress_is_not_swallowed_as_prose() {
+    // Mirrors `logic_line_partial_progress_is_not_swallowed_as_prose` for
+    // the temp-decl shape (rule 12o: a recovery loop must fire on partial
+    // progress, not only zero progress). `~ let n 5` makes partial
+    // progress — `let_line` consumes `KW_LET`/`IDENT` but `binding_
+    // annotation` sees no `:` and `p.eat(EQ)` fails on `5` (not `=`), so
+    // `let_line` stops with `5` unconsumed. Before a recovery loop existed
+    // for this shape, that leftover would be handed back to `body_line`'s
+    // prose scanner with zero diagnostics.
+    let src = "flow greet() {\n~ let n 5\n}\n";
+    let p = parse(src);
+    assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
+    assert!(
+        !p.errors().is_empty(),
+        "partial-progress leftover tokens must raise a real diagnostic"
+    );
+    assert!(
+        !has_node_kind(&p.syntax(), SyntaxKind::TEXT),
+        "partial-progress leftover tokens must never be swallowed into TEXT prose"
+    );
 }
 
 #[test]

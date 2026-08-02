@@ -200,7 +200,7 @@ pub(super) struct BodyResult {
     /// Issue #1994: see [`super::LambdaAnnotationMismatch`]. Recorded
     /// unconditionally by every `infer_lambda` call this body walk reaches
     /// (including nested lambdas); reported only by strict mode, as
-    /// `Error`-severity `E173` rather than the gradual `E063`
+    /// `Error`-severity `E174` rather than the gradual `E063`
     /// `typed_assign_mismatches`/`field_assign_mismatches` use.
     pub lambda_annotation_mismatches: Vec<LambdaAnnotationMismatch>,
     /// Issue #1881: see [`super::UfcsCallArgs`]. Recorded unconditionally,
@@ -2876,7 +2876,7 @@ impl InferPass<'_, '_> {
         // (E063) reporting any disagreement only as a gradual advisory —
         // now GOVERNS this slot unconditionally: the annotation is the
         // resulting type, and a body-derived type that disagrees with it is
-        // recorded as an eager, `Error`-severity `E173`
+        // recorded as an eager, `Error`-severity `E174`
         // ([`LambdaAnnotationMismatch`]) rather than silently overridden.
         // `docs/typed-mode-spec.md` §2 records why the two are now ruled to
         // differ. An `Unknown`/`Conflicted` body-derived type never
@@ -2897,7 +2897,7 @@ impl InferPass<'_, '_> {
         // "the param's own narrowing" from "the shadowing local's". Running
         // the disagreement check against that value would compare the
         // param's annotation against a completely unrelated binding's type
-        // and report a false `E173` the instant the two disagree (the exact
+        // and report a false `E174` the instant the two disagree (the exact
         // review-finding shape #1954 already fixed once for the `self.
         // annotated` seed — a rebound name is excluded there for the
         // identical reason). Falls back to #1910's own unannotated-style
@@ -2994,9 +2994,7 @@ impl InferPass<'_, '_> {
     /// placed after the return would be dead code in the one pass that
     /// harvests effect atoms.
     fn infer_fn_literal(&mut self, fl: &brink_ir::FnLiteral) -> Ty {
-        for arg in &fl.args {
-            self.infer_expr(arg);
-        }
+        let arg_tys: Vec<Ty> = fl.args.iter().map(|arg| self.infer_expr(arg)).collect();
         let Some(def) = self.resolve(fl.target.range) else {
             return Ty::Unknown;
         };
@@ -3006,8 +3004,59 @@ impl InferPass<'_, '_> {
         let Some(sig) = self.ctx.known_sigs.get(&def) else {
             return Ty::Unknown;
         };
+        // Issue #2001 (the tracked remainder of #1995/#1920 after PR #1999):
+        // `#fn`'s bound-argument loop **is** the by-ref binding site
+        // (docs/t1c-spec.md §2, §6.1a channel 5 — the creation-site half of
+        // the aliasing enumeration) — the one place a `Ty::Fn` value's
+        // remaining param row can never contain a `ref` param, because it
+        // must already be bound here. `fn_values::check`'s `E080` only
+        // verifies a `ref` position is bound to *some* durable cell, never
+        // that the cell's static type agrees with the declared `ref` param
+        // type, so this invariant check is a separate obligation. Mirrors
+        // `infer_call`'s direct-call check, but only the `ref`-arm half of
+        // it: this loop only checks `ref`-bound arguments, so the
+        // observed-local carve-out below is always the *partial* one
+        // (`!observed || assignable(..)`), never the *full* skip
+        // (`!observed && !assignable(..)`) `infer_call`'s non-ref arm uses.
+        // That is deliberate, not an oversight — the #1995 finding on
+        // `infer_call` is that the full skip is only sound for the non-ref
+        // case (an argument that would already conflict and get reported as
+        // `E066`); a `ref` mismatch that stays `assignable` in the
+        // covariant direction still needs its own report even when the
+        // argument is an observed local, so the ref arm always keeps this
+        // narrower, partial carve-out. By-value (non-`ref`) bound arguments
+        // are deliberately left unchecked here — #2001's own scope note:
+        // adding a by-value check at this creation site is new checking
+        // that needs its own design call, not an assumed yes.
+        let ref_positions = self.ctx.index.symbols.get(&def);
         for (i, arg) in fl.args.iter().enumerate() {
             if let Some(param_ty) = sig.params.get(i) {
+                let is_ref_param = ref_positions
+                    .and_then(|info| info.params.get(i))
+                    .is_some_and(|p| p.is_ref);
+                let observed = self.arg_is_observed_local(arg);
+                if is_ref_param
+                    && !param_ty.is_unresolved()
+                    && let Some(arg_ty) = arg_tys.get(i)
+                    && !arg_ty.is_unresolved()
+                    && !ref_assignable(param_ty, arg_ty)
+                    && (!observed || assignable(param_ty, arg_ty))
+                {
+                    let callee = fl
+                        .target
+                        .segments
+                        .iter()
+                        .map(|s| s.text.as_str())
+                        .collect::<Vec<_>>()
+                        .join(".");
+                    self.direct_call_arg_mismatches.push(DirectCallArgMismatch {
+                        range: fl.target.range,
+                        callee,
+                        index: i,
+                        expected: param_ty.clone(),
+                        found: arg_ty.clone(),
+                    });
+                }
                 self.observe(arg, param_ty);
             }
         }
@@ -5152,7 +5201,7 @@ mod tests {
     // written annotation now governs its param/return type unconditionally
     // — narrowing #1910's body-derived read-back to the unannotated case —
     // and an incompatible body raises an eager `LambdaAnnotationMismatch`
-    // (`E173`) at the lambda itself, never silently discarded.
+    // (`E174`) at the lambda itself, never silently discarded.
 
     #[test]
     fn lambda_return_annotation_governs_over_a_disagreeing_body() {

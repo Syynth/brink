@@ -1,5 +1,6 @@
 //! Inline-markup vocabulary validation against the host capability manifest
-//! (`docs/prose-dialect-spec.md` §4.2, issue #1733).
+//! (`docs/prose-dialect-spec.md` §4.2, issue #1733; required attributes,
+//! issue #1780/#1997).
 //!
 //! §4.2's ruling has two halves. The first — **freeform by default** — landed
 //! with the markup grammar itself (PR #1732): an unrecognized `<tag>` is
@@ -26,15 +27,27 @@
 //! `brink.toml`-referenced conventions module instead; the two are not the
 //! same surface.
 //!
+//! # Required attributes (issue #1997)
+//!
+//! Until #1997, `attrs` was an *allow*-list only: an attribute outside the
+//! declared set reported `E165`, but a declared attribute simply absent from
+//! a span was never diagnosed — there was no way to say "this attribute is
+//! mandatory". [`brink_ir::ManifestSpanAttr::required`] adds that: a span of
+//! a declared kind missing one of its kind's `required` attributes reports
+//! `E173`, gated the same way `E164`/`E165` are (only for a span whose name
+//! *is* declared, one report per missing attribute rather than one combined
+//! message). Attribute *values* stay unchecked and untyped — this is the
+//! required/optional distinction only, not a type system.
+//!
 //! # Severity
 //!
-//! `E164`/`E165` default to `Warning`, which is exactly what makes them
-//! configurable: `[lints] E164 = "deny"` promotes a declared vocabulary to
-//! binding, `[lints] E164 = "allow"`/`@[allow(E164)]`/`// brink-disable E164`
-//! turn a check off for a project, a declaration, or a line. Hard-error
-//! codes are neither overridable nor suppressible (`brink_ir::suppressions`),
-//! so `Warning` is the only base that satisfies §4.2's "configurable
-//! severity".
+//! `E164`/`E165`/`E173` default to `Warning`, which is exactly what makes
+//! them configurable: `[lints] E164 = "deny"` promotes a declared vocabulary
+//! to binding, `[lints] E164 = "allow"`/`@[allow(E164)]`/
+//! `// brink-disable E164` turn a check off for a project, a declaration, or
+//! a line. Hard-error codes are neither overridable nor suppressible
+//! (`brink_ir::suppressions`), so `Warning` is the only base that satisfies
+//! §4.2's "configurable severity".
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -59,10 +72,20 @@ pub fn check(files: &[(FileId, &HirFile)], manifest: Option<&HostManifest>) -> V
     // same kind merges deterministically, and diagnostic *messages* quote
     // nothing iteration-ordered, so this is order-insensitive by
     // construction rather than by luck.
-    let mut vocab: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    let mut vocab: BTreeMap<&str, KindVocab<'_>> = BTreeMap::new();
     for kind in &manifest.markup {
         let entry = vocab.entry(kind.name.as_str()).or_default();
-        entry.extend(kind.attrs.iter().map(String::as_str));
+        for attr in &kind.attrs {
+            entry.allowed.insert(attr.name.as_str());
+            // A duplicate kind declaration's `required` is unioned in, not
+            // overwritten: once any declaration of this kind marks an
+            // attribute required, it stays required — the same
+            // never-loosens-on-merge posture `allowed`'s `extend` already
+            // has (a later declaration can only add, never take away).
+            if attr.required {
+                entry.required.insert(attr.name.as_str());
+            }
+        }
     }
 
     let mut out = Vec::new();
@@ -77,6 +100,19 @@ pub fn check(files: &[(FileId, &HirFile)], manifest: Option<&HostManifest>) -> V
     out
 }
 
+/// One declared span kind's vocabulary: every attribute name it allows, and
+/// the subset of those that are `required` (issue #1997).
+///
+/// `required` is always a subset of `allowed` by construction — the vocab
+/// builder only ever inserts into `required` alongside the matching
+/// `allowed` insert, never on its own — so [`SpanWalker::check_span`] never
+/// has to guard against a "required but not allowed" attribute name.
+#[derive(Default)]
+struct KindVocab<'a> {
+    allowed: BTreeSet<&'a str>,
+    required: BTreeSet<&'a str>,
+}
+
 /// Collects markup diagnostics for one file.
 ///
 /// Descends into spans by hand rather than relying on the shared walker:
@@ -86,7 +122,7 @@ pub fn check(files: &[(FileId, &HirFile)], manifest: Option<&HostManifest>) -> V
 /// walkers see past it). This is the one pass that needs the span node.
 struct SpanWalker<'a> {
     file: FileId,
-    vocab: &'a BTreeMap<&'a str, BTreeSet<&'a str>>,
+    vocab: &'a BTreeMap<&'a str, KindVocab<'a>>,
     out: &'a mut Vec<Diagnostic>,
 }
 
@@ -118,14 +154,37 @@ impl SpanWalker<'_> {
                     span.name
                 ),
             ),
-            Some(allowed) => {
+            Some(kind_vocab) => {
                 for (attr, _value) in &span.attrs {
-                    if !allowed.contains(attr.as_str()) {
+                    if !kind_vocab.allowed.contains(attr.as_str()) {
                         self.report(
                             span,
                             DiagnosticCode::E165,
                             format!(
                                 "unknown attribute `{attr}` on markup tag `<{}>`: the host manifest does not declare it for this span kind",
+                                span.name
+                            ),
+                        );
+                    }
+                }
+                // Gated the same way E164/E165 already are: this only ever
+                // runs for a span whose *name* the manifest declares (an
+                // undeclared tag reports E164 alone), and only for the
+                // subset of a declared kind's attributes actually marked
+                // `required` — a kind with none declared required never
+                // fires this for any span of that kind. One diagnostic per
+                // missing attribute, in sorted (`BTreeSet`) order, so a span
+                // missing several required attributes gets one report per
+                // name rather than a single combined message.
+                let present: BTreeSet<&str> =
+                    span.attrs.iter().map(|(attr, _)| attr.as_str()).collect();
+                for &required_attr in &kind_vocab.required {
+                    if !present.contains(required_attr) {
+                        self.report(
+                            span,
+                            DiagnosticCode::E173,
+                            format!(
+                                "markup tag `<{}>` is missing required attribute `{required_attr}`: the host manifest declares it required for this span kind",
                                 span.name
                             ),
                         );
@@ -175,7 +234,25 @@ impl HirVisitor for SpanWalker<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use brink_ir::{ManifestExternal, ManifestSpanKind, SemanticTypeDef};
+    use brink_ir::{ManifestExternal, ManifestSpanAttr, ManifestSpanKind, SemanticTypeDef};
+
+    /// A plain optional attribute (`required` defaults to `false`).
+    fn attr(name: &str) -> ManifestSpanAttr {
+        ManifestSpanAttr {
+            name: name.to_string(),
+            required: false,
+            ty: None,
+        }
+    }
+
+    /// A `required` attribute (issue #1997).
+    fn required_attr(name: &str) -> ManifestSpanAttr {
+        ManifestSpanAttr {
+            name: name.to_string(),
+            required: true,
+            ty: None,
+        }
+    }
 
     fn lower(src: &str) -> HirFile {
         let parse = brink_syntax_native::parse(src);
@@ -198,13 +275,14 @@ mod tests {
         diags.iter().map(|d| d.code.as_str()).collect()
     }
 
-    /// A vocabulary declaring `<wave amount="…">` and a bare `<b>`.
+    /// A vocabulary declaring `<wave amount="…">` and a bare `<b>`. Neither
+    /// attribute is `required` — the pre-#1997 allow-list-only shape.
     fn wave_manifest() -> HostManifest {
         HostManifest {
             markup: vec![
                 ManifestSpanKind {
                     name: "wave".to_string(),
-                    attrs: vec!["amount".to_string()],
+                    attrs: vec![attr("amount")],
                 },
                 ManifestSpanKind {
                     name: "b".to_string(),
@@ -477,6 +555,7 @@ mod tests {
         // "configurable severity" requirement, not a cosmetic choice.
         assert_eq!(DiagnosticCode::E164.severity(), brink_ir::Severity::Warning);
         assert_eq!(DiagnosticCode::E165.severity(), brink_ir::Severity::Warning);
+        assert_eq!(DiagnosticCode::E173.severity(), brink_ir::Severity::Warning);
     }
 
     // ── Determinism ─────────────────────────────────────────────────────
@@ -487,11 +566,11 @@ mod tests {
             markup: vec![
                 ManifestSpanKind {
                     name: "wave".to_string(),
-                    attrs: vec!["amount".to_string()],
+                    attrs: vec![attr("amount")],
                 },
                 ManifestSpanKind {
                     name: "wave".to_string(),
-                    attrs: vec!["speed".to_string()],
+                    attrs: vec![attr("speed")],
                 },
             ],
             ..HostManifest::default()
@@ -501,5 +580,113 @@ mod tests {
             Some(&manifest),
         );
         assert!(diags.is_empty(), "both attrs must be accepted: {diags:?}");
+    }
+
+    // ── Required attributes (issue #1780/#1997) ─────────────────────────
+
+    /// A vocabulary declaring `<sfx name="…" volume="…">` where `volume` is
+    /// `required` and `name` is not.
+    fn sfx_manifest() -> HostManifest {
+        HostManifest {
+            markup: vec![ManifestSpanKind {
+                name: "sfx".to_string(),
+                attrs: vec![attr("name"), required_attr("volume")],
+            }],
+            ..HostManifest::default()
+        }
+    }
+
+    #[test]
+    fn a_span_carrying_its_required_attribute_is_accepted() {
+        let diags = run(
+            "flow a() {\n  <sfx name=\"door\" volume=\"3\">clank</sfx>\n}\n",
+            Some(&sfx_manifest()),
+        );
+        assert!(diags.is_empty(), "required attribute present: {diags:?}");
+    }
+
+    #[test]
+    fn a_span_missing_its_required_attribute_reports_e173() {
+        let diags = run(
+            "flow a() {\n  <sfx name=\"door\">clank</sfx>\n}\n",
+            Some(&sfx_manifest()),
+        );
+        assert_eq!(codes(&diags), ["E173"], "{diags:?}");
+        assert!(
+            diags[0].message.contains("volume") && diags[0].message.contains("<sfx>"),
+            "message must name the missing attribute and the tag: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn a_span_missing_every_optional_attribute_but_none_required_is_not_diagnosed() {
+        // `wave_manifest`'s `amount` is not required, so a bare `<wave>` with
+        // no attributes at all must not fire E173 (or E165 — it carries no
+        // undeclared attribute either).
+        let diags = run(
+            "flow a() {\n  <wave>shimmer</wave>\n}\n",
+            Some(&wave_manifest()),
+        );
+        assert!(diags.is_empty(), "no required attrs declared: {diags:?}");
+    }
+
+    #[test]
+    fn a_span_missing_several_required_attributes_reports_one_e173_per_attribute() {
+        let manifest = HostManifest {
+            markup: vec![ManifestSpanKind {
+                name: "sfx".to_string(),
+                attrs: vec![required_attr("name"), required_attr("volume")],
+            }],
+            ..HostManifest::default()
+        };
+        let diags = run("flow a() {\n  <sfx>clank</sfx>\n}\n", Some(&manifest));
+        // Sorted (`BTreeSet`-driven) order: "name" < "volume".
+        assert_eq!(codes(&diags), ["E173", "E173"], "{diags:?}");
+        assert!(diags[0].message.contains("name"), "{}", diags[0].message);
+        assert!(diags[1].message.contains("volume"), "{}", diags[1].message);
+    }
+
+    #[test]
+    fn an_undeclared_tag_does_not_also_report_e173() {
+        // The same gating E165 already has: an undeclared tag reports E164
+        // alone. There is no declared kind to have a required-attribute set
+        // in the first place, so this is really pinning that `check_span`'s
+        // `None` arm never falls through into the `Some` arm's E173 logic.
+        let diags = run(
+            "flow a() {\n  <shake power=\"9\">whoa</shake>\n}\n",
+            Some(&sfx_manifest()),
+        );
+        assert_eq!(codes(&diags), ["E164"], "{diags:?}");
+    }
+
+    #[test]
+    fn duplicate_kind_declarations_union_required_rather_than_overwrite() {
+        // The first declaration marks `volume` required; the second
+        // (same-named) declaration only adds `name` as an allowed attribute
+        // and says nothing about `volume`. The merge must not let the
+        // second declaration silently un-require `volume`.
+        let manifest = HostManifest {
+            markup: vec![
+                ManifestSpanKind {
+                    name: "sfx".to_string(),
+                    attrs: vec![required_attr("volume")],
+                },
+                ManifestSpanKind {
+                    name: "sfx".to_string(),
+                    attrs: vec![attr("name")],
+                },
+            ],
+            ..HostManifest::default()
+        };
+        let diags = run(
+            "flow a() {\n  <sfx name=\"door\">clank</sfx>\n}\n",
+            Some(&manifest),
+        );
+        assert_eq!(
+            codes(&diags),
+            ["E173"],
+            "volume must still be required after the merge: {diags:?}"
+        );
     }
 }

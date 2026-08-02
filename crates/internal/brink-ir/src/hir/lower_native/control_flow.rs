@@ -149,9 +149,9 @@ fn lower_block_item(
     diags: &mut Vec<Diagnostic>,
 ) -> Option<BlockStmt> {
     match item.kind() {
-        N::LET_STMT => {
-            ast::LetStmt::cast(item.clone()).and_then(|n| lower_temp_decl(file_id, &n, diags))
-        }
+        N::LET_STMT => ast::LetStmt::cast(item.clone())
+            .and_then(|n| lower_temp_decl(file_id, &n, diags))
+            .map(BlockStmt::TempDecl),
         N::ASSIGN_STMT => ast::AssignStmt::cast(item.clone())
             .and_then(|n| lower_assignment(file_id, &n, diags))
             .map(BlockStmt::Assignment),
@@ -190,18 +190,25 @@ fn lower_block_item(
 /// `brink-analyzer::strict`'s temp firewall (`collect_temps` →
 /// `annotations::resolve`) exempts an annotated native `let` from `E065`
 /// with no analyzer change at all.
-fn lower_temp_decl(
+///
+/// Returns the bare [`TempDecl`] rather than wrapping it, mirroring
+/// [`lower_assignment`]'s own shape — this `StmtBlock` item-position call
+/// site wraps as `BlockStmt::TempDecl`, while the content-ground `~ let
+/// name = expr` logic line (issue #1972,
+/// `lower_native::body::lower_logic_line_temp_decl`) wraps the identical
+/// result as `Stmt::TempDecl` instead, sharing this one lowering.
+pub(super) fn lower_temp_decl(
     file_id: FileId,
     temp: &ast::LetStmt,
     diags: &mut Vec<Diagnostic>,
-) -> Option<BlockStmt> {
+) -> Option<TempDecl> {
     let range = temp.syntax().text_range();
     let Some(name) = name_from(temp.name_token()) else {
         diags.push(diag(file_id, range, DiagnosticCode::E014));
         return None;
     };
     let value = temp.value().map(|v| lower_expr(file_id, &v, diags));
-    Some(BlockStmt::TempDecl(TempDecl {
+    Some(TempDecl {
         ptr: native_provenance(file_id, NodeClass::TempDecl, temp.syntax()),
         name,
         value,
@@ -209,7 +216,7 @@ fn lower_temp_decl(
             .type_annotation()
             .as_ref()
             .and_then(super::types::lower_type_annotation),
-    }))
+    })
 }
 
 /// `place = expr;` / `place += expr;` / `place -= expr;` — the place is

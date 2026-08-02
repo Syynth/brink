@@ -117,11 +117,14 @@ argument type must match the erased parameter type exactly
 covariant `assignable` widening; only a `ref` slot needs the stricter
 twin. Applies uniformly to every by-ref call-checking site: the
 direct-call check (#1864), the UFCS-desugared receiver/argument check
-(#1881), and — **outstanding**, filed as a follow-up rather than
-blocking this ruling — the `#fn(target, args…)` partial-application
-binding site (`infer_fn_literal`), which per §2 above is itself a
-by-ref *binding* site and has no by-ref (or by-value) argument check
-of any kind yet.
+(#1881), and — closed by #2001 — the `#fn(target, args…)` partial-
+application binding site (`infer_fn_literal`), which per §2 above is
+itself a by-ref *binding* site. `infer_fn_literal` now runs the same
+`ref_assignable` invariant check the direct-call/UFCS sites do, at
+its bound-argument loop. By-value (non-`ref`) bound arguments at this
+site are **still deliberately left unchecked**: #2001 named that as
+new checking needing its own scope call, not an assumed yes, and
+declined to add it — a separate follow-up if ever wanted.
 
 ## 6. Diagnostics — PROPOSED
 

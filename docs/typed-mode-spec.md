@@ -190,7 +190,7 @@ two, on purpose:
   body-derived type that disagrees (when it resolves to anything concrete —
   `Unknown`/`Conflicted` never "disagrees", same guard
   `report_if_mismatched` uses) is recorded as an eager, `Error`-severity
-  `E173` (`infer::body::InferPass::infer_lambda`, reported by
+  `E174` (`infer::body::InferPass::infer_lambda`, reported by
   `strict::check_lambda_annotation_mismatches`), raised at the lambda's own
   declaration — never deferred to wherever the lambda is later called, and
   never downgradable the way `E063` is.

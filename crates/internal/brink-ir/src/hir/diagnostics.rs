@@ -1502,6 +1502,27 @@ pub enum DiagnosticCode {
     /// unrecognized name gets a shape-only wording that never asserts ink
     /// membership.
     E172,
+
+    // ── Required markup attributes (issue #1780 gap 1, ruled by #1997)
+    //    ────────────────────────────────────────────────────────────────
+    /// An inline markup span of a declared kind is missing an attribute the
+    /// host manifest marks `required` for that kind.
+    ///
+    /// The counterpart `E164`/`E165` never caught: `attrs` was an
+    /// *allow*-list only until #1997, so a declared attribute simply absent
+    /// from a span went undiagnosed. Gated the same way as `E165`: it only
+    /// ever fires for a span whose *name* the manifest does declare (an
+    /// undeclared name reports `E164` alone), and only for attributes the
+    /// declaring kind actually marks `required` — a kind with none required
+    /// never raises this for any span of that kind. One report per missing
+    /// attribute, not one combined message, mirroring `E165`'s
+    /// one-per-attribute posture rather than `E164`'s one-per-span.
+    ///
+    /// `Warning` by default, the same posture as `E164`/`E165`, for the same
+    /// reason: only a `Warning`-base code is `[lints]`-configurable and
+    /// `@[allow(…)]`-suppressible, and a host that wants a required
+    /// attribute to be binding raises it with `[lints] E173 = "deny"`.
+    E173,
     /// A lambda's own **written annotation** (a param's `: T` or the
     /// lambda's `: R` return annotation) disagrees with its body-derived
     /// type (issue #1994, RULED 2026-08-01, closing #1932: "the written
@@ -1530,7 +1551,7 @@ pub enum DiagnosticCode {
     /// posture as `E156`/`E158`): raised only from
     /// `infer::body::InferPass::infer_lambda`, reported by
     /// `strict::check_lambda_annotation_mismatches` under `types = strict`.
-    E173,
+    E174,
 }
 
 impl DiagnosticCode {
@@ -1717,6 +1738,7 @@ impl DiagnosticCode {
         Self::E171,
         Self::E172,
         Self::E173,
+        Self::E174,
     ];
 
     /// The stable string representation (e.g., `"E001"`).
@@ -1900,6 +1922,7 @@ impl DiagnosticCode {
             Self::E171 => "E171",
             Self::E172 => "E172",
             Self::E173 => "E173",
+            Self::E174 => "E174",
         }
     }
 
@@ -2186,6 +2209,9 @@ impl DiagnosticCode {
                 "native: a `#…` tag beginning with `@` is the ink-dialect compiler-directive shape (`#@private`/`#@was`/`#@local`/…) — native has no such directive channel, so it lowers as an ordinary runtime tag"
             }
             Self::E173 => {
+                "inline markup tag is missing an attribute the host manifest marks required for this span kind"
+            }
+            Self::E174 => {
                 "a lambda's written parameter/return annotation disagrees with the type its body actually infers"
             }
         }
@@ -2221,9 +2247,12 @@ impl DiagnosticCode {
             // `@[allow(…)]`-suppressible (only `Warning`-base codes are —
             // see `crate::suppressions`). A host that wants a declared
             // vocabulary to be binding raises them with
-            // `[lints] E164 = "deny"`.
+            // `[lints] E164 = "deny"`. Issue #1780/#1997 adds `E173`
+            // (missing required attribute) to the same family, same
+            // rationale.
             | Self::E164
             | Self::E165
+            | Self::E173
             // Issue #1848: a duplicate claiming pattern is dead code (the
             // earlier-declared handler always wins first), not a hard
             // error — `Warning`-tier so it stays `[lints]`-configurable and
@@ -2429,6 +2458,7 @@ impl DiagnosticCode {
             "E171" => Some(Self::E171),
             "E172" => Some(Self::E172),
             "E173" => Some(Self::E173),
+            "E174" => Some(Self::E174),
             _ => None,
         }
     }
