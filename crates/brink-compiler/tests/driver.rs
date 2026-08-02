@@ -408,11 +408,45 @@ fn compile_path_native_const_lambda_literal_decl_default_compiles() {
         !global.mutable,
         "a `const` global stays immutable regardless of its default's kind"
     );
-    assert!(
-        matches!(global.default_value, brink_format::Value::FnRef(_)),
-        "a file-scope lambda has no enclosing frame to capture from, so it \
-         must fold to a bare FnRef (no bound environment), got {:?}",
-        global.default_value
+    let brink_format::Value::FnRef(target) = global.default_value else {
+        panic!(
+            "a file-scope lambda has no enclosing frame to capture from, so it \
+             must fold to a bare FnRef (no bound environment), got {:?}",
+            global.default_value
+        );
+    };
+    // Review finding on #1774: mirrors the `brink-ir`-level assertion in
+    // `lambda_literal_declaration_default.rs` against the actually-compiled
+    // `StoryData` — `assemble_program`'s `root_children.extend(prelude
+    // .lifted...)` is the one hunk that makes this feature more than a
+    // type-check relaxation, so this walks `output.data.containers` (not
+    // just the global's own `default_value`) to prove the `FnRef` target
+    // resolves to a real, compiled container with `twice`'s one `x` param.
+    let lifted = output
+        .data
+        .containers
+        .iter()
+        .find(|c| c.id == target)
+        .unwrap_or_else(|| {
+            panic!(
+                "no compiled container has id {target:?} — the FnRef target \
+                 does not resolve to a real container in StoryData"
+            )
+        });
+    assert_eq!(
+        lifted.param_count, 1,
+        "expected `twice`'s one `x` param, got param_count {}",
+        lifted.param_count
+    );
+    assert_eq!(
+        lifted.params.len(),
+        1,
+        "expected `twice`'s one `x` ParamMeta entry, got {} entries",
+        lifted.params.len()
+    );
+    assert_eq!(
+        output.data.name_table[lifted.params[0].name.0 as usize], "x",
+        "expected the lifted container's param to be named `x`"
     );
 }
 

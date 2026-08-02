@@ -30,11 +30,40 @@ fn const_lambda_literal_decl_default_folds_without_e083() {
         !g.mutable,
         "a `const` global stays immutable regardless of its default's kind"
     );
+    let lir::ConstValue::FnRef(target) = g.default else {
+        panic!(
+            "a file-scope lambda has no enclosing frame to capture from, so it \
+             must fold to a bare FnRef (no bound environment), got {:?}",
+            g.default
+        );
+    };
+    // Review finding on #1774: `assemble_program`'s
+    // `root_children.extend(prelude.lifted.iter().cloned())` is the one hunk
+    // that makes this feature more than a type-check relaxation — without
+    // it, `twice`'s `FnRef` target would point at a container that was never
+    // actually assembled into the program. Walk the assembled tree (not just
+    // `PreludeDecls`/`GlobalDef::default`) to prove the lifted container is
+    // really there, really a function, and really has `twice`'s one `x`
+    // parameter.
+    let lifted = find_any(&program.root, &|c| c.id == target).unwrap_or_else(|| {
+        panic!(
+            "no container with id {target:?} was assembled into program.root's \
+             tree — the FnRef target does not resolve to a real container"
+        )
+    });
     assert!(
-        matches!(g.default, lir::ConstValue::FnRef(_)),
-        "a file-scope lambda has no enclosing frame to capture from, so it \
-         must fold to a bare FnRef (no bound environment), got {:?}",
-        g.default
+        lifted.is_function,
+        "the lifted container for a decl-default lambda must be a function"
+    );
+    assert_eq!(
+        lifted.params.len(),
+        1,
+        "expected `twice`'s one `x` param, got {} params",
+        lifted.params.len()
+    );
+    assert_eq!(
+        program.name_table[lifted.params[0].name.0 as usize], "x",
+        "expected the lifted container's param to be named `x`"
     );
 }
 
