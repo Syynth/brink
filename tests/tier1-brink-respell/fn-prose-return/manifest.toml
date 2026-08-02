@@ -1,0 +1,28 @@
+# Native-only fixture (no ink origin). See ../README.md.
+ink_source = "n/a (native-only; see notes)"
+oracle_case = "n/a (native-only; see notes)"
+family = "fn body-dialect selector (charter §4)"
+status = "hand-written native, episode-identity proven (round_trip.rs only)"
+notes = """
+Issue #2029: `emit_knot` always wrote a bare `{` for a `fn`'s body, never
+the `>{ }` prose-ground override (charter §4, RULED 2026-07-23) a `fn`
+needs when its body is `Stmt::Return`/`Stmt::Content`-shaped — the shape
+this printer's statement stream (`emit_return`, etc.) always spells.
+Since a bare `{` on a `fn` instead selects the *code*-ground default
+(`;`-terminated `STMT_BLOCK`), the emitted `.brink` failed to reparse at
+all (`expected SEMICOLON, found R_BRACE`) for *any* `fn` this emitter
+regenerated, not just a value-carrying `return` (#1973's own scope — see
+that PR's `value_carrying_return_round_trips` test, which sidesteps this
+entirely by using a `flow`, not an `fn`, per its own doc comment).
+
+This fixture is the `fn` counterpart `emit_native.rs`'s own doc flagged
+as a pre-existing gap: `fn double(x) >{ return x * 2 }` called from a
+`flow main()`'s content interpolation (`{double(21)}`), the same shape as
+`tests/tier1-native/prose-return-value/story.brink` (a compile-and-run
+e2e fixture for #1973 — that one never touches `emit_native` at all, so
+it did not and could not catch this). Verified only by
+`crates/internal/brink-respell/tests/round_trip.rs` (native
+lower -> emit -> reparse -> relower -> episode-identical against itself)
+— with the #2029 fix reverted, this round-trip fails outright at the
+reparse step (a hard parse error), not merely a text mismatch.
+"""
