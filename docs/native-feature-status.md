@@ -35,7 +35,7 @@ unimplemented · ❓ unverified (nobody has checked; do not assume either way)
 | `let` / temp declaration | ✅ | ✅ | ✅ | ✅ | |
 | Assignment | ✅ | ✅ | ✅ | ✅ | in **code** position only — see prose table |
 | `if` / `else` | ✅ | ✅ | ✅ | ✅ | |
-| `else if` chains | ✅ | ✅ | ✅ | ❌ | emitter gap **#1975**, 12 cases |
+| `else if` chains | ✅ | ✅ | ✅ | ✅ | round-trips since **#1975** (PR #2041) |
 | `for` loops | ✅ | ✅ | ✅ | ✅ | incl. `for k, v` |
 | `return` with a value | ✅ | ✅ | ✅ | ✅ | in **`fn`** bodies; prose position is #1973 |
 | Lambdas | ✅ | ✅ | ✅ | ✅ | lifting landed (#1709) |
@@ -45,7 +45,7 @@ unimplemented · ❓ unverified (nobody has checked; do not assume either way)
 | Construction literals | ✅ | ✅ | ✅ | ✅ | |
 | `or` coalescing | ✅ | ✅ | ✅ | ✅ | |
 | Fn values by bare name | ✅ | ✅ | ✅ | ✅ | ruled 2026-08-01 (#1862) |
-| Fn value in `var`/`const` | ✅ | ❌ | — | — | ruled **2026-08-01** (#1774); `E083` still gates it |
+| Fn value in `var`/`const` | ✅ | ❌ | — | — | 🔒 **ruled 2026-08-01 (#1774)** — allow both; `E083` still gates it |
 | `ref` params | ✅ | ✅ | ⚠️ | ✅ | variance unsound until **#1995** lands |
 
 ## Prose dialect (`flow` bodies, `>{ }` blocks)
@@ -55,21 +55,21 @@ unimplemented · ❓ unverified (nobody has checked; do not assume either way)
 | Prose lines & interpolation | ✅ | ✅ | ✅ | ✅ | |
 | Diverts `->` | ✅ | ✅ | ✅ | ⚠️ | divert-target-as-**value** fails, 18 cases |
 | Choices | ✅ | ✅ | ✅ | ⚠️ | inline conditional in choice content, 21 cases |
-| Conditionals in content `{if …}` | ✅ | ✅ | ✅ | ❌ | verified 2026-08-01; emitter gap |
+| Conditionals in content `{if …}` | ✅ | ✅ | ✅ | 🔒 | emitter gap; **#1737 ruled 2026-08-02** — lifter recurses into spans |
 | Tags `#` | ✅ | ✅ | ✅ | ✅ | markup inside a tag is **literal** (ruled #1783) |
 | Markup spans `<b>…</b>` | ✅ | ✅ | ✅ | ✅ | `.inkb` **v6** `PART_SPAN` |
-| Hyphenated span names `<fade-in>` | ✅ | ❌ | — | — | 🔒 ruled 2026-08-01 → **#1996** |
+| Hyphenated span names `<fade-in>` | ✅ | ✅ | ✅ | ✅ | landed **#1996** |
 | `@[element(claims=…)]` handlers | ✅ | ✅ | ✅ | ❓ | `annotations-element` golden |
 | Prose-bodied `fn` via `>{ }` | ✅ | ✅ | ✅ | ❓ | verified 2026-08-01: emits `[A] hi` |
 | **Statements at prose position (bare, no `~`)** | ⚠️ | ❌ | ❌ | ❌ | **🔴 SILENT** — see below; by design, not open (charter §8.2) |
 | `~ stmt`/`~{ }` line/block escape (assignment/bare-call/temp-decl/`until`/logic block) | ✅ | ✅ | ⚠️ | ⚠️ | #1991 + #1972 (both slices); Round-trips only leaf stmts, nested if/while/for inside `~{ }` is an emitter-only gap; Runs — a call-only `~{ }` escape now correctly flushes its output boundary (review finding, w111), but the same pre-existing gluing bug (no `Stmt::EndOfLine` after a call-only code-ground `LogicBlock`) still reaches the whole-body `~{ }`/`fn`-default override path (`lower_stmt_block_as_body`/`lir::lower::blocks::lower_block_stmt_list`), untouched by this fix — tracked at **#2056** |
-| `> text` line escape in code body | ✅ | ✅ | ❌ | ❌ | 🔒 `E129` — #1992 |
-| `return <value>` at prose position | ✅ | ❌ | — | — | #1973, 16 cases |
+| `> text` line escape in code body | ✅ | ✅ | ✅ | ✅ | landed **#1992**; added `LogicBlockScope` |
+| `return <value>` at prose position | ✅ | ✅ | ✅ | ✅ | landed **#1973** (PR #2027) |
 | Alternations `{~ {& {! {\|` | ✅ | ✅ | ✅ | ❌ | emitter gap, 17 cases |
 | Inline sequences | ✅ | ✅ | ✅ | ❌ | emitter gap, 10 cases |
-| Thread splice `<- flow(args)` | ✅ | ⚠️ | ❓ | ❌ | #1974; narrowed to choice-point splice |
+| Thread splice `<- flow(args)` | ✅ | ✅ | ✅ | ⚠️ | **#1974** re-nesting landed; bucket 21 → 17 |
 | Scene headings / cues / parentheticals | ✅ | ✅ | ❌ | ❌ | parse (#1715) but produce **no HIR** (`E129`) |
-| Word-break spring | ❓ | ❌ | — | — | #1976, `needs-design`, 12 cases |
+| Word-break spring | ✅ | — | — | ⚠️ | **RULED internal 2026-08-02** — no native spelling owed; respell/emitter only |
 
 ## Conventions & elements
 
@@ -86,10 +86,10 @@ whole vocabulary by naming a different conventions module. Sequenced as
 | Typed handler params (`E171`) | ✅ | ✅ | ✅ | — | #1849 closed |
 | Confinement to one module (`E169`) | ✅ | ✅ | ⚠️ | — | query landed; **unreachable from live typing** (#1880) |
 | Directive-shaped tag guard (`E172`) | ✅ | ✅ | ✅ | — | landed 2026-08-01 (#1835) |
-| **`!name` sigil dispatch** | ✅ | ❌ | — | — | **reserved, unimplemented** — see below |
+| `!name` sigil dispatch | ✅ | ✅ | ✅ | ✅ | landed **#2004** — the `!radio` shape is authorable |
 | Block elements `@[element(…, block)]` | ✅ | ❌ | — | — | **v1b · #1839 — unblocked 2026-08-01**, unbuilt |
-| `fn conventions()` registration | ✅ | ❌ | — | — | **v1c · #1840** — 4 blocking questions ruled 2026-08-01 |
-| Comptime evaluation of conventions | ✅ | ❌ | — | — | #1840; dependency shape ruled 2026-08-01 (#1867) |
+| `fn conventions()` registration | ✅ | ❌ | — | — | 🔒 **v1c unblocked 2026-08-02** — Q5 ruled (`register` = comptime-only intrinsic) |
+| Comptime evaluation of conventions | ✅ | ❌ | — | — | 🔒 unblocked — #1867 + Q5 both ruled |
 | `@[style]` declaration surface | ✅ | ✅ | ❌ | — | `StyleToken` produced, **zero consumers** (#1719) |
 | Built-in screenplay preset | ✅ | ❌ | — | — | #1720; `dialect.rs`'s `Default` is legacy hardcoding, not this |
 | `[project] elements` name validation | ✅ | ⚠️ | ⚠️ | — | #1874 |
@@ -116,8 +116,8 @@ Tracked as **#2006**.
 | Last-good caching on comptime fault | ✅ | ❌ | ruled Q2 2026-08-01; never substitute another module's conventions |
 | `@[style]` consumption | ✅ | ❌ | `StyleToken` produced in `brink-ir`, read by nothing (#1719) |
 | Elements reach `IdeSession` | ✅ | ❌ | #1880 — `E169` unreachable from live typing |
-| **Match ordering** | ⏳ | ❌ | **RULE OWED** — "declaration-order + overlap diagnostics is the lean" |
-| **Editor re-evaluation loop** | ⏳ | ❌ | **OWED** (§3.5) — yet Q2 already depends on it existing |
+| Match ordering | ✅ | ❌ | — | — | 🔒 **RULED 2026-08-02** — walk keeps going, records shadowed matches |
+| Editor re-evaluation loop | ✅ | ❌ | — | — | 🔒 **RULED 2026-08-02** — projection cached on closure; classify per keystroke |
 
 ⚠ **Two rulings are still owed here**, and one of them has already been
 depended on: Q2's last-good caching is justified *because* "§3.5's owed
