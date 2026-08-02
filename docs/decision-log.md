@@ -2515,3 +2515,51 @@
 - **SCOPE:** minor/local (restates §9.1 rather than adding a rule)
 - **WHAT:** Whether a claiming handler inside a `module { … }` block may claim is **the wrong axis**. The split is by **dispatch kind**, exactly as §9.1 item 4 already ruled: **pattern-claiming** handlers (`claims = "…"` — scene headings and the like) are confined to the **one conventions module** named in `brink.toml`; **`!name`-dispatched** handlers are **legal anywhere**, precisely because they self-announce at the call site. `E112`'s provisional "nested in a module block" placement fence should therefore be replaced by the dispatch-kind rule composed with `E169`'s file confinement, not kept as a nesting rule of its own. ⚠ Residual, flagged and assumed YES pending correction: a `module { … }` block **inside** the conventions file still counts as being in the conventions module (same file, same module).
 - **WHY:** Recorded because the issue was filed as an open design question and closed as already-ruled, and that distinction is worth preserving: the answer was in §9.1 the whole time, and re-deriving it cost a round trip. Note also that the ruling was only half-enforceable when made — `!name` dispatch was reserved but unimplemented until #2004 landed 2026-08-02, so the confinement rule was in practice stricter than ruled for a day.
+
+## `register` is a comptime-only intrinsic; calling it elsewhere is a diagnostic (#1840 Q5)
+- **WHEN:** 2026-08-02
+- **PROJECT:** brink
+- **SYSTEM:** conventions comptime (#1840)
+- **SCOPE:** moderate (unblocks conventions v1c)
+- **WHAT:** **`register` is a T1b intrinsic, legal ONLY inside the conventions module's `fn conventions()`**, where the comptime evaluator intercepts it during `begin_function_eval`. **No opcode, no runtime registry cell, no bytecode** — `fn conventions()` is comptime-consumed and never emitted, so the registry has no runtime life. Calling `register` anywhere else is a **compile error** (one new diagnostic code). Q4 had already ruled its *meaning* (a write to a named registry cell, the RNG-cell shape); this settles its lowering and legality. Rejected: a real opcode plus a runtime registry (ships machinery nothing reads), and an intrinsic that lowers to nothing outside comptime (a call that silently does nothing is the silent-drop class CLAUDE.md treats as a bug by default).
+- **WHY:** Three consecutive waves declined #1840, the last of them on a genuine finding: `register` did not resolve at all (`E025`), and Q4 had explicitly rejected modelling it as an `EXTERNAL`, so it could not ride the existing external-call dispatch. The agent concluded there was no coherent runtime story and therefore no deliverable slice. The missing step was recognising that **`register` does not need a runtime story** — the registry exists only while the compiler is evaluating, so "comptime-only intrinsic" is not a limitation but the correct shape. The e2e objection dissolves the same way: a direct test of `register` is impossible, but a project with a conventions module producing classified output exercises it end to end, which is the behaviour anyone actually cares about.
+
+## Span-nested inline conditionals lift; the lifter recurses into spans (#1737)
+- **WHEN:** 2026-08-02
+- **PROJECT:** brink
+- **SYSTEM:** prose dialect — template lifting × markup (#1737)
+- **SCOPE:** moderate
+- **WHAT:** **`hir::normalize::try_lift_inline` recurses into `Span::children`**, so `<b>{cond: a|b}</b>` lifts to template form like any other inline conditional and the span survives. **Accepted cost:** markup-wrapped conditionals multiply translation-table entries per branch, so a line's translation footprint grows with the number of branches inside spans. ⚠ The implementation must preserve §4.3's **line-scoped span invariant** — the locale system swaps whole line vectors by index and hard-rejects count mismatches, so a span may never split or cross line-table entries. Rejected: ruling the shape out of scope in §4.4, and diagnosing it instead of flattening.
+- **WHY:** §4.3 already rules that markup and logic nest freely inside each other; the flattening fallback was an implementation gap, not an expression of policy, and it lost the author's span **silently**. Ruling the shape out of scope would have carved an exception into a nesting promise the spec makes unconditionally, to save a translation-table cost that is real but bounded and paid only by lines that actually use the shape. The diagnose-instead variant was the right answer only if the shape stayed unsupported; once it works, there is nothing to diagnose.
+
+## Ink's `?` / `!?` list-match operators route through UFCS, not a native operator (#2043)
+- **WHEN:** 2026-08-02
+- **PROJECT:** brink
+- **SYSTEM:** native expression grammar × respell (#2043)
+- **SCOPE:** minor/local
+- **WHAT:** **No new native operator.** The respeller lowers ink's `list ? item` to `list.contains(item)` and `list !? item` to `!list.contains(item)`, using the prelude verb that already exists. Zero native grammar change. ⚠ **Owed by the implementation: verify precedence and chaining equivalence** — an operator and a call parse differently, so any ink idiom relying on `?`'s precedence, or on chaining, must produce the same tree through the UFCS lowering. Pin it with a differential, not an assumption. Rejected: importing ink's `?`/`!?` spelling verbatim, and minting a native `has`/`!has`.
+- **WHY:** The native surface has consistently preferred readable spellings over punctuation — the 2026-08-01 `#fn` → bare-name ruling turned on exactly that reasoning — and `?` as containment is not self-evident to a reader who does not already know ink. But designing a *new* native operator was equally unattractive when `contains` already exists in the prelude and says what it means. Routing through the existing verb costs no grammar, no spelling decision, and no teaching surface; the only thing it owes is proof that the parse trees agree.
+
+## Unrecognized inline escapes are rejected (#2040)
+- **WHEN:** 2026-08-02
+- **PROJECT:** brink
+- **SYSTEM:** prose dialect — the escape set (#2040, §8d.6)
+- **SCOPE:** moderate (breaking for some existing content)
+- **WHAT:** **An unrecognized inline escape is a compile error.** `\q` is diagnosed, naming the four valid escapes (`\<` `\{` `\#` `\\`). One new diagnostic code. ⚠ **Breaking:** prose containing a literal backslash before a letter (Windows paths, LaTeX-ish text) now errors until doubled as `\\` — the diagnostic message MUST name the four valid escapes **and** point at `\\` for a literal backslash, or the fix is not discoverable. ⚠ Apply **consistently across every scanner in §4.6's audit table** (`tag()`, `cue_name()`, `scene_title`, `parenthetical`, content); a rejection in one and a pass-through in another is the exact asymmetry class #1738/#1883 exist to close.
+- **WHY:** §8d.6 ruled the escape set final, and a closed set that silently accepts members outside it is not closed in any way an author can rely on. The realistic failure is a typo — an author reaches for an escape that does not exist, gets no feedback, and ships a stray backslash to the reader. That is the same silent-degradation shape the `~ stmt` bug had. The breaking-change cost is real but narrow and mechanically fixable, and it is discoverable at build time rather than in the finished story.
+
+## Word-break springs are internal; native gets no spelling (#1976)
+- **WHEN:** 2026-08-02
+- **PROJECT:** brink
+- **SYSTEM:** prose dialect — `ContentPart::Spring` (#1976)
+- **SCOPE:** minor/local (retires a `needs-design` flag)
+- **WHAT:** **Nobody writes springs — it is an internal concept.** No native authoring spelling exists and none is owed. The respeller emits whatever internal form the 12 ink corpus cases need and the emitter round-trips it. ⇒ #1976 stops being `needs-design`; its remaining work is purely the respell/emitter round-trip for those 12 cases — an emitter task, not a grammar one — and no book or spec teaching surface is owed.
+- **WHY:** A spring is a layout artifact of how ink handles overflow, not something an author reasons about while writing a scene. Giving it a native spelling would add grammar, spec text and book coverage for a concept whose entire corpus presence is incidental. Keeping it internal also keeps the native surface's stated smallness honest: the respeller's job is to preserve ink's *behaviour*, not to surface every mechanism ink used to achieve it.
+
+## Lifted-lambda identity: HIR mints, LIR consumes (#1727)
+- **WHEN:** 2026-08-02
+- **PROJECT:** brink
+- **SYSTEM:** lambda lifting × effect fixpoint (#1727, #1770)
+- **SCOPE:** architectural
+- **WHAT:** **The direction inverts: HIR stamps a lifted lambda's identity and `alloc_lambda_address` READS it**, rather than deriving its own from `ctx.scope_path`. ⚠ Owed by the implementation: LIR's allocator stops being self-contained, so every path that lowers a lambda must carry the HIR id through — name those paths in the PR. Rejected: a path-independent per-body ordinal (non-self-describing, and inserting a lambda earlier renumbers later ones — a save-key hazard if these ever persist), and a v1 scope covering only non-nested lambdas.
+- **WHY:** The id-parity problem exists only because the id is derived **twice** from a structure that differs between the two derivations: `ctx.scope_path` is mutated while descending into conditional/sequence/choice bodies, so a lambda nested in a branch gets a LIR path that HIR-time minting cannot reproduce. Every option that keeps two derivations has to keep them agreeing forever; removing the second derivation removes the class of bug rather than one instance. The v1-scope alternative was tempting because it unblocks #1770's common case cheaply, but it leaves the effect fixpoint incomplete for precisely the nested shape #1770 exists to make sound — an unsound analysis that reports success is worse than one that is honestly incomplete. ⇒ Unblocks #1770.
