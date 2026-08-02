@@ -241,8 +241,16 @@ pub struct EffectsAssertion {
 /// element (a scene heading, a transition) is literally an annotated
 /// handler with a claiming pattern.
 ///
-/// The `!name` sigil dispatch rewrite is still not implemented — only the
-/// claiming half dispatches today (`crate::hir::lower_native::element`).
+/// The `!name` sigil dispatch rewrite (issue #2004) now dispatches too —
+/// for a top-level `fn` only, matching the `claims` half's own restriction
+/// (a rewrite is an expression call; only a `fn` is callable as one). A
+/// `flow`-attached `args = "…"` still parses and validates here (this
+/// struct's declaration surface never distinguished `fn` from `flow`), but
+/// `hir::lower_native::element::collect` only ever scans top-level `fn`
+/// declarations into the dispatch table, so a `flow`'s own `args` clause
+/// is not yet a live dispatch target — nor is the `block` clause (issue
+/// #1839/#1840's own scope), nor cross-file dispatch-name resolution (v1
+/// dispatch is file-local, matching `claims`'s own file-local scope).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ElementAnnotation {
     /// The portable-regex source text of the `args = "…"`/`claims = "…"`
@@ -309,6 +317,11 @@ pub enum ElementKind {
     /// A scene heading (`SCENE_HEADING`, `docs/prose-dialect-spec.md`
     /// §8b.2/.3) — the `INT.`/`EXT.` prefixed header line.
     SceneHeading,
+    /// A `!name` sigil dispatch (`BANG_DISPATCH`, §3.5b, issue #2004) —
+    /// self-announcing, unlike the other two variants above (both of
+    /// which are *claimed*, i.e. matched without any structural marker of
+    /// their own).
+    BangDispatch,
 }
 
 /// One named capture bound by a claimed line, as a **span into real

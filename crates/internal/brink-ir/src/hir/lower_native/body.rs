@@ -239,6 +239,14 @@ fn lower_one_item(
     if let Some(claimed) = super::element::try_claim(file_id, node, elements) {
         return claimed;
     }
+    // `!name` sigil dispatch (issue #2004): tried right after claiming,
+    // same "harmless when it isn't its own node kind" posture — see
+    // `element::try_dispatch`'s own doc for what "not dispatched" falls
+    // through to (this function's own loud-`E129` default arm below, for a
+    // `BANG_DISPATCH` node kind no other arm here claims).
+    if let Some(dispatched) = super::element::try_dispatch(file_id, node, elements) {
+        return dispatched;
+    }
     match node.kind() {
         N::CONTENT_LINE => {
             let Some(cl) = ast::ContentLine::cast(node.clone()) else {

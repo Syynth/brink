@@ -426,6 +426,21 @@ pub enum SyntaxKind {
     /// parenthetical, or that cue's dialogue), so the G-1 `(label)`
     /// content-line spelling is untouched everywhere else.
     PARENTHETICAL,
+    /// `!name rest of the line…` — the self-announcing `!name`
+    /// annotation-element dispatch sigil (§3.5b, issue #2004). The `!` and
+    /// the name must be **adjacent**, mirroring [`Self::CUE`]'s `@NAME`
+    /// discipline (`element::at_bang_dispatch`) — a bare `!` not
+    /// immediately followed by an identifier stays ordinary prose. Holds a
+    /// [`Self::DISPATCH_NAME`] and the remainder as a fused
+    /// [`Self::CONTENT_LINE`] (the same technique [`Self::COMPACT_CUE`]
+    /// uses for its dialogue line) — whether a handler by that name
+    /// actually exists, and whether its `args = "…"` pattern matches the
+    /// remainder, is `hir::lower_native::element::try_dispatch`'s
+    /// question, not the parser's.
+    BANG_DISPATCH,
+    /// The name run inside a [`Self::BANG_DISPATCH`], after the `!` sigil
+    /// and before the remainder.
+    DISPATCH_NAME,
 
     // ── Node kinds — inline markup (docs/prose-dialect-spec.md §4, ──────
     // ── RULED 2026-07-25, issue #1716) ───────────────────────────────────

@@ -59,6 +59,8 @@ ast_node!(Cue, CUE);
 ast_node!(CueName, CUE_NAME);
 ast_node!(CompactCue, COMPACT_CUE);
 ast_node!(Parenthetical, PARENTHETICAL);
+ast_node!(BangDispatch, BANG_DISPATCH);
+ast_node!(DispatchName, DISPATCH_NAME);
 
 // ── Inline markup (docs/prose-dialect-spec.md §4, issue #1716) ──────
 ast_node!(Span, SPAN);
@@ -1646,6 +1648,27 @@ impl CompactCue {
     /// The fused dialogue line after the `:` (§8b.9).
     pub fn line(&self) -> Option<ContentLine> {
         support::child(&self.syntax)
+    }
+}
+
+impl BangDispatch {
+    /// The dispatching name after the `!` sigil.
+    pub fn name(&self) -> Option<DispatchName> {
+        support::child(&self.syntax)
+    }
+
+    /// The remainder after the name — a fused content line, the same way
+    /// [`CompactCue::line`] fuses its dialogue line.
+    pub fn line(&self) -> Option<ContentLine> {
+        support::child(&self.syntax)
+    }
+}
+
+impl DispatchName {
+    /// The dispatching name, with the surrounding source whitespace
+    /// trimmed.
+    pub fn text(&self) -> String {
+        self.syntax.text().to_string().trim().to_owned()
     }
 }
 
