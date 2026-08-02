@@ -55,12 +55,24 @@
 //! Explicitly unsupported (each a real gap, not an oversight — see
 //! `docs/b0-sequencing.md` §3 and `tests/tier1-brink-respell/README.md`'s
 //! own gap findings for the native-grammar context): `Stmt::TempDecl`/
-//! `Assignment`/`ExprStmt`/`LogicBlock`/`Await` at prose-body position
-//! (code-dialect ground — `lower_native::body` never constructs any of
-//! these outside a `~{ }` logic block, so this is a native-**grammar**
-//! gap, not just an emission one: there is no bare `~ x = expr`-style
-//! prose-body statement to round-trip yet, issue #1335's B0.8b sweep);
-//! `Stmt::Sequence`/`ContentPart::InlineSequence`/`InlineConditional`
+//! `LogicBlock`/`Await` at prose-body position (code-dialect ground —
+//! `lower_native::body` never constructs any of these outside a `~{ }`
+//! logic block, so this is a native-**grammar** gap, not just an emission
+//! one: there is no bare `~ let …`/`~{ }`-block/`~ await …`-style
+//! prose-body statement to round-trip yet, issue #1335's B0.8b sweep).
+//! **Correction (issue #1991, PR #2002):** `Stmt::Assignment`/`ExprStmt`
+//! at prose-body position no longer belong in that native-grammar-gap
+//! bucket — `~ x = expr`/`~ expr` (the content-ground logic-line escape,
+//! charter §8.2) is exactly that bare prose-body statement, and
+//! `lower_native::body::lower_logic_line` has produced both outside any
+//! `~{ }` block since #1991 landed. Their refusal below is now
+//! **emitter-only**, the same category the alternations sentence just
+//! below already uses: the grammar and lowering both exist, this printer
+//! has simply never grown the `emit_*` arm for a content-ground
+//! `Assignment`/`ExprStmt` (as opposed to the code-ground `~{ }`
+//! `STMT_BLOCK` form, which is a different HIR shape — `Stmt::LogicBlock`,
+//! still a real grammar gap above); `Stmt::Sequence`/
+//! `ContentPart::InlineSequence`/`InlineConditional`
 //! (alternations `~`/`&`/`!`/`|` — **unlike the code-dialect-ground gaps
 //! above, this one is emitter-only, not native-grammar**: native's
 //! `ALTERNATION_BLOCK` parses and `lower_native::body`/`expr` already
