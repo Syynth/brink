@@ -1,0 +1,13 @@
+var n = 0
+
+fn bump() {
+  n += 1;
+}
+
+flow main() {
+  ~ n = 5
+  ~ n += 3
+  ~ bump()
+  Value is {n}.
+  -> END
+}

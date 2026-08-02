@@ -1,0 +1,26 @@
+// `~ stmt` — the content-ground line escape into code (charter §8.2,
+// RULED 2026-07-23, issue #1991: ink's logic line, kept). Exercises both
+// recognized shapes (assignment, including the `+=`/`-=` compound forms,
+// and a bare expression evaluated for its side effect), a logic line
+// followed by ordinary prose on the next line, and the escape reused
+// inside a choice's braced body and a conditional's colon body — the two
+// other body-shaped positions that dispatch through the same `TILDE` arm
+// (`block::body_line` and `family::colon_body_line`, kept in sync).
+
+fn bump() {
+  n += 1;
+}
+
+flow greet() {
+  ~ n = 5
+  ~ n += 1
+  ~ n -= 1
+  ~ bump()
+  Value is {n}.
+  {?
+    * [go] {
+      ~ n = 0
+    }
+  }
+  {if n == 0: ~ n = 1}
+}

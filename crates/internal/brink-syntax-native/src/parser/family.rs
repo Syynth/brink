@@ -209,6 +209,10 @@ fn colon_body_line(p: &mut Parser<'_, '_>) {
         AT_L_BRACKET => super::annotation::annotation_line(p),
         DIVERT => super::divert::divert_or_tunnel(p),
         KW_RETURN => super::divert::return_stmt(p),
+        // `~ stmt` — the content-ground logic-line escape (charter §8.2,
+        // RULED 2026-07-23, issue #1991). Kept in sync with `body_line`'s
+        // own `TILDE` arm per this function's doc.
+        TILDE => super::stmt::logic_line(p),
         // A bare `<-` outside a choice point warns (ruling #1263) — it must
         // reach `splice_outside_choice_point` here too, not fall through to
         // the prose scan and be silently swallowed as TEXT.

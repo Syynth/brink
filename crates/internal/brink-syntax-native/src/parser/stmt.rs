@@ -36,9 +36,9 @@
 //! (`block::block`).
 
 use crate::SyntaxKind::{
-    ASSIGN_STMT, BREAK_STMT, CONTINUE_STMT, DOT, EQ, EXPR_STMT, IDENT, KW_BREAK, KW_CONTINUE,
-    KW_FOR, KW_IF, KW_LET, KW_RETURN, KW_UNTIL, KW_WHILE, L_BRACE, LET_STMT, MINUS_EQ, PLUS_EQ,
-    R_BRACE, RETURN_STMT, SEMICOLON, STMT_BLOCK,
+    ASSIGN_STMT, BREAK_STMT, CONTINUE_STMT, DOT, EOF, EQ, EXPR_STMT, IDENT, KW_BREAK, KW_CONTINUE,
+    KW_FOR, KW_IF, KW_LET, KW_RETURN, KW_UNTIL, KW_WHILE, L_BRACE, LET_STMT, LOGIC_LINE, MINUS_EQ,
+    NEWLINE, PLUS_EQ, R_BRACE, RETURN_STMT, SEMICOLON, STMT_BLOCK,
 };
 
 use super::Parser;
@@ -283,4 +283,103 @@ fn expr_or_tail_stmt(p: &mut Parser<'_, '_>) -> bool {
     } else {
         false
     }
+}
+
+// ── The content-ground line escape: `~ stmt` (charter §8.2, RULED ────
+// ── 2026-07-23, issue #1991) ──────────────────────────────────────────
+//
+// Ink's logic line, kept: `~ stmt` runs code inside an otherwise
+// content-ground (prose) body. Reached from `block::body_line`'s (and
+// `family::colon_body_line`'s — kept in sync, see that function's doc)
+// `TILDE` dispatch arm — never reached from `stmt_block`'s own per-
+// statement loop, which recognizes a bare `~` nowhere in its dispatch.
+
+/// `~ stmt` — parse one logic line. Only assignment (`at_assignment`,
+/// above) and a bare expression (evaluated for its side effect — e.g. a
+/// function call) have content-ground meaning here; every other code-ground
+/// statement shape (`let`, `if`, `while`, `for`, `until`, `return`, `break`,
+/// `continue`) either already has its own content-ground spelling reachable
+/// without a `~` (bare `return`/diverts are `body_line` keywords in their
+/// own right) or has no content-ground meaning at all — reaching for one of
+/// those here falls through to [`expr_stmt_line`], whose `expr::expression`
+/// call diagnoses an unrecognized leading keyword loudly (`expr::atom`'s
+/// "expected an expression" fallback) rather than silently swallowing it,
+/// per issue #1991's own hedge ("if the decision is instead ... it must be
+/// a diagnostic, never silent prose").
+///
+/// The `NEWLINE`/EOF that ends the line is left **unconsumed** by the two
+/// callees below and bumped here, as a sibling of `LOGIC_LINE`, exactly
+/// like `content::content_line`'s own trailing-newline handling — the line
+/// escape is a content-ground line, terminated by end-of-line, never by the
+/// code-ground `;` (`ASSIGN_STMT`/`EXPR_STMT` are reused unmodified from
+/// `stmt_block`'s grammar above — see `SyntaxKind::RETURN_STMT`'s doc for
+/// the established one-node-two-grammars precedent this follows).
+pub(crate) fn logic_line(p: &mut Parser<'_, '_>) {
+    p.start_node(LOGIC_LINE);
+    p.bump(); // TILDE
+    p.skip_ws();
+    let before = p.pos();
+    if at_assignment(p) {
+        assign_line(p);
+    } else {
+        expr_stmt_line(p);
+    }
+    // A statement/expression grammar that recognized NOTHING at all (an
+    // unsupported shape — `if`/`while`/`for`/`until`/`let`/`return`/
+    // `break`/`continue`, none of which `expr::expression`'s atom accepts,
+    // already raised a diagnostic there) makes zero progress past `before`.
+    // Left alone, the still-unconsumed tokens would be handed back to
+    // `body_line`'s next loop iteration and re-dispatched — for anything
+    // that isn't itself a fresh structural item, that fallback is the
+    // prose scanner, which is exactly the silent swallow issue #1991 is
+    // about. Consume the rest of THIS physical line here instead, inside
+    // `LOGIC_LINE` itself, so a malformed logic line is always loud (one
+    // `error_recover` diagnostic per stray token, the same idiom
+    // `stmt_block`'s own recovery loop above uses) and never silently
+    // reclassified as story text.
+    if p.pos() == before {
+        while !matches!(p.current(), NEWLINE | EOF) {
+            let stuck = p.pos();
+            p.error_recover("unsupported logic-line shape");
+            if p.pos() == stuck {
+                break;
+            }
+        }
+    }
+    p.finish_node();
+    if p.at(NEWLINE) {
+        p.skip_ws();
+        p.bump();
+    }
+}
+
+/// `~ x = expr` / `~ x += expr` / `~ x -= expr` — identical to
+/// [`assign_stmt`] except for the terminator: this is a content-ground
+/// line, so it stops at `NEWLINE`/EOF, never `;` (see [`logic_line`]'s
+/// doc).
+fn assign_line(p: &mut Parser<'_, '_>) {
+    p.start_node(ASSIGN_STMT);
+    super::expr::path(p);
+    p.skip_ws();
+    if matches!(p.current(), EQ | PLUS_EQ | MINUS_EQ) {
+        p.bump();
+    } else {
+        p.expect(EQ);
+    }
+    p.skip_ws();
+    super::expr::expression(p);
+    p.finish_node();
+}
+
+/// `~ expr` — an expression evaluated for its side effect (a function call
+/// being the overwhelmingly common case). The content-ground counterpart of
+/// [`expr_or_tail_stmt`]'s `EXPR_STMT` case, minus the `;` terminator (see
+/// [`logic_line`]'s doc) — every `~ stmt` that isn't recognized as an
+/// assignment reaches here, so a malformed or unsupported logic line still
+/// gets a real (if generic) diagnostic from `expr::expression` rather than
+/// silently falling through to nothing.
+fn expr_stmt_line(p: &mut Parser<'_, '_>) {
+    p.start_node(EXPR_STMT);
+    super::expr::expression(p);
+    p.finish_node();
 }

@@ -207,6 +207,7 @@ fn classify(kind: SyntaxKind) -> Coverage {
         // ── Node kinds — bodies & content ─────────────────────────
         SyntaxKind::BLOCK
         | SyntaxKind::CONTENT_LINE
+        | SyntaxKind::LOGIC_LINE
         | SyntaxKind::TEXT
         | SyntaxKind::INTERPOLATION
         | SyntaxKind::GLUE_NODE
