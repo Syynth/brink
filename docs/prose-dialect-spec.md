@@ -137,6 +137,13 @@ elements serving as *spellings of structure that already exists*:
   JSON is the precedent, and it already solved a real constraint: it is
   interpreted identically in Rust and TS (the editor needs the
   conventions too).
+  > **2026-08-02 caveat:** issue #1874 landed validation of a bare
+  > preset-shaped `elements` value against the closed built-in-preset set
+  > (`brink-analyzer::AnalysisOptions::apply_project_config`). That set is
+  > empty until #1720 ships a real built-in preset, so today `elements =
+  > "screenplay"` — the exact form this section names as an example — is
+  > unrecognized and produces a `ConfigWarning`. A project-relative path
+  > pointer is unaffected.
 - **Markup vocabulary is host-authored** → it lives in the **host
   capability manifest**, same author as the externals section, and can
   be *generated* from engine code (a text-effect plugin auto-declaring

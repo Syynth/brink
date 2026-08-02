@@ -39,7 +39,12 @@
 //!   and inventing a project-side "no file may claim" rule for this case
 //!   is a bigger decision than this issue's slice covers (see the PR
 //!   description's scope note). The caller skips this pass for a
-//!   non-path-shaped pointer.
+//!   non-path-shaped pointer. This module still stays silent on it either
+//!   way — but as of issue #1874 the bare name itself is no longer silently
+//!   *accepted*: `AnalysisOptions::apply_project_config` (a different crate,
+//!   a different check) validates it against the closed built-in-preset set
+//!   and emits a `ConfigWarning` when it isn't recognized, which today means
+//!   every bare name (no preset has shipped yet, #1720).
 
 use brink_ir::{Diagnostic, DiagnosticCode, FileId, HirFile};
 

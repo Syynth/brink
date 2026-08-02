@@ -456,7 +456,21 @@ const BUILTIN_ELEMENT_PRESETS: &[&str] = &[];
 /// calls this with the real constant.
 fn validate_elements_preset(pointer: &str, presets: &[&str]) -> Result<(), ConfigWarning> {
     if presets.contains(&pointer) {
-        Ok(())
+        return Ok(());
+    }
+    if presets.is_empty() {
+        // The only reachable case today: `BUILTIN_ELEMENT_PRESETS` is empty
+        // because no built-in preset has shipped yet (#1720). Every
+        // preset-shaped value — including the eventual `"screenplay"`
+        // spelled straight out of docs/prose-dialect-spec.md §3.4 — is
+        // unrecognized right now, and that is not a typo on the author's
+        // part. Say so, rather than accusing them of misspelling a name
+        // that has never been valid.
+        Err(ConfigWarning(format!(
+            "[project] elements = \"{pointer}\" names a built-in preset, but no built-in \
+             preset has shipped yet (#1720); use a project-relative path to a `.brink` \
+             conventions module instead"
+        )))
     } else {
         Err(ConfigWarning(format!(
             "[project] elements = \"{pointer}\" is not a recognized built-in preset name and \
