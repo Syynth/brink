@@ -110,8 +110,9 @@ pub(crate) use analysis::{
     comparator_contract_diagnostics_query, contributor_diagnostics_query,
     conventions_confinement_diagnostics_query, diagnostics_query,
     effects_assertion_diagnostics_query, external_meta_query, has_errors_in_closure_query,
-    has_errors_query, inline_docs_query, per_file_diagnostics_query, resolutions_index_query,
-    ufcs_resolution_query, value_meta_query, whole_project_diagnostics_query,
+    has_errors_query, inline_docs_query, per_file_diagnostics_query,
+    register_intrinsic_diagnostics_query, resolutions_index_query, ufcs_resolution_query,
+    value_meta_query, whole_project_diagnostics_query,
 };
 
 // ─── Database ────────────────────────────────────────────────────────
@@ -283,6 +284,12 @@ impl Default for BrinkDatabase {
                 // ruling. Reads `module_map_query` only for a file that
                 // declared at least one claiming handler.
                 .ingredient::<conventions_confinement_diagnostics_query>()
+                // `register`-intrinsic confinement gate (E175, issue #1840
+                // Q5): a `register(...)` call is legal only inside the
+                // conventions module's `fn conventions()`. Reads
+                // `module_map_query` only for a file with at least one
+                // `register(...)` call.
+                .ingredient::<register_intrinsic_diagnostics_query>()
                 // Layer 3.
                 .ingredient::<lir_query>()
                 .ingredient::<lir_in_closure_query>()

@@ -44,7 +44,9 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use brink_analyzer::{AnalysisResult, ExternalCheckSeverity, SymbolMeta, TypePolicy};
+use brink_analyzer::{
+    AnalysisResult, ExternalCheckSeverity, SymbolMeta, TypePolicy, register_intrinsic_diagnostics,
+};
 use brink_format::DefinitionId;
 use brink_ir::{
     Diagnostic, DocBlock, FileId, HirFile, ResolutionMap, SymbolIndex, SymbolKind, SymbolManifest,
@@ -486,6 +488,96 @@ pub(crate) fn conventions_confinement_diagnostics_query(
     ))
 }
 
+/// One file's `register`-intrinsic confinement diagnostics (`E175`, issue
+/// #1840 Q5 — the *legality* half of the 2026-08-02 "`register` is a
+/// comptime-only intrinsic" ruling). `register` is legal only inside the
+/// project's configured conventions module's `fn conventions()`.
+///
+/// Lazy the same way [`conventions_confinement_diagnostics_query`] is: a
+/// file with no unresolved `register(...)` call anywhere never reads
+/// [`module_map_query`]. **Deliberately NOT the same early-outs as that
+/// query for the "unconfigured" cases** — see
+/// `brink_analyzer::register_intrinsic_diagnostics`'s own module doc for
+/// why: `register`'s legality is a language-level restriction, not a
+/// project-configuration-dependent one, so "no conventions module
+/// configured at all" must resolve to `is_conventions_module: false` (every
+/// call in the project is then illegal), never to "skip this file
+/// entirely". This intentionally duplicates
+/// [`conventions_confinement_diagnostics_query`]'s ~10-line `is_conventions_
+/// module` resolution rather than sharing it, to keep the two queries'
+/// differing "unconfigured" postures from ever being tempted to drift back
+/// together by a well-meaning refactor.
+///
+/// Threads this file's own [`resolve_query`] output through to
+/// `register_intrinsic_diagnostics` — a call whose range resolved to a real
+/// symbol (same-file or cross-file declaration, or a local temp/param of
+/// the same name) is a shadow, never the intrinsic, exactly the same
+/// resolution-map-backed check `dialect_gate::check` already does for
+/// every other T1b stdlib name.
+///
+/// `lru = 4096`: same per-file runaway-guard ceiling as every other
+/// per-file diagnostic query in this module.
+#[salsa::tracked(lru = 4096)]
+pub(crate) fn register_intrinsic_diagnostics_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+    file: SourceFile,
+) -> Arc<Vec<Diagnostic>> {
+    let hir = &lowered_query(db, file).hir;
+    let file_id = file.file_id(db);
+    let (file_resolutions, _diags) = resolve_query(db, project, file);
+
+    // Cheap pre-check (mirrors `conventions_confinement_diagnostics_query`'s
+    // own laziness): skip `module_map_query` entirely when this file can
+    // never produce a diagnostic no matter how `is_conventions_module`
+    // resolves. `is_conventions_module: false` is the maximal/superset case
+    // — every structurally-found, not-already-resolved-to-a-real-symbol
+    // call gets flagged — so an empty result here means `true` would be
+    // empty too, and it's safe to skip project resolution entirely.
+    if register_intrinsic_diagnostics(file_id, hir, false, file_resolutions.as_ref()).is_empty() {
+        return Arc::new(Vec::new());
+    }
+
+    let opts = project.analysis_options(db);
+    let is_conventions_module = 'resolved: {
+        let Some(pointer) = opts.elements.as_deref() else {
+            // No conventions module configured at all: there is no
+            // possible legal placement for `register` anywhere in the
+            // project.
+            break 'resolved false;
+        };
+        if !brink_analyzer::is_path_shaped_elements_pointer(pointer) {
+            // A bare preset name (`elements = "screenplay"`) names no
+            // project file — same conclusion.
+            break 'resolved false;
+        }
+        let (module_map, _module_diags) = module_map_query(db, project);
+        let Some(this_module) = module_map.get(&file_id).map(|m| m.name.as_str()) else {
+            break 'resolved false;
+        };
+        let native_root = project.native_root(db).as_deref();
+        let expected_module = crate::modules::native_module_path(
+            &crate::modules::root_relative_key(native_root, pointer),
+        );
+        if !module_map.values().any(|m| m.name == expected_module) {
+            // A path-shaped pointer resolving to no real file. E169's own
+            // query already warns for this (`tracing::warn!`) whenever a
+            // claiming handler exists anywhere in the project — not
+            // duplicated here to avoid two warnings for one misconfigured
+            // pointer.
+            break 'resolved false;
+        }
+        this_module == expected_module
+    };
+
+    Arc::new(register_intrinsic_diagnostics(
+        file_id,
+        hir,
+        is_conventions_module,
+        file_resolutions.as_ref(),
+    ))
+}
+
 /// One file's NS-A4 comparator-contract diagnostics (E119,
 /// docs/stdlib-spec.md §4b, issue #1110 — extended to the fn-value verb
 /// trio `map`/`filter`/`fold` by issue #1679, §4): `sort_by`/`sorted_by`/
@@ -668,6 +760,17 @@ pub(crate) fn whole_project_diagnostics_query(
     for file in project.files(db) {
         diagnostics.extend(
             conventions_confinement_diagnostics_query(db, project, *file)
+                .iter()
+                .cloned(),
+        );
+    }
+    // `register`-intrinsic confinement gate (E175, issue #1840 Q5) —
+    // per-file, lazy (see `register_intrinsic_diagnostics_query`'s doc): a
+    // file with no `register(...)` call never even reads
+    // `module_map_query`.
+    for file in project.files(db) {
+        diagnostics.extend(
+            register_intrinsic_diagnostics_query(db, project, *file)
                 .iter()
                 .cloned(),
         );

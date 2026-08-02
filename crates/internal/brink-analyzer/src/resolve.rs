@@ -946,9 +946,16 @@ pub(crate) fn is_builtin_function(name: &str) -> bool {
 /// T1b stdlib slice 1 function names (`docs/t1b-surface-spec.md` §5) plus
 /// the TM-3-completion pure conversion intrinsics `int`/`float`/`string`
 /// (`docs/typed-mode-spec.md` §4, maintainer ruling 2026-07-13, issue #659,
-/// "per the stdlib slice-1 pattern"): lowercase free functions,
-/// brink-dialect-gated. Kept in sync by hand with `brink_ir`'s
-/// LIR-lowering copy of this same list (`lir::lower::expr::
+/// "per the stdlib slice-1 pattern") — plus one comptime-only intrinsic,
+/// `register` (issue #1840 Q5, `docs/decision-log.md` 2026-08-02): unlike
+/// every other name here, `register` is neither an ordinary stdlib function
+/// nor a pure conversion — it has no opcode and no runtime fallback at all,
+/// legal only inside the project's configured conventions module's `fn
+/// conventions()`. It rides this exact list purely so an unresolved call
+/// doesn't raise `E025`; `register_intrinsic_diagnostics`/`E175` is the
+/// separate pass that confines *where* such a call is legal. Otherwise:
+/// lowercase free functions, brink-dialect-gated. Kept in sync by hand with
+/// `brink_ir`'s LIR-lowering copy of this same list (`lir::lower::expr::
 /// is_t1b_stdlib_name`) — the crates don't share a dependency edge for this
 /// purpose in the analysis → codegen direction, mirroring the existing
 /// `is_builtin_function`/`recognize_builtin` split for the classic uppercase
@@ -1095,6 +1102,19 @@ pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
             | "filter_map"
             | "each"
             | "map_each"
+            // `register(#fn(target))` (issue #1840 Q5, `docs/decision-log.md`
+            // 2026-08-02 "`register` is a comptime-only intrinsic"): a T1b
+            // comptime-only intrinsic, legal only inside the project's
+            // configured conventions module's well-known `fn conventions()`.
+            // Listed here (silent, unconditional-by-name — the same
+            // shadowable, dialect-gated posture as every other name above)
+            // so an ordinary resolution failure doesn't raise E025 for a
+            // legal use; a SEPARATE pass (`register_intrinsic_diagnostics`,
+            // caller-fed `is_conventions_module` — the same shape
+            // `conventions_module_diagnostics`/`E169` uses) narrows the
+            // *legal placement* down and raises `E175` for every use
+            // outside `fn conventions()`.
+            | "register"
     )
 }
 
