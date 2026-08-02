@@ -2246,14 +2246,27 @@ impl InferPass<'_, '_> {
                         let is_ref_param = ref_positions
                             .and_then(|info| info.params.get(i))
                             .is_some_and(|p| p.is_ref);
+                        // Issue #1995 review finding (BLOCKING): the
+                        // observed-local skip used to gate the whole check,
+                        // which silently dropped a `ref` widening
+                        // (`ref float` ← an `int` cell) whenever the
+                        // argument was a bare Param/Temp — `unify(Int,
+                        // Float)` never goes `Conflicted`, so `observe`
+                        // (below) never reports it as `E066` either. The
+                        // skip is only sound for the non-ref, "would already
+                        // conflict" case; a ref mismatch that stays
+                        // `assignable` in the covariant direction (the
+                        // widening pair) still needs its own report even
+                        // when the argument is an observed local.
+                        let observed = self.arg_is_observed_local(arg);
                         if !param_ty.is_unresolved()
-                            && !self.arg_is_observed_local(arg)
                             && let Some(arg_ty) = arg_tys.get(i)
                             && !arg_ty.is_unresolved()
                             && if is_ref_param {
                                 !ref_assignable(param_ty, arg_ty)
+                                    && (!observed || assignable(param_ty, arg_ty))
                             } else {
-                                !assignable(param_ty, arg_ty)
+                                !observed && !assignable(param_ty, arg_ty)
                             }
                         {
                             let callee = path

@@ -584,13 +584,15 @@ pub fn assignable(target: &Ty, source: &Ty) -> bool {
 /// Is a value of type `source` legal as the argument bound to a `ref`
 /// parameter declared `target`?
 ///
-/// **Invariant, not covariant** (issue #1995/#1920, ruled 2026-08-01). A
-/// `ref` slot both *reads* and *writes* through the caller's own storage
-/// cell — [`assignable`]'s one-directional widening (`int` argument fits a
-/// `float` slot) is unsound here, because the callee can write a `float`
-/// back through a cell that is statically declared `int`. Every other
-/// argument-type check in this crate is a genuine "does this value fit"
-/// question and stays on [`assignable`]; only a call's `ref`-parameter
+/// **Invariant, not covariant** (issue #1995/#1920, ruled 2026-08-01;
+/// `docs/t1e-spec.md` §5b owns this ruling — the ref/projection binding
+/// spec, not just the decision log). A `ref` slot both *reads* and *writes*
+/// through the caller's own storage cell — [`assignable`]'s one-directional
+/// widening (`int` argument fits a `float` slot) is unsound here, because
+/// the callee can write a `float` back through a cell that is statically
+/// declared `int`. Every other argument-type check in this crate is a
+/// genuine "does this value fit" question and stays on [`assignable`]; only
+/// a call's `ref`-parameter
 /// slots need this stricter twin.
 ///
 /// Still row-insensitive for the same reason [`assignable`] is: two
@@ -599,9 +601,44 @@ pub fn assignable(target: &Ty, source: &Ty) -> bool {
 /// before comparing keeps that guarantee while requiring the erased types to
 /// match exactly, in either direction, rather than merely joining without
 /// widening the target.
+///
+/// **Nested `Unknown` is a wildcard, not a mismatch** (issue #1995 review
+/// finding, BLOCKING). Raw structural `==` treats `Array<Unknown>` (an empty
+/// `#[]` literal, or any other element-type-unconstrained spelling) as
+/// unequal to `Array<float>`, which reported a false `E063` on ordinary code
+/// like `VAR xs = #[]` bound to a `ref Array<float>` parameter — call sites
+/// only guard `is_unresolved()` at the *top* level (`Unknown`/`Conflicted`),
+/// never on a nested position, so an inner `Unknown` used to leak through as
+/// a genuine structural mismatch. [`invariant_eq`] recurses through the same
+/// parameterized shapes [`unify`] does, treating `Ty::Unknown` at any nesting
+/// depth as compatible with anything — "element type unknown" is not
+/// "element type wrong". A concrete mismatch one level down (`Array<int>`
+/// into `ref Array<float>`) still fails: only `Unknown` gets the wildcard
+/// reading, every other leaf still compares exactly.
 #[must_use]
 pub fn ref_assignable(target: &Ty, source: &Ty) -> bool {
-    erase_fn_rows(target) == erase_fn_rows(source)
+    invariant_eq(&erase_fn_rows(target), &erase_fn_rows(source))
+}
+
+/// [`ref_assignable`]'s comparator: structurally equal except that
+/// `Ty::Unknown` in either operand, at any nesting depth, matches anything.
+/// Assumes both `fn` row effects have already been erased by the caller
+/// (mirrors [`assignable`]'s own row-insensitivity).
+fn invariant_eq(a: &Ty, b: &Ty) -> bool {
+    match (a, b) {
+        (Ty::Unknown, _) | (_, Ty::Unknown) => true,
+        (Ty::Array(x), Ty::Array(y))
+        | (Ty::Option(x), Ty::Option(y))
+        | (Ty::Weighted(x), Ty::Weighted(y)) => invariant_eq(x, y),
+        (Ty::Map(k1, v1), Ty::Map(k2, v2)) => invariant_eq(k1, k2) && invariant_eq(v1, v2),
+        (Ty::Fn(p1, r1, e1), Ty::Fn(p2, r2, e2)) => {
+            e1 == e2
+                && p1.len() == p2.len()
+                && p1.iter().zip(p2.iter()).all(|(x, y)| invariant_eq(x, y))
+                && invariant_eq(r1, r2)
+        }
+        _ => a == b,
+    }
 }
 
 /// Why an [`coalesce`] application is ill-typed (NS-A1, F19).
@@ -1128,6 +1165,44 @@ mod tests {
         assert!(!ref_assignable(
             &fn_ty(&[Ty::Int], Ty::Int),
             &fn_ty_from(&[Ty::String], Ty::Int, &[1])
+        ));
+    }
+
+    #[test]
+    fn ref_assignable_treats_nested_unknown_as_a_wildcard() {
+        // Issue #1995 review finding (BLOCKING): a nested `Unknown` — the
+        // element type of an empty `#[]` array literal, or `none`'s
+        // `Option<Unknown>` — is "element type unknown", not "element type
+        // wrong". Raw structural `==` used to reject both against a
+        // concrete `ref` slot; the wildcard reading accepts them.
+        assert!(ref_assignable(
+            &Ty::Array(Box::new(Ty::Float)),
+            &Ty::Array(Box::new(Ty::Unknown))
+        ));
+        assert!(ref_assignable(
+            &Ty::Option(Box::new(Ty::Float)),
+            &Ty::Option(Box::new(Ty::Unknown))
+        ));
+        // Wildcard applies in either direction.
+        assert!(ref_assignable(
+            &Ty::Array(Box::new(Ty::Unknown)),
+            &Ty::Array(Box::new(Ty::Float))
+        ));
+        // Nested inside a Map, on either the key or the value side.
+        assert!(ref_assignable(
+            &Ty::Map(Box::new(Ty::String), Box::new(Ty::Int)),
+            &Ty::Map(Box::new(Ty::Unknown), Box::new(Ty::Unknown))
+        ));
+        // A genuine concrete mismatch one level down is still rejected —
+        // the wildcard reading applies only to `Unknown`, never as a
+        // general "give up and accept" escape hatch.
+        assert!(!ref_assignable(
+            &Ty::Array(Box::new(Ty::Float)),
+            &Ty::Array(Box::new(Ty::Int))
+        ));
+        assert!(!ref_assignable(
+            &Ty::Option(Box::new(Ty::Float)),
+            &Ty::Option(Box::new(Ty::String))
         ));
     }
 

@@ -103,6 +103,26 @@ An **optimizer, not a gatekeeper**: soundness never depends on it
 exclusivity it may hold the `make_mut` spine across a region. It can
 be incomplete and arrive later — backlog item, not in this milestone.
 
+## 5b. Ref-parameter argument checking is invariant — RULED 2026-08-01 (#1920/#1995)
+
+A `ref` slot both reads *and* writes through the caller's own storage
+cell, so `assignable`'s covariant widening (an `int` argument fits a
+`float` slot) is unsound there: `assignable(Float, Int)` is `true`,
+so `fn scale(ref x: float)` accepted an `int` cell and the callee
+wrote a `float` back through storage statically declared `int`. Ruled:
+`ref` parameter arguments are checked **invariantly** — the erased
+argument type must match the erased parameter type exactly
+(`infer::ty::ref_assignable`, row-insensitive for the same reason
+`assignable` is, issue #1680 step 2). By-value arguments keep the ordinary
+covariant `assignable` widening; only a `ref` slot needs the stricter
+twin. Applies uniformly to every by-ref call-checking site: the
+direct-call check (#1864), the UFCS-desugared receiver/argument check
+(#1881), and — **outstanding**, filed as a follow-up rather than
+blocking this ruling — the `#fn(target, args…)` partial-application
+binding site (`infer_fn_literal`), which per §2 above is itself a
+by-ref *binding* site and has no by-ref (or by-value) argument check
+of any kind yet.
+
 ## 6. Diagnostics — PROPOSED
 
 From the next free code: non-durable projection root (reuse the E080

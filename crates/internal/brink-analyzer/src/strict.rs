@@ -5445,6 +5445,60 @@ mod tests {
         );
     }
 
+    /// Review finding on this issue's own PR (BLOCKING): the direct-call
+    /// check's argument-mismatch fact used to be gated on
+    /// `!self.arg_is_observed_local(arg)` for the whole check, not just the
+    /// non-`ref` arm — which silently skipped a `ref` widening whenever the
+    /// argument was a bare Param/Temp local, because `unify(Int, Float)`
+    /// never goes `Conflicted`, so `observe`'s own join never reports it as
+    /// `E066` either. `direct_call_ref_param_widening_is_rejected_under_
+    /// strict` above only exercises a global `VAR` argument — the one
+    /// argument kind the skip never covered — so it passed identically with
+    /// this exact soundness hole still open. This is the "same laxity in a
+    /// different spelling" the ruling warns about, on the **native** local
+    /// (`let`) spelling.
+    #[test]
+    fn direct_call_ref_param_widening_through_a_local_is_rejected_under_strict() {
+        let diags = native_strict_diags(
+            "fn scale(ref x: float): float {\n  x = x * 2.0;\n  return x;\n}\n\
+             fn main() {\n  let i: int = 3;\n  scale(i);\n}\n",
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E063 && d.message.contains("argument 1")),
+            "a bare local int cell must not widen into a declared-float ref parameter \
+             either, the same as the global-VAR case above: {diags:?}"
+        );
+    }
+
+    /// The **ink** sibling of the test above: a `~ temp` argument at a `ref`
+    /// position must be checked the same way a native `let` local is.
+    #[test]
+    fn direct_call_ref_param_widening_through_an_ink_temp_is_rejected_under_strict() {
+        let parsed = brink_syntax::parse(
+            "=== function scale(ref x: float, k: int): float ===\n\
+             ~ x = x * k\n~ return x\n\
+             === main ===\n~ temp i: int = 3\n~ scale(i, 2)\n-> DONE\n",
+        );
+        let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
+        let opts = crate::AnalysisOptions {
+            dialect: crate::Dialect::Brink,
+            types: Some(TypePolicy::Strict),
+            ..crate::AnalysisOptions::default()
+        };
+        let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E063 && d.message.contains("argument 1")),
+            "a `~ temp` int cell must not widen into a declared-float ref parameter \
+             either: {:?}",
+            result.diagnostics
+        );
+    }
+
     // ── Issue #1903: `root_content` reaches the strict walk ──────────────
 
     /// Issue #1903 regression. `collect_defs` walked only `hir.knots`, so
