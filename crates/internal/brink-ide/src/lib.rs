@@ -33,6 +33,7 @@ pub mod story_graph;
 pub mod structural_delete;
 pub mod structural_move;
 pub mod structural_result;
+pub mod style_hover;
 mod text;
 pub mod trivia;
 pub mod ufcs_hover;
