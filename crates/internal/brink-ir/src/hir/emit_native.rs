@@ -541,7 +541,20 @@ fn emit_knot(out: &mut String, k: &Knot) -> Result<(), EmitError> {
     // The ruled `: type` return clause goes after the parameter list
     // (NG-C, issue #1489) — never before the `(`, and never as an arrow.
     let ret = emit_annotation_suffix(k.return_type.as_ref());
-    let _ = writeln!(out, "{keyword} {}({params}){ret} {{", k.name.text);
+    // Body-dialect selector (charter §4, RULED 2026-07-23): plain `{ }` is
+    // the per-keyword *default* — `fn` → code-ground `STMT_BLOCK`, `flow` →
+    // prose-ground `BLOCK`. This printer's statement stream
+    // (`emit_stmt_stream`/`emit_return`/`emit_temp_decl`/etc.) only ever
+    // spells **prose-ground** syntax (bare `return`, no `;`; the `~ …`
+    // content-ground logic-line escape) — it never emits the `;`-terminated
+    // code-ground form. A `flow`'s bare `{` already matches its prose
+    // default, so it needs no override. A `fn`'s bare `{` would instead
+    // select the *code*-ground default, and reparsing prose-ground
+    // statements under that dialect fails (issue #2029) — so a `fn`'s body
+    // always needs the explicit `>{ }` prose override to reparse into the
+    // same shape this printer just wrote.
+    let selector = if k.is_function { ">" } else { "" };
+    let _ = writeln!(out, "{keyword} {}({params}){ret} {selector}{{", k.name.text);
     emit_block_stmts(out, &k.body, 1, &k.name.text)?;
     for s in &k.stitches {
         emit_stitch(out, s, 1)?;
@@ -1699,20 +1712,24 @@ mod tests {
     /// `"return with a value expression"`.
     ///
     /// Deliberately a `flow`, not an `fn` (unlike the corpus's own motivating
-    /// shape, e.g. I003-tunnel-to-death's `is_alive` function): `emit_knot`
-    /// always prints a plain `{` for both keywords, never the `>{ }`
-    /// prose-ground override an `fn`'s body-dialect default needs to
-    /// re-parse this emitter's prose-ground statement text (`emit_return`'s
-    /// own `return <expr>` spelling included) — a real, separate,
-    /// pre-existing gap this fix's own round-trip check surfaced (every
-    /// `fn` this emitter produces already needed it, for a bare `return`
-    /// too; nothing here changes that channel), flagged rather than folded
-    /// into this PR. This test instead pins exactly what #1973 changed: the
-    /// grammar/lowering/emitter path for a value-carrying return, isolated
-    /// from that unrelated container-keyword gap. `brink-analyzer`'s E032
-    /// (return outside function) is a different crate/pass this emitter
-    /// test harness never runs — see `value_carrying_return_in_non_function_
-    /// still_emits_e032` in `brink-analyzer` for that semantics pin.
+    /// shape, e.g. I003-tunnel-to-death's `is_alive` function): at the time
+    /// this test was written, `emit_knot` always printed a plain `{` for
+    /// both keywords, never the `>{ }` prose-ground override an `fn`'s
+    /// body-dialect default needs to re-parse this emitter's prose-ground
+    /// statement text (`emit_return`'s own `return <expr>` spelling
+    /// included) — a real, separate, pre-existing gap this fix's own
+    /// round-trip check surfaced (every `fn` this emitter produces already
+    /// needed it, for a bare `return` too; nothing here changed that
+    /// channel), flagged rather than folded into this PR. This test instead
+    /// pinned exactly what #1973 changed: the grammar/lowering/emitter path
+    /// for a value-carrying return, isolated from that unrelated
+    /// container-keyword gap. `brink-analyzer`'s E032 (return outside
+    /// function) is a different crate/pass this emitter test harness never
+    /// runs — see `value_carrying_return_in_non_function_still_emits_e032`
+    /// in `brink-analyzer` for that semantics pin. **Correction (issue
+    /// #2029, fixed):** `emit_knot` now spells `>{ }` for every `fn` (see
+    /// its own doc comment) — `fn_prose_body_value_return_round_trips`,
+    /// below, is the `fn` counterpart this note used to say was missing.
     #[test]
     fn value_carrying_return_round_trips() {
         let src = "flow f() {\n  Hello.\n  return hp > 0\n}\n";
@@ -1949,5 +1966,74 @@ mod tests {
         };
         assert!(t.value.is_none());
         assert!(t.annotation.is_some());
+    }
+
+    /// A `fn` whose body is the prose-ground override (`>{ … }`, charter
+    /// §4) must round-trip back into the **same** `>{ … }` spelling, not
+    /// the bare `{` (which would select the *code*-ground default). This
+    /// printer's statement stream (`emit_return`, here) only ever spells
+    /// prose-ground syntax (no `;`) — under the wrong default, reparsing
+    /// fails outright (issue #2029: `expected SEMICOLON, found R_BRACE`
+    /// with the bug present). A value-carrying `return` (issue #1973) is
+    /// the shape that surfaced this — see `emit_return`'s own doc.
+    #[test]
+    fn fn_prose_body_value_return_round_trips() {
+        let src = "fn heal(hp) >{\n  return hp\n}\n";
+        let emitted = lower_and_emit(src).expect("fn with a value return must emit");
+        assert!(
+            emitted.contains(">{"),
+            "emitted fn body must carry the `>{{` prose-ground override:\n{emitted}"
+        );
+
+        let hir = reparse_and_lower(&emitted);
+        assert!(hir.knots[0].is_function);
+        let Stmt::Return(r) = &hir.knots[0].body.stmts[0] else {
+            panic!(
+                "expected Stmt::Return as the re-lowered fn body's first statement: {:?}",
+                hir.knots[0].body
+            );
+        };
+        assert!(matches!(r.value, Some(Expr::Path(_))));
+    }
+
+    /// The same dialect-selector bug reaches *any* statement the emitter
+    /// regenerates for a `fn`'s prose body, not just a value-carrying
+    /// `return` — a bare `return` and ordinary content lines hit it too
+    /// (issue #2029's stated scope, broader than #1973's).
+    #[test]
+    fn fn_prose_body_bare_return_and_content_round_trip() {
+        let src = "fn greet() >{\n  Hi.\n  return\n}\n";
+        let emitted = lower_and_emit(src).expect("fn with prose content + bare return must emit");
+        assert!(
+            emitted.contains(">{"),
+            "emitted fn body must carry the `>{{` prose-ground override:\n{emitted}"
+        );
+
+        let hir = reparse_and_lower(&emitted);
+        assert!(hir.knots[0].is_function);
+        let stmts = &hir.knots[0].body.stmts;
+        assert!(
+            stmts.iter().any(|s| matches!(s, Stmt::Content(_))),
+            "expected a Content statement among the re-lowered fn body: {stmts:?}"
+        );
+        assert!(
+            stmts
+                .iter()
+                .any(|s| matches!(s, Stmt::Return(r) if r.value.is_none())),
+            "expected a bare Return statement among the re-lowered fn body: {stmts:?}"
+        );
+    }
+
+    /// A `flow`'s bare `{` is already its prose default — `emit_knot` must
+    /// not start writing a spurious selector for it (only `fn` needs the
+    /// override; a `flow` never does).
+    #[test]
+    fn flow_body_has_no_selector_prefix() {
+        let src = "flow a() {\n  Hi.\n}\n";
+        let emitted = lower_and_emit(src).expect("flow must emit");
+        assert!(
+            emitted.contains("flow a() {\n"),
+            "flow header must stay a bare `{{`, no selector:\n{emitted}"
+        );
     }
 }

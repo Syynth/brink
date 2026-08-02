@@ -44,6 +44,7 @@ origin and oracle case name:
 | `complex-flow-v1/` | weave + gather, deep nesting (bonus — likely the charter's own source example) | `tests/tier1/gather/complex-flow-v1/story.ink` |
 | `labeled-mid-flow-gather/` | labeled gather (G-1, issue #1335) — the checked-in `story.brink` is still **hand-written, native-only, not a 1:1 ink respelling**, see its own `manifest.toml`, but the ink origin below now mechanically respells to an episode-identical `.brink` (`ink_corpus_convert.rs`'s `once_only_choices_can_link_back_to_self`) | `tests/tier1/choices/once-only-choices-can-link-back-to-self/story.ink` |
 | `typed-annotations/` | `: type` annotations (NG-A/NG-B, issues #1487/#1488) — **native-only**, see its own `manifest.toml` | none (the annotation grammar is native-specific) |
+| `fn-prose-return/` | `fn` body-dialect selector (charter §4, issue #2029) — **native-only**, see its own `manifest.toml` | none (the `fn`/`emit_knot` selector gap has no ink counterpart) |
 
 Each case directory has:
 - `story.brink` — the respelled native source.
