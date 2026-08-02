@@ -513,6 +513,38 @@ fn compile_path_native_lambda_valued_global_call_site_is_unresolved() {
     );
 }
 
+/// Review finding on #1774: the PR body and the comment posted on issue
+/// #1774 both claimed this test existed (`compile_path_native_const_lambda_
+/// decl_default_self_recursion_works`, "#[ignore]d with a doc explaining the
+/// separate, pre-existing gap they hit") — it did not; only the call-site
+/// test above was ever added. This is that missing test, added rather than
+/// just correcting the claim, since the gap it documents is real and was
+/// already verified by hand: a global `const`-bound lambda referencing its
+/// own name recursively (`fact` calling `fact` inside its own body) does
+/// **not** yet work — `brink-analyzer` reports `E025` ("unresolved variable
+/// reference") at *both* occurrences of the recursive call (the const's own
+/// name, mid-initializer, is not visible to its own body's resolution — a
+/// single-pass ordering nuance). Orthogonal to both this issue's `E083` gate
+/// and #2083's incremental-resolution gap (that one is about calling a
+/// fn-valued global from *outside* its own declaration; this one is about a
+/// fn-valued global calling *itself*, *inside* its own declaration) —
+/// narrower than and adjacent to #2083's territory rather than a clean
+/// independent bug, so not filed separately (see `docs/t1c-spec.md` §2b).
+#[test]
+#[ignore = "pre-existing resolver limitation: a global const-bound lambda cannot reference its own name recursively (E025) — not introduced or fixed by #1774, narrower than and adjacent to #2083, not filed separately"]
+fn compile_path_native_const_lambda_decl_default_self_recursion_works() {
+    let output = compile_and_run_native(
+        "lambda-decl-default-self-recursion",
+        "const fact = |n| {\n  if n <= 1 { return 1; }\n  return n * fact(n - 1);\n}\n\n\
+         flow main() {\n  Result: {fact(5)} -> END\n}\n",
+    );
+    assert!(
+        output.contains("Result: 120"),
+        "a global const-bound lambda should be able to call itself \
+         recursively once the resolver limitation is fixed, got: {output:?}"
+    );
+}
+
 /// Review finding on #1764, UPDATED by #1774 (RULED 2026-08-01): a
 /// lambda-valued `VAR`/`CONST` default used to be a hard compile error
 /// (`E083`) independently of #1764's seven analyzer-pass fixes — this test

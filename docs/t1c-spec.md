@@ -245,6 +245,20 @@ Pinned by `brink-ir`'s
   shape resolves cleanly through the simpler whole-project
   `brink_analyzer::analyze` path `brink-ir`'s own tests use. See the
   #1774 → #2083 (filed separately).
+- A narrower, **separate, pre-existing** gap, checked directly against
+  this issue's own "does #1764/self-recursion become expressible" ask
+  and found still no: a global `const`-bound lambda cannot call *itself*
+  recursively by name from inside its own body (`const fact = |n| … n *
+  fact(n - 1) …`) — `brink-analyzer` reports `E025` at both occurrences
+  of the recursive call. The const's own name, mid-initializer, is not
+  yet visible to its own body's resolution (a single-pass ordering
+  nuance in the resolver, not the `E083`/capture story this ruling is
+  about). Narrower than and adjacent to #2083's territory (that gap is
+  about calling a fn-valued global from *outside* its declaration; this
+  one is about calling it from *inside* its own declaration) rather than
+  a clean independent bug, so not filed separately — pinned by
+  `brink-compiler`'s `#[ignore]`d
+  `compile_path_native_const_lambda_decl_default_self_recursion_works`.
 
 ## 3. Invocation and `bind` — RULED (typing rule details in §4)
 
