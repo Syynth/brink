@@ -267,3 +267,37 @@ fn i113_else_branches() {
         "tests/tier2/conditions/I113-else-branches/story.ink",
     );
 }
+
+// ─── `fn`-body prose-override selector (issue #2044) ────────────────────
+//
+// `tests/tier2/function/complex-func2/story.ink`'s `=== function derp(a,
+// b) ===` knot mixes a `VAR`-turned-declaration, a mid-body `~ x = a - b`
+// assignment, and a follow-on `IfElse`-shaped conditional block in the
+// same ink source body — the exact "mid-body statement after an
+// inline-conditional VAR chain" shape #2044 named. Note the `VAR`s hoist
+// to file-level globals on the way through the mechanical respell (the
+// emitted `.brink` puts `var x = 0` / `var y = 3` / `var z = 1` before
+// `flow main()`), so the emitted `fn derp` body itself carries only the
+// assignment and the conditional, not a declaration — it's the *ink*
+// source, not the emitted knot body, that mixes all three. At filing
+// time this failed to reparse
+// (`expected an expression, found TILDE`): `emit_knot` wrote a bare `{`
+// for every `fn`, which selects native's code-ground (`;`-terminated)
+// statement dialect, but the printer's statement stream only ever spells
+// prose-ground syntax.
+//
+// That root cause was already fixed by PR #2039 (closing #2029, merged
+// before this issue's assigned work began) — `emit_knot` now spells the
+// `>{ }` prose-ground override for every `fn` body. This test is the
+// round-trip differential #2044 asked for: no `ink_corpus_convert.rs`
+// case exercised an ink-derived `fn` knot's body before now, so the
+// `>{ }` fix had no episode-identity proof against a real oracle-corpus
+// `fn`. See `docs/decision-log.md` or issue #2029 for the fix itself —
+// this PR adds test coverage only, not a production change.
+#[test]
+fn complex_func2_fn_body_mid_statement() {
+    assert_episode_identical(
+        "complex-func2",
+        "tests/tier2/function/complex-func2/story.ink",
+    );
+}
