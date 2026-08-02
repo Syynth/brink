@@ -5499,6 +5499,72 @@ mod tests {
         );
     }
 
+    // ── Issue #2001: `#fn` creation-site ref-invariance ───────────────────
+
+    /// Repro from #2001 (the tracked remainder of #1995/#1920 left after PR
+    /// #1999): `#fn(target, args…)`'s bound-argument loop
+    /// (`InferPass::infer_fn_literal`) never ran *any* argument-type check —
+    /// neither `ref_assignable` nor `assignable` — even though this literal
+    /// **is** the by-ref binding site (docs/t1c-spec.md §2: "all `ref`
+    /// params must be bound at creation"), the one place a `Ty::Fn` value's
+    /// remaining param row can never contain a `ref` param. `#fn`'s own
+    /// `fn_values::check` (`E080`) only checks that a `ref` position is
+    /// bound to *some* durable cell — never that the cell's static type
+    /// agrees with the declared `ref` param type — so this is a genuinely
+    /// separate gap from that check. Ink-only fixture (`#fn`'s binding form
+    /// is ink-only, ruled 2026-08-01 per #1862).
+    #[test]
+    fn fn_literal_ref_param_widening_is_rejected_under_strict() {
+        let parsed = brink_syntax::parse(
+            "=== function scale(ref x: float, k: int): float ===\n\
+             ~ x = x * k\n~ return x\n\
+             VAR i = 3\n\
+             === main ===\n~ temp f = #fn(scale, i)\n~ temp r: float = f(2)\n-> DONE\n",
+        );
+        let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
+        let opts = crate::AnalysisOptions {
+            dialect: crate::Dialect::Brink,
+            types: Some(TypePolicy::Strict),
+            ..crate::AnalysisOptions::default()
+        };
+        let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E063 && d.message.contains("argument 1")),
+            "a #fn-bound int cell must not widen into a declared-float ref parameter \
+             either: {:?}",
+            result.diagnostics
+        );
+    }
+
+    /// The by-value sibling: binding an ordinary (non-`ref`) `int` argument
+    /// into `k` alongside an exactly-typed `ref float` binding must stay
+    /// clean — the invariant check only rejects widening at the `ref`
+    /// position, and #2001 explicitly declines to add a *new* by-value
+    /// check at this creation site (that is its own scope call per the
+    /// issue body, not assumed yes).
+    #[test]
+    fn fn_literal_by_value_param_is_unaffected_by_ref_invariance() {
+        let (hir, index, res) = build(
+            "=== function scale(ref x: float, k: int): float ===\n\
+             ~ x = x * k\n~ return x\n\
+             VAR f: float = 1.0\n\
+             === main ===\n~ temp fv = #fn(scale, f, 2)\n-> DONE\n",
+        );
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E063 && d.message.contains("argument")),
+            "a well-typed ref argument plus an exactly-typed by-value argument bound at \
+             creation must stay clean: {diags:?}"
+        );
+    }
+
     // ── Issue #1903: `root_content` reaches the strict walk ──────────────
 
     /// Issue #1903 regression. `collect_defs` walked only `hir.knots`, so
