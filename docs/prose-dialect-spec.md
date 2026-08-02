@@ -822,6 +822,96 @@ touches neither item, changes no parsing/depth/parity decision, and is not
 a step toward resolving either one — it does not narrow #1883, same as
 #1738's original `\#` fix didn't.
 
+### 4.7 Tag raw-text scan: brace-balancing and per-tag scope (#1728, #1787)
+
+Filed from issue #1814: `content::tag()`'s raw-text scan and brace-depth
+counter went through two rulings (#1728/PR #1777, then #1787/PR #1807)
+that were documented inline on `tag()` itself but never given a spec-level
+home — this subsection is that home. It sits alongside §4.6 above, which
+covers the *same function's* escape-set handling; this section covers a
+different, orthogonal axis: not what a tag's escaped characters mean, but
+how far its raw scan runs before deciding the tag is over.
+
+**The mechanism.** A `#tag`'s body (`tag()` in `content.rs`, called by
+`tag_line_tail` for trailing tags and `header_tag_tail` for a header line's
+own tags) is scanned as raw text — it never re-parses a `{…}` it meets as a
+real interpolation/alternation/choice node (§4.6's table calls the sibling
+engine's `TEXT`-run scanner "structural only, by design"; the same is true
+here, one level up). The scan stops at `NEWLINE`/`EOF`, at an unescaped
+`HASH` (a new sibling tag), or at an `R_BRACE` — but only once a `depth`
+counter, bumped on every literal, unescaped `{` and brought back down on
+every `}`, has returned to zero. This is pure raw-character balancing, not
+interpolation awareness: `#tag {gold` (never closed) still runs to end of
+line exactly as it did before #1728.
+
+**The tradeoff (RULED, review of #1728, PR #1777, merged 2026-07-29 — "not
+'no regression'").** A depth counter over raw text with no real grammar
+cannot distinguish "genuinely unbalanced" from "matches something later."
+Fixing the original bug means a *balanced* brace inside a tag no longer
+ends it early:
+
+```brink
+flow f() {
+  Hello #tag {gold} coins.
+  The river bends.
+}
+```
+
+now parses as one tag and two content lines, where it used to stop the tag
+at the first `}` and misparse the rest. The mirror-image cost: a genuinely
+*unbalanced*, unescaped `{` left open inside a tag now eats the enclosing
+block's own same-line `}` closer instead of stopping there —
+
+```brink
+flow f() { Hello #tag { }
+```
+
+fails to parse, because the tag's `{` is counted and the very next `}` is
+consumed as its match, leaving the flow body with no closer before
+`NEWLINE`/`EOF`. This is accepted as inherent to depth-based balancing over
+raw text, not a regression — pinned by
+`an_unbalanced_open_brace_in_a_tag_eats_the_enclosing_blocks_own_closer`.
+`\{` is excluded from the depth counter (an escaped brace is text, not a
+metacharacter, per #1716/PR #1732's literal-brace escape), pinned by
+`a_tag_with_an_escaped_open_brace_does_not_swallow_the_enclosing_blocks_own_closer`.
+
+**Scope (RULED, review of #1777, issue #1787, delivered by PR #1807,
+merged 2026-07-31): `depth` is scoped per-tag, not per-line, and that is
+the intended contract, not a gap.** `tag()` runs fresh for each `HASH` a
+content line sees, so `depth` always restarts at zero for a new tag — an
+earlier sibling tag's in-progress, unbalanced depth is simply discarded at
+the `HASH` boundary, never carried into the next tag's scan. For example:
+
+```brink
+flow f() { Hello #a {x #b}
+```
+
+parses with zero errors: tag `a`'s scan is cut short by the (unescaped)
+`HASH` that starts `b` — before the depth check is ever consulted, exactly
+like `NEWLINE`/`EOF` — so `a`'s in-progress depth of 1 (from its own
+unmatched `{`) is discarded rather than carried into `b`. `b` starts fresh
+at depth zero and immediately meets the `}`, stopping there without
+consuming it, leaving that brace for the flow body's own closer. The
+alternative — a per-line scope that carries depth across the `HASH`
+boundary — would let one tag's own unbalanced brace reach *through* a
+syntactically distinct sibling tag and swallow that sibling's, or the
+enclosing block's, own closer: a strictly worse and less local failure
+than the already-accepted per-tag tradeoff above. A `HASH` is a real,
+tokenized boundary (each one starts its own `TAG` node), unlike the raw,
+grammar-blind `{`/`}` this scan balances, so treating it as anything other
+than a hard reset would blur a structural boundary the CST already treats
+as absolute. Pinned by
+`a_tags_own_unbalanced_brace_does_not_leak_depth_into_a_sibling_tag`.
+
+**Still open, not ruled here:** issue #1883 asks a related but distinct
+question — after #1851/#1852 made `cue_name()`'s own brace-depth counter
+`COLON`-aware and gave `\{` backslash-parity treatment there, whether
+`tag()`/`cue_name()`'s `HASH`-as-hard-reset boundary (ruled above) still
+holds, and whether `\}` should gain the same backslash-parity carve-out
+`\{` already has. Both are about the parser's *structural* recognition and
+are untouched by this section, exactly as they're untouched by §4.6's
+escape-stripping ruling above.
+
 ## 5. Tooling: completions & succession (RULED doctrine)
 
 **Harvest by default, declaration upgrades** — the freeform/manifest
