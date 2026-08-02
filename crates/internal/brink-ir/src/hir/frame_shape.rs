@@ -535,6 +535,11 @@ fn collect_reads(expr: &Expr, sink: &mut impl FnMut(&String)) {
             collect_reads(&r.start, sink);
             collect_reads(&r.end, sink);
         }
+        // Block capture (issue #1839): a self-contained `Vec<Stmt>` embedded
+        // inside an expression tree (a `content`-typed call argument),
+        // exactly like `Expr::Lambda`'s braced body above — descend for the
+        // same soundness reason.
+        Expr::Fragment(stmts) => collect_fragment_reads(stmts, sink),
         // Leaves with no local reads: literals, and static references (a
         // divert-target value / list literal names targets/items, not locals).
         Expr::Int(_)
@@ -543,6 +548,22 @@ fn collect_reads(expr: &Expr, sink: &mut impl FnMut(&String)) {
         | Expr::Null
         | Expr::DivertTarget(_)
         | Expr::ListLiteral(_) => {}
+    }
+}
+
+/// Collect the single-segment names read within a captured content block's
+/// statements (`Expr::Fragment`, issue #1839) — needed for the same reason
+/// [`Expr::Lambda`]'s braced body above is: a fragment capture is a
+/// self-contained statement list embedded inside an expression tree, so the
+/// stateful per-def walker (`FrameShapeWalker::walk_block` and friends)
+/// never visits it on its own. Built on [`super::types::fragment_stmt_exprs`]
+/// — the shared "every expression a captured `Stmt` run directly contains"
+/// flattening `brink-analyzer`'s own walkers use for the identical reason
+/// (issue #1764) — rather than re-deriving the per-`Stmt`-variant descent
+/// here too.
+fn collect_fragment_reads(stmts: &[Stmt], sink: &mut impl FnMut(&String)) {
+    for e in super::types::fragment_stmt_exprs(stmts) {
+        collect_reads(e, sink);
     }
 }
 

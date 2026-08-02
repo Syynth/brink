@@ -517,6 +517,13 @@ fn expr_children(expr: &Expr) -> Vec<&Expr> {
                 brink_ir::StringPart::Literal(_) => None,
             })
             .collect(),
+        // Block capture (issue #1839): the captured run can itself contain
+        // a coalescing chain (an interior line's `{x or y}` interpolation),
+        // so it must recurse — `brink_ir::fragment_stmt_exprs` is the
+        // shared "every expression a captured `Stmt` run directly contains"
+        // flattening (issue #1764's audit-driven pattern), same one
+        // `LambdaBody::all_exprs` already gets above.
+        Expr::Fragment(stmts) => brink_ir::fragment_stmt_exprs(stmts),
         Expr::Int(_)
         | Expr::Float(_)
         | Expr::Bool(_)

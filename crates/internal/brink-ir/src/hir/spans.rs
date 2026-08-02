@@ -61,7 +61,12 @@ use crate::hir::types::{Expr, StringPart};
 pub fn expr_span(expr: &Expr) -> Option<TextRange> {
     let mut span = None;
     match expr {
-        Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Null => {}
+        // Internal-only (issue #1839): `Fragment` is never constructed from
+        // surface syntax, so it has no source range of its own to key on —
+        // no side-table consumer needs to address the fragment expression
+        // itself independently of the `Call` it's an argument to. Same
+        // "nothing to cover" leaf as the scalar literals it's grouped with.
+        Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::Null | Expr::Fragment(_) => {}
         Expr::Path(p) | Expr::DivertTarget(p) => cover(&mut span, Some(p.range)),
         Expr::ListLiteral(items) => {
             for p in items {

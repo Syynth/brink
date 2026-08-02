@@ -87,7 +87,7 @@ whole vocabulary by naming a different conventions module. Sequenced as
 | Confinement to one module (`E169`) | ✅ | ✅ | ⚠️ | — | query landed; **unreachable from live typing** (#1880) |
 | Directive-shaped tag guard (`E172`) | ✅ | ✅ | ✅ | — | landed 2026-08-01 (#1835) |
 | **`!name` sigil dispatch** | ✅ | ❌ | — | — | **reserved, unimplemented** — see below |
-| Block elements `@[element(…, block)]` | ✅ | ❌ | — | — | **v1b · #1839 — unblocked 2026-08-01**, unbuilt |
+| Block elements `@[element(…, block)]` | ✅ | ✅ | ✅ | ❓ | **v1b landed** — `annotations-element-block` golden; cross-file injection (#1863) doesn't carry `block` yet, tracked as #2068 |
 | `fn conventions()` registration | ✅ | ❌ | — | — | **v1c · #1840** — 4 blocking questions ruled 2026-08-01 |
 | Comptime evaluation of conventions | ✅ | ❌ | — | — | #1840; dependency shape ruled 2026-08-01 (#1867) |
 | `@[style]` declaration surface | ✅ | ✅ | ❌ | — | `StyleToken` produced, **zero consumers** (#1719) |

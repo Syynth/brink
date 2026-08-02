@@ -471,6 +471,19 @@ fn walk_expr(expr: &Expr, v: &mut impl HirVisitor) {
             walk_expr(&r.start, v);
             walk_expr(&r.end, v);
         }
+        // Block capture (issue #1839): the captured run is a real part of
+        // this tree — a consumer walking references/hover/etc. must see
+        // the interior lines a `content`-typed argument holds, exactly as
+        // it would if they were still at top-level body position. Reuses
+        // `walk_stmt` directly (not `walk_block_ctx`, which also fires
+        // `enter_block`/`exit_block` for a real `Block` node this isn't) —
+        // `ContentContext::Body` matches every interior line's own
+        // top-level position before it was captured.
+        Expr::Fragment(stmts) => {
+            for s in stmts {
+                walk_stmt(s, ContentContext::Body, v);
+            }
+        }
     }
 }
 

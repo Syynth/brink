@@ -754,7 +754,11 @@ fn is_const_foldable_kind(
         // Lambdas (issue #1685) never constant-fold: a lambda value is
         // made at its creation site (its captures are snapshotted there),
         // so it has no compile-time value at all.
-        | hir::Expr::Lambda(_) => false,
+        | hir::Expr::Lambda(_)
+        // Internal-only (issue #1839) — never surface syntax, so it can
+        // never appear as a declaration default in the first place; `false`
+        // for the same reason as every other non-literal shape here.
+        | hir::Expr::Fragment(_) => false,
     }
 }
 
@@ -829,7 +833,10 @@ fn is_const_foldable_decl_default(
         // NS-A5 v1: see `is_const_foldable_kind`'s Range arm.
         | hir::Expr::Range(_)
         // Lambdas: see `is_const_foldable_kind`'s Lambda arm.
-        | hir::Expr::Lambda(_) => false,
+        | hir::Expr::Lambda(_)
+        // Internal-only (issue #1839): see `is_const_foldable_kind`'s
+        // Fragment arm.
+        | hir::Expr::Fragment(_) => false,
     }
 }
 

@@ -278,6 +278,95 @@ fn annotations_element_reaches_story_data() {
     );
 }
 
+/// Block capture (issue #1839, `docs/decision-log.md` 2026-08-01
+/// "Content-as-value"): `@[element(claims = "…", block)]` captures the
+/// **following run** into a trailing `content`-typed parameter, terminated
+/// by a blank line — `VENDOR`'s two dialogue lines, ending before the blank
+/// line that precedes `Just an ordinary line.`.
+///
+/// `cue`'s prose-ground body (`>{ {name}\n{body} }`) mirrors the ruled
+/// `!radio` shape (`docs/decision-log.md` 2026-07-31 "Claiming handlers,
+/// prose bodies... ALREADY RULED") — the handler **wraps** the captured
+/// block (emits the name, then the body) rather than tagging it.
+///
+/// `WAIT!` inside the captured block matches a *second*, unrelated claiming
+/// handler (`shout`, non-`block`) and is rewritten to `shout("WAIT")` —
+/// proving "interior lines are already classified and lowered by their own
+/// handlers" falls out of reusing the ordinary `body::lower_items` dispatch
+/// loop for the captured run, not a special case: `WAIT!` renders as
+/// `WAIT!!!`, not verbatim.
+#[test]
+fn annotations_element_block() {
+    assert_case("annotations-element-block");
+}
+
+/// Compile-level sibling to `annotations_element_block`, proving the ⚠
+/// requirement `docs/decision-log.md`'s 2026-08-01 ruling flags as owed and
+/// unverified: a block's interior lines must keep their **own** line-table
+/// entries (translation-resident, independently resolvable) rather than
+/// being flattened into the claimed header's own line — the failure mode
+/// that would have resulted had `content` been representationally
+/// sub-line. Each of `cue`'s two plain interior lines is asserted as its
+/// **own** `LineContent::Plain` entry, not merged into one string and not
+/// dropped.
+///
+/// This also pins the runtime fix this issue's build found and needed:
+/// `brink-runtime`'s `OutputBuffer::has_content`/`ends_in_newline` used to
+/// check the *outer* transcript (or nothing at all) while inside a
+/// `BeginFragment`/`EndFragment` capture, because no earlier fragment use
+/// had ever captured more than one recognized line — every earlier caller
+/// composed exactly one call's side-effect output. A multi-statement block
+/// capture is the first thing that exercises a fragment holding several
+/// `EndOfLine`-terminated lines, and the pre-fix behavior glued them
+/// together with no separator at all (`"You shouldn't be here.Not after
+/// dark."`) — reverting the `brink-runtime/src/output/mod.rs` fragment-aware
+/// branches reproduces exactly that, confirming this test would catch the
+/// regression.
+#[test]
+fn annotations_element_block_reaches_story_data() {
+    let path = corpus_dir()
+        .join("annotations-element-block")
+        .join("story.brink");
+    let output = brink_compiler::compile_path(&path)
+        .unwrap_or_else(|e| panic!("compile annotations-element-block: {e:?}"));
+    let (_program, line_tables) =
+        brink_runtime::link(&output.data).expect("link annotations-element-block");
+
+    let plain_entries: Vec<&str> = line_tables
+        .iter()
+        .flatten()
+        .filter_map(|entry| match &entry.content {
+            brink_format::LineContent::Plain(s) => Some(s.as_str()),
+            brink_format::LineContent::Template(_) => None,
+        })
+        .collect();
+
+    assert_eq!(
+        plain_entries
+            .iter()
+            .filter(|s| **s == "You shouldn't be here.")
+            .count(),
+        1,
+        "the captured block's first interior line must reach its own \
+         Plain line-table entry exactly once: {plain_entries:?}"
+    );
+    assert_eq!(
+        plain_entries
+            .iter()
+            .filter(|s| **s == "Not after dark.")
+            .count(),
+        1,
+        "the captured block's second interior line must reach its own \
+         Plain line-table entry exactly once, distinct from the first: \
+         {plain_entries:?}"
+    );
+    assert!(
+        !plain_entries.contains(&"You shouldn't be here.Not after dark."),
+        "the two captured lines must never be flattened into one entry \
+         with no separator: {plain_entries:?}"
+    );
+}
+
 /// Value-carrying `return <expr>` at prose-body position (issue #1973):
 /// `fn double(x) >{ return x * 2 }` overrides the `fn`'s default
 /// code-ground body to prose-ground, and `return x * 2` is the
@@ -685,6 +774,7 @@ fn every_case_directory_has_a_test() {
         "annotations-allow",
         "annotations-effects",
         "annotations-element",
+        "annotations-element-block",
         "annotations-was",
         "array-literal",
         "as-binding",
