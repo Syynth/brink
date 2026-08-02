@@ -544,6 +544,15 @@ flow main() {
 /// `9`. With the parser/lowering fix reverted, this case's transcript
 /// reads `~ n = 5\n~ n += 3\n~ bump()\nValue is 0.` instead — a different
 /// mismatch for every one of the three lines, not just a missing feature.
+///
+/// Extended by issue #1972 with a fourth logic-line shape the same
+/// `TILDE` dispatch didn't originally cover: `~ let m = n + 1` (a
+/// content-ground temp declaration). "Temp is 10." is only reachable if
+/// `m` is actually bound to `n + 1` (`n` is `9` at that point) and
+/// interpolated — with the #1972 grammar/lowering reverted, `~ let m = n +
+/// 1` compiles clean and prints verbatim as story text instead (the exact
+/// silent-swallow bug #1991 fixed for assignment/bare-call, still open for
+/// `let` until this fix).
 #[test]
 fn logic_line_escape() {
     assert_case("logic-line-escape");

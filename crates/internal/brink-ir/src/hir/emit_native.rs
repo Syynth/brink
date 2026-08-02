@@ -54,24 +54,22 @@
 //!
 //! Explicitly unsupported (each a real gap, not an oversight — see
 //! `docs/b0-sequencing.md` §3 and `tests/tier1-brink-respell/README.md`'s
-//! own gap findings for the native-grammar context): `Stmt::TempDecl`/
-//! `LogicBlock`/`Await` at prose-body position (code-dialect ground —
-//! `lower_native::body` never constructs any of these outside a `~{ }`
-//! logic block, so this is a native-**grammar** gap, not just an emission
-//! one: there is no bare `~ let …`/`~{ }`-block/`~ await …`-style
-//! prose-body statement to round-trip yet, issue #1335's B0.8b sweep).
-//! **Correction (issue #1991, PR #2002):** `Stmt::Assignment`/`ExprStmt`
-//! at prose-body position no longer belong in that native-grammar-gap
-//! bucket — `~ x = expr`/`~ expr` (the content-ground logic-line escape,
-//! charter §8.2) is exactly that bare prose-body statement, and
-//! `lower_native::body::lower_logic_line` has produced both outside any
-//! `~{ }` block since #1991 landed. Their refusal below is now
-//! **emitter-only**, the same category the alternations sentence just
-//! below already uses: the grammar and lowering both exist, this printer
-//! has simply never grown the `emit_*` arm for a content-ground
-//! `Assignment`/`ExprStmt` (as opposed to the code-ground `~{ }`
-//! `STMT_BLOCK` form, which is a different HIR shape — `Stmt::LogicBlock`,
-//! still a real grammar gap above); `Stmt::Sequence`/
+//! own gap findings for the native-grammar context): `Stmt::LogicBlock`/
+//! `Await` at prose-body position (code-dialect ground —
+//! `lower_native::body` never constructs either outside a `~{ }` logic
+//! block, so this is a native-**grammar** gap, not just an emission one:
+//! there is no `~{ }`-block/`~ await …`-style prose-body statement to
+//! round-trip yet, issue #1335's B0.8b sweep). **Correction (issue #1991,
+//! PR #2002; issue #1972):** `Stmt::TempDecl`/`Assignment`/`ExprStmt` at
+//! prose-body position no longer belong in that native-grammar-gap bucket —
+//! `~ let name = expr`/`~ x = expr`/`~ expr` (the content-ground logic-line
+//! escape, charter §8.2, extended to `TempDecl` by #1972) is exactly that
+//! bare prose-body statement, and `lower_native::body::lower_logic_line`
+//! has produced all three outside any `~{ }` block since #1991/#1972
+//! landed. This printer now emits all three (`emit_temp_decl`/
+//! `emit_assignment`/`emit_expr_stmt`, below) — as opposed to the
+//! code-ground `~{ }` `STMT_BLOCK` form, which is a different HIR shape,
+//! `Stmt::LogicBlock`, still a real grammar gap above; `Stmt::Sequence`/
 //! `ContentPart::InlineSequence`/`InlineConditional`
 //! (alternations `~`/`&`/`!`/`|` — **unlike the code-dialect-ground gaps
 //! above, this one is emitter-only, not native-grammar**: native's
@@ -128,10 +126,10 @@
 use std::fmt::Write as _;
 
 use crate::{
-    Block, Choice, ChoiceSet, CondBranch, CondKind, Conditional, ConstDecl, Content, ContentPart,
-    DivertPath, DivertTarget, Expr, ExternalDecl, HirFile, Import, InfixOp, Knot, LambdaBody,
-    ListDecl, Name, Param, Path, PostfixOp, PrefixOp, Return, Stitch, Stmt, StringPart, StructDecl,
-    Tag, TypeExpr, VarDecl,
+    AssignOp, Assignment, Block, Choice, ChoiceSet, CondBranch, CondKind, Conditional, ConstDecl,
+    Content, ContentPart, DivertPath, DivertTarget, Expr, ExternalDecl, HirFile, Import, InfixOp,
+    Knot, LambdaBody, ListDecl, Name, Param, Path, PostfixOp, PrefixOp, Return, Stitch, Stmt,
+    StringPart, StructDecl, Tag, TempDecl, TypeExpr, VarDecl,
 };
 
 // ─── Labeled lines (G-1) ─────────────────────────────────────────────
@@ -698,9 +696,18 @@ fn emit_stmt_stream(
                 return Ok(());
             }
             Stmt::Sequence(_) => return Err(unsupported("alternation sequence", context)),
-            Stmt::TempDecl(_) => return Err(unsupported("temp declaration", context)),
-            Stmt::Assignment(_) => return Err(unsupported("assignment", context)),
-            Stmt::ExprStmt(_) => return Err(unsupported("expression statement", context)),
+            Stmt::TempDecl(t) => {
+                let line = emit_temp_decl(t, context)?;
+                let _ = writeln!(out, "{indent}{line}");
+            }
+            Stmt::Assignment(a) => {
+                let line = emit_assignment(a, context)?;
+                let _ = writeln!(out, "{indent}{line}");
+            }
+            Stmt::ExprStmt(e) => {
+                let line = emit_expr_stmt(e, context)?;
+                let _ = writeln!(out, "{indent}{line}");
+            }
             Stmt::ThreadStart(_) => return Err(unsupported("thread-start splice", context)),
             Stmt::LogicBlock(_) => return Err(unsupported("`~ { }` logic block", context)),
             Stmt::Await(_) => return Err(unsupported("await statement", context)),
@@ -800,6 +807,45 @@ fn emit_labeled_stmt_stream(
             emit_stmt_stream(out, rest, depth, context)
         }
     }
+}
+
+/// `~ let name: type = expr` — the content-ground `Stmt::TempDecl` printer
+/// (issue #1972). Reuses [`emit_annotation_suffix`] for the same `": T"`
+/// rendering `var`/`const` bindings already use — the ascription is the
+/// identical `TypeExpr` shape in every binding position.
+fn emit_temp_decl(t: &TempDecl, context: &str) -> Result<String, EmitError> {
+    let ty = emit_annotation_suffix(t.annotation.as_ref());
+    match &t.value {
+        Some(v) => {
+            let value = emit_expr(v, context)?;
+            Ok(format!("~ let {}{ty} = {value}", t.name.text))
+        }
+        None => Ok(format!("~ let {}{ty}", t.name.text)),
+    }
+}
+
+/// `~ x = expr` / `~ x += expr` / `~ x -= expr` — the content-ground
+/// `Stmt::Assignment` printer (issue #1991/#1972). `target` is always an
+/// `Expr::Path` in practice (`lower_native::control_flow::lower_assignment`
+/// never constructs any other shape there), but `emit_expr` is reused
+/// rather than special-cased so a target this emitter can't yet spell
+/// still refuses loudly instead of being assumed away.
+fn emit_assignment(a: &Assignment, context: &str) -> Result<String, EmitError> {
+    let target = emit_expr(&a.target, context)?;
+    let op = match a.op {
+        AssignOp::Set => "=",
+        AssignOp::Add => "+=",
+        AssignOp::Sub => "-=",
+    };
+    let value = emit_expr(&a.value, context)?;
+    Ok(format!("~ {target} {op} {value}"))
+}
+
+/// `~ expr` — the content-ground `Stmt::ExprStmt` printer (issue
+/// #1991/#1972), an expression evaluated for its side effect (a function
+/// call being the overwhelmingly common case).
+fn emit_expr_stmt(e: &Expr, context: &str) -> Result<String, EmitError> {
+    Ok(format!("~ {}", emit_expr(e, context)?))
 }
 
 fn emit_return(r: &Return, context: &str) -> Result<String, EmitError> {
@@ -1728,5 +1774,95 @@ mod tests {
             "expected the label's body to be exactly a ChoiceSet: {:?}",
             b.stmts
         );
+    }
+
+    // ── Issue #1972: the content-ground logic-line escape's printer ─────
+    // ── (`Stmt::TempDecl`/`Assignment`/`ExprStmt` at prose-body position) ─
+    //
+    // Before this landed, all three refused with `EmitError::Unsupported`
+    // even though `~ let name = expr`/`~ x = expr`/`~ expr` had a real
+    // grammar and lowering (the `Assignment`/`ExprStmt` half since #1991,
+    // `TempDecl` newly added by this same issue) — a real gap for
+    // `brink-respell`'s ink→native corpus conversion (the "temp
+    // declaration"/"assignment"/"expression statement" `full_corpus_sweep`
+    // buckets), not a parser one.
+
+    #[test]
+    fn logic_line_assignment_round_trips() {
+        let src = "flow a() {\n  ~ n = 5\n}\n";
+        let emitted = lower_and_emit(src).expect("a content-ground assignment must now emit");
+        assert!(emitted.contains("~ n = 5"), "{emitted}");
+
+        let hir = reparse_and_lower(&emitted);
+        let Stmt::Assignment(a) = &hir.knots[0].body.stmts[0] else {
+            panic!(
+                "expected Stmt::Assignment as the re-lowered body's first statement: {:?}",
+                hir.knots[0].body
+            );
+        };
+        assert_eq!(a.op, crate::AssignOp::Set);
+        assert!(matches!(a.value, Expr::Int(5)));
+    }
+
+    #[test]
+    fn logic_line_compound_assignment_round_trips() {
+        let src = "flow a() {\n  ~ n += 3\n}\n";
+        let emitted =
+            lower_and_emit(src).expect("a content-ground compound assignment must now emit");
+        assert!(emitted.contains("~ n += 3"), "{emitted}");
+
+        let hir = reparse_and_lower(&emitted);
+        let Stmt::Assignment(a) = &hir.knots[0].body.stmts[0] else {
+            panic!("expected Stmt::Assignment: {:?}", hir.knots[0].body);
+        };
+        assert_eq!(a.op, crate::AssignOp::Add);
+    }
+
+    #[test]
+    fn logic_line_bare_call_round_trips() {
+        // `bump` is a `flow` (not `fn`) so its default plain `{ }` body
+        // stays prose-ground — a `fn`'s default `{ }` lowers to a
+        // `Stmt::LogicBlock` `emit_knot` cannot spell back at all (it
+        // always prints a bare `{` regardless of body dialect, a
+        // separate, pre-existing round-trip gap unrelated to this test).
+        let src = "flow bump() {\n  return\n}\nflow a() {\n  ~ bump()\n}\n";
+        let emitted = lower_and_emit(src).expect("a content-ground bare call must now emit");
+        assert!(emitted.contains("~ bump()"), "{emitted}");
+
+        let hir = reparse_and_lower(&emitted);
+        let a_body = &hir.knots[1].body;
+        assert!(matches!(a_body.stmts[0], Stmt::ExprStmt(Expr::Call(..))));
+    }
+
+    #[test]
+    fn logic_line_temp_decl_round_trips() {
+        let src = "flow a() {\n  ~ let n = 5\n}\n";
+        let emitted = lower_and_emit(src).expect("a content-ground temp decl must now emit");
+        assert!(emitted.contains("~ let n = 5"), "{emitted}");
+
+        let hir = reparse_and_lower(&emitted);
+        let Stmt::TempDecl(t) = &hir.knots[0].body.stmts[0] else {
+            panic!(
+                "expected Stmt::TempDecl as the re-lowered body's first statement: {:?}",
+                hir.knots[0].body
+            );
+        };
+        assert_eq!(t.name.text, "n");
+        assert!(matches!(t.value, Some(Expr::Int(5))));
+    }
+
+    #[test]
+    fn logic_line_temp_decl_with_annotation_and_no_initializer_round_trips() {
+        let src = "flow a() {\n  ~ let n: int\n}\n";
+        let emitted =
+            lower_and_emit(src).expect("an annotated, uninitialized temp decl must now emit");
+        assert!(emitted.contains("~ let n: int"), "{emitted}");
+
+        let hir = reparse_and_lower(&emitted);
+        let Stmt::TempDecl(t) = &hir.knots[0].body.stmts[0] else {
+            panic!("expected Stmt::TempDecl: {:?}", hir.knots[0].body);
+        };
+        assert!(t.value.is_none());
+        assert!(t.annotation.is_some());
     }
 }

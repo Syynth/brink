@@ -14,6 +14,8 @@ flow main() {
   ~ n += 3
   ~ bump()
   Value is {n}.
+  ~ let m = n + 1
+  Temp is {m}.
   ~ n = shout()
   after
   -> END
