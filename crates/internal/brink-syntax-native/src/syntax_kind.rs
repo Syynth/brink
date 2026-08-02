@@ -344,15 +344,20 @@ pub enum SyntaxKind {
     /// `~ stmt` — the content-ground line-escape into code (charter §8.2,
     /// RULED 2026-07-23, `docs/decision-log.md` "Native interleaving &
     /// body-dialect spelling": ink's logic line, kept — issue #1991).
-    /// Wraps a single [`Self::ASSIGN_STMT`]/[`Self::EXPR_STMT`] child, both
-    /// node kinds reused **unmodified** from the code-ground statement
-    /// layer (`parser/stmt.rs`) in a different position — parsed WITHOUT
-    /// the code-ground `;` terminator; this escape is one content-ground
-    /// line, terminated by `NEWLINE`/EOF exactly like [`Self::CONTENT_LINE`]
-    /// itself. Mirrors [`Self::RETURN_STMT`]'s doc precedent (one node
-    /// shape safely serving two grammars). Parsed by
-    /// `parser/stmt.rs::logic_line`, dispatched from `block::body_line`'s
-    /// (and `family::colon_body_line`'s) `TILDE` arm.
+    /// Wraps a single [`Self::LET_STMT`]/[`Self::ASSIGN_STMT`]/
+    /// [`Self::EXPR_STMT`]/[`Self::UNTIL_STMT`]/[`Self::STMT_BLOCK`] child,
+    /// every node kind reused **unmodified** from the code-ground statement
+    /// layer (`parser/stmt.rs`) in a different position — the four
+    /// line-shaped children (`LET_STMT`/`ASSIGN_STMT`/`EXPR_STMT`/
+    /// `UNTIL_STMT`) parse WITHOUT the code-ground `;` terminator, this
+    /// escape being one content-ground line, terminated by `NEWLINE`/EOF
+    /// exactly like [`Self::CONTENT_LINE`] itself; the `STMT_BLOCK` child
+    /// (a `~{ … }` multi-statement logic block, issue #1972) is
+    /// self-delimiting via its own matching `}` instead. Mirrors
+    /// [`Self::RETURN_STMT`]'s doc precedent (one node shape safely serving
+    /// two grammars). Parsed by `parser/stmt.rs::logic_line`, dispatched
+    /// from `block::body_line`'s (and `family::colon_body_line`'s) `TILDE`
+    /// arm.
     LOGIC_LINE,
     /// `> text` — the code-ground line-escape into prose (charter §8.2,
     /// RULED 2026-07-23, `docs/decision-log.md` "Native interleaving &

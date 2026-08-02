@@ -39,8 +39,8 @@ use crate::hir::FileId;
 use crate::provenance::NodeClass;
 use crate::{
     Assignment, Block, BlockStmt, Content, ContentPart, Diagnostic, DiagnosticCode, Divert,
-    DivertPath, DivertTarget, ElseBranch, Expr, IfStmt, LogicBlock, Name, Return, ReturnKind,
-    SpanPart, Stmt, StringPart, Tag, TempDecl, TunnelCall,
+    DivertPath, DivertTarget, ElseBranch, Expr, IfStmt, LogicBlock, LogicBlockScope, Name, Return,
+    ReturnKind, SpanPart, Stmt, StringPart, Tag, TempDecl, TunnelCall,
 };
 
 use super::choice::lower_choice_point;
@@ -523,22 +523,65 @@ fn lower_one_item(
 /// `~ stmt` — the content-ground logic-line escape into code (charter
 /// §8.2, RULED 2026-07-23 `docs/decision-log.md` "Native interleaving &
 /// body-dialect spelling", issue #1991: ink's logic line, kept). Targets
-/// the top-level `Stmt::TempDecl`/`Stmt::Assignment`/`Stmt::ExprStmt`
-/// variants — an already-proven HIR/LIR/codegen/runtime path, since those
-/// are exactly what the ink-dialect's own logic line already lowers to
+/// the top-level `Stmt::TempDecl`/`Stmt::Assignment`/`Stmt::ExprStmt`/
+/// `Stmt::Await`/`Stmt::LogicBlock` variants — an already-proven HIR/LIR/
+/// codegen/runtime path for the first three (LIR-fenced E052 for `Await`
+/// pending FS-3, same as the code-ground `until` statement — see
+/// `lir::lower::stmts`), since those are exactly what the ink-dialect's own
+/// logic line already lowers to
 /// (`hir::lower::content::logic_line::LogicLineOutput`) — rather than
-/// inventing a new one. `TempDecl` (`~ let name = expr`) is issue #1972's
-/// addition to the two shapes #1991 originally wired; only the three
-/// `LogicLine` shapes `parser/stmt.rs::logic_line` can produce are matched
-/// — a `LOGIC_LINE` with none of them (should not happen given that
-/// parser, but CST nodes from a malformed parse are never assumed
-/// well-formed) is diagnosed loudly (E129) rather than silently dropped.
+/// inventing a new one. `TempDecl` (`~ let name = expr`, issue #1972) and
+/// `Await`/`LogicBlock` (`~ until cond` / `~{ … }`, also issue #1972) are
+/// this and #1991's additions to the single shape (`Assignment`/
+/// `ExprStmt`) #1991 originally wired; only the five `LogicLine` shapes
+/// `parser/stmt.rs::logic_line` can produce are matched — a `LOGIC_LINE`
+/// with none of them (should not happen given that parser, but CST nodes
+/// from a malformed parse are never assumed well-formed) is diagnosed
+/// loudly (E129) rather than silently dropped.
+///
+/// The `stmt_block()`/`until_stmt()` checks run first: a `~{ … }` block
+/// wraps its own `stmts: Vec<BlockStmt>` via
+/// [`super::control_flow::lower_stmt_block`] (the same call `expr::lower_expr`'s
+/// `STMT_BLOCK` atom case and the whole-body `~{ }`/`fn`-default override
+/// use) with `scope: LogicBlockScope::Standalone` — this escape is always
+/// exactly one `LogicBlock`, never split (splitting only ever happens one
+/// level up, in `lower_stmt_block_as_body`, for a `> text` line inside a
+/// **whole** code-ground body — see that function's doc). Like every sibling
+/// arm below (`~ let`/`~ x =`/`~ expr`), a trailing `Stmt::EndOfLine` is
+/// appended when the block contains a call anywhere in its statements
+/// (review finding, w111): a call-only `~{ … }` escape (e.g. `~{ shout();
+/// }`) otherwise leaves its output unterminated and glues into whatever
+/// prose line follows, exactly the bug `~ expr`'s own `needs_eol` check
+/// exists to prevent for the single-statement form. A `~ until cond`
+/// reuses `control_flow::lower_until_stmt` verbatim, wrapping the result as
+/// `Stmt::Await` instead of that function's own `BlockStmt::Await` call
+/// site.
 fn lower_logic_line(
     file_id: FileId,
     ll: &ast::LogicLine,
     diags: &mut Vec<Diagnostic>,
 ) -> Vec<Stmt> {
     let range = ll.syntax().text_range();
+    if let Some(block) = ll.stmt_block() {
+        let stmts = super::control_flow::lower_stmt_block(file_id, &block, diags);
+        let needs_eol = block_stmts_contain_call(&stmts);
+        let mut out = vec![Stmt::LogicBlock(LogicBlock {
+            ptr: native_provenance(file_id, NodeClass::LogicBlock, block.syntax()),
+            stmts,
+            scope: LogicBlockScope::Standalone,
+        })];
+        if needs_eol {
+            out.push(Stmt::EndOfLine);
+        }
+        return out;
+    }
+    if let Some(until_stmt) = ll.until_stmt() {
+        return vec![Stmt::Await(super::control_flow::lower_until_stmt(
+            file_id,
+            &until_stmt,
+            diags,
+        ))];
+    }
     if let Some(let_stmt) = ll.let_stmt() {
         return lower_logic_line_temp_decl(file_id, &let_stmt, diags).map_or_else(Vec::new, |td| {
             let needs_eol = td.value.as_ref().is_some_and(expr_contains_call);
@@ -639,6 +682,43 @@ fn expr_contains_call(expr: &Expr) -> bool {
             .any(|p| matches!(p, StringPart::Interpolation(e) if expr_contains_call(e))),
         _ => false,
     }
+}
+
+/// Whether a `~{ … }` block's statements contain a call anywhere — the
+/// `BlockStmt` analogue of [`expr_contains_call`], walked recursively into
+/// nested `if`/`while`/`for` bodies (a call two levels deep still needs the
+/// escape's own trailing `Stmt::EndOfLine`, since [`lower_logic_line`] only
+/// gets one flush point for the whole block, unlike the code-ground
+/// statement printer, which never needs this at all — see
+/// [`lower_logic_line`]'s doc). `Break`/`Continue` carry no expression and
+/// never match.
+fn block_stmts_contain_call(stmts: &[BlockStmt]) -> bool {
+    stmts.iter().any(|s| match s {
+        BlockStmt::TempDecl(td) => td.value.as_ref().is_some_and(expr_contains_call),
+        BlockStmt::Assignment(a) => expr_contains_call(&a.value),
+        BlockStmt::Return(r) => r.value.as_ref().is_some_and(expr_contains_call),
+        BlockStmt::ExprStmt(e) => expr_contains_call(e),
+        BlockStmt::Await(a) => a.condition.as_ref().is_some_and(expr_contains_call),
+        BlockStmt::If(i) => if_stmt_contains_call(i),
+        BlockStmt::While(w) => {
+            expr_contains_call(&w.condition) || block_stmts_contain_call(&w.body)
+        }
+        BlockStmt::For(f) => expr_contains_call(&f.iterable) || block_stmts_contain_call(&f.body),
+        BlockStmt::Break(_) | BlockStmt::Continue(_) => false,
+    })
+}
+
+/// [`block_stmts_contain_call`]'s `if`/`else if`/`else` walk — split out
+/// since `ElseBranch::ElseIf` recurses on `IfStmt` itself, not on a
+/// `[BlockStmt]` slice (mirrors [`fixup_return_kind_in_if_stmt`]'s shape).
+fn if_stmt_contains_call(i: &IfStmt) -> bool {
+    expr_contains_call(&i.condition)
+        || block_stmts_contain_call(&i.body)
+        || match &i.else_branch {
+            Some(ElseBranch::ElseIf(inner)) => if_stmt_contains_call(inner),
+            Some(ElseBranch::Else(stmts)) => block_stmts_contain_call(stmts),
+            None => false,
+        }
 }
 
 /// The `return`/tunnel-return container-exit unification (charter §11,

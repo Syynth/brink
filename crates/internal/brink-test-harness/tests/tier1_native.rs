@@ -587,6 +587,29 @@ flow main() {
 /// than #1991's assignment/bare-call case, but this test still fails
 /// without the fix (it just fails at `compile_path`, not at the
 /// transcript-diff step).
+///
+/// Extended again by issue #1972's second slice with a `~{ … }`
+/// multi-statement logic block: `let k = m + 2; n = k; shout();` — the
+/// second "Hi" plus "Now is 12." are only reachable if all three
+/// statements inside the block actually ran (`m` is `10` at that point, so
+/// `k = 12`, `n = k = 12`, then `shout()` prints "Hi" without touching
+/// `n`). With the `L_BRACE` dispatch arm in `logic_line` reverted, `~{`
+/// falls through to `expr_stmt_line`'s `expr::expression`, whose
+/// `STMT_BLOCK` atom case (blocks-as-values) lowers the block's statements
+/// for their diagnostics but has no `Expr` representation for the block's
+/// own value (`expr::lower_expr`'s `STMT_BLOCK` arm doc) — always a loud
+/// `E129`, never a silent drop, so this fixture fails to compile without
+/// the fix too, the same posture as the temp-decl case above.
+///
+/// The block deliberately ends on `shout()` (a call, not the silent
+/// `bump()` the first cut of this fixture used) to guard a second, later
+/// review finding: `lower_logic_line`'s `LogicBlock` arm must append
+/// `Stmt::EndOfLine` when the block contains a call, exactly like its
+/// `~ let`/`~ x =`/`~ expr` siblings already do — without that, this
+/// fixture's second "Hi" glues into the following `Now is 12.` line as
+/// `HiNow is 12.` (verified by reverting only that `needs_eol` check: the
+/// transcript diff fails on that exact line, confirming the golden guards
+/// the output-boundary fix, not just the block's own reachability).
 #[test]
 fn logic_line_escape() {
     assert_case("logic-line-escape");
