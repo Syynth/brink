@@ -64,19 +64,62 @@ pub struct HostManifest {
 
 /// One declared inline-markup span kind (`docs/prose-dialect-spec.md` §4.2).
 ///
-/// Deliberately flat: a tag name plus the attribute names that tag accepts.
-/// Attribute *types* are not modelled — span attributes are static text by
-/// construction (see `SyntaxKind::SPAN_ATTR_VALUE`), so there is nothing to
-/// type-check against, and the flat-nominal scope guardrail that governs
+/// A tag name plus the attributes that tag accepts. Attribute *values* are
+/// not modelled — span attributes are static text by construction (see
+/// `SyntaxKind::SPAN_ATTR_VALUE`), so there is nothing to type-check a value
+/// against, and the flat-nominal scope guardrail that governs
 /// [`SemanticTypeDef`] applies here for the same reason.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManifestSpanKind {
     /// The tag name as written in source, e.g. `wave` for `<wave>…</wave>`.
     pub name: String,
-    /// The attribute names this kind accepts, e.g. `["amount"]` for
+    /// The attributes this kind accepts, e.g. `[{"name": "amount"}]` for
     /// `<wave amount="3">`. Empty means the kind takes no attributes.
+    ///
+    /// Issue #1997 widened this from a bare `Vec<String>` (issue #1733's
+    /// original, allow-list-only shape) to [`Vec<ManifestSpanAttr>`] so a
+    /// declared attribute can carry a `required` flag (`E173`) — see that
+    /// type's own doc for the schema-headroom rationale.
     #[serde(default)]
-    pub attrs: Vec<String>,
+    pub attrs: Vec<ManifestSpanAttr>,
+}
+
+/// One attribute a [`ManifestSpanKind`] accepts (`docs/prose-dialect-spec.md`
+/// §4.2, issue #1780 gap 1, ruled by issue #1997).
+///
+/// Widens `ManifestSpanKind.attrs` from a bare `Vec<String>` to a record so
+/// that [`Self::required`] has somewhere to live, *and* so that a future
+/// attribute-value type has somewhere to land later without another schema
+/// break — issue #1780's gap 2. **That second half is schema headroom
+/// only: attribute-value typing is NOT implemented by this type.** Span
+/// attribute values stay static text by construction
+/// (`SyntaxKind::SPAN_ATTR_VALUE`); nothing here parses, resolves, or checks
+/// one against anything. A future PR that wants typed values adds a new
+/// `#[serde(default)]` field here — additive on an already-object-shaped
+/// array element, unlike widening a bare `String` would have been.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManifestSpanAttr {
+    /// The attribute name, e.g. `"amount"` for `<wave amount="3">`.
+    pub name: String,
+    /// Whether a span of this kind must carry this attribute, checked by
+    /// `brink_analyzer::markup_check` (`E173`). Defaults to `false`
+    /// (optional), matching every attribute's behavior before this field
+    /// existed — a manifest predating issue #1997 declares only names, and
+    /// every one of them deserializes as optional, exactly as it always
+    /// checked.
+    #[serde(default)]
+    pub required: bool,
+    /// Reserved slot for a future attribute-value type (issue #1780 gap 2).
+    /// **Inert.** Round-tripped through serde like any other field, but no
+    /// pass in this crate reads it, resolves it against
+    /// [`SemanticTypeDef`], or checks an attribute value against it — doing
+    /// so is explicitly out of scope for issue #1997. It exists only so a
+    /// later PR that *does* implement typing needs a new check, not a new
+    /// manifest shape: `TypeRef` is `#[serde(transparent)]`, so this field's
+    /// wire form is already the plain-string shape `ManifestParam::ty` uses
+    /// (e.g. `"ty": "int"`), and switching it on is additive.
+    #[serde(default)]
+    pub ty: Option<TypeRef>,
 }
 
 /// A registered external-function signature.
@@ -497,20 +540,35 @@ mod doc_example_tests {
         // section of docs/host-capability-manifest.md — same guard as the
         // Tier-1 example above: the doc's JSON is the shape hosts copy, so a
         // drift between it and `ManifestSpanKind`'s serde derive fails here.
+        //
+        // Issue #1997 widened `attrs` from `Vec<String>` to
+        // `Vec<ManifestSpanAttr>`; `sfx`'s `volume` is declared `required`
+        // here to also pin the new flag's wire shape in the same fixture.
         let json = r#"
         { "markup": [
-            { "name": "wave", "attrs": ["amount"] },
+            { "name": "wave", "attrs": [{ "name": "amount" }] },
             { "name": "b" },
-            { "name": "sfx", "attrs": ["name", "volume"] }
+            { "name": "sfx", "attrs": [{ "name": "name" }, { "name": "volume", "required": true }] }
         ] }
         "#;
 
         let manifest: super::HostManifest = serde_json::from_str(json).expect("parse doc example");
         assert_eq!(manifest.markup.len(), 3);
         assert_eq!(manifest.markup[0].name, "wave");
-        assert_eq!(manifest.markup[0].attrs, vec!["amount".to_string()]);
+        assert_eq!(
+            manifest.markup[0].attrs,
+            vec![super::ManifestSpanAttr {
+                name: "amount".to_string(),
+                required: false,
+                ty: None,
+            }]
+        );
         // Omitted `attrs` defaults to empty — a tag that takes none.
         assert!(manifest.markup[1].attrs.is_empty());
+        // Omitted `required` defaults to `false` (optional) — `name`'s
+        // requiredness is unaffected by its sibling `volume` declaring one.
+        assert!(!manifest.markup[2].attrs[0].required);
+        assert!(manifest.markup[2].attrs[1].required);
         // A manifest carrying only `markup` leaves the other sections empty,
         // which is what makes markup declarable independently of externals.
         assert!(manifest.externals.is_empty());
@@ -520,6 +578,8 @@ mod doc_example_tests {
         let round_tripped: super::HostManifest =
             serde_json::from_str(&serialized).expect("re-parse serialized manifest");
         assert_eq!(manifest, round_tripped);
-        assert!(serialized.contains(r#""markup":[{"name":"wave","attrs":["amount"]}"#));
+        assert!(serialized.contains(
+            r#""markup":[{"name":"wave","attrs":[{"name":"amount","required":false,"ty":null}]}"#
+        ));
     }
 }

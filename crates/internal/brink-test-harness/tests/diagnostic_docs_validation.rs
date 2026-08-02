@@ -252,6 +252,9 @@ fn diagnostic_codes_are_unique() {
 ///   `E159`/`E160`.
 /// - `E172` — raised only by `hir::lower_native::body::lower_tag`, i.e. only
 ///   while lowering a `.brink` file.
+/// - `E173` — the required-markup-attribute check (issue #1780/#1997), the
+///   same native-only markup channel as `E164`/`E165`; raised from the same
+///   `brink_analyzer::markup_check::SpanWalker`.
 ///
 /// Codes intentionally **excluded** despite living in the same numeric
 /// neighborhood: `E157` (the unnamed-once-only-choice / unnamed-sequence
@@ -260,7 +263,7 @@ fn diagnostic_codes_are_unique() {
 /// exactly what `E157.md`'s ```` ```ink ```` fences correctly demonstrate.
 const NATIVE_ONLY_CODES: &[&str] = &[
     "E130", "E132", "E145", "E146", "E153", "E154", "E155", "E156", "E158", "E159", "E160", "E161",
-    "E162", "E163", "E164", "E165", "E166", "E167", "E168", "E169", "E170", "E171", "E172",
+    "E162", "E163", "E164", "E165", "E166", "E167", "E168", "E169", "E170", "E171", "E172", "E173",
 ];
 
 /// Every fenced code block's info string (the text right after the opening
