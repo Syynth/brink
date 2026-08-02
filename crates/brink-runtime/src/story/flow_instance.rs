@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 
 use brink_format::{DefinitionId, PluralResolver, Value};
 
-use crate::error::RuntimeError;
+use crate::error::{RanOutOfContentCause, RuntimeError};
 use crate::output::OutputBuffer;
 use crate::program::Program;
 use crate::rng::StoryRng;
@@ -129,6 +129,7 @@ impl FlowInstance {
                 skipping_choice: false,
                 did_safe_exit: false,
                 did_unsafe_yield: false,
+                ran_out_of_content_cause: RanOutOfContentCause::default(),
                 exec_mode: ExecMode::default(),
                 pure_callback: crate::story::PureCallbackState::default(),
             },
@@ -427,7 +428,9 @@ impl FlowInstance {
         //    call delivered the text — error now.
         if self.status == StoryStatus::Done {
             if !self.flow.did_safe_exit {
-                return Err(RuntimeError::RanOutOfContent);
+                return Err(RuntimeError::RanOutOfContent(
+                    self.flow.ran_out_of_content_cause,
+                ));
             }
             self.status = StoryStatus::Active;
         }

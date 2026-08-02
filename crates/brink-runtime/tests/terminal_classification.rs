@@ -18,7 +18,7 @@
 //! updated deliberately, with the oracle re-run; that is the point of
 //! writing them down.
 
-use brink_runtime::{DotNetRng, Line, RuntimeError, Story};
+use brink_runtime::{DotNetRng, Line, RanOutOfContentCause, RuntimeError, Story};
 
 /// Compile ink source and link it into a runnable story.
 #[expect(clippy::unwrap_used)]
@@ -80,9 +80,15 @@ fn ran_out_of_content_faults_on_the_call_after_the_done_line() {
         "did_safe_exit must be false right after the ran-out-of-content Done line"
     );
 
-    // The classification only surfaces on the following call.
+    // The classification only surfaces on the following call. `k`'s body
+    // is reached by a plain `-> k` divert (no tunnel/function push), so the
+    // call stack is just the root frame at fault time — the "plain" cause,
+    // matching C#'s `!callStack.canPop` branch (issue #1993).
     assert!(
-        matches!(story.continue_single(), Err(RuntimeError::RanOutOfContent)),
+        matches!(
+            story.continue_single(),
+            Err(RuntimeError::RanOutOfContent(RanOutOfContentCause::Plain))
+        ),
         "the deferred fault surfaces one continue later"
     );
 }
@@ -142,5 +148,76 @@ fn end_classifies_eagerly_unlike_done() {
     assert!(
         matches!(story.continue_single(), Err(RuntimeError::StoryEnded)),
         "an ended story reports StoryEnded, never RanOutOfContent"
+    );
+}
+
+/// Characterizes a gap discovered while implementing #1993 (four
+/// call-stack-keyed `RanOutOfContent` causes): a tunnel (`->t->`) that runs
+/// out of content with **no** `->->` should classify as
+/// [`RanOutOfContentCause::Tunnel`] per C# (`Story.cs`'s
+/// `callStack.CanPop(PushPopType.Tunnel)` arm) — but today it classifies as
+/// [`RanOutOfContentCause::Plain`] instead, because this runtime's
+/// `vm::handle_frame_exhaustion` unconditionally pops an exhausted Tunnel
+/// frame when no choices are pending (silently treating it like an
+/// implicit function return and resuming the caller), where C# never
+/// auto-pops a Tunnel frame — only a Function. By the time the deferred
+/// fault fires, the tunnel frame (and then the caller's own frame) are
+/// already gone, so the classification captured at the *last* exhaustion
+/// event is the outermost one: Plain.
+///
+/// This pins **today's** (C#-divergent) behavior, not the desired one — see
+/// the module docs' philosophy. If a future fix makes tunnels match C#'s
+/// no-auto-pop semantics, this test must flip to `Tunnel` deliberately, with
+/// the oracle corpus re-run (`docs/decision-log.md`-worthy: it changes VM
+/// frame-popping, not just message text).
+#[test]
+fn tunnel_fall_off_classifies_as_plain_not_tunnel_today() {
+    let mut story =
+        story_from_source("-> main\n=== main ===\n-> tunnel ->\n\n=== tunnel ===\nHello.\n");
+
+    let (terminal, text) = drive_to_terminal(&mut story);
+    assert!(matches!(terminal, Line::Done { .. }));
+    assert!(text.contains("Hello."));
+    assert!(!story.did_safe_exit());
+
+    assert!(
+        matches!(
+            story.continue_single(),
+            Err(RuntimeError::RanOutOfContent(RanOutOfContentCause::Plain))
+        ),
+        "tunnel fall-off is misclassified as Plain today (see #1993 scope notes) — \
+         a future fix to Tunnel auto-pop semantics must flip this to Tunnel deliberately"
+    );
+}
+
+/// The function counterpart of the test above: a function (`f()`) that
+/// runs out of content with no `~ return` should classify as
+/// [`RanOutOfContentCause::Function`] per C# — but the classification is
+/// only ever transient here too. Unlike the tunnel case, brink's
+/// auto-pop-on-exhaustion for Function frames **does** match C#'s
+/// (`callStack.CanPop(PushPopType.Function)`) — but since there is always a
+/// `Root` frame beneath it, the auto-pop always succeeds and execution
+/// cascades down to the `Root` frame's own exhaustion, which reclassifies
+/// as Plain before the deferred fault ever reads it. `Function` is
+/// reachable in principle (e.g. if a future change lets some frame type
+/// block the cascade partway up without itself being poppable), but not
+/// through any call-stack shape this runtime can currently produce.
+#[test]
+fn function_fall_off_classifies_as_plain_not_function_today() {
+    let mut story =
+        story_from_source("-> main\n=== main ===\n~ temp x = f()\n\n=== function f ===\nHello.\n");
+
+    let (terminal, text) = drive_to_terminal(&mut story);
+    assert!(matches!(terminal, Line::Done { .. }));
+    assert!(text.contains("Hello."));
+    assert!(!story.did_safe_exit());
+
+    assert!(
+        matches!(
+            story.continue_single(),
+            Err(RuntimeError::RanOutOfContent(RanOutOfContentCause::Plain))
+        ),
+        "function fall-off cascades down to the root frame's own Plain \
+         classification today (see #1993 scope notes)"
     );
 }

@@ -25,7 +25,7 @@ use crate::record_ops;
 use crate::state::ContextAccess;
 use crate::story::{
     CallFrame, CallFrameType, ContainerPosition, ExecMode, Flow, PendingChoice, PureCallbackState,
-    Stats,
+    Stats, classify_ran_out_of_content,
 };
 use crate::string_ops;
 use crate::tower_ops;
@@ -2809,6 +2809,17 @@ fn handle_frame_exhaustion(
     stats: &mut Stats,
     frame_type: CallFrameType,
 ) -> Result<Stepped, RuntimeError> {
+    // Record *why*, from the exhausted frame's shape right now — before
+    // anything below pops it — in case this turns out to be the last
+    // exhaustion event before a content-exhausted `Done` (issue #1993).
+    // Harmless to write on every call: it is only ever consulted one
+    // `continue_single` later, and only when that later check finds
+    // `did_safe_exit == false`, so an overwrite from a branch that resumes
+    // normally (pending choices, a popped function with more content below)
+    // is simply superseded before anyone reads it.
+    let can_pop = flow.current_thread().call_stack.len() > 1;
+    flow.ran_out_of_content_cause = classify_ran_out_of_content(frame_type, can_pop);
+
     if frame_type == CallFrameType::Thread {
         // Thread boundary exhausted — thread is done. Pop it without
         // touching inherited frames below. ThreadCall always creates a
@@ -3238,6 +3249,7 @@ mod tests {
             skipping_choice: false,
             did_safe_exit: false,
             did_unsafe_yield: false,
+            ran_out_of_content_cause: crate::RanOutOfContentCause::default(),
             exec_mode: ExecMode::default(),
             pure_callback: crate::story::PureCallbackState::default(),
         }

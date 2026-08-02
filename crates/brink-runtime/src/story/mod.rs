@@ -29,7 +29,7 @@ mod types;
 pub use call_stack::ExecMode;
 pub(crate) use call_stack::{
     CallFrame, CallFrameType, ChoiceDisplay, ContainerPosition, Flow, PendingChoice,
-    PureCallbackState,
+    PureCallbackState, classify_ran_out_of_content,
 };
 pub use external::{ExternalFnHandler, ExternalResult, FallbackHandler, FunctionEval};
 pub use flow_instance::{DriveOutcome, FlowInstance};

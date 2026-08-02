@@ -4,6 +4,56 @@ use alloc::string::String;
 
 use brink_format::{DecodeError, DefinitionId};
 
+/// Why execution ran out of content — the call-stack shape C#'s
+/// `Story.Continue()` inspects to pick one of four messages (`Story.cs`,
+/// the `AddError` calls guarding the "ran out of content" branch: it checks
+/// `callStack.CanPop(PushPopType.Tunnel)`, then `.CanPop(PushPopType.Function)`,
+/// then `!callStack.canPop`, with a final backstop for none of the above).
+///
+/// Captured the moment a frame's content is discovered exhausted
+/// (`vm::handle_frame_exhaustion`, the same instant C# reads
+/// `callStack.CanPop`) and stashed on `Flow` until the *next*
+/// `continue_single` call raises the deferred fault (issue #1574 ruled the
+/// deferred timing stays — this only changes which cause is attached, not
+/// *when* the fault fires). It has to be captured that early rather than
+/// read fresh at fault time: unlike C#, this runtime's own exhaustion
+/// recovery always pops the exhausted frame (even a Tunnel with nothing
+/// pending), so by the time the deferred fault fires the frame that
+/// triggered it is usually long gone from the call stack.
+///
+/// In practice, only [`Plain`](Self::Plain) is reachable through any story
+/// today: a Tunnel or Function frame's exhaustion is captured correctly at
+/// the instant it happens, but this runtime's frame-popping (unlike C#'s)
+/// keeps unwinding past it — cascading all the way to the root frame's own
+/// exhaustion, which overwrites the cause with `Plain` before the fault
+/// ever surfaces. Making the other three arms reachable needs a separate,
+/// deliberate fix to that popping behavior (issue #1993's scope notes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, thiserror::Error)]
+pub enum RanOutOfContentCause {
+    /// The top call-stack frame is a tunnel (`->t->`) — content ran out
+    /// mid-tunnel with no `->->` to return. Mirrors
+    /// `callStack.CanPop(PushPopType.Tunnel)`.
+    #[error("unexpectedly reached end of content. Do you need a '->->' to return from a tunnel?")]
+    Tunnel,
+    /// The top call-stack frame is a function call — content ran out
+    /// mid-function with no `~ return`. Mirrors
+    /// `callStack.CanPop(PushPopType.Function)`.
+    #[error("unexpectedly reached end of content. Do you need a '~ return'?")]
+    Function,
+    /// The call stack can't pop at all (only the root frame remains) — the
+    /// plain "story fell off the end" case, and the default when nothing
+    /// more specific was ever recorded. Mirrors `!callStack.canPop`.
+    #[default]
+    #[error("ran out of content. Do you need a '-> DONE' or '-> END'?")]
+    Plain,
+    /// The call stack can pop, but the top frame is neither a tunnel nor a
+    /// function (e.g. a thread boundary, or an in-progress
+    /// engine-called-function frame). C#'s backstop for a call-stack shape
+    /// well-formed compiler output should never produce.
+    #[error("unexpectedly reached end of content for unknown reason. Please debug compiler!")]
+    Unknown,
+}
+
 /// Errors that can occur during story linking or execution.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum RuntimeError {
@@ -58,8 +108,8 @@ pub enum RuntimeError {
     #[error("flow already exists: {0}")]
     FlowAlreadyExists(String),
 
-    #[error("ran out of content. Do you need a '-> DONE' or '-> END'?")]
-    RanOutOfContent,
+    #[error("{0}")]
+    RanOutOfContent(RanOutOfContentCause),
 
     #[error("step limit exceeded ({0} steps)")]
     StepLimitExceeded(u64),
