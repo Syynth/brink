@@ -1266,6 +1266,37 @@ fn prose_line_with_no_prose_still_lowers_to_a_single_logic_block_unchanged() {
 }
 
 #[test]
+fn prose_line_with_no_prose_anchors_provenance_on_the_whole_stmt_block() {
+    // Review finding F4: `flush_code_ground_run` anchors a `LogicBlock`'s
+    // `ptr` on the run's first item (`run_start`), which is the right
+    // choice once a `> text` split has actually happened, but the
+    // no-split case must still anchor on the whole `STMT_BLOCK` node —
+    // the pre-#1992 shape — since `lb.ptr` is read for diagnostic ranges
+    // (`brink-analyzer/src/validate.rs`, `coalesce.rs`) and the module doc
+    // claims "byte-for-byte the prior shape" for exactly this case.
+    let src = "fn bump() {\n  n += 1;\n}\n";
+    let (hir, _m, diags) = lower_src(src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let body = only_knot_body(&hir);
+    let Stmt::LogicBlock(lb) = &body.stmts[0] else {
+        panic!("expected Stmt::LogicBlock, got {:?}", body.stmts[0]);
+    };
+    let parse = brink_syntax_native::parse(src);
+    let expected = parse
+        .tree()
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == N::STMT_BLOCK)
+        .expect("STMT_BLOCK in tree")
+        .text_range();
+    assert_eq!(
+        lb.ptr.range, expected,
+        "the single-run LogicBlock's ptr must span the whole `STMT_BLOCK`, \
+         not just its first statement"
+    );
+}
+
+#[test]
 fn prose_line_interleaves_with_logic_block_runs() {
     // Runs of ordinary statements on either side of a `> text` line each
     // become their own `LogicBlock`, with the content emission sitting
@@ -1316,6 +1347,34 @@ fn prose_line_nested_in_an_if_body_is_a_loud_e129_not_silent() {
         !body_contains_content(body),
         "a prose line with no content-emission home in this context must never \
          still surface as content: {body:?}"
+    );
+}
+
+#[test]
+fn a_g1_label_on_a_code_ground_prose_line_is_a_loud_e129_not_silently_dropped() {
+    // Review finding F3: `lower_code_ground_items` called
+    // `lower_content_line_body`, which its own doc says skips the
+    // `CONTENT_LINE`'s `LABEL` child deliberately — that's correct for
+    // `lower_items`'s weave-ground absorption algorithm (a label there
+    // decides how much of the item stream to swallow, consumed by the
+    // *caller* before this helper ever sees the line), but this
+    // split-run loop has no absorption target at all, so a `(name)` label
+    // on a `> text` line here was silently vanishing with no diagnostic —
+    // and a later `-> again` divert to that name would then fail to
+    // resolve, with no way to trace why.
+    let (hir, _m, diags) = lower_src("fn radio() {\n  n = 1;\n  > (again) hi\n}\n");
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E129),
+        "expected E129 for a G-1 label on a code-ground prose line, got: {diags:?}"
+    );
+    // The label's loss doesn't also swallow the line's own content — the
+    // prose line still lowers to ordinary `Stmt::Content`/`Stmt::EndOfLine`
+    // siblings, same as an unlabeled one.
+    let body = only_knot_body(&hir);
+    assert!(
+        body_contains_content(body),
+        "the prose line's own content must still lower even though its label \
+         is rejected: {body:?}"
     );
 }
 

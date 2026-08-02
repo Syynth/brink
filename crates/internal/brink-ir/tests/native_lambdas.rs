@@ -167,6 +167,42 @@ fn braced_body_without_a_tail_has_no_value_expression() {
 }
 
 #[test]
+fn a_trailing_prose_line_is_never_the_lambdas_tail_value() {
+    // Issue #1992 review finding F2: `ast::StmtBlock::tail()` didn't
+    // exclude `PROSE_LINE`, so `|| { > hi }` reported its `> text` escape
+    // as the block's blocks-as-values tail — this lambda's own body arm
+    // (`lower_lambda::lower_lambda`) then took `block.tail()` at its word
+    // and lowered the prose line as the lambda's *return value* via
+    // `expr::lower_expr` instead of routing it through
+    // `lower_stmt_block_stmts` → `lower_block_item`'s loud `E129` arm,
+    // where a `PROSE_LINE` nested anywhere but a `flow`/`fn`'s own
+    // top-level code-ground body is supposed to land.
+    let (lambda, diags) = lower_lambda("|| { > hi }");
+    let LambdaBody::Block { stmts, tail } = &lambda.body else {
+        panic!("expected a braced body, got {:?}", lambda.body);
+    };
+    assert!(
+        tail.is_none(),
+        "a `> text` prose line must never be a lambda's tail value, got {tail:?}"
+    );
+    // Not folded into `stmts` either: `lower_block_item`'s default arm
+    // reports `E129` and yields `None` (no `BlockStmt` representation for
+    // content), so the prose line contributes zero `BlockStmt`s here —
+    // reported loudly via the diagnostic below, never silently dropped
+    // *and* never silently promoted to the lambda's value.
+    assert!(
+        stmts.is_empty(),
+        "a nested `> text` line has no `BlockStmt` representation, got {stmts:?}"
+    );
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E129),
+        "expected E129 (a nested `> text` line has no content-emission home \
+         inside a lambda body), got {:?}",
+        codes(&diags)
+    );
+}
+
+#[test]
 fn return_inside_a_lambda_lowers_to_an_ordinary_return_statement() {
     let (lambda, diags) = lower_lambda("|x| { return x; }");
     assert_eq!(codes(&diags), Vec::<&str>::new());

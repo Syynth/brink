@@ -131,7 +131,16 @@ pub(super) fn lower_stmt_block_as_body(
     diags: &mut Vec<Diagnostic>,
 ) -> Block {
     let items: Vec<SyntaxNode> = block.items().collect();
-    let stmts = lower_code_ground_items(file_id, &items, elements, diags);
+    let mut stmts = lower_code_ground_items(file_id, &items, elements, diags);
+    // A body with no `> text` prose-line split still lowers to exactly one
+    // `Stmt::LogicBlock` — re-anchor its provenance on the whole
+    // `STMT_BLOCK` node (the pre-#1992 shape) rather than
+    // `flush_code_ground_run`'s `run_start` anchor (the first statement
+    // inside it), which is only a meaningful choice once a split has
+    // actually happened (review finding F4).
+    if let [Stmt::LogicBlock(lb)] = stmts.as_mut_slice() {
+        lb.ptr = native_provenance(file_id, NodeClass::LogicBlock, block.syntax());
+    }
     let tail = crate::tail_from_stmts(&stmts);
     Block {
         label: None,
@@ -145,7 +154,10 @@ pub(super) fn lower_stmt_block_as_body(
 /// items (wrapped as `Stmt::LogicBlock`) around `PROSE_LINE` items (lowered
 /// to `Stmt::Content`/`Stmt::EndOfLine` directly) — see
 /// [`lower_stmt_block_as_body`]'s doc for why the split lives here rather
-/// than inside `BlockStmt` itself.
+/// than inside `BlockStmt` itself. A G-1 `(name)` label on one of those
+/// `PROSE_LINE`s has no absorption target in this loop (unlike
+/// [`lower_items`]'s weave-ground stream) and is reported loudly (`E129`)
+/// rather than silently dropped (review finding F3).
 fn lower_code_ground_items(
     file_id: FileId,
     items: &[SyntaxNode],
@@ -161,6 +173,22 @@ fn lower_code_ground_items(
             flush_code_ground_run(file_id, &mut run, &mut run_start, diags, &mut stmts);
             if let Some(pl) = ast::ProseLine::cast(item.clone()) {
                 if let Some(cl) = pl.content_line() {
+                    // A G-1 `(name)` label on a code-ground `> text` line
+                    // has no absorption target here — unlike weave-ground
+                    // `lower_items`, which uses a label to decide how much
+                    // of the item stream a labeled content line/gather
+                    // swallows, this split-run loop has no such stream to
+                    // absorb into. Report it loudly (E129) rather than
+                    // silently dropping it and leaving a later `-> again`
+                    // to fail to resolve elsewhere with no explanation
+                    // (review finding F3).
+                    if let Some(label) = cl.label() {
+                        diags.push(diag(
+                            file_id,
+                            label.syntax().text_range(),
+                            DiagnosticCode::E129,
+                        ));
+                    }
                     stmts.extend(lower_content_line_body(file_id, &cl, elements, diags));
                 } else {
                     diags.push(diag(file_id, item.text_range(), DiagnosticCode::E129));
@@ -176,7 +204,49 @@ fn lower_code_ground_items(
         run.push(item);
     }
     flush_code_ground_run(file_id, &mut run, &mut run_start, diags, &mut stmts);
+    mark_split_logic_block_scopes(&mut stmts);
     stmts
+}
+
+/// After a `> text` prose-line escape has split one code-ground body into
+/// more than one `Stmt::LogicBlock` (review finding F1), those runs must
+/// still share **one** T1b lexical scope: a `let`/`temp` declared in an
+/// earlier run has to stay visible, for both reads and writes, in every
+/// run after it — including any trailing `Stmt::Content` after the *last*
+/// split run, since a `> text` prose line can be the final item in the
+/// body — not be popped the moment its own run's `LogicBlock` ends, which
+/// would otherwise send a later write silently to a phantom global
+/// (`lir::lower::stmts::lower_assign_target`'s `resolve_path` fallback
+/// finds no block-scoped slot and emits `AssignTarget::Global`) and a
+/// later read to a wrong-block-blaming E082 (`lir::lower::expr`'s
+/// `block_scoped_temp_names` arm). Tags the first split run `Opens`
+/// (pushes the shared scope) and every other one `Continues` (neither
+/// pushes nor pops) — see [`crate::LogicBlockScope`]'s doc for why the
+/// matching pop lives one level up, in
+/// `lir::lower::lower_block_with_children`, rather than on any particular
+/// run here. A body with fewer than two `LogicBlock`s (no split at all,
+/// the overwhelmingly common case) is left untouched at the default
+/// `LogicBlockScope::Standalone` — byte-for-byte the original
+/// push-and-pop-per-block shape.
+fn mark_split_logic_block_scopes(stmts: &mut [Stmt]) {
+    let count = stmts
+        .iter()
+        .filter(|s| matches!(s, Stmt::LogicBlock(_)))
+        .count();
+    if count < 2 {
+        return;
+    }
+    let mut seen = 0usize;
+    for stmt in stmts.iter_mut() {
+        if let Stmt::LogicBlock(lb) = stmt {
+            lb.scope = if seen == 0 {
+                crate::LogicBlockScope::Opens
+            } else {
+                crate::LogicBlockScope::Continues
+            };
+            seen += 1;
+        }
+    }
 }
 
 /// Flush a buffered run of ordinary (non-`PROSE_LINE`) `STMT_BLOCK` items
@@ -205,6 +275,7 @@ fn flush_code_ground_run(
         stmts.push(Stmt::LogicBlock(LogicBlock {
             ptr: native_provenance(file_id, NodeClass::LogicBlock, &anchor),
             stmts: block_stmts,
+            scope: crate::LogicBlockScope::Standalone,
         }));
     }
     *run_start = None;

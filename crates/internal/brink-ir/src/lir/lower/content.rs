@@ -177,7 +177,7 @@ fn lower_inline_block(block: &hir::Block, ctx: &mut LowerCtx<'_>) -> Vec<lir::St
     let mut stmts = Vec::new();
     for stmt in &block.stmts {
         if let hir::Stmt::LogicBlock(lb) = stmt {
-            stmts.extend(super::blocks::lower_logic_block(&lb.stmts, ctx));
+            stmts.extend(super::blocks::lower_logic_block(lb, ctx));
         } else if let Some(s) = super::stmts::lower_stmt(stmt, ctx) {
             stmts.push(s);
         }

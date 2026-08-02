@@ -486,6 +486,22 @@ fn if_stmt_as_the_last_item_is_not_mistaken_for_a_tail() {
     assert_eq!(items[0].kind(), SyntaxKind::IF_STMT);
 }
 
+/// `> text` (charter §8.2, issue #1992) never produces a value either —
+/// review finding F2. Before this, a `PROSE_LINE` as the last item in a
+/// `STMT_BLOCK` was missing from `StmtBlock::tail`'s exclusion list, so it
+/// was mistaken for the block's blocks-as-values tail expression exactly
+/// like an `IF_STMT` used to be (the sibling case just above).
+#[test]
+fn prose_line_as_the_last_item_is_not_mistaken_for_a_tail() {
+    let p = assert_lossless("var x = { > hi }\n");
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let block = stmt_block_of(&p);
+    assert!(block.tail().is_none());
+    let items: Vec<_> = block.items().collect();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].kind(), SyntaxKind::PROSE_LINE);
+}
+
 #[test]
 fn control_flow_bodies_nest_and_recurse() {
     let p = assert_lossless(
