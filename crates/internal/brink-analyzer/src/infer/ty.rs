@@ -581,6 +581,29 @@ pub fn assignable(target: &Ty, source: &Ty) -> bool {
     erase_fn_rows(&unify(target, source)) == erase_fn_rows(target)
 }
 
+/// Is a value of type `source` legal as the argument bound to a `ref`
+/// parameter declared `target`?
+///
+/// **Invariant, not covariant** (issue #1995/#1920, ruled 2026-08-01). A
+/// `ref` slot both *reads* and *writes* through the caller's own storage
+/// cell — [`assignable`]'s one-directional widening (`int` argument fits a
+/// `float` slot) is unsound here, because the callee can write a `float`
+/// back through a cell that is statically declared `int`. Every other
+/// argument-type check in this crate is a genuine "does this value fit"
+/// question and stays on [`assignable`]; only a call's `ref`-parameter
+/// slots need this stricter twin.
+///
+/// Still row-insensitive for the same reason [`assignable`] is: two
+/// `fn(): int` values created at different targets must not conflict merely
+/// because their [`FnRow`]s differ (issue #1680 step 2). Erasing both sides
+/// before comparing keeps that guarantee while requiring the erased types to
+/// match exactly, in either direction, rather than merely joining without
+/// widening the target.
+#[must_use]
+pub fn ref_assignable(target: &Ty, source: &Ty) -> bool {
+    erase_fn_rows(target) == erase_fn_rows(source)
+}
+
 /// Why an [`coalesce`] application is ill-typed (NS-A1, F19).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CoalesceError {
@@ -1079,6 +1102,33 @@ mod tests {
         assert!(!assignable(&Ty::Int, &Ty::Float));
         // …and the one legal directional numeric coercion still passes.
         assert!(assignable(&Ty::Float, &Ty::Int));
+    }
+
+    #[test]
+    fn ref_assignable_rejects_the_widening_assignable_permits() {
+        // Issue #1995/#1920: `assignable(Float, Int)` is `true` (by-value
+        // widening), but a `ref` slot must reject it — the exact soundness
+        // hole the ruling closed.
+        assert!(assignable(&Ty::Float, &Ty::Int));
+        assert!(!ref_assignable(&Ty::Float, &Ty::Int));
+        // The reverse direction was already rejected by `assignable` and
+        // stays rejected here.
+        assert!(!ref_assignable(&Ty::Int, &Ty::Float));
+        // Identical types still match invariantly.
+        assert!(ref_assignable(&Ty::Int, &Ty::Int));
+        assert!(ref_assignable(&Ty::Float, &Ty::Float));
+        // Row-insensitivity is preserved: two `fn(): int` values from
+        // different creation targets still match a `ref` slot declared
+        // `fn(int): int`.
+        assert!(ref_assignable(
+            &fn_ty(&[Ty::Int], Ty::Int),
+            &fn_ty_from(&[Ty::Int], Ty::Int, &[1])
+        ));
+        // But a structurally different fn type still does not.
+        assert!(!ref_assignable(
+            &fn_ty(&[Ty::Int], Ty::Int),
+            &fn_ty_from(&[Ty::String], Ty::Int, &[1])
+        ));
     }
 
     #[test]

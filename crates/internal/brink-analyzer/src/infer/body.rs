@@ -31,7 +31,7 @@ use brink_ir::{
 use rowan::TextRange;
 
 use super::effects::FnArgOrigins;
-use super::ty::{FnRow, TowerTy, Ty, assignable, coalesce, unify, unify_all};
+use super::ty::{FnRow, TowerTy, Ty, assignable, coalesce, ref_assignable, unify, unify_all};
 use super::{
     DirectCallArgMismatch, FieldAssignMismatch, InferredSig, TypedAssignMismatch, UfcsCallArgs,
     ValueCallFact, ValueCallKind, range_key,
@@ -2215,6 +2215,12 @@ impl InferPass<'_, '_> {
             self.record_call_edge(def);
             self.record_ref_param_writes(def, args);
             self.record_call_arg_fn_origins(def, args);
+            // Issue #1995/#1920: which positions are declared `ref` lives
+            // on the symbol index's own `params` (`InferredSig` carries no
+            // `is_ref` bit — see `record_ref_param_writes`'s doc), so it has
+            // to be read from `self.ctx.index` here too, alongside
+            // `known_sigs`'s inferred param types.
+            let ref_positions = self.ctx.index.symbols.get(&def);
             return self.ctx.known_sigs.get(&def).map_or(Ty::Unknown, |sig| {
                 for (i, arg) in args.iter().enumerate() {
                     if let Some(param_ty) = sig.params.get(i) {
@@ -2229,11 +2235,26 @@ impl InferPass<'_, '_> {
                         // `Ty::Conflicted` on its own, already reported as
                         // `E066`; see `super::DirectCallArgMismatch`'s doc
                         // for why reporting it again here would double up.
+                        //
+                        // Issue #1995/#1920: a `ref` parameter both reads
+                        // and writes through the caller's own cell, so its
+                        // argument is checked with `ref_assignable`
+                        // (invariant) rather than `assignable`'s covariant
+                        // widening — `assignable(Float, Int)` is `true`,
+                        // which let a `ref float` parameter accept an `int`
+                        // cell and write a `float` back through it.
+                        let is_ref_param = ref_positions
+                            .and_then(|info| info.params.get(i))
+                            .is_some_and(|p| p.is_ref);
                         if !param_ty.is_unresolved()
                             && !self.arg_is_observed_local(arg)
                             && let Some(arg_ty) = arg_tys.get(i)
                             && !arg_ty.is_unresolved()
-                            && !assignable(param_ty, arg_ty)
+                            && if is_ref_param {
+                                !ref_assignable(param_ty, arg_ty)
+                            } else {
+                                !assignable(param_ty, arg_ty)
+                            }
                         {
                             let callee = path
                                 .segments
