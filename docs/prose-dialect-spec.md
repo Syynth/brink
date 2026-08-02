@@ -478,7 +478,16 @@ fn radio(chan: string, text: content) {
   one `StyleToken::Custom("a b")` rather than two tokens.
 - **Staging**: v1 = built-in screenplay preset + `!`-dispatched
   annotations (zero comptime); the §3.5 conventions-module evaluation
-  arrives later for authoring full custom presets.
+  arrives later for authoring full custom presets. **The preset itself
+  landed, issue #1720** (`std/conventions/screenplay.brink`) — but only as
+  authored source, not as anything a project can `use` yet: no
+  `std::`-namespaced module resolution exists in the compiler (native
+  discovery is tree-is-universe, with no importable stdlib path), and
+  `fn conventions()` registration/comptime (issue #1840) hasn't landed
+  either. The preset's handlers are proven end to end only via a project
+  that inlines the same declarations directly (`tests/tier1-native/
+  conventions-screenplay-preset/`) — single-file `claims`/`block`
+  dispatch, exactly what #1838/#1839 shipped.
 
 ## 4. The markup layer
 
@@ -1229,17 +1238,36 @@ The *grammar* half of §8b/§8d is built, in `brink-syntax-native`
   content-line spelling is untouched outside dialogue;
 - trailing `#tag`s on a `flow` header line (§8b.4).
 
-**One shape lowers; the rest deliberately do not.** Issue #1838 landed
+**Two shapes lower; the rest deliberately do not.** Issue #1838 landed
 natural-notation dispatch, so a **scene heading** whose text an
 `@[element(claims = "…")]` handler matches lowers to exactly one call on
 that handler (`brink_ir::hir::lower_native::element`) — the first time any
-of this grammar reaches output. Everything else stays staged: element
-roles/attachment are §3.6/§8b.7–8 → issue #1717; the built-in preset is
-#1720; per-flow tag *APIs* are #474, whose iceboxed authoring surface this
-grammar supplies. (The conventions `lower:` column this paragraph used to
-name is **dissolved** — see `docs/decision-log.md` 2026-07-31.) Until those
-land, `hir::lower_native` reports every unclaimed shape as not-yet-lowered
-(`E129`) rather than reading it as ordinary prose or dropping it.
+of this grammar reached output. Issue #1720 (the built-in screenplay
+preset) widened `element::candidate` to the two remaining literal-line
+grammar shapes this section names — a real `CUE`'s name and a chain-gated
+`PARENTHETICAL`'s delivery text are now claim candidates too, exactly the
+same way (only a wholly literal run, no tag extension) — so `@NAME` and
+`(delivery)` lines now reach output through the same mechanism once a
+preset or project declares a matching handler; `std/conventions/
+screenplay.brink` is the shipped built-in one. `COMPACT_CUE` (`@NAME:
+text`) stays unclaimed (its fused name+text shape doesn't fit
+`try_claim`'s single-text-node contract), as does any cue/heading
+carrying a tag extension, and a heading carrying an explicit `[slug]`
+(every worked-page heading in §8/§8c/§8d does) — `candidate`'s literalness
+rule declines all three the same way it declines a `CONTENT_LINE` with
+interpolation. Promoting a slug-bearing heading to a genuine HIR stitch (a
+real divert target, §3.2/§3.3) is not built anywhere — issue #1717, which
+would have owned that, was closed as superseded by the §9.1 ruling without
+delivering it — so a heading-declared divert target, as §8c/§8d's worked
+pages write one, is not reachable through any preset today; a project
+still needs an ordinary `flow name() { … }` for that. Element
+roles/attachment (§3.6/§8b.7–8) are the `block` capture mechanism (issue
+#1839, landed) rather than a separate concept; per-flow tag *APIs* are
+#474, whose iceboxed authoring surface this grammar supplies. (The
+conventions `lower:` column this paragraph used to name is **dissolved**
+— see `docs/decision-log.md` 2026-07-31.) `hir::lower_native` still
+reports every *unclaimed* shape as not-yet-lowered (`E129`) rather than
+reading it as ordinary prose or dropping it.
 
 The **lyrics element stays dropped** (§8b.1): there is no `LYRICS` shape
 in the grammar, and the `~` conflict died with it.

@@ -321,6 +321,20 @@ pub enum ElementKind {
     /// which are *claimed*, i.e. matched without any structural marker of
     /// their own).
     BangDispatch,
+    /// A block cue (`CUE`, `docs/prose-dialect-spec.md` §8b.9/§8d.4) — a
+    /// bare `@NAME` speaker line with no tag extension (a cue carrying a
+    /// tag, e.g. `@VENDOR #(v.o.)`, is declined the same way a
+    /// slug/tag-carrying [`Self::SceneHeading`] is — see
+    /// [`crate::hir::lower_native::element::candidate`]'s own doc).
+    /// Issue #1720: the built-in screenplay preset's `cue` handler is the
+    /// first consumer.
+    Cue,
+    /// A parenthetical delivery line (`PARENTHETICAL`,
+    /// `docs/prose-dialect-spec.md` §8.), chain-gated by the parser (only
+    /// recognized directly after a live cue — `brink-syntax-native`'s
+    /// `at_parenthetical`). Issue #1720: the built-in screenplay preset's
+    /// `parenthetical` handler is the first consumer.
+    Parenthetical,
 }
 
 /// One named capture bound by a claimed line, as a **span into real

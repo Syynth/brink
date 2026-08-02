@@ -91,7 +91,7 @@ whole vocabulary by naming a different conventions module. Sequenced as
 | `fn conventions()` registration | ✅ | ❌ | — | — | **v1c · #1840** — 4 blocking questions ruled 2026-08-01 |
 | Comptime evaluation of conventions | ✅ | ❌ | — | — | #1840; dependency shape ruled 2026-08-01 (#1867) |
 | `@[style]` declaration surface | ✅ | ✅ | ❌ | — | `StyleToken` produced, **zero consumers** (#1719) |
-| Built-in screenplay preset | ✅ | ❌ | — | — | #1720; `dialect.rs`'s `Default` is legacy hardcoding, not this |
+| Built-in screenplay preset | ✅ | ✅ | ✅ | ❓ | **#1720 landed** — `std/conventions/screenplay.brink` (`heading`/`transition`/`cue`/`parenthetical`), `conventions-screenplay-preset` golden; NOT yet reachable via `use std::conventions::screenplay` (no std-module resolution exists; needs #1840); `dialect.rs`'s `Default` is unrelated legacy hardcoding |
 | `[project] elements` name validation | ✅ | ⚠️ | ⚠️ | — | #1874 |
 | `std::conventions` types | ❓ | ❌ | — | — | prose-spec §9 residual — the last prose-round design item |
 
