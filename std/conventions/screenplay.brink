@@ -34,12 +34,27 @@
 //      meant to be PRE-FROZEN and shipped, so a DEFAULT project pays
 //      ZERO comptime — only a project that OVERRIDES the preset would
 //      ever evaluate anything. This file is written so that pre-freezing
-//      is possible once #1840 lands (every handler below is a plain,
-//      side-effect-free rewrite — no state, no externals, nothing a
-//      `pure`/`register`-effect evaluator couldn't freeze) — it does not
-//      attempt to build the freezing/evaluation machinery itself, which
-//      would require running the evaluator for every default project and
-//      violate that same ruling.
+//      is possible once #1840 lands — it does not attempt to build the
+//      freezing/evaluation machinery itself, which would require running
+//      the evaluator for every default project and violate that same
+//      ruling.
+//
+//      This preset's handlers are NOT all side-effect-free: `heading`
+//      calls the `scene_entered` host extern (issue #2092, below). That
+//      is still compatible with #1840's `@[effects(pure)]` fence, because
+//      the fence in the decision log's 2026-07-31 §9.1 ruling (item 7)
+//      binds `fn conventions()` — the REGISTRATION function that runs at
+//      COMPTIME — not the handlers it registers. `fn conventions()`
+//      itself would only ever reference `heading` by name (to register
+//      it in order); it never calls it, so `heading`'s own effect row
+//      (which includes the `scene_entered` call) never has to satisfy
+//      `pure`. Item 8 of the same ruling confirms there is deliberately
+//      no "carry the handler's row" machinery to propagate a registered
+//      handler's effects up into that purity check — registration is a
+//      plain reference, not an invocation. A handler's own effect row is
+//      instead checked against whatever's ordinary for a called function
+//      (it runs at real story time, driven by the compiled program, the
+//      same as any other call), not against comptime purity.
 //
 // **What IS proven end to end today**: every handler below is byte-for-
 // byte the same shape as `tests/tier1-native/conventions-screenplay-
@@ -178,14 +193,20 @@
 // that lies about what it does. Left off entirely rather than shipping
 // a half-working one; add it once multi-token values land.
 
-// The host-facing scene-entry notification (issue #2092). No fallback
-// body is written inline on the `extern` itself — native `extern`
-// declarations never carry one (`brink-syntax-native`'s own
-// `extern_decl` doc: "no body, ever"). Instead a same-named `fn` below
-// supplies the ink-side fallback the linker binds when no host
-// `ExternalFnHandler` resolves the call (mirrors ink's own
-// `EXTERNAL`+matching-knot fallback idiom, `lir::lower::decls::
-// collect_externals`).
+/// The host-facing scene-entry notification (issue #2092). Fires once per
+/// claimed heading, before the handler's display text returns. `title` is
+/// the claimed heading's title text verbatim (e.g. `MARKET SQUARE -
+/// NIGHT`); `slug` is always the empty string today — no slug-bearing
+/// heading is claimable by this handler yet (#2077/#2078). No fallback
+/// body is written inline on the `extern` itself — native `extern`
+/// declarations never carry one (`brink-syntax-native`'s own
+/// `extern_decl` doc: "no body, ever"). Instead a same-named `fn` below
+/// supplies the ink-side fallback the linker binds when no host
+/// `ExternalFnHandler` resolves the call (mirrors ink's own
+/// `EXTERNAL`+matching-knot fallback idiom, `lir::lower::decls::
+/// collect_externals`).
+/// @param title {string}
+/// @param slug {string}
 extern scene_entered(title, slug)
 
 /// No-op fallback for `scene_entered` — runs only when nothing bound a
