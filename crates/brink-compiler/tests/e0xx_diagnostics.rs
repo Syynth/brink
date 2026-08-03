@@ -1499,6 +1499,103 @@ flow main() ~{
     );
 }
 
+/// Issue #2122: `lower_single_level_field_write` (`p.field = v`, the
+/// #2106/TM-4c single-level struct field write) resolves an as-binding's
+/// `Param`/`Temp` root via its own `ctx.temp_slot(&head_name)` call rather
+/// than routing through `stmts::lower_assign_target` — the place
+/// `e143_as_binding_is_immutable`'s first three shapes (plain assignment,
+/// compound assignment, bare in-place mutator) actually exercise; the
+/// other two shapes there (`bump(n)`, UFCS-projection `g.hp.heal(5)`) route
+/// through their own separate choke points
+/// (`expr::lower_ref_path_call_arg`, `blocks::try_lower_frame_local_auto_ref_stmt`)
+/// instead — so this sixth shape, a field *write* whose root is the
+/// binding itself (`b.items = […]`, not any of those five), reached
+/// codegen with no E148 at all before this fix: confirmed to fail (compile
+/// succeeds with zero diagnostics instead of erroring) with
+/// `stmts::reject_as_binding_write`'s call site in
+/// `lower_single_level_field_write` reverted (rule 20a).
+#[test]
+fn e148_write_to_as_binding_struct_field_via_field_write() {
+    let source = "\
+struct Bag {
+  items: Array<int>
+}
+
+flow main() ~{
+  if some(Bag { items: [1, 2] }) as b {
+    b.items = [9];
+  }
+}
+";
+    let err = compile_native("as-imm-field-write", source, native_strict_options())
+        .map(|_| ())
+        .expect_err("writing to an as-binding's struct field must fail");
+    let diags = errors_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E148),
+        "expected E148 for `b.items = [9];`, got: {diags:?}"
+    );
+}
+
+/// Issue #2122's other half: `lower_field_mutator` (`push(p.field, v)`/
+/// `p.field.push(v)`, the struct-field mutator lvalue #1495/PR #2106 fixed
+/// the *root-misroute* half of) has the identical hole — it resolves the
+/// as-binding's root the same way `lower_single_level_field_write` does,
+/// independently of `lower_assign_target`. Confirmed to fail with
+/// `stmts::reject_as_binding_write`'s call site in `lower_field_mutator`
+/// reverted (rule 20a): the mutator compiled clean with zero diagnostics
+/// instead of erroring.
+#[test]
+fn e148_write_to_as_binding_struct_field_via_mutator() {
+    let source = "\
+struct Bag {
+  items: Array<int>
+}
+
+flow main() ~{
+  if some(Bag { items: [1, 2] }) as b {
+    push(b.items, 9);
+  }
+}
+";
+    let err = compile_native("as-imm-field-mutator", source, native_strict_options())
+        .map(|_| ())
+        .expect_err("mutating an as-binding's struct field must fail");
+    let diags = errors_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E148),
+        "expected E148 for `push(b.items, 9);`, got: {diags:?}"
+    );
+}
+
+/// Companion to the two `e148_write_to_as_binding_struct_field_via_*` cases
+/// above: the identical field-write/field-mutator shapes on an *ordinary*
+/// (non-as-binding) `let`-rooted `Temp` must still compile — proving
+/// `reject_as_binding_write`'s new call sites only fire for a genuine
+/// as-binding slot, not for every `Param`/`Temp` root. A top-level `var`
+/// root projects to `SymbolKind::Variable`, not `Param`/`Temp`, and takes
+/// a different `AssignTarget::Global` arm in both lowering functions that
+/// never reaches `reject_as_binding_write` at all — so this fixture must
+/// root in a real `Temp` (a `let` local, precedent:
+/// `tests/tier1-native/for-k-v/story.brink`) to actually exercise the arm
+/// the as-binding guard lives in.
+#[test]
+fn ordinary_temp_struct_field_write_and_mutator_still_compile() {
+    let source = "\
+struct Bag {
+  items: Array<int>
+}
+
+flow main() ~{
+  let b = Bag { items: [1, 2] };
+  b.items = [3];
+  push(b.items, 4);
+}
+";
+    compile_native("not-as-imm-field-write", source, native_strict_options())
+        .expect("an ordinary let-rooted Temp field write/mutator must still compile");
+}
+
 // ─── `remove`/`remove_at` migration tail (E149, issue #1532) ────────────
 //
 // The #1501 review's follow-up on #1484's `remove`/`remove_at` split:
