@@ -62,9 +62,9 @@ unimplemented · ❓ unverified (nobody has checked; do not assume either way)
 | `@[element(claims=…)]` handlers | ✅ | ✅ | ✅ | ❓ | `annotations-element` golden |
 | Prose-bodied `fn` via `>{ }` | ✅ | ✅ | ✅ | ❓ | verified 2026-08-01: emits `[A] hi` |
 | **Statements at prose position (bare, no `~`)** | ⚠️ | ❌ | ❌ | ❌ | **🔴 SILENT** — see below; by design, not open (charter §8.2) |
-| `~ stmt`/`~{ }` line/block escape (assignment/bare-call/temp-decl/`until`/logic block) | ✅ | ✅ | ⚠️ | ⚠️ | #1991 + #1972 (both slices); Round-trips only leaf stmts, nested if/while/for inside `~{ }` is an emitter-only gap; Runs — a call-only `~{ }` escape now correctly flushes its output boundary (review finding, w111), but the same pre-existing gluing bug (no `Stmt::EndOfLine` after a call-only code-ground `LogicBlock`) still reaches the whole-body `~{ }`/`fn`-default override path (`lower_stmt_block_as_body`/`lir::lower::blocks::lower_block_stmt_list`), untouched by this fix — tracked at **#2056** |
-| `> text` line escape in code body | ✅ | ✅ | ✅ | ✅ | landed **#1992**; added `LogicBlockScope` |
-| `return <value>` at prose position | ✅ | ✅ | ✅ | ✅ | landed **#1973** (PR #2027) |
+| `~ stmt`/`~{ }` line/block escape (assignment/bare-call/temp-decl/`until`/logic block) | ✅ | ✅ | ⚠️ | ⚠️ | #1991 + #1972 (both slices); Round-trips only leaf stmts, nested if/while/for inside `~{ }` is an emitter-only gap; Runs — the call-only-escape output-boundary fix (review finding, w111) and its whole-body-override/`fn`-default sibling (`lower_stmt_block_as_body`/`flush_code_ground_run`, **#2056**) both append a boundary, but only ONE per flushed *run*: `lir::lower::blocks::lower_block_stmt_list` still has no per-statement `EndOfLine` tracking, so two emitting calls back to back in the same run (e.g. `flow main() ~{ shout(); shout(); > x }`) still glue as `HiHi` — same for a call inside an `if`/`while`/`for` followed by another emitting call in that same run (review finding F3, #2063) |
+| `> text` line escape in code body | ✅ | ✅ | ❌ | ❌ | 🔒 `E129` — #1992 |
+| `return <value>` at prose position | ✅ | ❌ | — | — | #1973, 16 cases |
 | Alternations `{~ {& {! {\|` | ✅ | ✅ | ✅ | ❌ | emitter gap, 17 cases |
 | Inline sequences | ✅ | ✅ | ✅ | ❌ | emitter gap, 10 cases |
 | Thread splice `<- flow(args)` | ✅ | ✅ | ✅ | ⚠️ | **#1974** re-nesting landed; bucket 21 → 17 |
@@ -86,13 +86,13 @@ whole vocabulary by naming a different conventions module. Sequenced as
 | Typed handler params (`E171`) | ✅ | ✅ | ✅ | — | #1849 closed |
 | Confinement to one module (`E169`) | ✅ | ✅ | ⚠️ | — | query landed; **unreachable from live typing** (#1880) |
 | Directive-shaped tag guard (`E172`) | ✅ | ✅ | ✅ | — | landed 2026-08-01 (#1835) |
-| `!name` sigil dispatch | ✅ | ✅ | ✅ | ✅ | landed **#2004** — the `!radio` shape is authorable |
-| Block elements `@[element(…, block)]` | ✅ | ❌ | — | — | **v1b · #1839 — unblocked 2026-08-01**, unbuilt |
-| `fn conventions()` registration | ✅ | ❌ | — | — | 🔒 **v1c unblocked 2026-08-02** — Q5 ruled (`register` = comptime-only intrinsic) |
-| Comptime evaluation of conventions | ✅ | ❌ | — | — | 🔒 unblocked — #1867 + Q5 both ruled |
+| **`!name` sigil dispatch** | ✅ | ❌ | — | — | **reserved, unimplemented** — see below |
+| Block elements `@[element(…, block)]` | ✅ | ✅ | ✅ | ❓ | **v1b landed** — `annotations-element-block` golden; cross-file injection (#1863) doesn't carry `block` yet, tracked as #2068 |
+| `fn conventions()` registration | ✅ | ❌ | — | — | **v1c · #1840** — 4 blocking questions ruled 2026-08-01 |
+| Comptime evaluation of conventions | ✅ | ❌ | — | — | #1840; dependency shape ruled 2026-08-01 (#1867) |
 | `@[style]` declaration surface | ✅ | ✅ | ❌ | — | `StyleToken` produced, **zero consumers** (#1719) |
-| Built-in screenplay preset | ✅ | ❌ | — | — | #1720; `dialect.rs`'s `Default` is legacy hardcoding, not this |
-| `[project] elements` name validation | ✅ | ⚠️ | ⚠️ | — | #1874 |
+| Built-in screenplay preset | ✅ | ✅ | ✅ | ❓ | **#1720 landed** — `std/conventions/screenplay.brink` (`heading`/`transition`/`cue`/`parenthetical`), `conventions-screenplay-preset` golden; NOT yet reachable via `use std::conventions::screenplay` (no std-module resolution exists; needs #1840); `dialect.rs`'s `Default` is unrelated legacy hardcoding |
+| `[project] elements` name validation | ✅ | ⚠️ | ⚠️ | — | #1874 landed: a bare preset-shaped name is checked against `brink-analyzer`'s `BUILTIN_ELEMENT_PRESETS` (now `["screenplay"]`, #1720 shipping it) via `apply_project_config`, warning through the existing `ConfigWarning` channel; a path-shaped pointer is never rejected (still #1844's job). **Parses** doesn't really apply — `[project] elements` is a `brink.toml` key, not grammar `brink-syntax-native` accepts or rejects; **Runs** is established only by `brink-analyzer` unit tests (`apply_project_config_*`) — no `brink compile`/`brink play` CLI run was performed |
 | `std::conventions` types | ❓ | ❌ | — | — | prose-spec §9 residual — the last prose-round design item |
 
 ## Editor side — how the author interrogates a claimed line
@@ -227,12 +227,12 @@ still a real authoring footgun worth a future lint (a separate, much
 smaller concern than a grammar decision), not because a bare-statement
 grammar is still pending.
 
-Fixed by #1991 (assignment/bare-call `~`-spelling) and #1972 (`~ let` temp
-decl + emitter parity for all three): the assignment/expression-statement/
-temp-declaration respell buckets that together accounted for 60 of the
-(then) 210 respell failures are now all at **zero** cases (verified by
-`full_corpus_sweep`, 2026-08-01). See "Corpus arithmetic" below for the
-current bucket breakdown.
+The assignment/expression-statement/temp-declaration respell buckets that
+together accounted for 60 of the (then) 210 respell failures — fixed by
+#1991's first slice and #1972's `~ let` temp-decl + emitter-parity
+follow-up — are now all at **zero** cases (verified by `full_corpus_sweep`,
+2026-08-01). See "Corpus arithmetic" below for the current bucket
+breakdown.
 
 The bare-unprefixed form is still the worst failure mode the project has:
 no compile error, no runtime error, just a story that quietly does the

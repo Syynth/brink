@@ -135,8 +135,18 @@ pub fn hover(
             format!("\n\n**effects** `{}`", view.display_line())
         });
 
+        // Issue #1719's remaining scope: a `@[style(...)]` annotation
+        // declared on a native knot/stitch (`crate::style_hover`'s module
+        // doc — a compiler-side-only query, not the held editor-rendering
+        // consumer). Empty for every ink file and every symbol with no
+        // `@[style]` of its own.
+        let style_str = db
+            .hir(file_id)
+            .and_then(|hir| crate::style_hover::style_hover_text(hir, info))
+            .unwrap_or_default();
+
         format!(
-            "**{kind_str}** `{}{inferred_local_str}{value_str}{params_str}{ret_str}`{detail_str}{kind_tag}{doc_block}{file_note}{fn_value_str}{effect_row_str}",
+            "**{kind_str}** `{}{inferred_local_str}{value_str}{params_str}{ret_str}`{detail_str}{kind_tag}{doc_block}{file_note}{fn_value_str}{effect_row_str}{style_str}",
             info.name
         )
     } else {

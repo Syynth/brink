@@ -416,6 +416,85 @@ fn a_cue_name_with_an_escaped_hash_does_not_end_the_name_early() {
 }
 
 #[test]
+fn a_hash_inside_an_open_brace_still_ends_a_cue_name_early() {
+    // Issue #1883 (item 1), confirmed: existing #1787 reasoning still
+    // applies, `cue_name()` does NOT become depth-aware for `HASH` the way
+    // it did for `COLON` (#1851) — this is intentional, not a residual
+    // gap. `COLON`/`R_BRACE` are raw, ungrammared punctuation this scan
+    // locally balances as "just text"; `HASH` is never that — an
+    // unescaped `HASH` always begins its own `TAG` node, a real,
+    // tokenized CST boundary (the exact reasoning §4.7's per-tag-scope
+    // ruling already states for why `HASH` must stay a hard reset between
+    // sibling tags). Gating `HASH` by `depth == 0` would let it merge into
+    // the *name's own text* whenever a brace happens to be open — turning
+    // an always-a-new-TAG token into sometimes-just-text depending on
+    // unrelated brace-balance, which would blur that same absolute
+    // boundary the other direction. So `@NAME {a#b} c.` still fails to
+    // parse: the name ends at "a" (before the unclosed `{` is ever
+    // balanced), `#b` becomes a sibling `TAG`, and the still-open `{`'s
+    // matching `}` is consumed as an unexpected top-level token once the
+    // name's own scan is long over.
+    let src = "@NAME {a#b} c.\nHello.\n";
+    let p = assert_lossless(src);
+    assert!(
+        !p.errors().is_empty(),
+        "expected the open `{{` to be abandoned at the HASH boundary and \
+         the later `}}` to become a stray top-level token, got: {:?}",
+        p.errors()
+    );
+    let cue = ast::Cue::cast(first_node(&p.syntax(), SyntaxKind::CUE)).expect("CUE");
+    assert_eq!(
+        cue.name().expect("name").text(),
+        "NAME {a",
+        "the name ends at the unescaped HASH regardless of the still-open `{{`"
+    );
+    assert_eq!(
+        count_node_kind(&p.syntax(), SyntaxKind::TAG),
+        1,
+        "the HASH starts its own sibling TAG rather than continuing the name"
+    );
+}
+
+#[test]
+fn a_cue_names_own_unescaped_closing_brace_remains_the_terminator_even_when_preceded_by_a_backslash()
+ {
+    // Issue #1883 (item 2), confirmed intentional, not a residual bug —
+    // mirrors `content.rs`'s
+    // `a_tags_own_unescaped_closing_brace_remains_the_terminator_even_when_preceded_by_a_backslash`
+    // exactly: `\{`'s backslash-parity carve-out (#1852) exists because
+    // `\{` is one of the ruled, final four-character inline escape set
+    // (§8d.6: `\< \{ \# \\`) — #1716/PR #1732 ruled it the literal-brace
+    // escape, so counting it as a real depth-opener would be the
+    // surprising reading. `}` is not a member of that set, so there is no
+    // equivalent "`\}` is a literal, non-metacharacter close-brace" ruling
+    // to protect — an `R_BRACE` preceded by a `BACKSLASH` is exactly what
+    // it looks like, an ordinary backslash followed by an ordinary,
+    // structurally significant `}`, so it keeps ending the name exactly
+    // like an unescaped `}` would, at depth zero.
+    let src = "flow f() { @NAME \\{a\\} c. }\n";
+    let p = assert_lossless(src);
+    assert!(
+        !p.errors().is_empty(),
+        "expected the name's own `\\}}` to swallow the flow's closer early \
+         and leave a stray top-level `}}`, got: {:?}",
+        p.errors()
+    );
+    let name = p
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::CUE_NAME)
+        .expect("CUE_NAME");
+    assert_eq!(
+        name.text(),
+        "NAME \\{a\\",
+        "the raw CST node — not `ast::CueName::text()`, which (issue #2045) \
+         strips the recognized `\\{{` escape's backslash — stops the instant \
+         it meets the `}}` from `\\}}`, backslash and all, exactly as it \
+         would for an unescaped `}}` at depth zero"
+    );
+}
+
+#[test]
 fn a_cue_names_text_accessor_strips_a_recognized_open_brace_escapes_backslash() {
     // Issue #2045's own scope note: `\{` gets the identical treatment as
     // `\#`. Kept brace-free-of-depth (no unclosed `{` here — the depth

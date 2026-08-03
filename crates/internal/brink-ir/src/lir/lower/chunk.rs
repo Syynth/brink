@@ -541,6 +541,11 @@ fn remap_expr(expr: &mut lir::Expr, map: &[NameId]) {
             relocate(field, map);
             remap_expr(value, map);
         }
+        // Block capture (issue #1839): the captured statements are lowered
+        // within this same chunk, so any `GetTemp`/`TakeTemp` they
+        // reference needs the identical relocation everything else in the
+        // chunk gets.
+        Expr::Fragment(stmts) => remap_stmts(stmts, map),
         // No name references.
         Expr::Int(_)
         | Expr::Float(_)

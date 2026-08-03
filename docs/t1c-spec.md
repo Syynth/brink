@@ -188,6 +188,78 @@ Respelling ink into native (`brink-respell`) follows the same split: a
 zero-bound `#fn(f)` emits as the bare name `f`; the binding form refuses
 loudly rather than emitting a lambda with different semantics.
 
+## 2b. A lambda literal decl default — RULED 2026-08-01 (issue #1774)
+
+A native `var`/`const` may also hold a **lambda literal** as its whole
+declaration default (`const twice = |x| x * 2`), not just the bare-name
+reference §2a ruled. `decls::is_const_foldable_decl_default`'s `Lambda`
+arm — which raised `E083` here since #1685 first landed lambdas — is
+lifted for exactly this position: `decls::collect_globals`'s
+`eval_const_lambda` folds the literal through the same lambda-lifting
+machinery (#1709, `lir::lower::lambda::lower_lambda`) every other lambda
+uses, just handed an **empty** enclosing frame (no knot/stitch params, no
+`~ temp` locals — file scope has none). The synthesized function is a
+sibling of the project's knots, addressed via
+`lir::ConstValue::FnRef`/`Closure` exactly like a bound `#fn(...)`
+literal.
+
+This does **not** relax §1's "no anonymous lambdas in Tier-1" — that
+ruling is about the T1c *partial-application* creation form
+(`#fn(name, args…)`) never admitting an anonymous body; a lambda literal
+is `#1685`'s separate surface, and this section is only about *where*
+that already-legal literal is allowed to sit, not a new creation form.
+
+Nested one level in — a lambda literal as a collection element, a
+struct field, or a `#fn` bound `val` arg — is **not** covered by this
+ruling and stays behind its own `E077`/`E076` diagnostic
+(`decls::is_const_foldable_kind`'s `Lambda` arm, deliberately unchanged).
+
+**Why this is safe**, pinning the reasoning rather than leaving it
+implicit: the creation-site-capture rule that gates a lambda everywhere
+else exists to keep a captured `#@local` cell from leaking outside its
+creating flow (the 2026-07-23 "flows-as-actors" direction). A file-scope
+lambda has no enclosing frame to capture *from* in the first place, so
+that invariant is never at stake — a fact made mechanical, not just
+argued, by handing `lower_lambda` an empty `TempMap`/`visible_temps`:
+every free name in the body then misses `ctx.temp_slot`, and
+`captured_locals`'s own contract treats a miss as "a legitimate
+non-local" (a global cell or a knot/function name), never a capture.
+Pinned by `brink-ir`'s
+`lambda_literal_decl_default_reads_other_globals_without_capturing_them`
+(`tests/lir_lowering/lambda_literal_declaration_default.rs`).
+
+**Known follow-ups, not fixed by this ruling:**
+
+- `signature::declared_fn_type` (the typing-side mirror of
+  `decls::fold_path_ref`/`eval_const_lambda`, §2a's own note) has no
+  `Expr::Lambda` arm — a lambda-valued global types as `Ty::Unknown`
+  rather than a real `fn(T…): R`, the same honest "can't determine"
+  fallback a shadowed bare-name reference already gets. Not a soundness
+  gap (gradual typing's fallback is sound by construction), just less
+  precise than the bare-name case.
+- A **separate, pre-existing** gap (not introduced or fixed here):
+  calling a fn-valued global — bare-name (#1862) or lambda (#1774) —
+  from anywhere other than its own declaration does not resolve through
+  the production `compile_path` → `brink-db` incremental pipeline
+  (`E025`, "unresolved variable reference"), even though the identical
+  shape resolves cleanly through the simpler whole-project
+  `brink_analyzer::analyze` path `brink-ir`'s own tests use. See the
+  #1774 → #2083 (filed separately).
+- A narrower, **separate, pre-existing** gap, checked directly against
+  this issue's own "does #1764/self-recursion become expressible" ask
+  and found still no: a global `const`-bound lambda cannot call *itself*
+  recursively by name from inside its own body (`const fact = |n| … n *
+  fact(n - 1) …`) — `brink-analyzer` reports `E025` at both occurrences
+  of the recursive call. The const's own name, mid-initializer, is not
+  yet visible to its own body's resolution (a single-pass ordering
+  nuance in the resolver, not the `E083`/capture story this ruling is
+  about). Narrower than and adjacent to #2083's territory (that gap is
+  about calling a fn-valued global from *outside* its declaration; this
+  one is about calling it from *inside* its own declaration) rather than
+  a clean independent bug, so not filed separately — pinned by
+  `brink-compiler`'s `#[ignore]`d
+  `compile_path_native_const_lambda_decl_default_self_recursion_works`.
+
 ## 3. Invocation and `bind` — RULED (typing rule details in §4)
 
 Both call forms ship:

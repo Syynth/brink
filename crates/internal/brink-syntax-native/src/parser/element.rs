@@ -285,6 +285,8 @@ pub(crate) fn cue_line(p: &mut Parser<'_, '_>) {
     }
 }
 
+/// Spec'd in `docs/prose-dialect-spec.md` §4.7a.
+///
 /// The name run after the `@` sigil. Raw-bumped up to `:`/tags/line end,
 /// so a multi-word character name (`@MARKET VENDOR`) is one name rather
 /// than a name plus stray text.
@@ -313,21 +315,53 @@ pub(crate) fn cue_line(p: &mut Parser<'_, '_>) {
 /// This is not full parity with `tag()`, though: `cue_name`'s stop set has
 /// one member `tag()`'s does not, `HASH`, checked *before* the depth guard,
 /// exactly like `NEWLINE`/`EOF` — so a `#` still cuts a name short even
-/// while a brace is open (#1883 tracks whether `HASH` should become
-/// depth-aware like `COLON`; that is a distinct, still-open question this
-/// function does not answer). `COLON`, unlike `HASH`, is now depth-guarded the
+/// while a brace is open. `COLON`, unlike `HASH`, is now depth-guarded the
 /// same way `R_BRACE` is (#1851): a colon inside an unclosed `{` is part of
 /// an interpolation, not the cue's terminator, so `@NAME {a:b} c.` no
 /// longer stops at the `:` — it scans through to the balanced `}` like
 /// `tag()` does.
 ///
+/// **CONFIRMED (issue #1883, item 1): existing #1787 reasoning still
+/// applies — `HASH` staying a hard, depth-blind reset is intentional, not
+/// a residual gap to close.** `COLON`/`R_BRACE` are raw, ungrammared
+/// punctuation this scan locally balances as "just text within this scan";
+/// `HASH` is never that — an unescaped `HASH` always begins its own `TAG`
+/// node, a real, tokenized CST boundary (the exact reasoning §4.7's
+/// per-tag-scope ruling already states for why a fresh `HASH` must reset
+/// `depth` to zero between sibling tags applies just as directly here).
+/// Gating `HASH` by `depth == 0` the way `COLON` is would let an unescaped
+/// `#` merge into the name's own text whenever a brace happens to be
+/// open — turning an always-starts-a-new-`TAG` token into
+/// sometimes-just-name-text depending on unrelated brace balance, which
+/// would blur that same absolute boundary from the other direction. So
+/// `@NAME {a#b} c.` still fails to parse: the name ends at `a`, `#b`
+/// becomes a sibling `TAG`, and the still-open `{`'s matching `}` becomes
+/// a stray top-level token once the name's own scan is long over. Pinned
+/// by `a_hash_inside_an_open_brace_still_ends_a_cue_name_early`. See
+/// `docs/prose-dialect-spec.md` §4.7b for the durable spec-level home.
+///
+/// **CONFIRMED (issue #1883, item 2): `\}`'s unconditional significance to
+/// the depth check (mirroring `tag()`, above) is intentional, not a
+/// residual asymmetry to close.** `\{`'s backslash-parity carve-out exists
+/// because `\{` is one of the ruled, final four-character inline escape
+/// set (§8d.6: `\< \{ \# \\`) — #1716/PR #1732 ruled it the literal-brace
+/// escape. `}` is not a member of that set, so there is no equivalent
+/// "`\}` is a literal, non-metacharacter close-brace" ruling to protect —
+/// an `R_BRACE` preceded by a `BACKSLASH` is exactly what it looks like,
+/// an ordinary backslash followed by an ordinary, structurally
+/// significant `}`, so it keeps ending the name exactly like an unescaped
+/// `}` would, at depth zero. Pinned by
+/// `a_cue_names_own_unescaped_closing_brace_remains_the_terminator_even_when_preceded_by_a_backslash`.
+/// See `docs/prose-dialect-spec.md` §4.7b for the durable spec-level home.
+///
 /// **`\#` escapes the name-boundary role of `#` (issue #1738), mirroring
 /// `tag()`'s identical fix** — an unescaped `HASH` still cuts the name short
-/// (the paragraph above, and #1883, are both about *that* case and are
-/// unchanged by this), but `#` is one of the four members of the ruled,
-/// final inline escape set (§8d.6), and `cue_name()` gave it zero escape
-/// treatment before this fix: a `\#` inside a name still ended it at the
-/// `#`, same defect `tag()` had. Same `backslash_count`-parity carve-out,
+/// (the paragraph above, and #1883 — resolved, see §4.7b — are both about
+/// *that* case and are unchanged by this), but `#` is one of the four
+/// members of the ruled, final inline escape set (§8d.6), and `cue_name()`
+/// gave it zero escape treatment before this fix: a `\#` inside a name
+/// still ended it at the `#`, same defect `tag()` had. Same
+/// `backslash_count`-parity carve-out,
 /// same "backslash not stripped from the literal text" precedent as `\{`
 /// just above. Pinned by
 /// `a_cue_name_with_an_escaped_hash_does_not_end_the_name_early`.

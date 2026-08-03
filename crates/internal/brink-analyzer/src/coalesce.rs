@@ -500,13 +500,16 @@ fn expr_children(expr: &Expr) -> Vec<&Expr> {
         // `E066` diagnostic: the same recursion also feeds
         // `project_has_coalesce` (the gate on building a `CoalesceTable` at
         // all), so stopping at the tail dropped a chain's recorded *shape*
-        // from the table as well as its diagnostic — for a lambda in a
-        // VAR/CONST initializer specifically, that position is a hard
-        // `E083` (`lir::lower::decls::is_const_foldable_decl_default`
-        // rejects every `Expr::Lambda` default), so the `CoalesceLookup`
-        // LIR lowering this table would otherwise feed never actually runs
-        // there — same unreachability as the other six passes. See
-        // `LambdaBody::all_exprs`.
+        // from the table as well as its diagnostic. For a lambda in a
+        // VAR/CONST initializer specifically, that position **used to be** a
+        // hard `E083` (`lir::lower::decls::is_const_foldable_decl_default`
+        // rejected every `Expr::Lambda` default) — issue #1774 (RULED
+        // 2026-08-01) lifted exactly that gate, so a decl-default lambda's
+        // chain now really does reach `CoalesceLookup` in LIR lowering (via
+        // `GlobalLambdaCtx::tables`, threaded from the real
+        // `coalesce_types_query` in production — the #1774 review's own
+        // finding was that this table used to be hard-coded empty for that
+        // one caller regardless). See `LambdaBody::all_exprs`.
         Expr::Lambda(l) => l.body.all_exprs(),
         Expr::Range(r) => vec![&r.start, &r.end],
         Expr::String(s) => s
@@ -517,6 +520,13 @@ fn expr_children(expr: &Expr) -> Vec<&Expr> {
                 brink_ir::StringPart::Literal(_) => None,
             })
             .collect(),
+        // Block capture (issue #1839): the captured run can itself contain
+        // a coalescing chain (an interior line's `{x or y}` interpolation),
+        // so it must recurse — `brink_ir::fragment_stmt_exprs` is the
+        // shared "every expression a captured `Stmt` run directly contains"
+        // flattening (issue #1764's audit-driven pattern), same one
+        // `LambdaBody::all_exprs` already gets above.
+        Expr::Fragment(stmts) => brink_ir::fragment_stmt_exprs(stmts),
         Expr::Int(_)
         | Expr::Float(_)
         | Expr::Bool(_)
@@ -851,11 +861,16 @@ mod tests {
 
     /// The same walk answers "does this project coalesce at all?", the gate
     /// on building a `CoalesceTable` at all. Missing the chain there dropped
-    /// its *shape* from the table, not just its diagnostic — though for a
-    /// lambda in a VAR/CONST initializer specifically, that table never
-    /// actually reaches `CoalesceLookup` in LIR: the position is already a
-    /// hard `E083` (see `expr_children`'s `Expr::Lambda` arm above), so this
-    /// pins the analyzer-layer shape, not an LIR-reachable one.
+    /// its *shape* from the table, not just its diagnostic. Before issue
+    /// #1774 (RULED 2026-08-01) this table never actually reached
+    /// `CoalesceLookup` in LIR for a lambda in a VAR/CONST initializer
+    /// specifically — the position was a hard `E083` (see `expr_children`'s
+    /// `Expr::Lambda` arm above) — so this pinned only the analyzer-layer
+    /// shape. #1774 lifted that gate, so this chain's shape is now
+    /// LIR-reachable too: `brink-ir`'s
+    /// `coalesce_chain_in_lambda_decl_default_gets_its_real_recorded_shape`
+    /// (`tests/lir_lowering/lambda_literal_declaration_default.rs`) is the
+    /// sibling pin on that end of the pipeline.
     #[test]
     fn a_chain_in_a_lambda_statement_of_a_var_initializer_trips_the_project_gate() {
         let (hir, _index, _res, _inf) =

@@ -519,6 +519,10 @@ fn collect_if(i: &brink_ir::IfStmt, ctx: &CollectCtx<'_>, out: &mut Vec<Comparat
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one match arm per Expr variant; splitting would obscure the dispatch"
+)]
 fn collect_expr(expr: &Expr, ctx: &CollectCtx<'_>, out: &mut Vec<ComparatorSite>) {
     match expr {
         Expr::Call(path, args) => {
@@ -666,5 +670,14 @@ fn collect_expr(expr: &Expr, ctx: &CollectCtx<'_>, out: &mut Vec<ComparatorSite>
         | Expr::Path(_)
         | Expr::DivertTarget(_)
         | Expr::ListLiteral(_) => {}
+        // Block capture (issue #1839): the captured run is real weave-level
+        // content, so it goes through `collect_stmt` — the same top-level
+        // `Stmt` vocabulary the rest of this file's HIR walk already uses —
+        // rather than the closed `BlockStmt` set `collect_block_stmt` owns.
+        Expr::Fragment(stmts) => {
+            for s in stmts {
+                collect_stmt(s, ctx, out);
+            }
+        }
     }
 }

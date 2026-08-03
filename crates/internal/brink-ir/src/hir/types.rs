@@ -293,11 +293,10 @@ pub struct ElementAnnotation {
     ///
     /// `true` only when the declaration also has a qualifying trailing
     /// `content`-typed parameter (`E166` otherwise — see
-    /// [`crate::hir::lower_native::annotation::parse_element`]). Like the
-    /// rest of this struct, this is the **declaration surface only**: the
+    /// [`crate::hir::lower_native::annotation::parse_element`]). The
     /// terminator search, the fragment capture itself, and the dispatch
-    /// call are issue #1838's natural-notation dispatch rewrite, not
-    /// implemented here.
+    /// call are `hir::lower_native::element`'s `try_claim`/`try_dispatch`
+    /// (issue #1839) — this field is what tells them to run it.
     pub block: bool,
     /// Source range of the whole `@[element(…)]` annotation line.
     pub range: TextRange,
@@ -322,6 +321,20 @@ pub enum ElementKind {
     /// which are *claimed*, i.e. matched without any structural marker of
     /// their own).
     BangDispatch,
+    /// A block cue (`CUE`, `docs/prose-dialect-spec.md` §8b.9/§8d.4) — a
+    /// bare `@NAME` speaker line with no tag extension (a cue carrying a
+    /// tag, e.g. `@VENDOR #(v.o.)`, is declined the same way a
+    /// slug/tag-carrying [`Self::SceneHeading`] is — see
+    /// [`crate::hir::lower_native::element::candidate`]'s own doc).
+    /// Issue #1720: the built-in screenplay preset's `cue` handler is the
+    /// first consumer.
+    Cue,
+    /// A parenthetical delivery line (`PARENTHETICAL`,
+    /// `docs/prose-dialect-spec.md` §8.), chain-gated by the parser (only
+    /// recognized directly after a live cue — `brink-syntax-native`'s
+    /// `at_parenthetical`). Issue #1720: the built-in screenplay preset's
+    /// `parenthetical` handler is the first consumer.
+    Parenthetical,
 }
 
 /// One named capture bound by a claimed line, as a **span into real
@@ -378,6 +391,14 @@ pub struct ElementMatch {
     pub captures: Vec<ElementCapture>,
     /// What the compiler did with the line.
     pub disposition: ElementDisposition,
+    /// The captured block's source range (issue #1839's `block` clause) —
+    /// `None` for an ordinary (non-`block`) match. Covers every source line
+    /// the terminator search absorbed into the trailing `content`-typed
+    /// argument, so a tooling consumer can show "this whole span feeds
+    /// `handler`'s `content` parameter" without re-running the terminator
+    /// search itself — the same no-invisible-expansion guarantee `line`
+    /// already gives the claimed header line alone.
+    pub content: Option<TextRange>,
 }
 
 /// One natural-notation claiming handler *declared* in a file — recorded
@@ -1324,6 +1345,25 @@ pub enum Expr {
     /// free: there is no lazy re-evaluation path, only this one owned tree,
     /// evaluated once at the creation site.
     RefArg(RefArgExpr),
+    /// An internal fragment-capture expression — **not constructible from
+    /// surface syntax** (`docs/decision-log.md` 2026-08-01 "Content-as-value:
+    /// an internal `Expr::Fragment` lowering form, turn-scoped — no new
+    /// primitive, no surface syntax"). Evaluates `stmts` through the normal
+    /// statement-lowering path *inside* a `BeginFragment`/`EndFragment`
+    /// bracket and yields the resulting `Value::FragmentRef` — the same
+    /// composition `brink-codegen-inkb::content::emit_slot_expr` already
+    /// uses for a call's side-effect output, widened to hold an arbitrary
+    /// captured run rather than one call's output alone.
+    ///
+    /// The only producer is the block-capture machinery
+    /// (`hir::lower_native::element`, issue #1839): a `@[element(…, block)]`
+    /// handler's trailing `content`-typed parameter binds one of these,
+    /// built from the source lines the terminator search captured. Each
+    /// statement inside keeps its own `Stmt::Content`/`Stmt::EndOfLine`
+    /// shape (and its own line-table entry once lowered) — a captured block
+    /// is never flattened to a single string, which is the whole point of
+    /// `content` staying translation-resident (§3.5b's capture contract).
+    Fragment(Vec<Stmt>),
 }
 
 /// `#fn(target, args…)`. `ptr` lets the dialect gate point its diagnostic
@@ -1521,6 +1561,116 @@ fn push_if_stmt_exprs<'a>(i: &'a IfStmt, out: &mut Vec<&'a Expr>) {
             }
         }
         None => {}
+    }
+}
+
+/// Every expression directly reachable from a block-capture's statements
+/// (`Expr::Fragment`, issue #1839) — the top-level-[`Stmt`] analogue of
+/// [`push_block_stmt_exprs`]'s `BlockStmt` walk, made `pub` (unlike that
+/// function) because callers outside this crate need it: every
+/// "does this construct occur *anywhere* inside an expression tree" walker
+/// in `brink-analyzer` that already flattens a lambda body via
+/// [`LambdaBody::all_exprs`] needs the identical flattening for a captured
+/// content block — the same audit-driven reason issue #1764 fixed eight
+/// walkers that had independently stopped short. Descends through nested
+/// statement bodies (`LabeledBlock`, `Conditional`/`Sequence` branches,
+/// `ChoiceSet`) but never into an `Expr`'s own children — callers recurse
+/// from these roots themselves, exactly like [`LambdaBody::all_exprs`]'s
+/// own contract.
+#[must_use]
+pub fn fragment_stmt_exprs(stmts: &[Stmt]) -> Vec<&Expr> {
+    let mut out = Vec::new();
+    for s in stmts {
+        push_stmt_exprs(s, &mut out);
+    }
+    out
+}
+
+/// [`fragment_stmt_exprs`]'s per-statement worker — mirrors
+/// [`crate::hir::visit`]'s `walk_stmt` arm for arm; a new [`Stmt`] variant
+/// must be added to both (and to [`push_block_stmt_exprs`] if it is ever
+/// added to the closed `BlockStmt` set instead).
+fn push_stmt_exprs<'a>(stmt: &'a Stmt, out: &mut Vec<&'a Expr>) {
+    match stmt {
+        Stmt::Content(c) => {
+            for part in &c.parts {
+                if let ContentPart::Interpolation(e) = part {
+                    out.push(e);
+                }
+            }
+        }
+        Stmt::Divert(d) => out.extend(d.target.args.iter()),
+        Stmt::TunnelCall(t) => {
+            for target in &t.targets {
+                out.extend(target.args.iter());
+            }
+        }
+        Stmt::ThreadStart(t) => out.extend(t.target.args.iter()),
+        Stmt::TempDecl(t) => out.extend(t.value.as_ref()),
+        Stmt::Assignment(a) => {
+            out.push(&a.target);
+            out.push(&a.value);
+        }
+        Stmt::Return(r) => {
+            out.extend(r.value.as_ref());
+            out.extend(r.onwards_args.iter());
+        }
+        Stmt::ChoiceSet(cs) => {
+            for choice in &cs.choices {
+                out.extend(choice.condition.as_ref());
+                for c in [
+                    &choice.start_content,
+                    &choice.bracket_content,
+                    &choice.inner_content,
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    for part in &c.parts {
+                        if let ContentPart::Interpolation(e) = part {
+                            out.push(e);
+                        }
+                    }
+                }
+                for s in &choice.body.stmts {
+                    push_stmt_exprs(s, out);
+                }
+            }
+            for s in &cs.continuation.stmts {
+                push_stmt_exprs(s, out);
+            }
+        }
+        Stmt::LabeledBlock(b) => {
+            for s in &b.stmts {
+                push_stmt_exprs(s, out);
+            }
+        }
+        Stmt::Conditional(cond) => {
+            if let CondKind::Switch(e) = &cond.kind {
+                out.push(e);
+            }
+            for branch in &cond.branches {
+                out.extend(branch.condition.as_ref());
+                for s in &branch.body.stmts {
+                    push_stmt_exprs(s, out);
+                }
+            }
+        }
+        Stmt::Sequence(seq) => {
+            for branch in &seq.branches {
+                for s in &branch.body.stmts {
+                    push_stmt_exprs(s, out);
+                }
+            }
+        }
+        Stmt::ExprStmt(e) => out.push(e),
+        Stmt::EndOfLine => {}
+        Stmt::LogicBlock(lb) => {
+            for s in &lb.stmts {
+                push_block_stmt_exprs(s, out);
+            }
+        }
+        Stmt::Await(a) => out.extend(a.condition.as_ref()),
     }
 }
 
@@ -1811,6 +1961,9 @@ pub fn display_expr(expr: &Expr) -> String {
             let op = if r.inclusive { "..=" } else { ".." };
             format!("{}{op}{}", display_expr(&r.start), display_expr(&r.end))
         }
+        // Internal-only (issue #1839) — never constructed from surface
+        // syntax, so there is no author-facing slot name to reconstruct.
+        Expr::Fragment(_) => "{...}".to_string(),
     }
 }
 

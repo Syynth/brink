@@ -673,6 +673,15 @@ fn garble_expr(e: &mut hir::Expr) {
                 }
             }
         }
+        // Block capture (issue #1839): the captured run is real body
+        // content, carrying its own provenance-bearing statements —
+        // garble it through the ordinary `garble_stmt`, exactly as it
+        // would be garbled at its original top-level position.
+        hir::Expr::Fragment(stmts) => {
+            for s in stmts {
+                garble_stmt(s);
+            }
+        }
     }
 }
 
