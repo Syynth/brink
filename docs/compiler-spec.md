@@ -366,7 +366,7 @@ Key semantics from the reference C# ink implementation relevant to compilation:
 
 ## Diagnostic Codes
 
-Every diagnostic the compiler can emit has a stable code (`E001`–`E172`) and a
+Every diagnostic the compiler can emit has a stable code (`E001`–`E176`) and a
 per-code reference file under [`docs/diagnostics/`](diagnostics/) with a summary,
 explanation, minimal repro, and fix guidance. `DiagnosticCode::as_str` /
 `DiagnosticCode::from_str_code` (`crates/internal/brink-ir/src/hir/diagnostics.rs`) are the
@@ -547,8 +547,12 @@ asserts every variant has a corresponding doc file and that no orphaned doc file
 | [`E170`](diagnostics/E170.md) | Two `@[convention(claims = "…", order = N)]` handlers declare textually different patterns that provably overlap, so the later-declared (higher-`order`) one can never claim anything in this file. |
 | [`E171`](diagnostics/E171.md) | A `@[convention(claims = "…", order = N)]` handler's captured parameter declares a type other than `string`/untyped/`content`, but every capture binds as a plain string literal — numeric capture coercion is deferred. |
 | [`E172`](diagnostics/E172.md) | A native `#…` tag begins with `@` — the ink-dialect directive-tag shape (`#@private`/`#@was`/`#@local`/…) — but native has no directive channel, so it lowers as an ordinary runtime tag. |
+| [`E173`](diagnostics/E173.md) | An inline markup span of a declared kind is missing an attribute the host manifest marks `required` for that kind. |
+| [`E174`](diagnostics/E174.md) | A lambda's own written annotation (a parameter's `: T` or the lambda's `: R` return annotation) disagrees with the type its body actually infers. |
+| [`E175`](diagnostics/E175.md) | `register` is called somewhere other than inside the project's configured conventions module's `fn conventions()` — native-only, `register` is a comptime-only intrinsic. |
+| [`E176`](diagnostics/E176.md) | A divert-with-args site (`-> knot(args)`, tunnel call, or thread-start) supplies the wrong number of arguments for its resolved target's declared parameters — `E031`'s sibling for the divert call shape. |
 | [`E178`](diagnostics/E178.md) | A `@[convention(claims = "…")]` annotation has no `order` clause — required, with no default. |
-| [`E179`](diagnostics/E179.md) | Two `@[convention(…)]` declarations in the same module carry the same `order` — reported against both declarations. |
+| [`E179`](diagnostics/E179.md) | Two `@[convention(…)]` declarations in the same module carry the same `order` — reported against every declaration in the group. |
 
 ## Known limitations
 

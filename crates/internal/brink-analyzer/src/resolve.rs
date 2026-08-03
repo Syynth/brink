@@ -321,6 +321,7 @@ fn resolve_divert(
             range: uref.range,
             target: id,
         });
+        check_divert_arity(index, file_id, uref, id, diagnostics);
     } else {
         diagnostics.push(unresolved_diag(
             file_id,
@@ -328,6 +329,63 @@ fn resolve_divert(
             &uref.path,
             DiagnosticCode::E024,
         ));
+    }
+}
+
+/// Check a divert-with-args site's argument count against its resolved
+/// target's declared parameter count (`E176`, issue #2156) — `E031`'s
+/// sibling for the divert call shape (`-> knot(args)`, a tunnel call, or a
+/// thread-start), extended to a construct `check_arity` never covered:
+/// `RefKind::Divert` refs always carried `arg_count: None` until this issue
+/// (`brink_ir::symbols::project::Projector::walk_divert_target`), so
+/// `check_arity` — gated on `arg_count.is_some()` — could never fire for a
+/// divert on either dialect regardless of how many arguments were given.
+///
+/// Scoped to a resolution naming a `Knot`/`Stitch`/`Label` — the only
+/// symbol kinds with their own declared parameter row — mirroring
+/// `resolve_function`'s own `check_arity` call sites, which likewise check
+/// only `External`/`Knot` resolutions and skip `Variable`/local ones. A
+/// divert resolving to a `Variable` (`-> x` where `x` holds a stored divert
+/// target, e.g. `docs/…/WritingWithInk.md`'s "Advanced: sending divert
+/// targets as parameters") or to a divert-typed local `Param` (`-> return_to`
+/// inside `=== knot(-> return_to) ===`) is an indirection whose real
+/// target's arity is not known statically at this site — `index.symbols`
+/// has no declared parameter row for either kind, so checking against it
+/// would misfire on legitimate code instead of silently doing nothing
+/// useful.
+fn check_divert_arity(
+    index: &SymbolIndex,
+    file_id: FileId,
+    uref: &brink_ir::UnresolvedRef,
+    target: DefinitionId,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let Some(call_arg_count) = uref.arg_count else {
+        return;
+    };
+    let Some(info) = index.symbols.get(&target) else {
+        return;
+    };
+    if !matches!(
+        info.kind,
+        SymbolKind::Knot | SymbolKind::Stitch | SymbolKind::Label
+    ) {
+        return;
+    }
+    let expected = info.params.len();
+    if call_arg_count != expected {
+        diagnostics.push(Diagnostic {
+            file: file_id,
+            range: uref.range,
+            message: format!(
+                "{}: `{}` expects {} argument(s), got {}",
+                DiagnosticCode::E176.title(),
+                uref.path,
+                expected,
+                call_arg_count,
+            ),
+            code: DiagnosticCode::E176,
+        });
     }
 }
 
@@ -1893,7 +1951,13 @@ mod tests {
 
     #[test]
     fn arity_check_no_arg_count_no_warning() {
-        // Non-function ref (arg_count=None) should never trigger arity check.
+        // A ref with `arg_count: None` (not a call site at all) should
+        // never trigger arity checking, regardless of kind. This uses
+        // `uref`'s hardcoded `None` directly rather than a real divert
+        // pipeline — since issue #2156 a *real* `RefKind::Divert` ref
+        // always carries `Some(target.args.len())`
+        // (`brink_ir::symbols::project`'s `walk_divert_target`); see
+        // `divert_arity_mismatch_emits_e176` below for that path.
         let manifest =
             make_manifest_with_params("greet", 1, vec![uref("greet", RefKind::Divert, None, None)]);
         let files = vec![(FileId(0), &manifest)];
@@ -1902,7 +1966,120 @@ mod tests {
 
         assert!(
             diags.is_empty(),
-            "divert should not trigger arity check: {diags:?}"
+            "a ref with no arg_count should not trigger arity check: {diags:?}"
+        );
+    }
+
+    /// Make a manifest with a top-level knot that has a specific number of
+    /// params, alongside a top-level `Variable` — for the divert-arity
+    /// (`E176`, issue #2156) test family below.
+    fn make_manifest_with_knot_and_variable(
+        knot_name: &str,
+        param_count: usize,
+        variable_name: &str,
+        unresolved: Vec<UnresolvedRef>,
+    ) -> SymbolManifest {
+        let mut manifest = make_manifest_with_params(knot_name, param_count, Vec::new());
+        let r = range(9000, variable_name.len() as u32);
+        manifest.variables.push(DeclaredSymbol {
+            name: variable_name.to_string(),
+            range: r,
+            params: Vec::new(),
+            detail: None,
+            visibility: None,
+            was: None,
+        });
+        manifest.unresolved = unresolved;
+        manifest
+    }
+
+    #[test]
+    fn divert_arity_match_emits_no_e176() {
+        // `-> greet(x)` where `greet` takes 1 param — no warning.
+        let manifest = make_manifest_with_params(
+            "greet",
+            1,
+            vec![uref_with_args(
+                "greet",
+                RefKind::Divert,
+                None,
+                None,
+                Some(1),
+            )],
+        );
+        let files = vec![(FileId(0), &manifest)];
+        let (index, _) = merge_manifests(&files);
+        let (resolutions, diags) = resolve_refs(&index, &files);
+
+        assert_eq!(resolutions.len(), 1);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostics for matching divert arity, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn divert_arity_mismatch_emits_e176() {
+        // `-> greet(x, y)` where `greet` takes 1 param — E176 warning, not
+        // E031 (that code stays scoped to ordinary calls; this is its
+        // sibling for the divert shape).
+        let manifest = make_manifest_with_params(
+            "greet",
+            1,
+            vec![uref_with_args(
+                "greet",
+                RefKind::Divert,
+                None,
+                None,
+                Some(2),
+            )],
+        );
+        let files = vec![(FileId(0), &manifest)];
+        let (index, _) = merge_manifests(&files);
+        let (resolutions, diags) = resolve_refs(&index, &files);
+
+        assert_eq!(
+            resolutions.len(),
+            1,
+            "should still resolve despite arity mismatch"
+        );
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, DiagnosticCode::E176);
+        assert!(diags[0].message.contains("expects 1"));
+        assert!(diags[0].message.contains("got 2"));
+    }
+
+    #[test]
+    fn divert_through_variable_is_not_arity_checked() {
+        // `-> holder` where `holder` is a `Variable` (holding a stored
+        // divert-target value, e.g. ink's "Advanced: sending divert
+        // targets as parameters") must never be arity-checked: a
+        // `Variable` symbol carries no declared parameter row of its own,
+        // so checking `arg_count` against it would misfire on legitimate
+        // code. `lookup_divert`'s case 6 (bare-name fallback to a
+        // `Variable`) is exactly the resolution this exercises — the knot
+        // `greet` (1 param) is a decoy that must NOT be what `holder`
+        // resolves to.
+        let manifest = make_manifest_with_knot_and_variable(
+            "greet",
+            1,
+            "holder",
+            vec![uref_with_args(
+                "holder",
+                RefKind::Divert,
+                None,
+                None,
+                Some(3),
+            )],
+        );
+        let files = vec![(FileId(0), &manifest)];
+        let (index, _) = merge_manifests(&files);
+        let (resolutions, diags) = resolve_refs(&index, &files);
+
+        assert_eq!(resolutions.len(), 1, "the Variable must still resolve");
+        assert!(
+            diags.is_empty(),
+            "a divert through a Variable resolution must never be arity-checked: {diags:?}"
         );
     }
 
