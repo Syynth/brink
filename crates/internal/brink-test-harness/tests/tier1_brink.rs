@@ -154,6 +154,19 @@ fn struct_construct_read_write() {
 /// `path.segments.len() > 1` split reverted (rule 20a): the bare-variable
 /// path is taken again and the case faults at runtime instead of matching
 /// `expected.txt`.
+///
+/// Two more shapes were added on review: `b = a` before any mutation, then
+/// asserting `b.items` is still `[1, 2]` after — the `let y = x` aliasing
+/// guarantee (`struct-copy-isolation`, `rmw-mutator-shared-nested-lvalue`'s
+/// precedent) that motivated the `Value`-layer isolation test this issue
+/// descends from (`nested_array_inside_record_field_is_isolated_after_copy`
+/// in `brink-format::value`); and a `Temp`-rooted case (`~ temp c = Bag#{…}`)
+/// exercising `lower_field_mutator`'s `SymbolKind::Param | Temp` arm, which
+/// the `VAR`-only original left uncovered — that arm is precisely the one
+/// whose historical symptom, before this fix, was a link-time `unresolved
+/// global` fault rather than `NotIndexable("record")` (see
+/// `tests/tier1-brink/algorithms/quadtree/story.ink`'s "actual arena-
+/// mutation friction" finding for that pre-fix repro).
 #[test]
 fn struct_field_mutator_lvalue_targets_the_field_not_the_root() {
     assert_case("struct-field-mutator-lvalue");
