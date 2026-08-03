@@ -225,6 +225,14 @@ save-state-medium save_state():      cow_copies=     0  arc_clones=     1
 save-state-medium load_state():      cow_copies=     0  arc_clones=     1
 ```
 
+This block predates `loop-append-field-10k` (issue #2123) and does not yet
+have a row for it: `cargo bench -p brink-runtime --features bench-counters`
+currently panics before any bench runs (`struct-field-access-10k`'s
+`VAR p: Point = 0` placeholder fails to compile under E063, unrelated to
+#2123 — see that PR's description), so a real captured number isn't
+available yet. Don't fabricate one here; add the row once that's
+unblocked.
+
 The snapshot-retention row is the §8 bounded-retention proof: g10-m10 and
 g10-m100 (same G=10, 10x different M) both report `cow_copies=11`;
 g100-m10 and g10-m100 (same 1,000 total mutations, 10x different G)

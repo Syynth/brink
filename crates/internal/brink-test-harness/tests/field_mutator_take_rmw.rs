@@ -151,8 +151,8 @@ proptest! {
 /// `push(a.items, i)` in a 2,000-iteration loop must not silently re-share
 /// the field's `Arc` across iterations — pinned here as a *value* check
 /// (the final length), with the actual COW-copy-count proof living in
-/// `crates/brink-runtime/benches/runtime.rs`'s `field_loop_append_bench`
-/// (see `docs/runtime-bench.md`).
+/// `crates/brink-runtime/tests/field_mutator_cow.rs` (see
+/// `docs/runtime-bench.md`).
 #[test]
 fn field_push_loop_produces_correct_length_at_scale() {
     let source = "STRUCT Bag = #{\n    items: Array<int>,\n}\nVAR a = 0\nVAR total = 0\n~ {\n    a = Bag#{items: #[]}\n    temp i = 0\n    while i < 2000 {\n        push(a.items, i)\n        i = i + 1\n    }\n    total = len(a.items)\n}\n{total}\n-> END\n";
@@ -227,5 +227,74 @@ fn fault_during_field_rmw_does_not_touch_unrelated_globals() {
             brink_format::Value::Int(9),
             brink_format::Value::Int(9),
         ])
+    );
+}
+
+/// `push`'s pre-check is a *guarantee*, not an accident: `lower_field_mutator`
+/// emits `push_len` (`CollectionLen` on the field) **before** the de-alias
+/// `RecordSet` that takes the root and nulls the field out, so a
+/// `NotIndexable` fault from pushing onto a non-collection field fires
+/// before anything is taken — mirroring `take_rmw.rs`'s
+/// `fault_during_push_leaves_root_unchanged` for the bare-variable case,
+/// `a` is left **completely unchanged**, not reduced to the field-scoped
+/// `Value::Null` trade-off the other tests in this file pin. Reorder those
+/// two emissions (a plausible future cleanup) and this test must go red:
+/// the field would start blowing away to `Value::Null` on this exact
+/// fault instead.
+#[test]
+fn fault_during_field_push_on_non_collection_leaves_root_unchanged() {
+    let source = "STRUCT Bag = #{\n    items: int,\n    tag: int,\n}\nVAR a = 0\n~ {\n    a = Bag#{items: 5, tag: 7}\n    push(a.items, 1)\n}\n{a.tag}\n-> END\n";
+    let mut story = compile(source);
+    let err = run_to_completion_or_fault(&mut story).expect_err("pushing onto an int field faults");
+    assert!(
+        matches!(err, RuntimeError::NotIndexable("int")),
+        "unexpected error: {err:?}"
+    );
+    let Some(Value::Record { fields, .. }) = story.variable("a") else {
+        panic!("a is not a declared record after the fault");
+    };
+    assert_eq!(
+        fields.as_slice(),
+        &[Value::Int(5), Value::Int(7)],
+        "push's NotIndexable pre-check must fault before the de-alias \
+         RecordSet runs, leaving `a` completely unchanged"
+    );
+}
+
+// ── Map-typed field coverage (house rule 16) ─────────────────────────────
+//
+// Every test above exercises an `Array<int>`-typed field via
+// `push`/`insert`/`remove_at`. `remove`/`clear` are map-only mutators
+// (issue #1484's split), and this PR's own changeset names `map_make_mut`
+// as a beneficiary of the de-alias fix, so they need their own coverage
+// through a `Map<K, V>`-typed field, not just an assertion by analogy with
+// the array case.
+
+/// `remove`/`clear` on a `Map<string, int>`-typed struct field run the
+/// same de-alias path as the array-field mutators above, but through
+/// `map_make_mut` instead of `array_make_mut`.
+#[test]
+fn field_remove_and_clear_on_map_field_work() {
+    let source = "STRUCT Bag = #{\n    m: Map<string, int>,\n}\nVAR a = 0\nVAR before = 0\nVAR after_remove = 0\nVAR after_clear = 0\n~ {\n    a = Bag#{m: #{\"x\": 1, \"y\": 2}}\n    before = len(a.m)\n    remove(a.m, \"x\")\n    after_remove = len(a.m)\n    clear(a.m)\n    after_clear = len(a.m)\n}\n{before} {after_remove} {after_clear}\n-> END\n";
+    let mut story = compile(source);
+    let out = run_to_completion_or_fault(&mut story).expect("no fault expected");
+    assert_eq!(out.trim(), "2 1 0");
+}
+
+/// Sharing-unobservable law (value-model-spec §3), map-field variant of
+/// `copy_then_field_push_never_observes_through_the_original` above:
+/// `b = a` then `remove(b.m, k)` must never change `a.m` — the de-alias
+/// fix must COW the map exactly when something else still aliases the
+/// field, the same guarantee `field_push_matches_manual_rmw`'s sibling
+/// proves for `array_make_mut`, proven here for `map_make_mut`.
+#[test]
+fn copy_then_field_remove_never_observes_through_the_original_map() {
+    let source = "STRUCT Bag = #{\n    m: Map<string, int>,\n}\nVAR a = 0\nVAR b = 0\nVAR a_after = 0\nVAR b_after = 0\n~ {\n    a = Bag#{m: #{\"x\": 1, \"y\": 2}}\n    b = a\n    remove(b.m, \"x\")\n    a_after = len(a.m)\n    b_after = len(b.m)\n}\n{a_after} {b_after}\n-> END\n";
+    let mut story = compile(source);
+    let out = run_to_completion_or_fault(&mut story).expect("no fault expected");
+    assert_eq!(
+        out.trim(),
+        "2 1",
+        "removing from b.m after b = a must not observe through a.m"
     );
 }

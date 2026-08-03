@@ -6,13 +6,12 @@
 //!
 //! Runs in CI's required "Test (bench-counters)" job
 //! (`cargo test -p brink-runtime --features bench-counters`, see
-//! `docs/runtime-bench.md`), same as `bench_counters::tests` and the
-//! divan benches under `benches/runtime.rs`. Without the fix, 2,000
-//! sequential `push(a.items, i)` calls pay 2,000 COW copies (one per
-//! call — O(n²) total); with it, the field's `Arc` becomes the sole
-//! owner after the first (a one-time literal-pool-sharing fork, the same
-//! shape `loop_append_bench`'s bare-variable case pays), so the count
-//! stays a small constant regardless of the loop bound.
+//! `docs/runtime-bench.md`), same as `bench_counters::tests`. Without the
+//! fix, 2,000 sequential `push(a.items, i)` calls pay 2,000 COW copies
+//! (one per call — O(n²) total); with it, the field's `Arc` becomes the
+//! sole owner after the first (a one-time literal-pool-sharing fork, the
+//! same shape `loop_append_bench`'s bare-variable case pays), so the
+//! count stays a small constant regardless of the loop bound.
 #![cfg(feature = "bench-counters")]
 
 use brink_compiler::{AnalysisOptions, Dialect, TypePolicy};
@@ -20,9 +19,11 @@ use brink_runtime::bench_counters;
 use brink_runtime::{DotNetRng, Step, Story};
 
 /// Loose enough to tolerate the one-time literal-pool-sharing fork
-/// [`loop_append_bench`]'s own doc describes, but two orders of magnitude
-/// below the loop bound — nowhere near enough headroom for the O(n²)
-/// pre-fix behavior (2,000 copies) to slip through.
+/// `loop_append_bench`'s own doc describes (a `benches/runtime.rs` divan
+/// bench, not linkable from a `tests/` target — hence plain text, not an
+/// intra-doc link), but two orders of magnitude below the loop bound —
+/// nowhere near enough headroom for the O(n²) pre-fix behavior (2,000
+/// copies) to slip through.
 const MAX_EXPECTED_COW_COPIES: u64 = 4;
 
 #[test]
