@@ -1690,25 +1690,21 @@ mod tests {
     /// surface through `y`, exactly like a bare `Array`-of-`Array`
     /// (`rmw-mutator-shared-nested-lvalue`, `tests/tier1-brink/`).
     ///
-    /// This is pinned only at the `Value` layer, not as an end-to-end
-    /// `tests/tier1-brink/` fixture, because the obvious source form —
-    /// `STRUCT Bag = #{ items: Array<int> }`, `push(a.items, 3)` — does not
-    /// currently reach this code path: `push`/`insert`/`remove`'s
-    /// bare-lvalue fast path (`try_lower_mutator_stmt` in
-    /// `brink-ir::lir::lower::blocks`) treats *any* `hir::Expr::Path`
-    /// lvalue, including a multi-segment TM-4b dotted field-access path
-    /// like `a.items`, as a single bare-variable target and resolves the
-    /// whole path's range to its root symbol — unlike plain field
-    /// assignment's `try_lower_field_assignment`, which explicitly special-
-    /// cases `path.segments.len() > 1`. The mutator ends up applied to `a`
-    /// itself (a `Record`) instead of `a`'s `items` field, so `push(a.items,
-    /// 3)` compiles clean but faults at runtime with
-    /// `RuntimeError::NotIndexable("record")` rather than mutating the
-    /// nested array. That is a real compiler bug, not a deliberate
-    /// limitation — tracked separately; this `Value`-layer test is what
-    /// proves the runtime's own COW discipline is already correct once a
-    /// future fix routes this lvalue shape through the field-projection
-    /// path instead.
+    /// The obvious source form — `STRUCT Bag = #{ items: Array<int> }`,
+    /// `push(a.items, 3)` — used to fault instead of reaching this code path:
+    /// `push`/`insert`/`remove`'s bare-lvalue fast path (`try_lower_mutator_stmt`
+    /// in `brink-ir::lir::lower::blocks`) treated *any* `hir::Expr::Path`
+    /// lvalue, including a multi-segment TM-4b dotted field-access path like
+    /// `a.items`, as a single bare-variable target and resolved the whole
+    /// path's range to its root symbol, applying the mutator to `a` itself (a
+    /// `Record`) instead of `a`'s `items` field. That was issue #1495, fixed
+    /// by routing a single-level struct-field mutator lvalue through the new
+    /// `lower_field_mutator` (mirrors `try_lower_field_assignment`'s existing
+    /// `path.segments.len() > 1` split). This `Value`-layer test remains as
+    /// the isolation guarantee's own regression pin; the end-to-end
+    /// aliasing case now lives at
+    /// `tests/tier1-brink/struct-field-mutator-lvalue/story.ink` alongside
+    /// the fix.
     #[test]
     fn nested_array_inside_record_field_is_isolated_after_copy() {
         let shape = ShapeId(0);
