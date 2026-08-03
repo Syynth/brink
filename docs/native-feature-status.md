@@ -91,7 +91,7 @@ whole vocabulary by naming a different conventions module. Sequenced as
 | `fn conventions()` registration | ✅ | ❌ | — | — | **v1c · #1840** — 4 blocking questions ruled 2026-08-01 |
 | Comptime evaluation of conventions | ✅ | ❌ | — | — | #1840; dependency shape ruled 2026-08-01 (#1867) |
 | `@[style]` declaration surface | ✅ | ✅ | ❌ | — | `StyleToken` produced, **zero consumers** (#1719) |
-| Built-in screenplay preset | ✅ | ✅ | ✅ | ❓ | **#1720 landed** — `std/conventions/screenplay.brink` (`heading`/`transition`/`cue`/`parenthetical`), `conventions-screenplay-preset` golden; NOT yet reachable via `use std::conventions::screenplay` (no std-module resolution exists; needs #1840); `dialect.rs`'s `Default` is unrelated legacy hardcoding |
+| Built-in screenplay preset | ✅ | ✅ | ✅ | ❓ | **#1720 landed** — `std/conventions/screenplay.brink` (`heading`/`transition`/`cue`/`parenthetical`), `conventions-screenplay-preset` golden; `heading` also declares + calls `extern scene_entered(title, slug)` as a host notification (#2092, PR #2144); NOT yet reachable via `use std::conventions::screenplay` (no std-module resolution exists; needs #1840); `dialect.rs`'s `Default` is unrelated legacy hardcoding |
 | `[project] elements` name validation | ✅ | ⚠️ | ⚠️ | — | #1874 landed: a bare preset-shaped name is checked against `brink-analyzer`'s `BUILTIN_ELEMENT_PRESETS` (now `["screenplay"]`, #1720 shipping it) via `apply_project_config`, warning through the existing `ConfigWarning` channel; a path-shaped pointer is never rejected (still #1844's job). **Parses** doesn't really apply — `[project] elements` is a `brink.toml` key, not grammar `brink-syntax-native` accepts or rejects; **Runs** is established only by `brink-analyzer` unit tests (`apply_project_config_*`) — no `brink compile`/`brink play` CLI run was performed |
 | `std::conventions` types | ❓ | ❌ | — | — | prose-spec §9 residual — the last prose-round design item |
 
@@ -146,7 +146,7 @@ anywhere in `brink-format` or `brink-runtime`; `Choice` is still
 | Universal block id | ✅ | ✅ | ✅ | **LANDED** — `OutputLine.block_id`, 4 tests each verified to fail when its increment site is disabled |
 | `Step` / `OutputLine` contract | ✅ | ✅ | ✅ | **LANDED #1684** (PR #2102) — `Line` → `Step`; terminals carry no text |
 | Choice captured environment | ✅ | ❌ | ❌ | #1508's analyzer half landed; `Choice` is still `{ text, index, tags }` |
-| Scene entry / transitions as host calls | ✅ | ❓ | ❓ | ruled sitting 4; the `lower:` column it used was **dissolved** by §9.1 — unverified what replaced it |
+| Scene entry / transitions as host calls | ✅ | — | ⚠️ | ruled sitting 4; the `lower:` column it used was **dissolved** by §9.1. **Scene entry answered (#2092, PR #2144):** `std/conventions/screenplay.brink`'s `heading` handler declares `extern scene_entered(title, slug)` and calls it directly — the existing Track-A extern/`ExternalFnHandler` call path, not a synthesized/codegen-only call; proven end-to-end by `issue_2092_scene_entered_extern.rs`, which reads the shipped file and drives it through a real bound handler. Still ⚠️: the preset itself is not yet reachable from a real project (needs #1840's module resolution), so no default project calls it yet, and written transitions (`SMASH CUT TO:`) as a departure-site style call are untouched by this row's landing |
 | Display metrics / measurement | ✅ | — | ❌ | design ruled (prose-spec §6); #362's CM6 consumer unbuilt |
 | Element data in XLIFF | ✅ | — | — | ruled **never exported** in v1 (decision-log 2026-07-26) — lives in the base `.inkb` |
 

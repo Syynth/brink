@@ -277,10 +277,13 @@ its seven-sibling audit (#1764).
 - **§9.1 — the `std::conventions` types design pass — is the live blocker.**
   It gates **#1717** (step 6a/6b) and **#1720** (step 8's preset). Two build
   agents independently declined on it without seeing each other's analysis.
-  The three decisions it owes: the concrete `Conventions` schema type + v1 file
-  format, the `brink.toml` pointer/load path, and — not in §9.1's own list —
-  what a synthesized `scene_entered`/transition call does when no matching
-  `EXTERNAL` was authored.
+  The two decisions it owes: the concrete `Conventions` schema type + v1 file
+  format, and the `brink.toml` pointer/load path. (A third question that used
+  to sit here — what a synthesized `scene_entered`/transition call does when
+  no matching `EXTERNAL` was authored — is answered by #2092/PR #2144: the
+  screenplay preset declares `extern scene_entered(title, slug)` itself and
+  ships a no-op ink-side fallback `fn`, so a matching `EXTERNAL` always
+  exists; there is no synthesized-call-with-no-fallback case to design for.)
 - **#1737** (span nesting an inline conditional) is blocked by
   `prose-dialect-spec` §4.4/§4.5, which label that interaction still-open.
 - **#1727** — RULED 2026-08-02 and delivered: HIR mints a lifted lambda's

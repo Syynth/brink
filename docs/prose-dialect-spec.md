@@ -1335,10 +1335,18 @@ unless marked:
 7. **Transitions and scene entry are lowered host calls, not content
    lines.** Their runtime consumer is the *engine*, not the reader —
    so they ride the existing non-blocking command/extern machinery
-   (journaled, effect-checked via the manifest). **Scene entry** = the
-   scene-heading element's default lowering (`scene_entered(title,
-   slug)` fires on entering the stitch — pure codegen, a call planted
-   at the top of the body). **Written transitions** (`SMASH CUT TO:`)
+   (journaled, effect-checked via the manifest). **Scene entry, as
+   shipped (#2092, PR #2144):** an AUTHORED call inside the screenplay
+   preset's `heading` handler (`std/conventions/screenplay.brink`) —
+   `scene_entered(title, slug)` fires when the heading LINE is claimed
+   by the handler, not on "entering the stitch" (a heading is not
+   promoted to a real HIR stitch — that promotion is #1717, closed
+   superseded by §9.1 without delivering it) and not planted by pure
+   codegen — it is an ordinary logic-line statement the handler's
+   author wrote, riding the same extern/`ExternalFnHandler` call path
+   any other call would. `slug` is currently always the empty string
+   (no slug-bearing heading is claimable by this handler yet,
+   #2077/#2078). **Written transitions** (`SMASH CUT TO:`)
    = a departure-site style call; the bare-scene-divert default cut
    needs no authored transition (the slugline implies the cut, as in
    real screenwriting). **Diverts remain absolutely invisible** — no
