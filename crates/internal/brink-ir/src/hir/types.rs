@@ -432,6 +432,18 @@ pub struct ClaimHandlerDecl {
     /// The claiming pattern's regex source (uncompiled — `regex::Regex`
     /// has no `Eq`, which this struct's derive needs).
     pub pattern: String,
+    /// The bare `block` clause (issue #1839): `true` when the trailing
+    /// declared parameter is a `content`-typed block-capture receiver, not
+    /// a regex-bound capture — see
+    /// [`crate::hir::lower_native::element`]'s `ClaimHandler::block` doc
+    /// for what that changes about argument binding. Carried across this
+    /// struct (issue #2068) so the cross-file injection join
+    /// (`brink_analyzer::conventions_registry`) has it to hand onward to
+    /// [`crate::hir::lower_native::external_conventions::ExternalClaimHandler`]
+    /// — before #2068, this field did not exist at all, so an injected
+    /// handler could never block-capture regardless of how it was
+    /// declared.
+    pub block: bool,
 }
 
 /// A built-in editor-presentation token (`docs/prose-dialect-spec.md`
