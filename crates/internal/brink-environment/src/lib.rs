@@ -1254,6 +1254,16 @@ mod tests {
         // that the manifest holds the text. A plain native project must
         // still compile, and the mounted stdlib module must not itself
         // introduce any diagnostic.
+        //
+        // `warnings.is_empty()` alone is vacuous here (review finding on
+        // #2080): a bare `main.brink` project compiles with zero warnings
+        // whether or not `mount_stdlib` ran at all, so it cannot
+        // distinguish "the mount reached the compile" from "the mount
+        // didn't happen". A native entry's compilation universe is
+        // "tree is universe" (every `.brink` key joins), so the mounted
+        // screenplay preset's `heading` handler — which declares
+        // `extern scene_entered(title, slug)` — must actually land in the
+        // compiled `StoryData`'s externals table. Assert that too.
         let t = tree(&[("main.brink", "flow main() { Hello. }")]);
         let env = Project::load(&t, "main.brink", &OptionOverrides::default()).expect("loads");
         let out = compile(&env).expect(
@@ -1262,6 +1272,97 @@ mod tests {
         assert!(
             out.warnings.is_empty(),
             "the mounted stdlib module must not itself introduce diagnostics: {:?}",
+            out.warnings
+        );
+        let has_scene_entered_extern = out.data.externals.iter().any(|ext| {
+            out.data
+                .name_table
+                .get(ext.name.0 as usize)
+                .is_some_and(|name| name == "scene_entered")
+        });
+        assert!(
+            has_scene_entered_extern,
+            "the mounted screenplay preset's `heading` handler declares \
+             `extern scene_entered(title, slug)` — its absence from the \
+             compiled externs means the mount never reached the compile at \
+             all, got externs: {:?}",
+            out.data.externals
+        );
+    }
+
+    #[test]
+    fn stdlib_mount_is_manifest_only_for_an_ink_entry() {
+        // Distinguishes native-entry reachability (asserted just above)
+        // from ink-entry reachability, which review found is NOT the
+        // same: `brink-db`'s `compilation_closure_files` walks an ink
+        // entry's `INCLUDE` graph (`topological_order`), and the mounted
+        // `.brink` key has no `INCLUDE` edge into it, so it is excluded
+        // from an ink compile's closure entirely — present in the
+        // `Environment`'s manifest, never lowered into LIR, contributing
+        // nothing to the compiled story. The PR's original changeset and
+        // reachability prose claimed the mount is "compiled as an
+        // ordinary native module alongside the project's own files" /
+        // "participates in native module resolution exactly like any
+        // project file" for every compile — true for a native entry
+        // (previous test), false for an ink one (this test), which is
+        // `@brink-lang/web`'s ordinary case.
+        let t = tree(&[("main.ink", "Hello.\n-> END\n")]);
+        let env = Project::load(&t, "main.ink", &OptionOverrides::default()).expect("loads");
+        let out = compile(&env).expect(
+            "a plain ink project must compile cleanly with the stdlib mounted alongside it",
+        );
+        assert!(
+            out.warnings.is_empty(),
+            "the mounted stdlib module must not itself introduce diagnostics \
+             for an ink entry either: {:?}",
+            out.warnings
+        );
+        let has_scene_entered_extern = out.data.externals.iter().any(|ext| {
+            out.data
+                .name_table
+                .get(ext.name.0 as usize)
+                .is_some_and(|name| name == "scene_entered")
+        });
+        assert!(
+            !has_scene_entered_extern,
+            "an ink entry's compilation closure must NOT include the \
+             mounted, manifest-only stdlib module (no INCLUDE edge reaches \
+             it) — its presence here would mean the mount reaches ink \
+             compiles too, contradicting the manifest-only scope fence: \
+             {:?}",
+            out.data.externals
+        );
+    }
+
+    #[test]
+    fn mounted_stdlib_introduces_no_diagnostics_under_types_strict() {
+        // Review finding on #2080: the mounted module now sits inside
+        // every native project's compilation closure, but the only
+        // existing compile test for it (`mounted_stdlib_compiles_cleanly_
+        // alongside_an_ordinary_native_project`, above) runs under
+        // `AnalysisOptions::default()`, which resolves `TypePolicy::
+        // Gradual`. A real `.brink` project setting `dialect = brink` in
+        // `brink.toml` resolves `TypePolicy::Strict` instead
+        // (`tier1_native_strict.rs`'s own module doc), and any strict
+        // diagnostic the mounted module produced would then fail every
+        // strict build. It is clean today — `tier1_native_strict.rs`'s
+        // baseline has zero rows for `conventions-screenplay-preset` —
+        // which is exactly what makes this guard cheap to add now, before
+        // the module grows and a strict finding sneaks in unnoticed.
+        let t = tree(&[("main.brink", "flow main() { Hello. }")]);
+        let overrides = OptionOverrides {
+            types: Some(TypePolicy::Strict),
+            ..OptionOverrides::default()
+        };
+        let env = Project::load(&t, "main.brink", &overrides).expect("loads");
+        let out = compile(&env).expect(
+            "a plain native project must compile cleanly under types = strict \
+             with the stdlib mounted alongside it",
+        );
+        assert!(
+            out.warnings.is_empty(),
+            "the mounted stdlib module must not itself introduce diagnostics \
+             under types = strict: {:?}",
             out.warnings
         );
     }
