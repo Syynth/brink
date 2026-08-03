@@ -101,6 +101,16 @@ fn all_diagnostic_codes_have_documentation() {
 
 #[test]
 fn diagnostic_codes_are_unique() {
+    // Codes reserved for an issue that has not landed a variant yet. #2156
+    // originally claimed both E176 and E177; it has since landed (as E176
+    // only — a single new diagnostic), leaving E177 itself unclaimed and
+    // unused. #2164's slice took E178/E179 instead, per its own explicit
+    // instruction not to take E176/E177, so E177 is now a genuine gap with
+    // no landed or queued owner. This allowlist entry stays until either a
+    // future issue claims E177 for a real variant (delete the entry then)
+    // or E177 is formally retired.
+    const RESERVED_CODES: &[&str] = &["E177"];
+
     // Enumerate the exhaustive variant list and build the inverse map: code string ->
     // every variant whose `as_str()` produces it. Unlike probing `from_str_code` over
     // `E001..E999` (which is `str -> Option<Self>` and can never surface two variants
@@ -154,16 +164,6 @@ fn diagnostic_codes_are_unique() {
         "The following diagnostic codes are duplicated (multiple variants return the same code):\n  {}",
         collisions.join("\n  ")
     );
-
-    // Codes reserved for an issue that has not landed a variant yet. #2156
-    // originally claimed both E176 and E177; it has since landed (as E176
-    // only — a single new diagnostic), leaving E177 itself unclaimed and
-    // unused. #2164's slice took E178/E179 instead, per its own explicit
-    // instruction not to take E176/E177, so E177 is now a genuine gap with
-    // no landed or queued owner. This allowlist entry stays until either a
-    // future issue claims E177 for a real variant (delete the entry then)
-    // or E177 is formally retired.
-    const RESERVED_CODES: &[&str] = &["E177"];
 
     // Verify no gaps in the numeric sequence: if E001 exists and E167 exists,
     // every code E001..=E167 must also exist. (Gaps are allowed *before* E001
