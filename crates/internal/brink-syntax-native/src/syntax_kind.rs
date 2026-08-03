@@ -812,11 +812,14 @@ pub enum SyntaxKind {
     /// following the head expression, so every existing "first child node
     /// that isn't a body/arm" condition accessor keeps working.
     ///
-    /// Parsed (but never lowered) inside a [`Self::CHOICE_GUARD`] too:
-    /// guard-`as` is admitted by the language but **implemented** only
-    /// once the `.inkb` v6 Choice record grows a captured environment, so
-    /// `brink-ir` diagnoses it as not-yet-supported (`E146`) rather than
-    /// letting it half-work.
+    /// Also parsed and lowered inside a [`Self::CHOICE_GUARD`] (issue
+    /// #1508): the guard's binding captures at presentation time, riding
+    /// the same `OptionBind` opcode + frame-slot machinery this construct
+    /// already uses in the other two positions — no separate wire-level
+    /// capture was needed once traced end to end (the choice's
+    /// thread-fork snapshot, which already restores tunnel/function
+    /// temps across a pick, generalizes to the guard's bound slot for
+    /// free). `E146` is retired now that this lowers for real.
     AS_BINDING,
 
     /// A parse-error wrapper node — swallows one unexpected token so error

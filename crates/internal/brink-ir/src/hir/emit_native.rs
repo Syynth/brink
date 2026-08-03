@@ -1350,7 +1350,20 @@ fn emit_choice(out: &mut String, depth: usize, c: &Choice, context: &str) -> Res
     let marker = if c.is_sticky { "+" } else { "*" };
     let mut head = format!("{indent}{marker}");
     if let Some(cond) = &c.condition {
-        let _ = write!(head, " {{if {}}}", emit_expr(cond, context)?);
+        // `c.binding` mirrors `IfStmt`/`ConditionalBlock`'s own
+        // `binding_suffix` handling above — a guard-`as` binding respells
+        // as a trailing `as NAME` inside the same `{if …}` braces
+        // (`docs/decision-log.md` 2026-07-26 "Choice-guard `as`
+        // un-deferred"; grammar: `parser::choice::choice_guard`).
+        let binding_suffix = match &c.binding {
+            Some(name) => format!(" as {}", name.text),
+            None => String::new(),
+        };
+        let _ = write!(
+            head,
+            " {{if {}{binding_suffix}}}",
+            emit_expr(cond, context)?
+        );
     }
     if let Some(label) = &c.label {
         let _ = write!(head, " ({})", label.text);
@@ -1956,6 +1969,32 @@ mod tests {
             cond.branches[0].binding.as_ref().map(|n| n.text.as_str()),
             Some("l"),
             "re-lowered conditional lost its `as` binding"
+        );
+    }
+
+    /// The choice-guard form (issue #1508) round-trips the same way the
+    /// template form above does: `hir::Choice::binding` respells as a
+    /// trailing `as NAME` inside the guard's `{if …}` braces
+    /// (`emit_choice`'s `binding_suffix`), and re-lowering the emitted
+    /// source recovers it on the re-lowered `Choice`.
+    #[test]
+    fn choice_guard_as_binding_round_trips() {
+        let src = "flow a() {\n  {?\n    * {if some(9) as n} [pick] {n}\n  }\n}\n";
+        let emitted = lower_and_emit(src).expect("choice guard `as` binding must now emit");
+        assert!(
+            emitted.contains("as n"),
+            "emitted source dropped the guard's `as` binding:\n{emitted}"
+        );
+
+        let hir = reparse_and_lower(&emitted);
+        let body = &hir.knots[0].body;
+        let Stmt::ChoiceSet(cs) = &body.stmts[0] else {
+            panic!("expected ChoiceSet as the re-lowered body's first statement: {body:?}");
+        };
+        assert_eq!(
+            cs.choices[0].binding.as_ref().map(|n| n.text.as_str()),
+            Some("n"),
+            "re-lowered choice lost its guard `as` binding"
         );
     }
 

@@ -1027,13 +1027,17 @@ pub enum DiagnosticCode {
     /// *after* the binding (`if find(x) as s && …`), is caught one layer
     /// earlier as a parse error (`brink-syntax-native::parser::binding`).
     E145,
-    /// An `as` binding in a **choice guard** (`* {if EXPR as name} [text]`).
-    /// Ruled admissible with capture-at-presentation, by-value COW
-    /// semantics (`docs/decision-log.md` 2026-07-26, "Choice-guard `as`
-    /// un-deferred"), but **not yet implemented**: the captured value has
-    /// to ride the pending choice across saves, which needs the `.inkb` v6
-    /// Choice record. Diagnosed by name so the construct never half-works
-    /// — this is "not yet", not "not a thing".
+    /// RETIRED (issue #1508) — previously "an `as` binding in a choice
+    /// guard (`* {if EXPR as name} [text]`) is ruled but not yet
+    /// implemented". `hir::lower_native::choice::lower_choice` now lowers
+    /// it for real: capture-at-presentation, by-value COW
+    /// (`docs/decision-log.md` 2026-07-26, "Choice-guard `as`
+    /// un-deferred"), reusing the same `OptionBind`/frame-slot machinery
+    /// `IfStmt::binding` already used — the guard's `OptionBind` writes
+    /// into the same frame `BeginChoice`'s `fork_thread` snapshots into
+    /// the pending choice, so the captured value rides along with no
+    /// separate wire-level capture needed. Code kept reserved, not reused,
+    /// for diagnostic-code stability — no longer emitted by any pass.
     E146,
     /// An `as` binding whose condition is a statically-known **non-Option**
     /// type (`if 5 as n { … }`). The binding unwraps `Option[T]` to `T`;
@@ -2157,7 +2161,7 @@ impl DiagnosticCode {
             Self::E145 => {
                 "the `as` binding must be the entire condition (no `&&`/`||` composition)"
             }
-            Self::E146 => "the `as` binding in a choice guard is not yet supported",
+            Self::E146 => "retired (issue #1508) — choice-guard `as` bindings now lower for real",
             Self::E147 => "the `as` binding requires an `Option[T]` condition",
             Self::E148 => "an `as` binding is immutable and cannot be assigned to",
             Self::E149 => "`remove` is map-only — did you mean `remove_at`?",

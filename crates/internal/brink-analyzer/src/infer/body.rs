@@ -4221,7 +4221,13 @@ impl InferPass<'_, '_> {
             self.effect_tags = true;
         }
         if let Some(cond) = &choice.condition {
-            self.infer_expr(cond); // condition position — no forcing.
+            let cond_ty = self.infer_expr(cond); // condition position — no forcing.
+            // Guard-`as` binding (issue #1508) — same treatment as
+            // `infer_conditional`'s `branch.binding`/`infer_if`'s
+            // `i.binding`: type the bound name from the condition's
+            // `Option[T]`, so a `{n}` read inside the choice's own body
+            // isn't stuck at `Unknown`.
+            self.bind_as_binding(choice.binding.as_ref(), &cond_ty);
         }
         if let Some(c) = &choice.start_content {
             self.infer_content(c);

@@ -240,6 +240,13 @@ fn walk_stmts(stmts: &[Stmt], push: &mut impl FnMut(&Name, &str)) {
             Stmt::Content(c) => walk_content(c, push),
             Stmt::ChoiceSet(cs) => {
                 for choice in &cs.choices {
+                    // Guard-`as` binding (issue #1508) — same treatment as
+                    // `Stmt::Conditional`'s `branch.binding` a few arms
+                    // down: it's a declaration site a temp/loop variable
+                    // can hide behind, per this function's own doc.
+                    if let Some(binding) = &choice.binding {
+                        push(binding, "binding");
+                    }
                     walk_stmts(&choice.body.stmts, push);
                 }
                 walk_stmts(&cs.continuation.stmts, push);

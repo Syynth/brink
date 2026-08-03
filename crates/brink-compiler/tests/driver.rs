@@ -1447,6 +1447,185 @@ fn native_as_binding_scope_ends_at_the_arm() {
     );
 }
 
+// ── Choice-guard `as` binding (issue #1508, decision log 2026-07-26
+//    "Choice-guard `as` un-deferred") ─────────────────────────────────
+//
+// Full pipeline, riding the *same* `OptionBind` + frame-slot machinery the
+// B1b tests above already prove: native parser (`AS_BINDING` inside
+// `CHOICE_GUARD`) → native HIR lowering (`hir::Choice::binding`) → LIR
+// (`lir::Expr::OptionBind`, scoped across condition *and* the choice's own
+// body — `lir::lower::mod::lower_choice_with_child`) → codegen
+// (`Opcode::OptionBind` inside the guard's condition eval) → runtime VM
+// (the write lands in the same frame `BeginChoice`'s `fork_thread`
+// snapshots into the pending choice) → `Story::choose` restores that
+// frame, so the picked body's `{n}` reads the captured value. No new
+// wire-format field exists or is needed: `OptionBind` and the thread-fork
+// snapshot both predate this feature (issue #1475) and already generalize
+// to a choice guard's binding without modification — verified by tracing
+// `vm.rs::handle_begin_choice`/`fork_thread` and `flow_instance.rs::choose`
+// end to end while implementing this, not assumed.
+
+/// Compile a native `.brink` entry from disk and link it, without
+/// draining any choices — mirrors `try_compile_and_run_native`, but hands
+/// back the linked `(Program, line_tables)` so a test can build a `Story`,
+/// inspect/select choices, mutate globals between presentation and pick,
+/// and — for the snapshot test — reattach a second `Story` to the same
+/// `Arc<Program>` after detaching the first.
+fn compile_native_linked(
+    dir_suffix: &str,
+    source: &str,
+) -> (
+    std::sync::Arc<brink_runtime::Program>,
+    Vec<Vec<brink_format::LineEntry>>,
+) {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-native-choice-as-{dir_suffix}-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("main.brink"), source).unwrap();
+
+    let result = brink_compiler::compile_path(&dir.join("main.brink"));
+    std::fs::remove_dir_all(&dir).ok();
+    let data = result
+        .unwrap_or_else(|err| panic!("choice-guard `as` fixture must compile cleanly: {err:?}"))
+        .data;
+
+    let (program, line_tables) = brink_runtime::link(&data).unwrap();
+    (std::sync::Arc::new(program), line_tables)
+}
+
+/// [`compile_native_linked`] wrapped straight into a fresh `Story`.
+fn compile_native_to_story(dir_suffix: &str, source: &str) -> Story<DotNetRng> {
+    let (program, line_tables) = compile_native_linked(dir_suffix, source);
+    Story::<DotNetRng>::new(program, line_tables)
+}
+
+const CHOICE_GUARD_AS_SRC: &str = "var stash: Option<int> = none\n\
+     flow main() {\n\
+     \x20 ~ stash = some(41)\n\
+     \x20 {?\n\
+     \x20   * {if stash as n} [pick it] {\n\
+     \x20     You have {n}.\n\
+     \x20     -> DONE\n\
+     \x20   }\n\
+     \x20 }\n}\n";
+
+/// The guard's `as` binding both gates the choice (`stash` is `some`, so
+/// it's presented) and captures `n = 41` **at presentation time** — a
+/// same-name global mutation between the choice appearing and being
+/// picked must not leak into the already-captured value. Regression for
+/// exactly the misread the maintainer caught in the 2026-07-26 "COW
+/// no-aliasing invariant" ruling: reference semantics would show `999`
+/// here, not the captured `41`.
+#[test]
+fn native_choice_guard_as_binds_and_captures_at_presentation() {
+    let mut story = compile_native_to_story("guard-capture", CHOICE_GUARD_AS_SRC);
+    // Host-facing `variable`/`set_variable` refuse an undeclared-module
+    // global by default (M-2b visibility enforcement) — a pre-existing,
+    // unrelated posture this test's mutation step needs to see past, the
+    // same documented dev-tooling escape hatch `visibility.rs`'s own
+    // `dev_override_allows_private_access` test uses. Flagged as scope
+    // overflow (issue comment) rather than fixed here: out of #1508's
+    // fence.
+    story.set_visibility_enforcement(false);
+
+    let lines = story.continue_maximally().expect("continue to the choice");
+    let Some(Step::Choices(choices)) = lines.last() else {
+        panic!("expected the guard-gated choice to be presented, got: {lines:?}");
+    };
+    assert_eq!(choices.len(), 1, "expected exactly one choice: {choices:?}");
+    assert_eq!(choices[0].text, "pick it");
+
+    // Mutate the source *after* presentation, *before* picking — capture-
+    // at-presentation must make this invisible to the picked body.
+    let mutated = story.set_variable(
+        "stash",
+        brink_format::Value::some(brink_format::Value::Int(999)),
+    );
+    assert!(mutated, "`stash` must be a real declared global");
+
+    story.choose(0).expect("choose the only choice");
+    let lines = story.continue_maximally().expect("continue after choosing");
+    let output: String = lines.iter().map(Step::text).collect();
+    assert!(
+        output.contains("You have 41."),
+        "expected the captured (pre-mutation) value 41, got: {output:?}"
+    );
+    assert!(
+        !output.contains("999"),
+        "the post-presentation mutation to 999 must never reach the picked \
+         body — capture-at-presentation, by-value COW: {output:?}"
+    );
+}
+
+/// The captured value survives a `StorySnapshot` round trip (the in-memory
+/// detach/reattach `Story::into_snapshot`/`from_snapshot` uses for locale
+/// hot-swapping) — issue #1508's "save round-trip" requirement. This is an
+/// ordinary `Clone` under the hood (`FlowInstance`/`Flow`/`PendingChoice`/
+/// `Thread` all derive `Clone`, no serde ceremony), the same "just clones"
+/// shape `ClosureValue`'s env row already relies on — proving it here
+/// pins that no extra wire-level plumbing is needed for the captured
+/// value to ride along.
+#[test]
+fn native_choice_guard_as_captured_value_survives_a_story_snapshot_round_trip() {
+    let (program, line_tables) = compile_native_linked("guard-snapshot", CHOICE_GUARD_AS_SRC);
+    let mut story = Story::<DotNetRng>::new(std::sync::Arc::clone(&program), line_tables);
+
+    let lines = story.continue_maximally().expect("continue to the choice");
+    assert!(
+        matches!(lines.last(), Some(Step::Choices(cs)) if cs.len() == 1),
+        "expected the guard-gated choice to be presented: {lines:?}"
+    );
+
+    // Detach and reattach to the SAME `Arc<Program>` — the snapshot
+    // carries the pending choice (and its captured `n = 41`) across, same
+    // as a locale hot-swap would.
+    let (snapshot, line_tables) = story.into_snapshot();
+    let mut story = Story::<DotNetRng>::from_snapshot(program, snapshot, line_tables);
+
+    story.choose(0).expect("choose the only choice");
+    let lines = story.continue_maximally().expect("continue after choosing");
+    let output: String = lines.iter().map(Step::text).collect();
+    assert!(
+        output.contains("You have 41."),
+        "expected the captured value to survive the snapshot round trip, got: {output:?}"
+    );
+}
+
+/// A `none` guard hides the choice entirely — the fallback (`else`) is
+/// what actually shows, and the bound name is never read (nothing to
+/// unwrap).
+#[test]
+fn native_choice_guard_as_false_condition_hides_the_choice() {
+    let source = "flow main() {\n\
+         \x20 {?\n\
+         \x20   * {if none as n} [pick it] {\n\
+         \x20     You have {n}.\n\
+         \x20     -> DONE\n\
+         \x20   }\n\
+         \x20   else {\n\
+         \x20     Nothing to grab.\n\
+         \x20     -> DONE\n\
+         \x20   }\n\
+         \x20 }\n}\n";
+    let mut story = compile_native_to_story("guard-false", source);
+    let lines = story
+        .continue_maximally()
+        .expect("continue past the hidden choice");
+    let output: String = lines.iter().map(Step::text).collect();
+    assert!(
+        output.contains("Nothing to grab."),
+        "expected the fallback to run since the guard is `none`, got: {output:?}"
+    );
+    assert!(
+        !output.contains("pick it") && !output.contains("You have"),
+        "the guarded choice must never appear when its condition is `none`, \
+         got: {output:?}"
+    );
+}
+
 // ── Native bare-name fn values (issue #1862) ────────────────────────
 //
 // The end-to-end proof that a bare name *is* a fn value lives in the

@@ -59,11 +59,17 @@ The dominant chain. Strictly ordered; each step gates the next.
      brink-intl reads only the line-tables section; bevy reads only the
      checksum). It gains a **length per section entry** so unknown sections are
      skippable, and `.brkt` becomes **framed records** (it is a log). **Not on
-     the critical path** — spans ride the existing `u8` part-tag dispatch, and a
-     Choice captured environment can ride as a nested value like `VAL_CLOSURE`.
+     the critical path** — spans ride the existing `u8` part-tag dispatch.
+   - ~~**Choice captured environment (guard-`as`)**~~ — **DONE** (#1508). Turned
+     out to need **no nested value and no wire-format change at all** — simpler
+     than even this doc's own "rides as a nested value like `VAL_CLOSURE`"
+     guess: the guard's binding reuses the *existing* `OptionBind` opcode
+     (issue #1475) in the condition-evaluation frame, and the pending choice's
+     existing thread-fork snapshot (which already restores tunnel/function
+     temps across a pick) carries the captured slot value across selection for
+     free. Verified end to end including a `StorySnapshot` round trip.
    - **Remaining v6 payloads**: `LinePart::Span` · element kind + open-map
-     element data · universal block id (a dedicated `OutputLine` field) ·
-     Choice captured environment (guard-`as`).
+     element data · universal block id (a dedicated `OutputLine` field).
    - **Moved out**: #1442 (intl alias-awareness — its own defect, Track 3) ·
      #1445, #1444 (both landed).
    - ⚠ *Owed: the bump-manifest issue, stating per payload whether it rides

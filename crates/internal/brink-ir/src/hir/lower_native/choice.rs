@@ -24,6 +24,7 @@ use crate::{
 
 use super::body::{lower_divert_like, lower_items, lower_span, push_escape, push_text};
 use super::cond::{lower_alternation, lower_conditional};
+use super::control_flow::lower_as_binding;
 use super::element::Elements;
 use super::expr::lower_path;
 use super::provenance::native_provenance;
@@ -116,18 +117,23 @@ fn lower_choice(
         .guard()
         .and_then(|g| g.expr())
         .map(|e| super::expr::lower_expr(file_id, &e, diags));
-    // B1b (issue #1475): guard-`as` is ruled (capture-at-presentation,
-    // by-value COW) but rides the `.inkb` v6 Choice record, which has no
-    // captured-environment slot yet. Diagnose the binding and lower the
-    // guard without it — `E146` is Error-severity, so nothing half-bound
-    // reaches codegen.
-    if let Some(binding) = c.guard().and_then(|g| g.as_binding()) {
-        diags.push(diag(
+    // B1b (issue #1475/#1508): guard-`as` now lowers for real
+    // (capture-at-presentation, by-value COW, decision log 2026-07-26
+    // "Choice-guard `as` un-deferred"). Reuses `lower_as_binding` verbatim
+    // — same E145 whole-condition check as the statement form
+    // (`if EXPR as name { … }`), since the binding's runtime shape is
+    // identical: an `OptionBind` in the condition-evaluation frame that
+    // `lir/lower/blocks.rs::lower_bound_condition` (shared with `IfStmt`)
+    // and `lir/lower/mod.rs::lower_choice_with_child` wire up below.
+    // `E146` ("not yet supported") is now retired — see its doc comment.
+    let binding = condition.as_ref().and_then(|cond| {
+        lower_as_binding(
             file_id,
-            binding.syntax().text_range(),
-            DiagnosticCode::E146,
-        ));
-    }
+            c.guard().and_then(|g| g.as_binding()).as_ref(),
+            cond,
+            diags,
+        )
+    });
 
     let (start_content, start_divert) = lower_choice_region(
         file_id,
@@ -179,6 +185,7 @@ fn lower_choice(
         is_fallback: false,
         label,
         condition,
+        binding,
         start_content,
         bracket_content,
         inner_content,
@@ -223,6 +230,7 @@ fn lower_fallback_choice(
         is_fallback: true,
         label: None,
         condition: None,
+        binding: None,
         start_content: None,
         bracket_content: None,
         inner_content: None,

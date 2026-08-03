@@ -157,6 +157,10 @@ impl LowerChoice for ast::Choice {
             is_fallback,
             label,
             condition,
+            // The ink grammar has no `as` binding anywhere — `AS_BINDING`
+            // is a `brink-syntax-native`-only node (`hir::Choice::binding`'s
+            // doc) — so this is always `None` for an ink-sourced choice.
+            binding: None,
             start_content,
             bracket_content,
             inner_content,

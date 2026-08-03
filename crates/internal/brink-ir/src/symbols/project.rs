@@ -497,6 +497,12 @@ impl Projector {
         for tag in &choice.tags {
             self.walk_tag(tag, knot, stitch);
         }
+        // Guard-`as` binding (issue #1508) — same treatment as
+        // `walk_conditional`'s `branch.binding`/`walk_if_stmt`'s
+        // `i.binding`: index it as an ordinary local, scoped to the
+        // choice's own body, so a `{n}` read inside resolves instead of
+        // raising E025.
+        self.push_as_binding(choice.binding.as_ref(), knot, stitch);
         self.walk_block(&choice.body, knot, stitch);
     }
 

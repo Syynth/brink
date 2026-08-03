@@ -241,11 +241,13 @@ fused test-and-bind opcode (`Opcode::OptionBind`). Binding immutable
 arm, rebinding per iteration in `while`; whole-condition-only for v1
 (**E145** — let-chains stay additively available later); a non-Option
 condition is **E147** (runtime residual:
-`RuntimeError::AsBindingNotOption`). **Deliberately not implemented:**
-`as` in a choice guard — ruled the same day
-(capture-at-presentation, by value, serialized with the pending choice)
-but sequenced with the `.inkb` v6 Choice record, so B1b diagnoses it as
-not-yet-supported (**E146**) rather than half-lowering it.
+`RuntimeError::AsBindingNotOption`). `as` in a choice guard — ruled the
+same day (capture-at-presentation, by value, riding the pending choice's
+existing thread-fork snapshot) — **is now implemented** (issue #1508):
+the guard's `OptionBind` writes into the same frame the choice's
+`BeginChoice` snapshots, so the captured value reaches the picked body
+with no separate wire-level capture. **E146** ("not yet supported") is
+retired.
 
 ### Wave B2 — `for k, v in m` / `for ref x in xs` / `for` over `iterate`
 The two-binding map desugar (**F10** — exact lowering + snapshot-keys

@@ -203,7 +203,18 @@ fn check_choice_set(cs: &ChoiceSet, file: FileId, ctx: &MistypeCtx<'_>, out: &mu
 
 fn check_choice(choice: &Choice, file: FileId, ctx: &MistypeCtx<'_>, out: &mut Vec<Diagnostic>) {
     if let Some(cond) = &choice.condition {
-        check_condition(cond, choice.ptr.text_range(), file, ctx, out);
+        // Same routing as `check_if`/`check_while`: a guard `as` binding
+        // (issue #1508) makes an `Option[T]` condition exactly what the
+        // author is supposed to write, so `E116` must not fire — `E147`
+        // takes its place for a statically non-Option condition.
+        check_condition_or_binding(
+            cond,
+            choice.binding.as_ref(),
+            choice.ptr.text_range(),
+            file,
+            ctx,
+            out,
+        );
     }
     if let Some(c) = &choice.start_content {
         check_content(c, file, ctx, out);

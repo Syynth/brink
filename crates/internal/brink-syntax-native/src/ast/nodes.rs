@@ -1198,10 +1198,11 @@ impl ChoiceGuard {
             .find(|n| n.kind() != SyntaxKind::AS_BINDING)
     }
 
-    /// The `as NAME` binding, when the author wrote one. Ruled but NOT yet
-    /// implemented (it rides the `.inkb` v6 Choice record) — `brink-ir`'s
-    /// choice lowering turns a present binding into `E146`, never into
-    /// working code (`parser/choice.rs::choice_guard`'s doc).
+    /// The `as NAME` binding, when the author wrote one. Implemented
+    /// (issue #1508): `brink-ir`'s choice lowering (`hir::Choice::binding`)
+    /// captures at presentation time via the same `OptionBind`
+    /// frame-slot machinery the statement/template forms already use
+    /// (`parser/choice.rs::choice_guard`'s doc). `E146` is retired.
     pub fn as_binding(&self) -> Option<AsBinding> {
         support::child(&self.syntax)
     }

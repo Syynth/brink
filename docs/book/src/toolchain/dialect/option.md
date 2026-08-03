@@ -377,12 +377,14 @@ The heaviest night on the tab: 7 coins — the ledger says some(7).
 > rebinds every iteration in `while`. For v1 the binding must be the
 > **entire** condition — composing it with `&&`/`||` is an error (`E145`);
 > let-chains can land later, additively. An `as` in a *choice guard* is
-> ruled (capture-at-presentation, by value) but not yet implemented — it
-> rides the `.inkb` v6 Choice record, and until then it is diagnosed as
-> not-yet-supported (`E146`). Nothing in *this* chapter changes either
-> way — these examples are brink-dialect, where `or` stays ink's boolean
-> or and there is no `as` binding at all; the chapter's own respell to the
-> native surface is separate, later work.
+> ruled (capture-at-presentation, by value) and now implemented too — the
+> guard's binding captures into the same frame slot the pending choice's
+> thread-fork snapshot already carries across selection, so the picked
+> body sees the value the player saw (`E146`, "not yet supported", is
+> retired). Nothing in *this* chapter changes either way — these
+> examples are brink-dialect, where `or` stays ink's boolean or and there
+> is no `as` binding at all; the chapter's own respell to the native
+> surface is separate, later work.
 
 ## How Option prints
 
