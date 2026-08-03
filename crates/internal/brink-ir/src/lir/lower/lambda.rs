@@ -182,7 +182,14 @@ pub(super) fn lower_lambda(l: &hir::LambdaExpr, ctx: &mut LowerCtx<'_>) -> lir::
             temps: &temps,
             names: ctx.names,
             ids: ctx.ids,
-            scope_path: path.clone(),
+            // A lambda nested inside this lambda's own body must scope off
+            // the *unqualified* relative path, not the already-prefix-
+            // qualified `path` — `lambda_scope_path` composes off
+            // `ctx.scope_path` and `qualify_lambda_path`/`alloc_address`
+            // apply `IdAllocator`'s path prefix themselves, so handing the
+            // qualified `path` down here would apply that prefix a second
+            // time for the nested lambda (review finding, #1727 follow-up).
+            scope_path: relative.clone(),
             is_root_content_scope: false,
             pending_children: Vec::new(),
             visible_temps: borrowed_names.iter().map(|s| (*s).to_string()).collect(),

@@ -52,11 +52,13 @@
 //! **A second known hole, deferred rather than fixed (issue #1887's own
 //! scope, bullet 2):** an inline lambda argument (`map(items, |x|
 //! impure())`) is also not collected as a comparator site, for a
-//! different, structural reason — a lambda literal has no `DefinitionId`
-//! until LIR lowering mints one (issue #1727, itself parked pending a
-//! design ruling), and this pass runs at HIR time, so there is nothing to
-//! resolve an effect row against yet. Recorded on #1709 and #1887; see the
-//! `_ => {}` arm in `collect_expr`'s `Expr::Call` match.
+//! different, structural reason — a lambda literal has a stable,
+//! HIR-minted `DefinitionId` since issue #1727, but it is still not a
+//! `SymbolIndex` entry/`DefKey`, so it cannot join the effect fixpoint's
+//! SCC solve (that's issue #1770's job), and this pass runs at HIR time
+//! over indexed defs, so there is nothing to resolve an effect row against
+//! yet. Recorded on #1709 and #1887; see the `_ => {}` arm in
+//! `collect_expr`'s `Expr::Call` match.
 //!
 //! Brink-only, same posture as the other effect passes: under strict-ink
 //! the `#fn(…)` literal (and the verbs themselves) are already rejected by
@@ -602,12 +604,14 @@ fn collect_expr(expr: &Expr, ctx: &CollectCtx<'_>, out: &mut Vec<ComparatorSite>
                     // an inline lambda argument (`map(items, |x| impure())`)
                     // is *itself* a pure-callback candidate, structurally
                     // parallel to the `#fn(target)`/bare-name arms above,
-                    // but a lambda literal has no `DefinitionId` until LIR
-                    // lowering mints one (issue #1727, itself parked
-                    // pending a design ruling) — so at HIR time, where this
-                    // pass runs, there is no def to resolve an effect row
-                    // against. Tracked on #1709 (the same structural gap
-                    // recorded for the creation-site atom) and #1887.
+                    // but a lambda literal — though it has had a stable,
+                    // HIR-minted `DefinitionId` since issue #1727 — is
+                    // still not a `SymbolIndex` entry/`DefKey`, so it can't
+                    // join the effect fixpoint's SCC solve (issue #1770's
+                    // job) — so at HIR time, where this pass runs over
+                    // indexed defs, there is no def to resolve an effect
+                    // row against. Tracked on #1709 (the same structural
+                    // gap recorded for the creation-site atom) and #1887.
                     // Not a regression: the pre-#1887 code dropped this
                     // shape too, just without a comment saying so.
                     _ => {}

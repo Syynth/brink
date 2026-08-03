@@ -25,6 +25,31 @@
 //! its old empty no-op): the test failed with "expected a lambda id to be
 //! stamped inside a weave conditional branch, got None", confirming it
 //! actually exercises the new code, not a vacuously-true assertion.
+//!
+//! ## The #1504-interplay gap (review finding on this issue's own PR)
+//!
+//! The three tests above all pass an **empty** `file_paths` map, so every
+//! `IdAllocator` path prefix (#1504's per-file qualifier,
+//! `hir::root_content_scope_path`) stays empty and `lower_lambda`'s
+//! `scope_path: path.clone()` (handing the *already-prefix-qualified* path
+//! down as the child `LowerCtx`'s scope, instead of the unqualified
+//! `relative`) was a silent no-op bug: with no prefix, qualifying twice is
+//! the same as qualifying once. [`nested_decl_lambda_matches_across_stamped_
+//! and_unstamped_paths`] below registers a real (non-empty) file path AND
+//! nests a lambda inside another lambda's own body, in a file-scope
+//! `CONST` default (issue #1774's `decls::eval_const_lambda` path) — the one
+//! shape where the *unstamped* projection `brink-db`'s `decl_hir_query`
+//! deliberately builds (see that query's doc) drives `lower_lambda`'s
+//! id-mint fallback for a **nested** lambda, rather than reading a
+//! pre-stamped `container_id`. Before the fix, that fallback re-applied the
+//! path prefix a second time for the inner lambda, minting a different
+//! `DefinitionId` than the whole-project stamped walk — the exact FG-4d
+//! history-independence violation this issue exists to prevent. Verified to
+//! fail without the fix: temporarily reverted `lower_lambda`'s
+//! `scope_path: relative.clone()` back to `scope_path: path.clone()` and
+//! re-ran this test — it failed with "the unstamped decl-hir-query path's
+//! inner lambda must mint the SAME DefinitionId as the whole-project
+//! stamped walk", then restored and re-verified green.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #![allow(
@@ -38,7 +63,7 @@
 use std::collections::HashMap;
 
 use brink_ir::hir::lower_native;
-use brink_ir::{BlockStmt, Expr, FileId, HirFile, LambdaExpr, Stmt};
+use brink_ir::{BlockStmt, Expr, FileId, HirFile, LambdaBody, LambdaExpr, Stmt, lir};
 
 /// A `flow`'s weave-level `{if …}` conditional — as opposed to a `fn`'s
 /// code-ground `if`, which lowers to a T1b `BlockStmt::If` and never
@@ -231,4 +256,160 @@ fn find_any<'a>(
         }
     }
     None
+}
+
+// ─── The #1504-interplay gap ──────────────────────────────────────────
+
+/// A file-scope `const` whose default is a lambda literal with another
+/// lambda nested inside its own braced block body (issue #1774's
+/// decl-default lambda path, `decls::eval_const_lambda`, crossed with
+/// #1727's own nested-lambda shape). Unlike [`SOURCE`] above, this fixture
+/// is always lowered with a REAL, non-empty registered file path — see the
+/// module doc's "#1504-interplay gap" section for why that is load-bearing.
+const NESTED_DECL_SOURCE: &str = "const f = |a| { let g = |b| b; g(a) }\n";
+
+/// The registered project path for [`NESTED_DECL_SOURCE`] — any non-empty
+/// value exercises `IdAllocator`'s per-file prefix (#1504); the exact
+/// spelling is not load-bearing.
+const NESTED_DECL_FILE_PATH: &str = "story/globals.brink";
+
+/// Navigate to the `f` decl's lambda default.
+fn nested_decl_lambda(hir: &HirFile) -> &LambdaExpr {
+    let cst = hir.constants.first().expect("expected one CONST decl");
+    let Expr::Lambda(l) = &cst.value else {
+        panic!(
+            "expected `f`'s default to be a lambda literal, got {:?}",
+            cst.value
+        );
+    };
+    l
+}
+
+/// Navigate from the outer lambda to the `g` lambda nested in its block
+/// body's first statement (`let g = |b| b;`).
+fn inner_lambda(outer: &LambdaExpr) -> &LambdaExpr {
+    let LambdaBody::Block { stmts, .. } = &outer.body else {
+        panic!(
+            "expected `f`'s body to be a braced block, got {:?}",
+            outer.body
+        );
+    };
+    let BlockStmt::TempDecl(t) = stmts.first().expect("expected the `let g = …` statement")
+    else {
+        panic!(
+            "expected the block's first statement to be a TempDecl, got {:?}",
+            stmts.first()
+        );
+    };
+    let Some(Expr::Lambda(l)) = t.value.as_ref() else {
+        panic!(
+            "expected `g`'s default to be a lambda literal, got {:?}",
+            t.value
+        );
+    };
+    l
+}
+
+/// The review finding's own repro: with a REAL registered file path, a
+/// lambda nested inside a decl-default lambda's body must mint the *same*
+/// `DefinitionId` whether it is reached through the whole-project stamped
+/// walk (`hir::stamp_container_ids` + the ordinary `lower_lambda` read of
+/// `container_id`) or through brink-db's deliberately UNSTAMPED
+/// `decl_hir_query` projection lowered via `lir::build_prelude_decls`
+/// directly (the same function `lir_prelude_decls_query` calls) — which
+/// forces `lower_lambda`'s id-mint fallback to engage for both the outer
+/// and the inner lambda, since neither ever got a stamped `container_id`.
+#[test]
+fn nested_decl_lambda_matches_across_stamped_and_unstamped_paths() {
+    let file_id = FileId(0);
+
+    // The raw HIR, exactly as `decl_hir_query` hands it to `collect_globals`
+    // — never normalized, never stamped (that query clones straight off
+    // `lowered_query`'s output; see its own doc).
+    let parsed = brink_syntax_native::parse(NESTED_DECL_SOURCE);
+    assert!(parsed.errors().is_empty(), "{:?}", parsed.errors());
+    let (raw, manifest, diags) = lower_native::lower(file_id, &parsed.tree());
+    assert!(
+        diags.is_empty(),
+        "unexpected lowering diagnostics: {diags:?}"
+    );
+
+    // A real analyze pass over the normalized copy — mirrors
+    // `resolutions_index_query`, which brink-db computes once, project-wide,
+    // off normalized HIR regardless of which per-file projection reads it.
+    let mut normalized = raw.clone();
+    brink_ir::hir::normalize_file(&mut normalized);
+    let files_for_analysis: Vec<(FileId, &HirFile, &brink_ir::SymbolManifest)> =
+        vec![(file_id, &normalized, &manifest)];
+    let result = brink_analyzer::analyze(&files_for_analysis);
+
+    let mut file_paths: HashMap<FileId, String> = HashMap::new();
+    file_paths.insert(file_id, NESTED_DECL_FILE_PATH.to_string());
+
+    // ── Reference: the whole-project, fully-stamped walk ──
+    let mut slice = [(file_id, normalized.clone())];
+    brink_ir::stamp_container_ids(&mut slice, &result.index, &file_paths);
+    let [(_, stamped)] = slice;
+
+    let outer_stamped = nested_decl_lambda(&stamped);
+    let outer_id = outer_stamped
+        .container_id
+        .expect("outer decl-default lambda must be HIR-stamped");
+    let inner_id = inner_lambda(outer_stamped)
+        .container_id
+        .expect("nested lambda inside a decl-default lambda's body must also be HIR-stamped");
+
+    // ── The path under test: the UNSTAMPED decl-hir-query projection,
+    // lowered directly through `build_prelude_decls` — no root content, no
+    // knots, exactly what `lir_prelude_decls_query` feeds it.
+    let ufcs = brink_ir::lir::UfcsLookup::new();
+    let coalesce = brink_ir::lir::CoalesceLookup::new();
+    let tables = brink_ir::lir::AnalyzerTables {
+        ufcs: &ufcs,
+        coalesce: &coalesce,
+    };
+    let files: Vec<(FileId, &HirFile)> = vec![(file_id, &raw)];
+    let decls = brink_ir::lir::build_prelude_decls(
+        &files,
+        &result.index,
+        &result.resolutions,
+        &file_paths,
+        brink_ir::lir::TypeMode::Gradual,
+        tables,
+    );
+    let prelude = brink_ir::lir::assemble_prelude(decls, vec![(file_id, raw)]);
+    let program = brink_ir::lir::assemble_program(&prelude, Vec::new(), 0, &result.index);
+
+    let g = program
+        .globals
+        .iter()
+        .find(|g| program.name_table[g.name.0 as usize] == "f")
+        .expect("no global named `f`");
+    let lir::ConstValue::FnRef(outer_target) = g.default else {
+        panic!(
+            "expected `f`'s decl default to fold to a bare FnRef, got {:?}",
+            g.default
+        );
+    };
+    assert_eq!(
+        outer_target, outer_id,
+        "the unstamped decl-hir-query path's outer lambda must mint the \
+         SAME DefinitionId as the whole-project stamped walk"
+    );
+
+    let inner_lifted = find_any(&program.root, &|c| c.id == inner_id).unwrap_or_else(|| {
+        panic!(
+            "no assembled container from the unstamped decl-hir-query path \
+             carries the expected nested-lambda id {inner_id:?} (computed \
+             independently by the whole-project stamped walk) — \
+             `lower_lambda`'s id-mint fallback must hand the child `LowerCtx` \
+             the unqualified `relative` scope path, not the already-prefixed \
+             `path`, or a nested lambda's fallback id gets the file prefix \
+             applied twice"
+        )
+    });
+    assert!(
+        inner_lifted.is_function,
+        "the nested lambda's lifted container must be function-shaped"
+    );
 }
