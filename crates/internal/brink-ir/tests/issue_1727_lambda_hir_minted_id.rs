@@ -48,7 +48,7 @@
 //! fail without the fix: temporarily reverted `lower_lambda`'s
 //! `scope_path: relative.clone()` back to `scope_path: path.clone()` and
 //! re-ran this test — it failed with "the unstamped decl-hir-query path's
-//! inner lambda must mint the SAME DefinitionId as the whole-project
+//! inner lambda must mint the SAME `DefinitionId` as the whole-project
 //! stamped walk", then restored and re-verified green.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
