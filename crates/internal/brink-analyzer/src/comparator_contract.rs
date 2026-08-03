@@ -355,6 +355,20 @@ struct ComparatorSite {
     target_name: String,
 }
 
+/// Issues #1769/#2085: this pass used to start only from `root_content` +
+/// knot/stitch bodies, silently skipping every file-level `VAR`/`CONST`
+/// initializer expression — both a direct pure-callback misuse written
+/// straight in an initializer (`VAR bad = sort_by(xs, #fn(spy))`, #1769) and
+/// one nested inside a decl-default lambda's own body
+/// (`const doIt = || map(xs, spy)`, #2085, legal since #1774's ruling). The
+/// other six passes in this "hand-rolled initializer recursion" family
+/// (`coalesce`, `contains_domain`, `conversions`, `map_keys`, `structs`,
+/// `range_refinement`) already carry this same two-loop mirror in their own
+/// entry points; this is `comparator_contract`'s copy of it. See this
+/// function's own doc below (and the PR that added these two loops) for why
+/// this stays a hand-rolled mirror rather than a switch to
+/// `hir::visit::visit_with_decl_initializers` — the shared entry point this
+/// family should eventually consolidate onto.
 fn collect_sites(hir: &HirFile, ctx: &CollectCtx<'_>, out: &mut Vec<ComparatorSite>) {
     collect_block(&hir.root_content, ctx, out);
     for knot in &hir.knots {
@@ -362,6 +376,12 @@ fn collect_sites(hir: &HirFile, ctx: &CollectCtx<'_>, out: &mut Vec<ComparatorSi
         for stitch in &knot.stitches {
             collect_block(&stitch.body, ctx, out);
         }
+    }
+    for var in &hir.variables {
+        collect_expr(&var.value, ctx, out);
+    }
+    for c in &hir.constants {
+        collect_expr(&c.value, ctx, out);
     }
 }
 
