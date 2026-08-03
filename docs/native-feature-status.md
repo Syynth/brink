@@ -45,7 +45,7 @@ unimplemented · ❓ unverified (nobody has checked; do not assume either way)
 | Construction literals | ✅ | ✅ | ✅ | ✅ | |
 | `or` coalescing | ✅ | ✅ | ✅ | ✅ | |
 | Fn values by bare name | ✅ | ✅ | ✅ | ✅ | ruled 2026-08-01 (#1862) |
-| Fn value in `var`/`const` | ✅ | ❌ | — | — | 🔒 **ruled 2026-08-01 (#1774)** — allow both; `E083` still gates it |
+| Fn value in `var`/`const` | ✅ | ✅ | ✅ | ⚠️ | **LANDED #1774** (PR #2084) |
 | `ref` params | ✅ | ✅ | ⚠️ | ✅ | variance unsound until **#1995** lands |
 
 ## Prose dialect (`flow` bodies, `>{ }` blocks)
@@ -87,12 +87,12 @@ whole vocabulary by naming a different conventions module. Sequenced as
 | Confinement to one module (`E169`) | ✅ | ✅ | ⚠️ | — | query landed; **unreachable from live typing** (#1880) |
 | Directive-shaped tag guard (`E172`) | ✅ | ✅ | ✅ | — | landed 2026-08-01 (#1835) |
 | **`!name` sigil dispatch** | ✅ | ❌ | — | — | **reserved, unimplemented** — see below |
-| Block elements `@[element(…, block)]` | ✅ | ✅ | ✅ | ❓ | **v1b landed** — `annotations-element-block` golden; #2068 landed 2026-08-02 — the cross-file injection join (#1863) now carries `block` too (`ClaimHandlerDecl` → `ClaimHandlerCandidate` → `ExternalClaimHandler`), proven by a hand-built `ExternalConventions` unit fixture — real end-to-end project wiring still waits on #1840's comptime evaluator, same as the rest of #1863 |
-| `fn conventions()` registration | ✅ | ❌ | — | — | **v1c · #1840** — 4 blocking questions ruled 2026-08-01 |
-| Comptime evaluation of conventions | ✅ | ❌ | — | — | #1840; dependency shape ruled 2026-08-01 (#1867) |
+| Block elements `@[element(…, block)]` | ✅ | ✅ | ✅ | ❓ | **LANDED #1839** (PR #2067) — capture stops at a line carrying a divert/label |
+| `fn conventions()` registration | ✅ | ✅ | ⚠️ | — | registration + Q4 effect row landed (#2095); **comptime evaluation blocked** on #1840's interception ruling |
+| Comptime evaluation of conventions | ✅ | ❌ | — | — | 🔒 **BLOCKED** — `begin_function_eval` intercepts `CallExternal`; Q5 made `register` an intrinsic. Contradiction on #1840 |
 | `@[style]` declaration surface | ✅ | ✅ | ❌ | — | `StyleToken` produced, **zero consumers** (#1719) |
-| Built-in screenplay preset | ✅ | ✅ | ✅ | ❓ | **#1720 landed** — `std/conventions/screenplay.brink` (`heading`/`transition`/`cue`/`parenthetical`), `conventions-screenplay-preset` golden; `heading` also declares + calls `extern scene_entered(title, slug)` as a host notification (#2092, PR #2144); NOT yet reachable via `use std::conventions::screenplay` (no std-module resolution exists; needs #1840); `dialect.rs`'s `Default` is unrelated legacy hardcoding |
-| `[project] elements` name validation | ✅ | ⚠️ | ⚠️ | — | #1874 landed: a bare preset-shaped name is checked against `brink-analyzer`'s `BUILTIN_ELEMENT_PRESETS` (now `["screenplay"]`, #1720 shipping it) via `apply_project_config`, warning through the existing `ConfigWarning` channel; a path-shaped pointer is never rejected (still #1844's job). **Parses** doesn't really apply — `[project] elements` is a `brink.toml` key, not grammar `brink-syntax-native` accepts or rejects; **Runs** is established only by `brink-analyzer` unit tests (`apply_project_config_*`) — no `brink compile`/`brink play` CLI run was performed |
+| Built-in screenplay preset | ✅ | ✅ | ✅ | ❓ | **SHIPS** as `std/conventions/screenplay.brink` (#1720/PR #2081) + `scene_entered` extern (#2092) — **but not importable**, see #2080 |
+| `[project] elements` name validation | ✅ | ✅ | ✅ | — | **LANDED #1874** |
 | `std::conventions` types | ❓ | ❌ | — | — | prose-spec §9 residual — the last prose-round design item |
 
 ## Editor side — how the author interrogates a claimed line
@@ -106,18 +106,18 @@ Tracked as **#2006**.
 
 | Feature | Ruled | Built | Notes |
 |---|---|---|---|
-| Per-line classification metadata | ✅ | ❌ | matched kind · handler + source location · capture bindings as spans · disposition |
-| Explain-match query | ✅ | ❌ | is-this-matched / by-what / what-bound; lists attempted patterns on a miss |
+| Per-line classification metadata | ✅ | ❌ | slice #2112 — walk records shadowed matches (ruled) |
+| Explain-match query | ✅ | ❌ | slice #2113 — reads #2112's data |
 | Hover shows the handler body | ✅ | ❌ | every matched line points at a real function (§9.1's improvement over the dissolved table) |
 | Capture spans as decoration ranges | ✅ | ❌ | the same spans drive editor decoration |
-| Harvest index (cues, span kinds) | ✅ | ❌ | ruled a **project-db index obligation**, sibling of the symbol index |
-| Succession rules (Tab/Enter) | ✅ | ❌ | live in the conventions file; what makes transitions convention-driven, not hardcoded ink |
-| Serialized conventions projection | ✅ | ❌ | what the editor reads instead of tracing execution |
+| Harvest index (cues, span kinds) | ✅ | ✅ | **LANDED #2114** — project-wide, sibling of the symbol index |
+| Succession rules (Tab/Enter) | ✅ | ❌ | slice #2115 — transport only; CM6 held |
+| Serialized conventions projection | ✅ | ❌ | slice #2111 — behind #1840 |
 | Last-good caching on comptime fault | ✅ | ❌ | ruled Q2 2026-08-01; never substitute another module's conventions |
-| `@[style]` consumption | ✅ | ❌ | `StyleToken` produced in `brink-ir`, read by nothing (#1719) |
+| `@[style]` consumption | ✅ | ❌ | slice #2116 — declaration surface landed (#1719/PR #2069) |
 | Elements reach `IdeSession` | ✅ | ❌ | #1880 — `E169` unreachable from live typing |
-| Match ordering | ✅ | ❌ | — | — | 🔒 **RULED 2026-08-02** — walk keeps going, records shadowed matches |
-| Editor re-evaluation loop | ✅ | ❌ | — | — | 🔒 **RULED 2026-08-02** — projection cached on closure; classify per keystroke |
+| Match ordering | ✅ | ❌ | **RULED 2026-08-02** — walk keeps going, records shadowed |
+| Editor re-evaluation loop | ✅ | ❌ | **RULED 2026-08-02** — projection cached on closure |
 
 ⚠ **Two rulings are still owed here**, and one of them has already been
 depended on: Q2's last-good caching is justified *because* "§3.5's owed
