@@ -93,8 +93,8 @@ use brink_format::DefinitionId;
 use brink_ir::hir::expr_span;
 use brink_ir::hir::visit::{self, ContentContext, HirVisitor};
 use brink_ir::{
-    Choice, Content, Diagnostic, DiagnosticCode, Expr, FileId, HirFile, InfixOp, Knot,
-    ResolutionMap, Stitch, Stmt, SymbolIndex, SymbolKind,
+    Choice, ConstDecl, Content, Diagnostic, DiagnosticCode, Expr, FileId, HirFile, InfixOp, Knot,
+    ResolutionMap, Stitch, Stmt, SymbolIndex, SymbolKind, VarDecl,
 };
 use rowan::TextRange;
 
@@ -196,9 +196,10 @@ pub fn to_lir_lookup(table: &CoalesceTable) -> brink_ir::lir::CoalesceLookup {
 /// is native-lowering-only) never triggers whole-project inference on this
 /// pass's account, mirroring [`crate::project_has_ufcs_call`]'s own shape.
 ///
-/// Covers the file-level `VAR`/`CONST` initializers too, which
-/// `visit::visit`'s block-tree walk does not reach — the same gap
-/// [`resolve`] itself patches by hand.
+/// Covers the file-level `VAR`/`CONST` initializers too (issue #2098: via
+/// [`visit::visit_with_decl_initializers`], not a hand-rolled second walk —
+/// `Scan` has no state that needs resetting per-decl, so the shared entry
+/// point alone covers both the block tree and every initializer).
 #[must_use]
 pub fn project_has_coalesce(hir: &HirFile) -> bool {
     struct Scan {
@@ -215,21 +216,8 @@ pub fn project_has_coalesce(hir: &HirFile) -> bool {
         }
     }
     let mut scan = Scan { found: false };
-    visit::visit(hir, &mut scan);
+    visit::visit_with_decl_initializers(hir, &mut scan);
     scan.found
-        || hir
-            .variables
-            .iter()
-            .map(|v| &v.value)
-            .chain(hir.constants.iter().map(|c| &c.value))
-            .any(expr_contains_coalesce)
-}
-
-/// Whether `expr` or any subexpression coalesces — [`project_has_coalesce`]'s
-/// initializer half, over the same [`expr_children`] recursion
-/// [`check_expr`] walks.
-fn expr_contains_coalesce(expr: &Expr) -> bool {
-    coalesce_operands(expr).is_some() || expr_children(expr).into_iter().any(expr_contains_coalesce)
 }
 
 /// Record every `or`-coalescing chain's operand/result types and report the
@@ -269,37 +257,14 @@ pub fn resolve(
             table: &mut table,
             diagnostics: &mut out,
         };
-        visit::visit(hir, &mut v);
-        // File-level VAR/CONST initializers aren't part of `visit::visit`'s
-        // block-tree walk — same gap `conversions::check`'s own doc
-        // explains, same fix (a small hand recursion over just these).
-        let ctx = MistypeCtx {
-            index,
-            globals: &globals,
-            signatures: &inference.signatures,
-            resolution_by_range: &resolution_by_range,
-            locals: None,
-        };
-        for var in &hir.variables {
-            check_expr(
-                &var.value,
-                var.ptr.text_range(),
-                file,
-                &ctx,
-                &mut table,
-                &mut out,
-            );
-        }
-        for c in &hir.constants {
-            check_expr(
-                &c.value,
-                c.ptr.text_range(),
-                file,
-                &ctx,
-                &mut table,
-                &mut out,
-            );
-        }
+        // Issue #2098: `CoalesceVisitor::enter_var_decl`/`enter_const_decl`
+        // reset `fallback` (and the knot/stitch locals) to the declaration's
+        // own scope before its initializer's expressions arrive, so the
+        // shared entry point covers the block tree and every file-level
+        // declaration's own initializer in one drive — the hand-rolled
+        // `check_expr`/`expr_children` mirror of `visit::visit`'s own
+        // descent this used to need is gone.
+        visit::visit_with_decl_initializers(hir, &mut v);
     }
     (table, out)
 }
@@ -414,6 +379,27 @@ impl HirVisitor for CoalesceVisitor<'_> {
         self.stitch_locals = None;
     }
 
+    /// Issue #2098: a file-level `VAR` sits outside any knot/stitch, so its
+    /// initializer needs the same "no enclosing def" reset `exit_knot`/
+    /// `exit_stitch` already give the walk when it *leaves* one — plus its
+    /// own range as the diagnostic anchor of last resort (this replaces the
+    /// hand-rolled `check_expr` recursion's explicit `fallback` parameter,
+    /// which passed `var.ptr.text_range()` for exactly this reason).
+    fn enter_var_decl(&mut self, var: &VarDecl) {
+        self.fallback = var.ptr.text_range();
+        self.current_knot_name = None;
+        self.knot_locals = None;
+        self.stitch_locals = None;
+    }
+
+    /// [`HirVisitor::enter_var_decl`]'s `CONST` twin.
+    fn enter_const_decl(&mut self, konst: &ConstDecl) {
+        self.fallback = konst.ptr.text_range();
+        self.current_knot_name = None;
+        self.knot_locals = None;
+        self.stitch_locals = None;
+    }
+
     fn enter_stmt(&mut self, stmt: &Stmt) {
         if let Some(range) = stmt_anchor(stmt) {
             self.fallback = range;
@@ -454,89 +440,6 @@ impl HirVisitor for CoalesceVisitor<'_> {
     }
 }
 
-/// Recurse into `expr` looking for coalescing chains — used only for
-/// the file-level VAR/CONST initializers `visit::visit` doesn't cover;
-/// every other position is already reached through the `HirVisitor` walk
-/// above. Mirrors `conversions::check_expr`'s own shape, with the same
-/// "analyse a chain once, at its root" discipline `enter_expr` keeps (here
-/// it falls out of the recursion shape — the spine is never re-entered).
-fn check_expr(
-    expr: &Expr,
-    fallback: TextRange,
-    file: FileId,
-    ctx: &MistypeCtx<'_>,
-    table: &mut CoalesceTable,
-    out: &mut Vec<Diagnostic>,
-) {
-    if coalesce_operands(expr).is_some() {
-        analyze_chain(expr, fallback, file, ctx, table, out);
-        for operand in chain_operands(expr) {
-            check_expr(operand, fallback, file, ctx, table, out);
-        }
-        return;
-    }
-    for child in expr_children(expr) {
-        check_expr(child, fallback, file, ctx, table, out);
-    }
-}
-
-/// Direct child expressions of `expr` — mirrors `conversions::expr_children`
-/// (same rationale: needed only because `check_expr` runs outside the
-/// `HirVisitor` walk).
-fn expr_children(expr: &Expr) -> Vec<&Expr> {
-    match expr {
-        Expr::Prefix(_, inner) | Expr::Postfix(inner, _) => vec![inner],
-        Expr::FieldAccess(fa) => vec![&fa.base],
-        Expr::Infix(ie) => vec![&ie.lhs, &ie.rhs],
-        Expr::Call(_, args) => args.iter().collect(),
-        Expr::ArrayLiteral(a) => a.elements.iter().collect(),
-        Expr::MapLiteral(m) => m.entries.iter().flat_map(|(k, v)| [k, v]).collect(),
-        Expr::Index(idx) => vec![&idx.base, &idx.index],
-        Expr::StructLiteral(sl) => sl.fields.iter().map(|(_, v)| v).collect(),
-        Expr::FnLiteral(fl) => fl.args.iter().collect(),
-        Expr::RefArg(ra) => vec![&ra.operand],
-        // A lambda's whole body (issue #1685, #1764). A coalescing chain is
-        // one wherever it sits, and this module's output is not only the
-        // `E066` diagnostic: the same recursion also feeds
-        // `project_has_coalesce` (the gate on building a `CoalesceTable` at
-        // all), so stopping at the tail dropped a chain's recorded *shape*
-        // from the table as well as its diagnostic. For a lambda in a
-        // VAR/CONST initializer specifically, that position **used to be** a
-        // hard `E083` (`lir::lower::decls::is_const_foldable_decl_default`
-        // rejected every `Expr::Lambda` default) — issue #1774 (RULED
-        // 2026-08-01) lifted exactly that gate, so a decl-default lambda's
-        // chain now really does reach `CoalesceLookup` in LIR lowering (via
-        // `GlobalLambdaCtx::tables`, threaded from the real
-        // `coalesce_types_query` in production — the #1774 review's own
-        // finding was that this table used to be hard-coded empty for that
-        // one caller regardless). See `LambdaBody::all_exprs`.
-        Expr::Lambda(l) => l.body.all_exprs(),
-        Expr::Range(r) => vec![&r.start, &r.end],
-        Expr::String(s) => s
-            .parts
-            .iter()
-            .filter_map(|p| match p {
-                brink_ir::StringPart::Interpolation(e) => Some(e.as_ref()),
-                brink_ir::StringPart::Literal(_) => None,
-            })
-            .collect(),
-        // Block capture (issue #1839): the captured run can itself contain
-        // a coalescing chain (an interior line's `{x or y}` interpolation),
-        // so it must recurse — `brink_ir::fragment_stmt_exprs` is the
-        // shared "every expression a captured `Stmt` run directly contains"
-        // flattening (issue #1764's audit-driven pattern), same one
-        // `LambdaBody::all_exprs` already gets above.
-        Expr::Fragment(stmts) => brink_ir::fragment_stmt_exprs(stmts),
-        Expr::Int(_)
-        | Expr::Float(_)
-        | Expr::Bool(_)
-        | Expr::Null
-        | Expr::Path(_)
-        | Expr::DivertTarget(_)
-        | Expr::ListLiteral(_) => Vec::new(),
-    }
-}
-
 /// The two operands of a coalescing node, or `None` for anything else.
 fn coalesce_operands(expr: &Expr) -> Option<(&Expr, &Expr)> {
     match expr {
@@ -558,23 +461,6 @@ fn chain_spine(root: &Expr) -> Vec<&Expr> {
         cursor = lhs;
     }
     spine
-}
-
-/// The operand subtrees hanging off the chain rooted at `root` — every
-/// step's fallback, plus the innermost left-hand operand — i.e. everything
-/// under `root` that is *not* a spine node.
-fn chain_operands(root: &Expr) -> Vec<&Expr> {
-    let spine = chain_spine(root);
-    let mut out: Vec<&Expr> = spine
-        .iter()
-        .filter_map(|node| coalesce_operands(node).map(|(_, rhs)| rhs))
-        .collect();
-    if let Some(innermost) = spine.last()
-        && let Some((lhs, _)) = coalesce_operands(innermost)
-    {
-        out.push(lhs);
-    }
-    out
 }
 
 /// Fold the coalescing chain rooted at `root`, left-associatively: classify
@@ -849,9 +735,11 @@ mod tests {
 
     // ── issue #1764: a lambda's statements in a VAR/CONST initializer ────
 
-    /// The VAR/CONST-initializer recursion is the one walk that isn't
-    /// `visit::visit`'s (which already descends a lambda's statements), so it
-    /// has to descend them itself.
+    /// Coverage for a lambda's statements in a VAR/CONST initializer comes
+    /// from `visit::visit_with_decl_initializers` (which reaches the
+    /// initializer at all) composed with `walk_expr`'s `Expr::Lambda` arm
+    /// (which already descends a lambda's statements) — there is no
+    /// separate hand-rolled recursion for this position (issue #2098).
     #[test]
     fn a_bad_chain_in_a_lambda_statement_of_a_var_initializer_is_e066() {
         let diags = check_all("var f = ||: int {\n  let x = 5 or 9;\n  0\n};\n");
@@ -864,8 +752,9 @@ mod tests {
     /// its *shape* from the table, not just its diagnostic. Before issue
     /// #1774 (RULED 2026-08-01) this table never actually reached
     /// `CoalesceLookup` in LIR for a lambda in a VAR/CONST initializer
-    /// specifically — the position was a hard `E083` (see `expr_children`'s
-    /// `Expr::Lambda` arm above) — so this pinned only the analyzer-layer
+    /// specifically — the position was a hard `E083` (see
+    /// `hir::visit::walk_expr`'s `Expr::Lambda` arm, which descends a
+    /// lambda's statements) — so this pinned only the analyzer-layer
     /// shape. #1774 lifted that gate, so this chain's shape is now
     /// LIR-reachable too: `brink-ir`'s
     /// `coalesce_chain_in_lambda_decl_default_gets_its_real_recorded_shape`
@@ -1168,5 +1057,28 @@ mod tests {
         let chain = only_chain(src);
         assert_eq!(chain.steps.len(), 1);
         assert_eq!(chain.steps[0].shape, CoalesceShape::Collapse);
+    }
+
+    /// Issue #2098: a bare-literal operand (`5 or 9`) carries no `Provenance`
+    /// of its own for [`stmt_anchor`]/`enter_content`/`enter_choice` to pick
+    /// up (see `CoalesceVisitor::fallback`'s own doc) — inside a VAR
+    /// initializer specifically, that means the diagnostic's anchor can only
+    /// come from `CoalesceVisitor::enter_var_decl`'s reset. Before the
+    /// migration this was the hand-rolled `check_expr` recursion's explicit
+    /// `fallback: var.ptr.text_range()` parameter; this pins the same
+    /// resulting range through the shared `HirVisitor` entry point instead.
+    #[test]
+    fn a_bare_literal_chain_in_a_var_initializer_anchors_on_the_declaration() {
+        let src = "var v = 5 or 9\nflow main() {\n  -> END\n}\n";
+        let (hir, index, resolutions, inference) = build_native(src);
+        let diags = check(&[(HirFileId(0), &hir)], &index, &inference, &resolutions);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].code, DiagnosticCode::E066);
+        assert_eq!(
+            diags[0].range,
+            hir.variables[0].ptr.text_range(),
+            "a bare-literal chain's fallback anchor must be the VAR's own \
+             range when nothing narrower is available"
+        );
     }
 }

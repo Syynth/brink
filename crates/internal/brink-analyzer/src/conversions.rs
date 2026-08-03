@@ -94,27 +94,13 @@ pub fn check(
             stitch_locals: None,
             diagnostics: &mut out,
         };
-        visit::visit(hir, &mut v);
-        // File-level declaration initializers aren't part of `visit::visit`'s
-        // block-tree walk (see its module doc) — same pattern
-        // `structs::check`/`dialect_gate`/`annotations` use for VAR/CONST. No
-        // enclosing def here, so `locals` is `None` — only a reference to a
-        // global VAR/CONST is classifiable at file scope, matching
-        // `infer::body`'s own firewall (a body never sees another def's
-        // locals either).
-        let ctx = MistypeCtx {
-            index,
-            globals: &globals,
-            signatures: &inference.signatures,
-            resolution_by_range: &resolution_by_range,
-            locals: None,
-        };
-        for var in &hir.variables {
-            check_expr(&var.value, file, &ctx, &mut out);
-        }
-        for c in &hir.constants {
-            check_expr(&c.value, file, &ctx, &mut out);
-        }
+        // Issue #2098: `ConversionVisitor::enter_expr` has no state that
+        // needs resetting between the block tree and a file-level
+        // declaration's own initializer (`locals` is already `None` at this
+        // scope) — so the shared entry point covers both in one drive, and
+        // the hand-rolled `check_expr`/`expr_children` mirror of
+        // `visit::visit`'s own descent this used to need is gone.
+        visit::visit_with_decl_initializers(hir, &mut v);
     }
     out
 }
@@ -204,64 +190,6 @@ impl HirVisitor for ConversionVisitor<'_> {
     fn enter_expr(&mut self, expr: &Expr) {
         let ctx = self.ctx();
         check_call(expr, self.file, &ctx, self.diagnostics);
-    }
-}
-
-/// Recurse into `expr` looking for `int`/`float` calls — used only for the
-/// file-level VAR/CONST initializers `visit::visit` doesn't cover; every
-/// other position is already reached through the `HirVisitor` walk above.
-/// Mirrors `structs::check_expr`'s own shape (a small hand recursion, not
-/// worth sharing across the two modules for one call site each).
-fn check_expr(expr: &Expr, file: FileId, ctx: &MistypeCtx<'_>, out: &mut Vec<Diagnostic>) {
-    check_call(expr, file, ctx, out);
-    for child in expr_children(expr) {
-        check_expr(child, file, ctx, out);
-    }
-}
-
-/// Direct child expressions of `expr` — mirrors `structs::expr_children`
-/// (same rationale: needed only because `check_expr` runs outside the
-/// `HirVisitor` walk).
-fn expr_children(expr: &Expr) -> Vec<&Expr> {
-    match expr {
-        Expr::Prefix(_, inner) | Expr::Postfix(inner, _) => vec![inner],
-        Expr::FieldAccess(fa) => vec![&fa.base],
-        Expr::Infix(ie) => vec![&ie.lhs, &ie.rhs],
-        Expr::Call(_, args) => args.iter().collect(),
-        Expr::ArrayLiteral(a) => a.elements.iter().collect(),
-        Expr::MapLiteral(m) => m.entries.iter().flat_map(|(k, v)| [k, v]).collect(),
-        Expr::Index(idx) => vec![&idx.base, &idx.index],
-        Expr::StructLiteral(sl) => sl.fields.iter().map(|(_, v)| v).collect(),
-        // T1c `#fn(target, args…)`: only the bound arguments are child
-        // expressions — the target is a static `Path` field, same as `Call`.
-        Expr::FnLiteral(fl) => fl.args.iter().collect(),
-        // T1e `ref lvalue-path`: only the operand is a child expression.
-        Expr::RefArg(ra) => vec![&ra.operand],
-        // A lambda's whole body (issue #1685, #1764). An `int(…)`/`float(…)`
-        // call's argument domain is the same question in a braced body's
-        // statement position as in its tail, so both are reached — see
-        // `LambdaBody::all_exprs`.
-        Expr::Lambda(l) => l.body.all_exprs(),
-        Expr::Range(r) => vec![&r.start, &r.end],
-        Expr::String(s) => s
-            .parts
-            .iter()
-            .filter_map(|p| match p {
-                brink_ir::StringPart::Interpolation(e) => Some(e.as_ref()),
-                brink_ir::StringPart::Literal(_) => None,
-            })
-            .collect(),
-        // Block capture (issue #1839) — same shared flattening
-        // `Expr::Lambda` uses above, over a captured `Stmt` run instead of
-        // a `BlockStmt` one (issue #1764's audit-driven pattern).
-        Expr::Fragment(stmts) => brink_ir::fragment_stmt_exprs(stmts),
-        Expr::Int(_)
-        | Expr::Float(_)
-        | Expr::Bool(_)
-        | Expr::Null
-        | Expr::Path(_)
-        | Expr::DivertTarget(_)
-        | Expr::ListLiteral(_) => Vec::new(),
     }
 }
 
@@ -431,9 +359,11 @@ mod tests {
         check(&[(FileId(0), &hir)], &index, &inference, &resolutions)
     }
 
-    /// Issue #1764: the VAR/CONST-initializer recursion is the one walk that
-    /// isn't `visit::visit`'s (which already descends a lambda's statements),
-    /// so it has to descend them itself.
+    /// Coverage for a lambda's statements in a VAR/CONST initializer comes
+    /// from `visit::visit_with_decl_initializers` (which reaches the
+    /// initializer at all) composed with `walk_expr`'s `Expr::Lambda` arm
+    /// (which already descends a lambda's statements) — there is no
+    /// separate hand-rolled recursion for this position (issue #2098).
     #[test]
     fn a_bad_conversion_in_a_lambda_statement_of_a_var_initializer_is_e078() {
         let diags = check_all_native("var f = ||: int {\n  let x = int(Map { 1: 2 });\n  0\n};\n");
