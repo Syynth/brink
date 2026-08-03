@@ -73,16 +73,37 @@ mod tests {
     use super::EditorSession;
 
     /// `market/barter.brink` — the definition side of the file boundary.
+    /// `pub` (issue #1582, RULED 2026-08-03) is load-bearing here, not
+    /// decorative: before that keyword existed, every native declaration
+    /// lowered with `visibility: None`, which a declared module (native
+    /// modules are always declared) treats as `Private` — `E087`
+    /// unconditionally, `use` or not. Marking `haggle` `pub` is what makes
+    /// `main.brink`'s cross-module reference legal at all.
     const BARTER: &str = "\
 var gold = 10
 
 /// Trade at the market stall.
-flow haggle() {
+pub flow haggle() {
   You haggle over the price.
 }
 ";
 
-    /// `main.brink` — the reference side: a divert into the other file.
+    /// `docks/barter.brink` — a second, unrelated module that `pub`-exports
+    /// a `haggle` *homonym*. Its presence is the disambiguation this test
+    /// exists to force: a bare-name fallback (`lookup_by_name`) can only
+    /// ever return one first-winner to every importer, so if hover still
+    /// names `market/barter.brink` with this file also loaded, resolution
+    /// is provably following `main.brink`'s qualified `use` path by
+    /// equality, not guessing from the leaf name alone.
+    const DOCKS_BARTER: &str = "\
+/// Trade at the docks.
+pub flow haggle() {
+  You haggle over crates on the pier.
+}
+";
+
+    /// `main.brink` — the reference side: a qualified `use` naming the
+    /// market's `haggle` specifically, then a divert into it.
     const MAIN: &str = "\
 use story::market::barter::haggle;
 
@@ -92,16 +113,32 @@ flow start() {
 }
 ";
 
-    /// Cross-file "Defined in `path`" hover in the web editor (#1553).
-    /// `hover_impl` used to hand `brink_ide::hover` only the hovered file, so
-    /// the definition's file was never in the lookup set and the note could
-    /// not render — a defect invisible to any same-file hover test.
+    /// Cross-file "Defined in `path`" hover in the web editor (#1553),
+    /// proven **E087-free and import-driven** end to end through the real
+    /// `@brink-lang/web` surface (`EditorSession::hover`) — the acceptance
+    /// criterion #1582's owner asked for (2026-07-26 comment): a
+    /// same-leaf-name symbol in two modules that only a real `use` import
+    /// can disambiguate. `hover_impl` used to hand `brink_ide::hover` only
+    /// the hovered file, so the definition's file was never in the lookup
+    /// set and the note could not render — a defect invisible to any
+    /// same-file hover test.
     #[test]
     fn hover_names_the_defining_file_across_the_project() {
         let mut session = EditorSession::new();
         session.update_file("market/barter.brink", BARTER);
+        session.update_file("docks/barter.brink", DOCKS_BARTER);
         session.update_file("main.brink", MAIN);
         assert!(session.set_active_file("main.brink"));
+
+        let analysis = session.session.analysis().expect("analysis");
+        assert!(
+            !analysis
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E087),
+            "pub (#1582) must license this cross-module use import E087-free: {:?}",
+            analysis.diagnostics
+        );
 
         let offset = u32::try_from(MAIN.find("haggle\n}").expect("divert target")).expect("offset");
         let json = session.hover(offset);
@@ -110,7 +147,7 @@ flow start() {
 
         assert!(
             content.contains("*Defined in `market/barter.brink`*"),
-            "hover must name the defining file: {json}"
+            "hover must resolve to the market's haggle, not the docks' homonym: {json}"
         );
     }
 }
