@@ -1572,6 +1572,46 @@ pub enum DiagnosticCode {
     /// `.brink`-surface concepts (`@[element(claims = "…")]` handlers,
     /// `brink.toml`'s `[project] elements`), same posture as `E169`.
     E175,
+    /// A divert-with-args site (`-> knot(args)`, `->-> tunnel(args)`, or
+    /// `<- thread(args)`) supplies a number of arguments that does not
+    /// match its resolved target's declared parameter count (issue #2156).
+    ///
+    /// PR #2150 (issue #2136) wired native's `-> knot(args)` call-args
+    /// syntax into `DivertTarget::args` for the first time — before that,
+    /// the shape hard-failed `E129` on native and never reached this check
+    /// at all. Investigating that newly-reachable path found the arity gap
+    /// was real on **both** dialects: `brink_ir::symbols::project`'s
+    /// `walk_divert_target`/`Expr::DivertTarget` ref-pushing sites always
+    /// recorded `arg_count: None` for a `RefKind::Divert` reference,
+    /// unconditionally discarding `DivertTarget::args.len()` — so
+    /// `brink_analyzer::resolve::check_arity` (`E031`, gated on
+    /// `arg_count.is_some()`) could never fire for a divert, on either
+    /// dialect, regardless of how many arguments were supplied. `E176` is
+    /// `E031`'s sibling for the divert call shape, kept as its own code
+    /// (rather than widening `E031`'s own message, which names *function*
+    /// calls) so the two diagnostics can be told apart and suppressed
+    /// independently.
+    ///
+    /// Scoped to a resolution that names a `Knot`/`Stitch`/`Label` (the
+    /// only symbol kinds with their own declared parameter row) —
+    /// deliberately **not** checked when the divert resolves through a
+    /// `Variable` or a divert-typed local `Param` (a stored/forwarded
+    /// divert-target value, e.g. the ink docs' `-> generic_sleep (->
+    /// waking_in_the_hut)` — see "Advanced: sending divert targets as
+    /// parameters"), whose underlying target's arity is not known
+    /// statically at the indirection site. `resolve_function`'s own
+    /// `check_arity` call sites already draw this same line (only
+    /// `External`/`Knot` resolutions are checked; `Variable`/local
+    /// resolutions are not).
+    ///
+    /// `Warning`-tier by default, matching `E031`'s own severity precedent
+    /// for the identical arity-mismatch shape at an ordinary call site —
+    /// `lir::lower::stmts::lower_divert_target` still lowers a mismatched
+    /// site (`lower_call_args` pushes exactly as many `CallArg`s as the
+    /// divert supplies, not the target's declared count), so this stays
+    /// advisory rather than blocking, and is `[lints]`-configurable /
+    /// `@[allow(E176)]`-suppressible like every other `Warning`-base code.
+    E176,
 }
 
 impl DiagnosticCode {
@@ -1760,6 +1800,7 @@ impl DiagnosticCode {
         Self::E173,
         Self::E174,
         Self::E175,
+        Self::E176,
     ];
 
     /// The stable string representation (e.g., `"E001"`).
@@ -1945,6 +1986,7 @@ impl DiagnosticCode {
             Self::E173 => "E173",
             Self::E174 => "E174",
             Self::E175 => "E175",
+            Self::E176 => "E176",
         }
     }
 
@@ -2239,6 +2281,9 @@ impl DiagnosticCode {
             Self::E175 => {
                 "`register` is a comptime-only intrinsic — legal only inside the project's configured conventions module's `fn conventions()`"
             }
+            Self::E176 => {
+                "a divert-with-args site (`-> knot(args)`, tunnel call, or thread-start) supplies the wrong number of arguments for its resolved target's declared parameters"
+            }
         }
     }
 
@@ -2289,7 +2334,11 @@ impl DiagnosticCode {
             // `@`-led runtime tag (the issue's own caution) — `Warning`
             // plus `@[allow(E172)]` is the escape valve, same posture as
             // E132's malformed-directive-tag report.
-            | Self::E172 => Severity::Warning,
+            | Self::E172
+            // Issue #2156: `E031`'s sibling for a divert-with-args call
+            // site — same severity precedent as the call-expression arity
+            // check it extends.
+            | Self::E176 => Severity::Warning,
             // Issue #1674: the one code whose *default* is the `Info`
             // advisory tier rather than `Warning` — RULED "off or info by
             // default" (a single-shot project should not be nagged) while
@@ -2485,6 +2534,7 @@ impl DiagnosticCode {
             "E173" => Some(Self::E173),
             "E174" => Some(Self::E174),
             "E175" => Some(Self::E175),
+            "E176" => Some(Self::E176),
             _ => None,
         }
     }

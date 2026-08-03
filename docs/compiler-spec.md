@@ -366,7 +366,7 @@ Key semantics from the reference C# ink implementation relevant to compilation:
 
 ## Diagnostic Codes
 
-Every diagnostic the compiler can emit has a stable code (`E001`–`E172`) and a
+Every diagnostic the compiler can emit has a stable code (`E001`–`E176`) and a
 per-code reference file under [`docs/diagnostics/`](diagnostics/) with a summary,
 explanation, minimal repro, and fix guidance. `DiagnosticCode::as_str` /
 `DiagnosticCode::from_str_code` (`crates/internal/brink-ir/src/hir/diagnostics.rs`) are the
@@ -547,6 +547,8 @@ asserts every variant has a corresponding doc file and that no orphaned doc file
 | [`E170`](diagnostics/E170.md) | Two `@[element(claims = "…")]` handlers declare textually different patterns that provably overlap, so the later-declared one can never claim anything in this file (under the interim first-match-wins dispatch order). |
 | [`E171`](diagnostics/E171.md) | A `@[element(claims = "…")]` handler's captured parameter declares a type other than `string`/untyped/`content`, but every capture binds as a plain string literal — numeric capture coercion is deferred. |
 | [`E172`](diagnostics/E172.md) | A native `#…` tag begins with `@` — the ink-dialect directive-tag shape (`#@private`/`#@was`/`#@local`/…) — but native has no directive channel, so it lowers as an ordinary runtime tag. |
+<!-- E173–E175 rows are missing from this table (pre-existing staleness, not from issue #2156 — see that issue's PR body for the scope note); each still has a real doc file and passes `diagnostic_docs_validation`. -->
+| [`E176`](diagnostics/E176.md) | A divert-with-args site (`-> knot(args)`, tunnel call, or thread-start) supplies the wrong number of arguments for its resolved target's declared parameters — `E031`'s sibling for the divert call shape. |
 
 ## Known limitations
 

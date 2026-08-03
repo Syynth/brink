@@ -427,7 +427,21 @@ impl Projector {
         stitch: Option<&str>,
     ) {
         if let DivertPath::Path(p) = &target.path {
-            self.push_ref(path_text(p), p.range, RefKind::Divert, knot, stitch, None);
+            // Issue #2156: carry the divert's own call-arg count through so
+            // `brink-analyzer::resolve::resolve_divert` can arity-check it
+            // (`E176`) exactly like `RefKind::Function` already does for an
+            // ordinary call — this used to be hardcoded `None` regardless
+            // of `target.args.len()`, which is why the check could never
+            // fire for a divert on either dialect (see `E176`'s own doc
+            // comment in `hir::diagnostics` for the full history).
+            self.push_ref(
+                path_text(p),
+                p.range,
+                RefKind::Divert,
+                knot,
+                stitch,
+                Some(target.args.len()),
+            );
         }
         for e in &target.args {
             self.walk_expr(e, knot, stitch);
@@ -1093,8 +1107,13 @@ EXTERNAL beep(n)
         let strukt = find(RefKind::Struct, "Point");
         assert_eq!(strukt.arg_count, None);
 
+        // Issue #2156: a bare `-> away` (no call-args syntax) now records
+        // `Some(0)`, not `None` — `arg_count` is always `Some(target.args.len())`
+        // for a divert ref (0 for a bare divert), so `resolve_divert`'s arity
+        // check (`E176`) can run uniformly rather than being permanently
+        // gated off by a hardcoded `None`.
         let divert = find(RefKind::Divert, "away");
-        assert_eq!(divert.arg_count, None);
+        assert_eq!(divert.arg_count, Some(0));
     }
 
     #[test]
