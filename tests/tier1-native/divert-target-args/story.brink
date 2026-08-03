@@ -1,10 +1,10 @@
-flow scale(x, factor) {
+flow scale(x: int, factor: int) {
   Scaled: {x * factor}
   -> combine(x, factor) ->
   All done. -> END
 }
 
-flow combine(a, b) {
+flow combine(a: int, b: int) {
   Sum: {a + b}
   return
 }

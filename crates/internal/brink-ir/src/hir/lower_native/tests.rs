@@ -1108,6 +1108,41 @@ fn tunnel_call_target_args_are_wired_through_not_dropped() {
 }
 
 #[test]
+fn return_redirect_target_call_args_are_wired_through_not_dropped() {
+    // Review finding on this PR: `lower_divert_target` also backs
+    // `RETURN_REDIRECT` (`return -> b(1)`, charter §11's tunnel-return
+    // respelling) through `lower_return_redirect` — a third call site,
+    // distinct from the plain-divert and tunnel-call ones pinned above.
+    // `parser/divert.rs::return_stmt` routes `return -> …` through the same
+    // `divert_target` production those two go through, so this construct
+    // parsed clean and hard-failed with E129 before #2136 and would
+    // otherwise now silently drop the arg into `onwards_args` — unlike the
+    // two siblings, it lands in `Return::onwards_args`, not
+    // `DivertTarget::args` (`lower_return_redirect`'s `Stmt::Return { kind:
+    // TunnelRedirect, onwards_args, .. }`), a different field consumed by a
+    // different LIR site (`lir::lower::stmts::lower_return`, not
+    // `lower_divert_target`).
+    let (hir, _m, diags) = lower_src("flow b(x) {\n  Bye.\n}\nflow a() {\n  return -> b(1)\n}\n");
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let Stmt::Return(r) = &hir.knots[1].body.stmts[0] else {
+        panic!("expected Return, got {:?}", hir.knots[1].body.stmts[0]);
+    };
+    assert_eq!(r.kind, ReturnKind::TunnelRedirect);
+    assert!(matches!(r.value, Some(Expr::DivertTarget(_))));
+    assert_eq!(
+        r.onwards_args.len(),
+        1,
+        "the call arg must survive lowering into Return::onwards_args: {:?}",
+        r.onwards_args
+    );
+    assert!(
+        matches!(r.onwards_args[0], Expr::Int(1)),
+        "expected the literal `1` argument to lower to Expr::Int(1), got: {:?}",
+        r.onwards_args[0]
+    );
+}
+
+#[test]
 fn inline_divert_mid_content_line_splits_into_two_statements() {
     let (hir, _m, diags) = lower_src("flow b() {\n  Bye.\n}\nflow a() {\n  The wager. -> b\n}\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
