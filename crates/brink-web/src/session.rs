@@ -815,7 +815,11 @@ mod websession_wasm_tests {
         // that a deleted `element: Some(ElementJs { .. })` arm in
         // `value_marshal.rs::line_to_js` would otherwise leave untested.
         assert_eq!(v["line"]["element"]["kind"], "narrative", "{json}");
-        assert_eq!(v["line"]["element"]["data"], serde_json::json!({}), "{json}");
+        assert_eq!(
+            v["line"]["element"]["data"],
+            serde_json::json!({}),
+            "{json}"
+        );
 
         let json = s.advance().expect("advance succeeds");
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
