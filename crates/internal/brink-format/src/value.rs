@@ -1771,6 +1771,12 @@ mod tests {
     /// array's `Arc` until something mutates one side. Mutating the
     /// *original* variable after capture must fork via COW, leaving the
     /// closure's captured snapshot untouched.
+    ///
+    /// This pins the `Value`-layer COW invariant that `MakeClosure`'s
+    /// val-capture relies on; it hand-builds the `ClosureEnvEntry` directly
+    /// and does not itself drive `vm.rs::MakeClosure` (`brink-format` cannot
+    /// reach the VM) — no test here asserts that the opcode handler builds
+    /// `is_ref: false` snapshot entries the way it does at `vm.rs:906-915`.
     #[test]
     fn closure_val_capture_is_isolated_from_later_mutation_of_the_source() {
         let mut original = Value::array(vec![Value::Int(1)]);
