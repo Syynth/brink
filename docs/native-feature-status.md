@@ -141,11 +141,11 @@ anywhere in `brink-format` or `brink-runtime`; `Choice` is still
 | Feature | Ruled | On the wire | Reaches the host | Notes |
 |---|---|---|---|---|
 | Markup spans (`PART_SPAN`) | ✅ | ✅ | ✅ | **the one output-side thing that shipped** — `.inkb` v6, PR #1732 |
-| Element kind per line | ✅ | ❌ | ❌ | #1683 — v6 residual payload, unimplemented |
-| Per-line element data | ✅ | ❌ | ❌ | #1683 — open-map payload |
-| Universal block id | ✅ | ❌ | ❌ | #1684 — a dedicated `OutputLine` field; zero lines exist |
-| `Step` / `OutputLine` contract | ✅ | ❌ | ❌ | #1684 — R1 folded #1520 into it 2026-08-01 |
-| Choice captured environment | ✅ | ❌ | ❌ | #1508 — rides the open v6 line |
+| Element kind per line | ✅ | ✅ | ⚠️ | **carrier landed** (`OutputLine.element`, PR #2109) but **always `NARRATIVE`** — nothing populates it from claim handlers yet |
+| Per-line element data | ✅ | ✅ | ⚠️ | `Element.data` is an open `BTreeMap`; empty in the degenerate case, unpopulated |
+| Universal block id | ✅ | ✅ | ✅ | **LANDED** — `OutputLine.block_id`, 4 tests each verified to fail when its increment site is disabled |
+| `Step` / `OutputLine` contract | ✅ | ✅ | ✅ | **LANDED #1684** (PR #2102) — `Line` → `Step`; terminals carry no text |
+| Choice captured environment | ✅ | ❌ | ❌ | #1508's analyzer half landed; `Choice` is still `{ text, index, tags }` |
 | Scene entry / transitions as host calls | ✅ | ❓ | ❓ | ruled sitting 4; the `lower:` column it used was **dissolved** by §9.1 — unverified what replaced it |
 | Display metrics / measurement | ✅ | — | ❌ | design ruled (prose-spec §6); #362's CM6 consumer unbuilt |
 | Element data in XLIFF | ✅ | — | — | ruled **never exported** in v1 (decision-log 2026-07-26) — lives in the base `.inkb` |
