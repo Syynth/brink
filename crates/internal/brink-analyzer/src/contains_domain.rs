@@ -434,9 +434,11 @@ mod tests {
 
     // ── issue #1764: a lambda's statements in a VAR/CONST initializer ────
 
-    /// The VAR/CONST-initializer recursion is the one walk that isn't
-    /// `visit::visit`'s (which already descends a lambda's statements), so it
-    /// has to descend them itself.
+    /// Coverage for a lambda's statements in a VAR/CONST initializer comes
+    /// from `visit::visit_with_decl_initializers` (which reaches the
+    /// initializer at all) composed with `walk_expr`'s `Expr::Lambda` arm
+    /// (which already descends a lambda's statements) — there is no
+    /// separate hand-rolled recursion for this position (issue #2098).
     #[test]
     fn an_always_false_contains_in_a_lambda_statement_of_a_var_initializer_is_e152() {
         let diags = check_all_native(

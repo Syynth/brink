@@ -735,9 +735,11 @@ mod tests {
 
     // ── issue #1764: a lambda's statements in a VAR/CONST initializer ────
 
-    /// The VAR/CONST-initializer recursion is the one walk that isn't
-    /// `visit::visit`'s (which already descends a lambda's statements), so it
-    /// has to descend them itself.
+    /// Coverage for a lambda's statements in a VAR/CONST initializer comes
+    /// from `visit::visit_with_decl_initializers` (which reaches the
+    /// initializer at all) composed with `walk_expr`'s `Expr::Lambda` arm
+    /// (which already descends a lambda's statements) — there is no
+    /// separate hand-rolled recursion for this position (issue #2098).
     #[test]
     fn a_bad_chain_in_a_lambda_statement_of_a_var_initializer_is_e066() {
         let diags = check_all("var f = ||: int {\n  let x = 5 or 9;\n  0\n};\n");
@@ -750,8 +752,9 @@ mod tests {
     /// its *shape* from the table, not just its diagnostic. Before issue
     /// #1774 (RULED 2026-08-01) this table never actually reached
     /// `CoalesceLookup` in LIR for a lambda in a VAR/CONST initializer
-    /// specifically — the position was a hard `E083` (see `expr_children`'s
-    /// `Expr::Lambda` arm above) — so this pinned only the analyzer-layer
+    /// specifically — the position was a hard `E083` (see
+    /// `hir::visit::walk_expr`'s `Expr::Lambda` arm, which descends a
+    /// lambda's statements) — so this pinned only the analyzer-layer
     /// shape. #1774 lifted that gate, so this chain's shape is now
     /// LIR-reachable too: `brink-ir`'s
     /// `coalesce_chain_in_lambda_decl_default_gets_its_real_recorded_shape`

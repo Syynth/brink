@@ -483,6 +483,17 @@ fn walk_expr(expr: &Expr, v: &mut impl HirVisitor) {
         // uses. Params/return annotation are declaration data, not `Expr`
         // children, so they do not descend (same shape as `FnLiteral`'s
         // static target).
+        //
+        // For a lambda in a VAR/CONST initializer specifically, this
+        // position **used to be** a hard `E083`
+        // (`lir::lower::decls::is_const_foldable_decl_default` rejected
+        // every `Expr::Lambda` default) — issue #1774 (RULED 2026-08-01)
+        // lifted exactly that gate, so a decl-default lambda's chain now
+        // really does reach `CoalesceLookup` in LIR lowering (via
+        // `GlobalLambdaCtx::tables`, threaded from the real
+        // `coalesce_types_query` in production — the #1774 review's own
+        // finding was that this table used to be hard-coded empty for that
+        // one caller regardless).
         Expr::Lambda(l) => match &l.body {
             LambdaBody::Expr(e) => walk_expr(e, v),
             LambdaBody::Block { stmts, tail } => {

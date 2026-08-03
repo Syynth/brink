@@ -359,9 +359,11 @@ mod tests {
         check(&[(FileId(0), &hir)], &index, &inference, &resolutions)
     }
 
-    /// Issue #1764: the VAR/CONST-initializer recursion is the one walk that
-    /// isn't `visit::visit`'s (which already descends a lambda's statements),
-    /// so it has to descend them itself.
+    /// Coverage for a lambda's statements in a VAR/CONST initializer comes
+    /// from `visit::visit_with_decl_initializers` (which reaches the
+    /// initializer at all) composed with `walk_expr`'s `Expr::Lambda` arm
+    /// (which already descends a lambda's statements) — there is no
+    /// separate hand-rolled recursion for this position (issue #2098).
     #[test]
     fn a_bad_conversion_in_a_lambda_statement_of_a_var_initializer_is_e078() {
         let diags = check_all_native("var f = ||: int {\n  let x = int(Map { 1: 2 });\n  0\n};\n");

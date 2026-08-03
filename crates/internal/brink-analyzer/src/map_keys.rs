@@ -380,10 +380,13 @@ mod tests {
         assert_eq!(diags[0].code, DiagnosticCode::E106);
     }
 
-    /// Issue #1764: the VAR/CONST-initializer recursion is the one walk that
-    /// isn't `visit::visit`'s (which already descends a lambda's statements),
-    /// so it has to descend them itself. A block-bodied lambda's `let` is a
-    /// statement, not the body's value expression.
+    /// Coverage for a lambda's statements in a VAR/CONST initializer comes
+    /// from `visit::visit_with_decl_initializers` (which reaches the
+    /// initializer at all) composed with `walk_expr`'s `Expr::Lambda` arm
+    /// (which already descends a lambda's statements) — there is no
+    /// separate hand-rolled recursion for this position (issue #2098). A
+    /// block-bodied lambda's `let` is a statement, not the body's value
+    /// expression.
     #[test]
     fn a_bad_key_in_a_lambda_statement_of_a_var_initializer_is_reported() {
         let hir = build_native("var f = ||: int {\n  let m = Map { 3.5: 1 };\n  0\n};\n");
