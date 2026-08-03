@@ -151,6 +151,22 @@ pub fn lower_expr(expr: &hir::Expr, ctx: &mut LowerCtx<'_>) -> lir::Expr {
         // that stood here through #1685 is retired: an anonymous body has a
         // runtime representation now. See `super::lambda`.
         hir::Expr::Lambda(l) => super::lambda::lower_lambda(l, ctx),
+
+        // Block capture (issue #1839, `docs/decision-log.md` 2026-08-01
+        // "Content-as-value"): the captured run lowers through the exact
+        // same per-statement path an ordinary body uses
+        // (`super::stmts::lower_stmt`) — interior lines keep their own
+        // `Stmt::Content`/`Stmt::EndOfLine` shape (and, once recognized,
+        // their own line-table entry) rather than being flattened. Codegen
+        // (`brink-codegen-inkb::content`) wraps the result in
+        // `BeginFragment`/`EndFragment`.
+        hir::Expr::Fragment(stmts) => {
+            let lowered = stmts
+                .iter()
+                .filter_map(|s| super::stmts::lower_stmt(s, ctx))
+                .collect();
+            lir::Expr::Fragment(lowered)
+        }
     }
 }
 
@@ -901,15 +917,23 @@ fn lower_call(path: &hir::Path, args: &[hir::Expr], ctx: &mut LowerCtx<'_>) -> l
 ///
 /// Reached only for a *resolved* multi-segment callee path whose head is a
 /// param/temp/variable/constant — `lower_call`'s caller has already
-/// established that. Every such site the analyzer's `ufcs` pass visited
+/// established that. Every such site the analyzer's `ufcs` pass *visited*
 /// carries a verdict (it is, by construction, UFCS-shaped); a project
-/// compiled through `brink-db` never reaches the `None` arm below in
-/// practice, because a UFCS diagnostic (`E140`–`E143`) is Error-severity and
-/// gates `lir_lowering_query` before it ever runs. The `None` fallback stays
-/// as a real refusal (the pre-#1506 `E144`, verbatim) rather than a panic or
-/// a silent `Null`, for the callers that lower HIR directly without running
-/// analysis first (this crate's own tests/benches, `golden_i078.rs`) — see
-/// #1482's PR description for the miscompile this guards against.
+/// compiled through `brink-db` reaches the `None` arm below only when a call
+/// site exists that the `ufcs` pass never visited in the first place. Before
+/// issue #1774 that was true of every production caller (`ufcs::resolve`
+/// walks `visit::visit`'s block-tree only), so the arm was dead in
+/// production. #1774 changed that: a `VAR`/`CONST` decl default may now be a
+/// lambda literal, and its body is walked by `visit::visit` too — a decl
+/// default's own initializer is not (`ufcs::resolve` has no hand-recursion
+/// over `hir.variables`/`hir.constants` the way `coalesce::resolve` does),
+/// so a method call there is genuinely unvisited and reaches this refusal in
+/// production now. Still a safe hard refusal (`E144`), never a silent
+/// miscompile — see [`super::decls::GlobalLambdaCtx::tables`]'s doc for the
+/// follow-up that would close this. The other production route to this arm
+/// stays the callers that lower HIR directly without running analysis first
+/// (this crate's own tests/benches, `golden_i078.rs`) — see #1482's PR
+/// description for the miscompile this guards against.
 /// The shared E144 refusal: `name` resolves as method-call syntax that this
 /// UFCS lowering cannot turn into a real call, so refuse loudly rather than
 /// silently folding to `Null`. Two call sites reach this — [`lower_ufcs_call`]
@@ -1722,6 +1746,29 @@ fn lower_t1b_stdlib_call(
                 args: supplied,
             })
         }
+        // `register(target)` (issue #1840 Q5, `docs/decision-log.md`
+        // 2026-08-02 "`register` is a comptime-only intrinsic"): a T1b
+        // comptime-only intrinsic. *Placement* legality (inside the
+        // conventions module's `fn conventions()`) is
+        // `brink_analyzer::register_intrinsic_diagnostics`'s job (`E175`),
+        // not this lowering's — this arm only recognizes the call shape so
+        // a legal `register` call never falls through to ordinary
+        // (unresolved-callee) call lowering. Deliberately no new opcode:
+        // the ruling is explicit that `register` has "no opcode, no
+        // runtime registry cell, no bytecode", because the comptime
+        // evaluator that will actually intercept these calls (#1840's
+        // remaining slice) never emits `fn conventions()` to bytecode at
+        // all. Until that evaluator exists, this interim lowering just
+        // evaluates the referenced fn value (so a bad reference still
+        // gets whatever diagnostics evaluating it would produce) and
+        // yields it unchanged — the same discarded-value shape any other
+        // unused expression-statement already has.
+        "register" => {
+            if !arity_ok(ctx, 1) {
+                return Some(lir::Expr::Null);
+            }
+            Some(lower_expr(&args[0], ctx))
+        }
         _ => None,
     }
 }
@@ -1915,6 +1962,10 @@ pub(crate) fn is_t1b_stdlib_name(name: &str) -> bool {
             | "filter_map"
             | "each"
             | "map_each"
+            // `register(target)` (issue #1840 Q5) — kept in sync by hand
+            // with `resolve::is_t1b_stdlib_name`'s own copy; see
+            // `lower_t1b_stdlib_call`'s `"register"` arm for the lowering.
+            | "register"
     )
 }
 

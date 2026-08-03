@@ -199,7 +199,10 @@ fn collect_call_callees(
         }
         // Neither fn-value shape is recursed: a `FnLiteral`'s target and a
         // lambda's body (issue #1685) are not invoked during condition
-        // re-evaluation, only the surrounding expression is.
+        // re-evaluation, only the surrounding expression is. `Fragment`
+        // (issue #1839) is never a syntactic part of an `await` condition
+        // either — block capture only ever appears inside a `Stmt::Content`
+        // a claim/dispatch rewrite produces.
         Expr::Int(_)
         | Expr::Float(_)
         | Expr::Bool(_)
@@ -210,7 +213,8 @@ fn collect_call_callees(
         | Expr::ListLiteral(_)
         | Expr::FnLiteral(_)
         | Expr::Lambda(_)
-        | Expr::RefArg(_) => {}
+        | Expr::RefArg(_)
+        | Expr::Fragment(_) => {}
     }
 }
 
@@ -302,7 +306,10 @@ impl Ctx<'_> {
             | Expr::ListLiteral(_)
             | Expr::FnLiteral(_)
             | Expr::Lambda(_)
-            | Expr::RefArg(_) => {}
+            | Expr::RefArg(_)
+            // Internal-only (issue #1839) — see `collect_call_callees`'s
+            // identical arm above for why this can never appear here.
+            | Expr::Fragment(_) => {}
         }
     }
 

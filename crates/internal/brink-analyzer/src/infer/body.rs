@@ -1708,6 +1708,10 @@ impl InferPass<'_, '_> {
 
     // ── Expressions ──────────────────────────────────────────────────
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one match arm per Expr variant; splitting would obscure the dispatch"
+    )]
     fn infer_expr(&mut self, expr: &Expr) -> Ty {
         match expr {
             Expr::Int(_) => Ty::Int,
@@ -1868,6 +1872,19 @@ impl InferPass<'_, '_> {
                     _ => false,
                 };
                 Ty::Range { non_empty }
+            }
+            // Block capture (issue #1839, `docs/decision-log.md` 2026-08-01
+            // "Content-as-value"): a `content`-typed value. The captured
+            // statements are inferred through the ordinary `infer_stmt`
+            // path — the same one the enclosing body's own statements go
+            // through — so any call/effect inside a captured line is
+            // observed exactly as it would be at its original top-level
+            // position, not silently skipped.
+            Expr::Fragment(stmts) => {
+                for s in stmts {
+                    self.infer_stmt(s);
+                }
+                Ty::Content
             }
         }
     }

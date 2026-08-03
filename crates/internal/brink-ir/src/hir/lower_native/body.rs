@@ -369,8 +369,13 @@ pub(super) fn lower_items(
             return stmts;
         }
 
-        stmts.extend(lower_one_item(file_id, node, elements, diags));
-        i += 1;
+        // `items[i + 1..]` — the remaining, not-yet-lowered sibling run — is
+        // a block-capturing handler's (issue #1839) candidate content; see
+        // `lower_one_item`'s own doc for how `consumed` folds back in here.
+        let (item_stmts, consumed) =
+            lower_one_item(file_id, node, &items[i + 1..], elements, diags);
+        stmts.extend(item_stmts);
+        i += 1 + consumed;
     }
     stmts
 }
@@ -415,32 +420,50 @@ fn lower_continuation(
 /// Dispatch a single body item that is neither a labeled content line nor a
 /// choice point (both handled by [`lower_items`] itself, since they can
 /// absorb the rest of the stream).
+///
+/// Returns the statements the item lowers to and, in the `usize`, how many
+/// items of `following` a `block`-declared handler's terminator search
+/// (issue #1839, `element::capture_block`) absorbed — `0` for every arm
+/// that doesn't dispatch to a block-capturing handler, which is every arm
+/// unchanged from before that issue. `following` is `lower_items`'s own
+/// remaining, not-yet-lowered sibling run (`&items[i + 1..]`); the caller
+/// folds `consumed` back into its own index so an absorbed item is never
+/// lowered a second time.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one match arm per body-item node kind; splitting would obscure the dispatch"
+)]
 fn lower_one_item(
     file_id: FileId,
     node: &SyntaxNode,
+    following: &[SyntaxNode],
     elements: &mut Elements,
     diags: &mut Vec<Diagnostic>,
-) -> Vec<Stmt> {
+) -> (Vec<Stmt>, usize) {
     // Natural-notation element dispatch (issue #1838): a claiming
     // `@[element(claims = "…")]` handler takes the line before any ordinary
     // reading of it. Declines for every file with no claiming handler and
     // for every line no pattern matches, so the fall-through below is the
     // pre-#1838 behavior byte for byte.
-    if let Some(claimed) = super::element::try_claim(file_id, node, elements) {
-        return claimed;
+    if let Some((claimed, consumed)) =
+        super::element::try_claim(file_id, node, elements, following, diags)
+    {
+        return (claimed, consumed);
     }
     // `!name` sigil dispatch (issue #2004): tried right after claiming,
     // same "harmless when it isn't its own node kind" posture — see
     // `element::try_dispatch`'s own doc for what "not dispatched" falls
     // through to (this function's own loud-`E129` default arm below, for a
     // `BANG_DISPATCH` node kind no other arm here claims).
-    if let Some(dispatched) = super::element::try_dispatch(file_id, node, elements) {
-        return dispatched;
+    if let Some((dispatched, consumed)) =
+        super::element::try_dispatch(file_id, node, elements, following, diags)
+    {
+        return (dispatched, consumed);
     }
-    match node.kind() {
+    let stmts = match node.kind() {
         N::CONTENT_LINE => {
             let Some(cl) = ast::ContentLine::cast(node.clone()) else {
-                return Vec::new();
+                return (Vec::new(), 0);
             };
             lower_content_line_body(file_id, &cl, elements, diags)
         }
@@ -450,25 +473,36 @@ fn lower_one_item(
         // unclaimed heading falls to the loud-`E129` arm below exactly as
         // it did before, since promoting a heading to a real HIR stitch is
         // issue #1717's slice, not this one's.
+        //
+        // A `block`-declared heading handler's "following run" is this
+        // scene's own braceless body (issue #1839) — the natural reading of
+        // "the run following the heading" for a heading-scoped construct —
+        // rather than whatever follows the whole `SCENE_STITCH` in the
+        // enclosing stream; `consumed` is folded into where the body items
+        // continue lowering FROM, not into this function's own outer
+        // `usize` (a `SCENE_STITCH` is one item; it never absorbs a sibling
+        // beyond itself).
         N::SCENE_STITCH => {
             let heading = node.children().find(|n| n.kind() == N::SCENE_HEADING);
-            let Some(claimed) = heading
+            let body_items: Vec<SyntaxNode> = node
+                .children()
+                .find(|n| n.kind() == N::SCENE_BODY)
+                .map(|b| b.children().collect())
+                .unwrap_or_default();
+            let Some((claimed, consumed)) = heading
                 .as_ref()
-                .and_then(|h| super::element::try_claim(file_id, h, elements))
+                .and_then(|h| super::element::try_claim(file_id, h, elements, &body_items, diags))
             else {
                 diags.push(diag(file_id, node.text_range(), DiagnosticCode::E129));
-                return Vec::new();
+                return (Vec::new(), 0);
             };
             let mut stmts = claimed;
-            if let Some(body) = node.children().find(|n| n.kind() == N::SCENE_BODY) {
-                let items: Vec<SyntaxNode> = body.children().collect();
-                stmts.extend(lower_items(file_id, &items, 0, elements, diags));
-            }
+            stmts.extend(lower_items(file_id, &body_items, consumed, elements, diags));
             stmts
         }
         N::TAG_LINE => {
             let Some(tl) = ast::TagLine::cast(node.clone()) else {
-                return Vec::new();
+                return (Vec::new(), 0);
             };
             let tags: Vec<Tag> = tl
                 .tags()
@@ -495,7 +529,7 @@ fn lower_one_item(
         // kept). See `lower_logic_line`'s doc.
         N::LOGIC_LINE => {
             let Some(ll) = ast::LogicLine::cast(node.clone()) else {
-                return Vec::new();
+                return (Vec::new(), 0);
             };
             lower_logic_line(file_id, &ll, diags)
         }
@@ -509,13 +543,13 @@ fn lower_one_item(
         N::RETURN_REDIRECT => lower_return_redirect(file_id, node, diags),
         N::CONDITIONAL_BLOCK => {
             let Some(cb) = ast::ConditionalBlock::cast(node.clone()) else {
-                return Vec::new();
+                return (Vec::new(), 0);
             };
             vec![Stmt::Conditional(lower_conditional(file_id, &cb, elements, diags))]
         }
         N::ALTERNATION_BLOCK => {
             let Some(ab) = ast::AlternationBlock::cast(node.clone()) else {
-                return Vec::new();
+                return (Vec::new(), 0);
             };
             vec![Stmt::Sequence(lower_alternation(file_id, &ab, elements, diags, true))]
         }
@@ -557,7 +591,8 @@ fn lower_one_item(
             diags.push(diag(file_id, node.text_range(), DiagnosticCode::E129));
             Vec::new()
         }
-    }
+    };
+    (stmts, 0)
 }
 
 /// `~ stmt` — the content-ground logic-line escape into code (charter

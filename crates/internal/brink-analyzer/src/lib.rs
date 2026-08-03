@@ -32,6 +32,7 @@ mod option_rules;
 mod protocols;
 mod range_refinement;
 mod ref_projection;
+mod register_intrinsic;
 mod resolve;
 mod signature;
 mod strict;
@@ -61,7 +62,9 @@ pub use coalesce::{
 pub use comparator_contract::{
     check as comparator_contract_diagnostics, comparator_callees, hir_has_comparator_site,
 };
-pub use conventions_confinement::conventions_module_diagnostics;
+pub use conventions_confinement::{
+    conventions_module_diagnostics, is_path_shaped_elements_pointer,
+};
 pub use conventions_registry::{
     ClaimHandlerCandidate, candidate_claim_handlers, join_conventions_registry,
 };
@@ -88,6 +91,7 @@ pub use protocols::{
     Protocol, ProtocolImplDecl, check_protocol_impls, check_reserved_names,
     is_reserved_protocol_name, iterate_element_ty, iterate_val_ty,
 };
+pub use register_intrinsic::register_intrinsic_diagnostics;
 pub use resolve::ImportScope;
 pub use signature::{Sig, local_signature, signature};
 pub use strict::{
@@ -164,6 +168,14 @@ pub struct AnalysisOptions {
     /// own project-file-authored values. Authoring-time/tooling input
     /// only, mirroring every other `AnalysisOptions` field — never embedded
     /// in `.inkb`.
+    ///
+    /// A preset-shaped value (issue #1874) is validated by
+    /// [`Self::apply_project_config`] against the closed built-in-preset
+    /// set *before* it lands here — an unrecognized bare name never
+    /// reaches this field (a `ConfigWarning` is returned instead), the same
+    /// "invalid entries never make it into the resolved policy" posture
+    /// `[lints]`'s [`validate_lint_code`] gate uses. A path-shaped value is
+    /// never rejected by that check (see [`is_path_shaped_elements_pointer`]).
     pub elements: Option<String>,
 }
 
@@ -299,10 +311,49 @@ impl AnalysisOptions {
         // untouched" rule — no `_overridden` tier exists for it yet (no
         // caller today sets it any way but through this file), so there is
         // nothing for an explicit override to win over.
-        if config.elements.is_some() {
-            self.elements.clone_from(&config.elements);
-        }
         let mut warnings = Vec::new();
+        if let Some(pointer) = config.elements.as_deref() {
+            // Issue #1874: a path-shaped pointer is never validated here —
+            // rejecting a valid project-relative custom-module path would
+            // break the exact case #1844's confinement rule (`E169`) is
+            // built around. Only a bare, preset-shaped name is checked
+            // against the closed built-in-preset set.
+            if is_path_shaped_elements_pointer(pointer) {
+                self.elements = Some(pointer.to_owned());
+            } else {
+                match validate_elements_preset(pointer, BUILTIN_ELEMENT_PRESETS) {
+                    Ok(()) => {
+                        self.elements = Some(pointer.to_owned());
+                        // Issue #1720 review finding: recognizing a preset
+                        // name in `BUILTIN_ELEMENT_PRESETS` is validation-
+                        // only — nothing downstream injects its handlers
+                        // into a project's dispatch table yet (no
+                        // `std::`-namespaced module resolution, #2080; no
+                        // `fn conventions()` registration/comptime, #1840).
+                        // Silently accepting the name here would leave an
+                        // author writing `elements = "screenplay"` with
+                        // zero diagnostics and zero behavior — the exact
+                        // "validate against the real set, never silently
+                        // drop an unactionable value" failure rule 19h
+                        // targets, just inverted (a *recognized* value that
+                        // does nothing, not an unrecognized one). So a name
+                        // in `BUILTIN_ELEMENT_PRESETS` but not yet in
+                        // `INJECTABLE_ELEMENT_PRESETS` still warns, on the
+                        // same "warn, never silently drop" channel, until
+                        // #2080/#1840 land and this can become a real
+                        // no-op.
+                        if !INJECTABLE_ELEMENT_PRESETS.contains(&pointer) {
+                            warnings.push(ConfigWarning(format!(
+                                "[project] elements = \"{pointer}\" names a recognized \
+                                 built-in preset, not injectable yet — no conventions \
+                                 applied (#2080/#1840)"
+                            )));
+                        }
+                    }
+                    Err(warning) => warnings.push(warning),
+                }
+            }
+        }
         let mut overrides = BTreeMap::new();
         for (code, level) in &config.lints {
             match validate_lint_code(code) {
@@ -386,6 +437,96 @@ fn validate_lint_code(code: &str) -> Result<(), ConfigWarning> {
         None => Err(ConfigWarning(format!(
             "[lints] `{code}` is not a recognized diagnostic code; ignored"
         ))),
+    }
+}
+
+/// The closed set of built-in `[project] elements` preset names
+/// (docs/prose-dialect-spec.md §3.4), checked against a bare, preset-shaped
+/// `elements` value (issue #1874, the remainder of #1844's item 5).
+///
+/// **`"screenplay"` added by issue #1720** (the built-in screenplay
+/// preset), the moment it shipped its authored source at
+/// `std/conventions/screenplay.brink` — exactly what this doc comment
+/// asked the landing PR to do. This changes ONLY the validation verdict
+/// (a project spelling `elements = "screenplay"` no longer gets the
+/// "no built-in preset has shipped yet" warning) — it does **not** mean
+/// the pointer is consumed downstream yet. Nothing reads `self.elements`
+/// to actually inject the preset's handlers into a project's dispatch
+/// table: `std::conventions::screenplay` has no real `use`-importable
+/// module path (no `std::`-namespaced resolution exists in the compiler
+/// at all — see #2080), and `fn conventions()` registration/comptime
+/// (#1840) hasn't landed either. `brink-db`'s
+/// `conventions_confinement_diagnostics_query` still explicitly skips the
+/// `E169` confinement check for a preset-shaped pointer, per its own doc,
+/// unchanged by this addition.
+///
+/// **Hardcoded, deliberately, not data-driven** — and this should change
+/// once it can. A truly data-driven registry would read the actual
+/// `std::conventions::*` module set the project's comptime evaluator
+/// produces, but that evaluator-to-project-lowering seam is exactly what
+/// issue #1863 tracks as still missing ("no project-level injection point
+/// for an evaluated conventions registry"); this crate has no comptime
+/// evaluator and no project database to ask. A hardcoded literal is the
+/// only thing buildable today without reaching past this issue's fence
+/// into #1863's. Once #1863 lands, this list should be replaced by a query
+/// against that registry rather than grown further as a literal — a
+/// hardcoded set drifting out of sync with the real module set is exactly
+/// the kind of silent staleness this closed-set check exists to prevent.
+const BUILTIN_ELEMENT_PRESETS: &[&str] = &["screenplay"];
+
+/// The subset of [`BUILTIN_ELEMENT_PRESETS`] whose handlers are actually
+/// injected into a project's dispatch table today (issue #1720 review
+/// finding). Empty: no preset injection mechanism exists yet — #2080's
+/// `std::`-namespaced module resolution and #1840's `fn conventions()`
+/// registration/comptime are both still open. A name present in
+/// [`BUILTIN_ELEMENT_PRESETS`] but absent here is recognized (a correctly
+/// spelled built-in preset name, not an unrecognized-name error) but not
+/// yet reachable — [`AnalysisOptions::apply_project_config`] warns about
+/// that gap explicitly on the same channel rather than silently
+/// no-opping, so an author never sees zero diagnostics *and* zero
+/// behavior for the same value. Move a name from here to
+/// `BUILTIN_ELEMENT_PRESETS`'s sibling list into this one the moment its
+/// handlers are actually wired in.
+const INJECTABLE_ELEMENT_PRESETS: &[&str] = &[];
+
+/// Validate a preset-shaped `[project] elements` pointer (already
+/// established by the caller, via [`is_path_shaped_elements_pointer`], to
+/// carry no path separator and no `.brink` extension) against `presets`,
+/// the closed built-in-preset-name set — `Ok(())` if `pointer` is a
+/// recognized name, otherwise a [`ConfigWarning`] naming it, the same
+/// "warn, never silently drop" channel [`validate_lint_code`] uses for an
+/// unknown `[lints]` code.
+///
+/// Takes `presets` as a parameter, rather than reading
+/// [`BUILTIN_ELEMENT_PRESETS`] directly, so the comparison logic itself is
+/// testable against a non-empty registry without needing a real built-in
+/// preset to exist yet (see this module's tests) — production code always
+/// calls this with the real constant.
+fn validate_elements_preset(pointer: &str, presets: &[&str]) -> Result<(), ConfigWarning> {
+    if presets.contains(&pointer) {
+        return Ok(());
+    }
+    if presets.is_empty() {
+        // No longer reachable in production since #1720 shipped
+        // `"screenplay"` into `BUILTIN_ELEMENT_PRESETS` — kept as its own
+        // arm (rather than folded into the `else` below) because the
+        // message is meaningfully different: an empty registry means
+        // *every* preset-shaped value, including a correctly-spelled one,
+        // is unrecognized because nothing has shipped, which is not a typo
+        // on the author's part. Still exercised directly by this module's
+        // own tests (`validate_elements_preset`'s `presets` parameter, not
+        // the real constant) to pin that distinction.
+        Err(ConfigWarning(format!(
+            "[project] elements = \"{pointer}\" names a built-in preset, but no built-in \
+             preset has shipped yet (#1720); use a project-relative path to a `.brink` \
+             conventions module instead"
+        )))
+    } else {
+        Err(ConfigWarning(format!(
+            "[project] elements = \"{pointer}\" is not a recognized built-in preset name and \
+             is not a project-relative path to a `.brink` conventions module (no `/`, `\\`, or \
+             `.brink` extension); ignored"
+        )))
     }
 }
 
@@ -1485,6 +1626,7 @@ mod tests {
         AnalysisOptions, Dialect, FileId, ImportScope, LintLevel, LintPolicy, ModuleMap,
         ProjectConfig, SemanticTypeDiagnosticSeverity, TypePolicy, analyze, analyze_with_modules,
         analyze_with_options, per_file_diagnostics, resolve, symbol_index,
+        validate_elements_preset,
     };
 
     /// ink with an `EXTERNAL` whose param is typed with a host semantic type
@@ -2227,6 +2369,129 @@ EXTERNAL add_state(who)
 
         assert!(warnings.is_empty());
         assert_eq!(options.lints.overrides.get("E157"), Some(&LintLevel::Warn));
+    }
+
+    // ── AnalysisOptions::apply_project_config: `[project] elements`
+    // preset-name validation (issue #1874) ──
+
+    #[test]
+    fn apply_project_config_rejects_an_unrecognized_bare_preset_name() {
+        let mut options = AnalysisOptions::default();
+        let config = ProjectConfig {
+            elements: Some("screnplay".to_owned()),
+            ..ProjectConfig::default()
+        };
+
+        let warnings = options.apply_project_config(&config, false, false);
+
+        assert_eq!(
+            options.elements, None,
+            "an unrecognized preset name must never be carried onto \
+             `AnalysisOptions::elements`"
+        );
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].0.contains("screnplay"));
+    }
+
+    /// #1720 (the built-in screenplay preset) shipped its authored source
+    /// at `std/conventions/screenplay.brink` and added `"screenplay"` to
+    /// `BUILTIN_ELEMENT_PRESETS` — this test used to pin the opposite
+    /// (rejected-until-shipped) reality, per its own doc comment's promise
+    /// to update alongside the registry change. Note this proves only the
+    /// *validation* verdict flipped — `options.elements` being populated
+    /// does not by itself mean anything downstream consumes it yet (no
+    /// `std::`-module resolution or `fn conventions()` registration exists,
+    /// #2080/#1840).
+    ///
+    /// A #1720 review finding caught the first version of this test
+    /// asserting `warnings.is_empty()`: recognizing the name here is
+    /// validation-only, and silently accepting it would leave an author
+    /// writing `elements = "screenplay"` with zero diagnostics and zero
+    /// behavior (rule 19h's failure mode). `options.elements` is still
+    /// populated (the name is not rejected as unrecognized), but a
+    /// not-yet-injectable warning is still surfaced on the same channel.
+    #[test]
+    fn apply_project_config_accepts_screenplay_preset_name_now_that_it_shipped() {
+        let mut options = AnalysisOptions::default();
+        let config = ProjectConfig {
+            elements: Some("screenplay".to_owned()),
+            ..ProjectConfig::default()
+        };
+
+        let warnings = options.apply_project_config(&config, false, false);
+
+        assert_eq!(options.elements.as_deref(), Some("screenplay"));
+        assert_eq!(warnings.len(), 1, "unexpected warnings: {warnings:?}");
+        assert!(warnings[0].0.contains("screenplay"));
+        assert!(warnings[0].0.contains("not injectable yet"));
+        assert!(warnings[0].0.contains("#2080"));
+        assert!(warnings[0].0.contains("#1840"));
+    }
+
+    #[test]
+    fn apply_project_config_accepts_a_bare_path_shaped_elements_pointer() {
+        let mut options = AnalysisOptions::default();
+        let config = ProjectConfig {
+            elements: Some("conventions.brink".to_owned()),
+            ..ProjectConfig::default()
+        };
+
+        let warnings = options.apply_project_config(&config, false, false);
+
+        assert!(
+            warnings.is_empty(),
+            "a path-shaped pointer (`.brink` extension) must never be \
+             rejected by the preset-name closed set — that would break the \
+             custom-conventions-module case #1844's confinement rule is \
+             built around"
+        );
+        assert_eq!(options.elements.as_deref(), Some("conventions.brink"));
+    }
+
+    #[test]
+    fn apply_project_config_accepts_a_directory_path_shaped_elements_pointer() {
+        let mut options = AnalysisOptions::default();
+        let config = ProjectConfig {
+            elements: Some("scenes/conventions.brink".to_owned()),
+            ..ProjectConfig::default()
+        };
+
+        let warnings = options.apply_project_config(&config, false, false);
+
+        assert!(warnings.is_empty());
+        assert_eq!(
+            options.elements.as_deref(),
+            Some("scenes/conventions.brink")
+        );
+    }
+
+    #[test]
+    fn apply_project_config_leaves_elements_unset_when_absent() {
+        let mut options = AnalysisOptions::default();
+        let config = ProjectConfig::default();
+
+        let warnings = options.apply_project_config(&config, false, false);
+
+        assert!(warnings.is_empty());
+        assert_eq!(options.elements, None);
+    }
+
+    #[test]
+    fn validate_elements_preset_accepts_a_name_present_in_the_registry() {
+        // Exercises the comparison logic itself against an explicit
+        // registry literal, decoupled from `BUILTIN_ELEMENT_PRESETS`'s own
+        // current contents — proves the check is a real membership test,
+        // not a hardcoded "always reject a bare name". Since #1720,
+        // production's real constant also contains `"screenplay"` (see
+        // `apply_project_config_accepts_screenplay_preset_name_now_that_it_shipped`),
+        // but this test's own point survives regardless of what the
+        // constant holds.
+        assert!(validate_elements_preset("screenplay", &["screenplay"]).is_ok());
+    }
+
+    #[test]
+    fn validate_elements_preset_rejects_a_name_outside_the_registry() {
+        assert!(validate_elements_preset("screnplay", &["screenplay"]).is_err());
     }
 
     // ── AnalysisOptions::apply_lint_overrides: CLI/API tier (issue #1373) ──

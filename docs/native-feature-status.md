@@ -87,13 +87,13 @@ whole vocabulary by naming a different conventions module. Sequenced as
 | Confinement to one module (`E169`) | ✅ | ✅ | ⚠️ | — | query landed; **unreachable from live typing** (#1880) |
 | Directive-shaped tag guard (`E172`) | ✅ | ✅ | ✅ | — | landed 2026-08-01 (#1835) |
 | **`!name` sigil dispatch** | ✅ | ❌ | — | — | **reserved, unimplemented** — see below |
-| Block elements `@[element(…, block)]` | ✅ | ❌ | — | — | **v1b · #1839 — unblocked 2026-08-01**, unbuilt |
+| Block elements `@[element(…, block)]` | ✅ | ✅ | ✅ | ❓ | **v1b landed** — `annotations-element-block` golden; cross-file injection (#1863) doesn't carry `block` yet, tracked as #2068 |
 | `fn conventions()` registration | ✅ | ❌ | — | — | **v1c · #1840** — 4 blocking questions ruled 2026-08-01 |
 | Comptime evaluation of conventions | ✅ | ❌ | — | — | #1840; dependency shape ruled 2026-08-01 (#1867) |
 | `@[style]` declaration surface | ✅ | ✅ | ❌ | — | `StyleToken` produced, **zero consumers** (#1719) |
-| Built-in screenplay preset | ✅ | ❌ | — | — | #1720; `dialect.rs`'s `Default` is legacy hardcoding, not this |
-| `[project] elements` name validation | ✅ | ⚠️ | ⚠️ | — | #1874 |
-| `std::conventions` types | ✅ | — | — | — | **DISSOLVED by §9.1** — no type to design; `use` + a registration call |
+| Built-in screenplay preset | ✅ | ✅ | ✅ | ❓ | **#1720 landed** — `std/conventions/screenplay.brink` (`heading`/`transition`/`cue`/`parenthetical`), `conventions-screenplay-preset` golden; NOT yet reachable via `use std::conventions::screenplay` (no std-module resolution exists; needs #1840); `dialect.rs`'s `Default` is unrelated legacy hardcoding |
+| `[project] elements` name validation | ✅ | ⚠️ | ⚠️ | — | #1874 landed: a bare preset-shaped name is checked against `brink-analyzer`'s `BUILTIN_ELEMENT_PRESETS` (now `["screenplay"]`, #1720 shipping it) via `apply_project_config`, warning through the existing `ConfigWarning` channel; a path-shaped pointer is never rejected (still #1844's job). **Parses** doesn't really apply — `[project] elements` is a `brink.toml` key, not grammar `brink-syntax-native` accepts or rejects; **Runs** is established only by `brink-analyzer` unit tests (`apply_project_config_*`) — no `brink compile`/`brink play` CLI run was performed |
+| `std::conventions` types | ❓ | ❌ | — | — | prose-spec §9 residual — the last prose-round design item |
 
 ## Editor side — how the author interrogates a claimed line
 
@@ -227,12 +227,12 @@ still a real authoring footgun worth a future lint (a separate, much
 smaller concern than a grammar decision), not because a bare-statement
 grammar is still pending.
 
-Fixed by #1991 (assignment/bare-call `~`-spelling) and #1972 (`~ let` temp
-decl + emitter parity for all three): the assignment/expression-statement/
-temp-declaration respell buckets that together accounted for 60 of the
-(then) 210 respell failures are now all at **zero** cases (verified by
-`full_corpus_sweep`, 2026-08-01). See "Corpus arithmetic" below for the
-current bucket breakdown.
+The assignment/expression-statement/temp-declaration respell buckets that
+together accounted for 60 of the (then) 210 respell failures — fixed by
+#1991's first slice and #1972's `~ let` temp-decl + emitter-parity
+follow-up — are now all at **zero** cases (verified by `full_corpus_sweep`,
+2026-08-01). See "Corpus arithmetic" below for the current bucket
+breakdown.
 
 The bare-unprefixed form is still the worst failure mode the project has:
 no compile error, no runtime error, just a story that quietly does the

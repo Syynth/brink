@@ -1142,6 +1142,17 @@ pub enum Expr {
     /// `string(x)` pure conversion intrinsic — display form, identical to
     /// interpolation. Total over every value; never faults.
     ConvertString(Box<Expr>),
+
+    /// The LIR twin of `hir::Expr::Fragment` (`docs/decision-log.md`
+    /// 2026-08-01 "Content-as-value") — internal only, never produced by
+    /// ordinary expression lowering, only by the block-capture machinery
+    /// (`hir::lower_native::element`, issue #1839). Codegens to
+    /// `BeginFragment`, each statement emitted through the normal
+    /// `ContainerEmitter::emit_body` path, `EndFragment` — the identical
+    /// bracket `emit_slot_expr`'s call-composition case already wraps a
+    /// call's side-effect output in, widened to hold an arbitrary captured
+    /// statement run.
+    Fragment(Vec<Stmt>),
 }
 
 impl Expr {

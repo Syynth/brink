@@ -2457,6 +2457,139 @@ fn an_unclaimed_scene_heading_is_still_loudly_unlowered() {
     );
 }
 
+// ─── `CUE`/`PARENTHETICAL` claim candidates (issue #1720) ───────────
+//
+// `candidate()`'s widening to the two remaining literal-line grammar
+// shapes named in `docs/prose-dialect-spec.md` §3.5b — a genuine `@NAME`
+// cue and a chain-gated `(delivery)` parenthetical, not a look-alike
+// plain `CONTENT_LINE` (the pre-#1720 fixtures in this file and
+// `tests/tier1-native/annotations-element-block/story.brink` all claim
+// bare `VENDOR`, never `@VENDOR` — the actual grammar node was never
+// reachable before this).
+
+#[test]
+fn a_claimed_cue_lowers_to_a_call() {
+    let (hir, _m, diags) = lower_src(
+        "@[element(claims = \"^(?<name>[A-Z][A-Z ]*)$\")]\nfn cue(name) {\n  return name;\n}\n\nflow main() {\n  @VENDOR\n}\n",
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let main = hir
+        .knots
+        .iter()
+        .find(|k| k.name.text == "main")
+        .expect("main");
+    let (callee, args) =
+        only_claimed_call(&main.body).expect("the cue line must lower to one call");
+    assert_eq!(callee, "cue");
+    assert_eq!(args, vec!["VENDOR".to_string()]);
+    assert_eq!(hir.element_matches.len(), 1);
+    assert_eq!(hir.element_matches[0].kind, crate::ElementKind::Cue);
+}
+
+#[test]
+fn an_unclaimed_cue_is_still_loudly_unlowered() {
+    let (_hir, _m, diags) = lower_src("flow main() {\n  @VENDOR\n}\n");
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E129),
+        "an unclaimed cue must stay loud: {diags:?}"
+    );
+}
+
+#[test]
+fn a_cue_with_a_tag_extension_is_not_a_claim_candidate() {
+    // §8d.4: cue extensions ride the tag channel, e.g. `@VENDOR #(v.o.)`.
+    // The tag is structure the pattern is never shown — mirroring the
+    // slug/tag-carrying `SCENE_HEADING` case above — so this still falls
+    // to the loud `E129` default even with a matching handler declared.
+    let (_hir, _m, diags) = lower_src(
+        "@[element(claims = \"^(?<name>[A-Z][A-Z ]*)$\")]\nfn cue(name) {\n  return name;\n}\n\nflow main() {\n  @VENDOR #(v.o.)\n}\n",
+    );
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E129),
+        "a tag-carrying cue must not be silently claimed against a partial line: {diags:?}"
+    );
+}
+
+#[test]
+fn a_claimed_parenthetical_lowers_to_a_call() {
+    // A parenthetical is chain-gated by the parser (`at_parenthetical`) —
+    // it only parses as `PARENTHETICAL` directly after a live cue.
+    let (hir, _m, diags) = lower_src(
+        "@[element(claims = \"^(?<name>[A-Z][A-Z ]*)$\")]\nfn cue(name) {\n  return name;\n}\n@[element(claims = \"^(?<delivery>.+)$\")]\nfn parenthetical(delivery) {\n  return delivery;\n}\n\nflow main() {\n  @VENDOR\n  (hushed)\n}\n",
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(
+        hir.element_matches.len(),
+        2,
+        "both the cue and the parenthetical must be claimed: {:?}",
+        hir.element_matches
+    );
+    assert_eq!(
+        hir.element_matches[1].kind,
+        crate::ElementKind::Parenthetical
+    );
+    let main = hir
+        .knots
+        .iter()
+        .find(|k| k.name.text == "main")
+        .expect("main");
+    let rendered = format!("{:?}", main.body.stmts);
+    assert!(
+        rendered.contains("hushed"),
+        "the parenthetical's captured delivery text must reach the call: {rendered}"
+    );
+}
+
+#[test]
+fn a_cue_block_capture_stops_at_a_following_parenthetical_and_the_parenthetical_claims_separately()
+{
+    // The screenplay preset's actual chaining shape (§8, "the complement-
+    // pass page"): `@VENDOR` / `(hushed)` / dialogue. `capture_block`'s
+    // ruled terminator ends a run at "any element-level line", and a
+    // `PARENTHETICAL` is explicitly one of those (`element.rs`'s own
+    // doc) — so a `block`-declared cue captures ZERO lines here (the very
+    // next item is the parenthetical, not a plain `CONTENT_LINE`), and the
+    // parenthetical is then claimed on its own next iteration, in turn
+    // `block`-capturing the dialogue that follows IT. This is the intended
+    // reading of the ruled terminator, not a bug: attachment across a cue
+    // AND a parenthetical is two independent claims, not one.
+    //
+    // The parenthetical's own pattern is deliberately narrow
+    // (`^[a-z][a-z' -]*$`, lowercase-only) rather than the obvious `.+`:
+    // `try_claim` matches purely on the extracted text against
+    // `handler.pattern`, with **no kind restriction at all** —
+    // `candidate()` only decides whether a node offers literal text to
+    // match, never which handler is allowed to claim which grammar shape.
+    // A permissive parenthetical pattern would therefore also claim the
+    // captured dialogue line a second time when `capture_block` re-lowers
+    // it through the ordinary `body::lower_items` path (proven: an
+    // earlier draft of this test used `.+` and got 3 `element_matches`,
+    // not 2, because "You shouldn't be here." satisfied it too). This is
+    // a real, load-bearing constraint on how the built-in preset's own
+    // patterns must be written, not a mechanism bug — see the PR
+    // description's own finding.
+    let src = "@[element(claims = \"^(?<name>[A-Z][A-Z ]*)$\", block)]\nfn cue(name: string, body: content) {\n  return name;\n}\n@[element(claims = \"^(?<delivery>[a-z][a-z' -]*)$\", block)]\nfn parenthetical(delivery: string, body: content) {\n  return delivery;\n}\n\nflow main() {\n  @VENDOR\n  (hushed)\n  You shouldn't be here.\n}\n";
+    let (hir, _m, diags) = lower_src(src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(hir.element_matches.len(), 2);
+    let cue_match = &hir.element_matches[0];
+    assert_eq!(cue_match.handler.text, "cue");
+    assert_eq!(
+        cue_match.content, None,
+        "the cue's own block capture must see zero lines: the very next item is the \
+         parenthetical, not a plain CONTENT_LINE"
+    );
+    let paren_match = &hir.element_matches[1];
+    assert_eq!(paren_match.handler.text, "parenthetical");
+    let content_range = paren_match
+        .content
+        .expect("the parenthetical's own block capture must see the dialogue line");
+    assert_eq!(
+        &src[usize::from(content_range.start())..usize::from(content_range.end())],
+        "You shouldn't be here."
+    );
+}
+
 #[test]
 fn a_claim_records_handler_and_capture_spans() {
     let src = "@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival(who) {\n  return who;\n}\n\nflow main() {\n  VENDOR enters\n}\n";
@@ -2485,6 +2618,234 @@ fn a_claim_records_handler_and_capture_spans() {
         src[usize::from(m.annotation.start())..usize::from(m.annotation.end())]
             .starts_with("@[element(claims"),
         "the annotation range must land on the claiming declaration"
+    );
+}
+
+/// Pull the `Expr::Fragment` a block-capturing claim's call passes as its
+/// last argument, panicking with a descriptive message if the shape isn't
+/// what a `block`-declared handler's call is supposed to produce.
+fn claimed_fragment_stmts(block: &crate::Block) -> &[Stmt] {
+    let Some(Stmt::Content(c)) = block.stmts.first() else {
+        panic!("expected the claimed line's Content statement first: {block:?}");
+    };
+    let [ContentPart::Interpolation(Expr::Call(_, args))] = c.parts.as_slice() else {
+        panic!("expected a single-call interpolation: {:?}", c.parts);
+    };
+    let Some(Expr::Fragment(stmts)) = args.last() else {
+        panic!("expected the last call argument to be a Fragment: {args:?}");
+    };
+    stmts
+}
+
+#[test]
+fn a_block_handler_captures_the_following_run_terminated_by_a_blank_line() {
+    // Issue #1839's ruled terminator: "a blank line, or any element-level
+    // line". This fixture exercises the blank-line half — two captured
+    // lines, then a blank line, then a third line that must stay OUTSIDE
+    // the capture (and outside `main.body`'s own top-level statements
+    // entirely, since it is absorbed into the `Fragment` argument).
+    let src = "@[element(claims = \"^(?<name>[A-Z]+)$\", block)]\nfn cue(name: string, body: content) {\n  return name;\n}\n\nflow main() {\n  VENDOR\n  Line one.\n  Line two.\n\n  After the blank line.\n}\n";
+    let (hir, _m, diags) = lower_src(src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(hir.element_matches.len(), 1);
+    let m = &hir.element_matches[0];
+    assert_eq!(m.handler.text, "cue");
+    let content_range = m
+        .content
+        .expect("a block match must record the captured block's own range");
+    assert_eq!(
+        &src[usize::from(content_range.start())..usize::from(content_range.end())],
+        "Line one.\n  Line two.",
+        "the recorded content range must cover exactly the two captured lines, no more"
+    );
+
+    let main = hir
+        .knots
+        .iter()
+        .find(|k| k.name.text == "main")
+        .expect("main");
+    let stmts = claimed_fragment_stmts(&main.body);
+    // Two captured content lines, each `Stmt::Content` + `Stmt::EndOfLine`.
+    assert_eq!(
+        stmts.len(),
+        4,
+        "expected two captured lines' worth of statements: {stmts:?}"
+    );
+    let rendered = format!("{stmts:?}");
+    assert!(
+        rendered.contains("Line one.") && rendered.contains("Line two."),
+        "both captured lines must be present in the fragment: {rendered}"
+    );
+
+    // `main.body`'s own top-level statements are exactly the claimed call
+    // (Content + EndOfLine) and the post-blank-line line (Content +
+    // EndOfLine) — four statements, not more. The two captured lines live
+    // ONLY inside the Fragment nested in the first Content's own call
+    // (`stmts`, checked above) — checking `main.body.stmts`' own *length*
+    // (rather than searching its `Debug` text, which would trivially find
+    // "Line one." nested inside that same first statement's Fragment
+    // regardless of whether it also, wrongly, appeared a second time as a
+    // sibling) is what actually proves nothing was lowered twice.
+    assert_eq!(
+        main.body.stmts.len(),
+        5,
+        "main's own body must contain only the claimed call, the \
+         post-blank-line line, and the flow's own implicit end-of-body \
+         divert — not the captured lines a second time: {:?}",
+        main.body.stmts
+    );
+    let main_rendered = format!("{:?}", main.body.stmts);
+    assert!(
+        main_rendered.contains("After the blank line."),
+        "the line after the blank line must survive as ordinary content: {main_rendered}"
+    );
+}
+
+#[test]
+fn a_block_handler_captures_the_following_run_terminated_by_an_element_level_line() {
+    // The other half of the ruled terminator: a non-`CONTENT_LINE` item
+    // (here, a divert) ends the run immediately, even with NO blank line
+    // separating it from the last captured line.
+    let src = "@[element(claims = \"^(?<name>[A-Z]+)$\", block)]\nfn cue(name: string, body: content) {\n  return name;\n}\n\nflow main() {\n  VENDOR\n  Line one.\n  Line two.\n  -> END\n}\n";
+    let (hir, _m, diags) = lower_src(src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(hir.element_matches.len(), 1);
+    let m = &hir.element_matches[0];
+    let content_range = m
+        .content
+        .expect("a block match must record the captured block's own range");
+    assert_eq!(
+        &src[usize::from(content_range.start())..usize::from(content_range.end())],
+        "Line one.\n  Line two.",
+        "the divert must not be absorbed into the captured range"
+    );
+
+    let main = hir
+        .knots
+        .iter()
+        .find(|k| k.name.text == "main")
+        .expect("main");
+    let stmts = claimed_fragment_stmts(&main.body);
+    assert_eq!(
+        stmts.len(),
+        4,
+        "expected exactly the two captured lines: {stmts:?}"
+    );
+
+    // The divert must still lower as a real, ordinary top-level statement
+    // in `main`'s own body, not be swallowed by the capture.
+    assert!(
+        main.body.stmts.iter().any(|s| matches!(s, Stmt::Divert(_))),
+        "the terminating divert must still lower normally: {:?}",
+        main.body.stmts
+    );
+}
+
+#[test]
+fn a_captured_line_ending_in_a_divert_does_not_join_the_block() {
+    // Reviewer finding on #1839's PR: the terminator search above only
+    // recognized a *separate* non-`CONTENT_LINE` sibling as "element-level"
+    // — but the native parser fuses a trailing `->`/`->->`/`{?}` onto the
+    // SAME `CONTENT_LINE` node as preceding prose
+    // (`brink-syntax-native`'s `divert_inside_multiline_choice_body_after_
+    // prose_is_a_divert_node` test proves the fused shape). Absorbing such
+    // a line into the capture would leave a real `Divert` inside the
+    // `Fragment`'s `BeginFragment`/`EndFragment` bracket with no way for
+    // `EndFragment` to ever run — the divert transfers control away first
+    // — silently corrupting the runtime's fragment-depth tracking
+    // (`crates/brink-runtime/src/output/fragment.rs`). The line must stay
+    // OUTSIDE the capture and lower normally instead.
+    let src = "@[element(claims = \"^(?<name>[A-Z]+)$\", block)]\nfn cue(name: string, body: content) {\n  return name;\n}\n\nflow main() {\n  VENDOR\n  Line one.\n  Get out. -> END\n}\n";
+    let (hir, _m, diags) = lower_src(src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let m = &hir.element_matches[0];
+    let content_range = m
+        .content
+        .expect("a block match must record the captured block's own range");
+    assert_eq!(
+        &src[usize::from(content_range.start())..usize::from(content_range.end())],
+        "Line one.",
+        "the divert-carrying line must not be folded into the captured range"
+    );
+
+    let main = hir
+        .knots
+        .iter()
+        .find(|k| k.name.text == "main")
+        .expect("main");
+    let stmts = claimed_fragment_stmts(&main.body);
+    assert_eq!(
+        stmts.len(),
+        2,
+        "expected exactly the one captured line's worth of statements, not the \
+         divert-carrying one too: {stmts:?}"
+    );
+    assert!(
+        !format!("{stmts:?}").contains("Divert"),
+        "the divert must never appear inside the fragment: {stmts:?}"
+    );
+
+    // The divert-carrying line must still lower normally, as an ordinary
+    // top-level statement, with its own real `Stmt::Divert`.
+    assert!(
+        main.body.stmts.iter().any(|s| matches!(s, Stmt::Divert(_))),
+        "the divert-carrying line must still lower as a normal top-level \
+         statement, not be swallowed by the capture: {:?}",
+        main.body.stmts
+    );
+    let main_rendered = format!("{:?}", main.body.stmts);
+    assert!(
+        main_rendered.contains("Get out."),
+        "the divert line's own prose must survive: {main_rendered}"
+    );
+}
+
+#[test]
+fn a_captured_line_carrying_a_label_does_not_join_the_block() {
+    // Same reviewer finding, the other fused shape: a labeled content line
+    // (`(name) text`) is still `CONTENT_LINE` kind, but folding it into the
+    // capture would let `lower_items`'s own label-absorption mechanism
+    // swallow the REST of the captured run into a `Stmt::LabeledBlock`
+    // nested inside the `Fragment` — which LIR then rejects with a
+    // misleading `E059` about inline-content position rather than anything
+    // about block capture (`lir::lower::stmts`'s
+    // `reject_unsupported_inline_construct`). The labeled line must stay
+    // OUTSIDE the capture and lower normally as its own top-level
+    // `Stmt::LabeledBlock`.
+    let src = "@[element(claims = \"^(?<name>[A-Z]+)$\", block)]\nfn cue(name: string, body: content) {\n  return name;\n}\n\nflow main() {\n  VENDOR\n  Line one.\n  (later) You wait.\n  -> END\n}\n";
+    let (hir, _m, diags) = lower_src(src);
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let m = &hir.element_matches[0];
+    let content_range = m
+        .content
+        .expect("a block match must record the captured block's own range");
+    assert_eq!(
+        &src[usize::from(content_range.start())..usize::from(content_range.end())],
+        "Line one.",
+        "the labeled line must not be folded into the captured range"
+    );
+
+    let main = hir
+        .knots
+        .iter()
+        .find(|k| k.name.text == "main")
+        .expect("main");
+    let stmts = claimed_fragment_stmts(&main.body);
+    assert_eq!(
+        stmts.len(),
+        2,
+        "expected exactly the one captured line's worth of statements, not the \
+         labeled line too: {stmts:?}"
+    );
+
+    assert!(
+        main.body
+            .stmts
+            .iter()
+            .any(|s| matches!(s, Stmt::LabeledBlock(_))),
+        "the labeled line must still lower as a normal top-level \
+         LabeledBlock, not be swallowed by the capture: {:?}",
+        main.body.stmts
     );
 }
 

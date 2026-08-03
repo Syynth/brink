@@ -1724,6 +1724,12 @@ fn emit_expr(e: &Expr, context: &str) -> Result<String, EmitError> {
                 LambdaBody::Block { .. } => Err(unsupported("lambda with a braced body", context)),
             }
         }
+        // Internal-only (issue #1839, `docs/decision-log.md` 2026-08-01
+        // "Content-as-value") — never constructed from surface syntax, so
+        // there is nothing to round-trip. Mirrors this module's existing
+        // refusal for every other claiming-file construct (module doc:
+        // "`emit_native` cannot round-trip a claiming file").
+        Expr::Fragment(_) => Err(unsupported("internal fragment-capture expression", context)),
     }
 }
 

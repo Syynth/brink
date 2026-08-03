@@ -3157,6 +3157,36 @@ mod tests {
         assert!(parsed[0].contains("project.future_key"));
     }
 
+    /// Issue #1874: an unrecognized `[project] elements` preset name reaches
+    /// the wasm-exported `apply_project_config` — proving the closed-set
+    /// check added to `AnalysisOptions::apply_project_config` (`brink-
+    /// analyzer`) is actually wired into `@brink-lang/web`'s editor session,
+    /// not merely covered by an analyzer-crate unit test.
+    #[test]
+    fn apply_project_config_reports_unrecognized_elements_preset_as_a_warning() {
+        let mut s = EditorSession::new();
+        let warnings = s
+            .apply_project_config("[project]\nelements = \"screnplay\"\n")
+            .expect("an unrecognized preset name is a warning, not a parse error");
+        let parsed: Vec<String> = serde_json::from_str(&warnings).expect("valid json");
+        assert_eq!(parsed.len(), 1, "{parsed:?}");
+        assert!(parsed[0].contains("screnplay"));
+    }
+
+    /// The path-shaped sibling of the above: a project-relative `.brink`
+    /// pointer must never be rejected by the preset-name closed set — that
+    /// would break the custom-conventions-module case #1844's confinement
+    /// rule is built around.
+    #[test]
+    fn apply_project_config_accepts_path_shaped_elements_pointer_with_no_warning() {
+        let mut s = EditorSession::new();
+        let warnings = s
+            .apply_project_config("[project]\nelements = \"conventions.brink\"\n")
+            .expect("a path-shaped elements value is valid");
+        let parsed: Vec<String> = serde_json::from_str(&warnings).expect("valid json");
+        assert!(parsed.is_empty(), "{parsed:?}");
+    }
+
     // ── Issue #1414: `discover_project_config` (SourceTree seam, no ────────
     // external host filesystem read) ────────────────────────────────────
 

@@ -1109,17 +1109,27 @@ writes / calls / emits / suspend defeat fusion).
    host-driven reactive sleep and in-language `await` are complementary.
    Folding `suspend(rung)` into the row rests on that (planned) suspension
    model, with no spec conflict.
-3. **OPEN — `register`'s effect row (#1840's comptime-conventions
-   fence).** `docs/conventions-comptime-sizing.md` §4 finds that
-   `@[effects(pure)] fn conventions()` — the ruled canonical spelling —
-   fails its own `E103` assertion under either obvious spelling of
-   `register` (an `EXTERNAL`, which lands in `EffectRow.calls`; or a
-   row-exempt intrinsic, which is the bespoke exemption this spec's own
-   rng-cell precedent, §10, rejected). Candidate answers: a `comptime` row
-   dimension `pure` permits; a named registry cell plus a redefinition of
-   what `pure` asserts inside a comptime frame; or a declared
-   `writes(conventions)` on the ruled example instead of `pure`. Unresolved
-   here, not #1840's.
+3. **RESOLVED 2026-08-01/2026-08-02 — `register`'s effect row (#1840's
+   comptime-conventions fence).** `docs/conventions-comptime-sizing.md` §4
+   found that `@[effects(pure)] fn conventions()` — the then-canonical
+   spelling — failed its own `E103` assertion under either obvious spelling
+   of `register` (an `EXTERNAL`, which lands in `EffectRow.calls`; or a
+   row-exempt intrinsic, the bespoke exemption this spec's own rng-cell
+   precedent, §10, rejects). `docs/decision-log.md`'s 2026-08-01
+   "Conventions comptime: the four blocking rulings (#1840)" entry (Q4)
+   ruled it: **`register` writes a named registry cell**, and `fn
+   conventions()` declares that write rather than claiming purity — the
+   same "ordinary write to a named cell" shape §10 already gives every RNG
+   draw. The 2026-08-02 "`register` is a comptime-only intrinsic" entry
+   (Q5) then settled `register`'s own legality/lowering (a T1b intrinsic,
+   legal only inside `fn conventions()`, `E175` — `crates/internal/
+   brink-analyzer/src/register_intrinsic.rs`). ⚠ **Still open,
+   implementation-side:** the ruled row itself has no arm yet in
+   `brink_analyzer::infer::intrinsics` — `register` is today a row-exempt
+   intrinsic in practice (empty row), the exact shape Q4 rejected, so
+   `@[effects(pure)] fn conventions() { register(x) }` compiles clean
+   until that wiring lands. Recorded in `register_intrinsic.rs`'s own
+   module doc and `docs/diagnostics/E175.md`.
 
 ### 14.6 Build posture
 

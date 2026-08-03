@@ -580,6 +580,18 @@ impl ContainerEmitter<'_> {
                 self.emit_expr(inner, false);
                 self.emit(Opcode::ConvertString);
             }
+
+            // Block capture (issue #1839): identical bracket to
+            // `emit_slot_expr`'s call-composition case, holding an
+            // arbitrary captured statement run instead of one call's
+            // output — `emit_body` lowers each statement through the
+            // normal per-statement path, so a recognized line inside stays
+            // a real line-table entry.
+            lir::Expr::Fragment(stmts) => {
+                self.emit(Opcode::BeginFragment);
+                self.emit_body(stmts);
+                self.emit(Opcode::EndFragment);
+            }
         }
     }
 

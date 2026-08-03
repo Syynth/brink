@@ -1,0 +1,45 @@
+// The built-in screenplay preset (issue #1720, `std/conventions/screenplay.brink`)
+// exercised end to end. Cross-file `use std::conventions::screenplay` is not
+// yet a real import (no std-module resolution exists in the compiler, and
+// `fn conventions()` registration/comptime is issue #1840, still open) — so
+// this fixture inlines the SAME four handler declarations the shipped
+// preset ships, proving the preset's own bodies dispatch correctly via the
+// mechanism that IS landed today (single-file `@[element(claims = …)]` +
+// `block` capture, issues #1838/#1839).
+
+@[element(claims = "^(?<kind>INT|EXT)\\. (?<title>.+)$")]
+fn heading(kind: string, title: string) {
+  return "-- {kind}. {title} --";
+}
+
+@[element(claims = "^(?<text>[A-Z][A-Z '-]*:)$")]
+fn transition(text: string) {
+  return text;
+}
+
+@[element(claims = "^(?<name>[A-Z][A-Z '-]*)$", block)]
+fn cue(name: string, body: content) >{
+  {name}
+  {body}
+}
+
+@[element(claims = "^(?<delivery>[a-z][a-z' -]*)$", block)]
+fn parenthetical(delivery: string, body: content) >{
+  ({delivery})
+  {body}
+}
+
+flow main() {
+  INT. MARKET SQUARE - NIGHT
+  The square is empty.
+
+  @VENDOR
+  (hushed)
+  You shouldn't be here after dark.
+
+  @KID
+  Says who?
+
+  CUT TO:
+  -> END
+}

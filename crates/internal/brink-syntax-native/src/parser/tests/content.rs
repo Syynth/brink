@@ -733,6 +733,49 @@ fn a_tag_with_an_escaped_hash_does_not_end_the_tag_early() {
 }
 
 #[test]
+fn a_tags_own_unescaped_closing_brace_remains_the_terminator_even_when_preceded_by_a_backslash() {
+    // Issue #1883 (item 2), confirmed intentional, not a residual bug:
+    // `\{`'s backslash-parity carve-out (#1852) exists *because* `\{` is
+    // one of the ruled, final four-character inline escape set (§8d.6) —
+    // #1716/PR #1732 ruled `\{` the literal-brace escape, so counting it
+    // as a real depth-opener would be the surprising reading. `}` is *not*
+    // a member of that set — `\< \{ \# \\` are the only four — so there is
+    // no equivalent "`\}` means a literal, non-metacharacter close-brace"
+    // ruling to protect. An `R_BRACE` preceded by a `BACKSLASH` is exactly
+    // what it looks like: an ordinary backslash character followed by an
+    // ordinary, structurally significant `}` — so it keeps ending the tag
+    // exactly like an unescaped `}` would, at depth zero. Here `\{gold\}`
+    // opens a real depth-counted brace (`\{`, backslash-escaped so NOT
+    // counted — matches `a_tag_with_an_escaped_open_brace_does_not_swallow_the_enclosing_blocks_own_closer`),
+    // so depth never leaves zero, and the following `\}` stops the tag
+    // there — one character earlier than a naive reading of "`\{`/`\}` are
+    // a matched escape pair" would predict, leaving the tag's own trailing
+    // backslash as the last consumed token and " more. }" as separate
+    // top-level content (a stray `}` once the flow's own closer has
+    // already been consumed by the tag's premature stop — see the
+    // `errors` assertion).
+    let src = "flow f() { Hello #tag \\{a\\} more. }\n";
+    let p = assert_lossless(src);
+    assert!(
+        !p.errors().is_empty(),
+        "expected the tag's own `\\}}` to swallow the flow's closer early \
+         and leave a stray top-level `}}`, got: {:?}",
+        p.errors()
+    );
+    let tag = p
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::TAG)
+        .expect("TAG");
+    assert_eq!(
+        tag.text(),
+        "#tag \\{a\\",
+        "the tag stops the instant it meets the `}}` from `\\}}`, backslash \
+         and all, exactly as it would for an unescaped `}}` at depth zero"
+    );
+}
+
+#[test]
 fn a_tags_text_accessor_strips_a_recognized_escapes_backslash() {
     // Issue #2045: `markup::escape` already strips a *recognized* escape's
     // backslash for ordinary content, but `tag()`'s raw free-text scan gave

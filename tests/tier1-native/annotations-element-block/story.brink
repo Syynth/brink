@@ -1,0 +1,20 @@
+@[element(claims = "^(?<name>[A-Z][A-Z ]*)$", block)]
+fn cue(name: string, body: content) >{
+  {name}
+  {body}
+}
+
+@[element(claims = "^(?<word>[A-Z]+)!$")]
+fn shout(word: string) {
+  return "{word}!!!";
+}
+
+flow main() {
+  VENDOR
+  You shouldn't be here.
+  WAIT!
+  Not after dark.
+
+  Just an ordinary line.
+  -> END
+}

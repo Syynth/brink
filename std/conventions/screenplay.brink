@@ -1,0 +1,185 @@
+// `std::conventions::screenplay` — the built-in screenplay preset
+// (issue #1720, Track 1 step 8 of #1351).
+//
+// `docs/prose-dialect-spec.md` §3.4/§3.5: "Presets ship as modules
+// (`std::conventions::screenplay`)... The producer compiles and evaluates
+// it (existing machinery: the compiler + `begin_function_eval`) and
+// freezes the resulting *value* into the `Environment` — the compiler
+// never consumes the module, only the value." §9.1's 2026-07-31 ruling
+// ("Conventions are annotated handlers") dissolved the `Conventions` type
+// and the `lower:` column this file used to need: a preset element is
+// literally an annotated handler — matched line, named captures bound to
+// params by name, exactly one call — the same three steps `!name`
+// dispatch takes, minus the sigil.
+//
+// ⚠ STATUS (honest, as of this issue): this file is the preset's SOURCE
+// FORM, matching §3.5's authored shape. It is NOT YET REACHABLE via
+// `use std::conventions::screenplay` in any real project, for two
+// independent, already-tracked reasons:
+//
+//   1. No `std::`-namespaced module resolution exists in the compiler at
+//      all. Native source discovery is "tree-is-universe" (every `.brink`
+//      file under a project's root joins that project — see
+//      `brink-driver`'s discovery, CLAUDE.md's own note) with no concept
+//      of an importable standard-library path; the closest existing
+//      precedent, the T1b stdlib slice, is Rust-side bare-name
+//      recognition (`brink_analyzer::resolve::is_t1b_stdlib_name`), not a
+//      real `.brink` source file anyone imports.
+//   2. `fn conventions()` registration + comptime evaluation (issue
+//      #1840, "Conventions v1c") has not landed — `register(...)` itself
+//      has no resolvable meaning yet (verified against `origin/main` at
+//      the time of this issue: `register` is an unresolved-variable
+//      `E025`, not a builtin). Per the 2026-08-01 side ruling this
+//      issue's briefing carries: this preset's resolved projection is
+//      meant to be PRE-FROZEN and shipped, so a DEFAULT project pays
+//      ZERO comptime — only a project that OVERRIDES the preset would
+//      ever evaluate anything. This file is written so that pre-freezing
+//      is possible once #1840 lands (every handler below is a plain,
+//      side-effect-free rewrite — no state, no externals, nothing a
+//      `pure`/`register`-effect evaluator couldn't freeze) — it does not
+//      attempt to build the freezing/evaluation machinery itself, which
+//      would require running the evaluator for every default project and
+//      violate that same ruling.
+//
+// **What IS proven end to end today**: every handler below is byte-for-
+// byte the same shape as `tests/tier1-native/conventions-screenplay-
+// preset/story.brink`, a project that inlines these exact declarations
+// (the only reachable way to exercise a claiming handler before #1840 —
+// single-file `@[element(claims = …)]` dispatch, issues #1838/#1839) and
+// pins the resulting transcript against a real compile + run. That test
+// is this preset's regression coverage; keep the two in sync.
+//
+// # Element inventory covered (docs/prose-dialect-spec.md §8, §8b, §8d)
+//
+// - `heading` — scene headings (`INT.`/`EXT.` prefix, §3.3/§8b.7). Scene
+//   entry is ruled a lowered host call (`scene_entered(title, slug)`),
+//   but no such extern exists to call yet (this preset does not invent
+//   one) — this handler emits the announcement as plain text instead,
+//   which is as far as "elements reach runtime output" goes before
+//   #1683/#1684 (`Line`/`Step` carry no structured element metadata, only
+//   text a handler body emits). **Only claims a heading with NO explicit
+//   `[slug]` and no trailing tags** — `hir::lower_native::element::
+//   candidate`'s literalness rule declines a heading carrying either,
+//   the same way it declines a `CONTENT_LINE` carrying interpolation;
+//   every worked-page heading in the spec (`[market]`, `[chapel_found]`,
+//   `[alley_escape]`) uses an explicit slug and so is NOT claimable by
+//   this handler as written. Promoting a heading to a real HIR stitch (a
+//   genuine divert target, §3.2/§3.3's "a scene heading may declare a
+//   stitch") is not built anywhere in the compiler — issue #1717, which
+//   would have owned that, was closed as superseded by the §9.1 ruling
+//   without delivering it. So `-> chapel_found`-style diverts into a
+//   heading-declared stitch, as §8c's worked case writes them, are not
+//   reachable through any preset; a project wanting that today still
+//   needs an ordinary `flow chapel_found() { … }`.
+// - `transition` — a bare, all-caps line ending in `:` (`CUT TO:`,
+//   `SMASH CUT TO:`, §8b.7/§8d). Re-emits its own text verbatim; diverts
+//   stay absolutely invisible either way (RULED, unconditionally — a
+//   transition dresses the divert that follows, it never touches it).
+// - `cue` — a bare `@NAME` speaker line (§8b.9/§8d.4), `block`-capturing
+//   the dialogue that follows it directly. Only claims a cue with no
+//   trailing tag extension (`@VENDOR #(v.o.)` declines the same way a
+//   slug-carrying heading does — the tag is structure the pattern is
+//   never shown).
+// - `parenthetical` — a chain-gated `(delivery)` line (parser-enforced:
+//   only recognized directly after a live cue), `block`-capturing the
+//   dialogue that follows IT.
+//
+// ⚠ **Cue + parenthetical + dialogue is two independent claims, not one
+// joined attachment.** `capture_block`'s ruled terminator (issue #1839)
+// ends a captured run at "a blank line, or any element-level line" —
+// and a `PARENTHETICAL` is explicitly one of those. So when a cue is
+// directly followed by a parenthetical (the common screenplay shape,
+// `docs/prose-dialect-spec.md` §8's own worked pages: `@VENDOR` /
+// `(hushed)` / dialogue), `cue`'s own `block` capture sees ZERO lines —
+// the very next item is the parenthetical, not plain dialogue — and
+// `cue` emits the speaker name followed by a BLANK line (the `>{ {name}
+// \n{body} }` template's own newline still renders even when `{body}`
+// interpolates to the empty `Fragment` — pinned in `tests/tier1-native/
+// conventions-screenplay-preset/expected.txt`). `parenthetical` is then claimed on
+// its own very next iteration, and IT captures the dialogue. There is no
+// context injection (deferred, §3.5b's own Deferred list: "handlers
+// reading attachment data") linking the two calls — `cue` never learns
+// what `parenthetical` captured, and vice versa. This is not a bug this
+// preset works around; it is what the currently-landed mechanism
+// supports, and `crates/internal/brink-ir/src/hir/lower_native/tests.rs`
+// (`a_cue_block_capture_stops_at_a_following_parenthetical_and_the_
+// parenthetical_claims_separately`) pins exactly this split.
+//
+// ⚠ **`try_claim` matches purely on extracted TEXT against a handler's
+// pattern — it never restricts a handler to only the grammar kind its
+// author had in mind.** `candidate()` decides whether a node offers
+// literal text to match at all; it does not gate WHICH handler may claim
+// it. A permissive `parenthetical` pattern (the obvious `.+`) would also
+// re-claim the very dialogue it just captured, the moment `capture_block`
+// re-lowers that captured run through the ordinary dispatch loop — proven
+// while building this preset (an earlier draft used `.+` and produced a
+// THIRD, spurious `parenthetical` call over "You shouldn't be here.").
+// `parenthetical`'s pattern below is therefore deliberately narrow
+// (lowercase-initial only, no punctuation) — real screenplay
+// parenthetical deliveries (`(hushed)`, `(beat)`, `(to Kid)` excepted —
+// capitalized names inside a delivery are NOT covered by this pattern,
+// a known, documented narrowing) satisfy this; ordinary dialogue
+// (capitalized, punctuated) does not. Widening this pattern safely needs
+// either a kind-aware dispatch restriction (a mechanism change beyond
+// this issue's fence) or a token that survives the parens/braces some
+// other way — not attempted here.
+//
+// ⚠ **This is not just a self-re-claim hazard — it is the real constraint
+// on this preset's patterns.** Because `try_claim` is kind-blind (see
+// above: `candidate()` gates which NODE KINDS offer text to match, not
+// which handler may claim a given match), `parenthetical`'s
+// `^[a-z][a-z' -]*$` pattern will claim ANY all-lowercase,
+// punctuation-free line anywhere a `CONTENT_LINE` is itself a claim
+// candidate — not only a chain-gated `PARENTHETICAL` node and not only
+// inside dialogue. An ordinary, unrelated action/prose line elsewhere in
+// the same project (`she waits`, `he nods slowly`) matches the same
+// pattern and gets wrongly rewritten through `parenthetical`, block-
+// capturing whatever plain lines follow it. Keeping every ordinary prose
+// line either capitalized, punctuated, or otherwise outside this exact
+// shape is the only guard today — there is no kind restriction to fall
+// back on.
+//
+// ⚠ **Compact cues (`@NAME: text`, §8b.9) and any cue/heading carrying a
+// tag extension are NOT covered.** `COMPACT_CUE` fuses a `CUE_NAME` and
+// an ordinary `CONTENT_LINE` (which may itself carry markup) into one
+// node; `candidate()` widens to `CUE`/`PARENTHETICAL` for this issue but
+// deliberately not to `COMPACT_CUE`, since matching it safely needs
+// either a two-piece capture (name AND fused text) `try_claim`'s
+// single-text-node contract does not support today, or a policy for
+// what happens when the fused line is not wholly literal. Left
+// unclaimed — a compact cue still reports the pre-existing loud `E129`,
+// never silently read as ordinary prose.
+//
+// # `@[style]` — deliberately NOT declared here
+//
+// `docs/prose-dialect-spec.md` §3.5b names the screenplay preset as the
+// example that would make itself self-describing via `@[style(... =
+// "[right, uppercase]")]` (transitions right-aligned + uppercase, cues
+// uppercase). That section's own Deferred list states plainly that
+// **multi-token style values are not built**: a `key = "a b"` value
+// lowers to one `StyleToken::Custom("a b")`, not two tokens — so writing
+// `[right, uppercase]` here would silently ship a decorative annotation
+// that lies about what it does. Left off entirely rather than shipping
+// a half-working one; add it once multi-token values land.
+
+@[element(claims = "^(?<kind>INT|EXT)\\. (?<title>.+)$")]
+fn heading(kind: string, title: string) {
+  return "-- {kind}. {title} --";
+}
+
+@[element(claims = "^(?<text>[A-Z][A-Z '-]*:)$")]
+fn transition(text: string) {
+  return text;
+}
+
+@[element(claims = "^(?<name>[A-Z][A-Z '-]*)$", block)]
+fn cue(name: string, body: content) >{
+  {name}
+  {body}
+}
+
+@[element(claims = "^(?<delivery>[a-z][a-z' -]*)$", block)]
+fn parenthetical(delivery: string, body: content) >{
+  ({delivery})
+  {body}
+}

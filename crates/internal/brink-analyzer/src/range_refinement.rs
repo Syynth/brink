@@ -255,6 +255,10 @@ fn expr_children(expr: &Expr) -> Vec<&Expr> {
                 brink_ir::StringPart::Literal(_) => None,
             })
             .collect(),
+        // Block capture (issue #1839), kept uniform with the sibling
+        // initializer walks for the same "descend anyway" reason the
+        // `Expr::Lambda` arm above gives — see `brink_ir::fragment_stmt_exprs`.
+        Expr::Fragment(stmts) => brink_ir::fragment_stmt_exprs(stmts),
         Expr::Int(_)
         | Expr::Float(_)
         | Expr::Bool(_)

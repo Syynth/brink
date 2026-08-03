@@ -530,12 +530,19 @@ impl FreeScan {
                 self.expr(&r.start);
                 self.expr(&r.end);
             }
+            // Block capture (issue #1839) only ever produces a `Fragment`
+            // as a weave-level `Stmt::Content` call argument
+            // (`hir::lower_native::element`), never inside a lambda's own
+            // expression tree — this walker is scoped to exactly that
+            // tree, so `Fragment` is structurally unreachable here, same
+            // posture as the no-local-reads leaves it's grouped with.
             hir::Expr::Int(_)
             | hir::Expr::Float(_)
             | hir::Expr::Bool(_)
             | hir::Expr::Null
             | hir::Expr::DivertTarget(_)
-            | hir::Expr::ListLiteral(_) => {}
+            | hir::Expr::ListLiteral(_)
+            | hir::Expr::Fragment(_) => {}
         }
     }
 }
