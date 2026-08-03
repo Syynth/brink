@@ -491,6 +491,7 @@ fn every_case_directory_has_a_test() {
         "struct-display-default",
         "struct-through-function-call",
         "struct-copy-isolation",
+        "struct-field-mutator-lvalue",
         "annotations-mixed",
         "fn-value-call-forms",
         "fn-value-ref-mutation",
