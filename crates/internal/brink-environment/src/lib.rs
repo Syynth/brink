@@ -366,7 +366,7 @@ const STDLIB_SOURCES: &[(&str, &str)] = &[(
     "std/conventions/screenplay.brink",
     include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../../std/conventions/screenplay.brink"
+        "/std/conventions/screenplay.brink"
     )),
 )];
 

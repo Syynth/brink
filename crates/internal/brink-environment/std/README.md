@@ -6,6 +6,17 @@ modules, authored as ordinary `.brink` files per
 project *imports and extends* a preset with ordinary value code instead
 of forking a JSON blob").
 
+**Lives inside `brink-environment`'s package, not at the repo root.**
+`brink-environment` mounts this tree via `include_str!` (see
+`crates/internal/brink-environment/src/lib.rs`'s `STDLIB_SOURCES`), and
+`brink-environment` is a published crate — `include_str!` cannot reach
+outside its own package root, so the canonical source has to live under
+`crates/internal/brink-environment/std/`, not the repo's top-level `std/`
+(a review finding on #2080 caught the earlier out-of-package path, which
+built and tested clean locally but would have broken `cargo package`'s
+verify build for every downstream consumer). There is no longer a
+repo-root `std/` directory.
+
 **Mounted, but not yet a real import target.** #2080 (ruled 2026-08-03)
 mounts this directory's source into every compiled project's
 `Environment` manifest (`crates/internal/brink-environment`) — the same
