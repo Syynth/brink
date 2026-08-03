@@ -44,23 +44,24 @@
 //! registry — that is exactly what the comptime evaluator slice will
 //! change, without needing to touch this confinement check again.
 //!
-//! # Known gap: the ruled effect row isn't wired yet
+//! # `register`'s effect row (issue #1840, registration slice)
 //!
 //! `docs/decision-log.md`'s 2026-08-01 Q4 ruling settles what `register`
 //! *means* in the effect system — a write to a **named registry cell**,
 //! the same "ordinary write" shape §10 of `docs/effects-spec.md` already
 //! gives every RNG draw — specifically to correct an earlier framing
 //! (`@[effects(pure)] fn conventions()`) that failed its own `E103` fence,
-//! and to reject the alternative of a bespoke row-exempt intrinsic.
-//! **That row has no arm yet in `brink_analyzer::infer::intrinsics`**, so
-//! as of this pass, `register` is in practice row-exempt (an empty row) —
-//! the exact shape Q4 rejected. Concretely: `@[effects(pure)] fn
-//! conventions() { register(x) }` compiles clean today, though Q4's ruling
-//! says a `register` call should be recorded as a write and `pure` should
-//! therefore fail it. This pass (legality/confinement, `E175`) is
-//! unaffected either way; the gap is purely in effect inference and is
-//! deliberately not fixed here — see `docs/effects-spec.md` §14.5 item 3
-//! and `docs/diagnostics/E175.md` for the same note.
+//! and to reject the alternative of a bespoke row-exempt intrinsic. This is
+//! now wired: `super::infer::intrinsics::intrinsic_effects`'s
+//! `conventions_write` bit makes every `register(...)` call write
+//! `brink_format::DefinitionId::CONVENTIONS_REGISTRY_CELL`, so
+//! `@[effects(pure)] fn conventions() { register(x) }` — the ruled
+//! example's original spelling — now genuinely fails `E103` naming
+//! `conventions_registry`; `@[effects(writes(conventions_registry))]` is
+//! the corrected spelling that passes. This pass (legality/confinement,
+//! `E175`) is a separate, unaffected check either way — see
+//! `docs/effects-spec.md` §10/§14.5 item 3 and `docs/diagnostics/E175.md`
+//! for the full history.
 
 use brink_ir::hir::visit::{self, HirVisitor};
 use brink_ir::{Diagnostic, DiagnosticCode, Expr, FileId, HirFile, Knot, ResolutionMap};

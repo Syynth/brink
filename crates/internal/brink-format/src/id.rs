@@ -75,6 +75,26 @@ impl DefinitionId {
     pub const RNG_CELL: DefinitionId =
         DefinitionId(((DefinitionTag::GlobalVar as u64) << 56) | 0x00_5EED_0000_D1CE);
 
+    /// The well-known cell id of the **conventions handler registry** (issue
+    /// #1840 Q4, `docs/decision-log.md` 2026-08-01 "Conventions comptime:
+    /// the four blocking rulings"): `register(...)` writes a named
+    /// registry cell — the same "ordinary write to a named cell" shape
+    /// [`Self::RNG_CELL`] already gives every RNG draw (`docs/effects-spec.md`
+    /// §10) — rather than being modeled as an `EXTERNAL` call (which would
+    /// land in `EffectRow.calls`) or a bespoke row-exempt intrinsic (the
+    /// shape the ruling explicitly rejects). This constant is that cell's
+    /// name in the `DefinitionId` space shared by the effect-row machinery,
+    /// exactly like `RNG_CELL`.
+    ///
+    /// The cell is compiler-owned — no source declaration mints it, and
+    /// (per the 2026-08-02 Q5 ruling) it never has a runtime representation
+    /// at all: `register` is a comptime-only intrinsic, intercepted by the
+    /// comptime evaluator during `fn conventions()` evaluation, with no
+    /// opcode and no runtime cell. This id exists purely so the *static*
+    /// effect row can name the write; nothing at runtime ever touches it.
+    pub const CONVENTIONS_REGISTRY_CELL: DefinitionId =
+        DefinitionId(((DefinitionTag::GlobalVar as u64) << 56) | 0x00_C0DE_0000_C0DE);
+
     /// Create a new id from a tag and a 56-bit hash.
     ///
     /// The hash is masked to 56 bits — upper bits are silently discarded.
@@ -232,6 +252,23 @@ mod tests {
             id,
             DefinitionId::new(DefinitionTag::GlobalVar, 0x00_5EED_0000_D1CE)
         );
+    }
+
+    #[test]
+    fn conventions_registry_cell_is_a_well_formed_global_var_id() {
+        // Issue #1840 Q4: the same well-formedness shape as `RNG_CELL` —
+        // a valid, round-trippable `GlobalVar`-tagged id, distinct from
+        // `RNG_CELL` itself (two different named cells, two different
+        // hashes).
+        let id = DefinitionId::CONVENTIONS_REGISTRY_CELL;
+        assert_eq!(id.tag(), DefinitionTag::GlobalVar);
+        assert_eq!(id.hash(), 0x00_C0DE_0000_C0DE);
+        assert_eq!(DefinitionId::from_raw(id.to_raw()), Some(id));
+        assert_eq!(
+            id,
+            DefinitionId::new(DefinitionTag::GlobalVar, 0x00_C0DE_0000_C0DE)
+        );
+        assert_ne!(id, DefinitionId::RNG_CELL);
     }
 
     #[test]

@@ -3054,6 +3054,62 @@ mod tests {
         }
     }
 
+    // ─── Issue #1840 Q4: `register` writes the conventions registry cell,
+    // the same "named cell, ordinary write" shape as the RNG cell above
+    // ──────────────────────────────────────────────────────────────────
+
+    /// Before this fix, `register` had no arm in `super::intrinsics`, so it
+    /// was, in practice, a row-exempt intrinsic (an empty row) — this test
+    /// pins the fix: every `register(...)` call writes
+    /// `DefinitionId::CONVENTIONS_REGISTRY_CELL`, unconditionally.
+    #[test]
+    fn register_call_writes_the_conventions_registry_cell() {
+        use brink_format::DefinitionId;
+        let src = "fn scene(place) {\n  return place;\n}\n\
+                   fn conventions() {\n  register(scene);\n}\n";
+        let (hir, index, res) = build_native(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        let def = id_of(&index, "conventions");
+        assert!(
+            rows[&def]
+                .writes
+                .contains(&DefinitionId::CONVENTIONS_REGISTRY_CELL),
+            "`conventions`'s row must contain the conventions-registry-cell \
+             write; got {:?}",
+            rows[&def].writes
+        );
+        // And it never gets swept into the RNG cell — two distinct named
+        // cells, no cross-contamination.
+        assert!(
+            !rows[&def].writes.contains(&DefinitionId::RNG_CELL),
+            "a `register` call must never write the RNG cell"
+        );
+    }
+
+    /// The write propagates transitively through the fixpoint like any
+    /// other write atom, exactly mirroring
+    /// `rng_write_propagates_to_callers_through_the_fixpoint` above.
+    #[test]
+    fn conventions_registry_write_propagates_to_callers_through_the_fixpoint() {
+        use brink_format::DefinitionId;
+        let src = "fn scene(place) {\n  return place;\n}\n\
+                   fn wrapper() {\n  register(scene);\n}\n\
+                   fn conventions() {\n  wrapper();\n}\n";
+        let (hir, index, res) = build_native(src);
+        let files = [(FileId(0), &hir)];
+        let rows = effects_project(&files, &index, &res, None);
+        for name in ["wrapper", "conventions"] {
+            let def = id_of(&index, name);
+            assert!(
+                rows[&def]
+                    .writes
+                    .contains(&DefinitionId::CONVENTIONS_REGISTRY_CELL),
+                "`{name}` must carry the transitive conventions-registry-cell write"
+            );
+        }
+    }
+
     #[test]
     fn mutually_recursive_defs_share_the_unioned_row() {
         let src = "VAR gold = 0\nVAR hp = 10\n\
