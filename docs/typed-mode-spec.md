@@ -63,17 +63,29 @@ helpers never require an annotation. Accepted cost, on the record:
 inferred signatures ripple to callers on body edits (salsa early-cutoff
 contains no-change), and a body bug can surface at a caller.
 
-**RULED (issue #1763): a block-bodied lambda's own locals are outside
-the enclosing def's strict frame** — neither `Unknown`-escape-checked
-against it nor ascription-exemptable there. This falls out of #1750's
-frame-boundary fix: `InferPass::infer_lambda` snapshots and restores
-the enclosing def's `locals` around a lambda body, so a name declared
-only inside a lambda never becomes a key in the enclosing def's
-`body_types.locals` — there is nothing for the enclosing frame's
-`Unknown`-escape check to see, ascribed or not. A lambda gets its own
-strict-checked frame only if/when a future change gives it one (its
-own `BodyTypes`, run through the checker in its own right rather than
-folded into the enclosing def's).
+**RULED (issue #1763; superseded in part by issue #1770): a
+block-bodied lambda's own locals are outside the *enclosing def's*
+strict frame** — neither `Unknown`-escape-checked against it nor
+ascription-exemptable there. This falls out of #1750's frame-boundary
+fix: `InferPass::infer_lambda` snapshots and restores the enclosing
+def's `locals` around a lambda body, so a name declared only inside a
+lambda never becomes a key in the enclosing def's `body_types.locals`
+— there is nothing for the enclosing frame's `Unknown`-escape check to
+see, ascribed or not.
+
+Issue #1770 gave a lambda its own strict-checked frame — a lambda's
+own params and body-declared temps are now escape-checked in their own
+right (`BodyTypes::lambda_escapes`, a flat, cumulative vector fed
+straight from `InferPass::infer_lambda`'s own walk and re-emitted by
+`check_def` under the enclosing def's own label), not by giving the
+lambda a `BodyTypes`/`DefinitionId` of its own — a lambda still has
+none at inference time (`hir::stamp_container_ids` runs only after
+analysis; see issue #1727). A lambda's own *return*-type slot stays
+outside this frame, deliberately: issue #1994's
+`LambdaAnnotationMismatch` (`E174`) already owns a materially
+different, eager check for a written return annotation disagreeing
+with the body, and a second, gradual escape check on the identical
+slot would double-report the same fact under a different code.
 
 **RULED (issue #1912): a parameter's own annotation is visible to the
 body walk at *pure read sites*** — positions that consume the value and

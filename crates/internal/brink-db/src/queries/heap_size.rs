@@ -44,7 +44,7 @@ use std::sync::Arc;
 
 use brink_analyzer::{
     BodyTypes, DirectCallArgMismatch, FieldAssignMismatch, InferredSig, LambdaAnnotationMismatch,
-    Sig, Ty, TypedAssignMismatch, UfcsCallArgs, ValueCallFact,
+    LambdaEscapeSlot, Sig, Ty, TypedAssignMismatch, UfcsCallArgs, ValueCallFact,
 };
 use brink_format::DefinitionId;
 use brink_ir::{
@@ -394,6 +394,15 @@ fn lambda_annotation_mismatch_heap(m: &LambdaAnnotationMismatch) -> usize {
     m.param_name.as_ref().map_or(0, string_heap) + ty_heap(&m.expected) + ty_heap(&m.found)
 }
 
+/// Issue #1770: a `LambdaEscapeSlot`'s own heap contribution — its `ty`
+/// (same `ty_heap` every other fact's own `Ty` field uses) plus its
+/// `slot_label` `String` (`range`/`annotated` own no heap data of their
+/// own: two `u32`s and a `bool`, same posture as `array_remove_calls`'
+/// `TextRange`).
+fn lambda_escape_slot_heap(s: &LambdaEscapeSlot) -> usize {
+    ty_heap(&s.ty) + string_heap(&s.slot_label)
+}
+
 /// Issue #1881: a `UfcsCallArgs`'s own heap contribution — its `args` `Vec`
 /// plus each element's own `Ty` heap cost, same shape `body_types_heap`
 /// already applies to `b.params`/`b.locals`. `TextRange` owns no heap data
@@ -453,6 +462,11 @@ fn body_types_heap(b: &BodyTypes) -> usize {
         + b.ufcs_call_args
             .iter()
             .map(ufcs_call_args_heap)
+            .sum::<usize>()
+        + vec_heap(&b.lambda_escapes)
+        + b.lambda_escapes
+            .iter()
+            .map(lambda_escape_slot_heap)
             .sum::<usize>()
 }
 
@@ -748,6 +762,7 @@ mod tests {
                 lambda_annotation_mismatches: Vec::new(),
                 ufcs_call_args: Vec::new(),
                 array_remove_calls: Vec::new(),
+                lambda_escapes: Vec::new(),
             },
         );
 
@@ -849,6 +864,26 @@ mod tests {
         populated.ufcs_call_args.push(UfcsCallArgs {
             range: rowan::TextRange::new(rowan::TextSize::new(0), rowan::TextSize::new(1)),
             args: vec![Ty::Int, Ty::String],
+        });
+
+        let populated_size = infer_body_heap_size(&Some(Arc::new(populated)));
+        assert!(populated_size > empty);
+    }
+
+    /// Issue #1770: `lambda_escapes` is a consumer `body_types_heap` must
+    /// walk too — same growth-proof shape as
+    /// [`infer_body_heap_size_grows_with_lambda_annotation_mismatches`], the
+    /// house rule 20b guard against a structurally-ignoring accumulator.
+    #[test]
+    fn infer_body_heap_size_grows_with_lambda_escapes() {
+        let empty = infer_body_heap_size(&Some(Arc::new(BodyTypes::default())));
+
+        let mut populated = BodyTypes::default();
+        populated.lambda_escapes.push(LambdaEscapeSlot {
+            range: rowan::TextRange::new(rowan::TextSize::new(0), rowan::TextSize::new(1)),
+            ty: Ty::Unknown,
+            annotated: false,
+            slot_label: "lambda parameter `very_long_param_name`".to_string(),
         });
 
         let populated_size = infer_body_heap_size(&Some(Arc::new(populated)));

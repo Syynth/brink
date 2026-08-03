@@ -34,7 +34,7 @@ use super::effects::FnArgOrigins;
 use super::ty::{FnRow, TowerTy, Ty, assignable, coalesce, ref_assignable, unify, unify_all};
 use super::{
     DirectCallArgMismatch, FieldAssignMismatch, InferredSig, LambdaAnnotationMismatch,
-    TypedAssignMismatch, UfcsCallArgs, ValueCallFact, ValueCallKind, range_key,
+    LambdaEscapeSlot, TypedAssignMismatch, UfcsCallArgs, ValueCallFact, ValueCallKind, range_key,
 };
 
 /// Read-only context shared by every body inferred in the same SCC round.
@@ -207,6 +207,12 @@ pub(super) struct BodyResult {
     /// like `direct_call_arg_mismatches`; consumed by
     /// `crate::ufcs::UfcsVisitor`, reported only by strict mode.
     pub ufcs_call_args: Vec<UfcsCallArgs>,
+    /// Issue #1770: see [`super::LambdaEscapeSlot`]. Recorded
+    /// unconditionally by every `infer_lambda` call this body walk reaches
+    /// (including nested lambdas), the exact same "folded in" shape
+    /// `lambda_annotation_mismatches` already has; reported only by strict
+    /// mode.
+    pub lambda_escapes: Vec<LambdaEscapeSlot>,
     /// Issue #1532 (the #1501 review's `remove`/`remove_at` migration-tail
     /// finding): every `remove(a, i)` call site in this body whose first
     /// argument is statically known to be `Ty::Array` — the pre-#1484 array
@@ -282,6 +288,7 @@ fn new_pass<'a, 'b>(
         field_assign_mismatches: Vec::new(),
         lambda_annotation_mismatches: Vec::new(),
         ufcs_call_args: Vec::new(),
+        lambda_escapes: Vec::new(),
         array_remove_calls: Vec::new(),
         created_fn_values: BTreeSet::new(),
         local_fn_origins: BTreeMap::new(),
@@ -393,6 +400,7 @@ pub(super) fn infer_def_body(def: &super::Def<'_>, ctx: &BodyCtx<'_>) -> BodyRes
         field_assign_mismatches: pass.field_assign_mismatches,
         lambda_annotation_mismatches: pass.lambda_annotation_mismatches,
         ufcs_call_args: pass.ufcs_call_args,
+        lambda_escapes: pass.lambda_escapes,
         array_remove_calls: pass.array_remove_calls,
         created_fn_values: pass.created_fn_values,
         param_holes: pass.param_holes,
@@ -441,47 +449,58 @@ fn fold_literal_int_bound(expr: &Expr) -> Option<i64> {
 /// Issue #1910: every bare name a lambda's own block body directly binds —
 /// `TempDecl`, a `for` loop's `var_name`/`val_name`, or an `if`/`while`
 /// `EXPR as NAME` binding — collected recursively through `if`/`while`/`for`
-/// nesting. Used by `InferPass::infer_lambda` to extend its `self.locals`
-/// shadow past just the lambda's own params (see that call site's own doc):
-/// any of these can collide with an enclosing same-named local exactly the
-/// way an unshadowed param would.
+/// nesting, together with the binding's own name-range and (`TempDecl` only)
+/// its written ascription. Used by `InferPass::infer_lambda` two ways: the
+/// name-only projection (`.keys()`) extends its `self.locals` shadow past
+/// just the lambda's own params (see that call site's own doc: any of these
+/// can collide with an enclosing same-named local exactly the way an
+/// unshadowed param would), and the full range/ascription pair is issue
+/// #1770's per-lambda escape-check frame source — the diagnostic anchor and
+/// annotation-exemption input `strict::collect_temps` already produces for a
+/// top-level def's own body, just scoped to this lambda's own frame instead.
 ///
 /// Deliberately does **not** recurse into a nested `Expr::Lambda` (there is
 /// none to walk into here regardless — `BlockStmt` only carries expressions,
 /// and a lambda literal nested inside one of those is a leaf as far as this
-/// name collection is concerned): a nested lambda's own body binds its own
-/// names, shadowed by *its own* `infer_lambda` call when that literal is
-/// walked, not this one's.
-fn lambda_own_binding_names(stmts: &[brink_ir::BlockStmt], out: &mut BTreeSet<String>) {
-    fn walk_if(i: &brink_ir::IfStmt, out: &mut BTreeSet<String>) {
+/// binding collection is concerned): a nested lambda's own body binds its
+/// own names, shadowed (and — since #1770 — escape-checked) by *its own*
+/// `infer_lambda` call when that literal is walked, not this one's.
+fn lambda_own_bindings(
+    stmts: &[brink_ir::BlockStmt],
+    out: &mut BTreeMap<String, (TextRange, Option<brink_ir::TypeExpr>)>,
+) {
+    fn walk_if(
+        i: &brink_ir::IfStmt,
+        out: &mut BTreeMap<String, (TextRange, Option<brink_ir::TypeExpr>)>,
+    ) {
         if let Some(b) = &i.binding {
-            out.insert(b.text.clone());
+            out.insert(b.text.clone(), (b.range, None));
         }
-        lambda_own_binding_names(&i.body, out);
+        lambda_own_bindings(&i.body, out);
         match &i.else_branch {
             Some(brink_ir::ElseBranch::ElseIf(nested)) => walk_if(nested, out),
-            Some(brink_ir::ElseBranch::Else(body)) => lambda_own_binding_names(body, out),
+            Some(brink_ir::ElseBranch::Else(body)) => lambda_own_bindings(body, out),
             None => {}
         }
     }
     for s in stmts {
         match s {
             brink_ir::BlockStmt::TempDecl(t) => {
-                out.insert(t.name.text.clone());
+                out.insert(t.name.text.clone(), (t.name.range, t.annotation.clone()));
             }
             brink_ir::BlockStmt::If(i) => walk_if(i, out),
             brink_ir::BlockStmt::While(w) => {
                 if let Some(b) = &w.binding {
-                    out.insert(b.text.clone());
+                    out.insert(b.text.clone(), (b.range, None));
                 }
-                lambda_own_binding_names(&w.body, out);
+                lambda_own_bindings(&w.body, out);
             }
             brink_ir::BlockStmt::For(f) => {
-                out.insert(f.var_name.text.clone());
+                out.insert(f.var_name.text.clone(), (f.var_name.range, None));
                 if let Some(v) = &f.val_name {
-                    out.insert(v.text.clone());
+                    out.insert(v.text.clone(), (v.range, None));
                 }
-                lambda_own_binding_names(&f.body, out);
+                lambda_own_bindings(&f.body, out);
             }
             brink_ir::BlockStmt::Assignment(_)
             | brink_ir::BlockStmt::Return(_)
@@ -569,6 +588,10 @@ struct InferPass<'a, 'b> {
     /// See [`BodyResult::ufcs_call_args`] — accumulated the same way
     /// `direct_call_arg_mismatches` is, during the one body walk.
     ufcs_call_args: Vec<UfcsCallArgs>,
+    /// See [`BodyResult::lambda_escapes`] — accumulated the same
+    /// cumulative-not-frame-scoped way `lambda_annotation_mismatches` is,
+    /// pushed by [`Self::infer_lambda`] itself.
+    lambda_escapes: Vec<LambdaEscapeSlot>,
     /// See [`BodyResult::array_remove_calls`] — accumulated the same way
     /// `value_calls` is, during the one body walk.
     array_remove_calls: Vec<TextRange>,
@@ -2434,6 +2457,12 @@ impl InferPass<'_, '_> {
             // snapshotted/restored around a lambda's own frame window.
             lambda_annotation_mismatches: _,
             ufcs_call_args: _,
+            // Deliberately cumulative, not frame-scoped (issue #1770): the
+            // exact same reasoning as `lambda_annotation_mismatches` just
+            // above — a nested lambda's own escape slots must survive into
+            // the enclosing body's own result, never snapshotted/restored
+            // around a lambda's own frame window.
+            lambda_escapes: _,
             array_remove_calls: _,
             created_fn_values: _,
             local_fn_origins,
@@ -2555,7 +2584,7 @@ impl InferPass<'_, '_> {
     /// id is now minted at HIR time rather than in LIR (issue #1727,
     /// `hir::LambdaExpr::container_id`), it still doesn't exist yet at the
     /// point this function runs. Until the SCC-joining half of that gap
-    /// closes (#1770), an honest "unknown" is the only sound row a lambda
+    /// closes (#2152), an honest "unknown" is the only sound row a lambda
     /// can carry — which is precisely the coordination issue #1685 flagged.
     ///
     /// Composing a real row here would be **necessary but not sufficient**
@@ -2638,10 +2667,18 @@ impl InferPass<'_, '_> {
         // the lambda's own body *re-binds* via a fresh `TempDecl`/`if`/
         // `while`/`for` binding of the same spelling — see that loop's doc
         // for why a re-bound name must never be seeded.
-        let mut body_bound_names: BTreeSet<String> = BTreeSet::new();
+        // Issue #1770: the richer sibling of the pre-existing name-only
+        // collection — same walk, plus each binding's own range/ascription
+        // for this lambda's own escape-check frame (built below, once the
+        // body walk's final types are in). `body_bound_names` stays the
+        // exact `BTreeSet<String>` every existing shadow computation below
+        // already expects.
+        let mut body_bound_decls: BTreeMap<String, (TextRange, Option<brink_ir::TypeExpr>)> =
+            BTreeMap::new();
         if let brink_ir::LambdaBody::Block { stmts, .. } = &l.body {
-            lambda_own_binding_names(stmts, &mut body_bound_names);
+            lambda_own_bindings(stmts, &mut body_bound_decls);
         }
+        let body_bound_names: BTreeSet<String> = body_bound_decls.keys().cloned().collect();
         let shadow_names: BTreeSet<String> = param_names
             .iter()
             .cloned()
@@ -2801,6 +2838,35 @@ impl InferPass<'_, '_> {
                             .unwrap_or(Ty::Unknown)
                     })
                     .collect();
+                // Issue #1770: this lambda's own body-declared temps'
+                // escape-check slots — read back from `self.locals` for the
+                // exact same reason `narrowed` just above is: one line later,
+                // `restore_frame` wipes every name this walk touched.
+                //
+                // A name in `body_bound_names` that is *also* a param name
+                // (a re-bound param, `|t: int| { let t = "a"; t }`) is
+                // deliberately **not** skipped here (review finding on
+                // #1770): `self.locals[name]` holds the fresh local's own
+                // accumulated type, not the param's, so the escape genuinely
+                // belongs to the temp, not the parameter. The `params`
+                // governance loop below owns the opposite carve-out — it
+                // skips pushing a slot for exactly this name — so the two
+                // loops never both report the same rebound name, and this
+                // one reports it under the accurate `` "lambda temp" ``
+                // label rather than misattributing it to the annotated
+                // parameter of the same spelling.
+                for (name, (range, annotation)) in &body_bound_decls {
+                    let ty = self.locals.get(name).cloned().unwrap_or(Ty::Unknown);
+                    let annotated = annotation
+                        .as_ref()
+                        .is_some_and(|te| crate::annotations::resolve(te, &type_names).is_some());
+                    self.lambda_escapes.push(LambdaEscapeSlot {
+                        range: *range,
+                        ty,
+                        annotated,
+                        slot_label: format!("lambda temp `{name}`"),
+                    });
+                }
                 self.restore_frame(snapshot);
                 (ty, narrowed)
             }
@@ -2925,7 +2991,7 @@ impl InferPass<'_, '_> {
         // slot's pre-#1994 behavior exactly (no diagnostic either way,
         // since a rebound name was never seeded into `self.annotated` for
         // `own_annotation` to compare against anyway).
-        let params = l
+        let params: Vec<Ty> = l
             .params
             .iter()
             .zip(narrowed_params)
@@ -2986,6 +3052,37 @@ impl InferPass<'_, '_> {
                 }
             })
             .collect();
+        // Issue #1770: this lambda's own params' escape-check slots, built
+        // from the exact same final, post-#1994-governance `params` vector
+        // `Ty::Fn` below hands out to callers. An annotated param's `ty` is
+        // always its resolved annotation here (never `Unknown`/`Conflicted`)
+        // by construction of the governance loop just above — so
+        // `annotated` stays `false` unconditionally, there is nothing left
+        // for a separate exemption to do (see `LambdaEscapeSlot::annotated`'s
+        // own doc). An unresolvable-or-absent annotation leaves `ty` as the
+        // raw body-derived `inferred` value, which genuinely can still be
+        // `Unknown`/`Conflicted` — exactly the escape this issue exists to
+        // surface.
+        //
+        // Skips a name the body itself re-binds (`body_bound_names`,
+        // `|t: int| { let t = "a"; t }`) — review finding on #1770: the
+        // governance loop above reads that case's `ty` straight from
+        // `self.locals[name]`, which by then holds the *rebound local's*
+        // accumulated type, not the param's, so a slot pushed here would
+        // blame the annotated parameter for the fresh local's own
+        // contradiction. The body-declared-temps loop above owns this name
+        // instead, under the accurate `` "lambda temp" `` label.
+        for (p, ty) in l.params.iter().zip(&params) {
+            if body_bound_names.contains(&p.name.text) {
+                continue;
+            }
+            self.lambda_escapes.push(LambdaEscapeSlot {
+                range: p.name.range,
+                ty: ty.clone(),
+                annotated: false,
+                slot_label: format!("lambda parameter `{}`", p.name.text),
+            });
+        }
         let declared_ret = l
             .return_type
             .as_ref()
@@ -3014,7 +3111,7 @@ impl InferPass<'_, '_> {
         // pass runs *after* analysis, so there is still no id at inference
         // time to *name* as a creation target — and even once stamped, a
         // lambda literal has no index symbol / `DefKey` for the SCC solve
-        // to key a row against (#1770's keyspace gap, not this one). `FnRow`
+        // to key a row against (#2152's keyspace gap, not this one). `FnRow`
         // keys the shipped `DefinitionId → row` table (§7), so an honest
         // "unknown" is the only sound row a lambda can carry until that
         // closes.
@@ -4545,6 +4642,7 @@ mod tests {
             field_assign_mismatches: Vec::new(),
             lambda_annotation_mismatches: Vec::new(),
             ufcs_call_args: Vec::new(),
+            lambda_escapes: Vec::new(),
             array_remove_calls: Vec::new(),
             created_fn_values: BTreeSet::new(),
             local_fn_origins: BTreeMap::new(),

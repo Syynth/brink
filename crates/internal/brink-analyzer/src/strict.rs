@@ -802,6 +802,29 @@ fn check_def(
             out,
         );
     }
+
+    // Issue #1770: give every lambda literal anywhere in this body the same
+    // Unknown-escape (`E065`) / Conflicted-escape (`E066`) treatment the
+    // params/temps loops above just gave `def_label` itself. Each
+    // `body_types.lambda_escapes` entry is already a fully-built
+    // `emit_escape` input (final type, declaration range,
+    // annotation-exemption bit, ready-made slot label) — recorded
+    // unconditionally by `infer::body::InferPass::infer_lambda` for every
+    // lambda anywhere in this body, including one nested inside another
+    // lambda's own body (see that field's own doc) — so this is a flat
+    // re-emit under the enclosing def's own label, no per-lambda grouping
+    // or lookup needed.
+    for slot in &body_types.lambda_escapes {
+        emit_escape(
+            file,
+            def_label,
+            &slot.slot_label,
+            slot.range,
+            &slot.ty,
+            slot.annotated,
+            out,
+        );
+    }
 }
 
 /// `annotated`: whether an explicit, resolvable annotation/ascription is
@@ -1784,21 +1807,28 @@ struct TempDecl {
 /// `E066` that does fire. That shadowing collision, not the harmlessness
 /// of a dead entry on the unshadowed case, is the load-bearing reason not
 /// to descend. Pinned by
-/// `native_lambda_local_temp_ascription_is_invisible_to_enclosing_escape_check`
-/// (the unshadowed case, showing an unascribed and an ascribed
-/// lambda-local temp producing the identical empty diagnostic set) and
 /// `native_shadowed_lambda_local_temp_does_not_exempt_enclosing_temp`
 /// (the shadowed case, proving the enclosing temp still `E065`-escapes
-/// despite the lambda-local ascription), both below. If a future change
-/// ever gives a lambda its own strict-checked frame (its own `BodyTypes`,
-/// run through `check_def` in its own right rather than folded into the
-/// enclosing def's), that frame's own `collect_temps` call over the
-/// lambda's own body would populate the lambda's own frame-local map,
-/// never merged into the enclosing def's `body_types.locals` —
-/// sidestepping the shadowing collision above entirely. Flattening a
-/// lambda's temps into the enclosing def's map, the way a naive
-/// `Expr::Lambda` arm added directly to *this* walker would, is exactly
-/// the hazard to avoid.
+/// despite the lambda-local ascription), below.
+///
+/// Issue #1770 has since given a lambda its own strict-checked frame —
+/// but not by descending here. `InferPass::infer_lambda` records a
+/// lambda's own params/body-declared temps into a wholly separate,
+/// cumulative vector (`BodyTypes::lambda_escapes`,
+/// [`crate::infer::LambdaEscapeSlot`]), re-emitted by `check_def` under
+/// the enclosing def's own label — never merged into, and never read
+/// back out of, `body_types.locals`. So the shadowing collision this doc
+/// describes is still exactly as live a hazard for *this* function as it
+/// ever was: a naive `Expr::Lambda` arm added directly to `collect_temps`
+/// would still overwrite an enclosing shadowed name's `TempDecl` with the
+/// lambda-local one. #1770 sidesteps the whole question rather than
+/// answering it — don't read the existence of `lambda_escapes` as license
+/// to add that arm here; the two mechanisms solve different problems
+/// (this fn's one consumer keys off *bare name*, which is exactly what
+/// breaks under shadowing, while `lambda_escapes` never keys off name at
+/// all). See `native_lambda_local_temp_ascription_now_reaches_its_own_
+/// escape_check`, below, for the now-visible unshadowed case this doc
+/// used to pin here before #1770 gave it a home of its own.
 ///
 /// See `docs/effects-spec.md` §4.1 (issue #1762) for the general
 /// frame-scoped-vs-cumulative `InferPass` field rule this is the mirror
@@ -2391,52 +2421,68 @@ mod tests {
         );
     }
 
-    /// Issue #1763 (the strict-mode sibling of #1749/#1750's effect-row
-    /// fix): `collect_temps` never descends into `Expr::Lambda`, so a temp
-    /// declared *inside* a lambda's own block body can't be exempted by a
-    /// `~ temp x: T = …` ascription the way a top-level one can. This pins
-    /// the reason that gap is safe to leave undescended rather than a bug —
-    /// the unannotated and the ascribed lambda-local `let t` below produce
-    /// the *identical* (empty) diagnostic set, proving the ascription's
-    /// presence or absence is moot: a lambda-local temp never reaches
-    /// `body_types.locals` (the enclosing def's own locals map, the only
-    /// thing `collect_temps`' output is ever checked against) in the first
-    /// place, ascribed or not — `InferPass::infer_lambda`'s #1750
-    /// snapshot/restore of `locals` keeps it out entirely. Contrast with
-    /// `native_annotated_let_is_exempt_from_unknown_escape` immediately
-    /// above: the same `let t;` shape at the *top level* of the very same
-    /// `fn` body does E065-escape when unannotated.
+    /// Issue #1770 (closing the gap #1763 pinned as the then-deliberate
+    /// interim posture): a temp declared *inside* a lambda's own block body
+    /// now gets its own per-lambda escape-check frame
+    /// ([`crate::infer::LambdaEscapeSlot`]), populated by
+    /// `InferPass::infer_lambda` and re-emitted by `check_def` under the
+    /// enclosing def's own label — so it is no longer invisible just
+    /// because it never reaches the *enclosing* def's own
+    /// `body_types.locals` (`InferPass::infer_lambda`'s #1750 snapshot/
+    /// restore of `locals` still keeps it out of *that* map; this is a
+    /// wholly separate, cumulative map fed straight from the same walk).
+    ///
+    /// Before this fix (see the git history of this test, formerly
+    /// `native_lambda_local_temp_ascription_is_invisible_to_enclosing_
+    /// escape_check`): the unannotated and the ascribed lambda-local `let
+    /// t` below produced the *identical* (empty) diagnostic set — the
+    /// ascription changed nothing observable. Now they genuinely differ,
+    /// proving the ascription firewall reaches a lambda's own temps exactly
+    /// like it already does a top-level one
+    /// (`native_annotated_let_is_exempt_from_unknown_escape`, the same `let
+    /// t;` shape one scope out).
     #[test]
-    fn native_lambda_local_temp_ascription_is_invisible_to_enclosing_escape_check() {
+    fn native_lambda_local_temp_ascription_now_reaches_its_own_escape_check() {
         let unannotated = native_strict_diags(
             "fn f(n: int): int {\n  let g = |x: int|: int {\n    let t;\n    x\n  };\n  return n;\n}\n",
         );
+        assert_eq!(
+            unannotated.len(),
+            1,
+            "the lambda's own unannotated `let t` (never used, so genuinely \
+             `Unknown`) now escapes in its own right: {unannotated:?}"
+        );
+        assert_eq!(unannotated[0].code, DiagnosticCode::E065);
         assert!(
-            unannotated.is_empty(),
-            "the lambda's own unannotated `let t` never reaches the enclosing \
-             def's `body_types.locals`, so it cannot escape there: {unannotated:?}"
+            unannotated[0].message.contains("lambda temp `t`"),
+            "{unannotated:?}"
         );
 
         let ascribed = native_strict_diags(
             "fn f(n: int): int {\n  let g = |x: int|: int {\n    let t: string;\n    x\n  };\n  return n;\n}\n",
         );
-        assert_eq!(
-            ascribed, unannotated,
-            "an ascription on a lambda-local temp changes nothing observable — \
-             the temp is invisible to this check either way: {ascribed:?}"
+        assert!(
+            ascribed.is_empty(),
+            "the `: string` ascription now supplies the type, exempting the \
+             lambda's own temp exactly like a top-level one: {ascribed:?}"
         );
     }
 
     /// Guards the shadowing hazard the `collect_temps` doc comment calls
     /// out: on a shadowed name, `collect_temps`'s last-write-wins insert
-    /// means a naive `Expr::Lambda` arm would overwrite the *enclosing*
-    /// `let t;`'s `TempDecl` with the lambda-local `let t: string;`'s
-    /// ascribed one, silently exempting the outer temp from `E065`. This
-    /// fixture pins the enclosing temp's escape independent of the
-    /// lambda's own (differently ascribed) shadow of the same bare name —
-    /// it is green today, undescended, and would fail the moment a naive
-    /// `Expr::Lambda` arm is added to `collect_temps_stmt` /
-    /// `collect_temps_block_stmt`. (Shadowing itself is legal here:
+    /// means a naive `Expr::Lambda` arm added directly to it would
+    /// overwrite the *enclosing* `let t;`'s `TempDecl` with the
+    /// lambda-local `let t: string;`'s ascribed one, silently exempting the
+    /// outer temp from `E065`. Issue #1770 gives the lambda's own `t` a
+    /// genuine escape-check frame now (a separate, `LambdaEscapeSlot`-based
+    /// map fed straight from `InferPass::infer_lambda`'s own walk — see
+    /// that fact's own doc for why this sidesteps the collision entirely,
+    /// never touching `collect_temps`), so this fixture's own hazard
+    /// (`collect_temps_stmt`/`collect_temps_block_stmt` growing a naive
+    /// `Expr::Lambda` arm) remains exactly as un-triggered as before. Still
+    /// pins the enclosing temp's own escape, now expected to be the *only*
+    /// diagnostic (the lambda's own `t: string` is separately, correctly
+    /// exempt by its own ascription). (Shadowing itself is legal here:
     /// `check_capture_writes`
     /// (`crates/internal/brink-ir/src/hir/lower_native/lambda.rs`) fires
     /// `E156` only on writes to *captured* outers, never on a lambda-local
@@ -2446,13 +2492,134 @@ mod tests {
         let diags = native_strict_diags(
             "fn f(n: int): int {\n  let t;\n  let g = |x: int|: int {\n    let t: string;\n    x\n  };\n  return n;\n}\n",
         );
-        assert!(
-            diags.iter().any(|d| d.code == DiagnosticCode::E065),
+        assert_eq!(
+            diags.len(),
+            1,
             "the enclosing, unannotated `let t;` must still escape as E065 \
              even though a lambda-local `let t: string;` shadows the same \
              bare name with its own ascription — a naive `Expr::Lambda` arm \
              in `collect_temps` would overwrite the enclosing `TempDecl` \
-             and silently swallow this: {diags:?}"
+             and silently swallow this; the lambda's own `t` is separately \
+             exempt by its own ascription, so nothing else should appear: \
+             {diags:?}"
+        );
+        assert_eq!(diags[0].code, DiagnosticCode::E065);
+    }
+
+    /// Issue #1770's `E066` (Conflicted-escape) half — the sibling of
+    /// [`native_lambda_local_temp_ascription_now_reaches_its_own_escape_check`],
+    /// which only pins the `E065` (Unknown-escape) half. `t` is written as
+    /// an `int` then reassigned a `string` inside the lambda's own block
+    /// body, a genuine same-type disagreement (`unify(int, string) ==
+    /// Conflicted`, the #627 lattice) local to the lambda's own frame —
+    /// never observable at the top level at all, since `t` is declared and
+    /// used entirely inside `g`'s body.
+    #[test]
+    fn native_lambda_local_temp_with_conflicting_uses_reports_e066() {
+        let diags = native_strict_diags(
+            "fn f(n: int): int {\n  let g = |x: int|: int {\n    let t = 1;\n    t = \"oops\";\n    x\n  };\n  return n;\n}\n",
+        );
+        assert_eq!(
+            diags.len(),
+            1,
+            "the lambda's own `t` genuinely disagrees with itself (`int` \
+             then `string`) and must escape as E066, not merely go \
+             unreported the way a lambda-local temp did before #1770: \
+             {diags:?}"
+        );
+        assert_eq!(diags[0].code, DiagnosticCode::E066);
+        assert!(diags[0].message.contains("lambda temp `t`"), "{diags:?}");
+    }
+
+    /// Review finding on #1770: a param name the lambda's own body
+    /// re-binds (`|t: int| { let t = 1; t = "oops"; t }`) must be reported
+    /// as the *rebound local's* own escape, never misattributed to the
+    /// annotated parameter of the same spelling. Before this fix, the
+    /// params governance loop read `self.locals["t"]` — by then the
+    /// rebound local's accumulated type, `Conflicted` here, not the
+    /// param's — straight into a `LambdaEscapeSlot` labeled
+    /// `"lambda parameter `t`"`, blaming the annotated param for a
+    /// contradiction entirely internal to the fresh local that shadows it,
+    /// while the body-declared-temps loop silently skipped the name
+    /// entirely (see `LambdaEscapeSlot::annotated`'s doc and
+    /// `InferPass::infer_lambda`'s two governance-loop comments). The
+    /// temps loop now owns this name instead, so the only lambda-frame
+    /// row is a `"lambda temp `t`"` one and no `"lambda parameter `t`"`
+    /// row appears. The enclosing `let g = …` temp also escapes as
+    /// Conflicted in its own right — `g`'s inferred `fn(Conflicted):
+    /// Conflicted` type recursively classifies as Conflicted too
+    /// (`classify`'s own `Ty::Fn` arm, the same shape
+    /// `native_nested_lambda_inside_lambda_gets_its_own_escape_frame_too`
+    /// exercises for Unknown) — a real, independent escape, not a
+    /// duplicate.
+    #[test]
+    fn native_lambda_rebound_param_escape_is_attributed_to_the_temp_not_the_param() {
+        let diags = native_strict_diags(
+            "fn f(n: int): int {\n  let g = |t: int| {\n    let t = 1;\n    t = \"oops\";\n    t\n  };\n  return n;\n}\n",
+        );
+        assert_eq!(
+            diags.len(),
+            2,
+            "the rebound local `t`'s own int/string contradiction escapes \
+             at its own lambda-frame slot, and `g`'s own inferred \
+             fn(Conflicted): Conflicted type recursively escapes too: \
+             {diags:?}"
+        );
+        assert!(diags.iter().all(|d| d.code == DiagnosticCode::E066));
+        assert!(
+            diags.iter().any(|d| d.message.contains("lambda temp `t`")),
+            "must be attributed to the rebound local, not the annotated \
+             parameter of the same name: {diags:?}"
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("temp `g`")),
+            "{diags:?}"
+        );
+        assert!(
+            diags
+                .iter()
+                .all(|d| !d.message.contains("lambda parameter `t`")),
+            "the annotated parameter `t` must never be blamed for a \
+             contradiction entirely internal to the local that shadows it: \
+             {diags:?}"
+        );
+    }
+
+    /// Issue #1770's own doc on [`crate::infer::LambdaEscapeSlot`]: a lambda
+    /// nested inside another lambda's own body gets its **own**, separate
+    /// frame — its escape slots are folded into the same flat, cumulative
+    /// vector as the outer lambda's, not merged into (or lost inside) the
+    /// outer lambda's own frame. Two diagnostics prove two independent
+    /// things fired: `h`'s own unannotated, unused param `y` is only
+    /// reachable by recursing into `g`'s own nested lambda `h` (proving the
+    /// per-lambda walk genuinely recurses rather than stopping at the
+    /// first lambda it finds); `g`'s own temp `h` *also* escapes, because
+    /// `h`'s inferred `fn(Unknown): Unknown` type recursively classifies as
+    /// `Unknown` too (`classify`'s own `Ty::Fn` arm) — a real, independent
+    /// escape at `g`'s own frame, not a duplicate of `h`'s.
+    #[test]
+    fn native_nested_lambda_inside_lambda_gets_its_own_escape_frame_too() {
+        let diags = native_strict_diags(
+            "fn f(n: int): int {\n  let g = |x: int|: int {\n    let h = |y| y;\n    x\n  };\n  return n;\n}\n",
+        );
+        assert_eq!(
+            diags.len(),
+            2,
+            "`h`'s own param `y` (only reachable by recursing into `g`'s \
+             nested lambda) and `g`'s own temp `h` (whose `fn(Unknown): \
+             Unknown` type itself classifies as Unknown) are two \
+             independent escapes: {diags:?}"
+        );
+        assert!(diags.iter().all(|d| d.code == DiagnosticCode::E065));
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("lambda parameter `y`")),
+            "{diags:?}"
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("lambda temp `h`")),
+            "{diags:?}"
         );
     }
 
@@ -2612,11 +2779,25 @@ mod tests {
         let diags = native_strict_diags(
             "fn total() {\n  let items = [1, 2, 3, 4];\n  return fold(items, 0, |acc, x| acc + x);\n}\n",
         );
+        // Issue #1770: `acc`/`x` now get their own per-lambda escape-check
+        // frame, and neither is pinned by the callback's own body (`acc + x`
+        // joins two `Unknown`s) — so both correctly escape as `E065` in
+        // their own right. What this test still pins is `fold`'s *own*
+        // result: it must fall back to the seed `0`'s `int` rather than
+        // itself escaping as a third, redundant diagnostic on `total`'s own
+        // return type — the absence of any such row below is that proof.
+        assert_eq!(
+            diags.len(),
+            2,
+            "only the lambda's own two unconstrained params should escape — \
+             `total`'s own return type must still fall back cleanly to the \
+             seed's `int`: {diags:?}"
+        );
         assert!(
-            diags.is_empty(),
-            "neither `acc` nor `x` is pinned by the callback's own body \
-             (`acc + x` joins two `Unknown`s), so `fold`'s accumulator type \
-             must fall back to the seed `0`'s own `int`: {diags:?}"
+            diags.iter().all(|d| d.code == DiagnosticCode::E065
+                && (d.message.contains("lambda parameter `acc`")
+                    || d.message.contains("lambda parameter `x`"))),
+            "{diags:?}"
         );
     }
 
@@ -2703,12 +2884,28 @@ mod tests {
         let diags = native_strict_diags(
             "fn scaled() {\n  let a = 1;\n  let items = [1, 2, 3];\n  let scaled = map(items, |x| {\n    let a = \"str\";\n    a\n  });\n  return len(scaled);\n}\n",
         );
-        assert!(
-            diags.is_empty(),
-            "the lambda's own `let a = \"str\";` is a fresh binding, wholly \
-             unrelated to the enclosing `let a = 1;` of the same name — it \
+        // Issue #1770: the lambda's own param `x` is never referenced
+        // anywhere in its body (`{ let a = "str"; a }` only ever reads its
+        // own fresh `a`), so it now correctly escapes as `E065` in its own
+        // right — a genuinely new, unrelated finding. What this test still
+        // pins is that `a` itself stays clean: `classify(String)` is
+        // `Escape::Clean`, so the lambda's own shadowing `let a = "str";`
+        // contributes no diagnostic of its own, and — the actual
+        // regression this test guards — no `E066` appears anywhere (the
+        // corruption this fixture was written to catch).
+        assert_eq!(
+            diags.len(),
+            1,
+            "only the lambda's own unused param `x` should escape — the \
+             lambda's own `let a = \"str\";` is a fresh binding, wholly \
+             unrelated to the enclosing `let a = 1;` of the same name, and \
              must not corrupt the lambda's own inferred `string` return \
              into `Conflicted`: {diags:?}"
+        );
+        assert_eq!(diags[0].code, DiagnosticCode::E065);
+        assert!(
+            diags[0].message.contains("lambda parameter `x`"),
+            "{diags:?}"
         );
     }
 
@@ -2729,11 +2926,25 @@ mod tests {
         let diags = native_strict_diags(
             "fn f(): Array<Option<int>> {\n  let x: string = \"s\";\n  let items = [1, 2, 3];\n  return map(items, |x| some(x));\n}\n",
         );
+        // Issue #1770: the lambda's own param `x` is now visible to strict
+        // inference in its own right — `some(x)` places no constraint on
+        // `x`'s own type (mono-HM narrowing from a verb's own call site is
+        // not modeled, `infer_lambda`'s own doc), so it correctly escapes
+        // as `E065` on its own. What this test still pins is the *absence*
+        // of the regression it was written for: no `E063` disagreement
+        // between the annotated return type and a wrongly-inherited
+        // `string` (the enclosing, unrelated `let x: string`'s type).
+        assert_eq!(
+            diags.len(),
+            1,
+            "only the lambda's own unconstrained param `x` should escape — \
+             it must not inherit the enclosing `let x: string`'s annotated \
+             type merely because they share a bare name: {diags:?}"
+        );
+        assert_eq!(diags[0].code, DiagnosticCode::E065);
         assert!(
-            diags.is_empty(),
-            "the lambda's own param `x` must not inherit the enclosing \
-             `let x: string`'s annotated type merely because they share a \
-             bare name: {diags:?}"
+            diags[0].message.contains("lambda parameter `x`"),
+            "{diags:?}"
         );
     }
 
@@ -2755,11 +2966,28 @@ mod tests {
         let diags = native_strict_diags(
             "struct Point {\n  x: int,\n  y: int\n}\n\nfn g(): int {\n  let p = Point { x: 3, y: 4 };\n  let items = [1, 2];\n  return fold(items, 0, |a, b| p.x + a + b);\n}\n",
         );
+        // Issue #1770: `a`/`b` now get their own per-lambda escape-check
+        // frame. The dotted-field-read taint guard above (#1924's own
+        // follow-up fix) makes `infer_lambda` fall back to an honest
+        // `Unknown` for this callback's own signature rather than trust the
+        // mistyped `Struct(Point)` value — so `a`/`b` correctly escape as
+        // `E065` in their own right. What this test still pins is the
+        // *absence* of the regression it was written for: no `E063`
+        // disagreement between `g`'s `: int` return annotation and a
+        // wrongly-poisoned `Point`.
+        assert_eq!(
+            diags.len(),
+            2,
+            "only the lambda's own two params should escape — `p.x`'s own \
+             mistyped read must not poison `g`'s own `: int` return \
+             annotation, which has nothing to do with `p`'s own struct \
+             type: {diags:?}"
+        );
         assert!(
-            diags.is_empty(),
-            "`p.x`'s own mistyped read must not poison the fold callback's \
-             unrelated accumulator params `a`/`b`, which have nothing to do \
-             with `p`'s own struct type: {diags:?}"
+            diags.iter().all(|d| d.code == DiagnosticCode::E065
+                && (d.message.contains("lambda parameter `a`")
+                    || d.message.contains("lambda parameter `b`"))),
+            "{diags:?}"
         );
     }
 

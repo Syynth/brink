@@ -300,7 +300,7 @@ pub struct EffectAtoms {
     /// issue #1727 — LIR lowering only reads it, no longer mints it), but a
     /// lambda literal has no index symbol / `DefKey` of its own, so there is
     /// still nothing here to record it against. Joining it into the SCC
-    /// solve is #1770's job, not this one's.
+    /// solve is #2152's job, not this one's.
     pub creates_fn_values: BTreeSet<DefinitionId>,
     /// This body calls through a function value whose reaching values were
     /// not all created in-project (or otherwise escapes the static call

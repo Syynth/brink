@@ -211,6 +211,12 @@ pub struct BodyTypes {
     /// `ufcs::UfcsVisitor`, reported only by strict mode
     /// (`ufcs::check_strict`, `E063`).
     pub ufcs_call_args: Vec<UfcsCallArgs>,
+    /// Issue #1770: see [`LambdaEscapeSlot`]. Recorded unconditionally,
+    /// folded in from every lambda anywhere in this body (including nested
+    /// ones) exactly like `lambda_annotation_mismatches`; reported only by
+    /// strict mode (`strict::check_def`, the same `E065`/`E066` codes a
+    /// top-level def's own params/temps already use).
+    pub lambda_escapes: Vec<LambdaEscapeSlot>,
 }
 
 /// One UFCS-desugared call site's (`recv.name(args)` → `name(recv, args)`)
@@ -299,6 +305,81 @@ pub struct LambdaAnnotationMismatch {
     pub expected: Ty,
     /// The body's own independent derivation, which disagreed.
     pub found: Ty,
+}
+
+/// One lambda-body param or body-declared temp, ready for the same
+/// Unknown-escape (`E065`) / Conflicted-escape (`E066`) treatment
+/// `strict::check_def` already gives a top-level def's own `params`/
+/// `locals` (issue #1770: "lambda bodies are invisible to strict-mode
+/// escape checking... give lambda bodies a per-lambda frame").
+///
+/// A lambda literal still has no `DefinitionId`-keyed `BodyTypes` entry of
+/// its own to run `check_def` against — #1727 minted a lifted lambda a
+/// stable *identity*, not a `SymbolIndex` entry / `DefKey` (see that
+/// issue's ruling), and `infer_project`/`InferPass` run over HIR straight
+/// from `hir::lower`, strictly *before* `hir::stamp_container_ids` (which
+/// only runs as part of LIR lowering / the `normalized_stamped_query`
+/// salsa memo) — so even the identity #1727 does mint is not populated yet
+/// at the point this fact is recorded. Building a per-lambda strict-frame
+/// does not need it: each slot below is already a fully self-contained
+/// `emit_escape` input (final type, declaration range, annotation-exemption
+/// bit, and a ready-made slot label), so `strict::check_def` re-emits it
+/// with no per-lambda grouping or lookup required.
+///
+/// Recorded unconditionally by [`body::InferPass::infer_lambda`] for
+/// **every** lambda anywhere in the enclosing def's body, including one
+/// nested inside another lambda's own body — each nested lambda gets its
+/// own `infer_lambda` call and so contributes its own slots to this same
+/// flat, cumulative vector (mirrors [`LambdaAnnotationMismatch`]'s
+/// identical "folded in from every lambda anywhere in this body"
+/// precedent). Reported only by strict mode.
+///
+/// Deliberately **excludes** a lambda's own return-type slot: unlike a
+/// top-level `fn`'s return-type escape check, "does this lambda's body
+/// ever return a value" has no `E150`-style fall-through analysis defined
+/// for it, and #1994's `LambdaAnnotationMismatch` (`E174`) already owns a
+/// materially different, eager check for a lambda's return-type
+/// *annotation* disagreeing with its body — adding a second, gradual
+/// escape check for the identical slot would double-report the same fact
+/// under a different code. Out of scope for #1770; see that issue's own
+/// "Ask" (params + temps only, matching `BodyTypes::locals`'s own
+/// params-∪-temps membership, not `BodyTypes::return_ty`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LambdaEscapeSlot {
+    /// The slot's own declaration range — a param's name range, or a
+    /// body-declared temp's/`if`-`as`-binding's/`for`-var's own name range.
+    /// The diagnostic anchor, same convention as `check_def`'s own
+    /// per-slot ranges.
+    pub range: TextRange,
+    /// The slot's final, escape-checked type.
+    pub ty: Ty,
+    /// Whether a resolvable annotation/ascription exempts an `Unknown`
+    /// classification (never a `Conflicted` one) — mirrors `check_def`'s
+    /// own `annotated` argument to `emit_escape`. Always `false` for a
+    /// param slot: `infer_lambda`'s own annotation-governs-when-present
+    /// overlay (#1994) already replaces an annotated param's `ty` with the
+    /// resolved annotation itself before this slot is built, so there is
+    /// nothing left for a separate exemption to do there — this field only
+    /// ever does real work for a body-declared temp, which carries no such
+    /// overlay.
+    ///
+    /// That holds only for a param whose name the lambda's own body never
+    /// re-binds. A name the body *does* re-bind (`|t: int| { let t = 1;
+    /// t = "oops"; t }`) never reaches a param slot at all — review finding
+    /// on #1770: the governance overlay's rebound-name branch reads `ty`
+    /// straight from `self.locals[name]`, i.e. the shadowing local's own
+    /// accumulated type, not the annotated param's, so `infer_lambda`
+    /// excludes that name from this loop entirely and reports it only as a
+    /// `` "lambda temp" `` slot instead (built from the same body-declared-
+    /// temps loop every ordinary temp goes through) — the escape belongs to
+    /// the fresh local, not the parameter of the same spelling.
+    pub annotated: bool,
+    /// The slot's own label, ready to hand straight to `emit_escape` — e.g.
+    /// `` "lambda parameter `x`" `` / `` "lambda temp `t`" `` — prefixed so
+    /// the reported message reads distinctly from the enclosing def's own
+    /// same-named slot (`check_def`'s `param_name` and `slot_label`
+    /// convention, one level in).
+    pub slot_label: String,
 }
 
 /// One statically-checkable type mismatch at a **dotted struct-field**
@@ -918,6 +999,7 @@ fn solve_one_batch(
                     field_assign_mismatches: result.field_assign_mismatches,
                     lambda_annotation_mismatches: result.lambda_annotation_mismatches,
                     ufcs_call_args: result.ufcs_call_args,
+                    lambda_escapes: result.lambda_escapes,
                 },
             )
         })

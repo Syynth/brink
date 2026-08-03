@@ -80,11 +80,12 @@ pub use external_check::{
 pub use harvest::{CueHarvest, HarvestIndex, HarvestSite, SpanHarvest, harvest};
 pub use infer::{
     BodyTypes, CallGraph, CoalesceError, Def, DirectCallArgMismatch, EffectAtoms, EffectRow,
-    FieldAssignMismatch, FnRow, InferenceResult, InferredSig, LambdaAnnotationMismatch, SccGraph,
-    Ty, TypedAssignMismatch, UfcsCallArgs, ValueCallFact, ValueCallKind, assignable, call_edges,
-    coalesce, collect_external_sigs, def_body, def_effect_atoms, effects_project, erase_fn_rows,
-    infer_project, inferable_defs, inferable_defs_from_index, ref_assignable, referenced_globals,
-    scc_graph, solve_scc, solve_scc_effects, unify, unify_all,
+    FieldAssignMismatch, FnRow, InferenceResult, InferredSig, LambdaAnnotationMismatch,
+    LambdaEscapeSlot, SccGraph, Ty, TypedAssignMismatch, UfcsCallArgs, ValueCallFact,
+    ValueCallKind, assignable, call_edges, coalesce, collect_external_sigs, def_body,
+    def_effect_atoms, effects_project, erase_fn_rows, infer_project, inferable_defs,
+    inferable_defs_from_index, ref_assignable, referenced_globals, scc_graph, solve_scc,
+    solve_scc_effects, unify, unify_all,
 };
 pub use manifest::{ModuleMap, ResolvedModule};
 pub use native_admission::validate_native_accept_list;
