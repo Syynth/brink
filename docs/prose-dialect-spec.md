@@ -1117,6 +1117,41 @@ Consequences (RULED):
   ignored by the compiler. This is what makes the Tab/Enter behavior
   convention-driven instead of hardcoded ink.
 
+### 5.1 Implementation status — the harvest index (#2114, 2026-08-03)
+
+The "harvest is a project-db index obligation" consequence has landed:
+`brink_analyzer::harvest` (`HarvestIndex`) merges every file's HIR into a
+project-wide cue/span index, and `brink-db`'s `harvest_index_query` (exposed
+as `ProjectDb::harvest_index()`) is the sibling of `symbol_index_query` the
+ruling names — same shape, same per-file `lowered_query` dependency, same
+incrementality.
+
+What shipped:
+- **Cue payloads harvest independent of conventions.** `HirFile::cue_names`
+  is a whole-tree scan for every `CUE_NAME` node (both the block `CUE` and
+  the fused `COMPACT_CUE`), populated regardless of whether any `@[element]`
+  handler ever claims the line. This matters because an unclaimed cue
+  reports the loud `E129` and produces no `ElementMatch`/`Stmt` at all — a
+  project with zero conventions would otherwise have nothing to harvest.
+- **Markup spans upgrade from the host manifest today.** Unlike the cast
+  roster (below), the manifest is an ordinary, already-registered project
+  input — no comptime evaluation blocks reading it — so `SpanHarvest`
+  already carries the manifest's `ManifestSpanKind` **verbatim** (the
+  widened #1997 shape, `required` flag included) alongside harvested
+  occurrences, rather than waiting on a later slice.
+- **Element kinds are not indexed** — only the cue *payload* text and
+  markup span *names*/*attribute names*, matching "element kinds are
+  inherently declared" above.
+
+What has **not** shipped: the **cast roster** — no type or registration
+point for it exists anywhere in the compiler, so a harvested cue name has
+no declaration-upgrade path yet (`CueHarvest` carries only harvest sites).
+It is explicitly named as a tenant of the §3.5 module door, i.e. blocked on
+the same comptime conventions machinery issue #1840 has not landed. Also
+not built: any completion-UI consumer of the index — this is the
+project-db seam the ruling calls for, not the editor feature reading it
+(a separate, not-yet-filed downstream slice of #2006).
+
 ## 6. Display metrics & measurement (#362 becomes a consumer)
 
 - **The host declares metrics in the manifest** (host-authored,
