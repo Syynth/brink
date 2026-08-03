@@ -505,36 +505,44 @@ impl Backend {
         self.publish_config_outcome(&outcome).await;
     }
 
-    /// Register this session's source root with `ProjectDb`, both as the
-    /// native root (#1572) and the ink root (#1696), so the identity the
-    /// editor mints for a `.brink` file's module or an `.ink` file's
-    /// root-content scope equals what a real compile of the same tree mints.
+    /// Re-sync every native project's own root with `ProjectDb` (issue
+    /// #1580), so the identity the editor mints for a `.brink` file's
+    /// module equals what a real compile of *its own governing* `brink.toml`
+    /// mints.
     ///
-    /// The LSP keys `ProjectDb` by absolute OS path — it must, since every
-    /// path it holds round-trips through a `file://` URI — but a native
-    /// file's module and an ink file's root-content qualifier are both
-    /// contractually a function of a *root-relative* key. Declaring the same
-    /// root under both fields closes that gap at the one place each identity
-    /// function is fed (see [`brink_db::ProjectDb::set_native_root`] and
-    /// [`brink_db::ProjectDb::set_ink_root`]) — one workspace has one source
-    /// root regardless of which of the two languages a given file is, so
-    /// there is no reason for the two fields to ever diverge here (unlike
-    /// `brink-compiler`'s `prepare_driver`, which computes a *per-entry* root
-    /// from the entry's own directory, since a one-shot compile has no
-    /// broader "workspace" to anchor to).
+    /// A workspace no longer has one native source root — [`NativeProjects`]
+    /// discovers every governing `brink.toml` (`NativeRootsContext`,
+    /// `projects.rs`) and re-syncs each project's own `native_root`
+    /// independently. Only [`NativeProjectKey::Default`](projects::NativeProjectKey)
+    /// — the legacy single project every `.ink` file still lives in — also
+    /// gets `set_ink_root` called on it: ink's project extent is
+    /// INCLUDE-reachability from that one root, out of #1580's scope, so
+    /// every other (`Root`/`Orphan`) project's `ink_root` is left unset and
+    /// `native_root`/`ink_root` now *diverge by design* on any workspace with
+    /// more than one governing `brink.toml` (unlike `brink-compiler`'s
+    /// `prepare_driver`, which computes a *per-entry* root from the entry's
+    /// own directory, since a one-shot compile has no broader "workspace" to
+    /// anchor to).
     ///
     /// Called from `initialize` and from every later
-    /// [`reload_brink_toml`](Self::reload_brink_toml). Goes through
-    /// [`mutate_db`](Self::mutate_db) so the content generation advances:
-    /// changing the root changes every native module name and every ink
-    /// root-content id, both real input changes the background pass must
+    /// [`reload_brink_toml`](Self::reload_brink_toml). The filesystem walk
+    /// for sibling `brink.toml`s happens before the [`mutate_db`](Self::mutate_db)
+    /// call so it never runs under the `NativeProjects` lock (issue #1580
+    /// review finding); `mutate_db` itself still advances the content
+    /// generation, since changing a root changes every native module name in
+    /// that project, a real input change the background pass must
     /// re-analyze against.
     fn register_native_root(&self, roots: &[PathBuf], outcome: &ConfigLoadOutcome) {
         // Issue #1580: discover every governing `brink.toml` in the
         // workspace, not just the one `native_source_root` finds by walking
-        // up from the first root, and re-sync every project's own native
-        // root — see `NativeProjects::resync_roots`.
-        self.mutate_db(|projects| projects.resync_roots(roots, outcome));
+        // up from the first root. `compute_roots_context` performs a full
+        // recursive filesystem walk (`discover_other_native_roots`), so it
+        // runs here, BEFORE the lock — otherwise a batch of `brink.toml`
+        // watched-file events (`did_change_watched_files` calls this once
+        // per changed config) would each block every other LSP request on a
+        // full workspace walk.
+        let ctx = NativeProjects::compute_roots_context(roots, outcome);
+        self.mutate_db(|projects| projects.apply_roots_context(ctx));
     }
 
     /// Publish per-file diagnostics (parse + lowering only, no analysis).

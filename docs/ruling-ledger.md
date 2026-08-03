@@ -492,10 +492,12 @@ grouping. Grouping is still purely automatic. The two config surfaces are closed
 and neither has a scoping key: `ConfigOverrides` (`backend.rs:911`, corrected from the
 traced :916) = `dialect`/`types`/`lints`/`deny_warnings`; `ProjectConfig`
 (`crates/internal/brink-project-config/src/lib.rs:192`) adds only `unprune_dirs`,
-which can only *add* files. Nearest open issues #1572/#1580 concern native-`.brink`
-project extent, not user-configurable `.ink` include-tree grouping. The failing case
-named in the ruling's WHY (test-harness files INCLUDEing a subset) is still
-unaddressed.
+which can only *add* files. #1572/#1580 (native-`.brink` project extent — one
+`ProjectDb` per governing `brink.toml`, plus a per-file orphan carve-out) are both
+now closed, #1580 via PR #2202 (see `docs/decision-log.md`'s 2026-08-03 entry); that
+work is automatic root *discovery*, not a user-configurable scoping knob, so this
+ruling's own gap stands unaddressed. The failing case named in the ruling's WHY
+(test-harness files INCLUDEing a subset) is still unaddressed.
 
 ## 28. brink-studio standalone app uses Tauri
 

@@ -61,6 +61,39 @@
 //! file keeps whatever project it was first classified into until it is
 //! closed and reopened (or the session restarts). Only the steady-state
 //! extent (what a fresh workspace load computes) is guaranteed correct.
+//!
+//! ## Known non-compile-identical carve-out
+//!
+//! The wholly-unconfigured-workspace branch above is a **knowing exception**
+//! to "editor extent equals compile extent", not an instance of it. A real
+//! standalone compile of a rootless `.brink` file roots it at *that file's
+//! own directory* (`brink_driver::native_source_root`'s entry-relative
+//! fallback, `native_source_root_inner`) — a per-entry root, same as NF-3's
+//! single-file-project mode. The legacy default project this branch falls
+//! back to is rooted at the *first workspace folder* instead, which only
+//! agrees with the real per-entry root when the file happens to sit at that
+//! folder's top level. The divergence is deliberately accepted to preserve
+//! the pre-#1580 "open a folder of `.brink` files with no config yet"
+//! workflow (see the policy bullet above), not because it is actually
+//! compile-identical — a workspace-wide claim to that effect must carry this
+//! qualifier.
+//!
+//! It is also, by the same token, the one case where an unrelated
+//! `brink.toml` appearing *elsewhere* in the workspace changes a file's
+//! module identity without anything changing above that file's own
+//! directory — `classify`'s `None` arm routes to
+//! [`NativeProjectKey::Default`] only while `other_roots` is empty and
+//! `Orphan` (a different, per-entry root) the moment any other governing
+//! `brink.toml` exists. `docs/decision-log.md`'s NF-3 ruling (2026-07-22,
+//! lines ~1836-1842) calls exactly this shape of hazard out by name ("the
+//! same file resolved to `story::market::barter` or `story::barter`
+//! depending on whether a config happened to sit above it") and requires it
+//! be a *named, documented* mode rather than a silent fallback — which is
+//! what this paragraph and the policy bullet above are for. It remains an
+//! open question, not resolved by this issue, whether the wholly-unconfigured
+//! fallback should instead be `Orphan` unconditionally; that would restore
+//! full compile-identity but re-fragment the "no config yet" workflow this
+//! branch exists to preserve, which needs its own sign-off before changing.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -80,6 +113,11 @@ use super::ConfigLoadOutcome;
 /// source; `u32::MAX / STRIDE` (~4294) projects is far more than any real
 /// workspace will ever discover.
 const ID_STRIDE: u32 = 1_000_000;
+
+/// The most projects [`ID_STRIDE`] can address before two projects' `FileId`
+/// ranges would overlap (issue #1580 review finding) — see
+/// [`NativeProjects::ensure_index`]'s guard.
+const MAX_PROJECTS: usize = (u32::MAX / ID_STRIDE) as usize;
 
 /// Which native project a `.brink` file belongs to — see the module doc for
 /// the full policy.
@@ -119,9 +157,10 @@ impl NativeProjectKey {
 /// Everything native-project-extent classification needs, recomputed
 /// whenever `brink.toml` discovery might have changed (workspace load, or a
 /// watched-file `brink.toml` add/remove/edit) — see
-/// [`NativeProjects::resync_roots`].
+/// [`NativeProjects::compute_roots_context`] and
+/// [`NativeProjects::apply_roots_context`].
 #[derive(Debug, Clone, Default)]
-struct NativeRootsContext {
+pub(crate) struct NativeRootsContext {
     /// `native_source_root`'s own result, unchanged.
     default_root: Option<PathBuf>,
     /// Whether `default_root` came from an actually-discovered `brink.toml`
@@ -276,6 +315,16 @@ impl NativeProjects {
         this
     }
 
+    /// The [`NativeProjectKey::Default`] project's index — always present
+    /// ([`Self::new`] creates it eagerly), looked up rather than hard-coded
+    /// to `0` so this stays correct even if creation order ever changes.
+    fn default_index(&self) -> usize {
+        self.key_index
+            .get(&NativeProjectKey::Default)
+            .copied()
+            .unwrap_or(0)
+    }
+
     /// Get (creating if necessary) the project db for `key`, freshly
     /// registering its own native/ink root at creation time so the very
     /// first file admitted into it already mints compile-identical identity
@@ -285,8 +334,28 @@ impl NativeProjects {
         if let Some(&idx) = self.key_index.get(&key) {
             return idx;
         }
+        if self.entries.len() >= MAX_PROJECTS {
+            // One more project would saturate `id_base` into (or past) an
+            // earlier project's own `ID_STRIDE`-wide `FileId` range:
+            // `project_for_file`'s `id.0 / ID_STRIDE` would then misroute the
+            // new project's files onto whichever project already owns that
+            // range, and `ProjectDb::set_file`'s `next_id += 1` would overflow
+            // on the range's second file. `entries` is never pruned and
+            // `NativeProjectKey::Orphan` mints one project per unrooted file,
+            // so a pathological workspace can really reach this. Route into
+            // the default project instead — degraded (shared identity space
+            // with whatever else lives there) but never silently wrong.
+            tracing::warn!(
+                requested = ?key,
+                project_count = self.entries.len(),
+                "native project count reached ID_STRIDE capacity ({MAX_PROJECTS}); \
+                 routing into the default project instead of minting an \
+                 overlapping FileId range",
+            );
+            return self.default_index();
+        }
         let id_base = u32::try_from(self.entries.len())
-            .unwrap_or(u32::MAX / ID_STRIDE)
+            .unwrap_or(u32::MAX)
             .saturating_mul(ID_STRIDE);
         let mut db = brink_db::ProjectDb::with_id_base(id_base);
         let root = key
@@ -305,19 +374,41 @@ impl NativeProjects {
         idx
     }
 
-    /// Re-run `brink.toml` discovery (issue #1580) and re-sync every
-    /// already-known project's own root. See the module doc's "Known
-    /// limitation" for what this does *not* do (retroactively move an
-    /// already-admitted file to a newly discovered sibling project).
-    pub(super) fn resync_roots(&mut self, roots: &[PathBuf], outcome: &ConfigLoadOutcome) {
+    /// Run `brink.toml` discovery (issue #1580) and return the resulting
+    /// context, WITHOUT applying it to any project.
+    ///
+    /// This performs a full recursive filesystem walk
+    /// (`discover_other_native_roots`) and must be called *before* taking
+    /// the `NativeProjects` lock — see the review finding on
+    /// `Backend::register_native_root`, which calls this first and only
+    /// takes the lock to hand the already-computed result to
+    /// [`apply_roots_context`](Self::apply_roots_context). Doing the walk
+    /// under the lock would block every other LSP request (`goto_definition`,
+    /// `hover`, …) on a full workspace walk for as long as it takes the
+    /// filesystem to answer — and a batch of `brink.toml` watched-file
+    /// events calls this once per changed config, multiplying the stall.
+    pub(super) fn compute_roots_context(
+        roots: &[PathBuf],
+        outcome: &ConfigLoadOutcome,
+    ) -> NativeRootsContext {
         let default_root = super::native_source_root(roots, outcome);
         let default_is_configured = outcome.path.is_some();
         let other_roots = discover_other_native_roots(roots, default_root.as_deref());
-        self.ctx = NativeRootsContext {
+        NativeRootsContext {
             default_root,
             default_is_configured,
             other_roots,
-        };
+        }
+    }
+
+    /// Apply an already-computed [`NativeRootsContext`] (see
+    /// [`compute_roots_context`](Self::compute_roots_context)) and re-sync
+    /// every already-known project's own root. Touches no filesystem, so
+    /// it's cheap to run under the `NativeProjects` lock. See the module
+    /// doc's "Known limitation" for what this does *not* do (retroactively
+    /// move an already-admitted file to a newly discovered sibling project).
+    pub(super) fn apply_roots_context(&mut self, ctx: NativeRootsContext) {
+        self.ctx = ctx;
         for entry in &mut self.entries {
             let root = entry
                 .key
