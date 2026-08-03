@@ -26,7 +26,15 @@
 //!   *expression*, though, and one that
 //!   [`crate::symbols::project_manifest`] does record references from — a
 //!   consumer that needs those expressions too drives
-//!   [`visit_with_decl_initializers`] instead of [`visit`] (issue #1571);
+//!   [`visit_with_decl_initializers`] instead of [`visit`] (issue #1571).
+//!   A stateful visitor that needs to reset per-decl state (a diagnostic
+//!   anchor, "no enclosing knot/stitch locals here") implements
+//!   [`HirVisitor::enter_var_decl`]/[`HirVisitor::enter_const_decl`], which
+//!   fire immediately before each initializer's own expression tree (issue
+//!   #2098: this is what lets a pass built on `HirVisitor` get decl-
+//!   initializer coverage *by construction*, rather than hand-rolling a
+//!   second, parallel walk of the same shape it would otherwise have to
+//!   remember to keep in sync forever);
 //! - knot / stitch names and params beyond exposing the `Knot` / `Stitch` node
 //!   to the hooks;
 //! - **tag contents** — neither `Content.tags` nor `Choice.tags` are descended,
@@ -40,9 +48,9 @@
 //! walkers that never look at expressions pay nothing for the expression tree.
 
 use super::types::{
-    Block, BlockStmt, Choice, ChoiceSet, CondKind, Conditional, Content, ContentPart, DivertTarget,
-    ElseBranch, Expr, ForStmt, HirFile, IfStmt, Knot, LambdaBody, LogicBlock, Sequence, Stitch,
-    Stmt, StringPart, WhileStmt,
+    Block, BlockStmt, Choice, ChoiceSet, CondKind, Conditional, ConstDecl, Content, ContentPart,
+    DivertTarget, ElseBranch, Expr, ForStmt, HirFile, IfStmt, Knot, LambdaBody, LogicBlock,
+    Sequence, Stitch, Stmt, StringPart, VarDecl, WhileStmt,
 };
 
 /// Where a visited [`Content`] sits in the tree.
@@ -120,6 +128,24 @@ pub trait HirVisitor {
     /// [`HirVisitor::visit_exprs`] returns `true`.
     fn enter_expr(&mut self, _expr: &Expr) {}
 
+    /// A file-level `VAR` declaration's initializer is about to be walked —
+    /// fires immediately before [`visit_with_decl_initializers`] hands its
+    /// value expression to [`HirVisitor::enter_expr`]. Only
+    /// [`visit_with_decl_initializers`] calls this; [`visit`] never reaches a
+    /// declaration at all (see its module doc).
+    ///
+    /// A stateful visitor that tracks "am I inside a knot/stitch" (a
+    /// diagnostic-anchor fallback, an enclosing def's finalized locals, …)
+    /// needs this hook to reset that state to its file-scope value before the
+    /// initializer's expressions arrive — otherwise the walk's stateful
+    /// hooks would see whatever the *last* knot/stitch visited left behind,
+    /// not "there is no enclosing def here." A visitor with no such state
+    /// (most of them) never needs to implement this at all.
+    fn enter_var_decl(&mut self, _var: &VarDecl) {}
+
+    /// [`HirVisitor::enter_var_decl`]'s `CONST` twin.
+    fn enter_const_decl(&mut self, _const: &ConstDecl) {}
+
     /// Opt in to expression-tree descent. Defaults to `false` so structural
     /// walkers skip expressions entirely.
     fn visit_exprs(&self) -> bool {
@@ -164,9 +190,11 @@ pub fn visit(hir: &HirFile, v: &mut impl HirVisitor) {
 pub fn visit_with_decl_initializers(hir: &HirFile, v: &mut impl HirVisitor) {
     visit(hir, v);
     for var in &hir.variables {
+        v.enter_var_decl(var);
         walk_expr(&var.value, v);
     }
     for konst in &hir.constants {
+        v.enter_const_decl(konst);
         walk_expr(&konst.value, v);
     }
 }
@@ -492,6 +520,7 @@ mod tests {
     use super::*;
     use crate::FileId;
     use brink_syntax::parse;
+    use rowan::TextRange;
 
     #[derive(Default)]
     struct Counts {
@@ -648,5 +677,79 @@ mod tests {
             block_counts.sequences, 1,
             "promoted multiline block sequence: {block_hir:?}"
         );
+    }
+
+    /// Test-only probe for
+    /// [`decl_hooks_reset_a_stateful_visitors_anchor_before_each_initializer`]:
+    /// records whichever "current anchor" was live at each expression it
+    /// visits, mimicking the shape a real stateful pass (`coalesce`'s
+    /// `CoalesceVisitor::fallback`, e.g.) keeps.
+    struct Probe {
+        anchor: TextRange,
+        anchors_at_expr: Vec<TextRange>,
+    }
+    impl HirVisitor for Probe {
+        fn visit_exprs(&self) -> bool {
+            true
+        }
+        fn enter_knot(&mut self, knot: &Knot) {
+            self.anchor = knot.ptr.text_range();
+        }
+        fn enter_var_decl(&mut self, var: &VarDecl) {
+            self.anchor = var.ptr.text_range();
+        }
+        fn enter_const_decl(&mut self, konst: &ConstDecl) {
+            self.anchor = konst.ptr.text_range();
+        }
+        fn enter_expr(&mut self, _expr: &Expr) {
+            self.anchors_at_expr.push(self.anchor);
+        }
+    }
+
+    /// Issue #2098: [`HirVisitor::enter_var_decl`]/[`HirVisitor::enter_const_decl`]
+    /// are what let a stateful visitor (one that tracks "what's the nearest
+    /// diagnostic anchor" or "what are the enclosing def's locals") reset
+    /// that state before a declaration's own initializer arrives, instead of
+    /// inheriting whatever the *last* knot/stitch the walk visited left
+    /// behind. This is the structural property the whole hand-rolled
+    /// decl-initializer-walk family exists to get "for free": a visitor
+    /// that implements these two hooks needs no second, hand-written walk
+    /// of `hir.variables`/`hir.constants` at all — [`visit_with_decl_initializers`]
+    /// drives it through the exact same `enter_expr` path the block tree
+    /// uses, correctly reset every time.
+    #[test]
+    fn decl_hooks_reset_a_stateful_visitors_anchor_before_each_initializer() {
+        // The knot comes *before* the declarations in source, so
+        // `visit_with_decl_initializers`'s walk (knots/stitches, then
+        // decls) visits it first — if `enter_var_decl`/`enter_const_decl`
+        // didn't fire, the anchor recorded for `VAR c`/`CONST d`'s own
+        // initializer would wrongly still be the knot's.
+        let hir = lower_src("=== greet ===\nHello\n\nVAR c = 1\nCONST d = 2\n");
+        assert_eq!(hir.variables.len(), 1);
+        assert_eq!(hir.constants.len(), 1);
+
+        let mut p = Probe {
+            anchor: TextRange::new(0.into(), 0.into()),
+            anchors_at_expr: Vec::new(),
+        };
+        visit_with_decl_initializers(&hir, &mut p);
+
+        assert_eq!(
+            p.anchors_at_expr.len(),
+            2,
+            "the VAR value `1` and the CONST value `2`, no more: {:?}",
+            p.anchors_at_expr
+        );
+        let knot_range = hir.knots[0].ptr.text_range();
+        assert_ne!(
+            p.anchors_at_expr[0], knot_range,
+            "the VAR initializer must not see the knot's leftover anchor"
+        );
+        assert_eq!(p.anchors_at_expr[0], hir.variables[0].ptr.text_range());
+        assert_ne!(
+            p.anchors_at_expr[1], knot_range,
+            "the CONST initializer must not see the knot's leftover anchor"
+        );
+        assert_eq!(p.anchors_at_expr[1], hir.constants[0].ptr.text_range());
     }
 }
