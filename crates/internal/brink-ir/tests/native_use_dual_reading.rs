@@ -11,15 +11,21 @@
 //! existing import-coverage rules" (the #1592 ruling's own words).
 //!
 //! **Why the defining side is `.ink`, again.** Same reason as
-//! `native_use_import_scope.rs` (issue #1581): native has no working
-//! visibility marker yet (`#1582`, open/needs-design) — every native
-//! declaration's `visibility` stays `None`, and a *declared* native module
-//! defaults `Private`, which blocks any cross-module reference outright
-//! (`E087`) before dual-reading is even relevant. `#@public` on an `.ink`
-//! file is the only "public in a declared module" spelling the compiler has
-//! today, so that is what proves the resolution mechanics; it does **not**
-//! prove an all-native project resolves end-to-end — that provably still
-//! needs #1582, and is called out rather than claimed here.
+//! `native_use_import_scope.rs` (issue #1581): at the time this fixture was
+//! written, native had no working visibility marker of its own — every
+//! native declaration's `visibility` stayed `None`, and a *declared* native
+//! module defaults `Private`, which blocks any cross-module reference
+//! outright (`E087`) before dual-reading is even relevant. `#@public` on an
+//! `.ink` file was the only "public in a declared module" spelling the
+//! compiler had, so that is what proves the resolution mechanics. **That
+//! gap has since closed** (issue #1582, RULED 2026-08-03: native gained its
+//! own `pub` keyword — see
+//! `crates/internal/brink-ir/tests/native_pub_visibility.rs` for the
+//! fully-native regression). The ink-defining-module shape here is kept
+//! anyway: it is also exercising dual-reading's module-vs-item resolution
+//! (a `use` naming a *module*, not an item), which is orthogonal to which
+//! dialect defines the module and not itself proven by the `#1582`
+//! fixture.
 
 use std::collections::BTreeMap;
 

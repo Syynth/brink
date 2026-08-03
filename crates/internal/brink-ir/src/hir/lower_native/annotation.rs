@@ -92,10 +92,14 @@
 //! on `E111`, which is the reserved-namespace rule (§1.1) working as
 //! designed: an unknown annotation is loud, never a silent no-op.
 //!
-//! `is_local` and per-declaration `visibility` stay unwired for a different
-//! reason — they are *keyword* channels on the native surface (no
-//! `KW_LOCAL`/`KW_PUB` token exists yet), not annotation names, so there is
-//! nothing for this module to read.
+//! `is_local` stays unwired for a different reason — it is a *keyword*
+//! channel on the native surface (no `KW_LOCAL` token exists yet), not an
+//! annotation name, so there is nothing for this module to read.
+//! Per-declaration `visibility` is no longer in that category: issue #1582
+//! (RULED 2026-08-03) gave native its own `pub` keyword, wired in
+//! `decl::visibility_mark`/`container::lower_top_level_container` — also a
+//! keyword channel, and also not something this module reads, but it is
+//! not unwired anymore.
 //!
 //! # Placement
 //!
