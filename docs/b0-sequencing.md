@@ -372,8 +372,9 @@ path.
   and creates an ordinary T1c fn value over it (`PushFnRef` with no
   captures, `MakeClosure` with them), retiring the `E052` fence. Still
   open: the lifted function's **effect row** — `Ty::Fn` carries one since
-  #1680 step 3, but it names creation targets by `DefinitionId` and a
-  lambda has none until LIR mints it (#1727).
+  #1680 step 3, but it names creation targets by `DefinitionId`, and while
+  a lambda now has one, minted at HIR time (#1727), it still has no index
+  symbol for the SCC solve to key a row against (#1770).
 - **Enums** — ruled (§13.1) but no HIR node exists; the contract reserves
   the `HirFile.enums` channel; the node + exhaustive `match` land with the
   enum feature, not B0.

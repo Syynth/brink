@@ -295,10 +295,12 @@ pub struct EffectAtoms {
     /// "calls `g`" are different facts: spec §7's token table and §8 rung 1's
     /// reachability slicing both need the creation sites specifically.
     ///
-    /// **Lambda literals are out of scope** (issue #1727): their
-    /// `DefinitionId` is minted during LIR lowering
-    /// (`lir::lower::lambda::alloc_lambda_address`), downstream of HIR
-    /// inference, so there is no index symbol to record here at all.
+    /// **Lambda literals are still out of scope**: a lambda's
+    /// `DefinitionId` is now minted at HIR time (`hir::stamp_container_ids`,
+    /// issue #1727 — LIR lowering only reads it, no longer mints it), but a
+    /// lambda literal has no index symbol / `DefKey` of its own, so there is
+    /// still nothing here to record it against. Joining it into the SCC
+    /// solve is #1770's job, not this one's.
     pub creates_fn_values: BTreeSet<DefinitionId>,
     /// This body calls through a function value whose reaching values were
     /// not all created in-project (or otherwise escapes the static call

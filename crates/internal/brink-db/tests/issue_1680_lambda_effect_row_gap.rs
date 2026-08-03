@@ -10,18 +10,22 @@
 //! It did not block #1680's own analyzer-side work (rows on `Ty::Fn`, the
 //! unifier row join, §6.1 row-polymorphism), all of which has since
 //! landed — a lambda still gets the *unknown* row because a `FnRow` names
-//! creation targets by `DefinitionId` and a lambda has none (#1727). It is the same discipline
-//! #1685 (flipped by #1709) used for its `E052` fence, and it must
-//! **flip** when the row table is made to reach lifted lambdas.
+//! creation targets by `DefinitionId`, and while #1727 closed the identity
+//! half of the gap (a lambda's id is now minted once, at HIR time, and is
+//! stable/reproducible — see `hir::stamp_container_ids`,
+//! `hir::LambdaExpr::container_id`), a lambda literal still has no index
+//! symbol / `DefKey` for the SCC solve to key a row against — that half is
+//! #1770's job. It is the same discipline #1685 (flipped by #1709) used for
+//! its `E052` fence, and it must **flip** when the row table is made to
+//! reach lifted lambdas.
 //!
 //! ## Why the row is missing
 //!
 //! The obstacle is the keyspace, not the order the id and the rows are
 //! minted in — by the time `populate_effect_rows` runs, the lambda's
-//! `DefinitionId` already exists (`story_data_query` orders
-//! `lir_in_closure_query` → `brink_codegen_inkb::emit` →
-//! `populate_effect_rows`, so LIR lowering, which mints the id, has already
-//! completed):
+//! `DefinitionId` already exists (post-#1727, `hir::stamp_container_ids`
+//! mints it before LIR lowering ever runs; pre-#1727 it existed by this
+//! point too, just derived independently by LIR itself):
 //!
 //! - `populate_effect_rows` (`brink-db/src/queries/mod.rs`) walks
 //!   `inferable_defs_query`, which is
@@ -30,11 +34,12 @@
 //!   (`brink-analyzer/src/infer/mod.rs`). A lambda is an inline
 //!   `hir::Expr::Lambda`, never an indexed knot/stitch symbol, so no
 //!   iteration of that set can ever yield one.
-//! - The lifted function's `DefinitionId` is minted in **LIR** lowering, by
-//!   `IdAllocator::alloc_lambda_address` (`brink-ir/src/lir/lower/context.rs`),
-//!   but a lambda has no index symbol, so it has no `DefKey`/SCC membership
-//!   and `inferable_defs_from_index` was never going to enumerate it
-//!   regardless of when the id is minted.
+//! - The lifted function's `DefinitionId` is minted at HIR time
+//!   (`hir::stamp_container_ids`, `brink-ir/src/hir/stamp.rs`) and read, not
+//!   re-derived, by LIR lowering (`lir::lower::lambda::lower_lambda`) — but
+//!   a lambda still has no index symbol, so it has no `DefKey`/SCC
+//!   membership and `inferable_defs_from_index` still can't enumerate it,
+//!   regardless of when or where the id itself is minted.
 //!
 //! So the id that ends up in a live `VAL_FN_REF`/`VAL_CLOSURE` token is a
 //! `DefinitionTag::Address` id that the row table was never given a chance

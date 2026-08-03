@@ -85,6 +85,22 @@ pub fn stamp_container_ids(
             &mut seq,
         );
 
+        // File-scope `VAR`/`CONST` initializers (issue #1727) — these are
+        // flat, non-recursive `HirFile` vecs, not part of `root_content`'s
+        // block tree, so `stamp_block` above never reaches them. A default
+        // that is itself a lambda literal (issue #1774,
+        // `lir::lower::decls::eval_const_lambda`) is lowered with an
+        // **empty** `ctx.scope_path` qualified by the same file's
+        // `root_scope` prefix (`GlobalLambdaCtx`'s `set_path_prefix` call in
+        // `collect_globals`) — exactly `root_scope` itself, the same
+        // qualifier root content's own anonymous containers use.
+        for cst in &mut hir_file.constants {
+            stamp_lambdas_in_expr(&mut cst.value, &root_scope, "", index);
+        }
+        for var in &mut hir_file.variables {
+            stamp_lambdas_in_expr(&mut var.value, &root_scope, "", index);
+        }
+
         for knot in &mut hir_file.knots {
             let knot_path = &knot.name.text;
             let mut seq = 0;
@@ -179,6 +195,32 @@ fn stamp_stmt(
                 choice.container_id = Some(choice_id);
                 *choice_counter += 1;
 
+                // A lambda in the choice's own condition/content (issue
+                // #1727) is lowered *before* `ctx.scope_path` narrows to the
+                // choice's own scope (`lir::lower::mod.rs`'s
+                // `lower_choice`: the block scope opens, then
+                // condition/content lower, and only the *body* lowering
+                // below gets the narrowed `.c{n}` scope) — so these stamp
+                // at the parent `scope_path`, not `child_scope`.
+                if let Some(cond) = &mut choice.condition {
+                    stamp_lambdas_in_expr(cond, scope_path, label_scope, index);
+                }
+                for c in [
+                    &mut choice.start_content,
+                    &mut choice.bracket_content,
+                    &mut choice.inner_content,
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    stamp_lambdas_in_content(c, scope_path, label_scope, index);
+                }
+                for tag in &mut choice.tags {
+                    for part in &mut tag.parts {
+                        stamp_lambdas_in_content_part(part, scope_path, label_scope, index);
+                    }
+                }
+
                 // Recurse into choice body with narrowed scope.
                 let child_scope = format!("{scope_path}.c{}", *choice_counter - 1);
                 let mut child_choice_counter = 0;
@@ -243,6 +285,16 @@ fn stamp_stmt(
             *seq_counter += 1;
             let cond_scope = format!("b-{cond_idx}");
 
+            // The switch expression (`{expr: - val: …}`) and each branch's
+            // own condition lower *before* `ctx.scope_path` narrows to that
+            // branch (`lir::lower::mod.rs`'s `Stmt::Conditional` arm: the
+            // condition/`as`-binding lowers, then `ctx.scope_path =
+            // branch_scope` is set) — issue #1727 stamps a lambda there at
+            // the parent `scope_path`, matching that order.
+            if let hir::CondKind::Switch(e) = &mut cond.kind {
+                stamp_lambdas_in_expr(e, scope_path, label_scope, index);
+            }
+
             for (branch_idx, branch) in cond.branches.iter_mut().enumerate() {
                 let branch_scope = if scope_path.is_empty() {
                     format!("{cond_scope}.{branch_idx}")
@@ -251,6 +303,10 @@ fn stamp_stmt(
                 };
                 let branch_id = alloc_address(&branch_scope);
                 branch.container_id = Some(branch_id);
+
+                if let Some(bc) = &mut branch.condition {
+                    stamp_lambdas_in_expr(bc, scope_path, label_scope, index);
+                }
 
                 // Recurse into branch body — shares parent choice/gather counters.
                 for s in &mut branch.body.stmts {
@@ -306,26 +362,368 @@ fn stamp_stmt(
             }
         }
 
-        // These statement types never produce containers.
-        // T1b `~ { … }` blocks (docs/t1b-surface-spec.md §2): `BlockStmt` is
-        // a closed set with no variant for any weave concept, so nothing
-        // inside a logic block can ever need a synthetic LIR container —
-        // the seam rule enforces this by construction, not by a check here.
-        hir::Stmt::Content(_)
-        | hir::Stmt::Divert(_)
-        | hir::Stmt::TunnelCall(_)
-        | hir::Stmt::ThreadStart(_)
-        | hir::Stmt::TempDecl(_)
-        | hir::Stmt::Assignment(_)
-        | hir::Stmt::Return(_)
-        | hir::Stmt::ExprStmt(_)
-        | hir::Stmt::EndOfLine
-        | hir::Stmt::LogicBlock(_)
+        // None of these statement types ever produce a *structural*
+        // container (choice/gather/branch/sequence-wrapper) — but every one
+        // of them can carry an embedded `Expr::Lambda` (issue #1727), so
+        // each still needs a scan at the current `scope_path`. T1b `~ { … }`
+        // blocks (docs/t1b-surface-spec.md §2): `BlockStmt` is a closed set
+        // with no variant for any *weave* concept, so nothing inside a
+        // logic block can ever need a synthetic LIR container — the seam
+        // rule enforces that by construction, not by a check here — but a
+        // logic block's statements are exactly where a `let f = |x| …;`
+        // most commonly lives, so `LogicBlock` gets the fullest walk below.
+        hir::Stmt::Content(content) => {
+            stamp_lambdas_in_content(content, scope_path, label_scope, index);
+        }
+        hir::Stmt::Divert(d) => {
+            for a in &mut d.target.args {
+                stamp_lambdas_in_expr(a, scope_path, label_scope, index);
+            }
+        }
+        hir::Stmt::TunnelCall(t) => {
+            for target in &mut t.targets {
+                for a in &mut target.args {
+                    stamp_lambdas_in_expr(a, scope_path, label_scope, index);
+                }
+            }
+        }
+        hir::Stmt::ThreadStart(t) => {
+            for a in &mut t.target.args {
+                stamp_lambdas_in_expr(a, scope_path, label_scope, index);
+            }
+        }
+        hir::Stmt::TempDecl(t) => {
+            if let Some(e) = &mut t.value {
+                stamp_lambdas_in_expr(e, scope_path, label_scope, index);
+            }
+        }
+        hir::Stmt::Assignment(a) => {
+            stamp_lambdas_in_expr(&mut a.target, scope_path, label_scope, index);
+            stamp_lambdas_in_expr(&mut a.value, scope_path, label_scope, index);
+        }
+        hir::Stmt::Return(r) => {
+            if let Some(e) = &mut r.value {
+                stamp_lambdas_in_expr(e, scope_path, label_scope, index);
+            }
+            for a in &mut r.onwards_args {
+                stamp_lambdas_in_expr(a, scope_path, label_scope, index);
+            }
+        }
+        hir::Stmt::ExprStmt(e) => stamp_lambdas_in_expr(e, scope_path, label_scope, index),
+        hir::Stmt::EndOfLine => {}
+        hir::Stmt::LogicBlock(lb) => {
+            stamp_lambdas_in_block_stmts(&mut lb.stmts, scope_path, label_scope, index);
+        }
         // `await` (docs/flow-suspension-spec.md §3): the resume-container
         // synthesis (§3, a synthetic container id + tunnel-return stack) is
         // FS-2's later step, gated behind the FS-3 runtime; the construct is
-        // fenced at LIR lowering (E052) here and stamps no container yet.
-        | hir::Stmt::Await(_) => {}
+        // fenced at LIR lowering (E052) here and stamps no container yet —
+        // but its condition expression is still ordinary HIR that could
+        // embed a lambda, so it still gets scanned.
+        hir::Stmt::Await(a) => {
+            if let Some(c) = &mut a.condition {
+                stamp_lambdas_in_expr(c, scope_path, label_scope, index);
+            }
+        }
+    }
+}
+
+// ─── Lambda stamping (issue #1727) ─────────────────────────────────────
+//
+// A lifted lambda's `DefinitionId` used to be minted independently in LIR
+// lowering (`IdAllocator::alloc_lambda_address`), hashing a path built from
+// the *live*, mutated `ctx.scope_path` — the same value the structural
+// stamping above mirrors, one statement at a time, as it descends. That
+// made a lambda nested inside a `Conditional`/`Sequence`/`ChoiceSet` body
+// unreproducible from a fresh HIR-time walk, because nothing walked
+// *expressions* at all.
+//
+// RULED 2026-08-02 (`docs/decision-log.md`): invert the direction. HIR
+// mints the id here — using the exact same `scope_path` values the
+// structural stamping above already tracks for exactly this reason — and
+// `lir::lower::lambda::lower_lambda` only *consumes* `LambdaExpr::
+// container_id`, never re-derives it. The functions below extend every
+// `stamp_stmt`/`stamp_block` recursion site with an expression walk
+// (mirroring `lir::lower::lambda::FreeScan`'s descent, minus binder
+// tracking — a lambda's identity depends only on structural scope, never on
+// which names are in scope) that finds and stamps every `Expr::Lambda`,
+// including ones nested inside another lambda's own body.
+
+/// Recursively stamp every `Expr::Lambda` reachable from `expr` — including
+/// a lambda nested inside another lambda's body — with a content-derived
+/// container id: `{scope_path}.#lambda-{source start offset}`, the exact
+/// scheme `IdAllocator::alloc_lambda_address` used to derive independently.
+fn stamp_lambdas_in_expr(
+    expr: &mut hir::Expr,
+    scope_path: &str,
+    label_scope: &str,
+    index: &SymbolIndex,
+) {
+    match expr {
+        hir::Expr::Lambda(l) => stamp_lambda(l, scope_path, label_scope, index),
+        hir::Expr::Prefix(_, inner) | hir::Expr::Postfix(inner, _) => {
+            stamp_lambdas_in_expr(inner, scope_path, label_scope, index);
+        }
+        hir::Expr::Infix(ie) => {
+            stamp_lambdas_in_expr(&mut ie.lhs, scope_path, label_scope, index);
+            stamp_lambdas_in_expr(&mut ie.rhs, scope_path, label_scope, index);
+        }
+        hir::Expr::Call(_, args) => {
+            for a in args {
+                stamp_lambdas_in_expr(a, scope_path, label_scope, index);
+            }
+        }
+        hir::Expr::ArrayLiteral(a) => {
+            for e in &mut a.elements {
+                stamp_lambdas_in_expr(e, scope_path, label_scope, index);
+            }
+        }
+        hir::Expr::MapLiteral(m) => {
+            for (k, v) in &mut m.entries {
+                stamp_lambdas_in_expr(k, scope_path, label_scope, index);
+                stamp_lambdas_in_expr(v, scope_path, label_scope, index);
+            }
+        }
+        hir::Expr::Index(idx) => {
+            stamp_lambdas_in_expr(&mut idx.base, scope_path, label_scope, index);
+            stamp_lambdas_in_expr(&mut idx.index, scope_path, label_scope, index);
+        }
+        hir::Expr::Range(r) => {
+            stamp_lambdas_in_expr(&mut r.start, scope_path, label_scope, index);
+            stamp_lambdas_in_expr(&mut r.end, scope_path, label_scope, index);
+        }
+        hir::Expr::StructLiteral(sl) => {
+            for (_, v) in &mut sl.fields {
+                stamp_lambdas_in_expr(v, scope_path, label_scope, index);
+            }
+        }
+        hir::Expr::FieldAccess(fa) => {
+            stamp_lambdas_in_expr(&mut fa.base, scope_path, label_scope, index);
+        }
+        hir::Expr::FnLiteral(fl) => {
+            for a in &mut fl.args {
+                stamp_lambdas_in_expr(a, scope_path, label_scope, index);
+            }
+        }
+        hir::Expr::RefArg(ra) => {
+            stamp_lambdas_in_expr(&mut ra.operand, scope_path, label_scope, index);
+        }
+        hir::Expr::String(s) => {
+            for part in &mut s.parts {
+                if let hir::StringPart::Interpolation(inner) = part {
+                    stamp_lambdas_in_expr(inner, scope_path, label_scope, index);
+                }
+            }
+        }
+        // Block capture (issue #1839): a captured run's statements keep
+        // their own `Stmt::Content`/`EndOfLine` shape and lower through the
+        // ordinary per-statement path at the *current* `ctx.scope_path`,
+        // unchanged (`lir::lower::expr`'s `Fragment` arm reuses `ctx`
+        // as-is, never pushing a new scope) — so a lambda inside one stamps
+        // at this same `scope_path`, with fresh local counters exactly like
+        // a choice body gets (this fragment is its own isolated statement
+        // list, not sharing the enclosing frame's structural counters).
+        hir::Expr::Fragment(stmts) => {
+            let mut seq = 0;
+            let mut cc = 0;
+            let mut gc = 0;
+            for s in stmts {
+                stamp_stmt(
+                    s,
+                    scope_path,
+                    label_scope,
+                    index,
+                    &mut seq,
+                    &mut cc,
+                    &mut gc,
+                );
+            }
+        }
+        hir::Expr::Path(_)
+        | hir::Expr::DivertTarget(_)
+        | hir::Expr::ListLiteral(_)
+        | hir::Expr::Int(_)
+        | hir::Expr::Float(_)
+        | hir::Expr::Bool(_)
+        | hir::Expr::Null => {}
+    }
+}
+
+/// Stamp `l.container_id` from its own source position, then recurse into
+/// its body to stamp any lambda nested inside it. A nested lambda's own
+/// scope path is the qualified path just minted for `l` — matching
+/// `lir::lower::lambda::lower_lambda`'s child `LowerCtx::scope_path`, which
+/// is set to exactly that string before lowering the outer lambda's body.
+fn stamp_lambda(l: &mut hir::LambdaExpr, scope_path: &str, label_scope: &str, index: &SymbolIndex) {
+    let offset = u32::from(l.ptr.text_range().start());
+    let own_path = qualify(scope_path, &format!("#lambda-{offset}"));
+    l.container_id = Some(alloc_address(&own_path));
+
+    match &mut l.body {
+        hir::LambdaBody::Expr(e) => stamp_lambdas_in_expr(e, &own_path, label_scope, index),
+        hir::LambdaBody::Block { stmts, tail } => {
+            stamp_lambdas_in_block_stmts(stmts, &own_path, label_scope, index);
+            if let Some(t) = tail {
+                stamp_lambdas_in_expr(t, &own_path, label_scope, index);
+            }
+        }
+    }
+}
+
+/// Walk a T1b `~ { … }` block-statement list for embedded lambdas.
+/// `BlockStmt` never mutates `ctx.scope_path` in LIR lowering (its `If`/
+/// `While`/`For` bodies are lexical scopes only, never LIR containers — see
+/// the seam rule at `hir::Stmt::LogicBlock`'s doc), so every statement here
+/// stamps at the *same* `scope_path` the caller passed in.
+fn stamp_lambdas_in_block_stmts(
+    stmts: &mut [hir::BlockStmt],
+    scope_path: &str,
+    label_scope: &str,
+    index: &SymbolIndex,
+) {
+    for s in stmts {
+        stamp_lambdas_in_block_stmt(s, scope_path, label_scope, index);
+    }
+}
+
+fn stamp_lambdas_in_block_stmt(
+    stmt: &mut hir::BlockStmt,
+    scope_path: &str,
+    label_scope: &str,
+    index: &SymbolIndex,
+) {
+    match stmt {
+        hir::BlockStmt::TempDecl(t) => {
+            if let Some(e) = &mut t.value {
+                stamp_lambdas_in_expr(e, scope_path, label_scope, index);
+            }
+        }
+        hir::BlockStmt::Assignment(a) => {
+            stamp_lambdas_in_expr(&mut a.target, scope_path, label_scope, index);
+            stamp_lambdas_in_expr(&mut a.value, scope_path, label_scope, index);
+        }
+        hir::BlockStmt::Return(r) => {
+            if let Some(e) = &mut r.value {
+                stamp_lambdas_in_expr(e, scope_path, label_scope, index);
+            }
+            for a in &mut r.onwards_args {
+                stamp_lambdas_in_expr(a, scope_path, label_scope, index);
+            }
+        }
+        hir::BlockStmt::If(i) => stamp_lambdas_in_if_stmt(i, scope_path, label_scope, index),
+        hir::BlockStmt::While(w) => {
+            stamp_lambdas_in_expr(&mut w.condition, scope_path, label_scope, index);
+            stamp_lambdas_in_block_stmts(&mut w.body, scope_path, label_scope, index);
+        }
+        hir::BlockStmt::For(f) => {
+            stamp_lambdas_in_expr(&mut f.iterable, scope_path, label_scope, index);
+            stamp_lambdas_in_block_stmts(&mut f.body, scope_path, label_scope, index);
+        }
+        hir::BlockStmt::ExprStmt(e) => stamp_lambdas_in_expr(e, scope_path, label_scope, index),
+        hir::BlockStmt::Await(a) => {
+            if let Some(c) = &mut a.condition {
+                stamp_lambdas_in_expr(c, scope_path, label_scope, index);
+            }
+        }
+        hir::BlockStmt::Break(_) | hir::BlockStmt::Continue(_) => {}
+    }
+}
+
+fn stamp_lambdas_in_if_stmt(
+    i: &mut hir::IfStmt,
+    scope_path: &str,
+    label_scope: &str,
+    index: &SymbolIndex,
+) {
+    stamp_lambdas_in_expr(&mut i.condition, scope_path, label_scope, index);
+    stamp_lambdas_in_block_stmts(&mut i.body, scope_path, label_scope, index);
+    match &mut i.else_branch {
+        Some(hir::ElseBranch::ElseIf(nested)) => {
+            stamp_lambdas_in_if_stmt(nested, scope_path, label_scope, index);
+        }
+        Some(hir::ElseBranch::Else(stmts)) => {
+            stamp_lambdas_in_block_stmts(stmts, scope_path, label_scope, index);
+        }
+        None => {}
+    }
+}
+
+/// Walk a `Content` line's interpolations/inline conditionals/inline
+/// sequences/spans and tags for embedded lambdas.
+fn stamp_lambdas_in_content(
+    content: &mut hir::Content,
+    scope_path: &str,
+    label_scope: &str,
+    index: &SymbolIndex,
+) {
+    for part in &mut content.parts {
+        stamp_lambdas_in_content_part(part, scope_path, label_scope, index);
+    }
+    for tag in &mut content.tags {
+        for part in &mut tag.parts {
+            stamp_lambdas_in_content_part(part, scope_path, label_scope, index);
+        }
+    }
+}
+
+/// A content-embedded inline conditional/sequence (`ContentPart::
+/// InlineConditional`/`InlineSequence`) leaves `ctx.scope_path` unchanged in
+/// LIR lowering (`lir::lower::content::lower_content_part` never pushes a
+/// scope for these, unlike the weave-statement `Stmt::Conditional`/
+/// `Stmt::Sequence` forms that reuse the same `hir::Conditional`/`Sequence`
+/// structs) — so their branch bodies stamp at the *same* `scope_path`,
+/// with fresh local structural counters since these bodies are not part of
+/// the enclosing frame's own folded weave.
+fn stamp_lambdas_in_content_part(
+    part: &mut hir::ContentPart,
+    scope_path: &str,
+    label_scope: &str,
+    index: &SymbolIndex,
+) {
+    match part {
+        hir::ContentPart::Interpolation(e) => {
+            stamp_lambdas_in_expr(e, scope_path, label_scope, index);
+        }
+        hir::ContentPart::InlineConditional(cond) => {
+            if let hir::CondKind::Switch(e) = &mut cond.kind {
+                stamp_lambdas_in_expr(e, scope_path, label_scope, index);
+            }
+            for b in &mut cond.branches {
+                if let Some(c) = &mut b.condition {
+                    stamp_lambdas_in_expr(c, scope_path, label_scope, index);
+                }
+                let mut seq = 0;
+                let mut cc = 0;
+                let mut gc = 0;
+                for s in &mut b.body.stmts {
+                    stamp_stmt(
+                        s,
+                        scope_path,
+                        label_scope,
+                        index,
+                        &mut seq,
+                        &mut cc,
+                        &mut gc,
+                    );
+                }
+            }
+        }
+        hir::ContentPart::InlineSequence(seq) => {
+            for b in &mut seq.branches {
+                let mut sc = 0;
+                let mut cc = 0;
+                let mut gc = 0;
+                for s in &mut b.body.stmts {
+                    stamp_stmt(s, scope_path, label_scope, index, &mut sc, &mut cc, &mut gc);
+                }
+            }
+        }
+        hir::ContentPart::Span(span) => {
+            for child in &mut span.children {
+                stamp_lambdas_in_content_part(child, scope_path, label_scope, index);
+            }
+        }
+        hir::ContentPart::Text(_) | hir::ContentPart::Glue | hir::ContentPart::Spring => {}
     }
 }
 
