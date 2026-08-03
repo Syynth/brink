@@ -1187,12 +1187,13 @@ pub struct Choice {
 every marshal leg (`brink-web`, `bevy-brink`, the CLI TUI, `brink-ide`).
 Scoped narrower than this section's full worked shape, deliberately:
 `OutputLine` today is `{ text: String, tags: Vec<String>, block_id:
-BlockId }` — flat text, no `element`/`parts` decomposition yet. That's
-the information-identical schema-less-ink degenerate case this
-section's own "superset check" calls out; the `element`/markup-`Part`
-structured surface is #1683's job once the element/markup layer lands,
-riding the same `Step`/`OutputLine` contract this issue created rather
-than reopening it. `BlockId` counts uninterrupted runs (bumped on a
+BlockId, element: Element }` — flat text, no `parts` decomposition yet
+(see §7.2 below for `element`'s own scoping). That's the
+information-identical schema-less-ink degenerate case this section's
+own "superset check" calls out; the markup-`Part` structured surface
+is #1683's job once the element/markup layer lands, riding the same
+`Step`/`OutputLine` contract this issue created rather than reopening
+it. `BlockId` counts uninterrupted runs (bumped on a
 choice selection, a `Done` resume, and a host-directed jump); the
 richer attachment-derived assignment described in §3.7 is deferred to
 that same follow-up. The harness-side attribution safeguard

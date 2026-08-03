@@ -64,9 +64,10 @@ pub struct Element {
 }
 
 impl Element {
-    /// The degenerate kind every line reports today — "one implicit
-    /// narrative element for the whole story" (§3.7's own phrase, reused
-    /// here as the literal sentinel string).
+    /// The degenerate kind every line reports today — `docs/prose-dialect-spec.md`
+    /// §7's own superset check: "schema-less ink → `element: narrative,
+    /// parts: [Text]`" (§1 puts it the same way: "the *degenerate case* —
+    /// an untyped narrative element with no spans").
     pub const NARRATIVE: &'static str = "narrative";
 
     /// The always-correct default: no handler classified this line.

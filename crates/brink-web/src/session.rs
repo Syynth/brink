@@ -810,6 +810,12 @@ mod websession_wasm_tests {
         assert_eq!(v["line"]["type"], "text", "{json}");
         assert_eq!(v["line"]["text"], "Hello world.\n", "{json}");
         assert!(v["line"]["block_id"].is_u64(), "{json}");
+        // `element` (issue #1683): every line reports the degenerate
+        // narrative case with an empty data map — guards the marshal leg
+        // that a deleted `element: Some(ElementJs { .. })` arm in
+        // `value_marshal.rs::line_to_js` would otherwise leave untested.
+        assert_eq!(v["line"]["element"]["kind"], "narrative", "{json}");
+        assert_eq!(v["line"]["element"]["data"], serde_json::json!({}), "{json}");
 
         let json = s.advance().expect("advance succeeds");
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -817,6 +823,7 @@ mod websession_wasm_tests {
         assert_eq!(v["line"]["type"], "end", "{json}");
         assert_eq!(v["line"]["text"], "", "{json}");
         assert!(v["line"]["block_id"].is_null(), "{json}");
+        assert!(v["line"]["element"].is_null(), "{json}");
     }
 
     #[wasm_bindgen_test]
