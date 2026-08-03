@@ -377,12 +377,14 @@ The heaviest night on the tab: 7 coins — the ledger says some(7).
 > rebinds every iteration in `while`. For v1 the binding must be the
 > **entire** condition — composing it with `&&`/`||` is an error (`E145`);
 > let-chains can land later, additively. An `as` in a *choice guard* is
-> ruled (capture-at-presentation, by value) but not yet implemented — it
-> rides the `.inkb` v6 Choice record, and until then it is diagnosed as
-> not-yet-supported (`E146`). Nothing in *this* chapter changes either
-> way — these examples are brink-dialect, where `or` stays ink's boolean
-> or and there is no `as` binding at all; the chapter's own respell to the
-> native surface is separate, later work.
+> ruled (capture-at-presentation, by value) and now implemented too — the
+> guard's binding captures into the same frame slot the pending choice's
+> thread-fork snapshot already carries across selection, so the picked
+> body sees the value the player saw (`E146`, "not yet supported", is
+> retired). Nothing in *this* chapter changes either way — these
+> examples are brink-dialect, where `or` stays ink's boolean or and there
+> is no `as` binding at all; the chapter's own respell to the native
+> surface is separate, later work.
 
 ## How Option prints
 
@@ -501,9 +503,12 @@ value in `==`/arithmetic is a type fault; and the malformed-question faults
   `{if}` spelling" (immutable, typed `T` from `Option<T>`, scoped to the
   success arm, rebinding per iteration in `while`, whole-condition-only
   for v1). Landed on the native `.brink` surface in B1b (issue #1475).
-  Choice-guard `as` is ruled separately the same day
+  Choice-guard `as` was ruled separately the same day
   ("Choice-guard `as` un-deferred: capture-at-presentation, by-value
-  (COW), rides v6") and is deliberately **not** implemented yet.
+  (COW), rides v6") and now lands too (issue #1508): the guard's binding
+  captures into the same frame slot the pending choice's thread-fork
+  snapshot already carries across selection — no new wire-format field
+  needed (`E146`, "not yet supported", is retired).
 - **Bare `none` needs a type from context** — `docs/stdlib-spec.md` §1.4;
   E107's declaration rule (#1107).
 - **`Option<T>` in the static type language** — `docs/stdlib-spec.md`

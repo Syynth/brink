@@ -1271,10 +1271,18 @@ fn e066_native_string_plus_eq_int_concat_compiles_clean() {
     );
 }
 
-// ─── B1b the `as` binding (issue #1475): E145/E146/E147 ────────────────
+// ─── B1b the `as` binding (issue #1475/#1508): E145/E147 ────────────────
 //
 // Native-only, same reasoning as the E066 block above — an `AS_BINDING`
 // node exists only in the native grammar, so these reuse `compile_native`.
+//
+// E146 (choice-guard `as` "not yet supported") is RETIRED (issue #1508) —
+// it compiles for real now. The end-to-end proof that the bound value
+// actually reaches the picked choice's body (and survives a save round
+// trip) lives in `crates/brink-compiler/tests/driver.rs`'s "Choice-guard
+// `as` binding" section; this file only needs the diagnostics-clean
+// compile + the E145 whole-condition check reused from the statement
+// form below.
 
 /// E145 — the v1 whole-condition restriction, caught at HIR lowering when
 /// the binding sits on top of a `&&` composition. (The mirror spelling, an
@@ -1299,10 +1307,13 @@ fn e140_as_binding_over_a_boolean_composition() {
     }
 }
 
-/// E146 — guard-`as` is ruled but rides the `.inkb` v6 Choice record, so it
-/// is diagnosed as *not yet supported* rather than half-lowered.
+/// E146 is retired (issue #1508): a choice-guard `as` binding now compiles
+/// cleanly, with no lingering "not yet supported" diagnostic (not even as
+/// a warning) — the E146 retirement is a real behavior change, not just a
+/// doc-comment update. See `driver.rs` for the end-to-end proof that the
+/// bound value actually reaches the picked body.
 #[test]
-fn e141_as_binding_in_a_choice_guard_is_not_yet_supported() {
+fn e146_choice_guard_as_binding_no_longer_diagnoses_not_yet_supported() {
     let source = "flow main() {
   {?
     * {if some(1) as n} take it
@@ -1310,13 +1321,91 @@ fn e141_as_binding_in_a_choice_guard_is_not_yet_supported() {
   -> END
 }
 ";
-    let err = compile_native("as-guard", source, native_strict_options())
+    let output = compile_native("as-guard", source, native_strict_options())
+        .unwrap_or_else(|err| panic!("guard-`as` must compile cleanly now: {err:?}"));
+    assert!(
+        output
+            .warnings
+            .iter()
+            .all(|d| d.code != DiagnosticCode::E146),
+        "E146 must never be emitted post-retirement, got warnings: {:?}",
+        output.warnings
+    );
+}
+
+/// The E145 whole-condition restriction generalizes to the choice-guard
+/// form too — `lower_choice` reuses `lower_as_binding` verbatim (same
+/// helper the statement form's `e140_as_binding_over_a_boolean_
+/// composition` above exercises), so a `&&`/`||`-composed guard condition
+/// must be refused here exactly the same way.
+#[test]
+fn e145_as_binding_over_a_boolean_composition_in_a_choice_guard() {
+    let source = "flow main() {
+  {?
+    * {if true && some(1) as n} take it
+  }
+  -> END
+}
+";
+    let err = compile_native("as-guard-composed", source, native_strict_options())
         .map(|_| ())
-        .expect_err("guard-`as` must be refused until the v6 Choice record lands");
+        .expect_err("guard-`as` over a `&&` composition must fail");
     let diags = errors_of(err);
     assert!(
-        diags.iter().any(|d| d.code == DiagnosticCode::E146),
-        "expected E146, got: {diags:?}"
+        diags.iter().any(|d| d.code == DiagnosticCode::E145),
+        "expected E145, got: {diags:?}"
+    );
+}
+
+/// Review finding: routing `option_conditions::check_choice` through
+/// `check_condition_or_binding` makes E147 (statically-known non-Option
+/// guard condition) reachable from a choice guard for the first time —
+/// same as `e142_as_binding_on_a_non_option_condition` above, but for the
+/// choice-guard binding position instead of the statement form.
+#[test]
+fn e147_as_binding_on_a_non_option_condition_in_a_choice_guard() {
+    let source = "flow main() {
+  {?
+    * {if 5 as n} take it
+  }
+  -> END
+}
+";
+    let err = compile_native("as-guard-not-option", source, native_strict_options())
+        .map(|_| ())
+        .expect_err("`as` over an int guard condition must fail under types = strict");
+    let diags = errors_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E147),
+        "expected E147, got: {diags:?}"
+    );
+}
+
+/// Review finding: `lower_bound_condition`'s `as_binding_slots.insert`
+/// makes E148 (write to the immutable binding) reachable from a choice
+/// body for the first time — same choke point
+/// (`lower_assign_target`) the statement form's
+/// `e143_as_binding_is_immutable` already exercises, but the write now
+/// sits inside the choice's own braced body rather than an `if`'s.
+#[test]
+fn e148_write_to_a_choice_guard_as_binding_in_the_choice_body() {
+    let source = "flow main() {
+  {?
+    * {if some(1) as n} take it {
+      ~ n = 2
+      -> DONE
+    }
+  }
+  -> END
+}
+";
+    let err = compile_native("as-guard-imm-assign", source, native_strict_options())
+        .map(|_| ())
+        .expect_err("writing to a choice guard's `as` binding must fail");
+    let diags = errors_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E148),
+        "expected E148 for `~ n = 2`, got: {diags:?}"
     );
 }
 

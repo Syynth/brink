@@ -137,8 +137,10 @@ One brace grammar; the annotation position declares the kind:
   (`{if cond as name: … else: …}`, ruled 2026-07-26, B1b #1475) is a
   suffix of the `if` head in this position, and the identical suffix on
   the code-ground `if`/`while` — one construct, both condition
-  positions, no new syntax family. (In a choice guard it parses but is
-  not yet implemented — it rides the `.inkb` v6 Choice record.)
+  positions, no new syntax family. (In a choice guard it parses AND
+  lowers/runs end to end, issue #1508: the binding rides the existing
+  `OptionBind` + thread-fork-snapshot machinery, not a new `.inkb` v6
+  Choice-record field.)
 - **Characters where content alternates**: `{~ }` shuffle, `{& }`
   cycle, `{! }` once, `{| }` stopping-sequence (chars tentative).
 - **`{?` choice point** (§5) — one member of the family.

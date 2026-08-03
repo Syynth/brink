@@ -377,6 +377,13 @@ impl Collector {
         for tag in &choice.tags {
             self.walk_tag(tag, prefix);
         }
+        // B1b (issue #1508): the guard's `as` binding needs the same range
+        // admission `walk_conditional`/`walk_if_stmt`/`walk_while_stmt`
+        // already give every other binding position — otherwise a
+        // malformed/empty binding range escapes E124.
+        if let Some(binding) = &choice.binding {
+            self.check_range(binding.range);
+        }
         self.walk_block(&choice.body, prefix);
     }
 

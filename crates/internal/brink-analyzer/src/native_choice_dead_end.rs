@@ -330,6 +330,7 @@ mod tests {
             is_fallback: false,
             label: None,
             condition: None,
+            binding: None,
             start_content: None,
             bracket_content: None,
             inner_content: None,

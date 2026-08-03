@@ -1034,6 +1034,19 @@ pub struct Choice {
     pub label: Option<Name>,
     /// Condition expression `{cond}`.
     pub condition: Option<Expr>,
+    /// `* {if EXPR as NAME} [text]` — the guard's Option binding (B1b,
+    /// issue #1475/#1508, decision log 2026-07-26 "Choice-guard `as`
+    /// un-deferred"). Capture-at-presentation, by-value COW: the guard's
+    /// `OptionBind` runs (and writes the payload into its frame-local
+    /// slot) at presentation time, in the same frame `BeginChoice`'s
+    /// `fork_thread` snapshots into the pending choice — so the slot
+    /// value rides the pending choice through selection (even across a
+    /// `StorySnapshot` round trip) with no separate wire-level capture:
+    /// it is the same mechanism that already restores tunnel/function
+    /// temps across a pick. Scoped strictly to [`Self::body`], same as
+    /// [`IfStmt::binding`]. Native-surface-only — the ink/brink dialect
+    /// choice-guard grammar has no `as` and always leaves this `None`.
+    pub binding: Option<Name>,
     /// Text before `[` — appears in both choice list and output.
     pub start_content: Option<Content>,
     /// Text inside `[...]` — appears only in the choice list.

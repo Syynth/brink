@@ -520,7 +520,7 @@ asserts every variant has a corresponding doc file and that no orphaned doc file
 | [`E143`](diagnostics/E143.md) | **D5**: |
 | [`E144`](diagnostics/E144.md) | A UFCS call site that `brink-analyzer::ufcs` **resolved** cleanly has reached LIR lowering, which does not... |
 | [`E145`](diagnostics/E145.md) | The v1 whole-condition restriction: |
-| [`E146`](diagnostics/E146.md) | An `as` binding in a **choice guard** (`* {if EXPR as name} [text]`). |
+| [`E146`](diagnostics/E146.md) | RETIRED (issue #1508) — choice-guard `as` bindings now lower for real. |
 | [`E147`](diagnostics/E147.md) | An `as` binding whose condition is a statically-known **non-Option** type (`if 5 as n { … }`). |
 | [`E148`](diagnostics/E148.md) | A write to an `as` binding — `if find(s) as i { i = 0; }`, `pop(i)`, `i[0] = x`, `bump(ref i)`, … The... |
 | [`E149`](diagnostics/E149.md) | A `remove(a, i)` call whose first argument is statically known to be an array: |

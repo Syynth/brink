@@ -798,6 +798,7 @@ mod tests {
             is_fallback: false,
             label: None,
             condition: None,
+            binding: None,
             start_content: Some(mk_content(vec![text("Pick")])),
             bracket_content: None,
             inner_content: None,

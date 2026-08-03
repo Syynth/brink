@@ -216,8 +216,12 @@ fn diagnostic_codes_are_unique() {
 /// `docs/directive-annotations-spec.md` §5c/§5d directly — **not** carried
 /// over from issue #1836's filing-time list, which named nine codes
 /// (`E132`, `E153`–`E155`, `E159`–`E163`) and predates `E130`, `E145`,
-/// `E146`, `E156`, `E158`, and `E164`–`E172`, all of which landed
-/// native-only afterward:
+/// `E156`, `E158`, and `E164`–`E172`, all of which landed native-only
+/// afterward. `E146` (the choice-guard `as` binding) is deliberately
+/// **excluded**, not merely predating this list: issue #1508 retired it
+/// (choice-guard `as` now lowers for real, alongside `E145`) — a retired
+/// code is emitted from no surface at all, so "native-only" no longer
+/// describes it either:
 ///
 /// - `E130` — a native `flow` nested more than two levels deep; raised only
 ///   from `hir::lower_native::container`, whose `title()` reads "native:
@@ -225,11 +229,10 @@ fn diagnostic_codes_are_unique() {
 ///   is a native-surface container with no ink counterpart.
 /// - `E132` — the native file-level `@[was("…")]` rename record; ink's own
 ///   `@[…]` channel recognizes only `effects` (§5b).
-/// - `E145`/`E146` — the `as` binding channel (`if EXPR as name { … }` and
-///   the choice-guard form respectively); `AS_BINDING` is a
-///   `brink-syntax-native` grammar node with no counterpart in
-///   `brink-syntax`, and both are raised only from
-///   `hir::lower_native::control_flow` / `hir::lower_native::choice`.
+/// - `E145` — the `as` binding channel's whole-condition check (`if EXPR as
+///   name { … }`); `AS_BINDING` is a `brink-syntax-native` grammar node
+///   with no counterpart in `brink-syntax`, raised only from
+///   `hir::lower_native::control_flow`.
 /// - `E153`/`E154`/`E155` — the `@[allow(…)]` suppression channel: §5d says
 ///   "Native surface only" in as many words.
 /// - `E156` — a lambda body assigning to a captured binding; `LAMBDA_EXPR`
@@ -266,9 +269,8 @@ fn diagnostic_codes_are_unique() {
 /// knot/`*`-choice example is genuinely reachable from ink source, which is
 /// exactly what `E157.md`'s ```` ```ink ```` fences correctly demonstrate.
 const NATIVE_ONLY_CODES: &[&str] = &[
-    "E130", "E132", "E145", "E146", "E153", "E154", "E155", "E156", "E158", "E159", "E160", "E161",
-    "E162", "E163", "E164", "E165", "E166", "E167", "E168", "E169", "E170", "E171", "E172", "E173",
-    "E174",
+    "E130", "E132", "E145", "E153", "E154", "E155", "E156", "E158", "E159", "E160", "E161", "E162",
+    "E163", "E164", "E165", "E166", "E167", "E168", "E169", "E170", "E171", "E172", "E173", "E174",
 ];
 
 /// Every fenced code block's info string (the text right after the opening

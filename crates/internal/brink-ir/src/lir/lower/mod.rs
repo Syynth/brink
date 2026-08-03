@@ -1494,6 +1494,29 @@ fn lower_choice_with_child(
 
     let target = choice.container_id.unwrap_or(ctx.root_id);
 
+    // The block scope opens BEFORE the condition (so a guard-`as` binding,
+    // B1b issue #1508, can declare into it) and stays open across the
+    // choice's own content (start/bracket/inner) AND the *body* lowering
+    // below — unlike `blocks::lower_if_branch`'s bracket (which closes
+    // after the success arm and never reaches an `else`), a choice has no
+    // sibling arm to hide the binding from, so the scope simply wraps
+    // condition -> content -> body together. Every choice pushes/pops a
+    // scope, whether it binds or not, exactly like an ordinary `if`.
+    //
+    // This ordering matters: `{n}` appearing in the choice's own
+    // start/bracket/inner content (not just its body) must resolve
+    // through the same block-scoped temp slot the binding declares, so
+    // the content lowering below MUST happen after `push_block_scope`
+    // and the condition/binding lowering, not before.
+    ctx.push_block_scope();
+    let condition = match (choice.condition.as_ref(), choice.binding.as_ref()) {
+        (Some(cond_hir), Some(binding)) => {
+            Some(blocks::lower_bound_condition(cond_hir, binding, ctx))
+        }
+        (Some(cond_hir), None) => Some(expr::lower_expr(cond_hir, ctx)),
+        (None, _) => None,
+    };
+
     // Preserve the three-part content split for codegen backends.
     let start_content = choice
         .start_content
@@ -1544,7 +1567,6 @@ fn lower_choice_with_child(
             .and_then(|c| recognize::try_recognize(c, ctx))
     };
 
-    let condition = choice.condition.as_ref().map(|e| expr::lower_expr(e, ctx));
     let tags: Vec<Vec<lir::ContentPart>> = choice
         .tags
         .iter()
@@ -1565,6 +1587,7 @@ fn lower_choice_with_child(
     let (body_stmts, mut children) = lower_block_with_children(&choice.body, ctx, &mut cc, &mut gc);
     ctx.scope_path = old_scope;
     ctx.choice_gather_target = old_gather_target;
+    ctx.pop_block_scope();
 
     // Build the choice target container body. The output after selecting
     // a choice is: ChoiceOutput(content) + body stmts.
