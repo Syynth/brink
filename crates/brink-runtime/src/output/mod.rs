@@ -741,11 +741,45 @@ fn resolve_parts(
     out
 }
 
+/// Returns true if `part` interpolates a `content`-typed value
+/// (`Value::FragmentRef`) — either directly (`ValueRef`) or through a
+/// template `Slot` (`LineRef`).
+///
+/// Two distinct mechanisms produce a `FragmentRef` in this position, and
+/// this check does not — and structurally cannot — tell them apart: issue
+/// #1839's `block`-capture receiver, AND the ordinary display-position
+/// call-composition pattern `brink-codegen-inkb::content::emit_slot_expr`
+/// emits for *every* template slot whose expr is a function call
+/// (`lir::Expr::is_function_call()`, both dialects) — e.g. a line whose
+/// only content is `{ f() }`. Both are suppressed identically by the
+/// caller.
+///
+/// Purely structural: it does not need to look inside the referenced
+/// fragment to decide suppression. If a line's fully-resolved text comes
+/// out empty *and* one of its parts involved a fragment reference, that is
+/// sufficient evidence the fragment itself **rendered** empty. It does
+/// *not* follow that the fragment "captured nothing" — a fragment that
+/// captured a line which itself renders empty (e.g. an interpolated empty
+/// variable), or a call-composition fragment whose function simply
+/// returned `""`, both reach this same state. "Rendered empty" is the
+/// weaker, sufficient invariant suppression actually relies on.
+fn part_involves_fragment_ref(part: &OutputPart) -> bool {
+    match part {
+        OutputPart::LineRef { slots, .. } => {
+            slots.iter().any(|v| matches!(v, Value::FragmentRef(_)))
+        }
+        OutputPart::ValueRef(Value::FragmentRef(_)) => true,
+        _ => false,
+    }
+}
+
 /// Resolve glue and split into per-line output with associated tags.
 ///
 /// Each returned element is `(line_text, line_tags)`. Tags that appear
 /// in the stream associate with the current line (the line being built
-/// when the tag is encountered).
+/// when the tag is encountered). Lines that [`resolve_lines_annotated`]
+/// marks suppressed (issue #2091 — an empty `content`/Fragment capture)
+/// are dropped entirely; nothing else changes.
 pub(crate) fn resolve_lines(
     parts: &[OutputPart],
     program: &Program,
@@ -753,6 +787,62 @@ pub(crate) fn resolve_lines(
     resolver: Option<&dyn PluralResolver>,
     fragments: &[Fragment],
 ) -> Vec<(String, Vec<String>)> {
+    resolve_lines_annotated(parts, program, line_tables, resolver, fragments)
+        .into_iter()
+        .filter_map(|(text, tags, suppressed)| (!suppressed).then_some((text, tags)))
+        .collect()
+}
+
+/// Like [`resolve_lines`], but reports — per resolved line, as the trailing
+/// `bool` — whether it should be **suppressed** from reader-visible output:
+/// its fully-resolved text came out empty, it carries no tags, and at least
+/// one of its parts interpolated a `content`-typed value that itself
+/// rendered empty (issue #2091). Two distinct call sites produce that
+/// `Value::FragmentRef`, and this check treats them identically:
+///
+/// - issue #1839's `block`-capture receiver — e.g. a capture that
+///   terminated immediately because the next line was itself
+///   element-level (`hir::lower_native::element::capture_block`); and
+/// - the ordinary **display-position call-composition** pattern
+///   `brink-codegen-inkb::content::emit_slot_expr` emits
+///   (`BeginFragment`…`EndFragment`) for *every* template slot whose expr
+///   is a function call (`lir::Expr::is_function_call()`, both dialects) —
+///   e.g. a line whose only content is `{ f() }`, where `f` emits no
+///   side-effect text and returns an empty value.
+///
+/// See [`part_involves_fragment_ref`]'s own doc for why "the fragment
+/// rendered empty" is the invariant relied on here, not "the fragment
+/// captured nothing" — the two mechanisms above are exactly why the
+/// stronger claim does not hold.
+///
+/// This is a **read-time rendering decision only**: the line-table entry a
+/// suppressed line's `LineRef` points at is never touched, omitted, or
+/// renumbered — it stays present-but-empty, exactly as compiled, so
+/// locale hot-swap (which re-renders the *same* transcript against a
+/// swapped-in line vector, matched by index) keeps working unchanged. Only
+/// the rendered *output line* disappears; the underlying compiled data does
+/// not move.
+///
+/// A line that resolves empty for any OTHER reason — a literal blank line,
+/// or a self-closing inline markup span (`<pause/>`) with no children — is
+/// **not** suppressed: that is pre-existing, deliberate output (see the
+/// `inline-markup-point-marker` fixture, issue #1716), unrelated to this
+/// issue's scope of `content`/Fragment-driven emptiness.
+///
+/// [`OutputBuffer::take_first_line`] needs this unfiltered, index-aligned
+/// form — its single-newline slice always resolves to exactly two entries
+/// (the found line, then an always-empty trailing filler) — so it can tell
+/// "this line should be skipped, keep scanning for the next one" apart from
+/// "there is no completed line at all" without losing that index alignment
+/// (naively dropping the suppressed entry from the `Vec` would shift the
+/// filler into its place and return the very blank line being suppressed).
+pub(crate) fn resolve_lines_annotated(
+    parts: &[OutputPart],
+    program: &Program,
+    line_tables: &[Vec<LineEntry>],
+    resolver: Option<&dyn PluralResolver>,
+    fragments: &[Fragment],
+) -> Vec<(String, Vec<String>, bool)> {
     if parts.is_empty() {
         return Vec::new();
     }
@@ -761,9 +851,10 @@ pub(crate) fn resolve_lines(
     let mut remove = vec![false; parts.len()];
     mark_glue_removals(parts, &mut remove);
 
-    let mut lines: Vec<(String, Vec<String>)> = Vec::new();
+    let mut lines: Vec<(String, Vec<String>, bool)> = Vec::new();
     let mut current_text = String::new();
     let mut current_tags: Vec<String> = Vec::new();
+    let mut saw_fragment_ref = false;
     let mut after_glue = false;
 
     for (i, part) in parts.iter().enumerate() {
@@ -775,6 +866,9 @@ pub(crate) fn resolve_lines(
         }
         match part {
             OutputPart::Text(_) | OutputPart::LineRef { .. } | OutputPart::ValueRef(_) => {
+                if part_involves_fragment_ref(part) {
+                    saw_fragment_ref = true;
+                }
                 let s = resolve_part(part, program, line_tables, resolver, fragments);
                 // Collapse adjacent whitespace at part boundaries.
                 let s = if s.starts_with(char::is_whitespace)
@@ -800,8 +894,11 @@ pub(crate) fn resolve_lines(
             OutputPart::Newline => {
                 if !after_glue {
                     let trimmed = current_text.trim().to_string();
-                    lines.push((trimmed, mem::take(&mut current_tags)));
+                    let suppressed =
+                        trimmed.is_empty() && current_tags.is_empty() && saw_fragment_ref;
+                    lines.push((trimmed, mem::take(&mut current_tags), suppressed));
                     current_text = String::new();
+                    saw_fragment_ref = false;
                 }
             }
             OutputPart::Tag(tag) => {
@@ -813,10 +910,27 @@ pub(crate) fn resolve_lines(
         }
     }
 
-    // Always push the final line — even if empty — so that a trailing
-    // Newline part produces a trailing `\n` when the lines are joined.
+    // Push the final line — even if empty — so that a trailing Newline
+    // part produces a trailing `\n` when the lines are joined by
+    // `resolve_lines`'s callers (e.g. `flush_remaining`'s `\n`-join over
+    // consecutive entries).
+    //
+    // EXCEPTION (issue #2091): this final entry is itself eligible for
+    // suppression like any other — if the transcript's unread tail ends
+    // with an unterminated fragment-bearing segment that resolves empty
+    // (no following `Newline`), `suppressed` is `true` here too, and
+    // `resolve_lines` drops this entry from its `Vec` entirely rather than
+    // keeping it as a `("", [])` placeholder. When that happens, the
+    // trailing-`\n`-via-empty-final-entry guarantee this comment describes
+    // does NOT hold for the preceding real line — there is no longer a
+    // placeholder entry left for a caller's join loop to add a separator
+    // before. This is accepted, not additionally special-cased: it only
+    // arises when the story's last visible output is itself an empty
+    // `content`/Fragment interpolation, which is precisely the case this
+    // issue suppresses.
     let trimmed = current_text.trim().to_string();
-    lines.push((trimmed, current_tags));
+    let suppressed = trimmed.is_empty() && current_tags.is_empty() && saw_fragment_ref;
+    lines.push((trimmed, current_tags, suppressed));
 
     lines
 }
@@ -1579,5 +1693,276 @@ mod tests {
         buf.push_glue();
         buf.push_text("world");
         assert_eq!(buf.flush(), "helloworld");
+    }
+
+    // ── #2091: suppress a blank line from an empty content/Fragment capture ──
+    //
+    // A `block`-capturing handler (issue #1839) whose captured run is empty —
+    // e.g. a cue immediately followed by a parenthetical, so
+    // `hir::lower_native::element::capture_block` finds zero interior lines
+    // — still binds its `content`-typed parameter to a real (empty)
+    // `Value::FragmentRef`. Interpolating that alone on a template line
+    // (`{body}` in a prose-ground handler body) used to render its own
+    // visible blank line. These tests exercise the fix directly against the
+    // output-resolution layer, independent of the full compiler pipeline
+    // (see `tests/tier1-native/conventions-screenplay-preset/` for the e2e
+    // golden fixture this same fix corrects).
+
+    /// Build a minimal one-container `Program` plus a matching line table
+    /// from a caller-supplied list of `LineEntry`s (indices become
+    /// `line_idx`), for `resolve_lines`/`take_first_line` tests that need
+    /// more than `resolve_template`'s single entry.
+    fn program_with_line_table(entries: Vec<LineEntry>) -> (Program, Vec<Vec<LineEntry>>) {
+        use crate::program::LinkedContainer;
+        use brink_format::{CountingFlags, DefinitionId, DefinitionTag};
+        use std::collections::HashMap;
+
+        let id = DefinitionId::new(DefinitionTag::Address, 0);
+        let program = Program {
+            containers: vec![LinkedContainer {
+                id,
+                bytecode: vec![],
+                counting_flags: CountingFlags::empty(),
+                path_hash: 0,
+                param_count: 0,
+                params: Vec::new(),
+                scope_table_idx: 0,
+            }],
+            address_map: HashMap::new(),
+            scope_ids: vec![id],
+            source_checksum: 0,
+            globals: vec![],
+            global_map: HashMap::new(),
+            name_table: vec![],
+            address_by_path: HashMap::new(),
+            root_idx: 0,
+            list_literals: vec![],
+            literal_pool: vec![],
+            list_item_map: HashMap::new(),
+            list_defs: vec![],
+            list_def_map: HashMap::new(),
+            external_fns: HashMap::new(),
+            local_scope_defaults: Vec::new(),
+            struct_shapes: Vec::new(),
+            private_defs: Vec::new(),
+            alias_table: Vec::new(),
+        };
+        (program, vec![entries])
+    }
+
+    fn plain_entry(s: &str) -> LineEntry {
+        LineEntry {
+            content: LineContent::Plain(s.to_string()),
+            source_hash: 0,
+            flags: brink_format::LineFlags::from_plain(s),
+            audio_ref: None,
+            slot_info: vec![],
+            source_location: None,
+        }
+    }
+
+    fn one_slot_template_entry() -> LineEntry {
+        LineEntry {
+            content: LineContent::Template(vec![LinePart::Slot(0)]),
+            source_hash: 0,
+            // A Slot always defeats the compile-time conservative flags —
+            // see `LineFlags::from_template`'s own doc/tests.
+            flags: brink_format::LineFlags::empty(),
+            audio_ref: None,
+            slot_info: vec![],
+            source_location: None,
+        }
+    }
+
+    fn line_ref(line_idx: u16, slots: Vec<Value>, flags: brink_format::LineFlags) -> OutputPart {
+        OutputPart::LineRef {
+            container_idx: 0,
+            line_idx,
+            slots,
+            flags,
+        }
+    }
+
+    #[test]
+    fn resolve_lines_suppresses_a_blank_line_from_an_empty_content_capture() {
+        // line 0: "VENDOR", line 1: `{body}` (the block-capture receiver),
+        // line 2: "(hushed)" — matches the shape of the real regression
+        // (`tests/tier1-native/conventions-screenplay-preset/story.brink`).
+        let (program, line_tables) = program_with_line_table(vec![
+            plain_entry("VENDOR"),
+            one_slot_template_entry(),
+            plain_entry("(hushed)"),
+        ]);
+        // The captured block was empty: a real, present `Fragment` with no
+        // parts — not an omitted line-table entry (issue #2091's own "what
+        // happens to the line-table entry" question: present-but-empty).
+        let fragments = vec![Fragment {
+            parts: vec![],
+            tags: vec![],
+        }];
+
+        let parts = vec![
+            line_ref(0, vec![], brink_format::LineFlags::from_plain("VENDOR")),
+            OutputPart::Newline,
+            line_ref(
+                1,
+                vec![Value::FragmentRef(0)],
+                brink_format::LineFlags::empty(),
+            ),
+            OutputPart::Newline,
+            line_ref(2, vec![], brink_format::LineFlags::from_plain("(hushed)")),
+        ];
+
+        let lines = resolve_lines(&parts, &program, &line_tables, None, &fragments);
+        assert_eq!(
+            lines,
+            vec![
+                ("VENDOR".to_string(), Vec::<String>::new()),
+                ("(hushed)".to_string(), Vec::<String>::new()),
+            ],
+            "an empty content/Fragment capture must not render its own blank \
+             line between real content: {lines:?}"
+        );
+    }
+
+    /// Reviewer finding (PR #2140, issue #2091): the scope is NOT limited to
+    /// issue #1839's `block`-capture receiver. `part_involves_fragment_ref`
+    /// keys on `Value::FragmentRef` alone, and `brink-codegen-inkb::content::
+    /// emit_slot_expr`'s `BeginFragment`…`EndFragment` composition pattern
+    /// wraps *every* template slot whose expr is a function call
+    /// (`lir::Expr::is_function_call()`), in ordinary display position, in
+    /// both dialects — not just a `block` receiver. This pins that broader,
+    /// actual scope directly: a line whose only content is a call like
+    /// `{ f() }`, where `f` emits no side-effect text and returns an empty
+    /// value, is suppressed by the exact same mechanism as the block-capture
+    /// case above, with no `block`-capture machinery involved at all.
+    #[test]
+    fn resolve_lines_suppresses_a_blank_line_from_an_empty_display_position_call_composition() {
+        // line 0: "Before.", line 1: `{f()}` (ordinary call composition —
+        // NOT a `block`-capture receiver), line 2: "After."
+        let (program, line_tables) = program_with_line_table(vec![
+            plain_entry("Before."),
+            one_slot_template_entry(),
+            plain_entry("After."),
+        ]);
+        // Models `emit_slot_expr`'s composition pattern for `{ f() }`
+        // where `f` produced no side-effect output and its return value
+        // stringified to empty — a real, present `Fragment` with no parts,
+        // exactly as a `block` capture's empty fragment looks structurally.
+        let fragments = vec![Fragment {
+            parts: vec![],
+            tags: vec![],
+        }];
+
+        let parts = vec![
+            line_ref(0, vec![], brink_format::LineFlags::from_plain("Before.")),
+            OutputPart::Newline,
+            line_ref(
+                1,
+                vec![Value::FragmentRef(0)],
+                brink_format::LineFlags::empty(),
+            ),
+            OutputPart::Newline,
+            line_ref(2, vec![], brink_format::LineFlags::from_plain("After.")),
+        ];
+
+        let lines = resolve_lines(&parts, &program, &line_tables, None, &fragments);
+        assert_eq!(
+            lines,
+            vec![
+                ("Before.".to_string(), Vec::<String>::new()),
+                ("After.".to_string(), Vec::<String>::new()),
+            ],
+            "an empty display-position call-composition FragmentRef must be \
+             suppressed identically to a block capture — this is the \
+             broader scope the discriminator actually covers, not just \
+             #1839's block-capture receiver: {lines:?}"
+        );
+    }
+
+    /// Scope boundary: this fix is specifically about `content`/Fragment
+    /// captures, not "any interpolation that happens to render empty". A
+    /// `Slot` bound to a plain, non-`FragmentRef` value that resolves empty
+    /// keeps its pre-existing blank beat — unchanged, matching the
+    /// deliberately-preserved `inline-markup-point-marker` fixture (a
+    /// self-closing markup span with no children, issue #1716).
+    #[test]
+    fn resolve_lines_does_not_suppress_a_blank_line_from_a_non_fragment_empty_slot() {
+        let (program, line_tables) = program_with_line_table(vec![
+            plain_entry("VENDOR"),
+            one_slot_template_entry(),
+            plain_entry("(hushed)"),
+        ]);
+        let fragments: Vec<Fragment> = vec![];
+
+        let parts = vec![
+            line_ref(0, vec![], brink_format::LineFlags::from_plain("VENDOR")),
+            OutputPart::Newline,
+            line_ref(1, vec![Value::Null], brink_format::LineFlags::empty()),
+            OutputPart::Newline,
+            line_ref(2, vec![], brink_format::LineFlags::from_plain("(hushed)")),
+        ];
+
+        let lines = resolve_lines(&parts, &program, &line_tables, None, &fragments);
+        assert_eq!(
+            lines,
+            vec![
+                ("VENDOR".to_string(), Vec::<String>::new()),
+                (String::new(), Vec::<String>::new()),
+                ("(hushed)".to_string(), Vec::<String>::new()),
+            ],
+            "a non-Fragment empty slot must keep rendering its blank line: {lines:?}"
+        );
+    }
+
+    /// Streaming-API regression (the actual bug shape): `take_first_line`
+    /// must skip the suppressed blank line silently — never handing it back
+    /// as its own `Line::Text` — while still returning "VENDOR" and
+    /// "(hushed)" as two separate completed lines, in order, with the
+    /// cursor correctly advanced (no stall on the suppressed segment).
+    #[test]
+    fn take_first_line_skips_a_suppressed_line_and_returns_the_next_real_line() {
+        let (program, line_tables) = program_with_line_table(vec![
+            plain_entry("VENDOR"),
+            one_slot_template_entry(),
+            plain_entry("(hushed)"),
+        ]);
+
+        let mut buf = OutputBuffer::new();
+        buf.push_line_ref(0, 0, vec![], brink_format::LineFlags::from_plain("VENDOR"));
+        buf.push_newline();
+        buf.begin_fragment();
+        let frag_idx = buf.end_fragment().expect("checkpoint was just pushed");
+        buf.push_line_ref(
+            0,
+            1,
+            vec![Value::FragmentRef(frag_idx)],
+            brink_format::LineFlags::empty(),
+        );
+        buf.push_newline();
+        buf.push_line_ref(
+            0,
+            2,
+            vec![],
+            brink_format::LineFlags::from_plain("(hushed)"),
+        );
+        buf.push_newline();
+
+        let mut got = Vec::new();
+        // Bounded loop (VM-test hygiene): at most 3 real lines are possible
+        // here, so 5 iterations is generous headroom against a stall.
+        for _ in 0..5 {
+            match buf.take_first_line(&program, &line_tables, None) {
+                Some((text, _)) => got.push(text),
+                None => break,
+            }
+        }
+
+        assert_eq!(
+            got,
+            vec!["VENDOR\n".to_string(), "(hushed)\n".to_string()],
+            "the empty content capture must not surface as its own \
+             (blank) streamed line: {got:?}"
+        );
     }
 }
