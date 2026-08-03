@@ -6,5 +6,9 @@ publish = false
 
 [dependencies]
 brink-runtime = { path = "../../../crates/brink-runtime" }
-brink-compiler = { path = "../../../crates/brink-compiler" }
+# `test-util` (issue #2168): this tool compiles a fixture story straight off
+# disk via the legacy `compile_path` entry point, bypassing
+# `brink_environment::compile(&Environment)` (#1306, the production road)
+# on purpose — it's a benchmark-input generator, not a production consumer.
+brink-compiler = { path = "../../../crates/brink-compiler", features = ["test-util"] }
 rand = "0.9"

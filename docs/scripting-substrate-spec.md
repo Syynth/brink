@@ -123,7 +123,8 @@ about the *pass structure*, not necessarily crate boundaries.
 
 - **`brink-compiler` (batch)**: `compile()` constructs a db, sets
   inputs, pulls `story_data()`. Cold cost must not regress beyond noise
-  (#498 gate).
+  (#498 gate). Gated behind the `test-util` feature since #2168 — the
+  production road is `brink_environment::compile(&Environment)`.
 - **`brink-ide` / `brink-lsp` / `brink-web` sessions**: one db per
   session; edits are input writes; every feature (hover, rename
   analysis, line contexts, folding inputs) reads queries. Wasm is

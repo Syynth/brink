@@ -41,7 +41,10 @@ pest_derive = { workspace = true, optional = true }
 serde = { version = "1", default-features = false, features = ["alloc", "derive", "rc"] }
 
 [dev-dependencies]
-brink-compiler = { path = "../../brink-compiler" }
+# `test-util` (issue #2168): the `tests/` suite compiles inline/fixture ink
+# source directly, bypassing `brink_environment::compile(&Environment)`
+# (#1306, the production road) — gated the same way every such target is.
+brink-compiler = { path = "../../brink-compiler", features = ["test-util"] }
 insta = { workspace = true }
 proptest = { workspace = true }
 serde_json = { workspace = true }

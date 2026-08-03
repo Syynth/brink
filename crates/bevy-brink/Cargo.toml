@@ -83,8 +83,12 @@ bevy = { version = "0.19.0", features = ["file_watcher"] }
 # Tests compile small inline ink stories to exercise the loader/replay
 # code paths. brink-compiler is also pulled in via the `dev` feature
 # in the regular dependency set, but adding it as a dev-dep means
-# tests work even when someone disables default features.
-brink-compiler = { path = "../brink-compiler" }
+# tests work even when someone disables default features. `test-util`
+# (issue #2168) gates the legacy closure-based `compile`/`compile_with_options`
+# entry points these tests and the `examples/` call directly, bypassing
+# `brink_environment::compile(&Environment)` (#1306, the production road
+# `source_loader.rs` actually uses) on purpose.
+brink-compiler = { path = "../brink-compiler", features = ["test-util"] }
 # Enable brink-runtime's `testing` feature so tests can introspect
 # globals by name (Program::global_count, Program::global_name).
 brink-runtime = { path = "../brink-runtime", features = ["testing"]  }

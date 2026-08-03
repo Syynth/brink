@@ -53,7 +53,11 @@ bench-counters = []
 effect-trace = ["std"]
 
 [dev-dependencies]
-brink-compiler = { path = "../brink-compiler" }
+# `test-util` (issue #2168): tests and `benches/runtime.rs` compile
+# inline/fixture ink source directly, bypassing
+# `brink_environment::compile(&Environment)` (#1306, the production road)
+# — gated the same way every such test/bench target is.
+brink-compiler = { path = "../brink-compiler", features = ["test-util"] }
 serde_json.workspace = true
 divan.workspace = true
 proptest.workspace = true

@@ -19,7 +19,10 @@ thiserror = { workspace = true }
 xliff2 = { workspace = true, features = ["metadata"] }
 
 [dev-dependencies]
-brink-compiler = { path = "../../brink-compiler" }
+# `test-util` (issue #2168): tests here compile inline/fixture ink source
+# directly, bypassing `brink_environment::compile(&Environment)` (#1306,
+# the production road) — gated the same way every such test target is.
+brink-compiler = { path = "../../brink-compiler", features = ["test-util"] }
 brink-runtime = { path = "../../brink-runtime" }
 insta = { workspace = true, features = ["json"] }
 serde_json = { workspace = true }
