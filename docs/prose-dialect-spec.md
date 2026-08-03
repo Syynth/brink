@@ -1143,7 +1143,7 @@ Consequences (RULED):
 - Enumerable variants are measurement-critical: recognizer growth
   (#1446) is promoted from intl-nicety to measurement prerequisite.
 
-## 7. Runtime output (RULED in substance, sitting 3 — naming ⏳)
+## 7. Runtime output (RULED — naming closed by §8d.7)
 
 **Break-compat is RULED**: no external consumers exist; in-repo
 consumers (bevy, web, TUI) migrate in-PR; `@brink-lang/web` takes a
@@ -1179,7 +1179,27 @@ pub struct Choice {
 - `FlowInstance::advance` keeps `AwaitingExternal`, wrapping `Step`.
 - Superset check: schema-less ink → `element: narrative,
   parts: [Text]` — information-identical to today.
-- Naming (`Line`/`Step`/`StoryEvent`) ⏳.
+- Naming (`Line`/`Step`/`StoryEvent`) — **closed: `Step`** (§8d.7).
+
+### 7.1 Implementation status (#1684, 2026-08-02)
+
+`Step`/`OutputLine`/`BlockId` shipped in `brink-runtime`, migrating
+every marshal leg (`brink-web`, `bevy-brink`, the CLI TUI, `brink-ide`).
+Scoped narrower than this section's full worked shape, deliberately:
+`OutputLine` today is `{ text: String, tags: Vec<String>, block_id:
+BlockId }` — flat text, no `element`/`parts` decomposition yet. That's
+the information-identical schema-less-ink degenerate case this
+section's own "superset check" calls out; the `element`/markup-`Part`
+structured surface is #1683's job once the element/markup layer lands,
+riding the same `Step`/`OutputLine` contract this issue created rather
+than reopening it. `BlockId` counts uninterrupted runs (bumped on a
+choice selection, a `Done` resume, and a host-directed jump); the
+richer attachment-derived assignment described in §3.7 is deferred to
+that same follow-up. The harness-side attribution safeguard
+(`termination.rs::push_terminal`, reserved since PR #1513) grew its
+fold logic in the same PR — oracle CASES/EPISODES measured
+byte-identical to the pre-migration baseline (5607/1010/2 episodes,
+365/8/397 cases).
 
 ## 8. Worked cases (abbreviated; spellings illustrative)
 
