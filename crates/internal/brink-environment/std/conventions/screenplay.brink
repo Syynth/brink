@@ -31,44 +31,31 @@
 //      (`brink_analyzer::resolve::is_t1b_stdlib_name`), not a real
 //      `.brink` source file anyone imports.
 //   2. `fn conventions()` registration + comptime evaluation (issue
-//      #1840, "Conventions v1c") has not landed — `register(...)` itself
-//      has no resolvable meaning yet (verified against `origin/main` at
-//      the time of this issue: `register` is an unresolved-variable
-//      `E025`, not a builtin). Per the 2026-08-01 side ruling this
-//      issue's briefing carries: this preset's resolved projection is
-//      meant to be PRE-FROZEN and shipped, so a DEFAULT project pays
-//      ZERO comptime — only a project that OVERRIDES the preset would
-//      ever evaluate anything. This file is written so that pre-freezing
-//      is possible once #1840 lands — it does not attempt to build the
-//      freezing/evaluation machinery itself, which would require running
-//      the evaluator for every default project and violate that same
-//      ruling.
+//      #1840, "Conventions v1c") was RULED DISSOLVED entirely
+//      (`docs/decision-log.md` 2026-08-03, "`fn conventions()` is
+//      DISSOLVED") in favor of the `order`-based precedence issue #2164
+//      delivered — there is no registration step to land, and there
+//      never will be one. Precedence among this file's four handlers is
+//      total, explicit, and authored on each declaration's own `order =
+//      N` (see each handler below for its own justification), never
+//      inferred from declaration position.
 //
 //      This preset's handlers are NOT all side-effect-free: `heading`
 //      calls the `scene_entered` host extern (issue #2092, below). That
-//      is still compatible with #1840's `@[effects(pure)]` fence, because
-//      the fence in the decision log's 2026-07-31 §9.1 ruling (item 7)
-//      binds `fn conventions()` — the REGISTRATION function that runs at
-//      COMPTIME — not the handlers it registers. `fn conventions()`
-//      itself would only ever reference `heading` by name (to register
-//      it in order); it never calls it, so `heading`'s own effect row
-//      (which includes the `scene_entered` call) never has to satisfy
-//      `pure`. Item 8 of the same ruling confirms there is deliberately
-//      no "carry the handler's row" machinery to propagate a registered
-//      handler's effects up into that purity check — registration is a
-//      plain reference, not an invocation. A handler's own effect row is
-//      instead checked against whatever's ordinary for a called function
-//      (it runs at real story time, driven by the compiled program, the
-//      same as any other call), not against comptime purity.
+//      is compatible with a claiming handler's own effect row (checked
+//      like any ordinary called function, since there is no comptime
+//      registration step to fence) — see issue #2179's disposition for
+//      why a "convention handlers may never read world state" legality
+//      fence was investigated and declined for now.
 //
 // **What IS proven end to end today**: every handler below is byte-for-
 // byte the same shape as `tests/tier1-native/conventions-screenplay-
 // preset/story.brink`, a project that inlines these exact declarations
-// (the only reachable way to exercise a claiming handler before #1840 —
-// single-file `@[convention(claims = …, order = N)]` dispatch, issues
-// #1838/#1839/#2164) and
-// pins the resulting transcript against a real compile + run. That test
-// is this preset's regression coverage; keep the two in sync.
+// (the only reachable way to exercise a claiming handler before
+// `std::`-resolution lands — single-file `@[convention(claims = …, order
+// = N)]` dispatch, issues #1838/#1839/#2164) and pins the resulting
+// transcript against a real compile + run. That test is this preset's
+// regression coverage; keep the two in sync.
 //
 // # Element inventory covered (docs/prose-dialect-spec.md §8, §8b, §8d)
 //
@@ -112,54 +99,66 @@
 //   `SMASH CUT TO:`, §8b.7/§8d). Re-emits its own text verbatim; diverts
 //   stay absolutely invisible either way (RULED, unconditionally — a
 //   transition dresses the divert that follows, it never touches it).
-// - `cue` — a bare `@NAME` speaker line (§8b.9/§8d.4), `block`-capturing
-//   the dialogue that follows it directly. Only claims a cue with no
-//   trailing tag extension (`@VENDOR #(v.o.)` declines the same way a
-//   slug-carrying heading does — the tag is structure the pattern is
-//   never shown).
+// - `cue` — a bare `@NAME` speaker line (§8b.9/§8d.4). **Migrated to
+//   ATTACH MODE by issue #2166** (was `block`-capturing wrap-and-re-emit
+//   before this issue, spelled out below). `cue` claims and consumes
+//   *only its own line* — it never receives the dialogue that follows,
+//   the way a `block` handler would. It declares `attach = Cue`
+//   (issue #2178: a plain `struct` naming the handler's declared output
+//   schema) and returns a `Cue` value; nothing downstream reads that
+//   struct as attachment metadata yet (no consumer of `attach` exists in
+//   this repo today — see `Cue`'s own doc below), so today the only
+//   observable effect of the return value is that its structural default
+//   rendering (`docs/decision-log.md`'s "Display: the structural default
+//   form" convention, exercised end to end by `tests/tier1-native/
+//   conventions-attach-schema`) becomes the claimed line's own displayed
+//   text. Only claims a cue with no trailing tag extension (`@VENDOR
+//   #(v.o.)` declines the same way a slug-carrying heading does — the
+//   tag is structure the pattern is never shown).
 // - `parenthetical` — a chain-gated `(delivery)` line (parser-enforced:
-//   only recognized directly after a live cue), `block`-capturing the
-//   dialogue that follows IT.
+//   only recognized directly after a live cue). **Also migrated to
+//   ATTACH MODE by issue #2166**, for the identical reason `cue` was:
+//   it claims and consumes only its own line, declares `attach =
+//   Parenthetical`, and returns a `Parenthetical` value.
 //
-// ⚠ **Cue + parenthetical + dialogue is two independent claims, not one
-// joined attachment.** `capture_block`'s ruled terminator (issue #1839)
-// ends a captured run at "a blank line, or any element-level line" —
-// and a `PARENTHETICAL` is explicitly one of those. So when a cue is
-// directly followed by a parenthetical (the common screenplay shape,
-// `docs/prose-dialect-spec.md` §8's own worked pages: `@VENDOR` /
-// `(hushed)` / dialogue), `cue`'s own `block` capture sees ZERO lines —
-// the very next item is the parenthetical, not plain dialogue — and
-// `cue` emits the speaker name followed by a BLANK line (the `>{ {name}
-// \n{body} }` template's own newline still renders even when `{body}`
-// interpolates to the empty `Fragment` — pinned in `tests/tier1-native/
-// conventions-screenplay-preset/expected.txt`). `parenthetical` is then claimed on
-// its own very next iteration, and IT captures the dialogue. There is no
-// context injection (deferred, §3.5b's own Deferred list: "handlers
-// reading attachment data") linking the two calls — `cue` never learns
-// what `parenthetical` captured, and vice versa. This is not a bug this
-// preset works around; it is what the currently-landed mechanism
-// supports, and `crates/internal/brink-ir/src/hir/lower_native/tests.rs`
-// (`a_cue_block_capture_stops_at_a_following_parenthetical_and_the_
-// parenthetical_claims_separately`) pins exactly this split.
+// ⚠ **Cue, parenthetical, and the dialogue that follows are three
+// independent claims today, not one joined attachment.** Before issue
+// #2166, `cue`/`parenthetical` were `block`-capturing handlers that
+// WRAPPED the run following their matched line into their own template
+// output — this is exactly the shape the ruled attach/wrap split
+// (`docs/decision-log.md` 2026-08-03, "The element output model")
+// retires for a pattern-claiming handler that only ever wants to tag
+// *itself*, not re-emit someone else's dialogue. Under attach mode,
+// `cue`/`parenthetical` consume nothing beyond their own matched line;
+// the dialogue line(s) that follow are ordinary `CONTENT_LINE`s, lowered
+// and displayed through the same unclaimed path any other prose line
+// takes (verbatim, exactly as authored) — `cue` and `parenthetical`
+// never see them, and never learn what the other claimed. There is
+// still no context-injection linking the three claims (deferred, §3.5b's
+// own Deferred list: "handlers reading attachment data") — a real
+// consumer of `attach = Cue`/`attach = Parenthetical` (an editor
+// projection, a host binding) does not exist in this repo yet, so
+// "attaches metadata to the run that follows" is the schema's *declared*
+// intent, not a built runtime propagation today. What ships here is
+// exactly `#2178`'s landed mechanism: a claiming handler whose return
+// type agrees with its own `attach` clause, matched line → one call →
+// that struct's structural-default text.
 //
 // ⚠ **`try_claim` matches purely on extracted TEXT against a handler's
 // pattern — it never restricts a handler to only the grammar kind its
 // author had in mind.** `candidate()` decides whether a node offers
 // literal text to match at all; it does not gate WHICH handler may claim
 // it. A permissive `parenthetical` pattern (the obvious `.+`) would also
-// re-claim the very dialogue it just captured, the moment `capture_block`
-// re-lowers that captured run through the ordinary dispatch loop — proven
-// while building this preset (an earlier draft used `.+` and produced a
-// THIRD, spurious `parenthetical` call over "You shouldn't be here.").
-// `parenthetical`'s pattern below is therefore deliberately narrow
-// (lowercase-initial only, no punctuation) — real screenplay
-// parenthetical deliveries (`(hushed)`, `(beat)`, `(to Kid)` excepted —
-// capitalized names inside a delivery are NOT covered by this pattern,
-// a known, documented narrowing) satisfy this; ordinary dialogue
-// (capitalized, punctuated) does not. Widening this pattern safely needs
-// either a kind-aware dispatch restriction (a mechanism change beyond
-// this issue's fence) or a token that survives the parens/braces some
-// other way — not attempted here.
+// re-claim an ordinary dialogue line that happens to be lowercase and
+// punctuation-free — `parenthetical`'s pattern below is therefore
+// deliberately narrow (lowercase-initial only, no punctuation) — real
+// screenplay parenthetical deliveries (`(hushed)`, `(beat)`, `(to Kid)`
+// excepted — capitalized names inside a delivery are NOT covered by this
+// pattern, a known, documented narrowing) satisfy this; ordinary
+// dialogue (capitalized, punctuated) does not. Widening this pattern
+// safely needs either a kind-aware dispatch restriction (a mechanism
+// change beyond this issue's fence) or a token that survives the
+// parens/braces some other way — not attempted here.
 //
 // ⚠ **This is not just a self-re-claim hazard — it is the real constraint
 // on this preset's patterns.** Because `try_claim` is kind-blind (see
@@ -167,20 +166,19 @@
 // which handler may claim a given match), `parenthetical`'s
 // `^[a-z][a-z' -]*$` pattern will claim ANY all-lowercase,
 // punctuation-free line anywhere a `CONTENT_LINE` is itself a claim
-// candidate — not only a chain-gated `PARENTHETICAL` node and not only
-// inside dialogue. An ordinary, unrelated action/prose line elsewhere in
-// the same project (`she waits`, `he nods slowly`) matches the same
-// pattern and gets wrongly rewritten through `parenthetical`, block-
-// capturing whatever plain lines follow it. Keeping every ordinary prose
-// line either capitalized, punctuated, or otherwise outside this exact
-// shape is the only guard today — there is no kind restriction to fall
-// back on.
+// candidate — not only a chain-gated `PARENTHETICAL` node. An ordinary,
+// unrelated action/prose line elsewhere in the same project (`she
+// waits`, `he nods slowly`) matches the same pattern and gets wrongly
+// rewritten through `parenthetical`. Keeping every ordinary prose line
+// either capitalized, punctuated, or otherwise outside this exact shape
+// is the only guard today — there is no kind restriction to fall back
+// on.
 //
 // ⚠ **Compact cues (`@NAME: text`, §8b.9) and any cue/heading carrying a
 // tag extension are NOT covered.** `COMPACT_CUE` fuses a `CUE_NAME` and
 // an ordinary `CONTENT_LINE` (which may itself carry markup) into one
-// node; `candidate()` widens to `CUE`/`PARENTHETICAL` for this issue but
-// deliberately not to `COMPACT_CUE`, since matching it safely needs
+// node; `candidate()` widens to `CUE`/`PARENTHETICAL` for issue #1720
+// but deliberately not to `COMPACT_CUE`, since matching it safely needs
 // either a two-piece capture (name AND fused text) `try_claim`'s
 // single-text-node contract does not support today, or a policy for
 // what happens when the fused line is not wholly literal. Left
@@ -198,6 +196,37 @@
 // `[right, uppercase]` here would silently ship a decorative annotation
 // that lies about what it does. Left off entirely rather than shipping
 // a half-working one; add it once multi-token values land.
+//
+// # Dispatch order — chosen deliberately (issue #2166)
+//
+// Every handler's `order` below is total, explicit, and authored
+// (issue #2164: no default, no tie-break, `E179` on a duplicate). None
+// of these four patterns actually overlap on any input today — `heading`
+// requires a literal `INT.`/`EXT.` prefix, `transition` requires a
+// trailing `:` that neither of `cue`/`parenthetical`'s character classes
+// admit, and `cue`/`parenthetical` are disjoint on case (`[A-Z…]` vs
+// `[a-z…]`) — so no relative ordering among these four changes which
+// handler claims which line *today*. The values are still chosen to
+// reflect the precedence a screenplay actually needs if that ever
+// stops being true (a future convention narrowing one of these
+// classes, or a project overriding one pattern to widen it):
+//
+// - `heading = 10` — the most narrowly anchored pattern (a literal
+//   prefix token), and the only one a widened neighbour could never
+//   plausibly subsume. Tried first.
+// - `transition = 20` — also anchored (a trailing literal `:`), second
+//   most specific.
+// - `cue = 30` — an unanchored, whole-line character-class pattern
+//   (`[A-Z '-]*`). Broader than the two above, so tried only after they
+//   have had first refusal.
+// - `parenthetical = 40` — the single widest, most permissive pattern
+//   this file declares (documented above: it will claim ANY lowercase,
+//   punctuation-free line anywhere a claim candidate appears, not only a
+//   real chain-gated parenthetical). Ordered last on purpose, so every
+//   more specific pattern in this module gets to run first.
+//
+// Gaps of 10 between values are left deliberately, so a future handler
+// can be inserted between any two without renumbering the rest.
 
 /// The host-facing scene-entry notification (issue #2092). Fires once per
 /// claimed heading, before the handler's display text returns. `title` is
@@ -233,14 +262,28 @@ fn transition(text: string) {
   return text;
 }
 
-@[convention(claims = "^(?<name>[A-Z][A-Z '-]*)$", order = 30, block)]
-fn cue(name: string, body: content) >{
-  {name}
-  {body}
+/// `cue`'s declared attach schema (issue #2178). One field today — just
+/// the speaker name `cue`'s own `claims` pattern captures. No `voiceover`/
+/// `offscreen`-style field is declared here: this preset does not claim a
+/// cue's tag extension (`@VENDOR #(v.o.)` is deliberately left unclaimed,
+/// see the module doc above), so there is nothing captured to populate
+/// such a field with — adding one would be a dead, permanently-false key.
+struct Cue {
+  speaker: string,
 }
 
-@[convention(claims = "^(?<delivery>[a-z][a-z' -]*)$", order = 40, block)]
-fn parenthetical(delivery: string, body: content) >{
-  ({delivery})
-  {body}
+@[convention(claims = "^(?<name>[A-Z][A-Z '-]*)$", attach = Cue, order = 30)]
+fn cue(name: string): Cue {
+  return Cue { speaker: name };
+}
+
+/// `parenthetical`'s declared attach schema (issue #2178) — the claimed
+/// delivery text, verbatim.
+struct Parenthetical {
+  delivery: string,
+}
+
+@[convention(claims = "^(?<delivery>[a-z][a-z' -]*)$", attach = Parenthetical, order = 40)]
+fn parenthetical(delivery: string): Parenthetical {
+  return Parenthetical { delivery: delivery };
 }
