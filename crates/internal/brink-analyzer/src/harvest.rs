@@ -76,6 +76,15 @@ pub struct SpanHarvest {
     /// declares it — an undeclared attribute is still real usage, worth
     /// completing, exactly like an undeclared tag is (freeform stays the
     /// default; `markup_check` is the separate pass that diagnoses it).
+    ///
+    /// The recorded site is the *enclosing span's* range, not the
+    /// attribute's own — HIR's `SpanPart::attrs` is a flat
+    /// `Vec<(String, String)>` with no per-attribute provenance, so there
+    /// is no narrower range to record. A consumer highlighting or renaming
+    /// a specific attribute will select the whole `<tag …>` node, and two
+    /// occurrences of the same attribute name on one tag (e.g.
+    /// `<wave a="1" a="2">`) report two byte-identical sites. This is a
+    /// stated limitation of the current HIR shape, not a bug in this pass.
     pub attrs: BTreeMap<String, Vec<HarvestSite>>,
     /// The host manifest's own declaration of this kind, when registered —
     /// the "declaration upgrades" half of §5's ruling, carried verbatim

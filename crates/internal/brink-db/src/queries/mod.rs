@@ -734,12 +734,14 @@ pub(crate) fn symbol_index_query(
 /// §5): every `@NAME` cue payload and every inline-markup span kind/
 /// attribute name, harvested from every file's HIR and upgraded by the
 /// registered host manifest's `markup` vocabulary — the compiler-side
-/// sibling of [`symbol_index_query`], read the exact same way: every
-/// file's [`lowered_query`] output, nothing else. That is what gives this
-/// query the same incrementality `symbol_index_query` already has — an
-/// edit to file A's prose only recomputes this merge when file A's own
-/// `LoweredFile` output changes (salsa's per-file early cutoff), not on
-/// every keystroke project-wide.
+/// sibling of [`symbol_index_query`]. Its dependency set is every file's
+/// [`lowered_query`] output *plus* `project.analysis_options(db).host_manifest`
+/// (read below to build the manifest upgrade) — a manifest edit does
+/// invalidate this memo, unlike a plain per-file prose edit. That still
+/// gives this query the same per-file early cutoff `symbol_index_query`
+/// has for the `lowered_query` half: an edit to file A's prose only
+/// recomputes this merge when file A's own `LoweredFile` output changes,
+/// not on every keystroke project-wide.
 ///
 /// Thin wrapper over [`brink_analyzer::harvest`] — see that function's own
 /// doc, and `crate::db::ProjectDb::harvest_index` for the public surface a

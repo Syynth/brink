@@ -175,9 +175,13 @@ fn a_declared_but_unused_span_kind_completes_with_zero_files_using_it() {
 }
 
 /// An ink (`.ink`) file contributes no cue harvest — the native-only cue
-/// channel doesn't exist in that grammar — but an ordinary ink markup span
-/// still harvests, proving the index isn't accidentally native-gated as a
-/// whole.
+/// channel doesn't exist in that grammar (ink cannot spell a `@NAME` cue at
+/// all). Proven alongside a native `.brink` file in the same project: the
+/// native file's cue harvests normally, and the combined index's `cues`
+/// stays keyed only by that native cue — the ink file contributes nothing
+/// to it, which is what shows the index isn't accidentally native-gated as
+/// a whole (the ink file doesn't suppress harvesting project-wide, it
+/// simply has no cue channel to contribute from).
 #[test]
 fn ink_files_never_contribute_cue_harvest() {
     let mut db = ProjectDb::new();
@@ -185,7 +189,14 @@ fn ink_files_never_contribute_cue_harvest() {
         "main.ink",
         "=== knot ===\nHello there.\n-> END\n".to_owned(),
     );
+    db.set_file("a.brink", "flow a() {\n  @KID\n  Says who?\n}\n".to_owned());
 
     let index = db.harvest_index();
-    assert!(index.cues.is_empty(), "{:?}", index.cues);
+    assert_eq!(
+        index.cues.keys().collect::<Vec<_>>(),
+        vec!["KID"],
+        "only the native file's cue appears; the ink file contributes \
+         nothing to `cues`: {:?}",
+        index.cues
+    );
 }

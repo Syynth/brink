@@ -505,10 +505,14 @@ impl ProjectDb {
     /// project, upgraded by the registered host manifest's `markup`
     /// vocabulary where one is declared. The compiler-side sibling of
     /// [`symbol_index`](Self::symbol_index) — a completion consumer reads
-    /// this the same way it reads that index, and gets the same
-    /// incrementality: an edit backdates this memo exactly when it
-    /// backdates the symbol index (both read nothing beyond every file's
-    /// [`lowered_query`] output).
+    /// this the same way it reads that index, and gets the same per-file
+    /// [`lowered_query`] early cutoff the symbol index has: an edit
+    /// backdates this memo when it backdates the symbol index's
+    /// `lowered_query` half, but this index also depends on the registered
+    /// host manifest, so a manifest-only edit backdates this memo without
+    /// touching the symbol index at all (see
+    /// [`harvest_index_query`](crate::queries::harvest_index_query)'s own
+    /// doc for the full dependency set).
     pub fn harvest_index(&self) -> Arc<HarvestIndex> {
         Arc::clone(harvest_index_query(&self.salsa, self.project))
     }
