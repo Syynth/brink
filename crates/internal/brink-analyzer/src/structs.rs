@@ -173,26 +173,13 @@ pub fn check(
             stitch_locals: None,
             diagnostics: &mut out,
         };
-        visit::visit(hir, &mut v);
-        // File-level declaration initializers aren't part of `visit::visit`'s
-        // block-tree walk (see its module doc) — same pattern
-        // `dialect_gate`/`annotations` use for VAR/CONST. No enclosing def
-        // here, so `locals` is `None` — only a reference to a global
-        // VAR/CONST is classifiable at file scope, matching `infer::body`'s
-        // own firewall (a body never sees another def's locals either).
-        let ctx = MistypeCtx {
-            index,
-            globals: &globals,
-            signatures: &inference.signatures,
-            resolution_by_range: &resolution_by_range,
-            locals: None,
-        };
-        for var in &hir.variables {
-            check_expr(&var.value, file, &shapes, &ctx, &mut out);
-        }
-        for c in &hir.constants {
-            check_expr(&c.value, file, &shapes, &ctx, &mut out);
-        }
+        // Issue #2098: `ConstructionVisitor::enter_expr` has no state that
+        // needs resetting between the block tree and a file-level
+        // declaration's own initializer (`locals` is already `None` at this
+        // scope) — so the shared entry point covers both in one drive, and
+        // the hand-rolled `check_expr`/`expr_children` mirror of
+        // `visit::visit`'s own descent this used to need is gone.
+        visit::visit_with_decl_initializers(hir, &mut v);
     }
     out
 }
@@ -469,15 +456,12 @@ pub fn check_duplicates(files: &[(FileId, &HirFile)]) -> Vec<Diagnostic> {
             file,
             diagnostics: &mut out,
         };
-        visit::visit(hir, &mut v);
-        // Same file-level VAR/CONST-initializer gap `check`'s own doc
-        // explains — `visit::visit`'s block-tree walk doesn't cover them.
-        for var in &hir.variables {
-            check_duplicates_expr(&var.value, file, &mut out);
-        }
-        for c in &hir.constants {
-            check_duplicates_expr(&c.value, file, &mut out);
-        }
+        // Issue #2098: `DuplicateFieldVisitor::enter_expr` carries no
+        // per-position state at all, so the shared entry point covers the
+        // block tree and every file-level declaration's own initializer in
+        // one drive — the hand-rolled `check_duplicates_expr`/`expr_children`
+        // mirror of `visit::visit`'s own descent this used to need is gone.
+        visit::visit_with_decl_initializers(hir, &mut v);
     }
     out
 }
@@ -496,17 +480,6 @@ impl HirVisitor for DuplicateFieldVisitor<'_> {
         if let Expr::StructLiteral(sl) = expr {
             check_literal_duplicates(sl, self.file, self.diagnostics);
         }
-    }
-}
-
-/// [`check_expr`]'s twin for the duplicate-field pass — same file-level
-/// VAR/CONST-initializer recursion, independent of the shape table.
-fn check_duplicates_expr(expr: &Expr, file: FileId, out: &mut Vec<Diagnostic>) {
-    if let Expr::StructLiteral(sl) = expr {
-        check_literal_duplicates(sl, file, out);
-    }
-    for child in expr_children(expr) {
-        check_duplicates_expr(child, file, out);
     }
 }
 
@@ -529,75 +502,6 @@ fn check_literal_duplicates(sl: &StructLiteral, file: FileId, out: &mut Vec<Diag
                 code: DiagnosticCode::E084,
             });
         }
-    }
-}
-
-/// Recurse into `expr` looking for struct literals — used only for the
-/// file-level VAR/CONST initializers `visit::visit` doesn't cover; every
-/// other position is already reached through the `HirVisitor` walk above.
-fn check_expr(
-    expr: &Expr,
-    file: FileId,
-    shapes: &BTreeMap<String, ShapeInfo>,
-    ctx: &MistypeCtx<'_>,
-    out: &mut Vec<Diagnostic>,
-) {
-    if let Expr::StructLiteral(sl) = expr {
-        check_literal(sl, file, shapes, ctx, out);
-    }
-    for child in expr_children(expr) {
-        check_expr(child, file, shapes, ctx, out);
-    }
-}
-
-/// Direct child expressions of `expr` — a small mirror of
-/// `hir::visit::walk_expr`'s recursion shape, needed only because
-/// `check_expr` runs outside that walker (see its own doc).
-fn expr_children(expr: &Expr) -> Vec<&Expr> {
-    match expr {
-        Expr::Prefix(_, inner) | Expr::Postfix(inner, _) => vec![inner],
-        Expr::FieldAccess(fa) => vec![&fa.base],
-        Expr::Infix(ie) => vec![&ie.lhs, &ie.rhs],
-        Expr::Call(_, args) => args.iter().collect(),
-        Expr::ArrayLiteral(a) => a.elements.iter().collect(),
-        Expr::MapLiteral(m) => m.entries.iter().flat_map(|(k, v)| [k, v]).collect(),
-        Expr::Index(idx) => vec![&idx.base, &idx.index],
-        Expr::StructLiteral(sl) => sl.fields.iter().map(|(_, v)| v).collect(),
-        // T1c `#fn(target, args…)`: only the bound arguments are child
-        // expressions — the target is a static `Path` field, same as `Call`.
-        Expr::FnLiteral(fl) => fl.args.iter().collect(),
-        // T1e `ref lvalue-path`: only the operand is a child expression.
-        Expr::RefArg(ra) => vec![&ra.operand],
-        // A lambda's whole body (issue #1685, #1764). A construction
-        // literal's shape agreement doesn't depend on where the literal
-        // sits, so this walk must reach a braced body's *statements* too,
-        // not just its trailing value expression — see
-        // `LambdaBody::all_exprs`. (Locals declared inside the body are not
-        // in `MistypeCtx::locals`, which is `None` at file scope anyway, so
-        // an initializer naming one classifies `Unknown` and stays silent:
-        // "Unknown never disagrees", the same posture as every other
-        // unclassifiable initializer here.)
-        Expr::Lambda(l) => l.body.all_exprs(),
-        Expr::Range(r) => vec![&r.start, &r.end],
-        Expr::String(s) => s
-            .parts
-            .iter()
-            .filter_map(|p| match p {
-                brink_ir::StringPart::Interpolation(e) => Some(e.as_ref()),
-                brink_ir::StringPart::Literal(_) => None,
-            })
-            .collect(),
-        // Block capture (issue #1839) — same shared flattening
-        // `Expr::Lambda` uses above, over a captured `Stmt` run instead of
-        // a `BlockStmt` one (issue #1764's audit-driven pattern).
-        Expr::Fragment(stmts) => brink_ir::fragment_stmt_exprs(stmts),
-        Expr::Int(_)
-        | Expr::Float(_)
-        | Expr::Bool(_)
-        | Expr::Null
-        | Expr::Path(_)
-        | Expr::DivertTarget(_)
-        | Expr::ListLiteral(_) => Vec::new(),
     }
 }
 
@@ -1252,10 +1156,13 @@ mod tests {
 
     // ─── issue #1764: a lambda's statements in a VAR/CONST initializer ──
 
-    /// The VAR/CONST-initializer recursion is the one walk that isn't
-    /// `visit::visit`'s (which already descends a lambda's statements), so it
-    /// has to descend them itself. A block-bodied lambda's `let` is a
-    /// statement, not the body's value expression.
+    /// Coverage for a lambda's statements in a VAR/CONST initializer comes
+    /// from `visit::visit_with_decl_initializers` (which reaches the
+    /// initializer at all) composed with `walk_expr`'s `Expr::Lambda` arm
+    /// (which already descends a lambda's statements) — there is no
+    /// separate hand-rolled recursion for this position (issue #2098). A
+    /// block-bodied lambda's `let` is a statement, not the body's value
+    /// expression.
     #[test]
     fn a_duplicate_field_in_a_lambda_statement_of_a_var_initializer_is_reported() {
         let (hir, _index, _res, _inf) = build_native(

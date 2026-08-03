@@ -85,27 +85,13 @@ pub fn check(
             stitch_locals: None,
             diagnostics: &mut out,
         };
-        visit::visit(hir, &mut v);
-        // File-level VAR/CONST initializers aren't part of `visit::visit`'s
-        // walk — same pattern as `conversions::check`.
-        let ctx = MistypeCtx {
-            index,
-            globals: &globals,
-            signatures: &inference.signatures,
-            resolution_by_range: &resolution_by_range,
-            locals: None,
-        };
-        let fold = FoldCtx {
-            index,
-            resolution_by_range: &resolution_by_range,
-            const_ints: &const_ints,
-        };
-        for var in &hir.variables {
-            check_expr(&var.value, file, &ctx, &fold, &mut out);
-        }
-        for c in &hir.constants {
-            check_expr(&c.value, file, &ctx, &fold, &mut out);
-        }
+        // Issue #2098: `RefinementVisitor::enter_expr` has no state that
+        // needs resetting between the block tree and a file-level
+        // declaration's own initializer (`locals` is already `None` at this
+        // scope) — so the shared entry point covers both in one drive, and
+        // the hand-rolled `check_expr`/`expr_children` mirror of
+        // `visit::visit`'s own descent this used to need is gone.
+        visit::visit_with_decl_initializers(hir, &mut v);
     }
     out
 }
@@ -195,77 +181,6 @@ impl HirVisitor for RefinementVisitor<'_> {
         let ctx = self.ctx();
         let fold = self.fold_ctx();
         check_call(expr, self.file, &ctx, &fold, self.diagnostics);
-    }
-}
-
-/// Recurse into `expr` looking for `int(r)` calls — only for the file-level
-/// VAR/CONST initializers `visit::visit` doesn't cover (mirrors
-/// `conversions::check_expr`).
-fn check_expr(
-    expr: &Expr,
-    file: FileId,
-    ctx: &MistypeCtx<'_>,
-    fold: &FoldCtx<'_>,
-    out: &mut Vec<Diagnostic>,
-) {
-    check_call(expr, file, ctx, fold, out);
-    for child in expr_children(expr) {
-        check_expr(child, file, ctx, fold, out);
-    }
-}
-
-/// Direct child expressions — mirrors `conversions::expr_children` (needed
-/// only because `check_expr` runs outside the `HirVisitor` walk).
-fn expr_children(expr: &Expr) -> Vec<&Expr> {
-    match expr {
-        Expr::Prefix(_, inner) | Expr::Postfix(inner, _) => vec![inner],
-        Expr::FieldAccess(fa) => vec![&fa.base],
-        Expr::Infix(ie) => vec![&ie.lhs, &ie.rhs],
-        Expr::Call(_, args) | Expr::FnLiteral(brink_ir::FnLiteral { args, .. }) => {
-            args.iter().collect()
-        }
-        Expr::ArrayLiteral(a) => a.elements.iter().collect(),
-        Expr::MapLiteral(m) => m.entries.iter().flat_map(|(k, v)| [k, v]).collect(),
-        Expr::StructLiteral(sl) => sl.fields.iter().map(|(_, v)| v).collect(),
-        Expr::Index(idx) => vec![&idx.base, &idx.index],
-        Expr::RefArg(ra) => vec![&ra.operand],
-        // A lambda's whole body (issue #1685, #1764), kept uniform with the
-        // sibling initializer walks (`conversions`, `contains_domain`,
-        // `structs`, `map_keys`) — see `LambdaBody::all_exprs`.
-        //
-        // Unlike those four, this one has **no reachable case today**, and
-        // so no regression test: `Expr::Lambda` is produced only by
-        // `hir::lower_native`, and the native surface has no range grammar
-        // at all (no `..` token, no `RANGE_EXPR`, and `lower_native` never
-        // mints an `Expr::Range`). Both legs of `check_call` need a range —
-        // leg (a) a literal `Expr::Range` in argument position, leg (b) an
-        // argument classifying to `Ty::Range`, which at file scope
-        // (`MistypeCtx::locals = None`) could only come from a global whose
-        // own initializer is a range literal — so neither can occur inside a
-        // lambda body while the surfaces stay disjoint. This descends anyway
-        // so the gap cannot silently reopen the day NS-A5 range syntax lands
-        // natively; it is a no-op until then, not a fix.
-        Expr::Lambda(l) => l.body.all_exprs(),
-        Expr::Range(r) => vec![&r.start, &r.end],
-        Expr::String(s) => s
-            .parts
-            .iter()
-            .filter_map(|p| match p {
-                brink_ir::StringPart::Interpolation(e) => Some(e.as_ref()),
-                brink_ir::StringPart::Literal(_) => None,
-            })
-            .collect(),
-        // Block capture (issue #1839), kept uniform with the sibling
-        // initializer walks for the same "descend anyway" reason the
-        // `Expr::Lambda` arm above gives — see `brink_ir::fragment_stmt_exprs`.
-        Expr::Fragment(stmts) => brink_ir::fragment_stmt_exprs(stmts),
-        Expr::Int(_)
-        | Expr::Float(_)
-        | Expr::Bool(_)
-        | Expr::Null
-        | Expr::Path(_)
-        | Expr::DivertTarget(_)
-        | Expr::ListLiteral(_) => Vec::new(),
     }
 }
 
