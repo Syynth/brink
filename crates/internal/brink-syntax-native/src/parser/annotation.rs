@@ -91,23 +91,26 @@ fn annotation_arg(p: &mut Parser<'_, '_>) {
             if p.at(L_PAREN) {
                 annotation_args(p);
             } else if p.at(EQ) {
-                // The key/value clause form (issue #1719): `key = "value"`.
-                // Only a string-literal value is accepted — the ruled
-                // spellings (`@[element(args = "…")]`, `@[style(chan =
-                // "…")]`) never carry a bare-ident or numeric value on the
-                // right of `=`, so nothing else is attempted here. A
-                // malformed right-hand side is NOT recovered: it leaves no
-                // `STRING_LIT` child for `AnnotationArg::eq_value` to find
-                // (the lowering-side reader diagnoses that as a missing
-                // value), but the token itself is left unconsumed, which
-                // desyncs the enclosing `annotation_args`/`annotation_line`
-                // loops — expect a real parser error (`expected R_PAREN`,
-                // then `expected R_BRACKET`, then a trailing-text error on
-                // the line) for a non-string right-hand side, not a single
-                // clean diagnostic.
+                // The key/value clause form (issue #1719): `key = "value"`,
+                // widened by issue #2164 to also accept `key = <integer>`
+                // (`@[convention(…, order = 30)]`) — the ordering key is a
+                // bare integer, RULED (`docs/decision-log.md` 2026-08-03),
+                // not a quoted string like every other clause value this
+                // grammar has carried until now. A malformed right-hand
+                // side is NOT recovered: it leaves no `STRING_LIT`/
+                // `INTEGER_LIT` child for `AnnotationArg::eq_value`/
+                // `eq_int_value` to find (the lowering-side reader
+                // diagnoses that as a missing value), but the token itself
+                // is left unconsumed, which desyncs the enclosing
+                // `annotation_args`/`annotation_line` loops — expect a real
+                // parser error (`expected R_PAREN`, then `expected
+                // R_BRACKET`, then a trailing-text error on the line) for
+                // neither shape, not a single clean diagnostic.
                 p.expect(EQ);
                 if p.at(QUOTE) {
                     annotation_string_value(p);
+                } else if p.at(INTEGER) {
+                    annotation_integer_value(p);
                 }
             }
             p.finish_node();
@@ -173,5 +176,18 @@ fn annotation_string_value(p: &mut Parser<'_, '_>) {
         p.bump();
     }
     p.expect(QUOTE);
+    p.finish_node();
+}
+
+/// An `INTEGER_LIT` for an annotation clause's `= <integer>` right-hand
+/// side (issue #2164, `@[convention(…, order = 30)]`) — a plain sibling
+/// wrap of the single `INTEGER` token, the same shape [`annotation_arg`]'s
+/// own top-level `INTEGER` arm already builds for a bare numeric argument.
+/// A key/value clause reuses that shape rather than inventing a second
+/// integer-literal node kind: `AnnotationArg::eq_int_value`'s
+/// `support::child::<IntegerLit>` cast works identically for either.
+fn annotation_integer_value(p: &mut Parser<'_, '_>) {
+    p.start_node(INTEGER_LIT);
+    p.expect(INTEGER);
     p.finish_node();
 }
