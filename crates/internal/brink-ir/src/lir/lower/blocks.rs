@@ -1307,6 +1307,12 @@ pub(super) fn try_lower_frame_local_auto_ref_stmt(
 /// into `args[0]`, so from here on both shapes are identical. `name` is the
 /// bare mutator verb (never the dotted UFCS spelling) — used only for
 /// diagnostic messages.
+#[expect(
+    clippy::too_many_lines,
+    reason = "arity/lvalue checks plus the three lvalue-shape dispatches \
+              (bare variable, struct field, indexed chain) read better as \
+              one function than split across an arbitrary line boundary"
+)]
 fn lower_mutator_call(
     kind: MutatorKind,
     name: &str,
@@ -1618,6 +1624,14 @@ fn lower_bare_mutator(
 ///    `RecordSet`, and the result written back into `root_target` — step 2
 ///    already proved the field exists on this exact root value, so nothing
 ///    from here on can fault.
+#[expect(
+    clippy::too_many_lines,
+    reason = "mirrors lower_bare_mutator's own per-MutatorKind RMW dispatch, \
+              plus the field-projection take/RecordSet/write-back steps \
+              lower_single_level_field_write already needs for a plain \
+              field write — reads better as one function than split \
+              across an arbitrary line boundary"
+)]
 fn lower_field_mutator(
     kind: MutatorKind,
     path: &hir::Path,
