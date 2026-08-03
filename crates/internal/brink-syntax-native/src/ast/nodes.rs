@@ -812,6 +812,22 @@ impl AnnotationArg {
     pub fn eq_int_value(&self) -> Option<IntegerLit> {
         support::child(&self.syntax)
     }
+
+    /// The `= <ident>` clause's bare-identifier value (issue #2178,
+    /// `@[convention(…, attach = Cue)]` — the attached schema names a
+    /// declared `struct`, so this clause is a bare identifier, not a
+    /// quoted string or integer literal). `None` for every other clause
+    /// shape.
+    ///
+    /// Unlike [`Self::eq_value`]/[`Self::eq_int_value`], this is not a
+    /// distinct child *node* kind — the value is bumped as a second bare
+    /// `IDENT` token, a sibling of the key's own `IDENT` token (see
+    /// `parser::annotation::annotation_arg`'s `IDENT` arm). So this reads
+    /// the **second** direct-child `IDENT` token, not the first (which
+    /// [`Self::name_token`] already owns).
+    pub fn eq_ident_value(&self) -> Option<SyntaxToken> {
+        support::tokens(&self.syntax, IDENT).nth(1)
+    }
 }
 
 impl CallExpr {

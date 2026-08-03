@@ -239,8 +239,13 @@ pub(super) fn lower_top_level_container(
     // can check against the paired annotation's captures without
     // re-parsing either line.
     let element_annotation = super::annotation::element_annotation(file_id, syntax, &params, diags);
-    let convention_annotation =
-        super::annotation::convention_annotation(file_id, syntax, &params, diags);
+    let convention_annotation = super::annotation::convention_annotation(
+        file_id,
+        syntax,
+        &params,
+        return_type.as_ref(),
+        diags,
+    );
     let style_annotation = super::annotation::style_annotation(
         file_id,
         syntax,
@@ -352,8 +357,13 @@ fn lower_stitch(
     // claiming is legal only above a top-level `fn`, so a nested `flow`
     // carrying one gets `E112` from the generic annotation-line walk.
     let element_annotation = super::annotation::element_annotation(file_id, syntax, &params, diags);
-    let convention_annotation =
-        super::annotation::convention_annotation(file_id, syntax, &params, diags);
+    let convention_annotation = super::annotation::convention_annotation(
+        file_id,
+        syntax,
+        &params,
+        return_type.as_ref(),
+        diags,
+    );
     let style_annotation = super::annotation::style_annotation(
         file_id,
         syntax,

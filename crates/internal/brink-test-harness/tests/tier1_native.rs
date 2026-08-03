@@ -337,6 +337,21 @@ fn conventions_screenplay_preset() {
     assert_case("conventions-screenplay-preset");
 }
 
+/// `@[convention(…, attach = StructName, order = N)]` (issue #2178, split
+/// from #2164's 2026-08-03 design-backport comment "item 2") reaching the
+/// full pipeline: a claiming handler whose declared return type is a
+/// `struct` (checked against `attach` at the declaration, `E180`
+/// otherwise) actually returns one, and the claimed line's rendered text
+/// is that struct's default `Display` — proving the annotation-level
+/// schema declaration compiles and runs end to end, not just that it
+/// parses. This does **not** prove anything about a future NS-T
+/// projection actually reading `ClaimHandlerDecl::attach` (`#2111` is not
+/// built yet) — see this case's own `story.brink` doc comment.
+#[test]
+fn conventions_attach_schema() {
+    assert_case("conventions-attach-schema");
+}
+
 /// Compile-level sibling to `annotations_element_block`, proving the ⚠
 /// requirement `docs/decision-log.md`'s 2026-08-01 ruling flags as owed and
 /// unverified: a block's interior lines must keep their **own** line-table
@@ -848,6 +863,7 @@ fn every_case_directory_has_a_test() {
         "array-literal",
         "as-binding",
         "construction-literal",
+        "conventions-attach-schema",
         "conventions-screenplay-preset",
         "directive-like-tag",
         "divert-target-args",

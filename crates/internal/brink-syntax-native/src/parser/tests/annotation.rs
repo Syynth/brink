@@ -272,6 +272,32 @@ fn annotation_arg_key_value_negative_integer_is_a_parse_error() {
     );
 }
 
+/// Issue #2178: the key/value clause form widened a second time, to a
+/// bare-identifier value (`@[convention(claims = "…", attach = Cue)]`) —
+/// the attached schema names a declared `struct`, so this clause is
+/// neither a quoted string (`eq_value`) nor a bare integer
+/// (`eq_int_value`); `eq_ident_value` reads the plain identifier text.
+#[test]
+fn annotation_arg_key_value_ident() {
+    let src = "@[convention(attach = Cue)]\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let line = annotation_line_node(&p);
+    let args = line.args().expect("ANNOTATION_ARGS");
+    let arg = args.args().next().expect("ANNOTATION_ARG");
+    assert_eq!(arg.name_token().unwrap().text(), "attach");
+    assert!(
+        arg.eq_value().is_none(),
+        "must not be read as a string value"
+    );
+    assert!(
+        arg.eq_int_value().is_none(),
+        "must not be read as an integer value"
+    );
+    let ident = arg.eq_ident_value().expect("eq_ident_value");
+    assert_eq!(ident.text(), "Cue");
+}
+
 /// Two key/value clauses in one annotation, the `@[style(...)]` shape from
 /// the ruled example (`docs/prose-dialect-spec.md` §3.5b).
 #[test]

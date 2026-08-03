@@ -1649,6 +1649,31 @@ pub enum DiagnosticCode {
     /// second one is the problem" report — so an author sees the whole
     /// conflicting group regardless of which one they open first.
     E179,
+    /// A `@[convention(…, attach = StructName)]` clause names a struct the
+    /// declaration's own return type does not agree with (issue #2178,
+    /// split from #2164's 2026-08-03 design-backport comment "item 2":
+    /// "The attachment schema is a STRUCT — do not invent a DSL").
+    ///
+    /// `docs/decision-log.md` 2026-08-03 states the governing split
+    /// plainly: *"keys are declared, values are computed"* — `attach`
+    /// declares which keys a handler attaches and their types by naming an
+    /// ordinary `struct`; the handler body computes the values. That only
+    /// holds if the handler's own declared return type actually **is**
+    /// the named struct — a mismatch (a different type, a generic, a
+    /// `fn` type, or no declared return type at all) means the projection
+    /// and the handler's real output could never agree, so this is
+    /// reported at the `attach` clause's own value rather than silently
+    /// trusting the name. Reported the same "never a partial one" way
+    /// `E159`/`E178` are: no `ConventionAnnotation` at all results, rather
+    /// than one carrying a schema its own declaration cannot honor.
+    ///
+    /// Declaration-surface-only, like every other check in this module:
+    /// this compares `attach`'s name against the return type's own bare
+    /// name, and never checks whether a struct of that name is actually
+    /// *declared* anywhere — that is real name resolution's job (out of
+    /// scope for this code, same posture `E171`'s own doc explains for
+    /// captured-parameter types).
+    E180,
 }
 
 impl DiagnosticCode {
@@ -1840,6 +1865,7 @@ impl DiagnosticCode {
         Self::E176,
         Self::E178,
         Self::E179,
+        Self::E180,
     ];
 
     /// The stable string representation (e.g., `"E001"`).
@@ -2028,6 +2054,7 @@ impl DiagnosticCode {
             Self::E176 => "E176",
             Self::E178 => "E178",
             Self::E179 => "E179",
+            Self::E180 => "E180",
         }
     }
 
@@ -2327,6 +2354,9 @@ impl DiagnosticCode {
             }
             Self::E178 => "`@[convention(…)]` needs a required `order = N` clause",
             Self::E179 => "two `@[convention]` declarations in this module carry the same `order`",
+            Self::E180 => {
+                "a `@[convention(…, attach = StructName)]` clause disagrees with the handler's own declared return type"
+            }
         }
     }
 
@@ -2580,6 +2610,7 @@ impl DiagnosticCode {
             "E176" => Some(Self::E176),
             "E178" => Some(Self::E178),
             "E179" => Some(Self::E179),
+            "E180" => Some(Self::E180),
             _ => None,
         }
     }

@@ -481,6 +481,27 @@ fn radio(chan: string, text: content) {
   its existing blank-beat behavior (`inline-markup-point-marker`
   fixture, issue #1716), a separate, already-settled question this rule
   does not touch.
+- **`attach = StructName` — the declared attachment schema (RULED,
+  `docs/decision-log.md` 2026-08-03 "The element output model"; issue
+  #2178, split from #2164's item 2).** An optional clause on
+  `@[convention(claims = "…", order = N)]` naming a declared `struct` —
+  the schema of keys and types the handler attaches to the run that
+  follows. Governing split: **declared** (this clause: which keys, what
+  types — static, editor-readable, cacheable) vs. **computed** (the
+  handler body: the actual values). Deliberately not a new declarative
+  sub-language — a `struct` is already declarative, statically known,
+  serialized, and understood by compiler + editor + host, so reusing it
+  is the whole point. A handler can never attach a *computed key name*:
+  nothing about a plain `struct` return type lets it invent one, since
+  the struct's own declaration fixes the field names once and for all.
+  Checked at the declaration (`E180`): the handler's own return-type
+  annotation must name the same struct `attach` does, the same
+  declaration-surface-only posture `E166`/`E171` already take for
+  `block`/captured-parameter checks — real name resolution (does a
+  struct of that name actually exist) is deliberately out of scope here.
+  `ClaimHandlerDecl::attach` carries the schema name onward — the field a
+  future NS-T projection (#2111, blocked on this landing) reads to
+  surface a handler's declared output schema to the editor/host.
 - **`@[style]` — declared editor presentation (RULED, addenda 3–4).**
   A companion annotation mapping captures (and `line` = the whole
   line; `dispatch` = the `!name` prefix) to style values, drawn from

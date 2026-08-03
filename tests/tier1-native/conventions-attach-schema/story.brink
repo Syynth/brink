@@ -1,0 +1,29 @@
+// `@[convention(…, attach = StructName, order = N)]` (issue #2178, split
+// from #2164's 2026-08-03 design-backport comment "item 2") end to end.
+//
+// `cue`'s declared return type (`: Cue`) must agree with its `attach = Cue`
+// clause or the declaration is `E180` and never registered as a claiming
+// handler at all — this fixture proves the AGREEING case compiles and runs:
+// `cue` claims the `VENDOR` line, its body returns a real `Cue { … }` value,
+// and that struct's default rendering becomes the claimed line's text.
+//
+// This is a syntax/plumbing proof for the schema declaration itself, not a
+// proof that any editor/host projection reads `attach` — no such projection
+// exists yet (`#2111` is blocked on this landing, per the issue's own
+// sequencing note); `ClaimHandlerDecl::attach` is populated but has no
+// consumer in this repo today.
+struct Cue {
+  speaker: string,
+  voiceover: bool,
+}
+
+@[convention(claims = "^(?<name>[A-Z][A-Z '-]*)$", attach = Cue, order = 10)]
+fn cue(name: string): Cue {
+  return Cue { speaker: name, voiceover: false };
+}
+
+flow main() {
+  VENDOR
+  You shouldn't be here after dark.
+  -> END
+}

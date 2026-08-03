@@ -553,6 +553,7 @@ asserts every variant has a corresponding doc file and that no orphaned doc file
 | [`E176`](diagnostics/E176.md) | A divert-with-args site (`-> knot(args)`, tunnel call, or thread-start) supplies the wrong number of arguments for its resolved target's declared parameters — `E031`'s sibling for the divert call shape. |
 | [`E178`](diagnostics/E178.md) | A `@[convention(claims = "…")]` annotation has no `order` clause — required, with no default. |
 | [`E179`](diagnostics/E179.md) | Two `@[convention(…)]` declarations in the same module carry the same `order` — reported against every declaration in the group. |
+| [`E180`](diagnostics/E180.md) | A `@[convention(…, attach = StructName)]` clause names a struct the handler's own declared return type does not agree with. |
 
 ## Known limitations
 

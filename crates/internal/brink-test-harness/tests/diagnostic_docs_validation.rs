@@ -280,6 +280,10 @@ fn diagnostic_codes_are_unique() {
 ///   `element`/`style`; raised only from `hir::lower_native::annotation`
 ///   (`E178`) and `hir::lower_native::element::diagnose_duplicate_order`
 ///   (`E179`).
+/// - `E180` — `@[convention(…, attach = StructName)]`'s schema-vs-return-type
+///   agreement check (issue #2178, split from #2164's 2026-08-03 design
+///   backport): same native-only posture, raised only from
+///   `hir::lower_native::annotation::parse_convention`.
 ///
 /// Codes intentionally **excluded** despite living in the same numeric
 /// neighborhood: `E157` (the unnamed-once-only-choice / unnamed-sequence
@@ -289,7 +293,7 @@ fn diagnostic_codes_are_unique() {
 const NATIVE_ONLY_CODES: &[&str] = &[
     "E130", "E132", "E145", "E153", "E154", "E155", "E156", "E158", "E159", "E160", "E161", "E162",
     "E163", "E164", "E165", "E166", "E167", "E168", "E169", "E170", "E171", "E172", "E173", "E174",
-    "E178", "E179",
+    "E178", "E179", "E180",
 ];
 
 /// Every fenced code block's info string (the text right after the opening

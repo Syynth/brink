@@ -3321,6 +3321,74 @@ fn order_determines_precedence_not_declaration_position() {
     );
 }
 
+// ─── `attach = StructName` (issue #2178, split from #2164's 2026-08-03
+//     design-backport comment) ─────────────────────────────────────────
+
+#[test]
+fn attach_matching_the_declared_return_type_does_not_diagnose_e180() {
+    let (hir, _m, diags) = lower_src(
+        "struct Cue {\n  speaker: string\n}\n\n@[convention(claims = \"^(?<who>[A-Z]+)$\", attach = Cue, order = 10)]\nfn cue(who): Cue {\n  return Cue { speaker: who };\n}\n",
+    );
+    assert!(
+        !diags.iter().any(|d| d.code == DiagnosticCode::E180),
+        "attach matching the declared return type must not raise E180: {diags:?}"
+    );
+    let convention = hir.knots[0]
+        .convention_annotation
+        .as_ref()
+        .expect("present");
+    assert_eq!(
+        convention.attach.as_ref().map(|a| a.text.as_str()),
+        Some("Cue")
+    );
+}
+
+#[test]
+fn attach_with_no_return_type_at_all_diagnoses_e180() {
+    let (hir, _m, diags) = lower_src(
+        "struct Cue {\n  speaker: string\n}\n\n@[convention(claims = \"^(?<who>[A-Z]+)$\", attach = Cue, order = 10)]\nfn cue(who) {\n  return who;\n}\n",
+    );
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E180),
+        "attach with no declared return type at all must raise E180: {diags:?}"
+    );
+    // No partial annotation — same "never a partial one" posture E159/E178
+    // already take.
+    assert!(hir.knots[0].convention_annotation.is_none());
+}
+
+#[test]
+fn attach_naming_a_different_type_than_the_return_type_diagnoses_e180() {
+    let (_hir, _m, diags) = lower_src(
+        "struct Cue {\n  speaker: string\n}\n\n@[convention(claims = \"^(?<who>[A-Z]+)$\", attach = Cue, order = 10)]\nfn cue(who): string {\n  return who;\n}\n",
+    );
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E180),
+        "attach naming a struct the return type disagrees with must raise E180: {diags:?}"
+    );
+}
+
+#[test]
+fn no_attach_clause_at_all_never_diagnoses_e180() {
+    // `attach` is optional (unlike `order`) — a claiming handler that only
+    // ever emits text still needs no declared schema.
+    let (hir, _m, diags) = lower_src(
+        "@[convention(claims = \"^(?<who>[A-Z]+)$\", order = 10)]\nfn cue(who) {\n  return who;\n}\n",
+    );
+    assert!(
+        !diags.iter().any(|d| d.code == DiagnosticCode::E180),
+        "no attach clause must never raise E180: {diags:?}"
+    );
+    assert!(
+        hir.knots[0]
+            .convention_annotation
+            .as_ref()
+            .expect("present")
+            .attach
+            .is_none()
+    );
+}
+
 #[test]
 fn two_byte_identical_claim_patterns_diagnose_e168_on_the_later_one() {
     // Issue #1848: a duplicate claiming pattern is provably unreachable

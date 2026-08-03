@@ -340,6 +340,36 @@ pub struct ConventionAnnotation {
     /// instead of a `!name`-dispatched one (the built-in screenplay
     /// preset's `cue`/`parenthetical` handlers both declare it).
     pub block: bool,
+    /// The `attach = StructName` clause (issue #2178, split from #2164's
+    /// backport comment "item 2"), if declared — the handler's attached
+    /// output **schema**: a declared `struct`'s name, naming which keys
+    /// the handler attaches to the run that follows and their types.
+    /// `docs/decision-log.md` 2026-08-03 "The element output model": *"A
+    /// `struct` is already declarative, statically known, serialized, and
+    /// understood by compiler + editor + host — so the projection
+    /// carries a type and no new declarative sub-language exists."*
+    /// **Declared** here (the schema); the handler body **computes** the
+    /// values — the governing split the same ruling states: "keys are
+    /// declared, values are computed." A handler may never attach a
+    /// computed key *name*: that isn't a check this field needs, because
+    /// nothing about a plain `struct` return type lets a handler invent
+    /// one — the field names are fixed by the struct's own declaration.
+    ///
+    /// `None` when absent: `attach` is optional, unlike `order` — a
+    /// claiming handler that only ever emits text (the pre-#2178 shape)
+    /// still needs no declared schema.
+    ///
+    /// Validated against [`Knot::return_type`]/[`Stitch::return_type`] by
+    /// [`crate::hir::lower_native::annotation::parse_convention`]: the
+    /// declared return type's bare name must equal this clause's name, or
+    /// the mismatch is `E180` and this annotation is not attached at all
+    /// (the same "never a partial one" posture `E159`/`E178` already
+    /// take). This module never resolves whether a struct of this name is
+    /// actually *declared* — the same shallow, declaration-surface-only
+    /// posture the rest of the annotation-lowering module takes for every
+    /// other clause here — that is real name resolution's job, not this
+    /// one's.
+    pub attach: Option<Name>,
     /// Source range of the whole `@[convention(…)]` annotation line.
     pub range: TextRange,
 }
@@ -492,6 +522,13 @@ pub struct ClaimHandlerDecl {
     /// `@[convention]`, so every `ClaimHandlerDecl` carries one (there is
     /// no "no order" case to represent).
     pub order: i64,
+    /// The `attach = StructName` clause (issue #2178), if declared — see
+    /// [`ConventionAnnotation::attach`]'s own doc. This is the field a
+    /// future NS-T projection (#2111, blocked on this landing) reads to
+    /// surface a handler's declared output schema to the editor/host,
+    /// same "compiler reads the conventions module's CST" role
+    /// `params`/`pattern` already play for this struct.
+    pub attach: Option<String>,
 }
 
 /// One `@NAME` cue occurrence, recorded regardless of whether any
