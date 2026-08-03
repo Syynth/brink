@@ -402,7 +402,7 @@ pub(crate) fn await_purity_diagnostics_query(
 /// One file's conventions-module confinement diagnostics (`E169`, issue
 /// #1844 — the MODULE half of the 2026-07-31 §9.1 ruling's item (4); #1838/
 /// #1847 cover the *placement* half, `E112`). A pattern-claiming
-/// `@[element(claims = "…")]` handler is legal only in the project's
+/// `@[convention(claims = "…", order = N)]` handler is legal only in the project's
 /// configured conventions module (`brink.toml`'s `[project] elements`);
 /// this is the one seam that has both a file's real module identity
 /// ([`module_map_query`]'s native branch, `crate::modules::

@@ -1582,15 +1582,16 @@ fn main() {
     }
 
     // ── Issue #1838 review finding (blocking, correctness): a
-    // natural-notation `@[element(claims = "…")]` handler's dispatch is a
-    // compiler-*synthesized* call whose `Path`/`Name` range is the entire
-    // claimed prose line, not any real occurrence of the handler's name.
-    // Unfiltered, `rename`/`prepare_rename` treated it like any other
-    // reference and rewrote the claimed line's bytes — `brink ide rename`
-    // on a claiming handler corrupted its own claimed prose lines. ───────
+    // natural-notation `@[convention(claims = "…", order = N)]` handler's
+    // dispatch is a compiler-*synthesized* call whose `Path`/`Name` range is
+    // the entire claimed prose line, not any real occurrence of the
+    // handler's name. Unfiltered, `rename`/`prepare_rename` treated it like
+    // any other reference and rewrote the claimed line's bytes — `brink ide
+    // rename` on a claiming handler corrupted its own claimed prose
+    // lines. ───────
 
     const CLAIMING_HANDLER_SRC: &str = "\
-@[element(claims = \"^INT\\\\. (?<place>.+)$\")]
+@[convention(claims = \"^INT\\\\. (?<place>.+)$\", order = 10)]
 fn interior(place) {
   return place;
 }

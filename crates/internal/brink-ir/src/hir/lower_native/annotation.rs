@@ -12,7 +12,7 @@
 //!
 //! # What is ruled, and what is not
 //!
-//! Five annotation names have a ruled native meaning today:
+//! Six annotation names have a ruled native meaning today:
 //!
 //! - **`effects`** — `@[effects(pure, silent, total, reads(a), writes(b),
 //!   calls(c))]`, the assertion final form (`docs/effects-spec.md` §10,
@@ -31,43 +31,55 @@
 //!   [`crate::suppressions`] for the filter and the
 //!   source-`allow`-beats-project-`deny` ordering. **This module delivers
 //!   it.**
-//! - **`element`** — `@[element(args = "…")]`, the prose-dialect "second
-//!   authoring surface"'s pattern declaration (issue #1719,
-//!   `docs/prose-dialect-spec.md` §3.5b sitting 4 addenda 2–3). **This
-//!   module delivers the declaration surface** — [`element_annotation`]
-//!   parses the `args`/`name` clauses, validates the pattern compiles as a
-//!   portable regex (`E159`), and validates its named captures against the
-//!   declaration's own params (`E160`, the spec's "compile-checked" capture
-//!   contract). Also parses the bare `block` clause (issue #1839,
-//!   `docs/decision-log.md` 2026-07-31 "Conventions are annotated
-//!   handlers"): `@[element(args = "…", block)]` declares that the handler
-//!   captures the run *following* its matched line into a trailing
-//!   `content`-typed param, and this module validates that receiver exists
-//!   (`E166`) — see [`ElementAnnotation::block`]'s doc. The `!name` sigil
-//!   dispatch rewrite the annotation exists to drive now dispatches
-//!   (issue #2004, `super::element::try_dispatch`) for the plain, non-
-//!   `block` case on a top-level `fn` — matching a content line, binding
-//!   captures, and lowering to a call; a `block`-declared handler's
-//!   trailing receiver still has nothing dispatching into it (that binding
-//!   is issue #1839's own scope, not this one's — see [`ElementAnnotation`]'s
-//!   own doc). Issue #1838 added the **other** natural-notation spelling,
-//!   `claims = "…"` beside `args = "…"` — a pattern that claims a prose
-//!   line carrying no `!name` sigil. A claim is validated in both
-//!   directions (`E160` *and* `E167`: params ≡ captures, since every
-//!   argument of the rewritten call comes from a capture) and is legal
-//!   only above a top-level `fn` (`E112` otherwise — see
-//!   [`is_consumed_position`]). The dispatch itself lives in
-//!   [`super::element`]; `try_dispatch`'s own doc has the exact boundary of
-//!   what `!name` dispatch covers today.
+//! - **`element`** — `@[element(args = "…", block)]`, the `!name`-dispatch
+//!   pattern declaration (issue #1719, `docs/prose-dialect-spec.md` §3.5b
+//!   sitting 4 addenda 2–3). **This module delivers the declaration
+//!   surface** — [`element_annotation`] parses the `args`/`name` clauses,
+//!   validates the pattern compiles as a portable regex (`E159`), and
+//!   validates its named captures against the declaration's own params
+//!   (`E160`, the spec's "compile-checked" capture contract). Also parses
+//!   the bare `block` clause (issue #1839, `docs/decision-log.md`
+//!   2026-07-31 "Conventions are annotated handlers"): `@[element(args =
+//!   "…", block)]` declares that the handler captures the run *following*
+//!   its matched line into a trailing `content`-typed param, and this
+//!   module validates that receiver exists (`E166`) — see
+//!   [`ElementAnnotation::block`]'s doc. The `!name` sigil dispatch
+//!   rewrite the annotation exists to drive now dispatches (issue #2004,
+//!   `super::element::try_dispatch`) for the plain, non-`block` case on a
+//!   top-level `fn` — matching a content line, binding captures, and
+//!   lowering to a call; a `block`-declared handler's trailing receiver
+//!   still has nothing dispatching into it (that binding is issue #1839's
+//!   own scope, not this one's — see [`ElementAnnotation`]'s own doc).
+//!   Self-announcing and legal anywhere: `@[element]` carries **no
+//!   `order`** — a handler that names itself never competes for a line.
+//! - **`convention`** — `@[convention(claims = "…", order = N)]`, the
+//!   natural-notation pattern-claiming declaration (issue #1838, split out
+//!   of `@[element]` by issue #2164's 2026-08-03 ruling, "Claiming and
+//!   `!name` dispatch split into two annotations"). **This module
+//!   delivers it** — [`convention_annotation`] parses the `claims`/`order`
+//!   clauses and the bare `block` clause, validates the pattern compiles
+//!   as a portable regex (`E159`), validates named captures against
+//!   params in both directions (`E160` *and* `E167`: params ≡ captures,
+//!   since every argument of the rewritten call comes from a capture),
+//!   and requires `order` (`E178` if absent — there is no default,
+//!   because a claiming handler's precedence against every sibling in its
+//!   module must be total and authored, never inferred). Legal only above
+//!   a top-level `fn` (`E112` otherwise — see [`is_consumed_position`]):
+//!   the rewrite is an expression call, and a claiming pattern can take a
+//!   line that looks like ordinary prose, so it stays **confined** to the
+//!   `brink.toml`-named conventions module (issue #1844's `E169`, a
+//!   project-layer check this module doesn't perform). The dispatch
+//!   itself, and the `order`-based precedence walk, live in
+//!   [`super::element`].
 //! - **`style`** — `@[style(…)]`, the companion editor-presentation
 //!   annotation (same spec section, addenda 3–4). **This module delivers
 //!   it** as a pure declaration surface — [`style_annotation`] requires a
-//!   paired `element` on the same declaration (`E163`), parses `key =
-//!   "value"` clauses (`E161`), validates each key against `element`'s
-//!   captures plus `line`/`dispatch` (`E162`), and classifies each value
-//!   against the closed built-in presentation vocabulary
-//!   ([`crate::StyleToken`]). Nothing downstream reads it yet — the
-//!   consumer is the held editor track (NS-T, issues #1131/#1350); see
+//!   paired `element` or `convention` on the same declaration (`E163`),
+//!   parses `key = "value"` clauses (`E161`), validates each key against
+//!   the paired annotation's captures plus `line`/`dispatch` (`E162`), and
+//!   classifies each value against the closed built-in presentation
+//!   vocabulary ([`crate::StyleToken`]). Nothing downstream reads it yet —
+//!   the consumer is the held editor track (NS-T, issues #1131/#1350); see
 //!   [`crate::StyleAnnotation`]'s doc.
 //!
 //! Everything else the specs mention is either *deferred* or *not yet ruled
@@ -109,8 +121,8 @@ use rowan::TextRange;
 use crate::hir::FileId;
 use crate::suppressions::AllowScope;
 use crate::{
-    Diagnostic, DiagnosticCode, EffectsAssertion, ElementAnnotation, Param, Severity,
-    StyleAnnotation, StyleEntry, StyleToken, TypeExpr,
+    ConventionAnnotation, Diagnostic, DiagnosticCode, EffectsAssertion, ElementAnnotation, Param,
+    Severity, StyleAnnotation, StyleEntry, StyleToken, TypeExpr,
 };
 
 use super::SyntaxNode;
@@ -125,9 +137,18 @@ const WAS: &str = "was";
 /// The source-level diagnostic-suppression annotation name (issue #1161).
 const ALLOW: &str = "allow";
 
-/// The prose-dispatch pattern-declaration annotation name (issue #1719,
-/// `docs/prose-dialect-spec.md` §3.5b).
+/// The `!name`-dispatch pattern-declaration annotation name (issue #1719,
+/// `docs/prose-dialect-spec.md` §3.5b). Since issue #2164's 2026-08-03
+/// split, this name declares dispatch only (`args = "…"`) — the claiming
+/// half moved to [`CONVENTION`].
 const ELEMENT: &str = "element";
+
+/// The pattern-claiming annotation name (issue #2164, `docs/decision-
+/// log.md` 2026-08-03 "Claiming and `!name` dispatch split into two
+/// annotations: `@[convention]` and `@[element]`") — `@[convention(claims
+/// = "…", order = N)]`. Carries what `@[element(claims = "…")]` used to
+/// (issue #1838), plus the now-required `order` clause.
+const CONVENTION: &str = "convention";
 
 /// The editor-presentation companion annotation name (issue #1719, same
 /// spec section, addenda 3–4).
@@ -233,12 +254,14 @@ fn container_nesting_depth(decl: &SyntaxNode) -> usize {
 /// not waved through as "consumed" only to be read by nothing.
 fn is_consumed_position(name: &str, line: &SyntaxNode) -> bool {
     match name {
-        // A *claiming* `@[element(claims = "…")]` (issue #1838) is narrower
-        // than its `args` sibling: the rewrite is an expression call, and
-        // only a top-level `fn` is callable as one. A claim on a `flow`, or
-        // on a nested `fn`, would parse and validate and then claim
-        // nothing — exactly the silent no-op the `@`-namespace rule exists
-        // to prevent — so it is reported misplaced (`E112`) instead.
+        // `@[convention(claims = "…", order = N)]` (issue #2164, formerly
+        // `@[element(claims = "…")]`, issue #1838) is narrower than
+        // `@[element]`'s own placement: the rewrite is an expression call,
+        // and only a top-level `fn` is callable as one. A claim on a
+        // `flow`, or on a nested `fn`, would parse and validate and then
+        // claim nothing — exactly the silent no-op the `@`-namespace rule
+        // exists to prevent — so it is reported misplaced (`E112`)
+        // instead.
         //
         // "Top-level" here means exactly what [`super::element::collect`]
         // scans: a direct child of the file's `SOURCE_FILE` node, not
@@ -254,7 +277,7 @@ fn is_consumed_position(name: &str, line: &SyntaxNode) -> bool {
         // this is reachable *today*, not only once module lowering "lands"
         // — it is misplaced now, until claiming inside a module is a
         // designed, registered mechanism of its own.
-        ELEMENT if declares_claim(line) => attached_declaration(line).is_some_and(|d| {
+        CONVENTION => attached_declaration(line).is_some_and(|d| {
             d.kind() == N::FN_DECL && d.parent().is_some_and(|p| p.kind() == N::SOURCE_FILE)
         }),
         // The module-rename record is a *file-level* fact — `module::
@@ -288,23 +311,6 @@ fn is_consumed_position(name: &str, line: &SyntaxNode) -> bool {
     }
 }
 
-/// `true` when `line` is an `@[element(…)]` carrying a `claims = "…"`
-/// clause — the natural-notation spelling (issue #1838), which has a
-/// narrower legal placement than `args = "…"`.
-///
-/// A syntactic read of the clause *key* only: whether the value is a valid
-/// pattern, and whether its captures line up with the declaration's params,
-/// stays [`parse_element`]'s job. Placement must be decidable before any of
-/// that, so a malformed claim is still reported at the right position.
-fn declares_claim(line: &SyntaxNode) -> bool {
-    ast::AnnotationLine::cast(line.clone())
-        .and_then(|l| l.args())
-        .is_some_and(|args| {
-            args.args()
-                .any(|a| a.name_token().is_some_and(|t| t.text() == ELEMENT_CLAIMS))
-        })
-}
-
 /// The erasure chokepoint: called for every `ANNOTATION_LINE` a body or
 /// top-level walk encounters, so an annotation is *either* consumed by its
 /// owner *or* diagnosed here — never lowered to content, never dropped.
@@ -318,7 +324,7 @@ pub(super) fn handle_line(file_id: FileId, node: &SyntaxNode, diags: &mut Vec<Di
         return;
     };
     let range = node.text_range();
-    if !matches!(name.text(), EFFECTS | WAS | ALLOW | ELEMENT | STYLE) {
+    if !matches!(name.text(), EFFECTS | WAS | ALLOW | ELEMENT | CONVENTION | STYLE) {
         diags.push(diag(file_id, range, DiagnosticCode::E111));
     } else if !is_consumed_position(name.text(), node) {
         diags.push(diag(file_id, range, DiagnosticCode::E112));
@@ -557,27 +563,36 @@ fn parse_effects(
     })
 }
 
-// ─── `@[element]` / `@[style]` declaration surface (issue #1719) ─────────
+// ─── `@[element]` / `@[convention]` / `@[style]` declaration surface
+//     (issue #1719, split by issue #2164) ────────────────────────────────
 //
-// The `!name` sigil dispatch rewrite these annotations exist to declare
+// The `!name` sigil dispatch rewrite `@[element]` exists to declare
 // dispatches now for the plain (non-`block`) case (issue #2004,
-// `super::element::try_dispatch`) — this module remains only the
-// declaration surface (parse, validate, store on the `Knot`/`Stitch`); the
-// dispatch mechanism itself lives in `super::element`. See this module's
-// doc comment for the exact boundary.
+// `super::element::try_dispatch`); the claiming-precedence walk
+// `@[convention]`'s `order` drives lives in the same module. This file
+// remains only the declaration surface (parse, validate, store on the
+// `Knot`/`Stitch`); the dispatch/claiming mechanism itself lives in
+// `super::element`. See this module's doc comment for the exact boundary.
 
-/// The `@[element(…)]` clause keys. Exactly one of `args = "…"` (the
-/// `!name`-dispatched remainder pattern) and `claims = "…"` (the
-/// natural-notation whole-line claim, issue #1838) is required; `name =
-/// "…"` is the optional dispatch-name alias.
+/// The `@[element(…)]` clause keys: `args = "…"` (the `!name`-dispatched
+/// remainder pattern) is required; `name = "…"` is the optional
+/// dispatch-name alias.
 const ELEMENT_ARGS: &str = "args";
-const ELEMENT_CLAIMS: &str = "claims";
 const ELEMENT_NAME: &str = "name";
 
-/// The `@[element(…)]` bare `block` clause (issue #1839, `docs/decision-
-/// log.md` 2026-07-31): a flag, not a `key = "value"` pair — present or
-/// absent, never assigned. See [`ElementAnnotation::block`]'s doc for what
-/// it declares.
+/// The `@[convention(…)]` clause keys (issue #2164, split out of
+/// `@[element(claims = "…")]`): `claims = "…"` (the natural-notation
+/// whole-line claim) and `order = N` (the claiming precedence, `docs/
+/// decision-log.md` 2026-08-03 "`order` is REQUIRED on `@[convention]`")
+/// are both required.
+const CONVENTION_CLAIMS: &str = "claims";
+const CONVENTION_ORDER: &str = "order";
+
+/// The `@[element(…)]` / `@[convention(…)]` shared bare `block` clause
+/// (issue #1839, `docs/decision-log.md` 2026-07-31 "Conventions are
+/// annotated handlers"): a flag, not a `key = "value"` pair — present or
+/// absent, never assigned. See [`ElementAnnotation::block`]'s /
+/// [`ConventionAnnotation::block`]'s doc for what it declares.
 const ELEMENT_BLOCK: &str = "block";
 
 /// The native-type-system spelling `@[element(…, block)]`'s trailing
@@ -636,8 +651,8 @@ fn eq_value_text(arg: &ast::AnnotationArg) -> Option<String> {
     Some(out)
 }
 
-/// Read the `@[element(args = "…")]` annotation attached to `decl` (a
-/// `flow`/`fn` declaration node), if it declares one.
+/// Read the `@[element(args = "…", block)]` annotation attached to `decl`
+/// (a `flow`/`fn` declaration node), if it declares one.
 ///
 /// A second `@[element]` on the same declaration is `E048` (the same
 /// duplicate-directive discipline [`effects_assertion`] uses) and the
@@ -650,15 +665,12 @@ fn eq_value_text(arg: &ast::AnnotationArg) -> Option<String> {
 /// declaration. A bare `block` clause (issue #1839) with no qualifying
 /// trailing `content`-typed parameter on `decl` is `E166` — the same
 /// static-defect-in-the-declaration posture `E160` already takes, widened
-/// to the block capture contract. A `claims = "…"` pattern (issue #1838)
-/// naming a parameter no capture matches is the converse check, `E167` —
-/// the rewritten call has no other source of arguments, so every parameter
-/// must come from a capture. A `claims = "…"` pattern whose captured param
-/// declares a type the rewrite could never satisfy (not `string`, not
-/// untyped, not `content`) is `E171` (issue #1849) — the rewrite binds
-/// every capture as a plain string literal, so any other declared type
-/// could never actually be satisfied; `content` is exempted, see
-/// [`is_satisfiable_by_a_string_capture`]'s own doc for why.
+/// to the block capture contract.
+///
+/// `!name` dispatch carries no `order` (issue #2164) and no `E167`/`E171`
+/// converse checks — those are [`convention_annotation`]'s alone, since a
+/// self-announcing handler stays callable by hand with ordinary arguments
+/// and never competes for a line.
 pub(super) fn element_annotation(
     file_id: FileId,
     decl: &SyntaxNode,
@@ -696,7 +708,6 @@ fn parse_element(
     };
 
     let mut pattern: Option<String> = None;
-    let mut claims = false;
     let mut alias: Option<String> = None;
     let mut block = false;
     let mut ok = true;
@@ -721,14 +732,7 @@ fn parse_element(
             continue;
         };
         match key.text() {
-            // `args` and `claims` are two spellings of the same slot, and
-            // the slot fills at most once — a declaration carrying both is
-            // asking to be dispatched two incompatible ways.
             ELEMENT_ARGS if pattern.is_none() => pattern = Some(value),
-            ELEMENT_CLAIMS if pattern.is_none() => {
-                pattern = Some(value);
-                claims = true;
-            }
             ELEMENT_NAME if alias.is_none() => alias = Some(value),
             _ => ok = false,
         }
@@ -765,15 +769,166 @@ fn parse_element(
         return None;
     }
 
-    // The claiming half needs the *converse* check too (`E167`, issue
-    // #1838): a claimed line is rewritten to exactly one call whose every
-    // argument comes from a named capture, so a parameter no capture names
-    // has nothing to bind it to. A `!name` handler is exempt — it stays
-    // callable by hand with ordinary arguments.
+    Some(ElementAnnotation {
+        pattern,
+        captures,
+        alias,
+        block,
+        range,
+    })
+}
+
+/// Read the `@[convention(claims = "…", order = N)]` annotation attached
+/// to `decl` (a top-level `fn` declaration node — placement legality is
+/// [`is_consumed_position`]'s job, not this function's), if it declares
+/// one.
+///
+/// A second `@[convention]` on the same declaration is `E048` (the same
+/// duplicate-directive discipline [`effects_assertion`] uses) and the
+/// first wins. A malformed clause — a missing/non-string `claims` value,
+/// a missing/non-integer `order` value, an unrecognized clause key, or a
+/// pattern that doesn't compile as a portable regex — is `E159` and
+/// yields no `ConventionAnnotation` at all (never a partial one). A
+/// missing `order` clause specifically is `E178` (issue #2164,
+/// `docs/decision-log.md` 2026-08-03) — required, with no default. A
+/// named capture group that doesn't match any parameter on `decl` is
+/// `E160` — the capture contract (§3.5b: "named captures bind params by
+/// name (compile-checked)") enforced at the declaration. A bare `block`
+/// clause (issue #1839) with no qualifying trailing `content`-typed
+/// parameter on `decl` is `E166` — the same static-defect-in-the-
+/// declaration posture `E160` already takes, widened to the block
+/// capture contract. A pattern naming a parameter no capture matches is
+/// the converse check, `E167` — the rewritten call has no other source of
+/// arguments, so every parameter must come from a capture. A captured
+/// param declaring a type the rewrite could never satisfy (not `string`,
+/// not untyped, not `content`) is `E171` (issue #1849) — the rewrite
+/// binds every capture as a plain string literal, so any other declared
+/// type could never actually be satisfied; `content` is exempted, see
+/// [`is_satisfiable_by_a_string_capture`]'s own doc for why.
+///
+/// Duplicate `order` values across the module's declared handlers
+/// (`E179`) are **not** checked here — only one declaration is in view at
+/// a time; that check runs over the whole collected set in
+/// `super::element::diagnose_duplicate_order`.
+pub(super) fn convention_annotation(
+    file_id: FileId,
+    decl: &SyntaxNode,
+    params: &[Param],
+    diags: &mut Vec<Diagnostic>,
+) -> Option<ConventionAnnotation> {
+    let mut chosen: Option<ConventionAnnotation> = None;
+    for line in annotations_before(decl) {
+        if line.name_token().is_none_or(|t| t.text() != CONVENTION) {
+            continue;
+        }
+        let range = line.syntax().text_range();
+        let Some(parsed) = parse_convention(file_id, &line, range, params, diags) else {
+            continue; // already diagnosed
+        };
+        if chosen.is_some() {
+            diags.push(diag(file_id, range, DiagnosticCode::E048));
+            continue;
+        }
+        chosen = Some(parsed);
+    }
+    chosen
+}
+
+fn parse_convention(
+    file_id: FileId,
+    line: &ast::AnnotationLine,
+    range: TextRange,
+    params: &[Param],
+    diags: &mut Vec<Diagnostic>,
+) -> Option<ConventionAnnotation> {
+    let Some(args) = line.args() else {
+        diags.push(diag(file_id, range, DiagnosticCode::E159));
+        return None;
+    };
+
+    let mut pattern: Option<String> = None;
+    let mut order: Option<i64> = None;
+    let mut block = false;
+    let mut ok = true;
+    for arg in args.args() {
+        let Some(key) = arg.name_token() else {
+            ok = false;
+            continue;
+        };
+        if key.text() == ELEMENT_BLOCK {
+            // A flag, not a `key = "value"` pair — see `parse_element`'s
+            // identical guard.
+            if !block && arg.eq_value().is_none() && arg.nested_args().is_none() {
+                block = true;
+            } else {
+                ok = false;
+            }
+            continue;
+        }
+        if key.text() == CONVENTION_ORDER {
+            // `order = N` is a bare-integer clause (issue #2164, RULED), not
+            // a string one — `eq_int_value` reads it, never `eq_value_text`.
+            match (order.is_none(), arg.eq_int_value().and_then(|v| v.value())) {
+                (true, Some(n)) => order = Some(n),
+                _ => ok = false,
+            }
+            continue;
+        }
+        let Some(value) = eq_value_text(&arg) else {
+            ok = false;
+            continue;
+        };
+        match key.text() {
+            CONVENTION_CLAIMS if pattern.is_none() => pattern = Some(value),
+            _ => ok = false,
+        }
+    }
+
+    if !ok {
+        diags.push(diag(file_id, range, DiagnosticCode::E159));
+        return None;
+    }
+    let Some(pattern) = pattern else {
+        diags.push(diag(file_id, range, DiagnosticCode::E159));
+        return None;
+    };
+    // `order` is required (issue #2164, RULED 2026-08-03): no default, so a
+    // `@[convention]` with none is `E178` rather than silently falling back
+    // to declaration position the way the pre-#2164 interim rule did.
+    let Some(order) = order else {
+        diags.push(diag(file_id, range, DiagnosticCode::E178));
+        return None;
+    };
+
+    let Ok(compiled) = regex::Regex::new(&pattern) else {
+        diags.push(diag(file_id, range, DiagnosticCode::E159));
+        return None;
+    };
+    let captures: Vec<String> = compiled
+        .capture_names()
+        .flatten()
+        .map(ToString::to_string)
+        .collect();
+
+    for cap in &captures {
+        if !params.iter().any(|p| &p.name.text == cap) {
+            diags.push(diag(file_id, range, DiagnosticCode::E160));
+            return None;
+        }
+    }
+
+    if block && !has_block_content_param(params, &captures) {
+        diags.push(diag(file_id, range, DiagnosticCode::E166));
+        return None;
+    }
+
+    // The converse check (`E167`, issue #1838): a claimed line is rewritten
+    // to exactly one call whose every argument comes from a named capture,
+    // so a parameter no capture names has nothing to bind it to.
     //
     // A `block`-declared handler's trailing `content` param (issue #1839)
-    // is exempt too, the same way: `has_block_content_param`'s own check
-    // just above already guarantees it is the last param and is not one of
+    // is exempt, the same way: `has_block_content_param`'s own check just
+    // above already guarantees it is the last param and is not one of
     // `captures` by construction (it binds the captured *run*, not a named
     // group), so re-checking it here would reject every legal block
     // declaration with a false `E167`.
@@ -782,10 +937,9 @@ fn parse_element(
     } else {
         params
     };
-    if claims
-        && let Some(p) = e167_checked_params
-            .iter()
-            .find(|p| !captures.contains(&p.name.text))
+    if let Some(p) = e167_checked_params
+        .iter()
+        .find(|p| !captures.contains(&p.name.text))
     {
         diags.push(diag(file_id, p.name.range, DiagnosticCode::E167));
         return None;
@@ -809,22 +963,18 @@ fn parse_element(
     // claiming handler) leaves the line unclaimed rather than rewriting
     // it to a call with an argument that could never match its declared
     // type.
-    if claims
-        && let Some(p) = params.iter().find(|p| {
-            captures.contains(&p.name.text)
-                && !is_satisfiable_by_a_string_capture(p.annotation.as_ref())
-        })
-    {
+    if let Some(p) = params.iter().find(|p| {
+        captures.contains(&p.name.text) && !is_satisfiable_by_a_string_capture(p.annotation.as_ref())
+    }) {
         let range = p.annotation.as_ref().map_or(p.name.range, TypeExpr::range);
         diags.push(diag(file_id, range, DiagnosticCode::E171));
         return None;
     }
 
-    Some(ElementAnnotation {
+    Some(ConventionAnnotation {
         pattern,
-        claims,
+        order,
         captures,
-        alias,
         block,
         range,
     })
@@ -877,18 +1027,23 @@ fn is_satisfiable_by_a_string_capture(annotation: Option<&TypeExpr>) -> bool {
 }
 
 /// Read the `@[style(…)]` annotation attached to `decl`, if it declares
-/// one. Requires a paired [`element_annotation`] on the same declaration
-/// (`E163`) — pass the already-lowered `element` (or `None`) so this
-/// doesn't re-parse the `@[element(…)]` line itself.
+/// one. Requires a paired [`element_annotation`] OR [`convention_annotation`]
+/// on the same declaration (`E163`) — pass whichever was already lowered
+/// (or both `None`) so this doesn't re-parse the `@[element(…)]`/
+/// `@[convention(…)]` line itself.
 ///
 /// A second `@[style]` on the same declaration is `E048`. A clause that
 /// isn't a clean `key = "value"` pair, or an argument list that is
 /// missing/empty, is `E161`. A key that is neither `line`, `dispatch`,
-/// nor one of `element`'s named captures is `E162`.
+/// nor one of the paired annotation's named captures is `E162`. When a
+/// declaration carries **both** (unusual, but not itself an error — see
+/// [`crate::Knot::convention_annotation`]'s doc), the two capture sets are
+/// combined so either's names validate.
 pub(super) fn style_annotation(
     file_id: FileId,
     decl: &SyntaxNode,
     element: Option<&ElementAnnotation>,
+    convention: Option<&ConventionAnnotation>,
     diags: &mut Vec<Diagnostic>,
 ) -> Option<StyleAnnotation> {
     let mut chosen: Option<StyleAnnotation> = None;
@@ -897,7 +1052,7 @@ pub(super) fn style_annotation(
             continue;
         }
         let range = line.syntax().text_range();
-        let Some(parsed) = parse_style(file_id, &line, range, element, diags) else {
+        let Some(parsed) = parse_style(file_id, &line, range, element, convention, diags) else {
             continue;
         };
         if chosen.is_some() {
@@ -914,12 +1069,22 @@ fn parse_style(
     line: &ast::AnnotationLine,
     range: TextRange,
     element: Option<&ElementAnnotation>,
+    convention: Option<&ConventionAnnotation>,
     diags: &mut Vec<Diagnostic>,
 ) -> Option<StyleAnnotation> {
-    let Some(element) = element else {
+    if element.is_none() && convention.is_none() {
         diags.push(diag(file_id, range, DiagnosticCode::E163));
         return None;
-    };
+    }
+    let captures: Vec<&str> = element
+        .iter()
+        .flat_map(|e| e.captures.iter().map(String::as_str))
+        .chain(
+            convention
+                .iter()
+                .flat_map(|c| c.captures.iter().map(String::as_str)),
+        )
+        .collect();
 
     let Some(args) = line.args() else {
         diags.push(diag(file_id, range, DiagnosticCode::E161));
@@ -942,7 +1107,7 @@ fn parse_style(
         let key_text = key.text().to_string();
         if key_text != STYLE_KEY_LINE
             && key_text != STYLE_KEY_DISPATCH
-            && !element.captures.contains(&key_text)
+            && !captures.contains(&key_text.as_str())
         {
             diags.push(diag(file_id, arg_range, DiagnosticCode::E162));
             ok = false;

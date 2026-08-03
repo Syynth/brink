@@ -232,14 +232,22 @@ pub(super) fn lower_top_level_container(
         super::body::apply_implicit_done(&mut body_block);
     }
 
-    // The attached `@[element(…)]` / `@[style(…)]` declarations, if the
-    // declaration carries them (issue #1719, [`super::annotation`]) —
-    // `style` is read second and passed the already-lowered `element` so
-    // its key validation can check against `element`'s captures without
-    // re-parsing the `@[element(…)]` line.
+    // The attached `@[element(…)]` / `@[convention(…)]` / `@[style(…)]`
+    // declarations, if the declaration carries them (issue #1719, split by
+    // issue #2164, [`super::annotation`]) — `style` is read last and passed
+    // whichever of `element`/`convention` was lowered so its key validation
+    // can check against the paired annotation's captures without
+    // re-parsing either line.
     let element_annotation = super::annotation::element_annotation(file_id, syntax, &params, diags);
-    let style_annotation =
-        super::annotation::style_annotation(file_id, syntax, element_annotation.as_ref(), diags);
+    let convention_annotation =
+        super::annotation::convention_annotation(file_id, syntax, &params, diags);
+    let style_annotation = super::annotation::style_annotation(
+        file_id,
+        syntax,
+        element_annotation.as_ref(),
+        convention_annotation.as_ref(),
+        diags,
+    );
 
     Some(Knot {
         ptr: native_provenance(file_id, NodeClass::Knot, syntax),
@@ -253,6 +261,7 @@ pub(super) fn lower_top_level_container(
         // one (issue #1563, [`super::annotation`]).
         effects_assertion: super::annotation::effects_assertion(file_id, syntax, diags),
         element_annotation,
+        convention_annotation,
         style_annotation,
         return_type,
         doc,
@@ -336,10 +345,22 @@ fn lower_stitch(
         super::body::apply_implicit_done(&mut body_block);
     }
     // Same annotation channel as a top-level container — a nested `flow`'s
-    // `@[element(…)]`/`@[style(…)]` sit above its own head (issue #1719).
+    // `@[element(…)]`/`@[convention(…)]`/`@[style(…)]` sit above its own
+    // head (issue #1719, split by issue #2164). A `@[convention]` here is
+    // still parsed (this module never enforces placement — see
+    // `annotation::is_consumed_position`'s own doc) but is misplaced:
+    // claiming is legal only above a top-level `fn`, so a nested `flow`
+    // carrying one gets `E112` from the generic annotation-line walk.
     let element_annotation = super::annotation::element_annotation(file_id, syntax, &params, diags);
-    let style_annotation =
-        super::annotation::style_annotation(file_id, syntax, element_annotation.as_ref(), diags);
+    let convention_annotation =
+        super::annotation::convention_annotation(file_id, syntax, &params, diags);
+    let style_annotation = super::annotation::style_annotation(
+        file_id,
+        syntax,
+        element_annotation.as_ref(),
+        convention_annotation.as_ref(),
+        diags,
+    );
 
     Some(Stitch {
         ptr: native_provenance(file_id, NodeClass::Stitch, syntax),
@@ -351,6 +372,7 @@ fn lower_stitch(
         // `flow`'s `@[effects(…)]` sits above its own head (issue #1563).
         effects_assertion: super::annotation::effects_assertion(file_id, syntax, diags),
         element_annotation,
+        convention_annotation,
         style_annotation,
         return_type,
         doc,

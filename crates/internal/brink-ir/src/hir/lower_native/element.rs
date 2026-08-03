@@ -11,13 +11,20 @@
 //! ruling and are deliberately absent here.
 //!
 //! ```brink
-//! @[element(claims = "^INT\\. (?<place>.+)$")]
+//! @[convention(claims = "^INT\\. (?<place>.+)$", order = 10)]
 //! fn interior(place) { return "— inside " + place + " —"; }
 //!
 //! flow main() {
 //!   INT. MARKET SQUARE
 //! }
 //! ```
+//!
+//! Issue #2164 (`docs/decision-log.md` 2026-08-03) split the annotation
+//! this module was written against: `claims = "…"` moved from
+//! `@[element(…)]` to its own `@[convention(…)]` name, gaining a required
+//! `order` property that now drives the precedence this module's own
+//! doc describes below — see [`super::annotation`]'s module doc for the
+//! full split.
 //!
 //! The heading line no longer reaches `body::lower_one_item`'s loud-`E129`
 //! arm: it is claimed, `place` binds to `MARKET SQUARE`, and the line
@@ -144,9 +151,10 @@ use super::provenance::native_provenance;
 use crate::provenance::NodeClass;
 
 /// One declared natural-notation handler: a top-level `fn` whose
-/// `@[element(claims = "…")]` pattern claims prose lines — OR a handler
-/// injected from another file's evaluated conventions registry (issue
-/// #1863), for which `decl` is `None` (see that field's own doc).
+/// `@[convention(claims = "…", order = N)]` pattern claims prose lines —
+/// OR a handler injected from another file's evaluated conventions
+/// registry (issue #1863), for which `decl` is `None` (see that field's
+/// own doc).
 struct ClaimHandler {
     /// The handler's own name, carrying its declaration-site range — in
     /// the injected case, the range is in the DECLARING file, not this
@@ -158,7 +166,7 @@ struct ClaimHandler {
     params: Vec<String>,
     /// The compiled claiming pattern.
     pattern: regex::Regex,
-    /// Range of the `@[element(claims = "…")]` line itself.
+    /// Range of the `@[convention(claims = "…", order = N)]` line itself.
     annotation: TextRange,
     /// The handler declaration's own range — used to suppress claiming
     /// inside the handler's own body (the staging rule). `None` for an
@@ -179,6 +187,18 @@ struct ClaimHandler {
     /// injected handler, because `ExternalClaimHandler` had no `block`
     /// field to read at all.
     block: bool,
+    /// The claiming precedence (issue #2164, `docs/decision-log.md`
+    /// 2026-08-03 "`order` is REQUIRED on `@[convention]`…") — a bare
+    /// integer, required on every `@[convention]` declaration, so every
+    /// local `ClaimHandler` carries a real one (no "no order" case).
+    /// [`collect`] sorts `handlers` by this field ascending before
+    /// [`try_claim`]/[`diagnose_duplicate_patterns`] ever see it — lower
+    /// values are tried first. An injected handler's own order (issue
+    /// #1863) is not carried across the join yet (`ExternalClaimHandler`
+    /// has no `order` field): `external` is chained *after* the sorted
+    /// local `handlers` unconditionally, matching the pre-#2164 posture of
+    /// "local always wins over injected" — see [`Elements`]'s own doc.
+    order: i64,
 }
 
 /// One declared `!name`-dispatched handler: a top-level `fn` whose
@@ -280,6 +300,7 @@ impl Elements {
                 params: h.params.clone(),
                 pattern: h.pattern.as_str().to_string(),
                 block: h.block,
+                order: h.order,
             })
             .collect()
     }
@@ -288,14 +309,26 @@ impl Elements {
 /// Collect every claiming handler declared in `root`.
 ///
 /// Silent on everything `container.rs` already validated: each
-/// `@[element(…)]` line is parsed and checked against its own declaration
-/// exactly once there — that validation pass's own diagnostics are
-/// discarded here (into a throwaway `scratch` vec) rather than threaded
-/// through, since re-reporting would double every `E159`/`E160`/`E167`.
-/// Duplicate-pattern diagnosis ([`diagnose_duplicate_patterns`]) does
-/// *not* happen here either: it needs to see which handlers actually
-/// fired during body lowering, which hasn't happened yet at collection
-/// time — see that function's doc.
+/// `@[element(…)]`/`@[convention(…)]` line is parsed and checked against
+/// its own declaration exactly once there — that validation pass's own
+/// diagnostics are discarded here (into a throwaway `scratch` vec) rather
+/// than threaded through, since re-reporting would double every
+/// `E159`/`E160`/`E167`/`E178`. Duplicate-pattern diagnosis
+/// ([`diagnose_duplicate_patterns`]) does *not* happen here either: it
+/// needs to see which handlers actually fired during body lowering, which
+/// hasn't happened yet at collection time — see that function's doc.
+/// Duplicate-*order* diagnosis ([`diagnose_duplicate_order`]) DOES happen
+/// here, since it needs no lowering ground truth — `order` is a static
+/// property of the declaration alone.
+///
+/// `handlers` is sorted by `@[convention]`'s `order` (ascending) before
+/// this returns — issue #2164's ruling: "the claiming walk takes its
+/// precedence from that property instead of from declaration order." A
+/// stable sort, so two declarations that (incorrectly) share an `order`
+/// keep their declaration-order relative position — moot in practice,
+/// since a shared `order` is `E179`, an `Error`-severity diagnostic that
+/// fails the compile; the tie-break only matters for what a caller sees
+/// while diagnostics are still being collected.
 ///
 /// `external` is the issue #1863 injection point: an optional,
 /// already-ordered conventions registry built OUTSIDE this file (another
@@ -303,7 +336,10 @@ impl Elements {
 /// with one this file declares locally is dropped — a local declaration
 /// always wins (see [`Elements`]'s doc); in practice this only fires for
 /// the conventions module's own file, where the injected registry and
-/// this file's own declarations name the very same handlers.
+/// this file's own declarations name the very same handlers. Injected
+/// handlers carry no `order` of their own yet (`ExternalClaimHandler` has
+/// no such field) and are chained after the sorted local `handlers`
+/// unconditionally, matching the pre-#2164 "local always wins" posture.
 pub(super) fn collect(
     file_id: FileId,
     root: &SyntaxNode,
@@ -330,26 +366,33 @@ pub(super) fn collect(
             continue;
         };
         let params = super::container::lower_params(decl.param_list());
+        // `@[element]` (dispatch) and `@[convention]` (claiming) are two
+        // independent annotation reads since issue #2164's split — both
+        // are attempted on every top-level `fn`; a declaration carrying
+        // neither contributes nothing to either table.
         let mut scratch: Vec<Diagnostic> = Vec::new();
-        let Some(element) =
-            super::annotation::element_annotation(file_id, &node, &params, &mut scratch)
-        else {
-            continue;
-        };
-        let Ok(pattern) = regex::Regex::new(&element.pattern) else {
-            continue;
-        };
+        let element =
+            super::annotation::element_annotation(file_id, &node, &params, &mut scratch);
+        let convention =
+            super::annotation::convention_annotation(file_id, &node, &params, &mut scratch);
         let param_names: Vec<String> = params.into_iter().map(|p| p.name.text).collect();
-        if element.claims {
+
+        if let Some(convention) = convention
+            && let Ok(pattern) = regex::Regex::new(&convention.pattern)
+        {
             handlers.push(ClaimHandler {
-                name,
-                params: param_names,
+                name: name.clone(),
+                params: param_names.clone(),
                 pattern,
-                annotation: element.range,
+                annotation: convention.range,
                 decl: Some(node.text_range()),
-                block: element.block,
+                block: convention.block,
+                order: convention.order,
             });
-        } else {
+        }
+        if let Some(element) = element
+            && let Ok(pattern) = regex::Regex::new(&element.pattern)
+        {
             // The dispatch name: the `name = "…"` alias if declared, else
             // the `fn`'s own name — `annotation::parse_element`'s
             // `ELEMENT_NAME` clause. First-declared wins on a collision
@@ -365,6 +408,13 @@ pub(super) fn collect(
             });
         }
     }
+    // Issue #2164: precedence now comes from `order`, not declaration
+    // position — see this function's own doc. `E179` (duplicate `order`)
+    // is diagnosed separately by [`diagnose_duplicate_order`], called by
+    // `super::lower_with_conventions` right after this returns — a real
+    // diagnostic sink, unlike this function's own `scratch`-discarding
+    // per-declaration reads.
+    handlers.sort_by_key(|h| h.order);
     let mut external_handlers = Vec::new();
     if let Some(external) = external {
         for candidate in external.handlers() {
@@ -384,6 +434,10 @@ pub(super) fn collect(
                 // `block` flag, carried across the injection join by
                 // `ExternalClaimHandler::block`.
                 block: candidate.block,
+                // Issue #1863's join carries no `order` yet — see this
+                // function's own doc for why injected handlers are chained
+                // after the sorted local set regardless.
+                order: i64::MAX,
             });
         }
     }
@@ -392,6 +446,55 @@ pub(super) fn collect(
         external: external_handlers,
         dispatch,
         matches: Vec::new(),
+    }
+}
+
+/// `E179` (issue #2164, `docs/decision-log.md` 2026-08-03 "`order` is
+/// REQUIRED on `@[convention]`…"): flag every pair of this file's locally
+/// declared claiming handlers that share the same `order`.
+///
+/// A static check, unlike [`diagnose_duplicate_patterns`] — it needs no
+/// lowering ground truth (`elements.matches`), only the declared `order`
+/// values themselves, so `super::lower_with_conventions` calls this right
+/// after [`collect`] returns, before `walk_top_level` even runs.
+///
+/// Reported against **both** conflicting declarations (their own
+/// `annotation` ranges), the duplicate-definition posture the ruling
+/// calls for — not a single "first one wins" report the way `E048`
+/// (duplicate directive on one target) is, since here the two
+/// declarations are different `fn`s and neither is more "the real one"
+/// than the other. Scoped to `elements.handlers` only (this file's own
+/// declarations, matching `handler_decls`'s own "declared IN THIS FILE"
+/// posture) — an injected handler (issue #1863) was declared, and
+/// ordered, in its own file, so a collision with a local handler's
+/// `order` is not this file's defect to report.
+///
+/// `O(n²)` over a file's claiming handlers — see
+/// [`diagnose_duplicate_patterns`]'s own doc for why that headroom is
+/// never a real concern at this scale.
+pub(super) fn diagnose_duplicate_order(
+    file_id: FileId,
+    elements: &Elements,
+    diags: &mut Vec<Diagnostic>,
+) {
+    let handlers = &elements.handlers;
+    for (i, a) in handlers.iter().enumerate() {
+        for b in &handlers[i + 1..] {
+            if a.order == b.order {
+                diags.push(Diagnostic {
+                    file: file_id,
+                    range: a.annotation,
+                    message: DiagnosticCode::E179.title().to_string(),
+                    code: DiagnosticCode::E179,
+                });
+                diags.push(Diagnostic {
+                    file: file_id,
+                    range: b.annotation,
+                    message: DiagnosticCode::E179.title().to_string(),
+                    code: DiagnosticCode::E179,
+                });
+            }
+        }
     }
 }
 
@@ -487,10 +590,10 @@ fn generate_witnesses_from_hir(hir: &Hir) -> Vec<String> {
 /// provably overlap with an earlier-declared one's *and never actually won a
 /// claim of its own*.
 ///
-/// `elements.handlers` is in declaration order (the order `collect` pushed
-/// them, itself `root.children()`'s source order), which is also
+/// `elements.handlers` is sorted by `@[convention]`'s `order` (issue
+/// #2164 — ascending, [`collect`]'s own doc), which is also
 /// [`try_claim`]'s dispatch order — see that function's doc for why
-/// "earlier-declared" is the same as "wins". An identical pattern
+/// "earlier" (lower `order`) is the same as "wins". An identical pattern
 /// *provably* matches the identical set of lines — but "the earlier one
 /// always wins" is not quite the same claim as "the later one is dead
 /// code". `try_claim` excludes a handler from claiming lines inside its
@@ -586,24 +689,22 @@ pub(super) fn diagnose_duplicate_patterns(
 /// way it always did — the fall-through that keeps every unclaimed line,
 /// and every file with no claiming handler, byte-identical.
 ///
-/// # Dispatch order (interim)
+/// # Dispatch order
 ///
 /// When more than one handler's pattern matches a line, the first one in
-/// `elements.handlers` wins — [`Iterator::find`] below, over a `Vec` built
-/// by `collect` in top-level declaration order. **This is an interim rule,
-/// not a permanent one.** Issue #1848: the 2026-07-31 §9.1 ruling's item
-/// (5) says `fn conventions()` will *register* handlers in order once
-/// issue #1840 lands, and statement order in that registering function —
-/// not a claiming `fn`'s textual position in the file — becomes the
-/// authoritative resolution order then. Until #1840 lands, declaration
-/// order is the only order there is, so it is what this dispatches on; do
-/// not treat it as a rule worth entrenching or optimizing around. Two
-/// patterns that can both claim one line get no diagnostic today except
-/// the narrow byte-identical case ([`diagnose_duplicate_patterns`], issue
-/// #1848) — a genuinely overlapping (non-identical) pair silently
-/// prefers the earlier one, exactly the failure mode "pattern power
-/// proportional to auditability" (`docs/prose-dialect-spec.md` §3.5b)
-/// exists to keep visible, not eliminate outright.
+/// `elements.handlers` wins — [`Iterator::find`] below, over a `Vec`
+/// [`collect`] sorts by `@[convention]`'s required `order` property
+/// (ascending) before returning it. Issue #2164 (`docs/decision-log.md`
+/// 2026-08-03) makes this the RULED mechanism, replacing the interim
+/// declaration-order rule issue #1848 first documented here: precedence
+/// is now total, explicit, and authored on each declaration, never
+/// inferred from textual position. Two patterns that can both claim one
+/// line still get no diagnostic except the narrow byte-identical case
+/// ([`diagnose_duplicate_patterns`], issue #1848) — a genuinely
+/// overlapping (non-identical) pair silently prefers the lower-`order`
+/// one, exactly the failure mode "pattern power proportional to
+/// auditability" (`docs/prose-dialect-spec.md` §3.5b) exists to keep
+/// visible, not eliminate outright.
 ///
 /// # Block capture (issue #1839)
 ///

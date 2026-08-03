@@ -298,7 +298,7 @@ mod tests {
         // about the raw harvest — the whole-tree scan is independent of
         // `element::try_claim`.
         let hir = lower_native(
-            "@[element(claims = \"^(?<name>[A-Z][A-Z]*)$\", block)]\nfn cue(name: string, body: content) >{\n  {name}\n  {body}\n}\n\nflow a() {\n  @KID\n  Says who?\n}\n",
+            "@[convention(claims = \"^(?<name>[A-Z][A-Z]*)$\", order = 10, block)]\nfn cue(name: string, body: content) >{\n  {name}\n  {body}\n}\n\nflow a() {\n  @KID\n  Says who?\n}\n",
         );
         let index = harvest(&[(FileId(0), &hir)], None);
         assert!(

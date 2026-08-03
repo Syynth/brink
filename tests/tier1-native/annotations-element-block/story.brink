@@ -1,10 +1,10 @@
-@[element(claims = "^(?<name>[A-Z][A-Z ]*)$", block)]
+@[convention(claims = "^(?<name>[A-Z][A-Z ]*)$", order = 10, block)]
 fn cue(name: string, body: content) >{
   {name}
   {body}
 }
 
-@[element(claims = "^(?<word>[A-Z]+)!$")]
+@[convention(claims = "^(?<word>[A-Z]+)!$", order = 20)]
 fn shout(word: string) {
   return "{word}!!!";
 }

@@ -74,8 +74,8 @@
 //!                                 # built-in preset name ("screenplay") or
 //!                                 # a project-relative path to a `.brink`
 //!                                 # conventions module. Names the ONE file
-//!                                 # a pattern-claiming `@[element(claims =
-//!                                 # "…")]` handler may be declared in
+//!                                 # a pattern-claiming `@[convention(claims =
+//!                                 # "…", order = N)]` handler may be declared in
 //!                                 # (issue #1844's confinement rule, `E169`
 //!                                 # elsewhere) — unset means no conventions
 //!                                 # module is configured, so nothing is

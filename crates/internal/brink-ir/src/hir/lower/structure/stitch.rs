@@ -87,6 +87,7 @@ pub(super) fn lower_top_level_stitch(
         // Native-only annotations (issue #1719) — ink has no `@[element]`/
         // `@[style]` equivalent tag.
         element_annotation: None,
+        convention_annotation: None,
         style_annotation: None,
         return_type,
         doc,
@@ -169,6 +170,7 @@ pub(super) fn lower_stitch(
         // Native-only annotations (issue #1719) — ink has no `@[element]`/
         // `@[style]` equivalent tag.
         element_annotation: None,
+        convention_annotation: None,
         style_annotation: None,
         return_type,
         doc,

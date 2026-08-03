@@ -198,7 +198,8 @@ fn annotations_effects() {
 /// reached this transcript line any other way, since `radio` is never
 /// otherwise called with this exact captured text.
 ///
-/// The `claims = "…"` half (issue #1838) is the part with a *behavioral*
+/// The `claims = "…"` half (issue #1838, spelled `@[convention(…)]` since
+/// issue #2164's split) is the part with a *behavioral*
 /// signal, and it is this corpus's proof that natural-notation dispatch
 /// actually reaches a reader: `interior` claims the `INT. MARKET SQUARE`
 /// line, binds `place` to `MARKET SQUARE`, and the line lowers to one call
@@ -279,7 +280,7 @@ fn annotations_element_reaches_story_data() {
 }
 
 /// Block capture (issue #1839, `docs/decision-log.md` 2026-08-01
-/// "Content-as-value"): `@[element(claims = "…", block)]` captures the
+/// "Content-as-value"): `@[convention(claims = "…", order = N, block)]` captures the
 /// **following run** into a trailing `content`-typed parameter, terminated
 /// by a blank line — `VENDOR`'s two dialogue lines, ending before the blank
 /// line that precedes `Just an ordinary line.`.

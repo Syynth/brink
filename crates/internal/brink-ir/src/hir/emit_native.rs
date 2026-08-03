@@ -381,6 +381,7 @@ pub fn emit_file(hir: &HirFile) -> Result<String, EmitError> {
             is_local: false,
             effects_assertion: None,
             element_annotation: None,
+            convention_annotation: None,
             style_annotation: None,
             return_type: None,
             doc: None,
@@ -555,6 +556,7 @@ fn emit_knot(out: &mut String, k: &Knot) -> Result<(), EmitError> {
     if k.is_local
         || k.effects_assertion.is_some()
         || k.element_annotation.is_some()
+        || k.convention_annotation.is_some()
         || k.style_annotation.is_some()
         || k.doc.is_some()
         || k.visibility.is_some()
@@ -593,6 +595,7 @@ fn emit_stitch(out: &mut String, s: &Stitch, depth: usize) -> Result<(), EmitErr
     if s.is_local
         || s.effects_assertion.is_some()
         || s.element_annotation.is_some()
+        || s.convention_annotation.is_some()
         || s.style_annotation.is_some()
         || s.doc.is_some()
         || s.visibility.is_some()

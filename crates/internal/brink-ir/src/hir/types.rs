@@ -233,54 +233,35 @@ pub struct EffectsAssertion {
     pub range: TextRange,
 }
 
-/// An `@[element(args = "…")]` per-declaration annotation (issue #1719,
-/// `docs/prose-dialect-spec.md` §3.5b) — the **declaration surface** for
-/// the prose-dialect "second authoring surface": a `!name`-dispatched
-/// content line rewrites to a call on the annotated `fn`/`flow`, with the
-/// pattern's named captures binding params by name.
+/// An `@[element(args = "…", block)]` per-declaration annotation (issue
+/// #1719, `docs/prose-dialect-spec.md` §3.5b) — the **declaration
+/// surface** for a `!name`-dispatched handler: a dispatched content line
+/// rewrites to a call on the annotated `fn`/`flow`, with the pattern's
+/// named captures binding params by name.
 ///
-/// Two spellings share this struct, distinguished by [`Self::claims`]
-/// (issue #1838, `docs/decision-log.md` 2026-07-31 "Conventions are
-/// annotated handlers"): `args = "…"` declares a `!name`-dispatched
-/// handler, whose pattern parses only the remainder after the sigil;
-/// `claims = "…"` declares a **natural-notation** handler, whose pattern
-/// claims a whole prose line that announces nothing. The ruling collapsed
-/// the old declarative element table into this one surface, so a preset
-/// element (a scene heading, a transition) is literally an annotated
-/// handler with a claiming pattern.
-///
-/// The `!name` sigil dispatch rewrite (issue #2004) now dispatches too —
-/// for a top-level `fn` only, matching the `claims` half's own restriction
-/// (a rewrite is an expression call; only a `fn` is callable as one). A
-/// `flow`-attached `args = "…"` still parses and validates here (this
-/// struct's declaration surface never distinguished `fn` from `flow`), but
-/// `hir::lower_native::element::collect` only ever scans top-level `fn`
-/// declarations into the dispatch table, so a `flow`'s own `args` clause
-/// is not yet a live dispatch target — nor is the `block` clause (issue
-/// #1839/#1840's own scope), nor cross-file dispatch-name resolution (v1
-/// dispatch is file-local, matching `claims`'s own file-local scope).
+/// Until issue #2164, this struct also carried the natural-notation
+/// `claims = "…"` spelling (a `claims: bool` field distinguished the two).
+/// The 2026-08-03 ruling ("Claiming and `!name` dispatch split into two
+/// annotations: `@[convention]` and `@[element]`", `docs/decision-log.md`)
+/// splits that claiming half out into [`ConventionAnnotation`], declared
+/// under its own `@[convention(claims = "…", order = N)]` name. What
+/// remains here is `!name` dispatch only: self-announcing, legal
+/// anywhere, and carrying **no `order`** — a handler that names itself
+/// never competes for a line, so it needs no precedence over anything.
+/// `§9.1` item 1's "there is ONE element mechanism, not two" still holds
+/// at the *lowering* layer (both annotations still lower to a matched
+/// line, captures bound by name, and exactly one handler call) — only the
+/// authoring surface split.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ElementAnnotation {
-    /// The portable-regex source text of the `args = "…"`/`claims = "…"`
-    /// clause. For `args`, anchored against the dispatched line's
-    /// remainder (after the `!name ` prefix is stripped); for `claims`,
-    /// against the claimed line's whole text.
+    /// The portable-regex source text of the `args = "…"` clause, anchored
+    /// against the dispatched line's remainder (after the `!name ` prefix
+    /// is stripped).
     pub pattern: String,
-    /// `true` when the pattern was spelled `claims = "…"` — a
-    /// natural-notation claim over prose that carries no `!name` sigil.
-    /// `false` for the self-announcing `args = "…"` form.
-    ///
-    /// The asymmetry is ruled, not incidental: a claiming pattern can take
-    /// a line that looks like ordinary prose, so it is confined to the
-    /// project's conventions module, while `!name` handlers stay legal
-    /// anywhere precisely because the sigil makes every rewritten line
-    /// self-announcing.
-    pub claims: bool,
     /// `pattern`'s named capture groups, in the order `regex::Regex::
     /// capture_names` yields them — the set a paired `@[style(…)]`'s keys
-    /// are validated against (`E162`), and (once the `!name` dispatch
-    /// rewrite lands) the set that binds the annotated declaration's
-    /// params by name.
+    /// are validated against (`E162`), and the set that binds the
+    /// annotated declaration's params by name.
     pub captures: Vec<String>,
     /// An explicit dispatch-name alias (`name = "…"` in the same
     /// annotation), overriding the fn/flow's own name as the `!`-sigil
@@ -307,6 +288,57 @@ pub struct ElementAnnotation {
     /// (issue #1839) — this field is what tells them to run it.
     pub block: bool,
     /// Source range of the whole `@[element(…)]` annotation line.
+    pub range: TextRange,
+}
+
+/// An `@[convention(claims = "…", order = N)]` per-declaration annotation
+/// (issue #2164, `docs/decision-log.md` 2026-08-03) — the **declaration
+/// surface** for a pattern-claiming handler: a claimed prose line (one
+/// that announces nothing of its own — no `!name` sigil) rewrites to a
+/// call on the annotated top-level `fn`, with the pattern's named
+/// captures binding params by name.
+///
+/// Split out of the old `@[element(claims = "…")]` spelling (issue #1838)
+/// by the 2026-08-03 ruling: a claiming handler *competes* for lines it
+/// did not announce, so it needs an explicit precedence (`order`) and it
+/// stays **confined** to the `brink.toml`-named conventions module (§9.1
+/// item 4, issue #1844's `E169`) — properties [`ElementAnnotation`]'s
+/// `!name` dispatch does not share, since a self-announcing handler never
+/// competes for anything. Scene heading, cue, parenthetical are
+/// conventions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConventionAnnotation {
+    /// The portable-regex source text of the `claims = "…"` clause,
+    /// anchored against the claimed line's whole text.
+    pub pattern: String,
+    /// The claiming precedence (`order = N`) — a bare integer, RULED
+    /// (`docs/decision-log.md` 2026-08-03 "`order` is REQUIRED on
+    /// `@[convention]`…") over a sparse-integer convention or named
+    /// anchors. **Required**: a `@[convention]` with no `order` clause is
+    /// `E178` and yields no `ConventionAnnotation` at all — there is no
+    /// default, because `order` can never be absent. Two declarations in
+    /// one module carrying the same `order` is `E179` (both declarations
+    /// named), enforced across the module's collected handlers
+    /// (`hir::lower_native::element::diagnose_duplicate_order`) rather
+    /// than here, where only one declaration is in view at a time. Lower
+    /// values are tried first — the walk still tries every registered
+    /// pattern against every line, uses the first match, and records the
+    /// rest as shadowed (2026-08-02 match-ordering ruling, unaffected);
+    /// only the *source* of that trial order changed, from declaration
+    /// position to this field.
+    pub order: i64,
+    /// `pattern`'s named capture groups, in the order `regex::Regex::
+    /// capture_names` yields them — the set a paired `@[style(…)]`'s keys
+    /// are validated against (`E162`), and the set every argument of the
+    /// rewritten call comes from (`E167`: a claimed line has no other
+    /// source of arguments).
+    pub captures: Vec<String>,
+    /// The bare `block` clause (issue #1839) — identical meaning to
+    /// [`ElementAnnotation::block`]'s own doc, for a claiming handler
+    /// instead of a `!name`-dispatched one (the built-in screenplay
+    /// preset's `cue`/`parenthetical` handlers both declare it).
+    pub block: bool,
+    /// Source range of the whole `@[convention(…)]` annotation line.
     pub range: TextRange,
 }
 
@@ -429,9 +461,10 @@ pub struct ElementMatch {
 pub struct ClaimHandlerDecl {
     /// The handler's own name, carrying its declaration-site range.
     pub name: Name,
-    /// Range of the `@[element(claims = "…")]` annotation line itself — the
-    /// confinement diagnostic's anchor, matching `E112`'s own placement
-    /// diagnostic (the annotation line, not the declaration body).
+    /// Range of the `@[convention(claims = "…", order = N)]` annotation
+    /// line itself — the confinement diagnostic's anchor, matching
+    /// `E112`'s own placement diagnostic (the annotation line, not the
+    /// declaration body).
     pub annotation: TextRange,
     /// Parameter names in declaration order — the argument order a
     /// rewritten call uses. Guaranteed by `E160`/`E167` to be exactly the
@@ -452,6 +485,11 @@ pub struct ClaimHandlerDecl {
     /// handler could never block-capture regardless of how it was
     /// declared.
     pub block: bool,
+    /// The claiming precedence (`order = N`), issue #2164 — see
+    /// [`ConventionAnnotation::order`]'s own doc. Required on every
+    /// `@[convention]`, so every `ClaimHandlerDecl` carries one (there is
+    /// no "no order" case to represent).
+    pub order: i64,
 }
 
 /// One `@NAME` cue occurrence, recorded regardless of whether any
@@ -513,8 +551,9 @@ pub enum StyleToken {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StyleEntry {
     /// The clause's key: `"line"`, `"dispatch"`, or the name of a capture
-    /// group declared by the paired [`ElementAnnotation::pattern`]
-    /// (validated at lowering time — `E162`).
+    /// group declared by the paired [`ElementAnnotation::pattern`] or
+    /// [`ConventionAnnotation::pattern`] (validated at lowering time —
+    /// `E162`).
     pub key: String,
     pub value: StyleToken,
     /// Source range of this one clause (not the whole annotation line).
@@ -523,8 +562,9 @@ pub struct StyleEntry {
 
 /// An `@[style(…)]` per-declaration annotation (issue #1719,
 /// `docs/prose-dialect-spec.md` §3.5b addenda 3–4) — declared editor
-/// presentation, mapping a paired [`ElementAnnotation`]'s captures (plus
-/// the two special keys `line`/`dispatch`) to [`StyleToken`]s.
+/// presentation, mapping a paired [`ElementAnnotation`]'s or
+/// [`ConventionAnnotation`]'s captures (plus the two special keys
+/// `line`/`dispatch`) to [`StyleToken`]s.
 ///
 /// **Editor-presentation only.** The consumer of this data is the editor
 /// track (NS-T, issues #1131/#1350), which is held — this struct exists so
@@ -573,9 +613,18 @@ pub struct Knot {
     /// `docs/prose-dialect-spec.md` §3.5b). Native-only — ink has no
     /// equivalent tag.
     pub element_annotation: Option<ElementAnnotation>,
+    /// The `@[convention(claims = "…", order = N)]` annotation, if any
+    /// (issue #2164, split out of `@[element]` by the 2026-08-03 ruling).
+    /// Native-only, and legal only above a top-level `fn` (`E112`
+    /// otherwise) — see [`ConventionAnnotation`]'s own doc. Mutually
+    /// exclusive with `element_annotation` in practice (a declaration
+    /// names one mechanism or the other), but nothing enforces that here;
+    /// both are independent declaration-surface reads.
+    pub convention_annotation: Option<ConventionAnnotation>,
     /// The `@[style(…)]` annotation, if any (issue #1719, same spec
-    /// section). Requires a paired `element_annotation` on the same
-    /// declaration (`E163`) — see [`StyleAnnotation`].
+    /// section). Requires a paired `element_annotation` OR
+    /// `convention_annotation` on the same declaration (`E163`) — see
+    /// [`StyleAnnotation`].
     pub style_annotation: Option<StyleAnnotation>,
     /// The function-header return type annotation (TM-2, docs/typed-mode-spec.md
     /// §3: `): type ===`), brink-dialect-gated syntax. `None` when absent —
@@ -630,6 +679,9 @@ pub struct Stitch {
     /// The `@[element(args = "…")]` annotation, if any (issue #1719). See
     /// [`Knot::element_annotation`].
     pub element_annotation: Option<ElementAnnotation>,
+    /// The `@[convention(claims = "…", order = N)]` annotation, if any
+    /// (issue #2164). See [`Knot::convention_annotation`].
+    pub convention_annotation: Option<ConventionAnnotation>,
     /// The `@[style(…)]` annotation, if any (issue #1719). See
     /// [`Knot::style_annotation`].
     pub style_annotation: Option<StyleAnnotation>,

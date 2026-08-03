@@ -250,9 +250,9 @@ fn diagnostic_codes_are_unique() {
 ///   with a doc comment saying markup spans are "a native-grammar
 ///   construct" and the pass is "inert for ink source by construction (no
 ///   `ContentPart::Span` can exist there)".
-/// - `E166`–`E171` — the `@[element(claims = "…")]` / `@[element(…,
-///   block)]` dispatch family, the same native-only annotation channel as
-///   `E159`/`E160`.
+/// - `E166`–`E171` — the `@[element(…, block)]` / `@[convention(claims =
+///   "…", order = N)]` dispatch family, the same native-only annotation
+///   channel as `E159`/`E160`.
 /// - `E172` — raised only by `hir::lower_native::body::lower_tag`, i.e. only
 ///   while lowering a `.brink` file.
 /// - `E173` — the required-markup-attribute check (issue #1780/#1997), the
@@ -262,6 +262,12 @@ fn diagnostic_codes_are_unique() {
 ///   with its body-derived type (issue #1994); raised only from
 ///   `infer::body::InferPass::infer_lambda`, and `LAMBDA_EXPR` exists only
 ///   in `brink-syntax-native`, same posture as `E156`/`E158`.
+/// - `E178`/`E179` — `@[convention(…)]`'s required-and-unique `order`
+///   property (issue #2164, `docs/decision-log.md` 2026-08-03): `convention`
+///   is a native-only recognized annotation name, same posture as
+///   `element`/`style`; raised only from `hir::lower_native::annotation`
+///   (`E178`) and `hir::lower_native::element::diagnose_duplicate_order`
+///   (`E179`).
 ///
 /// Codes intentionally **excluded** despite living in the same numeric
 /// neighborhood: `E157` (the unnamed-once-only-choice / unnamed-sequence
@@ -271,6 +277,7 @@ fn diagnostic_codes_are_unique() {
 const NATIVE_ONLY_CODES: &[&str] = &[
     "E130", "E132", "E145", "E153", "E154", "E155", "E156", "E158", "E159", "E160", "E161", "E162",
     "E163", "E164", "E165", "E166", "E167", "E168", "E169", "E170", "E171", "E172", "E173", "E174",
+    "E178", "E179",
 ];
 
 /// Every fenced code block's info string (the text right after the opening
