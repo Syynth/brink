@@ -605,9 +605,14 @@ pub struct LowerCtx<'a> {
     /// pointer to the slot instead — so
     /// [`super::expr::lower_ref_path_call_arg`] and
     /// [`super::expr::lower_ref_projection_arg`] separately consult this
-    /// set at their own root. Entries are never removed: a slot is
-    /// allocated fresh per binding and never reused, so membership is a
-    /// permanent property of the slot, not of the scope being open.
+    /// set at their own root. Likewise, the UFCS frame-local auto-ref
+    /// recognizer ([`super::blocks::try_lower_frame_local_auto_ref_stmt`],
+    /// `g.hp.heal(5)`-shaped calls) writes the receiver back into the
+    /// root slot via its own `Assign`, bypassing both choke points above,
+    /// so it also consults this set inline at its own root. Entries are
+    /// never removed: a slot is allocated fresh per binding and never
+    /// reused, so membership is a permanent property of the slot, not of
+    /// the scope being open.
     pub as_binding_slots: crate::determinism::LookupSet<u16>,
     /// Every name ever declared via [`LowerCtx::declare_block_local`] in
     /// this frame — i.e. every T1b block-scoped `temp`/`for`-loop-variable
