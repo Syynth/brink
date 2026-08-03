@@ -162,6 +162,57 @@ The `Story` manages one or more flows and their contexts, providing the convenie
 - **Pending external query**: `has_pending_external() -> bool` — distinguishes "blocked on async external" from "actual error" when `continue_maximally()` returns `Err(UnresolvedExternalCall)`.
 - **External resolution**: `resolve_external(value: ExternalValue)` — provides the result for a pending external call. The next `continue_maximally()` or `continue_line()` call continues from where it froze.
 
+### Pending-terminal invalidation invariant
+
+> This section uses current (post-#1684) terminology — `Step`/`OutputLine`,
+> per CLAUDE.md's "Runtime public API" — rather than the `continue_line`/
+> `Line` API the rest of this "Execution model" section still describes.
+> Reconciling the whole section to the current API is tracked separately
+> (see the scope note filed against #2104); this note only covers the one
+> invariant it was asked to document.
+
+Terminal `Step`s (`Done`/`Choices`/`End`) carry no text of their own
+(`docs/prose-dialect-spec.md` §7). When a yield point is reached with
+unflushed trailing content, that content goes out first as its own
+`Step::Line`, and the bare terminal is stashed on the flow
+(`FlowInstance`'s internal `pending_terminal`) to be handed back, with no
+further VM stepping, on the very next `advance`/`continue_single` call.
+
+**The invariant:** `pending_terminal` may be `Some` only from the moment a
+yield computes it until the very next call that reads it back — and it must
+never be delivered if a host-directed operation moved execution to a
+different run in between. Concretely: `choose` (choice selection) and
+`choose_path_string`/`choose_path_string_with_args` (host-directed jump)
+each force-complete the current run and begin a fresh one; if either happens
+between the stash and its delivery, the stash must be discarded rather than
+replayed — otherwise the host gets back a `Done`/`Choices`/`End` left over
+from before the jump/choice instead of the new run's actual next step.
+
+**How it's enforced:** rather than relying on every such call site to
+remember an explicit clear (the shape of the original bug, found in #1684's
+own review — `choose_path_string_with_args` and `choose`/`select_choice`
+both initially forgot it), the stash is stamped with the flow's
+`next_block_id` — the same counter, already bumped by exactly these events,
+that numbers `Step::Line`'s `block_id` (`docs/prose-dialect-spec.md`
+§3.7/§8d.2). Reading the stash back compares its stamp against the
+*current* `next_block_id` and silently discards a stale one instead of
+returning it. This makes the invariant hold **by construction**: any future
+host-directed operation that begins a new run only has to keep bumping
+`next_block_id` for its own (unrelated, already-required) reason — block-id
+correctness for `Step::Line` — and pending-terminal invalidation comes along
+for free, with no clear-site of its own to forget. See `PendingTerminal`'s
+doc comment in `brink-runtime/src/story/call_stack.rs` for the
+implementation.
+
+**Out of scope for this invariant:** `Story::load_state`/the free
+`load_state` function (`brink-runtime/src/save.rs`) reconcile only *game
+state* (globals, visit/turn counts) into a `ContextAccess` — they never
+touch a `Flow` (or its `next_block_id`/`pending_terminal`) at all, so they
+cannot leave a stale stash behind and need no clear of their own.
+`begin_function_eval`/`resume_function_eval` similarly never move the main
+flow's execution position (the evaluation runs isolated, output hidden,
+transcript untouched), so they don't interact with this invariant either.
+
 ### Flows and instancing
 
 Every flow in the Story is a named **(Flow, Context) pair**. Multi-flow and instanced flows are the same primitive — the difference is usage pattern, not mechanism.

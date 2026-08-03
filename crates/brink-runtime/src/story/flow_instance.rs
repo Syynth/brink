@@ -19,7 +19,8 @@ use crate::vm;
 use crate::world::{ResolvedPolicy, World};
 
 use super::call_stack::{
-    CallFrame, CallFrameType, CallStack, ChoiceDisplay, ContainerPosition, ExecMode, Flow, Thread,
+    CallFrame, CallFrameType, CallStack, ChoiceDisplay, ContainerPosition, ExecMode, Flow,
+    PendingTerminal, Thread,
 };
 use super::external::{ExternalFnHandler, ExternalResult, FunctionEval};
 use super::types::{BlockId, Choice, Element, OutputLine, Stats, Step, StepOutcome, StoryStatus};
@@ -133,7 +134,7 @@ impl FlowInstance {
                 exec_mode: ExecMode::default(),
                 pure_callback: crate::story::PureCallbackState::default(),
                 next_block_id: 0,
-                pending_terminal: None,
+                pending_terminal: PendingTerminal::default(),
             },
             status: StoryStatus::Active,
             stats: Stats::default(),
@@ -392,8 +393,17 @@ impl FlowInstance {
         // 0. A terminal was computed on the previous call but held back
         //    because its trailing content had to go out first as its own
         //    `Step::Line` (terminals carry no text — §7). Deliver it now,
-        //    bare, with no VM stepping.
-        if let Some(pending) = self.flow.pending_terminal.take() {
+        //    bare, with no VM stepping — but only if no new run has begun
+        //    since it was stashed (`PendingTerminal`'s invalidation
+        //    invariant, #2104): a host-directed jump or choice between the
+        //    two calls bumps `next_block_id`, and `take_if_current` silently
+        //    drops a stash stamped with a now-stale block id instead of
+        //    replaying it.
+        if let Some(pending) = self
+            .flow
+            .pending_terminal
+            .take_if_current(self.flow.next_block_id)
+        {
             return Ok(StepOutcome::Step(pending));
         }
 
@@ -720,12 +730,13 @@ impl FlowInstance {
             call_stack: CallStack::new(root_frame),
         }];
         self.flow.pending_choices.clear();
-        // A stashed terminal from before the jump must not be replayed after
-        // it — the host explicitly redirected execution, so the next
-        // `advance`/`step_single_line` call must actually step the VM at the
-        // new target rather than handing back a stale `Done`/`Choices`/`End`
-        // left over from whatever this flow was doing before the jump.
-        self.flow.pending_terminal = None;
+        // No explicit pending-terminal clear needed here: `next_block_id`'s
+        // bump below (a fresh run begins at the jump target) is exactly
+        // what invalidates any stash from before the jump — see
+        // `PendingTerminal`'s doc comment. The host explicitly redirected
+        // execution, so the next `advance`/`step_single_line` call correctly
+        // steps the VM at the new target rather than handing back a stale
+        // `Done`/`Choices`/`End` left over from before the jump.
         // Transient intra-step flags. Both are false at any point a host can
         // observe (between lines / at a yield), but the jump abandons whatever
         // produced them, so clear defensively.
@@ -1389,11 +1400,12 @@ fn select_choice(
     });
 
     flow.pending_choices.clear();
-    // A stashed terminal predates this choice — the choice moved execution
-    // to a fresh target, so the next step must actually run the VM there
-    // rather than replaying whatever `Done`/`Choices`/`End` was pending
-    // before selection.
-    flow.pending_terminal = None;
+    // No explicit pending-terminal clear needed here either (same reasoning
+    // as `choose_path_string_with_args`): `next_block_id`'s bump below moves
+    // this choice to a fresh run, which is exactly what `PendingTerminal`
+    // uses to invalidate a stash from before the choice — so the next step
+    // correctly runs the VM at the chosen target rather than replaying
+    // whatever `Done`/`Choices`/`End` was pending before selection.
     *status = StoryStatus::Active;
     stats.choices_selected += 1;
     // A fresh run begins at the chosen branch (`BlockId`, §3.7/§8d.2).
@@ -1552,7 +1564,7 @@ fn yield_step(
     if text.is_empty() && tags.is_empty() {
         terminal
     } else {
-        flow.pending_terminal = Some(terminal);
+        flow.pending_terminal.stash(flow.next_block_id, terminal);
         make_output_line(flow, text, tags)
     }
 }

@@ -1227,7 +1227,7 @@ fn insert_index(index: &Value, len: usize) -> Result<usize, RuntimeError> {
 mod tests {
     use super::*;
     use crate::output::OutputBuffer;
-    use crate::story::Flow;
+    use crate::story::{Flow, PendingTerminal};
     use alloc::sync::Arc;
 
     /// A `Flow` with nothing but an empty value stack — every function in
@@ -1247,7 +1247,7 @@ mod tests {
             exec_mode: crate::story::ExecMode::default(),
             pure_callback: crate::story::PureCallbackState::default(),
             next_block_id: 0,
-            pending_terminal: None,
+            pending_terminal: PendingTerminal::default(),
         }
     }
 

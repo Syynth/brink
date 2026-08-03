@@ -3012,7 +3012,7 @@ mod tower_tests {
             exec_mode: crate::story::ExecMode::default(),
             pure_callback: crate::story::PureCallbackState::default(),
             next_block_id: 0,
-            pending_terminal: None,
+            pending_terminal: crate::story::PendingTerminal::default(),
         };
         flow.value_stack
             .push(Value::array(vec![v2(1.0, 2.0), v2(3.0, 4.0)]));

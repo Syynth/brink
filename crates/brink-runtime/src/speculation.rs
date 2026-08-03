@@ -110,6 +110,19 @@ pub struct Speculation<R: StoryRng = FastRng> {
     flow: FlowInstance,
     /// Running count of lines produced across every `advance` call so far
     /// on this speculation, checked against each call's `budget.lines`.
+    ///
+    /// **Post-#1684 note (#2104):** since the `Step`/`OutputLine`
+    /// terminal-split, a bare bounced-back terminal (a `pending_terminal`
+    /// stash, delivered on the call right after a yield's trailing content —
+    /// see `FlowInstance::advance_with_limit`'s doc comment) is itself one
+    /// more `StepOutcome::Step` — and so counts as one more increment here —
+    /// than the old fused `Line` model produced for the same run of story
+    /// content. A configured `Budget::lines` therefore buys marginally fewer
+    /// *turns* than it did before the split (one line's worth of budget is
+    /// spent on the content-then-terminal pair instead of a single fused
+    /// step). Harmless in practice — no case is near any budget — but worth
+    /// knowing if a speculative probe's line budget is ever tuned tightly
+    /// against a real story.
     lines_advanced: usize,
     _rng: PhantomData<R>,
 }

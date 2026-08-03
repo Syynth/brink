@@ -103,6 +103,21 @@ impl WriteObserver for ExploreRecorder {
 }
 
 /// Maximum `continue_single` calls per episode before aborting.
+///
+/// **Post-#1684 note (#2104):** since the `Step`/`OutputLine` terminal-split,
+/// every turn that ends in a yield with trailing content (any `Done`/
+/// `Choices`/`End` preceded by unflushed text) now costs one extra
+/// `continue_single` call versus the old fused `Line` model — the bare
+/// terminal is its own call (`pending_terminal`, see
+/// `FlowInstance::advance_with_limit`'s doc comment) rather than riding
+/// along on the same call as its trailing text. So the headroom under this
+/// cap shrank by roughly one call per turn, silently, across every episode.
+/// Oracle snapshots prove no case is anywhere near `10_000`, but if a future
+/// change makes exploration noticeably deeper per episode (e.g. a lot more
+/// turns, or much longer turns), this is the first place to look before
+/// raising the limit rather than treating a hit as a hang (never raise a
+/// timeout/limit to paper over an actual infinite loop — see `CLAUDE.md`'s
+/// "VM tests must not hang").
 const STEP_LIMIT: usize = 10_000;
 
 #[expect(clippy::too_many_lines)]

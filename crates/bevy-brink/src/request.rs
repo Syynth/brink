@@ -542,28 +542,28 @@ mod tests {
 
     use crate::globals::flow_context_view;
     use crate::{Advance, BrinkGlobals};
-    use bevy_app::{App, Update};
-    use brink_runtime::{FastRng, FlowInstance, Scope, Step, StoryStatus, WorldPolicy};
-
-    #[derive(bevy_ecs::resource::Resource, Default)]
-    struct Texts(Vec<String>);
+    use bevy_app::App;
+    use bevy_ecs::system::SystemState;
+    use brink_runtime::{Scope, Step, StoryStatus, WorldPolicy};
 
     /// Per-entity text accumulated across a single `advance_until_terminal`
     /// drive, via the `BrinkLineDelivered` observer registered by
     /// [`install_text_accumulator`]. Terminals carry no payload of their
     /// own (§7 — `docs/prose-dialect-spec.md`) — any trailing content
     /// already arrived as its own preceding `Step::Line`/`BrinkLineDelivered`
-    /// event, which is why [`drive_entity`] accumulates across every event
-    /// a drive fires rather than reading the single terminal
+    /// event, which is why both [`drive_entity`] and
+    /// [`drive_all_active_via_advance_until_terminal`] accumulate across
+    /// every event a drive fires rather than reading the single terminal
     /// `Advance::Step`'s own (now-empty) text. Relies on
     /// `SystemState::apply` (or an equivalent `Commands` flush) having run
-    /// before this is read — see `drive_entity`'s own use.
+    /// before this is read — see both helpers' own use.
     #[derive(bevy_ecs::resource::Resource, Default)]
     struct PendingText(std::collections::HashMap<Entity, String>);
 
-    /// Register the `BrinkLineDelivered` observer [`drive_entity`] relies
-    /// on to recover a flow's full drive text. Call once per test `App`
-    /// (see [`app_with_save_policy`]).
+    /// Register the `BrinkLineDelivered` observer [`drive_entity`]/
+    /// [`drive_all_active_via_advance_until_terminal`] rely on to recover a
+    /// flow's full drive text. Call once per test `App` (see
+    /// [`app_with_save_policy`]).
     fn install_text_accumulator(app: &mut App) {
         app.insert_resource(PendingText::default());
         app.add_observer(
@@ -575,39 +575,56 @@ mod tests {
         );
     }
 
+    /// System-state shape for [`drive_all_active_via_advance_until_terminal`]:
+    /// every flow's entity/component tuple plus the assets and shared
+    /// globals needed to build a [`flow_context_view`] and drive through
+    /// [`BrinkFlow::advance_until_terminal`]. Mirrors [`FlowQuery`] below
+    /// (the F6.3 helpers' equivalent), one entity earlier in the tuple since
+    /// this helper drives every active flow rather than one named entity.
+    type DriveAllQuery = SystemState<(
+        Query<
+            'static,
+            'static,
+            (
+                Entity,
+                &'static mut BrinkFlow<()>,
+                &'static mut BrinkContext<()>,
+                &'static crate::BrinkProgram<()>,
+                &'static crate::BrinkLocale<()>,
+            ),
+        >,
+        ResMut<'static, BrinkGlobals<()>>,
+        Res<'static, Assets<ProgramAsset>>,
+        Res<'static, Assets<crate::asset::LineTablesAsset>>,
+        Commands<'static, 'static>,
+    )>;
+
     /// Drive every `Active` flow (skips ones already at a terminal status,
-    /// e.g. `Done` from an earlier pass in the same test) to its first
-    /// terminal step, recording the produced text. Shared by the three
-    /// tests below.
+    /// e.g. `Done` from an earlier pass in the same test) to its next
+    /// terminal step, returning one accumulated text per flow driven. Shared
+    /// by the F6.2 tests below. Requires [`install_text_accumulator`] to
+    /// have been called on `app` first.
     ///
-    /// Drives the raw [`FlowInstance::drive`] rather than
-    /// [`BrinkFlow::advance_until_terminal`] so it gets every produced
-    /// `Step` back directly instead of only the (now payload-free, §7)
-    /// terminal — `advance_until_terminal` fires the intermediate content
-    /// as `BrinkLineDelivered` observer events instead, which are only
-    /// useful here if flushed (via `Commands`) before being read back in
-    /// the same system, an extra step this helper's callers don't need.
-    #[expect(
-        clippy::type_complexity,
-        clippy::needless_pass_by_value,
-        reason = "bevy systems take Res/Query by value and have complex query tuples"
-    )]
-    fn drive_all_active(
-        mut flows: Query<(
-            &mut BrinkFlow<()>,
-            &mut BrinkContext<()>,
-            &crate::BrinkProgram<()>,
-            &crate::BrinkLocale<()>,
-        )>,
-        globals: Option<ResMut<BrinkGlobals<()>>>,
-        programs: Res<Assets<ProgramAsset>>,
-        tables: Res<Assets<crate::asset::LineTablesAsset>>,
-        mut texts: ResMut<Texts>,
-    ) {
-        let Some(mut globals) = globals else {
-            return; // nothing fulfilled yet this tick
-        };
-        for (mut flow, mut ctx, prog, loc) in &mut flows {
+    /// Drives through the production [`BrinkFlow::advance_until_terminal`]
+    /// path (so `emit_drive_outcome` — and the `BrinkLineDelivered` observer
+    /// events it fires — actually gets exercised here; see #2104) rather
+    /// than the raw [`FlowInstance::drive`] this helper used until now.
+    /// `advance_until_terminal` delivers its intermediate content only as
+    /// `Commands`-deferred observer events, which is why this drives via an
+    /// explicit `SystemState`/[`SystemState::apply`] cycle — mirroring the
+    /// F6.3 tests' [`drive_entity`] helper — instead of running as a
+    /// scheduled `Update` system: `apply` flushes the `Commands` (so the
+    /// observer runs and [`PendingText`] is populated) before this function
+    /// reads it back, sidestepping the same-system flush-timing footgun a
+    /// scheduled system would hit rather than working around it by reaching
+    /// for the raw drive op.
+    fn drive_all_active_via_advance_until_terminal(app: &mut App) -> Vec<String> {
+        let mut state: DriveAllQuery = SystemState::new(app.world_mut());
+        let (mut flows, mut globals, programs, tables, mut commands) =
+            state.get_mut(app.world_mut()).expect("system params");
+
+        let mut driven = Vec::new();
+        for (entity, mut flow, mut ctx, prog, loc) in &mut flows {
             if flow.inner.status() != StoryStatus::Active {
                 continue;
             }
@@ -615,18 +632,35 @@ mod tests {
                 continue;
             };
             let mut view = flow_context_view(&mut globals, &mut ctx);
-            let mut budget = FlowInstance::LINE_LIMIT;
-            if let Ok(brink_runtime::DriveOutcome::Terminal(steps)) = flow.inner.drive::<FastRng>(
-                &p.program,
-                &t.tables,
-                &mut view,
-                &brink_runtime::FallbackHandler,
-                None,
-                &mut budget,
-            ) {
-                texts.0.push(steps.iter().map(Step::text).collect());
+            let advance = flow
+                .advance_until_terminal(
+                    &p.program,
+                    &t.tables,
+                    &mut view,
+                    &brink_runtime::FallbackHandler,
+                    entity,
+                    &mut commands,
+                )
+                .expect("advance");
+            match advance {
+                Advance::Step(_) => {}
+                // None of the F6.2 tests use externals.
+                Advance::AwaitingQuery => unreachable!("unexpected pending external in F6.2 tests"),
             }
+            driven.push(entity);
         }
+        state.apply(app.world_mut());
+
+        driven
+            .into_iter()
+            .map(|entity| {
+                app.world_mut()
+                    .resource_mut::<PendingText>()
+                    .0
+                    .remove(&entity)
+                    .unwrap_or_default()
+            })
+            .collect()
     }
 
     /// (a) Default policy (`WorldPolicy::default()`, installed automatically
@@ -640,8 +674,7 @@ mod tests {
         let mut app = App::new();
         app.add_plugins(bevy_asset::AssetPlugin::default());
         app.add_plugins(crate::BrinkPlugin::<()>::default());
-        app.insert_resource(Texts::default());
-        app.add_systems(Update, drive_all_active);
+        install_text_accumulator(&mut app);
 
         let (program, tables, ctx) = compile_test_story(
             "VAR counter = 0\n~ counter = counter + 1\nCounter is {counter}.\n-> DONE\n",
@@ -656,9 +689,8 @@ mod tests {
         app.world_mut()
             .spawn(BrinkFlowRequest::<()>::builder().story(story).build());
         app.update(); // fulfill both
-        app.update(); // drive both to Done in one pass
 
-        let mut texts = app.world().resource::<Texts>().0.clone();
+        let mut texts = drive_all_active_via_advance_until_terminal(&mut app); // drive both to Done in one pass
         texts.sort();
         assert_eq!(
             texts,
@@ -681,8 +713,7 @@ mod tests {
         let mut policy = WorldPolicy::default();
         policy.overrides.insert("start".to_string(), Scope::Local);
         app.add_plugins(crate::BrinkPlugin::<()>::default().with_policy(policy));
-        app.insert_resource(Texts::default());
-        app.add_systems(Update, drive_all_active);
+        install_text_accumulator(&mut app);
 
         // Root diverts straight into `start` — a real `-> start` divert, so
         // entering it goes through the normal goto machinery that bumps
@@ -705,8 +736,8 @@ mod tests {
                 .build(),
         );
         app.update(); // fulfill flow 1
-        app.update(); // drive flow 1 to Done
-        let flow1_text = app.world_mut().resource_mut::<Texts>().0.remove(0);
+        let flow1_text = drive_all_active_via_advance_until_terminal(&mut app) // drive flow 1 to Done
+            .remove(0);
         assert!(
             flow1_text.contains("Hello"),
             "flow 1's first-ever visit to a Local-scoped knot should take \
@@ -724,8 +755,8 @@ mod tests {
         app.world_mut()
             .spawn(BrinkFlowRequest::<()>::builder().story(story).build());
         app.update(); // fulfill flow 2 (flow 1 no longer matches `Without<BrinkFlow<M>>`)
-        app.update(); // drive flow 2 to Done
-        let flow2_text = app.world_mut().resource_mut::<Texts>().0.remove(0);
+        let flow2_text = drive_all_active_via_advance_until_terminal(&mut app) // drive flow 2 to Done
+            .remove(0);
         assert!(
             flow2_text.contains("Hello"),
             "flow 2's own Local visit count should also start fresh, \
@@ -791,7 +822,6 @@ mod tests {
     // exactly its own private state while the shared VAR converges once.
 
     use crate::globals::{load_flow_state, save_flow_state};
-    use bevy_ecs::system::SystemState;
     use brink_format::Value;
     use brink_runtime::ContextAccess;
 
