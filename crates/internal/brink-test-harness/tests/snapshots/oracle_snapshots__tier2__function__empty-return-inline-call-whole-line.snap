@@ -1,0 +1,14 @@
+---
+source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
+assertion_line: 182
+expression: case_snapshot
+---
+case: tier2/function/empty-return-inline-call-whole-line
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [] === PASS
+> "Before.\n" [Continue]
+> "\n" [Continue]
+> "After.\n" [Ended]
+outcome: Ended
