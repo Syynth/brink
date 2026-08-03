@@ -85,11 +85,8 @@ fn run_entry(source: &str, entry: &str) -> String {
 /// Drain a story to its terminal line, concatenating text.
 fn run_to_end(story: &mut Story<DotNetRng>) -> String {
     let mut out = String::new();
-    loop {
-        match story.continue_single().expect("runtime error") {
-            Step::Line(line) => out.push_str(&line.text),
-            Step::Done | Step::End | Step::Choices(_) | Step::Suspended => break,
-        }
+    while let Step::Line(line) = story.continue_single().expect("runtime error") {
+        out.push_str(&line.text);
     }
     out
 }

@@ -89,8 +89,8 @@ fn run(source: &str) -> String {
     loop {
         match story.continue_single().expect("no runtime fault") {
             Step::Line(line) => out.push_str(&line.text),
-            Step::Done | Step::End | Step::Suspended => break,
             Step::Choices(_) => panic!("these programs are choice-free"),
+            Step::Done | Step::End | Step::Suspended => break,
         }
     }
     out

@@ -1979,11 +1979,8 @@ fn compile_and_link(
 /// pushing text for the terminal case.
 fn run_to_end(story: &mut Story<DotNetRng>) -> String {
     let mut out = String::new();
-    loop {
-        match story.continue_single().expect("runtime error") {
-            Step::Line(line) => out.push_str(&line.text),
-            Step::Done | Step::End | Step::Choices(_) | Step::Suspended => break,
-        }
+    while let Step::Line(line) = story.continue_single().expect("runtime error") {
+        out.push_str(&line.text);
     }
     out
 }

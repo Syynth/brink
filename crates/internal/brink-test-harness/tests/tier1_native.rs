@@ -531,9 +531,9 @@ fn inline_tag_embedded_brace() {
 }
 
 /// Compile-level sibling to `inline_tag_embedded_brace` (review of #1787):
-/// `assert_case` runs through `run_native_transcript`, whose `Step::Line`'s content {
-/// text, .. }` arm discards the `tags` field entirely — so that golden
-/// fixture only pins that the *following* content line survives, never that
+/// `assert_case` runs through `run_native_transcript`, whose `Step::Line`
+/// arm discards the `tags` field entirely — so that golden fixture only
+/// pins that the *following* content line survives, never that
 /// the tag's own text (braces included) actually reached `StoryData`. This
 /// asserts that directly, compiling the exact same fixture through
 /// `brink_compiler::compile_path` and linking it, then checking the tag's
