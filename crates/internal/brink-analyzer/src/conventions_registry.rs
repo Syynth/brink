@@ -171,6 +171,9 @@ mod tests {
     const CONVENTIONS_SRC: &str = "@[element(claims = \"^INT\\\\. (?<place>.+)$\")]\n\
         fn interior(place: content) {\n  return place;\n}\n";
 
+    const BLOCK_CONVENTIONS_SRC: &str = "@[element(claims = \"^(?<name>[A-Z]+)$\", block)]\n\
+        fn cue(name: string, body: content) {\n  return name;\n}\n";
+
     #[test]
     fn candidate_claim_handlers_attaches_the_index_backed_id() {
         let hir = conventions_hir(CONVENTIONS_SRC);
@@ -218,6 +221,50 @@ mod tests {
         let candidates = candidate_claim_handlers(&index, FileId(0), &hir.claim_handlers);
 
         assert!(candidates.is_empty(), "{candidates:?}");
+    }
+
+    #[test]
+    fn candidate_claim_handlers_carries_the_block_flag_through_real_lowering() {
+        // Issue #2068 review finding: `join_carries_a_block_declared_candidates_flag_into_the_registry`
+        // below hand-builds a `ClaimHandlerCandidate { block: true, .. }`
+        // literal, which bypasses both of this join's first two hops —
+        // `element::handler_decls()` writing `HirFile::claim_handlers[i].block`
+        // (`lower_native/element.rs`) and `candidate_claim_handlers` reading
+        // it back off `handler.block` (this file, above) — so reverting
+        // either production hunk left that test green. This test drives a
+        // real `@[element(claims = "…", block)]` declaration through actual
+        // parsing and lowering instead, then through `candidate_claim_handlers`,
+        // and goes red if either hop is reverted.
+        let hir = conventions_hir(BLOCK_CONVENTIONS_SRC);
+        assert!(
+            hir.claim_handlers[0].block,
+            "a block-declared handler must read block: true straight off real lowering: {:?}",
+            hir.claim_handlers[0]
+        );
+
+        let id = DefinitionId::new(DefinitionTag::Address, 0xC0FF_EE01);
+        let mut index = SymbolIndex::default();
+        index
+            .by_name
+            .insert(hir.claim_handlers[0].name.text.clone(), vec![id]);
+        index.symbols.insert(
+            id,
+            function_symbol(
+                FileId(0),
+                hir.claim_handlers[0].annotation,
+                &hir.claim_handlers[0].name.text,
+                id,
+            ),
+        );
+
+        let candidates = candidate_claim_handlers(&index, FileId(0), &hir.claim_handlers);
+
+        assert_eq!(candidates.len(), 1);
+        assert!(
+            candidates[0].block,
+            "a block-declared handler must carry block: true through candidate_claim_handlers: {:?}",
+            candidates[0]
+        );
     }
 
     #[test]
