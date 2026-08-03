@@ -652,6 +652,15 @@ impl Value {
         }
     }
 
+    /// Borrow the weighted-table payload if this value is a
+    /// [`Weighted`](Self::Weighted).
+    pub fn as_weighted(&self) -> Option<&Arc<WeightedValue>> {
+        match self {
+            Self::Weighted(w) => Some(w),
+            _ => None,
+        }
+    }
+
     /// Build a [`Handle`](Self::Handle) token from a kind and host-allocated
     /// id (T1d, `docs/t1d-spec.md` §2). Note: this constructor is a plain
     /// value builder, not a capability mint — the invariant that handles
@@ -1742,6 +1751,111 @@ mod tests {
         assert_eq!(
             copy_inner.as_slice(),
             &[Value::Int(1), Value::Int(2), Value::Int(3)]
+        );
+    }
+
+    /// Issue #1476's audit traced `Closure` val-capture (`vm.rs::MakeClosure`),
+    /// `OptionVal(Some(Arc<Value>))`, and `Weighted` and found each correct by
+    /// construction — same Arc-COW mechanics as `Array`/`Map`/`Record`, no
+    /// bespoke mutation path exists for any of them — but flagged that none
+    /// had a dedicated aliasing regression pinning it, the way
+    /// `record_make_mut_copies_when_shared` does for records. These three
+    /// close that gap (folded into #1508 per #1476's review comment); the
+    /// fourth deferred test — the `as`-binding capture itself — still needs
+    /// the `.inkb` v6 Choice captured-environment slot (#1684/#1508) and
+    /// cannot be written yet.
+    ///
+    /// A `val` closure-env entry snapshots the bound value at
+    /// `MakeClosure` time (`ClosureEnvEntry { is_ref: false, .. }`): the
+    /// snapshot is an ordinary `Value` clone, so it shares the source
+    /// array's `Arc` until something mutates one side. Mutating the
+    /// *original* variable after capture must fork via COW, leaving the
+    /// closure's captured snapshot untouched.
+    #[test]
+    fn closure_val_capture_is_isolated_from_later_mutation_of_the_source() {
+        let mut original = Value::array(vec![Value::Int(1)]);
+        let entry = ClosureEnvEntry {
+            name: NameId(0),
+            is_ref: false,
+            payload: original.clone(), // val-capture snapshot, shares the Arc
+        };
+        let closure = Value::closure(DefinitionId::new(DefinitionTag::Address, 0), vec![entry]);
+
+        // Mutate the source *after* the closure captured it.
+        original
+            .array_make_mut()
+            .expect("array")
+            .push(Value::Int(2));
+        assert_eq!(
+            original.as_array().expect("array").as_slice(),
+            &[Value::Int(1), Value::Int(2)]
+        );
+
+        let captured = &closure.as_closure().expect("closure").env[0].payload;
+        assert_eq!(
+            captured.as_array().expect("array").as_slice(),
+            &[Value::Int(1)],
+            "mutating the source after MakeClosure must never be observable through the val-captured snapshot"
+        );
+    }
+
+    /// `OptionVal(Some(Arc<Value>))` (NS-A1) wraps its inner value behind its
+    /// own `Arc`, but the inner `Value` itself may still share a *nested*
+    /// Arc (e.g. an `Array`'s backing `Vec`) with whatever produced it. The
+    /// same COW discipline must hold one layer down: mutating the source
+    /// array after `some(...)` wrapped a clone of it must not leak through.
+    #[test]
+    fn option_some_wrap_is_isolated_from_later_mutation_of_the_source() {
+        let mut original = Value::array(vec![Value::Int(1)]);
+        let wrapped = Value::some(original.clone()); // shares the inner Arc
+
+        original
+            .array_make_mut()
+            .expect("array")
+            .push(Value::Int(2));
+        assert_eq!(
+            original.as_array().expect("array").as_slice(),
+            &[Value::Int(1), Value::Int(2)]
+        );
+
+        let inner = wrapped
+            .as_option()
+            .expect("option")
+            .expect("some")
+            .as_array()
+            .expect("array");
+        assert_eq!(
+            inner.as_slice(),
+            &[Value::Int(1)],
+            "mutating the source after `some(..)` wrapped it must never be observable through the wrapped copy"
+        );
+    }
+
+    /// `Weighted` (NS-A7) entries hold `Value`s in construction order; a
+    /// table built from an `Array` entry shares that array's Arc with its
+    /// source the same way a closure `val` capture or `some(..)` wrap does.
+    /// Mutating the source after the table was built must not leak into the
+    /// entry the table already captured.
+    #[test]
+    fn weighted_entry_capture_is_isolated_from_later_mutation_of_the_source() {
+        let mut original = Value::array(vec![Value::Int(1)]);
+        let table = Value::weighted(vec![(1, original.clone())]);
+
+        original
+            .array_make_mut()
+            .expect("array")
+            .push(Value::Int(2));
+        assert_eq!(
+            original.as_array().expect("array").as_slice(),
+            &[Value::Int(1), Value::Int(2)]
+        );
+
+        let weighted = table.as_weighted().expect("weighted");
+        let entry = weighted.entries[0].1.as_array().expect("array");
+        assert_eq!(
+            entry.as_slice(),
+            &[Value::Int(1)],
+            "mutating the source after the table captured it must never be observable through the weighted entry"
         );
     }
 
