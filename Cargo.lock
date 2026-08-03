@@ -2123,6 +2123,7 @@ version = "0.0.11"
 dependencies = [
  "brink-analyzer",
  "brink-codegen-inkb",
+ "brink-compiler",
  "brink-driver",
  "brink-format",
  "brink-ir",

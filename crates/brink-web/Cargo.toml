@@ -64,6 +64,12 @@ web-sys = { version = "0.3", features = ["console"] }
 wasm-bindgen-test = "0.3"
 # Lets the async wasm test `await` a JS `Promise` (`JsFuture`) on the Rust side.
 wasm-bindgen-futures = "0.4"
+# The `[dependencies]` entry above is feature-bare (no `test-util`) — this
+# crate's real compile road is `brink_environment::compile(&Environment)`
+# (#1306). This crate's own `#[cfg(test)]` wasm modules still compile inline
+# ink source directly, so they need `brink_compiler::compile`'s `test-util`
+# feature (issue #2168) — enabled only for test builds via this dev-dep edge.
+brink-compiler = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true
