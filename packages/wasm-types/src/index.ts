@@ -137,9 +137,23 @@ export interface Line {
    * (`brink_runtime::BlockId`). Present only for `"text"`; terminals
    * carry no line payload, so no block id. */
   block_id?: number;
+  /** This line's classification (`brink_runtime::Element`, issue #1683).
+   * Present only for `"text"`, mirroring `block_id` above. Scoped
+   * narrowly today: every line reports the degenerate
+   * `{ kind: "narrative", data: {} }` case — no `@[element]` handler's
+   * classification reaches this field yet. */
+  element?: ElementJs;
   choices?: Choice[];
   /** External name, present only on an `awaiting_external` line. */
   name?: string;
+}
+
+/** A line's classification (`brink_runtime::Element`). `kind` is an open
+ * vocabulary owned by whichever preset/handler classified the line, not a
+ * closed enum; `data` is an open, handler-defined payload. */
+export interface ElementJs {
+  kind: string;
+  data: Record<string, string>;
 }
 
 export interface Choice {
@@ -215,6 +229,10 @@ export interface SessionLine {
    * carry no payload of their own (`docs/prose-dialect-spec.md` §7,
    * RULED), so `text`/`tags` are always empty and `block_id` is absent. */
   block_id?: number;
+  /** This line's classification (`brink_runtime::Element`, issue #1683) —
+   * present only for `"text"`, mirroring `block_id`. See {@link Line}'s
+   * `element` field doc for today's scoping. */
+  element?: ElementJs;
   choices?: Choice[];
 }
 

@@ -109,6 +109,7 @@ impl WebSpeculation {
                 text: String::new(),
                 tags: Vec::new(),
                 block_id: None,
+                element: None,
                 choices: None,
                 name: speculation.pending_external_name().map(str::to_owned),
             },
