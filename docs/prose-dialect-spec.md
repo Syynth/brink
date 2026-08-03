@@ -439,6 +439,28 @@ fn radio(chan: string, text: content) {
   `block` in the project's conventions module still captures its block
   receiver when dispatched from another file
   (`hir::lower_native::element::ClaimHandler::block`'s own doc).
+  **Empty-capture rendering (RULED, issue #2091):** a `block` receiver
+  whose captured run is empty (e.g. a cue immediately followed by a
+  parenthetical, terminating the capture at zero interior lines) still
+  binds a real, present `Value::FragmentRef` to the `content`-typed
+  param — but interpolating it alone on a template line now renders
+  **nothing**, not a blank output line: `brink-runtime::output`'s
+  `resolve_lines`/`take_first_line` suppress a resolved line when its
+  text is empty, it carries no tags, and one of its parts interpolated a
+  `content`-typed value that itself rendered empty. This is a read-time
+  rendering decision only — the compiled line-table entry stays
+  present-but-empty, so locale hot-swap is unaffected. The same
+  suppression also fires for the ordinary display-position
+  call-composition `FragmentRef` `emit_slot_expr` produces for any
+  template slot whose expr is a function call (e.g. `{ f() }` where `f`
+  returns empty and emits nothing) — the discriminator is structural
+  (any `FragmentRef`-driven emptiness) and does not distinguish a
+  `block` receiver from that case. **Deliberately excluded:** a line
+  that resolves empty for any other reason — a literal blank line, or a
+  self-closing inline markup span (`<pause/>`) with no children — keeps
+  its existing blank-beat behavior (`inline-markup-point-marker`
+  fixture, issue #1716), a separate, already-settled question this rule
+  does not touch.
 - **`@[style]` — declared editor presentation (RULED, addenda 3–4).**
   A companion annotation mapping captures (and `line` = the whole
   line; `dispatch` = the `!name` prefix) to style values, drawn from

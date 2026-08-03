@@ -742,14 +742,27 @@ fn resolve_parts(
 }
 
 /// Returns true if `part` interpolates a `content`-typed value
-/// (`Value::FragmentRef`, issue #1839's block-capture/fragment machinery) —
-/// either directly (`ValueRef`) or through a template `Slot` (`LineRef`).
+/// (`Value::FragmentRef`) — either directly (`ValueRef`) or through a
+/// template `Slot` (`LineRef`).
+///
+/// Two distinct mechanisms produce a `FragmentRef` in this position, and
+/// this check does not — and structurally cannot — tell them apart: issue
+/// #1839's `block`-capture receiver, AND the ordinary display-position
+/// call-composition pattern `brink-codegen-inkb::content::emit_slot_expr`
+/// emits for *every* template slot whose expr is a function call
+/// (`lir::Expr::is_function_call()`, both dialects) — e.g. a line whose
+/// only content is `{ f() }`. Both are suppressed identically by the
+/// caller.
 ///
 /// Purely structural: it does not need to look inside the referenced
-/// fragment. If a line's fully-resolved text comes out empty *and* one of
-/// its parts involved a fragment reference, the fragment itself must have
-/// captured nothing — that's the only way the surrounding literal template
-/// text (if any) plus the fragment's own text could jointly resolve empty.
+/// fragment to decide suppression. If a line's fully-resolved text comes
+/// out empty *and* one of its parts involved a fragment reference, that is
+/// sufficient evidence the fragment itself **rendered** empty. It does
+/// *not* follow that the fragment "captured nothing" — a fragment that
+/// captured a line which itself renders empty (e.g. an interpolated empty
+/// variable), or a call-composition fragment whose function simply
+/// returned `""`, both reach this same state. "Rendered empty" is the
+/// weaker, sufficient invariant suppression actually relies on.
 fn part_involves_fragment_ref(part: &OutputPart) -> bool {
     match part {
         OutputPart::LineRef { slots, .. } => {
@@ -784,10 +797,23 @@ pub(crate) fn resolve_lines(
 /// `bool` — whether it should be **suppressed** from reader-visible output:
 /// its fully-resolved text came out empty, it carries no tags, and at least
 /// one of its parts interpolated a `content`-typed value that itself
-/// captured nothing (issue #2091; the mechanism is issue #1839's
-/// `BeginFragment`…`EndFragment` → `Value::FragmentRef`, e.g. a `block`
-/// capture that terminated immediately because the next line was itself
-/// element-level — `hir::lower_native::element::capture_block`).
+/// rendered empty (issue #2091). Two distinct call sites produce that
+/// `Value::FragmentRef`, and this check treats them identically:
+///
+/// - issue #1839's `block`-capture receiver — e.g. a capture that
+///   terminated immediately because the next line was itself
+///   element-level (`hir::lower_native::element::capture_block`); and
+/// - the ordinary **display-position call-composition** pattern
+///   `brink-codegen-inkb::content::emit_slot_expr` emits
+///   (`BeginFragment`…`EndFragment`) for *every* template slot whose expr
+///   is a function call (`lir::Expr::is_function_call()`, both dialects) —
+///   e.g. a line whose only content is `{ f() }`, where `f` emits no
+///   side-effect text and returns an empty value.
+///
+/// See [`part_involves_fragment_ref`]'s own doc for why "the fragment
+/// rendered empty" is the invariant relied on here, not "the fragment
+/// captured nothing" — the two mechanisms above are exactly why the
+/// stronger claim does not hold.
 ///
 /// This is a **read-time rendering decision only**: the line-table entry a
 /// suppressed line's `LineRef` points at is never touched, omitted, or
@@ -801,7 +827,7 @@ pub(crate) fn resolve_lines(
 /// or a self-closing inline markup span (`<pause/>`) with no children — is
 /// **not** suppressed: that is pre-existing, deliberate output (see the
 /// `inline-markup-point-marker` fixture, issue #1716), unrelated to this
-/// issue's scope of exactly `content`/Fragment captures.
+/// issue's scope of `content`/Fragment-driven emptiness.
 ///
 /// [`OutputBuffer::take_first_line`] needs this unfiltered, index-aligned
 /// form — its single-newline slice always resolves to exactly two entries
@@ -884,8 +910,24 @@ pub(crate) fn resolve_lines_annotated(
         }
     }
 
-    // Always push the final line — even if empty — so that a trailing
-    // Newline part produces a trailing `\n` when the lines are joined.
+    // Push the final line — even if empty — so that a trailing Newline
+    // part produces a trailing `\n` when the lines are joined by
+    // `resolve_lines`'s callers (e.g. `flush_remaining`'s `\n`-join over
+    // consecutive entries).
+    //
+    // EXCEPTION (issue #2091): this final entry is itself eligible for
+    // suppression like any other — if the transcript's unread tail ends
+    // with an unterminated fragment-bearing segment that resolves empty
+    // (no following `Newline`), `suppressed` is `true` here too, and
+    // `resolve_lines` drops this entry from its `Vec` entirely rather than
+    // keeping it as a `("", [])` placeholder. When that happens, the
+    // trailing-`\n`-via-empty-final-entry guarantee this comment describes
+    // does NOT hold for the preceding real line — there is no longer a
+    // placeholder entry left for a caller's join loop to add a separator
+    // before. This is accepted, not additionally special-cased: it only
+    // arises when the story's last visible output is itself an empty
+    // `content`/Fragment interpolation, which is precisely the case this
+    // issue suppresses.
     let trimmed = current_text.trim().to_string();
     let suppressed = trimmed.is_empty() && current_tags.is_empty() && saw_fragment_ref;
     lines.push((trimmed, current_tags, suppressed));
@@ -1780,6 +1822,61 @@ mod tests {
             ],
             "an empty content/Fragment capture must not render its own blank \
              line between real content: {lines:?}"
+        );
+    }
+
+    /// Reviewer finding (PR #2140, issue #2091): the scope is NOT limited to
+    /// issue #1839's `block`-capture receiver. `part_involves_fragment_ref`
+    /// keys on `Value::FragmentRef` alone, and `brink-codegen-inkb::content::
+    /// emit_slot_expr`'s `BeginFragment`…`EndFragment` composition pattern
+    /// wraps *every* template slot whose expr is a function call
+    /// (`lir::Expr::is_function_call()`), in ordinary display position, in
+    /// both dialects — not just a `block` receiver. This pins that broader,
+    /// actual scope directly: a line whose only content is a call like
+    /// `{ f() }`, where `f` emits no side-effect text and returns an empty
+    /// value, is suppressed by the exact same mechanism as the block-capture
+    /// case above, with no `block`-capture machinery involved at all.
+    #[test]
+    fn resolve_lines_suppresses_a_blank_line_from_an_empty_display_position_call_composition() {
+        // line 0: "Before.", line 1: `{f()}` (ordinary call composition —
+        // NOT a `block`-capture receiver), line 2: "After."
+        let (program, line_tables) = program_with_line_table(vec![
+            plain_entry("Before."),
+            one_slot_template_entry(),
+            plain_entry("After."),
+        ]);
+        // Models `emit_slot_expr`'s composition pattern for `{ f() }`
+        // where `f` produced no side-effect output and its return value
+        // stringified to empty — a real, present `Fragment` with no parts,
+        // exactly as a `block` capture's empty fragment looks structurally.
+        let fragments = vec![Fragment {
+            parts: vec![],
+            tags: vec![],
+        }];
+
+        let parts = vec![
+            line_ref(0, vec![], brink_format::LineFlags::from_plain("Before.")),
+            OutputPart::Newline,
+            line_ref(
+                1,
+                vec![Value::FragmentRef(0)],
+                brink_format::LineFlags::empty(),
+            ),
+            OutputPart::Newline,
+            line_ref(2, vec![], brink_format::LineFlags::from_plain("After.")),
+        ];
+
+        let lines = resolve_lines(&parts, &program, &line_tables, None, &fragments);
+        assert_eq!(
+            lines,
+            vec![
+                ("Before.".to_string(), Vec::<String>::new()),
+                ("After.".to_string(), Vec::<String>::new()),
+            ],
+            "an empty display-position call-composition FragmentRef must be \
+             suppressed identically to a block capture — this is the \
+             broader scope the discriminator actually covers, not just \
+             #1839's block-capture receiver: {lines:?}"
         );
     }
 
