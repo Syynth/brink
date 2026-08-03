@@ -683,6 +683,25 @@ fn mark_glue_removals(parts: &[OutputPart], remove: &mut [bool]) {
 }
 
 /// Resolve glue in a slice of output parts and return the flattened string.
+///
+/// Mirrors [`resolve_lines_annotated`]'s per-line suppression (issue #2091,
+/// extended to this path by issue #2147 — the string-capture path #2091's
+/// PR #2140 did not touch): if a line within the captured text resolves
+/// fully empty and at least one of its parts interpolated a `content`-typed
+/// value (`Value::FragmentRef`) that itself rendered empty, the line is
+/// dropped entirely — not left behind as a blank line — same as the
+/// streaming/batch `resolve_lines` path. This is `end_capture`'s resolution
+/// path (`Opcode::EndStringEval`, e.g. an unrecognized choice display or any
+/// `~ temp x = "..."` string-eval capture), plus
+/// [`OutputBuffer::resolve_fragment`] — every other caller of
+/// `resolve_parts` besides `resolve_lines_annotated` itself.
+///
+/// No `current_tags`-style tag exception is needed here (unlike
+/// `resolve_lines_annotated`): a `Tag` already sets `after_glue`, which
+/// unconditionally skips the newline right after it (pre-existing behavior,
+/// untouched by this fix) — so a tag-then-newline sequence never reaches
+/// this suppression check in the first place, and tags carry no characters
+/// into a captured string's text regardless.
 fn resolve_parts(
     parts: &[OutputPart],
     program: &Program,
@@ -696,6 +715,12 @@ fn resolve_parts(
 
     let mut out = String::new();
     let mut after_glue = false;
+    // issue #2147: track the start of the current (in-progress) line within
+    // `out`, and whether it saw a `content`/Fragment interpolation, so a
+    // line that resolves fully empty purely from a rendered-empty fragment
+    // can be dropped rather than left as a stray blank line.
+    let mut line_start = 0usize;
+    let mut saw_fragment_ref = false;
 
     for (i, part) in parts.iter().enumerate() {
         if remove[i] {
@@ -706,6 +731,9 @@ fn resolve_parts(
         }
         match part {
             OutputPart::Text(_) | OutputPart::LineRef { .. } | OutputPart::ValueRef(_) => {
+                if part_involves_fragment_ref(part) {
+                    saw_fragment_ref = true;
+                }
                 let s = resolve_part(part, program, line_tables, resolver, fragments);
                 // Collapse adjacent whitespace at part boundaries.
                 let s = if s.starts_with(char::is_whitespace) && out.ends_with(char::is_whitespace)
@@ -729,7 +757,15 @@ fn resolve_parts(
                 if !after_glue {
                     let trimmed_len = out.trim_end_matches([' ', '\t']).len();
                     out.truncate(trimmed_len);
-                    out.push('\n');
+                    if saw_fragment_ref && out[line_start..].trim().is_empty() {
+                        // Suppress: drop the whole (whitespace-only) line
+                        // and its trailing newline, not just its text.
+                        out.truncate(line_start);
+                    } else {
+                        out.push('\n');
+                        line_start = out.len();
+                    }
+                    saw_fragment_ref = false;
                 }
             }
             OutputPart::Glue | OutputPart::Checkpoint | OutputPart::Tag(_) => {
@@ -1963,6 +1999,93 @@ mod tests {
             vec!["VENDOR\n".to_string(), "(hushed)\n".to_string()],
             "the empty content capture must not surface as its own \
              (blank) streamed line: {got:?}"
+        );
+    }
+
+    /// Issue #2147 (gap 1 of #2091's follow-through review): `end_capture`
+    /// -> `resolve_parts` is the string-capture path — the `EndStringEval`
+    /// path an unrecognized choice display or `~ temp x = "..."` string-eval
+    /// rides — and PR #2140 only fixed the line-oriented
+    /// `resolve_lines`/`take_first_line` path. Same VENDOR / `{body}` /
+    /// (hushed) shape as `resolve_lines_suppresses_a_blank_line_from_an_
+    /// empty_content_capture`, but captured as a single string via
+    /// `begin_capture`/`end_capture` instead of resolved line-by-line.
+    #[test]
+    fn end_capture_suppresses_a_blank_line_from_an_empty_content_capture() {
+        let (program, line_tables) = program_with_line_table(vec![
+            plain_entry("VENDOR"),
+            one_slot_template_entry(),
+            plain_entry("(hushed)"),
+        ]);
+
+        let mut buf = OutputBuffer::new();
+        // A real, present (empty) Fragment — same shape #1839's block
+        // capture and #2140's display-position call composition produce.
+        buf.begin_fragment();
+        let frag_idx = buf.end_fragment().expect("checkpoint was just pushed");
+
+        buf.begin_capture();
+        buf.push_line_ref(0, 0, vec![], brink_format::LineFlags::from_plain("VENDOR"));
+        buf.push_newline();
+        buf.push_line_ref(
+            0,
+            1,
+            vec![Value::FragmentRef(frag_idx)],
+            brink_format::LineFlags::empty(),
+        );
+        buf.push_newline();
+        buf.push_line_ref(
+            0,
+            2,
+            vec![],
+            brink_format::LineFlags::from_plain("(hushed)"),
+        );
+
+        let text = buf
+            .end_capture(&program, &line_tables, None)
+            .expect("checkpoint was just pushed");
+        assert_eq!(
+            text, "VENDOR\n(hushed)",
+            "an empty content/Fragment capture inside a captured string \
+             must not leave a stray blank line — must match resolve_lines' \
+             suppression: {text:?}"
+        );
+    }
+
+    /// Scope boundary, mirrored from
+    /// `resolve_lines_does_not_suppress_a_blank_line_from_a_non_fragment_
+    /// empty_slot`: a `Slot` bound to a plain, non-`FragmentRef` value that
+    /// resolves empty keeps its pre-existing blank line inside a captured
+    /// string too — this fix is about `content`/Fragment captures
+    /// specifically, not "any interpolation that happens to render empty".
+    #[test]
+    fn end_capture_does_not_suppress_a_blank_line_from_a_non_fragment_empty_slot() {
+        let (program, line_tables) = program_with_line_table(vec![
+            plain_entry("VENDOR"),
+            one_slot_template_entry(),
+            plain_entry("(hushed)"),
+        ]);
+
+        let mut buf = OutputBuffer::new();
+        buf.begin_capture();
+        buf.push_line_ref(0, 0, vec![], brink_format::LineFlags::from_plain("VENDOR"));
+        buf.push_newline();
+        buf.push_line_ref(0, 1, vec![Value::Null], brink_format::LineFlags::empty());
+        buf.push_newline();
+        buf.push_line_ref(
+            0,
+            2,
+            vec![],
+            brink_format::LineFlags::from_plain("(hushed)"),
+        );
+
+        let text = buf
+            .end_capture(&program, &line_tables, None)
+            .expect("checkpoint was just pushed");
+        assert_eq!(
+            text, "VENDOR\n\n(hushed)",
+            "a non-Fragment empty slot must keep its blank line inside a \
+             captured string: {text:?}"
         );
     }
 }
