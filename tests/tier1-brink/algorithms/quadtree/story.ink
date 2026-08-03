@@ -76,19 +76,25 @@
 //    argument) rejects with a DIFFERENT diagnostic, `E055` ("collection
 //    mutator's first argument is not an lvalue") — two distinct error
 //    codes for what looks like the same underlying restriction from the
-//    author's side. And the worst variant of all was not a compile error
-//    at all: pushing into a plain (non-indexed) struct temp's array field
+//    author's side. A third variant used to be worse than either compile
+//    error: pushing into a plain (non-indexed) struct temp's array field
 //    directly — `temp b = Box#{xs: #[]}; push(b.xs, 5)`, no array
 //    indexing anywhere in the chain — compiled with ZERO diagnostics and
 //    produced a `.inkb`, but then FAILED AT LINK TIME with
-//    `unresolved global: $07_...` when actually run. This is a genuine
+//    `unresolved global: $07_...` when actually run: a genuine
 //    silent-miscompile-shaped bug (compiles clean, breaks downstream with
-//    no diagnostic pointing back at the cause) rather than a documented
-//    restriction, squarely the kind of thing the project's own "flag
-//    silent data drops" rule exists for — flagged here as corpus
-//    evidence, not fixed in this port (out of this epic's scope; feeds
-//    #521/#829 same as finding 1). THE WORKING IDIOM, used throughout
-//    this file's `quad_insert`/`quad_subdivide`: never write through a
+//    no diagnostic pointing back at the cause), squarely the kind of thing
+//    the project's own "flag silent data drops" rule exists for. That was
+//    issue #1495 (`try_lower_mutator_stmt`'s bare-lvalue fast path resolving
+//    a dotted `a.items` path to its root symbol instead of the field, hence
+//    the link-time "unresolved global" for a Temp-rooted root) and is fixed
+//    — a single-level struct-field mutator lvalue now lowers through
+//    `lower_field_mutator`, exercised end-to-end (including this exact
+//    Temp-rooted shape) by `tests/tier1-brink/struct-field-mutator-lvalue/`.
+//    It is not applied retroactively in this port (out of this epic's
+//    scope; feeds #521/#829 same as finding 1) because THE WORKING IDIOM,
+//    used throughout this file's `quad_insert`/`quad_subdivide`, remains the
+//    better fit for an *indexed* root regardless: never write through a
 //    chained lvalue at all — read the whole element out
 //    (`temp node = nodes[idx]`), mutate plain local temps (a bare
 //    struct's own field write, `node.nw = value`, and a bare array's own
@@ -96,7 +102,10 @@
 //    projection), then write the WHOLE modified value back in one shot
 //    (`nodes[idx] = node`). Slower to write than the chained form would
 //    have been, but every step is a single-level projection, which is
-//    exactly the shape every restriction above allows.
+//    exactly the shape every restriction above allows — and #1495's fix
+//    only reaches a single-level *bare* root (`a.items`), not an indexed
+//    one (`nodes[idx].pt_xs`), so `push(nodes[idx].pt_xs, px)`'s `E055`
+//    two sentences up is unaffected.
 //
 // 3. NO ARRAY CONCATENATION, AGAIN: merging the four children's query
 //    results back into one list is the same manual `for`/`push` loop
