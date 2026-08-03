@@ -2615,3 +2615,45 @@
 - **SCOPE:** moderate
 - **WHAT:** **`order` is a REQUIRED property of `@[convention]`, not an optional one, and two `@[convention]` declarations carrying the same `order` within the same module are a COMPILE ERROR.** This closes both sub-questions the bare-integer ruling left owed: there is no "default when `order` is absent", because it can never be absent; and there is no tie-breaking rule, because ties are rejected rather than resolved. Precedence over a project's conventions is therefore **total, explicit, and authored** — the compiler never infers, defaults, or falls back to declaration order to decide which pattern is tried first. Two diagnostics are owed: a **missing `order`** on a `@[convention]`, and a **duplicate `order`** within one module (which should name both declarations, the way a duplicate-definition error does). `@[element]` is unaffected — it takes no `order` at all, since a `!name`-dispatched handler announces itself and never competes for a line.
 - **WHY:** The maintainer's framing is the argument: *"you just have to tell us what order you want them in."* Every alternative to requiring it reintroduces exactly the implicitness this whole line of rulings was removing. An optional `order` with a default means some conventions are ordered by the author and others by a rule the author has to know, in one list, resolved silently. Allowing duplicates means a tie-break rule, and any tie-break rule is a second, invisible ordering mechanism sitting underneath the visible one — precisely the shape of the accidental declaration-order precedence the preset shipped with (#2166). Rejecting duplicates also makes the failure **local and legible**: two numbers that collide is a one-line fix an author can see, whereas a silent tie-break produces a working build whose behavior nobody chose. The cost is real and accepted: adding a convention to a dense list may mean renumbering neighbors, since bare integers were ruled over sparse-by-convention and named anchors. That cost is paid once, in a file that is small, authored rarely, and read top-to-bottom as the precedence order it encodes.
+
+## Stdlib mounts into `Environment`'s manifest at the producer, as plain source (#2080)
+- **WHEN:** 2026-08-03
+- **PROJECT:** brink
+- **SYSTEM:** compiler (`crates/internal/brink-environment`) — the `std::` mount
+- **SCOPE:** minor/local (implements an already-ruled mechanism; no new design)
+- **WHAT:** `Project::load` mounts the `std/` stdlib source tree (currently just
+  `std/conventions/screenplay.brink`) into every `Environment`'s manifest,
+  embedded at compile time via `include_str!` (so it mounts identically on
+  hosts with no filesystem, e.g. `@brink-lang/web`'s wasm build). No new
+  resolution mechanism was built: #2080's 2026-08-03 issue ruling found
+  `Environment` (#1306) already generalizes `the-tree-is-the-universe` to
+  `the-environment-is-the-universe` (`{ local module tree } + { resolved
+  external module set }`), and native module identity is a pure function of
+  a source's string key — so the stdlib needs no virtual module tree, no
+  second `FileId` space, and no bespoke preset registry. It joins the
+  manifest exactly like any project file, under the same root-relative,
+  forward-slash key convention; `brink_db::modules::native_module_path`
+  mints its identity the same way it would for a project file at that path.
+  A project source already present at the same key wins over the embedded
+  copy rather than being silently clobbered. The stdlib ships as **source**
+  in the manifest, not as a `resolved_deps` entry — that slot stays reserved
+  for #1093's compiled per-module artifacts.
+- **WHY:** The issue's own original framing (a virtual/embedded module tree
+  distinct from tree-is-universe discovery) assumed a problem that the
+  `Environment` seam had already solved by design; building a second
+  mechanism would have reopened exactly the parallel-universe surface
+  `external_conventions` is being deleted for (#2165). Embedding via
+  `include_str!` (rather than a real on-disk path) is required because the
+  compiler must run in wasm with no filesystem — the same constraint that
+  already keeps `brink-conventions export`/host I/O injected rather than
+  baked in.
+- **SCOPE FENCE (explicit, not an oversight):** this is the *mount* only —
+  the stdlib source is now present in every compiled environment's db, but
+  nothing in it is marked `pub` and no confinement rule scopes what a
+  project's own `use` may reach into it. A real `use std::…` importing an
+  item out of the mounted module still needs #1582's pub marker and #2167's
+  closure-scoped confinement — both ruled, neither built here. Also
+  untouched: the `[project] elements` → `conventions` rename the same
+  2026-08-03 ruling records as owed (a breaking config change needing its
+  own deprecation path and reader sweep) — a separate, larger piece of work
+  from the mount itself.
