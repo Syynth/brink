@@ -3470,6 +3470,7 @@ fn external_arrival_handler() -> ExternalConventions {
         params: vec!["who".to_string()],
         pattern: "^(?<who>[A-Z]+) enters$".to_string(),
         annotation: TextRange::new(0.into(), 10.into()),
+        block: false,
     }])
 }
 
@@ -3576,6 +3577,7 @@ fn an_injected_duplicate_with_a_stale_pattern_is_dropped_not_merely_shadowed() {
         // for staleness.
         pattern: "^(?<who>[A-Z]+) arrives$".to_string(),
         annotation: TextRange::new(0.into(), 10.into()),
+        block: false,
     }]);
     let (hir, _m, diags) = lower_with_conventions(
         FileId(0),
@@ -3621,6 +3623,7 @@ fn an_injected_handlers_foreign_annotation_range_never_suppresses_a_claim() {
             params: Vec::new(),
             pattern: "^SIGNAL$".to_string(),
             annotation: TextRange::new(claimed_start.into(), (claimed_start + 6).into()),
+            block: false,
         }])),
     );
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
@@ -3629,6 +3632,69 @@ fn an_injected_handlers_foreign_annotation_range_never_suppresses_a_claim() {
         1,
         "a foreign annotation range must never suppress a claim in this file: {:?}",
         hir.element_matches
+    );
+}
+
+#[test]
+fn an_injected_block_declared_handler_still_captures_the_following_run() {
+    // Issue #2068: the conventions-module handler this fixture stands in
+    // for is `@[element(claims = "^(?<name>[A-Z]+)$", block)] fn cue(name:
+    // string, body: content) { ... }` — declared `block` in ANOTHER file,
+    // matched here purely via cross-file injection (`external`, no local
+    // declaration of `cue` at all). Before #2068 `ExternalClaimHandler`
+    // had no `block` field, so `element::collect`'s external branch always
+    // set `block: false` for an injected handler regardless of how it was
+    // really declared — this handler would still rewrite the claimed line
+    // into a `cue("VENDOR", ...)` call, but with NO trailing Fragment
+    // argument at all, silently dropping the two lines that follow.
+    let src = "flow main() {\n  VENDOR\n  Line one.\n  Line two.\n\n  After the blank line.\n}\n";
+    let injected = ExternalConventions::new(vec![ExternalClaimHandler {
+        name: Name {
+            text: "cue".to_string(),
+            range: TextRange::new(0.into(), 3.into()),
+        },
+        params: vec!["name".to_string(), "body".to_string()],
+        pattern: "^(?<name>[A-Z]+)$".to_string(),
+        annotation: TextRange::new(0.into(), 10.into()),
+        // The declaring file's own `block` clause, carried across the
+        // injection join — this is the exact flag issue #2068 fixes the
+        // propagation of.
+        block: true,
+    }]);
+    let (hir, _m, diags) = lower_with_conventions(
+        FileId(0),
+        &brink_syntax_native::parse(src).tree(),
+        Some(&injected),
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    assert_eq!(hir.element_matches.len(), 1);
+    let m = &hir.element_matches[0];
+    assert_eq!(m.handler.text, "cue");
+    let content_range = m
+        .content
+        .expect("an injected block-declared handler must still record a captured block range");
+    assert_eq!(
+        &src[usize::from(content_range.start())..usize::from(content_range.end())],
+        "Line one.\n  Line two.",
+        "the injected handler's captured range must cover exactly the two follow-on lines"
+    );
+
+    let main = hir
+        .knots
+        .iter()
+        .find(|k| k.name.text == "main")
+        .expect("main");
+    let stmts = claimed_fragment_stmts(&main.body);
+    assert_eq!(
+        stmts.len(),
+        4,
+        "the injected handler's call must carry a Fragment with both captured lines' worth \
+         of statements, not an empty or missing capture: {stmts:?}"
+    );
+    let rendered = format!("{stmts:?}");
+    assert!(
+        rendered.contains("Line one.") && rendered.contains("Line two."),
+        "both captured lines must be present in the injected handler's Fragment: {rendered}"
     );
 }
 

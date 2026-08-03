@@ -19,10 +19,11 @@
 //! > join key.
 //!
 //! [`ExternalClaimHandler`] is the CST-side payload — pattern, parameter
-//! order, display name, annotation range — exactly what
-//! [`super::element::collect`] already produces for a *local* handler
-//! (issue #1838). [`ExternalConventions`] is the join's OUTPUT: an
-//! already-ordered, already-joined list, because this crate (`brink-ir`)
+//! order, display name, annotation range, block-capture flag (issue
+//! #2068) — exactly what [`super::element::collect`] already produces
+//! for a *local* handler (issue #1838). [`ExternalConventions`] is the
+//! join's OUTPUT: an already-ordered, already-joined list, because this
+//! crate (`brink-ir`)
 //! has no project identity to perform the join itself — single-file
 //! lowering never has a `SymbolIndex` to resolve a `DefinitionId` against
 //! (`element.rs`'s own module doc makes the same point about the
@@ -77,6 +78,14 @@ pub struct ExternalClaimHandler {
     /// Range of the `@[element(claims = "…")]` annotation line, in the
     /// declaring file.
     pub annotation: TextRange,
+    /// The bare `block` clause (issue #1839), carried across the
+    /// injection join since issue #2068 — `true` when the declaring
+    /// file's own trailing parameter is a `content`-typed block-capture
+    /// receiver rather than a regex-bound capture. Before #2068 this
+    /// field did not exist, so `super::element::collect` had no way to
+    /// give an injected handler anything but `block: false`, regardless
+    /// of how it was actually declared.
+    pub block: bool,
 }
 
 /// The project's evaluated conventions registry, as it arrives at a
