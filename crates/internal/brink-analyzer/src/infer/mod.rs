@@ -340,8 +340,8 @@ pub struct FieldAssignMismatch {
     pub found: Ty,
 }
 
-/// One statically-checkable argument-type mismatch recorded at either of
-/// two producer sites whose callee resolves straight to a known def via
+/// One statically-checkable argument-type mismatch recorded at any of
+/// three producer sites whose callee resolves straight to a known def via
 /// `known_sigs` — so its declared parameter types are already fully known
 /// at the site — unlike the T1c call-through-a-value case
 /// [`ValueCallFact`] exists for:
@@ -354,18 +354,25 @@ pub struct FieldAssignMismatch {
 ///   call-through-a-value check when the resulting `Ty::Fn` value is
 ///   later invoked, but the *bound* prefix checked here is only ever
 ///   checkable at creation.
+/// - a **divert with arguments** (issue #2127) — `-> knot(a, b)` — also not
+///   a call expression, but a `ref` position it binds is checked exactly
+///   like a direct call's `ref` argument (invariant, via `ref_assignable`).
+///   By-value positions at this site are **not** checked yet (#2127 scoped
+///   that out as its own design call, same posture #2001 took for
+///   `infer_fn_literal`'s by-value params).
 ///
 /// `strict::check_direct_call_args`'s rendered message reads "argument N
-/// of call to `name`" for both producers — accepted as-is for a `#fn`
-/// literal (a creation site's bound-argument list still names the target
-/// function's own parameter it's populating), rather than adding a
-/// site-discriminant field to say "creation of" instead of "call to";
+/// of call to `name`" for all three producers — accepted as-is for a `#fn`
+/// literal and a divert target too (both still name the target function's
+/// own parameter being populated), rather than adding a site-discriminant
+/// field to distinguish "creation of" / "divert to" from "call to";
 /// revisit if that reads as confusing in practice (#2001 review finding).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DirectCallArgMismatch {
     /// The diagnostic site's source range: the callee `Path`'s own range
-    /// for a direct call (same convention as [`ValueCallFact::range`]), or
-    /// the `#fn` literal's `target` path range for a creation site.
+    /// for a direct call (same convention as [`ValueCallFact::range`]), the
+    /// `#fn` literal's `target` path range for a creation site, or the
+    /// divert's own target path range (issue #2127).
     pub range: TextRange,
     /// The callee's display name (`h` in `h("hi")`; dotted if the resolved
     /// path had multiple segments, e.g. `Knot.stitch`).
