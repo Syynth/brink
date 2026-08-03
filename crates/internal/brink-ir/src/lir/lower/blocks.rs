@@ -1601,43 +1601,68 @@ fn lower_bare_mutator(
 /// projection (`push(a.items, v)`, `a: Bag`, `Bag.items: Array<int>`) — a
 /// bare `ident.ident` chain, which always parses as one multi-segment
 /// `hir::Expr::Path`, never a `hir::Expr::FieldAccess` (see
-/// `try_lower_field_assignment`'s doc for why). Follows the identical take →
-/// `make_mut` → write-back discipline [`lower_single_level_field_write`]
-/// established for `p.field = v`, substituting the mutator's own RMW
-/// expansion for a plain value write:
+/// `try_lower_field_assignment`'s doc for why).
+///
+/// #1495 shipped this reading `current = root.field` via an ordinary
+/// *cloning* `RecordGet`, leaving the root record fully intact until the
+/// very end. That meant the field's `Arc` was always doubly referenced by
+/// the time the RMW ran — once still embedded in the intact root, once in
+/// `current`'s own temp — so `array_make_mut`/`map_make_mut` always saw
+/// `strong_count >= 2` and paid the O(n) copy on *every* call: an O(n²)
+/// loop-append cliff one field deeper than #576 closed (issue #2123). There
+/// is still no dedicated field-level "take" opcode — the fix below answers
+/// #2123's ask without adding one, using only the existing `RecordSet` to
+/// null out the record's *own* reference to the field immediately after
+/// taking the root, so nothing but `current`'s temp holds the field's `Arc`
+/// by the time the RMW mutates it:
 ///
 /// 1. The mutator's own args (key/value), evaluated once each — mirrors
 ///    `lower_bare_mutator`'s step 1, since any of them may reference the
 ///    root or the field by name and both are still intact.
-/// 2. `current = root.field`, ALWAYS computed via a non-taking `RecordGet`
-///    (the fault pre-check, exactly like `lower_single_level_field_write`'s
-///    `current`) — also `push`'s key (`CollectionLen(current)`), read here
-///    while the field's current value is still cheaply at hand.
-/// 3. The mutator's RMW expansion (`CollectionInsert`/`CollectionRemove`/…)
-///    runs against `current`'s temp — an ordinary (cloning) read, not a
-///    take: there is no field-level take primitive, only the whole record's.
-///    This mirrors `lower_indexed_assignment`'s documented `n > 1` fallback
-///    (a nested container is still referenced from inside its parent until
-///    the parent's own write-back completes, so a per-field take would buy
-///    nothing here either) — the sanctioned §7 fallback, not a regression.
-///    Unlike [`lower_bare_mutator`], this expansion is materialized into its
-///    own synthetic temp *before* the root is taken (step 4): an
-///    author-supplied key/index (`insert`/`remove`/`remove_at`/`sort_by`/…)
-///    can still fault here (e.g. `remove_at` out of range), and doing so
-///    while `current` is the only thing read leaves `root_target` completely
-///    untouched — strictly better than `lower_bare_mutator`'s documented
-///    "fault leaves the root holding `Value::Null`" trade-off, since here
-///    the root is an entire record, not just the mutated array.
-/// 4. The root record is taken, the mutated field (already-evaluated in step
-///    3, so this step itself cannot fault) written back via `RecordSet`, and
-///    the result written back into `root_target`.
+/// 2. `current = root.field`, via a non-taking `RecordGet` (the fault
+///    pre-check — proves root is genuinely a record with this field,
+///    exactly like `lower_single_level_field_write`'s `current`) — also
+///    `push`'s key (`CollectionLen(current)`), read here while the field's
+///    current value is still cheaply at hand. Root is still fully intact.
+/// 3. **De-alias (issue #2123's fix)**: take the root, overwrite *its own*
+///    copy of the mutated field with `Value::Null` via `RecordSet`, and
+///    write this "husk" record straight back into `root_target` —
+///    *before* the RMW below runs. This drops the record's own reference
+///    to the field's `Arc`, so `current`'s temp becomes the sole owner
+///    whenever nothing else aliases the field specifically (the ordinary,
+///    non-shared case) — closing the cliff. Writing the husk back
+///    immediately (rather than holding it in a temp until step 5) means a
+///    fault in step 4 leaves `root_target` a *structurally valid record*
+///    with only this one field blown away to `Value::Null` — a narrower,
+///    field-scoped version of `lower_bare_mutator`'s already-ratified,
+///    tested "fault leaves the root holding `Value::Null`" trade-off
+///    (`fault_during_insert_leaves_root_null` et al.,
+///    `crates/internal/brink-test-harness/tests/take_rmw.rs`), not a new
+///    kind of risk — see the mirrored field-scoped tests in
+///    `field_mutator_take_rmw.rs`.
+/// 4. The mutator's RMW expansion (`CollectionInsert`/`CollectionRemove`/…)
+///    runs against `current`'s temp, now uniquely owned by construction
+///    whenever nothing else aliases the field — `array_make_mut`/
+///    `map_make_mut` mutates in place instead of COW-copying. This can
+///    still fault on an author-supplied key/index (`insert`/`remove`/
+///    `remove_at`/`sort_by`/…), which is exactly the field-scoped
+///    `Value::Null` trade-off step 3 sets up for.
+/// 5. The root (the husk from step 3) is taken again, the mutated field
+///    written back via `RecordSet`, and the result written back into
+///    `root_target`. This second take/`RecordSet` pair stays cheap even
+///    when the record itself is shared (e.g. `b = a`): step 3 already
+///    forked the record's own field vector once if that was needed, so by
+///    this point the husk is uniquely owned and this `record_make_mut` is
+///    free (an `Arc::make_mut` uniqueness check, not a copy).
 #[expect(
     clippy::too_many_lines,
     reason = "mirrors lower_bare_mutator's own per-MutatorKind RMW dispatch, \
-              plus the field-projection take/RecordSet/write-back steps \
-              lower_single_level_field_write already needs for a plain \
-              field write — reads better as one function than split \
-              across an arbitrary line boundary"
+              plus the field-projection take/RecordSet/write-back steps —\
+              now twice, once to de-alias the field before the RMW runs and \
+              once to write the mutated field back — lower_single_level_field_write \
+              needs a single instance of for a plain field write; reads \
+              better as one function than split across an arbitrary line \
+              boundary"
 )]
 fn lower_field_mutator(
     kind: MutatorKind,
@@ -1720,6 +1745,42 @@ fn lower_field_mutator(
         )
     });
 
+    // 3. De-alias (issue #2123): take the root, null out *its own* copy of
+    //    the field via `RecordSet`, write the husk straight back into
+    //    `root_target` — before the RMW below ever runs. After this,
+    //    `current_slot` is the field's sole owner whenever nothing else
+    //    aliases it, which is the entire point of this fix (see the
+    //    function doc's step 3).
+    let (dealias_slot, dealias_name) =
+        declare_synthetic("__c", take_expr_for_target(&root_target), ctx, out);
+    out.push(lir::Stmt::Assign {
+        target: lir::AssignTarget::Temp(dealias_slot, dealias_name),
+        op: AssignOp::Set,
+        value: lir::Expr::RecordSet {
+            base: Box::new(lir::Expr::TakeTemp(dealias_slot, dealias_name)),
+            field,
+            static_offset,
+            value: Box::new(lir::Expr::Null),
+        },
+    });
+    out.push(lir::Stmt::Assign {
+        target: root_target.clone(),
+        op: AssignOp::Set,
+        value: lir::Expr::TakeTemp(dealias_slot, dealias_name),
+    });
+
+    // The RMW's own mutating operand takes `current_slot` (issue #2123) —
+    // `container()` above is a *cloning* `GetTemp`, deliberately kept for
+    // `push_len`'s pre-mutation read, but feeding that same clone into the
+    // mutate step itself would leave `current_slot`'s own copy of the field
+    // as a second, un-consumed owner at exactly the moment
+    // `array_make_mut`/`map_make_mut` runs — recreating the cliff step 3
+    // just closed, independent of the record's own reference. Taking it
+    // instead means the value handed to the opcode is `current_slot`'s
+    // *only* reference, so uniqueness (and step 3's de-alias) is what
+    // `array_make_mut` actually sees.
+    let take_container = || lir::Expr::TakeTemp(current_slot, current_name);
+
     let new_field = match kind {
         MutatorKind::Push => {
             let Some((len_slot, len_name)) = push_len else {
@@ -1728,61 +1789,73 @@ fn lower_field_mutator(
                 return;
             };
             lir::Expr::CollectionInsert {
-                base: Box::new(container()),
+                base: Box::new(take_container()),
                 key: Box::new(lir::Expr::GetTemp(len_slot, len_name)),
                 value: Box::new(lir::Expr::GetTemp(arg_slots[0].0, arg_slots[0].1)),
             }
         }
         MutatorKind::Insert => lir::Expr::CollectionInsert {
-            base: Box::new(container()),
+            base: Box::new(take_container()),
             key: Box::new(lir::Expr::GetTemp(arg_slots[0].0, arg_slots[0].1)),
             value: Box::new(lir::Expr::GetTemp(arg_slots[1].0, arg_slots[1].1)),
         },
         MutatorKind::Remove => lir::Expr::CollectionRemove {
-            base: Box::new(container()),
+            base: Box::new(take_container()),
             key: Box::new(lir::Expr::GetTemp(arg_slots[0].0, arg_slots[0].1)),
         },
         MutatorKind::RemoveAt => lir::Expr::SeqRemoveAt {
-            base: Box::new(container()),
+            base: Box::new(take_container()),
             index: Box::new(lir::Expr::GetTemp(arg_slots[0].0, arg_slots[0].1)),
         },
-        MutatorKind::Clear => lir::Expr::MapClear(Box::new(container())),
-        MutatorKind::Shuffle => lir::Expr::RandShuffle(Box::new(container())),
-        MutatorKind::Sort => lir::Expr::SeqSorted(Box::new(container())),
+        MutatorKind::Clear => lir::Expr::MapClear(Box::new(take_container())),
+        MutatorKind::Shuffle => lir::Expr::RandShuffle(Box::new(take_container())),
+        MutatorKind::Sort => lir::Expr::SeqSorted(Box::new(take_container())),
         MutatorKind::SortBy => lir::Expr::SeqSortedBy {
-            seq: Box::new(container()),
+            seq: Box::new(take_container()),
             cmp: Box::new(lir::Expr::GetTemp(arg_slots[0].0, arg_slots[0].1)),
         },
         MutatorKind::HeapPush => lir::Expr::HeapPush {
-            seq: Box::new(container()),
+            seq: Box::new(take_container()),
             value: Box::new(lir::Expr::GetTemp(arg_slots[0].0, arg_slots[0].1)),
         },
     };
 
-    // 3. Materialize the RMW result into its own temp *before* touching the
-    //    root — it reads only `current` and the arg temps, never the root,
-    //    so any fault it raises (an out-of-range `remove_at`, an absent
-    //    `remove` key, …) leaves `root_target` untouched instead of losing
-    //    the whole record to a take that already happened.
+    // 4. Materialize the RMW result into its own temp — reads only
+    //    `current` (now uniquely owned whenever nothing else aliases the
+    //    field, per step 3 above) and the arg temps, never the root. Any
+    //    fault it raises (an out-of-range `remove_at`, an absent `remove`
+    //    key, …) leaves `root_target` holding the step-3 husk — a
+    //    structurally valid record missing only this one field, per the
+    //    function doc's field-scoped trade-off.
     let (new_slot, new_name) = declare_synthetic("__new", new_field, ctx, out);
 
-    // 4. Take the root, mutate the field via `RecordSet`, write the
-    //    resulting record back.
-    let (c_slot, c_name) = declare_synthetic("__c", take_expr_for_target(&root_target), ctx, out);
+    // 5. Take the root (the husk from step 3) back, write the mutated
+    //    field via `RecordSet`, write the resulting record back. `new_slot`
+    //    is taken, not cloned (issue #2123): this statement is its only
+    //    remaining use, but a loop body is the *same* compiled statement
+    //    re-executed every iteration, so a `GetTemp` here would leave
+    //    `new_slot` holding a live reference to this iteration's mutated
+    //    array that outlives the statement — still there, unconsumed, the
+    //    *next* time this same code runs and reads the field back out via
+    //    step 2's `RecordGet`, permanently pinning every iteration's array
+    //    at `strong_count == 2` and reintroducing the cliff this whole fix
+    //    exists to close.
+    let (writeback_slot, writeback_name) =
+        declare_synthetic("__c", take_expr_for_target(&root_target), ctx, out);
     out.push(lir::Stmt::Assign {
-        target: lir::AssignTarget::Temp(c_slot, c_name),
+        target: lir::AssignTarget::Temp(writeback_slot, writeback_name),
         op: AssignOp::Set,
         value: lir::Expr::RecordSet {
-            base: Box::new(lir::Expr::TakeTemp(c_slot, c_name)),
+            base: Box::new(lir::Expr::TakeTemp(writeback_slot, writeback_name)),
             field,
             static_offset,
-            value: Box::new(lir::Expr::GetTemp(new_slot, new_name)),
+            value: Box::new(lir::Expr::TakeTemp(new_slot, new_name)),
         },
     });
     out.push(lir::Stmt::Assign {
         target: root_target,
         op: AssignOp::Set,
-        value: lir::Expr::TakeTemp(c_slot, c_name),
+        value: lir::Expr::TakeTemp(writeback_slot, writeback_name),
     });
 }
 
