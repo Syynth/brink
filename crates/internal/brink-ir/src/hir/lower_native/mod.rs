@@ -203,8 +203,8 @@ pub fn lower_with_conventions(
     let mut top = TopLevel::default();
 
     // The file's natural-notation element handlers, collected before any
-    // body is lowered so a claiming `@[element(claims = "…")]` declared
-    // *below* the prose it claims still claims it (issue #1838).
+    // body is lowered so a claiming `@[convention(claims = "…", order = N)]`
+    // declared *below* the prose it claims still claims it (issue #1838).
     let mut elements = element::collect(file_id, file.syntax(), external);
 
     // `E179` (issue #2164): two `@[convention]` declarations in this file

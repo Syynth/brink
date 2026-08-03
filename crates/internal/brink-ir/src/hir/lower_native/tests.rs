@@ -3237,6 +3237,54 @@ fn two_conventions_sharing_an_order_diagnose_e179_on_both() {
         ranges.iter().any(|r| r.contains("claims = \"^B$\"")),
         "{ranges:?}"
     );
+    // The ruling (`docs/decision-log.md` 2026-08-03) asks for the message
+    // to name both conflicting declarations, the way a duplicate-definition
+    // error does — not a generic sentence naming neither. Each message must
+    // name the OTHER handler in the pair (its own name plus the one that
+    // conflicts with it), and the shared `order` value.
+    for d in &e179s {
+        assert!(
+            d.message.contains("`a`") && d.message.contains("`b`"),
+            "each E179 message must name BOTH conflicting handlers: {d:?}"
+        );
+        assert!(
+            d.message.contains("order = 10"),
+            "each E179 message must name the shared `order` value: {d:?}"
+        );
+    }
+}
+
+#[test]
+fn three_conventions_sharing_an_order_diagnose_e179_on_all_three() {
+    // Review finding on #2176: an all-pairs walk over a group of size k
+    // emits k*(k-1) diagnostics (six, for three handlers sharing one
+    // `order`), each declaration repeated k-1 times. Grouping by `order`
+    // must emit exactly one diagnostic per participating declaration.
+    let (_hir, _m, diags) = lower_src(
+        "@[convention(claims = \"^A$\", order = 10)]\nfn a() {\n  return \"a\";\n}\n\n@[convention(claims = \"^B$\", order = 10)]\nfn b() {\n  return \"b\";\n}\n\n@[convention(claims = \"^C$\", order = 10)]\nfn c() {\n  return \"c\";\n}\n",
+    );
+    let e179s: Vec<_> = diags
+        .iter()
+        .filter(|d| d.code == DiagnosticCode::E179)
+        .collect();
+    assert_eq!(
+        e179s.len(),
+        3,
+        "three handlers sharing one order must produce exactly one diagnostic \
+         PER declaration (three), not one per pair (six): {diags:?}"
+    );
+    // Each message must name both OTHER handlers in the group.
+    for d in &e179s {
+        assert!(
+            ["a", "b", "c"]
+                .iter()
+                .filter(|name| d.message.contains(&format!("`{name}`")))
+                .count()
+                >= 2,
+            "each E179 message must name at least the two OTHER conflicting \
+             handlers in a three-way group: {d:?}"
+        );
+    }
 }
 
 #[test]

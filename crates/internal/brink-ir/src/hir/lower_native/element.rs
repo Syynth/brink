@@ -260,9 +260,11 @@ pub(super) struct Elements {
     /// single source-order pass, neither of which is order-sensitive on
     /// its own; a `BTreeMap` costs nothing here and removes any doubt.
     /// Two declarations naming the same dispatch name is an interim
-    /// first-declared-wins ([`collect`]'s own doc), the same posture
-    /// `try_claim`'s dispatch-order doc already takes for `claims` pending
-    /// issue #1840's `fn conventions()` registration order.
+    /// first-declared-wins ([`collect`]'s own doc) — unlike `claims`
+    /// precedence, which issue #2164 (`docs/decision-log.md` 2026-08-03)
+    /// made total, explicit, and authored via `order` (see [`try_claim`]'s
+    /// own doc), `!name` dispatch has no `order` of its own and stays on
+    /// the interim first-declared-wins rule for now.
     dispatch: BTreeMap<String, DispatchHandler>,
     /// Every claimed line, in the order lowering *reached* it — not
     /// necessarily source order (a `CHOICE_POINT` lowers its source-later
@@ -282,8 +284,12 @@ impl Elements {
         self.handlers.is_empty() && self.external.is_empty()
     }
 
-    /// Every claiming handler *declared* in this file, in declaration
-    /// order — [`HirFile::claim_handlers`](crate::HirFile::claim_handlers)'s
+    /// Every claiming handler *declared* in this file, in ascending
+    /// `@[convention]` `order` (issue #2164, `docs/decision-log.md`
+    /// 2026-08-03 — `handlers` is already sorted by `order` before
+    /// [`collect`] returns, so this reflects precedence, not textual
+    /// declaration position) —
+    /// [`HirFile::claim_handlers`](crate::HirFile::claim_handlers)'s
     /// source (issue #1844's confinement check). Deliberately independent
     /// of `matches`: a handler that claims nothing in its own file is still
     /// a declaration, and still checkable. Deliberately reads `handlers`
@@ -449,26 +455,37 @@ pub(super) fn collect(
 }
 
 /// `E179` (issue #2164, `docs/decision-log.md` 2026-08-03 "`order` is
-/// REQUIRED on `@[convention]`…"): flag every pair of this file's locally
-/// declared claiming handlers that share the same `order`.
+/// REQUIRED on `@[convention]`…"): flag every group of two or more of this
+/// file's locally declared claiming handlers that share the same `order`.
 ///
 /// A static check, unlike [`diagnose_duplicate_patterns`] — it needs no
 /// lowering ground truth (`elements.matches`), only the declared `order`
 /// values themselves, so `super::lower_with_conventions` calls this right
 /// after [`collect`] returns, before `walk_top_level` even runs.
 ///
-/// Reported against **both** conflicting declarations (their own
-/// `annotation` ranges), the duplicate-definition posture the ruling
-/// calls for — not a single "first one wins" report the way `E048`
-/// (duplicate directive on one target) is, since here the two
-/// declarations are different `fn`s and neither is more "the real one"
-/// than the other. Scoped to `elements.handlers` only (this file's own
-/// declarations, matching `handler_decls`'s own "declared IN THIS FILE"
-/// posture) — an injected handler (issue #1863) was declared, and
-/// ordered, in its own file, so a collision with a local handler's
-/// `order` is not this file's defect to report.
+/// Reported against **every** conflicting declaration in a shared-`order`
+/// group (each one's own `annotation` range), the duplicate-definition
+/// posture the ruling calls for — not a single "first one wins" report
+/// the way `E048` (duplicate directive on one target) is, since here the
+/// declarations are different `fn`s and none is more "the real one" than
+/// another. Each diagnostic's message names every *other* declaration in
+/// the group and the shared `order` value, the same "name both/all
+/// conflicting declarations" posture `E169`'s sibling
+/// (`brink_analyzer::conventions_confinement`) already takes. Scoped to
+/// `elements.handlers` only (this file's own declarations, matching
+/// `handler_decls`'s own "declared IN THIS FILE" posture) — an injected
+/// handler (issue #1863) was declared, and ordered, in its own file, so a
+/// collision with a local handler's `order` is not this file's defect to
+/// report.
 ///
-/// `O(n²)` over a file's claiming handlers — see
+/// Grouped by `order` rather than walked as all pairs, so three or more
+/// handlers sharing one `order` value produce exactly one diagnostic per
+/// participating declaration (naming every *other* handler in the group),
+/// not one per pair — an all-pairs walk over a group of size `k` would
+/// emit `k * (k - 1)` diagnostics, each declaration repeated `k - 1` times.
+///
+/// `O(n²)` worst case over a file's claiming handlers (the grouping pass
+/// itself, plus building each message's "other declarations" list) — see
 /// [`diagnose_duplicate_patterns`]'s own doc for why that headroom is
 /// never a real concern at this scale.
 pub(super) fn diagnose_duplicate_order(
@@ -477,22 +494,40 @@ pub(super) fn diagnose_duplicate_order(
     diags: &mut Vec<Diagnostic>,
 ) {
     let handlers = &elements.handlers;
-    for (i, a) in handlers.iter().enumerate() {
-        for b in &handlers[i + 1..] {
-            if a.order == b.order {
-                diags.push(Diagnostic {
-                    file: file_id,
-                    range: a.annotation,
-                    message: DiagnosticCode::E179.title().to_string(),
-                    code: DiagnosticCode::E179,
-                });
-                diags.push(Diagnostic {
-                    file: file_id,
-                    range: b.annotation,
-                    message: DiagnosticCode::E179.title().to_string(),
-                    code: DiagnosticCode::E179,
-                });
-            }
+
+    // Group handler indices by their shared `order` value. `BTreeMap`, not
+    // `HashMap`, per this workspace's determinism rule — iteration order
+    // below must not depend on hash-bucket placement.
+    let mut by_order: BTreeMap<i64, Vec<usize>> = BTreeMap::new();
+    for (i, handler) in handlers.iter().enumerate() {
+        by_order.entry(handler.order).or_default().push(i);
+    }
+
+    for (order, indices) in &by_order {
+        if indices.len() < 2 {
+            continue;
+        }
+        // One diagnostic per participating declaration, naming every
+        // *other* declaration in this `order` group and the shared value
+        // — the duplicate-definition posture (report at each conflicting
+        // declaration, name the others), not a single "first wins" report.
+        for &i in indices {
+            let others = indices
+                .iter()
+                .filter(|&&j| j != i)
+                .map(|&j| format!("`{}`", handlers[j].name.text))
+                .collect::<Vec<_>>()
+                .join(", ");
+            diags.push(Diagnostic {
+                file: file_id,
+                range: handlers[i].annotation,
+                message: format!(
+                    "`{name}` shares `order = {order}` with {others} — every \
+                     `@[convention]` in a module must have a distinct `order`",
+                    name = handlers[i].name.text,
+                ),
+                code: DiagnosticCode::E179,
+            });
         }
     }
 }
