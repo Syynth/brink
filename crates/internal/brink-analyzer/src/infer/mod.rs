@@ -1318,6 +1318,19 @@ pub fn effects_project(
 /// edge on `brink-db`'s `solve_scc_query` side — the same coarse,
 /// range-free, `Eq`-cutoff shape `inline_docs_query` already gives every
 /// other reader.
+///
+/// **Does not itself return an `EXTERNAL`'s signature (issue #1921).**
+/// `batch` never contains an `EXTERNAL` — [`inferable_defs_from_index`]
+/// filters the index to `SymbolKind::Knot | SymbolKind::Stitch` only — so
+/// the returned `signatures` map (filtered to `batch`'s own members, see
+/// below) never carries one, even though `known_sigs` is seeded with every
+/// external's signature above. `brink-db`'s `type_inference_query`
+/// re-merges [`collect_external_sigs`]'s seed into its own aggregated
+/// `InferenceResult::signatures` once, after collecting every SCC's own
+/// members' signatures from this function — not per-SCC here — so an
+/// external's signature is exposed exactly once regardless of how many
+/// SCCs a project has, instead of every `solve_scc_query` memo duplicating
+/// the whole external-signature map.
 #[must_use]
 #[expect(
     clippy::too_many_arguments,
@@ -1341,52 +1354,16 @@ pub fn solve_scc(
     BTreeMap<DefinitionId, InferredSig>,
     BTreeMap<DefinitionId, BodyTypes>,
 ) {
-    // Issue #1921: computed once here (idempotent, cheap — see this fn's own
-    // doc) so it can be re-merged into the *returned* `signatures` below,
-    // not just into the working `known_sigs` this batch solves against.
-    // `batch` never contains an `EXTERNAL` (externals are never SCC members
-    // — see this fn's own doc), so the old "filter to `batch` members"
-    // projection silently dropped every external signature `solve_scc_query`
-    // seeded here: `brink-db`'s per-SCC `SolvedScc::signatures` (and the
-    // `type_inference_query` aggregation built from it) never carried an
-    // external's signature, unlike this same function's whole-project
-    // sibling `solve_batches` (which returns `known_sigs` wholesale, no
-    // batch filter, so `infer_project`'s `InferenceResult::signatures`
-    // already had it). That gap silently weakened `ufcs::
-    // check_ufcs_arg_types` on exactly the db-backed path the CLI/LSP/web
-    // consumers run through: `self.signatures.get(&target)` missed for a
-    // UFCS call into an `EXTERNAL`, so its argument types went unchecked
-    // there while the identical direct-call spelling (reading
-    // `ctx.known_sigs`, not `InferenceResult::signatures`) stayed checked.
-    // Issue #1921: computed once here (idempotent, cheap — see this fn's own
-    // doc) so it can be re-merged into the *returned* `signatures` below,
-    // not just into the working `known_sigs` this batch solves against.
-    // `batch` never contains an `EXTERNAL` (externals are never SCC members
-    // — see this fn's own doc), so the old "filter to `batch` members"
-    // projection silently dropped every external signature `solve_scc_query`
-    // seeded here: `brink-db`'s per-SCC `SolvedScc::signatures` (and the
-    // `type_inference_query` aggregation built from it) never carried an
-    // external's signature, unlike this same function's whole-project
-    // sibling `solve_batches` (which returns `known_sigs` wholesale, no
-    // batch filter, so `infer_project`'s `InferenceResult::signatures`
-    // already had it). That gap silently weakened `ufcs::
-    // check_ufcs_arg_types` on exactly the db-backed path the CLI/LSP/web
-    // consumers run through: `self.signatures.get(&target)` missed for a
-    // UFCS call into an `EXTERNAL`, so its argument types went unchecked
-    // there while the identical direct-call spelling (reading
-    // `ctx.known_sigs`, not `InferenceResult::signatures`) stayed checked.
-    let external_sigs = collect_external_sigs(index, manifest, inline_docs);
-    known_sigs.extend(external_sigs.iter().map(|(id, sig)| (*id, sig.clone())));
+    known_sigs.extend(collect_external_sigs(index, manifest, inline_docs));
     let by_file = index_resolutions_by_file(resolutions);
     let by_id: BTreeMap<DefinitionId, &Def<'_>> = defs.iter().map(|d| (d.id, d)).collect();
     let ctx = ProjectCtx::new(index, globals, &by_file, inferable, manifest);
 
     let bodies = solve_one_batch(batch, &by_id, &ctx, &mut known_sigs);
-    let mut signatures: BTreeMap<DefinitionId, InferredSig> = batch
+    let signatures: BTreeMap<DefinitionId, InferredSig> = batch
         .iter()
         .filter_map(|id| known_sigs.get(id).map(|sig| (*id, sig.clone())))
         .collect();
-    signatures.extend(external_sigs);
     (signatures, bodies)
 }
 

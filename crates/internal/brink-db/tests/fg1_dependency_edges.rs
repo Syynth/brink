@@ -80,25 +80,29 @@ fn signature_memo_survives_unrelated_file_body_edit() {
 /// backdates.
 ///
 /// Toggling [`brink_analyzer::ExternalCheckSeverity`] between `Off` and
-/// `Error` is such an edit: `external_check::analyze_externals`'s own
-/// `severity == Off => diags.clear()` gate is the *only* thing that reads
-/// this field, so it adds an `E039` diagnostic without touching the symbol
-/// index, any resolution, or (issue #1921) `collect_external_sigs`'s
-/// declaration-derived signature for `foo` — that reads only `host_manifest`
-/// (registered identically, unchanged, on both sides of this edit) and
-/// `inline_docs`, never `external_check`.
+/// `Error` is such an edit: the field is read by exactly two diagnostics
+/// gates — `external_check::analyze_externals`'s own
+/// `severity == Off => diags.clear()` gate, and
+/// `call_site_diagnostics_query`'s `== ExternalCheckSeverity::Off` early
+/// return (`crates/internal/brink-db/src/queries/analysis.rs`) — so flipping
+/// it adds an `E039` diagnostic without touching the symbol index, any
+/// resolution, or (issue #1921) `collect_external_sigs`'s declaration-derived
+/// signature for `foo` — that reads only `host_manifest` (registered
+/// identically, unchanged, on both sides of this edit) and `inline_docs`,
+/// never `external_check`.
 ///
 /// This scenario deliberately keeps the manifest *itself* constant across
 /// the edit (previously this test registered the manifest only on the
-/// "after" side) — issue #1921 fixed `solve_scc` to re-merge
-/// `collect_external_sigs`'s seed back into its own returned `signatures`
-/// (not just its working `known_sigs`), so `InferenceResult::signatures`
-/// now legitimately depends on `host_manifest` for any indexed `EXTERNAL`
-/// the manifest registers a matching entry for — a *manifest* edit is no
-/// longer diagnostics-only in that case, precisely because it is now
-/// correctly wired into typing. Only `external_check` — read solely by the
-/// diagnostics gate above, never by `solve_scc`/`collect_external_sigs` —
-/// stays genuinely diagnostics-only, so it is what this FG-1 pin now edits.
+/// "after" side) — issue #1921 fixed `type_inference_query` to merge
+/// `collect_external_sigs`'s seed (via its own `external_signatures_query`
+/// memo) into the aggregated `InferenceResult::signatures` it returns, so
+/// `InferenceResult::signatures` now legitimately depends on `host_manifest`
+/// for any indexed `EXTERNAL` the manifest registers a matching entry for —
+/// a *manifest* edit is no longer diagnostics-only in that case, precisely
+/// because it is now correctly wired into typing. Only `external_check` —
+/// read solely by the two diagnostics gates above, never by
+/// `solve_scc`/`collect_external_sigs`/`external_signatures_query` — stays
+/// genuinely diagnostics-only, so it is what this FG-1 pin now edits.
 #[test]
 fn type_inference_memo_survives_diagnostics_only_analysis_options_edit() {
     let mut db = ProjectDb::new();

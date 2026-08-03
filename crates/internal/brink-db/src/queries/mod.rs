@@ -254,6 +254,7 @@ impl Default for BrinkDatabase {
                 .ingredient::<scc_membership_query>()
                 .ingredient::<solve_scc_query>()
                 .ingredient::<inferred_signature_query>()
+                .ingredient::<external_signatures_query>()
                 .ingredient::<type_inference_query>()
                 .ingredient::<infer_body_query>()
                 .ingredient::<type_diagnostics_query>()
@@ -1169,18 +1170,18 @@ pub(crate) fn scc_membership_query(db: &dyn salsa::Database, project: ProjectInp
 /// the per-SCC cutoff [`inferred_signature_query`]/[`infer_body_query`]
 /// backdate on (Arc<plain> ruling, design doc §2 Fork 2).
 ///
-/// **Also carries every `EXTERNAL`'s declaration-derived signature (issue
-/// #1921).** [`brink_analyzer::solve_scc`] re-merges its own
-/// `collect_external_sigs` seed back into the `signatures` it returns (not
-/// just the SCC's own members) precisely so this field — and the
-/// `type_inference_query` aggregation built from every SCC's copy of it —
-/// agrees with the pure whole-project `infer_project` path: both now expose
-/// an external's signature, so `ufcs::check_ufcs_arg_types`'s
-/// `self.signatures.get(&target)` lookup finds a UFCS call's `EXTERNAL`
-/// target on the db-backed path (the CLI/LSP/web) exactly as it already did
-/// on the pure/in-memory one. Recomputed identically by every SCC (cheap,
-/// deterministic — see `solve_scc`'s own doc), so the duplication across
-/// SCCs is harmless.
+/// **Does not carry `EXTERNAL` signatures (issue #1921).** `batch` never
+/// contains an `EXTERNAL` (see [`brink_analyzer::solve_scc`]'s own doc), so
+/// `signatures` here is scoped to the SCC's own knot/stitch members, same as
+/// before #1921. [`type_inference_query`] is where every `EXTERNAL`'s
+/// declaration-derived signature is merged in — once, at the aggregation,
+/// not once per SCC — so it agrees with the pure whole-project
+/// `infer_project` path without every `solve_scc_query` memo paying to
+/// clone the project's whole external-signature map (that per-SCC
+/// duplication would also make every memo's *value* depend on the host
+/// manifest, which would cost `solve_scc_query`/`inferred_signature_query`/
+/// `infer_body_query` the FG-2 cutoff `fg1_dependency_edges.rs` pins even
+/// for an SCC that never calls an external).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct SolvedScc {
     pub signatures: BTreeMap<DefinitionId, brink_analyzer::InferredSig>,
@@ -1477,16 +1478,70 @@ pub(crate) fn effects_query<'db>(
     solved.get(&def_id).cloned().map(Arc::new)
 }
 
+/// Every `EXTERNAL`'s declaration-derived signature, project-wide (issue
+/// #1921 — [`brink_analyzer::collect_external_sigs`] as its own memo).
+/// `Arc<plain>`, `Eq`-derived, so a `host_manifest`/`inline_docs` edit that
+/// leaves every `EXTERNAL`'s declared signature unchanged backdates this
+/// memo exactly like [`solve_scc_query`] already backdates its own
+/// `host_manifest`-dependent `Ty::Handle` resolution (T1d-2b, issue #774).
+/// That backdating is *why* this is its own `#[salsa::tracked]` query and
+/// not an inline call inside [`type_inference_query`]: reading
+/// `project.analysis_options(db)` — a raw salsa input, never backdated on
+/// its own — directly inside `type_inference_query` would tie
+/// `type_inference_query`'s *own* memo to that input's revision instead of
+/// to this query's `Eq`-cutoff output, forcing `type_inference_query` to
+/// re-execute (a fresh `Arc::new`, breaking the pointer-identity guarantee
+/// `fg1_dependency_edges.rs` pins) on *any* `AnalysisOptions` edit,
+/// including a diagnostics-only one like `external_check` that never
+/// touches an external's declared signature at all.
+#[salsa::tracked(returns(ref))]
+pub(crate) fn external_signatures_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+) -> Arc<BTreeMap<DefinitionId, brink_analyzer::InferredSig>> {
+    let index = inference_index_query(db, project);
+    let inline_docs = inline_docs_query(db, project);
+    let opts = project.analysis_options(db);
+    Arc::new(brink_analyzer::collect_external_sigs(
+        index,
+        opts.host_manifest.as_ref(),
+        inline_docs,
+    ))
+}
+
 /// Whole-project type inference — now an aggregation over
 /// [`scc_membership_query`] + [`solve_scc_query`] (FG-2, issue #631; was a
 /// single monolithic [`brink_analyzer::infer_project`] call
 /// pre-decomposition). Still re-sourced off `inference_index`/`resolve`,
 /// never `analysis_query` (FG-1 §3) — every query this reads
 /// (`scc_membership_query` -> `call_graph_query` -> `call_edges_query` ->
-/// `inference_inputs`) traces back to the same two roots, so the
+/// `inference_inputs`, plus [`external_signatures_query`] below) traces
+/// back to the same two roots (or its own `Eq`-cutoff memo), so the
 /// pointer-identity guarantee `fg1_dependency_edges.rs` pins (a
 /// diagnostics-only edit leaves this memo fully validated, never
 /// re-executed) still holds after this refactor.
+///
+/// **Merges in every `EXTERNAL`'s signature once, here (issue #1921).**
+/// [`solve_scc_query`]'s own `signatures` never carries one — `batch` is
+/// never an `EXTERNAL` (see [`brink_analyzer::solve_scc`]'s own doc) — so
+/// without this, a UFCS call into an `EXTERNAL` went argument-unchecked on
+/// this db-backed path even though the identical call was already checked
+/// through the pure `infer_project` path (whose `solve_batches` sibling
+/// returns `known_sigs` wholesale, no batch filter). This re-merge reads
+/// [`external_signatures_query`] — its own backdating memo, see its doc —
+/// exactly once, at this single aggregation point, deliberately *not*
+/// inside [`solve_scc_query`] itself: doing it per-SCC would (a) make every
+/// `solve_scc_query` memo hold a full clone of the project's whole
+/// external-signature map, multiplying `solve_scc_heap_size`'s per-memo
+/// heap accounting by the SCC count, and (b) make every SCC's memoized
+/// *value* depend on every `EXTERNAL`'s declared type, so a `host_manifest`
+/// edit touching one external would invalidate every SCC's cutoff —
+/// including SCCs that never call that external — costing
+/// `inferred_signature_query`/`infer_body_query` the exact FG-2 per-def
+/// cutoff `fg1_dependency_edges.rs` pins, project-wide. Merging only here
+/// keeps that per-def cutoff intact; only this one aggregation memo
+/// re-executes (cheaply — no fixpoint solving, just a map merge) when a
+/// manifest edit changes an external's declared type.
 #[salsa::tracked(returns(ref))]
 pub(crate) fn type_inference_query(
     db: &dyn salsa::Database,
@@ -1507,6 +1562,11 @@ pub(crate) fn type_inference_query(
         signatures.extend(solved.signatures.iter().map(|(k, v)| (*k, v.clone())));
         bodies.extend(solved.bodies.iter().map(|(k, v)| (*k, v.clone())));
     }
+    signatures.extend(
+        external_signatures_query(db, project)
+            .iter()
+            .map(|(k, v)| (*k, v.clone())),
+    );
     Arc::new(InferenceResult { signatures, bodies })
 }
 
