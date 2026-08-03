@@ -77,7 +77,7 @@ trailing text already arrived as its own preceding `Step::Line`;
 
 ```rust
 pub enum Step {
-    Line(OutputLine),      // OutputLine { text, tags, block_id } — more output coming
+    Line(OutputLine),      // OutputLine { text, tags, block_id, element } — more output coming
     Done,                  // turn complete (ink -> DONE); no payload
     Choices(Vec<Choice>),  // pick a choice; no text/tags of its own
     End,                   // story permanently ended (ink -> END); no payload
@@ -90,6 +90,12 @@ pub enum Step {
 `Story::wake_check`; a park never auto-continues. See
 `brink-runtime/src/story/types.rs` for the real definition — this block is a
 summary, not the source of truth.)
+
+⚠ `OutputLine.element` (`Element { kind, data }`, PR #2109) is the carrier for
+per-line classification, but **every line reports `Element::NARRATIVE` today** —
+nothing populates it from claim handlers yet (#1683). The field exists; the
+classification does not. Do not read its presence as "the host can distinguish a
+scene heading".
 
 Primary consumer pattern:
 
