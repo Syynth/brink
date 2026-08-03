@@ -547,7 +547,9 @@ asserts every variant has a corresponding doc file and that no orphaned doc file
 | [`E170`](diagnostics/E170.md) | Two `@[element(claims = "…")]` handlers declare textually different patterns that provably overlap, so the later-declared one can never claim anything in this file (under the interim first-match-wins dispatch order). |
 | [`E171`](diagnostics/E171.md) | A `@[element(claims = "…")]` handler's captured parameter declares a type other than `string`/untyped/`content`, but every capture binds as a plain string literal — numeric capture coercion is deferred. |
 | [`E172`](diagnostics/E172.md) | A native `#…` tag begins with `@` — the ink-dialect directive-tag shape (`#@private`/`#@was`/`#@local`/…) — but native has no directive channel, so it lowers as an ordinary runtime tag. |
-<!-- E173–E175 rows are missing from this table (pre-existing staleness, not from issue #2156 — see that issue's PR body for the scope note); each still has a real doc file and passes `diagnostic_docs_validation`. -->
+| [`E173`](diagnostics/E173.md) | An inline markup span of a declared kind is missing an attribute the host manifest marks `required` for that kind. |
+| [`E174`](diagnostics/E174.md) | A lambda's own written annotation (a parameter's `: T` or the lambda's `: R` return annotation) disagrees with the type its body actually infers. |
+| [`E175`](diagnostics/E175.md) | `register` is called somewhere other than inside the project's configured conventions module's `fn conventions()` — native-only, `register` is a comptime-only intrinsic. |
 | [`E176`](diagnostics/E176.md) | A divert-with-args site (`-> knot(args)`, tunnel call, or thread-start) supplies the wrong number of arguments for its resolved target's declared parameters — `E031`'s sibling for the divert call shape. |
 
 ## Known limitations
