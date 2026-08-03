@@ -96,10 +96,15 @@ fn annotation_arg(p: &mut Parser<'_, '_>) {
                 // (`@[convention(…, order = 30)]`) — the ordering key is a
                 // bare integer, RULED (`docs/decision-log.md` 2026-08-03),
                 // not a quoted string like every other clause value this
-                // grammar has carried until now. A malformed right-hand
-                // side is NOT recovered: it leaves no `STRING_LIT`/
-                // `INTEGER_LIT` child for `AnnotationArg::eq_value`/
-                // `eq_int_value` to find (the lowering-side reader
+                // grammar has carried until now — and widened again by
+                // issue #2178 to also accept `key = <ident>`
+                // (`@[convention(…, attach = Cue)]`) — the attached
+                // schema is a declared `struct` *name*, so this is a bare
+                // identifier, not a string or integer literal either. A
+                // malformed right-hand side is NOT recovered: it leaves
+                // no `STRING_LIT`/`INTEGER_LIT`/`IDENT` child for
+                // `AnnotationArg::eq_value`/`eq_int_value`/
+                // `eq_ident_value` to find (the lowering-side reader
                 // diagnoses that as a missing value), but the token itself
                 // is left unconsumed, which desyncs the enclosing
                 // `annotation_args`/`annotation_line` loops — expect a real
@@ -111,6 +116,20 @@ fn annotation_arg(p: &mut Parser<'_, '_>) {
                     annotation_string_value(p);
                 } else if p.at(INTEGER) {
                     annotation_integer_value(p);
+                } else if p.at(IDENT) {
+                    // `eat`, not a raw `bump` — `bump` would consume
+                    // whatever raw token sits at `self.pos` next, which is
+                    // the trailing whitespace `p.expect(EQ)` didn't flush
+                    // (only leading trivia is flushed on `eat`/`expect`),
+                    // not the `IDENT` itself. This is exactly the bug
+                    // class `eat`'s own doc warns about ("annotation_arg
+                    // bumping a stray space instead of the next IDENT").
+                    // Bumped as a bare sibling token (no wrapping node),
+                    // exactly like the top-level bare-`IDENT` arm above —
+                    // `AnnotationArg::eq_ident_value` finds it as the
+                    // *second* direct-child `IDENT` token (the key is the
+                    // first).
+                    p.eat(IDENT);
                 }
             }
             p.finish_node();

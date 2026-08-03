@@ -279,6 +279,20 @@ nodes:
   precedence: the walk tries a module's claiming handlers in ascending
   `order`, first-match-wins. `@[element]` carries no `order` at all.
 
+  **`attach = StructName` is an optional clause on `@[convention]`**
+  (issue #2178, split from #2164's 2026-08-03 design-backport comment,
+  `docs/decision-log.md` "The element output model") — the handler's
+  declared **output schema**: a plain `struct` name, naming which keys
+  the handler attaches to the run that follows and their types. Keys are
+  declared (this clause); values are computed (the handler body) — no
+  new declarative sub-language, since a `struct` is already declarative,
+  statically known, serialized, and understood by compiler + editor +
+  host. The declaration's own `: type` return annotation must name the
+  same struct, or `E180` (declaration-surface-only, like every other
+  check here — real name resolution of the struct name is out of scope).
+  `@[element]` has no `attach` clause of its own — it is `@[convention]`
+  only, the same asymmetry `order` already has.
+
   Two claiming handlers declaring byte-identical `claims` patterns is
   `E168` (issue #1848) — the narrow, sound slice of "these two patterns
   compete for the same line" this surface detects; see that code's own

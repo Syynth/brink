@@ -272,6 +272,32 @@ fn annotation_arg_key_value_negative_integer_is_a_parse_error() {
     );
 }
 
+/// Issue #2178: the key/value clause form widened a second time, to a
+/// bare-identifier value (`@[convention(claims = "…", attach = Cue)]`) —
+/// the attached schema names a declared `struct`, so this clause is
+/// neither a quoted string (`eq_value`) nor a bare integer
+/// (`eq_int_value`); `eq_ident_value` reads the plain identifier text.
+#[test]
+fn annotation_arg_key_value_ident() {
+    let src = "@[convention(attach = Cue)]\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let line = annotation_line_node(&p);
+    let args = line.args().expect("ANNOTATION_ARGS");
+    let arg = args.args().next().expect("ANNOTATION_ARG");
+    assert_eq!(arg.name_token().unwrap().text(), "attach");
+    assert!(
+        arg.eq_value().is_none(),
+        "must not be read as a string value"
+    );
+    assert!(
+        arg.eq_int_value().is_none(),
+        "must not be read as an integer value"
+    );
+    let ident = arg.eq_ident_value().expect("eq_ident_value");
+    assert_eq!(ident.text(), "Cue");
+}
+
 /// Two key/value clauses in one annotation, the `@[style(...)]` shape from
 /// the ruled example (`docs/prose-dialect-spec.md` §3.5b).
 #[test]
@@ -305,26 +331,30 @@ fn annotation_args_multiple_key_value_pairs() {
     );
 }
 
-/// A `key = value` clause with a non-string right-hand side (a bare ident)
-/// is not the ruled shape — the parser leaves no `STRING_LIT` for
-/// `eq_value` to find (the lowering side diagnoses this as a missing
-/// value), and the arg still round-trips losslessly (no panic, no dropped
-/// text) even though it doesn't parse as a clean key/value pair.
+/// A `key = value` clause with a right-hand side that is none of the three
+/// ruled literal shapes (string, bare integer, bare identifier — issue
+/// #2178's `eq_ident_value` widening means a bare ident like `chan = bare`
+/// is now itself a valid clause, so it no longer proves this) is not the
+/// ruled shape — the parser leaves no `STRING_LIT`/`INTEGER_LIT`/`IDENT`
+/// for `eq_value`/`eq_int_value`/`eq_ident_value` to find (the lowering
+/// side diagnoses this as a missing value), and the arg still round-trips
+/// losslessly (no panic, no dropped text) even though it doesn't parse as
+/// a clean key/value pair.
 ///
-/// The unconsumed `bare` token desyncs the enclosing arg-list/line grammar
+/// The unconsumed `3.5` token desyncs the enclosing arg-list/line grammar
 /// — this is real recovery-by-error, not a single clean diagnostic, so
 /// this asserts the actual error set rather than just `p.errors().is_empty
 /// ()`/ignoring it.
 #[test]
 fn annotation_arg_key_value_non_string_rhs_has_no_eq_value() {
-    let src = "@[style(chan = bare)]\n";
+    let src = "@[style(chan = 3.5)]\n";
     let p = assert_lossless(src);
     let messages: Vec<_> = p.errors().iter().map(|e| e.message.as_str()).collect();
     assert_eq!(
         messages,
         vec![
-            "expected R_PAREN, found IDENT",
-            "expected R_BRACKET, found IDENT",
+            "expected R_PAREN, found FLOAT",
+            "expected R_BRACKET, found FLOAT",
             "unexpected text after `]` on an annotation line",
         ],
         "errors: {messages:?}"
@@ -334,6 +364,8 @@ fn annotation_arg_key_value_non_string_rhs_has_no_eq_value() {
     let arg = args.args().next().expect("ANNOTATION_ARG");
     assert_eq!(arg.name_token().unwrap().text(), "chan");
     assert!(arg.eq_value().is_none());
+    assert!(arg.eq_int_value().is_none());
+    assert!(arg.eq_ident_value().is_none());
 }
 
 /// Issue #1719 review finding: `{…}` interpolation inside an annotation

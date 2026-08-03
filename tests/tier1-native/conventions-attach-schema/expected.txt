@@ -1,0 +1,2 @@
+Cue { speaker: VENDOR, voiceover: false }
+You shouldn't be here after dark.

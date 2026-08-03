@@ -84,6 +84,7 @@ whole vocabulary by naming a different conventions module. Sequenced as
 | `@[element(args=…)]` capture binding | ✅ | ✅ | ✅ | ❓ | named captures bind params by name |
 | Prose-bodied handlers `>{ }` | ✅ | ✅ | ✅ | ❓ | verified 2026-08-01 — emits `[A] hi` |
 | Typed handler params (`E171`) | ✅ | ✅ | ✅ | — | #1849 closed |
+| `attach = StructName` schema (`E180`) | ✅ | ✅ | ✅ | — | issue #2178 (split from #2164 item 2) — parses, validates against the handler's own return type, and runs (a claiming handler's real struct value renders via its default `Display`); no consumer reads `ClaimHandlerDecl::attach` yet — the NS-T projection (#2111) is the one blocked on this landing, per that issue's own sequencing note |
 | Confinement to one module (`E169`) | ✅ | ✅ | ⚠️ | — | query landed; **unreachable from live typing** (#1880) |
 | Directive-shaped tag guard (`E172`) | ✅ | ✅ | ✅ | — | landed 2026-08-01 (#1835) |
 | **`!name` sigil dispatch** | ✅ | ❌ | — | — | **reserved, unimplemented** — see below |

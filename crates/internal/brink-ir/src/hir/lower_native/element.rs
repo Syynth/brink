@@ -199,6 +199,13 @@ struct ClaimHandler {
     /// local `handlers` unconditionally, matching the pre-#2164 posture of
     /// "local always wins over injected" — see [`Elements`]'s own doc.
     order: i64,
+    /// The `attach = StructName` clause (issue #2178), if declared — see
+    /// `crate::ConventionAnnotation::attach`'s own doc. `None` for an
+    /// injected handler (issue #1863): `ExternalClaimHandler` carries no
+    /// `attach` field to read yet, the same gap `order` has (see this
+    /// struct's own `order` doc) — an injected handler's schema, if any,
+    /// is not carried across the cross-file join.
+    attach: Option<String>,
 }
 
 /// One declared `!name`-dispatched handler: a top-level `fn` whose
@@ -307,6 +314,7 @@ impl Elements {
                 pattern: h.pattern.as_str().to_string(),
                 block: h.block,
                 order: h.order,
+                attach: h.attach.clone(),
             })
             .collect()
     }
@@ -372,14 +380,27 @@ pub(super) fn collect(
             continue;
         };
         let params = super::container::lower_params(decl.param_list());
+        // The declaration's own resolved return-type annotation (issue
+        // #2178) — read the same way `container::lower_top_level_container`
+        // does, since `convention_annotation`'s `attach = StructName`
+        // clause (`E180`) validates against it by name.
+        let return_type = decl
+            .return_type()
+            .as_ref()
+            .and_then(super::types::lower_type_annotation);
         // `@[element]` (dispatch) and `@[convention]` (claiming) are two
         // independent annotation reads since issue #2164's split — both
         // are attempted on every top-level `fn`; a declaration carrying
         // neither contributes nothing to either table.
         let mut scratch: Vec<Diagnostic> = Vec::new();
         let element = super::annotation::element_annotation(file_id, &node, &params, &mut scratch);
-        let convention =
-            super::annotation::convention_annotation(file_id, &node, &params, &mut scratch);
+        let convention = super::annotation::convention_annotation(
+            file_id,
+            &node,
+            &params,
+            return_type.as_ref(),
+            &mut scratch,
+        );
         let param_names: Vec<String> = params.into_iter().map(|p| p.name.text).collect();
 
         if let Some(convention) = convention
@@ -393,6 +414,7 @@ pub(super) fn collect(
                 decl: Some(node.text_range()),
                 block: convention.block,
                 order: convention.order,
+                attach: convention.attach.map(|a| a.text),
             });
         }
         if let Some(element) = element
@@ -443,6 +465,9 @@ pub(super) fn collect(
                 // function's own doc for why injected handlers are chained
                 // after the sorted local set regardless.
                 order: i64::MAX,
+                // Issue #1863's join carries no `attach` yet either — same
+                // gap as `order`, see this struct's own `attach` doc.
+                attach: None,
             });
         }
     }

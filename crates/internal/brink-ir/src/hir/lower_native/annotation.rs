@@ -121,8 +121,8 @@ use rowan::TextRange;
 use crate::hir::FileId;
 use crate::suppressions::AllowScope;
 use crate::{
-    ConventionAnnotation, Diagnostic, DiagnosticCode, EffectsAssertion, ElementAnnotation, Param,
-    Severity, StyleAnnotation, StyleEntry, StyleToken, TypeExpr,
+    ConventionAnnotation, Diagnostic, DiagnosticCode, EffectsAssertion, ElementAnnotation, Name,
+    Param, Severity, StyleAnnotation, StyleEntry, StyleToken, TypeExpr,
 };
 
 use super::SyntaxNode;
@@ -591,6 +591,11 @@ const ELEMENT_NAME: &str = "name";
 const CONVENTION_CLAIMS: &str = "claims";
 const CONVENTION_ORDER: &str = "order";
 
+/// The `@[convention(…)]` optional `attach = StructName` clause (issue
+/// #2178, split from #2164's backport comment "item 2") — the handler's
+/// declared output schema. See [`ConventionAnnotation::attach`]'s own doc.
+const CONVENTION_ATTACH: &str = "attach";
+
 /// The `@[element(…)]` / `@[convention(…)]` shared bare `block` clause
 /// (issue #1839, `docs/decision-log.md` 2026-07-31 "Conventions are
 /// annotated handlers"): a flag, not a `key = "value"` pair — present or
@@ -813,10 +818,20 @@ fn parse_element(
 /// (`E179`) are **not** checked here — only one declaration is in view at
 /// a time; that check runs over the whole collected set in
 /// `super::element::diagnose_duplicate_order`.
+///
+/// An optional `attach = StructName` clause (issue #2178) whose named
+/// struct disagrees with `return_type` — the declaration's own resolved
+/// return-type annotation, if any — is `E180`, the same "never a partial
+/// one" posture. `return_type` is passed in (rather than re-read from
+/// `decl`) because the caller has already lowered it once
+/// ([`super::container::lower_top_level_container`]/`lower_stitch`);
+/// re-parsing it here would duplicate that walk for a value this
+/// function only ever compares by name.
 pub(super) fn convention_annotation(
     file_id: FileId,
     decl: &SyntaxNode,
     params: &[Param],
+    return_type: Option<&TypeExpr>,
     diags: &mut Vec<Diagnostic>,
 ) -> Option<ConventionAnnotation> {
     let mut chosen: Option<ConventionAnnotation> = None;
@@ -825,7 +840,8 @@ pub(super) fn convention_annotation(
             continue;
         }
         let range = line.syntax().text_range();
-        let Some(parsed) = parse_convention(file_id, &line, range, params, diags) else {
+        let Some(parsed) = parse_convention(file_id, &line, range, params, return_type, diags)
+        else {
             continue; // already diagnosed
         };
         if chosen.is_some() {
@@ -837,20 +853,23 @@ pub(super) fn convention_annotation(
     chosen
 }
 
-fn parse_convention(
-    file_id: FileId,
-    line: &ast::AnnotationLine,
-    range: TextRange,
-    params: &[Param],
-    diags: &mut Vec<Diagnostic>,
-) -> Option<ConventionAnnotation> {
-    let Some(args) = line.args() else {
-        diags.push(diag(file_id, range, DiagnosticCode::E159));
-        return None;
-    };
+/// The raw clause values one `@[convention(…)]` line's arguments parse to
+/// — [`parse_convention`]'s own arg-parsing loop, factored out to keep
+/// that function under clippy's line budget. `None` from
+/// [`parse_convention_clauses`] means a malformed clause (an unrecognized
+/// key, a wrong-shaped value, or a repeated clause) — `E159`, the same
+/// "malformed annotation" catch-all every other shape here reports.
+struct ConventionClauses {
+    pattern: Option<String>,
+    order: Option<i64>,
+    attach: Option<Name>,
+    block: bool,
+}
 
+fn parse_convention_clauses(args: &ast::AnnotationArgs) -> Option<ConventionClauses> {
     let mut pattern: Option<String> = None;
     let mut order: Option<i64> = None;
+    let mut attach: Option<Name> = None;
     let mut block = false;
     let mut ok = true;
     for arg in args.args() {
@@ -877,6 +896,22 @@ fn parse_convention(
             }
             continue;
         }
+        if key.text() == CONVENTION_ATTACH {
+            // `attach = StructName` is a bare-identifier clause (issue
+            // #2178) — the attached schema names a declared `struct`, not
+            // a quoted string or a bare integer, so this reads
+            // `eq_ident_value`, never `eq_value_text`/`eq_int_value`.
+            match (attach.is_none(), arg.eq_ident_value()) {
+                (true, Some(tok)) => {
+                    attach = Some(Name {
+                        text: tok.text().to_string(),
+                        range: tok.text_range(),
+                    });
+                }
+                _ => ok = false,
+            }
+            continue;
+        }
         let Some(value) = eq_value_text(&arg) else {
             ok = false;
             continue;
@@ -887,10 +922,37 @@ fn parse_convention(
         }
     }
 
-    if !ok {
+    ok.then_some(ConventionClauses {
+        pattern,
+        order,
+        attach,
+        block,
+    })
+}
+
+fn parse_convention(
+    file_id: FileId,
+    line: &ast::AnnotationLine,
+    range: TextRange,
+    params: &[Param],
+    return_type: Option<&TypeExpr>,
+    diags: &mut Vec<Diagnostic>,
+) -> Option<ConventionAnnotation> {
+    let Some(args) = line.args() else {
         diags.push(diag(file_id, range, DiagnosticCode::E159));
         return None;
-    }
+    };
+
+    let Some(ConventionClauses {
+        pattern,
+        order,
+        attach,
+        block,
+    }) = parse_convention_clauses(&args)
+    else {
+        diags.push(diag(file_id, range, DiagnosticCode::E159));
+        return None;
+    };
     let Some(pattern) = pattern else {
         diags.push(diag(file_id, range, DiagnosticCode::E159));
         return None;
@@ -975,11 +1037,31 @@ fn parse_convention(
         return None;
     }
 
+    // `attach = StructName` (issue #2178): the declaration's own resolved
+    // return-type annotation must name the same struct — a shallow,
+    // by-name comparison, the same "declaration surface only, never the
+    // type checker" posture this whole module takes (see
+    // `has_block_content_param`'s own doc). No return type at all, or one
+    // that names something else (`int`, a different struct, a generic, a
+    // fn type), is `E180`: the handler's actual output could never carry
+    // the declared schema.
+    if let Some(attach) = &attach {
+        let matches = matches!(
+            return_type,
+            Some(TypeExpr::Named { name, .. }) if name == &attach.text
+        );
+        if !matches {
+            diags.push(diag(file_id, attach.range, DiagnosticCode::E180));
+            return None;
+        }
+    }
+
     Some(ConventionAnnotation {
         pattern,
         order,
         captures,
         block,
+        attach,
         range,
     })
 }
