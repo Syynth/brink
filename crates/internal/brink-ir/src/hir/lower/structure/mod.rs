@@ -229,6 +229,9 @@ fn lower_source_file(
         // the same reason: ink's grammar has no `@[element(claims = "…")]`
         // channel to claim a line with.
         element_matches: Vec::new(),
+        // Same reason, extended to the harvest obligation (issue #2114):
+        // ink's grammar has no `@NAME` cue channel to harvest.
+        cue_names: Vec::new(),
         // This module *is* the ink frontend — see `HirFile::native`.
         native: false,
         // Same reason, extended to the declaration record (issue #1844):

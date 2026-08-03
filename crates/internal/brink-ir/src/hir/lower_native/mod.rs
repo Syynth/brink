@@ -235,6 +235,12 @@ pub fn lower_with_conventions(
     let mut variables = Vec::new();
     let mut constants = Vec::new();
     let mut lists = Vec::new();
+    // Harvested `@NAME` cue payloads (issue #2114, §5's "harvest by
+    // default" ruling) — see `HirFile::cue_names`'s own doc for why this
+    // whole-tree scan cannot be derived from `elements.matches` alone.
+    // `CUE_NAME` nests inside both the block `CUE` and the fused
+    // `COMPACT_CUE`, so one match arm on the node kind covers both forms.
+    let mut cue_names = Vec::new();
     for node in file.syntax().descendants() {
         match node.kind() {
             N::VAR_DECL => {
@@ -256,6 +262,14 @@ pub fn lower_with_conventions(
                     .and_then(|l| decl::lower_flags_decl(file_id, &l, &mut diags))
                 {
                     lists.push(l);
+                }
+            }
+            N::CUE_NAME => {
+                if let Some(cue_name) = ast::CueName::cast(node.clone()) {
+                    cue_names.push(crate::hir::CueSite {
+                        name: cue_name.text(),
+                        range: node.text_range(),
+                    });
                 }
             }
             _ => {}
@@ -322,6 +336,16 @@ pub fn lower_with_conventions(
             let mut matches = elements.matches;
             matches.sort_by_key(|m| m.line.start());
             matches
+        },
+        // Harvested independent of claim status; sort into source order to
+        // match `element_matches`'s own promise (the whole-tree
+        // `descendants()` walk above already visits in document order, so
+        // this sort is a no-op in practice — cheap insurance, not a
+        // correctness fix).
+        cue_names: {
+            let mut sites = cue_names;
+            sites.sort_by_key(|c| c.range.start());
+            sites
         },
         // This module *is* the native frontend — see `HirFile::native`.
         native: true,

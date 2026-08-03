@@ -4025,14 +4025,56 @@ impl InferPass<'_, '_> {
         // `infer_call` half would let a call site's `#fn(g)` look like the
         // *only* thing that position ever receives.
         self.record_call_arg_fn_origins(def, &target.args);
+        // Issue #2127: a `ref` position binds the target's ref param
+        // exactly like a call does — `record_ref_param_writes` above
+        // already tracks the *write* — but until this fix the argument's
+        // *type* was never compared against the declared param type in
+        // either direction; `arg_tys` was computed above and then
+        // explicitly discarded. Mirrors `infer_call`'s `ref` arm (issue
+        // #1995/#1920: a `ref` parameter both reads and writes through the
+        // caller's own cell, so its argument is checked with
+        // `ref_assignable` — invariant — rather than `assignable`'s
+        // covariant widening).
+        //
+        // By-value positions are deliberately left unchecked here, same
+        // posture PR #2014 took for `infer_fn_literal`'s by-value params:
+        // that is new checking with its own design call, not an assumed
+        // yes (#2127's scope note). `observe` below still runs
+        // unconditionally for every position, ref or not, exactly as
+        // before this fix.
+        let ref_positions = self.ctx.index.symbols.get(&def);
         if let Some(sig) = self.ctx.known_sigs.get(&def) {
             for (i, arg) in target.args.iter().enumerate() {
                 if let Some(param_ty) = sig.params.get(i) {
+                    let is_ref_param = ref_positions
+                        .and_then(|info| info.params.get(i))
+                        .is_some_and(|p| p.is_ref);
+                    let observed = self.arg_is_observed_local(arg);
+                    if is_ref_param
+                        && !param_ty.is_unresolved()
+                        && let Some(arg_ty) = arg_tys.get(i)
+                        && !arg_ty.is_unresolved()
+                        && !ref_assignable(param_ty, arg_ty)
+                        && (!observed || assignable(param_ty, arg_ty))
+                    {
+                        let callee = p
+                            .segments
+                            .iter()
+                            .map(|s| s.text.as_str())
+                            .collect::<Vec<_>>()
+                            .join(".");
+                        self.direct_call_arg_mismatches.push(DirectCallArgMismatch {
+                            range: p.range,
+                            callee,
+                            index: i,
+                            expected: param_ty.clone(),
+                            found: arg_ty.clone(),
+                        });
+                    }
                     self.observe(arg, param_ty);
                 }
             }
         }
-        let _ = arg_tys;
     }
 
     // ── Statements / blocks ─────────────────────────────────────────

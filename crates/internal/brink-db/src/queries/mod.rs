@@ -10,6 +10,9 @@
 //! [`suppressions_query`], and the project-wide [`include_graph_query`].
 //!
 //! Layer 2 (project-wide names): [`symbol_index_query`],
+//! [`harvest_index_query`] (the project-db harvest obligation over cue
+//! payloads and markup span kinds, issue #2114 — a sibling merge over the
+//! same per-file [`lowered_query`] outputs, not a per-file query),
 //! [`resolution_index_query`] (the early-cutoff seam — see below),
 //! [`resolve_query`], [`signature_query`], and [`analysis_query`] — the
 //! latter now a thin assembler (issue #632 / FG-3) over
@@ -83,7 +86,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use brink_analyzer::{AnalysisOptions, CallGraph, InferenceResult, SccGraph, Sig, TypePolicy};
+use brink_analyzer::{
+    AnalysisOptions, CallGraph, HarvestIndex, InferenceResult, SccGraph, Sig, TypePolicy,
+};
 use brink_format::{
     CallAtom, CapabilityParam, DefinitionId, DirectEffects, EffectRowEntry, NameId, StoryData,
 };
@@ -152,6 +157,7 @@ impl Default for BrinkDatabase {
                 // Layer 2.
                 .ingredient::<module_map_query>()
                 .ingredient::<symbol_index_query>()
+                .ingredient::<harvest_index_query>()
                 .ingredient::<resolution_index_query>()
                 .ingredient::<resolve_query>()
                 .ingredient::<signature_query>()
@@ -722,6 +728,36 @@ pub(crate) fn symbol_index_query(
         brink_analyzer::symbol_index_with_modules(&manifest_refs, module_map, dialect, is_native);
     diagnostics.extend(module_diags.clone());
     (index, diagnostics)
+}
+
+/// The project-wide harvest index (issue #2114, `docs/prose-dialect-spec.md`
+/// §5): every `@NAME` cue payload and every inline-markup span kind/
+/// attribute name, harvested from every file's HIR and upgraded by the
+/// registered host manifest's `markup` vocabulary — the compiler-side
+/// sibling of [`symbol_index_query`]. Its dependency set is every file's
+/// [`lowered_query`] output *plus* `project.analysis_options(db).host_manifest`
+/// (read below to build the manifest upgrade) — a manifest edit does
+/// invalidate this memo, unlike a plain per-file prose edit. That still
+/// gives this query the same per-file early cutoff `symbol_index_query`
+/// has for the `lowered_query` half: an edit to file A's prose only
+/// recomputes this merge when file A's own `LoweredFile` output changes,
+/// not on every keystroke project-wide.
+///
+/// Thin wrapper over [`brink_analyzer::harvest`] — see that function's own
+/// doc, and `crate::db::ProjectDb::harvest_index` for the public surface a
+/// completion consumer calls.
+#[salsa::tracked(returns(ref))]
+pub(crate) fn harvest_index_query(
+    db: &dyn salsa::Database,
+    project: ProjectInput,
+) -> Arc<HarvestIndex> {
+    let files = project.files(db);
+    let hir_refs: Vec<(FileId, &HirFile)> = files
+        .iter()
+        .map(|f| (f.file_id(db), &lowered_query(db, *f).hir))
+        .collect();
+    let manifest = project.analysis_options(db).host_manifest.as_ref();
+    Arc::new(brink_analyzer::harvest(&hir_refs, manifest))
 }
 
 /// The early-cutoff projection of the symbol index used by resolution:

@@ -618,6 +618,56 @@ fn gradual_direct_call_arg_mismatch_still_compiles() {
     assert!(result.is_ok(), "{result:?}");
 }
 
+// ── Issue #2127: divert-with-args (`-> knot(args)`) ref-position argument
+// checking — `InferPass::infer_target` computed `arg_tys` and discarded it
+// (`let _ = arg_tys;`), so a `ref` param bound through a divert (rather than
+// a call expression) was never checked in either direction. By-value
+// positions at this site are deliberately left unchecked (#2127's own scope
+// note, same posture #2001 took for `#fn`'s by-value params) ─────────────
+
+#[test]
+fn strict_divert_target_ref_arg_mismatch_blocks_compilation_with_e063() {
+    // `scale`'s declared `ref x` parameter is `float`; the divert
+    // `-> scale(i, 2)` passes a bare `int` `VAR` cell — a genuine,
+    // statically-provable disagreement (the same invariant `ref_assignable`
+    // check the direct-call sibling test above exercises, reached this time
+    // through a divert rather than a call expression). Before this fix
+    // (#2127), this fixture compiled with zero diagnostics.
+    let err = compile_mem(
+        "VAR i = 3\n\
+         === main ===\n-> scale(i, 2)\n\
+         === scale(ref x: float, k: int) ===\n~ x = x * k\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::Strict,
+    )
+    .expect_err(
+        "a divert-with-args int cell must not widen into a declared-float ref parameter must \
+         fail strict compilation",
+    );
+    let diags = diagnostics_of(err);
+    assert_eq!(
+        diags.iter().map(|d| d.code).collect::<Vec<_>>(),
+        vec![DiagnosticCode::E063],
+        "this fixture is deliberately clean of every other strict diagnostic so E063 alone \
+         must be what fails compilation: {diags:?}"
+    );
+}
+
+#[test]
+fn gradual_divert_target_ref_arg_mismatch_still_compiles() {
+    // Same fixture, `types` left at its default (`Gradual`) — this check
+    // stays advisory-only and never blocks compilation, same posture as
+    // every other TM-3 check.
+    let result = compile_mem(
+        "VAR i = 3\n\
+         === main ===\n-> scale(i, 2)\n\
+         === scale(ref x: float, k: int) ===\n~ x = x * k\n-> DONE\n",
+        Dialect::Brink,
+        TypePolicy::default(),
+    );
+    assert!(result.is_ok(), "{result:?}");
+}
+
 // ── Issue #1877: VAR/CONST/temp initializers and assignments were never
 // checked against declared type annotations (the remainder of #1864 that
 // PR #1875's direct-call-argument check left) ──────────────────────────

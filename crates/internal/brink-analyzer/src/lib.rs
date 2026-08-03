@@ -20,6 +20,7 @@ mod dialect_gate;
 mod effects_assertions;
 mod external_check;
 mod fn_values;
+mod harvest;
 mod infer;
 mod manifest;
 mod map_keys;
@@ -76,6 +77,7 @@ pub use external_check::{
     ExternalCheckSeverity, InferredType, ResolvedParam, ResolvedType,
     SemanticTypeDiagnosticSeverity, SymbolMeta, ValueMeta,
 };
+pub use harvest::{CueHarvest, HarvestIndex, HarvestSite, SpanHarvest, harvest};
 pub use infer::{
     BodyTypes, CallGraph, CoalesceError, Def, DirectCallArgMismatch, EffectAtoms, EffectRow,
     FieldAssignMismatch, FnRow, InferenceResult, InferredSig, LambdaAnnotationMismatch, SccGraph,
