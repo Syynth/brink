@@ -3644,9 +3644,13 @@ fn an_injected_block_declared_handler_still_captures_the_following_run() {
     // declaration of `cue` at all). Before #2068 `ExternalClaimHandler`
     // had no `block` field, so `element::collect`'s external branch always
     // set `block: false` for an injected handler regardless of how it was
-    // really declared — this handler would still rewrite the claimed line
-    // into a `cue("VENDOR", ...)` call, but with NO trailing Fragment
-    // argument at all, silently dropping the two lines that follow.
+    // really declared. Traced through `try_claim`: with `block: false`,
+    // `bound_len` covers every declared param including `body`, so the
+    // capture loop looks for a named group called `body` in a pattern that
+    // only ever named `name` — `caps.name("body")` returns `None` and the
+    // whole claim is DECLINED, not rewritten with a missing argument. The
+    // line stayed plain, unclaimed prose and `hir.element_matches` was
+    // empty — that is what the reverted-fix run below actually asserts.
     let src = "flow main() {\n  VENDOR\n  Line one.\n  Line two.\n\n  After the blank line.\n}\n";
     let injected = ExternalConventions::new(vec![ExternalClaimHandler {
         name: Name {
