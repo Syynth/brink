@@ -5750,16 +5750,68 @@ mod tests {
         );
     }
 
+    /// Review finding (BLOCKING) on this issue's own PR: the test above only
+    /// exercises a global `VAR` argument — per the precedent set on the
+    /// sibling direct-call check (`direct_call_ref_param_widening_is_
+    /// rejected_under_strict`'s own doc, and the review finding that
+    /// produced `direct_call_ref_param_widening_through_a_local_is_
+    /// rejected_under_strict`/`..._through_an_ink_temp_...` above), a global
+    /// `VAR` is "the one argument kind the observed-local skip never
+    /// covered" — `arg_is_observed_local` only recognizes a bare
+    /// Param/Temp local, not a `VAR`. Rewriting the new guard as
+    /// `!observed && !ref_assignable(...)` (dropping the `(!observed ||
+    /// assignable(...))` carve-out this fix mirrors from `infer_call`)
+    /// would leave the VAR-only test above green, since a VAR argument is
+    /// never "observed" in the first place. This is the divert-target
+    /// sibling of `direct_call_ref_param_widening_through_an_ink_temp_is_
+    /// rejected_under_strict`: a `~ temp` local (not a global VAR) at the
+    /// `ref` position must still be rejected.
+    #[test]
+    fn divert_target_ref_param_widening_through_an_ink_temp_is_rejected_under_strict() {
+        let parsed = brink_syntax::parse(
+            "=== scale(ref x: float, k: int) ===\n\
+             ~ x = x * k\n-> DONE\n\
+             === main ===\n~ temp i: int = 3\n-> scale(i, 2)\n",
+        );
+        let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
+        let opts = crate::AnalysisOptions {
+            dialect: crate::Dialect::Brink,
+            types: Some(TypePolicy::Strict),
+            ..crate::AnalysisOptions::default()
+        };
+        let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E063 && d.message.contains("argument 1")),
+            "a `~ temp` int cell must not widen into a declared-float ref parameter \
+             at a divert target either: {:?}",
+            result.diagnostics
+        );
+    }
+
     /// The by-value sibling: an exactly-typed `ref float` argument alongside
-    /// an ordinary `int` argument in `k`'s by-value position must stay
+    /// a `float`-declared by-value param `k` fed an `int` literal must stay
     /// clean — #2127 deliberately leaves by-value divert-target argument
     /// checking unimplemented (its own design call, same posture #2001 took
     /// for `infer_fn_literal`), so this proves the `ref`-only check doesn't
     /// spuriously fire on the by-value position either.
+    ///
+    /// Review finding (BLOCKING) on this issue's own PR: the original
+    /// fixture passed the int literal `2` into `k: int` — an exact match
+    /// that stays clean whether by-value positions are unchecked (actual),
+    /// checked covariantly, or checked invariantly, so it could not
+    /// distinguish any of those. `k` is declared `float` here instead
+    /// (still fed the int literal `2`): `assignable(Float, Int)` is `true`
+    /// (the covariant widening direction) but `ref_assignable(Float, Int)`
+    /// is `false`, so this fixture is clean today under the actual
+    /// (by-value-unchecked) behavior and goes red the moment ref
+    /// invariance ever leaks into a by-value slot.
     #[test]
     fn divert_target_by_value_param_is_unaffected_by_ref_invariance() {
         let (hir, index, res) = build(
-            "=== scale(ref x: float, k: int) ===\n\
+            "=== scale(ref x: float, k: float) ===\n\
              ~ x = x * k\n-> DONE\n\
              VAR f: float = 1.0\n\
              === main ===\n-> scale(f, 2)\n",
@@ -5771,7 +5823,7 @@ mod tests {
             !diags
                 .iter()
                 .any(|d| d.code == DiagnosticCode::E063 && d.message.contains("argument")),
-            "a well-typed ref argument plus an exactly-typed by-value argument at a \
+            "a well-typed ref argument plus a covariantly-widened by-value argument at a \
              divert target must stay clean: {diags:?}"
         );
     }
