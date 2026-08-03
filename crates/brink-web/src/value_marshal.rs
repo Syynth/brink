@@ -878,6 +878,15 @@ pub(crate) fn line_to_js(step: brink_runtime::Step) -> LineJs {
     }
 }
 
+/// Wire mirror of [`brink_runtime::Step`]. Named `LineJs` (not `StepJs`)
+/// deliberately, predating #1684's `Line`→`Step` rename: the wire's own
+/// `"type"` discriminant for a content step is the string `"text"` (see
+/// [`line_to_js`]), and `@brink-lang/web`'s `Line` union
+/// (`packages/wasm-types/src/index.ts`) keeps that name too — renaming
+/// this internal struct would create a mismatch with the wire contract's
+/// actual vocabulary, not fix one. `session.rs`'s `StepOutcomeJs::Line`
+/// variant is the same story: its `rename_all = "snake_case"` serializes
+/// to `"line"`, which is the wire's real envelope discriminant.
 #[derive(Serialize)]
 pub(crate) struct LineJs {
     pub(crate) r#type: &'static str,

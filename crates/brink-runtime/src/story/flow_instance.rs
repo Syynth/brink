@@ -720,6 +720,12 @@ impl FlowInstance {
             call_stack: CallStack::new(root_frame),
         }];
         self.flow.pending_choices.clear();
+        // A stashed terminal from before the jump must not be replayed after
+        // it — the host explicitly redirected execution, so the next
+        // `advance`/`step_single_line` call must actually step the VM at the
+        // new target rather than handing back a stale `Done`/`Choices`/`End`
+        // left over from whatever this flow was doing before the jump.
+        self.flow.pending_terminal = None;
         // Transient intra-step flags. Both are false at any point a host can
         // observe (between lines / at a yield), but the jump abandons whatever
         // produced them, so clear defensively.
@@ -1383,6 +1389,11 @@ fn select_choice(
     });
 
     flow.pending_choices.clear();
+    // A stashed terminal predates this choice — the choice moved execution
+    // to a fresh target, so the next step must actually run the VM there
+    // rather than replaying whatever `Done`/`Choices`/`End` was pending
+    // before selection.
+    flow.pending_terminal = None;
     *status = StoryStatus::Active;
     stats.choices_selected += 1;
     // A fresh run begins at the chosen branch (`BlockId`, §3.7/§8d.2).

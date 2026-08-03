@@ -32,8 +32,8 @@ let mut spec = story.speculate();
 let handler = FallbackHandler;
 loop {
     match spec.advance(Budget::default(), &handler)? {
-        SpeculationStep::Line(line) if line.is_terminal() => break,
-        SpeculationStep::Line(_) => {}          // a produced line; keep going
+        SpeculationStep::Step(step) if step.is_terminal() => break,
+        SpeculationStep::Step(_) => {}          // a produced line; keep going
         SpeculationStep::AwaitingExternal => {
             // A deferred external — resolve it and advance again.
             spec.resolve_external(Value::Null);
@@ -44,7 +44,7 @@ loop {
 # }
 ```
 
-`advance` returns a `SpeculationStep` — either a `Line` (including a terminal
+`advance` returns a `SpeculationStep` — either a `Step` (including a terminal
 `Done`/`Choices`/`End`) or `AwaitingExternal`, the same pause-and-resume shape
 the [external functions](./external-functions.md) chapter describes. `go_to_path`,
 `choose`, and `eval_function` mirror their `Story`/`FlowInstance` counterparts,

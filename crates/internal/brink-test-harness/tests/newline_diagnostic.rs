@@ -1112,10 +1112,11 @@ fn runtime_intercept_step23_glue_not_dropped() {
     // that has leading text now costs one extra `continue_single` call
     // compared to the old fused `Line` model (the text arrives first, as
     // its own `Step::Line`, before the bare `Choices`), so this no longer
-    // pins an exact call count to reach the target line; it drives well
-    // past it (bounded so a real regression — e.g. an infinite loop —
-    // still fails loudly) and checks the glued text showed up anywhere
-    // along the way.
+    // pins an exact call count to reach the target line. It still pins a
+    // sharp assertion, though: rather than scanning the whole run for
+    // "sipping" anywhere, it finds the specific `Step::Line` that opens
+    // with `"Awkward," I reply` and asserts *that* line — not some other
+    // line — carries the glued text.
     let data = compile_intercept();
     let (program, line_tables) = brink_runtime::link(&data).expect("link failed");
     let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(
@@ -1124,14 +1125,14 @@ fn runtime_intercept_step23_glue_not_dropped() {
     );
 
     // Run e0 path (always pick choice 0).
-    let mut saw_sipping = false;
+    let mut awkward_reply_line: Option<String> = None;
     for i in 0..64 {
         match story.continue_single() {
             Ok(brink_runtime::Step::Line(line)) => {
-                if line.text.contains("sipping") {
-                    saw_sipping = true;
-                }
                 println!("step {i}: Text {:?}", line.text);
+                if line.text.contains("\"Awkward,\" I reply") {
+                    awkward_reply_line = Some(line.text);
+                }
             }
             Ok(brink_runtime::Step::Done) => {
                 println!("step {i}: Done");
@@ -1148,17 +1149,27 @@ fn runtime_intercept_step23_glue_not_dropped() {
             }
             _ => break,
         }
+        if awkward_reply_line.is_some() {
+            break;
+        }
     }
 
     // The "Agree" reply should read:
     //   "Awkward," I reply, sipping at my tea as though we were old friends.
     // NOT just:
     //   "Awkward," I reply
+    let awkward_reply_line = awkward_reply_line.unwrap_or_else(|| {
+        panic!(
+            "TheIntercept: expected the '\"Awkward,\" I reply' line \
+             somewhere along the e0 path but never saw it."
+        )
+    });
     assert!(
-        saw_sipping,
-        "TheIntercept: expected glued conditional text 'sipping...' \
-         somewhere along the e0 path. The Agree choice body's goto likely \
-         targets the wrong gather container.",
+        awkward_reply_line.contains("sipping"),
+        "TheIntercept: expected the '\"Awkward,\" I reply' line to include \
+         glued conditional text 'sipping...', got: {awkward_reply_line:?}. \
+         The Agree choice body's goto likely targets the wrong gather \
+         container.",
     );
 }
 

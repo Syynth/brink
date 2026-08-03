@@ -19,17 +19,17 @@ the same verbs — the session records as it goes:
 
 ```rust
 # extern crate brink_runtime;
-# use brink_runtime::{Line, RuntimeError, Story, StorySession};
+# use brink_runtime::{Step, RuntimeError, Story, StorySession};
 # fn demo(story: Story) -> Result<(), RuntimeError> {
 let mut session = StorySession::new(story, Some(42));
 
 loop {
     match session.continue_single()? {
-        Line::Choices { choices, .. } => {
+        Step::Choices(choices) => {
             session.choose(choices[0].index)?;   // journaled
         }
-        Line::End { .. } => break,
-        _ => {}                                  // Text / Done — keep going
+        Step::End => break,
+        _ => {}                                  // Line / Done — keep going
     }
 }
 # Ok(())

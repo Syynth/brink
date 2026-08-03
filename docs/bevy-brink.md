@@ -79,18 +79,16 @@ targeting the flow's entity, so consumers can either register a global
 observer via `app.add_observer(...)` or a per-entity observer via
 `world.entity_mut(flow).observe(...)`:
 
-- `BrinkLineDelivered<M>` — a `Line::Text` with text + tags
-- `BrinkChoicesPresented<M>` — choices + leading text
-- `BrinkTurnDone<M>` — `Line::Done` reached, carries any text accumulated
-  this turn
-- `BrinkStoryEnded<M>` — `Line::End` reached, carries any text accumulated
-  this turn
+- `BrinkLineDelivered<M>` — a `Step::Line` with text + tags
+- `BrinkChoicesPresented<M>` — `Step::Choices`; `text`/`tags` always empty
+- `BrinkTurnDone<M>` — `Step::Done` reached; `text`/`tags` always empty
+- `BrinkStoryEnded<M>` — `Step::End` reached; `text`/`tags` always empty
 
-Important: terminal variants (`Done`, `Choices`, `End`) carry their
-own accumulated text — they don't emit a separate preceding
-`BrinkLineDelivered` for that text. UIs that just want "everything that
-happened this turn" should append the terminal event's `text` field too,
-not only the per-line events.
+Important: terminal variants (`Done`, `Choices`, `End`) carry no payload
+of their own (`docs/prose-dialect-spec.md` §7, RULED) — their `text`/`tags`
+fields are always empty. Any trailing content already arrived as its own
+preceding `BrinkLineDelivered` event, so UIs that want "everything that
+happened this turn" only need to accumulate the per-line events.
 
 ### Init pass
 
@@ -331,12 +329,16 @@ poorly with `Trigger<'a>: Default`) was wrong. Diagnosed 2026-04-28:
   `flow.rs`) confirms `commands.trigger` from a system fires observers
   reliably with the generic `BrinkLineDelivered<()>`.
 - The flow tests were failing for two unrelated reasons:
-  1. **Test expectations didn't match the runtime API.** Terminal `Line`
-     variants (`Done`, `Choices`, `End`) carry their accumulated text in
-     their *own* `text` field — they don't emit a separate preceding
-     `Line::Text`. The test that fed the runtime `"goodbye\n-> END\n"`
-     and expected a `BrinkLineDelivered("goodbye")` event was wrong;
-     the runtime delivers it as `BrinkStoryEnded { text: "goodbye\n" }`.
+  1. **Test expectations didn't match the runtime API.** At the time,
+     terminal `Line` variants (`Done`, `Choices`, `End`) carried their
+     accumulated text in their *own* `text` field — they didn't emit a
+     separate preceding `Line::Text`. The test that fed the runtime
+     `"goodbye\n-> END\n"` and expected a `BrinkLineDelivered("goodbye")`
+     event was wrong; the runtime delivered it as
+     `BrinkStoryEnded { text: "goodbye\n" }`. (Superseded: terminals now
+     carry no payload — `docs/prose-dialect-spec.md` §7, RULED — so
+     `"goodbye\n"` today arrives as its own `BrinkLineDelivered` and
+     `BrinkStoryEnded.text` is always empty.)
   2. **`FlowStart::Root` does not auto-enter named knots.** A test that
      placed all content under `=== start ===` and used the default
      `FlowStart::Root` produced an empty `Done` and never reached the

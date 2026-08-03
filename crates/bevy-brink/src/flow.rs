@@ -18,8 +18,8 @@ use crate::event::{BrinkChoicesPresented, BrinkLineDelivered, BrinkStoryEnded, B
 /// Result of advancing a flow one step via [`BrinkFlow::step_one`].
 #[derive(Debug, Clone)]
 pub enum Advance {
-    /// A line was produced (and its observer event fired).
-    Line(Step),
+    /// A step was produced (and its observer event fired).
+    Step(Step),
     /// The flow paused on a world-access query binding (`bind_brink_query`),
     /// which can't be resolved from a non-exclusive system. The plugin's
     /// resolver (gated on
@@ -134,14 +134,14 @@ impl<M: Send + Sync + 'static> BrinkFlow<M> {
         {
             StepOutcome::Step(step) => {
                 emit_event::<M>(&step, entity, commands);
-                Ok(Advance::Line(step))
+                Ok(Advance::Step(step))
             }
             StepOutcome::AwaitingExternal => Ok(Advance::AwaitingQuery),
         }
     }
 
-    /// Step the VM until reaching a terminal line ([`Line::Done`],
-    /// [`Line::Choices`], or [`Line::End`]), queuing observer events
+    /// Step the VM until reaching a terminal step ([`Step::Done`],
+    /// [`Step::Choices`], or [`Step::End`]), queuing observer events
     /// for every line produced along the way.
     ///
     /// Delegates to the shared Layer-2 [`FlowInstance::drive`] op (F6.2):
@@ -206,7 +206,7 @@ impl<M: Send + Sync + 'static> BrinkFlow<M> {
         {
             StepOutcome::Step(step) => {
                 emit_event::<M>(&step, entity, commands);
-                Ok(Advance::Line(step))
+                Ok(Advance::Step(step))
             }
             StepOutcome::AwaitingExternal => Ok(Advance::AwaitingQuery),
         }
@@ -270,7 +270,7 @@ fn emit_drive_outcome<M: Send + Sync + 'static>(
                 emit_event::<M>(&line, entity, commands);
                 last = line;
             }
-            Ok(Advance::Line(last))
+            Ok(Advance::Step(last))
         }
         DriveOutcome::AwaitingExternal(lines) => {
             for line in &lines {

@@ -54,7 +54,11 @@ impl<M: Send + Sync + 'static> BrinkLineDelivered<M> {
 #[derive(EntityEvent)]
 pub struct BrinkChoicesPresented<M: Send + Sync + 'static = ()> {
     pub entity: Entity,
+    /// Always empty — terminals carry no payload of their own
+    /// (`docs/prose-dialect-spec.md` §7, RULED). Any trailing content
+    /// already arrived as its own preceding [`BrinkLineDelivered`] event.
     pub text: String,
+    /// Always empty; see [`Self::text`].
     pub tags: Vec<String>,
     pub choices: Vec<Choice>,
     _marker: PhantomData<fn() -> M>,
@@ -83,7 +87,11 @@ impl<M: Send + Sync + 'static> BrinkChoicesPresented<M> {
 #[derive(EntityEvent)]
 pub struct BrinkTurnDone<M: Send + Sync + 'static = ()> {
     pub entity: Entity,
+    /// Always empty — terminals carry no payload of their own
+    /// (`docs/prose-dialect-spec.md` §7, RULED). Any trailing content
+    /// already arrived as its own preceding [`BrinkLineDelivered`] event.
     pub text: String,
+    /// Always empty; see [`Self::text`].
     pub tags: Vec<String>,
     _marker: PhantomData<fn() -> M>,
 }
@@ -104,7 +112,11 @@ impl<M: Send + Sync + 'static> BrinkTurnDone<M> {
 #[derive(EntityEvent)]
 pub struct BrinkStoryEnded<M: Send + Sync + 'static = ()> {
     pub entity: Entity,
+    /// Always empty — terminals carry no payload of their own
+    /// (`docs/prose-dialect-spec.md` §7, RULED). Any trailing content
+    /// already arrived as its own preceding [`BrinkLineDelivered`] event.
     pub text: String,
+    /// Always empty; see [`Self::text`].
     pub tags: Vec<String>,
     _marker: PhantomData<fn() -> M>,
 }

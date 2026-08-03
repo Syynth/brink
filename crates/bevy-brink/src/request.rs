@@ -555,7 +555,7 @@ mod tests {
     /// already arrived as its own preceding `Step::Line`/`BrinkLineDelivered`
     /// event, which is why [`drive_entity`] accumulates across every event
     /// a drive fires rather than reading the single terminal
-    /// `Advance::Line`'s own (now-empty) text. Relies on
+    /// `Advance::Step`'s own (now-empty) text. Relies on
     /// `SystemState::apply` (or an equivalent `Commands` flush) having run
     /// before this is read — see `drive_entity`'s own use.
     #[derive(bevy_ecs::resource::Resource, Default)]
@@ -853,7 +853,7 @@ mod tests {
     /// event, so this accumulates text via the `BrinkLineDelivered` observer
     /// [`install_text_accumulator`] registers (callers must have called it
     /// on `app`, e.g. via [`app_with_save_policy`]) rather than reading it
-    /// off the terminal `Advance::Line` alone.
+    /// off the terminal `Advance::Step` alone.
     fn drive_entity(app: &mut App, entity: Entity) -> (String, Step) {
         let mut state: FlowQuery = SystemState::new(app.world_mut());
         let (mut flows, mut globals, programs, tables, mut commands) =
@@ -874,7 +874,7 @@ mod tests {
             .expect("advance");
         state.apply(app.world_mut());
         let step = match advance {
-            Advance::Line(step) => step,
+            Advance::Step(step) => step,
             // None of the F6.3 tests use externals, so a pause here can
             // only be a bug in the test setup.
             Advance::AwaitingQuery => unreachable!("unexpected pending external in F6.3 tests"),

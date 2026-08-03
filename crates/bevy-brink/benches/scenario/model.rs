@@ -330,7 +330,7 @@ fn step_active_flows(
             &mut commands,
         );
         match advanced {
-            Ok(Advance::Line(Step::Choices(_))) => {
+            Ok(Advance::Step(Step::Choices(_))) => {
                 if flow.choose(&mut view, 0).is_ok() {
                     counters.turns_completed += 1;
                 } else {

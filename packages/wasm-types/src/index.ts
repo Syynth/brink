@@ -116,9 +116,11 @@ export type LineType =
   | "end"
   /**
    * A flow parked at an `await` (`docs/flow-suspension-spec.md` §10.1).
-   * Like `"done"`, a park is a turn boundary — text accumulated before it
-   * flushes with the line. Drive the flow again via `continueFlow`/
-   * `wakeCheck` when the host wants output; a park never auto-continues.
+   * Like `"done"`, a park is a turn boundary. Terminals carry no payload
+   * of their own (`docs/prose-dialect-spec.md` §7, RULED) — any trailing
+   * text already arrived as its own preceding `"text"` line. Drive the
+   * flow again via `continueFlow`/`wakeCheck` when the host wants output;
+   * a park never auto-continues.
    *
    * **Runtime-unreachable until FS-3r.** No `Line` the runtime produces
    * today carries this type (the E052 fence keeps `await` from lowering).
@@ -131,6 +133,10 @@ export interface Line {
   type: LineType;
   text: string;
   tags: string[];
+  /** The run of adjacent content this line belongs to
+   * (`brink_runtime::BlockId`). Present only for `"text"`; terminals
+   * carry no line payload, so no block id. */
+  block_id?: number;
   choices?: Choice[];
   /** External name, present only on an `awaiting_external` line. */
   name?: string;
@@ -204,6 +210,11 @@ export interface SessionLine {
   type: "text" | "done" | "choices" | "end" | "suspended";
   text: string;
   tags: string[];
+  /** The run of adjacent content this line belongs to
+   * (`brink_runtime::BlockId`). Present only for `"text"`; terminals
+   * carry no payload of their own (`docs/prose-dialect-spec.md` §7,
+   * RULED), so `text`/`tags` are always empty and `block_id` is absent. */
+  block_id?: number;
   choices?: Choice[];
 }
 

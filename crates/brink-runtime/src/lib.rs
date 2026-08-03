@@ -6,28 +6,21 @@
 //! ```no_run
 //! # fn example(story_data: &brink_format::StoryData) -> Result<(), brink_runtime::RuntimeError> {
 //! use std::sync::Arc;
-//! use brink_runtime::Line;
+//! use brink_runtime::Step;
 //!
 //! let (program, line_tables) = brink_runtime::link(story_data)?;
 //! let mut story: brink_runtime::Story = brink_runtime::Story::new(Arc::new(program), line_tables);
 //! loop {
 //!     match story.continue_single()? {
-//!         Line::Text { text, .. } => print!("{text}"),
-//!         Line::Done { text, .. } => print!("{text}"),
-//!         Line::Choices { text, choices, .. } => {
-//!             print!("{text}");
+//!         Step::Line(line) => print!("{}", line.text),
+//!         Step::Done => {}
+//!         Step::Choices(choices) => {
 //!             let _ = choices;
 //!             // pick a choice...
 //!             story.choose(0)?;
 //!         }
-//!         Line::End { text, .. } => {
-//!             print!("{text}");
-//!             break;
-//!         }
-//!         Line::Suspended { text, .. } => {
-//!             print!("{text}");
-//!             break;
-//!         }
+//!         Step::End => break,
+//!         Step::Suspended => break,
 //!     }
 //! }
 //! # Ok(())

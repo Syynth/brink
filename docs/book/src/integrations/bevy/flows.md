@@ -81,7 +81,7 @@ the entity, and `Commands`. They return `Advance`:
 
 | `Advance` | Meaning |
 |-----------|---------|
-| `Line(Line)` | a line was produced and its observer event fired |
+| `Step(Step)` | a step was produced and its observer event fired |
 | `AwaitingQuery` | the flow paused on a world-access binding; the plugin resolver handles it — skip this flow and resume next frame |
 
 ```rust,ignore
@@ -99,14 +99,14 @@ building one from `BrinkBindings`.
 
 ### From an exclusive system — `advance_flow`
 
-`advance_flow::<M>(&mut World, entity) -> Result<Line, BrinkCallError>` is the
+`advance_flow::<M>(&mut World, entity) -> Result<Step, BrinkCallError>` is the
 counterpart for `&mut World` contexts. It resolves world-access query bindings
 *inline* (so a line like `Enemies near: {enemy_count()}.` works in one frame)
 and never yields `AwaitingQuery`. See [External Functions](./bindings.md).
 
 ## Choices
 
-A `Line::Choices` (or a `BrinkChoicesPresented` event) means the flow is waiting
+A `Step::Choices` (or a `BrinkChoicesPresented` event) means the flow is waiting
 for a pick. Select with `choose`:
 
 ```rust,ignore
@@ -122,16 +122,16 @@ For keyboard UIs, `digit_key_to_choice_index(&keys, choices.len())` maps
 
 ## Observer events
 
-`step_one`/`advance_until_terminal` fire one `EntityEvent` per produced line,
+`step_one`/`advance_until_terminal` fire one `EntityEvent` per produced step,
 targeted at the flow entity, so observers react to exactly the situation they
-care about (no `match` on a `Line`):
+care about (no `match` on a `Step`):
 
 | Event | Fires for | Carries |
 |-------|-----------|---------|
-| `BrinkLineDelivered<M>` | `Line::Text` (mid-stream) | `text`, `tags` |
-| `BrinkChoicesPresented<M>` | `Line::Choices` | `text`, `tags`, `choices: Vec<Choice>` |
-| `BrinkTurnDone<M>` | `Line::Done` (turn complete, `-> DONE`) | `text`, `tags` |
-| `BrinkStoryEnded<M>` | `Line::End` (`-> END`) | `text`, `tags` |
+| `BrinkLineDelivered<M>` | `Step::Line` (mid-stream) | `text`, `tags` |
+| `BrinkChoicesPresented<M>` | `Step::Choices` | `text`, `tags` (always empty), `choices: Vec<Choice>` |
+| `BrinkTurnDone<M>` | `Step::Done` (turn complete, `-> DONE`) | `text`, `tags` (always empty) |
+| `BrinkStoryEnded<M>` | `Step::End` (`-> END`) | `text`, `tags` (always empty) |
 | `BrinkFlowReset<M>` (dev) | a hot-reload is about to rebuild the flow | `entity` |
 
 ```rust,ignore
