@@ -23,9 +23,8 @@
 //! #2068) — exactly what [`super::element::collect`] already produces
 //! for a *local* handler (issue #1838). [`ExternalConventions`] is the
 //! join's OUTPUT: an already-ordered, already-joined list, because this
-//! crate (`brink-ir`)
-//! has no project identity to perform the join itself — single-file
-//! lowering never has a `SymbolIndex` to resolve a `DefinitionId` against
+//! crate (`brink-ir`) has no project identity to perform the join itself
+//! — single-file lowering never has a `SymbolIndex` to resolve a `DefinitionId` against
 //! (`element.rs`'s own module doc makes the same point about the
 //! confinement check). The join itself — attaching a `DefinitionId` to
 //! each declared handler and ordering the result against a
@@ -58,7 +57,8 @@ use crate::Name;
 /// project-identity boundary into another file's lowering (issue #1863).
 ///
 /// Carries everything [`super::element::try_claim`]-equivalent matching
-/// needs — pattern, parameter order, display name, annotation range —
+/// needs — pattern, parameter order, display name, annotation range,
+/// block-capture flag (issue #2068, see [`Self::block`]'s own doc) —
 /// deliberately *without* a `DefinitionId`: this crate has no project
 /// identity to compute one against (see the module doc). The id is the
 /// join key one layer up, in whatever produced this value.
