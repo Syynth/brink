@@ -422,14 +422,17 @@ fn radio(chan: string, text: content) {
   Interior lines lower through the ordinary `body::lower_items` dispatch
   loop, so a handler that would claim one of them still claims it — no
   special case, and each interior line still reaches its own line-table
-  entry (`tests/tier1-native/annotations-element-block/`). Not carried
-  across the cross-file conventions-module injection join (issue #1863):
-  an injected `ClaimHandler` is always treated as non-`block`, so a
-  handler declared `block` in the project's conventions module dispatches
-  its non-block capture params when injected into another file but never
-  its block capture there — a real, tracked gap
-  (`hir::lower_native::element::ClaimHandler::block`'s own doc), not a
-  silent one.
+  entry (`tests/tier1-native/annotations-element-block/`). Carried across
+  the cross-file conventions-module injection join (issue #1863) since
+  issue #2068: `ClaimHandlerDecl`, `ClaimHandlerCandidate`, and
+  `ExternalClaimHandler` each thread a `block: bool` through the three
+  join hops (`Elements::handler_decls()` →
+  `conventions_registry::candidate_claim_handlers` →
+  `conventions_registry::join_conventions_registry` →
+  `element::collect`'s external branch), so an injected handler declared
+  `block` in the project's conventions module still captures its block
+  receiver when dispatched from another file
+  (`hir::lower_native::element::ClaimHandler::block`'s own doc).
 - **`@[style]` — declared editor presentation (RULED, addenda 3–4).**
   A companion annotation mapping captures (and `line` = the whole
   line; `dispatch` = the `!name` prefix) to style values, drawn from
