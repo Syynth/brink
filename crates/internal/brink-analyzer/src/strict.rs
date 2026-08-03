@@ -1807,21 +1807,28 @@ struct TempDecl {
 /// `E066` that does fire. That shadowing collision, not the harmlessness
 /// of a dead entry on the unshadowed case, is the load-bearing reason not
 /// to descend. Pinned by
-/// `native_lambda_local_temp_ascription_is_invisible_to_enclosing_escape_check`
-/// (the unshadowed case, showing an unascribed and an ascribed
-/// lambda-local temp producing the identical empty diagnostic set) and
 /// `native_shadowed_lambda_local_temp_does_not_exempt_enclosing_temp`
 /// (the shadowed case, proving the enclosing temp still `E065`-escapes
-/// despite the lambda-local ascription), both below. If a future change
-/// ever gives a lambda its own strict-checked frame (its own `BodyTypes`,
-/// run through `check_def` in its own right rather than folded into the
-/// enclosing def's), that frame's own `collect_temps` call over the
-/// lambda's own body would populate the lambda's own frame-local map,
-/// never merged into the enclosing def's `body_types.locals` —
-/// sidestepping the shadowing collision above entirely. Flattening a
-/// lambda's temps into the enclosing def's map, the way a naive
-/// `Expr::Lambda` arm added directly to *this* walker would, is exactly
-/// the hazard to avoid.
+/// despite the lambda-local ascription), below.
+///
+/// Issue #1770 has since given a lambda its own strict-checked frame —
+/// but not by descending here. `InferPass::infer_lambda` records a
+/// lambda's own params/body-declared temps into a wholly separate,
+/// cumulative vector (`BodyTypes::lambda_escapes`,
+/// [`crate::infer::LambdaEscapeSlot`]), re-emitted by `check_def` under
+/// the enclosing def's own label — never merged into, and never read
+/// back out of, `body_types.locals`. So the shadowing collision this doc
+/// describes is still exactly as live a hazard for *this* function as it
+/// ever was: a naive `Expr::Lambda` arm added directly to `collect_temps`
+/// would still overwrite an enclosing shadowed name's `TempDecl` with the
+/// lambda-local one. #1770 sidesteps the whole question rather than
+/// answering it — don't read the existence of `lambda_escapes` as license
+/// to add that arm here; the two mechanisms solve different problems
+/// (this fn's one consumer keys off *bare name*, which is exactly what
+/// breaks under shadowing, while `lambda_escapes` never keys off name at
+/// all). See `native_lambda_local_temp_ascription_now_reaches_its_own_
+/// escape_check`, below, for the now-visible unshadowed case this doc
+/// used to pin here before #1770 gave it a home of its own.
 ///
 /// See `docs/effects-spec.md` §4.1 (issue #1762) for the general
 /// frame-scoped-vs-cumulative `InferPass` field rule this is the mirror
@@ -2522,6 +2529,60 @@ mod tests {
         );
         assert_eq!(diags[0].code, DiagnosticCode::E066);
         assert!(diags[0].message.contains("lambda temp `t`"), "{diags:?}");
+    }
+
+    /// Review finding on #1770: a param name the lambda's own body
+    /// re-binds (`|t: int| { let t = 1; t = "oops"; t }`) must be reported
+    /// as the *rebound local's* own escape, never misattributed to the
+    /// annotated parameter of the same spelling. Before this fix, the
+    /// params governance loop read `self.locals["t"]` — by then the
+    /// rebound local's accumulated type, `Conflicted` here, not the
+    /// param's — straight into a `LambdaEscapeSlot` labeled
+    /// `"lambda parameter `t`"`, blaming the annotated param for a
+    /// contradiction entirely internal to the fresh local that shadows it,
+    /// while the body-declared-temps loop silently skipped the name
+    /// entirely (see `LambdaEscapeSlot::annotated`'s doc and
+    /// `InferPass::infer_lambda`'s two governance-loop comments). The
+    /// temps loop now owns this name instead, so the only lambda-frame
+    /// row is a `"lambda temp `t`"` one and no `"lambda parameter `t`"`
+    /// row appears. The enclosing `let g = …` temp also escapes as
+    /// Conflicted in its own right — `g`'s inferred `fn(Conflicted):
+    /// Conflicted` type recursively classifies as Conflicted too
+    /// (`classify`'s own `Ty::Fn` arm, the same shape
+    /// `native_nested_lambda_inside_lambda_gets_its_own_escape_frame_too`
+    /// exercises for Unknown) — a real, independent escape, not a
+    /// duplicate.
+    #[test]
+    fn native_lambda_rebound_param_escape_is_attributed_to_the_temp_not_the_param() {
+        let diags = native_strict_diags(
+            "fn f(n: int): int {\n  let g = |t: int| {\n    let t = 1;\n    t = \"oops\";\n    t\n  };\n  return n;\n}\n",
+        );
+        assert_eq!(
+            diags.len(),
+            2,
+            "the rebound local `t`'s own int/string contradiction escapes \
+             at its own lambda-frame slot, and `g`'s own inferred \
+             fn(Conflicted): Conflicted type recursively escapes too: \
+             {diags:?}"
+        );
+        assert!(diags.iter().all(|d| d.code == DiagnosticCode::E066));
+        assert!(
+            diags.iter().any(|d| d.message.contains("lambda temp `t`")),
+            "must be attributed to the rebound local, not the annotated \
+             parameter of the same name: {diags:?}"
+        );
+        assert!(
+            diags.iter().any(|d| d.message.contains("temp `g`")),
+            "{diags:?}"
+        );
+        assert!(
+            diags
+                .iter()
+                .all(|d| !d.message.contains("lambda parameter `t`")),
+            "the annotated parameter `t` must never be blamed for a \
+             contradiction entirely internal to the local that shadows it: \
+             {diags:?}"
+        );
     }
 
     /// Issue #1770's own doc on [`crate::infer::LambdaEscapeSlot`]: a lambda

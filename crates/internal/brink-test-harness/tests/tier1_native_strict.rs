@@ -152,6 +152,14 @@ fn corpus_dir() -> PathBuf {
 /// inference, so `Unknown` is the specified outcome — the fixture is
 /// written in gradual style and would need annotations to be strict-clean.
 ///
+/// Issue #1770 (this file's own per-lambda escape-check frame) adds a
+/// third row here, for the identical reason: `ufcs_through_capture`'s own
+/// lambda parameter `k` (`|k| items.len() + k`) now also escapes as
+/// `Unknown` — `items.len()`'s result types `Unknown` (this group's own
+/// gap), so `k` is never pinned either. Not a new defect, the same one
+/// reaching a slot #1910 could not previously make visible (a lambda had
+/// no strict-checked frame of its own to escape from).
+///
 /// **Group C — pure verb-layer results and lambda-bound locals
 /// (`lambda-verbs`, `fn-value-bare-name`), issue #1910 — FIXED.**
 /// `InferPass::infer_lambda` used to rebuild a lambda's own `Ty::Fn(params,
@@ -189,6 +197,18 @@ fn corpus_dir() -> PathBuf {
 ///   escapes, exactly the pre-#1910 shape: see Group G below (issue #1924,
 ///   discovered while implementing #1910).
 ///
+/// Issue #1770 (this file's own per-lambda escape-check frame) adds four
+/// more rows here, all the identical §2 call-site-driven-inference-is-
+/// forbidden shape as `scaled`'s own `factor` above and `bump`/`heal`'s in
+/// Group B: `total` and `chained`'s outer `fold` callback
+/// (`|acc, x| acc + x`) never pins either param from its own body, so
+/// `total`/`chained`'s lambda parameters `acc` and `x` both escape as
+/// `Unknown`; `scaled`'s own callback (`|x| x * factor`, `factor` itself
+/// already unconstrained) is the identical shape one param over, so
+/// `scaled`'s own lambda parameter `x` escapes too. None of the four is a
+/// new defect — a lambda simply had no strict-checked frame of its own to
+/// escape from before this issue.
+///
 /// **Group D — string concatenation (`for-k-v`), issue #1911, FIXED.**
 /// `keys + ":" + total` used to mark the `int` local `total` as
 /// `Conflicted` (`E066`), because `+` was unified as a same-type operator
@@ -219,6 +239,14 @@ fn corpus_dir() -> PathBuf {
 /// callback's own `acc + x` places no constraint on either param, so the
 /// accumulator now falls back to the seed `0`'s `int` instead of the
 /// callback's own `Unknown` return).
+///
+/// Issue #1770 (this file's own per-lambda escape-check frame) adds two
+/// rows here: `mixed`'s own `|acc, x| acc + x` callback now gets its own
+/// strict-checked frame, surfacing `mixed`'s lambda parameters `acc` and
+/// `x` as `Unknown` escapes — the identical §2 shape as `add`/`apply`'s
+/// own parameters just above (and `bump`/`heal`'s in Group B): the
+/// callback's own body never pins either param, so `Unknown` is the
+/// specified outcome, not a new defect.
 ///
 /// **Group G — a captured struct field read inside a lambda types as the
 /// struct, not the field (`lambda-verbs`' `field_through_capture`), tracked
@@ -262,6 +290,15 @@ fn corpus_dir() -> PathBuf {
 /// still (incorrectly) types as `Ty::Struct("Point")` at the `infer_path`
 /// level; only the lambda-signature overlay refuses to trust it. #1924
 /// remains open for the real fix (a static field-type table).
+///
+/// Issue #1770 (this file's own per-lambda escape-check frame) gives that
+/// same lambda its own strict-checked frame for its *parameter* too,
+/// surfacing a third row against the identical root cause:
+/// `field_through_capture`'s own lambda parameter `k` (`|k| p.x + k`) is
+/// forced to `Unknown` by the same `dotted_field_read_tainted` guard —
+/// `BASELINE` already records two other rows against this exact def for
+/// the identical gap; this is a third slot it now reaches, not a new
+/// defect. #1924 remains open for the real fix.
 const BASELINE: &[(&str, &str, &str)] = &[
     // Group A
     (
@@ -351,14 +388,53 @@ const BASELINE: &[(&str, &str, &str)] = &[
         "`g` is called as a function value but its type escapes strict inference as Unknown \
          — annotate (`fn(T…): R`) or restructure",
     ),
+    // Issue #1770 — `mixed`'s own `|acc, x| acc + x` callback now gets its
+    // own strict-checked frame (see the module doc's Group F addendum).
+    (
+        "fn-value-bare-name",
+        "E065",
+        "`mixed`'s lambda parameter `acc` escapes strict inference as Unknown \
+         — annotate or restructure",
+    ),
+    (
+        "fn-value-bare-name",
+        "E065",
+        "`mixed`'s lambda parameter `x` escapes strict inference as Unknown \
+         — annotate or restructure",
+    ),
     // Group D (for-k-v) — issue #1911, FIXED: string+int/string+float
     // display-concat no longer marks `total` Conflicted, so `for-k-v`
     // produces no strict findings at all and has no rows here.
+    // Issue #1770 — `chained`'s outer `fold` callback (`|acc, x| acc + x`)
+    // now gets its own strict-checked frame, the same §2 shape as `total`'s
+    // below and `scaled`'s `factor` further down (see the module doc's
+    // Group C addendum).
+    (
+        "lambda-verbs",
+        "E065",
+        "`chained`'s lambda parameter `acc` escapes strict inference as Unknown \
+         — annotate or restructure",
+    ),
+    (
+        "lambda-verbs",
+        "E065",
+        "`chained`'s lambda parameter `x` escapes strict inference as Unknown \
+         — annotate or restructure",
+    ),
     // Group G (lambda-verbs) — `field_through_capture`: the #1924 dotted-
     // field-read gap, back to its pre-#1910 shape (two honest E065 Unknown
     // escapes) now that `infer_lambda`'s overlay refuses to trust a walk
     // that hit the mistyped read, rather than the misleading single E063
-    // this PR's first commit produced (see the module doc's Group G).
+    // this PR's first commit produced (see the module doc's Group G). Issue
+    // #1770 adds a third slot against the identical root cause: the
+    // lambda's own parameter `k` now also escapes (see the module doc's
+    // Group G addendum).
+    (
+        "lambda-verbs",
+        "E065",
+        "`field_through_capture`'s lambda parameter `k` escapes strict inference as Unknown \
+         — annotate or restructure",
+    ),
     (
         "lambda-verbs",
         "E065",
@@ -373,7 +449,15 @@ const BASELINE: &[(&str, &str, &str)] = &[
     ),
     // Group C residual (lambda-verbs) — `scaled`: call-site-driven inference
     // is forbidden by §2, so `factor` (and so the return) stays Unknown; not
-    // fixed by #1910, same reasoning as Group B's `bump`/`heal`.
+    // fixed by #1910, same reasoning as Group B's `bump`/`heal`. Issue
+    // #1770 adds `scaled`'s own lambda parameter `x` (`|x| x * factor`) for
+    // the identical reason (see the module doc's Group C addendum).
+    (
+        "lambda-verbs",
+        "E065",
+        "`scaled`'s lambda parameter `x` escapes strict inference as Unknown \
+         — annotate or restructure",
+    ),
     (
         "lambda-verbs",
         "E065",
@@ -385,8 +469,31 @@ const BASELINE: &[(&str, &str, &str)] = &[
         "E065",
         "`scaled`'s return type escapes strict inference as Unknown — annotate or restructure",
     ),
+    // Issue #1770 — `total`'s outer `fold` callback (`|acc, x| acc + x`)
+    // now gets its own strict-checked frame, the same §2 shape as
+    // `chained`'s above (see the module doc's Group C addendum).
+    (
+        "lambda-verbs",
+        "E065",
+        "`total`'s lambda parameter `acc` escapes strict inference as Unknown \
+         — annotate or restructure",
+    ),
+    (
+        "lambda-verbs",
+        "E065",
+        "`total`'s lambda parameter `x` escapes strict inference as Unknown \
+         — annotate or restructure",
+    ),
     // Group B residual (lambda-verbs) — `ufcs_through_capture`: blocked on
-    // #1909 (the UFCS-desugar result-type gap), not #1910.
+    // #1909 (the UFCS-desugar result-type gap), not #1910. Issue #1770 adds
+    // the lambda's own parameter `k` for the identical reason (see the
+    // module doc's Group B addendum).
+    (
+        "lambda-verbs",
+        "E065",
+        "`ufcs_through_capture`'s lambda parameter `k` escapes strict inference as Unknown \
+         — annotate or restructure",
+    ),
     (
         "lambda-verbs",
         "E065",

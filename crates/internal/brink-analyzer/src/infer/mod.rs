@@ -362,6 +362,17 @@ pub struct LambdaEscapeSlot {
     /// nothing left for a separate exemption to do there — this field only
     /// ever does real work for a body-declared temp, which carries no such
     /// overlay.
+    ///
+    /// That holds only for a param whose name the lambda's own body never
+    /// re-binds. A name the body *does* re-bind (`|t: int| { let t = 1;
+    /// t = "oops"; t }`) never reaches a param slot at all — review finding
+    /// on #1770: the governance overlay's rebound-name branch reads `ty`
+    /// straight from `self.locals[name]`, i.e. the shadowing local's own
+    /// accumulated type, not the annotated param's, so `infer_lambda`
+    /// excludes that name from this loop entirely and reports it only as a
+    /// `` "lambda temp" `` slot instead (built from the same body-declared-
+    /// temps loop every ordinary temp goes through) — the escape belongs to
+    /// the fresh local, not the parameter of the same spelling.
     pub annotated: bool,
     /// The slot's own label, ready to hand straight to `emit_escape` — e.g.
     /// `` "lambda parameter `x`" `` / `` "lambda temp `t`" `` — prefixed so

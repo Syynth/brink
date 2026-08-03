@@ -2584,7 +2584,7 @@ impl InferPass<'_, '_> {
     /// id is now minted at HIR time rather than in LIR (issue #1727,
     /// `hir::LambdaExpr::container_id`), it still doesn't exist yet at the
     /// point this function runs. Until the SCC-joining half of that gap
-    /// closes (#1770), an honest "unknown" is the only sound row a lambda
+    /// closes (#2152), an honest "unknown" is the only sound row a lambda
     /// can carry — which is precisely the coordination issue #1685 flagged.
     ///
     /// Composing a real row here would be **necessary but not sufficient**
@@ -2841,18 +2841,21 @@ impl InferPass<'_, '_> {
                 // Issue #1770: this lambda's own body-declared temps'
                 // escape-check slots — read back from `self.locals` for the
                 // exact same reason `narrowed` just above is: one line later,
-                // `restore_frame` wipes every name this walk touched. Skips
-                // any name in `body_bound_names` that is *also* a param name
-                // (a re-bound param, `|t: int| { let t = "a"; t }`) — the
-                // same carve-out the `params` governance loop below already
-                // applies for the identical reason (`self.locals[name]` holds
-                // the fresh local's type there, not the param's, and
-                // `check_def`'s own top-level temps loop skips a param-shadowing
-                // name the same way).
+                // `restore_frame` wipes every name this walk touched.
+                //
+                // A name in `body_bound_names` that is *also* a param name
+                // (a re-bound param, `|t: int| { let t = "a"; t }`) is
+                // deliberately **not** skipped here (review finding on
+                // #1770): `self.locals[name]` holds the fresh local's own
+                // accumulated type, not the param's, so the escape genuinely
+                // belongs to the temp, not the parameter. The `params`
+                // governance loop below owns the opposite carve-out — it
+                // skips pushing a slot for exactly this name — so the two
+                // loops never both report the same rebound name, and this
+                // one reports it under the accurate `` "lambda temp" ``
+                // label rather than misattributing it to the annotated
+                // parameter of the same spelling.
                 for (name, (range, annotation)) in &body_bound_decls {
-                    if param_names.contains(name) {
-                        continue;
-                    }
                     let ty = self.locals.get(name).cloned().unwrap_or(Ty::Unknown);
                     let annotated = annotation
                         .as_ref()
@@ -3060,7 +3063,19 @@ impl InferPass<'_, '_> {
         // raw body-derived `inferred` value, which genuinely can still be
         // `Unknown`/`Conflicted` — exactly the escape this issue exists to
         // surface.
+        //
+        // Skips a name the body itself re-binds (`body_bound_names`,
+        // `|t: int| { let t = "a"; t }`) — review finding on #1770: the
+        // governance loop above reads that case's `ty` straight from
+        // `self.locals[name]`, which by then holds the *rebound local's*
+        // accumulated type, not the param's, so a slot pushed here would
+        // blame the annotated parameter for the fresh local's own
+        // contradiction. The body-declared-temps loop above owns this name
+        // instead, under the accurate `` "lambda temp" `` label.
         for (p, ty) in l.params.iter().zip(&params) {
+            if body_bound_names.contains(&p.name.text) {
+                continue;
+            }
             self.lambda_escapes.push(LambdaEscapeSlot {
                 range: p.name.range,
                 ty: ty.clone(),
@@ -3096,7 +3111,7 @@ impl InferPass<'_, '_> {
         // pass runs *after* analysis, so there is still no id at inference
         // time to *name* as a creation target — and even once stamped, a
         // lambda literal has no index symbol / `DefKey` for the SCC solve
-        // to key a row against (#1770's keyspace gap, not this one). `FnRow`
+        // to key a row against (#2152's keyspace gap, not this one). `FnRow`
         // keys the shipped `DefinitionId → row` table (§7), so an honest
         // "unknown" is the only sound row a lambda can carry until that
         // closes.
