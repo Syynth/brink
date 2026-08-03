@@ -1318,6 +1318,19 @@ pub fn effects_project(
 /// edge on `brink-db`'s `solve_scc_query` side — the same coarse,
 /// range-free, `Eq`-cutoff shape `inline_docs_query` already gives every
 /// other reader.
+///
+/// **Does not itself return an `EXTERNAL`'s signature (issue #1921).**
+/// `batch` never contains an `EXTERNAL` — [`inferable_defs_from_index`]
+/// filters the index to `SymbolKind::Knot | SymbolKind::Stitch` only — so
+/// the returned `signatures` map (filtered to `batch`'s own members, see
+/// below) never carries one, even though `known_sigs` is seeded with every
+/// external's signature above. `brink-db`'s `type_inference_query`
+/// re-merges [`collect_external_sigs`]'s seed into its own aggregated
+/// `InferenceResult::signatures` once, after collecting every SCC's own
+/// members' signatures from this function — not per-SCC here — so an
+/// external's signature is exposed exactly once regardless of how many
+/// SCCs a project has, instead of every `solve_scc_query` memo duplicating
+/// the whole external-signature map.
 #[must_use]
 #[expect(
     clippy::too_many_arguments,

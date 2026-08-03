@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 #[cfg(debug_assertions)]
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -820,6 +821,10 @@ pub(crate) fn line_to_js(step: brink_runtime::Step) -> LineJs {
             text: line.text,
             tags: line.tags,
             block_id: Some(line.block_id.0),
+            element: Some(ElementJs {
+                kind: line.element.kind,
+                data: line.element.data,
+            }),
             choices: None,
             name: None,
         },
@@ -834,6 +839,7 @@ pub(crate) fn line_to_js(step: brink_runtime::Step) -> LineJs {
             text: String::new(),
             tags: Vec::new(),
             block_id: None,
+            element: None,
             choices: Some(
                 choices
                     .into_iter()
@@ -851,6 +857,7 @@ pub(crate) fn line_to_js(step: brink_runtime::Step) -> LineJs {
             text: String::new(),
             tags: Vec::new(),
             block_id: None,
+            element: None,
             choices: None,
             name: None,
         },
@@ -859,6 +866,7 @@ pub(crate) fn line_to_js(step: brink_runtime::Step) -> LineJs {
             text: String::new(),
             tags: Vec::new(),
             block_id: None,
+            element: None,
             choices: None,
             name: None,
         },
@@ -872,6 +880,7 @@ pub(crate) fn line_to_js(step: brink_runtime::Step) -> LineJs {
             text: String::new(),
             tags: Vec::new(),
             block_id: None,
+            element: None,
             choices: None,
             name: None,
         },
@@ -897,11 +906,24 @@ pub(crate) struct LineJs {
     /// terminals carry no line payload, so no block id.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) block_id: Option<u64>,
+    /// This line's classification (`brink_runtime::Element`, issue #1683)
+    /// — `Some` only for `"text"`, mirroring `block_id` above. Today every
+    /// line reports the degenerate `{kind: "narrative", data: {}}` case —
+    /// see `brink_runtime::Element`'s doc for what's not yet wired.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) element: Option<ElementJs>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) choices: Option<Vec<ChoiceJs>>,
     /// External name for the `awaiting_external` variant; omitted otherwise.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) name: Option<String>,
+}
+
+/// Wire mirror of [`brink_runtime::Element`].
+#[derive(Serialize)]
+pub(crate) struct ElementJs {
+    pub(crate) kind: String,
+    pub(crate) data: BTreeMap<String, String>,
 }
 
 #[derive(Serialize)]

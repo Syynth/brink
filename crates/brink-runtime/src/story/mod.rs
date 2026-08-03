@@ -33,7 +33,7 @@ pub(crate) use call_stack::{
 };
 pub use external::{ExternalFnHandler, ExternalResult, FallbackHandler, FunctionEval};
 pub use flow_instance::{DriveOutcome, FlowInstance};
-pub use types::{BlockId, Choice, OutputLine, Stats, Step, StepOutcome, StoryStatus};
+pub use types::{BlockId, Choice, Element, OutputLine, Stats, Step, StepOutcome, StoryStatus};
 
 // ── Story ───────────────────────────────────────────────────────────────────
 
