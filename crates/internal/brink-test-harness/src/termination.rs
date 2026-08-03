@@ -79,3 +79,112 @@ pub(crate) fn classify_done<R: StoryRng>(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::push_terminal;
+    use crate::episode::{StepOutcome, StepRecord};
+
+    /// The common case: a `Step::Line` (recorded as an open
+    /// `StepOutcome::Continue` step) precedes the terminal this same turn —
+    /// `push_terminal` must stamp the terminal's classification onto that
+    /// *same* record (preserving its text/tags) rather than pushing a
+    /// second, empty one. A naive pass-through (this function's shape
+    /// before #1684 — `steps.push(StepRecord::new(text, tags, outcome,
+    /// writes))` with fused text/tags parameters that no longer exist)
+    /// would instead leave two records — this is exactly the drift the
+    /// oracle ratchet is sensitive to.
+    #[test]
+    fn stamps_onto_the_open_continue_step_from_this_turn() {
+        let mut steps = vec![StepRecord::new(
+            "Hello.\n".to_string(),
+            vec!["tag".to_string()],
+            StepOutcome::Continue,
+            Vec::new(),
+        )];
+
+        push_terminal(&mut steps, StepOutcome::Done, Vec::new());
+
+        assert_eq!(
+            steps.len(),
+            1,
+            "must fold onto the existing step, not add one"
+        );
+        assert_eq!(
+            steps[0].text, "Hello.\n",
+            "the open step's text must survive the fold"
+        );
+        assert_eq!(steps[0].tags, vec!["tag".to_string()]);
+        assert_eq!(steps[0].outcome, StepOutcome::Done);
+    }
+
+    /// A terminal arriving with nothing open this turn (either the very
+    /// first event of the episode, or immediately after a previous turn's
+    /// terminal already closed the last record) must synthesize a fresh
+    /// empty step rather than overwrite the previous turn's classification.
+    #[test]
+    fn synthesizes_an_empty_step_when_nothing_precedes_it_in_the_turn() {
+        let mut steps = vec![StepRecord::new(
+            String::new(),
+            Vec::new(),
+            StepOutcome::Done,
+            Vec::new(),
+        )];
+
+        push_terminal(&mut steps, StepOutcome::Ended, Vec::new());
+
+        assert_eq!(
+            steps.len(),
+            2,
+            "the prior turn's Done record must be left alone, not overwritten"
+        );
+        assert_eq!(steps[0].outcome, StepOutcome::Done, "prior turn untouched");
+        assert_eq!(steps[1].text, "");
+        assert!(steps[1].tags.is_empty());
+        assert_eq!(steps[1].outcome, StepOutcome::Ended);
+    }
+
+    /// Same synthesize case, from a totally empty episode (no steps at
+    /// all yet) — an immediate terminal with zero preceding content.
+    #[test]
+    fn synthesizes_an_empty_step_for_an_empty_episode() {
+        let mut steps = Vec::new();
+
+        push_terminal(&mut steps, StepOutcome::Ended, Vec::new());
+
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].text, "");
+        assert_eq!(steps[0].outcome, StepOutcome::Ended);
+    }
+
+    /// Writes observed during the terminal transition (e.g. an
+    /// `increment_turn_index` fired by the yield opcode) must be preserved
+    /// alongside whatever writes the open step already recorded — the fold
+    /// extends, it doesn't replace.
+    #[test]
+    fn extends_writes_rather_than_replacing_them() {
+        use crate::episode::StateWrite;
+
+        let mut steps = vec![StepRecord::new(
+            "Hi.\n".to_string(),
+            Vec::new(),
+            StepOutcome::Continue,
+            vec![StateWrite::SetRngSeed { new_seed: 1 }],
+        )];
+
+        push_terminal(
+            &mut steps,
+            StepOutcome::Done,
+            vec![StateWrite::IncrementTurnIndex { new_value: 1 }],
+        );
+
+        assert_eq!(steps.len(), 1);
+        assert_eq!(
+            steps[0].writes,
+            vec![
+                StateWrite::SetRngSeed { new_seed: 1 },
+                StateWrite::IncrementTurnIndex { new_value: 1 },
+            ]
+        );
+    }
+}
