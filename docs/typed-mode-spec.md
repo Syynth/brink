@@ -361,9 +361,11 @@ STRUCT Point = #{                          // decl body MIRRORS the literal:
   this issue, checked only for missing/extra/mistyped fields at
   *construction* (the bullets above); a later plain assignment to a field
   reached zero type checking. Single-level only (`p.x = v`): a **chained**
-  write (`p.a.b = v`, 3+ segments) or a **mixed** index/field write
-  (`arr[i].x = v`) is unsupported at any RHS type and is rejected outright
-  with the non-suppressible `E074`, never a type-mismatch diagnostic.
+  write (`p.a.b = v`, 3+ segments), a **mixed** index/field write
+  (`arr[i].x = v`), or an index write whose index chain's own root is a
+  struct-field projection (`p.field[i] = v`, `push(p.field[i], v)`, issue
+  #2121) is unsupported at any RHS type and is rejected outright with the
+  non-suppressible `E074`, never a type-mismatch diagnostic.
 
 ## 7. What strict mode checks in plain-ink content — RULED
 
