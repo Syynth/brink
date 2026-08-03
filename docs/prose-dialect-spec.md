@@ -190,14 +190,32 @@ consumes the module, only the value.
   engine code; nobody hand-writes it either way.
 - The cast roster and PC identity live in the same module (`cast`,
   `pc`) — the "natural early tenant" arrives with the house.
-- Design pass owed (⏳, spec §9.1): the `std::conventions` types
-  shaped for extension ergonomics; the `fn conventions()` well-known-
-  name entry (mirroring `flow main()`); the portable-regex subset
-  validated at marshal with module-pointing errors; the editor
-  re-evaluation loop (**RULED 2026-08-01**: projection cached on the
-  conventions module's import closure; classification per keystroke against
-  it — comptime is never per-keystroke); sequencing (native construction literals ride
-  the #1103 build; the module may be brink-dialect until then). The
+- ✅ **The §9.1 design pass is CLOSED — nothing on it is owed.** This bullet
+  previously listed five open items; every one has since been settled, and
+  leaving the list up caused the maintainer to be asked to re-design already-
+  ruled work more than once. Retired 2026-08-02 with each item's disposition:
+  - **`std::conventions` types** — **DISSOLVED** by the 2026-07-31 §9.1 ruling,
+    in its own words: collapsing the two surfaces "removes the column, the
+    chain-rule engine, the `Conventions` type, and §9.1's 'types shaped for
+    extension ergonomics' — that last item stops being a data-structure design
+    problem and becomes `use` plus a registration call." There is no type to
+    design.
+  - **The `fn conventions()` well-known-name entry** — **RULED** by §9.1 item 5:
+    the well-known name survives and the module *registers handlers in order*
+    (statement order is resolution order); the returned `Conventions` type does
+    not survive.
+  - **The portable-regex subset** — **RULED** (decision-log, dialect-declaration
+    entry): "portable-regex core (JS ∩ Rust subset, CI-enforced) with affix
+    sugar compiling to it." What remains is marshal-time *validation* with
+    module-pointing errors — implementation, not design.
+  - **The editor re-evaluation loop** — **RULED 2026-08-02**: the projection is
+    cached on the conventions module's import closure; classification runs per
+    keystroke against it; comptime is never per-keystroke.
+  - **Sequencing** (native construction literals ride the #1103 build; the
+    module may be brink-dialect until then) — a sequencing note, never a design
+    question.
+
+  The
   `brink.toml` pointer itself (§3.4's `elements = "conventions.brink"`
   — corrected here from a stale `conventions = …` spelling that never
   matched §3.4) is **no longer owed for parsing**: `brink-project-
@@ -1385,9 +1403,13 @@ grace.
 
 ## 9. Open threads ⏳ (the resumption points)
 
-1. **The `std::conventions` types** design pass (the later-stage
-   module-authoring surface, §3.5) — the last substantial prose-round
-   design item.
+1. ✅ ~~**The `std::conventions` types** design pass~~ — **RESOLVED, not
+   owed.** Dissolved by the 2026-07-31 §9.1 ruling (the extension-ergonomics
+   problem "becomes `use` plus a registration call"), and the rest of §3.5's
+   companion list is settled too — see §3.5's retired-2026-08-02 bullet for
+   each item's disposition. This entry described it as "the last substantial
+   prose-round design item"; that was already false when written and it caused
+   repeated requests to re-design ruled work.
 2. **Translation, round 2** — ~~element data in XLIFF~~ (**closed by
    ruling, not by delivery** — decision-log 2026-07-26: v1 XLIFF export
    carries content and markup spans only; element kind and data are
