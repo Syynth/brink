@@ -17,7 +17,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use brink_analyzer::AnalysisOptions;
+use brink_analyzer::{AnalysisOptions, Dialect};
 use brink_db::ProjectDb;
 use brink_ir::DiagnosticCode;
 
@@ -25,6 +25,20 @@ fn opts_with_elements(pointer: &str) -> AnalysisOptions {
     AnalysisOptions {
         elements: Some(pointer.to_owned()),
         ..AnalysisOptions::default()
+    }
+}
+
+/// [`opts_with_elements`], plus `dialect: Brink` — every effects-assertion
+/// check (`effects_assertions_diagnostics_query` and its siblings) gates on
+/// `AnalysisOptions.dialect == Brink` regardless of the file's own native
+/// `.brink` syntax (`docs/effects-spec.md` §10's "Callers only run this
+/// under `dialect = brink`" posture, mirrored by `t2_2_effects_assertions.
+/// rs`'s `analyze_native` helper) — `opts_with_elements` alone (as the
+/// `E175`-only tests above use it) never triggers `E103`.
+fn opts_with_elements_and_brink_dialect(pointer: &str) -> AnalysisOptions {
+    AnalysisOptions {
+        dialect: Dialect::Brink,
+        ..opts_with_elements(pointer)
     }
 }
 
@@ -262,4 +276,60 @@ fn an_illegal_register_call_fails_story_data_with_e175() {
     let product = db.story_data().expect("entry is set").clone();
     assert!(product.story.is_none(), "expected compilation to fail");
     assert_eq!(codes(&product.errors), vec![DiagnosticCode::E175]);
+}
+
+// ─── Issue #1840 Q4 — the effect-row gap this pass closes ──────────────
+//
+// Before this fix, `register` had no arm in `brink_analyzer::infer::
+// intrinsics`, so it was, in practice, a row-exempt intrinsic (an empty
+// row) — the exact shape the Q4 ruling rejected in favor of the RNG-cell
+// precedent. `register` now writes `DefinitionId::CONVENTIONS_REGISTRY_
+// CELL`, unconditionally, on every call.
+
+/// The ruled example's original (superseded) spelling —
+/// `@[effects(pure)] fn conventions() { register(...) }` — now genuinely
+/// fails its own `E103` fence, exactly as the Q4 ruling's analysis found,
+/// instead of compiling clean the way it did before this pass.
+#[test]
+fn a_pure_conventions_fn_now_exceeds_on_the_registry_write() {
+    let mut db = ProjectDb::new();
+    db.set_analysis_options(opts_with_elements_and_brink_dialect("conventions.brink"));
+    db.set_file(
+        "conventions.brink",
+        "fn scene(place: string) {\n  return place;\n}\n\
+         @[effects(pure)]\nfn conventions() {\n  register(scene);\n}\n\
+         flow main() {\n  hi\n}\n"
+            .to_owned(),
+    );
+    let diags = db.analysis().diagnostics.clone();
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == DiagnosticCode::E103 && d.message.contains("conventions_registry")),
+        "{diags:?}"
+    );
+    // The legal-placement check (E175) is a separate, unaffected pass — the
+    // call sits inside `fn conventions()` in the configured module either
+    // way.
+    assert!(
+        diags.iter().all(|d| d.code != DiagnosticCode::E175),
+        "{diags:?}"
+    );
+}
+
+/// The Q4-corrected spelling: declaring the write (rather than claiming
+/// purity) satisfies the assertion — no `E103`.
+#[test]
+fn declaring_the_registry_write_satisfies_the_effects_assertion() {
+    let mut db = ProjectDb::new();
+    db.set_analysis_options(opts_with_elements_and_brink_dialect("conventions.brink"));
+    db.set_file(
+        "conventions.brink",
+        "fn scene(place: string) {\n  return place;\n}\n\
+         @[effects(writes(conventions_registry))]\nfn conventions() {\n  register(scene);\n}\n\
+         flow main() {\n  hi\n}\n"
+            .to_owned(),
+    );
+    let diags = db.analysis().diagnostics.clone();
+    assert!(diags.is_empty(), "{diags:?}");
 }
