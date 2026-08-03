@@ -35,7 +35,7 @@ use std::sync::Arc;
 
 use brink_compiler::{AnalysisOptions, Dialect, TypePolicy};
 use brink_ir::DiagnosticCode;
-use brink_runtime::{DotNetRng, Line, Story};
+use brink_runtime::{DotNetRng, Step, Story};
 
 fn compile_brink(
     source: &str,
@@ -88,12 +88,9 @@ fn run(source: &str) -> String {
     let mut out = String::new();
     loop {
         match story.continue_single().expect("no runtime fault") {
-            Line::Text { text, .. } => out.push_str(&text),
-            Line::Done { text, .. } | Line::End { text, .. } | Line::Suspended { text, .. } => {
-                out.push_str(&text);
-                break;
-            }
-            Line::Choices { .. } => panic!("these programs are choice-free"),
+            Step::Line(line) => out.push_str(&line.text),
+            Step::Done | Step::End | Step::Suspended => break,
+            Step::Choices(_) => panic!("these programs are choice-free"),
         }
     }
     out
@@ -107,7 +104,7 @@ fn run_expecting_fault(source: &str) -> String {
     let mut story = Story::<DotNetRng>::new(Arc::new(program), line_tables);
     loop {
         match story.continue_single() {
-            Ok(Line::Text { .. }) => {}
+            Ok(Step::Line(_)) => {}
             Ok(other) => panic!("expected a runtime fault, story finished: {other:?}"),
             Err(e) => return e.to_string(),
         }

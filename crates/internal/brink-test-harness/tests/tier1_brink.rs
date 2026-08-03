@@ -16,7 +16,7 @@
 use std::path::{Path, PathBuf};
 
 use brink_compiler::{AnalysisOptions, Dialect};
-use brink_runtime::{DotNetRng, Line, Story};
+use brink_runtime::{DotNetRng, Step, Story};
 
 fn corpus_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -48,12 +48,11 @@ fn run_case(dir: &Path) -> String {
     let mut hit_choices = false;
     loop {
         match story.continue_single().expect(&step_msg) {
-            Line::Text { text, .. } => out.push_str(&text),
-            Line::Done { text, .. } | Line::End { text, .. } | Line::Suspended { text, .. } => {
-                out.push_str(&text);
+            Step::Line(line) => out.push_str(&line.text),
+            Step::Done | Step::End | Step::Suspended => {
                 break;
             }
-            Line::Choices { .. } => {
+            Step::Choices(_) => {
                 hit_choices = true;
                 break;
             }
@@ -570,7 +569,7 @@ fn run_expecting_fault_gradual(source: &str) -> Option<brink_runtime::RuntimeErr
     let mut story = Story::<DotNetRng>::new(program, tables);
     for _ in 0..64 {
         match story.continue_single() {
-            Ok(Line::Done { .. } | Line::End { .. } | Line::Suspended { .. }) => return None,
+            Ok(Step::Done | Step::End | Step::Suspended) => return None,
             Ok(_) => {}
             Err(e) => return Some(e),
         }
@@ -584,7 +583,7 @@ fn run_to_error_gradual(source: &str) -> brink_runtime::RuntimeError {
     let mut story = Story::<DotNetRng>::new(program, tables);
     loop {
         match story.continue_single() {
-            Ok(Line::Text { .. }) => {}
+            Ok(Step::Line(_)) => {}
             Ok(other) => panic!("expected a runtime fault, story completed with {other:?}"),
             Err(e) => return e,
         }
@@ -1003,7 +1002,7 @@ fn run_to_error(source: &str) -> brink_runtime::RuntimeError {
     let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
     loop {
         match story.continue_single() {
-            Ok(Line::Text { .. }) => {}
+            Ok(Step::Line(_)) => {}
             Ok(other) => panic!("expected a runtime fault, story completed with {other:?}"),
             Err(e) => return e,
         }
@@ -1115,12 +1114,11 @@ fn keys_on_an_array_is_identity_pass_through_not_a_fault() {
     let mut out = String::new();
     loop {
         match story.continue_single().expect("no fault expected") {
-            Line::Text { text, .. } => out.push_str(&text),
-            Line::Done { text, .. } | Line::End { text, .. } | Line::Suspended { text, .. } => {
-                out.push_str(&text);
+            Step::Line(line) => out.push_str(&line.text),
+            Step::Done | Step::End | Step::Suspended => {
                 break;
             }
-            Line::Choices { .. } => panic!("unexpected choices"),
+            Step::Choices(_) => panic!("unexpected choices"),
         }
     }
     assert_eq!(out.trim(), "7 8 9");
@@ -1336,12 +1334,12 @@ fn int_of_negative_float_truncates_toward_zero_not_floor() {
             .expect("compile");
     let (program, line_tables) = brink_runtime::link(&output.data).expect("link");
     let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
-    match story.continue_single().expect("no fault expected") {
-        Line::Done { text, .. } | Line::End { text, .. } | Line::Suspended { text, .. } => {
-            assert_eq!(text.trim(), "-2");
-        }
-        other => panic!("expected terminal line, got {other:?}"),
-    }
+    // Terminals carry no text now (§7) — the content may arrive as its own
+    // `Step::Line` before the bare terminal, rather than fused with it as it
+    // was under the old `Line` API. Drain to the terminal and check the
+    // accumulated text either way.
+    let text = run_to_end(&mut story);
+    assert_eq!(text.trim(), "-2");
 }
 
 #[test]
@@ -1410,12 +1408,11 @@ fn string_of_a_divert_target_never_faults() {
     let mut out = String::new();
     loop {
         match story.continue_single().expect("string() must never fault") {
-            Line::Text { text, .. } => out.push_str(&text),
-            Line::Done { text, .. } | Line::End { text, .. } | Line::Suspended { text, .. } => {
-                out.push_str(&text);
+            Step::Line(line) => out.push_str(&line.text),
+            Step::Done | Step::End | Step::Suspended => {
                 break;
             }
-            Line::Choices { .. } => panic!("unexpected choices"),
+            Step::Choices(_) => panic!("unexpected choices"),
         }
     }
     // Proves the conversion actually ran (not a vacuous pass on zero
@@ -1716,7 +1713,7 @@ fn run_expecting_fault(source: &str) -> Option<brink_runtime::RuntimeError> {
     let mut story = Story::<DotNetRng>::new(program, tables);
     for _ in 0..64 {
         match story.continue_single() {
-            Ok(Line::Done { .. } | Line::End { .. } | Line::Suspended { .. }) => return None,
+            Ok(Step::Done | Step::End | Step::Suspended) => return None,
             Ok(_) => {}
             Err(e) => return Some(e),
         }
@@ -1976,19 +1973,16 @@ fn compile_and_link(
     (std::sync::Arc::new(program), tables)
 }
 
-/// Drain a story to its terminal line, concatenating text.
+/// Drain a story to its terminal step, concatenating text. Terminals carry
+/// no text of their own — any trailing content already arrived as its own
+/// preceding `Step::Line`, which is why this doesn't need a separate arm
+/// pushing text for the terminal case.
 fn run_to_end(story: &mut Story<DotNetRng>) -> String {
     let mut out = String::new();
     loop {
         match story.continue_single().expect("runtime error") {
-            Line::Text { text, .. } => out.push_str(&text),
-            Line::Done { text, .. }
-            | Line::End { text, .. }
-            | Line::Choices { text, .. }
-            | Line::Suspended { text, .. } => {
-                out.push_str(&text);
-                break;
-            }
+            Step::Line(line) => out.push_str(&line.text),
+            Step::Done | Step::End | Step::Choices(_) | Step::Suspended => break,
         }
     }
     out
@@ -2102,7 +2096,7 @@ Result {r}.
     let mut err = None;
     for _ in 0..8 {
         match s2.continue_single() {
-            Ok(Line::Done { .. } | Line::End { .. } | Line::Suspended { .. }) => break,
+            Ok(Step::Done | Step::End | Step::Suspended) => break,
             Ok(_) => {}
             Err(e) => {
                 err = Some(e);

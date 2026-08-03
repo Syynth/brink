@@ -195,7 +195,7 @@ fn error_empty_locale_tag() {
 
 #[test]
 fn end_to_end_localize_and_run() {
-    use brink_runtime::{DotNetRng, Line, LocaleMode, Story};
+    use brink_runtime::{DotNetRng, LocaleMode, Step, Story};
 
     let inkb = make_base_inkb();
     let data = make_base_data();
@@ -238,7 +238,7 @@ fn end_to_end_localize_and_run() {
     // Run the story and verify the localized text appears
     let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
     let lines = story.continue_maximally().unwrap();
-    let text: String = lines.iter().map(Line::text).collect();
+    let text: String = lines.iter().map(Step::text).collect();
     assert!(
         text.contains("[ES]"),
         "expected localized text containing '[ES]', got: {text}"

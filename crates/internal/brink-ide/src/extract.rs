@@ -686,13 +686,15 @@ mod tests {
             line_tables,
         );
         let mut texts = Vec::new();
-        for line in story.continue_maximally().expect("run") {
-            let text = match line {
-                brink_runtime::Line::Text { text, .. }
-                | brink_runtime::Line::Done { text, .. }
-                | brink_runtime::Line::End { text, .. }
-                | brink_runtime::Line::Choices { text, .. }
-                | brink_runtime::Line::Suspended { text, .. } => text,
+        for step in story.continue_maximally().expect("run") {
+            // Terminals carry no text of their own (§7) — any trailing
+            // content already arrived as its own preceding `Step::Line`.
+            let text = match step {
+                brink_runtime::Step::Line(line) => line.text,
+                brink_runtime::Step::Done
+                | brink_runtime::Step::End
+                | brink_runtime::Step::Choices(_)
+                | brink_runtime::Step::Suspended => String::new(),
             };
             if !text.is_empty() {
                 texts.push(text);

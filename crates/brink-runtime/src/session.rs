@@ -55,7 +55,7 @@ use crate::error::RuntimeError;
 use crate::rng::{FastRng, StoryRng};
 use crate::story::Story;
 use crate::story::{
-    ExternalFnHandler, ExternalResult, FallbackHandler, Line, StepOutcome, StoryStatus,
+    ExternalFnHandler, ExternalResult, FallbackHandler, Step, StepOutcome, StoryStatus,
 };
 
 /// Current [`SessionJournal`] format version.
@@ -716,7 +716,7 @@ impl<R: StoryRng> StorySession<R> {
     }
 
     /// Advance until one line of content or a yield point, journaling externals.
-    pub fn continue_single(&mut self) -> Result<Line, RuntimeError> {
+    pub fn continue_single(&mut self) -> Result<Step, RuntimeError> {
         self.ensure_started();
         let mut sink: Vec<(String, Vec<Value>, Value)> = Vec::new();
         let outcome = {
@@ -735,7 +735,7 @@ impl<R: StoryRng> StorySession<R> {
 
     /// Advance to the next pause, journaling externals. The last line is always
     /// terminal (`Done` / `Choices` / `End`).
-    pub fn continue_to_pause(&mut self) -> Result<Vec<Line>, RuntimeError> {
+    pub fn continue_to_pause(&mut self) -> Result<Vec<Step>, RuntimeError> {
         self.ensure_started();
         let mut sink: Vec<(String, Vec<Value>, Value)> = Vec::new();
         let outcome = {
@@ -1050,12 +1050,12 @@ impl<R: StoryRng> StorySession<R> {
             }
             steps += 1;
             match self.advance_with(handler) {
-                Ok(StepOutcome::Line(line)) if line.is_terminal() => {
+                Ok(StepOutcome::Step(step)) if step.is_terminal() => {
                     return ReplayOutcome::Replayed {
                         warnings: Vec::new(),
                     };
                 }
-                Ok(StepOutcome::Line(_)) => {}
+                Ok(StepOutcome::Step(_)) => {}
                 Ok(StepOutcome::AwaitingExternal) => {
                     let name = self
                         .story
@@ -1327,8 +1327,8 @@ impl<R: StoryRng> StorySession<R> {
                 }
             };
             match outcome {
-                Ok(StepOutcome::Line(line)) => {
-                    if line.is_terminal() {
+                Ok(StepOutcome::Step(step)) => {
+                    if step.is_terminal() {
                         return Ok(());
                     }
                 }

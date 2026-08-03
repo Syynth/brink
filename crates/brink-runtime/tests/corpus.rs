@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use brink_runtime::{DotNetRng, Line, Story};
+use brink_runtime::{DotNetRng, Step, Story};
 
 /// Format text with per-line tags inserted after each tagged line.
 ///
@@ -66,21 +66,13 @@ fn run_story_from_ink(ink_path: &Path, inputs: &[usize]) -> Result<String, Strin
             .continue_single()
             .map_err(|e| format!("runtime error: {e}"))?
         {
-            Line::Text { text, tags } => {
-                format_text_with_tags(&text, &[tags], &mut output);
+            Step::Line(line) => {
+                format_text_with_tags(&line.text, &[line.tags], &mut output);
             }
-            Line::Done { text, tags }
-            | Line::End { text, tags }
-            | Line::Suspended { text, tags } => {
-                format_text_with_tags(&text, &[tags], &mut output);
+            Step::Done | Step::End | Step::Suspended => {
                 break;
             }
-            Line::Choices {
-                text,
-                choices,
-                tags,
-            } => {
-                format_text_with_tags(&text, &[tags], &mut output);
+            Step::Choices(choices) => {
                 if choices.is_empty() {
                     return Err("no choices available".into());
                 }

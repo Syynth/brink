@@ -754,8 +754,8 @@ fn step_outcome_to_js<R: brink_runtime::StoryRng>(
     session: &brink_runtime::StorySession<R>,
 ) -> StepOutcomeJs {
     match outcome {
-        brink_runtime::StepOutcome::Line(line) => StepOutcomeJs::Line {
-            line: line_to_js(line),
+        brink_runtime::StepOutcome::Step(step) => StepOutcomeJs::Line {
+            line: line_to_js(step),
         },
         brink_runtime::StepOutcome::AwaitingExternal => StepOutcomeJs::AwaitingExternal {
             // `WebSession` never registers an internal promise-in-flight park

@@ -1,18 +1,21 @@
 //! Single-point terminal-step classification shared by the episode
 //! builders (`explorer.rs`, `runner.rs`).
 //!
-//! Prerequisite refactor for the Step/OutputLine runtime-output redesign
-//! (issue #1449). Today `Line::Done`/`Line::End` already carry the fused
-//! trailing text for the turn — the runtime does the fold internally
-//! (`flow_instance.rs`'s yield handling) before the harness ever sees a
-//! `Line`. [`push_terminal`] is the single place both builders turn a
-//! terminal `Line`'s payload into a [`StepRecord`] and push it onto the
-//! episode's step list; when the redesign makes terminals payload-free,
-//! this is the only place that needs to grow real fold logic (stamp the
-//! terminal's outcome onto `steps[len - 1]`, or synthesize an empty step if
-//! none precedes it in the turn) — call sites in `explorer.rs`/`runner.rs`
-//! do not change, because they already hand this function the `Vec` to
-//! fold into rather than receiving a record back to push themselves.
+//! The Step/OutputLine runtime-output redesign (issue #1684) made
+//! terminals payload-free: `Step::Done`/`Step::Choices`/`Step::End` carry
+//! no text — any trailing content the old fused `Line::Done`/`Line::Choices`/
+//! `Line::End` used to bundle in now arrives *first*, as its own ordinary
+//! `Step::Line`, and the runtime hands the harness the bare terminal on the
+//! very next `continue_single_observed` call
+//! (`FlowInstance::advance_with_limit`'s `pending_terminal` split). So the
+//! text is already sitting in `steps.last()` (pushed as `StepOutcome::
+//! Continue`) by the time a terminal event arrives — [`push_terminal`]'s
+//! whole job is to fold the terminal's classification onto that record
+//! rather than push a second, empty one. This is exactly the fold logic
+//! this function was reserved for since PR #1513 landed it as a
+//! byte-identical pass-through specifically to protect this attribution:
+//! if the ratchet moves in either direction now, the fold is wrong — it
+//! does not mean conformance changed.
 //!
 //! [`classify_done`] is the other half: the runtime defers the "ran out of
 //! content" error (no explicit `-> DONE`) to the *next* `continue` call
@@ -31,19 +34,34 @@ use brink_runtime::{Story, StoryRng, WriteObserver};
 
 use crate::episode::{Outcome, StateWrite, StepOutcome, StepRecord};
 
-/// Build the [`StepRecord`] for a terminal `Line` (`Done`/`End`/`Suspended`)
-/// and push it onto `steps`.
+/// Fold a terminal event (`Step::Done`/`Step::Choices`/`Step::End`/
+/// `Step::Suspended` — all payload-free now) into `steps`.
 ///
-/// See the module docs: this always takes the "new step" path today
-/// because the runtime hands terminals their text already fused in.
+/// If the last record already pushed this turn is still open
+/// (`StepOutcome::Continue` — i.e. an ordinary content line the runtime
+/// just emitted, with no terminal classification yet), the terminal
+/// stamps onto it directly: its `outcome` becomes `outcome` and `writes`
+/// extends its own. That is the common case — the runtime always emits
+/// trailing content as its own `Step::Line` before a payload-bearing
+/// terminal would have fused it in the old model.
+///
+/// If `steps` is empty, or its last record already closed a *previous*
+/// turn (any non-`Continue` outcome), there is nothing from *this* turn to
+/// stamp onto — a terminal arrived with zero preceding content — so an
+/// empty step is synthesized to carry the classification instead of
+/// corrupting the previous turn's record.
 pub(crate) fn push_terminal(
     steps: &mut Vec<StepRecord>,
-    text: String,
-    tags: Vec<String>,
     outcome: StepOutcome,
     writes: Vec<StateWrite>,
 ) {
-    steps.push(StepRecord::new(text, tags, outcome, writes));
+    match steps.last_mut() {
+        Some(last) if matches!(last.outcome, StepOutcome::Continue) => {
+            last.outcome = outcome;
+            last.writes.extend(writes);
+        }
+        _ => steps.push(StepRecord::new(String::new(), Vec::new(), outcome, writes)),
+    }
 }
 
 /// Classify a `Done` terminal into its episode [`Outcome`], probing the

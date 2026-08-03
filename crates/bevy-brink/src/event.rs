@@ -9,8 +9,8 @@
 //!   buffered cross-tick pubsub. Heavier than we need for "the flow
 //!   produced a line just now."
 //!
-//! All events here are split by `Line` variant so observers can target
-//! exactly the situation they care about (no inline `match` on a Line
+//! All events here are split by `Step` variant so observers can target
+//! exactly the situation they care about (no inline `match` on a Step
 //! enum). Pattern: bladeink's `DeliverLine` / `DeliverChoices`.
 //!
 //! For consumers that want the historical view rather than per-event
@@ -25,7 +25,7 @@ use bevy_ecs::entity::Entity;
 use bevy_ecs::event::EntityEvent;
 use brink_runtime::Choice;
 
-/// Fired when a flow produces a `Line::Text` — mid-stream content; more
+/// Fired when a flow produces a `Step::Line` — mid-stream content; more
 /// may follow on subsequent steps. Typewriter-style UIs accumulate;
 /// click-to-continue UIs concatenate until a terminal event arrives.
 #[derive(EntityEvent)]
@@ -47,7 +47,7 @@ impl<M: Send + Sync + 'static> BrinkLineDelivered<M> {
     }
 }
 
-/// Fired when a flow reaches a `Line::Choices` — pick one via
+/// Fired when a flow reaches a `Step::Choices` — pick one via
 /// [`BrinkFlow::choose`](crate::BrinkFlow::choose) (or
 /// [`choose_recording`](crate::BrinkFlow::choose_recording) in dev
 /// builds for replay-after-hot-reload).
@@ -77,7 +77,7 @@ impl<M: Send + Sync + 'static> BrinkChoicesPresented<M> {
     }
 }
 
-/// Fired when a flow reaches `Line::Done` — this turn's output is
+/// Fired when a flow reaches `Step::Done` — this turn's output is
 /// complete (the ink `-> DONE` instruction). The story is *not* over;
 /// call advance again for the next turn.
 #[derive(EntityEvent)]
@@ -99,7 +99,7 @@ impl<M: Send + Sync + 'static> BrinkTurnDone<M> {
     }
 }
 
-/// Fired when a flow reaches `Line::End` — the story has permanently
+/// Fired when a flow reaches `Step::End` — the story has permanently
 /// ended (the ink `-> END` instruction). No more advance is meaningful.
 #[derive(EntityEvent)]
 pub struct BrinkStoryEnded<M: Send + Sync + 'static = ()> {

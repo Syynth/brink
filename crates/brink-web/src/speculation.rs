@@ -103,11 +103,12 @@ impl WebSpeculation {
         self.merge_report(&tiered);
 
         let resp = match outcome {
-            brink_runtime::SpeculationStep::Line(line) => line_to_js(line),
+            brink_runtime::SpeculationStep::Step(step) => line_to_js(step),
             brink_runtime::SpeculationStep::AwaitingExternal => LineJs {
                 r#type: "awaiting_external",
                 text: String::new(),
                 tags: Vec::new(),
+                block_id: None,
                 choices: None,
                 name: speculation.pending_external_name().map(str::to_owned),
             },

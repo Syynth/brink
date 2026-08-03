@@ -20,7 +20,7 @@
 
 use brink_format::Value;
 use brink_runtime::{
-    DotNetRng, ExternalFnHandler, ExternalResult, Line, RanOutOfContentCause, RuntimeError, Story,
+    DotNetRng, ExternalFnHandler, ExternalResult, RanOutOfContentCause, RuntimeError, Step, Story,
 };
 
 /// Compile ink source and link it into a runnable story.
@@ -33,27 +33,28 @@ fn story_from_source(src: &str) -> Story<DotNetRng> {
     Story::new(std::sync::Arc::new(program), line_tables)
 }
 
-/// Drive until the first terminal line, returning it plus the text seen.
+/// Drive until the first terminal step, returning it plus the text seen.
 #[expect(clippy::unwrap_used, clippy::panic)]
-fn drive_to_terminal(story: &mut Story<DotNetRng>) -> (Line, String) {
+fn drive_to_terminal(story: &mut Story<DotNetRng>) -> (Step, String) {
     let mut text = String::new();
     for _ in 0..64 {
-        let line = story.continue_single().unwrap();
-        text.push_str(line.text());
-        if line.is_terminal() {
-            return (line, text);
+        let step = story.continue_single().unwrap();
+        text.push_str(step.text());
+        if step.is_terminal() {
+            return (step, text);
         }
     }
-    panic!("no terminal line within the step budget");
+    panic!("no terminal step within the step budget");
 }
 
 /// A story that falls off the end of its content with no explicit
-/// `-> DONE` still **delivers its trailing text** as a `Line::Done`, and
-/// only faults with `RanOutOfContent` on the *next* `continue_single`.
+/// `-> DONE` still **delivers its trailing text** first, as its own
+/// `Step::Line` (terminals carry no payload — §7), and only faults with
+/// `RanOutOfContent` on the *next* `continue_single`.
 ///
 /// This is the "one deferred call" seam: *why* the turn stopped (safe exit
 /// vs. ran out of content) is knowable at the yield — the flow's
-/// `did_safe_exit` flag is already false when `Line::Done` is handed out —
+/// `did_safe_exit` flag is already false when `Step::Done` is handed out —
 /// but the runtime only acts on it one call later. C# ink raises its
 /// equivalent error inside the *same* `Continue()` (`Story.cs`'s
 /// `ContinueInternal`, in the `!canContinue` branch) and never delivers
@@ -67,8 +68,8 @@ fn ran_out_of_content_faults_on_the_call_after_the_done_line() {
 
     let (terminal, text) = drive_to_terminal(&mut story);
     assert!(
-        matches!(terminal, Line::Done { .. }),
-        "trailing text is delivered as Done before the fault, got {terminal:?}"
+        matches!(terminal, Step::Done),
+        "the fault-arming Done terminal follows the trailing text, got {terminal:?}"
     );
     assert!(
         text.contains("Hello."),
@@ -105,7 +106,7 @@ fn explicit_done_is_a_safe_exit_and_does_not_fault() {
     let mut story = story_from_source("Hello.\n-> DONE\n");
 
     let (terminal, _) = drive_to_terminal(&mut story);
-    assert!(matches!(terminal, Line::Done { .. }));
+    assert!(matches!(terminal, Step::Done));
 
     // Issue #1573: `did_safe_exit` is readable on the production API and
     // distinguishes this case from the ran-out-of-content one above without
@@ -116,26 +117,20 @@ fn explicit_done_is_a_safe_exit_and_does_not_fault() {
     );
 
     // A safe exit resets `Active` and steps the VM again rather than
-    // faulting; with no content left, that yields an empty `Line::Done`,
-    // not `RanOutOfContent`. Pin the concrete value today's runtime
-    // returns, not just the negative "it isn't the fault" — a refactor
-    // that changed this to some other non-fault outcome (e.g. a step
-    // limit or a different line shape) must still turn this test red.
+    // faulting; with no content left, that yields a bare `Step::Done` (no
+    // text to flush first), not `RanOutOfContent`. Pin the concrete value
+    // today's runtime returns, not just the negative "it isn't the fault" —
+    // a refactor that changed this to some other non-fault outcome (e.g. a
+    // step limit or a different step shape) must still turn this test red.
     let result = story.continue_single();
     assert!(
-        matches!(
-            result,
-            Ok(Line::Done {
-                ref text,
-                ref tags
-            }) if text.is_empty() && tags.is_empty()
-        ),
+        matches!(result, Ok(Step::Done)),
         "a safe exit must not raise the deferred fault, got {result:?}"
     );
 }
 
 /// An explicit `-> END` classifies at the yield with no deferral at all:
-/// the terminal is `Line::End` and the next call reports `StoryEnded`.
+/// the terminal is `Step::End` and the next call reports `StoryEnded`.
 /// This is the asymmetry the design writeup calls out — `End` is decided
 /// eagerly, in its own arm, while `Done`'s fault half is decided lazily in
 /// a different one.
@@ -145,7 +140,7 @@ fn end_classifies_eagerly_unlike_done() {
 
     let (terminal, _) = drive_to_terminal(&mut story);
     assert!(
-        matches!(terminal, Line::End { .. }),
+        matches!(terminal, Step::End),
         "got {terminal:?}, expected End"
     );
     assert!(
@@ -179,7 +174,7 @@ fn tunnel_fall_off_classifies_as_plain_not_tunnel_today() {
         story_from_source("-> main\n=== main ===\n-> tunnel ->\n\n=== tunnel ===\nHello.\n");
 
     let (terminal, text) = drive_to_terminal(&mut story);
-    assert!(matches!(terminal, Line::Done { .. }));
+    assert!(matches!(terminal, Step::Done));
     assert!(text.contains("Hello."));
     assert!(!story.did_safe_exit());
 
@@ -213,7 +208,7 @@ fn function_fall_off_classifies_as_plain_not_function_today() {
         story_from_source("-> main\n=== main ===\n~ temp x = f()\n\n=== function f ===\nHello.\n");
 
     let (terminal, text) = drive_to_terminal(&mut story);
-    assert!(matches!(terminal, Line::Done { .. }));
+    assert!(matches!(terminal, Step::Done));
     assert!(text.contains("Hello."));
     assert!(!story.did_safe_exit());
 
@@ -243,7 +238,7 @@ impl ExternalFnHandler for NoExternals {
 ///
 /// Sequence: the main flow falls off the end (`Plain`, exactly like
 /// [`ran_out_of_content_faults_on_the_call_after_the_done_line`]) and
-/// delivers its trailing text as `Line::Done`. Before the caller ever asks
+/// delivers its trailing text first, then a bare `Step::Done`. Before the caller ever asks
 /// for the *next* line, the engine drives an out-of-band
 /// [`Story::call_function`] evaluation on the *same* flow: `f` calls a void
 /// helper `g` (no `~ return`, so `g`'s frame exhausts naturally through
@@ -269,7 +264,7 @@ fn call_function_void_helper_exhaustion_does_not_clobber_the_pending_plain_cause
     );
 
     let (terminal, text) = drive_to_terminal(&mut story);
-    assert!(matches!(terminal, Line::Done { .. }));
+    assert!(matches!(terminal, Step::Done));
     assert!(text.contains("Hello."));
     assert!(
         !story.did_safe_exit(),

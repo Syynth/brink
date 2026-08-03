@@ -21,7 +21,7 @@ use bevy_ecs::world::World;
 use bevy_log::warn;
 use bevy_tasks::{AsyncComputeTaskPool, TaskPool};
 use brink_format::Value;
-use brink_runtime::{FastRng, FlowInstance, Line, Program, RuntimeError, StepOutcome};
+use brink_runtime::{FastRng, FlowInstance, Program, RuntimeError, Step, StepOutcome};
 #[cfg(feature = "dev")]
 use brink_runtime::{RecordingHandler, ReplayRecorder};
 use thiserror::Error;
@@ -466,7 +466,7 @@ pub fn call_ink_function_value<M: Send + Sync + 'static>(
 /// so the World can be re-borrowed (for `run_system_with`) afterward.
 enum FlowStep {
     /// A line was produced.
-    Line(Line),
+    Line(Step),
     /// The flow paused on a world-access query; run this system then resume.
     Query {
         system: QuerySystemId,
@@ -480,35 +480,36 @@ enum FlowStep {
 
 /// Fire the per-line observer event (matching [`step_one`](crate::BrinkFlow::step_one))
 /// from an exclusive `&mut World` context.
-fn emit_line_event_world<M: Send + Sync + 'static>(world: &mut World, entity: Entity, line: &Line) {
+///
+/// Terminals carry no payload of their own (`docs/prose-dialect-spec.md`
+/// §7, RULED) — `BrinkTurnDone`/`BrinkStoryEnded` always fire with empty
+/// `text`/`tags`; any trailing content already arrived as its own
+/// preceding `BrinkLineDelivered` event.
+fn emit_line_event_world<M: Send + Sync + 'static>(world: &mut World, entity: Entity, step: &Step) {
     use crate::event::{BrinkChoicesPresented, BrinkLineDelivered, BrinkStoryEnded, BrinkTurnDone};
-    match line {
-        Line::Text { text, tags } => {
+    match step {
+        Step::Line(line) => {
             world
                 .entity_mut(entity)
-                .trigger(|e| BrinkLineDelivered::<M>::new(e, text.clone(), tags.clone()));
+                .trigger(|e| BrinkLineDelivered::<M>::new(e, line.text.clone(), line.tags.clone()));
         }
-        Line::Choices {
-            text,
-            tags,
-            choices,
-        } => {
+        Step::Choices(choices) => {
             world.entity_mut(entity).trigger(|e| {
-                BrinkChoicesPresented::<M>::new(e, text.clone(), tags.clone(), choices.clone())
+                BrinkChoicesPresented::<M>::new(e, String::new(), Vec::new(), choices.clone())
             });
         }
-        // A park (`Line::Suspended`, FS-3r) is a turn boundary like `Done`;
+        // A park (`Step::Suspended`, FS-3r) is a turn boundary like `Done`;
         // runtime-unreachable today behind the E052 fence, grouped here so
         // the exhaustive match keeps compiling as the variant lands.
-        Line::Done { text, tags } | Line::Suspended { text, tags } => {
+        Step::Done | Step::Suspended => {
             world
                 .entity_mut(entity)
-                .trigger(|e| BrinkTurnDone::<M>::new(e, text.clone(), tags.clone()));
+                .trigger(|e| BrinkTurnDone::<M>::new(e, String::new(), Vec::new()));
         }
-        Line::End { text, tags } => {
+        Step::End => {
             world
                 .entity_mut(entity)
-                .trigger(|e| BrinkStoryEnded::<M>::new(e, text.clone(), tags.clone()));
+                .trigger(|e| BrinkStoryEnded::<M>::new(e, String::new(), Vec::new()));
         }
     }
 }
@@ -561,7 +562,7 @@ fn advance_recording<M: Send + Sync + 'static>(
 pub fn advance_flow<M: Send + Sync + 'static>(
     world: &mut World,
     entity: Entity,
-) -> Result<Line, BrinkCallError> {
+) -> Result<Step, BrinkCallError> {
     #[expect(
         clippy::type_complexity,
         reason = "SystemState param tuple for the flow components + assets + bindings"
@@ -631,7 +632,7 @@ pub fn advance_flow<M: Send + Sync + 'static>(
             )?;
             triggers.extend(handler.take_queued());
             match outcome {
-                StepOutcome::Line(line) => FlowStep::Line(line),
+                StepOutcome::Step(step) => FlowStep::Line(step),
                 StepOutcome::AwaitingExternal => {
                     let name = flow
                         .inner

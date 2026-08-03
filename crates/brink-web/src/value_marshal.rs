@@ -813,23 +813,27 @@ pub(crate) fn debug_snapshot_to_js(s: brink_runtime::DebugSnapshot) -> DebugStat
     }
 }
 
-pub(crate) fn line_to_js(line: brink_runtime::Line) -> LineJs {
-    match line {
-        brink_runtime::Line::Text { text, tags } => LineJs {
+pub(crate) fn line_to_js(step: brink_runtime::Step) -> LineJs {
+    match step {
+        brink_runtime::Step::Line(line) => LineJs {
             r#type: "text",
-            text,
-            tags,
+            text: line.text,
+            tags: line.tags,
+            block_id: Some(line.block_id.0),
             choices: None,
             name: None,
         },
-        brink_runtime::Line::Choices {
-            text,
-            tags,
-            choices,
-        } => LineJs {
+        // Terminals carry no payload of their own (`docs/prose-dialect-spec.md`
+        // §7, RULED) — any trailing content already arrived as its own
+        // preceding `"text"`-typed `LineJs`. `text`/`tags` are always empty
+        // here now; kept (rather than made optional) so existing consumers
+        // that always read `.text`/`.tags` see an empty string/array instead
+        // of `undefined`.
+        brink_runtime::Step::Choices(choices) => LineJs {
             r#type: "choices",
-            text,
-            tags,
+            text: String::new(),
+            tags: Vec::new(),
+            block_id: None,
             choices: Some(
                 choices
                     .into_iter()
@@ -842,17 +846,19 @@ pub(crate) fn line_to_js(line: brink_runtime::Line) -> LineJs {
             ),
             name: None,
         },
-        brink_runtime::Line::Done { text, tags } => LineJs {
+        brink_runtime::Step::Done => LineJs {
             r#type: "done",
-            text,
-            tags,
+            text: String::new(),
+            tags: Vec::new(),
+            block_id: None,
             choices: None,
             name: None,
         },
-        brink_runtime::Line::End { text, tags } => LineJs {
+        brink_runtime::Step::End => LineJs {
             r#type: "end",
-            text,
-            tags,
+            text: String::new(),
+            tags: Vec::new(),
+            block_id: None,
             choices: None,
             name: None,
         },
@@ -861,10 +867,11 @@ pub(crate) fn line_to_js(line: brink_runtime::Line) -> LineJs {
         // `await` from producing bytecode — but its marshal leg ships now so
         // the `@brink-lang/web` `Line` union carries `"suspended"` and hosts
         // migrate the API shape early.
-        brink_runtime::Line::Suspended { text, tags } => LineJs {
+        brink_runtime::Step::Suspended => LineJs {
             r#type: "suspended",
-            text,
-            tags,
+            text: String::new(),
+            tags: Vec::new(),
+            block_id: None,
             choices: None,
             name: None,
         },
@@ -876,6 +883,11 @@ pub(crate) struct LineJs {
     pub(crate) r#type: &'static str,
     pub(crate) text: String,
     pub(crate) tags: Vec<String>,
+    /// The run of adjacent content this line belongs to
+    /// (`brink_runtime::BlockId`, §3.7/§8d.2) — `Some` only for `"text"`;
+    /// terminals carry no line payload, so no block id.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) block_id: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) choices: Option<Vec<ChoiceJs>>,
     /// External name for the `awaiting_external` variant; omitted otherwise.

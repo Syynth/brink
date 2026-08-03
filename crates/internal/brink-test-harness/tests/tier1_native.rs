@@ -519,7 +519,7 @@ fn inline_markup_hyphenated_name() {
 /// normally, and the following `Door creaks.` content line — proof the rest
 /// of the flow's body was never swallowed — plays untouched. This is a
 /// choice-free straight-line story, so the tag's own text isn't observable
-/// in `run_native_transcript`'s output (`Line::Text`'s `tags` field is
+/// in `run_native_transcript`'s output (`Step::Line`'s `tags` field is
 /// dropped by that helper — only the printed prose is), but a story that
 /// merely *compiles* clean here already isn't proof enough by itself
 /// (`assert_case` alone is only half the guard); the discriminating signal
@@ -531,7 +531,7 @@ fn inline_tag_embedded_brace() {
 }
 
 /// Compile-level sibling to `inline_tag_embedded_brace` (review of #1787):
-/// `assert_case` runs through `run_native_transcript`, whose `Line::Text {
+/// `assert_case` runs through `run_native_transcript`, whose `Step::Line`'s content {
 /// text, .. }` arm discards the `tags` field entirely — so that golden
 /// fixture only pins that the *following* content line survives, never that
 /// the tag's own text (braces included) actually reached `StoryData`. This
@@ -586,7 +586,7 @@ fn root_content_typed_strict() {
 /// `Warning`-severity and non-blocking (`DiagnosticCode::severity`), so
 /// neither line's compile fails and both still print as ordinary content.
 /// The diagnostic itself isn't observable through this transcript
-/// (`run_native_transcript`'s `Line::Text` arm drops the `tags` field
+/// (`run_native_transcript`'s `Step::Line` arm drops the `tags` field
 /// entirely, the same reason `inline_tag_embedded_brace`'s module doc
 /// gives) — `directive_like_tag_warns_e172` immediately below is the
 /// compile-level sibling that inspects `CompileOutput::warnings` directly.

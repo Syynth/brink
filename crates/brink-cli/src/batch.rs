@@ -9,21 +9,21 @@ pub fn play_loop<B: BufRead>(
 
     loop {
         match story.continue_single()? {
-            brink_runtime::Line::Text { text, .. } => {
-                write!(stdout, "{text}")?;
+            brink_runtime::Step::Line(line) => {
+                write!(stdout, "{}", line.text)?;
             }
-            // A park (`Line::Suspended`, FS-3r) is a terminal turn boundary;
+            // A park (`Step::Suspended`, FS-3r) is a terminal turn boundary;
             // runtime-unreachable today behind the E052 fence, grouped with
             // the other terminals so the exhaustive match keeps compiling.
-            brink_runtime::Line::Done { text, .. }
-            | brink_runtime::Line::End { text, .. }
-            | brink_runtime::Line::Suspended { text, .. } => {
-                write!(stdout, "{text}")?;
+            // Terminals carry no text of their own — any trailing content
+            // already arrived as its own preceding `Step::Line`.
+            brink_runtime::Step::Done
+            | brink_runtime::Step::End
+            | brink_runtime::Step::Suspended => {
                 stdout.flush()?;
                 break;
             }
-            brink_runtime::Line::Choices { text, choices, .. } => {
-                write!(stdout, "{text}")?;
+            brink_runtime::Step::Choices(choices) => {
                 for choice in &choices {
                     writeln!(stdout, "{}: {}", choice.index + 1, choice.text)?;
                 }

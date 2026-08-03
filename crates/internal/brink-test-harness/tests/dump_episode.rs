@@ -119,7 +119,7 @@ fn dump_tower_of_hanoi_3() {
     print_episode(&ep, "Tower of Hanoi (3 discs)");
 }
 
-/// `runner::record`'s `Line::Done` arm now probes `classify_done`, matching
+/// `runner::record`'s `Step::Done` arm now probes `classify_done`, matching
 /// `explorer::explore` (see `termination.rs`). Pins the one observable
 /// behavior change: a `Done` reached without an explicit `-> DONE` now
 /// surfaces as `Outcome::Error("...ran out of content...")` instead of
@@ -141,8 +141,8 @@ fn record_divert_choice_flags_missing_terminal_as_error() {
 }
 
 /// Counterpart to the above: a fixture that reaches an explicit `-> END`
-/// is unaffected by the `classify_done` probe (its terminal `Line` is
-/// `Line::End`, never `Line::Done`).
+/// is unaffected by the `classify_done` probe (its terminal `Step` is
+/// `Step::End`, never `Step::Done`).
 #[test]
 fn record_once_only_choices_reaches_explicit_end() {
     let ep = record_from_ink(

@@ -108,7 +108,7 @@ pub use brink_runtime::transcript::{TranscriptData, TranscriptError};
 /// The runtime types that appear in `bevy-brink`'s own public signatures,
 /// re-exported so consumers can name them without depending on `brink-runtime`:
 /// [`FlowInstance`](BrinkFlow::inner), [`Program`](crate::ProgramAsset::program),
-/// [`Choice`](crate::BrinkChoicesPresented::choices), [`Line`](advance_flow)'s
+/// [`Choice`](crate::BrinkChoicesPresented::choices), [`Step`](advance_flow)'s
 /// return, [`RuntimeError`](BrinkFlow::choose)'s error,
 /// [`FallbackHandler`] for the "no bindings" advance path, the scoped
 /// story-state types a host needs to build a policy and a per-step routing
@@ -122,8 +122,8 @@ pub use brink_runtime::transcript::{TranscriptData, TranscriptError};
 /// `World` is deliberately absent here — it collides with `bevy::prelude::World`
 /// under a glob import, so it is re-exported under the alias [`BrinkWorld`].
 pub use brink_runtime::{
-    Choice, ContextView, ExecMode, FallbackHandler, FlowInstance, FlowLocal, Line, LoadReport,
-    PolicyError, Program, RuntimeError, SaveState, Scope, WorldPolicy,
+    BlockId, Choice, ContextView, ExecMode, FallbackHandler, FlowInstance, FlowLocal, LoadReport,
+    OutputLine, PolicyError, Program, RuntimeError, SaveState, Scope, Step, WorldPolicy,
 };
 pub use brkt::{
     BrktLoader, BrktLoaderError, TranscriptAsset, capture_transcript, render_transcript_asset,

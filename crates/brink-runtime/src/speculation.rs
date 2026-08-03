@@ -38,7 +38,7 @@ use brink_format::Value;
 use crate::error::RuntimeError;
 use crate::program::Program;
 use crate::rng::{FastRng, StoryRng};
-use crate::story::{ExternalFnHandler, FlowInstance, FunctionEval, Line, StepOutcome};
+use crate::story::{ExternalFnHandler, FlowInstance, FunctionEval, Step, StepOutcome};
 use crate::world::{ContextView, FlowLocal, Mode, World};
 
 /// Caller-supplied cap on a [`Speculation`]'s VM stepping, in place of the
@@ -77,15 +77,15 @@ impl Default for Budget {
 /// Outcome of a single [`Speculation::advance`] call.
 ///
 /// Mirrors [`StepOutcome`], the [`FlowInstance::advance`] equivalent: a
-/// [`Line`] (including a terminal `Done`/`Choices`/`End` variant), or a
+/// [`Step`] (including a terminal `Done`/`Choices`/`End` variant), or a
 /// cleanly-surfaced pending external for the caller to resolve (see
 /// [`Speculation::resolve_external`]) before calling `advance` again. A
 /// budget-exhausted call is an `Err`, not a variant here — see
 /// [`RuntimeError::StepLimitExceeded`]/[`RuntimeError::LineLimitExceeded`].
 #[derive(Debug, Clone)]
 pub enum SpeculationStep {
-    /// A line of output, or a yield point (`Done`/`Choices`/`End`).
-    Line(Line),
+    /// A step of output, or a yield point (`Done`/`Choices`/`End`).
+    Step(Step),
     /// The speculation paused on a deferred external; resolve it and
     /// `advance` again.
     AwaitingExternal,
@@ -213,12 +213,12 @@ impl<R: StoryRng> Speculation<R> {
             budget.steps,
         )?;
 
-        if let StepOutcome::Line(_) = &outcome {
+        if let StepOutcome::Step(_) = &outcome {
             self.lines_advanced += 1;
         }
 
         Ok(match outcome {
-            StepOutcome::Line(line) => SpeculationStep::Line(line),
+            StepOutcome::Step(step) => SpeculationStep::Step(step),
             StepOutcome::AwaitingExternal => SpeculationStep::AwaitingExternal,
         })
     }

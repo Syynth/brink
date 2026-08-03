@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use brink_compiler::{AnalysisOptions, Dialect, TypePolicy};
 use brink_format::StoryData;
-use brink_runtime::{DotNetRng, Line, Program, Stats, Story};
+use brink_runtime::{DotNetRng, Program, Stats, Step, Story};
 
 // ── Scenarios ────────────────────────────────────────────────────────────────
 
@@ -198,11 +198,11 @@ fn run_to_completion(
         let mut done = false;
         for line in story.continue_maximally().unwrap() {
             match line {
-                Line::Text { .. } => {}
-                Line::Done { .. } | Line::End { .. } | Line::Suspended { .. } => {
+                Step::Line(_) => {}
+                Step::Done | Step::End | Step::Suspended => {
                     done = true;
                 }
-                Line::Choices { choices, .. } => {
+                Step::Choices(choices) => {
                     if input_idx >= inputs.len() {
                         done = true;
                         break;
@@ -240,11 +240,11 @@ fn run_to_completion_keep_story(
         let mut done = false;
         for line in story.continue_maximally().unwrap() {
             match line {
-                Line::Text { .. } => {}
-                Line::Done { .. } | Line::End { .. } | Line::Suspended { .. } => {
+                Step::Line(_) => {}
+                Step::Done | Step::End | Step::Suspended => {
                     done = true;
                 }
-                Line::Choices { choices, .. } => {
+                Step::Choices(choices) => {
                     if input_idx >= inputs.len() {
                         done = true;
                         break;

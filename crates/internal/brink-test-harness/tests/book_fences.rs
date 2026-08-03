@@ -33,7 +33,7 @@
 //!   draws randomness is deterministic (the tier1-brink corpus instead seeds
 //!   in-source with `~ seed(N)`, which needs no marker — prefer that when the
 //!   seed is part of the example).
-//! - `choices=1,2,…` — at each `Line::Choices`, pick the next number
+//! - `choices=1,2,…` — at each `Step::Choices`, pick the next number
 //!   (1-based, as a player would read them). Running out of picks, or ending
 //!   with picks unused, is a failure.
 //! - `compile-only` — the fence must compile but is not run (for programs
@@ -56,7 +56,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use brink_compiler::{AnalysisOptions, Dialect};
-use brink_runtime::{DotNetRng, Line, Story};
+use brink_runtime::{DotNetRng, Step, Story};
 use brink_source_tree::Walk;
 
 fn book_src_dir() -> PathBuf {
@@ -224,9 +224,8 @@ fn run_story(src: &str, markers: &Markers) -> Result<String, String> {
     let mut out = String::new();
     for _ in 0..STEP_LIMIT {
         match story.continue_single() {
-            Ok(Line::Text { text, .. }) => out.push_str(&text),
-            Ok(Line::Done { text, .. } | Line::End { text, .. } | Line::Suspended { text, .. }) => {
-                out.push_str(&text);
+            Ok(Step::Line(line)) => out.push_str(&line.text),
+            Ok(Step::Done | Step::End | Step::Suspended) => {
                 let unused = picks.count();
                 if unused > 0 {
                     return Err(format!(
@@ -235,8 +234,7 @@ fn run_story(src: &str, markers: &Markers) -> Result<String, String> {
                 }
                 return Ok(out);
             }
-            Ok(Line::Choices { text, choices, .. }) => {
-                out.push_str(&text);
+            Ok(Step::Choices(choices)) => {
                 let Some(pick) = picks.next() else {
                     return Err("story presented choices — linear fences must not; add a \
                          `<!-- fence: choices=… -->` marker with 1-based picks"

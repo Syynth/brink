@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use brink_compiler::{AnalysisOptions, Dialect};
-use brink_runtime::{DotNetRng, Line, Story};
+use brink_runtime::{DotNetRng, Step, Story};
 
 /// Compile brink-dialect source (`#@module`/`#@was` and T1c `#fn`/type
 /// annotations are brink-only extensions — see `docs/directive-annotations-spec.md`
@@ -32,15 +32,9 @@ fn link_story(data: &brink_format::StoryData) -> Story<DotNetRng> {
 #[expect(clippy::unwrap_used)]
 fn run_to_terminal(story: &mut Story<DotNetRng>) -> String {
     let mut out = String::new();
-    for line in story.continue_maximally().unwrap() {
-        match line {
-            Line::Text { text, .. }
-            | Line::Done { text, .. }
-            | Line::End { text, .. }
-            | Line::Suspended { text, .. } => {
-                out.push_str(&text);
-            }
-            Line::Choices { text, .. } => out.push_str(&text),
+    for step in story.continue_maximally().unwrap() {
+        if let Step::Line(line) = step {
+            out.push_str(&line.text);
         }
     }
     out

@@ -15,7 +15,7 @@
 
 use brink_format::Value;
 use brink_runtime::{
-    ExternalFnHandler, ExternalResult, FastRng, Line, Program, RuntimeError, StepOutcome, Story,
+    ExternalFnHandler, ExternalResult, FastRng, Program, RuntimeError, Step, StepOutcome, Story,
 };
 
 type LineTables = Vec<Vec<brink_format::LineEntry>>;
@@ -39,16 +39,7 @@ fn compile(src: &str) -> (Program, LineTables) {
 /// Drive the story to its next terminal yield, concatenating all text.
 fn run_to_yield(story: &mut Story<FastRng>) -> String {
     let lines = story.continue_maximally().expect("continue");
-    lines
-        .iter()
-        .map(|l| match l {
-            Line::Text { text, .. }
-            | Line::Done { text, .. }
-            | Line::Choices { text, .. }
-            | Line::End { text, .. }
-            | Line::Suspended { text, .. } => text.as_str(),
-        })
-        .collect()
+    lines.iter().map(Step::text).collect()
 }
 
 /// Handler that always defers (`Pending`) — simulates an async host binding.
@@ -209,7 +200,7 @@ fn jump_mid_flow_clears_choices_keeps_transcript() {
 
     let lines = story.continue_maximally().expect("continue");
     assert!(
-        matches!(lines.last(), Some(Line::Choices { choices, .. }) if choices.len() == 2),
+        matches!(lines.last(), Some(Step::Choices(choices)) if choices.len() == 2),
         "expected 2 pending choices, got {lines:?}"
     );
     let transcript_before = story.transcript_len();
@@ -305,20 +296,11 @@ fn jump_into_tunnel_target_completes_on_frameless_return() {
     story.choose_path_string("side").expect("jump into tunnel");
     let lines = story.continue_maximally().expect("continue");
     assert!(
-        matches!(lines.last(), Some(Line::Done { .. })),
+        matches!(lines.last(), Some(Step::Done)),
         "frameless ->-> completes the flow, got {lines:?}"
     );
     assert_eq!(
-        lines
-            .iter()
-            .map(|l| match l {
-                Line::Text { text, .. }
-                | Line::Done { text, .. }
-                | Line::Choices { text, .. }
-                | Line::End { text, .. }
-                | Line::Suspended { text, .. } => text.as_str(),
-            })
-            .collect::<String>(),
+        lines.iter().map(Step::text).collect::<String>(),
         "Side content.\n"
     );
 }

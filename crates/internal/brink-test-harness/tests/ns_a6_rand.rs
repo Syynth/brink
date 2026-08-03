@@ -17,7 +17,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use brink_compiler::{AnalysisOptions, Dialect};
-use brink_runtime::{DotNetRng, FastRng, Line, Story, StoryRng};
+use brink_runtime::{DotNetRng, FastRng, Step, Story, StoryRng};
 use std::sync::Arc;
 
 fn compile_and_link(
@@ -51,15 +51,9 @@ fn compile_and_link(
 fn run_segment<R: StoryRng>(story: &mut Story<R>, out: &mut String) -> bool {
     loop {
         match story.continue_single().expect("runtime error") {
-            Line::Text { text, .. } => out.push_str(&text),
-            Line::Choices { text, .. } => {
-                out.push_str(&text);
-                return true;
-            }
-            Line::Done { text, .. } | Line::End { text, .. } | Line::Suspended { text, .. } => {
-                out.push_str(&text);
-                return false;
-            }
+            Step::Line(line) => out.push_str(&line.text),
+            Step::Choices(_) => return true,
+            Step::Done | Step::End | Step::Suspended => return false,
         }
     }
 }

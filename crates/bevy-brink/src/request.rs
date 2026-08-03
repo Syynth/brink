@@ -759,7 +759,7 @@ mod tests {
     use crate::globals::{load_flow_state, save_flow_state};
     use bevy_ecs::system::SystemState;
     use brink_format::Value;
-    use brink_runtime::{ContextAccess, Line};
+    use brink_runtime::{ContextAccess, Step};
 
     /// The ink source shared by the F6.3 tests: `mood` (a private counter)
     /// and the `greet` knot's own visit count (read via `READ_COUNT`, so
@@ -813,7 +813,7 @@ mod tests {
     /// it. Panics if the flow parks on a world-access external (none of
     /// these tests use externals) or if any required asset/component is
     /// missing.
-    fn drive_entity(app: &mut App, entity: Entity) -> Line {
+    fn drive_entity(app: &mut App, entity: Entity) -> Step {
         let mut state: FlowQuery = SystemState::new(app.world_mut());
         let (mut flows, mut globals, programs, tables, mut commands) =
             state.get_mut(app.world_mut()).expect("system params");
