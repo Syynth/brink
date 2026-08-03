@@ -5,7 +5,7 @@ fn radio(chan: string, text: content) {
   return text;
 }
 
-@[element(claims = "^INT\\. (?<place>.+)$")]
+@[convention(claims = "^INT\\. (?<place>.+)$", order = 10)]
 fn interior(place: content) {
   return "-- inside {place} --";
 }

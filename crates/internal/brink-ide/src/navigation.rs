@@ -728,7 +728,7 @@ fn main() {
         // range is the entire claimed prose line, not a real occurrence of
         // the handler's name. Reporting it as a reference location would
         // highlight that whole prose line rather than any identifier.
-        let src = "@[element(claims = \"^INT\\\\. (?<place>.+)$\")]\nfn interior(place) {\n  return place;\n}\n\nflow main() {\n  INT. MARKET SQUARE\n}\n";
+        let src = "@[convention(claims = \"^INT\\\\. (?<place>.+)$\", order = 10)]\nfn interior(place) {\n  return place;\n}\n\nflow main() {\n  INT. MARKET SQUARE\n}\n";
         let mut session = IdeSession::new();
         let file_id = session.update_and_analyze("test.brink", src.to_string());
         let analysis = session.analysis().expect("analysis");

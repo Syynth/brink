@@ -53,7 +53,7 @@ pub struct ClaimHandlerCandidate {
     pub params: Vec<String>,
     /// The claiming pattern's regex source.
     pub pattern: String,
-    /// Range of the `@[element(claims = "…")]` annotation line.
+    /// Range of the `@[convention(claims = "…", order = N)]` annotation line.
     pub annotation: TextRange,
     /// The bare `block` clause (issue #1839), carried through this join
     /// since issue #2068 — see [`ExternalClaimHandler::block`]'s doc for
@@ -168,10 +168,10 @@ mod tests {
         }
     }
 
-    const CONVENTIONS_SRC: &str = "@[element(claims = \"^INT\\\\. (?<place>.+)$\")]\n\
+    const CONVENTIONS_SRC: &str = "@[convention(claims = \"^INT\\\\. (?<place>.+)$\", order = 10)]\n\
         fn interior(place: content) {\n  return place;\n}\n";
 
-    const BLOCK_CONVENTIONS_SRC: &str = "@[element(claims = \"^(?<name>[A-Z]+)$\", block)]\n\
+    const BLOCK_CONVENTIONS_SRC: &str = "@[convention(claims = \"^(?<name>[A-Z]+)$\", order = 10, block)]\n\
         fn cue(name: string, body: content) {\n  return name;\n}\n";
 
     #[test]
@@ -232,7 +232,7 @@ mod tests {
         // (`lower_native/element.rs`) and `candidate_claim_handlers` reading
         // it back off `handler.block` (this file, above) — so reverting
         // either production hunk left that test green. This test drives a
-        // real `@[element(claims = "…", block)]` declaration through actual
+        // real `@[convention(claims = "…", order = N, block)]` declaration through actual
         // parsing and lowering instead, then through `candidate_claim_handlers`,
         // and goes red if either hop is reverted.
         let hir = conventions_hir(BLOCK_CONVENTIONS_SRC);

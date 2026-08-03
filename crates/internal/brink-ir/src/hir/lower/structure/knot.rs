@@ -88,6 +88,7 @@ pub(super) fn lower_knot(
         // Native-only annotations (issue #1719) — ink has no `@[element]`/
         // `@[style]` equivalent tag.
         element_annotation: None,
+        convention_annotation: None,
         style_annotation: None,
         return_type,
         doc,

@@ -59,7 +59,7 @@ unimplemented · ❓ unverified (nobody has checked; do not assume either way)
 | Tags `#` | ✅ | ✅ | ✅ | ✅ | markup inside a tag is **literal** (ruled #1783) |
 | Markup spans `<b>…</b>` | ✅ | ✅ | ✅ | ✅ | `.inkb` **v6** `PART_SPAN` |
 | Hyphenated span names `<fade-in>` | ✅ | ✅ | ✅ | ✅ | landed **#1996** |
-| `@[element(claims=…)]` handlers | ✅ | ✅ | ✅ | ❓ | `annotations-element` golden |
+| `@[convention(claims=…, order=N)]` handlers | ✅ | ✅ | ✅ | ❓ | `annotations-element` golden |
 | Prose-bodied `fn` via `>{ }` | ✅ | ✅ | ✅ | ❓ | verified 2026-08-01: emits `[A] hi` |
 | **Statements at prose position (bare, no `~`)** | ⚠️ | ❌ | ❌ | ❌ | **🔴 SILENT** — see below; by design, not open (charter §8.2) |
 | `~ stmt`/`~{ }` line/block escape (assignment/bare-call/temp-decl/`until`/logic block) | ✅ | ✅ | ⚠️ | ⚠️ | #1991 + #1972 (both slices); Round-trips only leaf stmts, nested if/while/for inside `~{ }` is an emitter-only gap; Runs — the call-only-escape output-boundary fix (review finding, w111) and its whole-body-override/`fn`-default sibling (`lower_stmt_block_as_body`/`flush_code_ground_run`, **#2056**) both append a boundary, but only ONE per flushed *run*: `lir::lower::blocks::lower_block_stmt_list` still has no per-statement `EndOfLine` tracking, so two emitting calls back to back in the same run (e.g. `flow main() ~{ shout(); shout(); > x }`) still glue as `HiHi` — same for a call inside an `if`/`while`/`for` followed by another emitting call in that same run (review finding F3, #2063) |
@@ -80,7 +80,7 @@ whole vocabulary by naming a different conventions module. Sequenced as
 
 | Feature | Ruled | Parses | Runs | Round-trips | Notes |
 |---|---|---|---|---|---|
-| `@[element(claims=…)]` pattern claiming | ✅ | ✅ | ✅ | ❓ | **v1a landed** — `annotations-element` golden |
+| `@[convention(claims=…, order=N)]` pattern claiming | ✅ | ✅ | ✅ | ❓ | **v1a landed** — `annotations-element` golden |
 | `@[element(args=…)]` capture binding | ✅ | ✅ | ✅ | ❓ | named captures bind params by name |
 | Prose-bodied handlers `>{ }` | ✅ | ✅ | ✅ | ❓ | verified 2026-08-01 — emits `[A] hi` |
 | Typed handler params (`E171`) | ✅ | ✅ | ✅ | — | #1849 closed |

@@ -101,6 +101,16 @@ fn all_diagnostic_codes_have_documentation() {
 
 #[test]
 fn diagnostic_codes_are_unique() {
+    // Codes reserved for an issue that has not landed a variant yet. #2156
+    // originally claimed both E176 and E177; it has since landed (as E176
+    // only — a single new diagnostic), leaving E177 itself unclaimed and
+    // unused. #2164's slice took E178/E179 instead, per its own explicit
+    // instruction not to take E176/E177, so E177 is now a genuine gap with
+    // no landed or queued owner. This allowlist entry stays until either a
+    // future issue claims E177 for a real variant (delete the entry then)
+    // or E177 is formally retired.
+    const RESERVED_CODES: &[&str] = &["E177"];
+
     // Enumerate the exhaustive variant list and build the inverse map: code string ->
     // every variant whose `as_str()` produces it. Unlike probing `from_str_code` over
     // `E001..E999` (which is `str -> Option<Self>` and can never surface two variants
@@ -182,7 +192,9 @@ fn diagnostic_codes_are_unique() {
         let mut gaps = Vec::new();
         for num in first_num..=last_num {
             let code_str = format!("E{num:03}");
-            if !code_to_variants.contains_key(code_str.as_str()) {
+            if !code_to_variants.contains_key(code_str.as_str())
+                && !RESERVED_CODES.contains(&code_str.as_str())
+            {
                 gaps.push(code_str);
             }
         }
@@ -250,9 +262,9 @@ fn diagnostic_codes_are_unique() {
 ///   with a doc comment saying markup spans are "a native-grammar
 ///   construct" and the pass is "inert for ink source by construction (no
 ///   `ContentPart::Span` can exist there)".
-/// - `E166`–`E171` — the `@[element(claims = "…")]` / `@[element(…,
-///   block)]` dispatch family, the same native-only annotation channel as
-///   `E159`/`E160`.
+/// - `E166`–`E171` — the `@[element(…, block)]` / `@[convention(claims =
+///   "…", order = N)]` dispatch family, the same native-only annotation
+///   channel as `E159`/`E160`.
 /// - `E172` — raised only by `hir::lower_native::body::lower_tag`, i.e. only
 ///   while lowering a `.brink` file.
 /// - `E173` — the required-markup-attribute check (issue #1780/#1997), the
@@ -262,6 +274,12 @@ fn diagnostic_codes_are_unique() {
 ///   with its body-derived type (issue #1994); raised only from
 ///   `infer::body::InferPass::infer_lambda`, and `LAMBDA_EXPR` exists only
 ///   in `brink-syntax-native`, same posture as `E156`/`E158`.
+/// - `E178`/`E179` — `@[convention(…)]`'s required-and-unique `order`
+///   property (issue #2164, `docs/decision-log.md` 2026-08-03): `convention`
+///   is a native-only recognized annotation name, same posture as
+///   `element`/`style`; raised only from `hir::lower_native::annotation`
+///   (`E178`) and `hir::lower_native::element::diagnose_duplicate_order`
+///   (`E179`).
 ///
 /// Codes intentionally **excluded** despite living in the same numeric
 /// neighborhood: `E157` (the unnamed-once-only-choice / unnamed-sequence
@@ -271,6 +289,7 @@ fn diagnostic_codes_are_unique() {
 const NATIVE_ONLY_CODES: &[&str] = &[
     "E130", "E132", "E145", "E153", "E154", "E155", "E156", "E158", "E159", "E160", "E161", "E162",
     "E163", "E164", "E165", "E166", "E167", "E168", "E169", "E170", "E171", "E172", "E173", "E174",
+    "E178", "E179",
 ];
 
 /// Every fenced code block's info string (the text right after the opening

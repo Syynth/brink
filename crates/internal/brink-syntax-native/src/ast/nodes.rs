@@ -803,6 +803,15 @@ impl AnnotationArg {
     pub fn eq_value(&self) -> Option<StringLit> {
         support::child(&self.syntax)
     }
+
+    /// The `= <integer>` clause's integer-literal value (issue #2164,
+    /// `@[convention(…, order = 30)]` — the ordering key is a bare integer,
+    /// RULED). `None` for every other clause shape, including the string
+    /// key/value form [`Self::eq_value`] reads — a clause carries at most
+    /// one of the two, never both.
+    pub fn eq_int_value(&self) -> Option<IntegerLit> {
+        support::child(&self.syntax)
+    }
 }
 
 impl CallExpr {

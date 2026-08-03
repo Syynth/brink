@@ -2474,7 +2474,7 @@ fn only_claimed_call(block: &crate::Block) -> Option<(&str, Vec<String>)> {
 #[test]
 fn a_claimed_content_line_lowers_to_exactly_one_call() {
     let (hir, _m, diags) = lower_src(
-        "@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival(who) {\n  return who;\n}\n\nflow main() {\n  VENDOR enters\n}\n",
+        "@[convention(claims = \"^(?<who>[A-Z]+) enters$\", order = 10)]\nfn arrival(who) {\n  return who;\n}\n\nflow main() {\n  VENDOR enters\n}\n",
     );
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     let main = hir
@@ -2491,7 +2491,7 @@ fn a_claimed_content_line_lowers_to_exactly_one_call() {
 #[test]
 fn a_claimed_scene_heading_lowers_to_a_call_and_keeps_its_body() {
     let (hir, _m, diags) = lower_src(
-        "@[element(claims = \"^INT\\\\. (?<place>.+)$\")]\nfn interior(place) {\n  return place;\n}\n\nflow main() {\n  INT. MARKET SQUARE\n  The stalls are shuttered.\n}\n",
+        "@[convention(claims = \"^INT\\\\. (?<place>.+)$\", order = 20)]\nfn interior(place) {\n  return place;\n}\n\nflow main() {\n  INT. MARKET SQUARE\n  The stalls are shuttered.\n}\n",
     );
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     let main = hir
@@ -2537,7 +2537,7 @@ fn an_unclaimed_scene_heading_is_still_loudly_unlowered() {
 #[test]
 fn a_claimed_cue_lowers_to_a_call() {
     let (hir, _m, diags) = lower_src(
-        "@[element(claims = \"^(?<name>[A-Z][A-Z ]*)$\")]\nfn cue(name) {\n  return name;\n}\n\nflow main() {\n  @VENDOR\n}\n",
+        "@[convention(claims = \"^(?<name>[A-Z][A-Z ]*)$\", order = 30)]\nfn cue(name) {\n  return name;\n}\n\nflow main() {\n  @VENDOR\n}\n",
     );
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     let main = hir
@@ -2569,7 +2569,7 @@ fn a_cue_with_a_tag_extension_is_not_a_claim_candidate() {
     // slug/tag-carrying `SCENE_HEADING` case above — so this still falls
     // to the loud `E129` default even with a matching handler declared.
     let (_hir, _m, diags) = lower_src(
-        "@[element(claims = \"^(?<name>[A-Z][A-Z ]*)$\")]\nfn cue(name) {\n  return name;\n}\n\nflow main() {\n  @VENDOR #(v.o.)\n}\n",
+        "@[convention(claims = \"^(?<name>[A-Z][A-Z ]*)$\", order = 40)]\nfn cue(name) {\n  return name;\n}\n\nflow main() {\n  @VENDOR #(v.o.)\n}\n",
     );
     assert!(
         diags.iter().any(|d| d.code == DiagnosticCode::E129),
@@ -2582,7 +2582,7 @@ fn a_claimed_parenthetical_lowers_to_a_call() {
     // A parenthetical is chain-gated by the parser (`at_parenthetical`) —
     // it only parses as `PARENTHETICAL` directly after a live cue.
     let (hir, _m, diags) = lower_src(
-        "@[element(claims = \"^(?<name>[A-Z][A-Z ]*)$\")]\nfn cue(name) {\n  return name;\n}\n@[element(claims = \"^(?<delivery>.+)$\")]\nfn parenthetical(delivery) {\n  return delivery;\n}\n\nflow main() {\n  @VENDOR\n  (hushed)\n}\n",
+        "@[convention(claims = \"^(?<name>[A-Z][A-Z ]*)$\", order = 50)]\nfn cue(name) {\n  return name;\n}\n@[convention(claims = \"^(?<delivery>.+)$\", order = 60)]\nfn parenthetical(delivery) {\n  return delivery;\n}\n\nflow main() {\n  @VENDOR\n  (hushed)\n}\n",
     );
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     assert_eq!(
@@ -2635,7 +2635,7 @@ fn a_cue_block_capture_stops_at_a_following_parenthetical_and_the_parenthetical_
     // a real, load-bearing constraint on how the built-in preset's own
     // patterns must be written, not a mechanism bug — see the PR
     // description's own finding.
-    let src = "@[element(claims = \"^(?<name>[A-Z][A-Z ]*)$\", block)]\nfn cue(name: string, body: content) {\n  return name;\n}\n@[element(claims = \"^(?<delivery>[a-z][a-z' -]*)$\", block)]\nfn parenthetical(delivery: string, body: content) {\n  return delivery;\n}\n\nflow main() {\n  @VENDOR\n  (hushed)\n  You shouldn't be here.\n}\n";
+    let src = "@[convention(claims = \"^(?<name>[A-Z][A-Z ]*)$\", order = 70, block)]\nfn cue(name: string, body: content) {\n  return name;\n}\n@[convention(claims = \"^(?<delivery>[a-z][a-z' -]*)$\", order = 80, block)]\nfn parenthetical(delivery: string, body: content) {\n  return delivery;\n}\n\nflow main() {\n  @VENDOR\n  (hushed)\n  You shouldn't be here.\n}\n";
     let (hir, _m, diags) = lower_src(src);
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     assert_eq!(hir.element_matches.len(), 2);
@@ -2659,7 +2659,7 @@ fn a_cue_block_capture_stops_at_a_following_parenthetical_and_the_parenthetical_
 
 #[test]
 fn a_claim_records_handler_and_capture_spans() {
-    let src = "@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival(who) {\n  return who;\n}\n\nflow main() {\n  VENDOR enters\n}\n";
+    let src = "@[convention(claims = \"^(?<who>[A-Z]+) enters$\", order = 90)]\nfn arrival(who) {\n  return who;\n}\n\nflow main() {\n  VENDOR enters\n}\n";
     let (hir, _m, diags) = lower_src(src);
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     assert_eq!(hir.element_matches.len(), 1);
@@ -2683,7 +2683,7 @@ fn a_claim_records_handler_and_capture_spans() {
     );
     assert!(
         src[usize::from(m.annotation.start())..usize::from(m.annotation.end())]
-            .starts_with("@[element(claims"),
+            .starts_with("@[convention(claims"),
         "the annotation range must land on the claiming declaration"
     );
 }
@@ -2711,7 +2711,7 @@ fn a_block_handler_captures_the_following_run_terminated_by_a_blank_line() {
     // lines, then a blank line, then a third line that must stay OUTSIDE
     // the capture (and outside `main.body`'s own top-level statements
     // entirely, since it is absorbed into the `Fragment` argument).
-    let src = "@[element(claims = \"^(?<name>[A-Z]+)$\", block)]\nfn cue(name: string, body: content) {\n  return name;\n}\n\nflow main() {\n  VENDOR\n  Line one.\n  Line two.\n\n  After the blank line.\n}\n";
+    let src = "@[convention(claims = \"^(?<name>[A-Z]+)$\", order = 100, block)]\nfn cue(name: string, body: content) {\n  return name;\n}\n\nflow main() {\n  VENDOR\n  Line one.\n  Line two.\n\n  After the blank line.\n}\n";
     let (hir, _m, diags) = lower_src(src);
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     assert_eq!(hir.element_matches.len(), 1);
@@ -2773,7 +2773,7 @@ fn a_block_handler_captures_the_following_run_terminated_by_an_element_level_lin
     // The other half of the ruled terminator: a non-`CONTENT_LINE` item
     // (here, a divert) ends the run immediately, even with NO blank line
     // separating it from the last captured line.
-    let src = "@[element(claims = \"^(?<name>[A-Z]+)$\", block)]\nfn cue(name: string, body: content) {\n  return name;\n}\n\nflow main() {\n  VENDOR\n  Line one.\n  Line two.\n  -> END\n}\n";
+    let src = "@[convention(claims = \"^(?<name>[A-Z]+)$\", order = 110, block)]\nfn cue(name: string, body: content) {\n  return name;\n}\n\nflow main() {\n  VENDOR\n  Line one.\n  Line two.\n  -> END\n}\n";
     let (hir, _m, diags) = lower_src(src);
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     assert_eq!(hir.element_matches.len(), 1);
@@ -2822,7 +2822,7 @@ fn a_captured_line_ending_in_a_divert_does_not_join_the_block() {
     // — silently corrupting the runtime's fragment-depth tracking
     // (`crates/brink-runtime/src/output/fragment.rs`). The line must stay
     // OUTSIDE the capture and lower normally instead.
-    let src = "@[element(claims = \"^(?<name>[A-Z]+)$\", block)]\nfn cue(name: string, body: content) {\n  return name;\n}\n\nflow main() {\n  VENDOR\n  Line one.\n  Get out. -> END\n}\n";
+    let src = "@[convention(claims = \"^(?<name>[A-Z]+)$\", order = 120, block)]\nfn cue(name: string, body: content) {\n  return name;\n}\n\nflow main() {\n  VENDOR\n  Line one.\n  Get out. -> END\n}\n";
     let (hir, _m, diags) = lower_src(src);
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     let m = &hir.element_matches[0];
@@ -2879,7 +2879,7 @@ fn a_captured_line_carrying_a_label_does_not_join_the_block() {
     // `reject_unsupported_inline_construct`). The labeled line must stay
     // OUTSIDE the capture and lower normally as its own top-level
     // `Stmt::LabeledBlock`.
-    let src = "@[element(claims = \"^(?<name>[A-Z]+)$\", block)]\nfn cue(name: string, body: content) {\n  return name;\n}\n\nflow main() {\n  VENDOR\n  Line one.\n  (later) You wait.\n  -> END\n}\n";
+    let src = "@[convention(claims = \"^(?<name>[A-Z]+)$\", order = 130, block)]\nfn cue(name: string, body: content) {\n  return name;\n}\n\nflow main() {\n  VENDOR\n  Line one.\n  (later) You wait.\n  -> END\n}\n";
     let (hir, _m, diags) = lower_src(src);
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     let m = &hir.element_matches[0];
@@ -2922,7 +2922,7 @@ fn a_claiming_handler_does_not_claim_lines_in_its_own_body() {
     // use the conventions it defines"): without this the handler's own
     // prose would rewrite into a call on itself.
     let (hir, _m, diags) = lower_src(
-        "@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival(who) >{\n  VENDOR enters\n}\n",
+        "@[convention(claims = \"^(?<who>[A-Z]+) enters$\", order = 140)]\nfn arrival(who) >{\n  VENDOR enters\n}\n",
     );
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     assert!(
@@ -2946,7 +2946,7 @@ fn a_claiming_pattern_declaring_both_args_and_claims_diagnoses_e159() {
 #[test]
 fn a_claiming_handler_param_with_no_capture_diagnoses_e167() {
     let (hir, _m, diags) = lower_src(
-        "@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival(who, mood) {\n  return who;\n}\n",
+        "@[convention(claims = \"^(?<who>[A-Z]+) enters$\", order = 150)]\nfn arrival(who, mood) {\n  return who;\n}\n",
     );
     assert!(
         diags.iter().any(|d| d.code == DiagnosticCode::E167),
@@ -2967,14 +2967,14 @@ fn a_claiming_handler_param_with_no_capture_diagnoses_e167() {
 
 #[test]
 fn a_claiming_handler_numeric_typed_param_diagnoses_e171() {
-    let src = "@[element(claims = \"^Take (?<n>\\\\d+)$\")]\nfn take(n: int) {\n  return n;\n}\n";
+    let src = "@[convention(claims = \"^Take (?<n>\\\\d+)$\", order = 160)]\nfn take(n: int) {\n  return n;\n}\n";
     let (hir, _m, diags) = lower_src(src);
     let e171 = diags
         .iter()
         .find(|d| d.code == DiagnosticCode::E171)
         .unwrap_or_else(|| panic!("a numeric captured param must raise E171: {diags:?}"));
     // The span must land on `n`'s own type annotation (`int`), not the
-    // whole `@[element(…)]` line and not a claimed prose line — the exact
+    // whole `@[convention(…)]` line and not a claimed prose line — the exact
     // complaint issue #1849 filed against the pre-existing `E063` path.
     assert_eq!(
         &src[usize::from(e171.range.start())..usize::from(e171.range.end())],
@@ -2983,32 +2983,31 @@ fn a_claiming_handler_numeric_typed_param_diagnoses_e171() {
     );
     // A handler that fails this check is never registered as a claiming
     // handler at all — same posture as E160/E166/E167 above.
-    assert!(hir.knots[0].element_annotation.is_none());
+    assert!(hir.knots[0].convention_annotation.is_none());
 }
 
 #[test]
 fn a_claiming_handler_string_typed_param_does_not_diagnose_e171() {
     let (hir, _m, diags) = lower_src(
-        "@[element(claims = \"^Take (?<n>\\\\d+)$\")]\nfn take(n: string) {\n  return n;\n}\n",
+        "@[convention(claims = \"^Take (?<n>\\\\d+)$\", order = 170)]\nfn take(n: string) {\n  return n;\n}\n",
     );
     assert!(
         !diags.iter().any(|d| d.code == DiagnosticCode::E171),
         "a string-typed captured param must not raise E171: {diags:?}"
     );
-    let element = hir.knots[0].element_annotation.as_ref().expect("present");
-    assert!(element.claims);
+    assert!(hir.knots[0].convention_annotation.is_some());
 }
 
 #[test]
 fn a_claiming_handler_untyped_param_does_not_diagnose_e171() {
-    let (hir, _m, diags) =
-        lower_src("@[element(claims = \"^Take (?<n>\\\\d+)$\")]\nfn take(n) {\n  return n;\n}\n");
+    let (hir, _m, diags) = lower_src(
+        "@[convention(claims = \"^Take (?<n>\\\\d+)$\", order = 180)]\nfn take(n) {\n  return n;\n}\n",
+    );
     assert!(
         !diags.iter().any(|d| d.code == DiagnosticCode::E171),
         "an untyped captured param must not raise E171: {diags:?}"
     );
-    let element = hir.knots[0].element_annotation.as_ref().expect("present");
-    assert!(element.claims);
+    assert!(hir.knots[0].convention_annotation.is_some());
 }
 
 #[test]
@@ -3021,14 +3020,13 @@ fn a_claiming_handler_content_typed_param_does_not_diagnose_e171() {
     // Flagging it here would break that already-shipped, ruled pattern
     // for no compiler-observable reason.
     let (hir, _m, diags) = lower_src(
-        "@[element(claims = \"^INT\\\\. (?<place>.+)$\")]\nfn interior(place: content) {\n  return \"-- inside {place} --\";\n}\n",
+        "@[convention(claims = \"^INT\\\\. (?<place>.+)$\", order = 190)]\nfn interior(place: content) {\n  return \"-- inside {place} --\";\n}\n",
     );
     assert!(
         !diags.iter().any(|d| d.code == DiagnosticCode::E171),
         "a content-typed captured param must not raise E171: {diags:?}"
     );
-    let element = hir.knots[0].element_annotation.as_ref().expect("present");
-    assert!(element.claims);
+    assert!(hir.knots[0].convention_annotation.is_some());
 }
 
 #[test]
@@ -3039,8 +3037,8 @@ fn a_non_claiming_handler_may_have_params_beyond_its_captures() {
         "@[element(args = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival(who, mood) {\n  return who;\n}\n",
     );
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
-    let element = hir.knots[0].element_annotation.as_ref().expect("present");
-    assert!(!element.claims);
+    assert!(hir.knots[0].element_annotation.is_some());
+    assert!(hir.knots[0].convention_annotation.is_none());
 }
 
 // The `!name` sigil dispatch half of `@[element(…)]` (issue #2004): a
@@ -3178,6 +3176,151 @@ fn an_escaped_bang_at_line_start_stays_plain_text_and_never_dispatches() {
     );
 }
 
+// ─── `order` (issue #2164, `docs/decision-log.md` 2026-08-03) ───────────
+
+#[test]
+fn a_convention_with_no_order_diagnoses_e178() {
+    let (hir, _m, diags) = lower_src(
+        "@[convention(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival(who) {\n  return who;\n}\n",
+    );
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E178),
+        "a @[convention] with no order clause must raise E178: {diags:?}"
+    );
+    // No default — a handler that fails this check is never registered as
+    // a claiming handler at all, same posture as E159/E160/E166/E167.
+    assert!(hir.knots[0].convention_annotation.is_none());
+}
+
+#[test]
+fn a_convention_with_an_order_does_not_diagnose_e178() {
+    let (hir, _m, diags) = lower_src(
+        "@[convention(claims = \"^(?<who>[A-Z]+) enters$\", order = 10)]\nfn arrival(who) {\n  return who;\n}\n",
+    );
+    assert!(
+        !diags.iter().any(|d| d.code == DiagnosticCode::E178),
+        "a @[convention] with an order clause must not raise E178: {diags:?}"
+    );
+    let convention = hir.knots[0]
+        .convention_annotation
+        .as_ref()
+        .expect("present");
+    assert_eq!(convention.order, 10);
+}
+
+#[test]
+fn two_conventions_sharing_an_order_diagnose_e179_on_both() {
+    let (_hir, _m, diags) = lower_src(
+        "@[convention(claims = \"^A$\", order = 10)]\nfn a() {\n  return \"a\";\n}\n\n@[convention(claims = \"^B$\", order = 10)]\nfn b() {\n  return \"b\";\n}\n",
+    );
+    let e179s: Vec<_> = diags
+        .iter()
+        .filter(|d| d.code == DiagnosticCode::E179)
+        .collect();
+    assert_eq!(
+        e179s.len(),
+        2,
+        "a duplicate order must be reported against BOTH declarations, not just one: {diags:?}"
+    );
+    // Anchored on each declaration's own `@[convention(…)]` annotation
+    // line, matching E168/E170's own anchor posture — never the `fn` body.
+    let src = "@[convention(claims = \"^A$\", order = 10)]\nfn a() {\n  return \"a\";\n}\n\n@[convention(claims = \"^B$\", order = 10)]\nfn b() {\n  return \"b\";\n}\n";
+    let ranges: Vec<&str> = e179s
+        .iter()
+        .map(|d| &src[usize::from(d.range.start())..usize::from(d.range.end())])
+        .collect();
+    assert!(
+        ranges.iter().any(|r| r.contains("claims = \"^A$\"")),
+        "{ranges:?}"
+    );
+    assert!(
+        ranges.iter().any(|r| r.contains("claims = \"^B$\"")),
+        "{ranges:?}"
+    );
+    // The ruling (`docs/decision-log.md` 2026-08-03) asks for the message
+    // to name both conflicting declarations, the way a duplicate-definition
+    // error does — not a generic sentence naming neither. Each message must
+    // name the OTHER handler in the pair (its own name plus the one that
+    // conflicts with it), and the shared `order` value.
+    for d in &e179s {
+        assert!(
+            d.message.contains("`a`") && d.message.contains("`b`"),
+            "each E179 message must name BOTH conflicting handlers: {d:?}"
+        );
+        assert!(
+            d.message.contains("order = 10"),
+            "each E179 message must name the shared `order` value: {d:?}"
+        );
+    }
+}
+
+#[test]
+fn three_conventions_sharing_an_order_diagnose_e179_on_all_three() {
+    // Review finding on #2176: an all-pairs walk over a group of size k
+    // emits k*(k-1) diagnostics (six, for three handlers sharing one
+    // `order`), each declaration repeated k-1 times. Grouping by `order`
+    // must emit exactly one diagnostic per participating declaration.
+    let (_hir, _m, diags) = lower_src(
+        "@[convention(claims = \"^A$\", order = 10)]\nfn a() {\n  return \"a\";\n}\n\n@[convention(claims = \"^B$\", order = 10)]\nfn b() {\n  return \"b\";\n}\n\n@[convention(claims = \"^C$\", order = 10)]\nfn c() {\n  return \"c\";\n}\n",
+    );
+    let e179s: Vec<_> = diags
+        .iter()
+        .filter(|d| d.code == DiagnosticCode::E179)
+        .collect();
+    assert_eq!(
+        e179s.len(),
+        3,
+        "three handlers sharing one order must produce exactly one diagnostic \
+         PER declaration (three), not one per pair (six): {diags:?}"
+    );
+    // Each message must name both OTHER handlers in the group.
+    for d in &e179s {
+        assert!(
+            ["a", "b", "c"]
+                .iter()
+                .filter(|name| d.message.contains(&format!("`{name}`")))
+                .count()
+                >= 2,
+            "each E179 message must name at least the two OTHER conflicting \
+             handlers in a three-way group: {d:?}"
+        );
+    }
+}
+
+#[test]
+fn distinct_orders_never_diagnose_e179() {
+    let (_hir, _m, diags) = lower_src(
+        "@[convention(claims = \"^A$\", order = 10)]\nfn a() {\n  return \"a\";\n}\n\n@[convention(claims = \"^B$\", order = 20)]\nfn b() {\n  return \"b\";\n}\n",
+    );
+    assert!(
+        !diags.iter().any(|d| d.code == DiagnosticCode::E179),
+        "distinct orders must never raise E179: {diags:?}"
+    );
+}
+
+#[test]
+fn order_determines_precedence_not_declaration_position() {
+    // The core of issue #2164: a LATER-declared handler with a LOWER
+    // `order` must win the claim over an EARLIER-declared handler with a
+    // HIGHER `order` — proving precedence now comes from `order`, not
+    // textual position (the retired issue #1848 interim rule).
+    let (hir, _m, diags) = lower_src(
+        "@[convention(claims = \"^(?<who>[A-Z]+)$\", order = 20)]\nfn late_high_order(who) {\n  return \"late\";\n}\n\n@[convention(claims = \"^(?<who>VENDOR)$\", order = 10)]\nfn early_low_order(who) {\n  return \"early\";\n}\n\nflow main() {\n  VENDOR\n}\n",
+    );
+    assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+    let main = hir
+        .knots
+        .iter()
+        .find(|k| k.name.text == "main")
+        .expect("main");
+    let (callee, _args) =
+        only_claimed_call(&main.body).expect("the claimed line must lower to one call");
+    assert_eq!(
+        callee, "early_low_order",
+        "the lower-`order` handler must win the claim regardless of its later declaration position"
+    );
+}
+
 #[test]
 fn two_byte_identical_claim_patterns_diagnose_e168_on_the_later_one() {
     // Issue #1848: a duplicate claiming pattern is provably unreachable
@@ -3185,7 +3328,7 @@ fn two_byte_identical_claim_patterns_diagnose_e168_on_the_later_one() {
     // handler is flagged, not the earlier — the earlier one is the one
     // that actually wins under the interim first-match-wins order.
     let (_hir, _m, diags) = lower_src(
-        "@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival(who) {\n  return who;\n}\n\n@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival_again(who) {\n  return who;\n}\n",
+        "@[convention(claims = \"^(?<who>[A-Z]+) enters$\", order = 200)]\nfn arrival(who) {\n  return who;\n}\n\n@[convention(claims = \"^(?<who>[A-Z]+) enters$\", order = 210)]\nfn arrival_again(who) {\n  return who;\n}\n",
     );
     let e168s: Vec<_> = diags
         .iter()
@@ -3197,7 +3340,7 @@ fn two_byte_identical_claim_patterns_diagnose_e168_on_the_later_one() {
         "exactly one duplicate diagnostic, on the later declaration: {diags:?}"
     );
     let second_annotation_start = u32::try_from(
-        "@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival(who) {\n  return who;\n}\n\n"
+        "@[convention(claims = \"^(?<who>[A-Z]+) enters$\", order = 220)]\nfn arrival(who) {\n  return who;\n}\n\n"
             .len(),
     )
     .expect("fixture length fits in u32");
@@ -3219,7 +3362,7 @@ fn a_byte_identical_twin_that_claims_the_earlier_handlers_own_body_is_not_e168()
     // inside `a`'s own body, since `a` is barred from claiming there. `b`
     // is genuinely live for that line, so E168 must not fire on it.
     let (hir, _m, diags) = lower_src(
-        "@[element(claims = \"^SIGNAL$\")]\nfn a() >{\n  SIGNAL\n}\n\n@[element(claims = \"^SIGNAL$\")]\nfn b() >{\n  ok\n}\n",
+        "@[convention(claims = \"^SIGNAL$\", order = 230)]\nfn a() >{\n  SIGNAL\n}\n\n@[convention(claims = \"^SIGNAL$\", order = 240)]\nfn b() >{\n  ok\n}\n",
     );
     assert!(
         !diags.iter().any(|d| d.code == DiagnosticCode::E168),
@@ -3247,7 +3390,7 @@ fn three_byte_identical_claim_patterns_each_report_one_e168() {
     // `b`) are dead, and each must be reported exactly once, not once per
     // earlier twin it has.
     let (_hir, _m, diags) = lower_src(
-        "@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn a(who) {\n  return who;\n}\n\n@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn b(who) {\n  return who;\n}\n\n@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn c(who) {\n  return who;\n}\n",
+        "@[convention(claims = \"^(?<who>[A-Z]+) enters$\", order = 250)]\nfn a(who) {\n  return who;\n}\n\n@[convention(claims = \"^(?<who>[A-Z]+) enters$\", order = 260)]\nfn b(who) {\n  return who;\n}\n\n@[convention(claims = \"^(?<who>[A-Z]+) enters$\", order = 270)]\nfn c(who) {\n  return who;\n}\n",
     );
     let e168_ranges: Vec<_> = diags
         .iter()
@@ -3274,7 +3417,7 @@ fn allow_e168_above_the_later_declaration_suppresses_it() {
     // above the later declaration could never suppress it. Round-trips
     // through `crate::suppressions::apply_suppressions`, the real
     // consumer path every other suppressible code is checked against.
-    let src = "@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival(who) {\n  return who;\n}\n\n@[allow(E168)]\n@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival_again(who) {\n  return who;\n}\n";
+    let src = "@[convention(claims = \"^(?<who>[A-Z]+) enters$\", order = 280)]\nfn arrival(who) {\n  return who;\n}\n\n@[allow(E168)]\n@[convention(claims = \"^(?<who>[A-Z]+) enters$\", order = 290)]\nfn arrival_again(who) {\n  return who;\n}\n";
     let (hir, _m, diags) = lower_src(src);
     assert!(
         diags.iter().any(|d| d.code == DiagnosticCode::E168),
@@ -3301,7 +3444,7 @@ fn non_identical_overlapping_claim_patterns_that_never_win_are_e170() {
     // claim in this file (the earlier `arrival_general` always wins first),
     // so it is flagged with E170.
     let (_hir, _m, diags) = lower_src(
-        "@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival_general(who) {\n  return who;\n}\n\n@[element(claims = \"^(?<who>VENDOR) enters$\")]\nfn arrival_vendor(who) {\n  return who;\n}\n",
+        "@[convention(claims = \"^(?<who>[A-Z]+) enters$\", order = 300)]\nfn arrival_general(who) {\n  return who;\n}\n\n@[convention(claims = \"^(?<who>VENDOR) enters$\", order = 310)]\nfn arrival_vendor(who) {\n  return who;\n}\n",
     );
     let e170s: Vec<_> = diags
         .iter()
@@ -3324,7 +3467,7 @@ fn distinct_overlapping_claim_patterns_pin_first_match_wins() {
     // actually claims "VENDOR enters", not `arrival_vendor`, even though
     // `arrival_vendor` is now also diagnosed E170 for never winning.
     let (hir, _m, diags) = lower_src(
-        "@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival_general(who) {\n  return who;\n}\n\n@[element(claims = \"^(?<who>VENDOR) enters$\")]\nfn arrival_vendor(who) {\n  return who;\n}\n\nflow main() {\n  VENDOR enters\n}\n",
+        "@[convention(claims = \"^(?<who>[A-Z]+) enters$\", order = 320)]\nfn arrival_general(who) {\n  return who;\n}\n\n@[convention(claims = \"^(?<who>VENDOR) enters$\", order = 330)]\nfn arrival_vendor(who) {\n  return who;\n}\n\nflow main() {\n  VENDOR enters\n}\n",
     );
     assert!(
         diags.iter().any(|d| d.code == DiagnosticCode::E170),
@@ -3350,7 +3493,7 @@ fn allow_e170_above_the_later_declaration_suppresses_it() {
     // `@[allow(E170)]` can suppress it. Round-trips through
     // `crate::suppressions::apply_suppressions`, the real consumer path
     // every other suppressible code is checked against.
-    let src = "@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival_general(who) {\n  return who;\n}\n\n@[allow(E170)]\n@[element(claims = \"^(?<who>VENDOR) enters$\")]\nfn arrival_vendor(who) {\n  return who;\n}\n";
+    let src = "@[convention(claims = \"^(?<who>[A-Z]+) enters$\", order = 340)]\nfn arrival_general(who) {\n  return who;\n}\n\n@[allow(E170)]\n@[convention(claims = \"^(?<who>VENDOR) enters$\", order = 350)]\nfn arrival_vendor(who) {\n  return who;\n}\n";
     let (hir, _m, diags) = lower_src(src);
     assert!(
         diags.iter().any(|d| d.code == DiagnosticCode::E170),
@@ -3381,7 +3524,7 @@ fn overlapping_patterns_where_later_handler_actually_wins_are_not_e170() {
     // exactly such a line inside `interior_full`'s own body so
     // `interior_daytime` is genuinely live and must not be flagged.
     let (hir, _m, diags) = lower_src(
-        "@[element(claims = \"^INT\\\\. (?<p>.+)$\")]\nfn interior_full(p) >{\n  INT. KITCHEN - DAY\n}\n\n@[element(claims = \"^INT\\\\. (?<p>.+) - DAY$\")]\nfn interior_daytime(p) >{\n  ok\n}\n",
+        "@[convention(claims = \"^INT\\\\. (?<p>.+)$\", order = 360)]\nfn interior_full(p) >{\n  INT. KITCHEN - DAY\n}\n\n@[convention(claims = \"^INT\\\\. (?<p>.+) - DAY$\", order = 370)]\nfn interior_daytime(p) >{\n  ok\n}\n",
     );
     assert!(
         !diags.iter().any(|d| d.code == DiagnosticCode::E170),
@@ -3404,7 +3547,7 @@ fn overlapping_patterns_where_later_handler_actually_wins_are_not_e170() {
 fn non_overlapping_patterns_are_not_e170() {
     // Two patterns that don't overlap should not be flagged.
     let (_hir, _m, diags) = lower_src(
-        "@[element(claims = \"^INT\\\\. (?<p>.+)$\")]\nfn interior(p) {\n  return p;\n}\n\n@[element(claims = \"^EXT\\\\. (?<p>.+)$\")]\nfn exterior(p) {\n  return p;\n}\n",
+        "@[convention(claims = \"^INT\\\\. (?<p>.+)$\", order = 380)]\nfn interior(p) {\n  return p;\n}\n\n@[convention(claims = \"^EXT\\\\. (?<p>.+)$\", order = 390)]\nfn exterior(p) {\n  return p;\n}\n",
     );
     assert!(
         !diags.iter().any(|d| d.code == DiagnosticCode::E170),
@@ -3418,7 +3561,7 @@ fn a_claim_on_a_flow_is_misplaced_e112() {
     // top-level `fn` may claim — and a claim that could never fire must be
     // loud, not inert.
     let (_hir, _m, diags) = lower_src(
-        "@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nflow arrival(who) {\n  Hi, {who}!\n}\n",
+        "@[convention(claims = \"^(?<who>[A-Z]+) enters$\", order = 400)]\nflow arrival(who) {\n  Hi, {who}!\n}\n",
     );
     assert!(
         diags.iter().any(|d| d.code == DiagnosticCode::E112),
@@ -3429,7 +3572,7 @@ fn a_claim_on_a_flow_is_misplaced_e112() {
 #[test]
 fn a_claim_on_a_nested_fn_is_misplaced_e112() {
     let (_hir, _m, diags) = lower_src(
-        "flow outer() {\n  @[element(claims = \"^(?<who>[A-Z]+) enters$\")]\n  fn arrival(who) {\n    return who;\n  }\n}\n",
+        "flow outer() {\n  @[convention(claims = \"^(?<who>[A-Z]+) enters$\", order = 410)]\n  fn arrival(who) {\n    return who;\n  }\n}\n",
     );
     assert!(
         diags.iter().any(|d| d.code == DiagnosticCode::E112),
@@ -3447,7 +3590,7 @@ fn a_claim_on_a_fn_inside_a_module_is_misplaced_e112() {
     // as a handler: a silent drop. It must be diagnosed misplaced
     // instead, same as a claim on a flow or a nested fn.
     let (hir, _m, diags) = lower_src(
-        "module npcs {\n  @[element(claims = \"^(?<who>[A-Z]+) enters$\")]\n  fn arrival(who) {\n    return who;\n  }\n}\n",
+        "module npcs {\n  @[convention(claims = \"^(?<who>[A-Z]+) enters$\", order = 420)]\n  fn arrival(who) {\n    return who;\n  }\n}\n",
     );
     assert!(
         diags.iter().any(|d| d.code == DiagnosticCode::E112),
@@ -3467,7 +3610,7 @@ fn a_line_carrying_interpolation_is_never_claimed() {
     // A claiming pattern matches literal source text; a line with dynamic
     // parts has no fixed text to match and no honest capture spans.
     let (hir, _m, diags) = lower_src(
-        "var who = \"VENDOR\"\n\n@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival(who) {\n  return who;\n}\n\nflow main() {\n  {who} enters\n}\n",
+        "var who = \"VENDOR\"\n\n@[convention(claims = \"^(?<who>[A-Z]+) enters$\", order = 430)]\nfn arrival(who) {\n  return who;\n}\n\nflow main() {\n  {who} enters\n}\n",
     );
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     assert!(
@@ -3488,7 +3631,7 @@ fn element_matches_are_recorded_in_source_order_across_a_choice_point() {
     // source. `HirFile::element_matches`'s own doc promises source order;
     // `hir::lower_native::lower` must restore it by sorting on `line`
     // before storing the field.
-    let src = "@[element(claims = \"^SIGNAL (?<sound>.+)$\")]\nfn effect(sound) {\n  return sound;\n}\n\nflow main() {\n  {?\n    * Option. {\n      SIGNAL EARLY\n    }\n  }\n  SIGNAL LATE\n}\n";
+    let src = "@[convention(claims = \"^SIGNAL (?<sound>.+)$\", order = 440)]\nfn effect(sound) {\n  return sound;\n}\n\nflow main() {\n  {?\n    * Option. {\n      SIGNAL EARLY\n    }\n  }\n  SIGNAL LATE\n}\n";
     let (hir, _m, diags) = lower_src(src);
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     assert_eq!(hir.element_matches.len(), 2, "{:?}", hir.element_matches);
@@ -3545,7 +3688,7 @@ fn external_arrival_handler() -> ExternalConventions {
 fn lower_with_no_external_registry_is_byte_identical_to_lower() {
     // `external: None` must be `lower`'s own implementation, not a
     // parallel path — the whole point of `lower` being a thin wrapper.
-    let src = "@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival(who) {\n  return who;\n}\n\nflow main() {\n  VENDOR enters\n}\n";
+    let src = "@[convention(claims = \"^(?<who>[A-Z]+) enters$\", order = 450)]\nfn arrival(who) {\n  return who;\n}\n\nflow main() {\n  VENDOR enters\n}\n";
     let parse = brink_syntax_native::parse(src);
     let tree = parse.tree();
     assert_eq!(
@@ -3606,7 +3749,7 @@ fn a_local_handler_wins_over_an_injected_handler_of_the_same_name() {
     let (hir, _m, diags) = lower_with_conventions(
         FileId(0),
         &brink_syntax_native::parse(
-            "@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival(who) {\n  return who;\n}\n\nflow main() {\n  VENDOR enters\n}\n",
+            "@[convention(claims = \"^(?<who>[A-Z]+) enters$\", order = 460)]\nfn arrival(who) {\n  return who;\n}\n\nflow main() {\n  VENDOR enters\n}\n",
         )
         .tree(),
         Some(&external_arrival_handler()),
@@ -3649,7 +3792,7 @@ fn an_injected_duplicate_with_a_stale_pattern_is_dropped_not_merely_shadowed() {
     let (hir, _m, diags) = lower_with_conventions(
         FileId(0),
         &brink_syntax_native::parse(
-            "@[element(claims = \"^(?<who>[A-Z]+) enters$\")]\nfn arrival(who) {\n  return who;\n}\n\nflow main() {\n  VENDOR arrives\n}\n",
+            "@[convention(claims = \"^(?<who>[A-Z]+) enters$\", order = 470)]\nfn arrival(who) {\n  return who;\n}\n\nflow main() {\n  VENDOR arrives\n}\n",
         )
         .tree(),
         Some(&stale_duplicate),
@@ -3705,8 +3848,9 @@ fn an_injected_handlers_foreign_annotation_range_never_suppresses_a_claim() {
 #[test]
 fn an_injected_block_declared_handler_still_captures_the_following_run() {
     // Issue #2068: the conventions-module handler this fixture stands in
-    // for is `@[element(claims = "^(?<name>[A-Z]+)$", block)] fn cue(name:
-    // string, body: content) { ... }` — declared `block` in ANOTHER file,
+    // for is `@[convention(claims = "^(?<name>[A-Z]+)$", order = 10, block)]
+    // fn cue(name: string, body: content) { ... }` — declared `block` in
+    // ANOTHER file,
     // matched here purely via cross-file injection (`external`, no local
     // declaration of `cue` at all). Before #2068 `ExternalClaimHandler`
     // had no `block` field, so `element::collect`'s external branch always

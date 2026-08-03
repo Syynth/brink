@@ -233,6 +233,45 @@ fn annotation_arg_key_value_string() {
     );
 }
 
+/// Issue #2164: the key/value clause form widened to a bare-integer value
+/// (`@[convention(claims = "…", order = 30)]`) — the ordering key is
+/// RULED a bare integer (`docs/decision-log.md` 2026-08-03), not a quoted
+/// string. `eq_value` (the string reader) must find nothing here;
+/// `eq_int_value` reads the parsed `i64`.
+#[test]
+fn annotation_arg_key_value_integer() {
+    let src = "@[convention(order = 30)]\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let line = annotation_line_node(&p);
+    assert_eq!(line.name_token().unwrap().text(), "convention");
+    let args = line.args().expect("ANNOTATION_ARGS");
+    let arg = args.args().next().expect("ANNOTATION_ARG");
+    assert_eq!(arg.name_token().unwrap().text(), "order");
+    assert!(
+        arg.eq_value().is_none(),
+        "must not be read as a string value"
+    );
+    let int_lit = arg.eq_int_value().expect("eq_int_value");
+    assert_eq!(int_lit.value(), Some(30));
+}
+
+/// A negative bare-integer `order` value is not accepted by the grammar —
+/// there is no unary-minus production inside an annotation clause value,
+/// matching the every-other-numeric-literal-shape posture this grammar
+/// already takes. Documented here rather than silently accepted: `-5`
+/// lexes as its own `-` token, which desyncs the same way a non-string,
+/// non-integer right-hand side already does (`annotation_arg`'s own doc).
+#[test]
+fn annotation_arg_key_value_negative_integer_is_a_parse_error() {
+    let src = "@[convention(order = -5)]\n";
+    let p = assert_lossless(src);
+    assert!(
+        !p.errors().is_empty(),
+        "expected a parse error for `order = -5`"
+    );
+}
+
 /// Two key/value clauses in one annotation, the `@[style(...)]` shape from
 /// the ruled example (`docs/prose-dialect-spec.md` §3.5b).
 #[test]

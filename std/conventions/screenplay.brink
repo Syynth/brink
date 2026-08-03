@@ -60,7 +60,8 @@
 // byte the same shape as `tests/tier1-native/conventions-screenplay-
 // preset/story.brink`, a project that inlines these exact declarations
 // (the only reachable way to exercise a claiming handler before #1840 —
-// single-file `@[element(claims = …)]` dispatch, issues #1838/#1839) and
+// single-file `@[convention(claims = …, order = N)]` dispatch, issues
+// #1838/#1839/#2164) and
 // pins the resulting transcript against a real compile + run. That test
 // is this preset's regression coverage; keep the two in sync.
 //
@@ -216,24 +217,24 @@ extern scene_entered(title, slug)
 fn scene_entered(title: string, slug: string) {
 }
 
-@[element(claims = "^(?<kind>INT|EXT)\\. (?<title>.+)$")]
+@[convention(claims = "^(?<kind>INT|EXT)\\. (?<title>.+)$", order = 10)]
 fn heading(kind: string, title: string) {
   scene_entered(title, "");
   return "-- {kind}. {title} --";
 }
 
-@[element(claims = "^(?<text>[A-Z][A-Z '-]*:)$")]
+@[convention(claims = "^(?<text>[A-Z][A-Z '-]*:)$", order = 20)]
 fn transition(text: string) {
   return text;
 }
 
-@[element(claims = "^(?<name>[A-Z][A-Z '-]*)$", block)]
+@[convention(claims = "^(?<name>[A-Z][A-Z '-]*)$", order = 30, block)]
 fn cue(name: string, body: content) >{
   {name}
   {body}
 }
 
-@[element(claims = "^(?<delivery>[a-z][a-z' -]*)$", block)]
+@[convention(claims = "^(?<delivery>[a-z][a-z' -]*)$", order = 40, block)]
 fn parenthetical(delivery: string, body: content) >{
   ({delivery})
   {body}

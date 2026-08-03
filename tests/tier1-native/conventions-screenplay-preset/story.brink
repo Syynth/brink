@@ -1,11 +1,14 @@
 // The built-in screenplay preset (issue #1720, `std/conventions/screenplay.brink`)
 // exercised end to end. Cross-file `use std::conventions::screenplay` is not
-// yet a real import (no std-module resolution exists in the compiler, and
-// `fn conventions()` registration/comptime is issue #1840, still open) — so
-// this fixture inlines the SAME four handler declarations the shipped
-// preset ships, proving the preset's own bodies dispatch correctly via the
-// mechanism that IS landed today (single-file `@[element(claims = …)]` +
-// `block` capture, issues #1838/#1839). Also inlines the `scene_entered`
+// yet a real import (no std-module resolution exists in the compiler; the
+// `fn conventions()` registration/comptime mechanism this used to depend on
+// was DISSOLVED by the 2026-08-03 ruling, `docs/decision-log.md`, in favor of
+// `order`-based precedence, so this is now purely a missing-import gap, not
+// a comptime one) — so this fixture inlines the SAME four handler
+// declarations the shipped preset ships, proving the preset's own bodies
+// dispatch correctly via the mechanism that IS landed today (single-file
+// `@[convention(claims = …, order = N)]` + `block` capture, issues
+// #1838/#1839/#2164). Also inlines the `scene_entered`
 // host extern + no-op fallback (issue #2092) `heading` now calls — this
 // fixture is driven with the default `FallbackHandler`
 // (`brink_test_harness::corpus::run_native_transcript`, no host bound), so
@@ -19,24 +22,24 @@ extern scene_entered(title, slug)
 fn scene_entered(title: string, slug: string) {
 }
 
-@[element(claims = "^(?<kind>INT|EXT)\\. (?<title>.+)$")]
+@[convention(claims = "^(?<kind>INT|EXT)\\. (?<title>.+)$", order = 10)]
 fn heading(kind: string, title: string) {
   scene_entered(title, "");
   return "-- {kind}. {title} --";
 }
 
-@[element(claims = "^(?<text>[A-Z][A-Z '-]*:)$")]
+@[convention(claims = "^(?<text>[A-Z][A-Z '-]*:)$", order = 20)]
 fn transition(text: string) {
   return text;
 }
 
-@[element(claims = "^(?<name>[A-Z][A-Z '-]*)$", block)]
+@[convention(claims = "^(?<name>[A-Z][A-Z '-]*)$", order = 30, block)]
 fn cue(name: string, body: content) >{
   {name}
   {body}
 }
 
-@[element(claims = "^(?<delivery>[a-z][a-z' -]*)$", block)]
+@[convention(claims = "^(?<delivery>[a-z][a-z' -]*)$", order = 40, block)]
 fn parenthetical(delivery: string, body: content) >{
   ({delivery})
   {body}

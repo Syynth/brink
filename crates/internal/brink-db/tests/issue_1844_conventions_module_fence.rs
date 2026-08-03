@@ -1,6 +1,6 @@
 //! Issue #1844 — the MODULE half of the 2026-07-31 §9.1 confinement ruling
 //! (`docs/decision-log.md` "Conventions are annotated handlers", item 4):
-//! a pattern-claiming `@[element(claims = "…")]` handler is legal only in
+//! a pattern-claiming `@[convention(claims = "…", order = N)]` handler is legal only in
 //! the project's configured conventions module (`brink.toml`'s `[project]
 //! elements`). Exercised end-to-end through `ProjectDb`'s salsa query layer
 //! — the same `db.analysis()` path `brink compile`/`brink check` and
@@ -18,7 +18,7 @@ use brink_analyzer::AnalysisOptions;
 use brink_db::ProjectDb;
 use brink_ir::DiagnosticCode;
 
-const CLAIMING_HANDLER: &str = "@[element(claims = \"^INT\\\\. (?<place>.+)$\")]\n\
+const CLAIMING_HANDLER: &str = "@[convention(claims = \"^INT\\\\. (?<place>.+)$\", order = 10)]\n\
     fn interior(place: content) {\n  return place;\n}\n";
 
 fn opts_with_elements(pointer: &str) -> AnalysisOptions {
@@ -79,7 +79,7 @@ fn only_the_non_configured_file_is_flagged_among_siblings() {
     db.set_analysis_options(opts_with_elements("conventions.brink"));
     db.set_file(
         "conventions.brink",
-        "@[element(claims = \"^A$\")]\nfn a() {\n  return \"a\";\n}\n\
+        "@[convention(claims = \"^A$\", order = 10)]\nfn a() {\n  return \"a\";\n}\n\
          flow main() {\n  hi\n}\n"
             .to_owned(),
     );

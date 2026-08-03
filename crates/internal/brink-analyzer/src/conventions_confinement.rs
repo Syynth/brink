@@ -101,9 +101,10 @@ pub fn conventions_module_diagnostics(
             range: handler.annotation,
             code: DiagnosticCode::E169,
             message: format!(
-                "`{name}` claims prose with `@[element(claims = \"…\")]`, but pattern-claiming \
-                 handlers may only be declared in the project's configured conventions module \
-                 (`brink.toml`'s `[project] elements = \"{pointer}\"`) — move `{name}` there",
+                "`{name}` claims prose with `@[convention(claims = \"…\", order = …)]`, but \
+                 pattern-claiming handlers may only be declared in the project's configured \
+                 conventions module (`brink.toml`'s `[project] elements = \"{pointer}\"`) — move \
+                 `{name}` there",
                 name = handler.name.text,
             ),
         })
@@ -122,7 +123,7 @@ mod tests {
         hir
     }
 
-    const CLAIMING_SRC: &str = "@[element(claims = \"^INT\\\\. (?<place>.+)$\")]\n\
+    const CLAIMING_SRC: &str = "@[convention(claims = \"^INT\\\\. (?<place>.+)$\", order = 10)]\n\
         fn interior(place: content) {\n  return place;\n}\n\
         flow main() {\n  INT. MARKET SQUARE\n}\n";
 
@@ -170,8 +171,8 @@ mod tests {
 
     #[test]
     fn one_diagnostic_per_declared_handler() {
-        let src = "@[element(claims = \"^A$\")]\nfn a() {\n  return \"a\";\n}\n\
-                   @[element(claims = \"^B$\")]\nfn b() {\n  return \"b\";\n}\n\
+        let src = "@[convention(claims = \"^A$\", order = 10)]\nfn a() {\n  return \"a\";\n}\n\
+                   @[convention(claims = \"^B$\", order = 20)]\nfn b() {\n  return \"b\";\n}\n\
                    flow main() {\n  hi\n}\n";
         let hir = build_native(src);
         assert_eq!(hir.claim_handlers.len(), 2, "{:?}", hir.claim_handlers);
@@ -186,7 +187,7 @@ mod tests {
         // `element_matches` would be empty — but the declaration itself is
         // what the confinement rule cares about (the module doc's
         // reasoning for why this can't be derived from `element_matches`).
-        let src = "@[element(claims = \"^INT\\\\. (?<place>.+)$\")]\n\
+        let src = "@[convention(claims = \"^INT\\\\. (?<place>.+)$\", order = 10)]\n\
                    fn interior(place: content) {\n  return place;\n}\n\
                    flow main() {\n  hi\n}\n";
         let hir = build_native(src);

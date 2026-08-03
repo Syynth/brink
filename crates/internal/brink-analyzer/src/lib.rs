@@ -163,8 +163,8 @@ pub struct AnalysisOptions {
     /// §3.4), if set: a built-in preset name or a project-relative path to
     /// the project's conventions module. `None` means no conventions
     /// module is configured. Consumed by the confinement check (issue
-    /// #1844, `E169`) that requires pattern-claiming `@[element(claims =
-    /// "…")]` handlers to live in the one file this names — resolving the
+    /// #1844, `E169`) that requires pattern-claiming `@[convention(claims =
+    /// "…", order = N)]` handlers to live in the one file this names — resolving the
     /// pointer against real project/module identity needs `brink-db`'s
     /// path machinery, so this crate only carries the raw string through,
     /// the same posture [`Self::types`]/[`Self::dialect`] have toward their

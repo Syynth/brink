@@ -1337,7 +1337,7 @@ pub enum DiagnosticCode {
     // ── Natural-notation element dispatch (issue #1838,
     //    `docs/decision-log.md` 2026-07-31 "Conventions are annotated
     //    handlers") ───────────────────────────────────────────────────────
-    /// A natural-notation `@[element(claims = "…")]` handler declares a
+    /// A natural-notation `@[convention(claims = "…", order = N)]` handler declares a
     /// parameter that its pattern never captures, so a claimed line has
     /// nothing to bind it to.
     ///
@@ -1352,16 +1352,17 @@ pub enum DiagnosticCode {
     /// alongside issue #1839's `block` declaration surface, which claimed
     /// `E166` first (merged into `main` first) — see that code's own doc.
     E167,
-    /// Two `@[element(claims = "…")]` handlers declare byte-identical
+    /// Two `@[convention(claims = "…", order = N)]` handlers declare byte-identical
     /// patterns, and the later-declared one never actually won a claim in
     /// this file — so it is dead code.
     ///
-    /// Issue #1848: the interim (pre-#1840) dispatch order is top-level
-    /// declaration order with first-match-wins (`hir::lower_native::
-    /// element::try_claim`'s own doc) — an undocumented rule until this
-    /// issue, and one with no diagnostic when two patterns can both claim
-    /// the same line. This is the *sound*,
-    /// narrow slice of that check: identical patterns provably match
+    /// Issue #1848: dispatch order is first-match-wins over the module's
+    /// claiming handlers, ordered by `@[convention]`'s required `order`
+    /// property (issue #2164 — declaration order, the interim pre-#2164
+    /// rule, no longer applies; `hir::lower_native::element::try_claim`'s
+    /// own doc) — an undocumented rule until this issue, and one with no
+    /// diagnostic when two patterns can both claim the same line. This is
+    /// the *sound*, narrow slice of that check: identical patterns provably match
     /// identical inputs, so the overlap is certain, not merely possible.
     ///
     /// A byte-identical twin is not *unconditionally* dead, though:
@@ -1386,7 +1387,7 @@ pub enum DiagnosticCode {
     /// dead code, not a hard error the way an unregistered claim (`E112`)
     /// is.
     E168,
-    /// A top-level `fn` carries an `@[element(claims = "…")]` pattern-
+    /// A top-level `fn` carries an `@[convention(claims = "…", order = N)]` pattern-
     /// claiming annotation, but this file is not the project's configured
     /// conventions module — the module half of the 2026-07-31 §9.1 ruling's
     /// item (4) asymmetry (issue #1844; #1838 landed the *placement* half,
@@ -1444,7 +1445,7 @@ pub enum DiagnosticCode {
     /// See also: `E168` (byte-identical patterns), `docs/prose-dialect-
     /// spec.md` §3.5b ("pattern power proportional to auditability").
     E170,
-    /// A natural-notation `@[element(claims = "…")]` handler declares a
+    /// A natural-notation `@[convention(claims = "…", order = N)]` handler declares a
     /// parameter, bound by a named capture, whose declared type is neither
     /// `string` nor absent nor `content` — `int`, `float`, `bool`, a
     /// struct name, a generic, or a `fn` type.
@@ -1453,8 +1454,8 @@ pub enum DiagnosticCode {
     /// closing part of #1838): `hir::lower_native::element::try_claim`
     /// binds **every** matched capture as a plain `Expr::String` literal,
     /// unconditionally, regardless of the receiving parameter's declared
-    /// type — so `@[element(claims = "^Take (?<n>\\d+)$")] fn take(n:
-    /// int)` could never actually receive an `int`. Numeric capture
+    /// type — so `@[convention(claims = "^Take (?<n>\\d+)$", order = N)] fn
+    /// take(n: int)` could never actually receive an `int`. Numeric capture
     /// coercion is `docs/prose-dialect-spec.md` §3.5b's own Deferred list
     /// — the underlying gap is ruled-deferred, not itself a bug — but
     /// leaving the mismatch silent is: without this check it was, and
@@ -1577,7 +1578,7 @@ pub enum DiagnosticCode {
     /// error rather than the silent no-op CLAUDE.md forbids.
     ///
     /// Native-only: the conventions module and `fn conventions()` are both
-    /// `.brink`-surface concepts (`@[element(claims = "…")]` handlers,
+    /// `.brink`-surface concepts (`@[convention(claims = "…", order = N)]` handlers,
     /// `brink.toml`'s `[project] elements`), same posture as `E169`.
     E175,
     /// A divert-with-args site (`-> knot(args)`, `->-> tunnel(args)`, or
@@ -1620,6 +1621,34 @@ pub enum DiagnosticCode {
     /// advisory rather than blocking, and is `[lints]`-configurable /
     /// `@[allow(E176)]`-suppressible like every other `Warning`-base code.
     E176,
+
+    // ── `@[convention]` / `@[element]` split (issue #2164,
+    //    `docs/decision-log.md` 2026-08-03) — E177 was reserved for #2156
+    //    at the time this range was assigned; #2156 landed as E176 only
+    //    (see above), leaving E177 itself unclaimed and unused ────────
+    /// A `@[convention(claims = "…")]` annotation with no `order` clause.
+    ///
+    /// `order` is **required**, not optional (`docs/decision-log.md`
+    /// 2026-08-03 "`order` is REQUIRED on `@[convention]`…"): a claiming
+    /// handler competes for lines it did not announce, so its precedence
+    /// against every other claiming handler in the same module must be
+    /// total, explicit, and authored — there is no default to fall back
+    /// to, and the compiler never infers one from declaration position.
+    /// Reported at the annotation line, the same posture `E159` already
+    /// takes for a missing/malformed `claims` value; yields no
+    /// `ConventionAnnotation` at all (never a partial one with a made-up
+    /// order).
+    E178,
+    /// Two `@[convention]` declarations in the same module carry the same
+    /// `order` value.
+    ///
+    /// Ties are **rejected**, not resolved (the same ruling as `E178`):
+    /// "there is no tie-breaking rule, because ties are rejected rather
+    /// than resolved." Reported against **every** conflicting declaration —
+    /// the duplicate-definition posture, not a single "first one wins,
+    /// second one is the problem" report — so an author sees the whole
+    /// conflicting group regardless of which one they open first.
+    E179,
 }
 
 impl DiagnosticCode {
@@ -1809,6 +1838,8 @@ impl DiagnosticCode {
         Self::E174,
         Self::E175,
         Self::E176,
+        Self::E178,
+        Self::E179,
     ];
 
     /// The stable string representation (e.g., `"E001"`).
@@ -1995,6 +2026,8 @@ impl DiagnosticCode {
             Self::E174 => "E174",
             Self::E175 => "E175",
             Self::E176 => "E176",
+            Self::E178 => "E178",
+            Self::E179 => "E179",
         }
     }
 
@@ -2260,22 +2293,22 @@ impl DiagnosticCode {
                 "inline markup attribute is not declared for this span kind in the host manifest"
             }
             Self::E166 => {
-                "a block `@[element(…, block)]` needs a trailing `content`-typed parameter that is not one of its own named captures"
+                "a block `@[element(…, block)]` / `@[convention(…, block)]` needs a trailing `content`-typed parameter that is not one of its own named captures"
             }
             Self::E167 => {
-                "a natural-notation `@[element(claims = \"…\")]` handler declares a parameter its pattern never captures"
+                "a `@[convention(claims = \"…\", order = N)]` handler declares a parameter its pattern never captures"
             }
             Self::E168 => {
-                "this `@[element(claims = \"…\")]` pattern is byte-identical to an earlier-declared handler's, and never won a claim of its own — it is dead code"
+                "this `@[convention(claims = \"…\", order = N)]` pattern is byte-identical to an earlier-declared handler's, and never won a claim of its own — it is dead code"
             }
             Self::E169 => {
-                "a pattern-claiming `@[element(claims = \"…\")]` handler is legal only in the project's configured conventions module (`brink.toml`'s `[project] elements`)"
+                "a pattern-claiming `@[convention(claims = \"…\", order = N)]` handler is legal only in the project's configured conventions module (`brink.toml`'s `[project] elements`)"
             }
             Self::E170 => {
-                "this `@[element(claims = \"…\")]` pattern can overlap with an earlier-declared handler's pattern — they silently race, with the earlier one winning"
+                "this `@[convention(claims = \"…\", order = N)]` pattern can overlap with an earlier-declared handler's pattern — they silently race, with the lower-`order` one winning"
             }
             Self::E171 => {
-                "a natural-notation `@[element(claims = \"…\")]` handler's captured parameter is declared `string`-incompatible — every capture binds as a plain string literal until numeric coercion lands"
+                "a `@[convention(claims = \"…\", order = N)]` handler's captured parameter is declared `string`-incompatible — every capture binds as a plain string literal until numeric coercion lands"
             }
             Self::E172 => {
                 "native: a `#…` tag beginning with `@` is the ink-dialect compiler-directive shape (`#@private`/`#@was`/`#@local`/…) — native has no such directive channel, so it lowers as an ordinary runtime tag"
@@ -2292,6 +2325,8 @@ impl DiagnosticCode {
             Self::E176 => {
                 "a divert-with-args site (`-> knot(args)`, tunnel call, or thread-start) supplies the wrong number of arguments for its resolved target's declared parameters"
             }
+            Self::E178 => "`@[convention(…)]` needs a required `order = N` clause",
+            Self::E179 => "two `@[convention]` declarations in this module carry the same `order`",
         }
     }
 
@@ -2543,6 +2578,8 @@ impl DiagnosticCode {
             "E174" => Some(Self::E174),
             "E175" => Some(Self::E175),
             "E176" => Some(Self::E176),
+            "E178" => Some(Self::E178),
+            "E179" => Some(Self::E179),
             _ => None,
         }
     }
