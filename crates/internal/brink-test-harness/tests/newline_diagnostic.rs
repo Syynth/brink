@@ -1103,10 +1103,19 @@ fn compile_intercept() -> brink_format::StoryData {
 
 #[test]
 fn runtime_intercept_step23_glue_not_dropped() {
-    // The full TheIntercept compiled from story.ink diverges at step 23:
-    // after choosing "Agree", the reply should include glued conditional
-    // text ("sipping at my tea...") but brink drops it entirely and
-    // jumps to the wrong part of the story.
+    // The full TheIntercept compiled from story.ink diverges around the
+    // "Agree" reply: it should include glued conditional text ("sipping at
+    // my tea...") but brink used to drop it entirely and jump to the wrong
+    // part of the story.
+    //
+    // Terminals carry no payload of their own (§7) — every `Step::Choices`
+    // that has leading text now costs one extra `continue_single` call
+    // compared to the old fused `Line` model (the text arrives first, as
+    // its own `Step::Line`, before the bare `Choices`), so this no longer
+    // pins an exact call count to reach the target line; it drives well
+    // past it (bounded so a real regression — e.g. an infinite loop —
+    // still fails loudly) and checks the glued text showed up anywhere
+    // along the way.
     let data = compile_intercept();
     let (program, line_tables) = brink_runtime::link(&data).expect("link failed");
     let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(
@@ -1114,30 +1123,23 @@ fn runtime_intercept_step23_glue_not_dropped() {
         line_tables,
     );
 
-    // Run e0 path (always pick choice 0), dumping state at the critical steps
-    let mut last_text = String::new();
-    for i in 0..24 {
-        // Dump state before the critical region (steps 21-23)
-        if (21..=23).contains(&i) {
-            println!("\n--- BEFORE step {i} ---");
-            println!("{}", story.debug_state());
-        }
+    // Run e0 path (always pick choice 0).
+    let mut saw_sipping = false;
+    for i in 0..64 {
         match story.continue_single() {
             Ok(brink_runtime::Step::Line(line)) => {
-                if i >= 20 {
-                    println!("step {i}: Text {:?}", line.text);
+                if line.text.contains("sipping") {
+                    saw_sipping = true;
                 }
-                last_text = line.text;
+                println!("step {i}: Text {:?}", line.text);
             }
             Ok(brink_runtime::Step::Done) => {
                 println!("step {i}: Done");
                 break;
             }
             Ok(brink_runtime::Step::Choices(choices)) => {
-                if i >= 20 {
-                    let names: Vec<_> = choices.iter().map(|c| c.text.as_str()).collect();
-                    println!("step {i}: Choices {names:?}");
-                }
+                let names: Vec<_> = choices.iter().map(|c| c.text.as_str()).collect();
+                println!("step {i}: Choices {names:?}");
                 story.choose(0).expect("choose");
             }
             Ok(brink_runtime::Step::End) => {
@@ -1148,15 +1150,15 @@ fn runtime_intercept_step23_glue_not_dropped() {
         }
     }
 
-    // Step 23 (oracle numbering) should be:
+    // The "Agree" reply should read:
     //   "Awkward," I reply, sipping at my tea as though we were old friends.
     // NOT just:
     //   "Awkward," I reply
     assert!(
-        last_text.contains("sipping"),
-        "TheIntercept step 23: expected glued conditional text 'sipping...', \
-         got: {last_text:?}. The Agree choice body's goto likely targets \
-         the wrong gather container.",
+        saw_sipping,
+        "TheIntercept: expected glued conditional text 'sipping...' \
+         somewhere along the e0 path. The Agree choice body's goto likely \
+         targets the wrong gather container.",
     );
 }
 

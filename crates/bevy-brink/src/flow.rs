@@ -1062,17 +1062,24 @@ mod tests {
         app.update(); // fulfill
 
         // Drive one line at a time to the choice via the exclusive driver
-        // (this is the recording path).
-        let advance_to_terminal = |app: &mut bevy_app::App| -> Step {
+        // (this is the recording path). Terminals carry no text of their
+        // own (§7) — any trailing content already arrived as its own
+        // preceding `Step::Line`, so this accumulates text across the
+        // whole drive rather than reading it off the terminal.
+        let advance_to_terminal = |app: &mut bevy_app::App| -> (String, Step) {
+            let mut text = String::new();
             loop {
                 let step = advance_flow::<()>(app.world_mut(), entity).expect("advance");
+                if let Step::Line(ref line) = step {
+                    text.push_str(&line.text);
+                }
                 if step.is_terminal() {
-                    return step;
+                    return (text, step);
                 }
             }
         };
 
-        let at_choice = advance_to_terminal(&mut app);
+        let (_, at_choice) = advance_to_terminal(&mut app);
         assert!(
             matches!(at_choice, Step::Choices(_)),
             "expected the choice page; got {at_choice:?}"
@@ -1100,11 +1107,10 @@ mod tests {
             flow.choose_recording(&mut view, &mut log, 0)
                 .expect("choose");
         }
-        let ended = advance_to_terminal(&mut app);
+        let (ended_text, _ended) = advance_to_terminal(&mut app);
         assert!(
-            ended.text().contains("Switch is ON."),
-            "live play should take the ON branch; got {:?}",
-            ended.text()
+            ended_text.contains("Switch is ON."),
+            "live play should take the ON branch; got {ended_text:?}"
         );
 
         // The query result must have been recorded.
