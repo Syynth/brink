@@ -110,6 +110,9 @@ pub(super) fn lower_lambda(
         params,
         return_type,
         body,
+        // Stamped later by `hir::stamp::stamp_container_ids` (issue #1727),
+        // once analysis has run and the whole file tree exists to walk.
+        container_id: None,
     }))
 }
 

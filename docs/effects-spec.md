@@ -457,11 +457,14 @@ in, so that write is recorded as untraced too) poisons the name, and
 those cases belong to §6.2 (manifest-declared host callbacks) and §6.3
 / §5 (the heap's type-row join).
 
-**Known gap — lambda literals.** A lambda's `DefinitionId` is minted
-during LIR lowering (`lir::lower::lambda`), downstream of HIR
-inference, so it has **no index symbol** to harvest and is out of scope
-for this mechanism. The obstacle is keyspace (no index symbol → no
-`DefKey`/SCC membership), not timing. Tracked separately (#1727).
+**Known gap — lambda literals.** A lambda's `DefinitionId` is now minted
+at HIR time (`hir::stamp_container_ids`, RULED 2026-08-02, #1727 —
+before that ruling it was minted during LIR lowering, downstream of HIR
+inference), but it still has **no index symbol** to harvest and is out
+of scope for this mechanism. The obstacle is keyspace (no index symbol
+→ no `DefKey`/SCC membership), not timing — #1727 closed the timing
+half; giving the lambda an index symbol so it can join the SCC solve is
+tracked separately (#1770).
 
 **Aliasing channel enumeration — RATIFIED 2026-07-31 (issues #1735,
 #1817; `docs/decision-log.md` "Fn-value aliasing-channel enumeration
@@ -654,8 +657,9 @@ joins it alongside the params and the return.
   `#fn` initializer (`signature::declared_fn_type`, declaration-derived)
   mint a concrete row; `bind` carries the callee's row through unchanged,
   since partial application never changes which def eventually runs.
-  Everything else — a written `fn(T…): R` annotation, a lambda (no
-  `DefinitionId` before LIR, #1727) — is the top element. A global cell's
+  Everything else — a written `fn(T…): R` annotation, a lambda (a
+  `DefinitionId` since #1727, but still no index symbol to key a row
+  against — #1770) — is the top element. A global cell's
   row is minted **once**, at `collect_globals` (`infer/mod.rs`), from
   `declared_fn_type`'s declaration-derived read alone; `BodyCtx::globals`
   (`infer/body.rs`) is a read-only map that body inference only ever

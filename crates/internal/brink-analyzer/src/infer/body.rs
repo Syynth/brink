@@ -2549,11 +2549,14 @@ impl InferPass<'_, '_> {
     /// The effect row is the unknown top element. `Ty::Fn` does carry a
     /// [`FnRow`] since #1680 step 3, but a `FnRow` names **creation
     /// targets** by `DefinitionId` (the keys §7's row table is looked up
-    /// by), and a lambda has no such id at inference time — it is minted in
-    /// LIR by `IdAllocator::alloc_lambda_address` (#1727). Until that
-    /// keyspace gap closes, an honest "unknown" is the only sound row a
-    /// lambda can carry — which is precisely the coordination issue #1685
-    /// flagged.
+    /// by), and a lambda has no such id **at inference time** — inference
+    /// runs before `hir::stamp_container_ids` does (that pass "must be
+    /// called after analysis" — see its own doc), so even though a lambda's
+    /// id is now minted at HIR time rather than in LIR (issue #1727,
+    /// `hir::LambdaExpr::container_id`), it still doesn't exist yet at the
+    /// point this function runs. Until the SCC-joining half of that gap
+    /// closes (#1770), an honest "unknown" is the only sound row a lambda
+    /// can carry — which is precisely the coordination issue #1685 flagged.
     ///
     /// Composing a real row here would be **necessary but not sufficient**
     /// to make a lambda's row reachable through a live fn value — the
@@ -2564,15 +2567,15 @@ impl InferPass<'_, '_> {
     /// gives the lambda no row of its own, and nothing downstream can mint
     /// one either: `populate_effect_rows` keys the shipped
     /// `DefinitionId → row` table off `inferable_defs_from_index`, i.e.
-    /// `SymbolKind::Knot | SymbolKind::Stitch` symbols, whereas a lifted
-    /// lambda's `DefinitionId` is minted by
-    /// `lir::lower::context::IdAllocator::alloc_lambda_address` and is never
-    /// an indexed symbol at all — a keyspace gap, not a phase-order one. So
-    /// effects-spec §7's "a live fn value is a token; its row is a table
-    /// lookup" currently *misses* for every lambda token, which blocks the
-    /// shipped-table/§7-narrowing path (§6 item 4, an optional host
-    /// optimization) — not #1680's own analyzer-side work, which has
-    /// landed (Fork D retired T1c item 4's row field outright). Pinned by
+    /// `SymbolKind::Knot | SymbolKind::Stitch` symbols, and a lambda literal
+    /// still has no index symbol / `DefKey` of its own (#1727 minted a
+    /// stable id, not a `SymbolIndex` entry — see that issue's ruling) — a
+    /// keyspace gap, not a phase-order one. So effects-spec §7's "a live fn
+    /// value is a token; its row is a table lookup" currently *misses* for
+    /// every lambda token, which blocks the shipped-table/§7-narrowing path
+    /// (§6 item 4, an optional host optimization) — not #1680's own
+    /// analyzer-side work, which has landed (Fork D retired T1c item 4's row
+    /// field outright). Pinned by
     /// `brink-db/tests/issue_1680_lambda_effect_row_gap.rs`.
     #[expect(
         clippy::too_many_lines,
@@ -3006,11 +3009,15 @@ impl InferPass<'_, '_> {
             None => body_ty,
         };
         // The effect row stays at the top element. A lambda's lifted
-        // `DefinitionId` is minted in LIR (`alloc_lambda_address`), so it has
-        // no id at inference time to *name* as a creation target — the
-        // keyspace gap #1727 tracks. `FnRow` keys the shipped
-        // `DefinitionId → row` table (§7), so an honest "unknown" is the only
-        // sound row a lambda can carry until that gap closes.
+        // `DefinitionId` is now minted at HIR time (`hir::
+        // stamp_container_ids`, issue #1727) rather than in LIR, but that
+        // pass runs *after* analysis, so there is still no id at inference
+        // time to *name* as a creation target — and even once stamped, a
+        // lambda literal has no index symbol / `DefKey` for the SCC solve
+        // to key a row against (#1770's keyspace gap, not this one). `FnRow`
+        // keys the shipped `DefinitionId → row` table (§7), so an honest
+        // "unknown" is the only sound row a lambda can carry until that
+        // closes.
         Ty::Fn(params, Box::new(ret), FnRow::unknown())
     }
 
@@ -4655,6 +4662,7 @@ mod tests {
                 ))],
                 tail: None,
             },
+            container_id: None,
         };
 
         pass.infer_lambda(&lambda);
@@ -4748,6 +4756,7 @@ mod tests {
                 ))],
                 tail: None,
             },
+            container_id: None,
         };
 
         pass.infer_lambda(&lambda);
@@ -4886,6 +4895,7 @@ mod tests {
                 ],
                 tail: None,
             },
+            container_id: None,
         };
 
         pass.infer_lambda(&lambda);
@@ -5021,6 +5031,7 @@ mod tests {
                     range: x_arg_range,
                 })],
             ))),
+            container_id: None,
         };
 
         pass.infer_lambda(&lambda);
@@ -5103,6 +5114,7 @@ mod tests {
                     range: range(20, 21),
                 }))),
             },
+            container_id: None,
         };
 
         let ty = pass.infer_lambda(&lambda);
@@ -5162,6 +5174,7 @@ mod tests {
                 }],
                 range: range(20, 21),
             }))),
+            container_id: None,
         };
 
         let ty = pass.infer_lambda(&lambda);
@@ -5229,6 +5242,7 @@ mod tests {
                 }],
                 range: range(20, 21),
             }))),
+            container_id: None,
         };
 
         let ty = pass.infer_lambda(&lambda);
@@ -5288,6 +5302,7 @@ mod tests {
             body: brink_ir::LambdaBody::Expr(Box::new(Expr::String(brink_ir::StringExpr {
                 parts: vec![brink_ir::StringPart::Literal("wrong".to_string())],
             }))),
+            container_id: None,
         };
 
         let ty = pass.infer_lambda(&lambda);
@@ -5381,6 +5396,7 @@ mod tests {
                 })],
                 tail: None,
             },
+            container_id: None,
         };
 
         let ty = pass.infer_lambda(&lambda);
@@ -5471,6 +5487,7 @@ mod tests {
                 })],
                 tail: None,
             },
+            container_id: None,
         };
 
         let ty = pass.infer_lambda(&lambda);

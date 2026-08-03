@@ -1429,10 +1429,10 @@ pub struct FnLiteral {
 ///   lowering (`hir::lower_native::lambda`, `E156`).
 /// - **An effect row.** Lambdas are fn-colored always, and rows compose
 ///   through captures (#872). `Ty::Fn` carries an effect row since #1680
-///   step 3, but that row names creation targets by `DefinitionId` and a
-///   lambda has none until LIR mints it (#1727) — so there is still
-///   nothing here to put one in. Recording an invented row would be worse
-///   than recording none; see issue #1685's coordination note.
+///   step 3, but that row names creation targets by `DefinitionId` — this
+///   node now carries one ([`Self::container_id`]), stamped at HIR time
+///   (#1727), so the identity half of the gap is closed; joining the
+///   effect fixpoint on that identity is #1770's job, not this shape's.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LambdaExpr {
     /// The whole `|…| …` expression's own source range — the identity key a
@@ -1449,6 +1449,33 @@ pub struct LambdaExpr {
     pub return_type: Option<TypeExpr>,
     /// The body: one expression, or a braced block.
     pub body: LambdaBody,
+    /// This lambda's lifted-function identity (issue #1727), stamped by
+    /// [`super::stamp_container_ids`] from the exact same content-derived
+    /// scheme `IdAllocator::alloc_lambda_address` used to derive
+    /// independently: `{enclosing scope path}.#lambda-{source start
+    /// offset}`.
+    ///
+    /// RULED 2026-08-02 (`docs/decision-log.md`): HIR **mints** this id;
+    /// LIR lowering (`lir::lower::lambda::lower_lambda`) only **consumes**
+    /// it. Before this ruling, LIR derived the same identity a second time
+    /// from its own live `ctx.scope_path` — which is mutated while
+    /// descending into a `Conditional`/`Sequence`/`ChoiceSet` body, so a
+    /// lambda nested inside one got a path the HIR-time stamping pass (which
+    /// walked only `root_content`/knot/stitch bodies, never expressions)
+    /// could not reproduce. Removing the second derivation removes the
+    /// id-parity problem outright rather than trying to keep two
+    /// derivations in sync.
+    ///
+    /// `None` for a `LambdaExpr` that never ran
+    /// [`super::stamp_container_ids`] — a hand-built test fixture, or a
+    /// file-scope `VAR`/`CONST` lambda default folded from `brink-db`'s
+    /// decl-only projection (issue #1774), which deliberately skips
+    /// stamping to backdate across body-only edits. `lower_lambda` falls
+    /// back to re-deriving the id from the live `ctx.scope_path` in that
+    /// case (not `ctx.root_id`, unlike every other pre-stamped container id
+    /// — see that function's own doc for why a lambda's fallback needs to
+    /// differ).
+    pub container_id: Option<brink_format::DefinitionId>,
 }
 
 /// A [`LambdaExpr`]'s body — the two ruled spellings ("single-expression or

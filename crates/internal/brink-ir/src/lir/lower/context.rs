@@ -421,18 +421,30 @@ impl IdAllocator {
         id
     }
 
-    /// Allocate an address id for a lambda-lifted function (issue #1709),
-    /// returning it alongside the **qualified** path string.
+    /// Qualify a lambda-lifted function's scope-relative path with the
+    /// current [`set_path_prefix`](Self::set_path_prefix) prefix — the
+    /// **name** string codegen reads off `Container::name` to derive
+    /// `path_hash` and its address path (issue #1709).
     ///
-    /// [`alloc_address`](Self::alloc_address) keeps the qualification
-    /// private; a lifted function needs it back out, because the container
-    /// is emitted at top level and codegen derives its `path_hash` and
-    /// address path from `Container::name`. Handing back the same string
-    /// the id was hashed from keeps the two spellings of one identity from
-    /// drifting.
-    pub fn alloc_lambda_address(&mut self, path: &str) -> (DefinitionId, String) {
-        let qualified = qualify_path(&self.path_prefix, path).into_owned();
-        (self.alloc_address(path), qualified)
+    /// RULED 2026-08-02 (`docs/decision-log.md`, issue #1727): this
+    /// allocator no longer *mints* a lifted lambda's `DefinitionId` as its
+    /// primary source of truth — it only re-derives the display-name
+    /// spelling here. The identity itself is minted once, upstream, by
+    /// `hir::stamp::stamp_container_ids` (`hir::LambdaExpr::container_id`);
+    /// the caller (`lir::lower::lambda::lower_lambda`) reads that id
+    /// directly rather than asking this allocator to hash a path again for
+    /// every lambda the stamping pass reaches. Before this ruling, that
+    /// second hash used the *live* `ctx.scope_path` — which mutates while
+    /// descending into a `Conditional`/`Sequence`/`ChoiceSet` body — so a
+    /// lambda nested inside one got a path the HIR-time stamping pass
+    /// (which, pre-#1727, never walked expressions at all) could never
+    /// reproduce byte-for-byte. Removing that as the *primary* derivation
+    /// removes the id-parity problem outright; see `lower_lambda`'s own doc
+    /// for the one narrow, structurally-safe position (a file-scope decl
+    /// default) that still falls back to hashing `ctx.scope_path` here.
+    #[must_use]
+    pub fn qualify_lambda_path(&self, path: &str) -> String {
+        qualify_path(&self.path_prefix, path).into_owned()
     }
 
     /// Allocate the next sequential index for a conditional or sequence scope.

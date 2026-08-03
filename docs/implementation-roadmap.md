@@ -283,9 +283,15 @@ its seven-sibling audit (#1764).
   `EXTERNAL` was authored.
 - **#1737** (span nesting an inline conditional) is blocked by
   `prose-dialect-spec` §4.4/§4.5, which label that interaction still-open.
-- **#1727** (HIR-time index symbol for lifted lambdas) is blocked by a real
-  sequencing conflict: `stamp_container_ids` runs *after* `symbol_index_query`,
-  but the lambda's index entry must exist *before* `inferable_defs_query`.
+- **#1727** — RULED 2026-08-02 and delivered: HIR mints a lifted lambda's
+  identity (`hir::stamp_container_ids`, `hir::LambdaExpr::container_id`) and
+  LIR lowering only consumes it, closing the id-parity problem the original
+  "mint an index symbol" framing ran into (`stamp_container_ids` running
+  *after* `symbol_index_query`, while an index entry needs to exist *before*
+  `inferable_defs_query`). Giving the lambda an actual `SymbolIndex` entry /
+  `DefKey` so it can join the effect fixpoint's SCC solve is **#1770**'s job,
+  not this one's — that sequencing question is still open, just no longer
+  blocking the identity half.
 - **#1774** — may a native `var`/`const` hold a fn value? — decides whether
   #1764's seven analyzer walks are live at all.
 - **#1730** (native `fmt` has no `.brink` pipeline) blocks **#1718**;

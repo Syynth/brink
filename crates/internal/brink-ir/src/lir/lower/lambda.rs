@@ -40,46 +40,47 @@
 //! entered by an explicit `EnterContainer`/`Goto`/call, never by falling
 //! off the end of a parent, so a top-level lifted function is unreachable
 //! except through its own fn value. Its identity is content-derived
-//! (`{enclosing scope path}.#lambda-{start offset}`), so a fresh
-//! `IdAllocator` in a per-chunk salsa memo mints the same `DefinitionId`
-//! the whole-project walk does (the FG-4d history-independence gate).
+//! (`{enclosing scope path}.#lambda-{start offset}`) and, since issue
+//! #1727, **minted once, at HIR time** (`hir::stamp::stamp_container_ids`,
+//! `hir::LambdaExpr::container_id`) for every lambda that pass reaches —
+//! this module only reads it (`l.container_id`) rather than re-deriving it
+//! from LIR's own live `ctx.scope_path`; see [`lower_lambda`]'s own doc for
+//! the one narrow, structurally-safe position that still falls back to the
+//! old re-derivation. A fresh `IdAllocator` in a per-chunk salsa memo still
+//! reaches the same `DefinitionId` the whole-project walk does (the FG-4d
+//! history-independence gate) — for every stamped lambda trivially so now,
+//! since both walks read the same pre-stamped HIR field rather than each
+//! hashing their own path.
 //!
 //! ## What lifting still cannot express
 //!
 //! Effect rows. Lambdas are fn-colored always and rows compose through
 //! captures (#872). `Ty::Fn` has carried an effect row since #1680 step 3,
-//! but that row names **creation targets** by `DefinitionId`, and a
-//! lambda's id is minted right here in LIR — after inference — so a lifted
-//! lambda's row is still unrepresentable (#1727), and the pure trio's
-//! pure-required contract (`brink_analyzer::comparator_contract`'s E119)
-//! stays unable to see through a fn value. That gate checks inline
-//! `#fn(target)` callbacks only; a lambda callback is residual, exactly as
-//! gradual typing intends, and the runtime's dev-mode write guard
-//! (`vm::guard_comparator_write`) remains the backstop. Nothing here fakes
-//! that enforcement.
-//!
-//! There is a second, *structural* half to that gap, and it lives here
-//! rather than in the analyzer: the `DefinitionId` this module mints is
-//! never a key in the shipped `DefinitionId → row` table. That table
+//! but that row names **creation targets** by `DefinitionId`, and while a
+//! lambda now has one that is stable and HIR-minted (#1727), it is still
+//! not a key in the shipped `DefinitionId → row` table. That table
 //! (`StoryData::effect_rows`) is populated by `brink-db`'s
 //! `populate_effect_rows` from `inferable_defs_from_index`, which is
 //! `index.symbols` filtered to `SymbolKind::Knot | SymbolKind::Stitch`; a
 //! lambda is an inline `hir::Expr::Lambda`, never an indexed symbol, so it
 //! has no `DefKey`/SCC membership and no iteration of that set can ever
-//! yield one — the obstacle is the keyspace, not the order the id and the
-//! rows are minted in (`IdAllocator::alloc_lambda_address` has already run,
-//! by construction, by the time `populate_effect_rows` executes later in
-//! the same `story_data_query`). Consequence: effects-spec §7's "a live fn
-//! value is a token; its row is a table lookup" has nothing to find for a
-//! lambda token — that blocks the shipped-table/§7-narrowing path for
-//! lambda tokens (§6 item 4, an optional host optimization) and,
-//! conditionally, T1c item 4's row field if that is ruled to be an id
-//! reference rather than an inline row. It did not block #1680's own
-//! analyzer-side work (rows on `Ty::Fn`, the unifier row join, §6.1
-//! row-polymorphism), all of which has landed. Sound today only because
-//! `InferPass::infer_lambda`
-//! absorbs the body's atoms into the enclosing definition's row
-//! (over-reporting, spec §3). Pinned by
+//! yield one — closing that (joining the lambda's own row into the effect
+//! fixpoint) is #1770's job, not this module's. Consequence: effects-spec
+//! §7's "a live fn value is a token; its row is a table lookup" still has
+//! nothing to find for a lambda token — that blocks the shipped-table/
+//! §7-narrowing path for lambda tokens (§6 item 4, an optional host
+//! optimization) and, conditionally, T1c item 4's row field if that is
+//! ruled to be an id reference rather than an inline row. It did not block
+//! #1680's own analyzer-side work (rows on `Ty::Fn`, the unifier row join,
+//! §6.1 row-polymorphism), all of which has landed. Sound today only
+//! because `InferPass::infer_lambda` absorbs the body's atoms into the
+//! enclosing definition's row (over-reporting, spec §3). Also unaffected:
+//! the pure trio's pure-required contract
+//! (`brink_analyzer::comparator_contract`'s E119) still can't see through a
+//! fn value — that gate checks inline `#fn(target)` callbacks only; a
+//! lambda callback is residual, exactly as gradual typing intends, and the
+//! runtime's dev-mode write guard (`vm::guard_comparator_write`) remains
+//! the backstop. Pinned by
 //! `brink-db/tests/issue_1680_lambda_effect_row_gap.rs`.
 
 use brink_format::CountingFlags;
@@ -137,7 +138,37 @@ pub(super) fn lower_lambda(l: &hir::LambdaExpr, ctx: &mut LowerCtx<'_>) -> lir::
         })
         .collect();
 
-    let (id, path) = ctx.ids.alloc_lambda_address(&lambda_scope_path(l, ctx));
+    // Issue #1727: the identity is HIR-minted (`hir::stamp::
+    // stamp_container_ids`, `l.container_id`) for every lambda that pass
+    // walks — this only re-derives the display-name spelling from it.
+    //
+    // The `unwrap_or_else` fallback re-derives the id the pre-#1727 way
+    // (hashing the *live* `ctx.scope_path`) rather than defaulting to
+    // `ctx.root_id` the way every other pre-stamped container id
+    // (`CondBranch::container_id`, `Sequence::container_id`, …) does — a
+    // root-id collision would be actively worse here: two different
+    // lifted functions silently sharing one container id, rather than one
+    // recognizable "should not happen" address. It is exercised by exactly
+    // one still-legitimate caller today: `decls::eval_const_lambda`'s
+    // file-scope `VAR`/`CONST` lambda default (issue #1774) is folded from
+    // `brink-db`'s `decl_hir_query` projection, which deliberately never
+    // runs `stamp_container_ids` (it exists precisely to backdate across
+    // body-only edits — see that query's doc). That position is exactly
+    // the one shape the pre-#1727 derivation never had an id-parity
+    // problem with in the first place: a decl default is a bare
+    // expression, never nested inside a `Conditional`/`Sequence`/
+    // `ChoiceSet` body, so `ctx.scope_path` is always empty there and the
+    // re-derivation below is always byte-identical to what stamping would
+    // have produced. A future caller that reaches here with neither a
+    // stamped id nor an empty `ctx.scope_path` would silently recreate the
+    // id-parity bug this issue closed — not expected to exist today (every
+    // real body-lambda path runs through `stamp_container_ids` first), but
+    // worth naming precisely because the failure mode is silent.
+    let relative = lambda_scope_path(l, ctx);
+    let path = ctx.ids.qualify_lambda_path(&relative);
+    let id = l
+        .container_id
+        .unwrap_or_else(|| ctx.ids.alloc_address(&relative));
 
     let borrowed_names: Vec<&str> = param_names.iter().map(String::as_str).collect();
     let (body, children) = {

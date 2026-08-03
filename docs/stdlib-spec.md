@@ -197,8 +197,9 @@ cross-referenced so views ≠ projections.
   proven only when the reference resolves to a real function
   definition, the same two conjuncts `lower_path`'s `MakeFnValue` arm
   gates lowering on. An inline lambda argument is a separate,
-  explicitly deferred hole — see #1887's scope and #1709/#1727 — a
-  lambda has no `DefinitionId` until LIR lowering mints one.)*
+  explicitly deferred hole — see #1887's scope and #1709/#1727/#1770 — a
+  lambda's `DefinitionId` is minted at HIR time since #1727, but it still
+  has no index symbol for E119's origin-tracing to key against (#1770).)*
 - 🔶 **Mutating iteration — `for ref m in maps { m[k] = v }`**
   (proposed; arose from the §5 array-of-maps case): a ref-binding
   in `for` over arrays, desugaring to index-based access so
