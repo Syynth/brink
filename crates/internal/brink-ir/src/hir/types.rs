@@ -125,7 +125,9 @@ pub struct HirFile {
     /// every pass that already holds an `HirFile` gets it for free.
     pub native: bool,
     /// Every natural-notation claiming handler *declared* in this file
-    /// (issue #1844), in source order — independent of whether it ever
+    /// (issue #1844), in ascending `@[convention]` `order` (issue #2164,
+    /// `docs/decision-log.md` 2026-08-03 — declaration position no longer
+    /// has any bearing on precedence) — independent of whether it ever
     /// claimed a line; see [`ClaimHandlerDecl`]'s own doc for why this is
     /// not derivable from `element_matches`. Populated by the native
     /// frontend (`hir::lower_native::element::collect`); always empty for

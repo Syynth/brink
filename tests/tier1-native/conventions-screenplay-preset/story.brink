@@ -1,12 +1,14 @@
 // The built-in screenplay preset (issue #1720, `std/conventions/screenplay.brink`)
 // exercised end to end. Cross-file `use std::conventions::screenplay` is not
-// yet a real import (no std-module resolution exists in the compiler, and
-// `fn conventions()` registration/comptime is issue #1840, still open) — so
-// this fixture inlines the SAME four handler declarations the shipped
-// preset ships, proving the preset's own bodies dispatch correctly via the
-// mechanism that IS landed today (single-file `@[convention(claims = …,
-// order = N)]` + `block` capture, issues #1838/#1839/#2164). Also inlines
-// the `scene_entered`
+// yet a real import (no std-module resolution exists in the compiler; the
+// `fn conventions()` registration/comptime mechanism this used to depend on
+// was DISSOLVED by the 2026-08-03 ruling, `docs/decision-log.md`, in favor of
+// `order`-based precedence, so this is now purely a missing-import gap, not
+// a comptime one) — so this fixture inlines the SAME four handler
+// declarations the shipped preset ships, proving the preset's own bodies
+// dispatch correctly via the mechanism that IS landed today (single-file
+// `@[convention(claims = …, order = N)]` + `block` capture, issues
+// #1838/#1839/#2164). Also inlines the `scene_entered`
 // host extern + no-op fallback (issue #2092) `heading` now calls — this
 // fixture is driven with the default `FallbackHandler`
 // (`brink_test_harness::corpus::run_native_transcript`, no host bound), so
