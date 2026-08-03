@@ -986,7 +986,7 @@ mod proptest_divert {
     /// scoping note about not touching that file this wave — but the
     /// keyword set it must avoid is the same grammar).
     const KEYWORDS: &[&str] = &[
-        "flow", "fn", "var", "const", "let", "flags", "struct", "extern", "import", "use",
+        "pub", "flow", "fn", "var", "const", "let", "flags", "struct", "extern", "import", "use",
         "module", "return", "ref", "if", "match", "else", "while", "for", "in", "until", "break",
         "continue", "as", "or", "true", "false", "END", "DONE",
     ];

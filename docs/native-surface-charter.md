@@ -380,6 +380,23 @@ vocabulary.
   story::market::{barter, haggle};`), with the ceremony owned by
   tooling (auto-import inserts, fmt organizes) — neither the
   writer nor their agent types it by hand.
+- **`pub` is the visibility marker** (issue #1582, RULED
+  2026-08-03): a native `flow`, `fn`, `var`, `const`, `struct`,
+  `extern`, or `flags` declaration opts into cross-module
+  visibility by writing `pub` immediately before its keyword
+  (`pub fn heading(...) { ... }`). Absent `pub`, a declaration
+  stays **Private** — a declared module's already-ratified
+  2026-07-23 default. `pub` is the native spelling of the brink
+  dialect's `#@public` tag directive; it produces the same
+  `VisibilityMark::Public` `effective_visibility` (M-2,
+  `docs/modules-spec.md` §4) already consumes. Grammar ordering
+  (pinned, not separately ruled): a leading `///` doc comment and
+  any `@[…]` annotation lines both sit ABOVE `pub`, in that order
+  — `@[element(…)]` then `pub fn`, mirroring Rust's
+  `#[derive(…)] pub struct`. `import`/`use`/`module` do not take
+  `pub` (no `VisibilityMark` slot); neither do the ink dialect's
+  own `===knot===`/`=stitch=` declarations (a different crate,
+  untouched by this marker).
 - **Saves/wire always record absolute paths** regardless of
   imports (DefinitionId = (module, name) as ruled; the #719
   save-stability landmine stays defused).

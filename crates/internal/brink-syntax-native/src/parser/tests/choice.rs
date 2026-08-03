@@ -750,7 +750,7 @@ mod choice_proptests {
     /// "well-formed input round-trips with zero errors" property below for
     /// reasons unrelated to what this generator is testing.
     const KEYWORDS: &[&str] = &[
-        "flow", "fn", "var", "const", "let", "flags", "struct", "extern", "import", "use",
+        "pub", "flow", "fn", "var", "const", "let", "flags", "struct", "extern", "import", "use",
         "module", "return", "ref", "if", "match", "else", "while", "for", "in", "until", "break",
         "continue", "as", "or", "true", "false", "END", "DONE",
     ];

@@ -320,6 +320,16 @@ impl FlowDecl {
     pub fn doc(&self) -> Option<DocComment> {
         support::child(&self.syntax)
     }
+
+    /// `true` if a `pub` keyword precedes this header (issue #1582, RULED
+    /// 2026-08-03): opts the declaration into `VisibilityMark::Public`
+    /// (`hir::lower_native::container::lower_top_level_container`/
+    /// `lower_stitch` read this to populate `Knot`/`Stitch::visibility`).
+    /// Absent, the declaration stays `Private` — the already-ratified
+    /// 2026-07-23 default, unchanged by this accessor.
+    pub fn is_pub(&self) -> bool {
+        support::token(&self.syntax, SyntaxKind::KW_PUB).is_some()
+    }
 }
 
 impl FnDecl {
@@ -347,6 +357,11 @@ impl FnDecl {
     /// The leading `///` doc comment, if one is attached (B0.6b).
     pub fn doc(&self) -> Option<DocComment> {
         support::child(&self.syntax)
+    }
+
+    /// See [`FlowDecl::is_pub`].
+    pub fn is_pub(&self) -> bool {
+        support::token(&self.syntax, SyntaxKind::KW_PUB).is_some()
     }
 }
 
@@ -421,6 +436,11 @@ impl VarDecl {
     pub fn doc(&self) -> Option<DocComment> {
         support::child(&self.syntax)
     }
+
+    /// See [`FlowDecl::is_pub`].
+    pub fn is_pub(&self) -> bool {
+        support::token(&self.syntax, SyntaxKind::KW_PUB).is_some()
+    }
 }
 
 /// Child-node kinds that precede a binding's initializer and must never be
@@ -453,6 +473,11 @@ impl ConstDecl {
     pub fn doc(&self) -> Option<DocComment> {
         support::child(&self.syntax)
     }
+
+    /// See [`FlowDecl::is_pub`].
+    pub fn is_pub(&self) -> bool {
+        support::token(&self.syntax, SyntaxKind::KW_PUB).is_some()
+    }
 }
 
 impl FlagsDecl {
@@ -467,6 +492,11 @@ impl FlagsDecl {
     /// The leading `///` doc comment, if one is attached (B0.6b).
     pub fn doc(&self) -> Option<DocComment> {
         support::child(&self.syntax)
+    }
+
+    /// See [`FlowDecl::is_pub`].
+    pub fn is_pub(&self) -> bool {
+        support::token(&self.syntax, SyntaxKind::KW_PUB).is_some()
     }
 }
 
@@ -499,6 +529,11 @@ impl StructDecl {
     /// The leading `///` doc comment, if one is attached (B0.6b).
     pub fn doc(&self) -> Option<DocComment> {
         support::child(&self.syntax)
+    }
+
+    /// See [`FlowDecl::is_pub`].
+    pub fn is_pub(&self) -> bool {
+        support::token(&self.syntax, SyntaxKind::KW_PUB).is_some()
     }
 }
 
@@ -612,6 +647,11 @@ impl ExternDecl {
     /// The leading `///` doc comment, if one is attached (B0.6b).
     pub fn doc(&self) -> Option<DocComment> {
         support::child(&self.syntax)
+    }
+
+    /// See [`FlowDecl::is_pub`].
+    pub fn is_pub(&self) -> bool {
+        support::token(&self.syntax, SyntaxKind::KW_PUB).is_some()
     }
 }
 

@@ -144,31 +144,41 @@ fn try_declaration(p: &mut Parser<'_, '_>, doc: Option<rowan::Checkpoint>) -> bo
     // sigil, so a prose line that happens to start with a reserved word
     // (`flow through the garden.`) must fall through to prose, not get
     // mis-parsed as a declaration header.
-    if super::decl::at_flow_decl(p) {
+    //
+    // `pub`? (native visibility marker, issue #1582, RULED 2026-08-03): an
+    // optional leading keyword on seven of these forms, ORed in below via
+    // `decl::at_pub_*` alongside each form's unprefixed guard. `pub`
+    // itself is never bumped here — each decl fn consumes its own
+    // optional leading `pub` internally (`decl::eat_pub`), right after
+    // `doc_comment::open_with_doc` opens the node, so the token lands as
+    // an ordinary child without ever competing with the leading `///`
+    // doc-comment wrap (see `decl::at_pub_flow_decl`'s doc for why folding
+    // `pub`'s consumption into the same checkpoint as `doc` is wrong).
+    if super::decl::at_flow_decl(p) || super::decl::at_pub_flow_decl(p) {
         super::decl::flow_decl(p, doc);
         return true;
     }
-    if super::decl::at_fn_decl(p) {
+    if super::decl::at_fn_decl(p) || super::decl::at_pub_fn_decl(p) {
         super::decl::fn_decl(p, doc);
         return true;
     }
-    if p.at(KW_VAR) && super::decl::at_binding_decl(p) {
+    if (p.at(KW_VAR) && super::decl::at_binding_decl(p)) || super::decl::at_pub_var_decl(p) {
         super::decl::var_decl(p, doc);
         return true;
     }
-    if p.at(KW_CONST) && super::decl::at_binding_decl(p) {
+    if (p.at(KW_CONST) && super::decl::at_binding_decl(p)) || super::decl::at_pub_const_decl(p) {
         super::decl::const_decl(p, doc);
         return true;
     }
-    if super::decl::at_flags_decl(p) {
+    if super::decl::at_flags_decl(p) || super::decl::at_pub_flags_decl(p) {
         super::decl::flags_decl(p, doc);
         return true;
     }
-    if super::decl::at_struct_decl(p) {
+    if super::decl::at_struct_decl(p) || super::decl::at_pub_struct_decl(p) {
         super::decl::struct_decl(p, doc);
         return true;
     }
-    if super::decl::at_extern_decl(p) {
+    if super::decl::at_extern_decl(p) || super::decl::at_pub_extern_decl(p) {
         super::decl::extern_decl(p, doc);
         return true;
     }

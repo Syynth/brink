@@ -48,6 +48,22 @@ pub enum SyntaxKind {
     // reserved everywhere, Rust-style, not contextual like ink's T1b
     // keywords — the charter doesn't rule this either way; RustScript's own
     // north star reserves them globally, so this is the coherent default) ──
+    /// `pub` — the native visibility marker (issue #1582, RULED
+    /// 2026-08-03, `docs/decision-log.md` "Native visibility marker: a
+    /// `pub` keyword"). Optionally precedes `flow`/`fn`/`var`/`const`/
+    /// `struct`/`extern`/`flags` (never `import`/`use`/`module`, which
+    /// have no [`crate::VisibilityMark`] slot to carry, and never a
+    /// knot/stitch — those are ink-dialect grammar, untouched here).
+    /// Produces the same `VisibilityMark::Public` the brink dialect's
+    /// `#@public` tag directive already does; absent, a declaration stays
+    /// `Private` (already ratified 2026-07-23, unchanged by this token).
+    /// Hard-reserved everywhere, like every other keyword in this section
+    /// (Finding #1) — a prose line whose first word is literally "pub"
+    /// still falls through to `body_line`'s generic `TEXT` fallback
+    /// exactly like an unmatched `flow`/`var`/… does today, since the
+    /// declaration-head lookahead (`parser/decl.rs::at_pub_decl`) only
+    /// commits when a legal declaration shape follows.
+    KW_PUB,
     /// `flow` — story-time container (Coloring axis, charter §3).
     KW_FLOW,
     /// `fn` — expression-time container (Coloring axis, charter §3).
@@ -843,6 +859,7 @@ impl SyntaxKind {
                 | Self::BLOCK_COMMENT
                 | Self::DOC_COMMENT_OUTER
                 | Self::DOC_COMMENT_INNER
+                | Self::KW_PUB
                 | Self::KW_FLOW
                 | Self::KW_FN
                 | Self::KW_VAR
@@ -945,7 +962,8 @@ impl SyntaxKind {
     pub fn is_keyword(self) -> bool {
         matches!(
             self,
-            Self::KW_FLOW
+            Self::KW_PUB
+                | Self::KW_FLOW
                 | Self::KW_FN
                 | Self::KW_VAR
                 | Self::KW_CONST
@@ -1066,6 +1084,7 @@ mod tests {
     #[test]
     fn keywords_are_tokens() {
         let keywords = [
+            SyntaxKind::KW_PUB,
             SyntaxKind::KW_FLOW,
             SyntaxKind::KW_FN,
             SyntaxKind::KW_VAR,

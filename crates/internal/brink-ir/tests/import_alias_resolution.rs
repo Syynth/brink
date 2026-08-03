@@ -27,10 +27,16 @@
 //! **Why the defining module is an `.ink` file**, matching
 //! `native_use_import_scope.rs`'s fixture: the referencing side is the
 //! dialect under test; the defining side needs a *public* symbol in a
-//! *declared* module, and native has no visibility syntax yet (`lower_native`
-//! leaves every declaration's visibility at `None`, and a declared module
-//! defaults `Private`, decision-log 2026-07-23) — `#@public` is the only
-//! spelling of "public in a declared module" available today.
+//! *declared* module. At the time this fixture was written native had no
+//! visibility syntax of its own (`lower_native` left every declaration's
+//! visibility at `None`, and a declared module defaults `Private`,
+//! decision-log 2026-07-23), so `#@public` was the only spelling of
+//! "public in a declared module" available. **That gap has since closed**
+//! (issue #1582, RULED 2026-08-03: native gained its own `pub` keyword —
+//! see `crates/internal/brink-ir/tests/native_pub_visibility.rs` for the
+//! fully-native regression). The ink-defining-module shape here is kept
+//! anyway, since it is also exercising the ink-side alias grammar
+//! (`IMPORT … AS`), which a fully-native fixture cannot cover.
 
 use brink_analyzer::{AnalysisOptions, Dialect, ModuleMap, ResolvedModule};
 use brink_ir::{DiagnosticCode, FileId, HirFile, SymbolManifest};
