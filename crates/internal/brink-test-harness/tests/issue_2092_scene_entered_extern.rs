@@ -4,24 +4,28 @@
 //! Before this issue, `std/conventions/screenplay.brink`'s `heading`
 //! handler could only emit plain display text — there was no extern for it
 //! to notify a host engine (e.g. `bevy-brink`) that a scene changed. This
-//! test drives the preset's own claim-handler source (the same
-//! `@[element(claims = …)]` declarations `std/conventions/screenplay.brink`
-//! ships, mirroring `tests/tier1-native/conventions-screenplay-preset/
-//! story.brink`'s established single-file pattern — see that fixture's own
+//! test reads the real, shipped preset source directly (mirroring
+//! `screenplay_preset_std_module.rs`'s `screenplay_preset_path()`) and
+//! appends a driving `flow main()` — the one file the native "tree-is-
+//! universe" + single-file-claim-dispatch mechanism requires today (see
+//! `tests/tier1-native/conventions-screenplay-preset/story.brink`'s own
 //! doc for why cross-file `use std::conventions::screenplay` isn't real
-//! yet) through the real native pipeline, binds a recording
+//! yet) — through the real native pipeline, binds a recording
 //! [`ExternalFnHandler`], and asserts `scene_entered` fires with the
 //! claimed `(title, slug)` in call order — proving the wiring is actually
 //! reached, not just that the preset still lowers.
 //!
-//! Reverting the production `scene_entered(title, "");` call in
-//! `heading`'s body (restoring the pre-#2092 shape) makes
+//! Because this test drives the real `std/conventions/screenplay.brink`
+//! file (not a hand-copied inline constant), reverting the production
+//! `scene_entered(title, "");` call in that file's `heading` body (restoring
+//! the pre-#2092 shape) makes
 //! [`scene_entered_fires_with_the_claimed_title_and_an_empty_slug`] fail
 //! with zero recorded calls — verified by hand before landing this file.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::cell::RefCell;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use brink_format::Value;
@@ -29,46 +33,36 @@ use brink_runtime::{ExternalFnHandler, ExternalResult, Step, Story};
 use brink_test_harness::ExploreConfig;
 use brink_test_harness::corpus::compile_and_explore_from_brink_native;
 
-/// Byte-for-byte the same four handler declarations
-/// `std/conventions/screenplay.brink` ships (plus the `scene_entered`
-/// extern + no-op fallback it now declares alongside `heading`), combined
-/// with a driving `flow main()` in the one file the native "tree-is-
-/// universe" + single-file-claim-dispatch mechanism requires today.
-const SCREENPLAY_PRESET_WITH_DRIVER: &str = "\
-extern scene_entered(title, slug)
-
-fn scene_entered(title: string, slug: string) {
+/// Repo-root-relative path to the shipped preset source, mirroring
+/// `screenplay_preset_std_module.rs`'s `screenplay_preset_path()`
+/// (`CARGO_MANIFEST_DIR` for this crate is
+/// `crates/internal/brink-test-harness`; three `..` reach the repo root).
+fn screenplay_preset_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("..")
+        .join("std")
+        .join("conventions")
+        .join("screenplay.brink")
 }
 
-@[element(claims = \"^(?<kind>INT|EXT)\\\\. (?<title>.+)$\")]
-fn heading(kind: string, title: string) {
-  scene_entered(title, \"\");
-  return \"-- {kind}. {title} --\";
+/// The real, shipped preset source plus a driving `flow main()` in the one
+/// file the native "tree-is-universe" + single-file-claim-dispatch
+/// mechanism requires today.
+fn screenplay_preset_with_driver() -> String {
+    let path = screenplay_preset_path();
+    let preset = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()));
+    format!(
+        "{preset}\n\
+flow main() {{\n\
+  INT. MARKET SQUARE - NIGHT\n\
+  The square is empty.\n\
+  -> END\n\
+}}\n"
+    )
 }
-
-@[element(claims = \"^(?<text>[A-Z][A-Z '-]*:)$\")]
-fn transition(text: string) {
-  return text;
-}
-
-@[element(claims = \"^(?<name>[A-Z][A-Z '-]*)$\", block)]
-fn cue(name: string, body: content) >{
-  {name}
-  {body}
-}
-
-@[element(claims = \"^(?<delivery>[a-z][a-z' -]*)$\", block)]
-fn parenthetical(delivery: string, body: content) >{
-  ({delivery})
-  {body}
-}
-
-flow main() {
-  INT. MARKET SQUARE - NIGHT
-  The square is empty.
-  -> END
-}
-";
 
 /// Records every external call it sees, resolving `scene_entered` to
 /// `Value::Null` (a fire-and-forget host notification) and falling back to
@@ -106,11 +100,10 @@ fn scene_entered_fires_with_the_claimed_title_and_an_empty_slug() {
     // `FallbackHandler`-driven episodes (which this test discards) — link
     // and drive the `StoryData` a second time here with a handler that can
     // actually observe the call.
-    let (story_data, _episodes) = compile_and_explore_from_brink_native(
-        SCREENPLAY_PRESET_WITH_DRIVER,
-        &ExploreConfig::default(),
-    )
-    .unwrap_or_else(|e| panic!("preset + driver must compile and link: {e}"));
+    let source = screenplay_preset_with_driver();
+    let (story_data, _episodes) =
+        compile_and_explore_from_brink_native(&source, &ExploreConfig::default())
+            .unwrap_or_else(|e| panic!("preset + driver must compile and link: {e}"));
 
     let (program, line_tables) =
         brink_runtime::link(&story_data).expect("compiled screenplay preset must link");
