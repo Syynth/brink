@@ -77,9 +77,28 @@ fn signature_memo_survives_unrelated_file_body_edit() {
 /// — otherwise an edit that only changes `AnalysisResult`'s diagnostics
 /// (never `index`/`resolutions`) forces a needless whole-project
 /// re-inference, since `AnalysisResult`'s `PartialEq` almost never
-/// backdates. Registering a host manifest that disagrees with an already-
-/// declared `EXTERNAL`'s arity is such an edit: it adds an `E039`
-/// diagnostic without touching the symbol index or any resolution.
+/// backdates.
+///
+/// Toggling [`brink_analyzer::ExternalCheckSeverity`] between `Off` and
+/// `Error` is such an edit: `external_check::analyze_externals`'s own
+/// `severity == Off => diags.clear()` gate is the *only* thing that reads
+/// this field, so it adds an `E039` diagnostic without touching the symbol
+/// index, any resolution, or (issue #1921) `collect_external_sigs`'s
+/// declaration-derived signature for `foo` — that reads only `host_manifest`
+/// (registered identically, unchanged, on both sides of this edit) and
+/// `inline_docs`, never `external_check`.
+///
+/// This scenario deliberately keeps the manifest *itself* constant across
+/// the edit (previously this test registered the manifest only on the
+/// "after" side) — issue #1921 fixed `solve_scc` to re-merge
+/// `collect_external_sigs`'s seed back into its own returned `signatures`
+/// (not just its working `known_sigs`), so `InferenceResult::signatures`
+/// now legitimately depends on `host_manifest` for any indexed `EXTERNAL`
+/// the manifest registers a matching entry for — a *manifest* edit is no
+/// longer diagnostics-only in that case, precisely because it is now
+/// correctly wired into typing. Only `external_check` — read solely by the
+/// diagnostics gate above, never by `solve_scc`/`collect_external_sigs` —
+/// stays genuinely diagnostics-only, so it is what this FG-1 pin now edits.
 #[test]
 fn type_inference_memo_survives_diagnostics_only_analysis_options_edit() {
     let mut db = ProjectDb::new();
@@ -88,21 +107,10 @@ fn type_inference_memo_survives_diagnostics_only_analysis_options_edit() {
         "EXTERNAL foo(x)\n=== main ===\n~ foo(1)\n-> DONE\n".to_owned(),
     );
 
-    let before = std::ptr::from_ref::<InferenceResult>(db.type_inference());
-
-    // No manifest registered yet: no manifest-driven diagnostic for `foo`.
-    assert!(
-        !db.analysis()
-            .diagnostics
-            .iter()
-            .any(|d| d.code == DiagnosticCode::E039),
-        "no manifest is registered yet — E039 should not fire"
-    );
-
-    // Register a manifest that disagrees with the ink declaration's arity
-    // (2 params vs. 1) — a pure `AnalysisOptions` edit that changes
-    // `analysis_query`'s diagnostics but neither the symbol index nor any
-    // resolution (the manifest never touches ink source).
+    // The manifest disagrees with the ink declaration's arity (2 params vs.
+    // 1) — registered from the start and never edited below, so it cannot
+    // itself be the source of any `InferenceResult` change this test
+    // observes.
     let manifest = HostManifest {
         markup: Vec::new(),
         externals: vec![ManifestExternal {
@@ -127,6 +135,28 @@ fn type_inference_memo_survives_diagnostics_only_analysis_options_edit() {
     };
     db.set_analysis_options(AnalysisOptions {
         host_manifest: Some(manifest),
+        external_check: brink_analyzer::ExternalCheckSeverity::Off,
+        ..AnalysisOptions::default()
+    });
+
+    let before = std::ptr::from_ref::<InferenceResult>(db.type_inference());
+
+    // `external_check` starts `Off`: no manifest-driven diagnostic for `foo`.
+    assert!(
+        !db.analysis()
+            .diagnostics
+            .iter()
+            .any(|d| d.code == DiagnosticCode::E039),
+        "external_check = Off should suppress E039"
+    );
+
+    // Flip *only* `external_check` — the manifest (and everything else) is
+    // untouched — a pure `AnalysisOptions` edit that changes
+    // `analysis_query`'s diagnostics but neither the symbol index, any
+    // resolution, nor any input `solve_scc`/`collect_external_sigs` reads.
+    db.set_analysis_options(AnalysisOptions {
+        host_manifest: db.analysis_options().host_manifest.clone(),
+        external_check: brink_analyzer::ExternalCheckSeverity::Error,
         ..AnalysisOptions::default()
     });
 
@@ -137,7 +167,7 @@ fn type_inference_memo_survives_diagnostics_only_analysis_options_edit() {
             .diagnostics
             .iter()
             .any(|d| d.code == DiagnosticCode::E039),
-        "registering a mismatched-arity manifest should raise E039"
+        "external_check = Error should raise E039 for the mismatched-arity manifest"
     );
 
     let after = std::ptr::from_ref::<InferenceResult>(db.type_inference());

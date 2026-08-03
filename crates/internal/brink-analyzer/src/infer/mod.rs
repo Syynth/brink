@@ -1341,16 +1341,52 @@ pub fn solve_scc(
     BTreeMap<DefinitionId, InferredSig>,
     BTreeMap<DefinitionId, BodyTypes>,
 ) {
-    known_sigs.extend(collect_external_sigs(index, manifest, inline_docs));
+    // Issue #1921: computed once here (idempotent, cheap — see this fn's own
+    // doc) so it can be re-merged into the *returned* `signatures` below,
+    // not just into the working `known_sigs` this batch solves against.
+    // `batch` never contains an `EXTERNAL` (externals are never SCC members
+    // — see this fn's own doc), so the old "filter to `batch` members"
+    // projection silently dropped every external signature `solve_scc_query`
+    // seeded here: `brink-db`'s per-SCC `SolvedScc::signatures` (and the
+    // `type_inference_query` aggregation built from it) never carried an
+    // external's signature, unlike this same function's whole-project
+    // sibling `solve_batches` (which returns `known_sigs` wholesale, no
+    // batch filter, so `infer_project`'s `InferenceResult::signatures`
+    // already had it). That gap silently weakened `ufcs::
+    // check_ufcs_arg_types` on exactly the db-backed path the CLI/LSP/web
+    // consumers run through: `self.signatures.get(&target)` missed for a
+    // UFCS call into an `EXTERNAL`, so its argument types went unchecked
+    // there while the identical direct-call spelling (reading
+    // `ctx.known_sigs`, not `InferenceResult::signatures`) stayed checked.
+    // Issue #1921: computed once here (idempotent, cheap — see this fn's own
+    // doc) so it can be re-merged into the *returned* `signatures` below,
+    // not just into the working `known_sigs` this batch solves against.
+    // `batch` never contains an `EXTERNAL` (externals are never SCC members
+    // — see this fn's own doc), so the old "filter to `batch` members"
+    // projection silently dropped every external signature `solve_scc_query`
+    // seeded here: `brink-db`'s per-SCC `SolvedScc::signatures` (and the
+    // `type_inference_query` aggregation built from it) never carried an
+    // external's signature, unlike this same function's whole-project
+    // sibling `solve_batches` (which returns `known_sigs` wholesale, no
+    // batch filter, so `infer_project`'s `InferenceResult::signatures`
+    // already had it). That gap silently weakened `ufcs::
+    // check_ufcs_arg_types` on exactly the db-backed path the CLI/LSP/web
+    // consumers run through: `self.signatures.get(&target)` missed for a
+    // UFCS call into an `EXTERNAL`, so its argument types went unchecked
+    // there while the identical direct-call spelling (reading
+    // `ctx.known_sigs`, not `InferenceResult::signatures`) stayed checked.
+    let external_sigs = collect_external_sigs(index, manifest, inline_docs);
+    known_sigs.extend(external_sigs.iter().map(|(id, sig)| (*id, sig.clone())));
     let by_file = index_resolutions_by_file(resolutions);
     let by_id: BTreeMap<DefinitionId, &Def<'_>> = defs.iter().map(|d| (d.id, d)).collect();
     let ctx = ProjectCtx::new(index, globals, &by_file, inferable, manifest);
 
     let bodies = solve_one_batch(batch, &by_id, &ctx, &mut known_sigs);
-    let signatures: BTreeMap<DefinitionId, InferredSig> = batch
+    let mut signatures: BTreeMap<DefinitionId, InferredSig> = batch
         .iter()
         .filter_map(|id| known_sigs.get(id).map(|sig| (*id, sig.clone())))
         .collect();
+    signatures.extend(external_sigs);
     (signatures, bodies)
 }
 

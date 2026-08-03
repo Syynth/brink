@@ -1168,6 +1168,19 @@ pub(crate) fn scc_membership_query(db: &dyn salsa::Database, project: ProjectInp
 /// members plus their full body-type pictures. `Arc<plain>`, `Eq`-derived —
 /// the per-SCC cutoff [`inferred_signature_query`]/[`infer_body_query`]
 /// backdate on (Arc<plain> ruling, design doc §2 Fork 2).
+///
+/// **Also carries every `EXTERNAL`'s declaration-derived signature (issue
+/// #1921).** [`brink_analyzer::solve_scc`] re-merges its own
+/// `collect_external_sigs` seed back into the `signatures` it returns (not
+/// just the SCC's own members) precisely so this field — and the
+/// `type_inference_query` aggregation built from every SCC's copy of it —
+/// agrees with the pure whole-project `infer_project` path: both now expose
+/// an external's signature, so `ufcs::check_ufcs_arg_types`'s
+/// `self.signatures.get(&target)` lookup finds a UFCS call's `EXTERNAL`
+/// target on the db-backed path (the CLI/LSP/web) exactly as it already did
+/// on the pure/in-memory one. Recomputed identically by every SCC (cheap,
+/// deterministic — see `solve_scc`'s own doc), so the duplication across
+/// SCCs is harmless.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct SolvedScc {
     pub signatures: BTreeMap<DefinitionId, brink_analyzer::InferredSig>,
