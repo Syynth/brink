@@ -321,6 +321,7 @@ mod tests {
     use super::*;
     use crate::output::OutputBuffer;
     use crate::rng::{DotNetRng, FastRng};
+    use crate::story::PendingTerminal;
     use crate::world::World;
     use alloc::vec::Vec;
 
@@ -342,7 +343,7 @@ mod tests {
             exec_mode: crate::story::ExecMode::default(),
             pure_callback: crate::story::PureCallbackState::default(),
             next_block_id: 0,
-            pending_terminal: None,
+            pending_terminal: PendingTerminal::default(),
         }
     }
 

@@ -31,6 +31,13 @@ pub(crate) use call_stack::{
     CallFrame, CallFrameType, ChoiceDisplay, ContainerPosition, Flow, PendingChoice,
     PureCallbackState, classify_ran_out_of_content,
 };
+// Only test fixtures across the op-table modules construct a bare `Flow`
+// literal (production code reaches `pending_terminal` only through
+// `flow_instance.rs`, which imports `PendingTerminal` directly from
+// `call_stack`) — gate the re-export the same way so a plain `cargo check`
+// of the lib target (no `cfg(test)`) doesn't see it as unused.
+#[cfg(test)]
+pub(crate) use call_stack::PendingTerminal;
 pub use external::{ExternalFnHandler, ExternalResult, FallbackHandler, FunctionEval};
 pub use flow_instance::{DriveOutcome, FlowInstance};
 pub use types::{BlockId, Choice, Element, OutputLine, Stats, Step, StepOutcome, StoryStatus};

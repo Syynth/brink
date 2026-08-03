@@ -13,6 +13,13 @@ pub struct RunConfig {
     /// Pre-supplied choice indices (0-indexed).
     pub inputs: Vec<usize>,
     /// Maximum number of `continue_single` calls before aborting.
+    ///
+    /// **Post-#1684 note (#2104):** same per-turn cost as `explorer.rs`'s
+    /// `STEP_LIMIT` — a yield with trailing content now costs one extra
+    /// `continue_single` call for its bare terminal (`pending_terminal`),
+    /// so this cap's headroom shrank by roughly one call per turn versus
+    /// the old fused `Line` model. See `STEP_LIMIT`'s doc comment for the
+    /// full explanation; it applies here unchanged.
     pub max_steps: usize,
 }
 

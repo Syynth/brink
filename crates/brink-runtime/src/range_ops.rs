@@ -75,6 +75,7 @@ pub(crate) fn range_non_empty(flow: &mut Flow) -> Result<(), RuntimeError> {
 mod tests {
     use super::*;
     use crate::output::OutputBuffer;
+    use crate::story::PendingTerminal;
     use alloc::vec::Vec;
 
     /// Same minimal fixture shape as `rand_ops::tests` — these ops touch
@@ -94,7 +95,7 @@ mod tests {
             exec_mode: crate::story::ExecMode::default(),
             pure_callback: crate::story::PureCallbackState::default(),
             next_block_id: 0,
-            pending_terminal: None,
+            pending_terminal: PendingTerminal::default(),
         }
     }
 

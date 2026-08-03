@@ -349,8 +349,60 @@ pub(crate) struct Flow {
     /// computed but not yet delivered, because its trailing content needed
     /// to go out first as an ordinary `Step::Line` (terminals carry no
     /// text — `docs/prose-dialect-spec.md` §7). Consumed and returned bare
-    /// on the very next `advance` call, with no VM stepping.
-    pub pending_terminal: Option<super::types::Step>,
+    /// on the very next `advance` call, with no VM stepping — see
+    /// [`PendingTerminal`] for the invalidation invariant this type
+    /// enforces.
+    pub pending_terminal: PendingTerminal,
+}
+
+/// A terminal computed for the current run but held back because its
+/// trailing content had to flush first as its own `Step::Line` (terminals
+/// carry no text of their own — `docs/prose-dialect-spec.md` §7). Stamped
+/// with the [`Flow::next_block_id`] value current at the moment it was
+/// computed.
+///
+/// **Invariant this type exists to enforce** (the bug found in #1684's
+/// review, filed as #2104): a stashed terminal must never be handed back
+/// after a host-directed jump or choice has moved execution somewhere else
+/// in the meantime — `choose`/`choose_path_string`/`choose_path_string_with_args`
+/// all force-complete the current run and begin a fresh one (bumping
+/// `next_block_id`, per that field's own doc comment: "Bumped whenever a
+/// new run begins: after a choice is selected, after resuming from `Done`,
+/// and on a host-directed jump"). [`take_if_current`](Self::take_if_current)
+/// compares the stash's stamp against the block id current *at read time*
+/// and silently discards a stale stash rather than returning it — so the
+/// invariant holds **by construction**: any call site that begins a new run
+/// only has to keep bumping `next_block_id` for its own reasons (block-id
+/// correctness for `Step::Line`, already required whether or not this type
+/// existed), and pending-terminal invalidation falls out for free. No call
+/// site needs its own `= None` clear, so a future host-directed mutation
+/// (a rewind, a fast-forward) that begins a new run cannot reintroduce this
+/// bug by forgetting one.
+///
+/// `Story::load_state`/the free `load_state` function are **not** part of
+/// this invariant's surface: they reconcile only game state (globals,
+/// visit/turn counts) into a `ContextAccess`, never touching `Flow` or its
+/// `next_block_id`/`pending_terminal` at all — so they cannot leave a stale
+/// stash behind, and need no clear of their own. See
+/// `docs/runtime-spec.md`'s pending-terminal section.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PendingTerminal(Option<(u64, super::types::Step)>);
+
+impl PendingTerminal {
+    /// Stash `terminal`, stamped with the run (`next_block_id`) it was
+    /// computed under.
+    pub(crate) fn stash(&mut self, block_id: u64, terminal: super::types::Step) {
+        self.0 = Some((block_id, terminal));
+    }
+
+    /// Take the stashed terminal iff its stamp matches `current_block_id` —
+    /// i.e. no new run has begun since it was stashed. Always empties the
+    /// slot (fresh or stale), so a stale stash can never be read twice.
+    pub(crate) fn take_if_current(&mut self, current_block_id: u64) -> Option<super::types::Step> {
+        self.0
+            .take()
+            .and_then(|(stamp, terminal)| (stamp == current_block_id).then_some(terminal))
+    }
 }
 
 /// Transient bookkeeping for in-flight nested callback evaluations: a
@@ -531,6 +583,72 @@ impl Flow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::story::Step;
+
+    // ── PendingTerminal ───────────────────────────────────────────────────
+    //
+    // Unit-level coverage for the invalidation invariant itself (see
+    // `PendingTerminal`'s own doc comment): a stash is only ever handed
+    // back if the caller's current block id still matches the one it was
+    // stamped with, and a read — fresh or stale — always empties the slot.
+    // The `FlowInstance`-level regression tests for the actual bug this
+    // guards against (a stashed terminal replaying after a host jump or a
+    // choice) live in `brink-test-harness/tests/jump_to_path.rs`
+    // (`jump_right_after_content_line_does_not_replay_stale_terminal`,
+    // `choose_right_after_content_line_does_not_replay_stale_terminal`).
+
+    /// A stash read back under the SAME block id it was stamped with (the
+    /// ordinary case: content flushes, then the terminal is delivered on
+    /// the very next call, with no run boundary in between) is returned.
+    #[test]
+    fn take_if_current_returns_a_fresh_stash() {
+        let mut pending = PendingTerminal::default();
+        pending.stash(3, Step::Done);
+        assert_eq!(pending.take_if_current(3), Some(Step::Done));
+    }
+
+    /// A stash read back under a LATER block id than the one it was
+    /// stamped with — exactly what happens after a host-directed jump or
+    /// choice, both of which bump `next_block_id` before the flow is ever
+    /// asked to advance again — is discarded rather than replayed. This is
+    /// the mechanism that makes the invariant hold **without** a jump/choice
+    /// call site needing its own explicit `= None` clear.
+    #[test]
+    fn take_if_current_discards_a_stash_stamped_for_an_earlier_block() {
+        let mut pending = PendingTerminal::default();
+        pending.stash(3, Step::Done);
+        assert_eq!(
+            pending.take_if_current(4),
+            None,
+            "a stash stamped for block 3 must not surface once the current \
+             block has moved to 4"
+        );
+    }
+
+    /// Reading the slot always empties it — a stale stash discarded by one
+    /// read can't somehow surface on a later read even if that later read
+    /// happens to use the original stamp again.
+    #[test]
+    fn take_if_current_always_empties_the_slot_even_when_stale() {
+        let mut pending = PendingTerminal::default();
+        pending.stash(3, Step::Done);
+        assert_eq!(pending.take_if_current(4), None, "first (stale) read");
+        assert_eq!(
+            pending.take_if_current(3),
+            None,
+            "the slot was already emptied by the stale read above — it must \
+             not resurrect the old value just because the stamp is asked \
+             for again"
+        );
+    }
+
+    /// An empty slot never produces a terminal, regardless of which block
+    /// id is asked for.
+    #[test]
+    fn take_if_current_on_an_empty_slot_is_always_none() {
+        let mut pending = PendingTerminal::default();
+        assert_eq!(pending.take_if_current(0), None);
+    }
 
     /// A tunnel frame that can still pop classifies as `Tunnel` — mirrors
     /// C#'s `callStack.CanPop(PushPopType.Tunnel)` arm.

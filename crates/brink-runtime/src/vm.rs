@@ -3243,6 +3243,7 @@ fn handle_shuffle_sequence<R: crate::rng::StoryRng>(
 mod tests {
     use super::*;
     use crate::output::OutputBuffer;
+    use crate::story::PendingTerminal;
 
     /// A bare `Flow` for exercising [`guard_comparator_write`] — only
     /// `pure_callback` and `exec_mode` matter to the guard.
@@ -3261,7 +3262,7 @@ mod tests {
             exec_mode: ExecMode::default(),
             pure_callback: crate::story::PureCallbackState::default(),
             next_block_id: 0,
-            pending_terminal: None,
+            pending_terminal: PendingTerminal::default(),
         }
     }
 

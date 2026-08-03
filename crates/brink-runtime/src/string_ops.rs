@@ -126,6 +126,7 @@ fn type_name(v: &Value) -> &'static str {
 mod tests {
     use super::*;
     use crate::output::OutputBuffer;
+    use crate::story::PendingTerminal;
 
     fn test_flow() -> Flow {
         Flow {
@@ -142,7 +143,7 @@ mod tests {
             exec_mode: crate::story::ExecMode::default(),
             pure_callback: crate::story::PureCallbackState::default(),
             next_block_id: 0,
-            pending_terminal: None,
+            pending_terminal: PendingTerminal::default(),
         }
     }
 
