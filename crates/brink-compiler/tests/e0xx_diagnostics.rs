@@ -1357,6 +1357,58 @@ fn e145_as_binding_over_a_boolean_composition_in_a_choice_guard() {
     );
 }
 
+/// Review finding: routing `option_conditions::check_choice` through
+/// `check_condition_or_binding` makes E147 (statically-known non-Option
+/// guard condition) reachable from a choice guard for the first time —
+/// same as `e142_as_binding_on_a_non_option_condition` above, but for the
+/// choice-guard binding position instead of the statement form.
+#[test]
+fn e147_as_binding_on_a_non_option_condition_in_a_choice_guard() {
+    let source = "flow main() {
+  {?
+    * {if 5 as n} take it
+  }
+  -> END
+}
+";
+    let err = compile_native("as-guard-not-option", source, native_strict_options())
+        .map(|_| ())
+        .expect_err("`as` over an int guard condition must fail under types = strict");
+    let diags = errors_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E147),
+        "expected E147, got: {diags:?}"
+    );
+}
+
+/// Review finding: `lower_bound_condition`'s `as_binding_slots.insert`
+/// makes E148 (write to the immutable binding) reachable from a choice
+/// body for the first time — same choke point
+/// (`lower_assign_target`) the statement form's
+/// `e143_as_binding_is_immutable` already exercises, but the write now
+/// sits inside the choice's own braced body rather than an `if`'s.
+#[test]
+fn e148_write_to_a_choice_guard_as_binding_in_the_choice_body() {
+    let source = "flow main() {
+  {?
+    * {if some(1) as n} take it {
+      ~ n = 2
+      -> DONE
+    }
+  }
+  -> END
+}
+";
+    let err = compile_native("as-guard-imm-assign", source, native_strict_options())
+        .map(|_| ())
+        .expect_err("writing to a choice guard's `as` binding must fail");
+    let diags = errors_of(err);
+    assert!(
+        diags.iter().any(|d| d.code == DiagnosticCode::E148),
+        "expected E148 for `~ n = 2`, got: {diags:?}"
+    );
+}
+
 /// E147 — the binding unwraps `Option[T]`; a statically classifiable
 /// non-Option condition has nothing to unwrap. The strict-mode twin of the
 /// runtime's `AsBindingNotOption` fault.

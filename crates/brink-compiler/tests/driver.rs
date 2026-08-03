@@ -1626,6 +1626,138 @@ fn native_choice_guard_as_false_condition_hides_the_choice() {
     );
 }
 
+/// Review finding (post-#1508 land): `{n}` in the choice's OWN
+/// `start_content` (the text before the `[…]` bracket) must resolve
+/// through the guard's binding, not just `{n}` inside the braced body.
+/// `lower_choice_with_child` used to lower `start_content`/
+/// `bracket_content`/`inner_content` *before* `ctx.push_block_scope()`, so
+/// the block scope only ever covered the condition + braced body — a
+/// `{n}` read here fell through `lower_path`'s `SymbolKind::Temp`
+/// fallback (`GetGlobal(DefaultHasher(name))` for a nonexistent global)
+/// and faulted with `UnresolvedGlobal` on the very first
+/// `continue_maximally()`, before the choice ever presented. Verified to
+/// fail this way with the `push_block_scope` reordering reverted.
+///
+/// This only pins the compile-time resolution the finding's fix
+/// addresses (a real temp slot instead of a phantom global — no fault).
+/// It deliberately does not assert `{n}`'s displayed *value* here:
+/// `brink-codegen-inkb::container::emit_choice`'s pre-existing, choice-
+/// generic bytecode order evaluates a choice's display text *before* its
+/// condition (`// Push order: display first, condition second` — a
+/// choice-guard-unrelated convention this PR's diff never touches), so a
+/// guard's `OptionBind` write hasn't happened yet when this particular
+/// display string is composed. The captured value reaching the picked
+/// body (the feature's actual "capture-at-presentation" contract) is
+/// proven by `native_choice_guard_as_binds_and_captures_at_presentation`
+/// and the inner-content test below, both of which read `{n}` from
+/// contexts that run after the guard condition.
+#[test]
+fn native_choice_guard_as_start_content_reads_the_binding() {
+    let source = "var stash: Option<int> = none\n\
+         flow main() {\n\
+         \x20 ~ stash = some(41)\n\
+         \x20 {?\n\
+         \x20   * {if stash as n} You have {n}. [pick it] {\n\
+         \x20     -> DONE\n\
+         \x20   }\n\
+         \x20 }\n}\n";
+    let mut story = compile_native_to_story("guard-start-content", source);
+    story.set_visibility_enforcement(false);
+
+    let lines = story
+        .continue_maximally()
+        .expect("start-content `{n}` read must resolve through the guard binding, not fault");
+    let Some(Step::Choices(choices)) = lines.last() else {
+        panic!("expected the guard-gated choice to be presented, got: {lines:?}");
+    };
+    assert_eq!(choices.len(), 1, "expected exactly one choice: {choices:?}");
+}
+
+/// Same defect, `inner_content` (the text after the `[…]` bracket) instead
+/// of `start_content`. This half of the split composes into the *output*
+/// content emitted after the choice is picked (`ChoiceOutput`), so —
+/// before the fix — presentation succeeded but the fault surfaced on the
+/// *next* `continue_maximally()` call, after picking.
+#[test]
+fn native_choice_guard_as_inner_content_reads_the_binding() {
+    let source = "var stash: Option<int> = none\n\
+         flow main() {\n\
+         \x20 ~ stash = some(41)\n\
+         \x20 {?\n\
+         \x20   * {if stash as n} [pick it] You have {n}. {\n\
+         \x20     -> DONE\n\
+         \x20   }\n\
+         \x20 }\n}\n";
+    let mut story = compile_native_to_story("guard-inner-content", source);
+    story.set_visibility_enforcement(false);
+
+    let lines = story.continue_maximally().expect("continue to the choice");
+    assert!(
+        matches!(lines.last(), Some(Step::Choices(cs)) if cs.len() == 1),
+        "expected the guard-gated choice to be presented: {lines:?}"
+    );
+
+    story.choose(0).expect("choose the only choice");
+    let lines = story.continue_maximally().expect(
+        "inner-content `{n}` read must resolve through the guard binding after picking, not fault",
+    );
+    let output: String = lines.iter().map(Step::text).collect();
+    assert!(
+        output.contains("You have 41."),
+        "expected the choice's own inner-content to read the captured binding, got: {output:?}"
+    );
+}
+
+/// Review finding (same root cause as the two above): a *second*, sibling
+/// choice binding the same name as an earlier choice must not trip a
+/// spurious E082 ("block-scoped temp referenced after its block has
+/// closed"). `ctx.block_scoped_temp_names` records a binding's name
+/// permanently the first time it's declared; with the content lowered
+/// before `push_block_scope`, the second choice's own `{n}` read missed
+/// its own (freshly reopened) scope and fell through to the same
+/// `SymbolKind::Temp` fallback, which then misfired E082 — even though
+/// there is no `~ { … }` block anywhere in the source. Fixed by the same
+/// reordering: each choice's `push_block_scope`/binding declare now
+/// happens before that choice's own content is lowered, so its own `{n}`
+/// resolves through its own (current) scope instead of the fallback.
+#[test]
+fn native_choice_guard_as_two_choices_binding_the_same_name_both_compile_clean() {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-native-choice-as-shared-name-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("main.brink"),
+        "var stash: Option<int> = none\n\
+         flow main() {\n\
+         \x20 ~ stash = some(41)\n\
+         \x20 {?\n\
+         \x20   * {if stash as n} A [a] {\n\
+         \x20     -> DONE\n\
+         \x20   }\n\
+         \x20   * {if stash as n} B {n} [b] {\n\
+         \x20     -> DONE\n\
+         \x20   }\n\
+         \x20 }\n}\n",
+    )
+    .unwrap();
+    let result = brink_compiler::compile_path(&dir.join("main.brink"));
+    std::fs::remove_dir_all(&dir).ok();
+    // E082 is `Severity::Error` (not `Warning`), so the pre-fix misfire
+    // surfaces as a hard `CompileError`, not a warning on an `Ok` output —
+    // any error here (E082 or otherwise) means this must-compile-clean
+    // fixture regressed.
+    result.unwrap_or_else(|err| {
+        panic!(
+            "a second choice binding the same guard name must compile clean — \
+             no `~ {{ … }}` block exists in this source, so E082 must never \
+             fire: {err:?}"
+        )
+    });
+}
+
 // ── Native bare-name fn values (issue #1862) ────────────────────────
 //
 // The end-to-end proof that a bare name *is* a fn value lives in the
