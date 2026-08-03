@@ -210,6 +210,28 @@ fn ink_divert_with_args_to_unknown_target_emits_e024_not_e177() {
     );
 }
 
+#[test]
+fn ink_divert_to_stitch_with_wrong_arity_emits_e176() {
+    // Review finding on this PR (issue #2173): `check_divert_arity`'s kind
+    // guard admits `Knot | Stitch | Label`, but every other test in this
+    // file resolves to a `Knot` — a stitch can declare its own params
+    // (`= stitch(params)`) and `lookup_divert` resolves a dotted path to a
+    // `Stitch` before it ever reaches the top-level-knot case, so the
+    // `Stitch` arm is a live target that needs its own pin (deleting
+    // `SymbolKind::Stitch` from the `matches!` would fail no other test).
+    let diags = resolve_diags_ink(
+        "=== hub ===\n= market(item, other)\nBye.\n-> END\n\n=== a ===\n-> hub.market(1)\n",
+    );
+    let e176 = diags
+        .iter()
+        .find(|d| d.code == DiagnosticCode::E176)
+        .unwrap_or_else(|| {
+            panic!("expected E176 for a 1-arg divert against a 2-param stitch target: {diags:?}")
+        });
+    assert!(e176.message.contains("expects 2"), "{}", e176.message);
+    assert!(e176.message.contains("got 1"), "{}", e176.message);
+}
+
 // The "arity check must not misfire on an indirect (Variable) target" case
 // (a divert through a stored divert-target value, e.g. `-> some_var`) is
 // covered at the `brink-analyzer::resolve` unit level instead of here —
