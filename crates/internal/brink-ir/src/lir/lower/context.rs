@@ -589,11 +589,20 @@ pub struct LowerCtx<'a> {
     /// Temp slots that hold an `as` binding (B1b, issue #1475). The
     /// binding is **immutable** by ruling, and this is what makes that
     /// enforceable: every write path — plain assignment, compound `+=`,
-    /// indexed/field assignment's root, an in-place mutator like
+    /// an indexed-assignment root, a bare in-place mutator like
     /// `pop`/`clear` — resolves its target through
     /// [`super::stmts::lower_assign_target`], which refuses a slot in this
-    /// set (`E148`). `ref` arguments never route through that choke point
-    /// — they hand the callee a raw pointer to the slot instead — so
+    /// set (`E148`) via the shared [`super::stmts::reject_as_binding_write`]
+    /// check. A single-level struct-field write/mutator
+    /// (`super::blocks::lower_single_level_field_write`,
+    /// `super::blocks::lower_field_mutator`, issue #2122) resolves a
+    /// `Param`/`Temp` root's slot independently of `lower_assign_target`
+    /// (their root is the *head* of a two-segment path, not the whole
+    /// target), so those two call `reject_as_binding_write` directly
+    /// instead of routing through `lower_assign_target` itself — the same
+    /// set, the same diagnostic, a different call site. `ref` arguments
+    /// never route through either choke point — they hand the callee a raw
+    /// pointer to the slot instead — so
     /// [`super::expr::lower_ref_path_call_arg`] and
     /// [`super::expr::lower_ref_projection_arg`] separately consult this
     /// set at their own root. Entries are never removed: a slot is

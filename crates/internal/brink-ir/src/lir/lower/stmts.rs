@@ -311,23 +311,11 @@ pub(super) fn lower_assign_target(
         hir::Expr::Path(path) => {
             let name = path_to_string(path);
             if let Some(slot) = ctx.temp_slot(&name) {
-                // B1b (issue #1475): an `as` binding is immutable. Every
-                // write path funnels through here — plain/compound
-                // assignment, an indexed or field assignment's root cell,
-                // and the in-place mutators (`pop`, `clear`, …) — so this
-                // one refusal covers them all rather than each site
-                // re-deriving the rule.
-                if ctx.as_binding_slots.contains(&slot) {
-                    ctx.diagnostics.push(crate::Diagnostic {
-                        file: ctx.file,
-                        range: path.range,
-                        message: format!(
-                            "{}: `{name}` is an `as` binding — it is immutable and cannot be \
-                             assigned to or mutated in place",
-                            crate::DiagnosticCode::E148.title(),
-                        ),
-                        code: crate::DiagnosticCode::E148,
-                    });
+                // B1b (issue #1475): an `as` binding is immutable — see
+                // `reject_as_binding_write`'s doc for the full choke-point
+                // story (issue #2122: this is no longer the *only* site
+                // that calls it).
+                if reject_as_binding_write(slot, &name, path.range, ctx) {
                     return None;
                 }
                 let name_id = ctx.names.intern(&name);
@@ -345,4 +333,43 @@ pub(super) fn lower_assign_target(
         }
         _ => None,
     }
+}
+
+/// Issue #2122: the `as`-binding-immutability half of `lower_assign_target`'s
+/// refusal, factored out so `blocks::lower_single_level_field_write` and
+/// `blocks::lower_field_mutator` can call it too.
+///
+/// Those two functions resolve a `Param`/`Temp` root's slot themselves
+/// (`ctx.temp_slot(&head_name)`, the *head* of a two-segment `p.field`
+/// path) rather than routing through `lower_assign_target` — the resolution
+/// that function performs for a bare path is keyed on the **whole**
+/// dotted-path string (`path_to_string`, e.g. `"b.items"`), which is a
+/// different (and for these two callers, wrong) lookup than the head-only
+/// one they need, so calling `lower_assign_target` itself is not a drop-in
+/// substitute here. This helper is the "equivalent shared check" the issue
+/// asks for instead: the actual E148-diagnosing logic lives in exactly one
+/// place, even though each caller still derives its own slot.
+///
+/// Returns `true` (diagnosed, caller must stop and lower nothing) when
+/// `slot` is an immutable `as`-binding; `false` otherwise.
+pub(super) fn reject_as_binding_write(
+    slot: u16,
+    name: &str,
+    range: TextRange,
+    ctx: &mut LowerCtx<'_>,
+) -> bool {
+    if ctx.as_binding_slots.contains(&slot) {
+        ctx.diagnostics.push(crate::Diagnostic {
+            file: ctx.file,
+            range,
+            message: format!(
+                "{}: `{name}` is an `as` binding — it is immutable and cannot be \
+                 assigned to or mutated in place",
+                crate::DiagnosticCode::E148.title(),
+            ),
+            code: crate::DiagnosticCode::E148,
+        });
+        return true;
+    }
+    false
 }
