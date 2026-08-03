@@ -18,13 +18,18 @@
 // independent, already-tracked reasons:
 //
 //   1. No `std::`-namespaced module resolution exists in the compiler at
-//      all. Native source discovery is "tree-is-universe" (every `.brink`
-//      file under a project's root joins that project — see
-//      `brink-driver`'s discovery, CLAUDE.md's own note) with no concept
-//      of an importable standard-library path; the closest existing
-//      precedent, the T1b stdlib slice, is Rust-side bare-name
-//      recognition (`brink_analyzer::resolve::is_t1b_stdlib_name`), not a
-//      real `.brink` source file anyone imports.
+//      all. #2080 (ruled 2026-08-03) mounts this file's source into every
+//      compiled project's `Environment` manifest (`crates/internal/
+//      brink-environment`), so it now sits alongside a project's own
+//      sources in the same hash-addressed, string-keyed home — but that
+//      is only the mount. There is still no `use`-resolution mechanism
+//      that lets a project's own code reach an item inside it: nothing
+//      here is marked `pub`, and no confinement rule scopes what a
+//      project's `use` may reach (needs #1582's pub marker and #2167's
+//      closure-scoped confinement). The closest existing precedent, the
+//      T1b stdlib slice, is Rust-side bare-name recognition
+//      (`brink_analyzer::resolve::is_t1b_stdlib_name`), not a real
+//      `.brink` source file anyone imports.
 //   2. `fn conventions()` registration + comptime evaluation (issue
 //      #1840, "Conventions v1c") has not landed — `register(...)` itself
 //      has no resolvable meaning yet (verified against `origin/main` at

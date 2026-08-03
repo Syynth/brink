@@ -27,15 +27,18 @@ use std::path::PathBuf;
 
 use brink_ir::FileId;
 
-/// Repo-root-relative path to the shipped preset source, mirroring
-/// `tier1_native.rs`'s own `corpus_dir()` shape (`CARGO_MANIFEST_DIR` for
-/// this crate is `crates/internal/brink-test-harness`; three `..` reach the
-/// repo root).
+/// Path to the shipped preset source. The canonical copy lives inside
+/// `brink-environment`'s own package directory
+/// (`crates/internal/brink-environment/std/...`), not at the repo root, so
+/// it packages into the published crate's tarball — the crate's
+/// `include_str!` mount needs it there (see the #2080 review finding on
+/// out-of-package `include_str!` in a published lib). `CARGO_MANIFEST_DIR`
+/// for this crate is `crates/internal/brink-test-harness`; one `..` reaches
+/// `crates/internal`.
 fn screenplay_preset_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
-        .join("..")
-        .join("..")
+        .join("brink-environment")
         .join("std")
         .join("conventions")
         .join("screenplay.brink")

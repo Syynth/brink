@@ -36,6 +36,15 @@
 //! slot (#1093) is where external module artifacts will land, mounted at
 //! compile time with the same identity/linking machinery load-time DLC/UGC
 //! modules use — designed-for, not built.
+//!
+//! [`Project::load`] also mounts the **stdlib** into the manifest (#2080,
+//! ruled 2026-08-03) — built-in preset/convention `.brink` source
+//! (`std/conventions/screenplay.brink`), embedded via `include_str!` so it
+//! mounts identically on hosts with no filesystem (wasm). The stdlib is
+//! *source*, not a [`ResolvedDep`] (that slot stays reserved for #1093's
+//! compiled per-module artifacts): it joins the manifest exactly like any
+//! project file, under the same string-key convention, so it needs no
+//! parallel identity or resolution mechanism.
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -317,6 +326,8 @@ impl Project {
             manifest.insert(key, hash);
         }
 
+        mount_stdlib(&mut manifest, &mut inline);
+
         let options = resolve_options(tree, entry, overrides)?;
 
         Ok(Environment {
@@ -326,6 +337,57 @@ impl Project {
             options,
             resolved_deps: Vec::new(),
         })
+    }
+}
+
+// ── Standard library mount (#2080) ───────────────────────────────────
+
+/// The stdlib source set, embedded at compile time. #2080's 2026-08-03
+/// ruling: `Environment` (#1306) already generalizes
+/// `the-tree-is-the-universe` to `the-environment-is-the-universe`
+/// (`{ local module tree } + { resolved external module set }`), so the
+/// stdlib needs no bespoke resolution mechanism — it mounts into the same
+/// hash-addressed [`Environment::manifest`] every project source lives in,
+/// keyed by the same root-relative, forward-slash string-key convention
+/// (`std/conventions/screenplay.brink`). Native module identity then mints
+/// for it exactly as `brink_db::modules::native_module_path` mints for any
+/// project file — no std-specific identity rule exists or is needed.
+///
+/// `include_str!` (not a runtime filesystem read) because the wasm build
+/// (`@brink-lang/web`) has no filesystem — the ruling's explicit
+/// instruction: "Embed the source in the binary." Each new stdlib
+/// module/preset is added here as it ships; nothing downstream changes.
+///
+/// Scope (per the ruling): this is the *mount* only. Actually importing a
+/// mounted module (`use std::…`) additionally needs #1582's pub marker and
+/// #2167's closure-scoped confinement — neither shipped yet, so a mounted
+/// module's items are not yet reachable from a project's own `use`.
+const STDLIB_SOURCES: &[(&str, &str)] = &[(
+    "std/conventions/screenplay.brink",
+    include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/std/conventions/screenplay.brink"
+    )),
+)];
+
+/// Merge [`STDLIB_SOURCES`] into a manifest/content pair being assembled by
+/// [`Project::load`] — the whole mechanism the ruling describes: the
+/// producer adds stdlib entries, the same way it adds any other source key.
+/// A project source already present at the same key wins over the embedded
+/// copy rather than being silently clobbered (`std/` is a reserved-by-
+/// convention path, so a real collision is not expected, but "project data
+/// always wins" costs nothing and avoids a surprising override).
+fn mount_stdlib(
+    manifest: &mut BTreeMap<String, ContentHash>,
+    inline: &mut BTreeMap<ContentHash, String>,
+) {
+    for (key, text) in STDLIB_SOURCES {
+        if manifest.contains_key(*key) {
+            continue;
+        }
+        let hash = ContentHash::of(text);
+        inline.entry(hash).or_insert_with(|| (*text).to_string());
+        manifest.insert((*key).to_string(), hash);
     }
 }
 
@@ -620,9 +682,10 @@ mod tests {
         let env = Project::load(&t, "a.brink", &OptionOverrides::default()).expect("loads");
 
         let ContentStore::Inline(store) = &env.content;
-        // Two manifest keys, one deduplicated stored blob (same content hash).
-        assert_eq!(env.source_keys().count(), 2);
-        assert_eq!(store.len(), 1);
+        // Two project manifest keys (deduplicated to one stored blob) plus
+        // the mounted stdlib entry (#2080) — three keys, two stored blobs.
+        assert_eq!(env.source_keys().count(), 3);
+        assert_eq!(store.len(), 2);
     }
 
     #[test]
@@ -634,7 +697,17 @@ mod tests {
         ]);
         let env = Project::load(&t, "a.brink", &OptionOverrides::default()).expect("loads");
         let keys: Vec<_> = env.source_keys().collect();
-        assert_eq!(keys, vec!["a.brink", "m.brink", "z.brink"]);
+        // The mounted stdlib key (#2080) sorts between "m.brink" and
+        // "z.brink".
+        assert_eq!(
+            keys,
+            vec![
+                "a.brink",
+                "m.brink",
+                "std/conventions/screenplay.brink",
+                "z.brink"
+            ]
+        );
     }
 
     // ── serialize / round-trip / hash ────────────────────────────────
@@ -1063,7 +1136,16 @@ mod tests {
         ]);
         let env = Project::load(&t, "main.brink", &OptionOverrides::default()).expect("loads");
         let keys: Vec<_> = env.source_keys().collect();
-        assert_eq!(keys, vec!["lib/util.brink", "main.brink"]);
+        // The mounted stdlib key (#2080) sorts between "main.brink" and
+        // nothing else here, since 'm' < 's'.
+        assert_eq!(
+            keys,
+            vec![
+                "lib/util.brink",
+                "main.brink",
+                "std/conventions/screenplay.brink"
+            ]
+        );
     }
 
     #[test]
@@ -1094,7 +1176,195 @@ mod tests {
         let env = Project::load(&t, "main.ink", &OptionOverrides::default()).expect("loads");
         let keys: Vec<_> = env.source_keys().collect();
         // The orphan is not INCLUDE-reachable, so it is not in the universe.
-        assert_eq!(keys, vec!["lib.ink", "main.ink"]);
+        // The stdlib mount (#2080) is unconditional — it joins an ink
+        // project's environment too, sorting after "main.ink".
+        assert_eq!(
+            keys,
+            vec!["lib.ink", "main.ink", "std/conventions/screenplay.brink"]
+        );
+    }
+
+    // ── stdlib mount (#2080) ──────────────────────────────────────────
+
+    #[test]
+    fn stdlib_screenplay_preset_is_mounted_into_every_environment() {
+        let t = tree(&[("main.brink", "flow main() {}")]);
+        let env = Project::load(&t, "main.brink", &OptionOverrides::default()).expect("loads");
+
+        let mounted = env
+            .source_text("std/conventions/screenplay.brink")
+            .expect("the built-in screenplay preset must be mounted into every Environment");
+        assert!(
+            mounted.contains("heading"),
+            "mounted stdlib text looks wrong (embed path misconfigured?): {mounted}"
+        );
+    }
+
+    /// Reverting `mount_stdlib` (or not calling it from `Project::load`)
+    /// makes this fail: `source_text` for the stdlib key returns `None`.
+    #[test]
+    fn stdlib_mount_is_present_for_a_native_and_an_ink_entry_alike() {
+        let native = Project::load(
+            &tree(&[("main.brink", "flow main() {}")]),
+            "main.brink",
+            &OptionOverrides::default(),
+        )
+        .expect("loads");
+        let ink = Project::load(
+            &tree(&[("main.ink", "Hello.\n-> END\n")]),
+            "main.ink",
+            &OptionOverrides::default(),
+        )
+        .expect("loads");
+
+        assert!(
+            native
+                .source_text("std/conventions/screenplay.brink")
+                .is_some()
+        );
+        assert!(
+            ink.source_text("std/conventions/screenplay.brink")
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn a_project_source_at_the_stdlib_key_wins_over_the_embedded_copy() {
+        let t = tree(&[
+            ("main.brink", "flow main() {}"),
+            (
+                "std/conventions/screenplay.brink",
+                "// project-authored override\nflow overridden() {}",
+            ),
+        ]);
+        let env = Project::load(&t, "main.brink", &OptionOverrides::default()).expect("loads");
+        assert_eq!(
+            env.source_text("std/conventions/screenplay.brink")
+                .as_deref(),
+            Some("// project-authored override\nflow overridden() {}"),
+            "a project's own file at the stdlib's key must win, not be silently clobbered \
+             by the embedded copy"
+        );
+    }
+
+    #[test]
+    fn mounted_stdlib_compiles_cleanly_alongside_an_ordinary_native_project() {
+        // Proves the mount reaches the real, sole production compile path
+        // (`brink_environment::compile`, per #2080's ruling) — not just
+        // that the manifest holds the text. A plain native project must
+        // still compile, and the mounted stdlib module must not itself
+        // introduce any diagnostic.
+        //
+        // `warnings.is_empty()` alone is vacuous here (review finding on
+        // #2080): a bare `main.brink` project compiles with zero warnings
+        // whether or not `mount_stdlib` ran at all, so it cannot
+        // distinguish "the mount reached the compile" from "the mount
+        // didn't happen". A native entry's compilation universe is
+        // "tree is universe" (every `.brink` key joins), so the mounted
+        // screenplay preset's `heading` handler — which declares
+        // `extern scene_entered(title, slug)` — must actually land in the
+        // compiled `StoryData`'s externals table. Assert that too.
+        let t = tree(&[("main.brink", "flow main() { Hello. }")]);
+        let env = Project::load(&t, "main.brink", &OptionOverrides::default()).expect("loads");
+        let out = compile(&env).expect(
+            "a plain native project must compile cleanly with the stdlib mounted alongside it",
+        );
+        assert!(
+            out.warnings.is_empty(),
+            "the mounted stdlib module must not itself introduce diagnostics: {:?}",
+            out.warnings
+        );
+        let has_scene_entered_extern = out.data.externals.iter().any(|ext| {
+            out.data
+                .name_table
+                .get(ext.name.0 as usize)
+                .is_some_and(|name| name == "scene_entered")
+        });
+        assert!(
+            has_scene_entered_extern,
+            "the mounted screenplay preset's `heading` handler declares \
+             `extern scene_entered(title, slug)` — its absence from the \
+             compiled externs means the mount never reached the compile at \
+             all, got externs: {:?}",
+            out.data.externals
+        );
+    }
+
+    #[test]
+    fn stdlib_mount_is_manifest_only_for_an_ink_entry() {
+        // Distinguishes native-entry reachability (asserted just above)
+        // from ink-entry reachability, which review found is NOT the
+        // same: `brink-db`'s `compilation_closure_files` walks an ink
+        // entry's `INCLUDE` graph (`topological_order`), and the mounted
+        // `.brink` key has no `INCLUDE` edge into it, so it is excluded
+        // from an ink compile's closure entirely — present in the
+        // `Environment`'s manifest, never lowered into LIR, contributing
+        // nothing to the compiled story. The PR's original changeset and
+        // reachability prose claimed the mount is "compiled as an
+        // ordinary native module alongside the project's own files" /
+        // "participates in native module resolution exactly like any
+        // project file" for every compile — true for a native entry
+        // (previous test), false for an ink one (this test), which is
+        // `@brink-lang/web`'s ordinary case.
+        let t = tree(&[("main.ink", "Hello.\n-> END\n")]);
+        let env = Project::load(&t, "main.ink", &OptionOverrides::default()).expect("loads");
+        let out = compile(&env).expect(
+            "a plain ink project must compile cleanly with the stdlib mounted alongside it",
+        );
+        assert!(
+            out.warnings.is_empty(),
+            "the mounted stdlib module must not itself introduce diagnostics \
+             for an ink entry either: {:?}",
+            out.warnings
+        );
+        let has_scene_entered_extern = out.data.externals.iter().any(|ext| {
+            out.data
+                .name_table
+                .get(ext.name.0 as usize)
+                .is_some_and(|name| name == "scene_entered")
+        });
+        assert!(
+            !has_scene_entered_extern,
+            "an ink entry's compilation closure must NOT include the \
+             mounted, manifest-only stdlib module (no INCLUDE edge reaches \
+             it) — its presence here would mean the mount reaches ink \
+             compiles too, contradicting the manifest-only scope fence: \
+             {:?}",
+            out.data.externals
+        );
+    }
+
+    #[test]
+    fn mounted_stdlib_introduces_no_diagnostics_under_types_strict() {
+        // Review finding on #2080: the mounted module now sits inside
+        // every native project's compilation closure, but the only
+        // existing compile test for it (`mounted_stdlib_compiles_cleanly_
+        // alongside_an_ordinary_native_project`, above) runs under
+        // `AnalysisOptions::default()`, which resolves `TypePolicy::
+        // Gradual`. A real `.brink` project setting `dialect = brink` in
+        // `brink.toml` resolves `TypePolicy::Strict` instead
+        // (`tier1_native_strict.rs`'s own module doc), and any strict
+        // diagnostic the mounted module produced would then fail every
+        // strict build. It is clean today — `tier1_native_strict.rs`'s
+        // baseline has zero rows for `conventions-screenplay-preset` —
+        // which is exactly what makes this guard cheap to add now, before
+        // the module grows and a strict finding sneaks in unnoticed.
+        let t = tree(&[("main.brink", "flow main() { Hello. }")]);
+        let overrides = OptionOverrides {
+            types: Some(TypePolicy::Strict),
+            ..OptionOverrides::default()
+        };
+        let env = Project::load(&t, "main.brink", &overrides).expect("loads");
+        let out = compile(&env).expect(
+            "a plain native project must compile cleanly under types = strict \
+             with the stdlib mounted alongside it",
+        );
+        assert!(
+            out.warnings.is_empty(),
+            "the mounted stdlib module must not itself introduce diagnostics \
+             under types = strict: {:?}",
+            out.warnings
+        );
     }
 
     // ── the pure compile over the input ──────────────────────────────
