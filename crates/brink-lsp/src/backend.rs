@@ -40,10 +40,12 @@ use crate::backend::adapters::{
     diff_to_lsp_edits, domain_symbol_to_lsp, format_config_from_options, make_completion_item,
     make_stdlib_completion_item, ranges_overlap,
 };
+use crate::backend::projects::{AnalysisSnapshot, NativeProjects};
 use crate::convert::{self, LineIndex};
 use crate::semantic_tokens;
 
 mod adapters;
+pub(crate) mod projects;
 
 /// Per-project analysis results, keyed by project root.
 pub(crate) struct ProjectAnalyses {
@@ -312,7 +314,7 @@ impl DiagnosticsPublisher {
 
 pub struct Backend {
     client: Client,
-    db: Arc<Mutex<brink_db::ProjectDb>>,
+    db: Arc<Mutex<NativeProjects>>,
     analysis_rx: watch::Receiver<Option<Arc<ProjectAnalyses>>>,
     analysis_trigger: Arc<Notify>,
     generation: Arc<AtomicU64>,
@@ -399,7 +401,7 @@ impl Backend {
     #[expect(clippy::too_many_arguments)]
     pub fn new(
         client: Client,
-        db: Arc<Mutex<brink_db::ProjectDb>>,
+        db: Arc<Mutex<NativeProjects>>,
         analysis_rx: watch::Receiver<Option<Arc<ProjectAnalyses>>>,
         analysis_trigger: Arc<Notify>,
         generation: Arc<AtomicU64>,
@@ -528,13 +530,11 @@ impl Backend {
     /// root-content id, both real input changes the background pass must
     /// re-analyze against.
     fn register_native_root(&self, roots: &[PathBuf], outcome: &ConfigLoadOutcome) {
-        let root = native_source_root(roots, outcome)
-            .map(|p| p.to_string_lossy().into_owned())
-            .filter(|p| !p.is_empty());
-        self.mutate_db(|db| {
-            db.set_native_root(root.clone());
-            db.set_ink_root(root);
-        });
+        // Issue #1580: discover every governing `brink.toml` in the
+        // workspace, not just the one `native_source_root` finds by walking
+        // up from the first root, and re-sync every project's own native
+        // root — see `NativeProjects::resync_roots`.
+        self.mutate_db(|projects| projects.resync_roots(roots, outcome));
     }
 
     /// Publish per-file diagnostics (parse + lowering only, no analysis).
@@ -595,9 +595,12 @@ impl Backend {
             // only at `did_open`/`did_save`, never here (review finding on
             // #1672 part 2 — see [`rename_suspicion_diags`]).
             if let Some(new_manifest) = db.manifest(file_id) {
+                let dialect = db
+                    .analysis_options_for(file_id)
+                    .map_or_else(Dialect::default, |o| o.dialect);
                 lsp_diags.extend(rename_suspicion_diags(
                     &self.previous_manifests,
-                    db.analysis_options().dialect,
+                    dialect,
                     file_id,
                     new_manifest,
                     &idx,
@@ -661,7 +664,7 @@ impl Backend {
     /// and the anti-downgrade rule would misfire: a routine edit's per-file
     /// publish would tie the previous analysis and be dropped as a same-
     /// generation downgrade, silently killing instant syntax feedback.
-    fn mutate_db<R>(&self, f: impl FnOnce(&mut brink_db::ProjectDb) -> R) -> R {
+    fn mutate_db<R>(&self, f: impl FnOnce(&mut NativeProjects) -> R) -> R {
         let mut db = lock_db(&self.db);
         let out = f(&mut db);
         self.generation.fetch_add(1, Ordering::Relaxed);
@@ -788,7 +791,7 @@ impl Backend {
         // can only create edges to files already in the db, so files loaded
         // before their include targets will have missing edges.
         let mut db = lock_db(&self.db);
-        db.rebuild_include_graph();
+        db.rebuild_include_graphs();
     }
 
     /// Recursively walk a directory, loading every source file it holds. The
@@ -847,7 +850,7 @@ fn is_source_path(path: &std::path::Path) -> bool {
         .is_some_and(|ext| ext == "ink" || ext == "brink")
 }
 
-fn lock_db(db: &Arc<Mutex<brink_db::ProjectDb>>) -> std::sync::MutexGuard<'_, brink_db::ProjectDb> {
+fn lock_db(db: &Arc<Mutex<NativeProjects>>) -> std::sync::MutexGuard<'_, NativeProjects> {
     match db.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
@@ -1798,13 +1801,16 @@ impl LanguageServer for Backend {
         // B3a UFCS resolution (issue #1507): a brief, transient lock —
         // `goto_definition` reads the memoized `db.ufcs_verdict` to jump to
         // a UFCS-desugared free function instead of the receiver.
-        let db = lock_db(&self.db);
+        let projects = lock_db(&self.db);
+        let Some(db) = projects.project_for_path(&path) else {
+            return Ok(None);
+        };
         let Some(loc) =
-            brink_ide::navigation::goto_definition(&db, &snap.analysis, snap.file_id, offset)
+            brink_ide::navigation::goto_definition(db, &snap.analysis, snap.file_id, offset)
         else {
             return Ok(None);
         };
-        drop(db);
+        drop(projects);
 
         // Find the target file in our snapshot
         let Some((_, target_path, target_source)) = snap
@@ -1846,15 +1852,18 @@ impl LanguageServer for Backend {
 
         // B3a UFCS resolution (issue #1539): a brief, transient lock — see
         // `goto_definition`'s own comment on the same pattern.
-        let db = lock_db(&self.db);
+        let projects = lock_db(&self.db);
+        let Some(db) = projects.project_for_path(&path) else {
+            return Ok(None);
+        };
         let refs = brink_ide::navigation::find_references(
-            &db,
+            db,
             &snap.analysis,
             snap.file_id,
             offset,
             params.context.include_declaration,
         );
-        drop(db);
+        drop(projects);
 
         if refs.is_empty() {
             return Ok(None);
@@ -1906,10 +1915,13 @@ impl LanguageServer for Backend {
         // TM-5 (#621): a brief, transient lock — `db.infer_body`/
         // `inferred_signature` are the FG-narrowed per-def fallback hover
         // reads when a param/temp/signature position has no declared type.
-        let db = lock_db(&self.db);
+        let projects = lock_db(&self.db);
+        let Some(db) = projects.project_for_path(&path) else {
+            return Ok(None);
+        };
         let Some(info) = brink_ide::hover::hover(
             &snap.analysis,
-            &db,
+            db,
             snap.file_id,
             &snap.source,
             offset,
@@ -1917,7 +1929,7 @@ impl LanguageServer for Backend {
         ) else {
             return Ok(None);
         };
-        drop(db);
+        drop(projects);
 
         let hover_range = info.range.map(|r| convert::to_lsp_range(r, &idx));
 
@@ -2124,16 +2136,7 @@ impl LanguageServer for Backend {
             return Ok(Some(vec![]));
         };
 
-        let all_files = {
-            let db = lock_db(&self.db);
-            db.file_ids()
-                .filter_map(|fid| {
-                    let p = db.file_path(fid)?.to_owned();
-                    let s = db.source(fid)?.to_owned();
-                    Some((fid, p, s))
-                })
-                .collect::<Vec<_>>()
-        };
+        let all_files = lock_db(&self.db).all_file_metadata();
 
         let domain_symbols = brink_ide::document::workspace_symbols(
             projects.by_root.values().map(std::convert::AsRef::as_ref),
@@ -2274,13 +2277,16 @@ impl LanguageServer for Backend {
 
         // B3a UFCS resolution (issue #1539): a brief, transient lock — see
         // `goto_definition`'s own comment on the same pattern.
-        let db = lock_db(&self.db);
+        let projects = lock_db(&self.db);
+        let Some(db) = projects.project_for_path(&path) else {
+            return Ok(None);
+        };
         let Some(range) =
-            brink_ide::rename::prepare_rename(&db, &snap.analysis, snap.file_id, offset)
+            brink_ide::rename::prepare_rename(db, &snap.analysis, snap.file_id, offset)
         else {
             return Ok(None);
         };
-        drop(db);
+        drop(projects);
 
         Ok(Some(PrepareRenameResponse::Range(convert::to_lsp_range(
             range, &idx,
@@ -2307,13 +2313,16 @@ impl LanguageServer for Backend {
 
         // B3a UFCS resolution (issue #1539): a brief, transient lock — see
         // `goto_definition`'s own comment on the same pattern.
-        let db = lock_db(&self.db);
+        let projects = lock_db(&self.db);
+        let Some(db) = projects.project_for_path(&path) else {
+            return Ok(None);
+        };
         let Some(result) =
-            brink_ide::rename::rename(&db, &snap.analysis, snap.file_id, offset, &params.new_name)
+            brink_ide::rename::rename(db, &snap.analysis, snap.file_id, offset, &params.new_name)
         else {
             return Ok(None);
         };
-        drop(db);
+        drop(projects);
 
         // Convert domain edits to LSP WorkspaceEdit
         let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
@@ -2350,7 +2359,10 @@ impl LanguageServer for Backend {
         };
 
         let (source, import_actions, fn_value_actions, value_call_actions) = {
-            let db = lock_db(&self.db);
+            let projects = lock_db(&self.db);
+            let Some(db) = projects.project_for_path(&path) else {
+                return Ok(Some(vec![]));
+            };
             let Some(file_id) = db.file_id(&path) else {
                 return Ok(Some(vec![]));
             };
@@ -2364,13 +2376,13 @@ impl LanguageServer for Backend {
             // Auto-import quick-fix (M-4): session-aware, so it reads the
             // module-qualified db while the lock is held, then merges into the
             // same code-action list as the source-only actions below.
-            let import_actions = brink_ide::import_fix::import_actions(&db, file_id, offset);
+            let import_actions = brink_ide::import_fix::import_actions(db, file_id, offset);
             // T1c creation-site + call()/bind() strict quick-fixes (issue
             // #744): same session-aware merge posture.
             let fn_value_actions =
-                brink_ide::creation_site_fix::fn_value_actions(&db, file_id, offset);
+                brink_ide::creation_site_fix::fn_value_actions(db, file_id, offset);
             let value_call_actions =
-                brink_ide::value_call_fix::value_call_actions(&db, file_id, offset);
+                brink_ide::value_call_fix::value_call_actions(db, file_id, offset);
             (source, import_actions, fn_value_actions, value_call_actions)
         };
 
@@ -2594,7 +2606,10 @@ impl LanguageServer for Backend {
         let range_end = convert::to_text_size(params.range.end, &idx);
         let request_range = rowan::TextRange::new(range_start, range_end);
 
-        let db = lock_db(&self.db);
+        let projects = lock_db(&self.db);
+        let Some(db) = projects.project_for_path(&path) else {
+            return Ok(None);
+        };
         let Some(file_id) = db.file_id(&path) else {
             return Ok(None);
         };
@@ -2610,12 +2625,12 @@ impl LanguageServer for Backend {
         let domain_hints = brink_ide::inlay_hints::inlay_hints(
             root.syntax(),
             &snap.analysis,
-            &db,
+            db,
             file_id,
             request_range,
             None,
         );
-        drop(db);
+        drop(projects);
 
         if domain_hints.is_empty() {
             return Ok(None);
@@ -2701,9 +2716,8 @@ struct BackgroundAnalysisCompleteParams {
 /// analyzed under the current values on the very next background pass, with
 /// no separate propagation step needed.
 #[expect(clippy::too_many_arguments)]
-#[expect(clippy::too_many_lines)]
 pub async fn analysis_loop(
-    db: Arc<Mutex<brink_db::ProjectDb>>,
+    db: Arc<Mutex<NativeProjects>>,
     generation: Arc<AtomicU64>,
     trigger: Arc<Notify>,
     tx: watch::Sender<Option<Arc<ProjectAnalyses>>>,
@@ -2745,8 +2759,24 @@ pub async fn analysis_loop(
         // carried (both read the revision under the db lock; the analysis reads
         // at-or-after the write). Tagged `Analysis`, this therefore wins the
         // `DiagnosticsPublisher` anti-downgrade rule against that per-file set.
-        let (
-            generation,
+        // Issue #1580: `Backend` may now hold several independent native
+        // projects (one per governing `brink.toml`, plus ink's own
+        // default) rather than one shared db. `NativeProjects::
+        // snapshot_for_analysis` does per-project exactly what this block
+        // used to do to one db — push `opts` as each project's own salsa
+        // input (guarded against unchanged values exactly as before, see
+        // its own doc), then snapshot `compute_projects`/`analysis_inputs_
+        // for`/`is_native`/`module_map`/`module_map_diagnostics`/
+        // `file_metadata`/`file_diagnostics`/`suppressions`/`manifest` —
+        // and merges every project's output into one set of flat
+        // collections. That merge is safe (never conflates two projects'
+        // files) because every project's `FileId`s are disjoint ranges.
+        let snap = {
+            let mut db = lock_db(&db);
+            db.snapshot_for_analysis(&opts)
+        };
+        let generation = generation.load(Ordering::Relaxed);
+        let AnalysisSnapshot {
             projects,
             modules,
             module_diags,
@@ -2754,90 +2784,7 @@ pub async fn analysis_loop(
             per_file_diags,
             file_suppressions,
             manifests,
-        ) = {
-            let mut db = lock_db(&db);
-            // Push the same options this pass analyzes under into the db as a
-            // salsa input, *before* reading anything derived from it (issue
-            // #1562, folding in the #1553 bug class in its second db holder).
-            //
-            // The published diagnostics come from the off-db
-            // `analyze_with_modules` pass below, which honors `opts` — but
-            // several request handlers read the db's own queries directly:
-            // hover (`db.effects`/`db.signature`/`db.inferred_signature`/
-            // `db.infer_body`), inlay hints, code actions, and rename's UFCS
-            // resolution. `Backend` never wrote this input, so every one of
-            // them ran under `AnalysisOptions::default()` — `Dialect::StrictInk`
-            // no matter what the client declared, which (among other things)
-            // gates off M-2d cross-declared-module coexistence in
-            // `symbol_index_query`. Every native `.brink` file has a declared
-            // module, so two native modules with a same-named flow lost one of
-            // them from the db's index, and every db-backed hover row for it
-            // silently vanished.
-            //
-            // Guarded against unchanged values exactly as `IdeSession::
-            // sync_db_options` is: salsa stamps the current revision on every
-            // write, so an unguarded call here — once per analysis pass, i.e.
-            // once per keystroke — would invalidate every direct reader on
-            // every edit.
-            if db.analysis_options() != &opts {
-                db.set_analysis_options(opts.clone());
-            }
-            let generation = generation.load(Ordering::Relaxed);
-            let project_defs = db.compute_projects();
-            // `is_native` per root (issue #1562 review finding), captured
-            // under the same lock as `project_defs`: the off-db pass below
-            // has no `Language` classification of its own, so without this
-            // M-2d cross-declared-module coexistence stayed gated on a
-            // client having declared `dialect: "brink"` — a native project
-            // has no dialect to be wrong about.
-            let project_inputs: Vec<_> = project_defs
-                .iter()
-                .map(|(root, m)| (*root, db.analysis_inputs_for(m), db.is_native(*root)))
-                .collect();
-            // The project's resolved modules (#1526), cloned out under the
-            // same lock as the inputs they qualify. Module identity needs
-            // file paths, which the analysis inputs don't carry — without it
-            // this pass mints `DefinitionId`s that don't match the db's, so
-            // every native `.brink` symbol misses in `db.effects`/
-            // `db.signature`/`db.infer_body`. Keyed by `FileId`, so the
-            // whole-workspace map is a harmless superset for each project.
-            let modules = db.module_map().clone();
-            // The map's diagnostics half (`E085` stem collisions, #1553).
-            // `analyze_with_modules` below is handed the finished map, so it
-            // cannot re-derive them; without folding them back in per project
-            // a collision a db-driven compile catches never reaches the editor.
-            let module_diags = db.module_map_diagnostics().to_vec();
-            let meta = db.file_metadata();
-            let diags: Vec<_> = meta
-                .iter()
-                .filter_map(|(fid, _, _)| Some((*fid, db.file_diagnostics(*fid)?.to_vec())))
-                .collect();
-            let suppressions: HashMap<brink_ir::FileId, brink_ir::suppressions::Suppressions> =
-                meta.iter()
-                    .filter_map(|(fid, _, _)| Some((*fid, db.suppressions(*fid)?.clone())))
-                    .collect();
-            // Current manifests, snapshotted under the same lock (issue
-            // #1672 part 2, review finding): `publish_all_diagnostics`
-            // diffs these against `previous_manifests` to compute the same
-            // undeclared-rename suspicion the fast per-file publish
-            // computes, so the two publishes for one generation agree
-            // instead of the background pass's publish silently clobbering
-            // the hint with a set that never carried it.
-            let manifests: HashMap<brink_ir::FileId, brink_ir::SymbolManifest> = meta
-                .iter()
-                .filter_map(|(fid, _, _)| Some((*fid, db.manifest(*fid)?.clone())))
-                .collect();
-            (
-                generation,
-                project_inputs,
-                modules,
-                module_diags,
-                meta,
-                diags,
-                suppressions,
-                manifests,
-            )
-        };
+        } = snap;
 
         // Run per-project analysis OUTSIDE the lock
         let mut by_root = HashMap::new();
