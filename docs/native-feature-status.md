@@ -89,8 +89,8 @@ whole vocabulary by naming a different conventions module. Sequenced as
 | Directive-shaped tag guard (`E172`) | ✅ | ✅ | ✅ | — | landed 2026-08-01 (#1835) |
 | **`!name` sigil dispatch** | ✅ | ❌ | — | — | **reserved, unimplemented** — see below |
 | Block elements `@[element(…, block)]` | ✅ | ✅ | ✅ | ❓ | **LANDED #1839** (PR #2067) — capture stops at a line carrying a divert/label |
-| `fn conventions()` registration | ✅ | ✅ | ⚠️ | — | registration + Q4 effect row landed (#2095); **comptime evaluation blocked** on #1840's interception ruling |
-| Comptime evaluation of conventions | ✅ | ❌ | — | — | 🔒 **BLOCKED** — `begin_function_eval` intercepts `CallExternal`; Q5 made `register` an intrinsic. Contradiction on #1840 |
+| `fn conventions()` registration | — | — | — | — | **DISSOLVED** (2026-08-03 ruling) — the well-known registration fn, `register` intrinsic, and #1840's entire Q1–Q6 comptime chain are removed from the design; precedence is now a declared `order = N` property directly on `@[convention]`/`@[element]` (split from #2164, landed via PR #2176) — no comptime involved |
+| Comptime evaluation of conventions | — | — | — | — | **DEFERRED, not blocked** — moot for conventions specifically since ordering no longer needs it; comptime as a general capability remains wanted but undesigned, to be decided when something genuinely needs it |
 | `@[style]` declaration surface | ✅ | ✅ | ❌ | — | `StyleToken` produced, **zero consumers** (#1719) |
 | Built-in screenplay preset | ✅ | ✅ | ✅ | ❓ | **SHIPS** as `std/conventions/screenplay.brink` (#1720/PR #2081) + `scene_entered` extern (#2092), and **#2080 mounts its source into every compiled `Environment`** — **but still not importable**: nothing in it is `pub` and no confinement rule scopes a `use` into it yet (needs #1582's pub marker + #2167's confinement) |
 | `[project] elements` name validation | ✅ | ✅ | ✅ | — | **LANDED #1874** |
