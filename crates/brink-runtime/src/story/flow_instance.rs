@@ -22,7 +22,7 @@ use super::call_stack::{
     CallFrame, CallFrameType, CallStack, ChoiceDisplay, ContainerPosition, ExecMode, Flow, Thread,
 };
 use super::external::{ExternalFnHandler, ExternalResult, FunctionEval};
-use super::types::{BlockId, Choice, OutputLine, Stats, Step, StepOutcome, StoryStatus};
+use super::types::{BlockId, Choice, Element, OutputLine, Stats, Step, StepOutcome, StoryStatus};
 
 // ── FlowInstance ────────────────────────────────────────────────────────────
 
@@ -1473,12 +1473,16 @@ fn flush_remaining(
     (text, tags)
 }
 
-/// Build a [`Step::Line`] stamped with the flow's current [`BlockId`].
+/// Build a [`Step::Line`] stamped with the flow's current [`BlockId`] and
+/// the degenerate [`Element::narrative`] classification (issue #1683 —
+/// see [`Element`]'s doc for why this stays the always-correct default
+/// rather than a handler-derived kind/data pair today).
 fn make_output_line(flow: &Flow, text: String, tags: Vec<String>) -> Step {
     Step::Line(OutputLine {
         text,
         tags,
         block_id: BlockId(flow.next_block_id),
+        element: Element::narrative(),
     })
 }
 

@@ -417,6 +417,7 @@ impl StoryRunner {
                 text: String::new(),
                 tags: Vec::new(),
                 block_id: None,
+                element: None,
                 choices: None,
                 name: story.pending_external_name().map(str::to_owned),
             },

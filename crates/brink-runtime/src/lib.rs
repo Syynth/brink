@@ -90,9 +90,9 @@ pub use session::{
 pub use speculation::{Budget, Speculation, SpeculationStep};
 pub use state::{ContextAccess, ObservedContext, WriteObserver};
 pub use story::{
-    BlockId, Choice, DriveOutcome, ExecMode, ExternalFnHandler, ExternalResult, FallbackHandler,
-    FlowInstance, FunctionEval, OutputLine, Stats, Step, StepOutcome, Story, StorySnapshot,
-    StoryStatus,
+    BlockId, Choice, DriveOutcome, Element, ExecMode, ExternalFnHandler, ExternalResult,
+    FallbackHandler, FlowInstance, FunctionEval, OutputLine, Stats, Step, StepOutcome, Story,
+    StorySnapshot, StoryStatus,
 };
 pub use world::{
     CommitError, ContextView, FlowLocal, FrameStartView, Mode, PolicyError, ResolvedPolicy, Scope,

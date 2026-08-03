@@ -1187,12 +1187,13 @@ pub struct Choice {
 every marshal leg (`brink-web`, `bevy-brink`, the CLI TUI, `brink-ide`).
 Scoped narrower than this section's full worked shape, deliberately:
 `OutputLine` today is `{ text: String, tags: Vec<String>, block_id:
-BlockId }` — flat text, no `element`/`parts` decomposition yet. That's
-the information-identical schema-less-ink degenerate case this
-section's own "superset check" calls out; the `element`/markup-`Part`
-structured surface is #1683's job once the element/markup layer lands,
-riding the same `Step`/`OutputLine` contract this issue created rather
-than reopening it. `BlockId` counts uninterrupted runs (bumped on a
+BlockId, element: Element }` — flat text, no `parts` decomposition yet
+(see §7.2 below for `element`'s own scoping). That's the
+information-identical schema-less-ink degenerate case this section's
+own "superset check" calls out; the markup-`Part` structured surface
+is #1683's job once the element/markup layer lands, riding the same
+`Step`/`OutputLine` contract this issue created rather than reopening
+it. `BlockId` counts uninterrupted runs (bumped on a
 choice selection, a `Done` resume, and a host-directed jump); the
 richer attachment-derived assignment described in §3.7 is deferred to
 that same follow-up. The harness-side attribution safeguard
@@ -1200,6 +1201,29 @@ that same follow-up. The harness-side attribution safeguard
 fold logic in the same PR — oracle CASES/EPISODES measured
 byte-identical to the pre-migration baseline (5607/1010/2 episodes,
 365/8/397 cases).
+
+### 7.2 Implementation status — `Element`'s degenerate case only (#1683)
+
+`brink_runtime::Element { kind: String, data: BTreeMap<String, String> }`
+shipped as `OutputLine.element`, migrating the same marshal legs #1684
+touched (`brink-web`'s `LineJs`/`ElementJs`, the `@brink-lang/web`
+`Line`/`SessionLine` TS types). **Scoped to the degenerate case only,
+honestly**: every line reports `Element::narrative()` (`kind:
+"narrative"`, empty `data`) regardless of source markup — no
+`@[element]` handler's classification (§3.5b) reaches this field yet.
+Compile-time-baked `kind`/`data` (handler name + named captures,
+`hir::ElementMatch`) exists in the compiler already, but wiring it onto
+a specific runtime `OutputLine` needs either new `.inkb` line-table
+storage (the single-line, return-based case — `heading`/`transition`
+in `std/conventions/screenplay.brink`) or a VM-level scoping mechanism
+(a `block`-capturing handler like `cue`/`parenthetical`, whose call
+emits more than one line dynamically) — neither is attempted here; see
+this issue's tracked follow-up for a concrete design sketch (an
+`Element` push/pop VM stack bracketing the rewritten call, plus a new
+`.inkb`-adjacent constant table) that still needs maintainer sign-off
+before it becomes production VM/wire architecture. Oracle CASES/EPISODES
+measured unchanged from #1684's own baseline (5607/1010/2 episodes,
+365/8/397 cases) — expected, since no text/tags path changed.
 
 ## 8. Worked cases (abbreviated; spellings illustrative)
 

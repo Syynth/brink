@@ -1,7 +1,8 @@
 //! Small output/status types: [`StoryStatus`], [`Step`], [`OutputLine`],
-//! [`BlockId`], [`StepOutcome`], [`Choice`], [`Stats`].
+//! [`BlockId`], [`Element`], [`StepOutcome`], [`Choice`], [`Stats`].
 
-use alloc::string::String;
+use alloc::collections::BTreeMap;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 /// The current execution status of a story.
@@ -35,6 +36,50 @@ pub enum StoryStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BlockId(pub u64);
 
+/// A line's classification — kind + an open, preset-defined data map
+/// (`docs/prose-dialect-spec.md` §7/§3.5b, §3.6, sitting-5 ruling item 8:
+/// "the output format bakes no scene-specific fields — element data is an
+/// open map produced by conventions and handlers"). Deliberately a `String`
+/// kind, not a closed enum: the vocabulary belongs to whichever preset or
+/// `@[element]` handler classified the line, never to the runtime.
+///
+/// **Scoped narrower than the full ruling, honestly** (issue #1683): today
+/// every line gets [`Element::narrative`], the degenerate case the spec's
+/// "superset check" names ("schema-less ink → `element: narrative`").
+/// Compile-time-baked data from an `@[element]` handler's match (kind =
+/// handler name, data = its named captures, `hir::ElementMatch`) is real in
+/// the compiler already, but wiring it onto a *specific* runtime
+/// `OutputLine` needs either new `.inkb` line-table storage (for the
+/// single-line, return-based case) or a VM-level scoping mechanism (for a
+/// `block`-capturing handler like `cue`/`parenthetical`, whose call emits
+/// more than one line dynamically) — neither is built here. See this
+/// issue's tracked follow-up for the concrete design.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Element {
+    /// The classifying handler's name, or [`Self::NARRATIVE`] for an
+    /// ordinary, unclassified line.
+    pub kind: String,
+    /// Open, handler-defined payload. Empty for the degenerate case.
+    pub data: BTreeMap<String, String>,
+}
+
+impl Element {
+    /// The degenerate kind every line reports today — `docs/prose-dialect-spec.md`
+    /// §7's own superset check: "schema-less ink → `element: narrative,
+    /// parts: [Text]`" (§1 puts it the same way: "the *degenerate case* —
+    /// an untyped narrative element with no spans").
+    pub const NARRATIVE: &'static str = "narrative";
+
+    /// The always-correct default: no handler classified this line.
+    #[must_use]
+    pub fn narrative() -> Self {
+        Self {
+            kind: Self::NARRATIVE.to_string(),
+            data: BTreeMap::new(),
+        }
+    }
+}
+
 /// One line of story content, carried inside [`Step::Line`].
 ///
 /// `.text()`/`.tags()` intentionally stay plain fields rather than a
@@ -52,6 +97,8 @@ pub struct OutputLine {
     pub tags: Vec<String>,
     /// The run of adjacent content this line belongs to. See [`BlockId`].
     pub block_id: BlockId,
+    /// This line's classification. See [`Element`] for today's scoping.
+    pub element: Element,
 }
 
 /// A single step of story output from [`Story::continue_single`].
