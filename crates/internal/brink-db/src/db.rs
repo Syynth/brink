@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use brink_analyzer::{
-    AnalysisOptions, AnalysisResult, BodyTypes, EffectRow, InferenceResult, InferredSig, Sig,
-    SymbolMeta,
+    AnalysisOptions, AnalysisResult, BodyTypes, EffectRow, HarvestIndex, InferenceResult,
+    InferredSig, Sig, SymbolMeta,
 };
 use brink_format::DefinitionId;
 use brink_ir::suppressions::Suppressions;
@@ -17,12 +17,12 @@ use crate::determinism::LookupMap;
 use crate::queries::{
     BrinkDatabase, CompileProduct, DefKey, KnotChunkKey, LirProduct, ProjectInput, ResolvedProject,
     SourceFile, analysis_query, call_site_diagnostics_query, call_site_metas_query,
-    diagnostics_query, effects_query, has_errors_query, include_graph_query, infer_body_query,
-    inferred_signature_query, lir_knot_chunk_query, lir_prelude_decls_query, lir_query,
-    local_signature_query, lowered_query, module_map_query, parse_native_query, parse_query,
-    per_file_diagnostics_query, resolutions_index_query, resolve_query, signature_query,
-    story_data_query, suppressions_query, symbol_index_query, type_diagnostics_query,
-    type_inference_query, ufcs_resolution_query, value_meta_query,
+    diagnostics_query, effects_query, harvest_index_query, has_errors_query, include_graph_query,
+    infer_body_query, inferred_signature_query, lir_knot_chunk_query, lir_prelude_decls_query,
+    lir_query, local_signature_query, lowered_query, module_map_query, parse_native_query,
+    parse_query, per_file_diagnostics_query, resolutions_index_query, resolve_query,
+    signature_query, story_data_query, suppressions_query, symbol_index_query,
+    type_diagnostics_query, type_inference_query, ufcs_resolution_query, value_meta_query,
 };
 
 /// Stateful incremental project database.
@@ -497,6 +497,20 @@ impl ProjectDb {
     /// produced alongside [`symbol_index`](Self::symbol_index).
     pub fn symbol_index_diagnostics(&self) -> &[Diagnostic] {
         &symbol_index_query(&self.salsa, self.project).1
+    }
+
+    /// The project-wide harvest index (layer 2, issue #2114,
+    /// `docs/prose-dialect-spec.md` §5): every `@NAME` cue payload and every
+    /// inline-markup span kind/attribute name written anywhere in the
+    /// project, upgraded by the registered host manifest's `markup`
+    /// vocabulary where one is declared. The compiler-side sibling of
+    /// [`symbol_index`](Self::symbol_index) — a completion consumer reads
+    /// this the same way it reads that index, and gets the same
+    /// incrementality: an edit backdates this memo exactly when it
+    /// backdates the symbol index (both read nothing beyond every file's
+    /// [`lowered_query`] output).
+    pub fn harvest_index(&self) -> Arc<HarvestIndex> {
+        Arc::clone(harvest_index_query(&self.salsa, self.project))
     }
 
     /// Every file's resolved module (M-1, docs/modules-spec.md §1/§5) — the
