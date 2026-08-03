@@ -630,6 +630,243 @@ fn compile_path_native_ufcs_call_in_lambda_decl_default_is_e144() {
     );
 }
 
+/// Compile a native `.brink` entry from disk with `Dialect::Brink` explicitly
+/// requested — mirrors `seq_verbs.rs`'s own `compile_native` helper.
+/// `comparator_contract`'s E119 gate is `dialect == Brink`-only, with no
+/// `is_native` fallback the way `map_keys`'s gate has (`lib.rs`: `if
+/// opts.dialect == Dialect::Brink && needs_effects`), so it must be
+/// requested explicitly even though the source is already native-surface —
+/// the same "brink-dialect analysis over native-surface source" combination
+/// issue #1887 is about.
+fn compile_native_brink_dialect(
+    dir_suffix: &str,
+    source: &str,
+) -> Result<brink_compiler::CompileOutput, brink_compiler::CompileError> {
+    let dir = std::env::temp_dir().join(format!(
+        "brink-compiler-comparator-contract-{dir_suffix}-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("main.brink"), source).unwrap();
+    let options = brink_compiler::AnalysisOptions {
+        dialect: brink_compiler::Dialect::Brink,
+        ..brink_compiler::AnalysisOptions::default()
+    };
+    let result = brink_compiler::compile_path_with_options(&dir.join("main.brink"), options);
+    std::fs::remove_dir_all(&dir).ok();
+    result
+}
+
+/// Issue #2085 (the `comparator_contract.rs` half of #1774's
+/// re-verification remainder): `comparator_contract::collect_sites` used to
+/// start only from `root_content` + knot/stitch bodies — the same
+/// unvisited-decl-initializer gap `ufcs.rs` has (see
+/// `compile_path_native_ufcs_call_in_lambda_decl_default_is_e144` above),
+/// confirmed live here rather than assumed. `spy` writes the global `seen`,
+/// so a pure-callback quartet call (`map`) naming it as a decl-default
+/// lambda's own callback must still be refused by E119 — not silently
+/// pass because the analyzer never visited the initializer at all.
+///
+/// **Reproduced first (rule 20a):** with `collect_sites`'s two new
+/// `hir.variables`/`hir.constants` loops removed, this compiled clean with
+/// zero warnings/errors — confirmed both via a direct `brink-analyzer`-level
+/// repro before writing the fix, and by reverting the production hunk and
+/// re-running this exact test (red without the fix, green with it).
+#[test]
+fn compile_path_native_comparator_contract_call_in_lambda_decl_default_is_e119() {
+    let source = "var seen = 0\n\n\
+         fn spy(n) {\n  seen = seen + n;\n  return n;\n}\n\n\
+         const doIt = || map([1, 2], spy)\n\n\
+         flow main() {\n  Hi. -> END\n}\n";
+
+    let err = compile_native_brink_dialect("lambda-decl-default", source).expect_err(
+        "an impure named callback of a pure-callback verb, called inside a decl-default \
+         lambda's own body, must be refused by E119 — not compile clean because the \
+         analyzer never visited the initializer",
+    );
+    let codes = diagnostic_codes(&err);
+    assert!(
+        codes.contains(&"E119"),
+        "expected E119 among diagnostics, got: {codes:?}"
+    );
+}
+
+/// The companion positive twin: a *pure* named callback inside a
+/// decl-default lambda body must still compile clean — the fix must not
+/// over-trigger on every callback reachable from an initializer, only on
+/// ones whose row provably exceeds pure·silent (mirrors
+/// `native_bare_name_pure_callback_passes` in `seq_verbs.rs`, this time
+/// reached from `collect_sites`'s new initializer loops rather than a
+/// flow body).
+#[test]
+fn compile_path_native_comparator_contract_pure_call_in_lambda_decl_default_compiles() {
+    let source = "fn double(n) {\n  return n * 2;\n}\n\n\
+         const doIt = || map([1, 2], double)\n\n\
+         flow main() {\n  Hi. -> END\n}\n";
+
+    compile_native_brink_dialect("lambda-decl-default-pure", source).expect(
+        "a pure named callback inside a decl-default lambda body must compile clean \
+         (E119 is exceedance-only, not a blanket refusal of the new initializer reach)",
+    );
+}
+
+/// Issue #1769 (`comparator_contract::collect_sites` never walked file-level
+/// `VAR`/`CONST` initializers at all — independent of lambdas): the SAME
+/// `collect_sites` fix that closes #2085's lambda-body gap closes this one
+/// too, since both are the identical missing walk. A direct (non-lambda)
+/// `sort_by` misuse written straight in a `VAR` initializer must be refused
+/// by E119.
+#[test]
+fn compile_path_native_comparator_contract_call_directly_in_var_initializer_is_e119() {
+    let source = "var seen = 0\n\n\
+         fn spy(x, y) {\n  seen = seen + 1;\n  return x - y;\n}\n\n\
+         var sorted = sort_by([2, 1], spy)\n\n\
+         flow main() {\n  Hi. -> END\n}\n";
+
+    let err = compile_native_brink_dialect("var-initializer-direct", source).expect_err(
+        "an impure named comparator called directly in a VAR initializer (no lambda \
+         involved) must be refused by E119 — issue #1769's own gap",
+    );
+    let codes = diagnostic_codes(&err);
+    assert!(
+        codes.contains(&"E119"),
+        "expected E119 among diagnostics, got: {codes:?}"
+    );
+}
+
+// ── Issue #2085, item 1: `compile_path`-level coverage for the four
+// passes #1764/#2084 spot-checked as "already hand-recurses over
+// `hir.variables`/`hir.constants`, should already be structurally
+// reachable, but has no dedicated regression test yet" — `contains_domain`,
+// `conversions`, `range_refinement`, `structs` (`map_keys` already has its
+// analog: `compile_path_native_lambda_valued_var_default_compiles_with_
+// map_keys_warning_alongside` above). No production fix accompanies these
+// three (`contains_domain`/`conversions`/`structs`) — they confirm existing
+// behavior, mirroring the map_keys test's own shape.
+
+/// `contains_domain`'s E152 (a float needle against an int-keyed map,
+/// provably always false) fires from inside a decl-default lambda's own
+/// body — its initializer hand-recursion (`for var in &hir.variables` /
+/// `for c in &hir.constants` in `contains_domain::check`) already reaches
+/// `Expr::Lambda`'s body via `check_expr`'s own lambda-descent arm (the
+/// #1764 unit test `an_always_false_contains_in_a_lambda_statement_of_a_
+/// var_initializer_is_e152` proves this at the analyzer layer; this pins
+/// it through the production `compile_path` pipeline instead).
+#[test]
+fn compile_path_native_contains_domain_call_in_lambda_decl_default_is_e152() {
+    let source = "const doIt = || {\n  let hit = contains(Map { 1: \"a\" }, 3.5);\n  0\n}\n\n\
+         flow main() {\n  Hi. -> END\n}\n";
+
+    let result = compile_native_brink_dialect("contains-domain-lambda-decl-default", source);
+    let out = result.expect(
+        "a decl-default lambda body's contains() misuse compiles clean (E152 is a warning), \
+         with E152 firing alongside it",
+    );
+    let codes: Vec<&str> = out.warnings.iter().map(|d| d.code.as_str()).collect();
+    assert!(
+        codes.contains(&"E152"),
+        "expected E152 among warnings, got: {codes:?}"
+    );
+}
+
+/// `conversions`'s E078 (`int()` rejecting a map argument) fires from
+/// inside a decl-default lambda's own body — mirrors the #1764 unit test
+/// `a_bad_conversion_in_a_lambda_statement_of_a_var_initializer_is_e078`,
+/// this time through `compile_path`.
+#[test]
+fn compile_path_native_conversions_call_in_lambda_decl_default_is_e078() {
+    let source = "const doIt = || {\n  let x = int(Map { 1: 2 });\n  0\n}\n\n\
+         flow main() {\n  Hi. -> END\n}\n";
+
+    let err = compile_native_brink_dialect("conversions-lambda-decl-default", source).expect_err(
+        "a bad int() conversion inside a decl-default lambda body must be refused by E078",
+    );
+    let codes = diagnostic_codes(&err);
+    assert!(
+        codes.contains(&"E078"),
+        "expected E078 among diagnostics, got: {codes:?}"
+    );
+}
+
+/// `structs`'s E071 (a struct-literal field disagreeing with its declared
+/// type) fires from inside a decl-default lambda's own body — `structs::
+/// check`'s own initializer loop (`for var in &hir.variables` / `for c in
+/// &hir.constants`, calling `check_expr` — which, like its five siblings,
+/// already descends `Expr::Lambda`) reaches it structurally; this pins
+/// that reach through `compile_path`.
+#[test]
+fn compile_path_native_structs_literal_in_lambda_decl_default_is_e071() {
+    let source = "struct Point {\n  x: float\n}\n\n\
+         const doIt = || Point { x: \"hi\" }\n\n\
+         flow main() {\n  Hi. -> END\n}\n";
+
+    let err = compile_native_brink_dialect("structs-lambda-decl-default", source).expect_err(
+        "a struct literal with a field type mismatch inside a decl-default lambda body \
+         must be refused by E071",
+    );
+    let codes = diagnostic_codes(&err);
+    assert!(
+        codes.contains(&"E071"),
+        "expected E071 among diagnostics, got: {codes:?}"
+    );
+}
+
+/// `range_refinement` (NS-A5, E117) is one of #1774's own-documented
+/// "currently-documented-vacuous" checks with respect to a decl-default
+/// LAMBDA specifically — not because its own initializer hand-recursion is
+/// broken, but because of surface disjointness: a range literal (`a..b`)
+/// parses only on the ink/brink dialect surface (`brink-syntax`), and a
+/// lambda literal (`|x| …`) parses only on the native surface
+/// (`brink-syntax-native`, `hir::lower_native`) — confirmed directly: a
+/// bare `int(0..0)` inside a native `.brink` decl-default lambda body fails
+/// to *parse* at all (`E037`/`E129`, not E117), because native has no `..`
+/// range-literal grammar. The two surfaces are mutually exclusive, so no
+/// fixture can ever put a range literal inside a lambda body — this is the
+/// same finding `comparator_contract.rs`'s own module comment records for
+/// `Expr::FnLiteral`/`Expr::Lambda`.
+///
+/// The honest equivalent this test pins instead: `range_refinement`'s own
+/// initializer hand-recursion (`for c in &hir.constants` /
+/// `for var in &hir.variables`, twice over in `range_refinement::check`)
+/// reaches a **plain, non-lambda** top-level `VAR` initializer on the one
+/// surface ranges actually exist on (ink/brink dialect) — through
+/// `compile_path`'s in-memory sibling `compile_with_options`, since
+/// `range_refinement` has no native-surface reach to give `compile_path`
+/// (the on-disk native entry point) anything to exercise here.
+#[test]
+fn compile_ink_brink_range_refinement_direct_var_initializer_is_e117() {
+    // The empty range literal must sit in the `VAR`'s own initializer
+    // expression — `range_refinement::check`'s `visit::visit(hir, &mut v)`
+    // call already walks an ordinary `~ bad = int(0..0)` assignment inside
+    // a flow body (that's the block-tree, not an initializer), so a
+    // fixture that put the call there instead would pass with the
+    // initializer hand-recursion loops deleted, proving nothing about them.
+    let files: std::collections::HashMap<&str, &str> =
+        std::collections::HashMap::from([("main.ink", "VAR bad = int(0..0)\n-> END\n")]);
+    let options = brink_compiler::AnalysisOptions {
+        dialect: brink_compiler::Dialect::Brink,
+        ..brink_compiler::AnalysisOptions::default()
+    };
+    let result = brink_compiler::compile_with_options(
+        "main.ink",
+        |p| {
+            files.get(p).map(|s| (*s).to_string()).ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::NotFound, format!("not found: {p}"))
+            })
+        },
+        options,
+    );
+    let err = result.expect_err(
+        "a provably-empty range literal in a plain VAR initializer must be refused by E117",
+    );
+    let codes = diagnostic_codes(&err);
+    assert!(
+        codes.contains(&"E117"),
+        "expected E117 among diagnostics, got: {codes:?}"
+    );
+}
+
 /// A `target/` subdirectory sitting next to a valid `.brink` entry, holding
 /// a file that is not valid brink source at all: native discovery must
 /// never walk into `target/` in the first place (issue #1381), so the

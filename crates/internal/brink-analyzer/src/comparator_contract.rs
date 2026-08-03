@@ -355,6 +355,24 @@ struct ComparatorSite {
     target_name: String,
 }
 
+/// Issues #1769/#2085: this pass used to start only from `root_content` +
+/// knot/stitch bodies, silently skipping every file-level `VAR`/`CONST`
+/// initializer expression — both a direct pure-callback misuse written
+/// straight in an initializer (`VAR bad = sort_by(xs, #fn(spy))`, #1769) and
+/// one nested inside a decl-default lambda's own body
+/// (`const doIt = || map(xs, spy)`, #2085, legal since #1774's ruling). The
+/// other six passes in this "hand-rolled initializer recursion" family
+/// (`coalesce`, `contains_domain`, `conversions`, `map_keys`, `structs`,
+/// `range_refinement`) already carry this same two-loop mirror in their own
+/// entry points; this is `comparator_contract`'s copy of it. This stays a
+/// hand-rolled mirror rather than switching to
+/// `hir::visit::visit_with_decl_initializers` (the shared entry point
+/// `hir::visit.rs` built for exactly this class of gap, issue #1571)
+/// because `comparator_contract`'s own accumulator/signature don't fit that
+/// trait shape without a larger refactor out of scope for this bug-fix PR;
+/// #2096 (`ufcs::resolve`'s own copy of the same gap) raises the identical
+/// shared-visitor question for its own hand-rolled walker and is the
+/// nearest tracked follow-up.
 fn collect_sites(hir: &HirFile, ctx: &CollectCtx<'_>, out: &mut Vec<ComparatorSite>) {
     collect_block(&hir.root_content, ctx, out);
     for knot in &hir.knots {
@@ -362,6 +380,12 @@ fn collect_sites(hir: &HirFile, ctx: &CollectCtx<'_>, out: &mut Vec<ComparatorSi
         for stitch in &knot.stitches {
             collect_block(&stitch.body, ctx, out);
         }
+    }
+    for var in &hir.variables {
+        collect_expr(&var.value, ctx, out);
+    }
+    for c in &hir.constants {
+        collect_expr(&c.value, ctx, out);
     }
 }
 
