@@ -35,6 +35,17 @@ fn analyze(source: &str, opts: AnalysisOptions) -> Vec<brink_ir::Diagnostic> {
     let mut db = ProjectDb::new();
     db.set_analysis_options(opts);
     db.set_file("main.brink", source.to_owned());
+    // Reviewer finding (docs/effects-dialect-gate-audit.md §2/§6): the
+    // whole-project db path's `is_native` (`project_is_native`,
+    // `crates/internal/brink-db/src/queries/mod.rs:576-585`) is
+    // entry-derived and `false` whenever `ProjectDb::entry()` is `None` —
+    // `ProjectDb::new()` leaves it unset. Without this, these fixtures
+    // would stay "dark by default" even after an `is_native` fallback (#2099
+    // option (a)) landed, silently voiding the suite's forward-looking
+    // purpose. Setting the entry here matches the convention ~15 sibling
+    // `brink-db` suites already use (e.g. `issue_1840_register_intrinsic_
+    // confinement.rs`).
+    db.set_entry("main.brink");
     db.analysis().diagnostics.clone()
 }
 

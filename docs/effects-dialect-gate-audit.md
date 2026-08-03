@@ -32,13 +32,16 @@ if opts.dialect == Dialect::Brink && needs_effects {
 This single gate is the only thing standing between a project and three
 downstream checks — `effects_assertions::check` (E102/E103/E108/E109),
 `await_purity::check` (E105), and `comparator_contract::check` (E119) — for
-the monolithic `analyze`/`analyze_with_modules` path. `opts.dialect` is
-`brink_project_config::Dialect`, an **ink-only axis** (`{StrictInk, Brink}`,
-`crates/internal/brink-analyzer/src/dialect_gate.rs:51`) — a native `.brink`
-project has no opinion on it at all, so it silently carries whatever
-`AnalysisOptions::default()` gives it (`StrictInk`) unless something
-explicitly sets `dialect = brink` in `brink.toml` or `--dialect brink` — a
-flag that means nothing for native source.
+the monolithic `analyze`/`analyze_with_modules` path, specifically
+`whole_project_diagnostics` (`lib.rs:1167-1321`). `opts.dialect` is
+`brink_project_config::Dialect`, an **ink-only axis** defined at
+`crates/internal/brink-project-config/src/lib.rs:134-138`
+(`{StrictInk, Brink}`, `#[default]` on `StrictInk`; re-exported for
+consumers at `crates/internal/brink-analyzer/src/dialect_gate.rs:51`) — a
+native `.brink` project has no opinion on it at all, so it silently carries
+whatever `AnalysisOptions::default()` gives it (`StrictInk`) unless
+something explicitly sets `dialect = brink` in `brink.toml` or `--dialect
+brink` — a flag that means nothing for native source.
 
 The incremental salsa path (`brink-db`, what `brink compile`/`brink
 check`/`@brink-lang/web` actually run) mirrors the same gate at each of the
@@ -60,7 +63,7 @@ if project.analysis_options(db).dialect != brink_analyzer::Dialect::Brink {
 ```
 
 None of the three consult `is_native` / the file's `Language` at all — unlike
-the sibling gate four lines above them in `lib.rs`:
+a sibling gate elsewhere in `lib.rs`:
 
 ```rust
 // lib.rs:844
@@ -69,9 +72,34 @@ if dialect == Dialect::Brink || is_native {
     // map_keys::check_duplicate_keys (E138)
 ```
 
-`map_keys`'s `is_native` fallback is exactly the shape #2099 asks about
-adding here. It is not hypothetical precedent — it already exists in the same
-function, four lines away.
+**Correction (this gate is further away than an earlier draft of this audit
+claimed):** `lib.rs:844` sits inside `per_file_diagnostics` (`lib.rs:785-888`)
+— a **different pass** from `whole_project_diagnostics` (`lib.rs:1167-1321`),
+which is where the effects gate at `lib.rs:1255` lives. They are 411 lines
+and a pass boundary apart, not "four lines away" — an earlier version of
+this section conflated the two. The two passes also source `is_native`
+differently, which matters for what "mirroring `map_keys`" would actually
+require:
+
+- `per_file_diagnostics`'s `is_native` (the `map_keys` precedent) is a
+  **per-file** language check computed fresh at each call site:
+  `crates/internal/brink-db/src/queries/analysis.rs:139` —
+  `super::file_language(file.path(db)) == super::Language::Native` — inside
+  `per_file_diagnostics_query`, one file at a time.
+- `whole_project_diagnostics` takes `is_native: bool` as a caller-supplied
+  parameter, not a per-file recomputation. In the db path the caller derives
+  it from `project_is_native` (`crates/internal/brink-db/src/queries/
+  mod.rs:576-585`), which is **entry-derived**: it returns `false` whenever
+  `project.entry(db)` is `None`, and the same file's own doc comment
+  (`mod.rs:597`) notes `Backend` (the LSP) never calls
+  `ProjectDb::set_entry` — so in an entry-less project (the IDE/LSP path),
+  `project_is_native` is always `false`, regardless of how native every file
+  in the project actually is.
+
+So `map_keys`'s fallback is real precedent for the *shape* of a fix, but it
+is not a drop-in mirror: the effects family's `is_native` source, if wired
+the same way, would go dark for exactly the caller (the entry-less
+IDE/LSP path) that most needs it. See the correction to §5(a) below.
 
 ## 3. This is not a hairline gap — it is already documented as a live gap in three places
 
@@ -156,10 +184,29 @@ Flagged as a candidate follow-up, not asserted.
 
 ## 5. The options, restated from #2099 (not decided here)
 
-**(a) Add the `is_native` fallback.** Widen `lib.rs:1255` to `(opts.dialect
-== Dialect::Brink || is_native) && needs_effects`, and each of the three
-`analysis.rs` query guards to the equivalent `!= Brink && !is_native` form,
-mirroring `map_keys`'s existing precedent exactly. Every native `.brink`
+**(a) Add the `is_native` fallback.** This is directionally the `map_keys`
+shape but, per the §2 correction, **not a drop-in mirror** — none of the four
+gate sites (`lib.rs:1255` and the three `analysis.rs` query guards) already
+holds an `is_native` binding the way `lib.rs:844` does, so each site needs
+its own wiring, not a copy-paste:
+
+- `whole_project_diagnostics` (`lib.rs:1167-1321`) already takes
+  `is_native: bool` as a parameter (`lib.rs:1172`) — widen `lib.rs:1255` to
+  `(opts.dialect == Dialect::Brink || is_native) && needs_effects` using that
+  existing parameter, no new plumbing needed for the monolithic path itself.
+- The three `analysis.rs` db queries (`effects_assertion_diagnostics_query`,
+  `await_purity_diagnostics_query`, `comparator_contract_diagnostics_query`)
+  have no per-file `is_native` in scope today; each would need to derive one
+  the way `per_file_diagnostics_query` does at `analysis.rs:139`
+  (`super::file_language(file.path(db)) == super::Language::Native`) — a
+  **per-file** check, not the project-level `project_is_native` the
+  whole-project db path (`analysis.rs:694`) uses elsewhere. Reaching for
+  `project_is_native` instead would look like the same fix but silently stay
+  dark for exactly the entry-less IDE/LSP path (`ProjectDb`/`Backend` never
+  calls `set_entry`, `mod.rs:597`) — the caveat is worth stating explicitly
+  in any implementation, not just this audit.
+
+With whichever `is_native` source is correct per site, every native `.brink`
 project would start receiving E102/E103/E105/E108/E109/E119 the moment it
 writes an `@[effects(…)]` assertion, an `await`, or a
 `sort_by`/`sorted_by`/`map`/`filter`/`fold` call with a callback the analyzer
@@ -182,7 +229,19 @@ Nothing in `docs/decision-log.md` rules this either way today (checked: the
 not effects; the T2 effects rulings, sitting 1/2/3/4, are silent on which
 dialects activate the checker; §10's "author-facing surface" ruling
 describes the assertion *grammar*, never the gate that decides whether the
-checker runs at all).
+checker runs at all; the 2026-07-20 "Unified block/effect/coroutine model
+ratified (native surface)" entry (`decision-log.md:1788`) settles the
+suspension-ladder/coroutine substrate but never mentions the `dialect` flag
+or an activation gate; the 2026-07-21 "Effect system for the native
+surface: one unified row, checking-not-handlers, bounds+row-poly" entry
+(`decision-log.md:1812`) is the most on-point of the two — its item (8)
+says the work "wires row inference to native-lowered HIR" and treats the
+row itself as a native-surface-first design, but it rules the *shape* of
+the effect row, not *whether* `effects_assertions`/`await_purity`/
+`comparator_contract` run at all for a given dialect — so neither entry
+rules the activation gate this audit is about, though the 1812 entry is
+the strongest directional signal that native-surface effect checking is
+where the design is headed).
 
 ## 6. Regression coverage
 
