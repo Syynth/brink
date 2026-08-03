@@ -342,6 +342,9 @@ fn garble_file(hir: &mut HirFile) {
         allow_scopes: _,
         // Likewise: source ranges and captured text, no `Provenance`.
         element_matches: _,
+        // Likewise: a harvested name + a source range, no `Provenance`
+        // (issue #2114).
+        cue_names: _,
         // A frontend-provenance flag, not a source `Provenance`.
         native: _,
         // Likewise: a declaration record (name + annotation range), no

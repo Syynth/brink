@@ -99,6 +99,14 @@ pub struct HirFile {
     /// frontend (`hir::lower_native::element`); always empty for the ink
     /// frontend, whose grammar has no `@[element]` channel.
     pub element_matches: Vec<ElementMatch>,
+    /// Every `@NAME` cue payload written in this file, harvested
+    /// independent of whether any conventions handler claims the line
+    /// (issue #2114, `docs/prose-dialect-spec.md` §5's "harvest by
+    /// default" ruling — see [`CueSite`]'s own doc for why this cannot be
+    /// derived from `element_matches`). Populated by the native frontend;
+    /// always empty for the ink frontend, whose grammar has no cue
+    /// channel.
+    pub cue_names: Vec<CueSite>,
     /// Which frontend produced this file: `true` for the native (`.brink`)
     /// surface (`hir::lower_native`), `false` for the ink one
     /// (`hir::lower::structure`).
@@ -444,6 +452,29 @@ pub struct ClaimHandlerDecl {
     /// handler could never block-capture regardless of how it was
     /// declared.
     pub block: bool,
+}
+
+/// One `@NAME` cue occurrence, recorded regardless of whether any
+/// conventions handler ever claims the line (`docs/prose-dialect-spec.md`
+/// §5, issue #2114: "harvest by default, declaration upgrades").
+///
+/// This is the harvest counterpart to [`ElementMatch`]: `element_matches`
+/// only records a cue line a claiming handler actually won, so a project
+/// with no conventions module — where every `@NAME` line reports the loud
+/// `E129` and produces no `ElementMatch`/`Stmt` at all — would otherwise
+/// have no record of its own cue names for cross-file completion to read.
+/// [`HirFile::cue_names`] is populated by a whole-tree scan for every
+/// `CUE_NAME` node (nested inside both the block `CUE` and the fused
+/// `COMPACT_CUE`, `docs/prose-dialect-spec.md` §8b.9/§8d.4), independent of
+/// `element`'s claim/dispatch machinery.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CueSite {
+    /// The speaker name text, as `ast::CueName::text()` yields it (source
+    /// whitespace trimmed, a recognized inline escape's backslash
+    /// stripped).
+    pub name: String,
+    /// Source range of the `CUE_NAME` node itself.
+    pub range: TextRange,
 }
 
 /// A built-in editor-presentation token (`docs/prose-dialect-spec.md`
