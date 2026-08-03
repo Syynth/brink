@@ -1036,11 +1036,12 @@ fn check_value_calls(
 /// As of #2001, [`crate::infer::DirectCallArgMismatch`] also carries facts
 /// from a second producer that is not a call at all: a `#fn(target, args…)`
 /// literal's bound-argument list, which is the by-ref *creation* site for a
-/// partial application (see that struct's own doc). Both producers map onto
-/// the same `E063` message ("argument N of call to `name`") — accepted as
-/// close enough for the creation-site case too rather than adding a
-/// call-vs-creation discriminant; see [`crate::infer::DirectCallArgMismatch`]
-/// for that call.
+/// partial application (see that struct's own doc). As of #2127, a third
+/// producer joins them: a divert-with-arguments (`-> knot(a, b)`) `ref`
+/// position. All three map onto the same `E063` message ("argument N of
+/// call to `name`") — accepted as close enough for the creation-site and
+/// divert-target cases too rather than adding a call-vs-creation-vs-divert
+/// discriminant; see [`crate::infer::DirectCallArgMismatch`] for that call.
 ///
 /// `infer::body::InferPass::arg_is_observed_local` already excludes an
 /// argument `InferPass::observe` itself would join `param_ty` into, so
@@ -5705,6 +5706,104 @@ mod tests {
                 .any(|d| d.code == DiagnosticCode::E063 && d.message.contains("argument")),
             "a well-typed ref argument plus an exactly-typed by-value argument bound at \
              creation must stay clean: {diags:?}"
+        );
+    }
+
+    // ── Issue #2127: divert-with-args (`-> knot(args)`) `ref`-position ────
+    //    argument checking
+
+    /// Repro from #2127: `InferPass::infer_target` (the `-> knot(args)`
+    /// divert-with-args site) computed `arg_tys` and then explicitly
+    /// discarded it (`let _ = arg_tys;`) — it called
+    /// `record_ref_param_writes` so a `ref` param's *write* was tracked for
+    /// effect purposes, but never compared the argument's static type
+    /// against the declared param type in either direction. Same shape as
+    /// `direct_call_ref_param_widening_is_rejected_under_strict` above: a
+    /// bare `int` `VAR` cell must not widen into a declared-`float` `ref`
+    /// parameter, this time reached via a divert rather than a call
+    /// expression. Uses a plain (non-`function`) knot — `-> ` is the
+    /// ordinary way to reach one, unlike `scale(...)`'s call-expression
+    /// sibling tests, which exercise a `function` knot.
+    #[test]
+    fn divert_target_ref_param_widening_is_rejected_under_strict() {
+        let parsed = brink_syntax::parse(
+            "=== scale(ref x: float, k: int) ===\n\
+             ~ x = x * k\n-> DONE\n\
+             VAR i = 3\n\
+             === main ===\n-> scale(i, 2)\n",
+        );
+        let (hir, manifest, _diag) = brink_ir::hir::lower(FileId(0), &parsed.tree());
+        let opts = crate::AnalysisOptions {
+            dialect: crate::Dialect::Brink,
+            types: Some(TypePolicy::Strict),
+            ..crate::AnalysisOptions::default()
+        };
+        let result = crate::analyze_with_options(&[(FileId(0), &hir, &manifest)], &opts);
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E063 && d.message.contains("argument 1")),
+            "a divert-with-args int cell must not widen into a declared-float ref \
+             parameter either: {:?}",
+            result.diagnostics
+        );
+    }
+
+    /// The by-value sibling: an exactly-typed `ref float` argument alongside
+    /// an ordinary `int` argument in `k`'s by-value position must stay
+    /// clean — #2127 deliberately leaves by-value divert-target argument
+    /// checking unimplemented (its own design call, same posture #2001 took
+    /// for `infer_fn_literal`), so this proves the `ref`-only check doesn't
+    /// spuriously fire on the by-value position either.
+    #[test]
+    fn divert_target_by_value_param_is_unaffected_by_ref_invariance() {
+        let (hir, index, res) = build(
+            "=== scale(ref x: float, k: int) ===\n\
+             ~ x = x * k\n-> DONE\n\
+             VAR f: float = 1.0\n\
+             === main ===\n-> scale(f, 2)\n",
+        );
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
+        assert!(
+            !diags
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E063 && d.message.contains("argument")),
+            "a well-typed ref argument plus an exactly-typed by-value argument at a \
+             divert target must stay clean: {diags:?}"
+        );
+    }
+
+    /// The `root_content` sibling of the test above (mirrors
+    /// `ink_root_content_direct_call_ref_widening_is_checked`): a divert
+    /// with a ref-mismatched argument written at an ink file's literal
+    /// top-level weave must still reach a diagnostic through
+    /// `check_direct_call_args`'s existing `root_content` synthetic-ID
+    /// handling (issue #1903) — this fix pushes onto the same
+    /// `direct_call_arg_mismatches` vec every other producer already uses,
+    /// so no additional plumbing should be needed, but this proves it.
+    #[test]
+    fn ink_root_content_divert_target_ref_widening_is_checked() {
+        let src = "VAR i = 3\n\
+                   -> scale(i, 2)\n\
+                   === scale(ref x: float, k: int) ===\n\
+                   ~ x = x * k\n-> DONE\n";
+        let (hir, index, res) = build(src);
+        assert!(
+            !hir.root_content.stmts.is_empty(),
+            "fixture precondition: the ink frontend must populate root_content"
+        );
+        let inference =
+            crate::infer_project(&[(FileId(0), &hir)], &index, &res, None, &BTreeMap::new());
+        let diags = check(&[(FileId(0), &hir)], &index, &inference, &res, None);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E063 && d.message.contains("argument 1")),
+            "a divert-with-args ref-argument mismatch written at file root must be \
+             reported, not silently dropped: {diags:?}"
         );
     }
 
