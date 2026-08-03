@@ -60,7 +60,7 @@ use rowan::TextRange;
 use crate::hir::{
     Block, BlockStmt, Choice, ChoiceSet, CondKind, Conditional, Content, ContentPart, DivertPath,
     DivertTarget, ElseBranch, ForStmt, HirFile, IfStmt, Knot, LambdaBody, LambdaExpr, LogicBlock,
-    Param, Path, Sequence, Stmt, StringPart, Tag, WhileStmt,
+    Param, Path, Return, ReturnKind, Sequence, Stmt, StringPart, Tag, WhileStmt,
 };
 use crate::host_manifest::DocBlock;
 use crate::{Expr, ParamInfo, Scope, SymbolKind, VisibilityMark};
@@ -397,14 +397,7 @@ impl Projector {
                 self.walk_expr(&a.target, knot, stitch);
                 self.walk_expr(&a.value, knot, stitch);
             }
-            Stmt::Return(r) => {
-                if let Some(e) = &r.value {
-                    self.walk_expr(e, knot, stitch);
-                }
-                for e in &r.onwards_args {
-                    self.walk_expr(e, knot, stitch);
-                }
-            }
+            Stmt::Return(r) => self.walk_return(r, knot, stitch),
             Stmt::ChoiceSet(cs) => self.walk_choice_set(cs, knot, stitch),
             Stmt::LabeledBlock(b) => self.walk_block(b, knot, stitch),
             Stmt::Conditional(c) => self.walk_conditional(c, knot, stitch),
@@ -417,6 +410,38 @@ impl Projector {
                     self.walk_expr(e, knot, stitch);
                 }
             }
+        }
+    }
+
+    /// Shared by `Stmt::Return`/`BlockStmt::Return` (issue #2173 review
+    /// finding on #2156): a tunnel redirect (`->-> target(args)`) stores its
+    /// call args in `onwards_args`, not on the `DivertTarget` expression
+    /// itself, so the generic `Expr::DivertTarget` arm in `walk_expr` (which
+    /// always pushes `arg_count: None`) would silently lose them. When
+    /// `r.value` is a bare `Expr::DivertTarget` under `ReturnKind::
+    /// TunnelRedirect`, push the ref directly with
+    /// `Some(r.onwards_args.len())` so `check_divert_arity` can check it;
+    /// any other return-value shape (including a plain `-> target` stored
+    /// value under `ReturnKind::Explicit`, which is never a redirect and
+    /// never has onwards args) falls through to the ordinary `walk_expr`
+    /// path with `arg_count: None`, unchanged.
+    fn walk_return(&mut self, r: &Return, knot: Option<&str>, stitch: Option<&str>) {
+        match (&r.value, r.kind) {
+            (Some(Expr::DivertTarget(p)), ReturnKind::TunnelRedirect) => {
+                self.push_ref(
+                    path_text(p),
+                    p.range,
+                    RefKind::Divert,
+                    knot,
+                    stitch,
+                    Some(r.onwards_args.len()),
+                );
+            }
+            (Some(e), _) => self.walk_expr(e, knot, stitch),
+            (None, _) => {}
+        }
+        for e in &r.onwards_args {
+            self.walk_expr(e, knot, stitch);
         }
     }
 
@@ -588,14 +613,7 @@ impl Projector {
                 self.walk_expr(&a.target, knot, stitch);
                 self.walk_expr(&a.value, knot, stitch);
             }
-            BlockStmt::Return(r) => {
-                if let Some(e) = &r.value {
-                    self.walk_expr(e, knot, stitch);
-                }
-                for e in &r.onwards_args {
-                    self.walk_expr(e, knot, stitch);
-                }
-            }
+            BlockStmt::Return(r) => self.walk_return(r, knot, stitch),
             BlockStmt::If(i) => self.walk_if_stmt(i, knot, stitch),
             BlockStmt::While(w) => self.walk_while_stmt(w, knot, stitch),
             BlockStmt::For(f) => self.walk_for_stmt(f, knot, stitch),

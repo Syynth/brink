@@ -125,6 +125,39 @@ fn native_tunnel_call_with_wrong_arity_emits_e176() {
     assert!(e176.message.contains("got 1"), "{}", e176.message);
 }
 
+#[test]
+fn native_return_redirect_with_wrong_arity_emits_e176() {
+    // Review finding on this PR (issue #2173): `return -> b(1, 2)` (native's
+    // tunnel-return respell, charter §11) lowers to `Stmt::Return { kind:
+    // TunnelRedirect, value: Some(Expr::DivertTarget(_)), onwards_args }` —
+    // a third divert-with-args shape, distinct from the plain-divert and
+    // tunnel-call ones pinned above, and one the generic `Expr::DivertTarget`
+    // walk can never see the arg count for (the args live in
+    // `Return::onwards_args`, not on the `DivertTarget` expression itself).
+    // Pinned by `brink_ir::hir::lower_native::tests::
+    // return_redirect_target_call_args_are_wired_through_not_dropped`.
+    let diags =
+        resolve_diags_native("flow b(x, y) {\n  Bye.\n}\nflow a() {\n  return -> b(1)\n}\n");
+    let e176 = diags
+        .iter()
+        .find(|d| d.code == DiagnosticCode::E176)
+        .unwrap_or_else(|| {
+            panic!("expected E176 for a 1-arg return-redirect against a 2-param target: {diags:?}")
+        });
+    assert!(e176.message.contains("expects 2"), "{}", e176.message);
+    assert!(e176.message.contains("got 1"), "{}", e176.message);
+}
+
+#[test]
+fn native_return_redirect_with_matching_arity_emits_no_e176() {
+    let diags =
+        resolve_diags_native("flow b(x, y) {\n  Bye.\n}\nflow a() {\n  return -> b(1, 2)\n}\n");
+    assert!(
+        diags.iter().all(|d| d.code != DiagnosticCode::E176),
+        "matching arity must not warn: {diags:?}"
+    );
+}
+
 // ─── Arity: ink ─────────────────────────────────────────────────────────
 
 #[test]
