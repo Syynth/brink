@@ -20,11 +20,26 @@
 //! Every call site of these four functions is test/bench/example code
 //! compiling an inline or fixture ink source with no need for a real
 //! `Environment`. They stay available for exactly that under the
-//! `test-util` feature (off by default), so no new production consumer can
-//! reach for them by accident. `#[cfg(test)]` cannot do this job — the
-//! callers span separate integration-test crates that cannot see this
+//! `test-util` feature (off by default). `#[cfg(test)]` cannot do this job —
+//! the callers span separate integration-test crates that cannot see this
 //! crate's own `#[cfg(test)]`. A test/bench/example target that needs them
 //! opts in with a `dev-dependencies` edge enabling the feature, e.g.:
+//!
+//! The guarantee this actually gives: an external crates.io consumer, or
+//! any isolated `cargo check -p <crate>` build that does not resolve
+//! `brink-test-harness`, cannot reach these functions without opting in.
+//! It is **not** a guarantee inside a `--workspace` build of this repo —
+//! `brink-test-harness` takes `brink-compiler` with `features =
+//! ["test-util"]` as a **normal** (non-dev) dependency, because its own
+//! `[[bin]]` targets and `src/corpus.rs` call these functions
+//! unconditionally, not just under a test cfg. Cargo's feature unification
+//! then enables `test-util` for every crate sharing that `brink-compiler`
+//! instance across the whole workspace resolve, so a production fn added to
+//! e.g. `brink-cli` would still compile under `cargo check --workspace`.
+//! The CI job's isolated `-p brink-cli -p brink-web -p brink-lsp -p
+//! bevy-brink -p brink-environment` check (added alongside this note) is
+//! what actually proves the fence for those crates, since it never resolves
+//! `brink-test-harness`.
 //!
 //! ```toml
 //! [dev-dependencies]

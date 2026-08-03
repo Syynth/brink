@@ -308,6 +308,21 @@ jobs:
         if: '!cancelled()'
         run: cargo check -p brink-runtime --no-default-features
 
+      # `test-util` fence (#2168): `brink-compiler`'s legacy closure/path
+      # compile entry points are gated behind the `test-util` feature so a
+      # new production consumer can't reach for them by accident — but that
+      # only holds for a build that never resolves `brink-test-harness` (a
+      # normal, non-dev dependency there enables the feature and unifies it
+      # across the whole `--workspace` resolve). This isolated `-p` check
+      # covers every crate that consumes `brink-compiler` in production
+      # (`brink-cli`, `brink-web`, `brink-lsp`, `bevy-brink`,
+      # `brink-environment`) without pulling in the test harness, so it
+      # actually proves the fence a `--workspace` check cannot.
+      - name: Compiler test-util fence holds in isolation
+        id: test_util_fence
+        if: '!cancelled()'
+        run: cargo check --locked -p brink-cli -p brink-web -p brink-lsp -p bevy-brink -p brink-environment
+
       # Publishability pre-flight (#1232). crates.io Trusted Publishing tokens
       # can publish a new VERSION of an existing crate but CANNOT CREATE one —
       # the first publish of any new crate must be done by hand. When
@@ -550,7 +565,15 @@ jobs:
       # One cargo invocation for the whole package set: rustdoc resolves the
       # examples off -L, and two builds of a crate with different hashes make
       # it bail with E0464. See the `book-test` recipe in the justfile.
-      - run: cargo build -p brink-runtime -p brink-compiler -p brink-format -p brink-intl -p bevy-brink -p brink-project-config
+      #
+      # `--features brink-compiler/test-util`: four chapters' fences call
+      # `compile_path`/`compile_path_with_options` (#2168 gated these behind
+      # `test-util`, off by default). This is the interim unblock, not the
+      # fix — those chapters teach an API surface an external crates.io
+      # consumer cannot call. Tracked in #2175: migrate the fences to
+      # `brink_environment::Project::load` + `compile`, add `-p
+      # brink-environment` here, and drop this flag.
+      - run: cargo build -p brink-runtime -p brink-compiler -p brink-format -p brink-intl -p bevy-brink -p brink-project-config --features brink-compiler/test-util
         env:
           CARGO_TARGET_DIR: target/book-doctest
       # Run mdbook under the pinned toolchain (rust-toolchain.toml). `cargo
