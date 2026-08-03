@@ -448,7 +448,7 @@ asserts every variant has a corresponding doc file and that no orphaned doc file
 | [`E071`](diagnostics/E071.md) | Under `types = strict`, a struct construction literal's field initializer disagrees with the field's... |
 | [`E072`](diagnostics/E072.md) | RETIRED — : |
 | [`E073`](diagnostics/E073.md) | Non-suppressible defense-in-depth backstop, mirroring `E053`/`E060`/ (former) `E072`: |
-| [`E074`](diagnostics/E074.md) | A field-write target (`p.field = expr`) is a *chained* projection — `p.a.b = v` or a mixed `p.a[i].b = v`... |
+| [`E074`](diagnostics/E074.md) | A field-write target (`p.field = expr`) is a *chained* projection — `p.a.b = v` or a mixed `p.a[i].b = v` — or (issue #2121) an indexed write whose index chain's own root is a struct-field projection (`p.field[i] = v`, `push(p.field[i], v)`)... |
 | [`E075`](diagnostics/E075.md) | A struct construction literal used as a `VAR`/`CONST` declaration default doesn't match its declared shape: |
 | [`E076`](diagnostics/E076.md) | A map literal used as a `VAR`/`CONST` declaration default has a key that isn't a compile-time-constant... |
 | [`E077`](diagnostics/E077.md) | An array element, map value, struct field, or `#fn` bound `val` arg nested inside a `VAR`/`CONST`... |

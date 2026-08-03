@@ -22,7 +22,10 @@ serde.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
-brink-compiler = { path = "../../brink-compiler" }
+# `test-util` (issue #2168): `extract.rs`'s tests compile inline ink source
+# directly, bypassing `brink_environment::compile(&Environment)` (#1306,
+# the production road) — gated the same way every such test target is.
+brink-compiler = { path = "../../brink-compiler", features = ["test-util"] }
 brink-runtime = { path = "../../brink-runtime" }
 insta.workspace = true
 serde_json.workspace = true

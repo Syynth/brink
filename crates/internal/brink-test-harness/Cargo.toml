@@ -10,7 +10,13 @@ publish = false
 [dependencies]
 brink-runtime = { workspace = true, features = ["testing"] }
 brink-format = { workspace = true, features = ["inkt"] }
-brink-compiler = { workspace = true }
+# `test-util` (issue #2168): this crate IS test/bench tooling — `corpus.rs`
+# and the `compile_bench`/`inkb_hashes` bins compile fixture ink source
+# straight off disk via the legacy closure/path entry points, bypassing
+# `brink_environment::compile(&Environment)` (#1306, the production road)
+# on purpose. A normal (non-dev) dependency since those bins need it
+# unconditionally, not just under a test target.
+brink-compiler = { workspace = true, features = ["test-util"] }
 # For the compile_bench bin (#498): stage-level timing through the production
 # driver's own seams (discover / analyze / diagnostics / LIR / codegen).
 brink-driver = { workspace = true }

@@ -408,8 +408,9 @@ The **Tier 1 + closed Tier 2 MVP** is implemented. What shipped:
 - **Severity flag** (`ExternalCheckSeverity { Error (default), Off }`) plumbed
   through `analyze_with_options`, `IdeSession::set_external_check`,
   `EditorSession::set_external_check`, and `brink-compiler::compile_with_options`
-  (the "compiler flag"). `Off` suppresses diagnostics but still builds
-  enrichment.
+  (the "compiler flag" — gated behind the `test-util` feature since #2168;
+  production callers go through `brink_environment::compile` instead). `Off`
+  suppresses diagnostics but still builds enrichment.
 - **Surfacing**: hover + signature help (`brink-ide`) and completion detail
   (`brink-web`) show typed params / return / kind / doc. `compile_project`
   carries the registered manifest so diagnostics appear in compile output.
