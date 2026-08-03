@@ -6026,6 +6026,35 @@ mod tests {
         );
     }
 
+    /// Issue #2136: before native's `hir::lower_native::body::lower_
+    /// divert_target` wired `-> knot(args)` call args into
+    /// `DivertTarget::args`, this exact fixture failed to *compile* at all
+    /// (a hard `E129`, "parses but has no HIR lowering yet") — PR #2128's
+    /// review disposition confirmed directly that #2127/#2128's ref-
+    /// position check therefore had structurally nothing to check on the
+    /// native surface, since `target.args` was always empty by the time
+    /// this pass ran. Now the arg survives lowering and reaches
+    /// `infer_target` exactly like the ink-dialect fixture above — this is
+    /// the native sibling of `divert_target_ref_param_widening_is_
+    /// rejected_under_strict`, proving #2127/#2128's existing check now
+    /// fires on a native fixture with no changes to `brink-analyzer`
+    /// itself.
+    #[test]
+    fn divert_target_ref_param_widening_is_rejected_under_strict_on_native() {
+        let diags = native_strict_diags(
+            "fn scale(ref x: float, k: int) {\n  x = x * k;\n}\n\
+             var i: int = 3;\n\
+             flow main() {\n  -> scale(i, 2)\n}\n",
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.code == DiagnosticCode::E063 && d.message.contains("argument 1")),
+            "a divert-with-args int cell must not widen into a declared-float ref \
+             parameter on native either: {diags:?}"
+        );
+    }
+
     // ── Review finding on #2001: root_content reaches check_direct_call_args ──
 
     /// Review finding (BLOCKING) on this issue's own PR: `check_direct_call_args`

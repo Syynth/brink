@@ -1390,23 +1390,24 @@ fn lower_divert_target(
         return None;
     };
     // Native's `DIVERT_TARGET` grammar (`parser/divert.rs::divert_target`)
-    // now captures `-> knot(args)` call args as an `ARG_LIST` sibling of
-    // `PATH` (bug #1196's fix, read back via `DivertTarget::call_args()`).
-    // This pass doesn't wire them into `DivertPath`/codegen yet — that's a
-    // follow-up's job, not this one's — so a present arg list is diagnosed
-    // loudly (E129, "parses but has no HIR lowering yet") instead of being
-    // silently dropped.
-    if let Some(args) = t.call_args() {
-        diags.push(diag(
-            file_id,
-            args.syntax().text_range(),
-            DiagnosticCode::E129,
-        ));
-    }
-    Some(DivertTarget {
-        path,
-        args: Vec::new(),
-    })
+    // captures `-> knot(args)` call args as an `ARG_LIST` sibling of `PATH`
+    // (bug #1196's fix, read back via `DivertTarget::call_args()`). Issue
+    // #2136: wire them into `DivertTarget::args` here, mirroring the
+    // ink-dialect path (`hir::lower::divert::lower_divert_target_with_args`)
+    // — an `ARG_LIST`'s children are the raw argument expression nodes
+    // directly (not wrapped in a further node), the same shape
+    // `lower_call` above already reads for an ordinary call expression's
+    // own `ARG_LIST`. Downstream (`lir::lower::stmts::lower_divert_target`,
+    // shared by every dialect) already consumes `DivertTarget::args`
+    // unconditionally, so populating it here is the whole fix — no
+    // dialect-specific LIR/codegen changes are needed.
+    let args = t
+        .call_args()
+        .into_iter()
+        .flat_map(|al| al.syntax().children().collect::<Vec<_>>())
+        .map(|arg_node| lower_expr(file_id, &arg_node, diags))
+        .collect();
+    Some(DivertTarget { path, args })
 }
 
 /// `RETURN_STMT`'s optional value expression (issue #1973): `None` for a

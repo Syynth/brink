@@ -832,6 +832,19 @@ scheduling sound as content loads.
 surface — SETTLED (sitting 4, 2026-07-16)**: see §12–§13. The T2
 design round is CLOSED; everything remaining is implementation.
 
+**OPEN QUESTION (issue #2099, raised 2026-08-03, NOT RULED):** the ruling
+above fixes the assertion *grammar*; it is silent on which dialects/surfaces
+actually activate the checker. In the shipped implementation, the whole
+family this section describes (E102/E103/E108/E109 exceedance, E105 the
+await purity gate, E119 the comparator contract) is gated on
+`AnalysisOptions.dialect == Dialect::Brink` with **no `is_native` fallback**
+— so a stock native `.brink` project (no explicit `dialect = brink` opt-in)
+gets none of it, even once it writes `@[effects(…)]` annotations, `until`
+conditions, or `sort_by`/`map`/`filter`/`fold` callbacks. See
+`docs/effects-dialect-gate-audit.md` for the full measurement and the two
+options (add the `is_native` fallback vs. rule opt-in-only correct and
+document it) — deliberately not decided by that document or this note.
+
 ## 11. Invariants and non-goals
 
 - **No runtime code synthesis** — the load-bearing invariant (not "no

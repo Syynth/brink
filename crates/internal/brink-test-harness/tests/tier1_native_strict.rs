@@ -310,6 +310,10 @@ const BASELINE: &[(&str, &str, &str)] = &[
         "E065",
         "`absent`'s temp `n` escapes strict inference as Unknown — annotate or restructure",
     ),
+    // `divert-target-args` (issue #2136) has no rows here: `scale`/`combine`'s
+    // params are annotated (`x: int`, `factor: int`, `a: int`, `b: int`),
+    // so no parameter escapes strict inference as `Unknown` — see the module
+    // doc's discussion of this fixture for the annotate-vs-relabel tradeoff.
     // Group F (fn-value-bare-name)
     (
         "fn-value-bare-name",
