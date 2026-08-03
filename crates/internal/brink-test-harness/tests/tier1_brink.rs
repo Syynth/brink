@@ -206,6 +206,84 @@ o is {o.inner.items}.
     );
 }
 
+/// Issue #2121 — the "one level down" remainder of #1495/PR #2106: a
+/// **Path-then-Index** mutator lvalue (`push(a.items[0], v)`, `a.items:
+/// Array<Array<int>>`) reaches `lower_lvalue_container_chain` with the index
+/// chain's root still a raw 2-segment `Path` (`a.items`) — a different call
+/// chain than the 2106 fix's own `lower_mutator_call` Path-lvalue split,
+/// which never sees an `Index`-shaped lvalue at all. Before this fix this
+/// compiled clean (no diagnostic — reproduced against a real compile+run,
+/// `brink play` on this exact shape printed `cannot index into a record
+/// value` instead of any diagnostic, the identical NotIndexable("record")
+/// symptom #1495's own repro had) — the write silently misrouted onto the
+/// root `a` (a `Record`) instead of `a.items[0]` (the inner `Array`). Now
+/// raises the same non-suppressible `E074` `lower_mutator_call`'s own
+/// 3+-segment case already raises, rather than reaching codegen. Confirmed
+/// to fail with `reject_field_projection_index_root`'s call site in
+/// `lower_lvalue_container_chain` reverted (rule 20a): the case compiled
+/// clean with zero diagnostics and faulted at runtime instead of hitting
+/// this assertion.
+#[test]
+fn path_then_index_mutator_lvalue_is_e074_not_silently_misrouted() {
+    let source = "\
+STRUCT Bag = #{
+    items: Array<Array<int>>,
+}
+VAR a = 0
+~ {
+    a = Bag#{items: #[#[1, 2], #[3, 4]]}
+    push(a.items[0], 99)
+}
+a is {a.items}.
+-> END
+";
+    let err = compile_brink(source)
+        .expect_err("a Path-then-Index struct-field mutator lvalue must still be a compile error");
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E074),
+        "expected E074 (chained field-write projection), got {diags:?}"
+    );
+}
+
+/// Same shape as
+/// [`path_then_index_mutator_lvalue_is_e074_not_silently_misrouted`], but for
+/// plain indexed assignment (`a.items[0] = v`) rather than a mutator call —
+/// `lower_indexed_assignment` has the identical root-resolution hole (its
+/// own `flatten_index_chain` → `lower_assign_target` call), a *different*
+/// function than the mutator path above, so both need the guard
+/// independently. Before this fix: compiled clean, faulted at runtime with
+/// `NotIndexable("record")` (reproduced against a real compile+run).
+/// Confirmed to fail with `reject_field_projection_index_root`'s call site
+/// in `lower_indexed_assignment` reverted (rule 20a).
+#[test]
+fn path_then_index_plain_assignment_is_e074_not_silently_misrouted() {
+    let source = "\
+STRUCT Bag = #{
+    items: Array<int>,
+}
+VAR a = 0
+~ {
+    a = Bag#{items: #[1, 2, 3]}
+    a.items[0] = 99
+}
+a is {a.items}.
+-> END
+";
+    let err = compile_brink(source).expect_err(
+        "a Path-then-Index struct-field assignment target must still be a compile error",
+    );
+    let diags = errors_of(&err);
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.code == brink_compiler::DiagnosticCode::E074),
+        "expected E074 (chained field-write projection), got {diags:?}"
+    );
+}
+
 // ── #674: `arr[i].field = v` grammar fix ─────────────────────────────────
 //
 // The `.field` postfix grammar's assignment-target position used to reject

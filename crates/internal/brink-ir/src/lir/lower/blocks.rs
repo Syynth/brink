@@ -375,6 +375,55 @@ fn emit_chained_field_write_diagnostic(range: rowan::TextRange, ctx: &mut LowerC
     });
 }
 
+/// Issue #2121 — the "one level down" remainder of #1495/PR #2106's fix.
+/// `push(a.items[0], v)` and `a.items[0] = v` reach
+/// [`lower_indexed_assignment`]/[`lower_lvalue_container_chain`] with an
+/// `Index` lvalue whose *root* (after [`flatten_index_chain`] unwinds the
+/// index chain) is still a raw multi-segment `hir::Expr::Path` — `a.items`
+/// parses as one `Path` (never `hir::Expr::FieldAccess`, same TM-4b shape
+/// [`try_lower_field_assignment`]'s doc describes), and PR #2106 only taught
+/// the *bare* Path-lvalue dispatch (`lower_mutator_call`'s own `if let
+/// hir::Expr::Path` arm) and `try_lower_field_assignment` to split on
+/// `segments.len() > 1` — neither of those call sites is on this Index-root
+/// path, so `super::stmts::lower_assign_target` still resolves the whole
+/// `a.items` range down to the **root** symbol `a` (a `Record`), routing the
+/// write onto `a` itself instead of `a.items` (the `Array`) — reproduced
+/// against a real compile+run: compiles clean (no diagnostic) and faults at
+/// runtime with `NotIndexable("record")`, the identical silent-misroute
+/// symptom #1495's own repro had.
+///
+/// Rejected here with the same non-suppressible `E074`
+/// `try_lower_field_assignment`/`lower_mutator_call` already raise for a
+/// chained field *write*/*mutator*, mirroring that fix's shape exactly
+/// rather than inventing a second approach: a correct lowering here would
+/// need to route the index op through the field's `RecordGet`/`RecordSet`
+/// take-then-write-back discipline first (there is no `AssignTarget` shape
+/// for "a field of a record" today), which is exactly the general
+/// lvalue-resolution extension the issue asks to avoid unless it's the only
+/// option — a targeted hard-reject closes the silent-misroute hole without
+/// it.
+///
+/// Returns `true` (diagnosed, caller must stop and lower nothing) only when
+/// `root_expr` is this exact shape — a multi-segment `Path` that resolves to
+/// an assignable root (`Variable`/`Constant`/`Param`/`Temp`); `false`
+/// otherwise (a bare single-segment `Path`, or one that doesn't resolve to
+/// an assignable root at all — the analyzer's `E025` handles that case, same
+/// as every other call site in this module).
+fn reject_field_projection_index_root(root_expr: &hir::Expr, ctx: &mut LowerCtx<'_>) -> bool {
+    if let hir::Expr::Path(path) = root_expr
+        && path.segments.len() > 1
+        && let Some(info) = ctx.resolve_path(path.range)
+        && matches!(
+            info.kind,
+            SymbolKind::Variable | SymbolKind::Constant | SymbolKind::Param | SymbolKind::Temp
+        )
+    {
+        emit_chained_field_write_diagnostic(path.range, ctx);
+        return true;
+    }
+    false
+}
+
 /// The single-level case (`path.segments.len() == 2`) — `p.field = v`/`p.field
 /// op= v` on a resolvable root. Follows the identical take → `make_mut` →
 /// write-back RMW discipline [`lower_flat_indexed_assignment`] uses,
@@ -567,6 +616,14 @@ fn lower_indexed_assignment(
     out: &mut Vec<lir::Stmt>,
 ) {
     let (root_expr, indices_hir) = flatten_index_chain(idx);
+    // Issue #2121: `a.items[0] = v` — the root of the index chain is itself
+    // a struct-field projection (`a.items`, a multi-segment `Path`), not a
+    // bare variable. See `reject_field_projection_index_root`'s doc for why
+    // this must be checked *before* `lower_assign_target` gets a chance to
+    // silently misroute it onto the root `a`.
+    if reject_field_projection_index_root(root_expr, ctx) {
+        return;
+    }
     let Some(root_target) = super::stmts::lower_assign_target(root_expr, ctx) else {
         // Unresolvable root — same silent-skip discipline as plain
         // assignment (analyzer's E025 is the author-facing signal).
@@ -1409,10 +1466,14 @@ fn lower_mutator_call(
     let Some((root_target, idx_slots, c_slots)) =
         lower_lvalue_container_chain(lvalue_expr, ctx, out)
     else {
-        // Structurally unreachable given the `is_lvalue_expr` guard above —
-        // guarded rather than asserted so a future grammar change can't
-        // corrupt output instead of doing nothing (same discipline as
-        // `lower_indexed_assignment`'s `n == 0` guard).
+        // Two ways here: (1) genuinely structurally unreachable given the
+        // `is_lvalue_expr` guard above — guarded rather than asserted so a
+        // future grammar change can't corrupt output instead of doing
+        // nothing (same discipline as `lower_indexed_assignment`'s `n == 0`
+        // guard); (2) issue #2121 — `reject_field_projection_index_root`
+        // fired inside `lower_lvalue_container_chain` and already pushed the
+        // `E074` diagnostic, so returning here without pushing anything
+        // *is* the handling.
         return;
     };
     // `lower_lvalue_container_chain` always pushes the root as `c_slots[0]`
@@ -1894,6 +1955,18 @@ fn lower_lvalue_container_chain(
         hir::Expr::Path(_) => (lvalue, Vec::new()),
         _ => return None,
     };
+    // Issue #2121: `push(a.items[0], v)` — the root of the index chain is
+    // itself a struct-field projection (`a.items`). See
+    // `reject_field_projection_index_root`'s doc for why this must be
+    // checked *before* `lower_assign_target` gets a chance to silently
+    // misroute it onto the root `a`. Returning `None` here reaches the
+    // caller's (`lower_mutator_call`) "structurally unreachable" `else`
+    // branch, which is now reachable *for this one diagnosed reason* — it
+    // returns without pushing anything, which is correct: the diagnostic
+    // already emitted is the handling.
+    if reject_field_projection_index_root(root_expr, ctx) {
+        return None;
+    }
     let root_target = super::stmts::lower_assign_target(root_expr, ctx)?;
 
     let idx_slots: Vec<(u16, brink_format::NameId)> = indices_hir
