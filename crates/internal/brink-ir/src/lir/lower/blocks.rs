@@ -1620,10 +1620,17 @@ fn lower_bare_mutator(
 ///    (a nested container is still referenced from inside its parent until
 ///    the parent's own write-back completes, so a per-field take would buy
 ///    nothing here either) — the sanctioned §7 fallback, not a regression.
-/// 4. The root record is taken, the mutated field written back via
-///    `RecordSet`, and the result written back into `root_target` — step 2
-///    already proved the field exists on this exact root value, so nothing
-///    from here on can fault.
+///    Unlike [`lower_bare_mutator`], this expansion is materialized into its
+///    own synthetic temp *before* the root is taken (step 4): an
+///    author-supplied key/index (`insert`/`remove`/`remove_at`/`sort_by`/…)
+///    can still fault here (e.g. `remove_at` out of range), and doing so
+///    while `current` is the only thing read leaves `root_target` completely
+///    untouched — strictly better than `lower_bare_mutator`'s documented
+///    "fault leaves the root holding `Value::Null`" trade-off, since here
+///    the root is an entire record, not just the mutated array.
+/// 4. The root record is taken, the mutated field (already-evaluated in step
+///    3, so this step itself cannot fault) written back via `RecordSet`, and
+///    the result written back into `root_target`.
 #[expect(
     clippy::too_many_lines,
     reason = "mirrors lower_bare_mutator's own per-MutatorKind RMW dispatch, \
@@ -1752,7 +1759,14 @@ fn lower_field_mutator(
         },
     };
 
-    // 3. Take the root, mutate the field via `RecordSet`, write the
+    // 3. Materialize the RMW result into its own temp *before* touching the
+    //    root — it reads only `current` and the arg temps, never the root,
+    //    so any fault it raises (an out-of-range `remove_at`, an absent
+    //    `remove` key, …) leaves `root_target` untouched instead of losing
+    //    the whole record to a take that already happened.
+    let (new_slot, new_name) = declare_synthetic("__new", new_field, ctx, out);
+
+    // 4. Take the root, mutate the field via `RecordSet`, write the
     //    resulting record back.
     let (c_slot, c_name) = declare_synthetic("__c", take_expr_for_target(&root_target), ctx, out);
     out.push(lir::Stmt::Assign {
@@ -1762,7 +1776,7 @@ fn lower_field_mutator(
             base: Box::new(lir::Expr::TakeTemp(c_slot, c_name)),
             field,
             static_offset,
-            value: Box::new(new_field),
+            value: Box::new(lir::Expr::GetTemp(new_slot, new_name)),
         },
     });
     out.push(lir::Stmt::Assign {
