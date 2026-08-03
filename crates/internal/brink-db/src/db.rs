@@ -55,6 +55,25 @@ pub struct ProjectDb {
 impl ProjectDb {
     /// Create an empty project database.
     pub fn new() -> Self {
+        Self::with_id_base(0)
+    }
+
+    /// Create an empty project database whose `FileId`s start counting from
+    /// `id_base` instead of `0` (issue #1580).
+    ///
+    /// A long-lived host that keeps *multiple* independent `ProjectDb`
+    /// instances alive at once — `brink-lsp`'s per-native-project extent
+    /// partitioning, one db per governing `brink.toml` — needs every
+    /// instance's `FileId`s to be mutually disjoint: each db mints its own
+    /// `FileId`s starting at `0` internally, so two dbs each holding a
+    /// first-registered file would otherwise both mint `FileId(0)`, and a
+    /// caller merging per-project data into one `FileId`-keyed map (as
+    /// `brink-lsp`'s cross-project `ProjectAnalyses` does) would silently
+    /// conflate two unrelated files. Callers are responsible for choosing
+    /// non-overlapping `id_base` ranges (e.g. a fixed stride per project
+    /// index) — this constructor only seeds the counter, it does not police
+    /// collisions across instances it knows nothing about.
+    pub fn with_id_base(id_base: u32) -> Self {
         let salsa = BrinkDatabase::default();
         let project = ProjectInput::new(
             &salsa,
@@ -71,7 +90,7 @@ impl ProjectDb {
             path_to_id: LookupMap::new(),
             id_to_path: LookupMap::new(),
             retired: LookupMap::new(),
-            next_id: 0,
+            next_id: id_base,
         }
     }
 

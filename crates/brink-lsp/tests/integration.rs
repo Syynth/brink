@@ -2303,6 +2303,108 @@ fn native_two_file_workspace_hover_keeps_the_db_backed_effect_row() {
     );
 }
 
+/// Issue #1580 (RULED 2026-08-03): the LSP must discover *every* governing
+/// `brink.toml` in the workspace and give each its own project, applying
+/// `brink_driver::native_source_root` per project instead of once to
+/// `roots.first()` — editor extent must equal compile extent.
+///
+/// The fixture plants **two independent copies** of the exact two-file
+/// native project `native_two_file_workspace_hover_keeps_the_db_backed_
+/// effect_row` above already proves works standalone — one under
+/// `game/brink.toml`, one under `demo/brink.toml` — as *sibling*
+/// subdirectories of one opened workspace root that itself has no
+/// `brink.toml`. Neither sibling is an ancestor of the other, so
+/// `native_source_root`'s walk-*up*-from-the-first-root alone can never
+/// discover either one; before #1580 the LSP recognized no config at all
+/// here and fell back to the bare workspace root as the *single* native
+/// root, so `game/market/barter.brink` minted the module
+/// `story::game::market::barter` — not `story::market::barter`, what a
+/// real, standalone compile of `game/` (using *its own* `brink.toml`)
+/// mints. `main.brink`'s `use story::market::barter::haggle;` names exactly
+/// that real-compile-identical path, so before the fix it fails to resolve
+/// (no db-backed **effects** row on the cross-file divert); after the fix,
+/// `game/` and `demo/` are each their own project rooted at their own
+/// directory, so the qualified name matches and the hover resolves —
+/// independently, and correctly attributed, in *both* siblings at once
+/// (proving no cross-project bleed: each hover carries its own sibling's
+/// distinct doc comment, never the other's).
+#[test]
+fn two_sibling_brink_toml_projects_each_get_their_own_root_relative_identity() {
+    const MAX_MESSAGES: u64 = 2000;
+
+    let root = unique_tmp_dir("two-sibling-native-projects");
+    for (sibling, doc) in [
+        ("game", "Trade at the game stall."),
+        ("demo", "Trade at the demo stall."),
+    ] {
+        let barter = format!(
+            "var gold = 10\n\n/// {doc}\nflow haggle() {{\n  You haggle over the price.\n}}\n"
+        );
+        std::fs::create_dir_all(root.join(sibling).join("market")).unwrap();
+        std::fs::write(root.join(sibling).join("brink.toml"), "[project]\n").unwrap();
+        std::fs::write(root.join(sibling).join("market/barter.brink"), &barter).unwrap();
+        std::fs::write(root.join(sibling).join("main.brink"), NATIVE_MAIN).unwrap();
+    }
+
+    // The workspace root itself has no `brink.toml` — walking up from it
+    // finds nothing, so the legacy default project has no real config
+    // either; `game/` and `demo/` are each discovered purely by the
+    // downward sibling walk #1580 adds.
+    let (mut child, mut stdin, mut stdout) = start_server_at(&root, None);
+
+    let game_main_uri = format!("file://{}", root.join("game/main.brink").display());
+    let game_barter_uri = format!("file://{}", root.join("game/market/barter.brink").display());
+    let demo_main_uri = format!("file://{}", root.join("demo/main.brink").display());
+    let demo_barter_uri = format!("file://{}", root.join("demo/market/barter.brink").display());
+
+    let game_barter_src = std::fs::read_to_string(root.join("game/market/barter.brink")).unwrap();
+    let demo_barter_src = std::fs::read_to_string(root.join("demo/market/barter.brink")).unwrap();
+
+    did_open_native(&mut stdin, &game_main_uri, NATIVE_MAIN);
+    did_open_native(&mut stdin, &game_barter_uri, &game_barter_src);
+    did_open_native(&mut stdin, &demo_main_uri, NATIVE_MAIN);
+    did_open_native(&mut stdin, &demo_barter_uri, &demo_barter_src);
+    let _ = wait_for_analysis_pass_where(&mut stdout, &game_main_uri, MAX_MESSAGES, |c| c >= 4);
+
+    // The cross-file divert target `-> haggle` in each sibling's own
+    // `main.brink` (line 4, same shape as `NATIVE_MAIN` above).
+    let game_cross = hover_at(&mut stdin, &mut stdout, 2, &game_main_uri, 4, 6);
+    let demo_cross = hover_at(&mut stdin, &mut stdout, 3, &demo_main_uri, 4, 6);
+
+    drop(stdin);
+    drop(stdout);
+    let _ = child.wait();
+    std::fs::remove_dir_all(&root).unwrap();
+
+    let game_md = game_cross["result"]["contents"]["value"]
+        .as_str()
+        .unwrap_or("");
+    let demo_md = demo_cross["result"]["contents"]["value"]
+        .as_str()
+        .unwrap_or("");
+
+    assert!(
+        game_md.contains("**knot** `haggle`") && game_md.contains("**effects**"),
+        "game/main.brink's `use story::market::barter::haggle;` must resolve \
+         against game/'s *own* brink.toml root (story::market::barter), not \
+         the workspace root's story::game::market::barter: {game_cross}"
+    );
+    assert!(
+        game_md.contains("Trade at the game stall."),
+        "game/'s cross-file hover must carry game/'s own doc comment, never demo's: {game_cross}"
+    );
+    assert!(
+        demo_md.contains("**knot** `haggle`") && demo_md.contains("**effects**"),
+        "demo/main.brink's `use story::market::barter::haggle;` must resolve \
+         against demo/'s *own* brink.toml root, independently of game/'s: {demo_cross}"
+    );
+    assert!(
+        demo_md.contains("Trade at the demo stall."),
+        "demo/'s cross-file hover must carry demo/'s own doc comment, never game's \
+         (cross-project bleed): {demo_cross}"
+    );
+}
+
 /// Start a server rooted at `root`, `initialize` + `initialized` it, and
 /// return its pipes. `dialect` is written verbatim into
 /// `initializationOptions.dialect` when given.

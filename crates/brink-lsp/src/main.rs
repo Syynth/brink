@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{Notify, watch};
 use tower_lsp::{LspService, Server};
 
+use crate::backend::projects::NativeProjects;
 use crate::backend::{Backend, DiagnosticsPublisher, LanguageOptions};
 
 #[tokio::main]
@@ -20,7 +21,7 @@ async fn main() {
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
 
-    let db = Arc::new(Mutex::new(brink_db::ProjectDb::new()));
+    let db = Arc::new(Mutex::new(NativeProjects::new()));
     let generation = Arc::new(AtomicU64::new(0));
     let trigger = Arc::new(Notify::new());
     let (analysis_tx, analysis_rx) = watch::channel(None);

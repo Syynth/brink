@@ -2666,3 +2666,70 @@
   2026-08-03 ruling records as owed (a breaking config change needing its
   own deprecation path and reader sweep) — a separate, larger piece of work
   from the mount itself.
+
+## The LSP holds one `ProjectDb` per governing `brink.toml`, plus a per-file orphan carve-out (#1580)
+- **WHEN:** 2026-08-03
+- **PROJECT:** brink
+- **SYSTEM:** `brink-lsp` (native project-extent partitioning) — refines the
+  2026-07-22 native-project-root ruling (NF-3, lines ~1836-1842 above) for the
+  editor specifically
+- **SCOPE:** architectural (changes the LSP from one shared native project to
+  N independent ones, each with its own `ProjectDb`, `FileId` space, and
+  symbol index)
+- **WHAT:** `brink-lsp` no longer applies `brink_driver::native_source_root`
+  once to `roots.first()`. `NativeProjects` (`crates/brink-lsp/src/backend/projects.rs`)
+  discovers **every** governing `brink.toml` in the opened workspace (walking
+  every workspace folder *downward*, not just up from one starting point) and
+  gives each its own fully independent `ProjectDb` — own native root, own
+  symbol index, own `DefinitionId` space, disjoint `FileId` ranges via a new
+  `ID_STRIDE`-wide stride per project (`ProjectDb::with_id_base`). A `.brink`
+  file under no governing `brink.toml` at all falls back to NF-3's rootless
+  single-file-project mode (`NativeProjectKey::Orphan`, rooted at the file's
+  own directory) **only when some other part of the workspace has a real
+  `brink.toml`**; when the *whole* workspace is unconfigured, every native
+  file still shares the single legacy default project, preserving the
+  pre-#1580 "open a folder of `.brink` files with no config yet" workflow
+  byte-for-byte. Only the default project's root is also declared as the ink
+  root (`set_ink_root`) — ink's project extent is INCLUDE-reachability from
+  that one root, unaffected by this issue, so `native_root`/`ink_root`
+  diverge by design on any workspace with more than one governing
+  `brink.toml`.
+- **TENSION WITH NF-3, NAMED RATHER THAN HIDDEN:** the wholly-unconfigured
+  fallback above is a **knowing, non-compile-identical carve-out**, not an
+  instance of "editor extent equals compile extent." A real standalone
+  compile of a rootless file roots it at *that file's own directory*
+  (`native_source_root_inner`'s entry-relative fallback); the legacy default
+  project this branch falls back to is rooted at the *first workspace
+  folder* instead. It is also, by construction, the one case where an
+  unrelated `brink.toml` appearing **elsewhere** in the workspace changes a
+  file's module identity without anything changing above that file's own
+  directory — exactly the class of hazard NF-3's ruling names ("the same
+  file resolved to `story::market::barter` or `story::barter` depending on
+  whether a config happened to sit above it"). It is accepted here, and
+  documented as a carve-out rather than silently shipped, because the
+  alternative (`Orphan` unconditionally) would fragment the "no config yet"
+  workflow the existing `crates/brink-lsp/tests/integration.rs` "Native
+  `.brink` workspaces" tests pin. Whether the wholly-unconfigured fallback
+  should instead be `Orphan` unconditionally is **left open**, not resolved
+  by this issue.
+- **KNOWN LIMITATION:** a `brink.toml` that appears, moves, or disappears
+  mid-session re-syncs every already-discovered project's own root, but does
+  not retroactively move an already-admitted file to a newly discovered
+  sibling project — that file keeps its original project until closed and
+  reopened, or the session restarts. Only the steady-state extent (what a
+  fresh workspace load computes) is guaranteed correct.
+- **WHY:** Native module identity is root-relative (#1576) and computed off
+  a single Salsa `native_root` input per `ProjectDb`. A workspace with more
+  than one governing `brink.toml` — story sources plus a fixture or example
+  project elsewhere in the tree — previously had only one recognized root;
+  every file outside it fell back to `root_relative_key`'s
+  absolute-path-embedding identity instead of the clean, root-relative name a
+  real standalone compile of its own `brink.toml` would mint. Namespacing
+  `DefinitionId` keys instead (one shared db, tagged identities) was
+  considered and rejected: it would diverge from what a real compile of
+  either project alone mints, the exact divergence class the NF-3 ruling
+  calls out as unacceptable. Recorded here per the "a ruling lands in the
+  decision log, not only a module doc / PR body" discipline (rules 20d/21b) —
+  this PR's own module doc (`projects.rs`) and PR #2202's body stated both
+  the per-`brink.toml` partition and the orphan carve-out, but neither had
+  landed in this log until now.
