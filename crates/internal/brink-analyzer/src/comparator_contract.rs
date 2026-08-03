@@ -364,11 +364,15 @@ struct ComparatorSite {
 /// other six passes in this "hand-rolled initializer recursion" family
 /// (`coalesce`, `contains_domain`, `conversions`, `map_keys`, `structs`,
 /// `range_refinement`) already carry this same two-loop mirror in their own
-/// entry points; this is `comparator_contract`'s copy of it. See this
-/// function's own doc below (and the PR that added these two loops) for why
-/// this stays a hand-rolled mirror rather than a switch to
-/// `hir::visit::visit_with_decl_initializers` — the shared entry point this
-/// family should eventually consolidate onto.
+/// entry points; this is `comparator_contract`'s copy of it. This stays a
+/// hand-rolled mirror rather than switching to
+/// `hir::visit::visit_with_decl_initializers` (the shared entry point
+/// `hir::visit.rs` built for exactly this class of gap, issue #1571)
+/// because `comparator_contract`'s own accumulator/signature don't fit that
+/// trait shape without a larger refactor out of scope for this bug-fix PR;
+/// #2096 (`ufcs::resolve`'s own copy of the same gap) raises the identical
+/// shared-visitor question for its own hand-rolled walker and is the
+/// nearest tracked follow-up.
 fn collect_sites(hir: &HirFile, ctx: &CollectCtx<'_>, out: &mut Vec<ComparatorSite>) {
     collect_block(&hir.root_content, ctx, out);
     for knot in &hir.knots {

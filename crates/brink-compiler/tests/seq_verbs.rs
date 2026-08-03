@@ -293,6 +293,30 @@ fn opaque_callback_is_not_proven_and_passes() {
         .expect("an opaque callback is not provably in violation");
 }
 
+/// Issue #1769's own gap, the ink/brink-dialect variant: `comparator_
+/// contract::collect_sites` used to start only from `root_content` +
+/// knot/stitch bodies, silently skipping every file-level `VAR`/`CONST`
+/// initializer expression. A direct (non-lambda) impure comparator call
+/// written straight in a `VAR` initializer — not inside a flow body — must
+/// still be refused by E119. `driver.rs`'s
+/// `compile_path_native_comparator_contract_call_directly_in_var_initializer_is_e119`
+/// pins the native bare-name spelling of this same gap; this is the
+/// `#fn(...)` inline-literal spelling `#1769` named directly.
+///
+/// **Regression-verified (rule 20a):** with `collect_sites`'s two new
+/// `hir.variables`/`hir.constants` loops removed, this still fails to
+/// compile (a plain `VAR` initializer must be compile-time-constant, so an
+/// unrelated `E083` fires regardless) but E119 itself never appears among
+/// the diagnostics — confirmed by reverting the production hunk and
+/// re-running this exact test (red on the `has_code(E119)` assertion
+/// without the fix, green with it).
+#[test]
+fn writing_map_callback_directly_in_var_initializer_is_e119() {
+    let source = "VAR seen = 0\nVAR bad = map(#[1], #fn(spy))\n{bad}\n-> END\n\n=== function spy(n: int): int ===\n~ seen = seen + 1\n~ return n\n";
+    let diags = diagnostics_of(compile_brink(source, Some(TypePolicy::Gradual)).unwrap_err());
+    assert!(has_code(&diags, DiagnosticCode::E119), "{diags:?}");
+}
+
 // ── E119 on the native bare-name spelling (issue #1887) ──────────────
 //
 // `comparator_contract::collect_expr` recognized a pure-callback site only
