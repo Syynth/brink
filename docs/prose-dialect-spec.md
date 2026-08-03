@@ -455,7 +455,16 @@ fn radio(chan: string, text: content) {
   template slot whose expr is a function call (e.g. `{ f() }` where `f`
   returns empty and emits nothing) — the discriminator is structural
   (any `FragmentRef`-driven emptiness) and does not distinguish a
-  `block` receiver from that case. **Deliberately excluded:** a line
+  `block` receiver from that case. **Extended to the string-capture and
+  fragment-interior paths (issue #2147):** the fix above landed only in
+  `resolve_lines`/`take_first_line`; `brink-runtime::output::resolve_parts`
+  — `OutputBuffer::end_capture`'s resolution path (`Opcode::EndStringEval`,
+  e.g. an unrecognized choice display or any `~ temp x = "..."`
+  string-eval capture) and `OutputBuffer::resolve_fragment` (the resolver
+  `ChoiceDisplay::Fragment` reads through) — did not suppress the same
+  case until #2147 applied the identical per-line invariant there too,
+  including when resolving a *nested* fragment's own multi-line interior.
+  **Deliberately excluded:** a line
   that resolves empty for any other reason — a literal blank line, or a
   self-closing inline markup span (`<pause/>`) with no children — keeps
   its existing blank-beat behavior (`inline-markup-point-marker`

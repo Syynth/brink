@@ -1,6 +1,5 @@
 ---
 source: crates/internal/brink-test-harness/tests/oracle_snapshots.rs
-assertion_line: 198
 expression: summary
 ---
 tests_github/abobilly__kimbar/specs/ink: PASS (1/1 episodes)

@@ -690,11 +690,29 @@ fn mark_glue_removals(parts: &[OutputPart], remove: &mut [bool]) {
 /// fully empty and at least one of its parts interpolated a `content`-typed
 /// value (`Value::FragmentRef`) that itself rendered empty, the line is
 /// dropped entirely — not left behind as a blank line — same as the
-/// streaming/batch `resolve_lines` path. This is `end_capture`'s resolution
-/// path (`Opcode::EndStringEval`, e.g. an unrecognized choice display or any
-/// `~ temp x = "..."` string-eval capture), plus
-/// [`OutputBuffer::resolve_fragment`] — every other caller of
-/// `resolve_parts` besides `resolve_lines_annotated` itself.
+/// streaming/batch `resolve_lines` path.
+///
+/// `resolve_lines_annotated` does **not** call this function directly — the
+/// two hold independent copies of the same suppression logic, applied at
+/// different granularities. `resolve_parts`'s real callers are:
+///
+/// - [`OutputBuffer::end_capture`] — `Opcode::EndStringEval`'s resolution
+///   path (e.g. an unrecognized choice display, or any
+///   `~ temp x = "..."` string-eval capture);
+/// - [`OutputBuffer::resolve_fragment`] (`output/fragment.rs`) — the
+///   resolver `ChoiceDisplay::Fragment` reads through (`story/mod.rs`,
+///   `story/flow_instance.rs`), so a captured choice's display text is
+///   affected too (`brink-cli`'s `tui/app.rs` reads it from there);
+/// - [`resolve_part`]'s `ValueRef(Value::FragmentRef)` arm and
+///   [`resolve_line_parts`]'s `LinePart::Slot` `FragmentRef` arm — both
+///   recurse into `resolve_parts` to resolve a fragment's own *interior*,
+///   and both are themselves reachable from `resolve_lines_annotated`'s
+///   top-level resolution whenever a rendered line references a fragment.
+///   So this suppression also reaches inside any nested, multi-line
+///   fragment rendered on the streaming/batch path — a blank line
+///   contributed purely by an inner, rendered-empty fragment now vanishes
+///   from the *interior* of an outer fragment's captured text too, not
+///   only at a transcript line's own top level.
 ///
 /// No `current_tags`-style tag exception is needed here (unlike
 /// `resolve_lines_annotated`): a `Tag` already sets `after_glue`, which
@@ -772,6 +790,20 @@ fn resolve_parts(
                 after_glue = true;
             }
         }
+    }
+
+    // issue #2147 (trailing-entry parity with `resolve_lines_annotated`'s
+    // own `EXCEPTION (issue #2091)` handling of its final, unterminated
+    // entry): a captured string need not end on a `Newline` part. If the
+    // text since the last committed line resolves empty and interpolated a
+    // Fragment, drop it AND the newline that introduced it — mirroring how
+    // `resolve_lines` drops that trailing entry from its `Vec` whole (no
+    // join separator left behind for it either). Without this, parts like
+    // `[Text("a"), Newline, ValueRef(FragmentRef(<empty>))]` resolved to
+    // `"a\n"` here while `resolve_lines` (joining its per-line `Vec`, which
+    // dropped the suppressed trailing entry) produced just `"a"`.
+    if saw_fragment_ref && line_start > 0 && out[line_start..].trim().is_empty() {
+        out.truncate(line_start - 1);
     }
 
     out
@@ -2086,6 +2118,103 @@ mod tests {
             text, "VENDOR\n\n(hushed)",
             "a non-Fragment empty slot must keep its blank line inside a \
              captured string: {text:?}"
+        );
+    }
+
+    /// Review finding on issue #2147's PR: `resolve_lines_annotated`
+    /// deliberately suppresses its own final, unterminated entry (the
+    /// `EXCEPTION (issue #2091)` block above it) — dropping the trailing
+    /// newline along with it — while `resolve_parts`'s suppression only
+    /// fired on an `OutputPart::Newline`. A captured string whose *last*
+    /// segment (no trailing `Newline` part) is empty and Fragment-derived
+    /// must drop that trailing newline too, matching `resolve_lines`.
+    #[test]
+    fn end_capture_drops_trailing_newline_before_an_unterminated_empty_fragment() {
+        let (program, line_tables) =
+            program_with_line_table(vec![plain_entry("a"), one_slot_template_entry()]);
+
+        let mut buf = OutputBuffer::new();
+        // A real, present (empty) Fragment — same shape as the other
+        // tests in this module.
+        buf.begin_fragment();
+        let frag_idx = buf.end_fragment().expect("checkpoint was just pushed");
+
+        buf.begin_capture();
+        buf.push_line_ref(0, 0, vec![], brink_format::LineFlags::from_plain("a"));
+        buf.push_newline();
+        // No trailing newline after this — the capture ends mid-line, same
+        // as an unread transcript tail ending on an empty Fragment
+        // interpolation.
+        buf.push_line_ref(
+            0,
+            1,
+            vec![Value::FragmentRef(frag_idx)],
+            brink_format::LineFlags::empty(),
+        );
+
+        let text = buf
+            .end_capture(&program, &line_tables, None)
+            .expect("checkpoint was just pushed");
+        assert_eq!(
+            text, "a",
+            "an unterminated trailing empty Fragment interpolation must \
+             drop its introducing newline too, matching resolve_lines' \
+             final-entry suppression: {text:?}"
+        );
+    }
+
+    /// Review finding on issue #2147's PR: `resolve_parts`'s new
+    /// suppression is reached not only from `end_capture`'s string-capture
+    /// path but also from [`OutputBuffer::resolve_fragment`] — including
+    /// when resolving a *nested* fragment's own interior, when that inner
+    /// fragment's captured region spans more than one line and one of
+    /// those interior lines is contributed purely by a further-nested,
+    /// rendered-empty fragment. Pin that this interior suppression fires
+    /// identically to the top-level `resolve_lines`/`end_capture` case —
+    /// this is the "nested/multi-line fragment interior" effect the
+    /// doc comment on `resolve_parts` discloses.
+    #[test]
+    fn resolve_fragment_suppresses_a_blank_line_from_a_nested_empty_fragment_interior() {
+        let (program, line_tables) = program_with_line_table(vec![
+            plain_entry("VENDOR"),
+            one_slot_template_entry(),
+            plain_entry("(hushed)"),
+        ]);
+
+        let mut buf = OutputBuffer::new();
+
+        // The inner, empty Fragment (e.g. a block-capture receiver that
+        // captured nothing).
+        buf.begin_fragment();
+        let inner_idx = buf.end_fragment().expect("checkpoint was just pushed");
+
+        // The outer Fragment: three lines, with the middle one contributed
+        // purely by the (empty) inner Fragment — i.e. a multi-line
+        // fragment whose own interior has a suppressible blank line.
+        buf.begin_fragment();
+        buf.push_line_ref(0, 0, vec![], brink_format::LineFlags::from_plain("VENDOR"));
+        buf.push_newline();
+        buf.push_line_ref(
+            0,
+            1,
+            vec![Value::FragmentRef(inner_idx)],
+            brink_format::LineFlags::empty(),
+        );
+        buf.push_newline();
+        buf.push_line_ref(
+            0,
+            2,
+            vec![],
+            brink_format::LineFlags::from_plain("(hushed)"),
+        );
+        let outer_idx = buf.end_fragment().expect("checkpoint was just pushed");
+
+        let text = buf.resolve_fragment(outer_idx, &program, &line_tables, None);
+        assert_eq!(
+            text, "VENDOR\n(hushed)",
+            "a multi-line fragment's own interior must suppress a blank \
+             line from a nested, rendered-empty fragment the same way the \
+             top-level resolve_lines/end_capture paths do: {text:?}"
         );
     }
 }
