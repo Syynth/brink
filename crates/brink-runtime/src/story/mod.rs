@@ -33,7 +33,7 @@ pub(crate) use call_stack::{
 };
 pub use external::{ExternalFnHandler, ExternalResult, FallbackHandler, FunctionEval};
 pub use flow_instance::{DriveOutcome, FlowInstance};
-pub use types::{Choice, Line, Stats, StepOutcome, StoryStatus};
+pub use types::{BlockId, Choice, OutputLine, Stats, Step, StepOutcome, StoryStatus};
 
 // ── Story ───────────────────────────────────────────────────────────────────
 
@@ -244,7 +244,7 @@ impl<R: StoryRng> Story<R> {
     }
 
     /// Re-resolve all pending choices against the current line tables.
-    /// Returns the same choices that would appear in `Line::Choices`,
+    /// Returns the same choices that would appear in `Step::Choices`,
     /// but freshly resolved (useful after locale switch).
     pub fn pending_choices(&self) -> Vec<Choice> {
         self.resolved_choices_for(&self.default.flow)
@@ -557,11 +557,11 @@ impl<R: StoryRng> Story<R> {
     /// Execute until one line of content (up to newline), or until a
     /// yield point (choices/end) if no newline occurs first.
     ///
-    /// The returned [`Line`] variant tells you what to do next:
-    /// - [`Line::Text`] — more output may follow, keep calling.
-    /// - [`Line::Choices`] — call [`choose`](Self::choose) then resume.
-    /// - [`Line::End`] — the story has permanently ended.
-    pub fn continue_single(&mut self) -> Result<Line, RuntimeError> {
+    /// The returned [`Step`] variant tells you what to do next:
+    /// - [`Step::Line`] — more output may follow, keep calling.
+    /// - [`Step::Choices`] — call [`choose`](Self::choose) then resume.
+    /// - [`Step::End`] — the story has permanently ended.
+    pub fn continue_single(&mut self) -> Result<Step, RuntimeError> {
         let resolver = self.resolver.as_deref();
         let mut view = ContextView::new(&mut self.default_context, &mut self.default_local);
         self.default.step_single_line::<R>(
@@ -578,7 +578,7 @@ impl<R: StoryRng> Story<R> {
     pub fn continue_single_observed(
         &mut self,
         observer: &mut dyn WriteObserver,
-    ) -> Result<Line, RuntimeError> {
+    ) -> Result<Step, RuntimeError> {
         use crate::state::ObservedContext;
         let mut view = ContextView::new(&mut self.default_context, &mut self.default_local);
         let mut obs_ctx = ObservedContext::new(&mut view, observer);
@@ -597,7 +597,7 @@ impl<R: StoryRng> Story<R> {
     pub fn continue_single_with(
         &mut self,
         handler: &dyn ExternalFnHandler,
-    ) -> Result<Line, RuntimeError> {
+    ) -> Result<Step, RuntimeError> {
         let resolver = self.resolver.as_deref();
         let mut view = ContextView::new(&mut self.default_context, &mut self.default_local);
         self.default.step_single_line::<R>(
@@ -611,10 +611,10 @@ impl<R: StoryRng> Story<R> {
 
     /// Execute until the next yield point, collecting all lines.
     ///
-    /// Returns a `Vec<Line>` where the last element is always
-    /// [`Line::Choices`] or [`Line::End`], and all preceding elements
-    /// are [`Line::Text`].
-    pub fn continue_maximally(&mut self) -> Result<Vec<Line>, RuntimeError> {
+    /// Returns a `Vec<Step>` where the last element is always
+    /// [`Step::Choices`] or [`Step::End`], and all preceding elements
+    /// are [`Step::Line`].
+    pub fn continue_maximally(&mut self) -> Result<Vec<Step>, RuntimeError> {
         self.continue_maximally_impl(&FallbackHandler)
     }
 
@@ -623,14 +623,14 @@ impl<R: StoryRng> Story<R> {
     pub fn continue_maximally_with(
         &mut self,
         handler: &dyn ExternalFnHandler,
-    ) -> Result<Vec<Line>, RuntimeError> {
+    ) -> Result<Vec<Step>, RuntimeError> {
         self.continue_maximally_impl(handler)
     }
 
     fn continue_maximally_impl(
         &mut self,
         handler: &dyn ExternalFnHandler,
-    ) -> Result<Vec<Line>, RuntimeError> {
+    ) -> Result<Vec<Step>, RuntimeError> {
         let resolver = self.resolver.as_deref();
         let mut view = ContextView::new(&mut self.default_context, &mut self.default_local);
         self.default.drive_to_terminal::<R>(
@@ -647,7 +647,7 @@ impl<R: StoryRng> Story<R> {
     pub fn continue_maximally_observed(
         &mut self,
         observer: &mut dyn WriteObserver,
-    ) -> Result<Vec<Line>, RuntimeError> {
+    ) -> Result<Vec<Step>, RuntimeError> {
         use crate::state::ObservedContext;
         let mut view = ContextView::new(&mut self.default_context, &mut self.default_local);
         let mut obs_ctx = ObservedContext::new(&mut view, observer);
@@ -820,7 +820,7 @@ impl<R: StoryRng> Story<R> {
     }
 
     /// Run a named flow instance until the next yield point.
-    pub fn continue_flow_maximally(&mut self, name: &str) -> Result<Vec<Line>, RuntimeError> {
+    pub fn continue_flow_maximally(&mut self, name: &str) -> Result<Vec<Step>, RuntimeError> {
         self.continue_flow_maximally_with(name, &FallbackHandler)
     }
 
@@ -829,7 +829,7 @@ impl<R: StoryRng> Story<R> {
         &mut self,
         name: &str,
         handler: &dyn ExternalFnHandler,
-    ) -> Result<Vec<Line>, RuntimeError> {
+    ) -> Result<Vec<Step>, RuntimeError> {
         let (instance, ctx, local) = self
             .instances
             .get_mut(name)
@@ -884,7 +884,7 @@ impl<R: StoryRng> Story<R> {
     ///
     /// **Returns an empty list until parks exist (FS-3r).** No flow can be
     /// parked in today's runtime — the E052 lowering fence keeps `await`
-    /// from producing bytecode ([`Line::Suspended`] is unreachable), so
+    /// from producing bytecode ([`Step::Suspended`] is unreachable), so
     /// there are no conditions to re-evaluate. The method ships now (FS-3w)
     /// so hosts wire the wake loop against a stable shape; FS-3r fills in
     /// real condition evaluation + dirty-tracking without changing this
@@ -942,7 +942,7 @@ impl<R: StoryRng> Story<R> {
     }
 
     /// Advance a shared flow one line (against the shared context).
-    pub fn continue_flow_single(&mut self, name: &str) -> Result<Line, RuntimeError> {
+    pub fn continue_flow_single(&mut self, name: &str) -> Result<Step, RuntimeError> {
         self.continue_flow_single_with(name, &FallbackHandler)
     }
 
@@ -951,7 +951,7 @@ impl<R: StoryRng> Story<R> {
         &mut self,
         name: &str,
         handler: &dyn ExternalFnHandler,
-    ) -> Result<Line, RuntimeError> {
+    ) -> Result<Step, RuntimeError> {
         let resolver = self.resolver.as_deref();
         let instance = self
             .shared_instances
@@ -978,7 +978,7 @@ impl<R: StoryRng> Story<R> {
     pub fn continue_flow_maximally_shared(
         &mut self,
         name: &str,
-    ) -> Result<Vec<Line>, RuntimeError> {
+    ) -> Result<Vec<Step>, RuntimeError> {
         self.continue_flow_maximally_shared_with(name, &FallbackHandler)
     }
 
@@ -988,7 +988,7 @@ impl<R: StoryRng> Story<R> {
         &mut self,
         name: &str,
         handler: &dyn ExternalFnHandler,
-    ) -> Result<Vec<Line>, RuntimeError> {
+    ) -> Result<Vec<Step>, RuntimeError> {
         let resolver = self.resolver.as_deref();
         let instance = self
             .shared_instances
@@ -1462,29 +1462,25 @@ mod tests {
     fn step_until_choices(story: &mut Story) -> Vec<Choice> {
         loop {
             match story.continue_single().unwrap() {
-                Line::Choices { choices, .. } => return choices,
-                Line::Text { .. } => {}
-                Line::Done { .. } => panic!("story hit Done before presenting choices"),
-                Line::End { .. } => panic!("story ended before presenting choices"),
-                Line::Suspended { .. } => panic!("story parked before presenting choices"),
+                Step::Choices(choices) => return choices,
+                Step::Line(_) => {}
+                Step::Done => panic!("story hit Done before presenting choices"),
+                Step::End => panic!("story ended before presenting choices"),
+                Step::Suspended => panic!("story parked before presenting choices"),
             }
         }
     }
 
     /// Step a story, accumulating text, until it stops (choices, done, or
-    /// end) — returns the accumulated text for content assertions.
+    /// end) — returns the accumulated text for content assertions. Terminals
+    /// carry no text themselves; any trailing content already arrived as
+    /// its own preceding `Step::Line`.
     fn step_until_choices_or_end(story: &mut Story) -> String {
         let mut text = String::new();
         loop {
             match story.continue_single().unwrap() {
-                Line::Choices { text: t, .. }
-                | Line::Done { text: t, .. }
-                | Line::End { text: t, .. }
-                | Line::Suspended { text: t, .. } => {
-                    text.push_str(&t);
-                    return text;
-                }
-                Line::Text { text: t, .. } => text.push_str(&t),
+                Step::Choices(_) | Step::Done | Step::End | Step::Suspended => return text,
+                Step::Line(line) => text.push_str(&line.text),
             }
         }
     }
@@ -1536,24 +1532,22 @@ mod tests {
         Story::new(Arc::new(prog), tables)
     }
 
-    /// FS-3w guard (`docs/flow-suspension-spec.md` §10.1): `Line::Suspended`
-    /// ships on the `Line` surface now but is **runtime-unreachable until
+    /// FS-3w guard (`docs/flow-suspension-spec.md` §10.1): `Step::Suspended`
+    /// ships on the `Step` surface now but is **runtime-unreachable until
     /// FS-3r** — the E052 lowering fence keeps `await` from producing
     /// bytecode, so no `park`/`spill`/`resume` path exists to construct it.
-    /// This pins both halves: the variant's accessor/terminal contract, and
-    /// that driving a representative story (including one that spins up a
-    /// shared flow) never yields a `Suspended` line, and that `wake_check`
-    /// reports no woken flows because none can park.
+    /// This pins both halves: the variant's terminal contract (terminals
+    /// carry no payload — §7), and that driving a representative story
+    /// (including one that spins up a shared flow) never yields a
+    /// `Suspended` step, and that `wake_check` reports no woken flows
+    /// because none can park.
     #[test]
-    fn line_suspended_is_terminal_and_never_constructed_in_runtime() {
-        // The variant behaves like any other terminal: it carries text/tags
-        // and reports terminal.
-        let parked = Line::Suspended {
-            text: "pre-await".to_owned(),
-            tags: vec!["t".to_owned()],
-        };
-        assert_eq!(parked.text(), "pre-await");
-        assert_eq!(parked.tags(), ["t".to_owned()]);
+    fn step_suspended_is_terminal_and_never_constructed_in_runtime() {
+        // The variant behaves like any other terminal: no payload, reports
+        // terminal.
+        let parked = Step::Suspended;
+        assert_eq!(parked.text(), "");
+        assert!(parked.tags().is_empty());
         assert!(parked.is_terminal(), "a park is a turn boundary");
 
         // Drive a small story with a shared flow to a terminal; nothing the
@@ -1564,22 +1558,22 @@ mod tests {
             .spawn_flow_shared("f", None)
             .expect("spawn shared flow");
         for _ in 0..64 {
-            let line = story.continue_single().expect("continue");
+            let step = story.continue_single().expect("continue");
             assert!(
-                !matches!(line, Line::Suspended { .. }),
-                "runtime must never construct Line::Suspended before FS-3r"
+                !matches!(step, Step::Suspended),
+                "runtime must never construct Step::Suspended before FS-3r"
             );
-            if line.is_terminal() {
+            if step.is_terminal() {
                 break;
             }
         }
         for _ in 0..64 {
-            let line = story.continue_flow_single("f").expect("continue flow");
+            let step = story.continue_flow_single("f").expect("continue flow");
             assert!(
-                !matches!(line, Line::Suspended { .. }),
-                "a shared flow must never construct Line::Suspended before FS-3r"
+                !matches!(step, Step::Suspended),
+                "a shared flow must never construct Step::Suspended before FS-3r"
             );
-            if line.is_terminal() {
+            if step.is_terminal() {
                 break;
             }
         }
@@ -1593,7 +1587,7 @@ mod tests {
 
     /// #999: a shared flow that emits text forever must error at
     /// `FlowInstance::LINE_LIMIT` rather than growing `continue_flow_maximally_shared`'s
-    /// returned `Vec<Line>` without bound — the shared-flow analogue of
+    /// returned `Vec<Step>` without bound — the shared-flow analogue of
     /// `drive_to_terminal_errors_at_line_limit` above, exercised through the
     /// `Story`-level entry point the wasm leg (`brink-web`) actually calls.
     #[test]
@@ -1811,7 +1805,7 @@ mod tests {
         // The first line should have both tags.
         let first = lines.first().expect("expected at least one line");
         assert!(
-            !matches!(first, Line::Choices { .. }),
+            !matches!(first, Step::Choices(_)),
             "expected Text or End, got Choices"
         );
         assert_eq!(first.tags(), &["author: Joe", "title: My Great Story"],);
@@ -1853,14 +1847,14 @@ mod tests {
 
         let lines = story.continue_maximally().unwrap();
         // I091 should output "2\n" (CHOICE_COUNT) then present 2 choices.
-        let full_text: String = lines.iter().map(Line::text).collect();
+        let full_text: String = lines.iter().map(Step::text).collect();
         assert!(
             full_text.starts_with('2'),
             "output should start with '2' from CHOICE_COUNT(), got: {full_text:?}"
         );
         let last = lines.last().expect("expected at least one line");
         match last {
-            Line::Choices { choices, .. } => {
+            Step::Choices(choices) => {
                 assert_eq!(choices.len(), 2, "expected 2 choices");
             }
             other => panic!("expected Choices, got {other:?}"),
@@ -1891,12 +1885,9 @@ mod tests {
             .drive_to_terminal::<FastRng>(&program, &tables, &mut view, &FallbackHandler, None)
             .expect("drive succeeds");
         let (last, rest) = lines.split_last().expect("at least one line");
+        assert!(matches!(last, Step::Done), "expected Done, got {last:?}");
         assert!(
-            matches!(last, Line::Done { .. }),
-            "expected Done, got {last:?}"
-        );
-        assert!(
-            rest.iter().all(|l| matches!(l, Line::Text { .. })),
+            rest.iter().all(|l| matches!(l, Step::Line(_))),
             "every line before the terminal one should be Text, got {rest:?}"
         );
     }
@@ -1913,11 +1904,11 @@ mod tests {
             .expect("drive succeeds");
         let (last, rest) = lines.split_last().expect("at least one line");
         assert!(
-            matches!(last, Line::Choices { .. }),
+            matches!(last, Step::Choices(_)),
             "expected Choices, got {last:?}"
         );
         assert!(
-            rest.iter().all(|l| matches!(l, Line::Text { .. })),
+            rest.iter().all(|l| matches!(l, Step::Line(_))),
             "every line before the terminal one should be Text, got {rest:?}"
         );
     }
@@ -1932,12 +1923,9 @@ mod tests {
             .drive_to_terminal::<FastRng>(&program, &tables, &mut view, &FallbackHandler, None)
             .expect("drive succeeds");
         let (last, rest) = lines.split_last().expect("at least one line");
+        assert!(matches!(last, Step::End), "expected End, got {last:?}");
         assert!(
-            matches!(last, Line::End { .. }),
-            "expected End, got {last:?}"
-        );
-        assert!(
-            rest.iter().all(|l| matches!(l, Line::Text { .. })),
+            rest.iter().all(|l| matches!(l, Step::Line(_))),
             "every line before the terminal one should be Text, got {rest:?}"
         );
     }
@@ -2008,7 +1996,7 @@ mod tests {
             DriveOutcome::AwaitingExternal(lines) => lines,
             other @ DriveOutcome::Terminal(_) => panic!("expected AwaitingExternal, got {other:?}"),
         };
-        let paused_text: String = paused_lines.iter().map(Line::text).collect();
+        let paused_text: String = paused_lines.iter().map(Step::text).collect();
         assert!(
             paused_text.contains("Hello"),
             "text produced before the pause should include 'Hello.'; got {paused_text:?}"
@@ -2031,13 +2019,13 @@ mod tests {
             DriveOutcome::Terminal(lines) => lines,
             other @ DriveOutcome::AwaitingExternal(_) => panic!("expected Terminal, got {other:?}"),
         };
-        let resumed_text: String = resumed_lines.iter().map(Line::text).collect();
+        let resumed_text: String = resumed_lines.iter().map(Step::text).collect();
         assert!(
             resumed_text.contains("Value: 2"),
             "the resolved external's value should be inlined; got {resumed_text:?}"
         );
         assert!(
-            matches!(resumed_lines.last(), Some(Line::Done { .. })),
+            matches!(resumed_lines.last(), Some(Step::Done)),
             "expected the drive to finish at Done, got {resumed_lines:?}"
         );
         assert_eq!(

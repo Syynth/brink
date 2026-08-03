@@ -13,7 +13,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use brink_compiler::{AnalysisOptions, Dialect};
-use brink_runtime::{DotNetRng, Line, Story};
+use brink_runtime::{DotNetRng, Step, Story};
 use proptest::prelude::*;
 
 /// Compile+run a choice-free brink program to completion, returning its text.
@@ -33,12 +33,11 @@ fn run_brink(source: &str) -> String {
     let mut out = String::new();
     loop {
         match story.continue_single().expect(&step_msg) {
-            Line::Text { text, .. } => out.push_str(&text),
-            Line::Done { text, .. } | Line::End { text, .. } | Line::Suspended { text, .. } => {
-                out.push_str(&text);
+            Step::Line(line) => out.push_str(&line.text),
+            Step::Done | Step::End | Step::Suspended => {
                 break;
             }
-            Line::Choices { .. } => panic!("unexpected choices for:\n{source}"),
+            Step::Choices(_) => panic!("unexpected choices for:\n{source}"),
         }
     }
     out

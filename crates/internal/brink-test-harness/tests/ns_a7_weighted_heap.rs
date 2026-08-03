@@ -27,7 +27,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use brink_compiler::{AnalysisOptions, Dialect, TypePolicy};
-use brink_runtime::{DotNetRng, ExecMode, Line, RuntimeError, Story};
+use brink_runtime::{DotNetRng, ExecMode, RuntimeError, Step, Story};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -91,10 +91,9 @@ fn run_to_end(story: &mut Story<DotNetRng>) -> String {
     let mut out = String::new();
     loop {
         match story.continue_single().expect("runtime error") {
-            Line::Text { text, .. } => out.push_str(&text),
-            Line::Choices { .. } => panic!("straight-line story hit a choice"),
-            Line::Done { text, .. } | Line::End { text, .. } | Line::Suspended { text, .. } => {
-                out.push_str(&text);
+            Step::Line(line) => out.push_str(&line.text),
+            Step::Choices(_) => panic!("straight-line story hit a choice"),
+            Step::Done | Step::End | Step::Suspended => {
                 return out;
             }
         }
@@ -105,7 +104,7 @@ fn run_to_end(story: &mut Story<DotNetRng>) -> String {
 fn run_to_error(story: &mut Story<DotNetRng>) -> RuntimeError {
     loop {
         match story.continue_single() {
-            Ok(Line::Text { .. }) => {}
+            Ok(Step::Line(_)) => {}
             Ok(other) => panic!("expected a fault, story ended cleanly: {other:?}"),
             Err(e) => return e,
         }
@@ -394,11 +393,8 @@ fn weighted_survives_a_save_state_serde_round_trip() {
     let mut head = String::new();
     loop {
         match a.continue_single().expect("runtime error") {
-            Line::Text { text, .. } => head.push_str(&text),
-            Line::Choices { text, .. } => {
-                head.push_str(&text);
-                break;
-            }
+            Step::Line(line) => head.push_str(&line.text),
+            Step::Choices(_) => break,
             other => panic!("expected a choice, got {other:?}"),
         }
     }
@@ -411,8 +407,8 @@ fn weighted_survives_a_save_state_serde_round_trip() {
     let mut b = Story::<DotNetRng>::new(program, tables);
     loop {
         match b.continue_single().expect("runtime error") {
-            Line::Choices { .. } => break,
-            Line::Text { .. } => {}
+            Step::Choices(_) => break,
+            Step::Line(_) => {}
             other => panic!("expected a choice, got {other:?}"),
         }
     }
@@ -425,12 +421,9 @@ fn weighted_survives_a_save_state_serde_round_trip() {
     let mut tail = String::new();
     loop {
         match b.continue_single().expect("runtime error") {
-            Line::Text { text, .. } => tail.push_str(&text),
-            Line::Done { text, .. } | Line::End { text, .. } => {
-                tail.push_str(&text);
-                break;
-            }
-            other => panic!("unexpected line {other:?}"),
+            Step::Line(line) => tail.push_str(&line.text),
+            Step::Done | Step::End => break,
+            other => panic!("unexpected step {other:?}"),
         }
     }
     assert_eq!(tail, "after: Weighted { 3: sword, 1: shield } true\n");

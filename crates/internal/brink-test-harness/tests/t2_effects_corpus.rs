@@ -27,7 +27,7 @@ use brink_compiler::{AnalysisOptions, Dialect};
 use brink_db::ProjectDb;
 use brink_format::DefinitionId;
 use brink_ir::SymbolKind;
-use brink_runtime::{DotNetRng, Line, Story};
+use brink_runtime::{DotNetRng, Step, Story};
 
 fn brink_opts() -> AnalysisOptions {
     AnalysisOptions {
@@ -107,12 +107,9 @@ fn run_brink(source: &str) -> String {
              (must be straight-line and terminating):\n{source}"
         );
         match story.continue_single().expect("runtime error") {
-            Line::Text { text, .. } => out.push_str(&text),
-            Line::Done { text, .. } | Line::End { text, .. } | Line::Suspended { text, .. } => {
-                out.push_str(&text);
-                break;
-            }
-            Line::Choices { .. } => panic!("unexpected choices:\n{source}"),
+            Step::Line(line) => out.push_str(&line.text),
+            Step::Done | Step::End | Step::Suspended => break,
+            Step::Choices(_) => panic!("unexpected choices:\n{source}"),
         }
     }
     out
@@ -380,7 +377,7 @@ fn a_bound_cannot_cover_an_opaque_row_e103() {
 #[test]
 #[should_panic(expected = "exceeded")]
 fn run_brink_bounds_the_outer_drive_loop_on_infinite_output() {
-    // A knot that unconditionally diverts to itself emits one `Line::Text`
+    // A knot that unconditionally diverts to itself emits one `Step::Line`
     // per `continue_single` call forever — each call is under
     // `Story::STEP_LIMIT`, so nothing faults, but the outer loop across
     // calls must still be capped or this spins forever (see `STEP_LIMIT`

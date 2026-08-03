@@ -754,8 +754,8 @@ fn step_outcome_to_js<R: brink_runtime::StoryRng>(
     session: &brink_runtime::StorySession<R>,
 ) -> StepOutcomeJs {
     match outcome {
-        brink_runtime::StepOutcome::Line(line) => StepOutcomeJs::Line {
-            line: line_to_js(line),
+        brink_runtime::StepOutcome::Step(step) => StepOutcomeJs::Line {
+            line: line_to_js(step),
         },
         brink_runtime::StepOutcome::AwaitingExternal => StepOutcomeJs::AwaitingExternal {
             // `WebSession` never registers an internal promise-in-flight park
@@ -797,17 +797,26 @@ mod websession_wasm_tests {
 
     #[wasm_bindgen_test]
     fn advance_splits_step_outcome_from_line() {
-        // A single line immediately followed by `-> END` resolves as one
-        // `advance` step whose `Line` is the terminal `end` variant (not a
-        // separate `text` step) — this asserts the `StepOutcomeJs` envelope
-        // (`{ "type": "line", "line": Line }`), not any particular `Line`
-        // variant.
+        // A single line immediately followed by `-> END` is now two
+        // `advance` steps — a `"text"` `Line` carrying the content and its
+        // `block_id`, then a payload-free terminal `"end"` `Line` — this
+        // asserts the `StepOutcomeJs` envelope (`{ "type": "line", "line":
+        // Line }`), not any particular `Line` variant.
         let s = new_session("Hello world.\n-> END\n");
+
+        let json = s.advance().expect("advance succeeds");
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["type"], "line", "{json}");
+        assert_eq!(v["line"]["type"], "text", "{json}");
+        assert_eq!(v["line"]["text"], "Hello world.\n", "{json}");
+        assert!(v["line"]["block_id"].is_u64(), "{json}");
+
         let json = s.advance().expect("advance succeeds");
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["type"], "line", "{json}");
         assert_eq!(v["line"]["type"], "end", "{json}");
-        assert_eq!(v["line"]["text"], "Hello world.\n", "{json}");
+        assert_eq!(v["line"]["text"], "", "{json}");
+        assert!(v["line"]["block_id"].is_null(), "{json}");
     }
 
     #[wasm_bindgen_test]
@@ -858,15 +867,22 @@ mod websession_wasm_tests {
     fn did_safe_exit_distinguishes_explicit_done_from_ran_out_of_content() {
         // Issue #1573: both cases deliver a `done`-type `Line`; `didSafeExit`
         // is the production-reachable way to tell them apart without an
-        // extra `continueSingle` call.
+        // extra `continueSingle` call. The terminal split means the `Hello.`
+        // text and the payload-free `done` now arrive as two separate steps.
         let safe = new_session("Hello.\n-> DONE\n");
         let json = safe.continue_single().expect("first line");
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["type"], "text", "{json}");
+        let json = safe.continue_single().expect("second line");
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["type"], "done", "{json}");
         assert!(safe.did_safe_exit());
 
         let unsafe_ = new_session("-> k\n== k ==\nHello.\n");
         let json = unsafe_.continue_single().expect("first line");
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["type"], "text", "{json}");
+        let json = unsafe_.continue_single().expect("second line");
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["type"], "done", "{json}");
         assert!(!unsafe_.did_safe_exit());
@@ -1067,15 +1083,15 @@ mod websession_wasm_tests {
 
     #[wasm_bindgen_test]
     fn continue_flow_maximally_returns_every_line_to_the_terminal() {
-        // Per the `Line` contract (CLAUDE.md "Runtime public API" /
-        // docs/execution-model): terminal variants *carry* the text produced
-        // since the last yield, rather than being a content-free marker
-        // following a separate line for that text. So driving "One.\nTwo.\n"
-        // to its `-> END` yields two `Line`s, not three: a `Text` for "One."
-        // and a terminal `End` whose own `text` field holds "Two." — matching
-        // native `Story::continue_flow_maximally_shared`/`drive_to_terminal`
-        // exactly (verified directly against the native API for this same
-        // story/flow before writing this assertion).
+        // Per the `Step`/`OutputLine` contract (CLAUDE.md "Runtime public
+        // API" / docs/execution-model): terminal variants carry no payload
+        // of their own — any text produced before the boundary already
+        // arrived as its own preceding `"text"` `Line`. So driving
+        // "One.\nTwo.\n" to its `-> END` yields three `Line`s: a `Text` for
+        // "One.", a `Text` for "Two.", and a payload-free terminal `End` —
+        // matching native `Story::continue_flow_maximally_shared`/
+        // `drive_to_terminal` exactly (verified directly against the native
+        // API for this same story/flow before writing this assertion).
         let s = new_session("-> END\n=== bump ===\nOne.\nTwo.\n-> END\n");
         s.spawn_flow("f", Some("bump".to_owned())).expect("spawn");
         let json = s
@@ -1083,11 +1099,13 @@ mod websession_wasm_tests {
             .expect("drives the flow to its terminal line");
         let lines: serde_json::Value = serde_json::from_str(&json).unwrap();
         let arr = lines.as_array().expect("array of Line");
-        assert_eq!(arr.len(), 2, "{json}"); // "One.", then the terminal `end` carrying "Two."
+        assert_eq!(arr.len(), 3, "{json}"); // "One.", "Two.", then the payload-free terminal `end`
         assert_eq!(arr[0]["type"], "text");
         assert_eq!(arr[0]["text"], "One.\n");
-        assert_eq!(arr[1]["type"], "end");
+        assert_eq!(arr[1]["type"], "text");
         assert_eq!(arr[1]["text"], "Two.\n");
+        assert_eq!(arr[2]["type"], "end");
+        assert_eq!(arr[2]["text"], "");
         let full_text: String = arr
             .iter()
             .map(|l| l["text"].as_str().expect("text field"))

@@ -22,7 +22,7 @@ use super::call_stack::{
     CallFrame, CallFrameType, CallStack, ChoiceDisplay, ContainerPosition, ExecMode, Flow, Thread,
 };
 use super::external::{ExternalFnHandler, ExternalResult, FunctionEval};
-use super::types::{Choice, Line, Stats, StepOutcome, StoryStatus};
+use super::types::{BlockId, Choice, OutputLine, Stats, Step, StepOutcome, StoryStatus};
 
 // ── FlowInstance ────────────────────────────────────────────────────────────
 
@@ -71,22 +71,22 @@ pub(crate) struct EvalState {
 }
 
 /// Outcome of a single [`FlowInstance::drive`] call: either the drive
-/// reached a terminal line, or it paused on a deferred external mid-drive.
-/// Both variants carry every [`Line`] produced during *this* call — for
-/// `AwaitingExternal`, that's the (possibly empty) run of `Line::Text`
-/// produced before the pause; for `Terminal`, the terminal line is always
+/// reached a terminal step, or it paused on a deferred external mid-drive.
+/// Both variants carry every [`Step`] produced during *this* call — for
+/// `AwaitingExternal`, that's the (possibly empty) run of `Step::Line`
+/// produced before the pause; for `Terminal`, the terminal step is always
 /// the last element (see [`FlowInstance::drive`]).
 #[derive(Debug, Clone)]
 pub enum DriveOutcome {
-    /// Reached a terminal line ([`Line::Done`], [`Line::Choices`], or
-    /// [`Line::End`]) — always the last element of the `Vec`.
-    Terminal(Vec<Line>),
+    /// Reached a terminal step ([`Step::Done`], [`Step::Choices`], or
+    /// [`Step::End`]) — always the last element of the `Vec`.
+    Terminal(Vec<Step>),
     /// Paused on a deferred external
     /// ([`ExternalResult::Pending`](crate::ExternalResult::Pending)).
     /// Resolve it ([`FlowInstance::resolve_external`]) and call
     /// [`FlowInstance::drive`] again — with the **same** `budget` — to
     /// resume.
-    AwaitingExternal(Vec<Line>),
+    AwaitingExternal(Vec<Step>),
 }
 
 impl FlowInstance {
@@ -132,6 +132,8 @@ impl FlowInstance {
                 ran_out_of_content_cause: RanOutOfContentCause::default(),
                 exec_mode: ExecMode::default(),
                 pure_callback: crate::story::PureCallbackState::default(),
+                next_block_id: 0,
+                pending_terminal: None,
             },
             status: StoryStatus::Active,
             stats: Stats::default(),
@@ -197,7 +199,7 @@ impl FlowInstance {
     /// Execute until one complete line of output is available, or until a
     /// yield point (choices/done/ended) if no newline occurs first.
     ///
-    /// Returns a [`Line`] telling the caller what happened (`Text`/`Done`/
+    /// Returns a [`Step`] telling the caller what happened (`Line`/`Done`/
     /// `Choices`/`End`). This is the simple API for consumers whose
     /// external handler never defers: if the handler returns
     /// [`ExternalResult::Pending`], this errors with
@@ -210,9 +212,9 @@ impl FlowInstance {
         context: &mut (impl ContextAccess + ?Sized),
         handler: &dyn ExternalFnHandler,
         resolver: Option<&dyn PluralResolver>,
-    ) -> Result<Line, RuntimeError> {
+    ) -> Result<Step, RuntimeError> {
         match self.advance::<R>(program, line_tables, context, handler, resolver)? {
-            StepOutcome::Line(line) => Ok(line),
+            StepOutcome::Step(step) => Ok(step),
             StepOutcome::AwaitingExternal => {
                 // Preserve historical behavior for consumers using this
                 // (non-pausing) API: a deferred external they can't resolve
@@ -231,8 +233,8 @@ impl FlowInstance {
     /// malformed bytecode.
     pub const LINE_LIMIT: usize = 10_000;
 
-    /// Step this flow forward until the next terminal line (`Done`,
-    /// `Choices`, or `End`), collecting every [`Line`] produced along the
+    /// Step this flow forward until the next terminal step (`Done`,
+    /// `Choices`, or `End`), collecting every [`Step`] produced along the
     /// way.
     ///
     /// This is the single Layer-2 "drive to terminal" loop: [`Story`]'s
@@ -247,9 +249,9 @@ impl FlowInstance {
     ///   `step_single_line` does. Callers that need to pause on world-access
     ///   externals mid-drive should drive [`advance`](Self::advance)
     ///   themselves rather than use this method.
-    /// - Stops at the first [`Line`] for which [`Line::is_terminal`] returns
-    ///   `true`; that line is always the last element of the returned
-    ///   `Vec`, and every element before it is a [`Line::Text`].
+    /// - Stops at the first [`Step`] for which [`Step::is_terminal`] returns
+    ///   `true`; that step is always the last element of the returned
+    ///   `Vec`, and every element before it is a [`Step::Line`].
     /// - Bounded by [`Self::LINE_LIMIT`] (10,000) lines produced in a single
     ///   call; exceeding it returns [`RuntimeError::LineLimitExceeded`]
     ///   rather than looping forever.
@@ -265,17 +267,17 @@ impl FlowInstance {
         context: &mut (impl ContextAccess + ?Sized),
         handler: &dyn ExternalFnHandler,
         resolver: Option<&dyn PluralResolver>,
-    ) -> Result<Vec<Line>, RuntimeError> {
-        let mut lines = Vec::new();
+    ) -> Result<Vec<Step>, RuntimeError> {
+        let mut steps = Vec::new();
         loop {
-            let line =
+            let step =
                 self.step_single_line::<R>(program, line_tables, context, handler, resolver)?;
-            let terminal = line.is_terminal();
-            lines.push(line);
+            let terminal = step.is_terminal();
+            steps.push(step);
             if terminal {
-                return Ok(lines);
+                return Ok(steps);
             }
-            if lines.len() >= Self::LINE_LIMIT {
+            if steps.len() >= Self::LINE_LIMIT {
                 return Err(RuntimeError::LineLimitExceeded(Self::LINE_LIMIT));
             }
         }
@@ -304,14 +306,14 @@ impl FlowInstance {
     /// growth" rule). Start a fresh logical drive with a fresh
     /// `budget = FlowInstance::LINE_LIMIT` (or any caller-chosen cap).
     ///
-    /// Like `drive_to_terminal`, the terminal line is always the last
-    /// element of the returned `Vec` and every line before it is
-    /// [`Line::Text`].
+    /// Like `drive_to_terminal`, the terminal step is always the last
+    /// element of the returned `Vec` and every step before it is
+    /// [`Step::Line`].
     ///
     /// # Errors
     /// Any error [`advance`](Self::advance) itself can produce, plus
     /// [`RuntimeError::LineLimitExceeded`] if `budget` reaches zero before a
-    /// terminal line is produced.
+    /// terminal step is produced.
     pub fn drive<R: StoryRng>(
         &mut self,
         program: &Program,
@@ -325,19 +327,19 @@ impl FlowInstance {
         // remaining budget *this call* started with, not the (possibly
         // already-partially-spent, across earlier resumes) original cap.
         let starting_budget = *budget;
-        let mut lines = Vec::new();
+        let mut steps = Vec::new();
         loop {
             if *budget == 0 {
                 return Err(RuntimeError::LineLimitExceeded(starting_budget));
             }
             match self.advance::<R>(program, line_tables, context, handler, resolver)? {
-                StepOutcome::AwaitingExternal => return Ok(DriveOutcome::AwaitingExternal(lines)),
-                StepOutcome::Line(line) => {
-                    let terminal = line.is_terminal();
+                StepOutcome::AwaitingExternal => return Ok(DriveOutcome::AwaitingExternal(steps)),
+                StepOutcome::Step(step) => {
+                    let terminal = step.is_terminal();
                     *budget -= 1;
-                    lines.push(line);
+                    steps.push(step);
                     if terminal {
-                        return Ok(DriveOutcome::Terminal(lines));
+                        return Ok(DriveOutcome::Terminal(steps));
                     }
                 }
             }
@@ -387,6 +389,14 @@ impl FlowInstance {
         resolver: Option<&dyn PluralResolver>,
         step_limit: u64,
     ) -> Result<StepOutcome, RuntimeError> {
+        // 0. A terminal was computed on the previous call but held back
+        //    because its trailing content had to go out first as its own
+        //    `Step::Line` (terminals carry no text — §7). Deliver it now,
+        //    bare, with no VM stepping.
+        if let Some(pending) = self.flow.pending_terminal.take() {
+            return Ok(StepOutcome::Step(pending));
+        }
+
         // 1. If buffer already has a completed line from a previous step,
         //    take it immediately (no VM stepping needed).
         if self.flow.output.has_completed_line()
@@ -395,7 +405,7 @@ impl FlowInstance {
                     .output
                     .take_first_line(program, line_tables, resolver)
         {
-            return Ok(StepOutcome::Line(Line::Text { text, tags }));
+            return Ok(StepOutcome::Step(make_output_line(&self.flow, text, tags)));
         }
 
         // 2. If buffer has partial content but VM has already yielded
@@ -403,11 +413,11 @@ impl FlowInstance {
         //    output is coming, so trailing Newlines are committed.
         if self.flow.output.has_unread() && self.status != StoryStatus::Active {
             let (text, tags) = flush_remaining(&mut self.flow, program, line_tables, resolver);
-            return Ok(StepOutcome::Line(make_yield_line(
+            return Ok(StepOutcome::Step(yield_step(
                 self.status,
                 text,
                 tags,
-                &self.flow,
+                &mut self.flow,
                 program,
                 line_tables,
                 resolver,
@@ -433,6 +443,8 @@ impl FlowInstance {
                 ));
             }
             self.status = StoryStatus::Active;
+            // A fresh run begins wherever the story resumes from `Done`.
+            self.flow.next_block_id += 1;
         }
 
         // Clear flags — will be set during this cycle if relevant.
@@ -464,7 +476,7 @@ impl FlowInstance {
                         && let Some((text, tags)) =
                             flow.output.take_first_line(program, line_tables, resolver)
                     {
-                        return Ok(StepOutcome::Line(Line::Text { text, tags }));
+                        return Ok(StepOutcome::Step(make_output_line(flow, text, tags)));
                     }
                 }
 
@@ -478,7 +490,7 @@ impl FlowInstance {
                         && let Some((text, tags)) =
                             flow.output.take_first_line(program, line_tables, resolver)
                     {
-                        return Ok(StepOutcome::Line(Line::Text { text, tags }));
+                        return Ok(StepOutcome::Step(make_output_line(flow, text, tags)));
                     }
                 }
 
@@ -497,7 +509,7 @@ impl FlowInstance {
                                 && let Some((text, tags)) =
                                     flow.output.take_first_line(program, line_tables, resolver)
                             {
-                                return Ok(StepOutcome::Line(Line::Text { text, tags }));
+                                return Ok(StepOutcome::Step(make_output_line(flow, text, tags)));
                             }
                             continue;
                         }
@@ -515,11 +527,11 @@ impl FlowInstance {
                         && let Some((text, tags)) =
                             flow.output.take_first_line(program, line_tables, resolver)
                     {
-                        return Ok(StepOutcome::Line(Line::Text { text, tags }));
+                        return Ok(StepOutcome::Step(make_output_line(flow, text, tags)));
                     }
 
                     let (text, tags) = flush_remaining(flow, program, line_tables, resolver);
-                    return Ok(StepOutcome::Line(make_yield_line(
+                    return Ok(StepOutcome::Step(yield_step(
                         *status,
                         text,
                         tags,
@@ -538,11 +550,19 @@ impl FlowInstance {
                         && let Some((text, tags)) =
                             flow.output.take_first_line(program, line_tables, resolver)
                     {
-                        return Ok(StepOutcome::Line(Line::Text { text, tags }));
+                        return Ok(StepOutcome::Step(make_output_line(flow, text, tags)));
                     }
 
                     let (text, tags) = flush_remaining(flow, program, line_tables, resolver);
-                    return Ok(StepOutcome::Line(Line::End { text, tags }));
+                    return Ok(StepOutcome::Step(yield_step(
+                        *status,
+                        text,
+                        tags,
+                        flow,
+                        program,
+                        line_tables,
+                        resolver,
+                    )));
                 }
             }
         }
@@ -700,12 +720,22 @@ impl FlowInstance {
             call_stack: CallStack::new(root_frame),
         }];
         self.flow.pending_choices.clear();
+        // A stashed terminal from before the jump must not be replayed after
+        // it — the host explicitly redirected execution, so the next
+        // `advance`/`step_single_line` call must actually step the VM at the
+        // new target rather than handing back a stale `Done`/`Choices`/`End`
+        // left over from whatever this flow was doing before the jump.
+        self.flow.pending_terminal = None;
         // Transient intra-step flags. Both are false at any point a host can
         // observe (between lines / at a yield), but the jump abandons whatever
         // produced them, so clear defensively.
         self.flow.skipping_choice = false;
         self.flow.in_tag = false;
         self.flow.did_safe_exit = true;
+        // The jump force-completes the current flow like `-> DONE` (see
+        // this method's own doc comment) — a fresh run begins at the
+        // target (`BlockId`, §3.7/§8d.2).
+        self.flow.next_block_id += 1;
 
         // Push the arguments in declaration order; the target's prologue
         // (`DeclareTemp`) binds them, exactly as `begin_function_eval` and an
@@ -732,13 +762,13 @@ impl FlowInstance {
     /// an explicit `-> DONE` opcode — as opposed to falling off the end of
     /// its content with nothing left to run.
     ///
-    /// Both cases deliver a terminal [`Line::Done`]; this is the only way
+    /// Both cases deliver a terminal [`Step::Done`]; this is the only way
     /// to tell them apart without issuing an extra `advance`/
     /// `step_single_line` call and observing whether it returns
     /// [`RuntimeError::RanOutOfContent`](crate::RuntimeError::RanOutOfContent).
-    /// Read it right after receiving a `Line::Done` — it is cleared at the
+    /// Read it right after receiving a `Step::Done` — it is cleared at the
     /// start of the *next* execution cycle, so a value read before a
-    /// terminal line is not meaningful.
+    /// terminal step is not meaningful.
     ///
     /// `true`: the story chose to stop (a knot/stitch reached `-> DONE`);
     /// resuming later is well-formed. `false`: the flow ran out of
@@ -1359,8 +1389,15 @@ fn select_choice(
     });
 
     flow.pending_choices.clear();
+    // A stashed terminal predates this choice — the choice moved execution
+    // to a fresh target, so the next step must actually run the VM there
+    // rather than replaying whatever `Done`/`Choices`/`End` was pending
+    // before selection.
+    flow.pending_terminal = None;
     *status = StoryStatus::Active;
     stats.choices_selected += 1;
+    // A fresh run begins at the chosen branch (`BlockId`, §3.7/§8d.2).
+    flow.next_block_id += 1;
 
     Ok(())
 }
@@ -1436,52 +1473,82 @@ fn flush_remaining(
     (text, tags)
 }
 
-/// Build the appropriate [`Line`] variant for a yield point based on
-/// the current story status.
-fn make_yield_line(
-    status: StoryStatus,
-    text: String,
-    tags: Vec<String>,
+/// Build a [`Step::Line`] stamped with the flow's current [`BlockId`].
+fn make_output_line(flow: &Flow, text: String, tags: Vec<String>) -> Step {
+    Step::Line(OutputLine {
+        text,
+        tags,
+        block_id: BlockId(flow.next_block_id),
+    })
+}
+
+/// Collect the currently pending choices into the public [`Choice`] shape,
+/// resolving each display text (trimming spaces/tabs, matching C#:
+/// `choice.text = (startText + choiceOnlyText).Trim(' ', '\t')`).
+fn collect_choices(
     flow: &Flow,
     program: &Program,
     line_tables: &[Vec<brink_format::LineEntry>],
     resolver: Option<&dyn brink_format::PluralResolver>,
-) -> Line {
-    match status {
-        StoryStatus::WaitingForChoice => {
-            let choices = flow
-                .pending_choices
-                .iter()
-                .enumerate()
-                .filter(|(_, pc)| !pc.flags.is_invisible_default)
-                .map(|(i, pc)| {
-                    let display_text = match &pc.display {
-                        ChoiceDisplay::Text(s) => s.clone(),
-                        ChoiceDisplay::Fragment(idx) => {
-                            flow.output
-                                .resolve_fragment(*idx, program, line_tables, resolver)
-                        }
-                    };
-                    // Trim spaces/tabs from choice display text, matching C#:
-                    // choice.text = (startText + choiceOnlyText).Trim(' ', '\t');
-                    let display_text = display_text
-                        .trim_matches(|c: char| c == ' ' || c == '\t')
-                        .to_string();
-                    Choice {
-                        text: display_text,
-                        index: i,
-                        tags: pc.tags.clone(),
-                    }
-                })
-                .collect();
-            Line::Choices {
-                text,
-                tags,
-                choices,
+) -> Vec<Choice> {
+    flow.pending_choices
+        .iter()
+        .enumerate()
+        .filter(|(_, pc)| !pc.flags.is_invisible_default)
+        .map(|(i, pc)| {
+            let display_text = match &pc.display {
+                ChoiceDisplay::Text(s) => s.clone(),
+                ChoiceDisplay::Fragment(idx) => {
+                    flow.output
+                        .resolve_fragment(*idx, program, line_tables, resolver)
+                }
+            };
+            let display_text = display_text
+                .trim_matches(|c: char| c == ' ' || c == '\t')
+                .to_string();
+            Choice {
+                text: display_text,
+                index: i,
+                tags: pc.tags.clone(),
             }
+        })
+        .collect()
+}
+
+/// Build the terminal [`Step`] for a yield point (`WaitingForChoice`/
+/// `Done`/`Ended`) based on the current story status.
+///
+/// Terminals carry no text (`docs/prose-dialect-spec.md` §7, RULED) —
+/// `Line`'s old fused shape no longer exists. If `text`/`tags` is
+/// non-empty, it's delivered first as its own `Step::Line`, and the bare
+/// terminal is stashed on `flow.pending_terminal` for the very next
+/// `advance` call to return with no further VM stepping. If there's
+/// nothing to flush, the bare terminal is returned immediately.
+fn yield_step(
+    status: StoryStatus,
+    text: String,
+    tags: Vec<String>,
+    flow: &mut Flow,
+    program: &Program,
+    line_tables: &[Vec<brink_format::LineEntry>],
+    resolver: Option<&dyn brink_format::PluralResolver>,
+) -> Step {
+    let terminal = match status {
+        StoryStatus::WaitingForChoice => {
+            Step::Choices(collect_choices(flow, program, line_tables, resolver))
         }
-        StoryStatus::Ended => Line::End { text, tags },
-        StoryStatus::Done => Line::Done { text, tags },
-        StoryStatus::Active => Line::Text { text, tags },
+        StoryStatus::Ended => Step::End,
+        StoryStatus::Done => Step::Done,
+        // Defensive fallback — `yield_step` is only ever called once
+        // `status` has transitioned away from `Active` at a genuine yield
+        // point (see call sites), so this arm is unreachable in practice.
+        StoryStatus::Active => return make_output_line(flow, text, tags),
+    };
+
+    if text.is_empty() && tags.is_empty() {
+        terminal
+    } else {
+        flow.pending_terminal = Some(terminal);
+        make_output_line(flow, text, tags)
     }
 }

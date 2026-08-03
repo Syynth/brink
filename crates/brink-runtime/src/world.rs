@@ -2130,7 +2130,7 @@ mod subtree_scope_tests {
     use super::*;
     use crate::link;
     use crate::rng::FastRng;
-    use crate::story::{FallbackHandler, FlowInstance, Line};
+    use crate::story::{FallbackHandler, FlowInstance, Step};
 
     /// Compile a small ink story with the brink compiler and link it,
     /// keeping the line tables `FlowInstance::drive_to_terminal` needs.
@@ -2378,10 +2378,10 @@ mod subtree_scope_tests {
                 .drive_to_terminal::<FastRng>(&program, &tables, view, &FallbackHandler, None)
                 .expect("drive succeeds");
             assert!(
-                matches!(lines.last(), Some(Line::Done { .. })),
+                matches!(lines.last(), Some(Step::Done)),
                 "expected Done, got {lines:?}"
             );
-            lines.iter().map(Line::text).collect::<String>()
+            lines.iter().map(Step::text).collect::<String>()
         };
 
         // Flow A: first (and only, for this assertion) encounter.

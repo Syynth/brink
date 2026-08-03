@@ -188,14 +188,14 @@ pub fn add_story_assets(
 mod runtime_story_api {
     use super::compile_test_story;
     use brink_format::Value;
-    use brink_runtime::{ExternalFnHandler, ExternalResult, FastRng, Line, Story};
+    use brink_runtime::{ExternalFnHandler, ExternalResult, FastRng, Step, Story};
 
     #[expect(
         clippy::needless_pass_by_value,
         reason = "test helper takes ownership of the produced lines"
     )]
-    fn render(lines: Vec<Line>) -> String {
-        lines.iter().map(Line::text).collect()
+    fn render(lines: Vec<Step>) -> String {
+        lines.iter().map(Step::text).collect()
     }
 
     #[test]
@@ -373,9 +373,9 @@ mod runtime_story_api {
         let mut parked = false;
         for _ in 0..50 {
             match story.advance_with(&Pauser).expect("advance") {
-                StepOutcome::Line(line) => {
-                    let terminal = line.is_terminal();
-                    text.push_str(line.text());
+                StepOutcome::Step(step) => {
+                    let terminal = step.is_terminal();
+                    text.push_str(step.text());
                     if terminal {
                         break;
                     }

@@ -28,7 +28,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
-use brink_runtime::{DotNetRng, Line, Story};
+use brink_runtime::{DotNetRng, Step, Story};
 
 /// Every test in this file compiles through `prepare_driver`, which calls
 /// `brink_driver::native_source_root` — and for a bare/`./`-relative entry
@@ -160,7 +160,7 @@ fn choosing_an_included_files_choice_runs_that_files_body() {
     let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
 
     // The first choice set is the included file's.
-    let Line::Choices { choices, .. } = story.continue_single().unwrap() else {
+    let Step::Choices(choices) = story.continue_single().unwrap() else {
         panic!("expected the included file's root choice set first");
     };
     assert_eq!(choices[0].text, "inc one");
@@ -169,9 +169,9 @@ fn choosing_an_included_files_choice_runs_that_files_body() {
     // Whatever ran must be the body of the choice the player was offered.
     let mut output = String::new();
     for _ in 0..4 {
-        let line = story.continue_single().unwrap();
-        output.push_str(line.text());
-        if matches!(line, Line::Done { .. } | Line::End { .. }) {
+        let step = story.continue_single().unwrap();
+        output.push_str(step.text());
+        if matches!(step, Step::Done | Step::End) {
             break;
         }
     }

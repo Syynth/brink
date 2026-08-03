@@ -4,7 +4,7 @@
 
 #![expect(clippy::unwrap_used, clippy::panic)]
 
-use brink_runtime::{DotNetRng, Line, Story};
+use brink_runtime::{DotNetRng, Step, Story};
 
 fn story_from(case: &str) -> (brink_runtime::Program, Vec<Vec<brink_format::LineEntry>>) {
     let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -19,11 +19,8 @@ fn story_from(case: &str) -> (brink_runtime::Program, Vec<Vec<brink_format::Line
 fn run_flow(story: &mut Story<DotNetRng>, name: &str) {
     for _ in 0..1000 {
         match story.continue_flow_single(name).unwrap() {
-            Line::Text { .. } => {}
-            Line::Done { .. }
-            | Line::End { .. }
-            | Line::Choices { .. }
-            | Line::Suspended { .. } => {
+            Step::Line(_) => {}
+            Step::Done | Step::End | Step::Choices(_) | Step::Suspended => {
                 return;
             }
         }

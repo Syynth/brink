@@ -70,43 +70,46 @@ Test cases: `tests/tier{1,2,3}/` — each has `story.ink`, `story.ink.json` (ink
 
 ## Runtime public API
 
-The runtime exposes a `Line` enum as the primary output type:
+The runtime exposes a `Step` enum as the primary output type. Only `Line`
+carries a payload — the terminal variants carry none of their own (any
+trailing text already arrived as its own preceding `Step::Line`;
+`docs/prose-dialect-spec.md` §7, RULED):
 
 ```rust
-pub enum Line {
-    Text { text: String, tags: Vec<String> },     // more output coming
-    Done { text: String, tags: Vec<String> },     // turn complete (ink -> DONE)
-    Choices { text: String, tags: Vec<String>, choices: Vec<Choice> },  // pick a choice
-    End { text: String, tags: Vec<String> },      // story permanently ended (ink -> END)
-    Suspended { .. },                             // flow parked at an `await` site (FlowFrame model)
+pub enum Step {
+    Line(OutputLine),      // OutputLine { text, tags, block_id } — more output coming
+    Done,                  // turn complete (ink -> DONE); no payload
+    Choices(Vec<Choice>),  // pick a choice; no text/tags of its own
+    End,                   // story permanently ended (ink -> END); no payload
+    Suspended,             // flow parked at an `await` site (FlowFrame model); no payload
 }
 ```
 
 (`Suspended` is the flow-suspension park — `docs/flow-suspension-spec.md`
-§10.1. Like `Done` it is a turn boundary: text accumulated before the park
-flushes with it. The host wakes the flow via `Story::wake_check`; a park never
-auto-continues. See `brink-runtime/src/story/types.rs` for the real
-definition — this block is a summary, not the source of truth.)
+§10.1. Like `Done` it is a turn boundary. The host wakes the flow via
+`Story::wake_check`; a park never auto-continues. See
+`brink-runtime/src/story/types.rs` for the real definition — this block is a
+summary, not the source of truth.)
 
 Primary consumer pattern:
 
 ```rust
 loop {
     match story.continue_single()? {
-        Line::Text { text, .. } => print!("{text}"),
-        Line::Done { text, .. } => { print!("{text}"); break; }
-        Line::Choices { text, choices, .. } => {
-            print!("{text}");
+        Step::Line(line) => print!("{}", line.text),
+        Step::Done => {}
+        Step::Choices(choices) => {
             story.choose(pick)?;
         }
-        Line::End { text, .. } => { print!("{text}"); break; }
+        Step::End => break,
+        Step::Suspended => break,
     }
 }
 ```
 
-`continue_maximally()` returns `Vec<Line>` — the last element is always a terminal variant (`Done`, `Choices`, or `End`).
+`continue_maximally()` returns `Vec<Step>` — the last element is always a terminal variant (`Done`, `Choices`, or `End`).
 
-`Line::Done` is delivered both for an explicit `-> DONE` and for a flow
+`Step::Done` is delivered both for an explicit `-> DONE` and for a flow
 that ran out of content with nothing left to run — call
 `Story::did_safe_exit()` (or `FlowInstance::did_safe_exit()`) right after
 receiving it to tell the two apart; `false` means the *next*
@@ -115,7 +118,7 @@ instead of more text.
 
 `FlowInstance` adds lower-level entry points for orchestration layers (e.g. `bevy-brink`):
 
-- `advance()` → `StepOutcome::{ Line(Line), AwaitingExternal }` — like `step_single_line` but surfaces a deferred external (`ExternalResult::Pending`) cleanly instead of erroring, so a world-access binding can pause and be resolved out-of-band. `step_single_line` is the thin wrapper that maps `AwaitingExternal` back to an error.
+- `advance()` → `StepOutcome::{ Step(Step), AwaitingExternal }` — like `step_single_line` but surfaces a deferred external (`ExternalResult::Pending`) cleanly instead of erroring, so a world-access binding can pause and be resolved out-of-band. `step_single_line` is the thin wrapper that maps `AwaitingExternal` back to an error.
 - `begin_function_eval` / `resume_function_eval` → `FunctionEval::{ Returned(Value), AwaitingExternal }` — evaluate an ink function from engine code without advancing the visible story (output isolated, transcript untouched), pausing/resuming on world-access externals. Plus `has_pending_external` / `pending_external_name` / `resolve_external` accessors.
 
 ## Cloud / fresh-environment sessions

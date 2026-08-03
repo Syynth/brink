@@ -21,7 +21,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use brink_compiler::{AnalysisOptions, Dialect};
-use brink_runtime::{DotNetRng, Line, RuntimeError, Story};
+use brink_runtime::{DotNetRng, RuntimeError, Step, Story};
 use proptest::prelude::*;
 
 /// Compile `source` under the brink dialect and return a linked, unstarted
@@ -48,12 +48,8 @@ fn run_to_completion_or_fault(story: &mut Story<DotNetRng>) -> Result<String, Ru
     let mut out = String::new();
     loop {
         match story.continue_single()? {
-            Line::Text { text, .. } => out.push_str(&text),
-            Line::Done { text, .. } | Line::End { text, .. } | Line::Suspended { text, .. } => {
-                out.push_str(&text);
-                return Ok(out);
-            }
-            Line::Choices { .. } => return Ok(out),
+            Step::Line(line) => out.push_str(&line.text),
+            Step::Done | Step::End | Step::Suspended | Step::Choices(_) => return Ok(out),
         }
     }
 }

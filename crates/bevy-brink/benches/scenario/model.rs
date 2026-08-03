@@ -27,7 +27,7 @@ use bevy::prelude::{
 use bevy::tasks::ComputeTaskPool;
 use bevy_brink::{
     Advance, BrinkContext, BrinkFlow, BrinkGlobals, BrinkPlugin, BrinkProgram, BrinkStory,
-    FallbackHandler, FlowInstance, Line, LineTablesAsset, Program, ProgramAsset, advance_batch,
+    FallbackHandler, FlowInstance, LineTablesAsset, Program, ProgramAsset, Step, advance_batch,
     advance_batch_parallel, flow_context_view,
 };
 
@@ -330,7 +330,7 @@ fn step_active_flows(
             &mut commands,
         );
         match advanced {
-            Ok(Advance::Line(Line::Choices { .. })) => {
+            Ok(Advance::Step(Step::Choices(_))) => {
                 if flow.choose(&mut view, 0).is_ok() {
                     counters.turns_completed += 1;
                 } else {

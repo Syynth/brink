@@ -299,6 +299,8 @@ mod tests {
             ran_out_of_content_cause: crate::RanOutOfContentCause::default(),
             exec_mode: crate::story::ExecMode::default(),
             pure_callback: crate::story::PureCallbackState::default(),
+            next_block_id: 0,
+            pending_terminal: None,
         }
     }
 

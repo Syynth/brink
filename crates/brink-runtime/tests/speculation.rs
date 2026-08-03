@@ -23,8 +23,8 @@ use std::sync::Arc;
 
 use brink_format::Value;
 use brink_runtime::{
-    Budget, ExternalFnHandler, ExternalResult, FallbackHandler, FunctionEval, Line, Program,
-    RuntimeError, SpeculationStep, Story,
+    Budget, ExternalFnHandler, ExternalResult, FallbackHandler, FunctionEval, Program,
+    RuntimeError, SpeculationStep, Step, Story,
 };
 
 /// A single program exercising everything these tests need: a mutated
@@ -96,9 +96,9 @@ fn drive_speculation(
     let mut lines = Vec::new();
     loop {
         match spec.advance(Budget::default(), &FallbackHandler).unwrap() {
-            SpeculationStep::Line(line) => {
-                let terminal = line.is_terminal();
-                lines.push((line.text().to_owned(), line.tags().to_vec()));
+            SpeculationStep::Step(step) => {
+                let terminal = step.is_terminal();
+                lines.push((step.text().to_owned(), step.tags().to_vec()));
                 if terminal {
                     return lines;
                 }
@@ -119,7 +119,7 @@ fn speculation_mirrors_live_continuation() {
     let mut story_a =
         Story::<brink_runtime::DotNetRng>::new(Arc::clone(&program), line_tables.clone());
     let first_a = story_a.continue_single().unwrap();
-    assert!(matches!(first_a, Line::Text { .. }));
+    assert!(matches!(first_a, Step::Line(_)));
 
     let mut spec = story_a.speculate();
     let spec_rest = drive_speculation(&mut spec);
@@ -219,7 +219,7 @@ fn speculation_budget_caps_total_lines_produced() {
 
     // First line succeeds — under the (lines: 1) budget.
     match spec.advance(one_line, &FallbackHandler).unwrap() {
-        SpeculationStep::Line(line) => assert!(!line.is_terminal()),
+        SpeculationStep::Step(step) => assert!(!step.is_terminal()),
         SpeculationStep::AwaitingExternal => panic!("no externals in this story"),
     }
 
@@ -291,7 +291,7 @@ fn speculation_go_to_path_jumps_and_runs() {
     let mut spec = story.speculate();
     spec.go_to_path("shrine").unwrap();
     match spec.advance(Budget::default(), &FallbackHandler).unwrap() {
-        SpeculationStep::Line(line) => assert!(line.text().contains("At the shrine")),
+        SpeculationStep::Step(step) => assert!(step.text().contains("At the shrine")),
         SpeculationStep::AwaitingExternal => panic!("no externals in this story"),
     }
 

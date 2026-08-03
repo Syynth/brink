@@ -464,16 +464,7 @@ fn strict_accepts_explicit_option_comparisons_in_conditions() {
         line_tables,
     );
     let lines = story.continue_maximally().expect("run to completion");
-    let text: String = lines
-        .iter()
-        .map(|l| match l {
-            brink_runtime::Line::Text { text, .. }
-            | brink_runtime::Line::Done { text, .. }
-            | brink_runtime::Line::Choices { text, .. }
-            | brink_runtime::Line::End { text, .. }
-            | brink_runtime::Line::Suspended { text, .. } => text.as_str(),
-        })
-        .collect();
+    let text: String = lines.iter().map(brink_runtime::Step::text).collect();
     assert_eq!(text, "at one.\n");
 }
 

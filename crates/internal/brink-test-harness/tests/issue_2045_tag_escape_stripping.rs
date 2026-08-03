@@ -10,7 +10,7 @@
 //! analyzer → LIR → codegen → link → explore. Unlike the `tier1-native`
 //! golden-transcript corpus (`tests/tier1-native/`,
 //! `brink_test_harness::corpus::run_native_transcript`), which only
-//! concatenates `Line::Text.text` and structurally discards tags, this
+//! concatenates `Step::Line`'s content and structurally discards tags, this
 //! reads `StepRecord.tags` directly off the recorded `Episode` — the one
 //! path in this harness that can actually observe a tag's text end to
 //! end, which is why this is a new file rather than an extension of that

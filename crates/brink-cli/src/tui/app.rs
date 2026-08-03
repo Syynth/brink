@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use brink_runtime::{Line, Story};
+use brink_runtime::{Step, Story};
 
 use super::event::Input;
 use super::typewriter::TypewriterState;
@@ -105,10 +105,10 @@ impl App {
         self.focus = Focus::Story;
 
         let lines = story.continue_maximally()?;
-        let text: String = lines.iter().map(Line::text).collect();
+        let text: String = lines.iter().map(Step::text).collect();
         self.current_transcript_end = story.transcript_len();
         match lines.last() {
-            Some(Line::Choices { choices, .. }) => {
+            Some(Step::Choices(choices)) => {
                 let entries: Vec<ChoiceEntry> = choices
                     .iter()
                     .map(|c| ChoiceEntry {
@@ -121,16 +121,16 @@ impl App {
                     then: AfterPassage::ShowChoices(entries),
                 };
             }
-            // A park (`Line::Suspended`, FS-3r) is a terminal turn boundary;
+            // A park (`Step::Suspended`, FS-3r) is a terminal turn boundary;
             // runtime-unreachable today behind the E052 fence, grouped with
             // the other terminals so the exhaustive match keeps compiling.
-            Some(Line::Done { .. } | Line::End { .. } | Line::Suspended { .. }) => {
+            Some(Step::Done | Step::End | Step::Suspended) => {
                 self.phase = Phase::Typing {
                     typewriter: TypewriterState::new(text, self.char_delay),
                     then: AfterPassage::End,
                 };
             }
-            Some(Line::Text { .. }) | None => {
+            Some(Step::Line(_)) | None => {
                 self.phase = Phase::Ended { text };
             }
         }

@@ -1,4 +1,4 @@
-use brink_runtime::{DotNetRng, Line, Story};
+use brink_runtime::{DotNetRng, Step, Story};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
@@ -28,13 +28,10 @@ fn main() {
         let last = lines.last();
         match last {
             // `Suspended` is runtime-unreachable today (FS-3r not yet
-            // landed, see brink_runtime::Line docs) but is matched here so
+            // landed, see brink_runtime::Step docs) but is matched here so
             // this tool keeps compiling once it becomes reachable.
-            Some(
-                Line::Text { .. } | Line::Done { .. } | Line::End { .. } | Line::Suspended { .. },
-            )
-            | None => break,
-            Some(Line::Choices { choices, .. }) => {
+            Some(Step::Line(_) | Step::Done | Step::End | Step::Suspended) | None => break,
+            Some(Step::Choices(choices)) => {
                 if choice_count >= MAX_CHOICES {
                     break;
                 }

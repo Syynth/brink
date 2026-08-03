@@ -1520,7 +1520,17 @@ mod tests {
 
         {
             let world = app.world_mut();
-            let _ = advance_flow::<()>(world, entity).expect("advances to -> DONE");
+            // Terminals carry no payload of their own (§7) — the trailing
+            // "Hi.\n" content arrives as its own `Step::Line` before the
+            // bare `Step::Done`, so this drives until the actual turn-done
+            // event (which the GC sweep is wired to) instead of assuming
+            // one call reaches it.
+            loop {
+                let step = advance_flow::<()>(world, entity).expect("advances to -> DONE");
+                if step.is_terminal() {
+                    break;
+                }
+            }
             world.flush();
         }
         app.update();
@@ -1578,7 +1588,17 @@ mod tests {
 
         {
             let world = app.world_mut();
-            let _ = advance_flow::<()>(world, entity).expect("advances to -> DONE");
+            // Terminals carry no payload of their own (§7) — the trailing
+            // "Hi.\n" content arrives as its own `Step::Line` before the
+            // bare `Step::Done`, so this drives until the actual turn-done
+            // event (which the GC sweep is wired to) instead of assuming
+            // one call reaches it.
+            loop {
+                let step = advance_flow::<()>(world, entity).expect("advances to -> DONE");
+                if step.is_terminal() {
+                    break;
+                }
+            }
             world.flush();
         }
         app.update(); // fires BrinkTurnDone → gc_on_turn_done early-returns

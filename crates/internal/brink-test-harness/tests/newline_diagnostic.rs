@@ -85,6 +85,25 @@ fn compile_to_story_data(source: &str) -> brink_format::StoryData {
     }
 }
 
+/// Drain `story` to its next terminal step (`Done`/`Choices`/`End`/
+/// `Suspended`), accumulating text from every `Step::Line` along the way.
+/// Terminals carry no text of their own (`docs/prose-dialect-spec.md` §7)
+/// — any trailing content already arrived as its own preceding
+/// `Step::Line`, which is exactly what this concatenates. Returns the
+/// accumulated text plus the terminal step itself, so callers can still
+/// assert which terminal variant was reached.
+fn drain_to_terminal(
+    story: &mut brink_runtime::Story<brink_runtime::DotNetRng>,
+) -> (String, brink_runtime::Step) {
+    let mut text = String::new();
+    loop {
+        match story.continue_single().expect("continue_single failed") {
+            brink_runtime::Step::Line(line) => text.push_str(&line.text),
+            terminal => return (text, terminal),
+        }
+    }
+}
+
 fn dump_inkt(data: &brink_format::StoryData) -> String {
     let mut out = String::new();
     brink_format::write_inkt(data, &mut out).expect("inkt write failed");
@@ -319,9 +338,7 @@ hello
 
     let line = story.continue_single().expect("continue_single failed");
     let text = match &line {
-        brink_runtime::Line::Text { text, .. }
-        | brink_runtime::Line::Done { text, .. }
-        | brink_runtime::Line::End { text, .. } => text.as_str(),
+        brink_runtime::Step::Line(line) => line.text.as_str(),
         other => panic!("unexpected line variant: {other:?}"),
     };
     assert_eq!(
@@ -354,9 +371,7 @@ hello
 
     let line = story.continue_single().expect("continue_single failed");
     let text = match &line {
-        brink_runtime::Line::Text { text, .. }
-        | brink_runtime::Line::Done { text, .. }
-        | brink_runtime::Line::End { text, .. } => text.as_str(),
+        brink_runtime::Step::Line(line) => line.text.as_str(),
         other => panic!("unexpected line variant: {other:?}"),
     };
     assert_eq!(
@@ -385,16 +400,14 @@ text1
 
     let line1 = story.continue_single().expect("continue_single 1");
     let text1 = match &line1 {
-        brink_runtime::Line::Text { text, .. } => text.as_str(),
+        brink_runtime::Step::Line(line) => line.text.as_str(),
         other => panic!("expected Text, got {other:?}"),
     };
     assert_eq!(text1, "text1\n", "function output should be its own line");
 
     let line2 = story.continue_single().expect("continue_single 2");
     let text2 = match &line2 {
-        brink_runtime::Line::Text { text, .. }
-        | brink_runtime::Line::Done { text, .. }
-        | brink_runtime::Line::End { text, .. } => text.as_str(),
+        brink_runtime::Step::Line(line) => line.text.as_str(),
         other => panic!("expected text, got {other:?}"),
     };
     assert_eq!(
@@ -416,9 +429,7 @@ fn runtime_i008_pattern_no_spurious_newline() {
 
     let line = story.continue_single().expect("continue_single failed");
     let text = match &line {
-        brink_runtime::Line::Text { text, .. }
-        | brink_runtime::Line::Done { text, .. }
-        | brink_runtime::Line::End { text, .. } => text.as_str(),
+        brink_runtime::Step::Line(line) => line.text.as_str(),
         other => panic!("unexpected line variant: {other:?}"),
     };
     assert_eq!(
@@ -457,16 +468,14 @@ VAR globalVal = 5
 
     let line1 = story.continue_single().expect("continue_single 1");
     let text1 = match &line1 {
-        brink_runtime::Line::Text { text, .. } => text.as_str(),
+        brink_runtime::Step::Line(line) => line.text.as_str(),
         other => panic!("expected Text, got {other:?}"),
     };
     assert_eq!(text1, "5\n", "first line should be initial globalVal");
 
     let line2 = story.continue_single().expect("continue_single 2");
     let text2 = match &line2 {
-        brink_runtime::Line::Text { text, .. }
-        | brink_runtime::Line::Done { text, .. }
-        | brink_runtime::Line::End { text, .. } => text.as_str(),
+        brink_runtime::Step::Line(line) => line.text.as_str(),
         other => panic!("expected text, got {other:?}"),
     };
     assert_eq!(
@@ -506,7 +515,7 @@ fn runtime_ran_out_of_content_produces_error() {
     // Present and select the "opt" choice
     let line = story.continue_single().expect("first continue");
     match &line {
-        brink_runtime::Line::Choices { .. } => story.choose(0).expect("choose"),
+        brink_runtime::Step::Choices(_) => story.choose(0).expect("choose"),
         other => panic!("expected Choices, got {other:?}"),
     }
 
@@ -516,9 +525,8 @@ fn runtime_ran_out_of_content_produces_error() {
     let mut delivered_text = String::new();
     for _ in 0..10 {
         match story.continue_single() {
-            Ok(brink_runtime::Line::Text { text, .. }) => delivered_text.push_str(&text),
-            Ok(brink_runtime::Line::Done { text, .. }) => {
-                delivered_text.push_str(&text);
+            Ok(brink_runtime::Step::Line(line)) => delivered_text.push_str(&line.text),
+            Ok(brink_runtime::Step::Done) => {
                 break;
             }
             Err(_) => {
@@ -546,11 +554,12 @@ fn runtime_done_opcode_does_not_error() {
         line_tables,
     );
 
-    let line = story.continue_single().expect("continue_single");
-    match &line {
-        brink_runtime::Line::Done { text, .. } => assert_eq!(text, "hello\n"),
-        other => panic!("expected Done, got {other:?}"),
-    }
+    let (text, terminal) = drain_to_terminal(&mut story);
+    assert_eq!(text, "hello\n");
+    assert!(
+        matches!(terminal, brink_runtime::Step::Done),
+        "expected Done, got {terminal:?}"
+    );
 }
 
 #[test]
@@ -564,11 +573,12 @@ fn runtime_end_opcode_does_not_error() {
         line_tables,
     );
 
-    let line = story.continue_single().expect("continue_single");
-    match &line {
-        brink_runtime::Line::End { text, .. } => assert_eq!(text, "hello\n"),
-        other => panic!("expected End, got {other:?}"),
-    }
+    let (text, terminal) = drain_to_terminal(&mut story);
+    assert_eq!(text, "hello\n");
+    assert!(
+        matches!(terminal, brink_runtime::Step::End),
+        "expected End, got {terminal:?}"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -589,7 +599,7 @@ fn runtime_i037_function_output_separate_from_conditional_body() {
 
     let line1 = story.continue_single().expect("continue_single 1");
     let text1 = match &line1 {
-        brink_runtime::Line::Text { text, .. } => text.as_str(),
+        brink_runtime::Step::Line(line) => line.text.as_str(),
         other => panic!("expected Text, got {other:?}"),
     };
     assert_eq!(
@@ -599,9 +609,7 @@ fn runtime_i037_function_output_separate_from_conditional_body() {
 
     let line2 = story.continue_single().expect("continue_single 2");
     let text2 = match &line2 {
-        brink_runtime::Line::Text { text, .. }
-        | brink_runtime::Line::Done { text, .. }
-        | brink_runtime::Line::End { text, .. } => text.as_str(),
+        brink_runtime::Step::Line(line) => line.text.as_str(),
         other => panic!("expected text, got {other:?}"),
     };
     assert_eq!(
@@ -650,7 +658,7 @@ fn runtime_glue_inside_conditional_after_gather() {
     // First continue should present choices.
     let line = story.continue_single().expect("continue_single");
     match &line {
-        brink_runtime::Line::Choices { .. } => story.choose(0).expect("choose"),
+        brink_runtime::Step::Choices(_) => story.choose(0).expect("choose"),
         other => panic!("expected Choices, got {other:?}"),
     }
 
@@ -659,9 +667,7 @@ fn runtime_glue_inside_conditional_after_gather() {
         .continue_single()
         .expect("continue_single after choice");
     let text = match &line {
-        brink_runtime::Line::Text { text, .. } | brink_runtime::Line::Done { text, .. } => {
-            text.as_str()
-        }
+        brink_runtime::Step::Line(line) => line.text.as_str(),
         other => panic!("expected text, got {other:?}"),
     };
     assert_eq!(
@@ -704,14 +710,14 @@ fn runtime_intercept_glue_conditional_faithful() {
     // Choose "Take cup" (teacup = true)
     let line = story.continue_single().expect("step 1");
     match &line {
-        brink_runtime::Line::Choices { .. } => story.choose(0).expect("choose 0"),
+        brink_runtime::Step::Choices(_) => story.choose(0).expect("choose 0"),
         other => panic!("expected Choices, got {other:?}"),
     }
 
     // "I take a mug.\n"
     let line = story.continue_single().expect("step 2");
     let text = match &line {
-        brink_runtime::Line::Text { text, .. } => text.clone(),
+        brink_runtime::Step::Line(line) => line.text.clone(),
         other => panic!("expected Text, got {other:?}"),
     };
     assert_eq!(text, "I take a mug.\n");
@@ -719,7 +725,7 @@ fn runtime_intercept_glue_conditional_faithful() {
     // "Quite a difficult situation." ...
     let line = story.continue_single().expect("step 3");
     let text = match &line {
-        brink_runtime::Line::Text { text, .. } => text.clone(),
+        brink_runtime::Step::Line(line) => line.text.clone(),
         other => {
             println!("got: {other:?}");
             text.clone()
@@ -730,16 +736,14 @@ fn runtime_intercept_glue_conditional_faithful() {
     // Should present Agree/Disagree choices
     let line = story.continue_single().expect("step 4");
     match &line {
-        brink_runtime::Line::Choices { .. } => story.choose(0).expect("choose Agree"),
+        brink_runtime::Step::Choices(_) => story.choose(0).expect("choose Agree"),
         other => panic!("expected Choices for agree/disagree, got {other:?}"),
     }
 
     // After "Agree": should be reply + glued conditional + period
     let line = story.continue_single().expect("step 5 - reply with glue");
     let text = match &line {
-        brink_runtime::Line::Text { text, .. } | brink_runtime::Line::Done { text, .. } => {
-            text.as_str()
-        }
+        brink_runtime::Step::Line(line) => line.text.as_str(),
         other => panic!("expected text, got {other:?}"),
     };
     println!("step 5 actual: {text:?}");
@@ -781,30 +785,31 @@ VAR drugged = false
     let mut steps = Vec::new();
     for i in 0..20 {
         match story.continue_single() {
-            Ok(brink_runtime::Line::Text { text, .. }) => {
+            Ok(brink_runtime::Step::Line(line)) => {
+                let text = line.text;
                 println!("step {i}: Text {text:?}");
                 steps.push(format!("Text {text:?}"));
             }
-            Ok(brink_runtime::Line::Done { text, .. }) => {
-                println!("step {i}: Done {text:?}");
-                steps.push(format!("Done {text:?}"));
+            Ok(brink_runtime::Step::Done) => {
+                println!("step {i}: Done");
+                steps.push("Done".to_string());
                 break;
             }
-            Ok(brink_runtime::Line::Choices { text, choices, .. }) => {
+            Ok(brink_runtime::Step::Choices(choices)) => {
                 let names: Vec<_> = choices.iter().map(|c| c.text.as_str()).collect();
-                println!("step {i}: Choices {text:?} {names:?} -> picking 0");
+                println!("step {i}: Choices {names:?} -> picking 0");
                 steps.push(format!("Choices {names:?}"));
                 story.choose(0).expect("choose");
             }
-            Ok(brink_runtime::Line::End { text, .. }) => {
-                println!("step {i}: End {text:?}");
-                steps.push(format!("End {text:?}"));
+            Ok(brink_runtime::Step::End) => {
+                println!("step {i}: End");
+                steps.push("End".to_string());
                 break;
             }
             // FS-3r park — runtime-unreachable today, a terminal boundary.
-            Ok(brink_runtime::Line::Suspended { text, .. }) => {
-                println!("step {i}: Suspended {text:?}");
-                steps.push(format!("Suspended {text:?}"));
+            Ok(brink_runtime::Step::Suspended) => {
+                println!("step {i}: Suspended");
+                steps.push("Suspended".to_string());
                 break;
             }
             Err(e) => {
@@ -879,28 +884,29 @@ VAR drugged = false
     let mut steps = Vec::new();
     for i in 0..30 {
         match story.continue_single() {
-            Ok(brink_runtime::Line::Text { text, .. }) => {
+            Ok(brink_runtime::Step::Line(line)) => {
+                let text = line.text;
                 println!("step {i}: Text {text:?}");
                 steps.push(format!("Text {text:?}"));
             }
-            Ok(brink_runtime::Line::Done { text, .. }) => {
-                println!("step {i}: Done {text:?}");
-                steps.push(format!("Done {text:?}"));
+            Ok(brink_runtime::Step::Done) => {
+                println!("step {i}: Done");
+                steps.push("Done".to_string());
                 break;
             }
-            Ok(brink_runtime::Line::Choices { text, choices, .. }) => {
+            Ok(brink_runtime::Step::Choices(choices)) => {
                 let names: Vec<_> = choices.iter().map(|c| c.text.as_str()).collect();
-                println!("step {i}: Choices {text:?} {names:?} -> picking 0");
+                println!("step {i}: Choices {names:?} -> picking 0");
                 steps.push(format!("Choices {names:?}"));
                 story.choose(0).expect("choose");
             }
-            Ok(brink_runtime::Line::End { text, .. }) => {
-                println!("step {i}: End {text:?}");
+            Ok(brink_runtime::Step::End) => {
+                println!("step {i}: End");
                 break;
             }
             // FS-3r park — runtime-unreachable today, a terminal boundary.
-            Ok(brink_runtime::Line::Suspended { text, .. }) => {
-                println!("step {i}: Suspended {text:?}");
+            Ok(brink_runtime::Step::Suspended) => {
+                println!("step {i}: Suspended");
                 break;
             }
             Err(e) => {
@@ -1038,28 +1044,29 @@ VAR drugged = false
     let mut steps = Vec::new();
     for i in 0..30 {
         match story.continue_single() {
-            Ok(brink_runtime::Line::Text { text, .. }) => {
+            Ok(brink_runtime::Step::Line(line)) => {
+                let text = line.text;
                 println!("step {i}: Text {text:?}");
                 steps.push(format!("Text {text:?}"));
             }
-            Ok(brink_runtime::Line::Done { text, .. }) => {
-                println!("step {i}: Done {text:?}");
-                steps.push(format!("Done {text:?}"));
+            Ok(brink_runtime::Step::Done) => {
+                println!("step {i}: Done");
+                steps.push("Done".to_string());
                 break;
             }
-            Ok(brink_runtime::Line::Choices { text, choices, .. }) => {
+            Ok(brink_runtime::Step::Choices(choices)) => {
                 let names: Vec<_> = choices.iter().map(|c| c.text.as_str()).collect();
-                println!("step {i}: Choices {text:?} {names:?} -> picking 0");
-                steps.push(format!("Choices {text:?} {names:?}"));
+                println!("step {i}: Choices {names:?} -> picking 0");
+                steps.push(format!("Choices {names:?}"));
                 story.choose(0).expect("choose");
             }
-            Ok(brink_runtime::Line::End { text, .. }) => {
-                println!("step {i}: End {text:?}");
+            Ok(brink_runtime::Step::End) => {
+                println!("step {i}: End");
                 break;
             }
             // FS-3r park — runtime-unreachable today, a terminal boundary.
-            Ok(brink_runtime::Line::Suspended { text, .. }) => {
-                println!("step {i}: Suspended {text:?}");
+            Ok(brink_runtime::Step::Suspended) => {
+                println!("step {i}: Suspended");
                 break;
             }
             Err(e) => {
@@ -1096,10 +1103,20 @@ fn compile_intercept() -> brink_format::StoryData {
 
 #[test]
 fn runtime_intercept_step23_glue_not_dropped() {
-    // The full TheIntercept compiled from story.ink diverges at step 23:
-    // after choosing "Agree", the reply should include glued conditional
-    // text ("sipping at my tea...") but brink drops it entirely and
-    // jumps to the wrong part of the story.
+    // The full TheIntercept compiled from story.ink diverges around the
+    // "Agree" reply: it should include glued conditional text ("sipping at
+    // my tea...") but brink used to drop it entirely and jump to the wrong
+    // part of the story.
+    //
+    // Terminals carry no payload of their own (§7) — every `Step::Choices`
+    // that has leading text now costs one extra `continue_single` call
+    // compared to the old fused `Line` model (the text arrives first, as
+    // its own `Step::Line`, before the bare `Choices`), so this no longer
+    // pins an exact call count to reach the target line. It still pins a
+    // sharp assertion, though: rather than scanning the whole run for
+    // "sipping" anywhere, it finds the specific `Step::Line` that opens
+    // with `"Awkward," I reply` and asserts *that* line — not some other
+    // line — carries the glued text.
     let data = compile_intercept();
     let (program, line_tables) = brink_runtime::link(&data).expect("link failed");
     let mut story = brink_runtime::Story::<brink_runtime::DotNetRng>::new(
@@ -1107,52 +1124,52 @@ fn runtime_intercept_step23_glue_not_dropped() {
         line_tables,
     );
 
-    // Run e0 path (always pick choice 0), dumping state at the critical steps
-    let mut last_text = String::new();
-    for i in 0..24 {
-        // Dump state before the critical region (steps 21-23)
-        if (21..=23).contains(&i) {
-            println!("\n--- BEFORE step {i} ---");
-            println!("{}", story.debug_state());
-        }
+    // Run e0 path (always pick choice 0).
+    let mut awkward_reply_line: Option<String> = None;
+    for i in 0..64 {
         match story.continue_single() {
-            Ok(brink_runtime::Line::Text { text, .. }) => {
-                if i >= 20 {
-                    println!("step {i}: Text {text:?}");
+            Ok(brink_runtime::Step::Line(line)) => {
+                println!("step {i}: Text {:?}", line.text);
+                if line.text.contains("\"Awkward,\" I reply") {
+                    awkward_reply_line = Some(line.text);
                 }
-                last_text = text;
             }
-            Ok(brink_runtime::Line::Done { text, .. }) => {
-                println!("step {i}: Done {text:?}");
-                last_text = text;
+            Ok(brink_runtime::Step::Done) => {
+                println!("step {i}: Done");
                 break;
             }
-            Ok(brink_runtime::Line::Choices { text, choices, .. }) => {
-                if i >= 20 {
-                    let names: Vec<_> = choices.iter().map(|c| c.text.as_str()).collect();
-                    println!("step {i}: Choices {text:?} {names:?}");
-                }
-                last_text = text;
+            Ok(brink_runtime::Step::Choices(choices)) => {
+                let names: Vec<_> = choices.iter().map(|c| c.text.as_str()).collect();
+                println!("step {i}: Choices {names:?}");
                 story.choose(0).expect("choose");
             }
-            Ok(brink_runtime::Line::End { text, .. }) => {
-                println!("step {i}: End {text:?}");
-                last_text = text;
+            Ok(brink_runtime::Step::End) => {
+                println!("step {i}: End");
                 break;
             }
             _ => break,
         }
+        if awkward_reply_line.is_some() {
+            break;
+        }
     }
 
-    // Step 23 (oracle numbering) should be:
+    // The "Agree" reply should read:
     //   "Awkward," I reply, sipping at my tea as though we were old friends.
     // NOT just:
     //   "Awkward," I reply
+    let awkward_reply_line = awkward_reply_line.unwrap_or_else(|| {
+        panic!(
+            "TheIntercept: expected the '\"Awkward,\" I reply' line \
+             somewhere along the e0 path but never saw it."
+        )
+    });
     assert!(
-        last_text.contains("sipping"),
-        "TheIntercept step 23: expected glued conditional text 'sipping...', \
-         got: {last_text:?}. The Agree choice body's goto likely targets \
-         the wrong gather container.",
+        awkward_reply_line.contains("sipping"),
+        "TheIntercept: expected the '\"Awkward,\" I reply' line to include \
+         glued conditional text 'sipping...', got: {awkward_reply_line:?}. \
+         The Agree choice body's goto likely targets the wrong gather \
+         container.",
     );
 }
 
@@ -1368,15 +1385,15 @@ fn intercept_step23_opcode_trace() {
     let mut step_count = 0;
     loop {
         match story.continue_single() {
-            Ok(brink_runtime::Line::Choices { .. }) => {
+            Ok(brink_runtime::Step::Choices(_)) => {
                 story.choose(0).expect("choose");
                 step_count += 1;
             }
-            Ok(brink_runtime::Line::Text { text, .. }) => {
+            Ok(brink_runtime::Step::Line(line)) => {
                 step_count += 1;
                 // Step 22 is the "\n" — stop AFTER it
                 if step_count >= 23 {
-                    println!("stopped after step {step_count}: {text:?}");
+                    println!("stopped after step {step_count}: {:?}", line.text);
                     break;
                 }
             }

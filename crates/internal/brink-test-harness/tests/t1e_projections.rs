@@ -35,7 +35,7 @@ use std::sync::Arc;
 
 use brink_compiler::{AnalysisOptions, Dialect};
 use brink_format::LineEntry;
-use brink_runtime::{DotNetRng, Line, RuntimeError, Story};
+use brink_runtime::{DotNetRng, RuntimeError, Step, Story};
 use proptest::prelude::*;
 
 /// Compile `source` (brink dialect) and link it to a runnable program —
@@ -85,17 +85,8 @@ fn run_entry(source: &str, entry: &str) -> String {
 /// Drain a story to its terminal line, concatenating text.
 fn run_to_end(story: &mut Story<DotNetRng>) -> String {
     let mut out = String::new();
-    loop {
-        match story.continue_single().expect("runtime error") {
-            Line::Text { text, .. } => out.push_str(&text),
-            Line::Done { text, .. }
-            | Line::End { text, .. }
-            | Line::Choices { text, .. }
-            | Line::Suspended { text, .. } => {
-                out.push_str(&text);
-                break;
-            }
-        }
+    while let Step::Line(line) = story.continue_single().expect("runtime error") {
+        out.push_str(&line.text);
     }
     out
 }
@@ -111,13 +102,8 @@ fn run_entry_until_fault(source: &str, entry: &str) -> RuntimeError {
         .unwrap_or_else(|e| panic!("goto {entry}: {e:?}"));
     loop {
         match story.continue_single() {
-            Ok(Line::Text { .. }) => {}
-            Ok(
-                Line::Done { .. }
-                | Line::End { .. }
-                | Line::Choices { .. }
-                | Line::Suspended { .. },
-            ) => {
+            Ok(Step::Line(_)) => {}
+            Ok(Step::Done | Step::End | Step::Choices(_) | Step::Suspended) => {
                 panic!("expected a ProjectionInvalidated fault, but the story ran to completion")
             }
             Err(e) => return e,

@@ -183,14 +183,13 @@ fn run_for_loop(collection_literal: &str) -> Vec<String> {
     let mut text = String::new();
     loop {
         match story.continue_single().expect("run") {
-            brink_runtime::Line::Text { text: t, .. } => text.push_str(&t),
-            brink_runtime::Line::Done { text: t, .. }
-            | brink_runtime::Line::End { text: t, .. }
-            | brink_runtime::Line::Suspended { text: t, .. } => {
-                text.push_str(&t);
+            brink_runtime::Step::Line(line) => text.push_str(&line.text),
+            brink_runtime::Step::Done
+            | brink_runtime::Step::End
+            | brink_runtime::Step::Suspended => {
                 break;
             }
-            brink_runtime::Line::Choices { .. } => panic!("unexpected choices"),
+            brink_runtime::Step::Choices(_) => panic!("unexpected choices"),
         }
     }
     // Output shape: "START\n[a, b, c]\n" — parse the bracketed array back

@@ -842,7 +842,7 @@ fn step_one_query_pauses_and_plugin_resolver_resumes() {
                 };
                 let handler = bindings.handler();
                 let mut view = crate::globals::flow_context_view(&mut globals, &mut ctx);
-                if let Ok(Advance::Line(line)) = flow.step_one(
+                if let Ok(Advance::Step(line)) = flow.step_one(
                     &p.program,
                     &t.tables,
                     &mut view,

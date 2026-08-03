@@ -21,7 +21,7 @@
 use std::sync::Arc;
 
 use brink_compiler::{AnalysisOptions, Dialect, TypePolicy};
-use brink_runtime::{DotNetRng, ExecMode, Line, RuntimeError, Story};
+use brink_runtime::{DotNetRng, ExecMode, RuntimeError, Step, Story};
 
 /// Build a brink-dialect story under gradual types (opaque-comparator
 /// misbehavior is exactly what gradual defers to the runtime) — the
@@ -55,12 +55,9 @@ fn run(story: &mut Story<DotNetRng>) -> Result<String, RuntimeError> {
     let mut out = String::new();
     loop {
         match story.continue_single()? {
-            Line::Text { text, .. } => out.push_str(&text),
-            Line::Done { text, .. } | Line::End { text, .. } | Line::Suspended { text, .. } => {
-                out.push_str(&text);
-                return Ok(out);
-            }
-            Line::Choices { .. } => panic!("no choices in these stories"),
+            Step::Line(line) => out.push_str(&line.text),
+            Step::Done | Step::End | Step::Suspended => return Ok(out),
+            Step::Choices(_) => panic!("no choices in these stories"),
         }
     }
 }

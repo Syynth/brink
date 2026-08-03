@@ -131,7 +131,7 @@ pub fn load_golden_transcript(path: &Path, case_label: &str) -> Result<String, S
 /// guessing which choice to take.
 ///
 /// Returns `Err` on any compile error, link error, or runtime fault, if
-/// the program ever reaches [`brink_runtime::Line::Choices`], or if it
+/// the program ever reaches [`brink_runtime::Step::Choices`], or if it
 /// produces more than [`brink_runtime::FlowInstance::LINE_LIMIT`] lines
 /// without reaching a terminal one.
 ///
@@ -159,14 +159,13 @@ pub fn run_native_transcript(brink_path: &Path) -> Result<String, String> {
             .continue_single()
             .map_err(|e| format!("runtime error in {}: {e}", brink_path.display()))?
         {
-            brink_runtime::Line::Text { text, .. } => out.push_str(&text),
-            brink_runtime::Line::Done { text, .. }
-            | brink_runtime::Line::End { text, .. }
-            | brink_runtime::Line::Suspended { text, .. } => {
-                out.push_str(&text);
+            brink_runtime::Step::Line(line) => out.push_str(&line.text),
+            brink_runtime::Step::Done
+            | brink_runtime::Step::End
+            | brink_runtime::Step::Suspended => {
                 break;
             }
-            brink_runtime::Line::Choices { .. } => {
+            brink_runtime::Step::Choices(_) => {
                 return Err(format!(
                     "{} presented choices — tier1-native cases must be choice-free \
                      straight-line programs",
@@ -177,7 +176,7 @@ pub fn run_native_transcript(brink_path: &Path) -> Result<String, String> {
         line_count += 1;
         if line_count >= brink_runtime::FlowInstance::LINE_LIMIT {
             return Err(format!(
-                "{} produced {} lines without reaching a terminal Line — exceeded \
+                "{} produced {} lines without reaching a terminal step — exceeded \
                  FlowInstance::LINE_LIMIT ({})",
                 brink_path.display(),
                 line_count,

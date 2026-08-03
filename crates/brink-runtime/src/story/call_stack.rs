@@ -335,6 +335,22 @@ pub(crate) struct Flow {
     /// In-flight nested **pure-callback** evaluation state — see
     /// [`PureCallbackState`].
     pub pure_callback: PureCallbackState,
+    /// The [`super::types::BlockId`] stamped onto the next `Step::Line`
+    /// produced by this flow — counts uninterrupted runs of adjacent
+    /// content (`docs/prose-dialect-spec.md` §3.7/§8d.2). Bumped whenever a
+    /// new run begins: after a choice is selected, after resuming from
+    /// `Done`, and on a host-directed jump (`choose_path_string`, which is
+    /// itself specified as force-completing the current flow like `->
+    /// DONE`). Never persisted — a resumed save simply continues numbering
+    /// from a fresh `0`, which is fine since ids are only ever compared
+    /// within one flow's own lifetime, never across a save/load boundary.
+    pub next_block_id: u64,
+    /// A terminal ([`super::types::Step`] variant with no line payload)
+    /// computed but not yet delivered, because its trailing content needed
+    /// to go out first as an ordinary `Step::Line` (terminals carry no
+    /// text — `docs/prose-dialect-spec.md` §7). Consumed and returned bare
+    /// on the very next `advance` call, with no VM stepping.
+    pub pending_terminal: Option<super::types::Step>,
 }
 
 /// Transient bookkeeping for in-flight nested callback evaluations: a

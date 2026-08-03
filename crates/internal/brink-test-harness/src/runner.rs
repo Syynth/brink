@@ -1,7 +1,7 @@
 //! Episode recording and simple text-output helpers.
 
 use brink_format::{DefinitionId, Value};
-use brink_runtime::{DotNetRng, Line, Program, Story, WriteObserver};
+use brink_runtime::{DotNetRng, Program, Step, Story, WriteObserver};
 
 use crate::episode::{
     ChoiceRecord, Episode, Outcome, StateSnapshot, StateWrite, StepOutcome, StepRecord,
@@ -96,8 +96,8 @@ pub fn record(
     let mut input_idx = 0;
 
     for _ in 0..config.max_steps {
-        let line = match story.continue_single_observed(&mut recorder) {
-            Ok(line) => line,
+        let step = match story.continue_single_observed(&mut recorder) {
+            Ok(step) => step,
             Err(e) => {
                 return Episode {
                     steps,
@@ -109,13 +109,18 @@ pub fn record(
         };
         let writes = recorder.drain();
 
-        match line {
-            Line::Text { text, tags } => {
-                steps.push(StepRecord::new(text, tags, StepOutcome::Continue, writes));
+        match step {
+            Step::Line(line) => {
+                steps.push(StepRecord::new(
+                    line.text,
+                    line.tags,
+                    StepOutcome::Continue,
+                    writes,
+                ));
             }
 
-            Line::Done { text, tags } => {
-                push_terminal(&mut steps, text, tags, StepOutcome::Done, writes);
+            Step::Done => {
+                push_terminal(&mut steps, StepOutcome::Done, writes);
                 // Probe for the deferred "ran out of content" error when
                 // the story didn't reach an explicit -> DONE. Matches
                 // explorer.rs's classification — see termination.rs.
@@ -131,8 +136,8 @@ pub fn record(
             // A park (FS-3r) is a terminal turn boundary recorded exactly
             // like a safely-exited `Done`; runtime-unreachable today behind
             // the E052 fence.
-            Line::Suspended { text, tags } => {
-                push_terminal(&mut steps, text, tags, StepOutcome::Done, writes);
+            Step::Suspended => {
+                push_terminal(&mut steps, StepOutcome::Done, writes);
                 return Episode {
                     steps,
                     outcome: Outcome::Done,
@@ -141,8 +146,8 @@ pub fn record(
                 };
             }
 
-            Line::End { text, tags } => {
-                push_terminal(&mut steps, text, tags, StepOutcome::Ended, writes);
+            Step::End => {
+                push_terminal(&mut steps, StepOutcome::Ended, writes);
                 return Episode {
                     steps,
                     outcome: Outcome::Ended,
@@ -151,11 +156,7 @@ pub fn record(
                 };
             }
 
-            Line::Choices {
-                text,
-                tags,
-                choices,
-            } => {
+            Step::Choices(choices) => {
                 let presented: Vec<ChoiceRecord> = choices
                     .iter()
                     .map(|c| ChoiceRecord {
@@ -166,15 +167,14 @@ pub fn record(
                     .collect();
 
                 if input_idx >= config.inputs.len() {
-                    steps.push(StepRecord::new(
-                        text,
-                        tags,
+                    push_terminal(
+                        &mut steps,
                         StepOutcome::Choices {
                             presented: presented.clone(),
                             selected: 0,
                         },
                         writes,
-                    ));
+                    );
                     return Episode {
                         steps,
                         outcome: Outcome::InputsExhausted {
@@ -189,15 +189,14 @@ pub fn record(
                 input_idx += 1;
                 choice_path.push(selected);
 
-                steps.push(StepRecord::new(
-                    text,
-                    tags,
+                push_terminal(
+                    &mut steps,
                     StepOutcome::Choices {
                         presented,
                         selected,
                     },
                     writes,
-                ));
+                );
 
                 if let Err(e) = story.choose(selected) {
                     return Episode {
@@ -232,16 +231,18 @@ pub fn run_text(
     let mut input_idx = 0;
 
     for _ in 0..10_000 {
-        let line = story
+        let step = story
             .continue_single()
             .map_err(|e| format!("runtime error: {e}"))?;
-        output.push_str(line.text());
-        match &line {
+        output.push_str(step.text());
+        match &step {
             // `Suspended` (FS-3r park) is a terminal turn boundary, grouped
-            // with the other terminals; runtime-unreachable today.
-            Line::Done { .. } | Line::End { .. } | Line::Suspended { .. } => return Ok(output),
-            Line::Text { .. } => {} // keep going
-            Line::Choices { choices, .. } => {
+            // with the other terminals; runtime-unreachable today. Terminals
+            // carry no text of their own — any trailing content already
+            // arrived as its own preceding `Step::Line`.
+            Step::Done | Step::End | Step::Suspended => return Ok(output),
+            Step::Line(_) => {} // keep going
+            Step::Choices(choices) => {
                 if input_idx >= inputs.len() {
                     return Ok(output);
                 }

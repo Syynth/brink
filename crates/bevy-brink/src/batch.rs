@@ -101,7 +101,7 @@ use bevy_log::warn;
 use brink_format::{DefinitionId, LineEntry, Value};
 use brink_runtime::{
     ContextAccess, DriveOutcome, ExternalFnHandler, FallbackHandler, FastRng, FlowInstance,
-    FrameStartView, Line, Program, RuntimeError, Scope, World, WorldPolicy, WriteObserver,
+    FrameStartView, Program, RuntimeError, Scope, Step, World, WorldPolicy, WriteObserver,
 };
 
 use crate::asset::{BrinkProgram, LineTablesAsset, ProgramAsset};
@@ -245,7 +245,7 @@ pub(crate) struct FlowBatchOutcome {
     story: AssetId<ProgramAsset>,
     writes: WriteBuffer,
     triggers: Vec<TriggerFn>,
-    lines: Vec<Line>,
+    lines: Vec<Step>,
     /// `true` if the flow paused on a deferred external during Step (parked,
     /// not advanced to terminal) — left for the plugin's existing resolver.
     awaiting: bool,
@@ -407,7 +407,7 @@ fn step_flow(
     line_tables: &[Vec<LineEntry>],
     handler: &dyn ExternalFnHandler,
     buf: &mut WriteBuffer,
-) -> (Vec<Line>, bool, Option<RuntimeError>) {
+) -> (Vec<Step>, bool, Option<RuntimeError>) {
     let mut scratch = FrameStartView::new(frame_start);
     let mut observed = brink_runtime::ObservedContext::new(&mut scratch, buf);
     let mut budget = FlowInstance::LINE_LIMIT;
@@ -546,7 +546,7 @@ pub(crate) struct BatchApplyResult {
 pub(crate) struct DeferredFlush {
     entity: Entity,
     triggers: Vec<TriggerFn>,
-    lines: Vec<Line>,
+    lines: Vec<Step>,
 }
 
 /// Apply pass 1 — flush every flow's buffered world writes onto `world` (the

@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use brink_compiler::{AnalysisOptions, Dialect};
-use brink_runtime::{DotNetRng, ExecMode, Line, RuntimeError, Story};
+use brink_runtime::{DotNetRng, ExecMode, RuntimeError, Step, Story};
 
 /// A brink story whose first line is NaN-free (the modes-agree prefix) and
 /// whose second line sorts an array containing NaN (`0.0 / 0.0` — float
@@ -53,12 +53,11 @@ fn run(story: &mut Story<DotNetRng>) -> Result<String, RuntimeError> {
     let mut out = String::new();
     loop {
         match story.continue_single()? {
-            Line::Text { text, .. } => out.push_str(&text),
-            Line::Done { text, .. } | Line::End { text, .. } | Line::Suspended { text, .. } => {
-                out.push_str(&text);
+            Step::Line(line) => out.push_str(&line.text),
+            Step::Done | Step::End | Step::Suspended => {
                 return Ok(out);
             }
-            Line::Choices { .. } => panic!("no choices in this story"),
+            Step::Choices(_) => panic!("no choices in this story"),
         }
     }
 }
@@ -71,7 +70,7 @@ fn dev_mode_is_the_default_and_faults_on_the_nan_comparand() {
     let mut out = String::new();
     let err = loop {
         match story.continue_single() {
-            Ok(Line::Text { text, .. }) => out.push_str(&text),
+            Ok(Step::Line(line)) => out.push_str(&line.text),
             Ok(_) => panic!("expected the NaN fault before any terminal line"),
             Err(e) => break e,
         }

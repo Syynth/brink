@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use brink_runtime::{DotNetRng, Line, Story};
+use brink_runtime::{DotNetRng, Step, Story};
 
 /// Helper: compile from an in-memory file system (`HashMap` of path to source).
 fn compile_mem(
@@ -1671,7 +1671,7 @@ fn native_bare_name_fn_value_satisfies_a_declared_fn_parameter() {
         .continue_maximally()
         .unwrap()
         .iter()
-        .map(Line::text)
+        .map(Step::text)
         .collect();
     assert!(
         output.contains("Applied: 42"),
@@ -1718,7 +1718,7 @@ fn native_bare_name_fn_value_decl_initializer_call_is_not_e065() {
         .continue_maximally()
         .unwrap()
         .iter()
-        .map(Line::text)
+        .map(Step::text)
         .collect();
     assert!(
         output.contains("Doubled: 6"),
@@ -1791,7 +1791,7 @@ fn native_bare_name_shadowed_by_a_same_named_global_is_not_typed_as_a_fn_value()
         .continue_maximally()
         .unwrap()
         .iter()
-        .map(Line::text)
+        .map(Step::text)
         .collect();
     assert!(
         output.contains("Val: 6"),
@@ -1839,7 +1839,7 @@ fn native_bare_name_shadowed_by_a_same_named_list_item_is_not_typed_as_a_fn_valu
         .continue_maximally()
         .unwrap()
         .iter()
-        .map(Line::text)
+        .map(Step::text)
         .collect();
     assert!(
         output.contains("Val:"),
@@ -2094,13 +2094,13 @@ fn compile_and_run(source: &str, inputs: &[usize]) -> String {
         let lines = story.continue_maximally().unwrap();
         let last = lines.last().unwrap();
         match last {
-            Line::Text { .. } | Line::Done { .. } | Line::End { .. } | Line::Suspended { .. } => {
+            Step::Line(_) | Step::Done | Step::End | Step::Suspended => {
                 for line in &lines {
                     output.push_str(line.text());
                 }
                 break;
             }
-            Line::Choices { choices, .. } => {
+            Step::Choices(choices) => {
                 for line in &lines {
                     output.push_str(line.text());
                 }
@@ -2311,7 +2311,7 @@ fn include_content_appears_before_main() {
     let (program, line_tables) = brink_runtime::link(&data).unwrap();
     let mut story = Story::<DotNetRng>::new(std::sync::Arc::new(program), line_tables);
     let lines = story.continue_maximally().unwrap();
-    let result: String = lines.iter().map(Line::text).collect();
+    let result: String = lines.iter().map(Step::text).collect();
     assert_eq!(
         result, "This is A.\nThis is B.\nThis is main.\n",
         "included file content must appear before main file content"
@@ -3267,14 +3267,14 @@ fn compile_and_run_steps(source: &str, inputs: &[usize]) -> Vec<(String, Option<
         guard += 1;
         assert!(guard < 100, "infinite loop detected");
         let lines = story.continue_maximally().unwrap();
-        let combined_text: String = lines.iter().map(Line::text).collect();
+        let combined_text: String = lines.iter().map(Step::text).collect();
         let last = lines.last().unwrap();
         match last {
-            Line::Text { .. } | Line::Done { .. } | Line::End { .. } | Line::Suspended { .. } => {
+            Step::Line(_) | Step::Done | Step::End | Step::Suspended => {
                 steps.push((combined_text, None));
                 break;
             }
-            Line::Choices { choices, .. } => {
+            Step::Choices(choices) => {
                 let count = choices.len();
                 steps.push((combined_text.clone(), Some(count)));
                 let idx = if input_idx < inputs.len() {
@@ -3787,7 +3787,7 @@ fn glue_in_choice_body_runtime_joins_text() {
     // First continue: should get choices
     let line = story.continue_single().unwrap();
     match &line {
-        Line::Choices { choices, .. } => {
+        Step::Choices(choices) => {
             assert_eq!(choices.len(), 2);
             story.choose(0).unwrap(); // pick "Yes"
         }
@@ -3797,11 +3797,8 @@ fn glue_in_choice_body_runtime_joins_text() {
     // Second continue: should get the glued text
     let line = story.continue_single().unwrap();
     let text = match &line {
-        Line::Text { text, .. } => text.clone(),
-        Line::End { text, .. } => text.clone(),
-        Line::Done { text, .. } => text.clone(),
-        Line::Suspended { text, .. } => text.clone(),
-        Line::Choices { .. } => panic!("expected text output, got choices"),
+        Step::Line(line) => line.text.clone(),
+        other => panic!("expected text output, got: {other:?}"),
     };
     eprintln!("got text: {text:?}");
     assert!(

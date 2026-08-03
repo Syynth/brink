@@ -61,7 +61,7 @@ let mut b: Story = Story::new(Arc::clone(&program), line_tables);
 
 1. **[Loading & Linking](./loading.md)** — produce `StoryData` (compile `.ink`
    or read `.inkb`) and `link()` it into a `Program` + line tables.
-2. **Drive it** — step the story and react to each `Line`. The loop, the `Line`
+2. **Drive it** — step the story and react to each `Step`. The loop, the `Step`
    variants, and choice handling all live in
    [The Execution Model](../concepts/execution-model.md).
 3. **[External Functions](./external-functions.md)** — let the story call back
@@ -78,18 +78,18 @@ arm means:
 
 ```rust
 # extern crate brink_runtime;
-# use brink_runtime::{Line, RuntimeError, Story};
+# use brink_runtime::{Step, RuntimeError, Story};
 # fn demo(story: &mut Story) -> Result<(), RuntimeError> {
 loop {
     match story.continue_single()? {
-        Line::Text { text, .. } | Line::Done { text, .. } => print!("{text}"),
-        Line::Choices { text, choices, .. } => {
-            print!("{text}");
+        Step::Line(line) => print!("{}", line.text),
+        Step::Done => {}
+        Step::Choices(choices) => {
             story.choose(/* player's pick */ choices[0].index)?;
         }
-        Line::End { text, .. } => { print!("{text}"); break; }
+        Step::End => break,
         // Reserved for flow suspension; not yet emitted.
-        Line::Suspended { text, .. } => { print!("{text}"); break; }
+        Step::Suspended => break,
     }
 }
 # Ok(())

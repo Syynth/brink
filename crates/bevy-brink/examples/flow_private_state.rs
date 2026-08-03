@@ -81,9 +81,9 @@ fn main() {
     app.bind_brink_fn::<(), _, _>("noop", |_args| Value::Int(0));
 
     // Narrate story text, labeled by the guard entity's `Name`. Mid-turn
-    // text arrives as `BrinkLineDelivered`; a terminal `Line::Choices`
-    // carries the accumulated text in its own field, so the choices
-    // event is observed too (this story's greetings all land there).
+    // text arrives as `BrinkLineDelivered`; `BrinkChoicesPresented` carries
+    // no text of its own (terminals are payload-free), so it's observed
+    // too only to react to the choices arriving, not for their text.
     app.add_observer(|on: On<BrinkLineDelivered<()>>, names: Query<&Name>| {
         say(&names, on.event().entity, &on.event().text);
     });

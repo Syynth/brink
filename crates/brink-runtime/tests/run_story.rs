@@ -2,7 +2,7 @@
 //!
 //! Compiles `.ink` fixtures, links, steps through with inputs, and compares output.
 
-use brink_runtime::{Choice, DotNetRng, Line, Story};
+use brink_runtime::{Choice, DotNetRng, Step, Story};
 
 /// Compile a `.ink` fixture (path relative to this crate) with the brink compiler.
 #[expect(clippy::unwrap_used)]
@@ -37,13 +37,11 @@ fn run_story_data(data: &brink_format::StoryData, inputs: &[usize]) -> String {
 
     loop {
         match story.continue_single().unwrap() {
-            Line::Text { text, .. } => output.push_str(&text),
-            Line::Done { text, .. } | Line::End { text, .. } | Line::Suspended { text, .. } => {
-                output.push_str(&text);
+            Step::Line(line) => output.push_str(&line.text),
+            Step::Done | Step::End | Step::Suspended => {
                 return output;
             }
-            Line::Choices { text, choices, .. } => {
-                output.push_str(&text);
+            Step::Choices(choices) => {
                 let idx = if input_idx < inputs.len() {
                     let c = inputs[input_idx];
                     input_idx += 1;
@@ -77,10 +75,10 @@ fn choices_yielded_on_bytecode_exhaustion() {
     let lines = story.continue_maximally().unwrap();
     let last = lines.last().expect("expected at least one line");
     assert!(
-        matches!(last, Line::Choices { .. }),
+        matches!(last, Step::Choices(_)),
         "expected Choices after first step, got {last:?}"
     );
-    if let Line::Choices { choices, .. } = last {
+    if let Step::Choices(choices) = last {
         assert_eq!(choices.len(), 2, "expected 2 choices (Yes/No)");
     }
 }
@@ -133,13 +131,10 @@ fn fallback_choice_auto_selected() {
     let lines = story.continue_maximally().unwrap();
     let last = lines.last().expect("expected at least one line");
     assert!(
-        matches!(
-            last,
-            Line::Text { .. } | Line::Done { .. } | Line::End { .. }
-        ),
+        matches!(last, Step::Line(_) | Step::Done | Step::End),
         "expected Text/Done/End (auto-selected fallback), got {last:?}"
     );
-    let full_text: String = lines.iter().map(Line::text).collect();
+    let full_text: String = lines.iter().map(Step::text).collect();
     assert_eq!(full_text.trim(), "Should be 1 not 0: 1.");
 }
 
@@ -590,7 +585,7 @@ fn tags_in_sequence() {
 }
 
 /// Trace the step-by-step behavior of the Tower of Hanoi story to verify
-/// the execution model returns the correct `Line` variants at each point.
+/// the execution model returns the correct `Step` variants at each point.
 ///
 /// Expected flow per cycle:
 /// 1. `continue_maximally()` → lines ending with Choices (flavor/intro text, with "Regard the temples")
@@ -599,15 +594,15 @@ fn tags_in_sequence() {
 /// 4. `choose(move)` → select a move
 /// 5. Back to step 1
 ///
-/// The runtime should NEVER return `Line::End` during normal play —
+/// The runtime should NEVER return `Step::End` during normal play —
 /// every step should yield Choices.
 #[test]
 #[expect(clippy::panic)] // let-else destructuring needs panic for the fallthrough
 fn tower_of_hanoi_step_sequence() {
     // Helper: collect all text and extract the final Choices line
-    fn extract_choices(lines: &[Line]) -> (&str, &[Choice]) {
-        if let Some(Line::Choices { choices, .. }) = lines.last() {
-            let full_text: String = lines.iter().map(Line::text).collect();
+    fn extract_choices(lines: &[Step]) -> (&str, &[Choice]) {
+        if let Some(Step::Choices(choices)) = lines.last() {
+            let full_text: String = lines.iter().map(Step::text).collect();
             let leaked: &str = Box::leak(full_text.into_boxed_str());
             (leaked, choices)
         } else {

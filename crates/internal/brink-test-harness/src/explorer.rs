@@ -4,7 +4,7 @@
 //! the oracle's per-`Continue()` granularity.
 
 use brink_format::Value;
-use brink_runtime::{DotNetRng, Line, Program, Story, WriteObserver};
+use brink_runtime::{DotNetRng, Program, Step, Story, WriteObserver};
 
 use crate::episode::{
     ChoiceRecord, Episode, Outcome, StateSnapshot, StateWrite, StepOutcome, StepRecord,
@@ -135,8 +135,8 @@ fn explore_inner(
             return;
         }
 
-        let line = match story.continue_single_observed(&mut recorder) {
-            Ok(line) => line,
+        let step = match story.continue_single_observed(&mut recorder) {
+            Ok(step) => step,
             Err(e) => {
                 episodes.push(Episode {
                     steps,
@@ -150,14 +150,19 @@ fn explore_inner(
 
         let writes = recorder.drain();
 
-        match line {
-            Line::Text { text, tags } => {
-                steps.push(StepRecord::new(text, tags, StepOutcome::Continue, writes));
+        match step {
+            Step::Line(line) => {
+                steps.push(StepRecord::new(
+                    line.text,
+                    line.tags,
+                    StepOutcome::Continue,
+                    writes,
+                ));
                 // Keep stepping.
             }
 
-            Line::Done { text, tags } => {
-                push_terminal(&mut steps, text, tags, StepOutcome::Done, writes);
+            Step::Done => {
+                push_terminal(&mut steps, StepOutcome::Done, writes);
                 // Probe for the deferred "ran out of content" error
                 // when the story didn't reach an explicit -> DONE.
                 let outcome = classify_done(&mut story, &mut recorder);
@@ -170,8 +175,8 @@ fn explore_inner(
                 return;
             }
 
-            Line::End { text, tags } => {
-                push_terminal(&mut steps, text, tags, StepOutcome::Ended, writes);
+            Step::End => {
+                push_terminal(&mut steps, StepOutcome::Ended, writes);
                 episodes.push(Episode {
                     steps,
                     outcome: Outcome::Ended,
@@ -186,8 +191,8 @@ fn explore_inner(
             // turn boundary; if one ever surfaced here, record it as a
             // completed turn so exploration terminates cleanly rather than
             // silently dropping the step.
-            Line::Suspended { text, tags } => {
-                push_terminal(&mut steps, text, tags, StepOutcome::Done, writes);
+            Step::Suspended => {
+                push_terminal(&mut steps, StepOutcome::Done, writes);
                 episodes.push(Episode {
                     steps,
                     outcome: Outcome::Done,
@@ -197,11 +202,7 @@ fn explore_inner(
                 return;
             }
 
-            Line::Choices {
-                text,
-                tags,
-                choices,
-            } => {
+            Step::Choices(choices) => {
                 let presented: Vec<ChoiceRecord> = choices
                     .iter()
                     .map(|c| ChoiceRecord {
@@ -212,15 +213,14 @@ fn explore_inner(
                     .collect();
 
                 if depth >= config.max_depth || episodes.len() >= config.max_episodes {
-                    steps.push(StepRecord::new(
-                        text,
-                        tags,
+                    push_terminal(
+                        &mut steps,
                         StepOutcome::Choices {
                             presented: presented.clone(),
                             selected: 0,
                         },
                         writes,
-                    ));
+                    );
                     episodes.push(Episode {
                         steps,
                         outcome: Outcome::InputsExhausted {
@@ -239,15 +239,14 @@ fn explore_inner(
                     }
 
                     let mut branch_steps = steps.clone();
-                    branch_steps.push(StepRecord::new(
-                        text.clone(),
-                        tags.clone(),
+                    push_terminal(
+                        &mut branch_steps,
                         StepOutcome::Choices {
                             presented: presented.clone(),
                             selected: i,
                         },
                         writes.clone(),
-                    ));
+                    );
 
                     let mut branch_path = choice_path.clone();
                     branch_path.push(i);

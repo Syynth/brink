@@ -78,7 +78,7 @@
 use std::path::{Path, PathBuf};
 
 use brink_compiler::{AnalysisOptions, Dialect, TypePolicy};
-use brink_runtime::{DotNetRng, Line, Story};
+use brink_runtime::{DotNetRng, Step, Story};
 use brink_test_harness::ground_truth::{dp, graph, ink_literal, pcg, sort};
 use regex::Regex;
 
@@ -114,12 +114,11 @@ fn run_case_with_types(dir: &Path, types: TypePolicy) -> String {
     let mut out = String::new();
     loop {
         match story.continue_single().expect(&step_msg) {
-            Line::Text { text, .. } => out.push_str(&text),
-            Line::Done { text, .. } | Line::End { text, .. } | Line::Suspended { text, .. } => {
-                out.push_str(&text);
+            Step::Line(line) => out.push_str(&line.text),
+            Step::Done | Step::End | Step::Suspended => {
                 break;
             }
-            Line::Choices { .. } => {
+            Step::Choices(_) => {
                 panic!(
                     "{} presented choices — algorithms-corpus cases must be choice-free",
                     ink_path.display()
@@ -152,12 +151,11 @@ fn run_source(label: &str, source: &str) -> String {
             .continue_single()
             .unwrap_or_else(|e| panic!("runtime error in {label}: {e}"))
         {
-            Line::Text { text, .. } => out.push_str(&text),
-            Line::Done { text, .. } | Line::End { text, .. } | Line::Suspended { text, .. } => {
-                out.push_str(&text);
+            Step::Line(line) => out.push_str(&line.text),
+            Step::Done | Step::End | Step::Suspended => {
                 break;
             }
-            Line::Choices { .. } => panic!("{label} presented choices unexpectedly"),
+            Step::Choices(_) => panic!("{label} presented choices unexpectedly"),
         }
     }
     out

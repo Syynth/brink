@@ -411,11 +411,12 @@ impl StoryRunner {
             .advance_with(&handler)
             .map_err(|e| JsError::new(&format!("runtime error: {e}")))?
         {
-            brink_runtime::StepOutcome::Line(line) => line_to_js(line),
+            brink_runtime::StepOutcome::Step(step) => line_to_js(step),
             brink_runtime::StepOutcome::AwaitingExternal => LineJs {
                 r#type: "awaiting_external",
                 text: String::new(),
                 tags: Vec::new(),
+                block_id: None,
                 choices: None,
                 name: story.pending_external_name().map(str::to_owned),
             },

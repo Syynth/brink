@@ -14,7 +14,7 @@
 use std::sync::Arc;
 
 use brink_compiler::{AnalysisOptions, Dialect, TypePolicy};
-use brink_runtime::{DotNetRng, Line, RuntimeError, Story};
+use brink_runtime::{DotNetRng, RuntimeError, Step, Story};
 
 /// Compile `source` under the brink dialect with the given type policy and
 /// return a linked, unstarted [`Story`], or the compiler's `Err` untouched
@@ -50,12 +50,8 @@ pub fn run_to_completion_or_fault(story: &mut Story<DotNetRng>) -> Result<String
     let mut out = String::new();
     loop {
         match story.continue_single()? {
-            Line::Text { text, .. } => out.push_str(&text),
-            Line::Done { text, .. }
-            | Line::End { text, .. }
-            | Line::Choices { text, .. }
-            | Line::Suspended { text, .. } => {
-                out.push_str(&text);
+            Step::Line(line) => out.push_str(&line.text),
+            Step::Done | Step::End | Step::Choices(_) | Step::Suspended => {
                 return Ok(out);
             }
         }

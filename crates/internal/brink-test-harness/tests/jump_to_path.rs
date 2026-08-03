@@ -15,7 +15,7 @@
 
 use brink_format::Value;
 use brink_runtime::{
-    ExternalFnHandler, ExternalResult, FastRng, Line, Program, RuntimeError, StepOutcome, Story,
+    ExternalFnHandler, ExternalResult, FastRng, Program, RuntimeError, Step, StepOutcome, Story,
 };
 
 type LineTables = Vec<Vec<brink_format::LineEntry>>;
@@ -39,16 +39,7 @@ fn compile(src: &str) -> (Program, LineTables) {
 /// Drive the story to its next terminal yield, concatenating all text.
 fn run_to_yield(story: &mut Story<FastRng>) -> String {
     let lines = story.continue_maximally().expect("continue");
-    lines
-        .iter()
-        .map(|l| match l {
-            Line::Text { text, .. }
-            | Line::Done { text, .. }
-            | Line::Choices { text, .. }
-            | Line::End { text, .. }
-            | Line::Suspended { text, .. } => text.as_str(),
-        })
-        .collect()
+    lines.iter().map(Step::text).collect()
 }
 
 /// Handler that always defers (`Pending`) — simulates an async host binding.
@@ -209,7 +200,7 @@ fn jump_mid_flow_clears_choices_keeps_transcript() {
 
     let lines = story.continue_maximally().expect("continue");
     assert!(
-        matches!(lines.last(), Some(Line::Choices { choices, .. }) if choices.len() == 2),
+        matches!(lines.last(), Some(Step::Choices(choices)) if choices.len() == 2),
         "expected 2 pending choices, got {lines:?}"
     );
     let transcript_before = story.transcript_len();
@@ -305,20 +296,96 @@ fn jump_into_tunnel_target_completes_on_frameless_return() {
     story.choose_path_string("side").expect("jump into tunnel");
     let lines = story.continue_maximally().expect("continue");
     assert!(
-        matches!(lines.last(), Some(Line::Done { .. })),
+        matches!(lines.last(), Some(Step::Done)),
         "frameless ->-> completes the flow, got {lines:?}"
     );
     assert_eq!(
-        lines
-            .iter()
-            .map(|l| match l {
-                Line::Text { text, .. }
-                | Line::Done { text, .. }
-                | Line::Choices { text, .. }
-                | Line::End { text, .. }
-                | Line::Suspended { text, .. } => text.as_str(),
-            })
-            .collect::<String>(),
+        lines.iter().map(Step::text).collect::<String>(),
         "Side content.\n"
+    );
+}
+
+/// A stale stashed terminal must not be replayed after a host-directed
+/// jump. `continue_single`'s single-step API stashes a computed terminal
+/// (`pending_terminal`) alongside a preceding content line so the *next*
+/// call can return it without further VM stepping (`yield_step`'s doc
+/// comment). If the host jumps in between those two calls, the jump must
+/// discard that stash — otherwise the next `continue_single` hands back
+/// the terminal that was pending *before* the jump instead of stepping the
+/// VM at the new target, and the jump is silently dropped from the host's
+/// point of view.
+#[test]
+fn jump_right_after_content_line_does_not_replay_stale_terminal() {
+    let (program, tables) = compile(
+        "Hello.\n\
+         === elsewhere ===\n\
+         Elsewhere.\n\
+         -> DONE\n",
+    );
+    let program = std::sync::Arc::new(program);
+    let mut story = Story::<FastRng>::new(std::sync::Arc::clone(&program), tables);
+
+    // First call surfaces "Hello." and stashes the implicit-end terminal
+    // (`Step::Done`, unsafe exit — no explicit `-> DONE`/`-> END`) for the
+    // next call — never drained via `continue_maximally`, which is what
+    // let this bug slip past the existing jump tests.
+    let step = story.continue_single().expect("first line");
+    assert!(
+        matches!(&step, Step::Line(line) if line.text == "Hello.\n"),
+        "expected the opening line, got {step:?}"
+    );
+
+    // The host jumps before ever asking for the next step.
+    story
+        .choose_path_string("elsewhere")
+        .expect("jump right after the content line");
+
+    // Without discarding the stash, this replays the stale `Step::Done`
+    // computed before the jump instead of stepping the VM at "elsewhere".
+    let step = story.continue_single().expect("post-jump line");
+    assert!(
+        matches!(&step, Step::Line(line) if line.text == "Elsewhere.\n"),
+        "jump was dropped — expected the jump target's content, got {step:?}"
+    );
+}
+
+/// The same stash-replay hazard for choice selection. `status` transitions
+/// to `WaitingForChoice` as soon as the VM reaches the choice point, in the
+/// *same* `continue_single` call that flushes the pre-choice content line —
+/// before the caller ever sees the `Step::Choices` that gets stashed for
+/// the next call. So `choose` is legal (and succeeds) right after that
+/// first call, without an intervening `continue_single` to drain the
+/// stash. If `choose` doesn't discard the pending terminal, the *next*
+/// `continue_single` replays the stale, already-chosen `Step::Choices`
+/// instead of stepping the VM into the chosen branch.
+#[test]
+fn choose_right_after_content_line_does_not_replay_stale_terminal() {
+    let (program, tables) = compile(
+        "-> start\n\
+         === start ===\n\
+         Before.\n\
+         * [left] Went left. -> DONE\n\
+         * [right] Went right. -> DONE\n",
+    );
+    let program = std::sync::Arc::new(program);
+    let mut story = Story::<FastRng>::new(std::sync::Arc::clone(&program), tables);
+
+    let step = story.continue_single().expect("first line");
+    assert!(
+        matches!(&step, Step::Line(line) if line.text == "Before.\n"),
+        "expected the opening line, got {step:?}"
+    );
+
+    // `status` is already `WaitingForChoice` here (set while stepping the
+    // VM in the call above), so this succeeds without ever seeing the
+    // `Step::Choices` that call stashed.
+    story.choose(0).expect("choose left");
+
+    // Without discarding the stash, this replays the stale, already-chosen
+    // `Step::Choices` instead of stepping the VM into the chosen branch.
+    let step = story.continue_single().expect("post-choice line");
+    assert!(
+        matches!(&step, Step::Line(line) if line.text == "Went left."),
+        "choice was dropped — expected the chosen branch's content, got {step:?}"
     );
 }

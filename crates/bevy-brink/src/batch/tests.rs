@@ -12,7 +12,7 @@ use bevy_ecs::event::Event;
 use bevy_ecs::observer::On;
 use bevy_ecs::resource::Resource;
 use bevy_ecs::system::{ResMut, RunSystemOnce as _};
-use brink_runtime::Line;
+use brink_runtime::Step;
 
 use super::parallel::advance_batch_parallel;
 use crate::test_support::{add_story_assets, compile_test_story};
@@ -65,7 +65,7 @@ fn run_batch_permuted(
             &FallbackHandler,
             &mut bufs[i],
         );
-        rendered[i] = lines.iter().map(Line::text).collect();
+        rendered[i] = lines.iter().map(Step::text).collect();
     }
 
     // Apply — always in flow-id order.
@@ -93,7 +93,7 @@ fn reads_pin_to_frame_start_not_a_peers_buffered_write() {
         &FallbackHandler,
         &mut buf_a,
     );
-    let text_a: String = lines_a.iter().map(Line::text).collect();
+    let text_a: String = lines_a.iter().map(Step::text).collect();
     assert!(
         text_a.contains("Val 0."),
         "A reads frame-start g=0: {text_a:?}"
@@ -118,7 +118,7 @@ fn reads_pin_to_frame_start_not_a_peers_buffered_write() {
         &FallbackHandler,
         &mut buf_b,
     );
-    let text_b: String = lines_b.iter().map(Line::text).collect();
+    let text_b: String = lines_b.iter().map(Step::text).collect();
     assert!(
         text_b.contains("Val 0."),
         "B must read frame-start g=0, not A's write: {text_b:?}"

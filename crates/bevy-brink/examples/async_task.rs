@@ -132,7 +132,7 @@ fn drive_flows(
             entity,
             &mut commands,
         ) {
-            Ok(Advance::Line(line)) => {
+            Ok(Advance::Step(line)) => {
                 let text = line.text().trim_end();
                 if !text.is_empty() {
                     info!("[line]     {text}");

@@ -18,7 +18,7 @@ brink play story.inkb
 use std::path::Path;
 use std::sync::Arc;
 use brink_compiler::compile_path;
-use brink_runtime::{Line, Story};
+use brink_runtime::{Step, Story};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Compile .ink source. `compile_path` returns a `CompileOutput`;
@@ -29,30 +29,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (program, line_tables) = brink_runtime::link(&output.data)?;
 
     // Create a story instance and run it. `continue_single` returns the
-    // next `Line`; the variant tells you what to do.
+    // next `Step`; the variant tells you what to do.
     let mut story: Story = Story::new(Arc::new(program), line_tables);
 
     loop {
         match story.continue_single()? {
             // Mid-stream content — keep going.
-            Line::Text { text, .. } | Line::Done { text, .. } => print!("{text}"),
-            Line::Choices { text, choices, .. } => {
-                print!("{text}");
+            Step::Line(line) => print!("{}", line.text),
+            // This turn's output is complete; the story isn't over.
+            Step::Done => {}
+            Step::Choices(choices) => {
                 for choice in &choices {
                     println!("  {}. {}", choice.index + 1, choice.text);
                 }
                 // Select the first choice (replace with real input).
                 story.choose(choices[0].index)?;
             }
-            Line::End { text, .. } => {
-                print!("{text}");
-                break;
-            }
+            Step::End => break,
             // Reserved for flow suspension; not yet emitted.
-            Line::Suspended { text, .. } => {
-                print!("{text}");
-                break;
-            }
+            Step::Suspended => break,
         }
     }
 
