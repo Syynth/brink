@@ -55,6 +55,10 @@ pub struct ClaimHandlerCandidate {
     pub pattern: String,
     /// Range of the `@[element(claims = "…")]` annotation line.
     pub annotation: TextRange,
+    /// The bare `block` clause (issue #1839), carried through this join
+    /// since issue #2068 — see [`ExternalClaimHandler::block`]'s doc for
+    /// what it means and why it must survive this hop.
+    pub block: bool,
 }
 
 /// Attach each of `handlers`' own `DefinitionId` via `index`, keeping only
@@ -92,6 +96,7 @@ pub fn candidate_claim_handlers(
                 params: handler.params.clone(),
                 pattern: handler.pattern.clone(),
                 annotation: handler.annotation,
+                block: handler.block,
             })
         })
         .collect()
@@ -126,6 +131,7 @@ pub fn join_conventions_registry(
                     params: c.params.clone(),
                     pattern: c.pattern.clone(),
                     annotation: c.annotation,
+                    block: c.block,
                 })
         })
         .collect();
@@ -164,6 +170,9 @@ mod tests {
 
     const CONVENTIONS_SRC: &str = "@[element(claims = \"^INT\\\\. (?<place>.+)$\")]\n\
         fn interior(place: content) {\n  return place;\n}\n";
+
+    const BLOCK_CONVENTIONS_SRC: &str = "@[element(claims = \"^(?<name>[A-Z]+)$\", block)]\n\
+        fn cue(name: string, body: content) {\n  return name;\n}\n";
 
     #[test]
     fn candidate_claim_handlers_attaches_the_index_backed_id() {
@@ -215,6 +224,50 @@ mod tests {
     }
 
     #[test]
+    fn candidate_claim_handlers_carries_the_block_flag_through_real_lowering() {
+        // Issue #2068 review finding: `join_carries_a_block_declared_candidates_flag_into_the_registry`
+        // below hand-builds a `ClaimHandlerCandidate { block: true, .. }`
+        // literal, which bypasses both of this join's first two hops —
+        // `element::handler_decls()` writing `HirFile::claim_handlers[i].block`
+        // (`lower_native/element.rs`) and `candidate_claim_handlers` reading
+        // it back off `handler.block` (this file, above) — so reverting
+        // either production hunk left that test green. This test drives a
+        // real `@[element(claims = "…", block)]` declaration through actual
+        // parsing and lowering instead, then through `candidate_claim_handlers`,
+        // and goes red if either hop is reverted.
+        let hir = conventions_hir(BLOCK_CONVENTIONS_SRC);
+        assert!(
+            hir.claim_handlers[0].block,
+            "a block-declared handler must read block: true straight off real lowering: {:?}",
+            hir.claim_handlers[0]
+        );
+
+        let id = DefinitionId::new(DefinitionTag::Address, 0xC0FF_EE01);
+        let mut index = SymbolIndex::default();
+        index
+            .by_name
+            .insert(hir.claim_handlers[0].name.text.clone(), vec![id]);
+        index.symbols.insert(
+            id,
+            function_symbol(
+                FileId(0),
+                hir.claim_handlers[0].annotation,
+                &hir.claim_handlers[0].name.text,
+                id,
+            ),
+        );
+
+        let candidates = candidate_claim_handlers(&index, FileId(0), &hir.claim_handlers);
+
+        assert_eq!(candidates.len(), 1);
+        assert!(
+            candidates[0].block,
+            "a block-declared handler must carry block: true through candidate_claim_handlers: {:?}",
+            candidates[0]
+        );
+    }
+
+    #[test]
     fn join_orders_by_the_external_identity_list_not_declaration_order() {
         let first = DefinitionId::new(DefinitionTag::Address, 1);
         let second = DefinitionId::new(DefinitionTag::Address, 2);
@@ -229,6 +282,7 @@ mod tests {
                 params: vec!["place".to_string()],
                 pattern: "^INT\\. (?<place>.+)$".to_string(),
                 annotation: TextRange::default(),
+                block: false,
             },
             ClaimHandlerCandidate {
                 id: second,
@@ -236,6 +290,7 @@ mod tests {
                 params: vec!["place".to_string()],
                 pattern: "^EXT\\. (?<place>.+)$".to_string(),
                 annotation: TextRange::default(),
+                block: false,
             },
         ];
 
@@ -268,6 +323,7 @@ mod tests {
             params: Vec::new(),
             pattern: "^INT\\.".to_string(),
             annotation: TextRange::default(),
+            block: false,
         }];
 
         let registry = join_conventions_registry(&[registered_only, declared], &candidates);
@@ -288,11 +344,45 @@ mod tests {
             params: Vec::new(),
             pattern: "^INT\\.".to_string(),
             annotation: TextRange::default(),
+            block: false,
         }];
 
         // `order` is empty — nothing was ever registered.
         let registry = join_conventions_registry(&[], &candidates);
 
         assert!(registry.is_empty());
+    }
+
+    #[test]
+    fn join_carries_a_block_declared_candidates_flag_into_the_registry() {
+        // Issue #2068: this join is the second of the three hops the
+        // `block` flag must survive (`candidate_claim_handlers` attaching
+        // the `DefinitionId` is the first, this join is the second,
+        // `element::collect` reading `ExternalClaimHandler::block` is the
+        // third and last — proven end to end in `brink-ir`'s own
+        // `lower_native::tests`). This test isolates the middle hop:
+        // before #2068, `ClaimHandlerCandidate` had no `block` field at
+        // all, so this call could not even be written.
+        let declared = DefinitionId::new(DefinitionTag::Address, 1);
+        let candidates = vec![ClaimHandlerCandidate {
+            id: declared,
+            name: Name {
+                text: "cue".to_string(),
+                range: TextRange::default(),
+            },
+            params: vec!["name".to_string(), "body".to_string()],
+            pattern: "^(?<name>[A-Z]+)$".to_string(),
+            annotation: TextRange::default(),
+            block: true,
+        }];
+
+        let registry = join_conventions_registry(&[declared], &candidates);
+
+        assert_eq!(registry.handlers().len(), 1);
+        assert!(
+            registry.handlers()[0].block,
+            "a candidate declared `block` must arrive at the registry still `block: true`: {:?}",
+            registry.handlers()[0]
+        );
     }
 }

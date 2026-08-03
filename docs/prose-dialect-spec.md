@@ -168,11 +168,17 @@ elements serving as *spellings of structure that already exists*:
 > well-known entry is `fn conventions()` which **registers handlers in
 > order**, not `fn conventions() -> Conventions`; the `Conventions`
 > **type does not exist**; and §9.1's owed "types shaped for extension
-> ergonomics" is dissolved rather than designed.
+> ergonomics" is dissolved rather than designed. **Also corrected,
+> 2026-08-01 (Q4):** `fn conventions()` is not pure — each `register(...)`
+> call is a write to the named conventions-registry cell, so the function
+> declares `@[effects(writes(conventions_registry))]`, not
+> `@[effects(pure)]`; the earlier purity framing failed its own `E103`
+> fence.
 **The authored form of project conventions is a `.brink` module** — a
-code-ground-only module exporting a pure `fn conventions() ->
-Conventions` (purity asserted via `@[effects(pure)]`, the determinism
-gate; the proc-macro staging rule holds: the module cannot use the
+code-ground-only module exporting `fn conventions()`, which declares
+`writes(conventions_registry)` (each `register(...)` call writes the
+named conventions-registry cell, `docs/decision-log.md`'s 2026-08-01 Q4
+ruling; the proc-macro staging rule holds: the module cannot use the
 conventions it defines). The producer compiles and evaluates it
 (existing machinery: the compiler + `begin_function_eval`) and freezes
 the resulting *value* into the `Environment` — the compiler never
@@ -422,14 +428,17 @@ fn radio(chan: string, text: content) {
   Interior lines lower through the ordinary `body::lower_items` dispatch
   loop, so a handler that would claim one of them still claims it — no
   special case, and each interior line still reaches its own line-table
-  entry (`tests/tier1-native/annotations-element-block/`). Not carried
-  across the cross-file conventions-module injection join (issue #1863):
-  an injected `ClaimHandler` is always treated as non-`block`, so a
-  handler declared `block` in the project's conventions module dispatches
-  its non-block capture params when injected into another file but never
-  its block capture there — a real, tracked gap
-  (`hir::lower_native::element::ClaimHandler::block`'s own doc), not a
-  silent one.
+  entry (`tests/tier1-native/annotations-element-block/`). Carried across
+  the cross-file conventions-module injection join (issue #1863) since
+  issue #2068: `ClaimHandlerDecl`, `ClaimHandlerCandidate`, and
+  `ExternalClaimHandler` each thread a `block: bool` through the three
+  join hops (`Elements::handler_decls()` →
+  `conventions_registry::candidate_claim_handlers` →
+  `conventions_registry::join_conventions_registry` →
+  `element::collect`'s external branch), so an injected handler declared
+  `block` in the project's conventions module still captures its block
+  receiver when dispatched from another file
+  (`hir::lower_native::element::ClaimHandler::block`'s own doc).
 - **`@[style]` — declared editor presentation (RULED, addenda 3–4).**
   A companion annotation mapping captures (and `line` = the whole
   line; `dispatch` = the `!name` prefix) to style values, drawn from
@@ -504,11 +513,13 @@ fn radio(chan: string, text: content) {
   settles `register`'s own legality and lowering — a T1b intrinsic, legal
   only inside the conventions module's `fn conventions()`, enforced by
   `E175` (`crates/internal/brink-analyzer/src/register_intrinsic.rs`).
-  ⚠ **Still open, implementation-side:** Q4's ruled effect row for
-  `register` (the named-registry-cell write) has no arm yet in
-  `brink_analyzer::infer::intrinsics` — see that gap recorded in
-  `register_intrinsic.rs`'s own module doc and `docs/diagnostics/E175.md`.
-  The comptime evaluator itself (`begin_function_eval` interception,
+  Q4's ruled effect row is now wired (issue #1840's registration slice,
+  2026-08-02): `brink_analyzer::infer::intrinsics::intrinsic_effects`'s
+  `conventions_write` bit makes every `register(...)` call write
+  `DefinitionId::CONVENTIONS_REGISTRY_CELL`, spelled `conventions_registry`
+  in a `writes(…)` clause — see `register_intrinsic.rs`'s own module doc
+  and `docs/diagnostics/E175.md` for the full history. The comptime
+  evaluator itself (`begin_function_eval` interception,
   `brink-compiler` taking `brink-runtime` as a real dependency per
   `docs/decision-log.md`'s #1867 entry) also remains unbuilt); **multi-token
   style values** — issue #1719's `@[style(key = "value")]` value is a single

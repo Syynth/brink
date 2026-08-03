@@ -84,9 +84,16 @@
 //! [`super::body::lower_items`] path, so a handler that would claim one of
 //! them still claims it, with no special case needed.
 //!
-//! **Not carried across the cross-file injection join** (issue #1863): an
-//! `external`/injected `ClaimHandler` is always `block: false` — see
-//! [`ClaimHandler::block`]'s own doc for why.
+//! **Carried across the cross-file injection join** (issue #1863) since
+//! issue #2068: an `external`/injected `ClaimHandler`'s `block` flag comes
+//! from `ExternalClaimHandler::block`, populated all the way back to the
+//! declaring file's own `ElementAnnotation.block` via `ClaimHandlerDecl`
+//! (this crate) and `ClaimHandlerCandidate` (`brink_analyzer::
+//! conventions_registry`, the project-layer join half of the seam). Before
+//! #2068 none of those three structs carried the flag at all, so a
+//! conventions-module handler declared `block` dispatched its non-block
+//! capture params when injected into another file, but silently never its
+//! block capture there.
 //!
 //! # Deliberately not here
 //!
@@ -165,15 +172,12 @@ struct ClaimHandler {
     /// The bare `block` clause (issue #1839): `true` when the trailing
     /// parameter is a `content`-typed block-capture receiver, not a
     /// regex-bound capture — see [`try_claim`]'s doc for what that changes
-    /// about argument binding. **Always `false` for an injected handler**
-    /// (`decl: None`): `super::external_conventions::ExternalClaimHandler`
-    /// does not carry the `block` flag across the cross-file injection
-    /// join (issue #1863) yet, so a conventions-module handler declared
-    /// with `block` can dispatch its non-block capture params when injected
-    /// into another file, but never its block capture there — a real,
-    /// tracked gap (issue #1839's PR notes it), not a silent one: `collect`
-    /// always sets this `false` for `external`, never reads a nonexistent
-    /// field.
+    /// about argument binding. For an injected handler (`decl: None`) this
+    /// is read straight off `ExternalClaimHandler::block`, carried across
+    /// the cross-file injection join (issue #1863) since issue #2068 —
+    /// before that fix this field was unconditionally `false` for every
+    /// injected handler, because `ExternalClaimHandler` had no `block`
+    /// field to read at all.
     block: bool,
 }
 
@@ -275,6 +279,7 @@ impl Elements {
                 annotation: h.annotation,
                 params: h.params.clone(),
                 pattern: h.pattern.as_str().to_string(),
+                block: h.block,
             })
             .collect()
     }
@@ -375,12 +380,10 @@ pub(super) fn collect(
                 pattern,
                 annotation: candidate.annotation,
                 decl: None,
-                // See `ClaimHandler::block`'s doc: `ExternalClaimHandler`
-                // does not carry this flag across the injection join yet
-                // (issue #1863's own scope), so an injected handler can
-                // never block-capture — always `false`, never read from
-                // `candidate` (which has no such field).
-                block: false,
+                // Issue #2068: read straight off the declaring file's own
+                // `block` flag, carried across the injection join by
+                // `ExternalClaimHandler::block`.
+                block: candidate.block,
             });
         }
     }
