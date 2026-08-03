@@ -1,7 +1,6 @@
 -- INT. MARKET SQUARE - NIGHT --
 The square is empty.
 VENDOR
-
 (hushed)
 You shouldn't be here after dark.
 KID
