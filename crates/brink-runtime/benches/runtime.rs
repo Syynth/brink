@@ -40,6 +40,13 @@ const CRUCIBLE_8_INPUT: &str = include_str!("../../../benchmarks/stories/crucibl
 /// below is a standalone `#[divan::bench]` using `compile_story_brink`.
 const LOOP_APPEND_10K_INK: &str = "../../benchmarks/stories/loop-append-10k/story.ink";
 
+/// Field loop-append (issue #2123, `docs/value-model-spec.md` §5's "one
+/// cliff" case one field deeper than #576 closed): [`LOOP_APPEND_10K_INK`]'s
+/// exact shape, except the appended-to array lives one field deep
+/// (`push(a.items, v)`, `a: Bag`) instead of being a bare variable. See the
+/// `.ink` file's header comment for the before/after cliff this isolates.
+const LOOP_APPEND_FIELD_10K_INK: &str = "../../benchmarks/stories/loop-append-field-10k/story.ink";
+
 /// Share-then-mutate (issue #821 Workstream A/B seed) benchmark: 5k
 /// iterations of "share a global into another, then mutate the copy" —
 /// the mirror image of [`LOOP_APPEND_10K_INK`]'s never-shared append.
@@ -312,6 +319,24 @@ mod loop_append_bench {
     #[divan::bench]
     fn push_10k(bencher: divan::Bencher) {
         let data = compile_story_brink(LOOP_APPEND_10K_INK);
+        #[expect(clippy::unwrap_used)]
+        let (program, line_tables) = brink_runtime::link(&data).unwrap();
+        let program = std::sync::Arc::new(program);
+        bencher.bench_local(|| run_to_completion(&program, line_tables.clone(), &[]));
+    }
+}
+
+/// Field loop-append (issue #2123): [`loop_append_bench`]'s exact
+/// granularity (link once, run repeatedly), one field deeper. Before the
+/// #2123 fix, this scenario is O(n^2) in the push count exactly like
+/// `loop_append_bench` was before #576; after it, O(n) amortized. See the
+/// PR description for measured before/after numbers.
+mod loop_append_field_bench {
+    use super::{LOOP_APPEND_FIELD_10K_INK, compile_story_brink, run_to_completion};
+
+    #[divan::bench]
+    fn push_field_10k(bencher: divan::Bencher) {
+        let data = compile_story_brink(LOOP_APPEND_FIELD_10K_INK);
         #[expect(clippy::unwrap_used)]
         let (program, line_tables) = brink_runtime::link(&data).unwrap();
         let program = std::sync::Arc::new(program);
@@ -687,6 +712,15 @@ fn print_bench_counters() {
     run_to_completion(&program, line_tables, &[]);
     let share_then_mutate = bench_counters::snapshot();
 
+    // Field loop-append (issue #2123): same amortize-to-~0 proof as
+    // loop-append-10k, one field deeper.
+    bench_counters::reset();
+    let data = compile_story_brink(LOOP_APPEND_FIELD_10K_INK);
+    let (program, line_tables) = brink_runtime::link(&data).unwrap();
+    let program = std::sync::Arc::new(program);
+    run_to_completion(&program, line_tables, &[]);
+    let loop_append_field = bench_counters::snapshot();
+
     // Struct field access (issue #821 second program batch): both
     // TypePolicy compiles of the same source, to prove the strict/gradual
     // COW-copy count is identical — the wall-time delta between the two
@@ -714,6 +748,10 @@ fn print_bench_counters() {
     eprintln!(
         "  share-then-mutate-5k:  cow_copies={:>6} arc_clones={:>6}",
         share_then_mutate.cow_copies, share_then_mutate.arc_clones
+    );
+    eprintln!(
+        "  loop-append-field-10k: cow_copies={:>6} arc_clones={:>6}",
+        loop_append_field.cow_copies, loop_append_field.arc_clones
     );
     eprintln!(
         "  struct-field-access-10k (strict):  cow_copies={:>6} arc_clones={:>6}",

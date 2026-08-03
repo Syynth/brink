@@ -83,6 +83,7 @@ bench-counters` added.
 | Program | File | Mechanism isolated |
 |---|---|---|
 | loop-append collection churn | `loop-append-10k/story.ink` | 10k sequential `push`es onto a never-shared array — proves (or disproves) O(1) amortized append after #576's take/make_mut/write-back fix (the §5 "one cliff" case) |
+| loop-append, one field deep | `loop-append-field-10k/story.ink` | Same shape as loop-append-10k, except the appended-to array lives one struct field deep (`push(a.items, v)`, `a: Bag`) — proves (or disproves) O(1) amortized append after issue #2123's fix, which closed this exact cliff one field deeper than #576 reached |
 | share-then-mutate COW cost | `share-then-mutate-5k/story.ink` | 5k iterations of "share a global into another, then mutate the copy" — the mirror image of loop-append: every iteration deliberately re-shares before mutating, so the COW copy is paid every time, not amortized away |
 | `ptr_eq` equality fast path | `ptr_eq_bench` module in `runtime.rs` (no `.ink` file — see below) | Same-`Arc` vs distinct-but-structurally-equal `Value::Array` comparison, directly against `brink_format::Value`'s hand-written `PartialEq` |
 | #fn creation density | `fn-creation-density-10k/story.ink` | 10k one-bound-arg closure creations (`#fn(ident, i)`), never called or shared — isolates `Value::closure`'s per-creation `Arc<ClosureValue>` allocation cost alone |
@@ -223,6 +224,14 @@ snapshot-retention g100-m100:        cow_copies=   101  arc_clones= 10201
 save-state-medium save_state():      cow_copies=     0  arc_clones=     1
 save-state-medium load_state():      cow_copies=     0  arc_clones=     1
 ```
+
+This block predates `loop-append-field-10k` (issue #2123) and does not yet
+have a row for it: `cargo bench -p brink-runtime --features bench-counters`
+currently panics before any bench runs (`struct-field-access-10k`'s
+`VAR p: Point = 0` placeholder fails to compile under E063, unrelated to
+#2123 — see that PR's description), so a real captured number isn't
+available yet. Don't fabricate one here; add the row once that's
+unblocked.
 
 The snapshot-retention row is the §8 bounded-retention proof: g10-m10 and
 g10-m100 (same G=10, 10x different M) both report `cow_copies=11`;
